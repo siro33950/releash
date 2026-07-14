@@ -20,7 +20,7 @@ docs/specs/<spec-id>/
   design.md
 ```
 
-本ステップでは `requirements.md` だけを作成・更新する。`behavior.md` と `design.md` は変更しない。
+この node では `requirements.md` だけを作成・更新する。`behavior.md` と `design.md` は変更しない。
 
 `requirements.md` には少なくとも以下を含める:
 

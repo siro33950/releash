@@ -118,6 +118,11 @@ impl WorkflowQueryService {
         &self,
         execution_id: &str,
     ) -> Result<Vec<WorkflowEventView>, WorkflowError> {
+        if self.get_execution(execution_id)?.is_none() {
+            return Err(WorkflowError::NotFound(format!(
+                "Workflow execution not found: {execution_id}"
+            )));
+        }
         Ok(self
             .read_events(execution_id)?
             .into_iter()
@@ -125,14 +130,12 @@ impl WorkflowQueryService {
             .collect())
     }
 
-    pub fn get_output(
-        &self,
-        execution_id: &str,
+    pub(in crate::usecase::workflow) fn get_output_from_events(
+        events: &[WorkflowEventDraft],
         node_name: &str,
-    ) -> Result<WorkflowGetOutputResult, WorkflowError> {
-        let events = self.read_events(execution_id)?;
-        Ok(latest_artifact_produced_from_drafts(&events, node_name)
-            .unwrap_or(WorkflowGetOutputResult::NotSubmitted))
+    ) -> WorkflowGetOutputResult {
+        latest_artifact_produced_from_drafts(events, node_name)
+            .unwrap_or(WorkflowGetOutputResult::NotSubmitted)
     }
 
     pub fn get_execution_state(
@@ -716,6 +719,11 @@ mod tests {
     #[test]
     fn get_execution_log_projects_event_drafts_to_wire_timestamp_fields() {
         let fixture = Fixture::new();
+        fixture.executions.seed(execution_summary(
+            test_execution_id(),
+            ExecutionStatus::Running,
+            "/wt",
+        ));
         fixture
             .events
             .append(&WorkflowEventDraft {
@@ -724,7 +732,6 @@ mod tests {
                 timestamp: 1.25,
                 payload: serde_json::json!({
                     "workflow_name": "wf",
-                    "workflow_file_stem": "wf",
                     "worktree_path": "/wt",
                 }),
             })
@@ -744,22 +751,13 @@ mod tests {
     }
 
     #[test]
-    fn get_execution_log_renames_caller_timestamps_to_millisecond_fields() {
+    fn get_execution_log_renames_submission_timestamp_to_millisecond_field() {
         let fixture = Fixture::new();
-        fixture
-            .events
-            .append(&WorkflowEventDraft {
-                execution_id: test_execution_id().to_string(),
-                event_kind: "cli_mutation_requested".to_string(),
-                timestamp: 3.0,
-                payload: serde_json::json!({
-                    "workflow_name": "wf",
-                    "request_id": "req-1",
-                    "request": {"type": "abort"},
-                    "requested_at": 2.0,
-                }),
-            })
-            .unwrap();
+        fixture.executions.seed(execution_summary(
+            test_execution_id(),
+            ExecutionStatus::Running,
+            "/wt",
+        ));
         fixture
             .events
             .append(&WorkflowEventDraft {
@@ -782,12 +780,24 @@ mod tests {
             .get_execution_log(test_execution_id())
             .unwrap();
 
-        assert_eq!(events[0]["requestedAtMs"].as_f64(), Some(2000.0));
-        assert!(events[0].get("requested_at").is_none());
-        assert_eq!(events[0]["timestampMs"].as_f64(), Some(3000.0));
-        assert_eq!(events[1]["submittedAtMs"].as_f64(), Some(4000.0));
-        assert!(events[1].get("submitted_at").is_none());
-        assert_eq!(events[1]["timestampMs"].as_f64(), Some(4000.0));
+        assert_eq!(events[0]["submittedAtMs"].as_f64(), Some(4000.0));
+        assert!(events[0].get("submitted_at").is_none());
+        assert_eq!(events[0]["timestampMs"].as_f64(), Some(4000.0));
+    }
+
+    #[test]
+    fn get_execution_log_rejects_an_unknown_execution_before_reading_events() {
+        let fixture = Fixture::new();
+
+        let error = fixture
+            .service
+            .get_execution_log(test_execution_id())
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            WorkflowError::NotFound(message) if message.contains(test_execution_id())
+        ));
     }
 
     #[test]
@@ -816,10 +826,8 @@ mod tests {
             ))
             .unwrap();
 
-        let result = fixture
-            .service
-            .get_output(test_execution_id(), "review")
-            .unwrap();
+        let events = fixture.service.read_events(test_execution_id()).unwrap();
+        let result = WorkflowQueryService::get_output_from_events(&events, "review");
 
         assert_eq!(
             result,
@@ -832,10 +840,7 @@ mod tests {
             }
         );
         assert_eq!(
-            fixture
-                .service
-                .get_output(test_execution_id(), "missing")
-                .unwrap(),
+            WorkflowQueryService::get_output_from_events(&events, "missing"),
             WorkflowGetOutputResult::NotSubmitted
         );
     }
@@ -864,10 +869,8 @@ mod tests {
             })
             .unwrap();
 
-        let result = fixture
-            .service
-            .get_output(test_execution_id(), "review")
-            .unwrap();
+        let events = fixture.service.read_events(test_execution_id()).unwrap();
+        let result = WorkflowQueryService::get_output_from_events(&events, "review");
 
         assert_eq!(
             result,

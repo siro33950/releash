@@ -1,4 +1,3 @@
-use crate::adaptor::gateway::workflow::event::CliMutationRejectionReason;
 use crate::adaptor::gateway::workflow::resolver::{
     ManagedWorktreeResolverError, WorkflowDefinitionResolverError,
 };
@@ -184,57 +183,9 @@ pub(crate) fn workflow_error_to_engine_error(
     }
 }
 
-pub(crate) fn should_commit_rejected_external_request(error: &WorkflowEngineError) -> bool {
-    matches!(
-        error,
-        WorkflowEngineError::ValidationError(_)
-            | WorkflowEngineError::InvalidState(_)
-            | WorkflowEngineError::UnauthorizedApprovalTarget(_)
-            | WorkflowEngineError::UnauthorizedWorktree(_)
-    )
-}
-
-/// Classifies engine-rejected external workflow mutations for the auxiliary
-/// `CliMutationRejected` event. Human-readable detail remains in the event
-/// message; this is intentionally coarse-grained observability metadata.
-pub(crate) fn classify_cli_mutation_rejection_reason(
-    error: &WorkflowEngineError,
-) -> CliMutationRejectionReason {
-    use CliMutationRejectionReason::*;
-    match error {
-        WorkflowEngineError::ExecutionNotFound(_) => ExecutionNotFound,
-        WorkflowEngineError::UnauthorizedApprovalTarget(_) => NotWaitingApproval,
-        WorkflowEngineError::UnauthorizedWorktree(_) => Other,
-        WorkflowEngineError::ValidationError(msg) => {
-            if msg.contains("contract mismatch") {
-                ContractMismatch
-            } else if msg.contains("is not a valid submission target") {
-                NodeNotFound
-            } else {
-                Other
-            }
-        }
-        WorkflowEngineError::InvalidState(msg) => {
-            if msg.contains("is not currently accepting structured output") {
-                NodeNotAccepting
-            } else if msg.contains("is already terminal")
-                || msg.contains("is not accepting structured output (state:")
-            {
-                ExecutionNotActive
-            } else {
-                Other
-            }
-        }
-        // Retryable/internal I/O paths should be gated by
-        // `should_commit_rejected_external_request`; keep classification safe.
-        _ => Other,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adaptor::gateway::workflow::event::CliMutationRejectionReason as R;
     use crate::usecase::agent_session::runtime::usecase::AgentRuntimeError;
 
     #[test]
@@ -278,77 +229,5 @@ mod tests {
             NodeExecutionFailureKind::StartupTimeout
         );
         assert_eq!(error.retry_count(), Some(1));
-    }
-
-    #[test]
-    fn rejected_external_request_commit_policy_keeps_user_rejections_observable() {
-        assert!(should_commit_rejected_external_request(
-            &WorkflowEngineError::ValidationError("bad input".to_string())
-        ));
-        assert!(should_commit_rejected_external_request(
-            &WorkflowEngineError::InvalidState("not waiting".to_string())
-        ));
-        assert!(should_commit_rejected_external_request(
-            &WorkflowEngineError::UnauthorizedApprovalTarget("target".to_string())
-        ));
-        assert!(should_commit_rejected_external_request(
-            &WorkflowEngineError::UnauthorizedWorktree("worktree".to_string())
-        ));
-        assert!(!should_commit_rejected_external_request(
-            &WorkflowEngineError::SessionStore("io".to_string())
-        ));
-        assert!(!should_commit_rejected_external_request(
-            &WorkflowEngineError::AgentSession("runtime".to_string())
-        ));
-    }
-
-    #[test]
-    fn cli_mutation_rejection_reason_maps_known_errors() {
-        let cases: Vec<(WorkflowEngineError, R)> = vec![
-            (
-                WorkflowEngineError::ExecutionNotFound("run".to_string()),
-                R::ExecutionNotFound,
-            ),
-            (
-                WorkflowEngineError::UnauthorizedApprovalTarget("target".to_string()),
-                R::NotWaitingApproval,
-            ),
-            (
-                WorkflowEngineError::ValidationError(
-                    "contract mismatch: node 'r' expects 'a', got 'b'".to_string(),
-                ),
-                R::ContractMismatch,
-            ),
-            (
-                WorkflowEngineError::ValidationError(
-                    "node 'r' is not a valid submission target".to_string(),
-                ),
-                R::NodeNotFound,
-            ),
-            (
-                WorkflowEngineError::InvalidState(
-                    "node 'r' is not currently accepting structured output".to_string(),
-                ),
-                R::NodeNotAccepting,
-            ),
-            (
-                WorkflowEngineError::InvalidState("execution x is already terminal".to_string()),
-                R::ExecutionNotActive,
-            ),
-            (
-                WorkflowEngineError::InvalidState(
-                    "execution x is not accepting structured output (state: Completed)".to_string(),
-                ),
-                R::ExecutionNotActive,
-            ),
-            (
-                WorkflowEngineError::InvalidState("something else".to_string()),
-                R::Other,
-            ),
-        ];
-        for (err, expected) in cases {
-            let got = classify_cli_mutation_rejection_reason(&err);
-            assert_eq!(got, expected, "unexpected reason for error: {err}");
-        }
     }
 }

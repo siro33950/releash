@@ -60,7 +60,7 @@ pub async fn start_workflow(
     let permission_mode = parse_workflow_start_permission_mode(permission_mode)?;
     runtime
         .start_execution(StartExecutionCommand {
-            workflow_file_stem: workflow_name,
+            workflow_name,
             worktree_path,
             request,
             created_from,
@@ -92,6 +92,15 @@ pub async fn abort_workflow(
 #[tauri::command]
 pub async fn approve_workflow_node(
     runtime: tauri::State<'_, Arc<WorkflowRuntimeUsecase>>,
+    args: ApproveWorkflowNodeArgs,
+) -> Result<(), String> {
+    approve_workflow_node_with_runtime(runtime.inner().as_ref(), args).await
+}
+
+/// Tauri wrapper と transport-independent boundary test が共有する production adapter。
+/// state transition は持たず、typed command を `WorkflowRuntimeUsecase` へ渡すだけに保つ。
+pub(crate) async fn approve_workflow_node_with_runtime(
+    runtime: &WorkflowRuntimeUsecase,
     args: ApproveWorkflowNodeArgs,
 ) -> Result<(), String> {
     let ApproveWorkflowNodeArgs {

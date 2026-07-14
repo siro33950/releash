@@ -111,7 +111,7 @@ pub(crate) enum RuleDto {
     },
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct WorkflowSummaryDto {
     pub name: String,
     pub description: String,

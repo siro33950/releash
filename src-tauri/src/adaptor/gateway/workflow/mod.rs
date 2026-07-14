@@ -2,7 +2,7 @@
 //!
 //! These adapters intentionally preserve the existing workflow persistence
 //! formats (`workflow_executions/`, `workflow_execution_logs/`, workflow YAML, facet markdown,
-//! and pending command files). Controller wiring moves to these ports in #1037.
+//! execution event logs and workflow YAML/facet markdown.
 
 pub(crate) mod approval_runtime;
 pub(crate) mod builtin;
@@ -15,7 +15,6 @@ mod editor_gateway;
 pub(crate) mod engine_error;
 pub(crate) mod engine_start_guard;
 pub(crate) mod event;
-pub(crate) mod event_log_query;
 pub(crate) mod event_log_writer;
 pub(crate) mod event_projection;
 mod event_repository;
@@ -24,7 +23,6 @@ mod execution_projection_repository;
 pub(crate) mod execution_registry;
 mod execution_repository;
 pub(crate) mod execution_store;
-pub(crate) mod external_execution_restore;
 pub(crate) mod facet;
 mod facet_repository;
 pub(crate) mod failure_policy_config;
@@ -36,14 +34,8 @@ pub(crate) mod orphan_recovery;
 pub(crate) mod output_limit;
 pub(crate) mod output_submission;
 pub(crate) mod parallel_runtime;
-pub(crate) mod pending_command;
-pub(crate) mod pending_command_dispatcher;
-mod pending_command_watcher;
-mod pending_repository;
-pub(crate) mod pending_runtime;
 pub(crate) mod prompt_rendering;
 pub(crate) mod resolver;
-pub(crate) mod route_context;
 mod runtime_command_gateway;
 pub(crate) mod runtime_commit;
 pub(crate) mod runtime_engine;
@@ -81,13 +73,11 @@ pub(crate) use execution_archive_repository::WorkflowExecutionArchiveFileReposit
 pub(crate) use execution_projection_repository::WorkflowExecutionProjectionLogRepository;
 pub(crate) use execution_repository::WorkflowExecutionFileRepository;
 pub(crate) use facet_repository::WorkflowFacetFileRepository;
-pub(crate) use pending_command_watcher::spawn_pending_command_watcher;
-pub(crate) use pending_repository::{
-    process_pending_workflow_command_entry, PendingWorkflowCommandFileRepository,
-};
 pub(crate) use runtime_command_gateway::{
     TauriWorkflowRuntimeCommandGateway, TauriWorkflowRuntimeCommandGatewayDeps,
 };
+#[cfg(test)]
+pub(crate) use runtime_resolver::resolve_workflow_by_name;
 #[cfg(test)]
 pub(crate) use secret_source_gateway::EmptySecretSourceGateway;
 pub(crate) use secret_source_gateway::WorkflowSecretSourceConfigGateway;

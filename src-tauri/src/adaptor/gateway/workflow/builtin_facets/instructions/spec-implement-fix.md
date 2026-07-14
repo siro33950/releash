@@ -25,14 +25,14 @@
 - `releash review list --session-id "$RELEASH_SESSION_ID" --state open --json`
 - 各 Thread の `releash review get <thread-id> --session-id "$RELEASH_SESSION_ID" --json` で本文・対象範囲を確認
 - 必要に応じて `releash review history <thread-id> --session-id "$RELEASH_SESSION_ID" --json` で履歴も確認
-- **Open Thread が 1 件も無い場合**は修正不要。ステップ 2〜5 を行わず、ステップ 6 で `verdict: "completed"` を提出して終了する
+- **Open Thread が 1 件も無い場合**は修正不要。手順 2〜5 を行わず、手順 6 で `verdict: "completed"` を提出して終了する
 
 ## 2. 全体設計
 
 - 全 Open Thread を読み、全体の修正方針を設計する
 - 複数 Thread の衝突・依存関係を整理する
 - 修正は Spec（requirements / behavior / design）と矛盾しないこと
-- 競合する Thread があれば、Spec と整合する方を採用する。どちらも Spec と矛盾しない場合は、より具体的・根拠が明確な方を採用する。採用しなかった方の Thread はステップ 4 で不採用として Resolve する（Open のまま残すと次のループで再 review され同じ指摘が再投稿されるため）
+- 競合する Thread があれば、Spec と整合する方を採用する。どちらも Spec と矛盾しない場合は、より具体的・根拠が明確な方を採用する。採用しなかった方の Thread は手順 4 で不採用として Resolve する（Open のまま残すと次のループで再 review され同じ指摘が再投稿されるため）
 
 ## 3. 修正の実装
 
@@ -47,14 +47,14 @@
 
 ## 5. 再修正ループ
 
-- Resolve できなかった Thread が残っていれば、それらを Open として再度ステップ 3 へ戻り、修正と Resolve を繰り返す
+- Resolve できなかった Thread が残っていれば、それらを Open として再度手順 3 へ戻り、修正と Resolve を繰り返す
 - すべての Open Thread が Resolve されたら完了
 
 ## 6. Verdict の提出
 
 `spec-implement-fix-verdict` schema の Artifact を prompt 末尾の必須アクションに従って提出する。
 
-- ステップ 1 で Open Thread が 1 件も無かった場合:
+- 手順 1 で Open Thread が 1 件も無かった場合:
 
 ```json
 {

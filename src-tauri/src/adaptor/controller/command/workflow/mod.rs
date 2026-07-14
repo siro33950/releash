@@ -418,9 +418,8 @@ fn validate_template_variables(content: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::execution::{
-        get_workflow_execution, get_workflow_execution_log_inner,
-        get_workflow_execution_state_inner, get_workflow_node_detail_inner,
-        list_workflow_executions,
+        get_workflow_execution, get_workflow_execution_log_impl, get_workflow_execution_state_impl,
+        get_workflow_node_detail_impl, list_workflow_executions,
     };
     use super::*;
     use crate::adaptor::gateway::workflow::event::WorkflowEvent;
@@ -811,20 +810,8 @@ mod tests {
                 WorkflowEvent::ExecutionAborted { .. } => "ExecutionAborted",
                 WorkflowEvent::ExecutionInterrupted { .. } => "ExecutionInterrupted",
                 WorkflowEvent::ContractViolated { .. } => "ContractViolated",
-                WorkflowEvent::CliMutationRequested { .. } => "CliMutationRequested",
                 WorkflowEvent::ArtifactProduced { .. } => "ArtifactProduced",
-                WorkflowEvent::CliMutationRejected { .. } => "CliMutationRejected",
             })
-            .collect()
-    }
-
-    /// `event_kinds` から `CliMutationRequested` 発生（CLI 経路のみ追加される
-    /// 観測 event）を除外する。CLI / UI 経路の engine 出力等価性を比較する
-    /// 際に使用する（review R4-01）。
-    fn event_kinds_excluding_cli_mutation(events: &[WorkflowEvent]) -> Vec<&'static str> {
-        event_kinds(events)
-            .into_iter()
-            .filter(|kind| *kind != "CliMutationRequested")
             .collect()
     }
 
@@ -1170,185 +1157,6 @@ mod tests {
         assert_eq!(execution.status, ExecutionStatus::Completed);
         assert!(event_kinds(&read_adapter_events(&data_dir, &execution_id))
             .contains(&"ApprovalResolved"));
-    }
-
-    // ---- CLI / UI 経路の engine 等価性（spec [06] L99-102 Rule, review R4-01） ----
-    //
-    // 同一意図の state 変化要求は呼び出し経路に依らず engine から見て等価に
-    // 扱われる、という Rule を直接検証する。各テストは UI adapter
-    // （`approve_workflow_node_adapter` / `abort_workflow_adapter`）と CLI
-    // pending dispatcher（`dispatch_pending_command`）を同一初期 state に
-    // 流し、`CliMutationRequested`（CLI 経路のみ追加される観測 event）を
-    // 除いた event 列が一致することを確認する。
-
-    /// CLI pending Approve は UI approve_workflow_node と engine 視点で等価。
-    #[tokio::test]
-    async fn cli_pending_approve_and_ui_approve_yield_equivalent_engine_outcome() {
-        let ui_app = make_adapter_app();
-        let ui_engine = make_adapter_engine();
-        let ui_data_dir = configure_run_store(&ui_app, &ui_engine).await;
-        let (ui_store, ui_handles) = make_adapter_deps(&ui_data_dir);
-        let ui_execution_id = uuid::Uuid::new_v4().to_string();
-        ui_engine
-            .seed_active_execution_for_test(
-                ui_execution_id.clone(),
-                approval_only_workflow(),
-                RuntimeExecutionState::WaitingApproval,
-                "/wt/ui-approve-parity".to_string(),
-                ExecutionOrigin::DesktopUi,
-            )
-            .await;
-
-        let cli_app = make_adapter_app();
-        let cli_engine = make_adapter_engine();
-        let cli_data_dir = configure_run_store(&cli_app, &cli_engine).await;
-        let (cli_store, cli_handles) = make_adapter_deps(&cli_data_dir);
-        let cli_execution_id = uuid::Uuid::new_v4().to_string();
-        cli_engine
-            .seed_active_execution_for_test(
-                cli_execution_id.clone(),
-                approval_only_workflow(),
-                RuntimeExecutionState::WaitingApproval,
-                "/wt/cli-approve-parity".to_string(),
-                ExecutionOrigin::DesktopUi,
-            )
-            .await;
-
-        approve_workflow_node_adapter(
-            ui_app.handle(),
-            &ui_handles,
-            &ui_store,
-            &ui_engine,
-            ui_execution_id.clone(),
-            "review".to_string(),
-            None,
-            Some("parity-lgtm".to_string()),
-        )
-        .await
-        .expect("UI approval must succeed");
-
-        let cli_outcome = crate::adaptor::gateway::workflow::pending_command_dispatcher::dispatch_pending_command(
-            cli_app.handle(),
-            &cli_engine,
-            &cli_store,
-            &cli_handles,
-            crate::adaptor::gateway::workflow::pending_command::PendingCommand::new(
-                cli_execution_id.clone(),
-                crate::adaptor::gateway::workflow::pending_command::PendingCommandPayload::Approve {
-                    node_name: "review".to_string(),
-                    node_execution_id: None,
-                    comment: Some("parity-lgtm".to_string()),
-                },
-                100.0,
-            ),
-        )
-        .await;
-        assert_eq!(
-            cli_outcome,
-            crate::adaptor::gateway::workflow::pending_command_dispatcher::PendingCommandDispatchOutcome::Accepted
-        );
-
-        let ui_execution = project_adapter_execution(&ui_data_dir, &ui_execution_id);
-        let cli_execution = project_adapter_execution(&cli_data_dir, &cli_execution_id);
-        assert_eq!(ui_execution.status, cli_execution.status);
-        assert_eq!(
-            adapter_execution_status(&ui_engine, &ui_execution_id).await,
-            adapter_execution_status(&cli_engine, &cli_execution_id).await
-        );
-        assert_eq!(
-            event_kinds_excluding_cli_mutation(&read_adapter_events(
-                &ui_data_dir,
-                &ui_execution_id
-            )),
-            event_kinds_excluding_cli_mutation(&read_adapter_events(
-                &cli_data_dir,
-                &cli_execution_id
-            ))
-        );
-    }
-
-    /// CLI pending Abort（run 全体）は UI abort_workflow と engine 視点で等価。
-    #[tokio::test]
-    async fn cli_pending_abort_and_ui_abort_yield_equivalent_engine_outcome() {
-        let ui_app = make_adapter_app();
-        let ui_engine = make_adapter_engine();
-        let ui_data_dir = configure_run_store(&ui_app, &ui_engine).await;
-        let (ui_store, ui_handles) = make_adapter_deps(&ui_data_dir);
-        let ui_execution_id = uuid::Uuid::new_v4().to_string();
-        ui_engine
-            .seed_active_execution_for_test(
-                ui_execution_id.clone(),
-                approval_only_workflow(),
-                RuntimeExecutionState::Running,
-                "/wt/ui-abort-parity".to_string(),
-                ExecutionOrigin::DesktopUi,
-            )
-            .await;
-
-        let cli_app = make_adapter_app();
-        let cli_engine = make_adapter_engine();
-        let cli_data_dir = configure_run_store(&cli_app, &cli_engine).await;
-        let (cli_store, cli_handles) = make_adapter_deps(&cli_data_dir);
-        let cli_execution_id = uuid::Uuid::new_v4().to_string();
-        cli_engine
-            .seed_active_execution_for_test(
-                cli_execution_id.clone(),
-                approval_only_workflow(),
-                RuntimeExecutionState::Running,
-                "/wt/cli-abort-parity".to_string(),
-                ExecutionOrigin::DesktopUi,
-            )
-            .await;
-
-        abort_workflow_adapter(
-            ui_app.handle(),
-            &ui_handles,
-            &ui_store,
-            &ui_engine,
-            ui_execution_id.clone(),
-        )
-        .await
-        .expect("UI abort must succeed");
-
-        let cli_outcome = crate::adaptor::gateway::workflow::pending_command_dispatcher::dispatch_pending_command(
-            cli_app.handle(),
-            &cli_engine,
-            &cli_store,
-            &cli_handles,
-            crate::adaptor::gateway::workflow::pending_command::PendingCommand::new(
-                cli_execution_id.clone(),
-                crate::adaptor::gateway::workflow::pending_command::PendingCommandPayload::Abort { node_name: None },
-                300.0,
-            ),
-        )
-        .await;
-        assert_eq!(
-            cli_outcome,
-            crate::adaptor::gateway::workflow::pending_command_dispatcher::PendingCommandDispatchOutcome::Accepted
-        );
-
-        let ui_execution = project_adapter_execution(&ui_data_dir, &ui_execution_id);
-        let cli_execution = project_adapter_execution(&cli_data_dir, &cli_execution_id);
-        assert_eq!(ui_execution.status, ExecutionStatus::Aborted);
-        assert_eq!(cli_execution.status, ExecutionStatus::Aborted);
-        assert_eq!(
-            ui_engine.list_completed_executions().await[0].status,
-            ExecutionStatus::Aborted
-        );
-        assert_eq!(
-            cli_engine.list_completed_executions().await[0].status,
-            ExecutionStatus::Aborted
-        );
-        assert_eq!(
-            event_kinds_excluding_cli_mutation(&read_adapter_events(
-                &ui_data_dir,
-                &ui_execution_id
-            )),
-            event_kinds_excluding_cli_mutation(&read_adapter_events(
-                &cli_data_dir,
-                &cli_execution_id
-            ))
-        );
     }
 
     #[test]
@@ -2683,7 +2491,7 @@ mod tests {
         );
 
         // unauthorized worktree_path は canonicalize 段階で Err として弾かれる。
-        let log = get_workflow_execution_log_inner(
+        let log = get_workflow_execution_log_impl(
             &app.state::<AppState>().workflow_usecase,
             unauthorized_wt.to_string(),
             execution_id.clone(),
@@ -2694,7 +2502,7 @@ mod tests {
             "unauthorized worktree_path must be rejected by event log invoke"
         );
 
-        let state = get_workflow_execution_state_inner(
+        let state = get_workflow_execution_state_impl(
             &app.state::<AppState>().workflow_usecase,
             unauthorized_wt.to_string(),
             execution_id.clone(),
@@ -2743,7 +2551,7 @@ mod tests {
             })
             .unwrap();
 
-        let events = get_workflow_execution_log_inner(
+        let events = get_workflow_execution_log_impl(
             &app.state::<AppState>().workflow_usecase,
             worktree_path.clone(),
             execution_id.clone(),
@@ -2757,7 +2565,7 @@ mod tests {
         // view 型へ変換されて返る（`timestampMs` フィールドで単位を明示）。
         assert_eq!(events[0]["timestampMs"].as_f64(), Some(400_000.0));
 
-        let missing = get_workflow_execution_log_inner(
+        let missing = get_workflow_execution_log_impl(
             &app.state::<AppState>().workflow_usecase,
             worktree_path.clone(),
             read_only_test_uuid(98),
@@ -2799,7 +2607,7 @@ mod tests {
             })
             .unwrap();
 
-        let view = get_workflow_execution_state_inner(
+        let view = get_workflow_execution_state_impl(
             &app.state::<AppState>().workflow_usecase,
             worktree_path.clone(),
             execution_id.clone(),
@@ -2811,7 +2619,7 @@ mod tests {
         assert!(view.node_executions.is_empty());
 
         // 存在しない execution_id は Ok(None)。
-        let missing = get_workflow_execution_state_inner(
+        let missing = get_workflow_execution_state_impl(
             &app.state::<AppState>().workflow_usecase,
             worktree_path.clone(),
             read_only_test_uuid(97),
@@ -2821,7 +2629,7 @@ mod tests {
         assert!(missing.is_none());
     }
 
-    /// spec issues-1023 L132/L150: `get_workflow_node_detail_inner` の worktree
+    /// spec issues-1023 L132/L150: `get_workflow_node_detail_impl` の worktree
     /// 認可境界。現 worktree と一致する run の detail は Some、別 worktree（managed
     /// 集合外）からの invoke は canonicalize 段階で Err として弾かれる。
     #[tokio::test]
@@ -2896,7 +2704,7 @@ mod tests {
             .unwrap();
 
         // 現 worktree からの invoke は detail を返す
-        let ok = get_workflow_node_detail_inner(
+        let ok = get_workflow_node_detail_impl(
             &app.state::<AppState>().workflow_usecase,
             worktree_path.clone(),
             execution_id.clone(),
@@ -2911,7 +2719,7 @@ mod tests {
 
         // 別 worktree（managed 集合外）からの invoke は canonicalize 段階で Err
         let outside = tempfile::TempDir::new().unwrap();
-        let result = get_workflow_node_detail_inner(
+        let result = get_workflow_node_detail_impl(
             &app.state::<AppState>().workflow_usecase,
             outside.path().to_string_lossy().to_string(),
             execution_id.clone(),

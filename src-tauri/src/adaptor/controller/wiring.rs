@@ -16,6 +16,7 @@ use crate::adaptor::gateway::agent_session::{
     FileSessionStorage, GitAgentPromptSuggestionGateway,
     RegistryAgentSessionBackendLifecycleGateway, RuntimeAgentSessionCloser,
 };
+use crate::adaptor::gateway::app_config::{read_config_if_exists, AppConfig, ReleashConfig};
 use crate::adaptor::gateway::code::branch_base::BranchBaseResolverGateway;
 use crate::adaptor::gateway::code::branch_diff::BranchDiffGateway;
 use crate::adaptor::gateway::code::diff_compute::DiffComputerGateway;
@@ -41,14 +42,15 @@ use crate::adaptor::gateway::workflow::{
     EmptySecretSourceGateway, NoopWorkflowExternalEditorGateway, PassthroughManagedWorktreeGateway,
 };
 use crate::adaptor::gateway::workflow::{
-    RepositoryManagedWorktreeGateway, StoredWorkspaceSessionGateway,
-    TauriNodeExecutionLifecycleGateway, TauriWorkflowExternalEditorGateway,
-    TauriWorkflowRuntimeCommandGateway, TauriWorkflowRuntimeCommandGatewayDeps,
-    WorkflowConfigPathFileGateway, WorkflowDefinitionFileRepository,
-    WorkflowDefinitionFileSourceGateway, WorkflowDiagnosticsFileGateway,
-    WorkflowEventLogRepository, WorkflowExecutionArchiveFileRepository,
-    WorkflowExecutionFileRepository, WorkflowExecutionProjectionLogRepository,
-    WorkflowFacetFileRepository, WorkflowSecretSourceConfigGateway,
+    RepoPathsManagedWorktreeGateway, RepositoryManagedWorktreeGateway,
+    StoredWorkspaceSessionGateway, TauriNodeExecutionLifecycleGateway,
+    TauriWorkflowExternalEditorGateway, TauriWorkflowRuntimeCommandGateway,
+    TauriWorkflowRuntimeCommandGatewayDeps, WorkflowConfigPathFileGateway,
+    WorkflowDefinitionFileRepository, WorkflowDefinitionFileSourceGateway,
+    WorkflowDiagnosticsFileGateway, WorkflowEventLogRepository,
+    WorkflowExecutionArchiveFileRepository, WorkflowExecutionFileRepository,
+    WorkflowExecutionProjectionLogRepository, WorkflowFacetFileRepository,
+    WorkflowSecretSourceConfigGateway,
 };
 use crate::domain::app_config::{AgentConfigRepository, ConfigRepository, ConfigSecretRepository};
 use crate::domain::git_host::{CacheTtl, IssueInfo, PrStatus};
@@ -74,7 +76,8 @@ use crate::usecase::repository_usecase::RepositoryUsecase;
 use crate::usecase::workflow::ports::ExternalEditorGateway;
 use crate::usecase::workflow::query_service::WorkflowQueryService;
 use crate::usecase::workflow::{
-    NodeExecutionLifecycleUsecase, WorkflowRuntimeUsecase, WorkflowUsecase, WorkspaceSessionGateway,
+    NodeExecutionLifecycleUsecase, WorkflowReadUsecase, WorkflowRuntimeUsecase, WorkflowUsecase,
+    WorkspaceSessionGateway,
 };
 
 pub(crate) fn build_agent_backend_registry(
@@ -254,6 +257,50 @@ pub(crate) fn build_workflow_usecase_with_repository_worktrees<R: tauri::Runtime
     )
 }
 
+pub(crate) fn build_file_direct_workflow_read_usecase(
+    data_dir: impl Into<std::path::PathBuf>,
+    workflows_dir: Option<std::path::PathBuf>,
+) -> Result<WorkflowReadUsecase, String> {
+    let data_dir = data_dir.into();
+    let workflows_dir =
+        workflows_dir.unwrap_or_else(WorkflowDefinitionFileRepository::default_workflows_dir);
+    let config_path = data_dir.join("releash.toml");
+    let config = read_config_if_exists(&config_path)?.unwrap_or_else(ReleashConfig::default);
+    let mut repo_paths = config.app.last_repo_paths.clone();
+    if !config.app.last_root_path.is_empty() && !repo_paths.contains(&config.app.last_root_path) {
+        repo_paths.push(config.app.last_root_path.clone());
+    }
+    let worktrees: Arc<dyn ManagedWorktreeGateway> = Arc::new(
+        RepoPathsManagedWorktreeGateway::new(Arc::new(build_repository_usecase()), repo_paths),
+    );
+    let config_secrets: Arc<dyn ConfigSecretRepository> =
+        Arc::new(AppConfig::new(config, config_path));
+    let secrets: Arc<dyn SecretSourceGateway> =
+        Arc::new(WorkflowSecretSourceConfigGateway::new(config_secrets));
+
+    let executions = Arc::new(WorkflowExecutionFileRepository::new(data_dir.clone()));
+    let definitions = Arc::new(WorkflowDefinitionFileRepository::new(
+        workflows_dir.clone(),
+        workflows_dir.clone(),
+    ));
+    let definition_sources = Arc::new(WorkflowDefinitionFileSourceGateway::new(
+        workflows_dir.clone(),
+        workflows_dir.clone(),
+    ));
+    let facets = Arc::new(WorkflowFacetFileRepository::new(workflows_dir));
+    let events = Arc::new(WorkflowEventLogRepository::new(data_dir.clone()));
+    let execution_projection = Arc::new(WorkflowExecutionProjectionLogRepository::new(data_dir));
+    let query = WorkflowQueryService::new(
+        executions,
+        definitions,
+        definition_sources,
+        facets,
+        events,
+        execution_projection,
+    );
+    Ok(WorkflowReadUsecase::new(query, worktrees, secrets))
+}
+
 fn build_workflow_usecase_with_gateways(
     data_dir: impl Into<std::path::PathBuf>,
     worktrees: Arc<dyn ManagedWorktreeGateway>,
@@ -329,10 +376,6 @@ pub(crate) fn build_node_execution_lifecycle_usecase(
         open_tabs,
     ));
     NodeExecutionLifecycleUsecase::new(gateway.clone(), gateway)
-}
-
-pub(crate) fn spawn_workflow_pending_command_watcher(app: tauri::AppHandle, data_dir: PathBuf) {
-    crate::adaptor::gateway::workflow::spawn_pending_command_watcher(app, data_dir);
 }
 
 pub(crate) fn spawn_startup_app_data_gc(

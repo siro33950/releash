@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 #[cfg(test)]
 use std::fs::{self, OpenOptions};
 #[cfg(test)]
@@ -9,8 +8,6 @@ use std::path::PathBuf;
 
 use crate::adaptor::gateway::workflow::execution_store;
 use crate::adaptor::gateway::workflow::log::WorkflowEventLog;
-#[cfg(test)]
-use crate::adaptor::gateway::workflow::pending_command::PendingCommandStore;
 #[cfg(test)]
 use crate::domain::workflow::WorkflowExecutionRecord;
 use crate::domain::workflow::{
@@ -47,7 +44,6 @@ impl WorkflowExecutionFileRepository {
         execution_store::read_valid_execution_metadata(&self.data_dir, execution_id)
     }
 
-    #[cfg(test)]
     pub(crate) fn gc_delete_paths(&self, execution_id: &str) -> Vec<PathBuf> {
         let mut paths = vec![execution_store::workflow_execution_metadata_path(
             &self.data_dir,
@@ -55,26 +51,6 @@ impl WorkflowExecutionFileRepository {
         )];
         paths.extend(WorkflowEventLog::new(&self.data_dir).gc_delete_paths(execution_id));
         paths.extend(workflow_artifact_paths(&self.data_dir, execution_id));
-        paths.extend(
-            PendingCommandStore::new(&self.data_dir).gc_delete_paths_for_execution(execution_id),
-        );
-        paths
-    }
-
-    pub(crate) fn gc_delete_paths_with_pending_index(
-        &self,
-        execution_id: &str,
-        pending_paths_by_execution: &HashMap<String, Vec<PathBuf>>,
-    ) -> Vec<PathBuf> {
-        let mut paths = vec![execution_store::workflow_execution_metadata_path(
-            &self.data_dir,
-            execution_id,
-        )];
-        paths.extend(WorkflowEventLog::new(&self.data_dir).gc_delete_paths(execution_id));
-        paths.extend(workflow_artifact_paths(&self.data_dir, execution_id));
-        if let Some(pending_paths) = pending_paths_by_execution.get(execution_id) {
-            paths.extend(pending_paths.iter().cloned());
-        }
         paths
     }
 

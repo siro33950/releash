@@ -244,19 +244,6 @@ fn workflow_archive_retention_and_running_protection() {
     write_workflow_execution(tmp.path(), "running-archive", live.path(), "running");
     fs::create_dir_all(tmp.path().join("workflow/old-archive")).unwrap();
     fs::write(tmp.path().join("workflow/old-archive/artifact.json"), "{}").unwrap();
-    fs::create_dir_all(tmp.path().join("workflow_pending/pending")).unwrap();
-    fs::create_dir_all(tmp.path().join("workflow_pending/processed")).unwrap();
-    fs::write(
-        tmp.path().join("workflow_pending/pending/old-command.json"),
-        serde_json::json!({"id": "cmd-1", "execution_id": "old-archive"}).to_string(),
-    )
-    .unwrap();
-    fs::write(
-        tmp.path()
-            .join("workflow_pending/processed/boundary-command.json"),
-        serde_json::json!({"id": "cmd-2", "executionId": "boundary-archive"}).to_string(),
-    )
-    .unwrap();
     write_archive_index(
         tmp.path(),
         &[
@@ -295,14 +282,6 @@ fn workflow_archive_retention_and_running_protection() {
         .join("workflow_executions/old-archive.json")
         .exists());
     assert!(!tmp.path().join("workflow/old-archive").exists());
-    assert!(!tmp
-        .path()
-        .join("workflow_pending/pending/old-command.json")
-        .exists());
-    assert!(tmp
-        .path()
-        .join("workflow_pending/processed/boundary-command.json")
-        .exists());
     assert!(tmp
         .path()
         .join("workflow_executions/boundary-archive.json")

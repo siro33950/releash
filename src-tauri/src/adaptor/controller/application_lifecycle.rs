@@ -24,12 +24,16 @@ impl WorkflowCommandShutdown for crate::usecase::workflow::WorkflowRuntimeUsecas
     }
 }
 
-pub(crate) fn request_application_quit_with_runtime(
+pub(crate) fn request_application_quit_with_runtime<F>(
     app: tauri::AppHandle,
     runtime: Arc<crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase>,
     workflow_runtime: Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>,
-) {
+    shutdown_local_api: F,
+) where
+    F: FnOnce() + Send + 'static,
+{
     tauri::async_runtime::spawn(async move {
+        shutdown_local_api();
         shutdown_application_services(workflow_runtime.as_ref(), runtime.as_ref()).await;
         app.exit(0);
     });

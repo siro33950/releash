@@ -19,7 +19,7 @@
 
 ## 出力
 
-本ステップでは `design.md` だけを作成・更新する。`requirements.md` と `behavior.md` は変更しない。
+この node では `design.md` だけを作成・更新する。`requirements.md` と `behavior.md` は変更しない。
 
 `design.md` には少なくとも以下を含める:
 

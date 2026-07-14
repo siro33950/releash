@@ -544,34 +544,7 @@ fn test_workflow_execution_delete_paths(app_data_dir: &Path, execution_id: &str)
             paths.push(path);
         }
     }
-    for subdir in ["pending", "processing", "processed"] {
-        let dir = app_data_dir.join("workflow_pending").join(subdir);
-        let Ok(entries) = fs::read_dir(dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let Ok(content) = fs::read_to_string(&path) else {
-                continue;
-            };
-            if test_pending_command_execution_id(&content).as_deref() == Some(execution_id) {
-                paths.push(path);
-            }
-        }
-    }
     paths
-}
-
-fn test_pending_command_execution_id(content: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(content).ok()?;
-    value
-        .get("execution_id")
-        .or_else(|| value.get("executionId"))
-        .and_then(|value| value.as_str())
-        .map(str::to_string)
 }
 
 fn collect_test_workspace_state_records(app_data_dir: &Path) -> Vec<WorkspaceStateGcRecord> {

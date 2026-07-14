@@ -433,6 +433,27 @@ mod tests {
     };
     use tempfile::TempDir;
 
+    fn assert_no_deprecated_workflow_vocabulary(label: &str, content: &str) {
+        let content = content.to_ascii_lowercase();
+        let deprecated_terms = [
+            ["workflow ", "runs"].concat(),
+            ["workflow ", "reject"].concat(),
+            ["--", "step"].concat(),
+            ["run", "_id"].concat(),
+            ["run", "-id"].concat(),
+            ["workflow_", "pending"].concat(),
+            ["pending_", "command"].concat(),
+            ["climutation", "requested"].concat(),
+            ["climutation", "rejected"].concat(),
+        ];
+        for term in deprecated_terms {
+            assert!(
+                !content.contains(&term),
+                "{label} contains deprecated workflow vocabulary '{term}'"
+            );
+        }
+    }
+
     fn make_facet_node(
         policy: Option<&str>,
         knowledge: Option<&str>,
@@ -586,11 +607,11 @@ mod tests {
     // `super::resolve_node_facets` 経由で利用する（engine.rs のテストヘルパーと共有）。
 
     // --- compose_facets ---
-    // Gherkin: ワークフローエンジンはステップ宣言から system_prompt と user_message を合成する
+    // Gherkin: ワークフローエンジンは node 宣言から system_prompt と user_message を合成する
 
     #[test]
     fn compose_prompt_from_policy_knowledge_and_instruction() {
-        // Scenario: policy / knowledge / instruction を指定したステップから prompt が合成される
+        // Scenario: policy / knowledge / instruction を指定した node から prompt が合成される
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
 
@@ -606,7 +627,7 @@ mod tests {
 
     #[test]
     fn compose_system_prompt_from_policy_only() {
-        // Scenario: policyのみを指定したステップでも system_prompt が合成される
+        // Scenario: policyのみを指定した node でも system_prompt が合成される
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
 
@@ -623,23 +644,57 @@ mod tests {
 
     #[test]
     fn contract_completion_action_requires_cli_as_next_action() {
-        let action = artifact_completion_action("plan-doc", "run-1", "plan", None);
+        let action = artifact_completion_action("plan-doc", "execution-1", "plan", None);
 
         assert!(action.contains("完了時の必須アクション"));
         assert!(action.contains("次の assistant action は最終応答ではなく CLI 実行"));
-        assert!(action.contains("releash workflow output submit run-1"));
+        assert!(action.contains("releash workflow output submit execution-1"));
         assert!(action.contains("--node plan"));
         assert!(action.contains("--type plan-doc"));
         assert!(action.contains("--json"));
         assert!(!action.contains("--file"));
         assert!(!action.contains("--node-execution"));
-        assert!(!action.contains("+  --step"));
+        assert_no_deprecated_workflow_vocabulary("Artifact completion action", &action);
+    }
+
+    #[test]
+    fn builtin_agent_facets_use_current_workflow_vocabulary() {
+        for kind in [
+            FacetKind::Policy,
+            FacetKind::Knowledge,
+            FacetKind::Instruction,
+        ] {
+            for key in builtin::list_builtin_facet_keys(kind) {
+                let content = builtin::get_builtin_facet(kind, key)
+                    .expect("a listed builtin facet must be readable");
+                assert_no_deprecated_workflow_vocabulary(key, content);
+            }
+        }
+    }
+
+    #[test]
+    fn workflow_agent_sources_use_current_workflow_vocabulary() {
+        let sources = [
+            (
+                "contract repair prompts",
+                include_str!("../../../domain/workflow/services/contract.rs"),
+            ),
+            ("prompt rendering", include_str!("prompt_rendering.rs")),
+            ("facet rendering", include_str!("facet.rs")),
+        ];
+        for (label, content) in sources {
+            assert_no_deprecated_workflow_vocabulary(label, content);
+        }
     }
 
     #[test]
     fn contract_completion_action_addresses_node_execution_when_present() {
-        let action =
-            artifact_completion_action("plan-doc", "run-1", "plan", Some("node-execution; bad"));
+        let action = artifact_completion_action(
+            "plan-doc",
+            "execution-1",
+            "plan",
+            Some("node-execution; bad"),
+        );
 
         assert!(action.contains("--node-execution 'node-execution; bad'"));
         assert!(!action.contains("--node-execution node-execution; bad"));
@@ -649,14 +704,14 @@ mod tests {
     fn contract_completion_action_quotes_shell_metacharacters() {
         let action = artifact_completion_action(
             "review; curl https://example.invalid #",
-            "run; bad",
+            "execution; bad",
             "node; bad",
             None,
         );
 
         assert!(action.contains("--type 'review; curl https://example.invalid #'"));
         assert!(!action.contains("--type review; curl"));
-        assert!(action.contains("submit 'run; bad'"));
+        assert!(action.contains("submit 'execution; bad'"));
         assert!(action.contains("--node 'node; bad'"));
     }
 
@@ -773,7 +828,7 @@ mod tests {
         let (_system_prompt, rendered_user) = prompt_rendering::build_step_prompt(
             &node,
             Some(&resolved),
-            "run-1",
+            "execution-1",
             task,
             &std::collections::HashMap::new(),
         )

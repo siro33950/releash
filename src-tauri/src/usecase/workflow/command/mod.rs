@@ -1,6 +1,5 @@
 mod abort_execution;
 mod approval;
-mod pending;
 mod preflight;
 mod start_execution;
 mod submit_output;
@@ -9,8 +8,6 @@ pub use abort_execution::AbortExecutionCommand;
 pub(crate) use abort_execution::WorkflowAbortExecutionUsecase;
 pub use approval::ApprovalCommand;
 pub(crate) use approval::WorkflowApprovalUsecase;
-pub use pending::WorkflowPendingCommandUsecase;
-pub(crate) use pending::WorkflowPendingRuntimeCommandUsecase;
 pub(crate) use preflight::WorkflowRuntimeCommandPreflight;
 pub(crate) use start_execution::WorkflowStartExecutionUsecase;
 pub use start_execution::{ResolvedStartExecutionCommand, StartExecutionCommand};
@@ -22,9 +19,7 @@ mod tests {
     use super::*;
     use crate::domain::workflow::{ExecutionOrigin, WorkflowDefinition, WorkflowError};
     use crate::usecase::workflow::ports::{
-        PendingRuntimeCommand, PendingRuntimeCommandOutcome, PendingRuntimeCommandPayload,
-        WorkflowAbortExecutionGateway, WorkflowApprovalGateway,
-        WorkflowPendingRuntimeCommandGateway, WorkflowStartExecutionGateway,
+        WorkflowAbortExecutionGateway, WorkflowApprovalGateway, WorkflowStartExecutionGateway,
         WorkflowSubmitOutputGateway,
     };
     use std::sync::{Arc, Mutex};
@@ -46,7 +41,7 @@ mod tests {
 
         async fn resolve_start_execution_workflow(
             &self,
-            _workflow_file_stem: &str,
+            _workflow_name: &str,
         ) -> Result<WorkflowDefinition, WorkflowError> {
             self.calls.lock().unwrap().push("resolve_workflow");
             Ok(WorkflowDefinition::default())
@@ -88,17 +83,6 @@ mod tests {
         }
     }
 
-    #[async_trait::async_trait]
-    impl WorkflowPendingRuntimeCommandGateway for FakeRuntimeGateway {
-        async fn dispatch_pending_command(
-            &self,
-            _command: PendingRuntimeCommand,
-        ) -> PendingRuntimeCommandOutcome {
-            self.calls.lock().unwrap().push("pending");
-            PendingRuntimeCommandOutcome::Accepted
-        }
-    }
-
     fn valid_execution_id() -> String {
         "00000000-0000-0000-0000-000000000001".to_string()
     }
@@ -109,7 +93,7 @@ mod tests {
 
         WorkflowStartExecutionUsecase::new(gateway.clone())
             .execute(StartExecutionCommand {
-                workflow_file_stem: "wf".to_string(),
+                workflow_name: "wf".to_string(),
                 worktree_path: "/tmp/wt".to_string(),
                 request: None,
                 created_from: ExecutionOrigin::DesktopUi,
@@ -143,16 +127,6 @@ mod tests {
             })
             .await
             .unwrap();
-        let outcome = WorkflowPendingRuntimeCommandUsecase::new(gateway.clone())
-            .dispatch(PendingRuntimeCommand {
-                execution_id: valid_execution_id(),
-                request_id: "00000000-0000-0000-0000-000000000002".to_string(),
-                requested_at: 1.0,
-                payload: PendingRuntimeCommandPayload::Abort { node_name: None },
-            })
-            .await;
-
-        assert_eq!(outcome, PendingRuntimeCommandOutcome::Accepted);
         assert_eq!(
             gateway.calls.lock().unwrap().as_slice(),
             [
@@ -161,8 +135,7 @@ mod tests {
                 "start",
                 "abort",
                 "approval",
-                "submit",
-                "pending"
+                "submit"
             ]
         );
     }
@@ -173,7 +146,7 @@ mod tests {
 
         assert!(WorkflowStartExecutionUsecase::new(gateway.clone())
             .execute(StartExecutionCommand {
-                workflow_file_stem: "bad name!".to_string(),
+                workflow_name: "bad name!".to_string(),
                 worktree_path: "/tmp/wt".to_string(),
                 request: None,
                 created_from: ExecutionOrigin::DesktopUi,
@@ -207,19 +180,6 @@ mod tests {
             })
             .await
             .is_err());
-        let outcome = WorkflowPendingRuntimeCommandUsecase::new(gateway.clone())
-            .dispatch(PendingRuntimeCommand {
-                execution_id: "not-a-uuid".to_string(),
-                request_id: "00000000-0000-0000-0000-000000000002".to_string(),
-                requested_at: 1.0,
-                payload: PendingRuntimeCommandPayload::Abort { node_name: None },
-            })
-            .await;
-        assert!(matches!(
-            outcome,
-            PendingRuntimeCommandOutcome::RejectedFinal(reason)
-                if reason.contains("invalid execution_id")
-        ));
         assert!(gateway.calls.lock().unwrap().is_empty());
     }
 }

@@ -202,10 +202,15 @@ pub(crate) fn validate_submission_target_context(
                 )))
             }
             candidates => {
+                let candidate_ids = candidates
+                    .iter()
+                    .map(|execution| execution.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 return Err(WorkflowEngineError::InvalidState(format!(
-                    "node '{node_name}' has {} active executions; node_execution_id is required",
-                    candidates.len()
-                )))
+                    "node '{node_name}' has {} active executions; node_execution_id is required; candidates: [{candidate_ids}]",
+                    candidates.len(),
+                )));
             }
         }
     };
@@ -848,6 +853,8 @@ mod tests {
             error,
             WorkflowEngineError::InvalidState(message)
                 if message.contains("node_execution_id is required")
+                    && message.contains("00000000-0000-4000-8000-000000000201")
+                    && message.contains("00000000-0000-4000-8000-000000000203")
         ));
     }
 

@@ -166,52 +166,6 @@ pub enum WorkflowEvent {
         reason: String,
         timestamp: f64,
     },
-    CliMutationRequested {
-        execution_id: String,
-        request_id: String,
-        request: CliMutationRequestRecord,
-        requested_at: f64,
-        timestamp: f64,
-    },
-    CliMutationRejected {
-        execution_id: String,
-        request_id: String,
-        request: CliMutationRequestRecord,
-        reason: CliMutationRejectionReason,
-        message: String,
-        requested_at: f64,
-        timestamp: f64,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case", tag = "kind", deny_unknown_fields)]
-pub enum CliMutationRequestRecord {
-    Approve {
-        node_name: String,
-        #[serde(skip_serializing_if = "Option::is_none", default)]
-        comment: Option<String>,
-    },
-    Abort {
-        #[serde(skip_serializing_if = "Option::is_none", default)]
-        node_name: Option<String>,
-    },
-    SubmitOutput {
-        node_name: String,
-        contract: String,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CliMutationRejectionReason {
-    ExecutionNotFound,
-    ExecutionNotActive,
-    NodeNotFound,
-    NotWaitingApproval,
-    NodeNotAccepting,
-    ContractMismatch,
-    Other,
 }
 
 impl WorkflowEvent {
@@ -231,9 +185,7 @@ impl WorkflowEvent {
             | Self::ExecutionCompleted { execution_id, .. }
             | Self::ExecutionFailed { execution_id, .. }
             | Self::ExecutionAborted { execution_id, .. }
-            | Self::ExecutionInterrupted { execution_id, .. }
-            | Self::CliMutationRequested { execution_id, .. }
-            | Self::CliMutationRejected { execution_id, .. } => execution_id,
+            | Self::ExecutionInterrupted { execution_id, .. } => execution_id,
         }
     }
 
@@ -253,9 +205,7 @@ impl WorkflowEvent {
             | Self::ExecutionCompleted { timestamp, .. }
             | Self::ExecutionFailed { timestamp, .. }
             | Self::ExecutionAborted { timestamp, .. }
-            | Self::ExecutionInterrupted { timestamp, .. }
-            | Self::CliMutationRequested { timestamp, .. }
-            | Self::CliMutationRejected { timestamp, .. } => *timestamp,
+            | Self::ExecutionInterrupted { timestamp, .. } => *timestamp,
         }
     }
 }
@@ -352,27 +302,6 @@ mod tests {
     }
 
     #[test]
-    fn cli_mutation_uses_execution_and_node_vocabulary() {
-        let event = WorkflowEvent::CliMutationRejected {
-            execution_id: "execution-1".to_string(),
-            request_id: "request-1".to_string(),
-            request: CliMutationRequestRecord::SubmitOutput {
-                node_name: "review".to_string(),
-                contract: "review_result".to_string(),
-            },
-            reason: CliMutationRejectionReason::NodeNotAccepting,
-            message: "not accepting".to_string(),
-            requested_at: 1.0,
-            timestamp: 2.0,
-        };
-        let json = serde_json::to_string(&event).unwrap();
-        assert!(!json.contains("run_id"));
-        assert!(!json.contains("step_name"));
-        assert!(json.contains("execution_id"));
-        assert!(json.contains("node_name"));
-    }
-
-    #[test]
     fn canonical_variants_reject_legacy_identity_fields() {
         let execution = serde_json::json!({
             "event": "execution_aborted",
@@ -394,8 +323,9 @@ mod tests {
         });
         assert!(serde_json::from_value::<WorkflowEvent>(node).is_err());
 
+        let retired_mutation_event = ["cli_mutation", "requested"].join("_");
         let mutation = serde_json::json!({
-            "event": "cli_mutation_requested",
+            "event": retired_mutation_event,
             "execution_id": "00000000-0000-4000-8000-000000000001",
             "request_id": "00000000-0000-4000-8000-000000000002",
             "request": {
