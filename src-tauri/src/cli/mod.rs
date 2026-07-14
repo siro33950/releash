@@ -1,6 +1,6 @@
 //! [05] / [06] `releash workflow ...` CLI 入口。
 //!
-//! read-only 観測経路は engine と IPC せず、`workflow_runs/` 配下と `workflows/`
+//! read-only 観測経路は engine と IPC せず、`workflow_executions/` 配下と `workflows/`
 //! YAML / builtin を file-direct で読む（spec [05] design）。
 //! mutating CLI (`approve` / `abort`) も engine と直接 IPC せず、pending
 //! command file を enqueue するところまでを CLI の責務に閉じる（spec [06] CLI 完了
@@ -25,7 +25,7 @@ use crate::adaptor::gateway::workflow::WorkflowDefinitionFileRepository;
 
 /// `releash` CLI のトップ args。
 ///
-/// clap AST は外部公開せず、エントリーポイントは `cli::run()` に限定する
+/// clap AST は外部公開せず、エントリーポイントは CLI dispatcher に限定する
 /// （spec [05] scope の境界 + 内部 AST の非公開境界）。
 #[derive(Parser, Debug)]
 #[command(name = "releash", disable_help_subcommand = true)]
@@ -69,64 +69,66 @@ pub fn run() -> i32 {
         }
     };
     let workflows_dir = WorkflowDefinitionFileRepository::default_workflows_dir();
-    // data_dir は List / Runs / Status / Logs それぞれの branch 内で解決する。
-    // List も workflow_runs/ 由来の `is_running` 反映のため data_dir を必要とするが、
+    // data_dir は List / Executions / Status / Logs それぞれの branch 内で解決する。
+    // List も workflow_executions/ 由来の `is_running` 反映のため data_dir を必要とするが、
     // 各 branch 内で解決することで未到達の branch では I/O を走らせない。
     // [05] 観測経路境界: data_dir 自体が存在しない場合は `NotFound` として扱い、
-    // 「run が 0 件」と「向き先がそもそも無い」を区別する（5-1 修正）。
+    // 「execution が 0 件」と「向き先がそもそも無い」を区別する（5-1 修正）。
     let resolve = || resolve_existing_data_dir();
     let result =
         match cli.command {
             TopCommand::Workflow { command } => match command {
                 WorkflowSubcommand::List { json } => resolve()
                     .and_then(|data_dir| workflow::cmd_list(&workflows_dir, &data_dir, json)),
-                WorkflowSubcommand::Runs {
+                WorkflowSubcommand::Executions {
                     status,
                     worktree,
                     json,
-                } => resolve()
-                    .and_then(|data_dir| workflow::cmd_runs(&data_dir, status, worktree, json)),
-                WorkflowSubcommand::Status { run_id, json } => {
-                    resolve().and_then(|data_dir| workflow::cmd_status(&data_dir, &run_id, json))
-                }
-                WorkflowSubcommand::Logs { run_id, json } => {
-                    resolve().and_then(|data_dir| workflow::cmd_logs(&data_dir, &run_id, json))
-                }
+                } => resolve().and_then(|data_dir| {
+                    workflow::cmd_executions(&data_dir, status, worktree, json)
+                }),
+                WorkflowSubcommand::Status { execution_id, json } => resolve()
+                    .and_then(|data_dir| workflow::cmd_status(&data_dir, &execution_id, json)),
+                WorkflowSubcommand::Logs { execution_id, json } => resolve()
+                    .and_then(|data_dir| workflow::cmd_logs(&data_dir, &execution_id, json)),
                 WorkflowSubcommand::Approve {
-                    run_id,
+                    execution_id,
                     node,
                     node_execution,
                     comment,
                 } => resolve().and_then(|data_dir| {
-                    workflow::cmd_approve(&data_dir, &run_id, node, node_execution, comment)
+                    workflow::cmd_approve(&data_dir, &execution_id, node, node_execution, comment)
                 }),
-                WorkflowSubcommand::Abort { run_id, node } => {
-                    resolve().and_then(|data_dir| workflow::cmd_abort(&data_dir, &run_id, node))
-                }
+                WorkflowSubcommand::Abort { execution_id, node } => resolve()
+                    .and_then(|data_dir| workflow::cmd_abort(&data_dir, &execution_id, node)),
                 WorkflowSubcommand::Output { command } => {
                     resolve().and_then(|data_dir| match command {
                         OutputSubcommand::Submit {
-                            run_id,
-                            step,
+                            execution_id,
+                            node,
                             node_execution,
                             contract,
                             json,
                             file,
                         } => output::cmd_output_submit(
                             &data_dir,
-                            &run_id,
-                            &step,
+                            &execution_id,
+                            &node,
                             node_execution,
                             &contract,
                             json,
                             file,
                         ),
-                        OutputSubcommand::Validate { run_id, step, file } => {
-                            output::cmd_output_validate(&data_dir, &run_id, &step, &file)
-                        }
-                        OutputSubcommand::Get { run_id, step, json } => {
-                            output::cmd_output_get(&data_dir, &run_id, &step, json)
-                        }
+                        OutputSubcommand::Validate {
+                            execution_id,
+                            node,
+                            file,
+                        } => output::cmd_output_validate(&data_dir, &execution_id, &node, &file),
+                        OutputSubcommand::Get {
+                            execution_id,
+                            node,
+                            json,
+                        } => output::cmd_output_get(&data_dir, &execution_id, &node, json),
                     })
                 }
             },
@@ -145,7 +147,7 @@ mod tests {
     /// subcommand 説明 / value_name / 順序 / doc comment 文言の観測不変性を担保する。
     #[test]
     fn render_long_help_matches_split_before_golden() {
-        let expected = "`releash` CLI のトップ args。\n\nclap AST は外部公開せず、エントリーポイントは `cli::run()` に限定する （spec [05] scope の境界 + 内部 AST の非公開境界）。\n\nUsage: releash <COMMAND>\n\nCommands:\n  workflow  workflow 観測サブコマンド。\n  review    Agent review comment サブコマンド。\n\nOptions:\n  -h, --help\n          Print help (see a summary with '-h')\n";
+        let expected = "`releash` CLI のトップ args。\n\nclap AST は外部公開せず、エントリーポイントは CLI dispatcher に限定する （spec [05] scope の境界 + 内部 AST の非公開境界）。\n\nUsage: releash <COMMAND>\n\nCommands:\n  workflow  workflow 観測サブコマンド。\n  review    Agent review comment サブコマンド。\n\nOptions:\n  -h, --help\n          Print help (see a summary with '-h')\n";
 
         assert_eq!(super::render_long_help(), expected);
     }
@@ -185,7 +187,7 @@ mod tests {
         }
         for src in [
             "use super::workflow_io;",
-            "let _ = super::workflow_io::read_domain_log;",
+            "let _ = super::workflow_io::read_execution_events;",
             "use crate::cli::workflow_io::PendingEnqueueOutput;",
         ] {
             assert!(

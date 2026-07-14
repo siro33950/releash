@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use crate::domain::workflow::FailureClassification;
 #[cfg(test)]
-use crate::domain::workflow::WorkflowStepFailureKind;
+use crate::domain::workflow::NodeExecutionFailureKind;
 use attributes::{
     usage_event_allowed, AgentTurnMetric, HotPathMetric, OpStatus, PayloadChannel, StartupMetric,
     TurnDimensions, KEY_CHANNEL, KEY_OPERATION, KEY_OUTCOME, KEY_STATUS, KEY_USAGE_EVENT,
@@ -437,7 +437,7 @@ pub(crate) fn record_hot_path_duration(metric: HotPathMetric, status: OpStatus, 
     metrics.operation_status.add(1, &attrs);
 }
 
-pub(crate) fn record_workflow_step_failure(
+pub(crate) fn record_workflow_node_failure(
     classification: FailureClassification,
     retry_count: Option<u32>,
 ) {
@@ -445,7 +445,7 @@ pub(crate) fn record_workflow_step_failure(
         return;
     }
     let mut attrs = vec![
-        KeyValue::new(KEY_OPERATION, "workflow.step.failure"),
+        KeyValue::new(KEY_OPERATION, "workflow.node.failure"),
         KeyValue::new(KEY_STATUS, OpStatus::Failure.as_str()),
         KeyValue::new(attributes::KEY_FAILURE_KIND, classification.kind.as_str()),
         KeyValue::new(
@@ -783,19 +783,19 @@ mod tests {
     }
 
     #[test]
-    fn workflow_step_failure_records_failure_attributes() {
+    fn workflow_node_failure_records_failure_attributes() {
         let _guard = lock_test_telemetry();
         reset_test_metrics();
         set_active(true);
 
-        record_workflow_step_failure(
-            FailureClassification::new(WorkflowStepFailureKind::StartupTimeout),
+        record_workflow_node_failure(
+            FailureClassification::new(NodeExecutionFailureKind::StartupTimeout),
             Some(2),
         );
 
         let records = records_named("releash.operation.status");
         assert!(records.iter().any(|record| {
-            has_attr(record, KEY_OPERATION, "workflow.step.failure")
+            has_attr(record, KEY_OPERATION, "workflow.node.failure")
                 && has_attr(record, KEY_STATUS, "failure")
                 && has_attr(record, attributes::KEY_FAILURE_KIND, "startup_timeout")
                 && has_attr(record, attributes::KEY_FAILURE_DISPOSITION, "retryable")
@@ -806,19 +806,19 @@ mod tests {
     }
 
     #[test]
-    fn workflow_step_failure_records_user_abort_disposition() {
+    fn workflow_node_failure_records_user_abort_disposition() {
         let _guard = lock_test_telemetry();
         reset_test_metrics();
         set_active(true);
 
-        record_workflow_step_failure(
-            FailureClassification::new(WorkflowStepFailureKind::UserAbort),
+        record_workflow_node_failure(
+            FailureClassification::new(NodeExecutionFailureKind::UserAbort),
             None,
         );
 
         let records = records_named("releash.operation.status");
         assert!(records.iter().any(|record| {
-            has_attr(record, KEY_OPERATION, "workflow.step.failure")
+            has_attr(record, KEY_OPERATION, "workflow.node.failure")
                 && has_attr(record, attributes::KEY_FAILURE_KIND, "user_abort")
                 && has_attr(
                     record,

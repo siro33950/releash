@@ -7,9 +7,9 @@ import {
 	Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { WorkspaceStepStatus } from "@/types/workspace-tree";
+import type { WorkspaceNodeStatus } from "@/types/workspace-tree";
 
-export const workflowStepIconClasses: Record<WorkspaceStepStatus, string> = {
+export const workflowNodeIconClasses: Record<WorkspaceNodeStatus, string> = {
 	queued: "text-muted-foreground",
 	running: "text-blue-600 dark:text-blue-300",
 	failed: "text-red-600 dark:text-red-300",
@@ -19,20 +19,20 @@ export const workflowStepIconClasses: Record<WorkspaceStepStatus, string> = {
 	completed: "text-green-600 dark:text-green-300",
 };
 
-interface WorkflowStepStatusIconProps {
-	status: WorkspaceStepStatus;
+interface WorkflowNodeStatusIconProps {
+	status: WorkspaceNodeStatus;
 	containerClassName?: string;
 	iconClassName?: string;
 	circleClassName?: string;
 }
 
-export function WorkflowStepStatusIcon({
+export function WorkflowNodeStatusIcon({
 	status,
 	containerClassName,
 	iconClassName = "size-3.5 shrink-0",
 	circleClassName = "size-2.5 shrink-0",
-}: WorkflowStepStatusIconProps) {
-	const colorClassName = workflowStepIconClasses[status];
+}: WorkflowNodeStatusIconProps) {
+	const colorClassName = workflowNodeIconClasses[status];
 	const inheritedColor = containerClassName ? undefined : colorClassName;
 	const baseIconClassName = cn(iconClassName, inheritedColor);
 	const icon =

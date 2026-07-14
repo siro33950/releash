@@ -8,52 +8,12 @@ export type JsonValue =
 	| JsonValue[]
 	| { [key: string]: JsonValue };
 
-interface TokenUsage {
+export interface TokenUsage {
 	inputTokens: number;
 	outputTokens: number;
 }
 
-/**
- * spec issues-1023: step / child の終端状態。
- * `"completed"` が既定（旧 ndjson 互換）。`"failed"` は partial child failure、
- * `"aborted"` / `"interrupted"` は run の中断で停止した step / fanout child を表現する。
- */
-type StepEntryState = "completed" | "failed" | "aborted" | "interrupted";
-
-type FailureDisposition =
-	| "retryable"
-	| "partial"
-	| "terminal"
-	| "user-action-required";
-
-interface ChildOutputSnapshot {
-	stepName: string;
-	sessionId?: string;
-	result?: string;
-	runIndex: number;
-	completedAt: number;
-	structuredOutput?: JsonValue;
-	artifactContract?: string;
-	/** 受信側 optional。未指定時は `"completed"` 扱い（旧バックエンド互換）。 */
-	state?: StepEntryState;
-	failureKind?: WorkflowStepFailureKind;
-	failureDisposition?: FailureDisposition;
-}
-
-interface StepHistoryEntry {
-	stepName: string;
-	completedAt: number;
-	result: string | null;
-	sessionId?: string;
-	tokenUsage?: TokenUsage;
-	structuredOutput?: JsonValue;
-	runIndex?: number;
-	childOutputs?: ChildOutputSnapshot[];
-	/** 受信側 optional。未指定時は `"completed"` 扱い（旧バックエンド互換）。 */
-	state?: StepEntryState;
-}
-
-type WorkflowStepFailureKind =
+export type NodeExecutionFailureKind =
 	| "startup_timeout"
 	| "stale_runtime_timeout"
 	| "model_refusal"
@@ -62,18 +22,13 @@ type WorkflowStepFailureKind =
 	| "user_abort"
 	| "infrastructure_crash";
 
-type WorkflowExecutionState =
-	| { type: "running" }
-	| { type: "waiting_approval" }
-	| { type: "completed" }
-	| {
-			type: "failed";
-			reason: string;
-			failureKind: WorkflowStepFailureKind;
-			retryCount?: number;
-	  }
-	| { type: "aborted" }
-	| { type: "interrupted" };
+export type WorkflowExecutionStatus =
+	| "running"
+	| "waiting_approval"
+	| "completed"
+	| "failed"
+	| "aborted"
+	| "interrupted";
 
 type Rule =
 	| {
@@ -114,7 +69,7 @@ export interface SessionSpec {
 	facets: FacetRefs;
 }
 
-export type WorkflowSchema = JsonValue;
+export type SchemaDefView = JsonValue;
 
 export type FanoutItemsSource = JsonValue[] | string;
 
@@ -137,23 +92,12 @@ export interface NodeDefinition {
 	rules?: Rule[];
 }
 
-export interface Workflow {
+export interface WorkflowDefinition {
 	name: string;
 	description: string;
 	builtin: boolean;
-	schemas?: Record<string, WorkflowSchema>;
+	schemas?: Record<string, SchemaDefView>;
 	nodes: NodeDefinition[];
-}
-
-interface StepOutput {
-	stepName: string;
-	runIndex: number;
-	sessionId?: string;
-	result?: string;
-	structuredOutput?: JsonValue;
-	artifactContract?: string;
-	tokenUsage?: TokenUsage;
-	completedAt: number;
 }
 
 export type NodeExecutionStatus =
@@ -172,10 +116,10 @@ export interface FanoutParentRef {
 
 export interface NodeExecutionFailure {
 	reason: string;
-	kind: WorkflowStepFailureKind;
+	kind: NodeExecutionFailureKind;
 }
 
-export interface NodeExecutionView {
+export interface NodeExecution {
 	id: string;
 	executionId: string;
 	nodeName: string;
@@ -183,7 +127,7 @@ export interface NodeExecutionView {
 	attempt: number;
 	status: NodeExecutionStatus;
 	sessionId?: string;
-	artifact?: JsonValue;
+	artifact?: Artifact;
 	tokenUsage?: TokenUsage;
 	failure?: NodeExecutionFailure;
 	fanoutParent?: FanoutParentRef;
@@ -191,71 +135,63 @@ export interface NodeExecutionView {
 	completedAt?: number;
 }
 
-interface WorkflowStepRuntimeState {
-	runtimeActive: boolean;
-	tabOpen: boolean;
+export interface Artifact {
+	nodeName: string;
+	contract?: string;
+	value: JsonValue;
+	producedAt: number;
 }
 
-export interface WorkflowStallObservation {
-	chatSessionId: string;
-	stepName: string;
-	runIndex: number;
-	turnPhase: string;
-	idleSecs: number;
-	signalCount: number;
-	capReached: boolean;
-	observedAt: number;
+export interface Fanout {
+	parent: NodeExecution;
+	children: NodeExecution[];
+	artifact?: Artifact;
 }
 
-export interface WorkflowState {
-	executionId: string;
+export interface ApprovalTarget {
+	nodeExecutionId: string;
+	nodeName: string;
+	sessionId?: string;
+}
+
+export interface WorkflowExecution {
+	id: string;
 	workflowName: string;
-	state: WorkflowExecutionState;
-	currentStepIndex: number;
-	currentStepName: string;
-	currentSessionId?: string;
-	totalSteps: number;
-	stepHistory: StepHistoryEntry[];
-	stepExecutionCounts: Record<string, number>;
-	stepOutputs: Record<string, StepOutput>;
-	workflowDefinition: Workflow;
-	totalTokenUsage: TokenUsage;
-	stepStates: Record<string, string>;
-	runtimeStates?: Record<string, WorkflowStepRuntimeState>;
-	nodeExecutions: NodeExecutionView[];
-	startedAt: number;
-	updatedAt: number;
-	stallObservations?: WorkflowStallObservation[];
-}
-
-/// Workflow run 一覧コマンドから返る
-/// WorkflowRun のサマリ表現。Rust 側 `WorkflowRunSummary` のフィールドに対応する（camelCase）。
-export interface WorkflowRunSummary {
-	runId: string;
-	workflowName: string;
-	task?: string | null;
-	status:
-		| "running"
-		| "waiting_approval"
-		| "completed"
-		| "failed"
-		| "aborted"
-		| "interrupted";
+	status: WorkflowExecutionStatus;
+	currentNode?: string | null;
 	worktreePath: string;
-	currentNodeName?: string | null;
-	triggerSource: "desktop_ui" | "remote" | "cli" | "agent";
+	createdFrom: "desktop_ui" | "cli" | "agent" | "api";
 	startedAt: number;
 	updatedAt: number;
 	completedAt?: number | null;
 	errorReason?: string | null;
+	totalTokenUsage: TokenUsage;
+	nodeExecutions: NodeExecution[];
+	artifacts: Artifact[];
+	fanouts: Fanout[];
+	approvalTarget?: ApprovalTarget | null;
 }
 
-export interface WorkflowStatePayload {
+export interface WorkflowExecutionSummary {
+	executionId: string;
+	workflowName: string;
+	status: WorkflowExecutionStatus;
 	worktreePath: string;
-	workflowState: WorkflowState;
+	currentNode?: string | null;
+	createdFrom: "desktop_ui" | "cli" | "agent" | "api";
+	startedAt: number;
+	updatedAt: number;
+	completedAt?: number | null;
+	errorReason?: string | null;
+	totalTokenUsage: TokenUsage;
 }
 
-export type WorkflowSummary = {
+export interface WorkflowExecutionChangedPayload {
+	worktreePath: string;
+	workflowExecution: WorkflowExecution;
+}
+
+export type WorkflowDefinitionSummary = {
 	name: string;
 	description: string;
 	builtin: boolean;
@@ -281,14 +217,14 @@ interface DiagnosticSpan {
 	end_col: number;
 }
 
-export interface DiagnosticItem {
+export interface DiagnosticView {
 	code: string;
 	severity: DiagnosticSeverity;
 	stage: DiagnosticStage;
 	span?: DiagnosticSpan;
 	message: string;
 	workflow_name?: string;
-	step_name?: string;
+	node_name?: string;
 	facet_key?: string;
 	facet_kind?: string;
 	field?: string;
@@ -302,12 +238,12 @@ export interface DiagnosticSummary {
 
 interface FacetUsageEntry {
 	workflow_name: string;
-	step_name: string;
+	node_name: string;
 	slot: string;
 }
 
 export interface DiagnosticReport {
-	items: DiagnosticItem[];
+	items: DiagnosticView[];
 	workflow_summaries: Record<string, DiagnosticSummary>;
 	facet_summaries: Record<string, DiagnosticSummary>;
 	facet_usage: Record<string, FacetUsageEntry[]>;
@@ -316,13 +252,13 @@ export interface DiagnosticReport {
 export type SaveWorkflowSourceResponse =
 	| {
 			ok: true;
-			workflow: Workflow;
-			diagnostics?: DiagnosticItem[];
+			workflow: WorkflowDefinition;
+			diagnostics?: DiagnosticView[];
 			error?: string;
 	  }
 	| {
 			ok: false;
 			workflow?: null;
-			diagnostics: DiagnosticItem[];
+			diagnostics: DiagnosticView[];
 			error?: string;
 	  };

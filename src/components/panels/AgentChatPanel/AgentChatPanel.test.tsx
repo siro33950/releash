@@ -163,7 +163,9 @@ vi.mock("@/contexts/AgentChatContext", () => ({
 	AgentChatProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
 
-const useWorkflowStateMock = vi.fn().mockReturnValue({ workflowState: null });
+const useWorkflowStateMock = vi
+	.fn()
+	.mockReturnValue({ workflowExecution: null });
 vi.mock("@/hooks/useWorkflowState", () => ({
 	useWorkflowState: (...args: unknown[]) => useWorkflowStateMock(...args),
 }));
@@ -2641,8 +2643,8 @@ describe("AgentChatPanel workflow panel visibility", () => {
 	// spec issues-1220: Session 列は Workspace tree に移ったため、AgentChatPanel は
 	// active free chat session の本文だけを表示する。
 
-	it("does not render a session tab bar and does not show workflow step sessions as chat body", () => {
-		useWorkflowStateMock.mockReturnValue({ workflowState: null });
+	it("does not render a session tab bar and does not show workflow node sessions as chat body", () => {
+		useWorkflowStateMock.mockReturnValue({ workflowExecution: null });
 		mockUseAgentChat({
 			sessions: [
 				{
@@ -2655,14 +2657,14 @@ describe("AgentChatPanel workflow panel visibility", () => {
 					updatedAt: 1000,
 				},
 				{
-					id: "workflow-step-1",
-					firstMessage: "Workflow step",
+					id: "workflow-node-1",
+					firstMessage: "Workflow node",
 					messageCount: 1,
 					worktreePath: "/test",
 					state: "idle",
 					createdAt: 1000,
 					updatedAt: 1000,
-					workflowStepSession: true,
+					workflowNodeSession: true,
 				},
 			],
 			activeSession: {
@@ -2682,7 +2684,7 @@ describe("AgentChatPanel workflow panel visibility", () => {
 			/>,
 		);
 		expect(screen.queryByTestId("session-tab-list")).toBeNull();
-		expect(screen.queryByText("Workflow step")).toBeNull();
+		expect(screen.queryByText("Workflow node")).toBeNull();
 		expect(screen.getByTestId("message-input")).toBeInTheDocument();
 	});
 });

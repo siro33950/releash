@@ -28,7 +28,7 @@ fn domain_validation_to_engine_error(
 ) -> WorkflowEngineError {
     match err {
         domain::WorkflowError::Validation(message) if message == "workflow has no nodes" => {
-            WorkflowEngineError::InvalidWorkflow("Workflow has no steps".to_string())
+            WorkflowEngineError::InvalidWorkflow("Workflow has no nodes".to_string())
         }
         domain::WorkflowError::Validation(message) => WorkflowEngineError::InvalidWorkflow(message),
         domain::WorkflowError::InvalidState(message) => WorkflowEngineError::InvalidState(message),
@@ -60,7 +60,7 @@ mod tests {
     fn validate_workflow_shape_delegates_to_domain_and_preserves_empty_message() {
         let err = validate_workflow_shape(&workflow(Vec::new())).unwrap_err();
 
-        assert_eq!(err.to_string(), "Workflow has no steps");
+        assert_eq!(err.to_string(), "Workflow has no nodes");
     }
 
     #[test]

@@ -5,14 +5,14 @@
 //! objects, but the rules for derived fields live here.
 
 use crate::domain::workflow::value_objects::{
-    ApprovalOperations, NodeDefinition, StepHistoryEntry, TokenUsage, WorkflowExecutionState,
+    NodeDefinition, NodeHistoryEntry, RuntimeApprovalOperations, RuntimeExecutionState, TokenUsage,
 };
 #[cfg(test)]
-use crate::domain::workflow::STEP_STATE_COMPLETED;
+use crate::domain::workflow::NODE_STATUS_COMPLETED;
 
-pub fn total_token_usage(step_history: &[StepHistoryEntry]) -> TokenUsage {
+pub fn total_token_usage(node_history: &[NodeHistoryEntry]) -> TokenUsage {
     let mut usage = TokenUsage::default();
-    for entry in step_history {
+    for entry in node_history {
         if let Some(entry_usage) = &entry.token_usage {
             usage.add(entry_usage);
         }
@@ -21,17 +21,17 @@ pub fn total_token_usage(step_history: &[StepHistoryEntry]) -> TokenUsage {
 }
 
 pub fn approval_operations(
-    state: &WorkflowExecutionState,
+    state: &RuntimeExecutionState,
     current_step: Option<&NodeDefinition>,
-) -> Option<ApprovalOperations> {
-    if !matches!(state, WorkflowExecutionState::WaitingApproval) {
+) -> Option<RuntimeApprovalOperations> {
+    if !matches!(state, RuntimeExecutionState::WaitingApproval) {
         return None;
     }
     let current_step = current_step?;
     if !current_step.is_approval_session() {
         return None;
     }
-    Some(ApprovalOperations { can_approve: true })
+    Some(RuntimeApprovalOperations { can_approve: true })
 }
 
 #[cfg(test)]
@@ -44,8 +44,8 @@ mod tests {
     #[test]
     fn total_token_usage_sums_history_entries_and_skips_missing_usage() {
         let usage = total_token_usage(&[
-            StepHistoryEntry {
-                step_name: "plan".to_string(),
+            NodeHistoryEntry {
+                node_name: "plan".to_string(),
                 completed_at: 1.0,
                 result: None,
                 session_id: None,
@@ -53,24 +53,24 @@ mod tests {
                     input_tokens: 3,
                     output_tokens: 5,
                 }),
-                structured_output: None,
-                run_index: 1,
-                child_outputs: None,
-                state: STEP_STATE_COMPLETED.to_string(),
+                artifact: None,
+                attempt: 1,
+                fanout_children: None,
+                state: NODE_STATUS_COMPLETED.to_string(),
             },
-            StepHistoryEntry {
-                step_name: "review".to_string(),
+            NodeHistoryEntry {
+                node_name: "review".to_string(),
                 completed_at: 2.0,
                 result: None,
                 session_id: None,
                 token_usage: None,
-                structured_output: None,
-                run_index: 1,
-                child_outputs: None,
-                state: STEP_STATE_COMPLETED.to_string(),
+                artifact: None,
+                attempt: 1,
+                fanout_children: None,
+                state: NODE_STATUS_COMPLETED.to_string(),
             },
-            StepHistoryEntry {
-                step_name: "fix".to_string(),
+            NodeHistoryEntry {
+                node_name: "fix".to_string(),
                 completed_at: 3.0,
                 result: None,
                 session_id: None,
@@ -78,10 +78,10 @@ mod tests {
                     input_tokens: 7,
                     output_tokens: 11,
                 }),
-                structured_output: None,
-                run_index: 1,
-                child_outputs: None,
-                state: STEP_STATE_COMPLETED.to_string(),
+                artifact: None,
+                attempt: 1,
+                fanout_children: None,
+                state: NODE_STATUS_COMPLETED.to_string(),
             },
         ]);
         assert_eq!(usage.input_tokens, 10);
@@ -117,17 +117,17 @@ mod tests {
 
         assert_eq!(
             approval_operations(
-                &WorkflowExecutionState::WaitingApproval,
+                &RuntimeExecutionState::WaitingApproval,
                 Some(&approval_step)
             ),
-            Some(ApprovalOperations { can_approve: true })
+            Some(RuntimeApprovalOperations { can_approve: true })
         );
         assert_eq!(
-            approval_operations(&WorkflowExecutionState::WaitingApproval, Some(&auto_step)),
+            approval_operations(&RuntimeExecutionState::WaitingApproval, Some(&auto_step)),
             None
         );
         assert_eq!(
-            approval_operations(&WorkflowExecutionState::Running, Some(&approval_step)),
+            approval_operations(&RuntimeExecutionState::Running, Some(&approval_step)),
             None
         );
     }

@@ -1,7 +1,7 @@
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum WorkflowStepFailureKind {
+pub enum NodeExecutionFailureKind {
     StartupTimeout,
     StaleRuntimeTimeout,
     ModelRefusal,
@@ -27,13 +27,13 @@ pub enum TimeoutKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FailureClassification {
-    pub kind: WorkflowStepFailureKind,
+    pub kind: NodeExecutionFailureKind,
     pub disposition: FailureDisposition,
     pub timeout_kind: Option<TimeoutKind>,
 }
 
 impl FailureClassification {
-    pub fn new(kind: WorkflowStepFailureKind) -> Self {
+    pub fn new(kind: NodeExecutionFailureKind) -> Self {
         Self {
             kind,
             disposition: kind.default_disposition(),
@@ -42,7 +42,7 @@ impl FailureClassification {
     }
 
     pub fn with_disposition(
-        kind: WorkflowStepFailureKind,
+        kind: NodeExecutionFailureKind,
         disposition: FailureDisposition,
     ) -> Self {
         Self {
@@ -53,7 +53,7 @@ impl FailureClassification {
     }
 }
 
-impl WorkflowStepFailureKind {
+impl NodeExecutionFailureKind {
     pub fn default_disposition(self) -> FailureDisposition {
         match self {
             Self::StartupTimeout | Self::StaleRuntimeTimeout | Self::StructuredOutputMismatch => {
@@ -106,7 +106,7 @@ impl TimeoutKind {
     }
 }
 
-impl fmt::Display for WorkflowStepFailureKind {
+impl fmt::Display for NodeExecutionFailureKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
@@ -132,31 +132,31 @@ mod tests {
     fn failure_kinds_have_expected_default_dispositions() {
         let cases = [
             (
-                WorkflowStepFailureKind::StartupTimeout,
+                NodeExecutionFailureKind::StartupTimeout,
                 FailureDisposition::Retryable,
             ),
             (
-                WorkflowStepFailureKind::StaleRuntimeTimeout,
+                NodeExecutionFailureKind::StaleRuntimeTimeout,
                 FailureDisposition::Retryable,
             ),
             (
-                WorkflowStepFailureKind::ModelRefusal,
+                NodeExecutionFailureKind::ModelRefusal,
                 FailureDisposition::Partial,
             ),
             (
-                WorkflowStepFailureKind::StructuredOutputMismatch,
+                NodeExecutionFailureKind::StructuredOutputMismatch,
                 FailureDisposition::Retryable,
             ),
             (
-                WorkflowStepFailureKind::ValidationFailure,
+                NodeExecutionFailureKind::ValidationFailure,
                 FailureDisposition::Terminal,
             ),
             (
-                WorkflowStepFailureKind::UserAbort,
+                NodeExecutionFailureKind::UserAbort,
                 FailureDisposition::UserActionRequired,
             ),
             (
-                WorkflowStepFailureKind::InfrastructureCrash,
+                NodeExecutionFailureKind::InfrastructureCrash,
                 FailureDisposition::Terminal,
             ),
         ];
@@ -169,24 +169,27 @@ mod tests {
     #[test]
     fn timeout_kind_is_only_present_for_timeout_failures() {
         assert_eq!(
-            WorkflowStepFailureKind::StartupTimeout.timeout_kind(),
+            NodeExecutionFailureKind::StartupTimeout.timeout_kind(),
             Some(TimeoutKind::Startup)
         );
         assert_eq!(
-            WorkflowStepFailureKind::StaleRuntimeTimeout.timeout_kind(),
+            NodeExecutionFailureKind::StaleRuntimeTimeout.timeout_kind(),
             Some(TimeoutKind::Stale)
         );
-        assert_eq!(WorkflowStepFailureKind::ModelRefusal.timeout_kind(), None);
+        assert_eq!(NodeExecutionFailureKind::ModelRefusal.timeout_kind(), None);
     }
 
     #[test]
     fn failure_classification_can_override_policy_disposition() {
         let classification = FailureClassification::with_disposition(
-            WorkflowStepFailureKind::StartupTimeout,
+            NodeExecutionFailureKind::StartupTimeout,
             FailureDisposition::Terminal,
         );
 
-        assert_eq!(classification.kind, WorkflowStepFailureKind::StartupTimeout);
+        assert_eq!(
+            classification.kind,
+            NodeExecutionFailureKind::StartupTimeout
+        );
         assert_eq!(classification.disposition, FailureDisposition::Terminal);
         assert_eq!(classification.timeout_kind, Some(TimeoutKind::Startup));
     }
@@ -194,7 +197,7 @@ mod tests {
     #[test]
     fn strings_are_stable_for_events_and_telemetry() {
         assert_eq!(
-            WorkflowStepFailureKind::StructuredOutputMismatch.as_str(),
+            NodeExecutionFailureKind::StructuredOutputMismatch.as_str(),
             "structured_output_mismatch"
         );
         assert_eq!(

@@ -434,7 +434,7 @@ fn search_sessions(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     for session in sorted {
-        if !include_workflow && session.is_workflow_step_session() {
+        if !include_workflow && session.is_workflow_node_session() {
             continue;
         }
         if session.state == SessionState::Archived {
@@ -517,8 +517,8 @@ mod tests {
             permission_profile_id: None,
             selected_model: None,
             backend_id: Some("claude".to_string()),
-            workflow_step_session: false,
-            workflow_step_context: None,
+            workflow_node_session: false,
+            workflow_node_context: None,
             context_epoch: None,
         }
     }
@@ -600,14 +600,14 @@ mod tests {
         let mut workflow = regular.clone();
         workflow.id = uuid::Uuid::new_v4().to_string();
         workflow.updated_at = 3.0;
-        workflow.workflow_step_session = true;
+        workflow.workflow_node_session = true;
 
         let results = search_sessions(vec![workflow, regular], "parser", false, 10);
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].matched_message_id, "m1");
         assert_eq!(results[0].snippet, "The parser bug is fixed");
-        assert!(!results[0].session.workflow_step_session);
+        assert!(!results[0].session.workflow_node_session);
     }
 
     #[test]

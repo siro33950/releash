@@ -37,7 +37,7 @@ impl PendingWorkflowCommandRepository for PendingWorkflowCommandFileRepository {
         self.store()
             .write_pending(&PendingCommand {
                 id: command.command_id,
-                run_id: command.run_id,
+                execution_id: command.execution_id,
                 payload,
                 requested_at: command.requested_at,
             })
@@ -56,7 +56,7 @@ impl PendingWorkflowCommandRepository for PendingWorkflowCommandFileRepository {
                     .map_err(|e| WorkflowError::external(e.to_string()))?;
                 Ok(PendingWorkflowCommand {
                     command_id: entry.command.id,
-                    run_id: entry.command.run_id,
+                    execution_id: entry.command.execution_id,
                     requested_at: entry.command.requested_at,
                     payload,
                 })
@@ -94,12 +94,12 @@ pub(crate) async fn process_pending_workflow_command_entry(
     entry: PendingCommandEntry,
 ) {
     let entry_id = entry.command.id.clone();
-    let run_id = entry.command.run_id.clone();
+    let execution_id = entry.command.execution_id.clone();
     let claimed = match store.claim_pending(&entry) {
         Ok(Some(claimed)) => claimed,
         Ok(None) => return,
         Err(e) => {
-            log::warn!("pending command claim failed: id={entry_id} run_id={run_id} reason={e}");
+            log::warn!("pending command claim failed: id={entry_id} execution_id={execution_id} reason={e}");
             return;
         }
     };
@@ -107,30 +107,30 @@ pub(crate) async fn process_pending_workflow_command_entry(
     let command = pending_command_to_runtime_command(claimed.entry.command.clone());
     match runtime.dispatch_pending_command(command).await {
         PendingRuntimeCommandOutcome::Accepted => {
-            log::info!("pending command dispatched: id={entry_id} run_id={run_id}");
+            log::info!("pending command dispatched: id={entry_id} execution_id={execution_id}");
             if let Err(e) = store.mark_processed(&claimed.entry) {
                 log::warn!(
-                    "Failed to mark pending command processed: id={entry_id} run_id={run_id} reason={e}"
+                    "Failed to mark pending command processed: id={entry_id} execution_id={execution_id} reason={e}"
                 );
             }
         }
         PendingRuntimeCommandOutcome::RejectedFinal(reason) => {
             log::warn!(
-                "pending command dispatch rejected: id={entry_id} run_id={run_id} reason={reason}"
+                "pending command dispatch rejected: id={entry_id} execution_id={execution_id} reason={reason}"
             );
             if let Err(e) = store.mark_processed(&claimed.entry) {
                 log::warn!(
-                    "Failed to mark rejected pending command processed: id={entry_id} run_id={run_id} reason={e}"
+                    "Failed to mark rejected pending command processed: id={entry_id} execution_id={execution_id} reason={e}"
                 );
             }
         }
         PendingRuntimeCommandOutcome::RetryableFailure(reason) => {
             log::warn!(
-                "pending command dispatch retryable failure: id={entry_id} run_id={run_id} reason={reason}"
+                "pending command dispatch retryable failure: id={entry_id} execution_id={execution_id} reason={reason}"
             );
             if let Err(e) = store.release_claim(&claimed.entry) {
                 log::warn!(
-                    "Failed to release pending command claim: id={entry_id} run_id={run_id} reason={e}"
+                    "Failed to release pending command claim: id={entry_id} execution_id={execution_id} reason={e}"
                 );
             }
         }
@@ -139,7 +139,7 @@ pub(crate) async fn process_pending_workflow_command_entry(
 
 fn pending_command_to_runtime_command(pending: PendingCommand) -> PendingRuntimeCommand {
     PendingRuntimeCommand {
-        run_id: pending.run_id,
+        execution_id: pending.execution_id,
         request_id: pending.id,
         requested_at: pending.requested_at,
         payload: pending_payload_to_runtime_payload(pending.payload),
@@ -163,15 +163,15 @@ fn pending_payload_to_runtime_payload(
             PendingRuntimeCommandPayload::Abort { node_name }
         }
         PendingCommandPayload::SubmitOutput {
-            step_name,
+            node_name,
             node_execution_id,
             contract,
-            structured_output,
+            artifact,
         } => PendingRuntimeCommandPayload::SubmitOutput {
-            step_name,
+            node_name,
             node_execution_id,
             contract,
-            structured_output,
+            artifact,
         },
     }
 }
@@ -186,11 +186,11 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let repo = PendingWorkflowCommandFileRepository::new(tmp.path());
         let command_id = "00000000-0000-4000-8000-000000000010";
-        let run_id = "00000000-0000-4000-8000-000000000011";
+        let execution_id = "00000000-0000-4000-8000-000000000011";
 
         repo.write_pending(PendingWorkflowCommand {
             command_id: command_id.to_string(),
-            run_id: run_id.to_string(),
+            execution_id: execution_id.to_string(),
             requested_at: 1.0,
             payload: serde_json::json!({
                 "kind": "approve",
@@ -213,7 +213,7 @@ mod tests {
         let command_id = "00000000-0000-4000-8000-000000000020";
         repo.write_pending(PendingWorkflowCommand {
             command_id: command_id.to_string(),
-            run_id: "00000000-0000-4000-8000-000000000021".to_string(),
+            execution_id: "00000000-0000-4000-8000-000000000021".to_string(),
             requested_at: 1.0,
             payload: serde_json::json!({"kind": "abort"}),
         })

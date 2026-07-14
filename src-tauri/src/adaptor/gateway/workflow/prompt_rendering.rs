@@ -5,7 +5,7 @@ use serde_json::Value;
 use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::facet::FacetContents;
 use crate::adaptor::gateway::workflow::schema::NodeDefinition;
-use crate::adaptor::gateway::workflow::state::StepOutput;
+use crate::adaptor::gateway::workflow::state::RuntimeArtifact;
 use crate::domain::workflow::services::reference::{
     self, resolve_runtime_reference, REQUEST_ARTIFACT,
 };
@@ -13,7 +13,7 @@ use crate::domain::workflow::services::reference::{
 use crate::domain::workflow::services::template_preview;
 
 pub(crate) fn artifact_values(
-    step_outputs: &HashMap<String, StepOutput>,
+    runtime_artifacts: &HashMap<String, RuntimeArtifact>,
     request: Option<&str>,
 ) -> HashMap<String, Value> {
     let mut artifacts = HashMap::new();
@@ -21,8 +21,8 @@ pub(crate) fn artifact_values(
         REQUEST_ARTIFACT.to_string(),
         Value::String(request.unwrap_or_default().to_string()),
     );
-    for (name, output) in step_outputs {
-        if let Some(value) = &output.structured_output {
+    for (name, output) in runtime_artifacts {
+        if let Some(value) = &output.artifact {
             artifacts.insert(name.clone(), value.clone());
         }
     }
@@ -152,9 +152,9 @@ pub(crate) fn render_step_workflow_instruction(
     _step: &NodeDefinition,
     facet_contents: Option<&FacetContents>,
     request: Option<&str>,
-    step_outputs: &HashMap<String, StepOutput>,
+    artifacts: &HashMap<String, RuntimeArtifact>,
 ) -> Option<String> {
-    let artifacts = artifact_values(step_outputs, request);
+    let artifacts = artifact_values(artifacts, request);
     render_workflow_instruction(facet_contents?.instruction.as_ref()?, &artifacts, None)
 }
 
@@ -162,18 +162,18 @@ pub(crate) fn render_fanout_child_workflow_instruction(
     _step: &NodeDefinition,
     facet_contents: Option<&FacetContents>,
     request: Option<&str>,
-    step_outputs: &HashMap<String, StepOutput>,
+    artifacts: &HashMap<String, RuntimeArtifact>,
     item: Option<&Value>,
 ) -> Option<String> {
-    let artifacts = artifact_values(step_outputs, request);
+    let artifacts = artifact_values(artifacts, request);
     render_workflow_instruction(facet_contents?.instruction.as_ref()?, &artifacts, item)
 }
 
 pub(crate) fn append_artifact_completion_action(
     prompt: &mut String,
     artifact: Option<&str>,
-    run_id: &str,
-    step_name: &str,
+    execution_id: &str,
+    node_name: &str,
     node_execution_id: Option<&str>,
 ) {
     let Some(contract) = artifact else {
@@ -181,8 +181,8 @@ pub(crate) fn append_artifact_completion_action(
     };
     let action = crate::adaptor::gateway::workflow::facet::artifact_completion_action(
         contract,
-        run_id,
-        step_name,
+        execution_id,
+        node_name,
         node_execution_id,
     );
     if !prompt.is_empty() {
@@ -194,25 +194,25 @@ pub(crate) fn append_artifact_completion_action(
 pub(crate) fn build_step_prompt(
     step: &NodeDefinition,
     facet_contents: Option<&FacetContents>,
-    run_id: &str,
+    execution_id: &str,
     request: Option<&str>,
-    step_outputs: &HashMap<String, StepOutput>,
+    artifacts: &HashMap<String, RuntimeArtifact>,
 ) -> Result<(Option<String>, String), WorkflowEngineError> {
     if !step.has_facet_refs() {
         return Err(WorkflowEngineError::InvalidWorkflow(format!(
-            "Step '{}' has no facet refs.",
+            "Node '{}' has no facet refs.",
             step.name
         )));
     }
 
     if step.has_facet_refs() && facet_contents.is_none_or(FacetContents::is_empty) {
         return Err(WorkflowEngineError::InvalidWorkflow(format!(
-            "Step '{}' has unresolved facet refs (workflow must go through load pipeline)",
+            "Node '{}' has unresolved facet refs (workflow must go through load pipeline)",
             step.name
         )));
     }
 
-    let artifacts = artifact_values(step_outputs, request);
+    let artifacts = artifact_values(artifacts, request);
     let composed = crate::adaptor::gateway::workflow::facet::compose_facets(facet_contents);
     let system_prompt = composed
         .system_prompt
@@ -222,7 +222,7 @@ pub(crate) fn build_step_prompt(
     append_artifact_completion_action(
         &mut prompt,
         step.artifact.as_deref(),
-        run_id,
+        execution_id,
         &step.name,
         None,
     );
@@ -232,9 +232,9 @@ pub(crate) fn build_step_prompt(
 pub(crate) fn build_fanout_child_prompt(
     step: &NodeDefinition,
     facet_contents: Option<&FacetContents>,
-    run_id: &str,
+    execution_id: &str,
     request: Option<&str>,
-    step_outputs: &HashMap<String, StepOutput>,
+    artifacts: &HashMap<String, RuntimeArtifact>,
     item: Option<&Value>,
     node_execution_id: &str,
 ) -> Result<(Option<String>, String), WorkflowEngineError> {
@@ -245,7 +245,7 @@ pub(crate) fn build_fanout_child_prompt(
         )));
     }
 
-    let artifacts = artifact_values(step_outputs, request);
+    let artifacts = artifact_values(artifacts, request);
     let composed = crate::adaptor::gateway::workflow::facet::compose_facets(facet_contents);
     let system_prompt = composed
         .system_prompt
@@ -256,7 +256,7 @@ pub(crate) fn build_fanout_child_prompt(
     append_artifact_completion_action(
         &mut user_message,
         step.artifact.as_deref(),
-        run_id,
+        execution_id,
         &step.name,
         Some(node_execution_id),
     );
@@ -264,14 +264,14 @@ pub(crate) fn build_fanout_child_prompt(
     Ok((system_prompt, user_message))
 }
 
-pub(crate) fn request_step_output(request: &str, timestamp: f64) -> StepOutput {
-    StepOutput {
-        step_name: REQUEST_ARTIFACT.to_string(),
-        run_index: 0,
+pub(crate) fn request_step_output(request: &str, timestamp: f64) -> RuntimeArtifact {
+    RuntimeArtifact {
+        node_name: REQUEST_ARTIFACT.to_string(),
+        attempt: 0,
         session_id: None,
         result: None,
-        structured_output: Some(Value::String(request.to_string())),
-        artifact_contract: Some("string".to_string()),
+        artifact: Some(Value::String(request.to_string())),
+        contract: Some("string".to_string()),
         token_usage: None,
         completed_at: timestamp,
     }
@@ -304,19 +304,36 @@ mod tests {
     }
 
     #[test]
+    fn build_step_prompt_reports_missing_facets_with_node_vocabulary() {
+        let node = NodeDefinition {
+            name: "review".to_string(),
+            ..NodeDefinition::default()
+        };
+
+        let error = build_step_prompt(&node, None, "execution-1", None, &HashMap::new())
+            .expect_err("node without facet refs must be rejected");
+
+        assert!(matches!(
+            error,
+            WorkflowEngineError::InvalidWorkflow(message)
+                if message == "Node 'review' has no facet refs."
+        ));
+    }
+
+    #[test]
     fn build_step_prompt_injects_inputs_as_json() {
         let mut step = make_test_step("implement", "Implement {{ request }}");
         step.inputs = vec!["request".to_string(), "plan".to_string()];
         let resolved = instruction_contents("Implement {{ request }}");
         let outputs = HashMap::from([(
             "plan".to_string(),
-            StepOutput {
-                step_name: "plan".to_string(),
-                run_index: 1,
+            RuntimeArtifact {
+                node_name: "plan".to_string(),
+                attempt: 1,
                 session_id: None,
                 result: None,
-                structured_output: Some(serde_json::json!({"summary": "ready"})),
-                artifact_contract: Some("plan".to_string()),
+                artifact: Some(serde_json::json!({"summary": "ready"})),
+                contract: Some("plan".to_string()),
                 token_usage: None,
                 completed_at: 1.0,
             },
@@ -338,13 +355,13 @@ mod tests {
         let resolved = instruction_contents("Spec dir: {{ authoring.spec_dir }}");
         let outputs = HashMap::from([(
             "authoring".to_string(),
-            StepOutput {
-                step_name: "authoring".to_string(),
-                run_index: 1,
+            RuntimeArtifact {
+                node_name: "authoring".to_string(),
+                attempt: 1,
                 session_id: None,
                 result: None,
-                structured_output: Some(serde_json::json!({"spec_dir": "docs/specs/foo"})),
-                artifact_contract: Some("spec-directory".to_string()),
+                artifact: Some(serde_json::json!({"spec_dir": "docs/specs/foo"})),
+                contract: Some("spec-directory".to_string()),
                 token_usage: None,
                 completed_at: 1.0,
             },
@@ -387,13 +404,13 @@ mod tests {
         let resolved = instruction_contents("Review {{ item.path }} for {{ request }}");
         let outputs = HashMap::from([(
             "plan".to_string(),
-            StepOutput {
-                step_name: "plan".to_string(),
-                run_index: 1,
+            RuntimeArtifact {
+                node_name: "plan".to_string(),
+                attempt: 1,
                 session_id: None,
                 result: None,
-                structured_output: Some(serde_json::json!({"summary": "ready"})),
-                artifact_contract: Some("plan".to_string()),
+                artifact: Some(serde_json::json!({"summary": "ready"})),
+                contract: Some("plan".to_string()),
                 token_usage: None,
                 completed_at: 1.0,
             },

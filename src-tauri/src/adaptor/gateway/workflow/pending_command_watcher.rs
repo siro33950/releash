@@ -166,16 +166,16 @@ async fn process_pending_pickup<R: tauri::Runtime>(
 mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::pending_command::{CliRequestPayload, PendingCommand};
-    use crate::domain::workflow::{WorkflowDefinition, WorkflowError, WorkflowStateSnapshot};
+    use crate::domain::workflow::{WorkflowDefinition, WorkflowError, WorkflowRuntimeSnapshot};
     use crate::usecase::workflow::command::{
-        AbortRunCommand, ApprovalCommand, ResolvedStartRunCommand, SubmitOutputCommand,
+        AbortExecutionCommand, ApprovalCommand, ResolvedStartExecutionCommand, SubmitOutputCommand,
     };
     use crate::usecase::workflow::ports::{
         ApprovalChatTarget, PendingRuntimeCommand, PendingRuntimeCommandOutcome,
-        PendingRuntimeCommandPayload, WorkflowAbortRunGateway, WorkflowApprovalChatGateway,
+        PendingRuntimeCommandPayload, WorkflowAbortExecutionGateway, WorkflowApprovalChatGateway,
         WorkflowApprovalGateway, WorkflowPendingRuntimeCommandGateway,
         WorkflowRuntimeShutdownGateway, WorkflowRuntimeStateGateway, WorkflowStallClearedCommand,
-        WorkflowStallObservedCommand, WorkflowStallObservedGateway, WorkflowStartRunGateway,
+        WorkflowStallObservedCommand, WorkflowStallObservedGateway, WorkflowStartExecutionGateway,
         WorkflowSubmitOutputGateway, WorkflowTurnCompleteCommand, WorkflowTurnCompleteGateway,
     };
     use std::collections::VecDeque;
@@ -233,40 +233,43 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl WorkflowStartRunGateway for TestWorkflowRuntimeGateway {
-        async fn resolve_start_run_worktree(
+    impl WorkflowStartExecutionGateway for TestWorkflowRuntimeGateway {
+        async fn resolve_start_execution_worktree(
             &self,
             _worktree_path: String,
         ) -> Result<String, WorkflowError> {
             Err(WorkflowError::external(
-                "resolve_start_run_worktree is not used by pending watcher tests",
+                "resolve_start_execution_worktree is not used by pending watcher tests",
             ))
         }
 
-        async fn resolve_start_run_workflow(
+        async fn resolve_start_execution_workflow(
             &self,
             _workflow_file_stem: &str,
         ) -> Result<WorkflowDefinition, WorkflowError> {
             Err(WorkflowError::external(
-                "resolve_start_run_workflow is not used by pending watcher tests",
+                "resolve_start_execution_workflow is not used by pending watcher tests",
             ))
         }
 
-        async fn start_resolved_run(
+        async fn start_resolved_execution(
             &self,
-            _command: ResolvedStartRunCommand,
+            _command: ResolvedStartExecutionCommand,
         ) -> Result<String, WorkflowError> {
             Err(WorkflowError::external(
-                "start_resolved_run is not used by pending watcher tests",
+                "start_resolved_execution is not used by pending watcher tests",
             ))
         }
     }
 
     #[async_trait::async_trait]
-    impl WorkflowAbortRunGateway for TestWorkflowRuntimeGateway {
-        async fn abort_run(&self, _command: AbortRunCommand) -> Result<(), WorkflowError> {
+    impl WorkflowAbortExecutionGateway for TestWorkflowRuntimeGateway {
+        async fn abort_execution(
+            &self,
+            _command: AbortExecutionCommand,
+        ) -> Result<(), WorkflowError> {
             Err(WorkflowError::external(
-                "abort_run is not used by pending watcher tests",
+                "abort_execution is not used by pending watcher tests",
             ))
         }
     }
@@ -341,17 +344,17 @@ mod tests {
 
     #[async_trait::async_trait]
     impl WorkflowRuntimeStateGateway for TestWorkflowRuntimeGateway {
-        async fn get_state_by_run_id(
+        async fn get_state_by_execution_id(
             &self,
-            _run_id: &str,
-        ) -> Result<Option<WorkflowStateSnapshot>, WorkflowError> {
+            _execution_id: &str,
+        ) -> Result<Option<WorkflowRuntimeSnapshot>, WorkflowError> {
             Ok(None)
         }
 
         async fn get_state_by_worktree(
             &self,
             _worktree_path: &str,
-        ) -> Result<Option<WorkflowStateSnapshot>, WorkflowError> {
+        ) -> Result<Option<WorkflowRuntimeSnapshot>, WorkflowError> {
             Ok(None)
         }
     }
@@ -431,11 +434,11 @@ mod tests {
         let data_dir = TempDir::new().unwrap();
         let pending_dir = TempDir::new().unwrap();
         let gateway = TestWorkflowRuntimeGateway::accepted();
-        let run_id = uuid::Uuid::new_v4().to_string();
+        let execution_id = uuid::Uuid::new_v4().to_string();
         let app = make_managed_app(data_dir.path(), gateway.clone());
         let store = PendingCommandStore::new(pending_dir.path());
         let command = PendingCommand::new(
-            run_id.clone(),
+            execution_id.clone(),
             CliRequestPayload::Abort { node_name: None },
             current_timestamp(),
         );
@@ -449,7 +452,7 @@ mod tests {
         );
         let commands = gateway.commands();
         assert_eq!(commands.len(), 1);
-        assert_eq!(commands[0].run_id, run_id);
+        assert_eq!(commands[0].execution_id, execution_id);
         assert_eq!(commands[0].request_id, command.id);
         assert!(matches!(
             commands[0].payload,
@@ -485,7 +488,7 @@ mod tests {
     async fn spawned_watcher_picks_up_pending_file_event_and_dispatches() {
         let data_dir = TempDir::new().unwrap();
         let gateway = TestWorkflowRuntimeGateway::accepted();
-        let run_id = uuid::Uuid::new_v4().to_string();
+        let execution_id = uuid::Uuid::new_v4().to_string();
         let app = make_managed_app(data_dir.path(), gateway.clone());
         let store = PendingCommandStore::new(data_dir.path());
 
@@ -493,7 +496,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(300)).await;
 
         let command = PendingCommand::new(
-            run_id.clone(),
+            execution_id.clone(),
             CliRequestPayload::Abort { node_name: None },
             current_timestamp(),
         );
@@ -520,11 +523,11 @@ mod tests {
     async fn spawned_watcher_initial_scan_picks_up_existing_pending_file() {
         let data_dir = TempDir::new().unwrap();
         let gateway = TestWorkflowRuntimeGateway::accepted();
-        let run_id = uuid::Uuid::new_v4().to_string();
+        let execution_id = uuid::Uuid::new_v4().to_string();
         let app = make_managed_app(data_dir.path(), gateway.clone());
         let store = PendingCommandStore::new(data_dir.path());
         let command = PendingCommand::new(
-            run_id.clone(),
+            execution_id.clone(),
             CliRequestPayload::Abort { node_name: None },
             current_timestamp(),
         );

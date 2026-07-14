@@ -1,10 +1,10 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import type { WorkspaceStepStatus } from "@/types/workspace-tree";
+import type { WorkspaceNodeStatus } from "@/types/workspace-tree";
+import { workflowNodeIconClasses } from "./WorkflowNodeStatusIcon";
 import { WorkflowRowStatusIcon } from "./WorkflowRowStatusIcon";
-import { workflowStepIconClasses } from "./WorkflowStepStatusIcon";
 
-const statuses: WorkspaceStepStatus[] = [
+const statuses: WorkspaceNodeStatus[] = [
 	"queued",
 	"running",
 	"failed",
@@ -14,7 +14,7 @@ const statuses: WorkspaceStepStatus[] = [
 	"completed",
 ];
 
-function renderIcon(status: WorkspaceStepStatus) {
+function renderIcon(status: WorkspaceNodeStatus) {
 	return render(<WorkflowRowStatusIcon status={status} />);
 }
 
@@ -26,11 +26,11 @@ describe("WorkflowRowStatusIcon", () => {
 		expect(container.querySelector("svg.lucide-workflow")).toBeInTheDocument();
 	});
 
-	it.each(statuses)("uses the workflow step status color for %s", (status) => {
+	it.each(statuses)("uses the workflow node status color for %s", (status) => {
 		const { container } = renderIcon(status);
 		const icon = container.querySelector("svg.lucide-workflow");
 
-		expect(icon).toHaveClass(...workflowStepIconClasses[status].split(" "));
+		expect(icon).toHaveClass(...workflowNodeIconClasses[status].split(" "));
 	});
 
 	it("pulses only running and waiting statuses", () => {
@@ -60,7 +60,7 @@ describe("WorkflowRowStatusIcon", () => {
 	});
 
 	it("falls back to muted color without pulse for an unknown runtime status", () => {
-		const { container } = renderIcon("future-status" as WorkspaceStepStatus);
+		const { container } = renderIcon("future-status" as WorkspaceNodeStatus);
 		const icon = container.querySelector("svg.lucide-workflow");
 
 		expect(screen.getByTitle("future-status")).toBeInTheDocument();

@@ -1,13 +1,13 @@
 import { Workflow } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { WorkspaceStepStatus } from "@/types/workspace-tree";
-import { workflowStepIconClasses } from "./WorkflowStepStatusIcon";
+import type { WorkspaceNodeStatus } from "@/types/workspace-tree";
+import { workflowNodeIconClasses } from "./WorkflowNodeStatusIcon";
 
-const pulseStatuses: ReadonlySet<WorkspaceStepStatus> =
-	new Set<WorkspaceStepStatus>(["running", "waiting"]);
+const pulseStatuses: ReadonlySet<WorkspaceNodeStatus> =
+	new Set<WorkspaceNodeStatus>(["running", "waiting"]);
 
 interface WorkflowRowStatusIconProps {
-	status: WorkspaceStepStatus;
+	status: WorkspaceNodeStatus;
 	containerClassName?: string;
 	iconClassName?: string;
 }
@@ -18,7 +18,7 @@ export function WorkflowRowStatusIcon({
 	iconClassName = "size-3.5 shrink-0",
 }: WorkflowRowStatusIconProps) {
 	const colorClassName =
-		workflowStepIconClasses[status] ?? "text-muted-foreground";
+		workflowNodeIconClasses[status] ?? "text-muted-foreground";
 	const pulseClassName = pulseStatuses.has(status)
 		? "animate-pulse"
 		: undefined;

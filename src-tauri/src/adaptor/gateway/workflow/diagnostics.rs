@@ -36,9 +36,9 @@ pub struct DiagnosticItem {
     /// 対象の workflow 名（ファセット診断の場合は None）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workflow_name: Option<String>,
-    /// 対象の step 名
+    /// 対象の node 名
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub step_name: Option<String>,
+    pub node_name: Option<String>,
     /// 対象のファセットキー（ファセット診断の場合）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub facet_key: Option<String>,
@@ -105,7 +105,7 @@ impl DiagnosticItem {
             span,
             message: message.into(),
             workflow_name: None,
-            step_name: None,
+            node_name: None,
             facet_key: None,
             facet_kind: None,
             field: None,
@@ -118,7 +118,7 @@ impl DiagnosticItem {
     }
 
     fn step(mut self, name: impl Into<String>) -> Self {
-        self.step_name = Some(name.into());
+        self.node_name = Some(name.into());
         self
     }
 
@@ -148,14 +148,14 @@ pub struct DiagnosticReport {
     pub workflow_summaries: HashMap<String, DiagnosticSummary>,
     /// "kind/key" → そのファセットの診断サマリ
     pub facet_summaries: HashMap<String, DiagnosticSummary>,
-    /// ファセットキー → 参照元workflow/step情報のリスト
+    /// ファセットキー → 参照元 workflow/node 情報のリスト
     pub facet_usage: HashMap<String, Vec<FacetUsageEntry>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FacetUsageEntry {
     pub workflow_name: String,
-    pub step_name: String,
+    pub node_name: String,
     pub slot: String,
 }
 
@@ -332,7 +332,7 @@ fn parse_shape_diagnostics(
             );
             continue;
         };
-        let step_name = node_obj
+        let node_name = node_obj
             .get("name")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("<unknown>");
@@ -359,7 +359,7 @@ fn parse_shape_diagnostics(
             ],
             span_map,
             workflow_name,
-            Some(step_name),
+            Some(node_name),
             &mut diagnostics,
         );
         let kind_count = ["command", "session", "fanout"]
@@ -374,30 +374,30 @@ fn parse_shape_diagnostics(
                     DiagnosticStage::ParseShape,
                     span_map.nearest_span(&node_path),
                     format!(
-                        "node '{step_name}' must contain exactly one kind block: command, session, or fanout"
+                        "node '{node_name}' must contain exactly one kind block: command, session, or fanout"
                     ),
                 )
                 .workflow(workflow_name)
-                .step(step_name)
+                .step(node_name)
                 .field("kind"),
             );
         }
-        if step_name == "request" || step_name == "item" {
+        if node_name == "request" || node_name == "item" {
             diagnostics.push(
                 DiagnosticItem::new(
                     "WFR004",
                     Severity::Error,
                     DiagnosticStage::Resolve,
                     span_map.field_span(&format!("{node_path}.name")),
-                    format!("node name '{step_name}' is reserved"),
+                    format!("node name '{node_name}' is reserved"),
                 )
                 .workflow(workflow_name)
-                .step(step_name)
+                .step(node_name)
                 .field("name"),
             );
         }
-        if step_name != "<unknown>"
-            && (validation::validate_name(step_name).is_err() || !names.insert(step_name))
+        if node_name != "<unknown>"
+            && (validation::validate_name(node_name).is_err() || !names.insert(node_name))
         {
             diagnostics.push(
                 DiagnosticItem::new(
@@ -405,17 +405,17 @@ fn parse_shape_diagnostics(
                     Severity::Error,
                     DiagnosticStage::ParseShape,
                     span_map.field_span(&format!("{node_path}.name")),
-                    format!("node name '{step_name}' is duplicated or invalid"),
+                    format!("node name '{node_name}' is duplicated or invalid"),
                 )
                 .workflow(workflow_name)
-                .step(step_name)
+                .step(node_name)
                 .field("name"),
             );
         }
         if node_obj.contains_key("fanout") && node_obj.contains_key("inputs") {
             diagnostics.push(kind_disallowed_diagnostic(
                 workflow_name,
-                step_name,
+                node_name,
                 "fanout",
                 "inputs",
                 span_map.field_span(&format!("{node_path}.inputs")),
@@ -432,7 +432,7 @@ fn parse_shape_diagnostics(
                 &["mode", "prompt", "inline_prompt"],
                 span_map,
                 workflow_name,
-                Some(step_name),
+                Some(node_name),
                 &mut diagnostics,
             );
             if !session.contains_key("gate") {
@@ -442,10 +442,10 @@ fn parse_shape_diagnostics(
                         Severity::Error,
                         DiagnosticStage::ParseShape,
                         span_map.nearest_span(&format!("{node_path}.session")),
-                        format!("session node '{step_name}' requires gate: auto or gate: approval"),
+                        format!("session node '{node_name}' requires gate: auto or gate: approval"),
                     )
                     .workflow(workflow_name)
-                    .step(step_name)
+                    .step(node_name)
                     .field("session.gate"),
                 );
             }
@@ -457,7 +457,7 @@ fn parse_shape_diagnostics(
                     &[],
                     span_map,
                     workflow_name,
-                    Some(step_name),
+                    Some(node_name),
                     &mut diagnostics,
                 );
             }
@@ -473,7 +473,7 @@ fn parse_shape_diagnostics(
                 &["parallel_children", "aggregate", "all_match", "any_match"],
                 span_map,
                 workflow_name,
-                Some(step_name),
+                Some(node_name),
                 &mut diagnostics,
             );
             if let Some(aggregate) = fanout
@@ -487,7 +487,7 @@ fn parse_shape_diagnostics(
                     &["all_match", "any_match", "then", "else"],
                     span_map,
                     workflow_name,
-                    Some(step_name),
+                    Some(node_name),
                     &mut diagnostics,
                 );
             }
@@ -505,7 +505,7 @@ fn parse_shape_diagnostics(
                     &["match", "cycle_guard", "resets_cycle_for"],
                     span_map,
                     workflow_name,
-                    Some(step_name),
+                    Some(node_name),
                     &mut diagnostics,
                 );
                 let discriminator_count = ["when", "switch", "loop_guard"]
@@ -522,7 +522,7 @@ fn parse_shape_diagnostics(
                             "rule discriminator keys when, switch, and loop_guard are mutually exclusive",
                         )
                         .workflow(workflow_name)
-                        .step(step_name)
+                        .step(node_name)
                         .field("rules"),
                     );
                 }
@@ -541,7 +541,7 @@ fn check_allowed_fields(
     old_fields: &[&str],
     span_map: &YamlSpanMap,
     workflow_name: &str,
-    step_name: Option<&str>,
+    node_name: Option<&str>,
     diagnostics: &mut Vec<DiagnosticItem>,
 ) {
     for key in map.keys() {
@@ -575,8 +575,8 @@ fn check_allowed_fields(
         )
         .workflow(workflow_name)
         .field(key);
-        if let Some(step_name) = step_name {
-            item = item.step(step_name);
+        if let Some(node_name) = node_name {
+            item = item.step(node_name);
         }
         diagnostics.push(item);
     }
@@ -584,7 +584,7 @@ fn check_allowed_fields(
 
 fn kind_disallowed_diagnostic(
     workflow_name: &str,
-    step_name: &str,
+    node_name: &str,
     kind: &str,
     field: &str,
     span: Option<DiagnosticSpan>,
@@ -594,10 +594,10 @@ fn kind_disallowed_diagnostic(
         Severity::Error,
         DiagnosticStage::ParseShape,
         span,
-        format!("node '{step_name}' ({kind}) cannot declare '{field}'"),
+        format!("node '{node_name}' ({kind}) cannot declare '{field}'"),
     )
     .workflow(workflow_name)
-    .step(step_name)
+    .step(node_name)
     .field(field)
 }
 
@@ -642,12 +642,12 @@ fn validation_error_to_diagnostic(
     span_map: Option<&YamlSpanMap>,
 ) -> DiagnosticItem {
     let (code, stage) = validation_error_code_stage(error);
-    let (step_name, field) = validation_error_context(error);
+    let (node_name, field) = validation_error_context(error);
     let span = span_map.and_then(|map| span_for_validation_error(wf, error, map));
     let mut item = DiagnosticItem::new(code, Severity::Error, stage, span, error.to_string())
         .workflow(wf.name.clone());
-    if let Some(step_name) = step_name {
-        item = item.step(step_name);
+    if let Some(node_name) = node_name {
+        item = item.step(node_name);
     }
     if let Some(field) = field {
         item = item.field(field);
@@ -755,15 +755,15 @@ fn span_for_validation_error(
             step_base_path(wf, step).and_then(|path| span_map.nearest_span(&path))
         }
         _ => {
-            let (step_name, field) = validation_error_context(error);
-            match (step_name.as_deref(), field.as_deref()) {
-                (Some(step_name), Some(field)) => step_field_path(wf, step_name, field)
+            let (node_name, field) = validation_error_context(error);
+            match (node_name.as_deref(), field.as_deref()) {
+                (Some(node_name), Some(field)) => step_field_path(wf, node_name, field)
                     .and_then(|path| span_map.field_span(&path))
                     .or_else(|| {
-                        step_base_path(wf, step_name).and_then(|path| span_map.nearest_span(&path))
+                        step_base_path(wf, node_name).and_then(|path| span_map.nearest_span(&path))
                     }),
-                (Some(step_name), None) => {
-                    step_base_path(wf, step_name).and_then(|path| span_map.nearest_span(&path))
+                (Some(node_name), None) => {
+                    step_base_path(wf, node_name).and_then(|path| span_map.nearest_span(&path))
                 }
                 (None, Some(field)) => span_map.field_span(field),
                 (None, None) => span_map.nearest_span(""),
@@ -783,8 +783,8 @@ fn input_reference_path(wf: &Workflow, reference: &str) -> Option<String> {
     None
 }
 
-fn invalid_rule_path(wf: &Workflow, step_name: &str, kind: InvalidRuleKind) -> Option<String> {
-    let (base, node) = step_base_path_with_node(wf, step_name)?;
+fn invalid_rule_path(wf: &Workflow, node_name: &str, kind: InvalidRuleKind) -> Option<String> {
+    let (base, node) = step_base_path_with_node(wf, node_name)?;
     let suffix = match kind {
         InvalidRuleKind::WhenFieldNotBoolean => {
             rule_index(node, |rule| matches!(rule, Rule::When { .. }))
@@ -821,10 +821,10 @@ fn invalid_rule_path(wf: &Workflow, step_name: &str, kind: InvalidRuleKind) -> O
 
 fn step_base_path_with_node<'a>(
     wf: &'a Workflow,
-    step_name: &str,
+    node_name: &str,
 ) -> Option<(String, &'a NodeDefinition)> {
     for (index, node) in wf.nodes.iter().enumerate() {
-        if node.name == step_name {
+        if node.name == node_name {
             return Some((format!("nodes[{index}]"), node));
         }
     }
@@ -835,17 +835,17 @@ fn rule_index(node: &NodeDefinition, matches_rule: impl Fn(&Rule) -> bool) -> Op
     node.rules.iter().position(matches_rule)
 }
 
-fn step_base_path(wf: &Workflow, step_name: &str) -> Option<String> {
+fn step_base_path(wf: &Workflow, node_name: &str) -> Option<String> {
     for (index, node) in wf.nodes.iter().enumerate() {
-        if node.name == step_name {
+        if node.name == node_name {
             return Some(format!("nodes[{index}]"));
         }
     }
     None
 }
 
-fn step_field_path(wf: &Workflow, step_name: &str, field: &str) -> Option<String> {
-    let base = step_base_path(wf, step_name)?;
+fn step_field_path(wf: &Workflow, node_name: &str, field: &str) -> Option<String> {
+    let base = step_base_path(wf, node_name)?;
     let suffix = match field {
         "permission" | "model" => format!("session.{field}"),
         "facets" => "session.facets".to_string(),
@@ -1062,14 +1062,14 @@ fn load_all_workflows(dir: &Path, facets_base_dir: &Path) -> Vec<NamedWorkflowDi
     results
 }
 
-/// ValidationError からステップ名とフィールド名を抽出
+/// ValidationError から node 名とフィールド名を抽出
 fn validation_error_context(e: &validation::ValidationError) -> (Option<String>, Option<String>) {
     use validation::ValidationError;
     match e {
         ValidationError::EmptyName | ValidationError::InvalidChars { .. } => {
             (None, Some("name".to_string()))
         }
-        ValidationError::EmptySteps => (None, Some("steps".to_string())),
+        ValidationError::EmptySteps => (None, Some("nodes".to_string())),
         ValidationError::DuplicateStep { name } => (Some(name.clone()), Some("name".to_string())),
         ValidationError::EmptyFanoutChildren { step } => {
             (Some(step.clone()), Some("fanout.child".to_string()))
@@ -1228,7 +1228,7 @@ impl<'a> FacetRefCheckContext<'a> {
     }
 
     /// 単一の facet 参照について usage 記録と存在チェックを行う。
-    fn check(&mut self, step_name: &str, slot: &str, kind: FacetKind, key: &str) {
+    fn check(&mut self, node_name: &str, slot: &str, kind: FacetKind, key: &str) {
         let facet_id = format!("{}/{}", kind.dir_name(), key);
 
         self.facet_usage
@@ -1236,7 +1236,7 @@ impl<'a> FacetRefCheckContext<'a> {
             .or_default()
             .push(FacetUsageEntry {
                 workflow_name: self.workflow_name.to_string(),
-                step_name: step_name.to_string(),
+                node_name: node_name.to_string(),
                 slot: slot.to_string(),
             });
 
@@ -1247,14 +1247,14 @@ impl<'a> FacetRefCheckContext<'a> {
                 DiagnosticStage::Resolve,
                 None,
                 format!(
-                    "ステップ '{}' が存在しないファセット '{}' ({}) を参照しています",
-                    step_name,
+                    "node '{}' が存在しないファセット '{}' ({}) を参照しています",
+                    node_name,
                     key,
                     kind.dir_name()
                 ),
             )
             .workflow(self.workflow_name.to_string())
-            .step(step_name.to_string())
+            .step(node_name.to_string())
             .facet(key.to_string(), kind.dir_name().to_string())
             .field(slot.to_string());
             add_diagnostic(
@@ -1266,8 +1266,8 @@ impl<'a> FacetRefCheckContext<'a> {
         }
     }
 
-    /// 1 つの step が持つ全 facet ref を一括検査する。
-    fn check_step(&mut self, step_name: &str, facet_refs: &FacetRefs<'_>) {
+    /// 1 つの node が持つ全 facet ref を一括検査する。
+    fn check_step(&mut self, node_name: &str, facet_refs: &FacetRefs<'_>) {
         let singles: &[(&str, FacetKind, Option<&str>)] = &[
             ("policy", FacetKind::Policy, facet_refs.policy),
             ("knowledge", FacetKind::Knowledge, facet_refs.knowledge),
@@ -1279,7 +1279,7 @@ impl<'a> FacetRefCheckContext<'a> {
         ];
         for (slot, kind, key_opt) in singles {
             if let Some(key) = key_opt {
-                self.check(step_name, slot, *kind, key);
+                self.check(node_name, slot, *kind, key);
             }
         }
     }
@@ -1330,13 +1330,13 @@ fn check_facet_template_references(
             continue;
         };
         let domain_workflow = workflow_definition_to_domain(workflow);
-        let allow_item = facet_usage_allows_item(workflow, &usage.step_name);
+        let allow_item = facet_usage_allows_item(workflow, &usage.node_name);
         for error in validation::validate_template_references(&domain_workflow, content, allow_item)
         {
             let span = facet_template_error_span(content, &error);
             let mut item = validation_error_to_diagnostic(workflow, &error, None)
                 .facet(facet_key.to_string(), facet_kind_name.to_string())
-                .step(usage.step_name.clone())
+                .step(usage.node_name.clone())
                 .field("content");
             item.span = span;
             add_diagnostic_to_workflow_and_facet(
@@ -1351,10 +1351,10 @@ fn check_facet_template_references(
     }
 }
 
-fn facet_usage_allows_item(workflow: &Workflow, step_name: &str) -> bool {
+fn facet_usage_allows_item(workflow: &Workflow, node_name: &str) -> bool {
     workflow.nodes.iter().any(|node| {
         node.fanout()
-            .is_some_and(|fanout| fanout.child.iter().any(|child| child == step_name))
+            .is_some_and(|fanout| fanout.child.iter().any(|child| child == node_name))
     })
 }
 
@@ -1647,7 +1647,7 @@ nodes:
             assert!(
                 report.items.iter().any(|item| item.code == code
                     && item.workflow_name.as_deref() == Some("semantic-template")
-                    && item.step_name.as_deref() == Some("step1")
+                    && item.node_name.as_deref() == Some("step1")
                     && item.facet_key.as_deref() == Some("bad")
                     && item.field.as_deref() == Some("content")
                     && item.span.is_some()),
@@ -1691,15 +1691,15 @@ nodes:
             fs::read_to_string(fixture_dir("invalid").join("WFC001_unreachable-subgraph.yml"))
                 .unwrap();
         let diagnosis = diagnose_workflow_source(&source, Some("unreachable-subgraph"));
-        for step_name in ["orphan", "target"] {
+        for node_name in ["orphan", "target"] {
             assert!(
                 diagnosis
                     .diagnostics
                     .iter()
                     .any(|item| item.code == "WFC001"
                         && item.stage == DiagnosticStage::ControlFlow
-                        && item.step_name.as_deref() == Some(step_name)),
-                "expected WFC001 for {step_name}, got: {:?}",
+                        && item.node_name.as_deref() == Some(node_name)),
+                "expected WFC001 for {node_name}, got: {:?}",
                 diagnosis.diagnostics
             );
         }
@@ -1951,6 +1951,14 @@ nodes:
     }
 
     #[test]
+    fn empty_workflow_nodes_diagnostic_uses_node_vocabulary_and_targets_nodes_field() {
+        assert_eq!(
+            validation_error_context(&validation::ValidationError::EmptySteps),
+            (None, Some("nodes".to_string()))
+        );
+    }
+
+    #[test]
     fn builtin_workflows_have_zero_validation_diagnostics() {
         for summary in builtin::list_builtin_workflows() {
             let workflow = builtin::load_builtin_workflow_resolved(&summary.name)
@@ -2032,7 +2040,7 @@ nodes:
             report.items.iter().any(|i| i.severity == Severity::Error
                 && i.message.contains("存在しない schemas Contract")
                 && i.message.contains("nonexistent-contract")
-                && i.step_name.as_deref() == Some("step1")
+                && i.node_name.as_deref() == Some("step1")
                 && i.field.as_deref() == Some("input")),
             "Expected missing-input-schema error, got: {:?}",
             report.items
@@ -2062,7 +2070,7 @@ nodes:
             report.items.iter().any(|i| i.severity == Severity::Error
                 && i.message.contains("存在しない schemas Contract")
                 && i.message.contains("nonexistent-contract")
-                && i.step_name.as_deref() == Some("step1")
+                && i.node_name.as_deref() == Some("step1")
                 && i.field.as_deref() == Some("artifact")),
             "Expected missing-artifact-schema error on step1, got: {:?}",
             report.items
@@ -2097,7 +2105,7 @@ nodes:
                 && i.message.contains("schemas.review-list")
                 && i.message
                     .contains("array.items references unknown schemas 'missing-item'")
-                && i.step_name.is_none()
+                && i.node_name.is_none()
                 && i.field.as_deref() == Some("schemas")),
             "Expected schema-scoped array.items error, got: {:?}",
             report.items
@@ -2106,7 +2114,7 @@ nodes:
             !report
                 .items
                 .iter()
-                .any(|i| i.step_name.as_deref() == Some("review-list")),
+                .any(|i| i.node_name.as_deref() == Some("review-list")),
             "array.items diagnostics must not be attached to a schema name as a step: {:?}",
             report.items
         );
@@ -2175,7 +2183,7 @@ nodes:
         assert!(
             report.items.iter().any(|i| i.severity == Severity::Error
                 && i.message.contains("存在しない schemas Contract")
-                && i.step_name.as_deref() == Some("child1")
+                && i.node_name.as_deref() == Some("child1")
                 && i.field.as_deref() == Some("input")),
             "Expected missing-input-schema error on child, got: {:?}",
             report.items
@@ -2206,7 +2214,7 @@ nodes:
             .iter()
             .filter(|i| {
                 i.severity == Severity::Error
-                    && i.step_name.as_deref() == Some("step1")
+                    && i.node_name.as_deref() == Some("step1")
                     && i.field.as_deref() == Some("rules.next")
                     && i.message.contains("存在しないnode")
             })
@@ -2246,7 +2254,7 @@ nodes:
             report.items.iter().any(|i| i.code == "WFC001"
                 && i.severity == Severity::Error
                 && i.stage == DiagnosticStage::ControlFlow
-                && i.step_name.as_deref() == Some("orphan")),
+                && i.node_name.as_deref() == Some("orphan")),
             "Expected WFC001 for orphan, got: {:?}",
             report.items
         );
@@ -2273,13 +2281,13 @@ nodes:
         save_workflow_yaml(wf_dir, &wf);
 
         let report = diagnose_all(wf_dir, wf_dir);
-        for step_name in ["step2", "step3"] {
+        for node_name in ["step2", "step3"] {
             assert!(
                 report.items.iter().any(|i| i.code == "WFC001"
                     && i.severity == Severity::Error
                     && i.stage == DiagnosticStage::ControlFlow
-                    && i.step_name.as_deref() == Some(step_name)),
-                "Expected WFC001 for {step_name}, got: {:?}",
+                    && i.node_name.as_deref() == Some(node_name)),
+                "Expected WFC001 for {node_name}, got: {:?}",
                 report.items
             );
         }
@@ -2362,7 +2370,7 @@ nodes:
         let report = diagnose_all(wf_dir, wf_dir);
         assert!(
             !report.items.iter().any(|i| i.severity == Severity::Error
-                && i.step_name.as_deref() == Some("build")
+                && i.node_name.as_deref() == Some("build")
                 && i.message.contains("ファセット参照")),
             "command node with command must not trigger facet requirement error: {:?}",
             report.items
@@ -2634,7 +2642,7 @@ nodes:
         let report = diagnose_all(wf_dir, wf_dir);
         assert!(
             !report.items.iter().any(|i| i.severity == Severity::Error
-                && i.step_name.as_deref() == Some("child1")
+                && i.node_name.as_deref() == Some("child1")
                 && i.field.as_deref() == Some("inputs")),
             "item reference inside fanout child should not be an error, got: {:?}",
             report.items

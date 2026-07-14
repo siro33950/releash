@@ -8,7 +8,7 @@ use super::ports::GcFileSystem;
 use super::request::{
     CacheGcRecord, LiveWorktreeResolution, LiveWorktreeSet, ProcessRecord, ProcessRecordStatus,
     ReviewCommentGcRecord, RuntimeProtection, SessionBlobStore, SessionGcRecord,
-    WorkflowRunGcRecord, WorkspaceStateGcRecord,
+    WorkflowExecutionGcRecord, WorkspaceStateGcRecord,
 };
 
 pub(super) struct SessionDeletionContext<'a> {
@@ -24,7 +24,7 @@ pub(super) struct SessionDeletionContext<'a> {
 pub(super) enum DeletionRevalidation {
     None,
     Session { session_id: String },
-    WorkflowRun { run_id: String },
+    WorkflowExecutionMetadata { execution_id: String },
     WorkspaceState { key: String },
     ReviewComment { key: String },
 }
@@ -33,7 +33,7 @@ pub(super) enum DeletionRevalidation {
 pub(super) struct DeletionCandidate {
     pub(super) path: PathBuf,
     pub(super) category: GcCategory,
-    pub(super) workflow_run_id: Option<String>,
+    pub(super) workflow_execution_id: Option<String>,
     pub(super) revalidation: DeletionRevalidation,
 }
 
@@ -69,30 +69,30 @@ impl DeletionPlan {
             self.candidates.push(DeletionCandidate {
                 path,
                 category,
-                workflow_run_id: None,
+                workflow_execution_id: None,
                 revalidation,
             });
         }
     }
 
-    fn add_workflow_path(&mut self, path: PathBuf, category: GcCategory, run_id: &str) {
+    fn add_workflow_path(&mut self, path: PathBuf, category: GcCategory, execution_id: &str) {
         if self.paths.insert(path.clone()) {
             self.candidates.push(DeletionCandidate {
                 path,
                 category,
-                workflow_run_id: Some(run_id.to_string()),
-                revalidation: DeletionRevalidation::WorkflowRun {
-                    run_id: run_id.to_string(),
+                workflow_execution_id: Some(execution_id.to_string()),
+                revalidation: DeletionRevalidation::WorkflowExecutionMetadata {
+                    execution_id: execution_id.to_string(),
                 },
             });
         }
     }
 
-    fn add_workflow_archive_record(&mut self, run_id: String, category: GcCategory) {
+    fn add_workflow_archive_record(&mut self, execution_id: String, category: GcCategory) {
         self.workflow_archive_records
             .entry(category)
             .or_default()
-            .insert(run_id);
+            .insert(execution_id);
     }
 }
 
@@ -158,40 +158,40 @@ fn add_session_delete(plan: &mut DeletionPlan, record: &SessionGcRecord, categor
 }
 
 pub(super) fn collect_workflow_deletions(
-    workflow_runs: &[WorkflowRunGcRecord],
+    workflow_executions: &[WorkflowExecutionGcRecord],
     live_worktrees: &LiveWorktreeResolution,
     now_secs: f64,
     retention: RetentionPolicy,
     plan: &mut DeletionPlan,
 ) {
-    for run in workflow_runs {
-        if !run.is_terminal || run.worktree_path.is_unresolved() {
+    for execution in workflow_executions {
+        if !execution.is_terminal || execution.worktree_path.is_unresolved() {
             continue;
         }
-        if !live_worktrees.contains_worktree_path(&run.worktree_path) {
-            if live_worktrees.worktree_path_may_be_unresolved(&run.worktree_path) {
+        if !live_worktrees.contains_worktree_path(&execution.worktree_path) {
+            if live_worktrees.worktree_path_may_be_unresolved(&execution.worktree_path) {
                 continue;
             }
-            add_workflow_run_delete(run, GcCategory::DeletedWorkspace, plan);
+            add_workflow_execution_delete(execution, GcCategory::DeletedWorkspace, plan);
             continue;
         }
-        if run.manual_archived_at.is_some_and(|archived_at| {
+        if execution.manual_archived_at.is_some_and(|archived_at| {
             is_expired(now_secs, archived_at, retention.archived_log_secs)
         }) {
-            add_workflow_run_delete(run, GcCategory::RecoverableExpired, plan);
+            add_workflow_execution_delete(execution, GcCategory::RecoverableExpired, plan);
         }
     }
 }
 
-fn add_workflow_run_delete(
-    run: &WorkflowRunGcRecord,
+fn add_workflow_execution_delete(
+    execution: &WorkflowExecutionGcRecord,
     category: GcCategory,
     plan: &mut DeletionPlan,
 ) {
-    for path in &run.delete_paths {
-        plan.add_workflow_path(path.clone(), category, &run.run_id);
+    for path in &execution.delete_paths {
+        plan.add_workflow_path(path.clone(), category, &execution.execution_id);
     }
-    plan.add_workflow_archive_record(run.run_id.clone(), category);
+    plan.add_workflow_archive_record(execution.execution_id.clone(), category);
 }
 
 pub(super) fn collect_workspace_keyed_deletions(

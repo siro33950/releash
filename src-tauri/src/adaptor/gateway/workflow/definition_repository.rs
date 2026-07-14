@@ -122,7 +122,7 @@ impl WorkflowDefinitionRepository for WorkflowDefinitionFileRepository {
         let mut summaries: Vec<_> = storage::list_workflows(&self.workflows_dir)
             .map_err(|e| WorkflowError::external(e.to_string()))?
             .into_iter()
-            .map(mapper::legacy_workflow_summary_to_domain)
+            .map(mapper::schema_workflow_summary_to_domain)
             .collect();
         for summary in &mut summaries {
             summary.is_running = running_names.contains(&summary.name);
@@ -134,11 +134,11 @@ impl WorkflowDefinitionRepository for WorkflowDefinitionFileRepository {
         match storage::resolve_workflow_path(&self.workflows_dir, file_stem) {
             Ok(path) => storage::load_workflow(&path, &self.facets_base_dir)
                 .map_err(|e| WorkflowError::external(e.to_string()))
-                .and_then(|workflow| mapper::legacy_workflow_to_domain(workflow).map(Some)),
+                .and_then(|workflow| mapper::schema_workflow_to_domain(workflow).map(Some)),
             Err(storage::StorageError::NotFound { .. }) => {
                 builtin::load_builtin_workflow_resolved(file_stem)
                     .map_err(|e| WorkflowError::external(e.to_string()))?
-                    .map(mapper::legacy_workflow_to_domain)
+                    .map(mapper::schema_workflow_to_domain)
                     .transpose()
             }
             Err(e) => Err(WorkflowError::external(e.to_string())),
@@ -151,8 +151,8 @@ impl WorkflowDefinitionRepository for WorkflowDefinitionFileRepository {
         original_name: Option<&str>,
     ) -> Result<(), WorkflowError> {
         let plan = validate_and_prepare_save(&self.workflows_dir, &definition.name, original_name)?;
-        let legacy = mapper::domain_workflow_to_legacy(&definition)?;
-        storage::save_workflow(&self.workflows_dir, &legacy)
+        let schema = mapper::domain_workflow_to_schema(&definition)?;
+        storage::save_workflow(&self.workflows_dir, &schema)
             .map_err(|e| WorkflowError::external(e.to_string()))?;
         remove_renamed_workflow_file_after_success(&self.workflows_dir, &plan)
     }
@@ -186,7 +186,7 @@ impl WorkflowDefinitionSourceGateway for WorkflowDefinitionFileSourceGateway {
             storage::save_workflow_source(&self.workflows_dir, &self.facets_base_dir, source)
                 .map_err(|e| WorkflowError::external(e.to_string()))?;
         remove_renamed_workflow_file_after_success(&self.workflows_dir, &plan)?;
-        mapper::legacy_workflow_to_domain(saved)
+        mapper::schema_workflow_to_domain(saved)
     }
 
     fn save_source_with_diagnostics(
@@ -203,7 +203,7 @@ impl WorkflowDefinitionSourceGateway for WorkflowDefinitionFileSourceGateway {
                 .map_err(storage_error_to_source_save_error)?;
         remove_renamed_workflow_file_after_success(&self.workflows_dir, &plan)
             .map_err(WorkflowSourceSaveError::Workflow)?;
-        mapper::legacy_workflow_to_domain(saved).map_err(WorkflowSourceSaveError::Workflow)
+        mapper::schema_workflow_to_domain(saved).map_err(WorkflowSourceSaveError::Workflow)
     }
 }
 

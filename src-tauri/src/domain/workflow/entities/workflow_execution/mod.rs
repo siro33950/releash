@@ -10,11 +10,12 @@ use std::collections::{HashMap, HashSet};
 use crate::domain::workflow::services::{history, parallel, projection, validation};
 #[cfg(test)]
 use crate::domain::workflow::value_objects::{
-    ApprovalOperations, NodeDefinition, RunId, StepOutput, WorkflowStateSnapshot, WorktreePath,
+    NodeDefinition, RuntimeApprovalOperations, RuntimeArtifact, WorkflowExecutionId,
+    WorkflowRuntimeSnapshot, WorktreePath,
 };
 use crate::domain::workflow::value_objects::{
-    StepHistoryEntry, TokenUsage, WorkflowDefinition, WorkflowExecutionState,
-    WorkflowStepFailureKind, STEP_STATE_COMPLETED, STEP_STATE_PENDING,
+    NodeExecutionFailureKind, NodeHistoryEntry, RuntimeExecutionState, TokenUsage,
+    WorkflowDefinition, NODE_STATUS_COMPLETED, NODE_STATUS_PENDING,
 };
 use crate::domain::workflow::FailureDisposition;
 #[cfg(test)]
@@ -24,45 +25,45 @@ use crate::domain::workflow::WorkflowError;
 #[derive(Debug, Clone, PartialEq)]
 #[cfg(test)]
 pub struct WorkflowExecution {
-    id: RunId,
+    id: WorkflowExecutionId,
     workflow: WorkflowDefinition,
-    state: WorkflowExecutionState,
-    current_step_index: usize,
-    step_execution_counts: HashMap<String, u32>,
-    step_history: Vec<StepHistoryEntry>,
+    state: RuntimeExecutionState,
+    current_node_index: usize,
+    node_execution_counts: HashMap<String, u32>,
+    node_history: Vec<NodeHistoryEntry>,
     worktree_path: WorktreePath,
     started_at: f64,
     updated_at: f64,
     current_session_id: Option<String>,
     current_step_token_usage: TokenUsage,
     terminal_total_token_usage: Option<TokenUsage>,
-    step_outputs: HashMap<String, StepOutput>,
+    artifacts: HashMap<String, RuntimeArtifact>,
     task: Option<String>,
-    parallel_run: Option<ParallelRunState>,
+    parallel_run: Option<FanoutRuntimeState>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ParallelRunState {
-    pub parent_step_name: String,
-    pub children: Vec<ParallelChildRun>,
+pub struct FanoutRuntimeState {
+    pub parent_node_name: String,
+    pub children: Vec<FanoutChildRuntime>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ParallelChildRun {
-    pub step_name: String,
+pub struct FanoutChildRuntime {
+    pub node_name: String,
     pub session_id: String,
-    pub state: ParallelChildState,
+    pub state: FanoutChildRuntimeState,
     pub result: Option<String>,
-    pub structured_output: Option<serde_json::Value>,
-    pub artifact_contract: Option<String>,
-    pub failure_kind: Option<WorkflowStepFailureKind>,
+    pub artifact: Option<serde_json::Value>,
+    pub contract: Option<String>,
+    pub failure_kind: Option<NodeExecutionFailureKind>,
     pub failure_disposition: Option<FailureDisposition>,
     pub token_usage: TokenUsage,
-    pub run_index: u32,
+    pub attempt: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ParallelChildState {
+pub enum FanoutChildRuntimeState {
     Running,
     Completed,
     Failed,
@@ -76,35 +77,35 @@ pub struct NodeCompletion {
     pub result: Option<String>,
     pub session_id: Option<String>,
     pub token_usage: Option<TokenUsage>,
-    pub structured_output: Option<serde_json::Value>,
-    pub artifact_contract: Option<String>,
-    pub run_index: Option<u32>,
+    pub artifact: Option<serde_json::Value>,
+    pub contract: Option<String>,
+    pub attempt: Option<u32>,
     pub completed_at: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg(test)]
-pub struct ParallelChildCompletion {
+pub struct FanoutChildCompletion {
     pub child_node_name: String,
     pub result: Option<String>,
     pub session_id: String,
     pub token_usage: Option<TokenUsage>,
-    pub structured_output: Option<serde_json::Value>,
-    pub run_index: u32,
+    pub artifact: Option<serde_json::Value>,
+    pub attempt: u32,
     pub completed_at: f64,
 }
 
 #[cfg(test)]
 impl WorkflowExecution {
     pub fn new(
-        id: RunId,
+        id: WorkflowExecutionId,
         workflow: WorkflowDefinition,
         worktree_path: WorktreePath,
         task: Option<String>,
         started_at: f64,
     ) -> Result<Self, WorkflowError> {
         validation::validate_workflow_shape(&workflow)?;
-        let first_step_name = workflow
+        let first_node_name = workflow
             .nodes
             .first()
             .map(|node| node.name.clone())
@@ -112,17 +113,17 @@ impl WorkflowExecution {
         Ok(Self {
             id,
             workflow,
-            state: WorkflowExecutionState::Running,
-            current_step_index: 0,
-            step_execution_counts: HashMap::from([(first_step_name, 1)]),
-            step_history: Vec::new(),
+            state: RuntimeExecutionState::Running,
+            current_node_index: 0,
+            node_execution_counts: HashMap::from([(first_node_name, 1)]),
+            node_history: Vec::new(),
             worktree_path,
             started_at,
             updated_at: started_at,
             current_session_id: None,
             current_step_token_usage: TokenUsage::default(),
             terminal_total_token_usage: None,
-            step_outputs: HashMap::new(),
+            artifacts: HashMap::new(),
             task,
             parallel_run: None,
         })
@@ -132,33 +133,40 @@ impl WorkflowExecution {
         self.task.as_deref()
     }
 
-    pub fn to_snapshot(&self) -> WorkflowStateSnapshot {
+    pub fn to_snapshot(&self) -> WorkflowRuntimeSnapshot {
         let total_token_usage = self
             .terminal_total_token_usage
             .clone()
-            .unwrap_or_else(|| projection::total_token_usage(&self.step_history));
+            .unwrap_or_else(|| projection::total_token_usage(&self.node_history));
 
-        let step_states = compute_step_states(
+        let node_statuses = compute_node_statuses(
             &self.workflow,
-            self.current_step_index,
+            self.current_node_index,
             &self.state,
-            &self.step_history,
+            &self.node_history,
         );
 
-        WorkflowStateSnapshot {
+        WorkflowRuntimeSnapshot {
             execution_id: self.id.to_string(),
             workflow_name: self.workflow.name.clone(),
+            worktree_path: self.worktree_path.to_string(),
+            created_from: crate::domain::workflow::ExecutionOrigin::DesktopUi,
+            request: self.task.clone().unwrap_or_default(),
+            error_reason: match &self.state {
+                RuntimeExecutionState::Failed { reason, .. } => Some(reason.clone()),
+                _ => None,
+            },
             state: self.state.clone(),
-            current_step_index: self.current_step_index,
-            current_step_name: self.current_step_name().unwrap_or_default().to_string(),
+            current_node_index: self.current_node_index,
+            current_node_name: self.current_node_name().unwrap_or_default().to_string(),
             current_session_id: self.current_session_id.clone(),
-            total_steps: self.workflow.nodes.len(),
-            step_history: self.step_history.clone(),
-            step_execution_counts: self.step_execution_counts.clone(),
+            total_nodes: self.workflow.nodes.len(),
+            node_history: self.node_history.clone(),
+            node_execution_counts: self.node_execution_counts.clone(),
             workflow_definition: self.workflow.clone(),
             total_token_usage,
-            step_states,
-            step_outputs: self.step_outputs.clone(),
+            node_statuses,
+            artifacts: self.artifacts.clone(),
             node_executions: Vec::new(),
             approval_operations: self.build_approval_operations(),
             stall_observations: Vec::new(),
@@ -172,27 +180,27 @@ impl WorkflowExecution {
         completion: NodeCompletion,
     ) -> Result<(), WorkflowError> {
         self.node_index(&completion.node_name)?;
-        let run_index = completion.run_index.unwrap_or_else(|| {
-            self.step_execution_counts
+        let attempt = completion.attempt.unwrap_or_else(|| {
+            self.node_execution_counts
                 .get(&completion.node_name)
                 .copied()
                 .unwrap_or(0)
         });
-        let entry = history::completed_step_history_entry(history::CompletedStepHistoryInput {
-            step_name: completion.node_name,
+        let entry = history::completed_node_history_entry(history::CompletedNodeHistoryInput {
+            node_name: completion.node_name,
             completed_at: completion.completed_at,
             result: completion.result,
             session_id: completion.session_id,
             token_usage: completion.token_usage.clone(),
-            structured_output: completion.structured_output,
-            run_index,
+            artifact: completion.artifact,
+            attempt,
         });
         if let Some(output) =
-            history::step_output_from_completed_history_entry(&entry, completion.artifact_contract)
+            history::artifact_from_completed_history_entry(&entry, completion.contract)
         {
-            self.step_outputs.insert(entry.step_name.clone(), output);
+            self.artifacts.insert(entry.node_name.clone(), output);
         }
-        self.step_history.push(entry);
+        self.node_history.push(entry);
         self.current_step_token_usage = TokenUsage::default();
         self.updated_at = completion.completed_at;
         Ok(())
@@ -203,18 +211,18 @@ impl WorkflowExecution {
         node_name: &str,
         timestamp: f64,
     ) -> Result<(), WorkflowError> {
-        self.current_step_index = self.node_index(node_name)?;
-        self.state = WorkflowExecutionState::WaitingApproval;
+        self.current_node_index = self.node_index(node_name)?;
+        self.state = RuntimeExecutionState::WaitingApproval;
         self.updated_at = timestamp;
         Ok(())
     }
 
-    pub fn abort_run(&mut self, timestamp: f64) {
-        self.state = WorkflowExecutionState::Aborted;
+    pub fn abort_execution(&mut self, timestamp: f64) {
+        self.state = RuntimeExecutionState::Aborted;
         if let Some(entry) = self.aborted_parallel_history_entry(timestamp) {
-            self.step_history.push(entry);
+            self.node_history.push(entry);
         } else if let Some(entry) = self.aborted_current_history_entry(timestamp) {
-            self.step_history.push(entry);
+            self.node_history.push(entry);
         }
         self.parallel_run = None;
         self.updated_at = timestamp;
@@ -226,27 +234,27 @@ impl WorkflowExecution {
         child_node_names: Vec<String>,
         timestamp: f64,
     ) -> Result<(), WorkflowError> {
-        self.current_step_index = self.node_index(parent_node_name)?;
-        if matches!(self.state, WorkflowExecutionState::WaitingApproval) {
-            self.state = WorkflowExecutionState::Running;
+        self.current_node_index = self.node_index(parent_node_name)?;
+        if matches!(self.state, RuntimeExecutionState::WaitingApproval) {
+            self.state = RuntimeExecutionState::Running;
         }
         let children = child_node_names
             .into_iter()
-            .map(|step_name| ParallelChildRun {
-                step_name,
+            .map(|node_name| FanoutChildRuntime {
+                node_name,
                 session_id: String::new(),
-                state: ParallelChildState::Running,
+                state: FanoutChildRuntimeState::Running,
                 result: None,
-                structured_output: None,
-                artifact_contract: None,
+                artifact: None,
+                contract: None,
                 failure_kind: None,
                 failure_disposition: None,
                 token_usage: TokenUsage::default(),
-                run_index: 0,
+                attempt: 0,
             })
             .collect();
-        self.parallel_run = Some(ParallelRunState {
-            parent_step_name: parent_node_name.to_string(),
+        self.parallel_run = Some(FanoutRuntimeState {
+            parent_node_name: parent_node_name.to_string(),
             children,
         });
         self.updated_at = timestamp;
@@ -260,7 +268,7 @@ impl WorkflowExecution {
         execution_count: u32,
         timestamp: f64,
     ) {
-        self.step_execution_counts
+        self.node_execution_counts
             .insert(child_node_name.to_string(), execution_count);
         let Some(parallel_run) = &mut self.parallel_run else {
             self.updated_at = timestamp;
@@ -269,70 +277,66 @@ impl WorkflowExecution {
         if let Some(child) = parallel_run
             .children
             .iter_mut()
-            .find(|child| child.step_name == child_node_name)
+            .find(|child| child.node_name == child_node_name)
         {
             child.session_id = session_id;
-            child.state = ParallelChildState::Running;
+            child.state = FanoutChildRuntimeState::Running;
             child.result = None;
             child.failure_kind = None;
             child.failure_disposition = None;
-            child.run_index = execution_count;
+            child.attempt = execution_count;
         } else {
-            parallel_run.children.push(ParallelChildRun {
-                step_name: child_node_name.to_string(),
+            parallel_run.children.push(FanoutChildRuntime {
+                node_name: child_node_name.to_string(),
                 session_id,
-                state: ParallelChildState::Running,
+                state: FanoutChildRuntimeState::Running,
                 result: None,
-                structured_output: None,
-                artifact_contract: None,
+                artifact: None,
+                contract: None,
                 failure_kind: None,
                 failure_disposition: None,
                 token_usage: TokenUsage::default(),
-                run_index: execution_count,
+                attempt: execution_count,
             });
         }
         self.updated_at = timestamp;
     }
 
-    pub fn record_parallel_child_completed(&mut self, completion: ParallelChildCompletion) {
-        let prior = self.step_outputs.get(&completion.child_node_name).cloned();
+    pub fn record_parallel_child_completed(&mut self, completion: FanoutChildCompletion) {
+        let prior = self.artifacts.get(&completion.child_node_name).cloned();
         let output_merge = parallel::merge_fanout_child_completion_output(
-            completion.structured_output.clone(),
-            prior
-                .as_ref()
-                .and_then(|output| output.structured_output.clone()),
-            prior
-                .as_ref()
-                .and_then(|output| output.artifact_contract.clone()),
+            completion.artifact.clone(),
+            prior.as_ref().and_then(|output| output.artifact.clone()),
+            prior.as_ref().and_then(|output| output.contract.clone()),
         );
 
         if let Some(parallel_run) = &mut self.parallel_run {
             if let Some(child) = parallel_run
                 .children
                 .iter_mut()
-                .find(|child| child.step_name == completion.child_node_name)
+                .find(|child| child.node_name == completion.child_node_name)
             {
-                child.state = ParallelChildState::Completed;
+                child.state = FanoutChildRuntimeState::Completed;
                 child.result = completion.result.clone();
                 child.session_id = completion.session_id.clone();
                 child.token_usage = completion.token_usage.clone().unwrap_or_default();
-                child.structured_output = output_merge.structured_output.clone();
-                child.artifact_contract = output_merge.artifact_contract.clone();
+                child.artifact = output_merge.artifact.clone();
+                child.contract = output_merge.contract.clone();
                 child.failure_kind = None;
                 child.failure_disposition = None;
-                child.run_index = completion.run_index;
+                child.attempt = completion.attempt;
             }
         }
 
-        self.step_outputs.insert(
+        self.artifacts.insert(
             completion.child_node_name.clone(),
-            StepOutput {
-                step_name: completion.child_node_name,
-                run_index: completion.run_index,
+            RuntimeArtifact {
+                node_name: completion.child_node_name,
+                attempt: completion.attempt,
                 session_id: Some(completion.session_id),
                 result: completion.result,
-                structured_output: output_merge.structured_output,
-                artifact_contract: output_merge.artifact_contract,
+                artifact: output_merge.artifact,
+                contract: output_merge.contract,
                 token_usage: completion.token_usage.clone(),
                 completed_at: completion.completed_at,
             },
@@ -347,24 +351,24 @@ impl WorkflowExecution {
         &mut self,
         node_name: &str,
         contract: &str,
-        structured_output: serde_json::Value,
+        artifact: serde_json::Value,
         result: Option<String>,
         timestamp: f64,
     ) {
-        let run_index = self
-            .step_execution_counts
+        let attempt = self
+            .node_execution_counts
             .get(node_name)
             .copied()
             .unwrap_or(0);
-        self.step_outputs.insert(
+        self.artifacts.insert(
             node_name.to_string(),
-            StepOutput {
-                step_name: node_name.to_string(),
-                run_index,
+            RuntimeArtifact {
+                node_name: node_name.to_string(),
+                attempt,
                 session_id: None,
                 result,
-                structured_output: Some(structured_output),
-                artifact_contract: Some(contract.to_string()),
+                artifact: Some(artifact),
+                contract: Some(contract.to_string()),
                 token_usage: None,
                 completed_at: timestamp,
             },
@@ -372,15 +376,15 @@ impl WorkflowExecution {
         self.updated_at = timestamp;
     }
 
-    fn current_step_name(&self) -> Option<&str> {
+    fn current_node_name(&self) -> Option<&str> {
         self.workflow
             .nodes
-            .get(self.current_step_index)
+            .get(self.current_node_index)
             .map(|node| node.name.as_str())
     }
 
     fn current_step(&self) -> Option<&NodeDefinition> {
-        self.workflow.nodes.get(self.current_step_index)
+        self.workflow.nodes.get(self.current_node_index)
     }
 
     fn node_index(&self, node_name: &str) -> Result<usize, WorkflowError> {
@@ -391,61 +395,61 @@ impl WorkflowExecution {
             .ok_or_else(|| WorkflowError::validation(format!("node not found: {node_name}")))
     }
 
-    fn build_approval_operations(&self) -> Option<ApprovalOperations> {
+    fn build_approval_operations(&self) -> Option<RuntimeApprovalOperations> {
         projection::approval_operations(&self.state, self.current_step())
     }
 
-    fn aborted_current_history_entry(&mut self, timestamp: f64) -> Option<StepHistoryEntry> {
-        let step_name = self.current_step_name()?.to_string();
-        let run_index = self.step_execution_counts.get(&step_name).copied()?;
+    fn aborted_current_history_entry(&mut self, timestamp: f64) -> Option<NodeHistoryEntry> {
+        let node_name = self.current_node_name()?.to_string();
+        let attempt = self.node_execution_counts.get(&node_name).copied()?;
         let already_in_history = self
-            .step_history
+            .node_history
             .last()
-            .is_some_and(|entry| entry.step_name == step_name && entry.run_index == run_index);
+            .is_some_and(|entry| entry.node_name == node_name && entry.attempt == attempt);
         if already_in_history {
             return None;
         }
         let token_usage = std::mem::take(&mut self.current_step_token_usage);
-        Some(history::aborted_step_history_entry(
-            step_name,
-            run_index,
+        Some(history::aborted_node_history_entry(
+            node_name,
+            attempt,
             self.current_session_id.clone(),
             token_usage,
             timestamp,
         ))
     }
 
-    fn aborted_parallel_history_entry(&self, timestamp: f64) -> Option<StepHistoryEntry> {
+    fn aborted_parallel_history_entry(&self, timestamp: f64) -> Option<NodeHistoryEntry> {
         let parallel_run = self.parallel_run.as_ref()?;
-        let parent_run_index = self
-            .step_execution_counts
-            .get(&parallel_run.parent_step_name)
+        let parent_attempt = self
+            .node_execution_counts
+            .get(&parallel_run.parent_node_name)
             .copied()
             .unwrap_or(0);
         Some(history::aborted_parallel_history_entry(
             parallel_run,
-            &self.step_outputs,
-            parent_run_index,
+            &self.artifacts,
+            parent_attempt,
             timestamp,
         ))
     }
 }
 
-impl ParallelChildState {
+impl FanoutChildRuntimeState {
     pub fn is_completed(self) -> bool {
         matches!(self, Self::Completed)
     }
 }
 
-pub fn compute_step_states(
+pub fn compute_node_statuses(
     workflow: &WorkflowDefinition,
-    current_step_index: usize,
-    state: &WorkflowExecutionState,
-    step_history: &[StepHistoryEntry],
+    current_node_index: usize,
+    state: &RuntimeExecutionState,
+    node_history: &[NodeHistoryEntry],
 ) -> HashMap<String, String> {
-    let completed: HashSet<&str> = step_history
+    let completed: HashSet<&str> = node_history
         .iter()
-        .map(|entry| entry.step_name.as_str())
+        .map(|entry| entry.node_name.as_str())
         .collect();
     workflow
         .nodes
@@ -453,16 +457,16 @@ pub fn compute_step_states(
         .enumerate()
         .map(|(index, node)| {
             let in_history = completed.contains(node.name.as_str());
-            let node_state = if index == current_step_index {
-                if matches!(state, WorkflowExecutionState::Failed { .. }) && in_history {
-                    STEP_STATE_COMPLETED
+            let node_state = if index == current_node_index {
+                if matches!(state, RuntimeExecutionState::Failed { .. }) && in_history {
+                    NODE_STATUS_COMPLETED
                 } else {
                     state.as_str()
                 }
             } else if in_history {
-                STEP_STATE_COMPLETED
+                NODE_STATUS_COMPLETED
             } else {
-                STEP_STATE_PENDING
+                NODE_STATUS_PENDING
             };
             (node.name.clone(), node_state.to_string())
         })
@@ -476,8 +480,8 @@ mod aggregate_tests {
         CommandSpec, FacetRefs, FanoutSpec, NodeKind, SessionGate, SessionSpec, WorkflowDefinition,
     };
 
-    fn run_id() -> RunId {
-        RunId::new("00000000-0000-4000-8000-000000000001").unwrap()
+    fn execution_id() -> WorkflowExecutionId {
+        WorkflowExecutionId::new("00000000-0000-4000-8000-000000000001").unwrap()
     }
 
     fn worktree() -> WorktreePath {
@@ -536,17 +540,19 @@ mod aggregate_tests {
     #[test]
     fn new_rejects_empty_and_accepts_command_workflows() {
         let empty = workflow(Vec::new());
-        assert!(WorkflowExecution::new(run_id(), empty, worktree(), None, 1.0).is_err());
+        assert!(WorkflowExecution::new(execution_id(), empty, worktree(), None, 1.0).is_err());
 
         let with_command = workflow(vec![node("script", TestNodeKind::Command)]);
-        assert!(WorkflowExecution::new(run_id(), with_command, worktree(), None, 1.0).is_ok());
+        assert!(
+            WorkflowExecution::new(execution_id(), with_command, worktree(), None, 1.0).is_ok()
+        );
     }
 
     #[test]
-    fn snapshot_computes_step_states_and_approval_operations() {
+    fn snapshot_computes_node_statuses_and_approval_operations() {
         let approval = node("approve", TestNodeKind::ApprovalSession);
         let mut exec = WorkflowExecution::new(
-            run_id(),
+            execution_id(),
             workflow(vec![node("plan", TestNodeKind::Session), approval]),
             worktree(),
             Some("task".to_string()),
@@ -561,17 +567,17 @@ mod aggregate_tests {
                 input_tokens: 2,
                 output_tokens: 3,
             }),
-            structured_output: None,
-            artifact_contract: None,
-            run_index: Some(1),
+            artifact: None,
+            contract: None,
+            attempt: Some(1),
             completed_at: 2.0,
         })
         .unwrap();
         exec.request_approval("approve", 3.0).unwrap();
 
         let snapshot = exec.to_snapshot();
-        assert_eq!(snapshot.step_states["plan"], "completed");
-        assert_eq!(snapshot.step_states["approve"], "waiting_approval");
+        assert_eq!(snapshot.node_statuses["plan"], "completed");
+        assert_eq!(snapshot.node_statuses["approve"], "waiting_approval");
         assert_eq!(snapshot.total_token_usage.input_tokens, 2);
         assert!(snapshot.approval_operations.is_some());
         assert_eq!(exec.task(), Some("task"));
@@ -580,25 +586,25 @@ mod aggregate_tests {
     #[test]
     fn snapshot_omits_approval_operations_for_non_approval_gate_waiting_state() {
         let mut exec = WorkflowExecution::new(
-            run_id(),
+            execution_id(),
             workflow(vec![node("implement", TestNodeKind::Session)]),
             worktree(),
             None,
             1.0,
         )
         .unwrap();
-        exec.state = WorkflowExecutionState::WaitingApproval;
+        exec.state = RuntimeExecutionState::WaitingApproval;
 
         let snapshot = exec.to_snapshot();
 
-        assert_eq!(snapshot.step_states["implement"], "waiting_approval");
+        assert_eq!(snapshot.node_statuses["implement"], "waiting_approval");
         assert!(snapshot.approval_operations.is_none());
     }
 
     #[test]
     fn abort_parallel_records_parent_with_child_snapshots() {
         let mut exec = WorkflowExecution::new(
-            run_id(),
+            execution_id(),
             workflow(vec![
                 node("parallel-review", TestNodeKind::Fanout),
                 node("a", TestNodeKind::Session),
@@ -617,29 +623,29 @@ mod aggregate_tests {
         .unwrap();
         exec.record_parallel_child_started("a", "session-a".to_string(), 1, 1.2);
         exec.record_parallel_child_started("b", "session-b".to_string(), 1, 1.2);
-        exec.record_parallel_child_completed(ParallelChildCompletion {
+        exec.record_parallel_child_completed(FanoutChildCompletion {
             child_node_name: "a".to_string(),
             result: Some("LGTM".to_string()),
             session_id: "session-a".to_string(),
             token_usage: None,
-            structured_output: None,
-            run_index: 1,
+            artifact: None,
+            attempt: 1,
             completed_at: 1.5,
         });
 
-        exec.abort_run(2.0);
+        exec.abort_execution(2.0);
         let snapshot = exec.to_snapshot();
-        assert_eq!(snapshot.state, WorkflowExecutionState::Aborted);
+        assert_eq!(snapshot.state, RuntimeExecutionState::Aborted);
         assert!(snapshot.node_executions.is_empty());
-        let parent = snapshot.step_history.first().unwrap();
-        assert_eq!(parent.step_name, "parallel-review");
+        let parent = snapshot.node_history.first().unwrap();
+        assert_eq!(parent.node_name, "parallel-review");
         assert_eq!(parent.state, "aborted");
-        let children = parent.child_outputs.as_ref().unwrap();
+        let children = parent.fanout_children.as_ref().unwrap();
         assert_eq!(children.len(), 2);
         assert_eq!(
             children
                 .iter()
-                .find(|child| child.step_name == "a")
+                .find(|child| child.node_name == "a")
                 .unwrap()
                 .state,
             "completed"
@@ -647,7 +653,7 @@ mod aggregate_tests {
         assert_eq!(
             children
                 .iter()
-                .find(|child| child.step_name == "b")
+                .find(|child| child.node_name == "b")
                 .unwrap()
                 .state,
             "aborted"
@@ -657,7 +663,7 @@ mod aggregate_tests {
     #[test]
     fn submit_output_updates_step_output_without_workflow_variable_side_effects() {
         let mut exec = WorkflowExecution::new(
-            run_id(),
+            execution_id(),
             workflow(vec![node("spec", TestNodeKind::Session)]),
             worktree(),
             None,
@@ -674,7 +680,7 @@ mod aggregate_tests {
 
         let snapshot = exec.to_snapshot();
         assert_eq!(
-            snapshot.step_outputs["spec"].artifact_contract.as_deref(),
+            snapshot.artifacts["spec"].contract.as_deref(),
             Some("spec-directory")
         );
     }

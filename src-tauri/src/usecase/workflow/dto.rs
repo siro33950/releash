@@ -130,7 +130,7 @@ pub(crate) struct FacetSummaryDto {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum RunStatusDto {
+pub(crate) enum ExecutionStatusDto {
     Running,
     WaitingApproval,
     Completed,
@@ -141,31 +141,37 @@ pub(crate) enum RunStatusDto {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum TriggerSourceDto {
+pub(crate) enum ExecutionOriginDto {
     DesktopUi,
-    Remote,
     Cli,
     Agent,
+    Api,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TokenUsageDto {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct WorkflowRunSummaryDto {
-    pub run_id: String,
+pub(crate) struct WorkflowExecutionSummaryDto {
+    pub execution_id: String,
     pub workflow_name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task: Option<String>,
-    pub status: RunStatusDto,
+    pub status: ExecutionStatusDto,
     pub worktree_path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub current_node_name: Option<String>,
-    pub trigger_source: TriggerSourceDto,
+    pub current_node: Option<String>,
+    pub created_from: ExecutionOriginDto,
     pub started_at: f64,
     pub updated_at: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_reason: Option<String>,
+    pub total_token_usage: TokenUsageDto,
 }
 
 pub(crate) fn workflow_to_dto(definition: &domain::WorkflowDefinition) -> WorkflowDto {
@@ -205,19 +211,24 @@ pub(crate) fn facet_summary_to_dto(summary: domain::FacetSummary) -> FacetSummar
     }
 }
 
-pub(crate) fn run_summary_to_dto(summary: domain::WorkflowRunSummary) -> WorkflowRunSummaryDto {
-    WorkflowRunSummaryDto {
-        run_id: summary.run_id,
+pub(crate) fn workflow_execution_summary_to_dto(
+    summary: domain::WorkflowExecutionSummary,
+) -> WorkflowExecutionSummaryDto {
+    WorkflowExecutionSummaryDto {
+        execution_id: summary.execution_id,
         workflow_name: summary.workflow_name,
-        task: summary.task,
-        status: run_status_to_dto(summary.status),
+        status: execution_status_to_dto(summary.status),
         worktree_path: summary.worktree_path,
-        current_node_name: summary.current_node_name,
-        trigger_source: trigger_source_to_dto(summary.trigger_source),
+        current_node: summary.current_node,
+        created_from: execution_origin_to_dto(summary.created_from),
         started_at: summary.started_at,
         updated_at: summary.updated_at,
         completed_at: summary.completed_at,
         error_reason: summary.error_reason,
+        total_token_usage: TokenUsageDto {
+            input_tokens: summary.total_token_usage.input_tokens,
+            output_tokens: summary.total_token_usage.output_tokens,
+        },
     }
 }
 
@@ -306,23 +317,23 @@ fn rule_to_dto(rule: &domain::Rule) -> RuleDto {
     }
 }
 
-fn run_status_to_dto(status: domain::RunStatus) -> RunStatusDto {
+fn execution_status_to_dto(status: domain::ExecutionStatus) -> ExecutionStatusDto {
     match status {
-        domain::RunStatus::Running => RunStatusDto::Running,
-        domain::RunStatus::WaitingApproval => RunStatusDto::WaitingApproval,
-        domain::RunStatus::Completed => RunStatusDto::Completed,
-        domain::RunStatus::Failed => RunStatusDto::Failed,
-        domain::RunStatus::Aborted => RunStatusDto::Aborted,
-        domain::RunStatus::Interrupted => RunStatusDto::Interrupted,
+        domain::ExecutionStatus::Running => ExecutionStatusDto::Running,
+        domain::ExecutionStatus::WaitingApproval => ExecutionStatusDto::WaitingApproval,
+        domain::ExecutionStatus::Completed => ExecutionStatusDto::Completed,
+        domain::ExecutionStatus::Failed => ExecutionStatusDto::Failed,
+        domain::ExecutionStatus::Aborted => ExecutionStatusDto::Aborted,
+        domain::ExecutionStatus::Interrupted => ExecutionStatusDto::Interrupted,
     }
 }
 
-fn trigger_source_to_dto(source: domain::TriggerSource) -> TriggerSourceDto {
+fn execution_origin_to_dto(source: domain::ExecutionOrigin) -> ExecutionOriginDto {
     match source {
-        domain::TriggerSource::DesktopUi => TriggerSourceDto::DesktopUi,
-        domain::TriggerSource::Remote => TriggerSourceDto::Remote,
-        domain::TriggerSource::Cli => TriggerSourceDto::Cli,
-        domain::TriggerSource::Agent => TriggerSourceDto::Agent,
+        domain::ExecutionOrigin::DesktopUi => ExecutionOriginDto::DesktopUi,
+        domain::ExecutionOrigin::Api => ExecutionOriginDto::Api,
+        domain::ExecutionOrigin::Cli => ExecutionOriginDto::Cli,
+        domain::ExecutionOrigin::Agent => ExecutionOriginDto::Agent,
     }
 }
 
@@ -331,7 +342,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn workflow_dto_serializes_like_existing_wire_shape() {
+    fn workflow_dto_serializes_like_canonical_wire_shape() {
         let workflow = WorkflowDto {
             name: "wf".to_string(),
             description: "desc".to_string(),
@@ -428,31 +439,38 @@ mod tests {
     }
 
     #[test]
-    fn run_summary_dto_serializes_like_existing_wire_shape() {
-        let summary = WorkflowRunSummaryDto {
-            run_id: "00000000-0000-4000-8000-000000000001".to_string(),
+    fn execution_summary_dto_serializes_like_canonical_wire_shape() {
+        let summary = WorkflowExecutionSummaryDto {
+            execution_id: "00000000-0000-4000-8000-000000000001".to_string(),
             workflow_name: "wf".to_string(),
-            task: None,
-            status: RunStatusDto::Running,
+            status: ExecutionStatusDto::Running,
             worktree_path: "/repo".to_string(),
-            current_node_name: None,
-            trigger_source: TriggerSourceDto::DesktopUi,
+            current_node: None,
+            created_from: ExecutionOriginDto::DesktopUi,
             started_at: 1.0,
             updated_at: 2.0,
             completed_at: None,
             error_reason: None,
+            total_token_usage: TokenUsageDto {
+                input_tokens: 13,
+                output_tokens: 8,
+            },
         };
 
         assert_eq!(
             serde_json::to_value(summary).unwrap(),
             serde_json::json!({
-                "runId": "00000000-0000-4000-8000-000000000001",
+                "executionId": "00000000-0000-4000-8000-000000000001",
                 "workflowName": "wf",
                 "status": "running",
                 "worktreePath": "/repo",
-                "triggerSource": "desktop_ui",
+                "createdFrom": "desktop_ui",
                 "startedAt": 1.0,
-                "updatedAt": 2.0
+                "updatedAt": 2.0,
+                "totalTokenUsage": {
+                    "inputTokens": 13,
+                    "outputTokens": 8
+                }
             })
         );
     }

@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
-use crate::domain::workflow::{WorkflowError, WorkflowStateSnapshot};
+use crate::domain::workflow::{WorkflowError, WorkflowRuntimeSnapshot};
 
 use super::approval_chat::WorkflowApprovalChatUsecase;
 #[cfg(test)]
-use super::command::ResolvedStartRunCommand;
+use super::command::ResolvedStartExecutionCommand;
 use super::command::{
-    AbortRunCommand, ApprovalCommand, StartRunCommand, SubmitOutputCommand,
-    WorkflowAbortRunUsecase, WorkflowApprovalUsecase, WorkflowPendingRuntimeCommandUsecase,
-    WorkflowRuntimeCommandPreflight, WorkflowStartRunUsecase, WorkflowSubmitOutputUsecase,
+    AbortExecutionCommand, ApprovalCommand, StartExecutionCommand, SubmitOutputCommand,
+    WorkflowAbortExecutionUsecase, WorkflowApprovalUsecase, WorkflowPendingRuntimeCommandUsecase,
+    WorkflowRuntimeCommandPreflight, WorkflowStartExecutionUsecase, WorkflowSubmitOutputUsecase,
 };
 use super::ports::{
     ApprovalChatTarget, PendingRuntimeCommand, PendingRuntimeCommandOutcome,
@@ -18,9 +18,9 @@ use super::ports::{
 };
 #[cfg(test)]
 use super::ports::{
-    PendingRuntimeCommandPayload, WorkflowAbortRunGateway, WorkflowApprovalChatGateway,
+    PendingRuntimeCommandPayload, WorkflowAbortExecutionGateway, WorkflowApprovalChatGateway,
     WorkflowApprovalGateway, WorkflowPendingRuntimeCommandGateway, WorkflowRuntimeShutdownGateway,
-    WorkflowRuntimeStateGateway, WorkflowStartRunGateway, WorkflowSubmitOutputGateway,
+    WorkflowRuntimeStateGateway, WorkflowStartExecutionGateway, WorkflowSubmitOutputGateway,
     WorkflowTurnCompleteCommand, WorkflowTurnCompleteGateway, WorkflowTurnTokenUsage,
 };
 use super::turn_complete::WorkflowTurnCompleteUsecase;
@@ -29,8 +29,8 @@ use super::turn_complete::WorkflowTurnCompleteUsecase;
 pub struct WorkflowRuntimeUsecase {
     runtime: Arc<dyn WorkflowRuntimeCommandGateway>,
     stall_observed: Arc<dyn WorkflowStallObservedGateway>,
-    start_run: WorkflowStartRunUsecase,
-    abort_run: WorkflowAbortRunUsecase,
+    start_execution: WorkflowStartExecutionUsecase,
+    abort_execution: WorkflowAbortExecutionUsecase,
     approval: WorkflowApprovalUsecase,
     submit_output: WorkflowSubmitOutputUsecase,
     pending_command: WorkflowPendingRuntimeCommandUsecase,
@@ -44,8 +44,8 @@ impl WorkflowRuntimeUsecase {
         Self {
             runtime: runtime.clone(),
             stall_observed: runtime.clone(),
-            start_run: WorkflowStartRunUsecase::new(runtime.clone()),
-            abort_run: WorkflowAbortRunUsecase::new(runtime.clone()),
+            start_execution: WorkflowStartExecutionUsecase::new(runtime.clone()),
+            abort_execution: WorkflowAbortExecutionUsecase::new(runtime.clone()),
             approval: WorkflowApprovalUsecase::new(runtime.clone()),
             submit_output: WorkflowSubmitOutputUsecase::new(runtime.clone()),
             pending_command: WorkflowPendingRuntimeCommandUsecase::new(runtime.clone()),
@@ -55,12 +55,18 @@ impl WorkflowRuntimeUsecase {
         }
     }
 
-    pub async fn start_run(&self, command: StartRunCommand) -> Result<String, WorkflowError> {
-        self.start_run.execute(command).await
+    pub async fn start_execution(
+        &self,
+        command: StartExecutionCommand,
+    ) -> Result<String, WorkflowError> {
+        self.start_execution.execute(command).await
     }
 
-    pub async fn abort_run(&self, command: AbortRunCommand) -> Result<(), WorkflowError> {
-        self.abort_run.execute(command).await
+    pub async fn abort_execution(
+        &self,
+        command: AbortExecutionCommand,
+    ) -> Result<(), WorkflowError> {
+        self.abort_execution.execute(command).await
     }
 
     pub async fn resolve_approval(&self, command: ApprovalCommand) -> Result<(), WorkflowError> {
@@ -118,18 +124,19 @@ impl WorkflowRuntimeUsecase {
         self.turn_complete.is_session_running(chat_session_id).await
     }
 
-    pub async fn get_state_by_run_id(
+    #[cfg(test)]
+    pub async fn get_state_by_execution_id(
         &self,
-        run_id: &str,
-    ) -> Result<Option<WorkflowStateSnapshot>, WorkflowError> {
-        self.preflight.validate_run_lookup(run_id)?;
-        self.runtime.get_state_by_run_id(run_id).await
+        execution_id: &str,
+    ) -> Result<Option<WorkflowRuntimeSnapshot>, WorkflowError> {
+        self.preflight.validate_execution_lookup(execution_id)?;
+        self.runtime.get_state_by_execution_id(execution_id).await
     }
 
     pub async fn get_state_by_worktree(
         &self,
         worktree_path: &str,
-    ) -> Result<Option<WorkflowStateSnapshot>, WorkflowError> {
+    ) -> Result<Option<WorkflowRuntimeSnapshot>, WorkflowError> {
         self.preflight.validate_worktree_lookup(worktree_path)?;
         self.runtime.get_state_by_worktree(worktree_path).await
     }
@@ -140,11 +147,11 @@ impl WorkflowRuntimeUsecase {
 
     pub async fn prepare_approval_chat(
         &self,
-        run_id: &str,
+        execution_id: &str,
         content: &str,
     ) -> Result<ApprovalChatTarget, WorkflowError> {
         self.approval_chat
-            .prepare_approval_chat(run_id, content)
+            .prepare_approval_chat(execution_id, content)
             .await
     }
 }
@@ -152,7 +159,7 @@ impl WorkflowRuntimeUsecase {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::workflow::{TriggerSource, WorkflowDefinition};
+    use crate::domain::workflow::{ExecutionOrigin, WorkflowDefinition};
     use std::sync::Mutex;
 
     #[derive(Default)]
@@ -162,8 +169,8 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl WorkflowStartRunGateway for FakeRuntimeGateway {
-        async fn resolve_start_run_worktree(
+    impl WorkflowStartExecutionGateway for FakeRuntimeGateway {
+        async fn resolve_start_execution_worktree(
             &self,
             worktree_path: String,
         ) -> Result<String, WorkflowError> {
@@ -171,7 +178,7 @@ mod tests {
             Ok(worktree_path)
         }
 
-        async fn resolve_start_run_workflow(
+        async fn resolve_start_execution_workflow(
             &self,
             _workflow_file_stem: &str,
         ) -> Result<WorkflowDefinition, WorkflowError> {
@@ -179,9 +186,9 @@ mod tests {
             Ok(WorkflowDefinition::default())
         }
 
-        async fn start_resolved_run(
+        async fn start_resolved_execution(
             &self,
-            _command: ResolvedStartRunCommand,
+            _command: ResolvedStartExecutionCommand,
         ) -> Result<String, WorkflowError> {
             self.calls.lock().unwrap().push("start");
             Ok("00000000-0000-0000-0000-000000000001".to_string())
@@ -189,8 +196,11 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl WorkflowAbortRunGateway for FakeRuntimeGateway {
-        async fn abort_run(&self, _command: AbortRunCommand) -> Result<(), WorkflowError> {
+    impl WorkflowAbortExecutionGateway for FakeRuntimeGateway {
+        async fn abort_execution(
+            &self,
+            _command: AbortExecutionCommand,
+        ) -> Result<(), WorkflowError> {
             self.calls.lock().unwrap().push("abort");
             Ok(())
         }
@@ -264,10 +274,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl WorkflowRuntimeStateGateway for FakeRuntimeGateway {
-        async fn get_state_by_run_id(
+        async fn get_state_by_execution_id(
             &self,
             _run_id: &str,
-        ) -> Result<Option<WorkflowStateSnapshot>, WorkflowError> {
+        ) -> Result<Option<WorkflowRuntimeSnapshot>, WorkflowError> {
             self.calls.lock().unwrap().push("state_by_run");
             Ok(None)
         }
@@ -275,7 +285,7 @@ mod tests {
         async fn get_state_by_worktree(
             &self,
             _worktree_path: &str,
-        ) -> Result<Option<WorkflowStateSnapshot>, WorkflowError> {
+        ) -> Result<Option<WorkflowRuntimeSnapshot>, WorkflowError> {
             self.calls.lock().unwrap().push("state_by_worktree");
             Ok(None)
         }
@@ -320,25 +330,25 @@ mod tests {
         let usecase = WorkflowRuntimeUsecase::new(gateway.clone());
 
         let _ = usecase
-            .start_run(StartRunCommand {
+            .start_execution(StartExecutionCommand {
                 workflow_file_stem: "wf".to_string(),
                 worktree_path: "/tmp/wt".to_string(),
-                task: None,
-                trigger_source: TriggerSource::DesktopUi,
+                request: None,
+                created_from: ExecutionOrigin::DesktopUi,
                 permission_mode: "ask".to_string(),
             })
             .await
             .unwrap();
         usecase
-            .abort_run(AbortRunCommand {
-                run_id: "00000000-0000-0000-0000-000000000001".to_string(),
+            .abort_execution(AbortExecutionCommand {
+                execution_id: "00000000-0000-0000-0000-000000000001".to_string(),
                 expected_node_name: None,
             })
             .await
             .unwrap();
         usecase
             .resolve_approval(ApprovalCommand {
-                run_id: "00000000-0000-0000-0000-000000000001".to_string(),
+                execution_id: "00000000-0000-0000-0000-000000000001".to_string(),
                 node_name: "review".to_string(),
                 node_execution_id: Some("node-execution-1".to_string()),
                 comment: None,
@@ -347,17 +357,17 @@ mod tests {
             .unwrap();
         usecase
             .submit_output(SubmitOutputCommand {
-                run_id: "00000000-0000-0000-0000-000000000001".to_string(),
-                step_name: "review".to_string(),
+                execution_id: "00000000-0000-0000-0000-000000000001".to_string(),
+                node_name: "review".to_string(),
                 node_execution_id: Some("node-execution-1".to_string()),
                 contract: "review-fix-tasks".to_string(),
-                structured_output: serde_json::json!({}),
+                artifact: serde_json::json!({}),
             })
             .await
             .unwrap();
         let pending = usecase
             .dispatch_pending_command(PendingRuntimeCommand {
-                run_id: "00000000-0000-0000-0000-000000000001".to_string(),
+                execution_id: "00000000-0000-0000-0000-000000000001".to_string(),
                 request_id: "00000000-0000-0000-0000-000000000002".to_string(),
                 requested_at: 1.0,
                 payload: PendingRuntimeCommandPayload::Abort { node_name: None },
@@ -379,7 +389,7 @@ mod tests {
             .await
             .unwrap();
         let _ = usecase
-            .get_state_by_run_id("00000000-0000-0000-0000-000000000001")
+            .get_state_by_execution_id("00000000-0000-0000-0000-000000000001")
             .await
             .unwrap();
         let _ = usecase.get_state_by_worktree("/tmp/wt").await.unwrap();
@@ -518,11 +528,11 @@ mod tests {
         let usecase = WorkflowRuntimeUsecase::new(gateway.clone());
 
         let err = usecase
-            .start_run(StartRunCommand {
+            .start_execution(StartExecutionCommand {
                 workflow_file_stem: "bad name!".to_string(),
                 worktree_path: "/tmp/wt".to_string(),
-                task: None,
-                trigger_source: TriggerSource::DesktopUi,
+                request: None,
+                created_from: ExecutionOrigin::DesktopUi,
                 permission_mode: "ask".to_string(),
             })
             .await
@@ -538,8 +548,8 @@ mod tests {
         let usecase = WorkflowRuntimeUsecase::new(gateway.clone());
 
         let abort_err = usecase
-            .abort_run(AbortRunCommand {
-                run_id: "not-a-uuid".to_string(),
+            .abort_execution(AbortExecutionCommand {
+                execution_id: "not-a-uuid".to_string(),
                 expected_node_name: None,
             })
             .await
@@ -548,7 +558,7 @@ mod tests {
 
         let approval_err = usecase
             .resolve_approval(ApprovalCommand {
-                run_id: "00000000-0000-0000-0000-000000000001".to_string(),
+                execution_id: "00000000-0000-0000-0000-000000000001".to_string(),
                 node_name: " ".to_string(),
                 node_execution_id: None,
                 comment: None,
@@ -559,11 +569,11 @@ mod tests {
 
         let submit_err = usecase
             .submit_output(SubmitOutputCommand {
-                run_id: "00000000-0000-0000-0000-000000000001".to_string(),
-                step_name: "review".to_string(),
+                execution_id: "00000000-0000-0000-0000-000000000001".to_string(),
+                node_name: "review".to_string(),
                 node_execution_id: None,
                 contract: " ".to_string(),
-                structured_output: serde_json::json!({}),
+                artifact: serde_json::json!({}),
             })
             .await
             .unwrap_err();
@@ -579,7 +589,7 @@ mod tests {
 
         let outcome = usecase
             .dispatch_pending_command(PendingRuntimeCommand {
-                run_id: "not-a-uuid".to_string(),
+                execution_id: "not-a-uuid".to_string(),
                 request_id: "00000000-0000-0000-0000-000000000002".to_string(),
                 requested_at: 1.0,
                 payload: PendingRuntimeCommandPayload::Abort { node_name: None },
@@ -589,7 +599,7 @@ mod tests {
         assert!(matches!(
             outcome,
             PendingRuntimeCommandOutcome::RejectedFinal(reason)
-                if reason.contains("invalid run_id")
+                if reason.contains("invalid execution_id")
         ));
         assert!(gateway.calls.lock().unwrap().is_empty());
     }
@@ -599,7 +609,10 @@ mod tests {
         let gateway = Arc::new(FakeRuntimeGateway::default());
         let usecase = WorkflowRuntimeUsecase::new(gateway.clone());
 
-        let run_err = usecase.get_state_by_run_id("not-a-uuid").await.unwrap_err();
+        let run_err = usecase
+            .get_state_by_execution_id("not-a-uuid")
+            .await
+            .unwrap_err();
         assert!(matches!(run_err, WorkflowError::Validation(_)));
 
         let worktree_err = usecase.get_state_by_worktree(" ").await.unwrap_err();

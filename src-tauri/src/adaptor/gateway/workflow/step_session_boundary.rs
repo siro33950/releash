@@ -6,7 +6,7 @@ use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::state::WorkflowState;
 use crate::adaptor::gateway::workflow::step_settings::WorkflowDefaults;
 use crate::domain::agent_session::PermissionMode;
-use crate::domain::workflow::WorkflowStepContext;
+use crate::domain::workflow::WorkflowNodeContext;
 use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::runtime::usecase::AgentRuntimeError;
 use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
@@ -68,7 +68,7 @@ pub(crate) trait StepSessionDeps: Send + Sync {
         step_model: Option<String>,
         step_permission: Option<String>,
         workflow_defaults: WorkflowDefaults,
-        workflow_step_context: WorkflowStepContext,
+        workflow_node_context: WorkflowNodeContext,
         kind_context: workflow_runtime_session::StepRuntimeKindContext,
     ) -> Result<StepSessionInfo, WorkflowEngineError>;
 
@@ -129,7 +129,7 @@ impl<'a, R: tauri::Runtime> StepSessionDeps for RealStepSessionDeps<'a, R> {
         step_model: Option<String>,
         step_permission: Option<String>,
         workflow_defaults: WorkflowDefaults,
-        workflow_step_context: WorkflowStepContext,
+        workflow_node_context: WorkflowNodeContext,
         kind_context: workflow_runtime_session::StepRuntimeKindContext,
     ) -> Result<StepSessionInfo, WorkflowEngineError> {
         let data_dir = crate::infrastructure::platform::app_data_dir::resolve_data_dir(self.app)
@@ -142,7 +142,7 @@ impl<'a, R: tauri::Runtime> StepSessionDeps for RealStepSessionDeps<'a, R> {
             step_model,
             step_permission,
             &workflow_defaults,
-            workflow_step_context,
+            workflow_node_context,
             kind_context,
         )?;
         Ok(StepSessionInfo {

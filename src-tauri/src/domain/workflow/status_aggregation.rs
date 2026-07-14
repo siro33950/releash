@@ -70,17 +70,6 @@ impl StepProgress {
             _ => Self::Queued,
         }
     }
-
-    pub(crate) fn representative(self) -> RepresentativeStatus {
-        match self {
-            Self::Failed => RepresentativeStatus::Failed,
-            Self::WaitingApproval => RepresentativeStatus::Waiting,
-            Self::Running => RepresentativeStatus::Running,
-            Self::Aborted => RepresentativeStatus::Aborted,
-            Self::Completed => RepresentativeStatus::Completed,
-            Self::Queued => RepresentativeStatus::Queued,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

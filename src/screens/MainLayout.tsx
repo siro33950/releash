@@ -185,7 +185,7 @@ function WorktreeContent({
 		centerSelectionRequest?.worktreePath === rootPath
 			? centerSelectionRequest
 			: null;
-	const showWorkflow = scopedCenterSelection?.kind === "workflowStep";
+	const showWorkflow = scopedCenterSelection?.kind === "workflowNode";
 	const handleNewSessionCreated = useCallback(
 		(sessionId: string) => {
 			onCenterSelectionResolved?.({

@@ -34,7 +34,7 @@ export interface LegacyChatSession {
 	planMode?: boolean;
 	permissionProfileId?: string | null;
 	backendId?: string | null;
-	workflowStepSession?: boolean;
+	workflowNodeSession?: boolean;
 }
 
 const INITIAL_SESSION_PAGE_LIMIT = 50;
@@ -210,7 +210,7 @@ interface RawGetSessionResponse {
 	pendingPermissionRequest?: PermissionRequest | null;
 	pendingPermissionStateRevision?: number | null;
 	latestTokenUsage?: TokenUsage | null;
-	workflowStepSession?: boolean;
+	workflowNodeSession?: boolean;
 	turnPhase: TurnPhase;
 	initialPage?: {
 		nextCursor?: string | null;
@@ -236,7 +236,7 @@ function convertRawGetSessionResponse(
 			planMode: raw.planMode,
 			permissionProfileId: raw.permissionProfileId,
 			backendId: raw.backendId,
-			workflowStepSession: raw.workflowStepSession,
+			workflowNodeSession: raw.workflowNodeSession,
 		}),
 		turnPhase: raw.turnPhase,
 		selectedModel: raw.selectedModel,
@@ -350,7 +350,7 @@ export async function setSessionTitle(
 }
 
 export interface RestoreSessionResponse {
-	restoredWorkflowStep: boolean;
+	restoredWorkflowNode: boolean;
 }
 
 export async function restoreSession(
@@ -440,7 +440,7 @@ export async function sendAgentMessage(
 }
 
 export async function sendWorkflowApprovalChatMessage(
-	runId: string,
+	executionId: string,
 	content: string,
 	permissionMode: PermissionMode,
 	planMode: boolean,
@@ -450,7 +450,7 @@ export async function sendWorkflowApprovalChatMessage(
 	const raw = await invoke<RawSendMessageResponse>(
 		"send_workflow_approval_chat_message",
 		{
-			runId,
+			executionId,
 			content,
 			permissionMode,
 			planMode,

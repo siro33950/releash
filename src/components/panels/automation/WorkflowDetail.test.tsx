@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import type { DiagnosticReport, Workflow } from "@/types/workflow";
+import type { DiagnosticReport, WorkflowDefinition } from "@/types/workflow";
 import {
 	WorkflowDetail,
 	WorkflowSourceDiagnosticDetail,
@@ -32,7 +32,7 @@ const EMPTY_REPORT: DiagnosticReport = {
 	facet_usage: {},
 };
 
-function makeWorkflow(overrides?: { input?: string }): Workflow {
+function makeWorkflow(overrides?: { input?: string }): WorkflowDefinition {
 	return {
 		name: "wf",
 		description: "test workflow",
@@ -86,7 +86,7 @@ describe("WorkflowDetail facet refs row", () => {
 		expect(screen.queryByText(matchLabel("Persona"))).not.toBeInTheDocument();
 	});
 
-	it("displays Input row when step declares input", async () => {
+	it("displays Input row when node declares input", async () => {
 		const user = userEvent.setup();
 		render(
 			<WorkflowDetail

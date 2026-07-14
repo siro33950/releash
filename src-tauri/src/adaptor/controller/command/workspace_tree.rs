@@ -2,15 +2,15 @@ use tauri::State;
 
 use crate::adaptor::controller::state::AppState;
 use crate::usecase::workflow::{
-    WorkspaceTreeNodeDto, WorkspaceWorkflowHistoryItemDto, WorkspaceWorkflowStepNodeDto,
+    WorkspaceTreeNodeDto, WorkspaceWorkflowHistoryItemDto, WorkspaceWorkflowNodeExecutionDto,
 };
 
 pub(super) const COMMAND_NAMES: &[&str] = &[
     "list_workspace_worktree_nodes",
     "list_workspace_workflow_history",
-    "get_workspace_workflow_step_detail",
-    "archive_workspace_workflow_run",
-    "restore_workspace_workflow_run",
+    "get_workspace_workflow_node_detail",
+    "archive_workspace_workflow_execution",
+    "restore_workspace_workflow_execution",
 ];
 
 pub(crate) fn register(router: &mut super::CommandRouter) {
@@ -22,9 +22,9 @@ pub(crate) fn invoke_handler(
     tauri::generate_handler![
         list_workspace_worktree_nodes,
         list_workspace_workflow_history,
-        get_workspace_workflow_step_detail,
-        archive_workspace_workflow_run,
-        restore_workspace_workflow_run,
+        get_workspace_workflow_node_detail,
+        archive_workspace_workflow_execution,
+        restore_workspace_workflow_execution,
     ]
 }
 
@@ -64,19 +64,24 @@ pub async fn list_workspace_workflow_history(
 }
 
 #[tauri::command]
-pub async fn get_workspace_workflow_step_detail(
+pub async fn get_workspace_workflow_node_detail(
     app_state: State<'_, AppState>,
     worktree_path: String,
-    run_id: String,
-    step_id: String,
-) -> Result<Option<WorkspaceWorkflowStepNodeDto>, String> {
+    execution_id: String,
+    node_execution_id: String,
+) -> Result<Option<WorkspaceWorkflowNodeExecutionDto>, String> {
     let workflow_usecase = app_state.workflow_usecase.clone();
     tokio::task::spawn_blocking(move || {
         let sessions = workflow_usecase
             .collect_workspace_session_inputs(&worktree_path)
             .map_err(|e| e.to_string())?;
         workflow_usecase
-            .get_workspace_workflow_step_detail(&worktree_path, &run_id, &step_id, sessions)
+            .get_workspace_workflow_node_detail(
+                &worktree_path,
+                &execution_id,
+                &node_execution_id,
+                sessions,
+            )
             .map_err(|e| e.to_string())
     })
     .await
@@ -84,15 +89,15 @@ pub async fn get_workspace_workflow_step_detail(
 }
 
 #[tauri::command]
-pub async fn archive_workspace_workflow_run(
+pub async fn archive_workspace_workflow_execution(
     app_state: State<'_, AppState>,
     worktree_path: String,
-    run_id: String,
+    execution_id: String,
 ) -> Result<(), String> {
     let workflow_usecase = app_state.workflow_usecase.clone();
     tokio::task::spawn_blocking(move || {
         workflow_usecase
-            .archive_workspace_workflow_run(&worktree_path, &run_id)
+            .archive_workspace_workflow_execution(&worktree_path, &execution_id)
             .map_err(|e| e.to_string())
     })
     .await
@@ -100,15 +105,15 @@ pub async fn archive_workspace_workflow_run(
 }
 
 #[tauri::command]
-pub async fn restore_workspace_workflow_run(
+pub async fn restore_workspace_workflow_execution(
     app_state: State<'_, AppState>,
     worktree_path: String,
-    run_id: String,
+    execution_id: String,
 ) -> Result<(), String> {
     let workflow_usecase = app_state.workflow_usecase.clone();
     tokio::task::spawn_blocking(move || {
         workflow_usecase
-            .restore_workspace_workflow_run(&worktree_path, &run_id)
+            .restore_workspace_workflow_execution(&worktree_path, &execution_id)
             .map_err(|e| e.to_string())
     })
     .await
@@ -146,7 +151,7 @@ mod tests {
     fn session(
         id: &str,
         state: WorkspaceSessionState,
-        workflow_step_session: bool,
+        workflow_node_session: bool,
     ) -> WorkspaceSessionInput {
         WorkspaceSessionInput {
             id: id.to_string(),
@@ -154,18 +159,17 @@ mod tests {
             state,
             updated_at: 2.0,
             first_message: id.to_string(),
-            workflow_step_session,
-            workflow_step_context: None,
+            workflow_node_session,
         }
     }
 
     #[test]
-    fn workspace_session_collection_includes_closed_workflow_steps_only() {
+    fn workspace_session_collection_includes_closed_workflow_nodes_only() {
         let gateway = FakeWorkspaceSessionGateway {
             active: vec![session("active", WorkspaceSessionState::Active, false)],
             closed: vec![
                 session("closed-regular", WorkspaceSessionState::Closed, false),
-                session("closed-step", WorkspaceSessionState::Closed, true),
+                session("closed-node", WorkspaceSessionState::Closed, true),
             ],
         };
         let workflow_usecase =
@@ -183,7 +187,7 @@ mod tests {
                 .iter()
                 .map(|session| session.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["active", "closed-step"]
+            vec!["active", "closed-node"]
         );
     }
 }

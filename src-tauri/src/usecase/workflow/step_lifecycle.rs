@@ -1,19 +1,19 @@
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
-pub struct ResolvedWorkflowStepSession {
+pub struct ResolvedWorkflowNodeSession {
     pub session_id: String,
     pub worktree_path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WorkflowStepLifecycleError {
+pub enum NodeExecutionLifecycleError {
     SessionNotFound(String),
     SessionStore(String),
     AgentSession(String),
 }
 
-impl std::fmt::Display for WorkflowStepLifecycleError {
+impl std::fmt::Display for NodeExecutionLifecycleError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::SessionNotFound(session_id) => write!(f, "ChatSession not found: {session_id}"),
@@ -22,51 +22,51 @@ impl std::fmt::Display for WorkflowStepLifecycleError {
     }
 }
 
-pub(crate) trait WorkflowStepSessionGateway: Send + Sync {
+pub(crate) trait WorkflowNodeSessionGateway: Send + Sync {
     fn resolve_step_session(
         &self,
         session_id: &str,
-    ) -> Result<Option<ResolvedWorkflowStepSession>, WorkflowStepLifecycleError>;
+    ) -> Result<Option<ResolvedWorkflowNodeSession>, NodeExecutionLifecycleError>;
 
-    fn open_step_tab(&self, session_id: &str) -> Result<(), WorkflowStepLifecycleError>;
+    fn open_step_tab(&self, session_id: &str) -> Result<(), NodeExecutionLifecycleError>;
 
-    fn close_step_tab(&self, session_id: &str) -> Result<bool, WorkflowStepLifecycleError>;
+    fn close_step_tab(&self, session_id: &str) -> Result<bool, NodeExecutionLifecycleError>;
 }
 
 #[async_trait::async_trait]
-pub(crate) trait WorkflowStepRuntimeGateway: Send + Sync {
+pub(crate) trait NodeExecutionRuntimeGateway: Send + Sync {
     async fn close_idle_runtime_on_tab_close(
         &self,
         session_id: &str,
-    ) -> Result<(), WorkflowStepLifecycleError>;
+    ) -> Result<(), NodeExecutionLifecycleError>;
 
     async fn close_runtime_on_step_done(
         &self,
         session_id: &str,
-    ) -> Result<(), WorkflowStepLifecycleError>;
+    ) -> Result<(), NodeExecutionLifecycleError>;
 }
 
-pub(crate) struct WorkflowStepLifecycle<'a> {
-    pub(crate) sessions: &'a dyn WorkflowStepSessionGateway,
-    pub(crate) runtime: &'a dyn WorkflowStepRuntimeGateway,
+pub(crate) struct NodeExecutionLifecycle<'a> {
+    pub(crate) sessions: &'a dyn WorkflowNodeSessionGateway,
+    pub(crate) runtime: &'a dyn NodeExecutionRuntimeGateway,
 }
 
 #[derive(Clone)]
-pub(crate) struct WorkflowStepLifecycleUsecase {
-    sessions: Arc<dyn WorkflowStepSessionGateway>,
-    runtime: Arc<dyn WorkflowStepRuntimeGateway>,
+pub(crate) struct NodeExecutionLifecycleUsecase {
+    sessions: Arc<dyn WorkflowNodeSessionGateway>,
+    runtime: Arc<dyn NodeExecutionRuntimeGateway>,
 }
 
-impl WorkflowStepLifecycleUsecase {
+impl NodeExecutionLifecycleUsecase {
     pub(crate) fn new(
-        sessions: Arc<dyn WorkflowStepSessionGateway>,
-        runtime: Arc<dyn WorkflowStepRuntimeGateway>,
+        sessions: Arc<dyn WorkflowNodeSessionGateway>,
+        runtime: Arc<dyn NodeExecutionRuntimeGateway>,
     ) -> Self {
         Self { sessions, runtime }
     }
 
-    fn lifecycle(&self) -> WorkflowStepLifecycle<'_> {
-        WorkflowStepLifecycle {
+    fn lifecycle(&self) -> NodeExecutionLifecycle<'_> {
+        NodeExecutionLifecycle {
             sessions: self.sessions.as_ref(),
             runtime: self.runtime.as_ref(),
         }
@@ -75,30 +75,30 @@ impl WorkflowStepLifecycleUsecase {
     pub async fn try_open_tab(
         &self,
         session_id: &str,
-    ) -> Result<Option<ResolvedWorkflowStepSession>, WorkflowStepLifecycleError> {
+    ) -> Result<Option<ResolvedWorkflowNodeSession>, NodeExecutionLifecycleError> {
         self.lifecycle().try_open_tab(session_id).await
     }
 
     pub async fn close_tab_target(
         &self,
         session_id: &str,
-    ) -> Result<Option<ResolvedWorkflowStepSession>, WorkflowStepLifecycleError> {
+    ) -> Result<Option<ResolvedWorkflowNodeSession>, NodeExecutionLifecycleError> {
         self.lifecycle().close_tab_target(session_id).await
     }
 }
 
-impl<'a> WorkflowStepLifecycle<'a> {
+impl<'a> NodeExecutionLifecycle<'a> {
     fn resolve_step_session(
         &self,
         session_id: &str,
-    ) -> Result<Option<ResolvedWorkflowStepSession>, WorkflowStepLifecycleError> {
+    ) -> Result<Option<ResolvedWorkflowNodeSession>, NodeExecutionLifecycleError> {
         self.sessions.resolve_step_session(session_id)
     }
 
     pub async fn try_open_tab(
         &self,
         session_id: &str,
-    ) -> Result<Option<ResolvedWorkflowStepSession>, WorkflowStepLifecycleError> {
+    ) -> Result<Option<ResolvedWorkflowNodeSession>, NodeExecutionLifecycleError> {
         let Some(target) = self.resolve_step_session(session_id)? else {
             return Ok(None);
         };
@@ -109,7 +109,7 @@ impl<'a> WorkflowStepLifecycle<'a> {
     pub async fn close_tab_target(
         &self,
         session_id: &str,
-    ) -> Result<Option<ResolvedWorkflowStepSession>, WorkflowStepLifecycleError> {
+    ) -> Result<Option<ResolvedWorkflowNodeSession>, NodeExecutionLifecycleError> {
         let Some(target) = self.resolve_step_session(session_id)? else {
             return Ok(None);
         };
@@ -125,7 +125,7 @@ impl<'a> WorkflowStepLifecycle<'a> {
 }
 
 pub(crate) async fn release_step_runtime_on_done_with_gateways(
-    runtime: &dyn WorkflowStepRuntimeGateway,
+    runtime: &dyn NodeExecutionRuntimeGateway,
     session_id: &str,
 ) {
     // The turn_complete handler holds session_runtime_lock across workflow
@@ -172,30 +172,30 @@ mod tests {
         }
     }
 
-    struct FakeWorkflowStepSessionGateway {
+    struct FakeWorkflowNodeSessionGateway {
         state: Arc<StdMutex<FakeLifecycleState>>,
     }
 
-    impl WorkflowStepSessionGateway for FakeWorkflowStepSessionGateway {
+    impl WorkflowNodeSessionGateway for FakeWorkflowNodeSessionGateway {
         fn resolve_step_session(
             &self,
             session_id: &str,
-        ) -> Result<Option<ResolvedWorkflowStepSession>, WorkflowStepLifecycleError> {
+        ) -> Result<Option<ResolvedWorkflowNodeSession>, NodeExecutionLifecycleError> {
             if !self.state.lock().unwrap().resolved {
                 return Ok(None);
             }
-            Ok(Some(ResolvedWorkflowStepSession {
+            Ok(Some(ResolvedWorkflowNodeSession {
                 session_id: session_id.to_string(),
                 worktree_path: "/repo".to_string(),
             }))
         }
 
-        fn open_step_tab(&self, _session_id: &str) -> Result<(), WorkflowStepLifecycleError> {
+        fn open_step_tab(&self, _session_id: &str) -> Result<(), NodeExecutionLifecycleError> {
             self.state.lock().unwrap().tab_open = true;
             Ok(())
         }
 
-        fn close_step_tab(&self, _session_id: &str) -> Result<bool, WorkflowStepLifecycleError> {
+        fn close_step_tab(&self, _session_id: &str) -> Result<bool, NodeExecutionLifecycleError> {
             let mut state = self.state.lock().unwrap();
             state.tab_close_calls += 1;
             let was_open = state.tab_open;
@@ -204,21 +204,21 @@ mod tests {
         }
     }
 
-    struct FakeWorkflowStepRuntimeGateway {
+    struct FakeNodeExecutionRuntimeGateway {
         state: Arc<StdMutex<FakeLifecycleState>>,
     }
 
     #[async_trait::async_trait]
-    impl WorkflowStepRuntimeGateway for FakeWorkflowStepRuntimeGateway {
+    impl NodeExecutionRuntimeGateway for FakeNodeExecutionRuntimeGateway {
         async fn close_idle_runtime_on_tab_close(
             &self,
             _session_id: &str,
-        ) -> Result<(), WorkflowStepLifecycleError> {
+        ) -> Result<(), NodeExecutionLifecycleError> {
             let mut state = self.state.lock().unwrap();
             state.runtime_tab_close_calls += 1;
             state.runtime_active = false;
             if state.fail_tab_runtime_close {
-                return Err(WorkflowStepLifecycleError::AgentSession(
+                return Err(NodeExecutionLifecycleError::AgentSession(
                     "runtime close failed".to_string(),
                 ));
             }
@@ -228,12 +228,12 @@ mod tests {
         async fn close_runtime_on_step_done(
             &self,
             _session_id: &str,
-        ) -> Result<(), WorkflowStepLifecycleError> {
+        ) -> Result<(), NodeExecutionLifecycleError> {
             let mut state = self.state.lock().unwrap();
             state.runtime_done_close_calls += 1;
             state.runtime_active = false;
             if state.fail_done_runtime_close {
-                return Err(WorkflowStepLifecycleError::AgentSession(
+                return Err(NodeExecutionLifecycleError::AgentSession(
                     "runtime close failed".to_string(),
                 ));
             }
@@ -244,14 +244,14 @@ mod tests {
     fn fake_lifecycle_gateways(
         state: Arc<StdMutex<FakeLifecycleState>>,
     ) -> (
-        FakeWorkflowStepSessionGateway,
-        FakeWorkflowStepRuntimeGateway,
+        FakeWorkflowNodeSessionGateway,
+        FakeNodeExecutionRuntimeGateway,
     ) {
         (
-            FakeWorkflowStepSessionGateway {
+            FakeWorkflowNodeSessionGateway {
                 state: Arc::clone(&state),
             },
-            FakeWorkflowStepRuntimeGateway { state },
+            FakeNodeExecutionRuntimeGateway { state },
         )
     }
 
@@ -295,7 +295,7 @@ mod tests {
             ..FakeLifecycleState::open_runtime_and_tab()
         }));
         let (sessions, runtime) = fake_lifecycle_gateways(Arc::clone(&state));
-        let lifecycle = WorkflowStepLifecycle {
+        let lifecycle = NodeExecutionLifecycle {
             sessions: &sessions,
             runtime: &runtime,
         };
@@ -304,7 +304,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(WorkflowStepLifecycleError::AgentSession(_))
+            Err(NodeExecutionLifecycleError::AgentSession(_))
         ));
         let state = state.lock().unwrap();
         assert_eq!(state.runtime_tab_close_calls, 1);

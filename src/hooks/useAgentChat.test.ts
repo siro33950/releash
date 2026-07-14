@@ -66,7 +66,7 @@ vi.mock("./useSessionStore", () => ({
 		messageCount: 1,
 		permissionMode: "edit",
 	}),
-	restoreSession: vi.fn().mockResolvedValue({ restoredWorkflowStep: false }),
+	restoreSession: vi.fn().mockResolvedValue({ restoredWorkflowNode: false }),
 	listClosedSessions: vi.fn().mockResolvedValue([]),
 	listAgentBackends: vi.fn().mockResolvedValue({
 		backends: [],
@@ -183,7 +183,7 @@ describe("useAgentChat", () => {
 		vi.mocked(sessionStore.sendWorkflowApprovalChatMessage).mockClear();
 		vi.mocked(sessionStore.initAgentSessions).mockClear();
 		vi.mocked(sessionStore.restoreSession).mockResolvedValue({
-			restoredWorkflowStep: false,
+			restoredWorkflowNode: false,
 		});
 		vi.mocked(sessionStore.restoreSession).mockClear();
 		vi.mocked(sessionStore.setSessionBackend).mockClear();
@@ -462,7 +462,7 @@ describe("useAgentChat", () => {
 		const { useAgentChat } = await import("./useAgentChat");
 		const sessionStore = await import("./useSessionStore");
 
-		// Spec issues-1011 line 121: approval chat 経由は run_id 主語で送信する。
+		// Spec issues-1011 line 121: approval chat 経由は execution_id 主語で送信する。
 		const { result } = renderHook(() =>
 			useAgentChat("/repo", "s1", "run-approval-1"),
 		);
@@ -487,7 +487,7 @@ describe("useAgentChat", () => {
 		expect(sessionStore.sendAgentMessage).not.toHaveBeenCalled();
 	});
 
-	it("sendMessage lets Rust route workflow step sessions from the generic entrypoint", async () => {
+	it("sendMessage lets Rust route workflow node sessions from the generic entrypoint", async () => {
 		const { renderHook, act, waitFor } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
 		const sessionStore = await import("./useSessionStore");
@@ -503,7 +503,7 @@ describe("useAgentChat", () => {
 					firstMessage: "",
 					messageCount: 0,
 					permissionMode: "edit",
-					workflowStepSession: true,
+					workflowNodeSession: true,
 				},
 			],
 			activeSession: {
@@ -543,7 +543,7 @@ describe("useAgentChat", () => {
 		);
 	});
 
-	it("does not treat workflow parent chat session as a workflow step target", async () => {
+	it("does not treat workflow parent chat session as a workflow node target", async () => {
 		const { renderHook, act, waitFor } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
 		const sessionStore = await import("./useSessionStore");
@@ -3048,7 +3048,7 @@ describe("useAgentChat", () => {
 		);
 	});
 
-	it("restoreSession does not start an agent process when Rust restored a workflow step tab", async () => {
+	it("restoreSession does not start an agent process when Rust restored a workflow node tab", async () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
 		const sessionStore = await import("./useSessionStore");
@@ -3060,7 +3060,7 @@ describe("useAgentChat", () => {
 		});
 
 		const restoredSession = {
-			id: "workflow-step-closed",
+			id: "workflow-node-closed",
 			worktreePath: "/repo",
 			messages: [
 				{
@@ -3077,7 +3077,7 @@ describe("useAgentChat", () => {
 			agentSessionId: "agent-session-1",
 		};
 		vi.mocked(sessionStore.restoreSession).mockResolvedValueOnce({
-			restoredWorkflowStep: true,
+			restoredWorkflowNode: true,
 		});
 		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
 			session: restoredSession,
@@ -3088,17 +3088,17 @@ describe("useAgentChat", () => {
 		mockInvoke.mockClear();
 
 		await act(async () => {
-			await result.current.restoreSession("workflow-step-closed");
+			await result.current.restoreSession("workflow-node-closed");
 		});
 
 		expect(mockInvoke).not.toHaveBeenCalledWith(
 			"start_agent_session",
 			expect.anything(),
 		);
-		expect(result.current.activeSession?.id).toBe("workflow-step-closed");
+		expect(result.current.activeSession?.id).toBe("workflow-node-closed");
 	});
 
-	it("restoreSession passes workflow step execution context from closed summaries", async () => {
+	it("restoreSession passes workflow node execution context from closed summaries", async () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
 		const sessionStore = await import("./useSessionStore");
@@ -3110,7 +3110,7 @@ describe("useAgentChat", () => {
 		});
 		vi.mocked(sessionStore.listClosedSessions).mockResolvedValueOnce([
 			{
-				id: "workflow-step-closed",
+				id: "workflow-node-closed",
 				worktreePath: "/repo",
 				state: "closed",
 				createdAt: 1,
@@ -3118,7 +3118,7 @@ describe("useAgentChat", () => {
 				firstMessage: "",
 				messageCount: 1,
 				permissionMode: "edit",
-				workflowStepSession: true,
+				workflowNodeSession: true,
 			},
 		] as never);
 		await act(async () => {
@@ -3126,11 +3126,11 @@ describe("useAgentChat", () => {
 		});
 
 		vi.mocked(sessionStore.restoreSession).mockResolvedValueOnce({
-			restoredWorkflowStep: true,
+			restoredWorkflowNode: true,
 		});
 		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
 			session: {
-				id: "workflow-step-closed",
+				id: "workflow-node-closed",
 				worktreePath: "/repo",
 				messages: [],
 				state: "idle",
@@ -3145,11 +3145,11 @@ describe("useAgentChat", () => {
 		} as never);
 
 		await act(async () => {
-			await result.current.restoreSession("workflow-step-closed");
+			await result.current.restoreSession("workflow-node-closed");
 		});
 
 		expect(sessionStore.restoreSession).toHaveBeenCalledWith(
-			"workflow-step-closed",
+			"workflow-node-closed",
 		);
 	});
 

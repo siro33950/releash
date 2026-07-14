@@ -187,12 +187,12 @@ impl fmt::Display for ValidationError {
                 f,
                 "ワークフロー名 '{name}' は先頭を英数字にし、2文字目以降は英数字・ハイフン・アンダースコアのみ使用できます"
             ),
-            Self::EmptySteps => write!(f, "ワークフローにステップが定義されていません"),
+            Self::EmptySteps => write!(f, "ワークフローにnodeが定義されていません"),
             Self::DuplicateStep { name } => {
-                write!(f, "ステップ名 '{name}' が重複しています")
+                write!(f, "node名 '{name}' が重複しています")
             }
             Self::MissingFacet { step } => {
-                write!(f, "ステップ '{step}' にはファセット参照が必要です")
+                write!(f, "node '{step}' にはファセット参照が必要です")
             }
             Self::EmptyFanoutChildren { step } => {
                 write!(f, "fanout node '{step}' must reference at least one child")
@@ -248,14 +248,14 @@ impl fmt::Display for ValidationError {
                 };
                 write!(
                     f,
-                    "ステップ '{step}' のpermissionが不正です: invalid permission mode: {display_value} (allowed: {})",
+                    "node '{step}' のpermissionが不正です: invalid permission mode: {display_value} (allowed: {})",
                     ALLOWED_PERMISSION_MODES
                 )
             }
             Self::MissingPermissionMode { step } => {
                 write!(
                     f,
-                    "ステップ '{step}' にはpermissionが必要です (allowed: {})",
+                    "node '{step}' にはpermissionが必要です (allowed: {})",
                     ALLOWED_PERMISSION_MODES
                 )
             }
@@ -270,13 +270,13 @@ impl fmt::Display for ValidationError {
             Self::EmptyCommand { step } => {
                 write!(
                     f,
-                    "commandステップ '{step}' の command は空にできません"
+                    "command node '{step}' の command は空にできません"
                 )
             }
             Self::UnknownModel { step, value } => {
                 write!(
                     f,
-                    "ステップ '{step}' のmodelが不正です: unknown model: {value}"
+                    "node '{step}' のmodelが不正です: unknown model: {value}"
                 )
             }
             Self::InvalidModelFormat {
@@ -286,7 +286,7 @@ impl fmt::Display for ValidationError {
             } => {
                 write!(
                     f,
-                    "ステップ '{step}' のmodel '{value}' は形式として無効です: {reason}"
+                    "node '{step}' のmodel '{value}' は形式として無効です: {reason}"
                 )
             }
             Self::ModelResolutionFailed {
@@ -296,13 +296,13 @@ impl fmt::Display for ValidationError {
             } => {
                 write!(
                     f,
-                    "ステップ '{step}' のmodel '{value}' の所属バックエンドを解決できません: {reason}"
+                    "node '{step}' のmodel '{value}' の所属バックエンドを解決できません: {reason}"
                 )
             }
             Self::UnknownSchemaRef { step, slot, key } => {
                 write!(
                     f,
-                    "ステップ '{step}' の {slot} が存在しない schemas Contract '{key}' を参照しています"
+                    "node '{step}' の {slot} が存在しない schemas Contract '{key}' を参照しています"
                 )
             }
             Self::InvalidSchemaRef {
@@ -313,7 +313,7 @@ impl fmt::Display for ValidationError {
             } => {
                 write!(
                     f,
-                    "ステップ '{step}' の {slot} Contract 参照 '{key}' が不正です: {reason}"
+                    "node '{step}' の {slot} Contract 参照 '{key}' が不正です: {reason}"
                 )
             }
             Self::InvalidSchema { schema, reason, .. } => {
@@ -322,7 +322,7 @@ impl fmt::Display for ValidationError {
             Self::InvalidArtifactSchema { step, contract } => {
                 write!(
                     f,
-                    "ステップ '{step}' の artifact '{contract}' は Object Contract である必要があります"
+                    "node '{step}' の artifact '{contract}' は Object Contract である必要があります"
                 )
             }
             Self::ReservedArtifactField {
@@ -332,7 +332,7 @@ impl fmt::Display for ValidationError {
             } => {
                 write!(
                     f,
-                    "commandステップ '{step}' の artifact '{contract}' が予約 field '{field}' を宣言しています"
+                    "command node '{step}' の artifact '{contract}' が予約 field '{field}' を宣言しています"
                 )
             }
             Self::InvalidArtifactReference {
@@ -740,7 +740,7 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
         return Err(reference_diagnostic_to_validation_error(err));
     }
 
-    // 重複ステップ名を検出する。
+    // 重複 node 名を検出する。
     let mut seen_names = HashSet::new();
     for step in &workflow.nodes {
         if !seen_names.insert(step.name.as_str()) {
@@ -1016,20 +1016,20 @@ fn validate_node_kind_fields(step: &NodeDefinition) -> Result<(), ValidationErro
     Ok(())
 }
 
-/// ステップに permission が必須として指定されていることを検証する。
+/// node に permission が必須として指定されていることを検証する。
 /// `None` または対象外の値（旧語彙・未知語彙・空文字）はバリデーションエラー。
 fn validate_required_permission(
-    step_name: &str,
+    node_name: &str,
     value: Option<&str>,
 ) -> Result<(), ValidationError> {
     match value {
         None => Err(ValidationError::MissingPermissionMode {
-            step: step_name.to_string(),
+            step: node_name.to_string(),
         }),
         Some(v) => {
             if !is_allowed_permission_mode(v) {
                 return Err(ValidationError::InvalidPermissionMode {
-                    step: step_name.to_string(),
+                    step: node_name.to_string(),
                     value: v.to_string(),
                 });
             }
@@ -1042,7 +1042,7 @@ fn is_allowed_permission_mode(value: &str) -> bool {
     matches!(value, "ask" | "edit" | "full")
 }
 
-/// ワークフロー内の全ステップの `model` フィールドを検証する。
+/// ワークフロー内の全 node の `model` フィールドを検証する。
 ///
 /// 検証は経路によらず同一の基準で行う:
 /// 1. 形式検証（`crate::domain::agent_session::ModelId`）— 空文字・空白のみ・制御文字・
@@ -1062,10 +1062,10 @@ where
     Ok(())
 }
 
-fn validate_model_format(step_name: &str, model: &str) -> Result<(), ValidationError> {
+fn validate_model_format(node_name: &str, model: &str) -> Result<(), ValidationError> {
     crate::domain::agent_session::ModelId::parse(model).map_err(|reason| {
         ValidationError::InvalidModelFormat {
-            step: step_name.to_string(),
+            step: node_name.to_string(),
             value: model.to_string(),
             reason,
         }
@@ -1074,7 +1074,7 @@ fn validate_model_format(step_name: &str, model: &str) -> Result<(), ValidationE
 }
 
 fn validate_model_registered<F>(
-    step_name: &str,
+    node_name: &str,
     model: &str,
     resolve_model: &mut F,
 ) -> Result<(), ValidationError>
@@ -1084,11 +1084,11 @@ where
     match resolve_model(model) {
         Ok(Some(_)) => Ok(()),
         Ok(None) => Err(ValidationError::UnknownModel {
-            step: step_name.to_string(),
+            step: node_name.to_string(),
             value: model.to_string(),
         }),
         Err(reason) => Err(ValidationError::ModelResolutionFailed {
-            step: step_name.to_string(),
+            step: node_name.to_string(),
             value: model.to_string(),
             reason,
         }),
@@ -1131,7 +1131,7 @@ pub fn validate_all(workflow: &Workflow) -> Vec<ValidationError> {
             .map(reference_diagnostic_to_validation_error),
     );
 
-    // 重複ステップ名を検出し、あれば蓄積するが、以降のチェックは続行
+    // 重複 node 名を検出し、あれば蓄積するが、以降のチェックは続行
     let mut seen_names = HashSet::new();
     let mut has_dup = false;
     for step in &workflow.nodes {
@@ -1340,6 +1340,28 @@ mod tests {
     // ---- 既存テスト ----
 
     #[test]
+    fn validation_messages_use_node_vocabulary() {
+        let errors = [
+            ValidationError::EmptySteps,
+            ValidationError::DuplicateStep {
+                name: "review".to_string(),
+            },
+            ValidationError::MissingFacet {
+                step: "review".to_string(),
+            },
+            ValidationError::EmptyCommand {
+                step: "build".to_string(),
+            },
+        ];
+
+        for error in errors {
+            let message = error.to_string();
+            assert!(message.contains("node"), "unexpected message: {message}");
+            assert!(!message.contains("ステップ"), "legacy message: {message}");
+        }
+    }
+
+    #[test]
     fn valid_workflow_passes() {
         let wf = make_workflow(vec![
             make_step("plan", TestKind::ApprovalSession, vec![]),
@@ -1502,7 +1524,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_step_names_fails() {
+    fn duplicate_node_names_fails() {
         let wf = make_workflow(vec![
             make_step("plan", TestKind::ApprovalSession, vec![]),
             make_step("plan", TestKind::Session, vec![]),
@@ -2092,7 +2114,7 @@ mod tests {
 
     #[test]
     fn input_reference_backward_reference_passes() {
-        // 定義順で後方のステップを input_reference で参照できる
+        // 定義順で後方の node を input_reference で参照できる
         let wf = make_workflow(vec![
             NodeDefinition {
                 ..make_step("step_a", TestKind::Session, vec![])

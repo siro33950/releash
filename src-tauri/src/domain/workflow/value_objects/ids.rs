@@ -1,16 +1,16 @@
 use crate::domain::workflow::WorkflowError;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct RunId(String);
+pub struct WorkflowExecutionId(String);
 
-impl RunId {
+impl WorkflowExecutionId {
     pub fn new(value: impl Into<String>) -> Result<Self, WorkflowError> {
         let value = value.into();
         if is_uuid_like(&value) {
             Ok(Self(value))
         } else {
             Err(WorkflowError::validation(format!(
-                "invalid run_id: {value}"
+                "invalid execution_id: {value}"
             )))
         }
     }
@@ -20,7 +20,7 @@ impl RunId {
     }
 }
 
-impl std::fmt::Display for RunId {
+impl std::fmt::Display for WorkflowExecutionId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
     }
@@ -118,10 +118,10 @@ mod ids_tests {
     use super::*;
 
     #[test]
-    fn test_run_id_uuid形式のみ受理する() {
-        assert!(RunId::new("00000000-0000-4000-8000-000000000001").is_ok());
-        assert!(RunId::new("../bad").is_err());
-        assert!(RunId::new("not-a-uuid").is_err());
+    fn test_workflow_execution_id_uuid形式のみ受理する() {
+        assert!(WorkflowExecutionId::new("00000000-0000-4000-8000-000000000001").is_ok());
+        assert!(WorkflowExecutionId::new("../bad").is_err());
+        assert!(WorkflowExecutionId::new("not-a-uuid").is_err());
     }
 
     #[test]

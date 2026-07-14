@@ -49,8 +49,8 @@ fn make_session(id: &str, worktree: &str) -> ChatSession {
         permission_profile_id: None,
         selected_model: None,
         backend_id: Some("claude".to_string()),
-        workflow_step_session: false,
-        workflow_step_context: None,
+        workflow_node_session: false,
+        workflow_node_context: None,
         context_epoch: None,
     }
 }
@@ -2124,8 +2124,8 @@ fn list_sessions_ignores_legacy_flat_json_and_sidecar() {
         selected_model: Some("gpt-5".to_string()),
         permission_profile_id: None,
         backend_id: "codex".to_string(),
-        workflow_step_session: false,
-        workflow_step_context: None,
+        workflow_node_session: false,
+        workflow_node_context: None,
         workflow_instructions: Vec::new(),
         agent_read_paths: None,
         context_epoch: None,
@@ -2586,11 +2586,11 @@ fn archive_open_session_archives_active_session() {
 }
 
 #[test]
-fn archive_open_session_rejects_workflow_step_sessions() {
+fn archive_open_session_rejects_workflow_node_sessions() {
     let tmp = TempDir::new().unwrap();
     let store = FileSessionStorage::default();
     let mut session = make_session(UUID1, "/repo");
-    session.workflow_step_session = true;
+    session.workflow_node_session = true;
     store
         .save_full_session_for_migration_or_restore(tmp.path(), &session)
         .unwrap();
@@ -2599,7 +2599,7 @@ fn archive_open_session_rejects_workflow_step_sessions() {
         .archive_open_session(tmp.path(), UUID1)
         .unwrap_err();
 
-    assert_eq!(err, "Workflow step sessions cannot be archived");
+    assert_eq!(err, "Workflow node sessions cannot be archived");
 }
 
 #[test]
@@ -2630,11 +2630,11 @@ fn set_session_title_overrides_summary_and_can_clear() {
 }
 
 #[test]
-fn set_session_title_rejects_workflow_step_sessions() {
+fn set_session_title_rejects_workflow_node_sessions() {
     let tmp = TempDir::new().unwrap();
     let store = FileSessionStorage::default();
     let mut session = make_session(UUID1, "/repo");
-    session.workflow_step_session = true;
+    session.workflow_node_session = true;
     store
         .save_full_session_for_migration_or_restore(tmp.path(), &session)
         .unwrap();
@@ -2643,7 +2643,7 @@ fn set_session_title_rejects_workflow_step_sessions() {
         .set_session_title(tmp.path(), UUID1, Some("Step title"))
         .unwrap_err();
 
-    assert_eq!(err, "Workflow step sessions cannot be renamed");
+    assert_eq!(err, "Workflow node sessions cannot be renamed");
 }
 
 #[test]
@@ -2753,11 +2753,11 @@ fn fork_session_copies_custom_title() {
 }
 
 #[test]
-fn fork_session_rejects_workflow_step_sessions() {
+fn fork_session_rejects_workflow_node_sessions() {
     let tmp = TempDir::new().unwrap();
     let store = FileSessionStorage::default();
     let mut session = make_session(UUID1, "/repo");
-    session.workflow_step_session = true;
+    session.workflow_node_session = true;
     store
         .save_full_session_for_migration_or_restore(tmp.path(), &session)
         .unwrap();
@@ -2766,7 +2766,7 @@ fn fork_session_rejects_workflow_step_sessions() {
         .fork_session(tmp.path(), UUID1)
         .unwrap_err();
 
-    assert_eq!(err, "Workflow step sessions cannot be forked");
+    assert_eq!(err, "Workflow node sessions cannot be forked");
 }
 
 #[test]

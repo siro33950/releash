@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::adaptor::gateway::workflow::schema;
-use crate::adaptor::gateway::workflow::state as legacy_state;
+use crate::adaptor::gateway::workflow::state as runtime_state;
 use crate::domain::workflow as domain;
 
 pub(crate) fn workflow_definition_to_domain(
@@ -29,123 +29,125 @@ pub(crate) fn workflow_schemas_to_domain(
         .collect()
 }
 
-pub(crate) fn workflow_execution_state_to_domain(
-    state: &legacy_state::WorkflowExecutionState,
-) -> domain::WorkflowExecutionState {
+pub(crate) fn runtime_execution_state_to_domain(
+    state: &runtime_state::RuntimeExecutionState,
+) -> domain::RuntimeExecutionState {
     match state {
-        legacy_state::WorkflowExecutionState::Running => domain::WorkflowExecutionState::Running,
-        legacy_state::WorkflowExecutionState::WaitingApproval => {
-            domain::WorkflowExecutionState::WaitingApproval
+        runtime_state::RuntimeExecutionState::Running => domain::RuntimeExecutionState::Running,
+        runtime_state::RuntimeExecutionState::WaitingApproval => {
+            domain::RuntimeExecutionState::WaitingApproval
         }
-        legacy_state::WorkflowExecutionState::Completed => {
-            domain::WorkflowExecutionState::Completed
-        }
-        legacy_state::WorkflowExecutionState::Failed {
+        runtime_state::RuntimeExecutionState::Completed => domain::RuntimeExecutionState::Completed,
+        runtime_state::RuntimeExecutionState::Failed {
             reason,
             kind,
             retry_count,
-        } => domain::WorkflowExecutionState::Failed {
+        } => domain::RuntimeExecutionState::Failed {
             reason: reason.clone(),
             kind: *kind,
             retry_count: *retry_count,
         },
-        legacy_state::WorkflowExecutionState::Aborted => domain::WorkflowExecutionState::Aborted,
-        legacy_state::WorkflowExecutionState::Interrupted => {
-            domain::WorkflowExecutionState::Interrupted
+        runtime_state::RuntimeExecutionState::Aborted => domain::RuntimeExecutionState::Aborted,
+        runtime_state::RuntimeExecutionState::Interrupted => {
+            domain::RuntimeExecutionState::Interrupted
         }
     }
 }
 
-pub(crate) fn step_outputs_to_domain(
-    step_outputs: &HashMap<String, legacy_state::StepOutput>,
-) -> HashMap<String, domain::StepOutput> {
-    step_outputs
+pub(crate) fn artifacts_to_domain(
+    artifacts: &HashMap<String, runtime_state::RuntimeArtifact>,
+) -> HashMap<String, domain::RuntimeArtifact> {
+    artifacts
         .iter()
-        .map(|(key, output)| (key.clone(), step_output_to_domain(output)))
+        .map(|(key, artifact)| (key.clone(), runtime_artifact_to_domain(artifact)))
         .collect()
 }
 
-pub(crate) fn step_output_to_domain(output: &legacy_state::StepOutput) -> domain::StepOutput {
-    domain::StepOutput {
-        step_name: output.step_name.clone(),
-        run_index: output.run_index,
+pub(crate) fn runtime_artifact_to_domain(
+    output: &runtime_state::RuntimeArtifact,
+) -> domain::RuntimeArtifact {
+    domain::RuntimeArtifact {
+        node_name: output.node_name.clone(),
+        attempt: output.attempt,
         session_id: output.session_id.clone(),
         result: output.result.clone(),
-        structured_output: output.structured_output.clone(),
-        artifact_contract: output.artifact_contract.clone(),
+        artifact: output.artifact.clone(),
+        contract: output.contract.clone(),
         token_usage: output.token_usage.as_ref().map(token_usage_to_domain),
         completed_at: output.completed_at,
     }
 }
 
-pub(crate) fn step_output_from_domain(output: domain::StepOutput) -> legacy_state::StepOutput {
+pub(crate) fn runtime_artifact_from_domain(
+    output: domain::RuntimeArtifact,
+) -> runtime_state::RuntimeArtifact {
     let token_usage = output.token_usage.as_ref().map(token_usage_from_domain);
-    legacy_state::StepOutput {
-        step_name: output.step_name,
-        run_index: output.run_index,
+    runtime_state::RuntimeArtifact {
+        node_name: output.node_name,
+        attempt: output.attempt,
         session_id: output.session_id,
         result: output.result,
-        structured_output: output.structured_output,
-        artifact_contract: output.artifact_contract,
+        artifact: output.artifact,
+        contract: output.contract,
         token_usage,
         completed_at: output.completed_at,
     }
 }
 
-pub(crate) fn step_history_entries_to_domain(
-    entries: &[legacy_state::StepHistoryEntry],
-) -> Vec<domain::StepHistoryEntry> {
-    entries.iter().map(step_history_entry_to_domain).collect()
+pub(crate) fn node_history_entries_to_domain(
+    entries: &[runtime_state::NodeHistoryEntry],
+) -> Vec<domain::NodeHistoryEntry> {
+    entries.iter().map(node_history_entry_to_domain).collect()
 }
 
-fn step_history_entry_to_domain(
-    entry: &legacy_state::StepHistoryEntry,
-) -> domain::StepHistoryEntry {
-    domain::StepHistoryEntry {
-        step_name: entry.step_name.clone(),
+fn node_history_entry_to_domain(
+    entry: &runtime_state::NodeHistoryEntry,
+) -> domain::NodeHistoryEntry {
+    domain::NodeHistoryEntry {
+        node_name: entry.node_name.clone(),
         completed_at: entry.completed_at,
         result: entry.result.clone(),
         session_id: entry.session_id.clone(),
         token_usage: entry.token_usage.as_ref().map(token_usage_to_domain),
-        structured_output: entry.structured_output.clone(),
-        run_index: entry.run_index,
-        child_outputs: entry
-            .child_outputs
+        artifact: entry.artifact.clone(),
+        attempt: entry.attempt,
+        fanout_children: entry
+            .fanout_children
             .as_ref()
             .map(|children| children.iter().map(child_output_to_domain).collect()),
         state: entry.state.clone(),
     }
 }
 
-pub(crate) fn step_history_entry_from_domain(
-    entry: domain::StepHistoryEntry,
-) -> legacy_state::StepHistoryEntry {
-    legacy_state::StepHistoryEntry {
-        step_name: entry.step_name,
+pub(crate) fn node_history_entry_from_domain(
+    entry: domain::NodeHistoryEntry,
+) -> runtime_state::NodeHistoryEntry {
+    runtime_state::NodeHistoryEntry {
+        node_name: entry.node_name,
         completed_at: entry.completed_at,
         result: entry.result,
         session_id: entry.session_id,
         token_usage: entry.token_usage.as_ref().map(token_usage_from_domain),
-        structured_output: entry.structured_output,
-        run_index: entry.run_index,
-        child_outputs: entry
-            .child_outputs
+        artifact: entry.artifact,
+        attempt: entry.attempt,
+        fanout_children: entry
+            .fanout_children
             .map(|children| children.into_iter().map(child_output_from_domain).collect()),
         state: entry.state,
     }
 }
 
 fn child_output_from_domain(
-    output: domain::ChildOutputSnapshot,
-) -> legacy_state::ChildOutputSnapshot {
-    legacy_state::ChildOutputSnapshot {
-        step_name: output.step_name,
+    output: domain::FanoutChildSnapshot,
+) -> runtime_state::FanoutChildSnapshot {
+    runtime_state::FanoutChildSnapshot {
+        node_name: output.node_name,
         session_id: output.session_id,
         result: output.result,
-        run_index: output.run_index,
+        attempt: output.attempt,
         completed_at: output.completed_at,
-        structured_output: output.structured_output,
-        artifact_contract: output.artifact_contract,
+        artifact: output.artifact,
+        contract: output.contract,
         state: output.state,
         failure_kind: output.failure_kind,
         failure_disposition: output.failure_disposition,
@@ -153,31 +155,31 @@ fn child_output_from_domain(
 }
 
 fn child_output_to_domain(
-    output: &legacy_state::ChildOutputSnapshot,
-) -> domain::ChildOutputSnapshot {
-    domain::ChildOutputSnapshot {
-        step_name: output.step_name.clone(),
+    output: &runtime_state::FanoutChildSnapshot,
+) -> domain::FanoutChildSnapshot {
+    domain::FanoutChildSnapshot {
+        node_name: output.node_name.clone(),
         session_id: output.session_id.clone(),
         result: output.result.clone(),
-        run_index: output.run_index,
+        attempt: output.attempt,
         completed_at: output.completed_at,
-        structured_output: output.structured_output.clone(),
-        artifact_contract: output.artifact_contract.clone(),
+        artifact: output.artifact.clone(),
+        contract: output.contract.clone(),
         state: output.state.clone(),
         failure_kind: output.failure_kind,
         failure_disposition: output.failure_disposition,
     }
 }
 
-pub(crate) fn token_usage_to_domain(usage: &legacy_state::TokenUsage) -> domain::TokenUsage {
+pub(crate) fn token_usage_to_domain(usage: &runtime_state::TokenUsage) -> domain::TokenUsage {
     domain::TokenUsage {
         input_tokens: usage.input_tokens,
         output_tokens: usage.output_tokens,
     }
 }
 
-pub(crate) fn token_usage_from_domain(usage: &domain::TokenUsage) -> legacy_state::TokenUsage {
-    legacy_state::TokenUsage {
+pub(crate) fn token_usage_from_domain(usage: &domain::TokenUsage) -> runtime_state::TokenUsage {
+    runtime_state::TokenUsage {
         input_tokens: usage.input_tokens,
         output_tokens: usage.output_tokens,
     }

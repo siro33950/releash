@@ -1,9 +1,9 @@
 use crate::domain::workflow::services::approval_rules;
 use crate::domain::workflow::{
-    ContractType, NodeName, RunId, WorkflowError, WorkflowName, WorktreePath,
+    ContractType, NodeName, WorkflowError, WorkflowExecutionId, WorkflowName, WorktreePath,
 };
 
-use super::{AbortRunCommand, ApprovalCommand, StartRunCommand, SubmitOutputCommand};
+use super::{AbortExecutionCommand, ApprovalCommand, StartExecutionCommand, SubmitOutputCommand};
 use crate::usecase::workflow::ports::{
     PendingRuntimeCommand, PendingRuntimeCommandPayload, WorkflowStallClearedNotification,
     WorkflowStallObservedNotification, WorkflowTurnCompleteNotification,
@@ -13,9 +13,9 @@ use crate::usecase::workflow::ports::{
 pub(crate) struct WorkflowRuntimeCommandPreflight;
 
 impl WorkflowRuntimeCommandPreflight {
-    pub(crate) fn validate_start_run(
+    pub(crate) fn validate_start_execution(
         &self,
-        command: &StartRunCommand,
+        command: &StartExecutionCommand,
     ) -> Result<(), WorkflowError> {
         WorkflowName::new(command.workflow_file_stem.clone())?;
         WorktreePath::new(command.worktree_path.clone())?;
@@ -27,17 +27,17 @@ impl WorkflowRuntimeCommandPreflight {
         Ok(())
     }
 
-    pub(crate) fn validate_abort_run(
+    pub(crate) fn validate_abort_execution(
         &self,
-        command: &AbortRunCommand,
+        command: &AbortExecutionCommand,
     ) -> Result<(), WorkflowError> {
-        RunId::new(command.run_id.clone())?;
+        WorkflowExecutionId::new(command.execution_id.clone())?;
         validate_optional_node_name(command.expected_node_name.as_deref())?;
         Ok(())
     }
 
     pub(crate) fn validate_approval(&self, command: &ApprovalCommand) -> Result<(), WorkflowError> {
-        RunId::new(command.run_id.clone())?;
+        WorkflowExecutionId::new(command.execution_id.clone())?;
         NodeName::new(command.node_name.clone())?;
         approval_rules::validate_optional_comment_text(
             command.comment.as_deref(),
@@ -50,8 +50,8 @@ impl WorkflowRuntimeCommandPreflight {
         &self,
         command: &SubmitOutputCommand,
     ) -> Result<(), WorkflowError> {
-        RunId::new(command.run_id.clone())?;
-        NodeName::new(command.step_name.clone())?;
+        WorkflowExecutionId::new(command.execution_id.clone())?;
+        NodeName::new(command.node_name.clone())?;
         ContractType::new(command.contract.clone())?;
         Ok(())
     }
@@ -60,8 +60,8 @@ impl WorkflowRuntimeCommandPreflight {
         &self,
         command: &PendingRuntimeCommand,
     ) -> Result<(), WorkflowError> {
-        RunId::new(command.run_id.clone())?;
-        RunId::new(command.request_id.clone())?;
+        WorkflowExecutionId::new(command.execution_id.clone())?;
+        WorkflowExecutionId::new(command.request_id.clone())?;
         match &command.payload {
             PendingRuntimeCommandPayload::Approve {
                 node_name,
@@ -79,12 +79,12 @@ impl WorkflowRuntimeCommandPreflight {
                 validate_optional_node_name(node_name.as_deref())
             }
             PendingRuntimeCommandPayload::SubmitOutput {
-                step_name,
+                node_name,
                 node_execution_id: _,
                 contract,
-                structured_output: _,
+                artifact: _,
             } => {
-                NodeName::new(step_name.clone())?;
+                NodeName::new(node_name.clone())?;
                 ContractType::new(contract.clone())?;
                 Ok(())
             }
@@ -127,8 +127,12 @@ impl WorkflowRuntimeCommandPreflight {
         Ok(())
     }
 
-    pub(crate) fn validate_run_lookup(&self, run_id: &str) -> Result<(), WorkflowError> {
-        RunId::new(run_id.to_string()).map(|_| ())
+    #[cfg(test)]
+    pub(crate) fn validate_execution_lookup(
+        &self,
+        execution_id: &str,
+    ) -> Result<(), WorkflowError> {
+        WorkflowExecutionId::new(execution_id.to_string()).map(|_| ())
     }
 
     pub(crate) fn validate_worktree_lookup(
@@ -140,10 +144,10 @@ impl WorkflowRuntimeCommandPreflight {
 
     pub(crate) fn validate_approval_chat(
         &self,
-        run_id: &str,
+        execution_id: &str,
         content: &str,
     ) -> Result<(), WorkflowError> {
-        RunId::new(run_id.to_string())?;
+        WorkflowExecutionId::new(execution_id.to_string())?;
         if content.trim().is_empty() {
             return Err(WorkflowError::validation(
                 "approval chat content must not be empty",

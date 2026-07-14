@@ -358,7 +358,7 @@ describe("agentChatReducer", () => {
 			expect(next).toBe(INITIAL_STATE);
 		});
 
-		it("appends to step session in sessionsById when its id matches", () => {
+		it("appends to node session in sessionsById when its id matches", () => {
 			const state: AgentChatState = {
 				...INITIAL_STATE,
 				sessionsById: { "step-1": makeSession({ id: "step-1" }) },
@@ -628,7 +628,7 @@ describe("agentChatReducer", () => {
 			expect(next).toBe(INITIAL_STATE);
 		});
 
-		it("updates step session state in sessionsById when its id matches", () => {
+		it("updates node session state in sessionsById when its id matches", () => {
 			const state: AgentChatState = {
 				...INITIAL_STATE,
 				sessionsById: {

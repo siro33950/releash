@@ -1,12 +1,15 @@
-use crate::domain::workflow::{RunId, WorkflowDefinition, WorkflowError, WorkflowStateSnapshot};
+use crate::domain::workflow::{
+    WorkflowDefinition, WorkflowError, WorkflowExecution, WorkflowExecutionId,
+    WorkflowRuntimeSnapshot,
+};
 
 use super::command::{
-    AbortRunCommand, ApprovalCommand, ResolvedStartRunCommand, SubmitOutputCommand,
+    AbortExecutionCommand, ApprovalCommand, ResolvedStartExecutionCommand, SubmitOutputCommand,
 };
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkflowEventDraft {
-    pub run_id: String,
+    pub execution_id: String,
     pub event_kind: String,
     pub timestamp: f64,
     pub payload: serde_json::Value,
@@ -17,20 +20,17 @@ pub trait WorkflowEventRepository: Send + Sync {
     fn append(&self, event: &WorkflowEventDraft) -> Result<(), WorkflowError>;
     #[cfg(test)]
     fn append_batch(&self, events: &[WorkflowEventDraft]) -> Result<(), WorkflowError>;
-    fn read(&self, run_id: &RunId) -> Result<Vec<WorkflowEventDraft>, WorkflowError>;
-}
-
-pub trait WorkflowStateProjectionRepository: Send + Sync {
-    fn get_state(&self, run_id: &RunId) -> Result<Option<WorkflowStateSnapshot>, WorkflowError>;
-}
-
-pub trait WorkflowStepDetailProjectionRepository: Send + Sync {
-    fn get_step_detail(
+    fn read(
         &self,
-        run_id: &RunId,
-        node_name: &str,
-        run_index: Option<u32>,
-    ) -> Result<Option<serde_json::Value>, WorkflowError>;
+        execution_id: &WorkflowExecutionId,
+    ) -> Result<Vec<WorkflowEventDraft>, WorkflowError>;
+}
+
+pub trait WorkflowExecutionProjectionRepository: Send + Sync {
+    fn get_execution(
+        &self,
+        execution_id: &WorkflowExecutionId,
+    ) -> Result<Option<WorkflowExecution>, WorkflowError>;
 }
 
 pub trait WorkflowDefinitionSourceGateway: Send + Sync {
@@ -59,7 +59,7 @@ pub enum WorkflowSourceSaveError {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PendingWorkflowCommand {
     pub command_id: String,
-    pub run_id: String,
+    pub execution_id: String,
     pub requested_at: f64,
     pub payload: serde_json::Value,
 }
@@ -86,24 +86,24 @@ pub trait WorkflowConfigPathGateway: Send + Sync {
 }
 
 #[async_trait::async_trait]
-pub trait WorkflowStartRunGateway: Send + Sync {
-    async fn resolve_start_run_worktree(
+pub trait WorkflowStartExecutionGateway: Send + Sync {
+    async fn resolve_start_execution_worktree(
         &self,
         worktree_path: String,
     ) -> Result<String, WorkflowError>;
-    async fn resolve_start_run_workflow(
+    async fn resolve_start_execution_workflow(
         &self,
         workflow_file_stem: &str,
     ) -> Result<WorkflowDefinition, WorkflowError>;
-    async fn start_resolved_run(
+    async fn start_resolved_execution(
         &self,
-        command: ResolvedStartRunCommand,
+        command: ResolvedStartExecutionCommand,
     ) -> Result<String, WorkflowError>;
 }
 
 #[async_trait::async_trait]
-pub trait WorkflowAbortRunGateway: Send + Sync {
-    async fn abort_run(&self, command: AbortRunCommand) -> Result<(), WorkflowError>;
+pub trait WorkflowAbortExecutionGateway: Send + Sync {
+    async fn abort_execution(&self, command: AbortExecutionCommand) -> Result<(), WorkflowError>;
 }
 
 #[async_trait::async_trait]
@@ -146,14 +146,15 @@ pub trait WorkflowStallObservedGateway: Send + Sync {
 
 #[async_trait::async_trait]
 pub trait WorkflowRuntimeStateGateway: Send + Sync {
-    async fn get_state_by_run_id(
+    #[cfg(test)]
+    async fn get_state_by_execution_id(
         &self,
-        run_id: &str,
-    ) -> Result<Option<WorkflowStateSnapshot>, WorkflowError>;
+        execution_id: &str,
+    ) -> Result<Option<WorkflowRuntimeSnapshot>, WorkflowError>;
     async fn get_state_by_worktree(
         &self,
         worktree_path: &str,
-    ) -> Result<Option<WorkflowStateSnapshot>, WorkflowError>;
+    ) -> Result<Option<WorkflowRuntimeSnapshot>, WorkflowError>;
 }
 
 #[async_trait::async_trait]
@@ -165,7 +166,7 @@ pub trait WorkflowRuntimeShutdownGateway: Send + Sync {
 pub trait WorkflowApprovalChatGateway: Send + Sync {
     async fn resolve_approval_chat_target(
         &self,
-        run_id: &str,
+        execution_id: &str,
     ) -> Result<ApprovalChatTarget, WorkflowError>;
     async fn validate_approval_chat_instruction(
         &self,
@@ -175,8 +176,8 @@ pub trait WorkflowApprovalChatGateway: Send + Sync {
 }
 
 pub trait WorkflowRuntimeCommandGateway:
-    WorkflowStartRunGateway
-    + WorkflowAbortRunGateway
+    WorkflowStartExecutionGateway
+    + WorkflowAbortExecutionGateway
     + WorkflowApprovalGateway
     + WorkflowSubmitOutputGateway
     + WorkflowPendingRuntimeCommandGateway
@@ -189,8 +190,8 @@ pub trait WorkflowRuntimeCommandGateway:
 }
 
 impl<T> WorkflowRuntimeCommandGateway for T where
-    T: WorkflowStartRunGateway
-        + WorkflowAbortRunGateway
+    T: WorkflowStartExecutionGateway
+        + WorkflowAbortExecutionGateway
         + WorkflowApprovalGateway
         + WorkflowSubmitOutputGateway
         + WorkflowPendingRuntimeCommandGateway
@@ -268,7 +269,7 @@ pub struct WorkflowStallClearedCommand {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PendingRuntimeCommand {
-    pub run_id: String,
+    pub execution_id: String,
     pub request_id: String,
     pub requested_at: f64,
     pub payload: PendingRuntimeCommandPayload,
@@ -285,10 +286,10 @@ pub enum PendingRuntimeCommandPayload {
         node_name: Option<String>,
     },
     SubmitOutput {
-        step_name: String,
+        node_name: String,
         node_execution_id: Option<String>,
         contract: String,
-        structured_output: serde_json::Value,
+        artifact: serde_json::Value,
     },
 }
 

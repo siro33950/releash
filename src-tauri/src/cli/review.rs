@@ -999,7 +999,7 @@ mod tests {
                     "permissionMode":"edit",
                     "selectedModel":"gpt-5",
                     "backendId":"codex",
-                    "workflowStepSession":false
+                    "workflowNodeSession":false
                 }}"#
             ),
         )
@@ -1029,7 +1029,7 @@ mod tests {
                     "permissionMode":"edit",
                     "selectedModel":"gpt-5",
                     "backendId":"codex",
-                    "workflowStepSession":false,
+                    "workflowNodeSession":false,
                     "firstMessagePreview":"",
                     "messageCount":0,
                     "bodyFormatVersion":1

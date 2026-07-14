@@ -42,13 +42,13 @@ use crate::adaptor::gateway::workflow::{
 };
 use crate::adaptor::gateway::workflow::{
     RepositoryManagedWorktreeGateway, StoredWorkspaceSessionGateway,
-    TauriWorkflowExternalEditorGateway, TauriWorkflowRuntimeCommandGateway,
-    TauriWorkflowRuntimeCommandGatewayDeps, TauriWorkflowStepLifecycleGateway,
+    TauriNodeExecutionLifecycleGateway, TauriWorkflowExternalEditorGateway,
+    TauriWorkflowRuntimeCommandGateway, TauriWorkflowRuntimeCommandGatewayDeps,
     WorkflowConfigPathFileGateway, WorkflowDefinitionFileRepository,
     WorkflowDefinitionFileSourceGateway, WorkflowDiagnosticsFileGateway,
-    WorkflowEventLogRepository, WorkflowFacetFileRepository, WorkflowRunArchiveFileRepository,
-    WorkflowRunFileRepository, WorkflowSecretSourceConfigGateway,
-    WorkflowStateProjectionLogRepository, WorkflowStepDetailProjectionLogRepository,
+    WorkflowEventLogRepository, WorkflowExecutionArchiveFileRepository,
+    WorkflowExecutionFileRepository, WorkflowExecutionProjectionLogRepository,
+    WorkflowFacetFileRepository, WorkflowSecretSourceConfigGateway,
 };
 use crate::domain::app_config::{AgentConfigRepository, ConfigRepository, ConfigSecretRepository};
 use crate::domain::git_host::{CacheTtl, IssueInfo, PrStatus};
@@ -74,7 +74,7 @@ use crate::usecase::repository_usecase::RepositoryUsecase;
 use crate::usecase::workflow::ports::ExternalEditorGateway;
 use crate::usecase::workflow::query_service::WorkflowQueryService;
 use crate::usecase::workflow::{
-    WorkflowRuntimeUsecase, WorkflowStepLifecycleUsecase, WorkflowUsecase, WorkspaceSessionGateway,
+    NodeExecutionLifecycleUsecase, WorkflowRuntimeUsecase, WorkflowUsecase, WorkspaceSessionGateway,
 };
 
 pub(crate) fn build_agent_backend_registry(
@@ -264,8 +264,10 @@ fn build_workflow_usecase_with_gateways(
     let data_dir = data_dir.into();
     let workflows_dir = WorkflowDefinitionFileRepository::default_workflows_dir();
     let facets_base_dir = workflows_dir.clone();
-    let runs = Arc::new(WorkflowRunFileRepository::new(data_dir.clone()));
-    let archive_runs = Arc::new(WorkflowRunArchiveFileRepository::new(data_dir.clone()));
+    let executions = Arc::new(WorkflowExecutionFileRepository::new(data_dir.clone()));
+    let execution_archives = Arc::new(WorkflowExecutionArchiveFileRepository::new(
+        data_dir.clone(),
+    ));
     let definitions = Arc::new(WorkflowDefinitionFileRepository::new(
         workflows_dir.clone(),
         facets_base_dir.clone(),
@@ -276,21 +278,19 @@ fn build_workflow_usecase_with_gateways(
     ));
     let facets = Arc::new(WorkflowFacetFileRepository::new(facets_base_dir.clone()));
     let events = Arc::new(WorkflowEventLogRepository::new(data_dir.clone()));
-    let state_projection = Arc::new(WorkflowStateProjectionLogRepository::new(data_dir.clone()));
-    let step_details = Arc::new(WorkflowStepDetailProjectionLogRepository::new(data_dir));
+    let execution_projection = Arc::new(WorkflowExecutionProjectionLogRepository::new(data_dir));
     let diagnostics = Arc::new(WorkflowDiagnosticsFileGateway::new(
         workflows_dir.clone(),
         facets_base_dir,
     ));
     let config_paths = Arc::new(WorkflowConfigPathFileGateway::new(workflows_dir));
     let query = WorkflowQueryService::new(
-        runs,
+        executions,
         definitions.clone(),
         definition_sources.clone(),
         facets.clone(),
         events,
-        state_projection,
-        step_details,
+        execution_projection,
     );
     WorkflowUsecase::new(
         query,
@@ -303,7 +303,7 @@ fn build_workflow_usecase_with_gateways(
         config_paths,
         secrets,
         sessions,
-        archive_runs,
+        execution_archives,
     )
 }
 
@@ -316,19 +316,19 @@ pub(crate) fn build_workflow_runtime_usecase(
     ))
 }
 
-pub(crate) fn build_workflow_step_lifecycle_usecase(
+pub(crate) fn build_node_execution_lifecycle_usecase(
     app: tauri::AppHandle,
     session_store: Arc<SessionStore>,
     agent_runtime: Arc<AgentSessionRuntimeUsecase>,
     open_tabs: Arc<OpenTabRegistry>,
-) -> WorkflowStepLifecycleUsecase {
-    let gateway = Arc::new(TauriWorkflowStepLifecycleGateway::new(
+) -> NodeExecutionLifecycleUsecase {
+    let gateway = Arc::new(TauriNodeExecutionLifecycleGateway::new(
         app,
         session_store,
         agent_runtime,
         open_tabs,
     ));
-    WorkflowStepLifecycleUsecase::new(gateway.clone(), gateway)
+    NodeExecutionLifecycleUsecase::new(gateway.clone(), gateway)
 }
 
 pub(crate) fn spawn_workflow_pending_command_watcher(app: tauri::AppHandle, data_dir: PathBuf) {

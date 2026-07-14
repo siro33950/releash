@@ -3,16 +3,16 @@
 use std::collections::HashMap;
 
 use crate::domain::workflow::value_objects::{
-    default_step_entry_state, ChildOutputSnapshot, FailureDisposition, ItemsSource,
-    StepHistoryEntry, StepOutput, TokenUsage, WorkflowDefinition, WorkflowStepFailureKind,
+    default_node_history_status, FailureDisposition, FanoutChildSnapshot, ItemsSource,
+    NodeExecutionFailureKind, NodeHistoryEntry, RuntimeArtifact, TokenUsage, WorkflowDefinition,
 };
 use crate::domain::workflow::WorkflowError;
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg(test)]
 pub struct FanoutChildOutputMerge {
-    pub structured_output: Option<serde_json::Value>,
-    pub artifact_contract: Option<String>,
+    pub artifact: Option<serde_json::Value>,
+    pub contract: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -21,19 +21,19 @@ pub struct FanoutChildCompletionInput {
     pub session_id: Option<String>,
     pub result: Option<String>,
     pub artifact: serde_json::Value,
-    pub artifact_contract: Option<String>,
+    pub contract: Option<String>,
     pub token_usage: TokenUsage,
     pub attempt: u32,
     pub completed_at: f64,
     pub state: String,
-    pub failure_kind: Option<WorkflowStepFailureKind>,
+    pub failure_kind: Option<NodeExecutionFailureKind>,
     pub failure_disposition: Option<FailureDisposition>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FanoutParentCompletionPlan {
-    pub parent_step_output: StepOutput,
-    pub history_entry: StepHistoryEntry,
+    pub parent_step_output: RuntimeArtifact,
+    pub history_entry: NodeHistoryEntry,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -52,27 +52,27 @@ pub struct FanoutExpansionPlan {
 
 #[cfg(test)]
 pub fn merge_fanout_child_completion_output(
-    completed_structured_output: Option<serde_json::Value>,
-    prior_structured_output: Option<serde_json::Value>,
-    prior_artifact_contract: Option<String>,
+    completed_artifact: Option<serde_json::Value>,
+    prior_artifact: Option<serde_json::Value>,
+    prior_contract: Option<String>,
 ) -> FanoutChildOutputMerge {
     FanoutChildOutputMerge {
-        structured_output: completed_structured_output.or(prior_structured_output),
-        artifact_contract: prior_artifact_contract,
+        artifact: completed_artifact.or(prior_artifact),
+        contract: prior_contract,
     }
 }
 
 fn resolve_fanout_items(
     source: Option<&ItemsSource>,
-    step_outputs: &HashMap<String, StepOutput>,
+    artifacts: &HashMap<String, RuntimeArtifact>,
 ) -> Result<Option<Vec<serde_json::Value>>, WorkflowError> {
     match source {
         None => Ok(None),
         Some(ItemsSource::Literal(items)) => Ok(Some(items.clone())),
         Some(ItemsSource::ArtifactField { node, field }) => {
-            let value = step_outputs
+            let value = artifacts
                 .get(node)
-                .and_then(|output| output.structured_output.as_ref())
+                .and_then(|output| output.artifact.as_ref())
                 .and_then(serde_json::Value::as_object)
                 .and_then(|artifact| artifact.get(field))
                 .ok_or_else(|| {
@@ -109,10 +109,10 @@ pub fn plan_fanout_expansion(
     workflow: &WorkflowDefinition,
     child_names: &[String],
     items_source: Option<&ItemsSource>,
-    step_outputs: &HashMap<String, StepOutput>,
+    artifacts: &HashMap<String, RuntimeArtifact>,
     counts: &HashMap<String, u32>,
 ) -> Result<FanoutExpansionPlan, WorkflowError> {
-    let items = resolve_fanout_items(items_source, step_outputs)?;
+    let items = resolve_fanout_items(items_source, artifacts)?;
     let coordinates = match items {
         Some(items) => items
             .into_iter()
@@ -187,16 +187,16 @@ pub fn plan_fanout_parent_completion(
             .collect(),
     );
 
-    let child_outputs = children
+    let fanout_children = children
         .iter()
-        .map(|child| ChildOutputSnapshot {
-            step_name: child.node_name.clone(),
+        .map(|child| FanoutChildSnapshot {
+            node_name: child.node_name.clone(),
             session_id: child.session_id.clone(),
             result: child.result.clone(),
-            run_index: child.attempt,
+            attempt: child.attempt,
             completed_at: child.completed_at,
-            structured_output: Some(child.artifact.clone()),
-            artifact_contract: child.artifact_contract.clone(),
+            artifact: Some(child.artifact.clone()),
+            contract: child.contract.clone(),
             state: child.state.clone(),
             failure_kind: child.failure_kind,
             failure_disposition: child.failure_disposition,
@@ -204,26 +204,26 @@ pub fn plan_fanout_parent_completion(
         .collect();
 
     FanoutParentCompletionPlan {
-        parent_step_output: StepOutput {
-            step_name: parent_node_name.to_string(),
-            run_index: parent_attempt,
+        parent_step_output: RuntimeArtifact {
+            node_name: parent_node_name.to_string(),
+            attempt: parent_attempt,
             session_id: None,
             result: None,
-            structured_output: Some(parent_artifact.clone()),
-            artifact_contract: None,
+            artifact: Some(parent_artifact.clone()),
+            contract: None,
             token_usage: Some(combined_tokens.clone()),
             completed_at: timestamp,
         },
-        history_entry: StepHistoryEntry {
-            step_name: parent_node_name.to_string(),
+        history_entry: NodeHistoryEntry {
+            node_name: parent_node_name.to_string(),
             completed_at: timestamp,
             result: Some("complete".to_string()),
             session_id: None,
             token_usage: Some(combined_tokens),
-            structured_output: Some(parent_artifact),
-            run_index: parent_attempt,
-            child_outputs: Some(child_outputs),
-            state: default_step_entry_state(),
+            artifact: Some(parent_artifact),
+            attempt: parent_attempt,
+            fanout_children: Some(fanout_children),
+            state: default_node_history_status(),
         },
     }
 }
@@ -232,20 +232,20 @@ pub fn plan_fanout_parent_completion(
 mod parallel_tests {
     use super::*;
 
-    fn completed_child(step_name: &str, result: Option<&str>) -> FanoutChildCompletionInput {
+    fn completed_child(node_name: &str, result: Option<&str>) -> FanoutChildCompletionInput {
         FanoutChildCompletionInput {
-            node_name: step_name.to_string(),
-            session_id: Some(format!("session-{step_name}")),
+            node_name: node_name.to_string(),
+            session_id: Some(format!("session-{node_name}")),
             result: result.map(str::to_string),
-            artifact: serde_json::json!({ "node": step_name }),
-            artifact_contract: Some("review".to_string()),
+            artifact: serde_json::json!({ "node": node_name }),
+            contract: Some("review".to_string()),
             token_usage: TokenUsage {
                 input_tokens: 2,
                 output_tokens: 3,
             },
             attempt: 1,
             completed_at: 10.0,
-            state: default_step_entry_state(),
+            state: default_node_history_status(),
             failure_kind: None,
             failure_disposition: None,
         }
@@ -341,7 +341,7 @@ mod parallel_tests {
         ];
         let plan = plan_fanout_parent_completion("parallel-review", 2, &children, 12.0);
 
-        assert_eq!(plan.history_entry.step_name, "parallel-review");
+        assert_eq!(plan.history_entry.node_name, "parallel-review");
         assert_eq!(plan.history_entry.result.as_deref(), Some("complete"));
         assert_eq!(
             plan.history_entry
@@ -352,14 +352,14 @@ mod parallel_tests {
         );
         assert_eq!(
             plan.parent_step_output
-                .structured_output
+                .artifact
                 .as_ref()
                 .and_then(|value| value.as_array())
                 .map(Vec::len),
             Some(2)
         );
         assert_eq!(
-            plan.parent_step_output.structured_output,
+            plan.parent_step_output.artifact,
             Some(serde_json::json!([
                 { "node": "review-a" },
                 { "node": "review-b" }
@@ -376,14 +376,14 @@ mod parallel_tests {
         );
 
         assert_eq!(
-            merge.structured_output,
+            merge.artifact,
             Some(serde_json::json!({ "verdict": "LGTM" }))
         );
-        assert_eq!(merge.artifact_contract.as_deref(), Some("review-contract"));
+        assert_eq!(merge.contract.as_deref(), Some("review-contract"));
     }
 
     #[test]
-    fn merge_fanout_child_completion_output_prefers_completed_structured_output() {
+    fn merge_fanout_child_completion_output_prefers_completed_artifact() {
         let merge = merge_fanout_child_completion_output(
             Some(serde_json::json!({ "verdict": "NEEDS_FIX" })),
             Some(serde_json::json!({ "verdict": "LGTM" })),
@@ -391,9 +391,9 @@ mod parallel_tests {
         );
 
         assert_eq!(
-            merge.structured_output,
+            merge.artifact,
             Some(serde_json::json!({ "verdict": "NEEDS_FIX" }))
         );
-        assert_eq!(merge.artifact_contract.as_deref(), Some("review-contract"));
+        assert_eq!(merge.contract.as_deref(), Some("review-contract"));
     }
 }

@@ -77,7 +77,7 @@ pub type SessionReaderPort = dyn AgentSessionReader<
     + Sync;
 
 /// テストで session 保存パスへ失敗を注入するためのフック。
-/// workflow step session の作成ロールバック経路（並列子ステップの save 失敗等）を
+/// workflow node session の作成ロールバック経路（fanout child node の save 失敗等）を
 /// 検証するために用いる。
 #[cfg(test)]
 pub(crate) type SessionSaveHook = Arc<dyn Fn(&ChatSession) -> Result<(), String> + Send + Sync>;
@@ -307,8 +307,8 @@ impl SessionStore {
         session_id: &str,
     ) -> Result<(), String> {
         let meta = self.require_meta(app_data_dir, session_id)?;
-        if meta.workflow_step_session {
-            return Err("Workflow step sessions cannot be archived".to_string());
+        if meta.workflow_node_session {
+            return Err("Workflow node sessions cannot be archived".to_string());
         }
         self.set_session_state(app_data_dir, session_id, SessionState::Archived)
     }
@@ -333,8 +333,8 @@ impl SessionStore {
         title: Option<&str>,
     ) -> Result<SessionSummary, String> {
         let meta = self.require_meta(app_data_dir, session_id)?;
-        if meta.workflow_step_session {
-            return Err("Workflow step sessions cannot be renamed".to_string());
+        if meta.workflow_node_session {
+            return Err("Workflow node sessions cannot be renamed".to_string());
         }
 
         let title_for_summary = title
@@ -356,8 +356,8 @@ impl SessionStore {
         session_id: &str,
     ) -> Result<ChatSession, String> {
         let parent_meta = self.require_meta(app_data_dir, session_id)?;
-        if parent_meta.workflow_step_session {
-            return Err("Workflow step sessions cannot be forked".to_string());
+        if parent_meta.workflow_node_session {
+            return Err("Workflow node sessions cannot be forked".to_string());
         }
 
         let now = now_timestamp();
@@ -368,7 +368,7 @@ impl SessionStore {
         forked_meta.updated_at = now;
         forked_meta.agent_session_id = None;
         forked_meta.context_carry = None;
-        forked_meta.workflow_step_session = false;
+        forked_meta.workflow_node_session = false;
 
         self.storage
             .fork_session_layout(app_data_dir, session_id, &forked_meta)?;

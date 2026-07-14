@@ -85,7 +85,7 @@ mod tests {
         usecase
             .enqueue_pending_command(PendingWorkflowCommand {
                 command_id: "cmd-1".to_string(),
-                run_id: "00000000-0000-4000-8000-000000000034".to_string(),
+                execution_id: "00000000-0000-4000-8000-000000000034".to_string(),
                 requested_at: 1.0,
                 payload: serde_json::json!({"kind":"approve"}),
             })
