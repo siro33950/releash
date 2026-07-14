@@ -65,11 +65,11 @@ pub enum PendingCommandPayload {
     /// [08] `releash workflow output submit` 経由で書き出される構造化出力提出。
     /// engine 側 dispatcher が submit-output runtime primitive に変換する。
     SubmitOutput {
-        step_name: String,
+        node_name: String,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         node_execution_id: Option<String>,
         contract: String,
-        structured_output: serde_json::Value,
+        artifact: serde_json::Value,
     },
 }
 
@@ -81,8 +81,8 @@ pub type CliRequestPayload = PendingCommandPayload;
 pub struct PendingCommand {
     /// この pending entry のユニーク ID（重複検知 / 処理済みマーキング用途）。
     pub id: String,
-    /// 対象 run の run_id（UUID）。
-    pub run_id: String,
+    /// 対象 execution の execution_id（UUID）。
+    pub execution_id: String,
     pub payload: PendingCommandPayload,
     /// CLI が pending command を書き出した時刻（Unix 秒）。TTL 判定と
     /// `CliMutationRequested.requested_at` の値として再利用される。
@@ -92,10 +92,10 @@ pub struct PendingCommand {
 impl PendingCommand {
     /// 新規 pending entry を生成する。`id` は内部で UUID v4 を払い出す。
     #[cfg(test)]
-    pub fn new(run_id: String, payload: PendingCommandPayload, requested_at: f64) -> Self {
+    pub fn new(execution_id: String, payload: PendingCommandPayload, requested_at: f64) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
-            run_id,
+            execution_id,
             payload,
             requested_at,
         }
@@ -232,16 +232,16 @@ impl PendingCommandStore {
             match read_pending_file(&path) {
                 Ok(command)
                     if validate_command_id(&command.id).is_ok()
-                        && validate_run_id(&command.run_id).is_ok() =>
+                        && validate_execution_id(&command.execution_id).is_ok() =>
                 {
                     entries.push(PendingCommandEntry { command, path })
                 }
                 Ok(command) => {
                     log::warn!(
-                        "pending command file skipped (invalid id or run_id): {} (id={}, run_id={})",
+                        "pending command file skipped (invalid id or execution_id): {} (id={}, execution_id={})",
                         path.display(),
                         command.id,
-                        command.run_id
+                        command.execution_id
                     );
                 }
                 Err(e) => {
@@ -408,7 +408,7 @@ impl PendingCommandStore {
             let should_remove = match read_pending_file(&path) {
                 Ok(command) => {
                     validate_command_id(&command.id).is_err()
-                        || validate_run_id(&command.run_id).is_err()
+                        || validate_execution_id(&command.execution_id).is_err()
                         || is_expired_or_clock_skewed(command.requested_at, now, ttl_secs)
                 }
                 Err(e) => {
@@ -446,7 +446,7 @@ impl PendingCommandStore {
     }
 
     #[cfg(test)]
-    pub(crate) fn gc_delete_paths_for_run(&self, run_id: &str) -> Vec<PathBuf> {
+    pub(crate) fn gc_delete_paths_for_execution(&self, execution_id: &str) -> Vec<PathBuf> {
         let mut paths = Vec::new();
         for dir in [&self.pending_dir, &self.processing_dir, &self.processed_dir] {
             let Ok(entries) = fs::read_dir(dir) else {
@@ -458,7 +458,7 @@ impl PendingCommandStore {
                     continue;
                 }
                 match read_pending_file(&path) {
-                    Ok(command) if command.run_id == run_id => paths.push(path),
+                    Ok(command) if command.execution_id == execution_id => paths.push(path),
                     Ok(_) => {}
                     Err(error) => {
                         log::warn!(
@@ -472,8 +472,8 @@ impl PendingCommandStore {
         paths
     }
 
-    pub(crate) fn gc_delete_paths_by_run(&self) -> HashMap<String, Vec<PathBuf>> {
-        let mut paths_by_run: HashMap<String, Vec<PathBuf>> = HashMap::new();
+    pub(crate) fn gc_delete_paths_by_execution(&self) -> HashMap<String, Vec<PathBuf>> {
+        let mut paths_by_execution: HashMap<String, Vec<PathBuf>> = HashMap::new();
         for dir in [&self.pending_dir, &self.processing_dir, &self.processed_dir] {
             let Ok(entries) = fs::read_dir(dir) else {
                 continue;
@@ -485,7 +485,10 @@ impl PendingCommandStore {
                 }
                 match read_pending_file(&path) {
                     Ok(command) => {
-                        paths_by_run.entry(command.run_id).or_default().push(path);
+                        paths_by_execution
+                            .entry(command.execution_id)
+                            .or_default()
+                            .push(path);
                     }
                     Err(error) => {
                         log::warn!(
@@ -496,7 +499,7 @@ impl PendingCommandStore {
                 }
             }
         }
-        paths_by_run
+        paths_by_execution
     }
 }
 
@@ -641,11 +644,11 @@ fn validate_command_id(id: &str) -> io::Result<()> {
     })
 }
 
-fn validate_run_id(run_id: &str) -> io::Result<()> {
-    Uuid::parse_str(run_id).map(|_| ()).map_err(|_| {
+fn validate_execution_id(execution_id: &str) -> io::Result<()> {
+    Uuid::parse_str(execution_id).map(|_| ()).map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidData,
-            "pending command run_id must be UUID",
+            "pending command execution_id must be UUID",
         )
     })
 }
@@ -814,7 +817,7 @@ mod tests {
         assert_eq!(removed, 1, "only the aged entry should be removed");
         let remaining = store.list_pending().unwrap();
         assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].command.run_id, test_uuid(4));
+        assert_eq!(remaining[0].command.execution_id, test_uuid(4));
     }
 
     /// spec [06] Rule: pending payload の typed shape は pending file の owner 境界で
@@ -826,10 +829,10 @@ mod tests {
             abort_payload(Some("review")),
             abort_payload(None),
             CliRequestPayload::SubmitOutput {
-                step_name: "review".to_string(),
+                node_name: "review".to_string(),
                 node_execution_id: Some("node-execution-review".to_string()),
                 contract: "review-verdict".to_string(),
-                structured_output: serde_json::json!({"verdict": "LGTM"}),
+                artifact: serde_json::json!({"verdict": "LGTM"}),
             },
         ] {
             let cmd = PendingCommand::new(test_uuid(10), p.clone(), 1.0);
@@ -843,7 +846,7 @@ mod tests {
     fn payload_accepts_missing_node_execution_id_for_single_name_fallback() {
         let json = serde_json::json!({
             "id": test_uuid(13),
-            "run_id": test_uuid(14),
+            "execution_id": test_uuid(14),
             "payload": {
                 "kind": "approve",
                 "node_name": "review"
@@ -867,7 +870,7 @@ mod tests {
         for removed_kind in ["reject", "rerun"] {
             let json = serde_json::json!({
                 "id": test_uuid(11),
-                "run_id": test_uuid(12),
+                "execution_id": test_uuid(12),
                 "payload": {
                     "kind": removed_kind,
                     "node_name": "review",
@@ -927,7 +930,7 @@ mod tests {
         std::fs::write(&garbage, b"not json").unwrap();
         let entries = store.list_pending().unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].command.run_id, test_uuid(8));
+        assert_eq!(entries[0].command.execution_id, test_uuid(8));
     }
 
     #[test]

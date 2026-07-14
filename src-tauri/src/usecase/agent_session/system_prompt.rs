@@ -57,7 +57,7 @@ pub(crate) fn build_session_system_prompt(
             mentions: request.mentions,
             editor_context: request.editor_context,
             read_file_paths,
-            workflow_state: workflow_state_payload(request.session.workflow_step_context.as_ref()),
+            workflow_state: workflow_state_payload(request.session.workflow_node_context.as_ref()),
             workflow_instructions: merged_workflow_instructions.clone(),
         },
     );
@@ -102,7 +102,7 @@ fn cached_or_restored_agent_read_paths(
 }
 
 fn workflow_state_payload(
-    context: Option<&crate::usecase::agent_session::session::WorkflowStepContextDto>,
+    context: Option<&crate::usecase::agent_session::session::WorkflowNodeContextDto>,
 ) -> Option<String> {
     context.and_then(|context| serde_json::to_string(context).ok())
 }

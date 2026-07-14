@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::adaptor::gateway::workflow::domain_mapping::{
-    step_history_entry_from_domain, step_output_from_domain, step_outputs_to_domain,
+    artifacts_to_domain, node_history_entry_from_domain, runtime_artifact_from_domain,
     token_usage_to_domain, workflow_definition_to_domain,
 };
 use crate::adaptor::gateway::workflow::engine_error::{
@@ -9,10 +9,10 @@ use crate::adaptor::gateway::workflow::engine_error::{
 };
 use crate::adaptor::gateway::workflow::event::FanoutParentRef;
 use crate::adaptor::gateway::workflow::runtime_state::{
-    ParallelChildRun, ParallelChildState, ParallelRunState, WorkflowExecution,
+    FanoutChildRuntime, FanoutChildRuntimeState, FanoutRuntimeState, WorkflowExecution,
 };
 use crate::adaptor::gateway::workflow::schema::NodeDefinition;
-use crate::adaptor::gateway::workflow::state::{StepOutput, TokenUsage, WorkflowState};
+use crate::adaptor::gateway::workflow::state::{RuntimeArtifact, TokenUsage, WorkflowState};
 use crate::adaptor::gateway::workflow::step_settings::WorkflowDefaults;
 use crate::domain::workflow::services::parallel as workflow_parallel;
 
@@ -29,18 +29,18 @@ pub(crate) struct FanoutChildExpansion {
 #[derive(Debug, Clone)]
 pub(crate) struct FanoutStartContext {
     pub(crate) children: Vec<FanoutChildExpansion>,
-    pub(crate) parent_step_name: String,
-    pub(crate) parent_run_index: u32,
+    pub(crate) parent_node_name: String,
+    pub(crate) parent_attempt: u32,
     pub(crate) order: u32,
     pub(crate) execution_id: String,
     pub(crate) workflow_name: String,
-    pub(crate) task: Option<String>,
+    pub(crate) request: Option<String>,
     pub(crate) workflow_defaults: WorkflowDefaults,
 }
 
 impl FanoutStartContext {
     #[cfg(test)]
-    pub(crate) fn child_step_names(&self) -> Vec<String> {
+    pub(crate) fn child_node_names(&self) -> Vec<String> {
         self.children
             .iter()
             .map(|child| child.node.name.clone())
@@ -50,12 +50,12 @@ impl FanoutStartContext {
 
 #[derive(Debug, Clone)]
 pub(crate) struct FanoutPromptInputs {
-    pub(crate) step_outputs: HashMap<String, StepOutput>,
+    pub(crate) artifacts: HashMap<String, RuntimeArtifact>,
 }
 
 pub(crate) struct FanoutChildSessionSetup {
     pub(crate) node_execution_id: String,
-    pub(crate) step_name: String,
+    pub(crate) node_name: String,
     pub(crate) session_id: String,
     pub(crate) system_prompt: Option<String>,
     pub(crate) workflow_instruction: Option<String>,
@@ -69,11 +69,11 @@ pub(crate) fn prepare_fanout_start_context(
     let step = exec
         .workflow
         .nodes
-        .get(exec.current_step_index)
+        .get(exec.current_node_index)
         .ok_or_else(|| {
             WorkflowEngineError::InvalidState(format!(
-                "current_step_index {} is out of bounds for workflow '{}'",
-                exec.current_step_index, exec.workflow.name
+                "current_node_index {} is out of bounds for workflow '{}'",
+                exec.current_node_index, exec.workflow.name
             ))
         })?;
     let fanout = step.fanout().ok_or_else(|| {
@@ -88,20 +88,20 @@ pub(crate) fn prepare_fanout_start_context(
             step.name
         )));
     }
-    let parent_run_index = exec
-        .step_execution_counts
+    let parent_attempt = exec
+        .node_execution_counts
         .get(&step.name)
         .copied()
         .unwrap_or(1);
     let domain_workflow = workflow_definition_to_domain(&exec.workflow);
-    let domain_step_outputs = step_outputs_to_domain(&exec.step_outputs);
+    let domain_artifacts = artifacts_to_domain(&exec.artifacts);
     let domain_step = domain_workflow
         .nodes
-        .get(exec.current_step_index)
+        .get(exec.current_node_index)
         .ok_or_else(|| {
             WorkflowEngineError::InvalidState(format!(
-                "current_step_index {} is out of bounds for workflow '{}'",
-                exec.current_step_index, exec.workflow.name
+                "current_node_index {} is out of bounds for workflow '{}'",
+                exec.current_node_index, exec.workflow.name
             ))
         })?;
     let domain_fanout = domain_step.fanout().ok_or_else(|| {
@@ -114,8 +114,8 @@ pub(crate) fn prepare_fanout_start_context(
         &domain_workflow,
         &domain_fanout.child,
         domain_fanout.items.as_ref(),
-        &domain_step_outputs,
-        &exec.step_execution_counts,
+        &domain_artifacts,
+        &exec.node_execution_counts,
     )
     .map_err(workflow_error_to_engine_error)?;
     let children = expansion_plan
@@ -145,24 +145,24 @@ pub(crate) fn prepare_fanout_start_context(
         })
         .collect::<Result<Vec<_>, WorkflowEngineError>>()?;
     Ok(FanoutStartContext {
-        parent_step_name: step.name.clone(),
-        parent_run_index,
-        order: exec.step_history.len() as u32,
+        parent_node_name: step.name.clone(),
+        parent_attempt,
+        order: exec.node_history.len() as u32,
         children,
         execution_id: exec.id.clone(),
         workflow_name: exec.workflow.name.clone(),
-        task: exec.task.clone(),
+        request: exec.request.clone(),
         workflow_defaults: exec.workflow_defaults.clone(),
     })
 }
 
 pub(crate) fn fanout_prompt_inputs(exec: &WorkflowExecution) -> FanoutPromptInputs {
     FanoutPromptInputs {
-        step_outputs: exec.step_outputs.clone(),
+        artifacts: exec.artifacts.clone(),
     }
 }
 
-pub(crate) fn apply_fanout_run_state(
+pub(crate) fn apply_fanout_runtime_state(
     exec: &mut WorkflowExecution,
     fanout_start: &FanoutStartContext,
     session_setups: &[FanoutChildSessionSetup],
@@ -174,14 +174,14 @@ pub(crate) fn apply_fanout_run_state(
         .ok_or_else(|| {
             WorkflowEngineError::InvalidState(format!(
                 "active fanout parent NodeExecution for '{}' is unavailable",
-                fanout_start.parent_step_name
+                fanout_start.parent_node_name
             ))
         })?;
     let children = fanout_start
         .children
         .iter()
         .map(|child| {
-            exec.step_execution_counts
+            exec.node_execution_counts
                 .entry(child.node.name.clone())
                 .and_modify(|attempt| *attempt = (*attempt).max(child.attempt))
                 .or_insert(child.attempt);
@@ -190,8 +190,8 @@ pub(crate) fn apply_fanout_run_state(
                 child.node.kind_name(),
                 child.attempt,
                 Some(FanoutParentRef {
-                    parent_node: fanout_start.parent_step_name.clone(),
-                    parent_attempt: fanout_start.parent_run_index,
+                    parent_node: fanout_start.parent_node_name.clone(),
+                    parent_attempt: fanout_start.parent_attempt,
                     item_index: child.item_index,
                     child_index: child.child_index,
                 }),
@@ -212,24 +212,24 @@ pub(crate) fn apply_fanout_run_state(
                     execution.session_id = Some(session_id.clone());
                 }
             }
-            ParallelChildRun {
+            FanoutChildRuntime {
                 node_execution_id: child.node_execution_id.clone(),
-                step_name: child.node.name.clone(),
+                node_name: child.node.name.clone(),
                 session_id,
-                state: ParallelChildState::Running,
+                state: FanoutChildRuntimeState::Running,
                 result: None,
-                structured_output: None,
-                artifact_contract: child.node.artifact.clone(),
+                artifact: None,
+                contract: child.node.artifact.clone(),
                 failure_kind: None,
                 failure_disposition: None,
                 token_usage: TokenUsage::default(),
-                run_index: child.attempt,
+                attempt: child.attempt,
                 completed_at: None,
             }
         })
         .collect();
-    exec.parallel_run = Some(ParallelRunState {
-        parent_step_name: fanout_start.parent_step_name.clone(),
+    exec.parallel_run = Some(FanoutRuntimeState {
+        parent_node_name: fanout_start.parent_node_name.clone(),
         parent_node_execution_id,
         children,
     });
@@ -238,35 +238,36 @@ pub(crate) fn apply_fanout_run_state(
 }
 
 pub(crate) struct FanoutParentCompletionPlan {
-    pub(crate) parent_step_output: StepOutput,
-    pub(crate) history_entry: crate::adaptor::gateway::workflow::state::StepHistoryEntry,
+    pub(crate) parent_step_output: RuntimeArtifact,
+    pub(crate) history_entry: crate::adaptor::gateway::workflow::state::NodeHistoryEntry,
 }
 
 pub(crate) fn plan_fanout_parent_completion(
-    parent_step_name: &str,
-    parent_run_index: u32,
-    children: &[ParallelChildRun],
+    parent_node_name: &str,
+    parent_attempt: u32,
+    children: &[FanoutChildRuntime],
     timestamp: f64,
 ) -> FanoutParentCompletionPlan {
     let children: Vec<workflow_parallel::FanoutChildCompletionInput> = children
         .iter()
         .map(|child| workflow_parallel::FanoutChildCompletionInput {
-            node_name: child.step_name.clone(),
+            node_name: child.node_name.clone(),
             session_id: (!child.session_id.is_empty()).then(|| child.session_id.clone()),
             result: child.result.clone(),
-            artifact: child
-                .structured_output
-                .clone()
-                .unwrap_or(serde_json::Value::Null),
-            artifact_contract: child.artifact_contract.clone(),
+            artifact: child.artifact.clone().unwrap_or(serde_json::Value::Null),
+            contract: child.contract.clone(),
             token_usage: token_usage_to_domain(&child.token_usage),
-            attempt: child.run_index,
+            attempt: child.attempt,
             completed_at: child.completed_at.unwrap_or(timestamp),
             state: match child.state {
-                ParallelChildState::Running => crate::domain::workflow::STEP_STATE_RUNNING,
-                ParallelChildState::Completed => crate::domain::workflow::STEP_STATE_COMPLETED,
-                ParallelChildState::Failed => crate::domain::workflow::STEP_STATE_FAILED,
-                ParallelChildState::Interrupted => crate::domain::workflow::STEP_STATE_INTERRUPTED,
+                FanoutChildRuntimeState::Running => crate::domain::workflow::NODE_STATUS_RUNNING,
+                FanoutChildRuntimeState::Completed => {
+                    crate::domain::workflow::NODE_STATUS_COMPLETED
+                }
+                FanoutChildRuntimeState::Failed => crate::domain::workflow::NODE_STATUS_FAILED,
+                FanoutChildRuntimeState::Interrupted => {
+                    crate::domain::workflow::NODE_STATUS_INTERRUPTED
+                }
             }
             .to_string(),
             failure_kind: child.failure_kind,
@@ -274,14 +275,14 @@ pub(crate) fn plan_fanout_parent_completion(
         })
         .collect();
     let plan = workflow_parallel::plan_fanout_parent_completion(
-        parent_step_name,
-        parent_run_index,
+        parent_node_name,
+        parent_attempt,
         &children,
         timestamp,
     );
     FanoutParentCompletionPlan {
-        parent_step_output: step_output_from_domain(plan.parent_step_output),
-        history_entry: step_history_entry_from_domain(plan.history_entry),
+        parent_step_output: runtime_artifact_from_domain(plan.parent_step_output),
+        history_entry: node_history_entry_from_domain(plan.history_entry),
     }
 }
 
@@ -291,7 +292,7 @@ mod tests {
     use crate::adaptor::gateway::workflow::schema::{
         CommandSpec, FanoutSpec, ItemsSource, NodeDefinition, NodeKind, SessionSpec, Workflow,
     };
-    use crate::adaptor::gateway::workflow::state::WorkflowExecutionState;
+    use crate::adaptor::gateway::workflow::state::RuntimeExecutionState;
 
     fn workflow_execution_fixture(node: NodeDefinition) -> WorkflowExecution {
         workflow_execution_with_nodes(vec![node])
@@ -307,22 +308,24 @@ mod tests {
                 schemas: Default::default(),
                 nodes,
             },
-            state: WorkflowExecutionState::Running,
-            current_step_index: 0,
-            step_execution_counts: HashMap::new(),
-            step_history: Vec::new(),
+            state: RuntimeExecutionState::Running,
+            current_node_index: 0,
+            node_execution_counts: HashMap::new(),
+            node_history: Vec::new(),
             workflow_defaults: WorkflowDefaults {
                 backend_id: Some("backend-1".to_string()),
                 permission_mode: "ask".to_string(),
             },
             worktree_path: "/tmp/repo".to_string(),
+            created_from: crate::domain::workflow::ExecutionOrigin::Cli,
+            error_reason: None,
             started_at: 1.0,
             updated_at: 1.0,
             current_session_id: None,
             current_step_token_usage: TokenUsage::default(),
-            step_outputs: HashMap::new(),
+            artifacts: HashMap::new(),
             node_executions: Vec::new(),
-            task: Some("ship it".to_string()),
+            request: Some("ship it".to_string()),
             parallel_run: None,
             current_stall_observations: Vec::new(),
         }
@@ -353,7 +356,7 @@ mod tests {
     ) {
         let parent_node_execution_id = exec.start_current_node_execution(1.5);
 
-        apply_fanout_run_state(exec, context, &[], 2.0).unwrap();
+        apply_fanout_runtime_state(exec, context, &[], 2.0).unwrap();
 
         let fanout_run = exec.parallel_run.as_ref().unwrap();
         assert_eq!(
@@ -375,8 +378,8 @@ mod tests {
             assert_eq!(
                 execution.fanout_parent.as_ref().unwrap(),
                 &FanoutParentRef {
-                    parent_node: context.parent_step_name.clone(),
-                    parent_attempt: context.parent_run_index,
+                    parent_node: context.parent_node_name.clone(),
+                    parent_attempt: context.parent_attempt,
                     item_index: expansion.item_index,
                     child_index: expansion.child_index,
                 }
@@ -402,12 +405,12 @@ mod tests {
 
         assert_eq!(context.execution_id, "run-1");
         assert_eq!(context.workflow_name, "test-workflow");
-        assert_eq!(context.parent_step_name, "fanout-review");
+        assert_eq!(context.parent_node_name, "fanout-review");
         assert_eq!(
-            context.child_step_names(),
+            context.child_node_names(),
             vec!["review-a".to_string(), "review-b".to_string()]
         );
-        assert_eq!(context.task.as_deref(), Some("ship it"));
+        assert_eq!(context.request.as_deref(), Some("ship it"));
         assert_eq!(context.workflow_defaults.permission_mode, "ask");
         assert_eq!(context.children[0].child_index, 0);
         assert_eq!(context.children[1].child_index, 1);
@@ -434,7 +437,7 @@ mod tests {
 
         let context = prepare_fanout_start_context(&exec).unwrap();
 
-        assert_eq!(context.child_step_names(), vec!["review", "review"]);
+        assert_eq!(context.child_node_names(), vec!["review", "review"]);
         assert_eq!(
             context
                 .children
@@ -470,7 +473,7 @@ mod tests {
 
         let context = prepare_fanout_start_context(&exec).unwrap();
 
-        assert_eq!(context.child_step_names(), vec!["a", "b", "a", "b"]);
+        assert_eq!(context.child_node_names(), vec!["a", "b", "a", "b"]);
         assert_eq!(
             context
                 .children
@@ -500,20 +503,20 @@ mod tests {
             session_node("a"),
             session_node("b"),
         ]);
-        exec.step_outputs.insert(
+        exec.artifacts.insert(
             "source".to_string(),
-            StepOutput {
-                step_name: "source".to_string(),
-                run_index: 1,
+            RuntimeArtifact {
+                node_name: "source".to_string(),
+                attempt: 1,
                 session_id: None,
                 result: None,
-                structured_output: Some(serde_json::json!({
+                artifact: Some(serde_json::json!({
                     "targets": [
                         { "id": "first" },
                         { "id": "second" }
                     ]
                 })),
-                artifact_contract: None,
+                contract: None,
                 token_usage: None,
                 completed_at: 1000.0,
             },
@@ -521,7 +524,7 @@ mod tests {
 
         let context = prepare_fanout_start_context(&exec).unwrap();
 
-        assert_eq!(context.child_step_names(), vec!["a", "b", "a", "b"]);
+        assert_eq!(context.child_node_names(), vec!["a", "b", "a", "b"]);
         assert_eq!(
             context
                 .children
@@ -576,15 +579,15 @@ mod tests {
             ),
             session_node("review"),
         ]);
-        exec.step_outputs.insert(
+        exec.artifacts.insert(
             "source".to_string(),
-            StepOutput {
-                step_name: "source".to_string(),
-                run_index: 1,
+            RuntimeArtifact {
+                node_name: "source".to_string(),
+                attempt: 1,
                 session_id: None,
                 result: None,
-                structured_output: Some(serde_json::json!({ "targets": "not-array" })),
-                artifact_contract: None,
+                artifact: Some(serde_json::json!({ "targets": "not-array" })),
+                contract: None,
                 token_usage: None,
                 completed_at: 1000.0,
             },
@@ -630,26 +633,26 @@ mod tests {
             fanout_node(&["review-a"], None),
             session_node("review-a"),
         ]);
-        exec.step_outputs.insert(
+        exec.artifacts.insert(
             "plan".to_string(),
             make_step_output("plan", "draft", Some("DONE")),
         );
         let inputs = fanout_prompt_inputs(&exec);
 
         assert_eq!(
-            inputs.step_outputs["plan"].structured_output,
+            inputs.artifacts["plan"].artifact,
             Some(serde_json::json!({ "text": "draft" }))
         );
     }
 
-    fn make_step_output(step_name: &str, text: &str, result: Option<&str>) -> StepOutput {
-        StepOutput {
-            step_name: step_name.to_string(),
-            run_index: 0,
-            session_id: Some(format!("session-{step_name}")),
+    fn make_step_output(node_name: &str, text: &str, result: Option<&str>) -> RuntimeArtifact {
+        RuntimeArtifact {
+            node_name: node_name.to_string(),
+            attempt: 0,
+            session_id: Some(format!("session-{node_name}")),
             result: result.map(str::to_string),
-            structured_output: Some(serde_json::json!({ "text": text })),
-            artifact_contract: None,
+            artifact: Some(serde_json::json!({ "text": text })),
+            contract: None,
             token_usage: None,
             completed_at: 1000.0,
         }

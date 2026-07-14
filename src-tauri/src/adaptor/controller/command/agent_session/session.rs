@@ -7,11 +7,11 @@ use crate::usecase::agent_session::session::{
     SessionStore, DEFAULT_SESSION_PAGE_LIMIT,
 };
 
-fn reject_explicit_start_for_workflow_step_session(
+fn reject_explicit_start_for_workflow_node_session(
     session: &crate::usecase::agent_session::session::ChatSession,
     cwd: &str,
 ) -> Result<(), String> {
-    if session.worktree_path != cwd || session.is_workflow_step_session() {
+    if session.worktree_path != cwd || session.is_workflow_node_session() {
         return Err(session_target_rejected());
     }
     Ok(())
@@ -31,7 +31,7 @@ fn validate_invoke_permission_mode(
 fn should_skip_close_agent_session(
     session: Option<&crate::usecase::agent_session::session::ChatSession>,
 ) -> bool {
-    session.is_some_and(|session| session.is_workflow_step_session())
+    session.is_some_and(|session| session.is_workflow_node_session())
 }
 
 #[tauri::command]
@@ -241,7 +241,7 @@ pub async fn start_agent_session(
         .get_session_shell(&data_dir, &chat_session_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Session not found: {chat_session_id}"))?;
-    reject_explicit_start_for_workflow_step_session(&session, &cwd)?;
+    reject_explicit_start_for_workflow_node_session(&session, &cwd)?;
     let validated_plan_mode = plan_mode.unwrap_or(false);
     runtime
         .start_session(
@@ -260,7 +260,7 @@ mod tests {
     use super::*;
 
     fn session_for_start_guard(
-        workflow_step_session: bool,
+        workflow_node_session: bool,
     ) -> crate::usecase::agent_session::session::ChatSession {
         crate::usecase::agent_session::session::ChatSession {
             id: uuid::Uuid::new_v4().to_string(),
@@ -278,8 +278,8 @@ mod tests {
             backend_id: Some(
                 crate::infrastructure::agent_session::claude::CLAUDE_BACKEND_ID.to_string(),
             ),
-            workflow_step_session,
-            workflow_step_context: None,
+            workflow_node_session,
+            workflow_node_context: None,
             context_epoch: None,
         }
     }
@@ -340,8 +340,8 @@ mod tests {
             backend_id: Some(
                 crate::infrastructure::agent_session::claude::CLAUDE_BACKEND_ID.to_string(),
             ),
-            workflow_step_session: false,
-            workflow_step_context: None,
+            workflow_node_session: false,
+            workflow_node_context: None,
             context_epoch: None,
         };
         store
@@ -361,7 +361,7 @@ mod tests {
     }
 
     #[test]
-    fn close_agent_session_guard_keeps_workflow_step_runtime() {
+    fn close_agent_session_guard_keeps_workflow_node_runtime() {
         let session = session_for_start_guard(true);
 
         assert!(should_skip_close_agent_session(Some(&session)));
@@ -399,7 +399,6 @@ pub async fn send_agent_message(
         '_,
         Arc<crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase>,
     >,
-    open_tabs: tauri::State<'_, Arc<crate::usecase::agent_session::session::OpenTabRegistry>>,
     chat_session_id: Option<String>,
     worktree_path: String,
     content: String,
@@ -430,12 +429,7 @@ pub async fn send_agent_message(
         )
         .await
         .map_err(|error| error.to_string())?;
-    crate::adaptor::controller_support::emit_after_workflow_step_message(
-        &app,
-        &response.session,
-        runtime.inner(),
-        open_tabs.inner(),
-    )
-    .await;
+    crate::adaptor::controller_support::emit_after_workflow_node_message(&app, &response.session)
+        .await;
     Ok(response)
 }

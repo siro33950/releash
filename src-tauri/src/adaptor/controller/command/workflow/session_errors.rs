@@ -1,31 +1,31 @@
-pub const WORKFLOW_STEP_TAB_OPERATION_FAILED_CODE: &str = "workflow_step_tab_operation_failed";
+pub const WORKFLOW_NODE_TAB_OPERATION_FAILED_CODE: &str = "workflow_node_tab_operation_failed";
 
 pub fn redacted_workflow_tab_error(code: &str) -> String {
-    format!("{code}: workflow step tab operation failed")
+    format!("{code}: workflow node tab operation failed")
 }
 
-pub fn workflow_step_tab_operation_failed() -> String {
-    redacted_workflow_tab_error(WORKFLOW_STEP_TAB_OPERATION_FAILED_CODE)
+pub fn workflow_node_tab_operation_failed() -> String {
+    redacted_workflow_tab_error(WORKFLOW_NODE_TAB_OPERATION_FAILED_CODE)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        redacted_workflow_tab_error, workflow_step_tab_operation_failed,
-        WORKFLOW_STEP_TAB_OPERATION_FAILED_CODE,
+        redacted_workflow_tab_error, workflow_node_tab_operation_failed,
+        WORKFLOW_NODE_TAB_OPERATION_FAILED_CODE,
     };
 
     #[test]
-    fn workflow_step_tab_error_is_redacted() {
-        let err = workflow_step_tab_operation_failed();
+    fn workflow_node_tab_error_is_redacted() {
+        let err = workflow_node_tab_operation_failed();
 
         assert_eq!(
             err,
-            redacted_workflow_tab_error(WORKFLOW_STEP_TAB_OPERATION_FAILED_CODE)
+            redacted_workflow_tab_error(WORKFLOW_NODE_TAB_OPERATION_FAILED_CODE)
         );
         assert_eq!(
             err,
-            "workflow_step_tab_operation_failed: workflow step tab operation failed"
+            "workflow_node_tab_operation_failed: workflow node tab operation failed"
         );
         assert!(!err.contains("/repo"));
         assert!(!err.contains("agent-session-secret"));
@@ -34,11 +34,11 @@ mod tests {
 
     #[test]
     fn redacted_workflow_tab_error_includes_code_without_sensitive_values() {
-        let err = redacted_workflow_tab_error("workflow_step_session_rejected");
+        let err = redacted_workflow_tab_error("workflow_node_session_rejected");
 
         assert_eq!(
             err,
-            "workflow_step_session_rejected: workflow step tab operation failed"
+            "workflow_node_session_rejected: workflow node tab operation failed"
         );
         assert!(!err.contains("/repo"));
         assert!(!err.contains("agent-session-secret"));

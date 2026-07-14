@@ -1,19 +1,19 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::domain::workflow::value_objects::{NodeKindName, WorkflowStepFailureKind};
+use crate::domain::workflow::value_objects::{NodeExecutionFailureKind, NodeKindName};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetryPolicy {
-    max_retries_by_kind: HashMap<WorkflowStepFailureKind, u32>,
+    max_retries_by_kind: HashMap<NodeExecutionFailureKind, u32>,
 }
 
 impl RetryPolicy {
-    pub fn should_retry(&self, kind: WorkflowStepFailureKind, attempts: u32) -> bool {
+    pub fn should_retry(&self, kind: NodeExecutionFailureKind, attempts: u32) -> bool {
         attempts < self.max_retries(kind)
     }
 
-    pub fn max_retries(&self, kind: WorkflowStepFailureKind) -> u32 {
+    pub fn max_retries(&self, kind: NodeExecutionFailureKind) -> u32 {
         self.max_retries_by_kind.get(&kind).copied().unwrap_or(0)
     }
 }
@@ -22,8 +22,8 @@ impl Default for RetryPolicy {
     fn default() -> Self {
         Self {
             max_retries_by_kind: HashMap::from([
-                (WorkflowStepFailureKind::StartupTimeout, 2),
-                (WorkflowStepFailureKind::StaleRuntimeTimeout, 0),
+                (NodeExecutionFailureKind::StartupTimeout, 2),
+                (NodeExecutionFailureKind::StaleRuntimeTimeout, 0),
             ]),
         }
     }
@@ -183,9 +183,9 @@ mod tests {
     fn retry_policy_retries_startup_timeout_twice_only() {
         let policy = RetryPolicy::default();
 
-        assert!(policy.should_retry(WorkflowStepFailureKind::StartupTimeout, 0));
-        assert!(policy.should_retry(WorkflowStepFailureKind::StartupTimeout, 1));
-        assert!(!policy.should_retry(WorkflowStepFailureKind::StartupTimeout, 2));
+        assert!(policy.should_retry(NodeExecutionFailureKind::StartupTimeout, 0));
+        assert!(policy.should_retry(NodeExecutionFailureKind::StartupTimeout, 1));
+        assert!(!policy.should_retry(NodeExecutionFailureKind::StartupTimeout, 2));
     }
 
     #[test]
@@ -193,10 +193,10 @@ mod tests {
         let policy = RetryPolicy::default();
 
         assert_eq!(
-            policy.max_retries(WorkflowStepFailureKind::StaleRuntimeTimeout),
+            policy.max_retries(NodeExecutionFailureKind::StaleRuntimeTimeout),
             0
         );
-        assert!(!policy.should_retry(WorkflowStepFailureKind::StaleRuntimeTimeout, 0));
+        assert!(!policy.should_retry(NodeExecutionFailureKind::StaleRuntimeTimeout, 0));
     }
 
     #[test]
@@ -320,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn structured_output_repair_policy_limits_attempts_and_requires_session() {
+    fn artifact_repair_policy_limits_attempts_and_requires_session() {
         let policy = StructuredOutputRepairPolicy::default();
 
         assert_eq!(

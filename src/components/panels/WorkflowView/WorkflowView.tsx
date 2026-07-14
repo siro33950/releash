@@ -9,18 +9,18 @@ import {
 	PopoverContent,
 	PopoverTrigger,
 } from "@/components/ui/popover";
-import { WorkflowStepStatusIcon } from "@/components/workspace/WorkflowStepStatusIcon";
+import { WorkflowNodeStatusIcon } from "@/components/workspace/WorkflowNodeStatusIcon";
 import {
-	submitWorkspaceWorkflowStepAction,
-	useWorkspaceWorkflowStepDetail,
-} from "@/hooks/useWorkspaceWorkflowStepDetail";
+	submitWorkspaceWorkflowNodeAction,
+	useWorkspaceWorkflowNodeDetail,
+} from "@/hooks/useWorkspaceWorkflowNodeDetail";
 import { useWorktreeSessionStatuses } from "@/hooks/useWorktreeSessionStatuses";
 import type { AgentState } from "@/types/protocol";
-import type { JsonValue } from "@/types/workflow";
+import type { Artifact } from "@/types/workflow";
 import type {
 	CenterSelection,
 	CenterSelectionRequest,
-	WorkspaceWorkflowStepDetail,
+	WorkspaceWorkflowNodeDetail,
 } from "@/types/workspace-tree";
 
 interface WorkflowViewProps {
@@ -36,7 +36,7 @@ interface WorkflowGridPane {
 	sessionId?: string;
 	worktreePath: string;
 	agentState?: AgentState | null;
-	artifact?: JsonValue;
+	artifact?: Artifact;
 }
 
 const WORKFLOW_GRID_MIN_TILE_WIDTH = 320;
@@ -50,22 +50,22 @@ export function WorkflowView({
 	leftPanels,
 	rightSlot,
 }: WorkflowViewProps) {
-	const stepSelection =
-		selectionRequest?.kind === "workflowStep" &&
+	const nodeSelection =
+		selectionRequest?.kind === "workflowNode" &&
 		selectionRequest.worktreePath === worktreePath
 			? selectionRequest
 			: null;
-	const step = useWorkspaceWorkflowStepDetail({
-		worktreePath: stepSelection ? worktreePath : null,
-		runId: stepSelection?.runId ?? null,
-		stepId: stepSelection?.stepId ?? null,
+	const node = useWorkspaceWorkflowNodeDetail({
+		worktreePath: nodeSelection ? worktreePath : null,
+		executionId: nodeSelection?.executionId ?? null,
+		nodeExecutionId: nodeSelection?.nodeExecutionId ?? null,
 	});
-	const stepDetail = step.detail;
+	const nodeDetail = node.detail;
 
-	const headerContent = stepDetail ? (
-		<WorkflowStepHeader
-			key={`${stepDetail.runId}:${stepDetail.id}`}
-			step={stepDetail}
+	const headerContent = nodeDetail ? (
+		<WorkflowNodeHeader
+			key={`${nodeDetail.executionId}:${nodeDetail.nodeExecutionId}`}
+			node={nodeDetail}
 		/>
 	) : null;
 
@@ -78,10 +78,10 @@ export function WorkflowView({
 				rightSlot={rightSlot}
 			/>
 			<div className="min-h-0 flex-1 overflow-hidden">
-				<WorkspaceWorkflowStepGrid
-					step={stepDetail}
-					loading={step.loading}
-					error={step.error}
+				<WorkspaceWorkflowNodeGrid
+					node={nodeDetail}
+					loading={node.loading}
+					error={node.error}
 					worktreePath={worktreePath}
 				/>
 			</div>
@@ -89,13 +89,13 @@ export function WorkflowView({
 	);
 }
 
-function WorkspaceWorkflowStepGrid({
-	step,
+function WorkspaceWorkflowNodeGrid({
+	node,
 	loading,
 	error,
 	worktreePath,
 }: {
-	step: WorkspaceWorkflowStepDetail | null;
+	node: WorkspaceWorkflowNodeDetail | null;
 	loading: boolean;
 	error: string | null;
 	worktreePath: string;
@@ -104,44 +104,44 @@ function WorkspaceWorkflowStepGrid({
 	// そのまま消費する（フロントでの導出は禁止）。
 	const sessionStatuses = useWorktreeSessionStatuses(worktreePath);
 	const [activePaneKey, setActivePaneKey] = useState<string | null>(
-		() => step?.sessions[0]?.id ?? null,
+		() => node?.sessions[0]?.id ?? null,
 	);
 	useEffect(() => {
-		if (!step) {
+		if (!node) {
 			setActivePaneKey(null);
 			return;
 		}
-		if (step.sessions.some((session) => session.id === activePaneKey)) {
+		if (node.sessions.some((session) => session.id === activePaneKey)) {
 			return;
 		}
-		setActivePaneKey(step.sessions[0]?.id ?? null);
-	}, [activePaneKey, step]);
+		setActivePaneKey(node.sessions[0]?.id ?? null);
+	}, [activePaneKey, node]);
 
 	const panes = useMemo<WorkflowGridPane[]>(() => {
-		if (!step) return [];
-		if (step.sessions.length === 0) {
+		if (!node) return [];
+		if (node.sessions.length === 0) {
 			return [
 				{
-					key: `${step.id}:empty`,
-					label: step.title,
-					worktreePath: step.worktreePath,
-					artifact: step.artifact,
+					key: `${node.nodeExecutionId}:empty`,
+					label: node.title,
+					worktreePath: node.worktreePath,
+					artifact: node.artifact,
 				},
 			];
 		}
-		return step.sessions.map((session) => ({
+		return node.sessions.map((session) => ({
 			key: session.id,
 			label: session.title,
 			sessionId: session.id,
 			worktreePath: session.worktreePath,
 			agentState: sessionStatuses.get(session.id)?.agent_state ?? null,
 		}));
-	}, [step, sessionStatuses]);
+	}, [node, sessionStatuses]);
 
-	if (!step) {
+	if (!node) {
 		return (
 			<div className="flex h-full flex-col items-center justify-center gap-1 bg-background px-4 text-center text-sm text-muted-foreground">
-				<div>{loading ? "Loading Step..." : "Step unavailable"}</div>
+				<div>{loading ? "Loading Node..." : "Node unavailable"}</div>
 				{error && <div className="max-w-md break-words text-xs">{error}</div>}
 			</div>
 		);
@@ -150,7 +150,7 @@ function WorkspaceWorkflowStepGrid({
 	return (
 		<div className="flex h-full min-h-0 flex-col bg-background">
 			<div className="min-h-0 flex-1 overflow-hidden">
-				<WorkflowStepGrid
+				<WorkflowNodeGrid
 					panes={panes}
 					activePaneKey={activePaneKey}
 					onSelectPane={setActivePaneKey}
@@ -160,7 +160,7 @@ function WorkspaceWorkflowStepGrid({
 	);
 }
 
-function WorkflowStepHeader({ step }: { step: WorkspaceWorkflowStepDetail }) {
+function WorkflowNodeHeader({ node }: { node: WorkspaceWorkflowNodeDetail }) {
 	const [approving, setApproving] = useState(false);
 	const [actionError, setActionError] = useState<string | null>(null);
 	const [actionErrorOpen, setActionErrorOpen] = useState(false);
@@ -169,15 +169,14 @@ function WorkflowStepHeader({ step }: { step: WorkspaceWorkflowStepDetail }) {
 		if (approving) return false;
 		setApproving(true);
 		try {
-			const result = await submitWorkspaceWorkflowStepAction({
-				worktreePath: step.worktreePath,
-				runId: step.runId,
-				stepId: step.id,
-				stepName: step.nodeName,
-				nodeExecutionId: step.nodeExecutionId,
+			const result = await submitWorkspaceWorkflowNodeAction({
+				worktreePath: node.worktreePath,
+				executionId: node.executionId,
+				nodeName: node.nodeName,
+				nodeExecutionId: node.nodeExecutionId,
 			});
 			if (!result) {
-				throw new Error("Workflow step action failed.");
+				throw new Error("Workflow node action failed.");
 			}
 			setActionError(null);
 			setActionErrorOpen(false);
@@ -189,11 +188,11 @@ function WorkflowStepHeader({ step }: { step: WorkspaceWorkflowStepDetail }) {
 		} finally {
 			setApproving(false);
 		}
-	}, [approving, step]);
+	}, [approving, node]);
 
 	return (
-		<WorkflowStepHeaderContent
-			step={step}
+		<WorkflowNodeHeaderContent
+			node={node}
 			approving={approving}
 			actionError={actionError}
 			actionErrorOpen={actionErrorOpen}
@@ -203,15 +202,15 @@ function WorkflowStepHeader({ step }: { step: WorkspaceWorkflowStepDetail }) {
 	);
 }
 
-function WorkflowStepHeaderContent({
-	step,
+function WorkflowNodeHeaderContent({
+	node,
 	approving,
 	actionError,
 	actionErrorOpen,
 	onActionErrorOpenChange,
 	onApprove,
 }: {
-	step: WorkspaceWorkflowStepDetail;
+	node: WorkspaceWorkflowNodeDetail;
 	approving: boolean;
 	actionError: string | null;
 	actionErrorOpen: boolean;
@@ -224,48 +223,48 @@ function WorkflowStepHeaderContent({
 	return (
 		<div className="flex min-w-0 flex-1 items-center gap-3 pl-2">
 			<div className="flex min-w-0 items-center gap-2">
-				<WorkflowStepStatusIcon status={step.status} />
+				<WorkflowNodeStatusIcon status={node.status} />
 				<span className="min-w-0 truncate text-sm font-medium">
-					{step.nodeName}
+					{node.nodeName}
 				</span>
 				<span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-					{step.stepType}
+					{node.nodeKind}
 				</span>
 				<span className="text-xs text-muted-foreground">
-					{step.nodeExecutionStatus ?? step.status}
+					{node.nodeExecutionStatus ?? node.status}
 				</span>
 				<span className="text-xs text-muted-foreground">
-					attempt {step.attempt}
+					attempt {node.attempt}
 				</span>
 				<span
 					className="max-w-36 truncate font-mono text-[10px] text-muted-foreground"
-					title={`NodeExecution ${step.nodeExecutionId ?? step.id}`}
+					title={`NodeExecution ${node.nodeExecutionId}`}
 				>
-					{step.nodeExecutionId ?? step.id}
+					{node.nodeExecutionId}
 				</span>
-				{step.sessionId && (
+				{node.sessionId && (
 					<span
 						className="max-w-32 truncate font-mono text-[10px] text-muted-foreground"
-						title={`Session ${step.sessionId}`}
+						title={`Session ${node.sessionId}`}
 					>
-						{step.sessionId}
+						{node.sessionId}
 					</span>
 				)}
-				{step.fanoutParent && (
+				{node.fanoutParent && (
 					<span
 						className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
-						title={`fanout parent ${step.fanoutParent.parentNode} attempt ${step.fanoutParent.parentAttempt}`}
+						title={`fanout parent ${node.fanoutParent.parentNode} attempt ${node.fanoutParent.parentAttempt}`}
 					>
-						{step.fanoutParent.parentNode}#{step.fanoutParent.parentAttempt}
+						{node.fanoutParent.parentNode}#{node.fanoutParent.parentAttempt}
 						{" · item "}
-						{step.fanoutParent.itemIndex ?? "–"}
+						{node.fanoutParent.itemIndex ?? "–"}
 						{" · child "}
-						{step.fanoutParent.childIndex}
+						{node.fanoutParent.childIndex}
 					</span>
 				)}
 			</div>
 			<div className="ml-auto flex shrink-0 items-center gap-2">
-				{step.artifact !== undefined && (
+				{node.artifact !== undefined && (
 					<Popover>
 						<PopoverTrigger asChild>
 							<Button type="button" variant="outline" size="xs">
@@ -274,7 +273,7 @@ function WorkflowStepHeaderContent({
 						</PopoverTrigger>
 						<PopoverContent side="bottom" align="end" className="w-96 p-0">
 							<pre className="max-h-80 overflow-auto p-3 text-xs">
-								{JSON.stringify(step.artifact, null, 2)}
+								{JSON.stringify(node.artifact, null, 2)}
 							</pre>
 						</PopoverContent>
 					</Popover>
@@ -319,7 +318,7 @@ function WorkflowStepHeaderContent({
 						</PopoverContent>
 					</Popover>
 				)}
-				{step.canApprove === true && (
+				{node.canApprove === true && (
 					<Button
 						type="button"
 						size="xs"
@@ -334,7 +333,7 @@ function WorkflowStepHeaderContent({
 	);
 }
 
-function WorkflowStepGrid({
+function WorkflowNodeGrid({
 	panes,
 	activePaneKey,
 	onSelectPane,
@@ -354,7 +353,7 @@ function WorkflowStepGrid({
 			className="h-full min-h-0 overflow-x-hidden overflow-y-auto bg-background p-2"
 		>
 			<div
-				data-testid="workflow-step-grid"
+				data-testid="workflow-node-grid"
 				className="grid w-full min-w-0 gap-2"
 				style={{
 					height: gridHeight,
@@ -363,7 +362,7 @@ function WorkflowStepGrid({
 				}}
 			>
 				{panes.map((pane) => (
-					<WorkflowStepPane
+					<WorkflowNodePane
 						key={pane.key}
 						pane={pane}
 						selected={activePaneKey === pane.key}
@@ -375,7 +374,7 @@ function WorkflowStepGrid({
 	);
 }
 
-function WorkflowStepPane({
+function WorkflowNodePane({
 	pane,
 	selected,
 	onSelect,
@@ -386,7 +385,7 @@ function WorkflowStepPane({
 }) {
 	return (
 		<div
-			data-testid="workflow-step-grid-tile"
+			data-testid="workflow-node-grid-tile"
 			data-active={selected ? "true" : undefined}
 			title={pane.label}
 			onPointerDown={onSelect}
@@ -408,7 +407,7 @@ function WorkflowStepPane({
 					/>
 				) : pane.artifact !== undefined ? (
 					<pre className="h-full overflow-auto p-4 text-xs">
-						{JSON.stringify(pane.artifact, null, 2)}
+						{JSON.stringify(pane.artifact.value, null, 2)}
 					</pre>
 				) : (
 					<div className="flex h-full items-center justify-center px-4 text-center text-sm text-muted-foreground">

@@ -22,7 +22,7 @@ pub(crate) const MAX_STALL_RECOVERY_ATTEMPTS: u32 = 3;
 pub(crate) fn stale_timeout_for_session(session: &ChatSession) -> Duration {
     timeout_from_secs(
         session
-            .workflow_step_context
+            .workflow_node_context
             .as_ref()
             .and_then(|context| context.stale_timeout_secs),
     )
@@ -108,7 +108,7 @@ pub(crate) fn recovery_cap_reached(recovery_attempts: u32) -> bool {
 
 pub(crate) fn startup_timeout_for_session(session: &ChatSession) -> Option<Duration> {
     session
-        .workflow_step_context
+        .workflow_node_context
         .as_ref()
         .and_then(|context| context.startup_timeout_secs)
         .map(Duration::from_secs)
@@ -116,7 +116,7 @@ pub(crate) fn startup_timeout_for_session(session: &ChatSession) -> Option<Durat
 
 pub(crate) fn startup_max_retries_for_session(session: &ChatSession) -> Option<u32> {
     session
-        .workflow_step_context
+        .workflow_node_context
         .as_ref()
         .and_then(|context| context.startup_max_retries)
 }

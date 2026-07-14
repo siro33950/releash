@@ -3,19 +3,19 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import type {
-	DiagnosticItem,
 	DiagnosticReport,
+	DiagnosticView,
 	FanoutItemsSource,
 	NodeDefinition,
-	Workflow,
+	WorkflowDefinition,
 } from "@/types/workflow";
-import { DiagnosticItemRow } from "./DiagnosticBadge";
+import { DiagnosticViewRow } from "./DiagnosticBadge";
 
 type WorkflowRule = NonNullable<NodeDefinition["rules"]>[number];
 
 type WorkflowSaveResult =
-	| { ok: true; workflow?: Workflow }
-	| { ok: false; error: string; diagnostics?: DiagnosticItem[] };
+	| { ok: true; workflow?: WorkflowDefinition }
+	| { ok: false; error: string; diagnostics?: DiagnosticView[] };
 
 export function WorkflowDetail({
 	workflow,
@@ -23,7 +23,7 @@ export function WorkflowDetail({
 	source,
 	onEdit,
 }: {
-	workflow: Workflow;
+	workflow: WorkflowDefinition;
 	report: DiagnosticReport;
 	source?: string | null;
 	onEdit: () => void;
@@ -50,7 +50,7 @@ export function WorkflowDetail({
 				<div className="flex flex-col gap-1.5 rounded-md border border-border p-3">
 					<span className="text-xs font-medium">Diagnostics</span>
 					{items.map((item) => (
-						<DiagnosticItemRow
+						<DiagnosticViewRow
 							key={`${item.code}-${item.span?.start_line ?? "na"}-${item.span?.start_col ?? "na"}-${item.message}-${item.field ?? ""}`}
 							item={item}
 						/>
@@ -62,10 +62,10 @@ export function WorkflowDetail({
 
 			<div className="flex flex-col gap-2">
 				<span className="text-xs font-medium text-muted-foreground">
-					Steps ({workflow.nodes.length})
+					Nodes ({workflow.nodes.length})
 				</span>
-				{workflow.nodes.map((step, idx) => (
-					<StepCard key={step.name} step={step} index={idx} />
+				{workflow.nodes.map((node, idx) => (
+					<NodeCard key={node.name} node={node} index={idx} />
 				))}
 			</div>
 		</div>
@@ -103,7 +103,7 @@ export function WorkflowSourceDiagnosticDetail({
 				<div className="flex flex-col gap-1.5 rounded-md border border-border p-3">
 					<span className="text-xs font-medium">Diagnostics</span>
 					{items.map((item) => (
-						<DiagnosticItemRow
+						<DiagnosticViewRow
 							key={`${item.code}-${item.span?.start_line ?? "na"}-${item.span?.start_col ?? "na"}-${item.message}-${item.field ?? ""}`}
 							item={item}
 						/>
@@ -125,7 +125,7 @@ export function WorkflowSourceEditor({
 }: {
 	name: string;
 	initialSource: string;
-	diagnostics: DiagnosticItem[];
+	diagnostics: DiagnosticView[];
 	onSave: (source: string) => Promise<WorkflowSaveResult>;
 	onCancel: () => void;
 }) {
@@ -233,7 +233,7 @@ export function WorkflowSourceEditor({
 				<div className="flex flex-col gap-1.5 rounded-md border border-border p-3">
 					<span className="text-xs font-medium">Diagnostics</span>
 					{diagnostics.map((item) => (
-						<DiagnosticItemRow
+						<DiagnosticViewRow
 							key={`${item.code}-${item.span?.start_line ?? "na"}-${item.span?.start_col ?? "na"}-${item.message}-${item.field ?? ""}`}
 							item={item}
 						/>
@@ -254,7 +254,7 @@ function WorkflowSourcePane({
 	diagnostics,
 }: {
 	source: string;
-	diagnostics: DiagnosticItem[];
+	diagnostics: DiagnosticView[];
 }) {
 	const hostRef = useRef<HTMLDivElement | null>(null);
 	const editorRef = useRef<
@@ -319,7 +319,7 @@ function WorkflowSourcePane({
 function applyMonacoMarkers(
 	monaco: typeof import("monaco-editor"),
 	model: import("monaco-editor").editor.ITextModel,
-	diagnostics: DiagnosticItem[],
+	diagnostics: DiagnosticView[],
 ) {
 	const markers = diagnostics.flatMap((item) => {
 		if (!item.span) return [];
@@ -344,11 +344,11 @@ function applyMonacoMarkers(
 	monaco.editor.setModelMarkers(model, "workflow-diagnostics", markers);
 }
 
-function StepCard({ step, index }: { step: NodeDefinition; index: number }) {
+function NodeCard({ node, index }: { node: NodeDefinition; index: number }) {
 	const [expanded, setExpanded] = useState(false);
-	const session = step.session;
+	const session = node.session;
 	const facets = session?.facets;
-	const fanout = step.fanout;
+	const fanout = node.fanout;
 	const childCount = fanout?.child.length ?? 0;
 
 	return (
@@ -360,9 +360,9 @@ function StepCard({ step, index }: { step: NodeDefinition; index: number }) {
 			>
 				<div className="flex items-center gap-2">
 					<span className="text-xs text-muted-foreground">{index + 1}.</span>
-					<span className="text-sm font-medium">{step.name}</span>
+					<span className="text-sm font-medium">{node.name}</span>
 					<span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-						{step.kind}
+						{node.kind}
 					</span>
 					{session?.gate === "approval" && (
 						<span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-600">
@@ -385,11 +385,11 @@ function StepCard({ step, index }: { step: NodeDefinition; index: number }) {
 			{expanded && (
 				<div className="px-3 pb-3 flex flex-col gap-2 text-xs">
 					<Separator />
-					{step.command && (
+					{node.command && (
 						<div className="flex flex-col gap-1">
 							<span className="font-medium text-muted-foreground">Command</span>
 							<p className="text-muted-foreground whitespace-pre-wrap bg-muted rounded p-2 font-mono">
-								{step.command}
+								{node.command}
 							</p>
 						</div>
 					)}
@@ -411,9 +411,9 @@ function StepCard({ step, index }: { step: NodeDefinition; index: number }) {
 					{(facets?.policy ||
 						facets?.knowledge ||
 						facets?.instruction ||
-						step.artifact ||
-						(step.inputs && step.inputs.length > 0) ||
-						step.input) && (
+						node.artifact ||
+						(node.inputs && node.inputs.length > 0) ||
+						node.input) && (
 						<div className="flex flex-col gap-1">
 							<span className="font-medium text-muted-foreground">
 								Workflow References
@@ -427,25 +427,25 @@ function StepCard({ step, index }: { step: NodeDefinition; index: number }) {
 							{facets?.instruction && (
 								<FacetRefRow label="Instruction" value={facets.instruction} />
 							)}
-							{step.artifact && (
-								<FacetRefRow label="Artifact" value={step.artifact} />
+							{node.artifact && (
+								<FacetRefRow label="Artifact" value={node.artifact} />
 							)}
-							{step.inputs && step.inputs.length > 0 && (
-								<FacetRefRow label="Inputs" value={step.inputs.join(", ")} />
+							{node.inputs && node.inputs.length > 0 && (
+								<FacetRefRow label="Inputs" value={node.inputs.join(", ")} />
 							)}
-							{step.input && <FacetRefRow label="Input" value={step.input} />}
+							{node.input && <FacetRefRow label="Input" value={node.input} />}
 						</div>
 					)}
 
 					{/* Rules */}
-					{step.rules && step.rules.length > 0 && (
+					{node.rules && node.rules.length > 0 && (
 						<div className="flex flex-col gap-1">
 							<span className="font-medium text-muted-foreground">
 								Transition Rules
 							</span>
-							{step.rules.map((r) => (
+							{node.rules.map((r) => (
 								<div
-									key={`${step.name}-rule-${ruleKey(r)}`}
+									key={`${node.name}-rule-${ruleKey(r)}`}
 									className="text-muted-foreground"
 								>
 									<span className="font-mono">{formatRule(r)}</span>

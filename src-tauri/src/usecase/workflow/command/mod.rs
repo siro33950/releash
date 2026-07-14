@@ -1,30 +1,31 @@
-mod abort_run;
+mod abort_execution;
 mod approval;
 mod pending;
 mod preflight;
-mod start_run;
+mod start_execution;
 mod submit_output;
 
-pub use abort_run::AbortRunCommand;
-pub(crate) use abort_run::WorkflowAbortRunUsecase;
+pub use abort_execution::AbortExecutionCommand;
+pub(crate) use abort_execution::WorkflowAbortExecutionUsecase;
 pub use approval::ApprovalCommand;
 pub(crate) use approval::WorkflowApprovalUsecase;
 pub use pending::WorkflowPendingCommandUsecase;
 pub(crate) use pending::WorkflowPendingRuntimeCommandUsecase;
 pub(crate) use preflight::WorkflowRuntimeCommandPreflight;
-pub(crate) use start_run::WorkflowStartRunUsecase;
-pub use start_run::{ResolvedStartRunCommand, StartRunCommand};
+pub(crate) use start_execution::WorkflowStartExecutionUsecase;
+pub use start_execution::{ResolvedStartExecutionCommand, StartExecutionCommand};
 pub use submit_output::SubmitOutputCommand;
 pub(crate) use submit_output::WorkflowSubmitOutputUsecase;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::workflow::{TriggerSource, WorkflowDefinition, WorkflowError};
+    use crate::domain::workflow::{ExecutionOrigin, WorkflowDefinition, WorkflowError};
     use crate::usecase::workflow::ports::{
         PendingRuntimeCommand, PendingRuntimeCommandOutcome, PendingRuntimeCommandPayload,
-        WorkflowAbortRunGateway, WorkflowApprovalGateway, WorkflowPendingRuntimeCommandGateway,
-        WorkflowStartRunGateway, WorkflowSubmitOutputGateway,
+        WorkflowAbortExecutionGateway, WorkflowApprovalGateway,
+        WorkflowPendingRuntimeCommandGateway, WorkflowStartExecutionGateway,
+        WorkflowSubmitOutputGateway,
     };
     use std::sync::{Arc, Mutex};
 
@@ -34,8 +35,8 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl WorkflowStartRunGateway for FakeRuntimeGateway {
-        async fn resolve_start_run_worktree(
+    impl WorkflowStartExecutionGateway for FakeRuntimeGateway {
+        async fn resolve_start_execution_worktree(
             &self,
             worktree_path: String,
         ) -> Result<String, WorkflowError> {
@@ -43,7 +44,7 @@ mod tests {
             Ok(worktree_path)
         }
 
-        async fn resolve_start_run_workflow(
+        async fn resolve_start_execution_workflow(
             &self,
             _workflow_file_stem: &str,
         ) -> Result<WorkflowDefinition, WorkflowError> {
@@ -51,9 +52,9 @@ mod tests {
             Ok(WorkflowDefinition::default())
         }
 
-        async fn start_resolved_run(
+        async fn start_resolved_execution(
             &self,
-            _command: ResolvedStartRunCommand,
+            _command: ResolvedStartExecutionCommand,
         ) -> Result<String, WorkflowError> {
             self.calls.lock().unwrap().push("start");
             Ok("00000000-0000-0000-0000-000000000001".to_string())
@@ -61,8 +62,11 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl WorkflowAbortRunGateway for FakeRuntimeGateway {
-        async fn abort_run(&self, _command: AbortRunCommand) -> Result<(), WorkflowError> {
+    impl WorkflowAbortExecutionGateway for FakeRuntimeGateway {
+        async fn abort_execution(
+            &self,
+            _command: AbortExecutionCommand,
+        ) -> Result<(), WorkflowError> {
             self.calls.lock().unwrap().push("abort");
             Ok(())
         }
@@ -95,7 +99,7 @@ mod tests {
         }
     }
 
-    fn valid_run_id() -> String {
+    fn valid_execution_id() -> String {
         "00000000-0000-0000-0000-000000000001".to_string()
     }
 
@@ -103,26 +107,26 @@ mod tests {
     async fn command_usecases_delegate_valid_commands() {
         let gateway = Arc::new(FakeRuntimeGateway::default());
 
-        WorkflowStartRunUsecase::new(gateway.clone())
-            .execute(StartRunCommand {
+        WorkflowStartExecutionUsecase::new(gateway.clone())
+            .execute(StartExecutionCommand {
                 workflow_file_stem: "wf".to_string(),
                 worktree_path: "/tmp/wt".to_string(),
-                task: None,
-                trigger_source: TriggerSource::DesktopUi,
+                request: None,
+                created_from: ExecutionOrigin::DesktopUi,
                 permission_mode: "ask".to_string(),
             })
             .await
             .unwrap();
-        WorkflowAbortRunUsecase::new(gateway.clone())
-            .execute(AbortRunCommand {
-                run_id: valid_run_id(),
+        WorkflowAbortExecutionUsecase::new(gateway.clone())
+            .execute(AbortExecutionCommand {
+                execution_id: valid_execution_id(),
                 expected_node_name: None,
             })
             .await
             .unwrap();
         WorkflowApprovalUsecase::new(gateway.clone())
             .execute(ApprovalCommand {
-                run_id: valid_run_id(),
+                execution_id: valid_execution_id(),
                 node_name: "review".to_string(),
                 node_execution_id: None,
                 comment: None,
@@ -131,17 +135,17 @@ mod tests {
             .unwrap();
         WorkflowSubmitOutputUsecase::new(gateway.clone())
             .execute(SubmitOutputCommand {
-                run_id: valid_run_id(),
-                step_name: "review".to_string(),
+                execution_id: valid_execution_id(),
+                node_name: "review".to_string(),
                 node_execution_id: None,
                 contract: "review-fix-tasks".to_string(),
-                structured_output: serde_json::json!({}),
+                artifact: serde_json::json!({}),
             })
             .await
             .unwrap();
         let outcome = WorkflowPendingRuntimeCommandUsecase::new(gateway.clone())
             .dispatch(PendingRuntimeCommand {
-                run_id: valid_run_id(),
+                execution_id: valid_execution_id(),
                 request_id: "00000000-0000-0000-0000-000000000002".to_string(),
                 requested_at: 1.0,
                 payload: PendingRuntimeCommandPayload::Abort { node_name: None },
@@ -167,26 +171,26 @@ mod tests {
     async fn command_usecases_reject_invalid_commands_before_gateway() {
         let gateway = Arc::new(FakeRuntimeGateway::default());
 
-        assert!(WorkflowStartRunUsecase::new(gateway.clone())
-            .execute(StartRunCommand {
+        assert!(WorkflowStartExecutionUsecase::new(gateway.clone())
+            .execute(StartExecutionCommand {
                 workflow_file_stem: "bad name!".to_string(),
                 worktree_path: "/tmp/wt".to_string(),
-                task: None,
-                trigger_source: TriggerSource::DesktopUi,
+                request: None,
+                created_from: ExecutionOrigin::DesktopUi,
                 permission_mode: "ask".to_string(),
             })
             .await
             .is_err());
-        assert!(WorkflowAbortRunUsecase::new(gateway.clone())
-            .execute(AbortRunCommand {
-                run_id: "not-a-uuid".to_string(),
+        assert!(WorkflowAbortExecutionUsecase::new(gateway.clone())
+            .execute(AbortExecutionCommand {
+                execution_id: "not-a-uuid".to_string(),
                 expected_node_name: None,
             })
             .await
             .is_err());
         assert!(WorkflowApprovalUsecase::new(gateway.clone())
             .execute(ApprovalCommand {
-                run_id: valid_run_id(),
+                execution_id: valid_execution_id(),
                 node_name: " ".to_string(),
                 node_execution_id: None,
                 comment: None,
@@ -195,17 +199,17 @@ mod tests {
             .is_err());
         assert!(WorkflowSubmitOutputUsecase::new(gateway.clone())
             .execute(SubmitOutputCommand {
-                run_id: valid_run_id(),
-                step_name: "review".to_string(),
+                execution_id: valid_execution_id(),
+                node_name: "review".to_string(),
                 node_execution_id: None,
                 contract: " ".to_string(),
-                structured_output: serde_json::json!({}),
+                artifact: serde_json::json!({}),
             })
             .await
             .is_err());
         let outcome = WorkflowPendingRuntimeCommandUsecase::new(gateway.clone())
             .dispatch(PendingRuntimeCommand {
-                run_id: "not-a-uuid".to_string(),
+                execution_id: "not-a-uuid".to_string(),
                 request_id: "00000000-0000-0000-0000-000000000002".to_string(),
                 requested_at: 1.0,
                 payload: PendingRuntimeCommandPayload::Abort { node_name: None },
@@ -214,7 +218,7 @@ mod tests {
         assert!(matches!(
             outcome,
             PendingRuntimeCommandOutcome::RejectedFinal(reason)
-                if reason.contains("invalid run_id")
+                if reason.contains("invalid execution_id")
         ));
         assert!(gateway.calls.lock().unwrap().is_empty());
     }

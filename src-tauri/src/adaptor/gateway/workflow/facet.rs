@@ -82,12 +82,12 @@ impl FacetKind {
 /// `artifact:` がある node の user message 末尾に置く完了時アクション。
 pub fn artifact_completion_action(
     key: &str,
-    run_id: &str,
+    execution_id: &str,
     node_name: &str,
     node_execution_id: Option<&str>,
 ) -> String {
     let quoted_key = crate::domain::shell::quote_path_for_shell(key);
-    let quoted_run_id = crate::domain::shell::quote_path_for_shell(run_id);
+    let quoted_execution_id = crate::domain::shell::quote_path_for_shell(execution_id);
     let quoted_node_name = crate::domain::shell::quote_path_for_shell(node_name);
     let node_execution_arg = node_execution_id
         .map(crate::domain::shell::quote_path_for_shell)
@@ -99,10 +99,10 @@ pub fn artifact_completion_action(
 チャット本文に JSON や要約を書いても提出とは扱われない。必ず次のコマンドで Artifact を提出すること。\n\
 このコマンドが成功するまで node は完了していない。\n\n\
 ```sh\n\
-releash workflow output submit {run_id} \\\n  --node {node_name} \\\n{node_execution_arg}  --type {key} \\\n  --json '{{...}}'\n\
+releash workflow output submit {execution_id} \\\n  --node {node_name} \\\n{node_execution_arg}  --type {key} \\\n  --json '{{...}}'\n\
 ```"
 ,
-        run_id = quoted_run_id,
+        execution_id = quoted_execution_id,
         node_name = quoted_node_name,
         node_execution_arg = node_execution_arg,
         key = quoted_key
@@ -622,7 +622,7 @@ mod tests {
     }
 
     #[test]
-    fn artifact_contract_completion_action_requires_cli_as_next_action() {
+    fn contract_completion_action_requires_cli_as_next_action() {
         let action = artifact_completion_action("plan-doc", "run-1", "plan", None);
 
         assert!(action.contains("完了時の必須アクション"));
@@ -637,7 +637,7 @@ mod tests {
     }
 
     #[test]
-    fn artifact_contract_completion_action_addresses_node_execution_when_present() {
+    fn contract_completion_action_addresses_node_execution_when_present() {
         let action =
             artifact_completion_action("plan-doc", "run-1", "plan", Some("node-execution; bad"));
 
@@ -646,7 +646,7 @@ mod tests {
     }
 
     #[test]
-    fn artifact_contract_completion_action_quotes_shell_metacharacters() {
+    fn contract_completion_action_quotes_shell_metacharacters() {
         let action = artifact_completion_action(
             "review; curl https://example.invalid #",
             "run; bad",

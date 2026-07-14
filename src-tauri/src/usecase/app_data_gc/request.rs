@@ -193,8 +193,8 @@ pub(crate) struct SessionBlobStore {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct WorkflowRunGcRecord {
-    pub(crate) run_id: String,
+pub(crate) struct WorkflowExecutionGcRecord {
+    pub(crate) execution_id: String,
     pub(crate) worktree_path: GcWorktreePath,
     pub(crate) is_terminal: bool,
     pub(crate) manual_archived_at: Option<f64>,
@@ -246,7 +246,7 @@ pub(crate) struct StartupGcRequest {
     /// mode, workspace-dependent whole-log deletion is skipped for safety.
     pub(crate) live_worktrees: Option<LiveWorktreeResolution>,
     pub(crate) session_records: Vec<SessionGcRecord>,
-    pub(crate) workflow_runs: Vec<WorkflowRunGcRecord>,
+    pub(crate) workflow_executions: Vec<WorkflowExecutionGcRecord>,
     pub(crate) workspace_state_records: Vec<WorkspaceStateGcRecord>,
     pub(crate) review_comment_records: Vec<ReviewCommentGcRecord>,
     pub(crate) checkpoint_paths: Vec<PathBuf>,

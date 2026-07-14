@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { FacetSubTab, useAutomation } from "@/hooks/useAutomation";
-import type { DiagnosticItem, FacetKind } from "@/types/workflow";
+import type { DiagnosticView, FacetKind } from "@/types/workflow";
 import { FacetDetail } from "./automation/FacetDetail";
 import { FacetEditor } from "./automation/FacetEditor";
 import { FacetList } from "./automation/FacetList";
@@ -62,7 +62,7 @@ export function AutomationSection({
 	const [editingFacet, setEditingFacet] = useState(false);
 	const [editingWorkflow, setEditingWorkflow] = useState(false);
 	const [workflowSaveDiagnostics, setWorkflowSaveDiagnostics] = useState<
-		DiagnosticItem[]
+		DiagnosticView[]
 	>([]);
 
 	// Dialogs

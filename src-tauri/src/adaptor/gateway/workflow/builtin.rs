@@ -848,26 +848,26 @@ mod tests {
                     .expect("builtin facet contents must resolve");
 
             for node in wf.nodes.iter().filter(|n| !n.inputs.is_empty()) {
-                let mut step_outputs = HashMap::new();
+                let mut artifacts = HashMap::new();
                 for input in node
                     .inputs
                     .iter()
                     .filter(|input| input.as_str() != "request")
                 {
-                    step_outputs.insert(
+                    artifacts.insert(
                         input.clone(),
-                        crate::adaptor::gateway::workflow::state::StepOutput {
-                            step_name: input.clone(),
-                            run_index: 1,
+                        crate::adaptor::gateway::workflow::state::RuntimeArtifact {
+                            node_name: input.clone(),
+                            attempt: 1,
                             session_id: None,
                             result: None,
-                            structured_output: Some(serde_json::json!({
+                            artifact: Some(serde_json::json!({
                                 "spec_dir": "docs/specs/issues-123",
                                 "verdict": "NEEDS_FIX",
                                 "tasks": [],
                                 "summary": "test"
                             })),
-                            artifact_contract: Some("test-artifact".to_string()),
+                            contract: Some("test-artifact".to_string()),
                             token_usage: None,
                             completed_at: 1.0,
                         },
@@ -878,7 +878,7 @@ mod tests {
                     resolved.for_node(&node.name),
                     "00000000-0000-0000-0000-000000000000",
                     Some(TASK_TEXT),
-                    &step_outputs,
+                    &artifacts,
                 )
                 .expect("build_step_prompt must succeed");
                 for input in &node.inputs {

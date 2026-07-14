@@ -67,9 +67,9 @@ impl WorkflowArchivePruner for TestArchivePruner {
     fn prune_workflow_archive_records(
         &self,
         app_data_dir: &Path,
-        run_ids: &HashSet<String>,
+        execution_ids: &HashSet<String>,
     ) -> Result<WorkflowArchivePruneResult, GcFileSystemError> {
-        let path = app_data_dir.join("workflow_run_archives.json");
+        let path = app_data_dir.join("workflow_execution_archives.json");
         if !path.exists() {
             return Ok(WorkflowArchivePruneResult::default());
         }
@@ -77,12 +77,15 @@ impl WorkflowArchivePruner for TestArchivePruner {
         let content = fs::read_to_string(&path).map_err(gc_file_system_error)?;
         let mut value: serde_json::Value = serde_json::from_str(&content)
             .map_err(|error| GcFileSystemError::other(error.to_string()))?;
-        let Some(runs) = value.get_mut("runs").and_then(|runs| runs.as_object_mut()) else {
+        let Some(executions) = value
+            .get_mut("executions")
+            .and_then(|executions| executions.as_object_mut())
+        else {
             return Ok(WorkflowArchivePruneResult::default());
         };
         let mut removed = 0;
-        for run_id in run_ids {
-            if runs.remove(run_id).is_some() {
+        for execution_id in execution_ids {
+            if executions.remove(execution_id).is_some() {
                 removed += 1;
             }
         }
@@ -286,7 +289,7 @@ pub(super) fn startup_gc_request(
         app_data_dir: app_data_dir.to_path_buf(),
         live_worktrees,
         session_records: collect_test_session_records(app_data_dir),
-        workflow_runs: collect_test_workflow_runs(app_data_dir),
+        workflow_executions: collect_test_workflow_executions(app_data_dir),
         workspace_state_records: collect_test_workspace_state_records(app_data_dir),
         review_comment_records: collect_test_review_comment_records(app_data_dir),
         checkpoint_paths: collect_test_checkpoint_paths(app_data_dir),
@@ -430,10 +433,10 @@ fn collect_test_session_blob_stores(app_data_dir: &Path) -> Vec<SessionBlobStore
         .collect()
 }
 
-fn collect_test_workflow_runs(app_data_dir: &Path) -> Vec<WorkflowRunGcRecord> {
-    let archived_at_by_run = test_manual_archive_times(app_data_dir);
-    let runs_dir = app_data_dir.join("workflow_runs");
-    let Ok(entries) = fs::read_dir(&runs_dir) else {
+fn collect_test_workflow_executions(app_data_dir: &Path) -> Vec<WorkflowExecutionGcRecord> {
+    let archived_at_by_execution = test_manual_archive_times(app_data_dir);
+    let executions_dir = app_data_dir.join("workflow_executions");
+    let Ok(entries) = fs::read_dir(&executions_dir) else {
         return Vec::new();
     };
     let mut records = Vec::new();
@@ -445,15 +448,20 @@ fn collect_test_workflow_runs(app_data_dir: &Path) -> Vec<WorkflowRunGcRecord> {
         let Ok(content) = fs::read_to_string(&path) else {
             continue;
         };
-        let Ok(run) = serde_json::from_str::<TestWorkflowRunMeta>(&content) else {
+        let Ok(execution) = serde_json::from_str::<TestWorkflowExecutionMeta>(&content) else {
             continue;
         };
-        records.push(WorkflowRunGcRecord {
-            run_id: run.run_id.clone(),
-            worktree_path: normalized_gc_worktree_path(&run.worktree_path),
-            is_terminal: run.status.is_terminal(),
-            manual_archived_at: archived_at_by_run.get(&run.run_id).copied(),
-            delete_paths: test_workflow_run_delete_paths(app_data_dir, &run.run_id),
+        records.push(WorkflowExecutionGcRecord {
+            execution_id: execution.execution_id.clone(),
+            worktree_path: normalized_gc_worktree_path(&execution.worktree_path),
+            is_terminal: execution.status.is_terminal(),
+            manual_archived_at: archived_at_by_execution
+                .get(&execution.execution_id)
+                .copied(),
+            delete_paths: test_workflow_execution_delete_paths(
+                app_data_dir,
+                &execution.execution_id,
+            ),
         });
     }
     records
@@ -461,15 +469,15 @@ fn collect_test_workflow_runs(app_data_dir: &Path) -> Vec<WorkflowRunGcRecord> {
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct TestWorkflowRunMeta {
-    run_id: String,
-    status: TestWorkflowRunStatus,
+struct TestWorkflowExecutionMeta {
+    execution_id: String,
+    status: TestWorkflowExecutionStatus,
     worktree_path: String,
 }
 
 #[derive(Debug, Clone, Copy, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum TestWorkflowRunStatus {
+enum TestWorkflowExecutionStatus {
     Running,
     WaitingApproval,
     Completed,
@@ -477,7 +485,7 @@ enum TestWorkflowRunStatus {
     Aborted,
 }
 
-impl TestWorkflowRunStatus {
+impl TestWorkflowExecutionStatus {
     fn is_terminal(self) -> bool {
         match self {
             Self::Completed | Self::Failed | Self::Aborted => true,
@@ -487,46 +495,50 @@ impl TestWorkflowRunStatus {
 }
 
 fn test_manual_archive_times(app_data_dir: &Path) -> HashMap<String, f64> {
-    let path = app_data_dir.join("workflow_run_archives.json");
+    let path = app_data_dir.join("workflow_execution_archives.json");
     let Ok(content) = fs::read_to_string(path) else {
         return HashMap::new();
     };
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
         return HashMap::new();
     };
-    let Some(runs) = value.get("runs").and_then(|runs| runs.as_object()) else {
+    let Some(executions) = value
+        .get("executions")
+        .and_then(|executions| executions.as_object())
+    else {
         return HashMap::new();
     };
-    runs.iter()
-        .filter_map(|(run_id, record)| {
+    executions
+        .iter()
+        .filter_map(|(execution_id, record)| {
             let archived_at = record.get("archivedAt").and_then(|value| value.as_f64())?;
             let reason = record.get("archiveReason").and_then(|value| value.as_str());
             let restored_at = record.get("restoredAt").and_then(|value| value.as_f64());
             (reason == Some(WORKFLOW_ARCHIVE_REASON_MANUAL) && restored_at.is_none())
-                .then(|| (run_id.clone(), archived_at))
+                .then(|| (execution_id.clone(), archived_at))
         })
         .collect()
 }
 
-fn test_workflow_run_delete_paths(app_data_dir: &Path, run_id: &str) -> Vec<PathBuf> {
+fn test_workflow_execution_delete_paths(app_data_dir: &Path, execution_id: &str) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     paths.push(
         app_data_dir
-            .join("workflow_runs")
-            .join(format!("{run_id}.json")),
+            .join("workflow_executions")
+            .join(format!("{execution_id}.json")),
     );
     for extension in ["ndjson", "json"] {
         paths.push(
             app_data_dir
-                .join("workflow_logs")
-                .join(format!("{run_id}.{extension}")),
+                .join("workflow_execution_logs")
+                .join(format!("{execution_id}.{extension}")),
         );
     }
     let workflow_dir = app_data_dir.join("workflow");
     for path in [
-        workflow_dir.join(run_id),
-        workflow_dir.join(format!("{run_id}.json")),
-        workflow_dir.join(format!("{run_id}.ndjson")),
+        workflow_dir.join(execution_id),
+        workflow_dir.join(format!("{execution_id}.json")),
+        workflow_dir.join(format!("{execution_id}.ndjson")),
     ] {
         if path.exists() {
             paths.push(path);
@@ -545,7 +557,7 @@ fn test_workflow_run_delete_paths(app_data_dir: &Path, run_id: &str) -> Vec<Path
             let Ok(content) = fs::read_to_string(&path) else {
                 continue;
             };
-            if test_pending_command_run_id(&content).as_deref() == Some(run_id) {
+            if test_pending_command_execution_id(&content).as_deref() == Some(execution_id) {
                 paths.push(path);
             }
         }
@@ -553,11 +565,11 @@ fn test_workflow_run_delete_paths(app_data_dir: &Path, run_id: &str) -> Vec<Path
     paths
 }
 
-fn test_pending_command_run_id(content: &str) -> Option<String> {
+fn test_pending_command_execution_id(content: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(content).ok()?;
     value
-        .get("run_id")
-        .or_else(|| value.get("runId"))
+        .get("execution_id")
+        .or_else(|| value.get("executionId"))
         .and_then(|value| value.as_str())
         .map(str::to_string)
 }
@@ -766,31 +778,65 @@ impl GcRevalidationReader for TestRevalidationReader {
         RevalidationRead::Missing
     }
 
-    fn workflow_run_state(
+    fn workflow_execution_state(
         &self,
         app_data_dir: &Path,
-        run_id: &str,
-    ) -> RevalidationRead<CurrentWorkflowRunState> {
-        let path = app_data_dir
-            .join("workflow_runs")
-            .join(format!("{run_id}.json"));
-        let content = match fs::read_to_string(path) {
-            Ok(content) => content,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return RevalidationRead::Missing;
-            }
-            Err(error) => return RevalidationRead::Unavailable(error.to_string()),
-        };
-        let run: TestWorkflowRunMeta = match serde_json::from_str(&content) {
-            Ok(run) => run,
-            Err(error) => return RevalidationRead::Unavailable(error.to_string()),
-        };
-        RevalidationRead::Present(CurrentWorkflowRunState {
-            worktree_path: normalized_gc_worktree_path(&run.worktree_path),
-            is_terminal: run.status.is_terminal(),
-            manual_archived_at: test_manual_archive_times(app_data_dir).get(run_id).copied(),
-        })
+        execution_id: &str,
+    ) -> RevalidationRead<CurrentWorkflowExecutionState> {
+        let archived_at_by_execution = test_manual_archive_times(app_data_dir);
+        read_current_test_workflow_execution_state(
+            app_data_dir,
+            execution_id,
+            &archived_at_by_execution,
+        )
     }
+
+    fn workflow_execution_states(
+        &self,
+        app_data_dir: &Path,
+        execution_ids: &HashSet<String>,
+    ) -> HashMap<String, RevalidationRead<CurrentWorkflowExecutionState>> {
+        let archived_at_by_execution = test_manual_archive_times(app_data_dir);
+        execution_ids
+            .iter()
+            .map(|execution_id| {
+                (
+                    execution_id.clone(),
+                    read_current_test_workflow_execution_state(
+                        app_data_dir,
+                        execution_id,
+                        &archived_at_by_execution,
+                    ),
+                )
+            })
+            .collect()
+    }
+}
+
+fn read_current_test_workflow_execution_state(
+    app_data_dir: &Path,
+    execution_id: &str,
+    archived_at_by_execution: &HashMap<String, f64>,
+) -> RevalidationRead<CurrentWorkflowExecutionState> {
+    let path = app_data_dir
+        .join("workflow_executions")
+        .join(format!("{execution_id}.json"));
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return RevalidationRead::Missing;
+        }
+        Err(error) => return RevalidationRead::Unavailable(error.to_string()),
+    };
+    let execution: TestWorkflowExecutionMeta = match serde_json::from_str(&content) {
+        Ok(execution) => execution,
+        Err(error) => return RevalidationRead::Unavailable(error.to_string()),
+    };
+    RevalidationRead::Present(CurrentWorkflowExecutionState {
+        worktree_path: normalized_gc_worktree_path(&execution.worktree_path),
+        is_terminal: execution.status.is_terminal(),
+        manual_archived_at: archived_at_by_execution.get(execution_id).copied(),
+    })
 }
 
 fn read_current_test_session_meta(
@@ -881,20 +927,20 @@ pub(super) fn write_message(session_dir: &Path, seq: u64, parts: Vec<MessagePart
     .unwrap();
 }
 
-pub(super) fn write_workflow_run(
+pub(super) fn write_workflow_execution(
     app_data_dir: &Path,
     id: &str,
     worktree_path: &Path,
     status: &str,
 ) {
-    fs::create_dir_all(app_data_dir.join("workflow_runs")).unwrap();
-    fs::create_dir_all(app_data_dir.join("workflow_logs")).unwrap();
+    fs::create_dir_all(app_data_dir.join("workflow_executions")).unwrap();
+    fs::create_dir_all(app_data_dir.join("workflow_execution_logs")).unwrap();
     fs::write(
         app_data_dir
-            .join("workflow_runs")
+            .join("workflow_executions")
             .join(format!("{id}.json")),
         serde_json::json!({
-            "runId": id,
+            "executionId": id,
             "status": status,
             "worktreePath": worktree_path.to_string_lossy()
         })
@@ -903,7 +949,7 @@ pub(super) fn write_workflow_run(
     .unwrap();
     fs::write(
         app_data_dir
-            .join("workflow_logs")
+            .join("workflow_execution_logs")
             .join(format!("{id}.ndjson")),
         "log",
     )
@@ -911,7 +957,7 @@ pub(super) fn write_workflow_run(
 }
 
 pub(super) fn write_archive_index(app_data_dir: &Path, entries: &[(&str, f64, Option<f64>)]) {
-    let runs = entries
+    let executions = entries
         .iter()
         .map(|(id, archived_at, restored_at)| {
             (
@@ -925,8 +971,8 @@ pub(super) fn write_archive_index(app_data_dir: &Path, entries: &[(&str, f64, Op
         })
         .collect::<serde_json::Map<_, _>>();
     fs::write(
-        app_data_dir.join("workflow_run_archives.json"),
-        serde_json::json!({ "runs": runs }).to_string(),
+        app_data_dir.join("workflow_execution_archives.json"),
+        serde_json::json!({ "executions": executions }).to_string(),
     )
     .unwrap();
 }

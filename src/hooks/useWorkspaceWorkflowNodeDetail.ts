@@ -2,43 +2,43 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useEffect, useRef, useState } from "react";
 import type { SessionStatus } from "@/types/session";
-import type { WorkflowStatePayload } from "@/types/workflow";
-import type { WorkspaceWorkflowStepDetail } from "@/types/workspace-tree";
+import type { WorkflowExecutionChangedPayload } from "@/types/workflow";
+import type { WorkspaceWorkflowNodeDetail } from "@/types/workspace-tree";
 
-interface UseWorkspaceWorkflowStepDetailInput {
+interface UseWorkspaceWorkflowNodeDetailInput {
 	worktreePath: string | null;
-	runId: string | null;
-	stepId: string | null;
+	executionId: string | null;
+	nodeExecutionId: string | null;
 }
 
 interface WorkspaceTreeRefreshDetail {
 	worktreePath?: string;
 }
 
-export interface WorkspaceWorkflowStepDetailState {
-	detail: WorkspaceWorkflowStepDetail | null;
+export interface WorkspaceWorkflowNodeDetailState {
+	detail: WorkspaceWorkflowNodeDetail | null;
 	loading: boolean;
 	error: string | null;
 }
 
-export function useWorkspaceWorkflowStepDetail({
+export function useWorkspaceWorkflowNodeDetail({
 	worktreePath,
-	runId,
-	stepId,
-}: UseWorkspaceWorkflowStepDetailInput): WorkspaceWorkflowStepDetailState {
-	const [state, setState] = useState<WorkspaceWorkflowStepDetailState>({
+	executionId,
+	nodeExecutionId,
+}: UseWorkspaceWorkflowNodeDetailInput): WorkspaceWorkflowNodeDetailState {
+	const [state, setState] = useState<WorkspaceWorkflowNodeDetailState>({
 		detail: null,
 		loading: false,
 		error: null,
 	});
-	const detailRef = useRef<WorkspaceWorkflowStepDetail | null>(null);
+	const detailRef = useRef<WorkspaceWorkflowNodeDetail | null>(null);
 
 	useEffect(() => {
 		detailRef.current = state.detail;
 	}, [state.detail]);
 
 	useEffect(() => {
-		if (!worktreePath || !runId || !stepId) {
+		if (!worktreePath || !executionId || !nodeExecutionId) {
 			detailRef.current = null;
 			setState({ detail: null, loading: false, error: null });
 			return;
@@ -56,9 +56,9 @@ export function useWorkspaceWorkflowStepDetail({
 				loading: true,
 				error: null,
 			}));
-			void invoke<WorkspaceWorkflowStepDetail | null>(
-				"get_workspace_workflow_step_detail",
-				{ worktreePath, runId, stepId },
+			void invoke<WorkspaceWorkflowNodeDetail | null>(
+				"get_workspace_workflow_node_detail",
+				{ worktreePath, executionId, nodeExecutionId },
 			)
 				.then((next) => {
 					if (cancelled) return;
@@ -99,15 +99,16 @@ export function useWorkspaceWorkflowStepDetail({
 		window.addEventListener("workspace-tree-refresh", handleRefresh);
 
 		const setup = async () => {
-			const nextUnlistenWorkflow = await listen<WorkflowStatePayload>(
-				"workflow-state-changed",
-				(event) => {
-					if (cancelled) return;
-					if (event.payload.worktreePath !== worktreePath) return;
-					if (event.payload.workflowState.executionId !== runId) return;
-					load(true);
-				},
-			);
+			const nextUnlistenWorkflow =
+				await listen<WorkflowExecutionChangedPayload>(
+					"workflow-execution-changed",
+					(event) => {
+						if (cancelled) return;
+						if (event.payload.worktreePath !== worktreePath) return;
+						if (event.payload.workflowExecution.id !== executionId) return;
+						load(true);
+					},
+				);
 			if (cancelled) {
 				nextUnlistenWorkflow();
 				return;
@@ -119,13 +120,13 @@ export function useWorkspaceWorkflowStepDetail({
 				(event) => {
 					if (cancelled) return;
 					if (event.payload.worktree_path !== worktreePath) return;
-					const displayedStepSession = detailRef.current?.sessions.some(
+					const displayedNodeSession = detailRef.current?.sessions.some(
 						(session) => session.id === event.payload.chat_session_id,
 					);
 					const sessionWasHidden =
 						event.payload.session_state === "closed" ||
 						event.payload.session_state === "archived";
-					if (!displayedStepSession && !sessionWasHidden) {
+					if (!displayedNodeSession && !sessionWasHidden) {
 						return;
 					}
 					load(true);
@@ -145,37 +146,35 @@ export function useWorkspaceWorkflowStepDetail({
 			unlistenWorkflow?.();
 			unlistenSessionStatus?.();
 		};
-	}, [runId, stepId, worktreePath]);
+	}, [executionId, nodeExecutionId, worktreePath]);
 
 	return state;
 }
 
-export async function submitWorkspaceWorkflowStepAction({
+export async function submitWorkspaceWorkflowNodeAction({
 	worktreePath,
-	runId,
-	stepId,
-	stepName,
+	executionId,
 	nodeExecutionId,
+	nodeName,
 }: {
 	worktreePath: string;
-	runId: string;
-	stepId: string;
-	stepName: string;
-	nodeExecutionId?: string;
-}): Promise<WorkspaceWorkflowStepDetail | null> {
-	await invoke("approve_workflow_step", {
+	executionId: string;
+	nodeExecutionId: string;
+	nodeName: string;
+}): Promise<WorkspaceWorkflowNodeDetail | null> {
+	await invoke("approve_workflow_node", {
 		args: {
-			runId,
-			stepName,
-			nodeExecutionId: nodeExecutionId ?? null,
+			executionId,
+			nodeName,
+			nodeExecutionId,
 			comment: null,
 		},
 	});
 	window.dispatchEvent(
 		new CustomEvent("workspace-tree-refresh", { detail: { worktreePath } }),
 	);
-	return invoke<WorkspaceWorkflowStepDetail | null>(
-		"get_workspace_workflow_step_detail",
-		{ worktreePath, runId, stepId },
+	return invoke<WorkspaceWorkflowNodeDetail | null>(
+		"get_workspace_workflow_node_detail",
+		{ worktreePath, executionId, nodeExecutionId },
 	);
 }

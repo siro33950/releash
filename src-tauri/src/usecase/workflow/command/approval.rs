@@ -7,7 +7,7 @@ use super::preflight::WorkflowRuntimeCommandPreflight;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalCommand {
-    pub run_id: String,
+    pub execution_id: String,
     pub node_name: String,
     pub node_execution_id: Option<String>,
     pub comment: Option<String>,

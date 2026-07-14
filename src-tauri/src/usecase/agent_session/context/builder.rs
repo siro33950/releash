@@ -429,7 +429,7 @@ mod tests {
     use crate::usecase::agent_session::context::{
         BranchDiffContextChangedFile, BranchDiffContextStats,
     };
-    use crate::usecase::agent_session::session::WorkflowStepContextDto;
+    use crate::usecase::agent_session::session::WorkflowNodeContextDto;
 
     struct EmptyInstructionSource;
 
@@ -1007,14 +1007,14 @@ mod tests {
 
     #[test]
     fn build_system_context_routes_workflow_instruction_outside_workflow_state() {
-        let workflow_state = serde_json::to_string(&WorkflowStepContextDto {
-            run_id: "run-1".to_string(),
+        let workflow_state = serde_json::to_string(&WorkflowNodeContextDto {
+            execution_id: "run-1".to_string(),
             node_execution_id: "node-execution-1".to_string(),
             workflow_name: "wf".to_string(),
-            step_name: "step-a".to_string(),
-            run_index: 0,
-            parent_step_name: None,
-            parent_run_index: None,
+            node_name: "step-a".to_string(),
+            attempt: 0,
+            parent_node_name: None,
+            parent_attempt: None,
             order: 0,
             startup_timeout_secs: None,
             startup_max_retries: None,
@@ -1044,8 +1044,8 @@ mod tests {
         assert!(built
             .payload_for(ContextSourceKind::WorkflowState)
             .is_some_and(|payload| !payload.contains("private workflow instruction")
-                && !payload.contains("parentStepName")
-                && !payload.contains("parentRunIndex")));
+                && !payload.contains("parentNodeName")
+                && !payload.contains("parentAttempt")));
     }
 
     #[test]

@@ -459,7 +459,7 @@ describe("AutomationSection", () => {
 					"policies/my-policy": [
 						{
 							workflow_name: "wf-1",
-							step_name: "step-1",
+							node_name: "step-1",
 							slot: "policy",
 						},
 					],
@@ -580,7 +580,7 @@ describe("AutomationSection", () => {
 		).toBeInTheDocument();
 	});
 
-	it("workflow detail shows step details when expanded", async () => {
+	it("workflow detail shows node details when expanded", async () => {
 		const user = userEvent.setup();
 		const automation = createMockAutomation({
 			selectedWorkflow: {
@@ -655,7 +655,7 @@ describe("AutomationSection", () => {
 						},
 						message: "Step references missing facet",
 						workflow_name: "diag-wf",
-						step_name: "step-1",
+						node_name: "step-1",
 					},
 					{
 						code: "WFT004",
@@ -663,7 +663,7 @@ describe("AutomationSection", () => {
 						stage: "typecheck",
 						message: "Consider adding artifact schema",
 						workflow_name: "diag-wf",
-						step_name: "step-1",
+						node_name: "step-1",
 					},
 				],
 			},
@@ -700,12 +700,12 @@ describe("AutomationSection", () => {
 					"policies/my-policy": [
 						{
 							workflow_name: "wf-alpha",
-							step_name: "step-1",
+							node_name: "step-1",
 							slot: "policy",
 						},
 						{
 							workflow_name: "wf-beta",
-							step_name: "step-2",
+							node_name: "step-2",
 							slot: "policy",
 						},
 					],
@@ -804,7 +804,7 @@ describe("AutomationSection", () => {
 					"policies/used-policy": [
 						{
 							workflow_name: "wf-1",
-							step_name: "step-1",
+							node_name: "step-1",
 							slot: "policy",
 						},
 					],

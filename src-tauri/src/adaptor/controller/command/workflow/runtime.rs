@@ -3,36 +3,37 @@ use std::sync::Arc;
 use serde::Deserialize;
 
 use crate::adaptor::controller::command::workflow::{
-    parse_workflow_approval_permission_mode, parse_workflow_start_permission_mode, validate_run_id,
+    parse_workflow_approval_permission_mode, parse_workflow_start_permission_mode,
+    validate_execution_id,
 };
 use crate::adaptor::controller_support::{
-    build_workflow_state_view, AgentImageAttachment, AgentSendMessageResponse,
-    AgentSessionRuntimeState, OpenTabRegistryState,
+    AgentImageAttachment, AgentSendMessageResponse, AgentSessionRuntimeState,
 };
-use crate::adaptor::protocol::workflow::WorkflowStateView;
 use crate::usecase::agent_session::runtime::SendAgentMessageRequest;
-use crate::usecase::workflow::command::{AbortRunCommand, ApprovalCommand, StartRunCommand};
+use crate::usecase::workflow::command::{
+    AbortExecutionCommand, ApprovalCommand, StartExecutionCommand,
+};
 use crate::usecase::workflow::WorkflowRuntimeUsecase;
 
-fn parse_domain_trigger_source(
+fn parse_execution_origin(
     value: Option<String>,
-) -> Result<crate::domain::workflow::TriggerSource, String> {
+) -> Result<crate::domain::workflow::ExecutionOrigin, String> {
     match value.as_deref() {
-        Some("cli") => Ok(crate::domain::workflow::TriggerSource::Cli),
-        Some("remote") => Ok(crate::domain::workflow::TriggerSource::Remote),
-        Some("agent") => Ok(crate::domain::workflow::TriggerSource::Agent),
+        Some("cli") => Ok(crate::domain::workflow::ExecutionOrigin::Cli),
+        Some("api") => Ok(crate::domain::workflow::ExecutionOrigin::Api),
+        Some("agent") => Ok(crate::domain::workflow::ExecutionOrigin::Agent),
         Some("desktop_ui") | Some("desktop-ui") | None => {
-            Ok(crate::domain::workflow::TriggerSource::DesktopUi)
+            Ok(crate::domain::workflow::ExecutionOrigin::DesktopUi)
         }
-        Some(other) => Err(format!("unknown trigger_source: {other}")),
+        Some(other) => Err(format!("unknown created_from: {other}")),
     }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ApproveWorkflowStepArgs {
-    pub run_id: String,
-    pub step_name: String,
+pub(crate) struct ApproveWorkflowNodeArgs {
+    pub execution_id: String,
+    pub node_name: String,
     #[serde(default)]
     pub node_execution_id: Option<String>,
     #[serde(default)]
@@ -40,30 +41,29 @@ pub(crate) struct ApproveWorkflowStepArgs {
 }
 
 #[cfg(test)]
-pub(crate) fn parse_approve_workflow_step_args(
+pub(crate) fn parse_approve_workflow_node_args(
     value: &serde_json::Value,
-) -> Result<ApproveWorkflowStepArgs, serde_json::Error> {
-    serde_json::from_value::<ApproveWorkflowStepArgs>(value.clone())
+) -> Result<ApproveWorkflowNodeArgs, serde_json::Error> {
+    serde_json::from_value::<ApproveWorkflowNodeArgs>(value.clone())
 }
 
-#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn start_workflow(
     runtime: tauri::State<'_, Arc<WorkflowRuntimeUsecase>>,
     workflow_name: String,
     worktree_path: String,
-    task: Option<String>,
-    trigger_source: Option<String>,
+    request: Option<String>,
+    created_from: Option<String>,
     permission_mode: Option<String>,
 ) -> Result<String, String> {
-    let trigger_source = parse_domain_trigger_source(trigger_source)?;
+    let created_from = parse_execution_origin(created_from)?;
     let permission_mode = parse_workflow_start_permission_mode(permission_mode)?;
     runtime
-        .start_run(StartRunCommand {
+        .start_execution(StartExecutionCommand {
             workflow_file_stem: workflow_name,
             worktree_path,
-            task,
-            trigger_source,
+            request,
+            created_from,
             permission_mode: permission_mode.to_string(),
         })
         .await
@@ -73,12 +73,12 @@ pub async fn start_workflow(
 #[tauri::command]
 pub async fn abort_workflow(
     runtime: tauri::State<'_, Arc<WorkflowRuntimeUsecase>>,
-    run_id: String,
+    execution_id: String,
 ) -> Result<(), String> {
-    validate_run_id(&run_id)?;
+    validate_execution_id(&execution_id)?;
     runtime
-        .abort_run(AbortRunCommand {
-            run_id,
+        .abort_execution(AbortExecutionCommand {
+            execution_id,
             expected_node_name: None,
         })
         .await
@@ -90,41 +90,21 @@ pub async fn abort_workflow(
 }
 
 #[tauri::command]
-pub async fn get_workflow_state(
+pub async fn approve_workflow_node(
     runtime: tauri::State<'_, Arc<WorkflowRuntimeUsecase>>,
-    agent_runtime: tauri::State<'_, AgentSessionRuntimeState>,
-    open_tabs: tauri::State<'_, OpenTabRegistryState>,
-    run_id: String,
-) -> Result<Option<WorkflowStateView>, String> {
-    validate_run_id(&run_id)?;
-    match runtime
-        .get_state_by_run_id(&run_id)
-        .await
-        .map_err(|e| e.to_string())?
-    {
-        Some(state) => Ok(Some(
-            build_workflow_state_view(state, agent_runtime.inner(), open_tabs.inner()).await,
-        )),
-        None => Ok(None),
-    }
-}
-
-#[tauri::command]
-pub async fn approve_workflow_step(
-    runtime: tauri::State<'_, Arc<WorkflowRuntimeUsecase>>,
-    args: ApproveWorkflowStepArgs,
+    args: ApproveWorkflowNodeArgs,
 ) -> Result<(), String> {
-    let ApproveWorkflowStepArgs {
-        run_id,
-        step_name,
+    let ApproveWorkflowNodeArgs {
+        execution_id,
+        node_name,
         node_execution_id,
         comment,
     } = args;
-    validate_run_id(&run_id)?;
+    validate_execution_id(&execution_id)?;
     runtime
         .resolve_approval(ApprovalCommand {
-            run_id,
-            node_name: step_name,
+            execution_id,
+            node_name,
             node_execution_id,
             comment,
         })
@@ -137,23 +117,22 @@ pub async fn approve_workflow_step(
 pub async fn send_workflow_approval_chat_message(
     app: tauri::AppHandle,
     agent_runtime: tauri::State<'_, AgentSessionRuntimeState>,
-    open_tabs: tauri::State<'_, OpenTabRegistryState>,
     runtime: tauri::State<'_, Arc<WorkflowRuntimeUsecase>>,
-    run_id: String,
+    execution_id: String,
     content: String,
     permission_mode: Option<String>,
     plan_mode: Option<bool>,
     images: Option<Vec<AgentImageAttachment>>,
     mentions: Option<Vec<crate::adaptor::protocol::mention::MentionReferenceInput>>,
 ) -> Result<AgentSendMessageResponse, String> {
-    // Spec issues-1011 line 121: 起動以外の workflow 操作 API は run_id を主語に取る。
-    // chat_session_id / worktree_path は run_id から workflow runtime usecase が解決する。
-    validate_run_id(&run_id)?;
+    // Spec issues-1011 line 121: 起動以外の workflow 操作 API は execution_id を主語に取る。
+    // chat_session_id / worktree_path は execution_id から workflow runtime usecase が解決する。
+    validate_execution_id(&execution_id)?;
     let permission_mode = parse_workflow_approval_permission_mode(permission_mode)?;
     let mentions = mentions.map(crate::adaptor::protocol::mention::into_domain_vec);
 
     let approval_target = runtime
-        .prepare_approval_chat(&run_id, &content)
+        .prepare_approval_chat(&execution_id, &content)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -172,13 +151,8 @@ pub async fn send_workflow_approval_chat_message(
         })
         .await
         .map_err(|e| e.to_string())?;
-    crate::adaptor::controller_support::emit_after_workflow_step_message(
-        &app,
-        &response.session,
-        agent_runtime.inner(),
-        open_tabs.inner(),
-    )
-    .await;
+    crate::adaptor::controller_support::emit_after_workflow_node_message(&app, &response.session)
+        .await;
     Ok(response)
 }
 
@@ -188,9 +162,9 @@ mod tests {
 
     #[test]
     fn approve_args_accept_optional_node_execution_address() {
-        let args = parse_approve_workflow_step_args(&serde_json::json!({
-            "runId": "00000000-0000-0000-0000-000000000001",
-            "stepName": "review",
+        let args = parse_approve_workflow_node_args(&serde_json::json!({
+            "executionId": "00000000-0000-0000-0000-000000000001",
+            "nodeName": "review",
             "nodeExecutionId": "node-execution-review",
         }))
         .unwrap();
@@ -203,9 +177,9 @@ mod tests {
 
     #[test]
     fn approve_args_keep_single_name_fallback_when_address_is_omitted() {
-        let args = parse_approve_workflow_step_args(&serde_json::json!({
-            "runId": "00000000-0000-0000-0000-000000000001",
-            "stepName": "review",
+        let args = parse_approve_workflow_node_args(&serde_json::json!({
+            "executionId": "00000000-0000-0000-0000-000000000001",
+            "nodeName": "review",
         }))
         .unwrap();
 

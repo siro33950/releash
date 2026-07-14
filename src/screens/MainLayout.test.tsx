@@ -1,7 +1,7 @@
 /**
  * spec issues-1220 Rule「中央表示は CenterSelection から導出される」
  *
- * MainLayout 近傍の統合テスト。Workspace tree から workflowStep selection request が
+ * MainLayout 近傍の統合テスト。Workspace tree から workflowNode selection request が
  * 渡ると、中央エリアの AgentChatPanel と入れ替わりに WorkflowView が表示されることを
  * 担保する。
  */
@@ -65,7 +65,7 @@ vi.mock("@/hooks/useBaseBranch", () => ({
 	}),
 }));
 vi.mock("@/hooks/useWorkflowState", () => ({
-	useWorkflowState: () => ({ workflowState: null }),
+	useWorkflowState: () => ({ workflowExecution: null }),
 }));
 vi.mock("@/contexts/AgentChatContext", () => ({
 	AgentChatProvider: ({ children }: { children: React.ReactNode }) => children,
@@ -186,7 +186,7 @@ describe("MainLayout center selection", () => {
 		}
 	});
 
-	it("mounts WorkflowView with selectedRootPath when workflowStep selection is requested", async () => {
+	it("mounts WorkflowView with selectedRootPath when workflowNode selection is requested", async () => {
 		render(
 			<TooltipProvider>
 				<MainLayout
@@ -195,11 +195,11 @@ describe("MainLayout center selection", () => {
 					onSettingsSave={vi.fn()}
 					leftNav={<div />}
 					centerSelectionRequest={{
-						kind: "workflowStep",
+						kind: "workflowNode",
 						worktreePath: "/managed/wt",
-						runId: "run-1",
-						stepId: "run-1:review:1",
-						stepName: "review",
+						executionId: "run-1",
+						nodeExecutionId: "run-1:review:1",
+						nodeName: "review",
 						requestId: 1,
 					}}
 				/>

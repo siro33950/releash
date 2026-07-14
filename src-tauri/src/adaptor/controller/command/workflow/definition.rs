@@ -23,13 +23,13 @@ pub async fn list_workflows(
     let query = state.workflow_usecase.clone();
     tokio::task::spawn_blocking(move || {
         let running_names: Vec<String> = query
-            .list_runs(crate::domain::workflow::RunListFilter {
-                status: Some(crate::domain::workflow::RunStatusFilter::Active),
+            .list_executions(crate::domain::workflow::ExecutionListFilter {
+                status: Some(crate::domain::workflow::ExecutionStatusFilter::Active),
                 worktree_path: None,
             })
             .map_err(|e| e.to_string())?
             .into_iter()
-            .map(|run| run.workflow_name)
+            .map(|execution| execution.workflow_name)
             .collect();
         query
             .list_workflows(&running_names)

@@ -24,29 +24,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn append_required_events_writes_batch_to_workflow_log() {
+    fn append_required_events_writes_batch_to_execution_log() {
         let tmp = tempfile::tempdir().unwrap();
-        let run_id = "00000000-0000-0000-0000-000000000001";
-        let event = WorkflowEvent::RunAborted {
-            run_id: run_id.to_string(),
-            workflow_name: "wf".to_string(),
-            aborted_step: None,
+        let execution_id = "00000000-0000-0000-0000-000000000001";
+        let event = WorkflowEvent::ExecutionAborted {
+            execution_id: execution_id.to_string(),
+            aborted_node: None,
             timestamp: 42.0,
         };
 
         append_required_events(tmp.path(), std::slice::from_ref(&event)).unwrap();
 
-        let events = WorkflowEventLog::new(tmp.path()).read_log(run_id).unwrap();
+        let events = WorkflowEventLog::new(tmp.path())
+            .read_log(execution_id)
+            .unwrap();
         assert_eq!(events.len(), 1);
         assert!(matches!(
             &events[0],
-            WorkflowEvent::RunAborted {
-                run_id: restored_run_id,
-                workflow_name,
+            WorkflowEvent::ExecutionAborted {
+                execution_id: restored_execution_id,
                 timestamp,
                 ..
-            } if restored_run_id == run_id
-                && workflow_name == "wf"
+            } if restored_execution_id == execution_id
                 && (*timestamp - 42.0).abs() < f64::EPSILON
         ));
     }
@@ -57,6 +56,6 @@ mod tests {
 
         append_required_events(tmp.path(), &[]).unwrap();
 
-        assert!(!tmp.path().join("workflow_logs").exists());
+        assert!(!tmp.path().join("workflow_execution_logs").exists());
     }
 }

@@ -356,8 +356,8 @@ mod tests {
             selected_model: Some("gpt-5.1-codex".to_string()),
             permission_profile_id: Some("profile-1".to_string()),
             backend_id: Some("codex".to_string()),
-            workflow_step_session: false,
-            workflow_step_context: None,
+            workflow_node_session: false,
+            workflow_node_context: None,
             context_epoch: None,
         }
     }
@@ -463,7 +463,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(!response.restored_workflow_step);
+        assert!(!response.restored_workflow_node);
         let saved = store
             .get_session_shell(tmp.path(), "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d")
             .unwrap()

@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -8,7 +8,7 @@ use crate::usecase::agent_session::session::{AttachmentRef, MessagePart, ToolOut
 
 use super::test_fixtures::*;
 use super::{
-    run_startup_gc, CurrentSessionState, CurrentWorkflowRunState, GcRevalidationReader,
+    run_startup_gc, CurrentSessionState, CurrentWorkflowExecutionState, GcRevalidationReader,
     GcWorktreePath, ProcessRecord, ProcessRecordStatus, RevalidationRead, RuntimeProtection,
 };
 
@@ -19,8 +19,8 @@ fn deleted_workspace_session_workflow_and_workspace_state_are_removed() {
     let deleted = tmp.path().join("deleted-worktree");
     let live_session = write_session(tmp.path(), "live-session", live.path(), "idle", NOW);
     let deleted_session = write_session(tmp.path(), "deleted-session", &deleted, "idle", NOW);
-    write_workflow_run(tmp.path(), "deleted-run", &deleted, "completed");
-    write_workflow_run(tmp.path(), "live-run", live.path(), "completed");
+    write_workflow_execution(tmp.path(), "deleted-execution", &deleted, "completed");
+    write_workflow_execution(tmp.path(), "live-execution", live.path(), "completed");
     fs::create_dir_all(tmp.path().join("workspace_state")).unwrap();
     fs::write(
         tmp.path()
@@ -72,9 +72,18 @@ fn deleted_workspace_session_workflow_and_workspace_state_are_removed() {
 
     assert!(live_session.exists());
     assert!(!deleted_session.exists());
-    assert!(!tmp.path().join("workflow_runs/deleted-run.json").exists());
-    assert!(!tmp.path().join("workflow_logs/deleted-run.ndjson").exists());
-    assert!(tmp.path().join("workflow_runs/live-run.json").exists());
+    assert!(!tmp
+        .path()
+        .join("workflow_executions/deleted-execution.json")
+        .exists());
+    assert!(!tmp
+        .path()
+        .join("workflow_execution_logs/deleted-execution.ndjson")
+        .exists());
+    assert!(tmp
+        .path()
+        .join("workflow_executions/live-execution.json")
+        .exists());
     assert!(tmp
         .path()
         .join("workspace_state")
@@ -113,7 +122,12 @@ fn symlinked_live_worktree_keeps_in_use_sessions_and_workflow() {
     let idle = write_session(tmp.path(), "idle-session", &symlink_worktree, "idle", NOW);
     let done = write_session(tmp.path(), "done-session", &symlink_worktree, "done", NOW);
     let error = write_session(tmp.path(), "error-session", &symlink_worktree, "error", NOW);
-    write_workflow_run(tmp.path(), "completed-run", &symlink_worktree, "completed");
+    write_workflow_execution(
+        tmp.path(),
+        "completed-execution",
+        &symlink_worktree,
+        "completed",
+    );
 
     run_gc(
         tmp.path(),
@@ -125,7 +139,10 @@ fn symlinked_live_worktree_keeps_in_use_sessions_and_workflow() {
     assert!(idle.exists());
     assert!(done.exists());
     assert!(error.exists());
-    assert!(tmp.path().join("workflow_runs/completed-run.json").exists());
+    assert!(tmp
+        .path()
+        .join("workflow_executions/completed-execution.json")
+        .exists());
 }
 
 #[test]
@@ -134,7 +151,7 @@ fn unresolved_worktree_path_keeps_session_and_workflow_conservatively() {
     let live = tempfile::tempdir().unwrap();
     let missing = tmp.path().join("blocked-worktree");
     let session = write_session(tmp.path(), "session", &missing, "idle", NOW);
-    write_workflow_run(tmp.path(), "completed-run", &missing, "completed");
+    write_workflow_execution(tmp.path(), "completed-execution", &missing, "completed");
     let mut request = startup_gc_request(
         tmp.path(),
         Some(full_resolution(live_set(&[("live", live.path())]))),
@@ -145,8 +162,8 @@ fn unresolved_worktree_path_keeps_session_and_workflow_conservatively() {
     for record in &mut request.session_records {
         record.worktree_path = Some(GcWorktreePath::unresolved(missing.to_string_lossy()));
     }
-    for run in &mut request.workflow_runs {
-        run.worktree_path = GcWorktreePath::unresolved(missing.to_string_lossy());
+    for execution in &mut request.workflow_executions {
+        execution.worktree_path = GcWorktreePath::unresolved(missing.to_string_lossy());
     }
 
     run_startup_gc(
@@ -157,7 +174,10 @@ fn unresolved_worktree_path_keeps_session_and_workflow_conservatively() {
     );
 
     assert!(session.exists());
-    assert!(tmp.path().join("workflow_runs/completed-run.json").exists());
+    assert!(tmp
+        .path()
+        .join("workflow_executions/completed-execution.json")
+        .exists());
 }
 
 #[test]
@@ -218,23 +238,23 @@ fn session_state_rules_keep_archived_until_retention_expires() {
 fn workflow_archive_retention_and_running_protection() {
     let tmp = tempfile::tempdir().unwrap();
     let live = tempfile::tempdir().unwrap();
-    write_workflow_run(tmp.path(), "old-archive", live.path(), "completed");
-    write_workflow_run(tmp.path(), "boundary-archive", live.path(), "completed");
-    write_workflow_run(tmp.path(), "restored-archive", live.path(), "completed");
-    write_workflow_run(tmp.path(), "running-archive", live.path(), "running");
+    write_workflow_execution(tmp.path(), "old-archive", live.path(), "completed");
+    write_workflow_execution(tmp.path(), "boundary-archive", live.path(), "completed");
+    write_workflow_execution(tmp.path(), "restored-archive", live.path(), "completed");
+    write_workflow_execution(tmp.path(), "running-archive", live.path(), "running");
     fs::create_dir_all(tmp.path().join("workflow/old-archive")).unwrap();
     fs::write(tmp.path().join("workflow/old-archive/artifact.json"), "{}").unwrap();
     fs::create_dir_all(tmp.path().join("workflow_pending/pending")).unwrap();
     fs::create_dir_all(tmp.path().join("workflow_pending/processed")).unwrap();
     fs::write(
         tmp.path().join("workflow_pending/pending/old-command.json"),
-        serde_json::json!({"id": "cmd-1", "run_id": "old-archive"}).to_string(),
+        serde_json::json!({"id": "cmd-1", "execution_id": "old-archive"}).to_string(),
     )
     .unwrap();
     fs::write(
         tmp.path()
             .join("workflow_pending/processed/boundary-command.json"),
-        serde_json::json!({"id": "cmd-2", "runId": "boundary-archive"}).to_string(),
+        serde_json::json!({"id": "cmd-2", "executionId": "boundary-archive"}).to_string(),
     )
     .unwrap();
     write_archive_index(
@@ -270,7 +290,10 @@ fn workflow_archive_retention_and_running_protection() {
         NOW,
     );
 
-    assert!(!tmp.path().join("workflow_runs/old-archive.json").exists());
+    assert!(!tmp
+        .path()
+        .join("workflow_executions/old-archive.json")
+        .exists());
     assert!(!tmp.path().join("workflow/old-archive").exists());
     assert!(!tmp
         .path()
@@ -282,29 +305,31 @@ fn workflow_archive_retention_and_running_protection() {
         .exists());
     assert!(tmp
         .path()
-        .join("workflow_runs/boundary-archive.json")
+        .join("workflow_executions/boundary-archive.json")
         .exists());
     assert!(tmp
         .path()
-        .join("workflow_runs/restored-archive.json")
+        .join("workflow_executions/restored-archive.json")
         .exists());
     assert!(tmp
         .path()
-        .join("workflow_runs/running-archive.json")
+        .join("workflow_executions/running-archive.json")
         .exists());
     let archive_index: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(tmp.path().join("workflow_run_archives.json")).unwrap(),
+        &fs::read_to_string(tmp.path().join("workflow_execution_archives.json")).unwrap(),
     )
     .unwrap();
-    assert!(archive_index["runs"].get("old-archive").is_none());
-    assert!(archive_index["runs"].get("boundary-archive").is_some());
+    assert!(archive_index["executions"].get("old-archive").is_none());
+    assert!(archive_index["executions"]
+        .get("boundary-archive")
+        .is_some());
 }
 
 #[test]
-fn workflow_archive_record_is_kept_when_run_deletion_fails() {
+fn workflow_archive_record_is_kept_when_execution_deletion_fails() {
     let tmp = tempfile::tempdir().unwrap();
     let live = tempfile::tempdir().unwrap();
-    write_workflow_run(tmp.path(), "old-archive", live.path(), "completed");
+    write_workflow_execution(tmp.path(), "old-archive", live.path(), "completed");
     write_archive_index(
         tmp.path(),
         &[(
@@ -323,19 +348,22 @@ fn workflow_archive_record_is_kept_when_run_deletion_fails() {
             NOW,
         ),
         &FailingRemoveFs {
-            failing_path: tmp.path().join("workflow_runs/old-archive.json"),
+            failing_path: tmp.path().join("workflow_executions/old-archive.json"),
         },
         &TestArchivePruner,
         &TestRevalidationReader,
     );
 
     assert_eq!(report.errors, 1);
-    assert!(tmp.path().join("workflow_runs/old-archive.json").exists());
+    assert!(tmp
+        .path()
+        .join("workflow_executions/old-archive.json")
+        .exists());
     let archive_index: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(tmp.path().join("workflow_run_archives.json")).unwrap(),
+        &fs::read_to_string(tmp.path().join("workflow_execution_archives.json")).unwrap(),
     )
     .unwrap();
-    assert!(archive_index["runs"].get("old-archive").is_some());
+    assert!(archive_index["executions"].get("old-archive").is_some());
 }
 
 #[test]
@@ -344,21 +372,21 @@ fn sweep_skips_workflow_candidate_outside_app_data_dir() {
     let app_data_dir = root.path().join("app-data");
     let live = tempfile::tempdir().unwrap();
     let deleted = root.path().join("deleted-worktree");
-    fs::create_dir_all(app_data_dir.join("workflow_runs")).unwrap();
+    fs::create_dir_all(app_data_dir.join("workflow_executions")).unwrap();
     fs::create_dir_all(root.path().join("outside")).unwrap();
     let outside = root.path().join("outside/target.json");
     fs::write(&outside, "outside").unwrap();
     fs::write(
-        app_data_dir.join("workflow_runs/malicious.json"),
+        app_data_dir.join("workflow_executions/malicious.json"),
         serde_json::json!({
-            "runId": "../../outside/target",
+            "executionId": "../../outside/target",
             "status": "completed",
             "worktreePath": deleted.to_string_lossy()
         })
         .to_string(),
     )
     .unwrap();
-    write_workflow_run(&app_data_dir, "normal-run", &deleted, "completed");
+    write_workflow_execution(&app_data_dir, "normal-execution", &deleted, "completed");
 
     run_gc(
         &app_data_dir,
@@ -368,7 +396,9 @@ fn sweep_skips_workflow_candidate_outside_app_data_dir() {
     );
 
     assert!(outside.exists());
-    assert!(!app_data_dir.join("workflow_runs/normal-run.json").exists());
+    assert!(!app_data_dir
+        .join("workflow_executions/normal-execution.json")
+        .exists());
 }
 
 #[test]
@@ -675,12 +705,15 @@ fn workspace_dependent_rules_skip_when_live_worktrees_unavailable() {
     let tmp = tempfile::tempdir().unwrap();
     let missing = tmp.path().join("missing-worktree");
     let archived = write_session(tmp.path(), "archived", &missing, "archived", NOW);
-    write_workflow_run(tmp.path(), "deleted-run", &missing, "completed");
+    write_workflow_execution(tmp.path(), "deleted-execution", &missing, "completed");
 
     run_gc(tmp.path(), None, vec![], NOW);
 
     assert!(archived.exists());
-    assert!(tmp.path().join("workflow_runs/deleted-run.json").exists());
+    assert!(tmp
+        .path()
+        .join("workflow_executions/deleted-execution.json")
+        .exists());
 }
 
 #[test]
@@ -713,10 +746,15 @@ fn partial_live_worktree_resolution_keeps_only_unresolved_repo_data() {
         "archived",
         NOW - RetentionPolicy::default().archived_log_secs as f64 - 1.0,
     );
-    write_workflow_run(tmp.path(), "deleted-run", &deleted_worktree, "completed");
-    write_workflow_run(
+    write_workflow_execution(
         tmp.path(),
-        "unresolved-run",
+        "deleted-execution",
+        &deleted_worktree,
+        "completed",
+    );
+    write_workflow_execution(
+        tmp.path(),
+        "unresolved-execution",
         &failed_repo_worktree,
         "completed",
     );
@@ -753,10 +791,13 @@ fn partial_live_worktree_resolution_keeps_only_unresolved_repo_data() {
     assert!(!deleted_session.exists());
     assert!(unresolved_session.exists());
     assert!(!expired_live_session.exists());
-    assert!(!tmp.path().join("workflow_runs/deleted-run.json").exists());
+    assert!(!tmp
+        .path()
+        .join("workflow_executions/deleted-execution.json")
+        .exists());
     assert!(tmp
         .path()
-        .join("workflow_runs/unresolved-run.json")
+        .join("workflow_executions/unresolved-execution.json")
         .exists());
     assert!(tmp
         .path()
@@ -860,7 +901,7 @@ fn active_session_and_running_workflow_guard_whole_data() {
     let missing = tmp.path().join("missing-worktree");
     let active = write_session(tmp.path(), "active", &missing, "active", NOW);
     let pid_live_archived = write_session(tmp.path(), "pid-live", live.path(), "archived", NOW);
-    write_workflow_run(tmp.path(), "running-run", &missing, "running");
+    write_workflow_execution(tmp.path(), "running-execution", &missing, "running");
     let protected = live_set(&[("missing-worktree", &missing)]);
     let protected_workspace_key = workspace_state_storage_key("missing-worktree");
     let protected_review_key = review_comment_storage_key(&missing.to_string_lossy());
@@ -907,7 +948,10 @@ fn active_session_and_running_workflow_guard_whole_data() {
 
     assert!(active.exists());
     assert!(pid_live_archived.exists());
-    assert!(tmp.path().join("workflow_runs/running-run.json").exists());
+    assert!(tmp
+        .path()
+        .join("workflow_executions/running-execution.json")
+        .exists());
     assert!(tmp
         .path()
         .join("workspace_state")
@@ -987,7 +1031,7 @@ fn sweep_collects_runtime_protection_once_per_run() {
     let live = tempfile::tempdir().unwrap();
     let deleted = tmp.path().join("deleted-worktree");
     write_session(tmp.path(), "session", &deleted, "idle", NOW);
-    write_workflow_run(tmp.path(), "workflow-run", &deleted, "completed");
+    write_workflow_execution(tmp.path(), "workflow-execution", &deleted, "completed");
     fs::create_dir_all(tmp.path().join("workspace_state")).unwrap();
     fs::write(tmp.path().join("workspace_state/deleted.json"), "{}").unwrap();
     fs::create_dir_all(tmp.path().join("review-comments")).unwrap();
@@ -1007,6 +1051,28 @@ fn sweep_collects_runtime_protection_once_per_run() {
     run_startup_gc(request, &TestFs, &TestArchivePruner, &reader);
 
     assert_eq!(reader.calls.get(), 1);
+}
+
+#[test]
+fn workflow_execution_revalidation_uses_single_batch_read() {
+    let tmp = tempfile::tempdir().unwrap();
+    let live = tempfile::tempdir().unwrap();
+    let deleted = tmp.path().join("deleted-worktree");
+    write_workflow_execution(tmp.path(), "deleted-execution-a", &deleted, "completed");
+    write_workflow_execution(tmp.path(), "deleted-execution-b", &deleted, "completed");
+    let request = startup_gc_request(
+        tmp.path(),
+        Some(full_resolution(live_set(&[("live", live.path())]))),
+        RuntimeProtection::default(),
+        Vec::new(),
+        NOW,
+    );
+    let reader = CountingWorkflowRevalidationReader::default();
+
+    run_startup_gc(request, &TestFs, &TestArchivePruner, &reader);
+
+    assert_eq!(reader.batch_calls.get(), 1);
+    assert_eq!(reader.single_calls.get(), 0);
 }
 
 struct RuntimeProtectionTestReader {
@@ -1030,12 +1096,12 @@ impl GcRevalidationReader for RuntimeProtectionTestReader {
         TestRevalidationReader.session_state(app_data_dir, session_id)
     }
 
-    fn workflow_run_state(
+    fn workflow_execution_state(
         &self,
         app_data_dir: &std::path::Path,
-        run_id: &str,
-    ) -> RevalidationRead<CurrentWorkflowRunState> {
-        TestRevalidationReader.workflow_run_state(app_data_dir, run_id)
+        execution_id: &str,
+    ) -> RevalidationRead<CurrentWorkflowExecutionState> {
+        TestRevalidationReader.workflow_execution_state(app_data_dir, execution_id)
     }
 }
 
@@ -1062,12 +1128,54 @@ impl GcRevalidationReader for CountingRuntimeProtectionReader {
         TestRevalidationReader.session_state(app_data_dir, session_id)
     }
 
-    fn workflow_run_state(
+    fn workflow_execution_state(
         &self,
         app_data_dir: &std::path::Path,
-        run_id: &str,
-    ) -> RevalidationRead<CurrentWorkflowRunState> {
-        TestRevalidationReader.workflow_run_state(app_data_dir, run_id)
+        execution_id: &str,
+    ) -> RevalidationRead<CurrentWorkflowExecutionState> {
+        TestRevalidationReader.workflow_execution_state(app_data_dir, execution_id)
+    }
+}
+
+#[derive(Default)]
+struct CountingWorkflowRevalidationReader {
+    batch_calls: Cell<usize>,
+    single_calls: Cell<usize>,
+}
+
+impl GcRevalidationReader for CountingWorkflowRevalidationReader {
+    fn runtime_protection(
+        &self,
+        _app_data_dir: &std::path::Path,
+        _process_records: &[ProcessRecord],
+    ) -> RuntimeProtection {
+        RuntimeProtection::default()
+    }
+
+    fn session_state(
+        &self,
+        app_data_dir: &std::path::Path,
+        session_id: &str,
+    ) -> RevalidationRead<CurrentSessionState> {
+        TestRevalidationReader.session_state(app_data_dir, session_id)
+    }
+
+    fn workflow_execution_state(
+        &self,
+        app_data_dir: &std::path::Path,
+        execution_id: &str,
+    ) -> RevalidationRead<CurrentWorkflowExecutionState> {
+        self.single_calls.set(self.single_calls.get() + 1);
+        TestRevalidationReader.workflow_execution_state(app_data_dir, execution_id)
+    }
+
+    fn workflow_execution_states(
+        &self,
+        app_data_dir: &std::path::Path,
+        execution_ids: &HashSet<String>,
+    ) -> HashMap<String, RevalidationRead<CurrentWorkflowExecutionState>> {
+        self.batch_calls.set(self.batch_calls.get() + 1);
+        TestRevalidationReader.workflow_execution_states(app_data_dir, execution_ids)
     }
 }
 

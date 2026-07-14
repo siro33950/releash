@@ -32,9 +32,9 @@ pub(super) fn cli_error_stderr(error: &CliError) -> String {
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum CliError {
-    /// run / template が見つからない（spec Rule: 存在しない run_id は明示的に「該当 run なし」）。
+    /// execution / template が見つからない。
     NotFound(String),
-    /// 入力フォーマット不正（不正な run_id、不正な status filter 値など）。
+    /// 入力フォーマット不正（不正な execution_id、不正な status filter 値など）。
     InvalidInput(String),
     /// その他の I/O / serialization エラー。
     Other(String),
@@ -65,7 +65,7 @@ fn resolve_data_dir_from_env(env_value: Option<String>) -> Result<PathBuf, Strin
 /// data_dir を解決し、パスが実在することを確認する。
 ///
 /// [05] 観測経路境界: `RELEASH_DATA_DIR` の typo / アプリ未起動などで data_dir
-/// が存在しない場合に「runs が 0 件」と紛れないよう、CLI 入口で `NotFound`
+/// が存在しない場合に「executions が 0 件」と紛れないよう、CLI 入口で `NotFound`
 /// として弾く（5-1 修正）。
 pub(super) fn resolve_existing_data_dir() -> Result<PathBuf, CliError> {
     let path = resolve_data_dir().map_err(CliError::Other)?;
@@ -99,10 +99,12 @@ pub(super) fn approval_input_error_to_cli_error(err: ApprovalInputError) -> CliE
     CliError::InvalidInput(err.to_string())
 }
 
-pub(super) fn validate_run_id(run_id: &str) -> Result<(), CliError> {
-    uuid::Uuid::parse_str(run_id)
+pub(super) fn validate_execution_id(execution_id: &str) -> Result<(), CliError> {
+    uuid::Uuid::parse_str(execution_id)
         .map(|_| ())
-        .map_err(|_| CliError::InvalidInput("Invalid run_id format (must be UUID)".to_string()))
+        .map_err(|_| {
+            CliError::InvalidInput("Invalid execution_id format (must be UUID)".to_string())
+        })
 }
 
 /// 表示用の固定幅列に収まるよう文字列を短縮する。
@@ -121,11 +123,12 @@ pub(in crate::cli) mod test_support {
     use std::path::Path;
 
     use crate::adaptor::gateway::workflow::event::WorkflowEvent;
-    use crate::adaptor::gateway::workflow::run::{RunStatus, TriggerSource, WorkflowRun};
+    use crate::adaptor::gateway::workflow::execution_store::WorkflowExecutionMetadata;
     use crate::domain::comment::{
         ReviewActor, ReviewComment, ReviewHistoryEntry, ReviewResolveInfo, ReviewTarget,
         ReviewThread, ReviewThreadState,
     };
+    use crate::domain::workflow::{ExecutionOrigin, ExecutionStatus, TokenUsage};
 
     pub(in crate::cli) fn write_review_config(data_dir: &Path) {
         fs::write(
@@ -165,8 +168,8 @@ models = ["opus"]
             permission_profile_id: None,
             selected_model: model.map(str::to_string),
             backend_id: backend_id.map(str::to_string),
-            workflow_step_session: false,
-            workflow_step_context: None,
+            workflow_node_session: false,
+            workflow_node_context: None,
             context_epoch: None,
         };
         store
@@ -174,20 +177,19 @@ models = ["opus"]
             .unwrap();
     }
 
-    pub(in crate::cli) fn make_run(
-        run_id: &str,
+    pub(in crate::cli) fn make_execution(
+        execution_id: &str,
         worktree: &str,
-        status: RunStatus,
+        status: ExecutionStatus,
         started_at: f64,
-    ) -> WorkflowRun {
-        WorkflowRun {
-            run_id: run_id.to_string(),
+    ) -> WorkflowExecutionMetadata {
+        WorkflowExecutionMetadata {
+            execution_id: execution_id.to_string(),
             workflow_name: "wf".to_string(),
-            task: None,
             status,
             worktree_path: worktree.to_string(),
-            current_node_name: None,
-            trigger_source: TriggerSource::Cli,
+            current_node: None,
+            created_from: ExecutionOrigin::Cli,
             started_at,
             updated_at: started_at,
             completed_at: if status.is_terminal() {
@@ -196,14 +198,18 @@ models = ["opus"]
                 None
             },
             error_reason: None,
+            total_token_usage: TokenUsage::default(),
         }
     }
 
-    pub(in crate::cli) fn write_run_file(data_dir: &Path, run: &WorkflowRun) {
-        let runs_dir = data_dir.join("workflow_runs");
-        fs::create_dir_all(&runs_dir).unwrap();
-        let path = runs_dir.join(format!("{}.json", run.run_id));
-        let json = serde_json::to_string_pretty(run).unwrap();
+    pub(in crate::cli) fn write_execution_file(
+        data_dir: &Path,
+        execution: &WorkflowExecutionMetadata,
+    ) {
+        let executions_dir = data_dir.join("workflow_executions");
+        fs::create_dir_all(&executions_dir).unwrap();
+        let path = executions_dir.join(format!("{}.json", execution.execution_id));
+        let json = serde_json::to_string_pretty(execution).unwrap();
         fs::write(path, json).unwrap();
     }
 
@@ -269,18 +275,18 @@ models = ["opus"]
         ]
     }
 
-    pub(in crate::cli) fn run_started_event(
-        run_id: &str,
+    pub(in crate::cli) fn execution_started_event(
+        execution_id: &str,
         workflow_name: &str,
         worktree: &str,
     ) -> WorkflowEvent {
-        WorkflowEvent::RunStarted {
-            run_id: run_id.to_string(),
+        WorkflowEvent::ExecutionStarted {
+            execution_id: execution_id.to_string(),
             workflow_name: workflow_name.to_string(),
-            workflow_file_stem: workflow_name.to_string(),
             worktree_path: worktree.to_string(),
+            created_from: ExecutionOrigin::Cli,
             request: String::new(),
-            workflow_definition: crate::adaptor::gateway::workflow::schema::Workflow {
+            definition: crate::adaptor::gateway::workflow::schema::Workflow {
                 name: workflow_name.to_string(),
                 description: "test".to_string(),
                 builtin: false,
@@ -298,7 +304,7 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn run_exit_code_mapping_is_stable() {
+    fn exit_code_mapping_is_stable() {
         assert_eq!(cli_result_exit_code(Ok(String::new())), 0);
         assert_eq!(
             cli_error_exit_code(&CliError::InvalidInput("bad".to_string())),
@@ -328,19 +334,19 @@ mod tests {
     }
 
     #[test]
-    fn validate_run_id_rejects_non_uuid() {
-        assert!(validate_run_id("not-a-uuid").is_err());
-        assert!(validate_run_id("").is_err());
-        assert!(validate_run_id("../etc/passwd").is_err());
+    fn validate_execution_id_rejects_non_uuid() {
+        assert!(validate_execution_id("not-a-uuid").is_err());
+        assert!(validate_execution_id("").is_err());
+        assert!(validate_execution_id("../etc/passwd").is_err());
     }
 
     #[test]
-    fn validate_run_id_accepts_valid_uuid() {
-        assert!(validate_run_id("550e8400-e29b-41d4-a716-446655440000").is_ok());
+    fn validate_execution_id_accepts_valid_uuid() {
+        assert!(validate_execution_id("550e8400-e29b-41d4-a716-446655440000").is_ok());
     }
 
     /// [05] 観測経路境界 (5-1 修正): data_dir が存在しない場合は `NotFound` として
-    /// 扱い、「runs 0 件」と「向き先がそもそも無い」を区別する。
+    /// 扱い、「executions 0 件」と「向き先がそもそも無い」を区別する。
     #[test]
     fn ensure_existing_data_dir_returns_not_found_for_missing_path() {
         let missing = std::path::PathBuf::from("/non/existent/releash-data-dir-test-path");
@@ -391,7 +397,7 @@ mod tests {
 
     /// spec [01]: 明示指定が空文字列のときは未設定扱いとし alias 内包値に
     /// フォールバックする（空文字列を data_dir として採用すると以降の
-    /// 観測経路で「runs 0 件」と紛れるため）。
+    /// 観測経路で「executions 0 件」と紛れるため）。
     #[test]
     fn resolve_data_dir_treats_empty_env_as_unset() {
         if dirs::data_dir().is_none() {

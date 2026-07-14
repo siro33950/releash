@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tauri::Manager;
 
 use crate::adaptor::gateway::workflow::domain_mapping::{
-    step_history_entries_to_domain, workflow_execution_state_to_domain,
+    node_history_entries_to_domain, runtime_execution_state_to_domain,
 };
 use crate::adaptor::gateway::workflow::engine_error::{
     workflow_error_to_engine_error, WorkflowEngineError,
@@ -29,11 +29,11 @@ pub(crate) fn resolve_chat_session_for_approval(
     let current_node = exec
         .workflow
         .nodes
-        .get(exec.current_step_index)
+        .get(exec.current_node_index)
         .ok_or_else(|| {
-            WorkflowEngineError::InvalidState("current step index is out of range".to_string())
+            WorkflowEngineError::InvalidState("current node index is out of range".to_string())
         })?;
-    let state = workflow_execution_state_to_domain(&exec.state);
+    let state = runtime_execution_state_to_domain(&exec.state);
     workflow_approval::resolve_chat_session_for_approval(
         workflow_approval::ApprovalChatSessionSnapshot {
             is_active: exec.is_active(),
@@ -51,12 +51,12 @@ pub(crate) fn validate_approval_chat_instruction(
     session_id: &str,
     content: &str,
 ) -> Result<(), WorkflowEngineError> {
-    let current_step = &exec.workflow.nodes[exec.current_step_index];
+    let current_step = &exec.workflow.nodes[exec.current_node_index];
     let is_current_approval_session = current_step.is_approval_session()
         && exec.current_session_id.as_deref() == Some(session_id);
     let is_prior_approval_gate_session =
         !is_current_approval_session && is_approval_gate_session(exec, session_id);
-    let state = workflow_execution_state_to_domain(&exec.state);
+    let state = runtime_execution_state_to_domain(&exec.state);
     workflow_approval::validate_approval_chat_instruction(
         workflow_approval::ApprovalChatInstructionContext {
             is_current_approval_session,
@@ -79,11 +79,11 @@ fn is_approval_gate_session(exec: &WorkflowExecution, session_id: &str) -> bool 
         .filter(|step| step.is_approval_session())
         .map(|step| step.name.clone())
         .collect();
-    let history = step_history_entries_to_domain(&exec.step_history);
+    let history = node_history_entries_to_domain(&exec.node_history);
     workflow_approval::is_approval_gate_session(
         session_id,
         exec.current_session_id.as_deref(),
-        &exec.workflow.nodes[exec.current_step_index].name,
+        &exec.workflow.nodes[exec.current_node_index].name,
         &approval_gate_session_names,
         &history,
     )
@@ -93,19 +93,19 @@ fn is_approval_gate_session(exec: &WorkflowExecution, session_id: &str) -> bool 
 pub(crate) fn validate_approval_target_snapshot(
     exec: &WorkflowExecution,
     expected_execution_id: Option<&str>,
-    expected_step_name: Option<&str>,
+    expected_node_name: Option<&str>,
 ) -> Result<(), WorkflowEngineError> {
-    let state = workflow_execution_state_to_domain(&exec.state);
-    let current_step = &exec.workflow.nodes[exec.current_step_index];
+    let state = runtime_execution_state_to_domain(&exec.state);
+    let current_step = &exec.workflow.nodes[exec.current_node_index];
     workflow_approval::validate_approval_target(
         workflow_approval::ApprovalTargetSnapshot {
             execution_id: &exec.id,
             state: &state,
-            current_step_name: &current_step.name,
+            current_node_name: &current_step.name,
             is_approval_gate_session: current_step.is_approval_session(),
         },
         expected_execution_id,
-        expected_step_name,
+        expected_node_name,
     )
     .map_err(workflow_error_to_engine_error)
 }
@@ -113,19 +113,19 @@ pub(crate) fn validate_approval_target_snapshot(
 pub(crate) fn resolve_approval_target_snapshot(
     exec: &WorkflowExecution,
     expected_execution_id: Option<&str>,
-    expected_step_name: Option<&str>,
+    expected_node_name: Option<&str>,
 ) -> Result<String, WorkflowEngineError> {
-    let state = workflow_execution_state_to_domain(&exec.state);
-    let current_step = &exec.workflow.nodes[exec.current_step_index];
+    let state = runtime_execution_state_to_domain(&exec.state);
+    let current_step = &exec.workflow.nodes[exec.current_node_index];
     workflow_approval::resolve_approval_target(
         workflow_approval::ApprovalTargetSnapshot {
             execution_id: &exec.id,
             state: &state,
-            current_step_name: &current_step.name,
+            current_node_name: &current_step.name,
             is_approval_gate_session: current_step.is_approval_session(),
         },
         expected_execution_id,
-        expected_step_name,
+        expected_node_name,
     )
     .map(str::to_string)
     .map_err(workflow_error_to_engine_error)
@@ -154,7 +154,7 @@ pub(crate) fn should_auto_approve_workflow_approval(
     snapshot: &WorkflowState,
     approval_auto_approve_enabled: bool,
 ) -> bool {
-    let state = workflow_execution_state_to_domain(&snapshot.state);
+    let state = runtime_execution_state_to_domain(&snapshot.state);
     workflow_approval::should_auto_approve_workflow_approval(&state, approval_auto_approve_enabled)
 }
 
@@ -165,7 +165,7 @@ pub(crate) fn auto_approve_target_for_persisted_snapshot(
     if should_auto_approve_workflow_approval(snapshot, approval_auto_approve_enabled) {
         Some((
             snapshot.execution_id.clone(),
-            snapshot.current_step_name.clone(),
+            snapshot.current_node_name.clone(),
         ))
     } else {
         None
@@ -179,24 +179,28 @@ mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::schema::Workflow;
     use crate::adaptor::gateway::workflow::state::{
-        TokenUsage, WorkflowExecutionState, WorkflowState,
+        RuntimeExecutionState, TokenUsage, WorkflowState,
     };
 
-    fn workflow_state_fixture(state: WorkflowExecutionState) -> WorkflowState {
+    fn workflow_state_fixture(state: RuntimeExecutionState) -> WorkflowState {
         WorkflowState {
             execution_id: "run-1".to_string(),
             workflow_name: "wf".to_string(),
+            worktree_path: "/repo".to_string(),
+            created_from: crate::domain::workflow::ExecutionOrigin::Cli,
+            request: "ship it".to_string(),
+            error_reason: None,
             state,
-            current_step_index: 0,
-            current_step_name: "approval".to_string(),
+            current_node_index: 0,
+            current_node_name: "approval".to_string(),
             current_session_id: None,
-            total_steps: 1,
-            step_history: Vec::new(),
-            step_execution_counts: HashMap::new(),
+            total_nodes: 1,
+            node_history: Vec::new(),
+            node_execution_counts: HashMap::new(),
             workflow_definition: Workflow::default(),
             total_token_usage: TokenUsage::default(),
-            step_states: HashMap::new(),
-            step_outputs: HashMap::new(),
+            node_statuses: HashMap::new(),
+            artifacts: HashMap::new(),
             node_executions: Vec::new(),
             stall_observations: Vec::new(),
             approval_operations: None,
@@ -207,7 +211,7 @@ mod tests {
 
     #[test]
     fn auto_approve_target_for_persisted_snapshot_builds_target() {
-        let snapshot = workflow_state_fixture(WorkflowExecutionState::WaitingApproval);
+        let snapshot = workflow_state_fixture(RuntimeExecutionState::WaitingApproval);
 
         let target = auto_approve_target_for_persisted_snapshot(&snapshot, true);
 
@@ -216,8 +220,8 @@ mod tests {
 
     #[test]
     fn auto_approve_target_for_persisted_snapshot_requires_waiting_and_enabled() {
-        let waiting = workflow_state_fixture(WorkflowExecutionState::WaitingApproval);
-        let running = workflow_state_fixture(WorkflowExecutionState::Running);
+        let waiting = workflow_state_fixture(RuntimeExecutionState::WaitingApproval);
+        let running = workflow_state_fixture(RuntimeExecutionState::Running);
 
         assert!(auto_approve_target_for_persisted_snapshot(&waiting, false).is_none());
         assert!(auto_approve_target_for_persisted_snapshot(&running, true).is_none());

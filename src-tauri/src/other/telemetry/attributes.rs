@@ -222,13 +222,13 @@ impl ModelFamily {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TurnContext {
     Chat,
-    WorkflowStep,
+    WorkflowNode,
 }
 
 impl TurnContext {
-    pub(crate) fn from_workflow_step(is_workflow_step: bool) -> Self {
-        if is_workflow_step {
-            Self::WorkflowStep
+    pub(crate) fn from_workflow_node(is_workflow_node: bool) -> Self {
+        if is_workflow_node {
+            Self::WorkflowNode
         } else {
             Self::Chat
         }
@@ -237,7 +237,7 @@ impl TurnContext {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Chat => "chat",
-            Self::WorkflowStep => "workflow_step",
+            Self::WorkflowNode => "workflow_node",
         }
     }
 }
@@ -451,7 +451,7 @@ mod tests {
             has_session: true,
             permission_mode: PermissionModeDim::Edit,
             model: ModelFamily::Sonnet,
-            context: TurnContext::WorkflowStep,
+            context: TurnContext::WorkflowNode,
             channel: PayloadChannel::TauriEvent,
             warm_path: WarmPath::QueryDirect,
         };
@@ -471,7 +471,7 @@ mod tests {
                 "true",
                 "edit",
                 "sonnet",
-                "workflow_step",
+                "workflow_node",
                 "tauri_event",
                 "query_direct",
             ]

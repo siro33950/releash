@@ -2,10 +2,10 @@
 
 use std::collections::HashSet;
 
-use crate::domain::workflow::value_objects::{StepHistoryEntry, WorkflowExecutionState};
+use crate::domain::workflow::value_objects::{NodeHistoryEntry, RuntimeExecutionState};
 use crate::domain::workflow::WorkflowError;
 #[cfg(test)]
-use crate::domain::workflow::STEP_STATE_COMPLETED;
+use crate::domain::workflow::NODE_STATUS_COMPLETED;
 
 pub const MAX_APPROVAL_COMMENT_CHARS: usize = 8192;
 
@@ -48,16 +48,16 @@ pub fn validate_required_comment_text(
 }
 
 pub fn should_auto_approve_workflow_approval(
-    state: &WorkflowExecutionState,
+    state: &RuntimeExecutionState,
     approval_auto_approve_enabled: bool,
 ) -> bool {
-    approval_auto_approve_enabled && matches!(state, WorkflowExecutionState::WaitingApproval)
+    approval_auto_approve_enabled && matches!(state, RuntimeExecutionState::WaitingApproval)
 }
 
 pub struct ApprovalChatInstructionContext<'a> {
     pub is_current_approval_session: bool,
     pub is_prior_approval_gate_session: bool,
-    pub state: &'a WorkflowExecutionState,
+    pub state: &'a RuntimeExecutionState,
 }
 
 pub fn validate_approval_chat_instruction(
@@ -72,7 +72,7 @@ pub fn validate_approval_chat_instruction(
         }
         return Ok(());
     }
-    if !matches!(context.state, WorkflowExecutionState::WaitingApproval) {
+    if !matches!(context.state, RuntimeExecutionState::WaitingApproval) {
         return Err(WorkflowError::invalid_state(
             "Workflow is not waiting for approval",
         ));
@@ -83,7 +83,7 @@ pub fn validate_approval_chat_instruction(
 
 pub struct ApprovalChatSessionSnapshot<'a> {
     pub is_active: bool,
-    pub state: &'a WorkflowExecutionState,
+    pub state: &'a RuntimeExecutionState,
     pub is_current_approval_session: bool,
     pub current_session_id: Option<&'a str>,
 }
@@ -92,9 +92,11 @@ pub fn resolve_chat_session_for_approval<'a>(
     snapshot: ApprovalChatSessionSnapshot<'a>,
 ) -> Result<&'a str, WorkflowError> {
     if !snapshot.is_active {
-        return Err(WorkflowError::invalid_state("workflow run is not active"));
+        return Err(WorkflowError::invalid_state(
+            "workflow execution is not active",
+        ));
     }
-    if !matches!(snapshot.state, WorkflowExecutionState::WaitingApproval) {
+    if !matches!(snapshot.state, RuntimeExecutionState::WaitingApproval) {
         return Err(WorkflowError::invalid_state(
             "Workflow is not waiting for approval",
         ));
@@ -105,30 +107,30 @@ pub fn resolve_chat_session_for_approval<'a>(
         ));
     }
     snapshot.current_session_id.ok_or_else(|| {
-        WorkflowError::invalid_state("workflow has no current step session for approval chat")
+        WorkflowError::invalid_state("workflow has no current node session for approval chat")
     })
 }
 
 pub struct ApprovalTargetSnapshot<'a> {
     pub execution_id: &'a str,
-    pub state: &'a WorkflowExecutionState,
-    pub current_step_name: &'a str,
+    pub state: &'a RuntimeExecutionState,
+    pub current_node_name: &'a str,
     pub is_approval_gate_session: bool,
 }
 
 pub fn resolve_approval_target<'a>(
     snapshot: ApprovalTargetSnapshot<'a>,
     expected_execution_id: Option<&str>,
-    expected_step_name: Option<&str>,
+    expected_node_name: Option<&str>,
 ) -> Result<&'a str, WorkflowError> {
-    if !matches!(snapshot.state, WorkflowExecutionState::WaitingApproval) {
+    if !matches!(snapshot.state, RuntimeExecutionState::WaitingApproval) {
         return Err(WorkflowError::invalid_state(
             "Workflow is not waiting for approval",
         ));
     }
     if !snapshot.is_approval_gate_session {
         return Err(WorkflowError::UnauthorizedApprovalTarget(
-            "current step is not an approval-gated session".to_string(),
+            "current node is not an approval-gated session".to_string(),
         ));
     }
     let expected_execution_id = expected_execution_id.ok_or_else(|| {
@@ -139,24 +141,24 @@ pub fn resolve_approval_target<'a>(
             "execution_id does not match".to_string(),
         ));
     }
-    if expected_step_name.is_some_and(|expected| expected != snapshot.current_step_name) {
+    if expected_node_name.is_some_and(|expected| expected != snapshot.current_node_name) {
         return Err(WorkflowError::UnauthorizedApprovalTarget(
-            "step does not match".to_string(),
+            "node does not match".to_string(),
         ));
     }
-    Ok(snapshot.current_step_name)
+    Ok(snapshot.current_node_name)
 }
 
 #[cfg(test)]
 pub fn validate_approval_target(
     snapshot: ApprovalTargetSnapshot<'_>,
     expected_execution_id: Option<&str>,
-    expected_step_name: Option<&str>,
+    expected_node_name: Option<&str>,
 ) -> Result<(), WorkflowError> {
-    resolve_approval_target(snapshot, expected_execution_id, expected_step_name)?;
-    if expected_step_name.is_none() {
+    resolve_approval_target(snapshot, expected_execution_id, expected_node_name)?;
+    if expected_node_name.is_none() {
         return Err(WorkflowError::UnauthorizedApprovalTarget(
-            "step_name is required".to_string(),
+            "node_name is required".to_string(),
         ));
     }
     Ok(())
@@ -165,19 +167,19 @@ pub fn validate_approval_target(
 pub fn is_approval_gate_session(
     session_id: &str,
     current_session_id: Option<&str>,
-    current_step_name: &str,
+    current_node_name: &str,
     approval_gate_session_names: &HashSet<String>,
-    step_history: &[StepHistoryEntry],
+    node_history: &[NodeHistoryEntry],
 ) -> bool {
     if current_session_id == Some(session_id)
-        && approval_gate_session_names.contains(current_step_name)
+        && approval_gate_session_names.contains(current_node_name)
     {
         return true;
     }
 
-    step_history.iter().any(|entry| {
+    node_history.iter().any(|entry| {
         entry.session_id.as_deref() == Some(session_id)
-            && approval_gate_session_names.contains(&entry.step_name)
+            && approval_gate_session_names.contains(&entry.node_name)
     })
 }
 
@@ -198,15 +200,15 @@ mod approval_rules_tests {
     #[test]
     fn auto_approve_requires_waiting_approval_and_enabled_flag() {
         assert!(should_auto_approve_workflow_approval(
-            &WorkflowExecutionState::WaitingApproval,
+            &RuntimeExecutionState::WaitingApproval,
             true,
         ));
         assert!(!should_auto_approve_workflow_approval(
-            &WorkflowExecutionState::WaitingApproval,
+            &RuntimeExecutionState::WaitingApproval,
             false,
         ));
         assert!(!should_auto_approve_workflow_approval(
-            &WorkflowExecutionState::Running,
+            &RuntimeExecutionState::Running,
             true,
         ));
     }
@@ -226,7 +228,7 @@ mod approval_rules_tests {
         let context = ApprovalChatInstructionContext {
             is_current_approval_session: false,
             is_prior_approval_gate_session: false,
-            state: &WorkflowExecutionState::Running,
+            state: &RuntimeExecutionState::Running,
         };
 
         assert!(validate_approval_chat_instruction(context, "").is_ok());
@@ -237,7 +239,7 @@ mod approval_rules_tests {
         let context = ApprovalChatInstructionContext {
             is_current_approval_session: false,
             is_prior_approval_gate_session: true,
-            state: &WorkflowExecutionState::Completed,
+            state: &RuntimeExecutionState::Completed,
         };
 
         assert!(matches!(
@@ -251,7 +253,7 @@ mod approval_rules_tests {
         let not_waiting = ApprovalChatInstructionContext {
             is_current_approval_session: true,
             is_prior_approval_gate_session: false,
-            state: &WorkflowExecutionState::Running,
+            state: &RuntimeExecutionState::Running,
         };
         assert!(matches!(
             validate_approval_chat_instruction(not_waiting, "ok").unwrap_err(),
@@ -261,7 +263,7 @@ mod approval_rules_tests {
         let waiting = ApprovalChatInstructionContext {
             is_current_approval_session: true,
             is_prior_approval_gate_session: false,
-            state: &WorkflowExecutionState::WaitingApproval,
+            state: &RuntimeExecutionState::WaitingApproval,
         };
         assert!(matches!(
             validate_approval_chat_instruction(waiting, "   ").unwrap_err(),
@@ -271,7 +273,7 @@ mod approval_rules_tests {
         let valid = ApprovalChatInstructionContext {
             is_current_approval_session: true,
             is_prior_approval_gate_session: false,
-            state: &WorkflowExecutionState::WaitingApproval,
+            state: &RuntimeExecutionState::WaitingApproval,
         };
         assert!(validate_approval_chat_instruction(valid, "please revise").is_ok());
     }
@@ -280,7 +282,7 @@ mod approval_rules_tests {
     fn resolve_chat_session_requires_active_waiting_approval_gate_session() {
         let snapshot = ApprovalChatSessionSnapshot {
             is_active: true,
-            state: &WorkflowExecutionState::WaitingApproval,
+            state: &RuntimeExecutionState::WaitingApproval,
             is_current_approval_session: true,
             current_session_id: Some("session-1"),
         };
@@ -292,7 +294,7 @@ mod approval_rules_tests {
 
         let inactive = ApprovalChatSessionSnapshot {
             is_active: false,
-            state: &WorkflowExecutionState::WaitingApproval,
+            state: &RuntimeExecutionState::WaitingApproval,
             is_current_approval_session: true,
             current_session_id: Some("session-1"),
         };
@@ -300,12 +302,12 @@ mod approval_rules_tests {
             resolve_chat_session_for_approval(inactive)
                 .unwrap_err()
                 .to_string(),
-            "invalid_state: workflow run is not active"
+            "invalid_state: workflow execution is not active"
         );
 
         let no_session = ApprovalChatSessionSnapshot {
             is_active: true,
-            state: &WorkflowExecutionState::WaitingApproval,
+            state: &RuntimeExecutionState::WaitingApproval,
             is_current_approval_session: true,
             current_session_id: None,
         };
@@ -313,17 +315,17 @@ mod approval_rules_tests {
             resolve_chat_session_for_approval(no_session)
                 .unwrap_err()
                 .to_string(),
-            "invalid_state: workflow has no current step session for approval chat"
+            "invalid_state: workflow has no current node session for approval chat"
         );
     }
 
     #[test]
     fn resolve_approval_target_validates_run_and_step_identity() {
-        let waiting = WorkflowExecutionState::WaitingApproval;
+        let waiting = RuntimeExecutionState::WaitingApproval;
         let snapshot = ApprovalTargetSnapshot {
             execution_id: "run-1",
             state: &waiting,
-            current_step_name: "review",
+            current_node_name: "review",
             is_approval_gate_session: true,
         };
 
@@ -335,7 +337,7 @@ mod approval_rules_tests {
         let snapshot = ApprovalTargetSnapshot {
             execution_id: "run-1",
             state: &waiting,
-            current_step_name: "review",
+            current_node_name: "review",
             is_approval_gate_session: true,
         };
         assert_eq!(
@@ -348,43 +350,43 @@ mod approval_rules_tests {
         let snapshot = ApprovalTargetSnapshot {
             execution_id: "run-1",
             state: &waiting,
-            current_step_name: "review",
+            current_node_name: "review",
             is_approval_gate_session: true,
         };
         assert_eq!(
             validate_approval_target(snapshot, Some("run-1"), None)
                 .unwrap_err()
                 .to_string(),
-            "unauthorized_approval_target: step_name is required"
+            "unauthorized_approval_target: node_name is required"
         );
 
         let snapshot = ApprovalTargetSnapshot {
             execution_id: "run-1",
             state: &waiting,
-            current_step_name: "review",
+            current_node_name: "review",
             is_approval_gate_session: false,
         };
         assert_eq!(
             resolve_approval_target(snapshot, Some("run-1"), Some("review"))
                 .unwrap_err()
                 .to_string(),
-            "unauthorized_approval_target: current step is not an approval-gated session"
+            "unauthorized_approval_target: current node is not an approval-gated session"
         );
     }
 
     #[test]
     fn is_approval_gate_session_matches_current_or_history_gated_sessions() {
         let approval_gate_sessions = HashSet::from(["review".to_string()]);
-        let history = vec![StepHistoryEntry {
-            step_name: "review".to_string(),
+        let history = vec![NodeHistoryEntry {
+            node_name: "review".to_string(),
             completed_at: 1.0,
             result: None,
             session_id: Some("old-review".to_string()),
             token_usage: None,
-            structured_output: None,
-            run_index: 1,
-            child_outputs: None,
-            state: STEP_STATE_COMPLETED.to_string(),
+            artifact: None,
+            attempt: 1,
+            fanout_children: None,
+            state: NODE_STATUS_COMPLETED.to_string(),
         }];
 
         assert!(is_approval_gate_session(

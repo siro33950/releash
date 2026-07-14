@@ -50,26 +50,25 @@ import {
 import { useWorkflowConfig } from "@/hooks/useWorkflowConfig";
 import { useWorkspaceTreeNodes } from "@/hooks/useWorkspaceTreeNodes";
 import { useWorktreeList } from "@/hooks/useWorktreeList";
-import { useWorktreeSessionStatuses } from "@/hooks/useWorktreeSessionStatuses";
 import {
-	useWorktreeStepStatuses,
-	type WorktreeStepStatuses,
-	workflowStepStatusKey,
-} from "@/hooks/useWorktreeStepStatuses";
+	useWorktreeNodeStatuses,
+	type WorktreeNodeStatuses,
+} from "@/hooks/useWorktreeNodeStatuses";
+import { useWorktreeSessionStatuses } from "@/hooks/useWorktreeSessionStatuses";
 import { trackEvent } from "@/lib/telemetry";
 import type { WorktreeBranch } from "@/types/git";
 import type {
 	CenterSelection,
 	WorkspaceSessionHistoryItem,
 	WorkspaceSessionNode,
+	WorkspaceWorkflowExecutionNode,
 	WorkspaceWorkflowHistoryItem,
-	WorkspaceWorkflowNode,
-	WorkspaceWorkflowStepNode,
+	WorkspaceWorkflowNodeExecution,
 } from "@/types/workspace-tree";
 import { CreateWorktreeModal } from "./CreateWorktreeModal";
 import { DeleteWorktreeDialog } from "./DeleteWorktreeDialog";
+import { WorkflowNodeStatusIcon } from "./WorkflowNodeStatusIcon";
 import { WorkflowRowStatusIcon } from "./WorkflowRowStatusIcon";
-import { WorkflowStepStatusIcon } from "./WorkflowStepStatusIcon";
 
 interface WorkspaceListProps {
 	repoPaths: string[];
@@ -90,26 +89,24 @@ const WORKFLOW_NAME_OFFSET_PX = 22;
 const DEFAULT_SESSION_TITLE = "NewSession";
 
 function applyLiveWorkflowStatuses(
-	node: WorkspaceWorkflowNode,
-	stepStatuses: WorktreeStepStatuses,
-): WorkspaceWorkflowNode {
+	execution: WorkspaceWorkflowExecutionNode,
+	nodeStatuses: WorktreeNodeStatuses,
+): WorkspaceWorkflowExecutionNode {
 	return {
-		...node,
-		status: stepStatuses.workflows.get(node.runId) ?? node.status,
-		steps: node.steps.map((step) => ({
-			...step,
-			status:
-				step.nodeExecutionId == null
-					? (stepStatuses.steps.get(
-							workflowStepStatusKey(node.runId, step.title, step.runIndex),
-						) ?? step.status)
-					: step.status,
+		...execution,
+		status:
+			nodeStatuses.executions.get(execution.executionId) ?? execution.status,
+		nodeExecutions: execution.nodeExecutions.map((node) => ({
+			...node,
+			status: nodeStatuses.nodes.get(node.nodeExecutionId) ?? node.status,
 		})),
 	};
 }
 
-function fanoutCoordinateLabel(step: WorkspaceWorkflowStepNode): string | null {
-	const parent = step.fanoutParent;
+function fanoutCoordinateLabel(
+	node: WorkspaceWorkflowNodeExecution,
+): string | null {
+	const parent = node.fanoutParent;
 	if (!parent) return null;
 	const item = parent.itemIndex == null ? "–" : String(parent.itemIndex);
 	return `item ${item} · child ${parent.childIndex}`;
@@ -133,15 +130,15 @@ function isDirectSessionSelected(
 	);
 }
 
-function isWorkflowStepSelected(
+function isWorkflowNodeSelected(
 	centerSelection: CenterSelection | null,
-	workflow: WorkspaceWorkflowNode,
-	step: WorkspaceWorkflowStepNode,
+	execution: WorkspaceWorkflowExecutionNode,
+	node: WorkspaceWorkflowNodeExecution,
 ): boolean {
 	return (
-		centerSelection?.kind === "workflowStep" &&
-		centerSelection.runId === workflow.runId &&
-		centerSelection.stepId === step.id
+		centerSelection?.kind === "workflowNode" &&
+		centerSelection.executionId === execution.executionId &&
+		centerSelection.nodeExecutionId === node.nodeExecutionId
 	);
 }
 
@@ -242,23 +239,23 @@ function WorktreeWorkflowRow({
 	node,
 	indentPx,
 	centerSelection,
-	onSelectStep,
+	onSelectNode,
 	onStop,
 	onArchive,
 }: {
-	node: WorkspaceWorkflowNode;
+	node: WorkspaceWorkflowExecutionNode;
 	indentPx: number;
 	centerSelection: CenterSelection | null;
-	onSelectStep: (
-		workflow: WorkspaceWorkflowNode,
-		step: WorkspaceWorkflowStepNode,
+	onSelectNode: (
+		execution: WorkspaceWorkflowExecutionNode,
+		node: WorkspaceWorkflowNodeExecution,
 	) => void;
-	onStop: (node: WorkspaceWorkflowNode) => void | Promise<void>;
-	onArchive: (node: WorkspaceWorkflowNode) => void | Promise<void>;
+	onStop: (node: WorkspaceWorkflowExecutionNode) => void | Promise<void>;
+	onArchive: (node: WorkspaceWorkflowExecutionNode) => void | Promise<void>;
 }) {
 	const [expanded, setExpanded] = useState(true);
 	const [workflowMenuOpen, setWorkflowMenuOpen] = useState(false);
-	const steps = node.steps;
+	const nodeExecutions = node.nodeExecutions;
 	const canStop = node.canStop;
 	const actionControlsVisible = workflowMenuOpen;
 	const workflowLabel = node.workflowName.trim() || node.title;
@@ -332,33 +329,36 @@ function WorktreeWorkflowRow({
 				</div>
 			</div>
 			{expanded &&
-				steps.map((step) => (
-					<WorktreeWorkflowStepRow
-						key={step.id}
-						step={step}
+				nodeExecutions.map((nodeExecution) => (
+					<WorktreeWorkflowNodeRow
+						key={nodeExecution.nodeExecutionId}
+						node={nodeExecution}
 						indentPx={indentPx + WORKFLOW_NAME_OFFSET_PX}
-						selected={isWorkflowStepSelected(centerSelection, node, step)}
-						onSelect={() => onSelectStep(node, step)}
+						selected={isWorkflowNodeSelected(
+							centerSelection,
+							node,
+							nodeExecution,
+						)}
+						onSelect={() => onSelectNode(node, nodeExecution)}
 					/>
 				))}
 		</div>
 	);
 }
 
-function WorktreeWorkflowStepRow({
-	step,
+function WorktreeWorkflowNodeRow({
+	node,
 	indentPx,
 	selected,
 	onSelect,
 }: {
-	step: WorkspaceWorkflowStepNode;
+	node: WorkspaceWorkflowNodeExecution;
 	indentPx: number;
 	selected?: boolean;
 	onSelect: () => void;
 }) {
-	const coordinateLabel = fanoutCoordinateLabel(step);
-	const executionId = step.nodeExecutionId ?? step.id;
-	const executionStatus = step.nodeExecutionStatus ?? step.status;
+	const coordinateLabel = fanoutCoordinateLabel(node);
+	const executionStatus = node.nodeExecutionStatus ?? node.status;
 	return (
 		<button
 			type="button"
@@ -370,28 +370,26 @@ function WorktreeWorkflowStepRow({
 			style={{ paddingLeft: indentPx }}
 			onClick={onSelect}
 			aria-current={selected ? "page" : undefined}
-			aria-label={`${step.nodeName}, ${step.stepType}, attempt ${step.attempt}, ${executionStatus}, ${executionId}`}
-			data-node-execution-id={step.nodeExecutionId}
+			aria-label={`${node.nodeName}, ${node.nodeKind}, attempt ${node.attempt}, ${executionStatus}, ${node.nodeExecutionId}`}
+			data-node-execution-id={node.nodeExecutionId}
 		>
-			<WorkflowStepStatusIcon
-				status={step.status}
+			<WorkflowNodeStatusIcon
+				status={node.status}
 				containerClassName="flex size-5 shrink-0 items-center justify-center"
 				iconClassName="size-3"
 				circleClassName="size-2"
 			/>
-			<span className="min-w-0 flex-1 truncate">{step.title}</span>
-			{step.nodeExecutionId && (
-				<span
-					className="shrink-0 text-[10px] text-muted-foreground"
-					title={`NodeExecution ${step.nodeExecutionId}, attempt ${step.attempt}`}
-				>
-					#{step.attempt}
-				</span>
-			)}
+			<span className="min-w-0 flex-1 truncate">{node.title}</span>
+			<span
+				className="shrink-0 text-[10px] text-muted-foreground"
+				title={`NodeExecution ${node.nodeExecutionId}, attempt ${node.attempt}`}
+			>
+				#{node.attempt}
+			</span>
 			{coordinateLabel && (
 				<span
 					className="shrink-0 rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground"
-					title={`fanout parent ${step.fanoutParent?.parentNode} attempt ${step.fanoutParent?.parentAttempt}`}
+					title={`fanout parent ${node.fanoutParent?.parentNode} attempt ${node.fanoutParent?.parentAttempt}`}
 				>
 					{coordinateLabel}
 				</span>
@@ -421,7 +419,7 @@ function WorktreeTreeItem({
 	const [selectedWorkflowName, setSelectedWorkflowName] = useState<
 		string | null
 	>(null);
-	const [workflowTaskInput, setWorkflowTaskInput] = useState("");
+	const [workflowRequestInput, setWorkflowRequestInput] = useState("");
 	const [workflowStartError, setWorkflowStartError] = useState<string | null>(
 		null,
 	);
@@ -452,7 +450,7 @@ function WorktreeTreeItem({
 		error: workflowsError,
 	} = useWorkflowConfig(createMenuOpen);
 	const sessionStatuses = useWorktreeSessionStatuses(branch.worktree_path);
-	const liveWorkflowStatuses = useWorktreeStepStatuses(branch.worktree_path);
+	const liveWorkflowStatuses = useWorktreeNodeStatuses(branch.worktree_path);
 	const sessionAgentStates = useMemo(() => {
 		const map = new Map<string, WorkspaceSessionNode["agentState"]>();
 		for (const [sessionId, status] of sessionStatuses) {
@@ -495,15 +493,18 @@ function WorktreeTreeItem({
 		[branch.worktree_path, selectCenter],
 	);
 
-	const handleSelectWorkflowStep = useCallback(
-		(workflow: WorkspaceWorkflowNode, step: WorkspaceWorkflowStepNode) => {
+	const handleSelectWorkflowNode = useCallback(
+		(
+			execution: WorkspaceWorkflowExecutionNode,
+			node: WorkspaceWorkflowNodeExecution,
+		) => {
 			if (!branch.worktree_path) return;
 			selectCenter({
-				kind: "workflowStep",
+				kind: "workflowNode",
 				worktreePath: branch.worktree_path,
-				runId: workflow.runId,
-				stepId: step.id,
-				stepName: step.nodeName,
+				executionId: execution.executionId,
+				nodeExecutionId: node.nodeExecutionId,
+				nodeName: node.nodeName,
 			});
 		},
 		[branch.worktree_path, selectCenter],
@@ -512,9 +513,9 @@ function WorktreeTreeItem({
 	const handleRestoreWorkflow = useCallback(
 		async (workflow: WorkspaceWorkflowHistoryItem) => {
 			if (!branch.worktree_path) return;
-			await invoke("restore_workspace_workflow_run", {
+			await invoke("restore_workspace_workflow_execution", {
 				worktreePath: branch.worktree_path,
-				runId: workflow.runId,
+				executionId: workflow.executionId,
 			});
 			await refreshTree();
 		},
@@ -522,13 +523,13 @@ function WorktreeTreeItem({
 	);
 
 	const handleArchiveWorkflow = useCallback(
-		async (workflow: WorkspaceWorkflowNode) => {
+		async (workflow: WorkspaceWorkflowExecutionNode) => {
 			if (!branch.worktree_path) return;
 			setWorkflowActionError(null);
 			try {
-				await invoke("archive_workspace_workflow_run", {
+				await invoke("archive_workspace_workflow_execution", {
 					worktreePath: branch.worktree_path,
-					runId: workflow.runId,
+					executionId: workflow.executionId,
 				});
 				await refreshTree();
 			} catch (e) {
@@ -539,10 +540,10 @@ function WorktreeTreeItem({
 	);
 
 	const handleStopWorkflow = useCallback(
-		async (workflow: WorkspaceWorkflowNode) => {
+		async (workflow: WorkspaceWorkflowExecutionNode) => {
 			setWorkflowActionError(null);
 			try {
-				await invoke("abort_workflow", { runId: workflow.runId });
+				await invoke("abort_workflow", { executionId: workflow.executionId });
 				await refreshTree();
 			} catch (e) {
 				setWorkflowActionError(`Stop workflow failed: ${String(e)}`);
@@ -562,7 +563,7 @@ function WorktreeTreeItem({
 	const handleSelectWorkflowForStart = useCallback((workflowName: string) => {
 		setCreateMenuOpen(false);
 		setSelectedWorkflowName(workflowName);
-		setWorkflowTaskInput("");
+		setWorkflowRequestInput("");
 		setWorkflowStartError(null);
 	}, []);
 
@@ -576,11 +577,11 @@ function WorktreeTreeItem({
 			await invoke<string>("start_workflow", {
 				workflowName: selectedWorkflowName,
 				worktreePath: branch.worktree_path,
-				task: workflowTaskInput.trim() || null,
+				request: workflowRequestInput.trim(),
 				permissionMode: "ask",
 			});
 			setSelectedWorkflowName(null);
-			setWorkflowTaskInput("");
+			setWorkflowRequestInput("");
 			await refreshTree();
 		} catch (e) {
 			setWorkflowStartError(String(e));
@@ -592,13 +593,13 @@ function WorktreeTreeItem({
 		refreshTree,
 		selectedWorkflowName,
 		workflowStarting,
-		workflowTaskInput,
+		workflowRequestInput,
 	]);
 
 	const handleWorkflowDialogOpenChange = useCallback((open: boolean) => {
 		if (open) return;
 		setSelectedWorkflowName(null);
-		setWorkflowTaskInput("");
+		setWorkflowRequestInput("");
 		setWorkflowStartError(null);
 	}, []);
 
@@ -753,7 +754,7 @@ function WorktreeTreeItem({
 										) : (
 											workflowHistory.map((node) => (
 												<DropdownMenuItem
-													key={node.runId}
+													key={node.executionId}
 													onSelect={() => void handleRestoreWorkflow(node)}
 												>
 													<span className="max-w-52 truncate">
@@ -889,11 +890,11 @@ function WorktreeTreeItem({
 						displayNodes.map((node) =>
 							node.kind === "workflow" ? (
 								<WorktreeWorkflowRow
-									key={node.runId}
+									key={node.executionId}
 									node={node}
 									indentPx={WORKTREE_NAME_INDENT_PX}
 									centerSelection={scopedCenterSelection}
-									onSelectStep={handleSelectWorkflowStep}
+									onSelectNode={handleSelectWorkflowNode}
 									onStop={handleStopWorkflow}
 									onArchive={handleArchiveWorkflow}
 								/>
@@ -944,10 +945,10 @@ function WorktreeTreeItem({
 						}}
 					>
 						<Textarea
-							value={workflowTaskInput}
-							onChange={(event) => setWorkflowTaskInput(event.target.value)}
-							placeholder="Task description (optional)"
-							aria-label="Workflow task"
+							value={workflowRequestInput}
+							onChange={(event) => setWorkflowRequestInput(event.target.value)}
+							placeholder="Request (optional)"
+							aria-label="Workflow request"
 							disabled={workflowStarting}
 						/>
 						{workflowStartError && (

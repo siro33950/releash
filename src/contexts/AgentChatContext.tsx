@@ -19,36 +19,31 @@ export function AgentChatProvider({
 	worktreePath,
 	children,
 }: AgentChatProviderProps) {
-	// approval-chat の run_id 解決は AgentChatPanel 個別の責務ではなく、
-	// 現 worktree の workflow state から導出されるグローバルな観測。Provider 側で
-	// 一度だけ解決し、useAgentChat に注入する。parent ChatSession 機構は撤去済み
-	// であり、approval chat の宛先は step session (`currentSessionId`) のみ。
-	const { workflowState } = useWorkflowState(worktreePath);
-	const workflowApprovalChatSessionId =
-		workflowState?.state.type === "waiting_approval"
-			? (workflowState.currentSessionId ?? null)
-			: null;
-	const workflowApprovalRunId =
-		workflowState?.state.type === "waiting_approval"
-			? (workflowState.executionId ?? null)
-			: null;
+	// Approval target の選択は backend-owned read model が所有する。frontend は
+	// target を推測せず、返された NodeExecution / Session 参照をそのまま使う。
+	const { workflowExecution } = useWorkflowState(worktreePath);
+	const approvalTarget = workflowExecution?.approvalTarget ?? null;
+	const workflowApprovalChatSessionId = approvalTarget?.sessionId ?? null;
+	const workflowApprovalExecutionId = approvalTarget
+		? (workflowExecution?.id ?? null)
+		: null;
 
 	const agentChat = useAgentChat(
 		worktreePath,
 		workflowApprovalChatSessionId,
-		workflowApprovalRunId,
+		workflowApprovalExecutionId,
 	);
 
 	const { sessions, refreshSessions, refreshClosedSessions } = agentChat;
 
-	// 既存挙動: workflow state が新規 step session を露出したら session 一覧を refresh。
+	// read model が新規 node session を露出したら session 一覧を refresh。
 	const knownWorkflowSessionIds = useMemo(() => {
 		return new Set(sessions.map((session) => session.id));
 	}, [sessions]);
-	const workflowStateUpdatedAt = workflowState?.updatedAt;
+	const workflowExecutionUpdatedAt = workflowExecution?.updatedAt;
 
 	useEffect(() => {
-		const workflowSessionIds = [workflowState?.currentSessionId].filter(
+		const workflowSessionIds = [approvalTarget?.sessionId].filter(
 			(id): id is string => Boolean(id),
 		);
 
@@ -59,17 +54,13 @@ export function AgentChatProvider({
 		) {
 			refreshSessions();
 		}
-	}, [
-		workflowState?.currentSessionId,
-		knownWorkflowSessionIds,
-		refreshSessions,
-	]);
+	}, [approvalTarget?.sessionId, knownWorkflowSessionIds, refreshSessions]);
 
 	useEffect(() => {
-		if (workflowStateUpdatedAt == null) return;
+		if (workflowExecutionUpdatedAt == null) return;
 		refreshSessions({ reconcileActiveSession: true });
 		refreshClosedSessions();
-	}, [workflowStateUpdatedAt, refreshSessions, refreshClosedSessions]);
+	}, [workflowExecutionUpdatedAt, refreshSessions, refreshClosedSessions]);
 
 	// 安定参照のため、shallow に memo する（agentChat の中身は内部で memoize 済み）。
 	const value = useMemo(() => agentChat, [agentChat]);

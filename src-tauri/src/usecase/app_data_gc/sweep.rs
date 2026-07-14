@@ -6,7 +6,7 @@ use crate::usecase::agent_session::session::SessionState;
 
 use super::plan::{DeletionCandidate, DeletionPlan, DeletionRevalidation};
 use super::ports::{
-    CurrentSessionState, CurrentWorkflowRunState, GcFileSystem, GcRevalidationReader,
+    CurrentSessionState, CurrentWorkflowExecutionState, GcFileSystem, GcRevalidationReader,
     RevalidationRead, WorkflowArchivePruner,
 };
 use super::request::{LiveWorktreeResolution, RuntimeProtection, StartupGcRequest};
@@ -19,13 +19,16 @@ pub(super) fn sweep(
     request: &StartupGcRequest,
 ) -> GcReport {
     let mut report = GcReport::default();
-    let mut failed_workflow_run_deletions: BTreeMap<GcCategory, HashSet<String>> = BTreeMap::new();
-    let mut workflow_revalidation = HashMap::new();
+    let mut failed_workflow_execution_deletions: BTreeMap<GcCategory, HashSet<String>> =
+        BTreeMap::new();
+    let workflow_execution_ids = workflow_execution_revalidation_ids(&plan.candidates);
+    let mut workflow_revalidation = revalidation_reader
+        .workflow_execution_states(&request.app_data_dir, &workflow_execution_ids);
     let runtime_protection =
         revalidation_reader.runtime_protection(&request.app_data_dir, &request.process_records);
     for candidate in plan.candidates {
         if !candidate_is_contained(&plan.app_data_dir, &candidate.path) {
-            mark_workflow_candidate_failed(&candidate, &mut failed_workflow_run_deletions);
+            mark_workflow_candidate_failed(&candidate, &mut failed_workflow_execution_deletions);
             log::info!(
                 "app data gc skipped {} because deletion candidate is outside app data dir",
                 candidate.path.display()
@@ -39,7 +42,7 @@ pub(super) fn sweep(
             &runtime_protection,
             &mut workflow_revalidation,
         ) {
-            mark_workflow_candidate_failed(&candidate, &mut failed_workflow_run_deletions);
+            mark_workflow_candidate_failed(&candidate, &mut failed_workflow_execution_deletions);
             log::info!(
                 "app data gc skipped {} because deletion candidate is no longer eligible",
                 candidate.path.display()
@@ -65,7 +68,10 @@ pub(super) fn sweep(
             Ok(false) => {}
             Err(error) => {
                 report.record_error();
-                mark_workflow_candidate_failed(&candidate, &mut failed_workflow_run_deletions);
+                mark_workflow_candidate_failed(
+                    &candidate,
+                    &mut failed_workflow_execution_deletions,
+                );
                 log::warn!(
                     "app data gc failed to remove {}: {error}",
                     candidate.path.display()
@@ -73,19 +79,21 @@ pub(super) fn sweep(
             }
         }
     }
-    for (category, run_ids) in plan.workflow_archive_records {
-        let failed_run_ids = failed_workflow_run_deletions
+    for (category, execution_ids) in plan.workflow_archive_records {
+        let failed_execution_ids = failed_workflow_execution_deletions
             .get(&category)
             .cloned()
             .unwrap_or_default();
-        let prune_run_ids = run_ids
-            .difference(&failed_run_ids)
+        let prune_execution_ids = execution_ids
+            .difference(&failed_execution_ids)
             .cloned()
             .collect::<HashSet<_>>();
-        if prune_run_ids.is_empty() {
+        if prune_execution_ids.is_empty() {
             continue;
         }
-        match archive_pruner.prune_workflow_archive_records(&plan.app_data_dir, &prune_run_ids) {
+        match archive_pruner
+            .prune_workflow_archive_records(&plan.app_data_dir, &prune_execution_ids)
+        {
             Ok(result) => {
                 for _ in 0..result.records_removed {
                     report.record_deleted(category, 0);
@@ -104,6 +112,21 @@ pub(super) fn sweep(
         }
     }
     report
+}
+
+fn workflow_execution_revalidation_ids(candidates: &[DeletionCandidate]) -> HashSet<String> {
+    candidates
+        .iter()
+        .filter_map(|candidate| match &candidate.revalidation {
+            DeletionRevalidation::WorkflowExecutionMetadata { execution_id } => {
+                Some(execution_id.clone())
+            }
+            DeletionRevalidation::None
+            | DeletionRevalidation::Session { .. }
+            | DeletionRevalidation::WorkspaceState { .. }
+            | DeletionRevalidation::ReviewComment { .. } => None,
+        })
+        .collect()
 }
 
 fn candidate_is_contained(app_data_dir: &Path, path: &Path) -> bool {
@@ -127,13 +150,13 @@ fn candidate_is_contained(app_data_dir: &Path, path: &Path) -> bool {
 
 fn mark_workflow_candidate_failed(
     candidate: &DeletionCandidate,
-    failed_workflow_run_deletions: &mut BTreeMap<GcCategory, HashSet<String>>,
+    failed_workflow_execution_deletions: &mut BTreeMap<GcCategory, HashSet<String>>,
 ) {
-    if let Some(run_id) = candidate.workflow_run_id.as_ref() {
-        failed_workflow_run_deletions
+    if let Some(execution_id) = candidate.workflow_execution_id.as_ref() {
+        failed_workflow_execution_deletions
             .entry(candidate.category)
             .or_default()
-            .insert(run_id.clone());
+            .insert(execution_id.clone());
     }
 }
 
@@ -142,18 +165,26 @@ fn candidate_still_valid(
     request: &StartupGcRequest,
     reader: &dyn GcRevalidationReader,
     runtime: &RuntimeProtection,
-    workflow_revalidation: &mut HashMap<String, RevalidationRead<CurrentWorkflowRunState>>,
+    workflow_revalidation: &mut HashMap<String, RevalidationRead<CurrentWorkflowExecutionState>>,
 ) -> bool {
     match &candidate.revalidation {
         DeletionRevalidation::None => true,
         DeletionRevalidation::Session { session_id } => {
             session_candidate_still_valid(candidate.category, session_id, request, runtime, reader)
         }
-        DeletionRevalidation::WorkflowRun { run_id } => {
+        DeletionRevalidation::WorkflowExecutionMetadata { execution_id } => {
             let state = workflow_revalidation
-                .entry(run_id.clone())
-                .or_insert_with(|| reader.workflow_run_state(&request.app_data_dir, run_id));
-            workflow_candidate_still_valid(candidate.category, run_id, request, runtime, state)
+                .entry(execution_id.clone())
+                .or_insert_with(|| {
+                    reader.workflow_execution_state(&request.app_data_dir, execution_id)
+                });
+            workflow_candidate_still_valid(
+                candidate.category,
+                execution_id,
+                request,
+                runtime,
+                state,
+            )
         }
         DeletionRevalidation::WorkspaceState { key } => {
             workspace_state_candidate_still_valid(key, request.live_worktrees.as_ref(), runtime)
@@ -222,10 +253,10 @@ fn session_state_matches_category(
 
 fn workflow_candidate_still_valid(
     category: GcCategory,
-    run_id: &str,
+    execution_id: &str,
     request: &StartupGcRequest,
     runtime: &RuntimeProtection,
-    state: &RevalidationRead<CurrentWorkflowRunState>,
+    state: &RevalidationRead<CurrentWorkflowExecutionState>,
 ) -> bool {
     let Some(live_worktrees) = request.live_worktrees.as_ref() else {
         return false;
@@ -236,7 +267,9 @@ fn workflow_candidate_still_valid(
         }
         RevalidationRead::Missing => false,
         RevalidationRead::Unavailable(error) => {
-            log::warn!("app data gc skipped workflow run {run_id} during revalidation: {error}");
+            log::warn!(
+                "app data gc skipped workflow execution {execution_id} during revalidation: {error}"
+            );
             false
         }
     }
@@ -244,7 +277,7 @@ fn workflow_candidate_still_valid(
 
 fn workflow_state_matches_category(
     category: GcCategory,
-    state: &CurrentWorkflowRunState,
+    state: &CurrentWorkflowExecutionState,
     live_worktrees: &LiveWorktreeResolution,
     runtime: &RuntimeProtection,
     request: &StartupGcRequest,

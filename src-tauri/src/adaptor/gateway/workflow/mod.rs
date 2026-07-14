@@ -1,11 +1,10 @@
 //! Workflow gateway implementations for the clean architecture ports.
 //!
 //! These adapters intentionally preserve the existing workflow persistence
-//! formats (`workflow_runs/`, `workflow_logs/`, workflow YAML, facet markdown,
+//! formats (`workflow_executions/`, `workflow_execution_logs/`, workflow YAML, facet markdown,
 //! and pending command files). Controller wiring moves to these ports in #1037.
 
 pub(crate) mod approval_runtime;
-mod archive_repository;
 pub(crate) mod builtin;
 mod config_path_gateway;
 mod definition_repository;
@@ -20,7 +19,11 @@ pub(crate) mod event_log_query;
 pub(crate) mod event_log_writer;
 pub(crate) mod event_projection;
 mod event_repository;
+mod execution_archive_repository;
+mod execution_projection_repository;
 pub(crate) mod execution_registry;
+mod execution_repository;
+pub(crate) mod execution_store;
 pub(crate) mod external_execution_restore;
 pub(crate) mod facet;
 mod facet_repository;
@@ -41,8 +44,6 @@ pub(crate) mod pending_runtime;
 pub(crate) mod prompt_rendering;
 pub(crate) mod resolver;
 pub(crate) mod route_context;
-pub(crate) mod run;
-mod run_repository;
 mod runtime_command_gateway;
 pub(crate) mod runtime_commit;
 pub(crate) mod runtime_engine;
@@ -57,8 +58,6 @@ mod secret_source_gateway;
 pub(crate) mod span_map;
 pub(crate) mod state;
 mod state_notification_gateway;
-mod state_projection_repository;
-mod step_detail_projection_repository;
 mod step_lifecycle_adapters;
 mod step_session_boundary;
 pub(crate) mod step_settings;
@@ -69,7 +68,6 @@ pub(crate) mod turn_completion;
 mod workspace_session;
 mod worktree_gateway;
 
-pub(crate) use archive_repository::WorkflowRunArchiveFileRepository;
 pub(crate) use config_path_gateway::WorkflowConfigPathFileGateway;
 pub(crate) use definition_repository::{
     WorkflowDefinitionFileRepository, WorkflowDefinitionFileSourceGateway,
@@ -79,28 +77,25 @@ pub(crate) use diagnostics_gateway::WorkflowDiagnosticsFileGateway;
 pub(crate) use editor_gateway::NoopWorkflowExternalEditorGateway;
 pub(crate) use editor_gateway::TauriWorkflowExternalEditorGateway;
 pub(crate) use event_repository::WorkflowEventLogRepository;
+pub(crate) use execution_archive_repository::WorkflowExecutionArchiveFileRepository;
+pub(crate) use execution_projection_repository::WorkflowExecutionProjectionLogRepository;
+pub(crate) use execution_repository::WorkflowExecutionFileRepository;
 pub(crate) use facet_repository::WorkflowFacetFileRepository;
 pub(crate) use pending_command_watcher::spawn_pending_command_watcher;
 pub(crate) use pending_repository::{
     process_pending_workflow_command_entry, PendingWorkflowCommandFileRepository,
 };
-pub(crate) use run_repository::WorkflowRunFileRepository;
 pub(crate) use runtime_command_gateway::{
     TauriWorkflowRuntimeCommandGateway, TauriWorkflowRuntimeCommandGatewayDeps,
 };
 #[cfg(test)]
 pub(crate) use secret_source_gateway::EmptySecretSourceGateway;
 pub(crate) use secret_source_gateway::WorkflowSecretSourceConfigGateway;
-pub(crate) use state_notification_gateway::{
-    build_workflow_state_view_from_snapshot, emit_workflow_state_from_snapshot,
-    emit_workflow_state_snapshot,
-};
-pub(crate) use state_projection_repository::WorkflowStateProjectionLogRepository;
-pub(crate) use step_detail_projection_repository::WorkflowStepDetailProjectionLogRepository;
+pub(crate) use state_notification_gateway::emit_workflow_execution_from_snapshot;
 #[cfg(test)]
 pub(crate) use step_lifecycle_adapters::close_step_session_tab_state;
 pub(crate) use step_lifecycle_adapters::{
-    mark_started_step_tab_open, release_step_runtime_on_done, TauriWorkflowStepLifecycleGateway,
+    mark_started_step_tab_open, release_step_runtime_on_done, TauriNodeExecutionLifecycleGateway,
 };
 #[cfg(test)]
 pub(crate) use step_lifecycle_adapters::{

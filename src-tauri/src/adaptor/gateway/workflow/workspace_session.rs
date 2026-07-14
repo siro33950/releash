@@ -2,9 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::domain::workflow::WorkflowError;
-use crate::usecase::agent_session::session::{
-    workflow_step_context_mapper, SessionState, SessionStore, SessionSummary,
-};
+use crate::usecase::agent_session::session::{SessionState, SessionStore, SessionSummary};
 use crate::usecase::workflow::{
     WorkspaceSessionGateway, WorkspaceSessionInput, WorkspaceSessionState,
 };
@@ -29,10 +27,7 @@ impl StoredWorkspaceSessionGateway {
             state: workspace_session_state(session.state),
             updated_at: session.updated_at,
             first_message: session.first_message,
-            workflow_step_session: session.workflow_step_session,
-            workflow_step_context: session
-                .workflow_step_context
-                .map(workflow_step_context_mapper::to_domain),
+            workflow_node_session: session.workflow_node_session,
         }
     }
 }

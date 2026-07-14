@@ -114,14 +114,14 @@ export function AgentChatPanel({
 	const { orderedSessions, selectSession, createNewSession } =
 		useAgentChatContext();
 
-	// spec issues-1023: workflow step として起動された chat session は
+	// spec issues-1023: workflow node として起動された chat session は
 	// 自由対話 chat tab と同格に tab bar 上に並べない。観測経路は Workflow panel の
-	// step conversation transcript 側に切り出されている。
+	// node conversation transcript 側に切り出されている。
 	const displayedSessions = useMemo(
-		() => orderedSessions.filter((s) => !s.workflowStepSession),
+		() => orderedSessions.filter((s) => !s.workflowNodeSession),
 		[orderedSessions],
 	);
-	// spec issues-1023 / issues-1022: 万一 activeSession が workflow step session の状態でも
+	// spec issues-1023 / issues-1022: 万一 activeSession が workflow node session の状態でも
 	// AgentChatPanel 本文では表示しない（Workflow panel 側 transcript の二重表示防止）。
 	// Diff Thread handoff (issues-1022) と同じ判定規則を共通 hook 経由で参照する。
 	const displayedActiveSession = useDisplayedActiveSession();

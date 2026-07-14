@@ -22,7 +22,7 @@ impl RequestEventKind {
             Self::ArtifactProduced => matches!(
                 event,
                 WorkflowEvent::ArtifactProduced { request_id: Some(id), .. }
-                    | WorkflowEvent::ContractRepairRequested { request_id: Some(id), .. }
+                    | WorkflowEvent::ContractViolated { request_id: Some(id), .. }
                     if id == request_id
             ),
             Self::CliMutationRequested => matches!(
@@ -35,7 +35,7 @@ impl RequestEventKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RequestEventLookupError {
-    InvalidRunId(String),
+    InvalidExecutionId(String),
     InvalidRequestId(String),
     ReadLog(String),
 }
@@ -43,12 +43,12 @@ pub(crate) enum RequestEventLookupError {
 pub(crate) fn request_event_already_recorded(
     data_dir: &Path,
     event_kind: RequestEventKind,
-    run_id: &str,
+    execution_id: &str,
     request_id: &str,
 ) -> Result<bool, RequestEventLookupError> {
-    uuid::Uuid::parse_str(run_id).map_err(|_| {
-        RequestEventLookupError::InvalidRunId(format!(
-            "{} run_id must be UUID",
+    uuid::Uuid::parse_str(execution_id).map_err(|_| {
+        RequestEventLookupError::InvalidExecutionId(format!(
+            "{} execution_id must be UUID",
             event_kind.validation_label()
         ))
     })?;
@@ -60,7 +60,7 @@ pub(crate) fn request_event_already_recorded(
     })?;
 
     let events = WorkflowEventLog::new(data_dir)
-        .read_log(run_id)
+        .read_log(execution_id)
         .map_err(RequestEventLookupError::ReadLog)?;
     Ok(events
         .iter()
@@ -82,12 +82,11 @@ mod tests {
     #[test]
     fn request_event_already_recorded_finds_artifact_produced_request_id() {
         let tmp = tempfile::tempdir().unwrap();
-        let run_id = uuid(1);
+        let execution_id = uuid(1);
         let request_id = uuid(2);
         WorkflowEventLog::new(tmp.path())
             .append_batch(&[WorkflowEvent::ArtifactProduced {
-                run_id: run_id.clone(),
-                workflow_name: "wf".to_string(),
+                execution_id: execution_id.clone(),
                 node_execution_id: uuid(3),
                 node_name: "review".to_string(),
                 contract: Some("review-verdict".to_string()),
@@ -102,7 +101,7 @@ mod tests {
             request_event_already_recorded(
                 tmp.path(),
                 RequestEventKind::ArtifactProduced,
-                &run_id,
+                &execution_id,
                 &request_id,
             ),
             Ok(true)
@@ -111,7 +110,7 @@ mod tests {
             request_event_already_recorded(
                 tmp.path(),
                 RequestEventKind::ArtifactProduced,
-                &run_id,
+                &execution_id,
                 &uuid(3),
             ),
             Ok(false)
@@ -119,22 +118,26 @@ mod tests {
     }
 
     #[test]
-    fn request_event_already_recorded_treats_contract_repair_as_submit_output_marker() {
+    fn request_event_already_recorded_treats_contract_violation_as_submit_output_marker() {
         let tmp = tempfile::tempdir().unwrap();
-        let run_id = uuid(10);
+        let execution_id = uuid(10);
         let request_id = uuid(11);
         WorkflowEventLog::new(tmp.path())
-            .append_batch(&[WorkflowEvent::ContractRepairRequested {
-                run_id: run_id.clone(),
-                workflow_name: "wf".to_string(),
+            .append_batch(&[WorkflowEvent::ContractViolated {
+                execution_id: execution_id.clone(),
+                node_execution_id: uuid(12),
                 node_name: "review".to_string(),
-                run_index: 1,
+                violations: vec![
+                    crate::adaptor::gateway::workflow::event::ContractViolationRecord {
+                        path: "$".to_string(),
+                        reason: submission_violation_reason(
+                            SubmissionViolation::InvalidSubmitOutput,
+                        )
+                        .to_string(),
+                    },
+                ],
+                repair_attempt: 1,
                 request_id: Some(request_id.clone()),
-                attempt: 1,
-                violation_reason: submission_violation_reason(
-                    SubmissionViolation::InvalidSubmitOutput,
-                )
-                .to_string(),
                 timestamp: 11.0,
             }])
             .unwrap();
@@ -143,7 +146,7 @@ mod tests {
             request_event_already_recorded(
                 tmp.path(),
                 RequestEventKind::ArtifactProduced,
-                &run_id,
+                &execution_id,
                 &request_id,
             ),
             Ok(true)
@@ -153,12 +156,11 @@ mod tests {
     #[test]
     fn request_event_already_recorded_finds_cli_mutation_request_id() {
         let tmp = tempfile::tempdir().unwrap();
-        let run_id = uuid(4);
+        let execution_id = uuid(4);
         let request_id = uuid(5);
         WorkflowEventLog::new(tmp.path())
             .append_batch(&[WorkflowEvent::CliMutationRequested {
-                run_id: run_id.clone(),
-                workflow_name: "wf".to_string(),
+                execution_id: execution_id.clone(),
                 request_id: request_id.clone(),
                 request: CliMutationRequestRecord::Abort { node_name: None },
                 requested_at: 20.0,
@@ -170,7 +172,7 @@ mod tests {
             request_event_already_recorded(
                 tmp.path(),
                 RequestEventKind::CliMutationRequested,
-                &run_id,
+                &execution_id,
                 &request_id,
             ),
             Ok(true)
@@ -179,7 +181,7 @@ mod tests {
             request_event_already_recorded(
                 tmp.path(),
                 RequestEventKind::CliMutationRequested,
-                &run_id,
+                &execution_id,
                 &uuid(6),
             ),
             Ok(false)
@@ -195,8 +197,8 @@ mod tests {
                 "not-a-uuid",
                 &uuid(7),
             ),
-            Err(RequestEventLookupError::InvalidRunId(
-                "SubmitOutput run_id must be UUID".to_string()
+            Err(RequestEventLookupError::InvalidExecutionId(
+                "SubmitOutput execution_id must be UUID".to_string()
             ))
         );
         assert_eq!(

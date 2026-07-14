@@ -10,7 +10,7 @@ import { useAgentChatContext } from "@/contexts/AgentChatContext";
  * シグネチャで sendThreadToAgent を呼べる。
  *
  * - メッセージ本文の整形は Rust 側 (`build_review_thread_handoff` Tauri command) が owner
- * - 送信先 session は AgentChat の active session そのもの。workflow step session を
+ * - 送信先 session は AgentChat の active session そのもの。workflow node session を
  *   開いている場合でも、その session 自身に送付できる (ユーザーが「現在開いている Agent」
  *   に対するハンドオフ操作として観測する)。
  * - active session が存在しない場合 `canSend` が `false` となり、UI 側はボタンを disabled にする

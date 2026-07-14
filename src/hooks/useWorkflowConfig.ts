@@ -1,9 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
-import type { WorkflowSummary } from "@/types/workflow";
+import type { WorkflowDefinitionSummary } from "@/types/workflow";
 
 export function useWorkflowConfig(open: boolean) {
-	const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
+	const [workflows, setWorkflows] = useState<WorkflowDefinitionSummary[]>([]);
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
@@ -11,7 +11,7 @@ export function useWorkflowConfig(open: boolean) {
 		setLoading(true);
 		setError(null);
 		try {
-			const list = await invoke<WorkflowSummary[]>("list_workflows");
+			const list = await invoke<WorkflowDefinitionSummary[]>("list_workflows");
 			setWorkflows(list);
 		} catch (e) {
 			setError(String(e));

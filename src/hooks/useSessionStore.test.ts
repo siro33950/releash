@@ -199,7 +199,7 @@ describe("session paging", () => {
 		await sendWorkflowApprovalChatMessage("run-1", "approve", "edit", false);
 
 		expect(invoke).toHaveBeenCalledWith("send_workflow_approval_chat_message", {
-			runId: "run-1",
+			executionId: "run-1",
 			content: "approve",
 			permissionMode: "edit",
 			planMode: false,

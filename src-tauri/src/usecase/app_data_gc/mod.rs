@@ -10,13 +10,13 @@ mod tests;
 
 pub(crate) use ports::gc_file_system_error;
 pub(crate) use ports::{
-    CurrentSessionState, CurrentWorkflowRunState, GcFileSystem, GcFileSystemError,
+    CurrentSessionState, CurrentWorkflowExecutionState, GcFileSystem, GcFileSystemError,
     GcRevalidationReader, RevalidationRead, WorkflowArchivePruner,
 };
 pub(crate) use request::{
     CacheGcRecord, GcWorktreePath, LiveWorktree, LiveWorktreeResolution, LiveWorktreeSet,
     ProcessRecord, ProcessRecordStatus, ReviewCommentGcRecord, RuntimeProtection, SessionBlobStore,
-    SessionGcRecord, StartupGcRequest, WorkflowArchivePruneResult, WorkflowRunGcRecord,
+    SessionGcRecord, StartupGcRequest, WorkflowArchivePruneResult, WorkflowExecutionGcRecord,
     WorkspaceStateGcRecord,
 };
 
@@ -48,7 +48,7 @@ pub(crate) fn run_startup_gc(
         };
         collect_session_deletions(&session_context, &mut plan);
         collect_workflow_deletions(
-            &request.workflow_runs,
+            &request.workflow_executions,
             live_worktree_resolution,
             request.now_secs,
             request.retention,

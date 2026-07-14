@@ -154,7 +154,7 @@ export interface UseAgentChatResult {
 	setBackend: (sessionId: string | null, backendId: string | null) => void;
 	/**
 	 * 任意 sessionId から最新の ChatSession を取得して sessionsById に upsert する。
-	 * 各 panel が「自分が見たい step session を読み込む」用途で利用する。
+	 * 各 panel が「自分が見たい node session を読み込む」用途で利用する。
 	 * 内部状態の単一の正典は `sessionsById` であり、本関数の戻り値は upsert 後の
 	 * snapshot（成功時）。
 	 */
@@ -334,7 +334,7 @@ function dispatchSessionMeta(
 export function useAgentChat(
 	worktreePath: string,
 	workflowApprovalChatSessionId: string | null = null,
-	workflowApprovalRunId: string | null = null,
+	workflowApprovalExecutionId: string | null = null,
 ): UseAgentChatResult {
 	const [state, dispatch] = useReducer(reducer, INITIAL_STATE);
 	const worktreePathRef = useRef(worktreePath);
@@ -343,8 +343,8 @@ export function useAgentChat(
 		workflowApprovalChatSessionId,
 	);
 	workflowApprovalChatSessionIdRef.current = workflowApprovalChatSessionId;
-	const workflowApprovalRunIdRef = useRef(workflowApprovalRunId);
-	workflowApprovalRunIdRef.current = workflowApprovalRunId;
+	const workflowApprovalExecutionIdRef = useRef(workflowApprovalExecutionId);
+	workflowApprovalExecutionIdRef.current = workflowApprovalExecutionId;
 
 	const activeSession = selectActiveSession(state);
 
@@ -585,11 +585,11 @@ export function useAgentChat(
 					const previousIndex = previousSessions.findIndex(
 						(session) => session.id === previousActiveSessionId,
 					);
-					// spec issues-1023: free chat tab bar に並ばない workflow step session は
+					// spec issues-1023: free chat tab bar に並ばない workflow node session は
 					// 自由対話の active 候補としても選ばない（chat panel の本文を
-					// workflow step transcript で乗っ取らない）。
+					// workflow node transcript で乗っ取らない）。
 					const freeChatSessions = sessions.filter(
-						(session) => !session.workflowStepSession,
+						(session) => !session.workflowNodeSession,
 					);
 					const nextSession =
 						freeChatSessions.length > 0
@@ -818,13 +818,14 @@ export function useAgentChat(
 						: (sessionModelsRef.current[activeSessionIdRef.current] ?? null);
 				const workflowApprovalChatSessionId =
 					workflowApprovalChatSessionIdRef.current;
-				const workflowApprovalRunId = workflowApprovalRunIdRef.current;
+				const workflowApprovalExecutionId =
+					workflowApprovalExecutionIdRef.current;
 				const response =
 					sessionId &&
 					workflowApprovalChatSessionId === sessionId &&
-					workflowApprovalRunId
+					workflowApprovalExecutionId
 						? await sendWorkflowApprovalChatMessage(
-								workflowApprovalRunId,
+								workflowApprovalExecutionId,
 								trimmed,
 								pm,
 								plan,
@@ -907,7 +908,7 @@ export function useAgentChat(
 					value: response.canChangeBackend,
 				});
 				// 新規作成 session の場合、active を切り替える（既存 sessionId 指定で送った場合は
-				// active を変更しない — Workflow panel から step session に送ったときに Main の
+				// active を変更しない — Workflow panel から node session に送ったときに Main の
 				// active を上書きしないため）。
 				if (sessionId === null && options?.activateNewSession !== false) {
 					dispatch({
@@ -964,7 +965,7 @@ export function useAgentChat(
 				if (isActive) {
 					// spec issues-1023: 閉じた後の active 候補も free chat に閉じる。
 					const remaining = sessions.filter(
-						(s) => s.id !== sessionId && !s.workflowStepSession,
+						(s) => s.id !== sessionId && !s.workflowNodeSession,
 					);
 					const nextSession =
 						remaining.length > 0
@@ -1003,9 +1004,9 @@ export function useAgentChat(
 	const restoreSessionFn = useCallback(
 		async (sessionId: string) => {
 			try {
-				let restoredWorkflowStep = false;
+				let restoredWorkflowNode = false;
 				const restoreResult = await restoreSessionApi(sessionId);
-				restoredWorkflowStep = restoreResult.restoredWorkflowStep === true;
+				restoredWorkflowNode = restoreResult.restoredWorkflowNode === true;
 				const response = await getSession(sessionId);
 				if (response) {
 					rememberInitialPage(response);
@@ -1016,7 +1017,7 @@ export function useAgentChat(
 					});
 					dispatchSessionMeta(dispatch, sessionId, response);
 					if (
-						!restoredWorkflowStep &&
+						!restoredWorkflowNode &&
 						(response.session.messages.length > 0 ||
 							response.session.agentSessionId)
 					) {
@@ -1068,7 +1069,7 @@ export function useAgentChat(
 				const isActive = activeSessionIdRef.current === sessionId;
 				if (isActive) {
 					const remaining = sessions.filter(
-						(s) => s.id !== sessionId && !s.workflowStepSession,
+						(s) => s.id !== sessionId && !s.workflowNodeSession,
 					);
 					const nextSession =
 						remaining.length > 0
