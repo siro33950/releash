@@ -1,14 +1,15 @@
-//! Pure parallel/collect reduce rules.
+//! Pure fanout/collect reduce rules.
 
 use std::collections::HashMap;
 
 use regex::RegexBuilder;
 
 use crate::domain::workflow::value_objects::{
-    default_step_entry_state, ChildOutputSnapshot, CollectConfig, FailureDisposition,
+    default_step_entry_state, ChildOutputSnapshot, CollectConfig, FailureDisposition, ItemsSource,
     ParallelAggregate, ReduceStrategy, StepHistoryEntry, StepOutput, TokenUsage,
-    WorkflowStepFailureKind,
+    WorkflowDefinition, WorkflowStepFailureKind,
 };
+use crate::domain::workflow::WorkflowError;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParallelReduceResult {
@@ -17,25 +18,30 @@ pub struct ParallelReduceResult {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ParallelChildOutputMerge {
+#[cfg(test)]
+pub struct FanoutChildOutputMerge {
     pub structured_output: Option<serde_json::Value>,
     pub artifact_contract: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ParallelChildCompletionInput {
-    pub step_name: String,
-    pub session_id: String,
+pub struct FanoutChildCompletionInput {
+    pub node_execution_id: String,
+    pub node_name: String,
+    pub session_id: Option<String>,
     pub result: Option<String>,
+    pub artifact: serde_json::Value,
+    pub artifact_contract: Option<String>,
     pub token_usage: TokenUsage,
-    pub run_index: u32,
+    pub attempt: u32,
+    pub completed_at: f64,
     pub state: String,
     pub failure_kind: Option<WorkflowStepFailureKind>,
     pub failure_disposition: Option<FailureDisposition>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ParallelParentTransitionPlan {
+pub enum FanoutParentTransitionPlan {
     Advance,
     TransitionTo {
         target_node_name: String,
@@ -44,19 +50,34 @@ pub enum ParallelParentTransitionPlan {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ParallelParentCompletionPlan {
-    pub child_step_names: Vec<String>,
+pub struct FanoutParentCompletionPlan {
+    pub child_node_names: Vec<String>,
     pub parent_step_output: StepOutput,
     pub history_entry: StepHistoryEntry,
-    pub transition: ParallelParentTransitionPlan,
+    pub transition: FanoutParentTransitionPlan,
 }
 
-pub fn merge_parallel_child_completion_output(
+#[derive(Debug, Clone, PartialEq)]
+pub struct FanoutChildExpansionPlan {
+    pub node_name: String,
+    pub attempt: u32,
+    pub item: Option<serde_json::Value>,
+    pub item_index: Option<usize>,
+    pub child_index: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FanoutExpansionPlan {
+    pub children: Vec<FanoutChildExpansionPlan>,
+}
+
+#[cfg(test)]
+pub fn merge_fanout_child_completion_output(
     completed_structured_output: Option<serde_json::Value>,
     prior_structured_output: Option<serde_json::Value>,
     prior_artifact_contract: Option<String>,
-) -> ParallelChildOutputMerge {
-    ParallelChildOutputMerge {
+) -> FanoutChildOutputMerge {
+    FanoutChildOutputMerge {
         structured_output: completed_structured_output.or(prior_structured_output),
         artifact_contract: prior_artifact_contract,
     }
@@ -159,63 +180,154 @@ pub fn apply_reduce(
     }
 }
 
-pub fn plan_parallel_parent_completion(
-    parent_step_name: &str,
-    parent_run_index: u32,
-    aggregate: Option<&ParallelAggregate>,
-    children: &[ParallelChildCompletionInput],
+fn resolve_fanout_items(
+    source: Option<&ItemsSource>,
     step_outputs: &HashMap<String, StepOutput>,
+) -> Result<Option<Vec<serde_json::Value>>, WorkflowError> {
+    match source {
+        None => Ok(None),
+        Some(ItemsSource::Literal(items)) => Ok(Some(items.clone())),
+        Some(ItemsSource::ArtifactField { node, field }) => {
+            let value = step_outputs
+                .get(node)
+                .and_then(|output| output.structured_output.as_ref())
+                .and_then(serde_json::Value::as_object)
+                .and_then(|artifact| artifact.get(field))
+                .ok_or_else(|| {
+                    WorkflowError::invalid_state(format!(
+                        "fanout items source '{node}.{field}' is unavailable"
+                    ))
+                })?;
+            let items = value.as_array().ok_or_else(|| {
+                WorkflowError::invalid_state(format!(
+                    "fanout items source '{node}.{field}' is not an array"
+                ))
+            })?;
+            Ok(Some(items.clone()))
+        }
+    }
+}
+
+fn next_child_attempts(
+    counts: &HashMap<String, u32>,
+    child_names: impl IntoIterator<Item = String>,
+) -> Vec<u32> {
+    let mut counts = counts.clone();
+    child_names
+        .into_iter()
+        .map(|name| {
+            let count = counts.entry(name).or_insert(0);
+            *count += 1;
+            *count
+        })
+        .collect()
+}
+
+pub fn plan_fanout_expansion(
+    workflow: &WorkflowDefinition,
+    child_names: &[String],
+    items_source: Option<&ItemsSource>,
+    step_outputs: &HashMap<String, StepOutput>,
+    counts: &HashMap<String, u32>,
+) -> Result<FanoutExpansionPlan, WorkflowError> {
+    let items = resolve_fanout_items(items_source, step_outputs)?;
+    let coordinates = match items {
+        Some(items) => items
+            .into_iter()
+            .enumerate()
+            .flat_map(|(item_index, item)| {
+                child_names
+                    .iter()
+                    .enumerate()
+                    .map(move |(child_index, name)| {
+                        (
+                            name.clone(),
+                            Some(item.clone()),
+                            Some(item_index),
+                            child_index,
+                        )
+                    })
+            })
+            .collect::<Vec<_>>(),
+        None => child_names
+            .iter()
+            .enumerate()
+            .map(|(child_index, name)| (name.clone(), None, None, child_index))
+            .collect(),
+    };
+    let attempts = next_child_attempts(
+        counts,
+        coordinates.iter().map(|(name, _, _, _)| name.clone()),
+    );
+    let children = coordinates
+        .into_iter()
+        .zip(attempts)
+        .map(|((name, item, item_index, child_index), attempt)| {
+            let node = workflow
+                .nodes
+                .iter()
+                .find(|node| node.name == name)
+                .ok_or_else(|| {
+                    WorkflowError::invalid_state(format!("fanout child node '{name}' is undefined"))
+                })?;
+            if node.is_fanout() {
+                return Err(WorkflowError::invalid_state(format!(
+                    "fanout child node '{name}' cannot be a fanout"
+                )));
+            }
+            Ok(FanoutChildExpansionPlan {
+                node_name: name,
+                attempt,
+                item,
+                item_index,
+                child_index,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(FanoutExpansionPlan { children })
+}
+
+pub fn plan_fanout_parent_completion(
+    parent_node_name: &str,
+    parent_attempt: u32,
+    aggregate: Option<&ParallelAggregate>,
+    children: &[FanoutChildCompletionInput],
     timestamp: f64,
-) -> ParallelParentCompletionPlan {
-    let child_step_names: Vec<String> = children
+) -> FanoutParentCompletionPlan {
+    let child_node_names: Vec<String> = children
         .iter()
-        .map(|child| child.step_name.clone())
+        .map(|child| child.node_name.clone())
         .collect();
     let mut combined_tokens = TokenUsage::default();
     for child in children {
         combined_tokens.add(&child.token_usage);
     }
 
-    let mut children_output = serde_json::Map::new();
-    for child_name in &child_step_names {
-        if let Some(output) = step_outputs.get(child_name) {
-            children_output.insert(
-                child_name.clone(),
-                output
-                    .structured_output
-                    .clone()
-                    .unwrap_or(serde_json::Value::Null),
-            );
-        }
-    }
+    let parent_artifact = serde_json::Value::Array(
+        children
+            .iter()
+            .map(|child| child.artifact.clone())
+            .collect(),
+    );
 
     let child_outputs = children
         .iter()
-        .map(|child| {
-            let output = step_outputs.get(&child.step_name);
-            ChildOutputSnapshot {
-                step_name: child.step_name.clone(),
-                session_id: output
-                    .and_then(|output| output.session_id.clone())
-                    .or_else(|| Some(child.session_id.clone())),
-                result: output
-                    .and_then(|output| output.result.clone())
-                    .or_else(|| child.result.clone()),
-                run_index: child.run_index,
-                completed_at: output
-                    .map(|output| output.completed_at)
-                    .unwrap_or(timestamp),
-                structured_output: output.and_then(|output| output.structured_output.clone()),
-                artifact_contract: output.and_then(|output| output.artifact_contract.clone()),
-                state: child.state.clone(),
-                failure_kind: child.failure_kind,
-                failure_disposition: child.failure_disposition,
-            }
+        .map(|child| ChildOutputSnapshot {
+            step_name: child.node_name.clone(),
+            session_id: child.session_id.clone(),
+            result: child.result.clone(),
+            run_index: child.attempt,
+            completed_at: child.completed_at,
+            structured_output: Some(child.artifact.clone()),
+            artifact_contract: child.artifact_contract.clone(),
+            state: child.state.clone(),
+            failure_kind: child.failure_kind,
+            failure_disposition: child.failure_disposition,
         })
         .collect();
 
     let (transition, history_result) = if let Some(aggregate) = aggregate {
-        let agg_result = evaluate_aggregate(aggregate, step_outputs, &child_step_names);
+        let agg_result = evaluate_fanout_aggregate(aggregate, children);
         let aggregate_result = if agg_result { "then" } else { "else" }.to_string();
         let target_node_name = if agg_result {
             aggregate.then.clone()
@@ -223,43 +335,74 @@ pub fn plan_parallel_parent_completion(
             aggregate.r#else.clone()
         };
         (
-            ParallelParentTransitionPlan::TransitionTo {
+            FanoutParentTransitionPlan::TransitionTo {
                 target_node_name,
                 aggregate_result: aggregate_result.clone(),
             },
             aggregate_result,
         )
     } else {
-        (
-            ParallelParentTransitionPlan::Advance,
-            "complete".to_string(),
-        )
+        (FanoutParentTransitionPlan::Advance, "complete".to_string())
     };
 
-    ParallelParentCompletionPlan {
-        child_step_names,
+    FanoutParentCompletionPlan {
+        child_node_names,
         parent_step_output: StepOutput {
-            step_name: parent_step_name.to_string(),
-            run_index: parent_run_index,
+            step_name: parent_node_name.to_string(),
+            run_index: parent_attempt,
             session_id: None,
             result: None,
-            structured_output: Some(serde_json::Value::Object(children_output)),
+            structured_output: Some(parent_artifact.clone()),
             artifact_contract: None,
             token_usage: Some(combined_tokens.clone()),
             completed_at: timestamp,
         },
         history_entry: StepHistoryEntry {
-            step_name: parent_step_name.to_string(),
+            step_name: parent_node_name.to_string(),
             completed_at: timestamp,
             result: Some(history_result),
             session_id: None,
             token_usage: Some(combined_tokens),
-            structured_output: None,
-            run_index: parent_run_index,
+            structured_output: Some(parent_artifact),
+            run_index: parent_attempt,
             child_outputs: Some(child_outputs),
             state: default_step_entry_state(),
         },
         transition,
+    }
+}
+
+pub fn evaluate_fanout_aggregate(
+    aggregate: &ParallelAggregate,
+    children: &[FanoutChildCompletionInput],
+) -> bool {
+    if let Some(pattern) = aggregate.all_match.as_deref() {
+        let regex = RegexBuilder::new(pattern).size_limit(1 << 20).build().ok();
+        children
+            .iter()
+            .all(|child| matches_result_pattern(child.result.as_deref(), pattern, &regex))
+    } else if let Some(pattern) = aggregate.any_match.as_deref() {
+        let regex = RegexBuilder::new(pattern).size_limit(1 << 20).build().ok();
+        children
+            .iter()
+            .any(|child| matches_result_pattern(child.result.as_deref(), pattern, &regex))
+    } else {
+        true
+    }
+}
+
+fn matches_result_pattern(
+    result: Option<&str>,
+    pattern: &str,
+    regex: &Option<regex::Regex>,
+) -> bool {
+    let Some(result) = result else {
+        return false;
+    };
+    if let Some(regex) = regex {
+        regex.is_match(result)
+    } else {
+        result.contains(pattern)
     }
 }
 
@@ -307,6 +450,7 @@ pub fn resolve_step_result(output: &StepOutput) -> Option<String> {
     output.result.clone()
 }
 
+#[cfg(test)]
 pub fn evaluate_aggregate(
     aggregate: &ParallelAggregate,
     step_outputs: &HashMap<String, StepOutput>,
@@ -335,6 +479,7 @@ pub fn evaluate_aggregate(
     }
 }
 
+#[cfg(test)]
 fn matches_aggregate_pattern(
     output: &StepOutput,
     pattern: &str,
@@ -367,20 +512,106 @@ mod parallel_tests {
         }
     }
 
-    fn completed_child(step_name: &str, result: Option<&str>) -> ParallelChildCompletionInput {
-        ParallelChildCompletionInput {
-            step_name: step_name.to_string(),
-            session_id: format!("session-{step_name}"),
+    fn completed_child(step_name: &str, result: Option<&str>) -> FanoutChildCompletionInput {
+        FanoutChildCompletionInput {
+            node_execution_id: format!("execution-{step_name}"),
+            node_name: step_name.to_string(),
+            session_id: Some(format!("session-{step_name}")),
             result: result.map(str::to_string),
+            artifact: serde_json::json!({ "node": step_name }),
+            artifact_contract: Some("review".to_string()),
             token_usage: TokenUsage {
                 input_tokens: 2,
                 output_tokens: 3,
             },
-            run_index: 1,
+            attempt: 1,
+            completed_at: 10.0,
             state: default_step_entry_state(),
             failure_kind: None,
             failure_disposition: None,
         }
+    }
+
+    fn session_node(name: &str) -> crate::domain::workflow::NodeDefinition {
+        crate::domain::workflow::NodeDefinition {
+            name: name.to_string(),
+            kind: crate::domain::workflow::NodeKind::Session(
+                crate::domain::workflow::SessionSpec::default(),
+            ),
+            ..Default::default()
+        }
+    }
+
+    fn fanout_node(name: &str) -> crate::domain::workflow::NodeDefinition {
+        crate::domain::workflow::NodeDefinition {
+            name: name.to_string(),
+            kind: crate::domain::workflow::NodeKind::Fanout(
+                crate::domain::workflow::FanoutSpec::default(),
+            ),
+            ..Default::default()
+        }
+    }
+
+    fn workflow_with_nodes(
+        nodes: Vec<crate::domain::workflow::NodeDefinition>,
+    ) -> WorkflowDefinition {
+        WorkflowDefinition {
+            name: "wf".to_string(),
+            nodes,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn plan_fanout_expansion_uses_items_major_order_and_indices() {
+        let workflow = workflow_with_nodes(vec![session_node("a"), session_node("b")]);
+        let children = vec!["a".to_string(), "b".to_string()];
+        let plan = plan_fanout_expansion(
+            &workflow,
+            &children,
+            Some(&ItemsSource::Literal(vec![
+                serde_json::json!("first"),
+                serde_json::json!("second"),
+            ])),
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            plan.children
+                .iter()
+                .map(|child| (
+                    child.node_name.as_str(),
+                    child.item.clone(),
+                    child.item_index,
+                    child.child_index,
+                    child.attempt
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("a", Some(serde_json::json!("first")), Some(0), 0, 1),
+                ("b", Some(serde_json::json!("first")), Some(0), 1, 1),
+                ("a", Some(serde_json::json!("second")), Some(1), 0, 2),
+                ("b", Some(serde_json::json!("second")), Some(1), 1, 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn plan_fanout_expansion_rejects_fanout_child() {
+        let workflow = workflow_with_nodes(vec![fanout_node("nested")]);
+        let children = vec!["nested".to_string()];
+
+        let err =
+            plan_fanout_expansion(&workflow, &children, None, &HashMap::new(), &HashMap::new())
+                .unwrap_err();
+
+        assert!(matches!(
+            err,
+            WorkflowError::InvalidState(message)
+                if message == "fanout child node 'nested' cannot be a fanout"
+        ));
     }
 
     #[test]
@@ -400,7 +631,7 @@ mod parallel_tests {
     }
 
     #[test]
-    fn plan_parallel_parent_completion_builds_history_output_and_then_transition() {
+    fn plan_fanout_parent_completion_builds_ordered_array_and_then_transition() {
         let aggregate = ParallelAggregate {
             all_match: Some("LGTM".to_string()),
             any_match: None,
@@ -411,29 +642,12 @@ mod parallel_tests {
             completed_child("review-a", Some("LGTM")),
             completed_child("review-b", Some("LGTM")),
         ];
-        let outputs = HashMap::from([
-            (
-                "review-a".to_string(),
-                output("review-a", Some("LGTM"), 10.0),
-            ),
-            (
-                "review-b".to_string(),
-                output("review-b", Some("LGTM"), 11.0),
-            ),
-        ]);
-
-        let plan = plan_parallel_parent_completion(
-            "parallel-review",
-            2,
-            Some(&aggregate),
-            &children,
-            &outputs,
-            12.0,
-        );
+        let plan =
+            plan_fanout_parent_completion("parallel-review", 2, Some(&aggregate), &children, 12.0);
 
         assert_eq!(
             plan.transition,
-            ParallelParentTransitionPlan::TransitionTo {
+            FanoutParentTransitionPlan::TransitionTo {
                 target_node_name: "ship".to_string(),
                 aggregate_result: "then".to_string()
             }
@@ -451,30 +665,31 @@ mod parallel_tests {
             plan.parent_step_output
                 .structured_output
                 .as_ref()
-                .and_then(|value| value.as_object())
-                .map(|object| object.len()),
+                .and_then(|value| value.as_array())
+                .map(Vec::len),
             Some(2)
+        );
+        assert_eq!(
+            plan.parent_step_output.structured_output,
+            Some(serde_json::json!([
+                { "node": "review-a" },
+                { "node": "review-b" }
+            ]))
         );
     }
 
     #[test]
-    fn plan_parallel_parent_completion_without_aggregate_advances() {
+    fn plan_fanout_parent_completion_without_aggregate_advances() {
         let children = vec![completed_child("review-a", Some("LGTM"))];
-        let outputs = HashMap::from([(
-            "review-a".to_string(),
-            output("review-a", Some("LGTM"), 10.0),
-        )]);
+        let plan = plan_fanout_parent_completion("parallel-review", 1, None, &children, 12.0);
 
-        let plan =
-            plan_parallel_parent_completion("parallel-review", 1, None, &children, &outputs, 12.0);
-
-        assert_eq!(plan.transition, ParallelParentTransitionPlan::Advance);
+        assert_eq!(plan.transition, FanoutParentTransitionPlan::Advance);
         assert_eq!(plan.history_entry.result.as_deref(), Some("complete"));
     }
 
     #[test]
-    fn merge_parallel_child_completion_output_keeps_prior_submitted_contract() {
-        let merge = merge_parallel_child_completion_output(
+    fn merge_fanout_child_completion_output_keeps_prior_submitted_contract() {
+        let merge = merge_fanout_child_completion_output(
             None,
             Some(serde_json::json!({ "verdict": "LGTM" })),
             Some("review-contract".to_string()),
@@ -488,8 +703,8 @@ mod parallel_tests {
     }
 
     #[test]
-    fn merge_parallel_child_completion_output_prefers_completed_structured_output() {
-        let merge = merge_parallel_child_completion_output(
+    fn merge_fanout_child_completion_output_prefers_completed_structured_output() {
+        let merge = merge_fanout_child_completion_output(
             Some(serde_json::json!({ "verdict": "NEEDS_FIX" })),
             Some(serde_json::json!({ "verdict": "LGTM" })),
             Some("review-contract".to_string()),

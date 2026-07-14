@@ -183,23 +183,6 @@ pub(crate) fn token_usage_from_domain(usage: &domain::TokenUsage) -> legacy_stat
     }
 }
 
-pub(crate) fn parallel_step_state_from_domain(
-    state: domain::ParallelStepState,
-) -> legacy_state::ParallelStepState {
-    legacy_state::ParallelStepState {
-        step_name: state.step_name,
-        state: state.state,
-        session_id: state.session_id,
-        result: state.result,
-        run_index: state.run_index,
-        completed_at: state.completed_at,
-        structured_output: state.structured_output,
-        artifact_contract: state.artifact_contract,
-        failure_kind: state.failure_kind,
-        failure_disposition: state.failure_disposition,
-    }
-}
-
 pub(crate) fn node_definition_to_domain(node: &schema::NodeDefinition) -> domain::NodeDefinition {
     domain::NodeDefinition {
         name: node.name.clone(),
@@ -224,11 +207,8 @@ pub(crate) fn node_kind_to_domain(kind: &schema::NodeKind) -> domain::NodeKind {
             facets: facet_refs_to_domain(&spec.facets),
         }),
         schema::NodeKind::Fanout(spec) => domain::NodeKind::Fanout(domain::FanoutSpec {
-            parallel_children: spec
-                .parallel_children
-                .iter()
-                .map(interim_child_to_domain)
-                .collect(),
+            child: spec.child.clone(),
+            items: spec.items.as_ref().map(items_source_to_domain),
             aggregate: spec.aggregate.as_ref().map(parallel_aggregate_to_domain),
         }),
     }
@@ -249,14 +229,13 @@ fn facet_refs_to_domain(facets: &schema::FacetRefs) -> domain::FacetRefs {
     }
 }
 
-fn interim_child_to_domain(child: &schema::InterimChild) -> domain::InterimChild {
-    domain::InterimChild {
-        name: child.name.clone(),
-        model: child.model.clone(),
-        permission: child.permission.clone(),
-        facets: facet_refs_to_domain(&child.facets),
-        artifact: child.artifact.clone(),
-        input: child.input.clone(),
+fn items_source_to_domain(items: &schema::ItemsSource) -> domain::ItemsSource {
+    match items {
+        schema::ItemsSource::Literal(values) => domain::ItemsSource::Literal(values.clone()),
+        schema::ItemsSource::ArtifactField { node, field } => domain::ItemsSource::ArtifactField {
+            node: node.clone(),
+            field: field.clone(),
+        },
     }
 }
 
@@ -371,6 +350,40 @@ mod tests {
                 .instruction
                 .as_deref(),
             Some("inst")
+        );
+    }
+
+    #[test]
+    fn workflow_definition_to_domain_preserves_fanout_child_and_items() {
+        let workflow = schema::Workflow {
+            name: "wf".to_string(),
+            description: "desc".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![schema::NodeDefinition {
+                name: "fanout".to_string(),
+                kind: schema::NodeKind::Fanout(schema::FanoutSpec {
+                    child: vec!["lint".to_string(), "test".to_string()],
+                    items: Some(schema::ItemsSource::ArtifactField {
+                        node: "plan".to_string(),
+                        field: "targets".to_string(),
+                    }),
+                    aggregate: None,
+                }),
+                ..Default::default()
+            }],
+        };
+
+        let mapped = workflow_definition_to_domain(&workflow);
+        let fanout = mapped.nodes[0].fanout().unwrap();
+
+        assert_eq!(fanout.child, vec!["lint".to_string(), "test".to_string()]);
+        assert_eq!(
+            fanout.items,
+            Some(domain::ItemsSource::ArtifactField {
+                node: "plan".to_string(),
+                field: "targets".to_string(),
+            })
         );
     }
 }

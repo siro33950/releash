@@ -18,6 +18,10 @@ pub(super) enum OutputSubcommand {
         run_id: String,
         #[arg(long = "node", alias = "step", value_name = "NODE_NAME")]
         step: String,
+        /// 同名の active NodeExecution が複数ある場合の対象 ID。
+        /// 省略時は RELEASH_NODE_EXECUTION_ID を使用する。
+        #[arg(long = "node-execution", value_name = "NODE_EXECUTION_ID")]
+        node_execution: Option<String>,
         #[arg(long = "type", value_name = "CONTRACT")]
         contract: String,
         #[arg(long, conflicts_with = "file", value_name = "JSON")]
@@ -63,6 +67,7 @@ pub(super) fn cmd_output_submit(
     data_dir: &Path,
     run_id: &str,
     step: &str,
+    node_execution: Option<String>,
     contract: &str,
     json_arg: Option<String>,
     file_arg: Option<PathBuf>,
@@ -102,6 +107,7 @@ pub(super) fn cmd_output_submit(
         run_id,
         workflow_io::CliRequestPayload::SubmitOutput {
             step_name: step.to_string(),
+            node_execution_id: workflow_io::resolve_node_execution_id(node_execution),
             contract: contract.to_string(),
             structured_output,
         },
@@ -382,6 +388,8 @@ mod tests {
                 run_id,
                 "--step",
                 "review",
+                "--node-execution",
+                "node-execution-review",
                 "--type",
                 "review-verdict",
                 "--json",
@@ -504,6 +512,7 @@ mod tests {
             tmp.path(),
             &run_id,
             "review",
+            Some("node-execution-review".to_string()),
             "review-verdict",
             Some(json.to_string()),
             None,
@@ -514,10 +523,12 @@ mod tests {
         match &entries[0].command.payload {
             PendingCommandPayload::SubmitOutput {
                 step_name,
+                node_execution_id,
                 contract,
                 structured_output,
             } => {
                 assert_eq!(step_name, "review");
+                assert_eq!(node_execution_id.as_deref(), Some("node-execution-review"));
                 assert_eq!(contract, "review-verdict");
                 assert_eq!(structured_output["verdict"], "LGTM");
             }
@@ -544,6 +555,7 @@ mod tests {
             tmp.path(),
             &run_id,
             "review",
+            None,
             "review-verdict",
             None,
             Some(input_file),
@@ -562,8 +574,16 @@ mod tests {
     fn cmd_output_submit_rejects_missing_json_and_file() {
         let tmp = TempDir::new().unwrap();
         let run_id = test_uuid(93);
-        let err = cmd_output_submit(tmp.path(), &run_id, "review", "review-verdict", None, None)
-            .unwrap_err();
+        let err = cmd_output_submit(
+            tmp.path(),
+            &run_id,
+            "review",
+            None,
+            "review-verdict",
+            None,
+            None,
+        )
+        .unwrap_err();
         assert!(matches!(err, CliError::InvalidInput(_)));
     }
 
@@ -576,6 +596,7 @@ mod tests {
             tmp.path(),
             &run_id,
             "review",
+            None,
             "review-verdict",
             Some("{not json}".to_string()),
             None,
@@ -594,6 +615,7 @@ mod tests {
             tmp.path(),
             &run_id,
             "review",
+            None,
             "review-verdict",
             Some("{\"verdict\":\"LGTM\"}".to_string()),
             None,
@@ -624,6 +646,7 @@ mod tests {
             tmp.path(),
             &run_id,
             "no-such-step",
+            None,
             "review-verdict",
             Some("{\"verdict\":\"LGTM\"}".to_string()),
             None,
@@ -653,6 +676,7 @@ mod tests {
             tmp.path(),
             &run_id,
             "review",
+            None,
             "fix-result",
             Some("{\"status\":\"FIXED\"}".to_string()),
             None,
@@ -681,6 +705,7 @@ mod tests {
             tmp.path(),
             &run_id,
             "review",
+            None,
             "spec-directory",
             Some("{}".to_string()),
             None,
@@ -710,6 +735,7 @@ mod tests {
                 tmp.path(),
                 &run_id,
                 "review",
+                None,
                 "spec-directory",
                 Some(format!(r#"{{"spec_dir":"{spec_dir}"}}"#)),
                 None,
@@ -763,6 +789,7 @@ mod tests {
         log.append(&WorkflowEvent::ArtifactProduced {
             run_id: run_id.clone(),
             workflow_name: "wf".to_string(),
+            node_execution_id: test_uuid(195),
             node_name: "review".to_string(),
             contract: Some("review-verdict".to_string()),
             value: serde_json::json!({"verdict": "LGTM"}),
@@ -882,6 +909,7 @@ mod tests {
         log.append(&WorkflowEvent::ArtifactProduced {
             run_id: run_id.clone(),
             workflow_name: "wf".to_string(),
+            node_execution_id: test_uuid(197),
             node_name: "review".to_string(),
             contract: Some("review-verdict".to_string()),
             value: serde_json::json!({"verdict": "LGTM"}),
@@ -944,6 +972,7 @@ mod tests {
         log.append(&WorkflowEvent::ArtifactProduced {
             run_id: run_id.clone(),
             workflow_name: "wf".to_string(),
+            node_execution_id: test_uuid(201),
             node_name: "cmd".to_string(),
             contract: None,
             value: serde_json::json!({
@@ -1016,6 +1045,7 @@ mod tests {
         log.append(&WorkflowEvent::ArtifactProduced {
             run_id: run_id.clone(),
             workflow_name: "wf".to_string(),
+            node_execution_id: test_uuid(199),
             node_name: "review".to_string(),
             contract: Some("review-verdict".to_string()),
             value: serde_json::json!({"verdict": "NEEDS_FIX", "findings": [{"severity": "error", "message": "bug"}]}),
@@ -1027,6 +1057,7 @@ mod tests {
         log.append(&WorkflowEvent::ArtifactProduced {
             run_id: run_id.clone(),
             workflow_name: "wf".to_string(),
+            node_execution_id: test_uuid(200),
             node_name: "review".to_string(),
             contract: Some("review-verdict".to_string()),
             value: serde_json::json!({"verdict": "LGTM"}),

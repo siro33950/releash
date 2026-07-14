@@ -66,10 +66,10 @@ pub fn workflow_state_to_view(
             .into_iter()
             .map(|(key, output)| (key, step_output_to_view(output)))
             .collect(),
-        active_parallel_steps: state
-            .active_parallel_steps
+        node_executions: state
+            .node_executions
             .into_iter()
-            .map(parallel_step_state_to_view)
+            .map(node_execution_to_view)
             .collect(),
         approval_operations: state.approval_operations.map(|operations| {
             workflow_wire::ApprovalOperationsView {
@@ -207,23 +207,20 @@ fn session_spec_to_view(spec: workflow::SessionSpec) -> workflow_wire::WorkflowS
 
 fn fanout_spec_to_view(spec: workflow::FanoutSpec) -> workflow_wire::WorkflowFanoutSpecView {
     workflow_wire::WorkflowFanoutSpecView {
-        parallel_children: spec
-            .parallel_children
-            .into_iter()
-            .map(interim_child_to_view)
-            .collect(),
+        child: spec.child,
+        items: spec.items.map(items_source_to_view),
         aggregate: spec.aggregate.map(aggregate_config_to_view),
     }
 }
 
-fn interim_child_to_view(child: workflow::InterimChild) -> workflow_wire::WorkflowInterimChildView {
-    workflow_wire::WorkflowInterimChildView {
-        name: child.name,
-        model: child.model,
-        permission: child.permission,
-        facets: facet_refs_to_view(child.facets),
-        artifact: child.artifact,
-        input: child.input,
+fn items_source_to_view(items: workflow::ItemsSource) -> workflow_wire::WorkflowItemsSourceView {
+    match items {
+        workflow::ItemsSource::Literal(values) => {
+            workflow_wire::WorkflowItemsSourceView::Literal(values)
+        }
+        workflow::ItemsSource::ArtifactField { node, field } => {
+            workflow_wire::WorkflowItemsSourceView::ArtifactField(format!("{node}.{field}"))
+        }
     }
 }
 
@@ -330,20 +327,57 @@ fn child_output_to_view(
     }
 }
 
-fn parallel_step_state_to_view(
-    state: workflow::ParallelStepState,
-) -> workflow_wire::ParallelStepStateView {
-    workflow_wire::ParallelStepStateView {
-        step_name: state.step_name,
-        state: state.state,
-        session_id: state.session_id,
-        result: state.result,
-        run_index: state.run_index,
-        completed_at: state.completed_at,
-        structured_output: state.structured_output,
-        artifact_contract: state.artifact_contract,
-        failure_kind: state.failure_kind,
-        failure_disposition: state.failure_disposition,
+fn node_execution_to_view(execution: workflow::NodeExecution) -> workflow_wire::NodeExecutionView {
+    workflow_wire::NodeExecutionView {
+        id: execution.id,
+        execution_id: execution.execution_id,
+        node_name: execution.node_name,
+        kind: node_kind_name_to_view(execution.kind),
+        attempt: execution.attempt,
+        status: node_execution_status_to_view(execution.status),
+        session_id: execution.session_id,
+        artifact: execution.artifact,
+        token_usage: execution.token_usage.map(token_usage_to_view),
+        failure: execution
+            .failure
+            .map(|failure| workflow_wire::NodeExecutionFailureView {
+                reason: failure.reason,
+                kind: failure.kind,
+            }),
+        fanout_parent: execution
+            .fanout_parent
+            .map(|parent| workflow_wire::FanoutParentRefView {
+                parent_node: parent.parent_node,
+                parent_attempt: parent.parent_attempt,
+                item_index: parent.item_index,
+                child_index: parent.child_index,
+            }),
+        started_at: execution.started_at,
+        completed_at: execution.completed_at,
+    }
+}
+
+fn node_kind_name_to_view(kind: workflow::NodeKindName) -> workflow_wire::WorkflowNodeKindView {
+    match kind {
+        workflow::NodeKindName::Command => workflow_wire::WorkflowNodeKindView::Command,
+        workflow::NodeKindName::Session => workflow_wire::WorkflowNodeKindView::Session,
+        workflow::NodeKindName::Fanout => workflow_wire::WorkflowNodeKindView::Fanout,
+    }
+}
+
+fn node_execution_status_to_view(
+    status: workflow::NodeExecutionStatus,
+) -> workflow_wire::NodeExecutionStatusView {
+    match status {
+        workflow::NodeExecutionStatus::Running => workflow_wire::NodeExecutionStatusView::Running,
+        workflow::NodeExecutionStatus::WaitingApproval => {
+            workflow_wire::NodeExecutionStatusView::WaitingApproval
+        }
+        workflow::NodeExecutionStatus::Succeeded => {
+            workflow_wire::NodeExecutionStatusView::Succeeded
+        }
+        workflow::NodeExecutionStatus::Failed => workflow_wire::NodeExecutionStatusView::Failed,
+        workflow::NodeExecutionStatus::Aborted => workflow_wire::NodeExecutionStatusView::Aborted,
     }
 }
 
@@ -364,8 +398,10 @@ fn step_output_to_view(output: workflow::StepOutput) -> workflow_wire::StepOutpu
 mod tests {
     use super::*;
     use crate::domain::workflow::{
-        ChildOutputSnapshot, FacetRefs, NodeDefinition, NodeKind, ParallelStepState, SessionGate,
-        SessionSpec, StepHistoryEntry, TokenUsage, WorkflowDefinition, WorkflowExecutionState,
+        ChildOutputSnapshot, FacetRefs, FanoutParentRef, FanoutSpec, ItemsSource, NodeDefinition,
+        NodeExecution, NodeExecutionFailure, NodeExecutionStatus, NodeKind, NodeKindName,
+        SessionGate, SessionSpec, StepHistoryEntry, TokenUsage, WorkflowDefinition,
+        WorkflowExecutionState,
     };
 
     fn state() -> WorkflowStateSnapshot {
@@ -410,17 +446,25 @@ mod tests {
             total_token_usage: TokenUsage::default(),
             step_states: HashMap::new(),
             step_outputs: HashMap::new(),
-            active_parallel_steps: vec![ParallelStepState {
-                step_name: "running-child".to_string(),
-                state: "running".to_string(),
-                session_id: Some("parallel-session".to_string()),
-                result: None,
-                run_index: 1,
+            node_executions: vec![NodeExecution {
+                id: "ne-running-child".to_string(),
+                execution_id: "exec-1".to_string(),
+                node_name: "running-child".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                status: NodeExecutionStatus::Running,
+                session_id: Some("fanout-session".to_string()),
+                artifact: None,
+                token_usage: None,
+                failure: None,
+                fanout_parent: Some(FanoutParentRef {
+                    parent_node: "current".to_string(),
+                    parent_attempt: 1,
+                    item_index: Some(0),
+                    child_index: 0,
+                }),
+                started_at: 1.5,
                 completed_at: None,
-                structured_output: None,
-                artifact_contract: None,
-                failure_kind: None,
-                failure_disposition: None,
             }],
             approval_operations: None,
             stall_observations: Vec::new(),
@@ -430,13 +474,13 @@ mod tests {
     }
 
     #[test]
-    fn presenter_adds_runtime_state_for_current_history_child_and_parallel_sessions() {
+    fn presenter_adds_runtime_state_for_current_history_and_fanout_child_sessions() {
         let open_sessions =
-            HashSet::from(["done-session".to_string(), "parallel-session".to_string()]);
+            HashSet::from(["done-session".to_string(), "fanout-session".to_string()]);
         let active_sessions = HashSet::from([
             "current-session".to_string(),
             "child-session".to_string(),
-            "parallel-session".to_string(),
+            "fanout-session".to_string(),
         ]);
 
         let view =
@@ -448,8 +492,8 @@ mod tests {
         assert!(!view.runtime_states["child-session"].tab_open);
         assert!(view.runtime_states["done-session"].tab_open);
         assert!(!view.runtime_states["done-session"].runtime_active);
-        assert!(view.runtime_states["parallel-session"].runtime_active);
-        assert!(view.runtime_states["parallel-session"].tab_open);
+        assert!(view.runtime_states["fanout-session"].runtime_active);
+        assert!(view.runtime_states["fanout-session"].tab_open);
     }
 
     #[test]
@@ -477,14 +521,13 @@ mod tests {
     }
 
     #[test]
-    fn workflow_state_to_view_maps_failure_metadata_to_wire_enums() {
+    fn workflow_state_to_view_maps_node_execution_and_child_failure_metadata() {
         let mut state = state();
-        state.active_parallel_steps[0].state =
-            crate::domain::workflow::STEP_STATE_FAILED.to_string();
-        state.active_parallel_steps[0].failure_kind =
-            Some(crate::domain::workflow::WorkflowStepFailureKind::ModelRefusal);
-        state.active_parallel_steps[0].failure_disposition =
-            Some(crate::domain::workflow::FailureDisposition::Partial);
+        state.node_executions[0].status = NodeExecutionStatus::Failed;
+        state.node_executions[0].failure = Some(NodeExecutionFailure {
+            reason: "model_refusal".to_string(),
+            kind: crate::domain::workflow::WorkflowStepFailureKind::ModelRefusal,
+        });
         state.step_history[0].child_outputs = Some(vec![ChildOutputSnapshot {
             step_name: "review-child".to_string(),
             session_id: Some("child-session".to_string()),
@@ -500,7 +543,7 @@ mod tests {
 
         let view = workflow_state_to_view(state);
         let child = view.step_history[0].child_outputs.as_ref().unwrap()[0].clone();
-        let parallel = view.active_parallel_steps[0].clone();
+        let execution = view.node_executions[0].clone();
 
         assert_eq!(
             child.failure_kind,
@@ -511,12 +554,18 @@ mod tests {
             Some(crate::domain::workflow::FailureDisposition::Partial)
         );
         assert_eq!(
-            parallel.failure_kind,
+            execution.failure.as_ref().map(|failure| failure.kind),
             Some(crate::domain::workflow::WorkflowStepFailureKind::ModelRefusal)
         );
+        assert_eq!(execution.id, "ne-running-child");
+        assert_eq!(execution.node_name, "running-child");
         assert_eq!(
-            parallel.failure_disposition,
-            Some(crate::domain::workflow::FailureDisposition::Partial)
+            execution.status,
+            workflow_wire::NodeExecutionStatusView::Failed
+        );
+        assert_eq!(
+            execution.fanout_parent.as_ref().unwrap().item_index,
+            Some(0)
         );
 
         let value = serde_json::to_value(view).unwrap();
@@ -525,8 +574,8 @@ mod tests {
             "model_refusal"
         );
         assert_eq!(
-            value["activeParallelSteps"][0]["failureDisposition"],
-            "partial"
+            value["nodeExecutions"][0]["failure"]["kind"],
+            "model_refusal"
         );
     }
 
@@ -621,7 +670,7 @@ mod tests {
                 output_tokens: 50,
             },
             step_states: HashMap::new(),
-            active_parallel_steps: vec![],
+            node_executions: vec![],
             approval_operations: None,
             stall_observations: Vec::new(),
             started_at: 999.0,
@@ -642,5 +691,37 @@ mod tests {
         assert_eq!(back.step_history.len(), 2);
         assert_eq!(back.step_history[0].step_name, "plan");
         assert_eq!(back.step_history[1].result, Some("done".to_string()));
+    }
+
+    #[test]
+    fn workflow_definition_view_maps_fanout_child_and_items() {
+        let definition = WorkflowDefinition {
+            name: "fanout".to_string(),
+            description: String::new(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![NodeDefinition {
+                name: "dispatch".to_string(),
+                kind: NodeKind::Fanout(FanoutSpec {
+                    child: vec!["worker-a".to_string(), "worker-b".to_string()],
+                    items: Some(ItemsSource::ArtifactField {
+                        node: "scan".to_string(),
+                        field: "items".to_string(),
+                    }),
+                    aggregate: None,
+                }),
+                ..NodeDefinition::default()
+            }],
+        };
+
+        let view = workflow_definition_to_view(definition);
+        let fanout = view.nodes[0].fanout.as_ref().unwrap();
+        assert_eq!(fanout.child, ["worker-a", "worker-b"]);
+        assert_eq!(
+            fanout.items,
+            Some(workflow_wire::WorkflowItemsSourceView::ArtifactField(
+                "scan.items".to_string()
+            ))
+        );
     }
 }

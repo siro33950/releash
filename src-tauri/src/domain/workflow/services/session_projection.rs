@@ -5,6 +5,7 @@ use crate::domain::workflow::WorkflowStateSnapshot;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepSessionProjection {
+    pub node_execution_id: Option<String>,
     pub session_id: Option<String>,
     pub step_name: String,
     pub run_index: Option<u32>,
@@ -23,24 +24,28 @@ pub fn current_run_index(state: &WorkflowStateSnapshot) -> Option<u32> {
         .or(Some(1))
 }
 
-fn projection(
+struct ProjectionInput<'a> {
+    node_execution_id: Option<String>,
     session_id: Option<String>,
     step_name: String,
     run_index: Option<u32>,
     group_step_name: String,
     group_run_index: Option<u32>,
-    status: &str,
+    status: &'a str,
     order: usize,
-) -> StepSessionProjection {
+}
+
+fn projection(input: ProjectionInput<'_>) -> StepSessionProjection {
     StepSessionProjection {
-        session_id,
-        step_name,
-        run_index,
-        group_step_name,
-        group_run_index,
-        progress: StepProgress::from_status_str(status),
-        representative: RepresentativeStatus::from_status_str(status),
-        order,
+        node_execution_id: input.node_execution_id,
+        session_id: input.session_id,
+        step_name: input.step_name,
+        run_index: input.run_index,
+        group_step_name: input.group_step_name,
+        group_run_index: input.group_run_index,
+        progress: StepProgress::from_status_str(input.status),
+        representative: RepresentativeStatus::from_status_str(input.status),
+        order: input.order,
     }
 }
 
@@ -53,53 +58,87 @@ pub fn collect_step_session_projections(
     for entry in &state.step_history {
         let order = next_order;
         next_order += 1;
-        projections.push(projection(
-            entry.session_id.clone(),
-            entry.step_name.clone(),
-            Some(entry.run_index),
-            entry.step_name.clone(),
-            Some(entry.run_index),
-            &entry.state,
+        projections.push(projection(ProjectionInput {
+            node_execution_id: None,
+            session_id: entry.session_id.clone(),
+            step_name: entry.step_name.clone(),
+            run_index: Some(entry.run_index),
+            group_step_name: entry.step_name.clone(),
+            group_run_index: Some(entry.run_index),
+            status: &entry.state,
             order,
-        ));
+        }));
         if let Some(children) = entry.child_outputs.as_ref() {
             for child in children {
-                projections.push(projection(
-                    child.session_id.clone(),
-                    child.step_name.clone(),
-                    Some(child.run_index),
-                    entry.step_name.clone(),
-                    Some(entry.run_index),
-                    &child.state,
+                projections.push(projection(ProjectionInput {
+                    node_execution_id: None,
+                    session_id: child.session_id.clone(),
+                    step_name: child.step_name.clone(),
+                    run_index: Some(child.run_index),
+                    group_step_name: entry.step_name.clone(),
+                    group_run_index: Some(entry.run_index),
+                    status: &child.state,
                     order,
-                ));
+                }));
             }
         }
     }
 
-    if state.current_session_id.is_some() || state.state.is_active() {
-        let order = next_order;
-        let run_index = current_run_index(state);
-        projections.push(projection(
-            state.current_session_id.clone(),
-            state.current_step_name.clone(),
-            run_index,
-            state.current_step_name.clone(),
-            run_index,
-            state.state.as_str(),
+    let current_group_order = next_order;
+    for execution in &state.node_executions {
+        let Some(session_id) = execution.session_id.clone() else {
+            continue;
+        };
+        let belongs_to_current_group = execution
+            .fanout_parent
+            .as_ref()
+            .is_some_and(|parent| parent.parent_node == state.current_step_name)
+            || (execution.fanout_parent.is_none()
+                && execution.node_name == state.current_step_name);
+        let order = if belongs_to_current_group {
+            current_group_order
+        } else {
+            let order = next_order;
+            next_order += 1;
+            order
+        };
+        let (group_step_name, group_run_index) = execution
+            .fanout_parent
+            .as_ref()
+            .map(|parent| (parent.parent_node.clone(), Some(parent.parent_attempt)))
+            .unwrap_or_else(|| (execution.node_name.clone(), Some(execution.attempt)));
+        projections.push(projection(ProjectionInput {
+            node_execution_id: Some(execution.id.clone()),
+            session_id: Some(session_id),
+            step_name: execution.node_name.clone(),
+            run_index: Some(execution.attempt),
+            group_step_name,
+            group_run_index,
+            status: execution.status.as_str(),
             order,
-        ));
-        for step in &state.active_parallel_steps {
-            projections.push(projection(
-                step.session_id.clone(),
-                step.step_name.clone(),
-                Some(step.run_index),
-                state.current_step_name.clone(),
-                run_index,
-                &step.state,
-                order,
-            ));
-        }
+        }));
+    }
+
+    let current_session_is_projected =
+        state.current_session_id.as_ref().is_some_and(|session_id| {
+            projections
+                .iter()
+                .any(|projection| projection.session_id.as_ref() == Some(session_id))
+        });
+    if !current_session_is_projected
+        && (state.current_session_id.is_some() || state.state.is_active())
+    {
+        let run_index = current_run_index(state);
+        projections.push(projection(ProjectionInput {
+            node_execution_id: None,
+            session_id: state.current_session_id.clone(),
+            step_name: state.current_step_name.clone(),
+            run_index,
+            group_step_name: state.current_step_name.clone(),
+            group_run_index: run_index,
+            status: state.state.as_str(),
+            order: current_group_order,
+        }));
     }
 
     retain_unique_step_session_projections(&mut projections);
@@ -111,6 +150,7 @@ fn retain_unique_step_session_projections(projections: &mut Vec<StepSessionProje
     projections.retain(|projection| {
         seen.insert((
             projection.session_id.clone(),
+            projection.node_execution_id.clone(),
             projection.step_name.clone(),
             projection.run_index,
             projection.group_step_name.clone(),
@@ -120,17 +160,10 @@ fn retain_unique_step_session_projections(projections: &mut Vec<StepSessionProje
 }
 
 pub fn collect_step_session_ids(state: &WorkflowStateSnapshot) -> HashSet<String> {
-    let mut ids = collect_step_session_projections(state)
+    collect_step_session_projections(state)
         .into_iter()
         .filter_map(|projection| projection.session_id)
-        .collect::<HashSet<_>>();
-    ids.extend(
-        state
-            .active_parallel_steps
-            .iter()
-            .filter_map(|step| step.session_id.clone()),
-    );
-    ids
+        .collect::<HashSet<_>>()
 }
 
 pub fn collect_completed_step_session_ids(state: &WorkflowStateSnapshot) -> Vec<String> {
@@ -154,9 +187,10 @@ pub fn collect_terminal_step_session_ids(state: &WorkflowStateSnapshot) -> Vec<S
     ids.extend(state.current_session_id.iter().cloned());
     ids.extend(
         state
-            .active_parallel_steps
+            .node_executions
             .iter()
-            .filter_map(|step| step.session_id.clone()),
+            .filter(|execution| execution.status.is_active())
+            .filter_map(|execution| execution.session_id.clone()),
     );
     ids.sort();
     ids.dedup();
@@ -167,8 +201,9 @@ pub fn collect_terminal_step_session_ids(state: &WorkflowStateSnapshot) -> Vec<S
 mod tests {
     use super::*;
     use crate::domain::workflow::{
-        ChildOutputSnapshot, ParallelStepState, StepHistoryEntry, WorkflowDefinition,
-        WorkflowExecutionState, STEP_STATE_ABORTED, STEP_STATE_COMPLETED, STEP_STATE_RUNNING,
+        ChildOutputSnapshot, FanoutParentRef, NodeExecution, NodeExecutionStatus, NodeKindName,
+        StepHistoryEntry, WorkflowDefinition, WorkflowExecutionState, STEP_STATE_ABORTED,
+        STEP_STATE_COMPLETED,
     };
     use std::collections::HashMap;
 
@@ -214,17 +249,25 @@ mod tests {
             total_token_usage: Default::default(),
             step_states: HashMap::new(),
             step_outputs: HashMap::new(),
-            active_parallel_steps: vec![ParallelStepState {
-                step_name: "running-child".to_string(),
-                state: STEP_STATE_RUNNING.to_string(),
+            node_executions: vec![NodeExecution {
+                id: "ne-child".to_string(),
+                execution_id: "exec-1".to_string(),
+                node_name: "running-child".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                status: NodeExecutionStatus::Running,
                 session_id: Some("parallel-session".to_string()),
-                result: None,
-                run_index: 1,
+                artifact: None,
+                token_usage: None,
+                failure: None,
+                fanout_parent: Some(FanoutParentRef {
+                    parent_node: "current".to_string(),
+                    parent_attempt: 1,
+                    item_index: None,
+                    child_index: 0,
+                }),
+                started_at: 1.5,
                 completed_at: None,
-                structured_output: None,
-                artifact_contract: None,
-                failure_kind: None,
-                failure_disposition: None,
             }],
             approval_operations: None,
             stall_observations: Vec::new(),
@@ -289,6 +332,7 @@ mod tests {
             .find(|projection| projection.session_id.as_deref() == Some("parallel-session"))
             .expect("parallel session projection");
         assert_eq!(parallel.step_name, "running-child");
+        assert_eq!(parallel.node_execution_id.as_deref(), Some("ne-child"));
         assert_eq!(parallel.run_index, Some(1));
         assert_eq!(parallel.group_step_name, "current");
         assert_eq!(parallel.group_run_index, Some(1));
@@ -381,7 +425,7 @@ mod tests {
             total_token_usage: Default::default(),
             step_states: HashMap::new(),
             step_outputs: HashMap::new(),
-            active_parallel_steps: vec![],
+            node_executions: vec![],
             approval_operations: None,
             stall_observations: Vec::new(),
             started_at: 0.0,

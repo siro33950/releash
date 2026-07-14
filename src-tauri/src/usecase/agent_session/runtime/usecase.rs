@@ -2027,6 +2027,7 @@ async fn open_runtime_for_session(
             }
         }
     });
+    let extra_env = workflow_execution_env(session.workflow_step_context.as_ref());
     let mut runtime = backend
         .open_session(SessionSpec {
             session_id: session.id.clone(),
@@ -2042,6 +2043,7 @@ async fn open_runtime_for_session(
             startup_timeout: startup_timeout_for_session(session),
             startup_max_retries: startup_max_retries_for_session(session),
             stale_timeout: None,
+            extra_env,
         })
         .await
         .map_err(AgentRuntimeError::from)?;
@@ -2058,6 +2060,25 @@ async fn open_runtime_for_session(
     };
     spawn_event_pump_task(ctx, session.id.clone(), runtime_epoch, events);
     Ok(runtime)
+}
+
+fn workflow_execution_env(
+    context: Option<&crate::usecase::agent_session::session::WorkflowStepContextDto>,
+) -> Vec<(String, String)> {
+    context
+        .map(|context| {
+            vec![
+                (
+                    "RELEASH_WORKFLOW_EXECUTION_ID".to_string(),
+                    context.run_id.clone(),
+                ),
+                (
+                    "RELEASH_NODE_EXECUTION_ID".to_string(),
+                    context.node_execution_id.clone(),
+                ),
+            ]
+        })
+        .unwrap_or_default()
 }
 
 fn spawn_event_pump_task(
@@ -4476,6 +4497,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn workflow_execution_env_includes_run_and_node_execution_ids() {
+        let context = crate::usecase::agent_session::session::workflow_step_context_mapper::to_dto(
+            workflow_step_context(None, None, None),
+        );
+
+        assert_eq!(
+            workflow_execution_env(Some(&context)),
+            vec![
+                (
+                    "RELEASH_WORKFLOW_EXECUTION_ID".to_string(),
+                    "run-1".to_string(),
+                ),
+                (
+                    "RELEASH_NODE_EXECUTION_ID".to_string(),
+                    "node-execution-1".to_string(),
+                ),
+            ]
+        );
+        assert!(workflow_execution_env(None).is_empty());
+    }
+
     struct DispatchBackend {
         id: &'static str,
         model: &'static str,
@@ -4864,6 +4907,7 @@ mod tests {
     ) -> WorkflowStepContext {
         WorkflowStepContext {
             run_id: "run-1".to_string(),
+            node_execution_id: "node-execution-1".to_string(),
             workflow_name: "workflow".to_string(),
             step_name: "step".to_string(),
             run_index: 0,

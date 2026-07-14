@@ -4,25 +4,31 @@ builtin: true
 nodes:
 - name: review-parallel
   fanout:
-    parallel_children:
-    - name: review-opus
-      model: claude-opus-4-8
-      permission: edit
-      facets:
-        policy: reviewing
-        knowledge: releash-thread-cli
-        instruction: review-all
-    - name: review-gpt55
-      model: gpt-5.5
-      permission: full
-      facets:
-        policy: reviewing
-        knowledge: releash-thread-cli
-        instruction: review-all
+    child:
+    - review-opus
+    - review-gpt55
     aggregate:
       all_match: ".*"
       then: reporting
       else: reporting
+- name: review-opus
+  session:
+    model: claude-opus-4-8
+    permission: edit
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-all
+- name: review-gpt55
+  session:
+    model: gpt-5.5
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-all
 - name: reporting
   session:
     model: gpt-5.5

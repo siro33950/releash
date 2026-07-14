@@ -53,20 +53,6 @@ pub struct ChildOutputSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ParallelStepState {
-    pub step_name: String,
-    pub state: String,
-    pub session_id: Option<String>,
-    pub result: Option<String>,
-    pub run_index: u32,
-    pub completed_at: Option<f64>,
-    pub structured_output: Option<serde_json::Value>,
-    pub artifact_contract: Option<String>,
-    pub failure_kind: Option<WorkflowStepFailureKind>,
-    pub failure_disposition: Option<FailureDisposition>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct StepOutput {
     pub step_name: String,
     pub run_index: u32,

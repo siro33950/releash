@@ -7,26 +7,40 @@ use crate::adaptor::gateway::workflow::domain_mapping::step_output_to_domain;
 use crate::adaptor::gateway::workflow::domain_mapping::{
     collect_config_to_domain, parallel_aggregate_to_domain, step_history_entry_from_domain,
     step_output_from_domain, step_outputs_to_domain, token_usage_to_domain,
+    workflow_definition_to_domain,
 };
-use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
-use crate::adaptor::gateway::workflow::event::{CollectedOutputEntry, WorkflowEvent};
+use crate::adaptor::gateway::workflow::engine_error::{
+    workflow_error_to_engine_error, WorkflowEngineError,
+};
+use crate::adaptor::gateway::workflow::event::{
+    CollectedOutputEntry, FanoutParentRef, WorkflowEvent,
+};
 use crate::adaptor::gateway::workflow::execution_registry::find_by_worktree_mut;
 use crate::adaptor::gateway::workflow::runtime_commit::StepOutcome;
 use crate::adaptor::gateway::workflow::runtime_state::{
     ParallelChildRun, ParallelChildState, ParallelRunState, WorkflowExecution,
 };
-use crate::adaptor::gateway::workflow::schema::{CollectConfig, InterimChild, ParallelAggregate};
+use crate::adaptor::gateway::workflow::schema::{CollectConfig, NodeDefinition, ParallelAggregate};
 use crate::adaptor::gateway::workflow::state::{StepOutput, TokenUsage, WorkflowState};
 use crate::adaptor::gateway::workflow::step_settings::WorkflowDefaults;
 use crate::domain::workflow::services::parallel as workflow_parallel;
 
 #[derive(Debug, Clone)]
-pub(crate) struct ParallelStartContext {
-    pub(crate) parallel_steps: Vec<InterimChild>,
+pub(crate) struct FanoutChildExpansion {
+    pub(crate) node_execution_id: String,
+    pub(crate) node: NodeDefinition,
+    pub(crate) attempt: u32,
+    pub(crate) item: Option<serde_json::Value>,
+    pub(crate) item_index: Option<usize>,
+    pub(crate) child_index: usize,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct FanoutStartContext {
+    pub(crate) children: Vec<FanoutChildExpansion>,
     pub(crate) parent_step_name: String,
     pub(crate) parent_run_index: u32,
     pub(crate) order: u32,
-    pub(crate) child_run_indices: Vec<u32>,
     pub(crate) aggregate: Option<ParallelAggregate>,
     pub(crate) execution_id: String,
     pub(crate) workflow_name: String,
@@ -34,63 +48,34 @@ pub(crate) struct ParallelStartContext {
     pub(crate) workflow_defaults: WorkflowDefaults,
 }
 
-impl ParallelStartContext {
+impl FanoutStartContext {
+    #[cfg(test)]
     pub(crate) fn child_step_names(&self) -> Vec<String> {
-        child_step_names(&self.parallel_steps)
-    }
-
-    pub(crate) fn started_event(&self, timestamp: f64) -> WorkflowEvent {
-        WorkflowEvent::ParallelStarted {
-            run_id: self.execution_id.clone(),
-            workflow_name: self.workflow_name.clone(),
-            parent_node_name: self.parent_step_name.clone(),
-            child_node_names: self.child_step_names(),
-            timestamp,
-        }
+        self.children
+            .iter()
+            .map(|child| child.node.name.clone())
+            .collect()
     }
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ParallelPromptInputs {
+pub(crate) struct FanoutPromptInputs {
     pub(crate) step_outputs: HashMap<String, StepOutput>,
 }
 
-pub(crate) struct ParallelChildSessionSetup {
+pub(crate) struct FanoutChildSessionSetup {
+    pub(crate) node_execution_id: String,
     pub(crate) step_name: String,
     pub(crate) session_id: String,
     pub(crate) system_prompt: Option<String>,
     pub(crate) workflow_instruction: Option<String>,
     pub(crate) user_message: String,
-    pub(crate) artifact_contract: Option<String>,
     pub(crate) permission_mode: String,
-    pub(crate) run_index: u32,
 }
 
-pub(crate) fn child_step_names(parallel_steps: &[InterimChild]) -> Vec<String> {
-    parallel_steps
-        .iter()
-        .map(|step| step.name.clone())
-        .collect()
-}
-
-fn next_child_run_indices(
-    counts: &HashMap<String, u32>,
-    parallel_steps: &[InterimChild],
-) -> Vec<u32> {
-    let mut counts = counts.clone();
-    parallel_steps
-        .iter()
-        .map(|step| {
-            let count = counts.entry(step.name.clone()).or_insert(0);
-            *count += 1;
-            *count
-        })
-        .collect()
-}
-
-pub(crate) fn prepare_parallel_start_context(
+pub(crate) fn prepare_fanout_start_context(
     exec: &WorkflowExecution,
-) -> Result<ParallelStartContext, WorkflowEngineError> {
+) -> Result<FanoutStartContext, WorkflowEngineError> {
     let step = exec
         .workflow
         .nodes
@@ -103,14 +88,13 @@ pub(crate) fn prepare_parallel_start_context(
         })?;
     let fanout = step.fanout().ok_or_else(|| {
         WorkflowEngineError::InvalidState(format!(
-            "StartParallel requires fanout node '{}'",
+            "StartFanout requires fanout node '{}'",
             step.name
         ))
     })?;
-    let parallel_steps = fanout.parallel_children.clone();
-    if parallel_steps.is_empty() {
+    if fanout.child.is_empty() {
         return Err(WorkflowEngineError::InvalidState(format!(
-            "StartParallel requires parallel children for node '{}'",
+            "StartFanout requires child references for node '{}'",
             step.name
         )));
     }
@@ -119,14 +103,69 @@ pub(crate) fn prepare_parallel_start_context(
         .get(&step.name)
         .copied()
         .unwrap_or(1);
-    let child_run_indices = next_child_run_indices(&exec.step_execution_counts, &parallel_steps);
-    Ok(ParallelStartContext {
+    let domain_workflow = workflow_definition_to_domain(&exec.workflow);
+    let domain_step_outputs = step_outputs_to_domain(&exec.step_outputs);
+    let domain_step = domain_workflow
+        .nodes
+        .get(exec.current_step_index)
+        .ok_or_else(|| {
+            WorkflowEngineError::InvalidState(format!(
+                "current_step_index {} is out of bounds for workflow '{}'",
+                exec.current_step_index, exec.workflow.name
+            ))
+        })?;
+    let domain_fanout = domain_step.fanout().ok_or_else(|| {
+        WorkflowEngineError::InvalidState(format!(
+            "StartFanout requires fanout node '{}'",
+            step.name
+        ))
+    })?;
+    let expansion_plan = workflow_parallel::plan_fanout_expansion(
+        &domain_workflow,
+        &domain_fanout.child,
+        domain_fanout.items.as_ref(),
+        &domain_step_outputs,
+        &exec.step_execution_counts,
+    )
+    .map_err(workflow_error_to_engine_error)?;
+    let children = expansion_plan
+        .children
+        .into_iter()
+        .map(|child| {
+            let node = exec
+                .workflow
+                .nodes
+                .iter()
+                .find(|node| node.name == child.node_name)
+                .cloned()
+                .ok_or_else(|| {
+                    WorkflowEngineError::InvalidState(format!(
+                        "fanout child node '{}' is undefined",
+                        child.node_name
+                    ))
+                })?;
+            Ok(FanoutChildExpansion {
+                node_execution_id: uuid::Uuid::new_v4().to_string(),
+                node,
+                attempt: child.attempt,
+                item: child.item,
+                item_index: child.item_index,
+                child_index: child.child_index,
+            })
+        })
+        .collect::<Result<Vec<_>, WorkflowEngineError>>()?;
+    // Zero-item fanout is a normal successful parent completion with no children. Do not carry
+    // the temporary aggregate compatibility route into that completion: the parent node's
+    // ordinary rules own the next transition for this case.
+    let aggregate = (!children.is_empty())
+        .then(|| fanout.aggregate.clone())
+        .flatten();
+    Ok(FanoutStartContext {
         parent_step_name: step.name.clone(),
         parent_run_index,
         order: exec.step_history.len() as u32,
-        child_run_indices,
-        parallel_steps,
-        aggregate: fanout.aggregate.clone(),
+        children,
+        aggregate,
         execution_id: exec.id.clone(),
         workflow_name: exec.workflow.name.clone(),
         task: exec.task.clone(),
@@ -134,46 +173,86 @@ pub(crate) fn prepare_parallel_start_context(
     })
 }
 
-pub(crate) fn parallel_prompt_inputs(exec: &WorkflowExecution) -> ParallelPromptInputs {
-    ParallelPromptInputs {
+pub(crate) fn fanout_prompt_inputs(exec: &WorkflowExecution) -> FanoutPromptInputs {
+    FanoutPromptInputs {
         step_outputs: exec.step_outputs.clone(),
     }
 }
 
-pub(crate) fn apply_parallel_run_state(
+pub(crate) fn apply_fanout_run_state(
     exec: &mut WorkflowExecution,
-    parent_step_name: String,
-    aggregate: Option<ParallelAggregate>,
-    child_setups: &[ParallelChildSessionSetup],
-) -> (Vec<u32>, WorkflowState) {
-    let indices: Vec<u32> = child_setups.iter().map(|setup| setup.run_index).collect();
-    for setup in child_setups {
-        exec.step_execution_counts
-            .insert(setup.step_name.clone(), setup.run_index);
-    }
-
-    let children: Vec<ParallelChildRun> = child_setups
+    fanout_start: &FanoutStartContext,
+    session_setups: &[FanoutChildSessionSetup],
+    timestamp: f64,
+) -> Result<WorkflowState, WorkflowEngineError> {
+    let parent_node_execution_id = exec
+        .active_current_node_execution_id()
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| {
+            WorkflowEngineError::InvalidState(format!(
+                "active fanout parent NodeExecution for '{}' is unavailable",
+                fanout_start.parent_step_name
+            ))
+        })?;
+    let children = fanout_start
+        .children
         .iter()
-        .map(|setup| ParallelChildRun {
-            step_name: setup.step_name.clone(),
-            session_id: setup.session_id.clone(),
-            state: ParallelChildState::Running,
-            result: None,
-            structured_output: None,
-            artifact_contract: setup.artifact_contract.clone(),
-            failure_kind: None,
-            failure_disposition: None,
-            token_usage: TokenUsage::default(),
-            run_index: setup.run_index,
+        .map(|child| {
+            exec.step_execution_counts
+                .entry(child.node.name.clone())
+                .and_modify(|attempt| *attempt = (*attempt).max(child.attempt))
+                .or_insert(child.attempt);
+            exec.start_node_execution(
+                child.node.name.clone(),
+                child.node.kind_name(),
+                child.attempt,
+                Some(FanoutParentRef {
+                    parent_node: fanout_start.parent_step_name.clone(),
+                    parent_attempt: fanout_start.parent_run_index,
+                    item_index: child.item_index,
+                    child_index: child.child_index,
+                }),
+                Some(child.node_execution_id.clone()),
+                timestamp,
+            );
+            let session_id = session_setups
+                .iter()
+                .find(|setup| setup.node_execution_id == child.node_execution_id)
+                .map(|setup| setup.session_id.clone())
+                .unwrap_or_default();
+            if !session_id.is_empty() {
+                if let Some(execution) = exec
+                    .node_executions
+                    .iter_mut()
+                    .find(|execution| execution.id == child.node_execution_id)
+                {
+                    execution.session_id = Some(session_id.clone());
+                }
+            }
+            ParallelChildRun {
+                node_execution_id: child.node_execution_id.clone(),
+                step_name: child.node.name.clone(),
+                session_id,
+                state: ParallelChildState::Running,
+                result: None,
+                structured_output: None,
+                artifact_contract: child.node.artifact.clone(),
+                failure_kind: None,
+                failure_disposition: None,
+                token_usage: TokenUsage::default(),
+                run_index: child.attempt,
+                completed_at: None,
+            }
         })
         .collect();
-
     exec.parallel_run = Some(ParallelRunState {
-        parent_step_name,
-        aggregate,
+        parent_step_name: fanout_start.parent_step_name.clone(),
+        parent_node_execution_id,
+        aggregate: fanout_start.aggregate.clone(),
         children,
     });
-    (indices, exec.to_workflow_state())
+    exec.updated_at = timestamp;
+    Ok(exec.to_workflow_state())
 }
 
 pub(crate) struct ReduceTransitionResult {
@@ -182,18 +261,15 @@ pub(crate) struct ReduceTransitionResult {
     pub(crate) snapshot_before: WorkflowExecution,
 }
 
-pub(crate) enum ParallelParentCompletionTransition {
+pub(crate) enum FanoutParentCompletionTransition {
     Advance,
-    TransitionTo {
-        target_node_name: String,
-        aggregate_result: String,
-    },
+    TransitionTo { target_node_name: String },
 }
 
-pub(crate) struct ParallelParentCompletionPlan {
+pub(crate) struct FanoutParentCompletionPlan {
     pub(crate) parent_step_output: StepOutput,
     pub(crate) history_entry: crate::adaptor::gateway::workflow::state::StepHistoryEntry,
-    pub(crate) transition: ParallelParentCompletionTransition,
+    pub(crate) transition: FanoutParentCompletionTransition,
 }
 
 /// reduce処理の結果。
@@ -302,23 +378,29 @@ pub(crate) fn evaluate_aggregate(
     workflow_parallel::evaluate_aggregate(&aggregate, &step_outputs, child_step_names)
 }
 
-pub(crate) fn plan_parallel_parent_completion(
+pub(crate) fn plan_fanout_parent_completion(
     parent_step_name: &str,
     parent_run_index: u32,
     aggregate: Option<&ParallelAggregate>,
     children: &[ParallelChildRun],
-    step_outputs: &HashMap<String, StepOutput>,
     timestamp: f64,
-) -> ParallelParentCompletionPlan {
+) -> FanoutParentCompletionPlan {
     let aggregate = aggregate.map(parallel_aggregate_to_domain);
-    let children: Vec<workflow_parallel::ParallelChildCompletionInput> = children
+    let children: Vec<workflow_parallel::FanoutChildCompletionInput> = children
         .iter()
-        .map(|child| workflow_parallel::ParallelChildCompletionInput {
-            step_name: child.step_name.clone(),
-            session_id: child.session_id.clone(),
+        .map(|child| workflow_parallel::FanoutChildCompletionInput {
+            node_execution_id: child.node_execution_id.clone(),
+            node_name: child.step_name.clone(),
+            session_id: (!child.session_id.is_empty()).then(|| child.session_id.clone()),
             result: child.result.clone(),
+            artifact: child
+                .structured_output
+                .clone()
+                .unwrap_or(serde_json::Value::Null),
+            artifact_contract: child.artifact_contract.clone(),
             token_usage: token_usage_to_domain(&child.token_usage),
-            run_index: child.run_index,
+            attempt: child.run_index,
+            completed_at: child.completed_at.unwrap_or(timestamp),
             state: match child.state {
                 ParallelChildState::Running => crate::domain::workflow::STEP_STATE_RUNNING,
                 ParallelChildState::Completed => crate::domain::workflow::STEP_STATE_COMPLETED,
@@ -330,28 +412,22 @@ pub(crate) fn plan_parallel_parent_completion(
             failure_disposition: child.failure_disposition,
         })
         .collect();
-    let step_outputs = step_outputs_to_domain(step_outputs);
-    let plan = workflow_parallel::plan_parallel_parent_completion(
+    let plan = workflow_parallel::plan_fanout_parent_completion(
         parent_step_name,
         parent_run_index,
         aggregate.as_ref(),
         &children,
-        &step_outputs,
         timestamp,
     );
     let transition = match plan.transition {
-        workflow_parallel::ParallelParentTransitionPlan::Advance => {
-            ParallelParentCompletionTransition::Advance
+        workflow_parallel::FanoutParentTransitionPlan::Advance => {
+            FanoutParentCompletionTransition::Advance
         }
-        workflow_parallel::ParallelParentTransitionPlan::TransitionTo {
-            target_node_name,
-            aggregate_result,
-        } => ParallelParentCompletionTransition::TransitionTo {
-            target_node_name,
-            aggregate_result,
-        },
+        workflow_parallel::FanoutParentTransitionPlan::TransitionTo {
+            target_node_name, ..
+        } => FanoutParentCompletionTransition::TransitionTo { target_node_name },
     };
-    ParallelParentCompletionPlan {
+    FanoutParentCompletionPlan {
         parent_step_output: step_output_from_domain(plan.parent_step_output),
         history_entry: step_history_entry_from_domain(plan.history_entry),
         transition,
@@ -377,11 +453,16 @@ pub(crate) fn resolve_step_result(output: &StepOutput) -> Option<String> {
 mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::schema::{
-        FanoutSpec, InterimChild, NodeDefinition, NodeKind, ReduceStrategy, Workflow,
+        CommandSpec, FanoutSpec, ItemsSource, NodeDefinition, NodeKind, ReduceStrategy,
+        SessionSpec, Workflow,
     };
     use crate::adaptor::gateway::workflow::state::WorkflowExecutionState;
 
     fn workflow_execution_fixture(node: NodeDefinition) -> WorkflowExecution {
+        workflow_execution_with_nodes(vec![node])
+    }
+
+    fn workflow_execution_with_nodes(nodes: Vec<NodeDefinition>) -> WorkflowExecution {
         WorkflowExecution {
             id: "run-1".to_string(),
             workflow: Workflow {
@@ -389,7 +470,7 @@ mod tests {
                 description: String::new(),
                 builtin: false,
                 schemas: Default::default(),
-                nodes: vec![node],
+                nodes,
             },
             state: WorkflowExecutionState::Running,
             current_step_index: 0,
@@ -405,98 +486,322 @@ mod tests {
             current_session_id: None,
             current_step_token_usage: TokenUsage::default(),
             step_outputs: HashMap::new(),
+            node_executions: Vec::new(),
             task: Some("ship it".to_string()),
             parallel_run: None,
             current_stall_observations: Vec::new(),
         }
     }
 
-    #[test]
-    fn prepare_parallel_start_context_captures_current_parallel_node() {
-        let child = InterimChild {
-            name: "review-a".to_string(),
-            model: Some("model-a".to_string()),
+    fn session_node(name: &str) -> NodeDefinition {
+        NodeDefinition {
+            name: name.to_string(),
+            kind: NodeKind::Session(SessionSpec::default()),
             ..Default::default()
-        };
-        let aggregate = ParallelAggregate {
-            all_match: Some("LGTM".to_string()),
-            any_match: None,
-            then: "merge".to_string(),
-            r#else: "fix".to_string(),
-        };
-        let exec = workflow_execution_fixture(NodeDefinition {
-            name: "parallel-review".to_string(),
-            kind: NodeKind::Fanout(FanoutSpec {
-                parallel_children: vec![child],
-                aggregate: Some(aggregate.clone()),
-            }),
-            ..Default::default()
-        });
-
-        let context = prepare_parallel_start_context(&exec).unwrap();
-
-        assert_eq!(context.execution_id, "run-1");
-        assert_eq!(context.workflow_name, "test-workflow");
-        assert_eq!(context.parent_step_name, "parallel-review");
-        assert_eq!(context.child_step_names(), vec!["review-a".to_string()]);
-        assert_eq!(context.aggregate, Some(aggregate));
-        assert_eq!(context.task.as_deref(), Some("ship it"));
-        assert_eq!(context.workflow_defaults.permission_mode, "ask");
-
-        assert!(matches!(
-            context.started_event(42.0),
-            WorkflowEvent::ParallelStarted {
-                run_id,
-                workflow_name,
-                parent_node_name,
-                child_node_names,
-                timestamp,
-            } if run_id == "run-1"
-                && workflow_name == "test-workflow"
-                && parent_node_name == "parallel-review"
-                && child_node_names == vec!["review-a".to_string()]
-                && (timestamp - 42.0).abs() < f64::EPSILON
-        ));
+        }
     }
 
-    #[test]
-    fn prepare_parallel_start_context_rejects_node_without_children() {
-        let exec = workflow_execution_fixture(NodeDefinition {
-            name: "plan".to_string(),
+    fn fanout_node(children: &[&str], items: Option<ItemsSource>) -> NodeDefinition {
+        NodeDefinition {
+            name: "fanout-review".to_string(),
             kind: NodeKind::Fanout(FanoutSpec {
-                parallel_children: vec![],
+                child: children.iter().map(|name| (*name).to_string()).collect(),
+                items,
                 aggregate: None,
             }),
             ..Default::default()
-        });
+        }
+    }
 
-        let err = prepare_parallel_start_context(&exec).unwrap_err();
+    fn apply_fanout_and_assert_child_node_executions(
+        exec: &mut WorkflowExecution,
+        context: &FanoutStartContext,
+    ) {
+        let parent_node_execution_id = exec.start_current_node_execution(1.5);
+
+        apply_fanout_run_state(exec, context, &[], 2.0).unwrap();
+
+        let fanout_run = exec.parallel_run.as_ref().unwrap();
+        assert_eq!(
+            fanout_run.parent_node_execution_id,
+            parent_node_execution_id
+        );
+        assert_eq!(fanout_run.children.len(), context.children.len());
+        assert_eq!(exec.node_executions.len(), context.children.len() + 1);
+
+        for expansion in &context.children {
+            let execution = exec
+                .node_executions
+                .iter()
+                .find(|execution| execution.id == expansion.node_execution_id)
+                .unwrap();
+            assert_eq!(execution.node_name, expansion.node.name);
+            assert_eq!(execution.kind, expansion.node.kind_name());
+            assert_eq!(execution.attempt, expansion.attempt);
+            assert_eq!(
+                execution.fanout_parent.as_ref().unwrap(),
+                &FanoutParentRef {
+                    parent_node: context.parent_step_name.clone(),
+                    parent_attempt: context.parent_run_index,
+                    item_index: expansion.item_index,
+                    child_index: expansion.child_index,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn prepare_fanout_start_context_expands_multiple_children() {
+        let mut exec = workflow_execution_with_nodes(vec![
+            fanout_node(&["review-a", "review-b"], None),
+            session_node("review-a"),
+            NodeDefinition {
+                name: "review-b".to_string(),
+                kind: NodeKind::Command(CommandSpec {
+                    command: "true".to_string(),
+                }),
+                ..Default::default()
+            },
+        ]);
+
+        let context = prepare_fanout_start_context(&exec).unwrap();
+
+        assert_eq!(context.execution_id, "run-1");
+        assert_eq!(context.workflow_name, "test-workflow");
+        assert_eq!(context.parent_step_name, "fanout-review");
+        assert_eq!(
+            context.child_step_names(),
+            vec!["review-a".to_string(), "review-b".to_string()]
+        );
+        assert_eq!(context.task.as_deref(), Some("ship it"));
+        assert_eq!(context.workflow_defaults.permission_mode, "ask");
+        assert_eq!(context.children[0].child_index, 0);
+        assert_eq!(context.children[1].child_index, 1);
+        assert!(context.children.iter().all(|child| child.item.is_none()));
+        assert_ne!(
+            context.children[0].node_execution_id,
+            context.children[1].node_execution_id
+        );
+        apply_fanout_and_assert_child_node_executions(&mut exec, &context);
+    }
+
+    #[test]
+    fn prepare_fanout_start_context_expands_one_child_over_items() {
+        let mut exec = workflow_execution_with_nodes(vec![
+            fanout_node(
+                &["review"],
+                Some(ItemsSource::Literal(vec![
+                    serde_json::json!({ "id": 1 }),
+                    serde_json::json!({ "id": 2 }),
+                ])),
+            ),
+            session_node("review"),
+        ]);
+
+        let context = prepare_fanout_start_context(&exec).unwrap();
+
+        assert_eq!(context.child_step_names(), vec!["review", "review"]);
+        assert_eq!(
+            context
+                .children
+                .iter()
+                .map(|child| child.item_index)
+                .collect::<Vec<_>>(),
+            vec![Some(0), Some(1)]
+        );
+        assert_eq!(
+            context
+                .children
+                .iter()
+                .map(|child| child.attempt)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        apply_fanout_and_assert_child_node_executions(&mut exec, &context);
+    }
+
+    #[test]
+    fn prepare_fanout_start_context_expands_matrix_items_major() {
+        let mut exec = workflow_execution_with_nodes(vec![
+            fanout_node(
+                &["a", "b"],
+                Some(ItemsSource::Literal(vec![
+                    serde_json::json!("first"),
+                    serde_json::json!("second"),
+                ])),
+            ),
+            session_node("a"),
+            session_node("b"),
+        ]);
+
+        let context = prepare_fanout_start_context(&exec).unwrap();
+
+        assert_eq!(context.child_step_names(), vec!["a", "b", "a", "b"]);
+        assert_eq!(
+            context
+                .children
+                .iter()
+                .map(|child| (child.item_index, child.child_index, child.attempt))
+                .collect::<Vec<_>>(),
+            vec![
+                (Some(0), 0, 1),
+                (Some(0), 1, 1),
+                (Some(1), 0, 2),
+                (Some(1), 1, 2)
+            ]
+        );
+        apply_fanout_and_assert_child_node_executions(&mut exec, &context);
+    }
+
+    #[test]
+    fn prepare_fanout_start_context_expands_items_from_artifact_field() {
+        let mut exec = workflow_execution_with_nodes(vec![
+            fanout_node(
+                &["a", "b"],
+                Some(ItemsSource::ArtifactField {
+                    node: "source".to_string(),
+                    field: "targets".to_string(),
+                }),
+            ),
+            session_node("a"),
+            session_node("b"),
+        ]);
+        exec.step_outputs.insert(
+            "source".to_string(),
+            StepOutput {
+                step_name: "source".to_string(),
+                run_index: 1,
+                session_id: None,
+                result: None,
+                structured_output: Some(serde_json::json!({
+                    "targets": [
+                        { "id": "first" },
+                        { "id": "second" }
+                    ]
+                })),
+                artifact_contract: None,
+                token_usage: None,
+                completed_at: 1000.0,
+            },
+        );
+
+        let context = prepare_fanout_start_context(&exec).unwrap();
+
+        assert_eq!(context.child_step_names(), vec!["a", "b", "a", "b"]);
+        assert_eq!(
+            context
+                .children
+                .iter()
+                .map(|child| (
+                    child.item.clone(),
+                    child.item_index,
+                    child.child_index,
+                    child.attempt
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (Some(serde_json::json!({ "id": "first" })), Some(0), 0, 1),
+                (Some(serde_json::json!({ "id": "first" })), Some(0), 1, 1),
+                (Some(serde_json::json!({ "id": "second" })), Some(1), 0, 2),
+                (Some(serde_json::json!({ "id": "second" })), Some(1), 1, 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn prepare_fanout_start_context_rejects_unavailable_artifact_field_items() {
+        let exec = workflow_execution_with_nodes(vec![
+            fanout_node(
+                &["review"],
+                Some(ItemsSource::ArtifactField {
+                    node: "source".to_string(),
+                    field: "targets".to_string(),
+                }),
+            ),
+            session_node("review"),
+        ]);
+
+        let err = prepare_fanout_start_context(&exec).unwrap_err();
 
         assert!(matches!(
             err,
             WorkflowEngineError::InvalidState(message)
-                if message == "StartParallel requires parallel children for node 'plan'"
+                if message == "fanout items source 'source.targets' is unavailable"
         ));
     }
 
     #[test]
-    fn parallel_prompt_inputs_clones_runtime_inputs() {
-        let mut exec = workflow_execution_fixture(NodeDefinition {
-            name: "parallel-review".to_string(),
-            kind: NodeKind::Fanout(FanoutSpec {
-                parallel_children: vec![InterimChild {
-                    name: "review-a".to_string(),
-                    ..Default::default()
-                }],
-                aggregate: None,
-            }),
-            ..Default::default()
-        });
+    fn prepare_fanout_start_context_rejects_non_array_artifact_field_items() {
+        let mut exec = workflow_execution_with_nodes(vec![
+            fanout_node(
+                &["review"],
+                Some(ItemsSource::ArtifactField {
+                    node: "source".to_string(),
+                    field: "targets".to_string(),
+                }),
+            ),
+            session_node("review"),
+        ]);
+        exec.step_outputs.insert(
+            "source".to_string(),
+            StepOutput {
+                step_name: "source".to_string(),
+                run_index: 1,
+                session_id: None,
+                result: None,
+                structured_output: Some(serde_json::json!({ "targets": "not-array" })),
+                artifact_contract: None,
+                token_usage: None,
+                completed_at: 1000.0,
+            },
+        );
+
+        let err = prepare_fanout_start_context(&exec).unwrap_err();
+
+        assert!(matches!(
+            err,
+            WorkflowEngineError::InvalidState(message)
+                if message == "fanout items source 'source.targets' is not an array"
+        ));
+    }
+
+    #[test]
+    fn prepare_fanout_start_context_empty_items_produces_no_children() {
+        let exec = workflow_execution_with_nodes(vec![
+            fanout_node(&["review"], Some(ItemsSource::Literal(Vec::new()))),
+            session_node("review"),
+        ]);
+
+        let context = prepare_fanout_start_context(&exec).unwrap();
+
+        assert!(context.children.is_empty());
+        assert!(context.aggregate.is_none());
+    }
+
+    #[test]
+    fn prepare_fanout_start_context_rejects_node_without_children() {
+        let exec = workflow_execution_fixture(fanout_node(&[], None));
+
+        let err = prepare_fanout_start_context(&exec).unwrap_err();
+
+        assert!(matches!(
+            err,
+            WorkflowEngineError::InvalidState(message)
+                if message == "StartFanout requires child references for node 'fanout-review'"
+        ));
+    }
+
+    #[test]
+    fn fanout_prompt_inputs_clones_runtime_inputs() {
+        let mut exec = workflow_execution_with_nodes(vec![
+            fanout_node(&["review-a"], None),
+            session_node("review-a"),
+        ]);
         exec.step_outputs.insert(
             "plan".to_string(),
             make_step_output("plan", "draft", Some("DONE")),
         );
-        let inputs = parallel_prompt_inputs(&exec);
+        let inputs = fanout_prompt_inputs(&exec);
 
         assert_eq!(
             inputs.step_outputs["plan"].structured_output,

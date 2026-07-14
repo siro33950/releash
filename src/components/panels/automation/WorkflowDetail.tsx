@@ -5,6 +5,7 @@ import { Separator } from "@/components/ui/separator";
 import type {
 	DiagnosticItem,
 	DiagnosticReport,
+	FanoutItemsSource,
 	NodeDefinition,
 	Workflow,
 } from "@/types/workflow";
@@ -348,7 +349,7 @@ function StepCard({ step, index }: { step: NodeDefinition; index: number }) {
 	const session = step.session;
 	const facets = session?.facets;
 	const fanout = step.fanout;
-	const childCount = fanout?.parallel_children.length ?? 0;
+	const childCount = fanout?.child.length ?? 0;
 
 	return (
 		<div className="rounded-md border border-border">
@@ -464,19 +465,23 @@ function StepCard({ step, index }: { step: NodeDefinition; index: number }) {
 						</div>
 					)}
 
-					{/* Parallel children */}
+					{/* Fanout children */}
 					{fanout && (
 						<div className="flex flex-col gap-1">
 							<span className="font-medium text-muted-foreground">
 								Fanout Children
 							</span>
-							{fanout.parallel_children.map((ps) => (
-								<div key={ps.name} className="ml-2 text-muted-foreground">
-									• {ps.name}
-									{ps.facets.instruction &&
-										` — instruction: ${ps.facets.instruction}`}
+							{fanout.child.map((childName) => (
+								<div key={childName} className="ml-2 text-muted-foreground">
+									• {childName}
 								</div>
 							))}
+							{fanout.items !== undefined && (
+								<FacetRefRow
+									label="Items"
+									value={formatFanoutItems(fanout.items)}
+								/>
+							)}
 							{fanout.aggregate && (
 								<div className="mt-1">
 									<span className="font-medium text-muted-foreground">
@@ -536,6 +541,10 @@ function sortedCases(cases: Record<string, string>): string {
 		.sort(([left], [right]) => left.localeCompare(right))
 		.map(([value, target]) => `${value}:${target}`)
 		.join(",");
+}
+
+function formatFanoutItems(items: FanoutItemsSource): string {
+	return typeof items === "string" ? items : JSON.stringify(items);
 }
 
 function FacetRefRow({ label, value }: { label: string; value: string }) {

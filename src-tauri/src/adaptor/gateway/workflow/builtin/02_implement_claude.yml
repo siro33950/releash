@@ -28,23 +28,29 @@ nodes:
   - next: review_parallel
 - name: review_parallel
   fanout:
-    parallel_children:
-    - name: review_spec
-      model: gpt-5.5
-      permission: edit
-      facets:
-        policy: reviewing
-        knowledge: releash-thread-cli
-        instruction: spec-implement-review-spec
-    - name: review_design
-      model: gpt-5.5
-      permission: edit
-      facets:
-        policy: reviewing
-        knowledge: releash-thread-cli
-        instruction: spec-implement-review-design
+    child:
+    - review_spec
+    - review_design
   rules:
   - next: fix
+- name: review_spec
+  session:
+    model: gpt-5.5
+    permission: edit
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: spec-implement-review-spec
+- name: review_design
+  session:
+    model: gpt-5.5
+    permission: edit
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: spec-implement-review-design
 - name: fix
   session:
     model: claude-opus-4-8

@@ -135,9 +135,11 @@ vi.mock("@/hooks/useWorkspaceTreeNodes", () => ({
 							runId: "run-1",
 							worktreePath: "/repo/wt",
 							title: "Build step",
+							nodeName: "build",
 							status: "running",
 							stepType: "session",
 							updatedAt: 1100,
+							attempt: 1,
 							sessions: [
 								{
 									kind: "session",
@@ -513,7 +515,106 @@ describe("WorkspaceList", () => {
 				worktreePath: "/repo/wt",
 				runId: "run-1",
 				stepId: "run-1:step-build",
-				stepName: "Build step",
+				stepName: "build",
+			},
+		);
+	});
+
+	it("renders same-name matrix children as distinct NodeExecution rows", async () => {
+		setSingleWorktree("/repo/matrix", {
+			nodes: [
+				{
+					kind: "workflow",
+					runId: "run-matrix",
+					worktreePath: "/repo/matrix",
+					workflowName: "matrix",
+					title: "Matrix fanout",
+					status: "running",
+					canStop: true,
+					updatedAt: 2_000,
+					steps: [
+						{
+							kind: "step",
+							id: "ne-review-item-0",
+							runId: "run-matrix",
+							worktreePath: "/repo/matrix",
+							title: "review",
+							nodeName: "review",
+							status: "running",
+							stepType: "session",
+							nodeExecutionStatus: "running",
+							updatedAt: 2_000,
+							runIndex: 1,
+							attempt: 1,
+							nodeExecutionId: "ne-review-item-0",
+							sessionId: "session-item-0",
+							fanoutParent: {
+								parentNode: "parallel-review",
+								parentAttempt: 1,
+								itemIndex: 0,
+								childIndex: 0,
+							},
+							sessions: [],
+						},
+						{
+							kind: "step",
+							id: "ne-review-item-1",
+							runId: "run-matrix",
+							worktreePath: "/repo/matrix",
+							title: "review",
+							nodeName: "review",
+							status: "waiting",
+							stepType: "session",
+							nodeExecutionStatus: "waiting_approval",
+							updatedAt: 2_001,
+							runIndex: 1,
+							attempt: 1,
+							nodeExecutionId: "ne-review-item-1",
+							sessionId: "session-item-1",
+							fanoutParent: {
+								parentNode: "parallel-review",
+								parentAttempt: 1,
+								itemIndex: 1,
+								childIndex: 0,
+							},
+							sessions: [],
+						},
+					],
+				},
+			],
+		});
+		const user = userEvent.setup();
+		const { onSelectWorktree } = renderWorkspaceList({
+			selectedRootPath: "/repo/matrix",
+		});
+
+		const rows = screen
+			.getAllByText("review")
+			.map((label) => label.closest("button"));
+		expect(rows).toHaveLength(2);
+		expect(rows[0]).toHaveAttribute(
+			"data-node-execution-id",
+			"ne-review-item-0",
+		);
+		expect(rows[1]).toHaveAttribute(
+			"data-node-execution-id",
+			"ne-review-item-1",
+		);
+		expect(rows[1]).toHaveAccessibleName(/waiting_approval/);
+		expect(screen.getByText("item 0 · child 0")).toBeInTheDocument();
+		expect(screen.getByText("item 1 · child 0")).toBeInTheDocument();
+
+		await user.click(rows[1] as HTMLButtonElement);
+		expect(onSelectWorktree).toHaveBeenCalledWith(
+			"/repo/matrix",
+			"empty",
+			"repo",
+			{
+				kind: "workflowStep",
+				worktreePath: "/repo/matrix",
+				runId: "run-matrix",
+				stepId: "ne-review-item-1",
+				stepName: "review",
 			},
 		);
 	});

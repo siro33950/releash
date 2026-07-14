@@ -124,6 +124,7 @@ mod tests {
             .execute(ApprovalCommand {
                 run_id: valid_run_id(),
                 node_name: "review".to_string(),
+                node_execution_id: None,
                 comment: None,
             })
             .await
@@ -132,6 +133,7 @@ mod tests {
             .execute(SubmitOutputCommand {
                 run_id: valid_run_id(),
                 step_name: "review".to_string(),
+                node_execution_id: None,
                 contract: "review-fix-tasks".to_string(),
                 structured_output: serde_json::json!({}),
             })
@@ -186,6 +188,7 @@ mod tests {
             .execute(ApprovalCommand {
                 run_id: valid_run_id(),
                 node_name: " ".to_string(),
+                node_execution_id: None,
                 comment: None,
             })
             .await
@@ -194,6 +197,7 @@ mod tests {
             .execute(SubmitOutputCommand {
                 run_id: valid_run_id(),
                 step_name: "review".to_string(),
+                node_execution_id: None,
                 contract: " ".to_string(),
                 structured_output: serde_json::json!({}),
             })

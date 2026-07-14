@@ -32,6 +32,7 @@ const makeState = (overrides: Partial<WorkflowState> = {}): WorkflowState => ({
 	},
 	totalTokenUsage: { inputTokens: 0, outputTokens: 0 },
 	stepStates: {},
+	nodeExecutions: [],
 	startedAt: 1000,
 	updatedAt: 1000,
 	...overrides,

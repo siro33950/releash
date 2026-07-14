@@ -1,6 +1,6 @@
 import type { PermissionMode } from "./session";
 
-type JsonValue =
+export type JsonValue =
 	| string
 	| number
 	| boolean
@@ -16,7 +16,7 @@ interface TokenUsage {
 /**
  * spec issues-1023: step / child の終端状態。
  * `"completed"` が既定（旧 ndjson 互換）。`"failed"` は partial child failure、
- * `"aborted"` / `"interrupted"` は run の中断で停止した step / parallel child を表現する。
+ * `"aborted"` / `"interrupted"` は run の中断で停止した step / fanout child を表現する。
  */
 type StepEntryState = "completed" | "failed" | "aborted" | "interrupted";
 
@@ -123,18 +123,11 @@ export interface SessionSpec {
 
 export type WorkflowSchema = JsonValue;
 
-/// fanout node 配下の暫定子 node API 表現。子は暗黙に session 扱い。
-interface InterimChild {
-	name: string;
-	facets: FacetRefs;
-	artifact?: string;
-	input?: string;
-	model?: string;
-	permission?: PermissionMode;
-}
+export type FanoutItemsSource = JsonValue[] | string;
 
 interface FanoutSpec {
-	parallel_children: InterimChild[];
+	child: string[];
+	items?: FanoutItemsSource;
 	aggregate?: AggregateConfig;
 }
 
@@ -184,17 +177,39 @@ interface StepOutput {
 	completedAt: number;
 }
 
-interface ParallelStepState {
-	stepName: string;
-	state: string;
+export type NodeExecutionStatus =
+	| "running"
+	| "waiting_approval"
+	| "succeeded"
+	| "failed"
+	| "aborted";
+
+export interface FanoutParentRef {
+	parentNode: string;
+	parentAttempt: number;
+	itemIndex?: number;
+	childIndex: number;
+}
+
+export interface NodeExecutionFailure {
+	reason: string;
+	kind: WorkflowStepFailureKind;
+}
+
+export interface NodeExecutionView {
+	id: string;
+	executionId: string;
+	nodeName: string;
+	kind: NodeKind;
+	attempt: number;
+	status: NodeExecutionStatus;
 	sessionId?: string;
-	result?: string;
-	runIndex: number;
+	artifact?: JsonValue;
+	tokenUsage?: TokenUsage;
+	failure?: NodeExecutionFailure;
+	fanoutParent?: FanoutParentRef;
+	startedAt: number;
 	completedAt?: number;
-	structuredOutput?: JsonValue;
-	artifactContract?: string;
-	failureKind?: WorkflowStepFailureKind;
-	failureDisposition?: FailureDisposition;
 }
 
 interface WorkflowStepRuntimeState {
@@ -228,7 +243,7 @@ export interface WorkflowState {
 	totalTokenUsage: TokenUsage;
 	stepStates: Record<string, string>;
 	runtimeStates?: Record<string, WorkflowStepRuntimeState>;
-	activeParallelSteps?: ParallelStepState[];
+	nodeExecutions: NodeExecutionView[];
 	startedAt: number;
 	updatedAt: number;
 	stallObservations?: WorkflowStallObservation[];

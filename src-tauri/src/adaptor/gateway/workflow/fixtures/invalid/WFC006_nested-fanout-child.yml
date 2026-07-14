@@ -1,0 +1,11 @@
+name: nested-fanout-child
+description: fanout cannot reference another fanout as its child
+nodes:
+  - name: outer
+    fanout:
+      child: inner
+  - name: inner
+    fanout:
+      child: worker
+  - name: worker
+    command: echo work

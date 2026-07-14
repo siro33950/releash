@@ -36,16 +36,6 @@ pub fn lookup_node_artifact_contract(
                 .clone()
                 .filter(|contract| !contract.trim().is_empty());
         }
-        if let Some(fanout) = node.fanout() {
-            for child in &fanout.parallel_children {
-                if child.name == node_name {
-                    return child
-                        .artifact
-                        .clone()
-                        .filter(|contract| !contract.trim().is_empty());
-                }
-            }
-        }
     }
     None
 }
@@ -126,8 +116,7 @@ fn infer_result(value: &Value) -> Option<String> {
 mod contract_service_tests {
     use super::*;
     use crate::domain::workflow::value_objects::{
-        FacetRefs, FanoutSpec, InterimChild, NodeDefinition, NodeKind, SchemaDef, SessionSpec,
-        WorkflowDefinition,
+        FacetRefs, FanoutSpec, NodeDefinition, NodeKind, SchemaDef, SessionSpec, WorkflowDefinition,
     };
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -149,27 +138,34 @@ mod contract_service_tests {
                     additional_properties: true,
                 },
             )]),
-            nodes: vec![NodeDefinition {
-                name: "parallel".to_string(),
-                kind: NodeKind::Fanout(FanoutSpec {
-                    parallel_children: vec![InterimChild {
-                        name: "child".to_string(),
-                        artifact: Some("review".to_string()),
+            nodes: vec![
+                NodeDefinition {
+                    name: "fanout".to_string(),
+                    kind: NodeKind::Fanout(FanoutSpec {
+                        child: vec!["child".to_string()],
+                        items: None,
+                        aggregate: None,
+                    }),
+                    ..Default::default()
+                },
+                NodeDefinition {
+                    name: "child".to_string(),
+                    kind: NodeKind::Session(SessionSpec {
                         facets: FacetRefs {
                             instruction: Some("review".to_string()),
                             ..Default::default()
                         },
                         ..Default::default()
-                    }],
-                    aggregate: None,
-                }),
-                ..Default::default()
-            }],
+                    }),
+                    artifact: Some("review".to_string()),
+                    ..Default::default()
+                },
+            ],
         }
     }
 
     #[test]
-    fn test_lookup_node_artifact_contract_parallel_childも探索する() {
+    fn test_lookup_node_artifact_contract_top_level_fanout_childも探索する() {
         assert_eq!(
             lookup_node_artifact_contract(&workflow(), "child").as_deref(),
             Some("review")

@@ -705,7 +705,7 @@ mod tests {
     // 構造の整合性は `validation::validate` が build/CI 段階で担保する。
 
     /// [02] schema 境界: built-in workflow の load 経路で facet contents read model が
-    /// populated されることを担保する（A 層）。top-level node と parallel child の両方で、
+    /// populated されることを担保する（A 層）。fanout child も top-level node として、
     /// policy/knowledge/instruction のいずれかが指定されていれば
     /// 本文が解決済みであることを全 builtin に対して検証する。
     /// これにより、共通 loader が built-in 経路で削られても CI で検知される。
@@ -765,58 +765,32 @@ mod tests {
             "builtin '{name}' must populate facet contents on at least one top-level node"
         );
 
-        // parallel child を含む workflow では、子の facet contents も必ず populated される
-        // ことを検証する。parallel を持たない workflow（例: spec-implement）はスキップ。
-        let has_parallel = wf.nodes.iter().any(|n| n.is_fanout());
-        if has_parallel {
-            let mut child_resolved_count = 0;
-            for node in &wf.nodes {
-                let Some(fanout) = node.fanout() else {
-                    continue;
-                };
-                for child in &fanout.parallel_children {
-                    let contents =
-                        resolved
-                            .for_child(&node.name, &child.name)
-                            .unwrap_or_else(|| {
-                                panic!(
-                                    "child '{}/{}' must have facet contents entry",
-                                    node.name, child.name
-                                )
-                            });
-                    if child.facets.policy.is_some() {
-                        assert!(
-                            contents.policy.is_some(),
-                            "child '{}/{}' has policy ref but facet contents policy is None",
-                            node.name,
-                            child.name
-                        );
-                        child_resolved_count += 1;
-                    }
-                    if child.facets.knowledge.is_some() {
-                        assert!(
-                            contents.knowledge.is_some(),
-                            "child '{}/{}' has knowledge ref but facet contents knowledge is None",
-                            node.name,
-                            child.name
-                        );
-                        child_resolved_count += 1;
-                    }
-                    if child.facets.instruction.is_some() {
-                        assert!(
-                            contents.instruction.is_some(),
-                            "child '{}/{}' has instruction ref but facet contents instruction is None",
-                            node.name,
-                            child.name
-                        );
-                        child_resolved_count += 1;
-                    }
+        // fanout child は通常の top-level node 参照であり、facet contents も node 名で
+        // 解決される。埋め込み child 専用 map は持たない。
+        for parent in &wf.nodes {
+            let Some(fanout) = parent.fanout() else {
+                continue;
+            };
+            for child_name in &fanout.child {
+                let child = wf
+                    .nodes
+                    .iter()
+                    .find(|candidate| candidate.name == *child_name)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "fanout child '{}.{}' must reference a top-level node",
+                            parent.name, child_name
+                        )
+                    });
+                if child.session().is_some() {
+                    assert!(
+                        resolved.for_node(child_name).is_some(),
+                        "fanout child '{}.{}' must resolve facets by top-level node name",
+                        parent.name,
+                        child_name
+                    );
                 }
             }
-            assert!(
-                child_resolved_count > 0,
-                "builtin '{name}' has parallel nodes but no facet contents on any parallel child"
-            );
         }
     }
 

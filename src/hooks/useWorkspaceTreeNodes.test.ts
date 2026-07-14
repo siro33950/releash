@@ -72,6 +72,7 @@ function makeWorkflowState(
 		},
 		totalTokenUsage: { inputTokens: 0, outputTokens: 0 },
 		stepStates: {},
+		nodeExecutions: [],
 		startedAt: 1_000,
 		updatedAt: 1_000,
 		...overrides,
@@ -353,10 +354,12 @@ describe("useWorkspaceTreeNodes", () => {
 						runId: "run-1",
 						worktreePath: "/repo",
 						title: "review",
+						nodeName: "review",
 						status: "running",
 						stepType: "session",
 						updatedAt: 1_000,
 						runIndex: 1,
+						attempt: 1,
 						sessions: [
 							{
 								kind: "session",

@@ -592,16 +592,8 @@ describe("AutomationSection", () => {
 						name: "complex-step",
 						kind: "fanout" as const,
 						fanout: {
-							parallel_children: [
-								{
-									name: "child-1",
-									facets: { instruction: "child-implement" },
-								},
-								{
-									name: "child-2",
-									facets: { instruction: "child-review" },
-								},
-							],
+							child: ["child-1", "child-2"],
+							items: "scan.items",
 							aggregate: {
 								all_match: "pass",
 								// biome-ignore lint/suspicious/noThenProperty: AggregateConfig uses then/else fields
@@ -646,6 +638,8 @@ describe("AutomationSection", () => {
 		expect(screen.getByText("Fanout Children")).toBeInTheDocument();
 		expect(screen.getByText(/child-1/)).toBeInTheDocument();
 		expect(screen.getByText(/child-2/)).toBeInTheDocument();
+		expect(screen.getByText(/^Items:/)).toBeInTheDocument();
+		expect(screen.getByText("scan.items")).toBeInTheDocument();
 	});
 
 	it("workflow detail shows diagnostics", () => {

@@ -361,11 +361,20 @@ async fn approve_workflow_step_adapter<R: tauri::Runtime>(
     engine: &Arc<TestRuntimeKernel>,
     run_id: String,
     step_name: String,
+    node_execution_id: Option<String>,
     comment: Option<String>,
 ) -> Result<(), String> {
     validate_run_id(&run_id)?;
     engine
-        .resolve_workflow_approval(app, session_store, handles, &run_id, comment, &step_name)
+        .resolve_workflow_approval(
+            app,
+            session_store,
+            handles,
+            &run_id,
+            comment,
+            &step_name,
+            node_execution_id.as_deref(),
+        )
         .await
         .map_err(|e| e.to_string())
 }
@@ -392,6 +401,7 @@ async fn approve_workflow_step_payload_adapter<R: tauri::Runtime>(
         engine,
         args.run_id,
         args.step_name,
+        args.node_execution_id,
         args.comment,
     )
     .await
@@ -446,7 +456,7 @@ mod tests {
     };
     use crate::adaptor::gateway::workflow::run::{RunStatus, TriggerSource};
     use crate::adaptor::gateway::workflow::schema::{
-        FacetRefs, NodeDefinition, NodeKind, SessionGate, SessionSpec,
+        FacetRefs, NodeDefinition, NodeKind, NodeKindName, SessionGate, SessionSpec,
     };
     use crate::adaptor::gateway::workflow::state::{WorkflowExecutionState, WorkflowState};
     use std::collections::HashSet;
@@ -659,7 +669,7 @@ mod tests {
             .map(|event| match event {
                 WorkflowEvent::RunStarted { .. } => "RunStarted",
                 WorkflowEvent::NodeStarted { .. } => "NodeStarted",
-                WorkflowEvent::StepSessionStarted { .. } => "StepSessionStarted",
+                WorkflowEvent::SessionAttached { .. } => "SessionAttached",
                 WorkflowEvent::WorkflowStallObserved { .. } => "WorkflowStallObserved",
                 WorkflowEvent::WorkflowStallCleared { .. } => "WorkflowStallCleared",
                 WorkflowEvent::NodeCompleted { .. } => "NodeCompleted",
@@ -671,10 +681,6 @@ mod tests {
                 WorkflowEvent::RunAborted { .. } => "RunAborted",
                 WorkflowEvent::RunInterrupted { .. } => "RunInterrupted",
                 WorkflowEvent::OutputCollected { .. } => "OutputCollected",
-                WorkflowEvent::ParallelStarted { .. } => "ParallelStarted",
-                WorkflowEvent::ParallelChildStarted { .. } => "ParallelChildStarted",
-                WorkflowEvent::ParallelChildCompleted { .. } => "ParallelChildCompleted",
-                WorkflowEvent::ParallelCompleted { .. } => "ParallelCompleted",
                 WorkflowEvent::ContractRepairRequested { .. } => "ContractRepairRequested",
                 WorkflowEvent::CliMutationRequested { .. } => "CliMutationRequested",
                 WorkflowEvent::ArtifactProduced { .. } => "ArtifactProduced",
@@ -884,6 +890,7 @@ mod tests {
             &adapter_engine,
             adapter_run_id.clone(),
             "review".to_string(),
+            None,
             Some("lgtm".to_string()),
         )
         .await
@@ -896,6 +903,7 @@ mod tests {
                 &direct_run_id,
                 Some("lgtm".to_string()),
                 "review",
+                None,
             )
             .await
             .expect("direct approval primitive must succeed");
@@ -1074,6 +1082,7 @@ mod tests {
             &ui_engine,
             ui_run_id.clone(),
             "review".to_string(),
+            None,
             Some("parity-lgtm".to_string()),
         )
         .await
@@ -1088,6 +1097,7 @@ mod tests {
                 cli_run_id.clone(),
                 crate::adaptor::gateway::workflow::pending_command::PendingCommandPayload::Approve {
                     node_name: "review".to_string(),
+                    node_execution_id: None,
                     comment: Some("parity-lgtm".to_string()),
                 },
                 100.0,
@@ -2682,8 +2692,11 @@ mod tests {
             .append(&WorkflowEvent::NodeStarted {
                 run_id: run_id.clone(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-plan-1".to_string(),
                 node_name: "plan".to_string(),
-                execution_count: 1,
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: None,
                 timestamp: 101.0,
             })
             .unwrap();
@@ -2691,6 +2704,7 @@ mod tests {
             .append(&WorkflowEvent::NodeCompleted {
                 run_id: run_id.clone(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-plan-1".to_string(),
                 node_name: "plan".to_string(),
                 result: Some("done".to_string()),
                 session_id: None,

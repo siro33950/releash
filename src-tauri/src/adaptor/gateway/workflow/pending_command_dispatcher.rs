@@ -206,7 +206,11 @@ where
     E: PendingCommandRuntime<R> + ?Sized,
 {
     match payload {
-        PendingRuntimeDispatchPayload::Approval { node_name, comment } => {
+        PendingRuntimeDispatchPayload::Approval {
+            node_name,
+            node_execution_id,
+            comment,
+        } => {
             engine
                 .resolve_workflow_approval_with_commit_context(
                     app,
@@ -215,6 +219,7 @@ where
                     run_id,
                     comment,
                     &node_name,
+                    node_execution_id.as_deref(),
                     Some(commit_context),
                 )
                 .await
@@ -233,6 +238,7 @@ where
         }
         PendingRuntimeDispatchPayload::SubmitOutput {
             step_name,
+            node_execution_id,
             contract,
             structured_output,
         } => {
@@ -243,6 +249,7 @@ where
                     agent_runtime,
                     run_id,
                     step_name,
+                    node_execution_id,
                     contract,
                     structured_output,
                     Some(request_id.to_string()),
@@ -321,12 +328,14 @@ fn classify_dispatch_error(error: WorkflowEngineError) -> PendingCommandDispatch
 
 fn payload_to_cli_request(payload: &PendingCommandPayload) -> CliMutationRequestRecord {
     match payload {
-        PendingCommandPayload::Approve { node_name, comment } => {
-            CliMutationRequestRecord::Approve {
-                node_name: node_name.clone(),
-                comment: comment.clone(),
-            }
-        }
+        PendingCommandPayload::Approve {
+            node_name,
+            node_execution_id: _,
+            comment,
+        } => CliMutationRequestRecord::Approve {
+            node_name: node_name.clone(),
+            comment: comment.clone(),
+        },
         PendingCommandPayload::Abort { node_name } => CliMutationRequestRecord::Abort {
             node_name: node_name.clone(),
         },
@@ -348,6 +357,7 @@ fn payload_to_cli_request(payload: &PendingCommandPayload) -> CliMutationRequest
 enum PendingRuntimeDispatchPayload {
     Approval {
         node_name: String,
+        node_execution_id: Option<String>,
         comment: Option<String>,
     },
     Abort {
@@ -355,6 +365,7 @@ enum PendingRuntimeDispatchPayload {
     },
     SubmitOutput {
         step_name: String,
+        node_execution_id: Option<String>,
         contract: String,
         structured_output: serde_json::Value,
     },
@@ -362,18 +373,26 @@ enum PendingRuntimeDispatchPayload {
 
 fn payload_to_runtime_dispatch(payload: PendingCommandPayload) -> PendingRuntimeDispatchPayload {
     match payload {
-        PendingCommandPayload::Approve { node_name, comment } => {
-            PendingRuntimeDispatchPayload::Approval { node_name, comment }
-        }
+        PendingCommandPayload::Approve {
+            node_name,
+            node_execution_id,
+            comment,
+        } => PendingRuntimeDispatchPayload::Approval {
+            node_name,
+            node_execution_id,
+            comment,
+        },
         PendingCommandPayload::Abort { node_name } => PendingRuntimeDispatchPayload::Abort {
             expected_node_name: node_name,
         },
         PendingCommandPayload::SubmitOutput {
             step_name,
+            node_execution_id,
             contract,
             structured_output,
         } => PendingRuntimeDispatchPayload::SubmitOutput {
             step_name,
+            node_execution_id,
             contract,
             structured_output,
         },
@@ -410,6 +429,7 @@ mod tests {
         run_id: String,
         comment: Option<String>,
         node_name: String,
+        node_execution_id: Option<String>,
         commit_context: Option<CommandCommitContext>,
     }
 
@@ -420,6 +440,7 @@ mod tests {
     struct SubmitRuntimeCall {
         run_id: String,
         step_name: String,
+        node_execution_id: Option<String>,
         contract: String,
         structured_output: serde_json::Value,
         request_id: Option<String>,
@@ -473,6 +494,7 @@ mod tests {
             run_id: &str,
             comment: Option<String>,
             node_name: &str,
+            node_execution_id: Option<&str>,
             commit_context: Option<CommandCommitContext>,
         ) -> Result<(), WorkflowEngineError> {
             self.approval_calls
@@ -482,6 +504,7 @@ mod tests {
                     run_id: run_id.to_string(),
                     comment,
                     node_name: node_name.to_string(),
+                    node_execution_id: node_execution_id.map(str::to_string),
                     commit_context,
                 });
             match self.next_approval_error.lock().unwrap().take() {
@@ -514,6 +537,7 @@ mod tests {
             _agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
             run_id: &str,
             step_name: String,
+            node_execution_id: Option<String>,
             contract: String,
             structured_output: serde_json::Value,
             request_id: Option<String>,
@@ -522,6 +546,7 @@ mod tests {
             self.submit_calls.lock().unwrap().push(SubmitRuntimeCall {
                 run_id: run_id.to_string(),
                 step_name,
+                node_execution_id,
                 contract,
                 structured_output,
                 request_id,
@@ -618,13 +643,19 @@ mod tests {
     fn payload_to_runtime_dispatch_preserves_typed_approve_target() {
         let payload = CliRequestPayload::Approve {
             node_name: "review".to_string(),
+            node_execution_id: Some("node-execution-review".to_string()),
             comment: None,
         };
         let dispatch_payload = payload_to_runtime_dispatch(payload.clone());
         let request = payload_to_cli_request(&payload);
         match dispatch_payload {
-            PendingRuntimeDispatchPayload::Approval { node_name, comment } => {
+            PendingRuntimeDispatchPayload::Approval {
+                node_name,
+                node_execution_id,
+                comment,
+            } => {
                 assert_eq!(node_name, "review");
+                assert_eq!(node_execution_id.as_deref(), Some("node-execution-review"));
                 assert!(comment.is_none());
             }
             other => panic!("expected approval dispatch payload, got: {other:?}"),
@@ -649,6 +680,7 @@ mod tests {
             run_id.clone(),
             CliRequestPayload::Approve {
                 node_name: "review".to_string(),
+                node_execution_id: Some("node-execution-review".to_string()),
                 comment: Some("cli-lgtm".to_string()),
             },
             900.0,
@@ -670,6 +702,10 @@ mod tests {
         assert_eq!(call.run_id, run_id);
         assert_eq!(call.comment.as_deref(), Some("cli-lgtm"));
         assert_eq!(call.node_name, "review");
+        assert_eq!(
+            call.node_execution_id.as_deref(),
+            Some("node-execution-review")
+        );
         assert_cli_pending_context(
             call.commit_context
                 .as_ref()
@@ -700,6 +736,7 @@ mod tests {
             run_id.clone(),
             CliRequestPayload::Approve {
                 node_name: "stale-review".to_string(),
+                node_execution_id: None,
                 comment: None,
             },
             900.75,
@@ -750,6 +787,7 @@ mod tests {
             run_id.clone(),
             CliRequestPayload::Approve {
                 node_name: "review".to_string(),
+                node_execution_id: None,
                 comment: None,
             },
             901.75,
@@ -786,6 +824,7 @@ mod tests {
             run_id.clone(),
             CliRequestPayload::SubmitOutput {
                 step_name: "review".to_string(),
+                node_execution_id: Some("node-execution-review".to_string()),
                 contract: "review-verdict".to_string(),
                 structured_output: serde_json::json!({"verdict": "LGTM"}),
             },
@@ -808,6 +847,10 @@ mod tests {
         let call = &calls[0];
         assert_eq!(call.run_id, run_id);
         assert_eq!(call.step_name, "review");
+        assert_eq!(
+            call.node_execution_id.as_deref(),
+            Some("node-execution-review")
+        );
         assert_eq!(call.contract, "review-verdict");
         assert_eq!(
             call.structured_output,
@@ -837,6 +880,7 @@ mod tests {
             run_id.clone(),
             CliRequestPayload::SubmitOutput {
                 step_name: "review".to_string(),
+                node_execution_id: None,
                 contract: "spec-directory".to_string(),
                 structured_output: serde_json::json!({"spec_dir": "/not/relative"}),
             },

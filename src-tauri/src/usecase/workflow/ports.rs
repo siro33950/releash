@@ -278,6 +278,7 @@ pub struct PendingRuntimeCommand {
 pub enum PendingRuntimeCommandPayload {
     Approve {
         node_name: String,
+        node_execution_id: Option<String>,
         comment: Option<String>,
     },
     Abort {
@@ -285,6 +286,7 @@ pub enum PendingRuntimeCommandPayload {
     },
     SubmitOutput {
         step_name: String,
+        node_execution_id: Option<String>,
         contract: String,
         structured_output: serde_json::Value,
     },

@@ -26,6 +26,7 @@ pub(crate) enum InternalNodeCommand {
     CompleteNode {
         run_id: String,
         workflow_name: String,
+        node_execution_id: String,
         node_name: String,
         result: Option<String>,
         session_id: Option<String>,
@@ -41,6 +42,7 @@ pub(crate) enum InternalNodeCommand {
     FailNode {
         run_id: String,
         workflow_name: String,
+        node_execution_id: String,
         node_name: String,
         reason: String,
         failure_kind: WorkflowStepFailureKind,
@@ -64,6 +66,7 @@ mod tests {
         let complete = InternalNodeCommand::CompleteNode {
             run_id: "00000000-0000-0000-0000-000000000020".to_string(),
             workflow_name: "wf".to_string(),
+            node_execution_id: "node-execution-20".to_string(),
             node_name: "step1".to_string(),
             result: Some("ok".to_string()),
             session_id: Some("sess-1".to_string()),
@@ -75,10 +78,12 @@ mod tests {
         match complete {
             InternalNodeCommand::CompleteNode {
                 ref run_id,
+                ref node_execution_id,
                 ref node_name,
                 ..
             } => {
                 assert_eq!(run_id, "00000000-0000-0000-0000-000000000020");
+                assert_eq!(node_execution_id, "node-execution-20");
                 assert_eq!(node_name, "step1");
             }
             _ => panic!("expected CompleteNode"),
@@ -86,6 +91,7 @@ mod tests {
         let fail = InternalNodeCommand::FailNode {
             run_id: "00000000-0000-0000-0000-000000000021".to_string(),
             workflow_name: "wf".to_string(),
+            node_execution_id: "node-execution-21".to_string(),
             node_name: "step2".to_string(),
             reason: "boom".to_string(),
             failure_kind: WorkflowStepFailureKind::InfrastructureCrash,
@@ -95,10 +101,12 @@ mod tests {
         match fail {
             InternalNodeCommand::FailNode {
                 ref reason,
+                ref node_execution_id,
                 ref node_name,
                 ..
             } => {
                 assert_eq!(reason, "boom");
+                assert_eq!(node_execution_id, "node-execution-21");
                 assert_eq!(node_name, "step2");
             }
             _ => panic!("expected FailNode"),

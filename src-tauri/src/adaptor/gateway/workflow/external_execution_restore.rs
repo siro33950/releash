@@ -63,6 +63,7 @@ pub(crate) fn restore_execution_from_projected_state(
         current_session_id: current_session_id.clone(),
         current_step_token_usage: TokenUsage::default(),
         step_outputs: state.step_outputs,
+        node_executions: state.node_executions,
         task: run.task,
         parallel_run: None,
         current_stall_observations: state.stall_observations,
@@ -78,7 +79,8 @@ pub(crate) fn restore_execution_from_projected_state(
 mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::run::{RunStatus, TriggerSource};
-    use crate::adaptor::gateway::workflow::schema::{NodeDefinition, Workflow};
+    use crate::adaptor::gateway::workflow::schema::{NodeDefinition, NodeKindName, Workflow};
+    use crate::adaptor::gateway::workflow::state::{NodeExecution, NodeExecutionStatus};
 
     fn workflow_run(status: RunStatus) -> WorkflowRun {
         WorkflowRun {
@@ -118,7 +120,7 @@ mod tests {
             total_token_usage: TokenUsage::default(),
             step_states: Default::default(),
             step_outputs: Default::default(),
-            active_parallel_steps: Vec::new(),
+            node_executions: Vec::new(),
             stall_observations: Vec::new(),
             approval_operations: None,
             started_at: 10.0,
@@ -173,6 +175,21 @@ mod tests {
     #[test]
     fn restore_execution_from_projected_state_rebuilds_runtime_execution() {
         let mut state = workflow_state(WorkflowExecutionState::WaitingApproval);
+        state.node_executions.push(NodeExecution {
+            id: "node-execution-1".to_string(),
+            execution_id: "run-1".to_string(),
+            node_name: "step-1".to_string(),
+            kind: NodeKindName::Session,
+            attempt: 1,
+            status: NodeExecutionStatus::WaitingApproval,
+            session_id: Some("session-1".to_string()),
+            artifact: None,
+            token_usage: None,
+            failure: None,
+            fanout_parent: None,
+            started_at: 10.0,
+            completed_at: None,
+        });
         state.stall_observations.push(WorkflowStallObservation {
             session_id: "session-1".to_string(),
             step_name: "step-1".to_string(),
@@ -201,6 +218,12 @@ mod tests {
         assert_eq!(restored.execution.task.as_deref(), Some("task"));
         assert_eq!(restored.execution.current_step_index, 0);
         assert!(restored.execution.parallel_run.is_none());
+        assert_eq!(restored.execution.node_executions.len(), 1);
+        assert_eq!(restored.execution.node_executions[0].id, "node-execution-1");
+        assert_eq!(
+            restored.execution.node_executions[0].status,
+            NodeExecutionStatus::WaitingApproval
+        );
         assert_eq!(restored.execution.workflow_defaults.backend_id, None);
         assert_eq!(
             restored.execution.workflow_defaults.permission_mode,

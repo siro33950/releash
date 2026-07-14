@@ -10,8 +10,8 @@ use crate::adaptor::gateway::workflow::execution_registry::{
 use crate::adaptor::gateway::workflow::facet::WorkflowFacetContents;
 use crate::adaptor::gateway::workflow::failure_policy_config::workflow_runtime_timeout_policy;
 use crate::adaptor::gateway::workflow::parallel_runtime::{
-    self as workflow_parallel_runtime, ParallelChildSessionSetup, ParallelPromptInputs,
-    ParallelStartContext,
+    self as workflow_fanout_runtime, FanoutChildSessionSetup, FanoutPromptInputs,
+    FanoutStartContext,
 };
 use crate::adaptor::gateway::workflow::prompt_rendering as workflow_prompt;
 use crate::adaptor::gateway::workflow::runtime_state::{SessionWorkflowRef, WorkflowExecution};
@@ -45,6 +45,7 @@ impl StepRuntimeKindContext {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn session() -> Self {
         Self::new(NodeKindName::Session, false)
     }
@@ -102,21 +103,21 @@ pub(crate) async fn record_post_commit_runtime_start_failure(
     runtime_start_failed_state(failure, error)
 }
 
-pub(crate) struct ParallelStartRuntimeInputs {
-    pub(crate) parallel_start: ParallelStartContext,
-    pub(crate) prompt_inputs: ParallelPromptInputs,
+pub(crate) struct FanoutStartRuntimeInputs {
+    pub(crate) fanout_start: FanoutStartContext,
+    pub(crate) prompt_inputs: FanoutPromptInputs,
 }
 
-pub(crate) async fn load_parallel_start_runtime_inputs(
+pub(crate) async fn load_fanout_start_runtime_inputs(
     executions: &Mutex<HashMap<String, WorkflowExecution>>,
     worktree_path: &str,
-) -> Result<ParallelStartRuntimeInputs, WorkflowEngineError> {
+) -> Result<FanoutStartRuntimeInputs, WorkflowEngineError> {
     let execs = executions.lock().await;
     let (_, exec) = find_by_worktree(&execs, worktree_path)
         .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
-    Ok(ParallelStartRuntimeInputs {
-        parallel_start: workflow_parallel_runtime::prepare_parallel_start_context(exec)?,
-        prompt_inputs: workflow_parallel_runtime::parallel_prompt_inputs(exec),
+    Ok(FanoutStartRuntimeInputs {
+        fanout_start: workflow_fanout_runtime::prepare_fanout_start_context(exec)?,
+        prompt_inputs: workflow_fanout_runtime::fanout_prompt_inputs(exec),
     })
 }
 
@@ -346,27 +347,26 @@ pub(crate) async fn release_completed_step_sessions<R: tauri::Runtime>(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn prepare_parallel_child_session_setups<R: tauri::Runtime>(
+pub(crate) async fn prepare_fanout_child_session_setups<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     registry: &AgentBackendRegistry,
     session_store: &Arc<SessionStore>,
     session_workflow_refs: &Mutex<HashMap<String, SessionWorkflowRef>>,
     worktree_path: &str,
-    parallel_start: &ParallelStartContext,
-    prompt_inputs: &ParallelPromptInputs,
+    fanout_start: &FanoutStartContext,
+    prompt_inputs: &FanoutPromptInputs,
     facet_contents: &WorkflowFacetContents,
-) -> Result<Vec<ParallelChildSessionSetup>, WorkflowEngineError> {
+) -> Result<Vec<FanoutChildSessionSetup>, WorkflowEngineError> {
     let prompt_plans =
-        prepare_parallel_child_prompt_plans(parallel_start, prompt_inputs, facet_contents)?;
-    let creation_plans =
-        prepare_parallel_child_creation_plans(registry, parallel_start, prompt_plans)?;
+        prepare_fanout_child_prompt_plans(fanout_start, prompt_inputs, facet_contents)?;
+    let creation_plans = prepare_fanout_child_creation_plans(registry, fanout_start, prompt_plans)?;
     let data_dir = crate::infrastructure::platform::app_data_dir::resolve_data_dir(app)
         .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
     let mut child_setups = Vec::new();
     let mut created_session_ids = Vec::new();
 
     for creation_plan in creation_plans {
-        let ps = &parallel_start.parallel_steps[creation_plan.step_index];
+        let child = &fanout_start.children[creation_plan.expansion_index];
         let step_session = match create_step_session_from_resolved_settings(
             session_store,
             &data_dir,
@@ -377,7 +377,7 @@ pub(crate) async fn prepare_parallel_child_session_setups<R: tauri::Runtime>(
         ) {
             Ok(session) => session,
             Err(err) => {
-                return Err(rollback_created_parallel_child_sessions(
+                return Err(rollback_created_fanout_child_sessions(
                     session_store,
                     &data_dir,
                     session_workflow_refs,
@@ -395,38 +395,36 @@ pub(crate) async fn prepare_parallel_child_session_setups<R: tauri::Runtime>(
             map.insert(
                 step_session_id.clone(),
                 SessionWorkflowRef {
-                    run_id: parallel_start.execution_id.clone(),
+                    run_id: fanout_start.execution_id.clone(),
                 },
             );
         }
         created_session_ids.push(step_session_id.clone());
 
-        child_setups.push(ParallelChildSessionSetup {
-            step_name: ps.name.clone(),
+        child_setups.push(FanoutChildSessionSetup {
+            node_execution_id: child.node_execution_id.clone(),
+            step_name: child.node.name.clone(),
             session_id: step_session_id,
             system_prompt: creation_plan.system_prompt,
             workflow_instruction: creation_plan.workflow_instruction,
             user_message: creation_plan.user_message,
             permission_mode: child_permission_mode,
-            artifact_contract: ps.artifact.clone(),
-            run_index: creation_plan.run_index,
         });
     }
 
     Ok(child_setups)
 }
 
-struct ParallelChildPromptPlan {
-    step_index: usize,
+struct FanoutChildPromptPlan {
+    expansion_index: usize,
     run_index: u32,
     system_prompt: Option<String>,
     user_message: String,
     workflow_instruction: Option<String>,
 }
 
-struct ParallelChildCreationPlan {
-    step_index: usize,
-    run_index: u32,
+struct FanoutChildCreationPlan {
+    expansion_index: usize,
     system_prompt: Option<String>,
     user_message: String,
     workflow_instruction: Option<String>,
@@ -435,82 +433,92 @@ struct ParallelChildCreationPlan {
     kind_context: StepRuntimeKindContext,
 }
 
-fn prepare_parallel_child_prompt_plans(
-    parallel_start: &ParallelStartContext,
-    prompt_inputs: &ParallelPromptInputs,
+fn prepare_fanout_child_prompt_plans(
+    fanout_start: &FanoutStartContext,
+    prompt_inputs: &FanoutPromptInputs,
     facet_contents: &WorkflowFacetContents,
-) -> Result<Vec<ParallelChildPromptPlan>, WorkflowEngineError> {
-    parallel_start
-        .parallel_steps
+) -> Result<Vec<FanoutChildPromptPlan>, WorkflowEngineError> {
+    fanout_start
+        .children
         .iter()
         .enumerate()
-        .zip(parallel_start.child_run_indices.iter().copied())
-        .map(|((step_index, ps), run_index)| {
-            let (system_prompt, user_message) = workflow_prompt::build_parallel_step_prompt(
-                ps,
-                facet_contents.for_child(&parallel_start.parent_step_name, &ps.name),
-                &parallel_start.execution_id,
-                parallel_start.task.as_deref(),
+        .filter(|(_, child)| child.node.session().is_some())
+        .map(|(expansion_index, child)| {
+            let (system_prompt, user_message) = workflow_prompt::build_fanout_child_prompt(
+                &child.node,
+                facet_contents.for_node(&child.node.name),
+                &fanout_start.execution_id,
+                fanout_start.task.as_deref(),
                 &prompt_inputs.step_outputs,
-                None,
+                child.item.as_ref(),
+                &child.node_execution_id,
             )?;
-            Ok(ParallelChildPromptPlan {
-                step_index,
-                run_index,
+            Ok(FanoutChildPromptPlan {
+                expansion_index,
+                run_index: child.attempt,
                 system_prompt,
                 user_message,
-                workflow_instruction: workflow_prompt::render_child_workflow_instruction(
-                    ps,
-                    facet_contents.for_child(&parallel_start.parent_step_name, &ps.name),
-                    parallel_start.task.as_deref(),
+                workflow_instruction: workflow_prompt::render_fanout_child_workflow_instruction(
+                    &child.node,
+                    facet_contents.for_node(&child.node.name),
+                    fanout_start.task.as_deref(),
                     &prompt_inputs.step_outputs,
-                    None,
+                    child.item.as_ref(),
                 ),
             })
         })
         .collect()
 }
 
-fn prepare_parallel_child_creation_plans(
+fn prepare_fanout_child_creation_plans(
     registry: &AgentBackendRegistry,
-    parallel_start: &ParallelStartContext,
-    prompt_plans: Vec<ParallelChildPromptPlan>,
-) -> Result<Vec<ParallelChildCreationPlan>, WorkflowEngineError> {
+    fanout_start: &FanoutStartContext,
+    prompt_plans: Vec<FanoutChildPromptPlan>,
+) -> Result<Vec<FanoutChildCreationPlan>, WorkflowEngineError> {
     let mut creation_plans = Vec::with_capacity(prompt_plans.len());
     for prompt_plan in prompt_plans {
-        let ps = &parallel_start.parallel_steps[prompt_plan.step_index];
+        let child = &fanout_start.children[prompt_plan.expansion_index];
+        let session = child.node.session().ok_or_else(|| {
+            WorkflowEngineError::InvalidState(format!(
+                "fanout child '{}' is not a session node",
+                child.node.name
+            ))
+        })?;
         let settings = resolve_step_session_creation_settings(
             registry,
-            ps.model.clone(),
-            ps.permission.clone(),
-            &parallel_start.workflow_defaults,
+            session.model.clone(),
+            session.permission.clone(),
+            &fanout_start.workflow_defaults,
         )?;
-        creation_plans.push(ParallelChildCreationPlan {
-            step_index: prompt_plan.step_index,
-            run_index: prompt_plan.run_index,
+        creation_plans.push(FanoutChildCreationPlan {
+            expansion_index: prompt_plan.expansion_index,
             system_prompt: prompt_plan.system_prompt,
             user_message: prompt_plan.user_message,
             settings,
             workflow_step_context: WorkflowStepContext {
-                run_id: parallel_start.execution_id.clone(),
-                workflow_name: parallel_start.workflow_name.clone(),
-                step_name: ps.name.clone(),
+                run_id: fanout_start.execution_id.clone(),
+                node_execution_id: child.node_execution_id.clone(),
+                workflow_name: fanout_start.workflow_name.clone(),
+                step_name: child.node.name.clone(),
                 run_index: prompt_plan.run_index,
-                parent_step_name: Some(parallel_start.parent_step_name.clone()),
-                parent_run_index: Some(parallel_start.parent_run_index),
-                order: parallel_start.order,
+                parent_step_name: Some(fanout_start.parent_step_name.clone()),
+                parent_run_index: Some(fanout_start.parent_run_index),
+                order: fanout_start.order,
                 startup_timeout_secs: None,
                 startup_max_retries: None,
                 stale_timeout_secs: None,
             },
-            kind_context: StepRuntimeKindContext::session(),
+            kind_context: StepRuntimeKindContext::new(
+                NodeKindName::Session,
+                child.node.is_approval_session(),
+            ),
             workflow_instruction: prompt_plan.workflow_instruction,
         });
     }
     Ok(creation_plans)
 }
 
-async fn rollback_created_parallel_child_sessions(
+async fn rollback_created_fanout_child_sessions(
     session_store: &SessionStore,
     data_dir: &Path,
     session_workflow_refs: &Mutex<HashMap<String, SessionWorkflowRef>>,
@@ -539,42 +547,58 @@ async fn rollback_created_parallel_child_sessions(
         original_error
     } else {
         WorkflowEngineError::SessionStore(format!(
-            "parallel child setup failed: {original_error}; rollback failed for created child sessions: {}",
+            "fanout child setup failed: {original_error}; rollback failed for created child sessions: {}",
             rollback_errors.join("; ")
         ))
     }
 }
 
+pub(crate) async fn rollback_prepared_fanout_child_sessions<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_store: &SessionStore,
+    session_workflow_refs: &Mutex<HashMap<String, SessionWorkflowRef>>,
+    child_setups: &[FanoutChildSessionSetup],
+    original_error: WorkflowEngineError,
+) -> WorkflowEngineError {
+    let data_dir = match crate::infrastructure::platform::app_data_dir::resolve_data_dir(app) {
+        Ok(data_dir) => data_dir,
+        Err(error) => {
+            return WorkflowEngineError::SessionStore(format!(
+                "fanout child event commit failed: {original_error}; failed to resolve rollback data dir: {error}"
+            ));
+        }
+    };
+    let session_ids = child_setups
+        .iter()
+        .map(|setup| setup.session_id.clone())
+        .collect::<Vec<_>>();
+    rollback_created_fanout_child_sessions(
+        session_store,
+        &data_dir,
+        session_workflow_refs,
+        &session_ids,
+        original_error,
+    )
+    .await
+}
+
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn activate_parallel_child_sessions<R: tauri::Runtime, O>(
+pub(crate) async fn activate_fanout_child_sessions<R: tauri::Runtime, O>(
     app: &tauri::AppHandle<R>,
     _branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     session_store: &Arc<SessionStore>,
     runtime: &Arc<AgentSessionRuntimeUsecase>,
     open_tabs: &Arc<OpenTabRegistry>,
-    executions: &Mutex<HashMap<String, WorkflowExecution>>,
     worktree_path: &str,
-    parallel_start: &ParallelStartContext,
-    child_setups: &[ParallelChildSessionSetup],
+    child_setups: &[FanoutChildSessionSetup],
+    snapshot: WorkflowState,
     observer: &O,
 ) -> Result<(), WorkflowEngineError>
 where
-    O: ParallelChildTurnObserver + ?Sized,
+    O: FanoutChildTurnObserver + ?Sized,
 {
-    let (child_run_indices, snapshot) = {
-        let mut execs = executions.lock().await;
-        let exec = find_by_worktree_mut(&mut execs, worktree_path)
-            .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
-
-        workflow_parallel_runtime::apply_parallel_run_state(
-            exec,
-            parallel_start.parent_step_name.clone(),
-            parallel_start.aggregate.clone(),
-            child_setups,
-        )
-    };
     broadcast_state(app, worktree_path, snapshot.clone()).await;
-    start_parallel_child_sessions(
+    start_fanout_child_sessions(
         app,
         None,
         session_store,
@@ -582,38 +606,36 @@ where
         open_tabs,
         worktree_path,
         child_setups,
-        &child_run_indices,
         Some(snapshot),
         observer,
     )
     .await
 }
 
-pub(crate) struct ParallelChildStartedRuntime<'a> {
+pub(crate) struct FanoutChildStartedRuntime<'a> {
+    pub(crate) node_execution_id: &'a str,
     pub(crate) step_name: &'a str,
     pub(crate) session_id: &'a str,
-    pub(crate) execution_count: u32,
 }
 
-pub(crate) trait ParallelChildTurnObserver {
-    fn child_turn_started(&self, started: ParallelChildStartedRuntime<'_>);
+pub(crate) trait FanoutChildTurnObserver {
+    fn child_turn_started(&self, started: FanoutChildStartedRuntime<'_>);
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn start_parallel_child_sessions<R: tauri::Runtime, O>(
+pub(crate) async fn start_fanout_child_sessions<R: tauri::Runtime, O>(
     app: &tauri::AppHandle<R>,
     _branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     _session_store: &Arc<SessionStore>,
     runtime: &Arc<AgentSessionRuntimeUsecase>,
     open_tabs: &Arc<OpenTabRegistry>,
     worktree_path: &str,
-    child_setups: &[ParallelChildSessionSetup],
-    child_run_indices: &[u32],
+    child_setups: &[FanoutChildSessionSetup],
     workflow_state_for_projection: Option<WorkflowState>,
     observer: &O,
 ) -> Result<(), WorkflowEngineError>
 where
-    O: ParallelChildTurnObserver + ?Sized,
+    O: FanoutChildTurnObserver + ?Sized,
 {
     let mut created_session_ids: Vec<String> = Vec::new();
     let mut runtime_guards = Vec::new();
@@ -628,7 +650,7 @@ where
         created_session_ids.push(setup.session_id.clone());
     }
 
-    for (index, setup) in child_setups.iter().enumerate() {
+    for setup in child_setups {
         let runtime_guard = runtime_guards.remove(0);
         let permission_mode = PermissionMode::parse(&setup.permission_mode)
             .map_err(|e| WorkflowEngineError::InvalidWorkflow(e.to_string()))?;
@@ -647,7 +669,7 @@ where
             }
             return Err(WorkflowEngineError::with_agent_runtime_context(
                 format!(
-                    "Failed to start turn for parallel child '{}'",
+                    "Failed to start turn for fanout child '{}'",
                     setup.step_name
                 ),
                 e,
@@ -655,10 +677,10 @@ where
         }
         drop(runtime_guard);
 
-        observer.child_turn_started(ParallelChildStartedRuntime {
+        observer.child_turn_started(FanoutChildStartedRuntime {
+            node_execution_id: &setup.node_execution_id,
             step_name: &setup.step_name,
             session_id: &setup.session_id,
-            execution_count: child_run_indices[index],
         });
     }
 
@@ -669,7 +691,7 @@ where
 mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::schema::{
-        FanoutSpec, InterimChild, NodeDefinition, NodeKind, Workflow,
+        FanoutSpec, NodeDefinition, NodeKind, Workflow,
     };
     use crate::adaptor::gateway::workflow::state::{StepOutput, TokenUsage};
     use crate::domain::agent_session::gateway::{
@@ -773,6 +795,7 @@ mod tests {
     fn workflow_context_for_test() -> WorkflowStepContext {
         WorkflowStepContext {
             run_id: "run-1".to_string(),
+            node_execution_id: "node-execution-1".to_string(),
             workflow_name: "workflow".to_string(),
             step_name: "step".to_string(),
             run_index: 0,
@@ -813,6 +836,7 @@ mod tests {
             current_session_id: Some("session-1".to_string()),
             current_step_token_usage: TokenUsage::default(),
             step_outputs: HashMap::new(),
+            node_executions: Vec::new(),
             task: None,
             parallel_run: None,
             current_stall_observations: Vec::new(),
@@ -953,7 +977,8 @@ mod tests {
         };
         let context = WorkflowStepContext {
             run_id: "run-1".to_string(),
-            workflow_name: "05_review-fix_codex".to_string(),
+            node_execution_id: "node-execution-1".to_string(),
+            workflow_name: "05_review-fix_gpt55".to_string(),
             step_name: "review".to_string(),
             run_index: 1,
             parent_step_name: None,
@@ -984,7 +1009,8 @@ mod tests {
         };
         let context = WorkflowStepContext {
             run_id: "run-1".to_string(),
-            workflow_name: "05_review-fix_codex".to_string(),
+            node_execution_id: "node-execution-1".to_string(),
+            workflow_name: "05_review-fix_gpt55".to_string(),
             step_name: "review".to_string(),
             run_index: 1,
             parent_step_name: None,
@@ -1015,6 +1041,7 @@ mod tests {
         };
         let context = WorkflowStepContext {
             run_id: "run-1".to_string(),
+            node_execution_id: "node-execution-1".to_string(),
             workflow_name: "unknown-template".to_string(),
             step_name: "approval".to_string(),
             run_index: 1,
@@ -1107,7 +1134,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn record_post_commit_runtime_start_failure_leaves_parallel_history_unchanged() {
+    async fn record_post_commit_runtime_start_failure_leaves_fanout_history_unchanged() {
         let executions = Mutex::new(HashMap::from([(
             "run-1".to_string(),
             workflow_execution_fixture("run-1", "/tmp/repo"),
@@ -1132,19 +1159,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn load_parallel_start_runtime_inputs_reads_context_and_prompt_inputs() {
+    async fn load_fanout_start_runtime_inputs_reads_context_and_prompt_inputs() {
         let mut exec = workflow_execution_fixture("run-1", "/tmp/repo");
         exec.workflow.nodes[0] = NodeDefinition {
-            name: "parallel-review".to_string(),
+            name: "fanout-review".to_string(),
             kind: NodeKind::Fanout(FanoutSpec {
-                parallel_children: vec![InterimChild {
-                    name: "review-a".to_string(),
-                    ..Default::default()
-                }],
+                child: vec!["review-a".to_string()],
+                items: None,
                 aggregate: None,
             }),
             ..Default::default()
         };
+        exec.workflow.nodes.push(NodeDefinition {
+            name: "review-a".to_string(),
+            ..Default::default()
+        });
         exec.step_outputs.insert(
             "plan".to_string(),
             StepOutput {
@@ -1160,13 +1189,13 @@ mod tests {
         );
         let executions = Mutex::new(HashMap::from([("run-1".to_string(), exec)]));
 
-        let inputs = load_parallel_start_runtime_inputs(&executions, "/tmp/repo")
+        let inputs = load_fanout_start_runtime_inputs(&executions, "/tmp/repo")
             .await
             .unwrap();
 
-        assert_eq!(inputs.parallel_start.parent_step_name, "parallel-review");
+        assert_eq!(inputs.fanout_start.parent_step_name, "fanout-review");
         assert_eq!(
-            inputs.parallel_start.child_step_names(),
+            inputs.fanout_start.child_step_names(),
             vec!["review-a".to_string()]
         );
         assert_eq!(

@@ -1009,6 +1009,7 @@ mod tests {
     fn build_system_context_routes_workflow_instruction_outside_workflow_state() {
         let workflow_state = serde_json::to_string(&WorkflowStepContextDto {
             run_id: "run-1".to_string(),
+            node_execution_id: "node-execution-1".to_string(),
             workflow_name: "wf".to_string(),
             step_name: "step-a".to_string(),
             run_index: 0,

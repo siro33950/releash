@@ -4,116 +4,158 @@ builtin: true
 nodes:
 - name: review-parallel
   fanout:
-    parallel_children:
-    - name: review-acceptance-opus
-      model: claude-opus-4-8
-      permission: edit
-      facets:
-        policy: reviewing
-        knowledge: releash-thread-cli
-        instruction: review-acceptance
-    - name: review-acceptance-gpt55
-      model: gpt-5.5
-      permission: full
-      facets:
-        policy: reviewing
-        knowledge: releash-thread-cli
-        instruction: review-acceptance
-    - name: review-structure-opus
-      model: claude-opus-4-8
-      permission: edit
-      facets:
-        policy: reviewing
-        knowledge: releash-thread-cli
-        instruction: review-structure
-    - name: review-structure-gpt55
-      model: gpt-5.5
-      permission: full
-      facets:
-        policy: reviewing
-        knowledge: releash-thread-cli
-        instruction: review-structure
-    - name: review-quality-opus
-      model: claude-opus-4-8
-      permission: edit
-      facets:
-        policy: reviewing
-        knowledge: releash-thread-cli
-        instruction: review-quality
-    - name: review-quality-gpt55
-      model: gpt-5.5
-      permission: full
-      facets:
-        policy: reviewing
-        knowledge: releash-thread-cli
-        instruction: review-quality
-    - name: review-test-opus
-      model: claude-opus-4-8
-      permission: edit
-      facets:
-        policy: reviewing
-        knowledge: releash-thread-cli
-        instruction: review-test
-    - name: review-test-gpt55
-      model: gpt-5.5
-      permission: full
-      facets:
-        policy: reviewing
-        knowledge: releash-thread-cli
-        instruction: review-test
-    - name: review-security-opus
-      model: claude-opus-4-8
-      permission: edit
-      facets:
-        policy: reviewing
-        knowledge: releash-thread-cli
-        instruction: review-security
-    - name: review-security-gpt55
-      model: gpt-5.5
-      permission: full
-      facets:
-        policy: reviewing
-        knowledge: releash-thread-cli
-        instruction: review-security
-    - name: review-architecture-opus
-      model: claude-opus-4-8
-      permission: edit
-      facets:
-        policy: reviewing
-        knowledge: releash-thread-cli
-        instruction: review-architecture
-    - name: review-architecture-gpt55
-      model: gpt-5.5
-      permission: full
-      facets:
-        policy: reviewing
-        knowledge: releash-thread-cli
-        instruction: review-architecture
+    child:
+    - review-acceptance-opus
+    - review-acceptance-gpt55
+    - review-structure-opus
+    - review-structure-gpt55
+    - review-quality-opus
+    - review-quality-gpt55
+    - review-test-opus
+    - review-test-gpt55
+    - review-security-opus
+    - review-security-gpt55
+    - review-architecture-opus
+    - review-architecture-gpt55
     aggregate:
       all_match: ".*"
       then: verify-and-classify
       else: verify-and-classify
+- name: review-acceptance-opus
+  session:
+    model: claude-opus-4-8
+    permission: edit
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-acceptance
+- name: review-acceptance-gpt55
+  session:
+    model: gpt-5.5
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-acceptance
+- name: review-structure-opus
+  session:
+    model: claude-opus-4-8
+    permission: edit
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-structure
+- name: review-structure-gpt55
+  session:
+    model: gpt-5.5
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-structure
+- name: review-quality-opus
+  session:
+    model: claude-opus-4-8
+    permission: edit
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-quality
+- name: review-quality-gpt55
+  session:
+    model: gpt-5.5
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-quality
+- name: review-test-opus
+  session:
+    model: claude-opus-4-8
+    permission: edit
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-test
+- name: review-test-gpt55
+  session:
+    model: gpt-5.5
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-test
+- name: review-security-opus
+  session:
+    model: claude-opus-4-8
+    permission: edit
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-security
+- name: review-security-gpt55
+  session:
+    model: gpt-5.5
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-security
+- name: review-architecture-opus
+  session:
+    model: claude-opus-4-8
+    permission: edit
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-architecture
+- name: review-architecture-gpt55
+  session:
+    model: gpt-5.5
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-architecture
 - name: verify-and-classify
   fanout:
-    parallel_children:
-    - name: verify-opus
-      model: claude-opus-4-8
-      permission: edit
-      facets:
-        policy: reviewing
-        knowledge: releash-thread-cli
-        instruction: full-review-verify-and-classify
-    - name: verify-gpt55
-      model: gpt-5.5
-      permission: full
-      facets:
-        policy: reviewing
-        knowledge: releash-thread-cli
-        instruction: full-review-verify-and-classify
+    child:
+    - verify-opus
+    - verify-gpt55
     aggregate:
       all_match: ".*"
       then: reporting
       else: reporting
+- name: verify-opus
+  session:
+    model: claude-opus-4-8
+    permission: edit
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: full-review-verify-and-classify
+- name: verify-gpt55
+  session:
+    model: gpt-5.5
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: full-review-verify-and-classify
 - name: reporting
   session:
     model: claude-opus-4-8

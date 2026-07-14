@@ -2,9 +2,10 @@ use std::collections::HashMap;
 
 use super::definition::WorkflowDefinition;
 use super::failure::WorkflowStepFailureKind;
+use super::node_execution::NodeExecution;
 use super::step_output::{
-    ParallelStepState, StepHistoryEntry, StepOutput, TokenUsage, STEP_STATE_ABORTED,
-    STEP_STATE_COMPLETED, STEP_STATE_FAILED, STEP_STATE_RUNNING, STEP_STATE_WAITING_APPROVAL,
+    StepHistoryEntry, StepOutput, TokenUsage, STEP_STATE_ABORTED, STEP_STATE_COMPLETED,
+    STEP_STATE_FAILED, STEP_STATE_RUNNING, STEP_STATE_WAITING_APPROVAL,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -70,7 +71,7 @@ pub struct WorkflowStateSnapshot {
     pub total_token_usage: TokenUsage,
     pub step_states: HashMap<String, String>,
     pub step_outputs: HashMap<String, StepOutput>,
-    pub active_parallel_steps: Vec<ParallelStepState>,
+    pub node_executions: Vec<NodeExecution>,
     pub approval_operations: Option<ApprovalOperations>,
     pub stall_observations: Vec<WorkflowStallObservation>,
     pub started_at: f64,
