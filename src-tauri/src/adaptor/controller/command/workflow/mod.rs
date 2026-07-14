@@ -680,7 +680,6 @@ mod tests {
                 WorkflowEvent::RunFailed { .. } => "RunFailed",
                 WorkflowEvent::RunAborted { .. } => "RunAborted",
                 WorkflowEvent::RunInterrupted { .. } => "RunInterrupted",
-                WorkflowEvent::OutputCollected { .. } => "OutputCollected",
                 WorkflowEvent::ContractRepairRequested { .. } => "ContractRepairRequested",
                 WorkflowEvent::CliMutationRequested { .. } => "CliMutationRequested",
                 WorkflowEvent::ArtifactProduced { .. } => "ArtifactProduced",

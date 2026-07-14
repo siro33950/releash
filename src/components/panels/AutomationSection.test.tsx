@@ -594,12 +594,6 @@ describe("AutomationSection", () => {
 						fanout: {
 							child: ["child-1", "child-2"],
 							items: "scan.items",
-							aggregate: {
-								all_match: "pass",
-								// biome-ignore lint/suspicious/noThenProperty: AggregateConfig uses then/else fields
-								then: "step-done",
-								else: "step-fail",
-							},
 						},
 						artifact: "json-schema",
 						inputs: ["step-0"],
@@ -611,10 +605,6 @@ describe("AutomationSection", () => {
 								on_exhausted: "fallback-step",
 							},
 						],
-						collect: {
-							from: ["step-a", "step-b"],
-							reduce: "concat" as const,
-						},
 					},
 				],
 			},

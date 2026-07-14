@@ -290,7 +290,6 @@ fn validate_log_run_id(run_id: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adaptor::gateway::workflow::event::CollectedOutputEntry;
     use crate::adaptor::gateway::workflow::event_projection::reconstruct_state_from_events;
     use crate::adaptor::gateway::workflow::schema::Workflow;
     use crate::adaptor::gateway::workflow::state::{TokenUsage, WorkflowExecutionState};
@@ -766,20 +765,6 @@ mod tests {
                 aborted_step: None,
                 timestamp: 7.0,
             },
-            WorkflowEvent::OutputCollected {
-                run_id: "00000000-0000-0000-0000-000000000911".to_string(),
-                workflow_name: "wf".to_string(),
-                node_name: "collect".to_string(),
-                node_outputs: vec![CollectedOutputEntry {
-                    node_name: "s1".to_string(),
-                    result: Some("LGTM".to_string()),
-                    structured_output: None,
-                }],
-                reduce_strategy: "AnyNeedsFix".to_string(),
-                reduce_result: Some("LGTM".to_string()),
-                reduce_structured_output: None,
-                timestamp: 8.0,
-            },
             WorkflowEvent::NodeStarted {
                 run_id: "00000000-0000-0000-0000-000000000911".to_string(),
                 workflow_name: "wf".to_string(),
@@ -996,21 +981,6 @@ mod tests {
             timestamp: 1004.0,
         })
         .unwrap();
-        log.append(&WorkflowEvent::OutputCollected {
-            run_id: "00000000-0000-0000-0000-000000000906".to_string(),
-            workflow_name: "test-wf".to_string(),
-            node_name: "collect".to_string(),
-            node_outputs: vec![CollectedOutputEntry {
-                node_name: "plan".to_string(),
-                result: Some("done".to_string()),
-                structured_output: None,
-            }],
-            reduce_strategy: "Last".to_string(),
-            reduce_result: Some("done".to_string()),
-            reduce_structured_output: None,
-            timestamp: 1004.5,
-        })
-        .unwrap();
         log.append(&WorkflowEvent::RunCompleted {
             run_id: "00000000-0000-0000-0000-000000000906".to_string(),
             workflow_name: "test-wf".to_string(),
@@ -1125,7 +1095,7 @@ mod tests {
     fn reconstruct_state_fanout_uses_node_executions_without_child_name_outputs() {
         use crate::adaptor::gateway::workflow::event::FanoutParentRef;
         use crate::adaptor::gateway::workflow::schema::{
-            FanoutSpec, NodeDefinition, NodeKind, NodeKindName, ParallelAggregate,
+            FanoutSpec, NodeDefinition, NodeKind, NodeKindName,
         };
 
         let tmp = TempDir::new().unwrap();
@@ -1135,12 +1105,6 @@ mod tests {
             kind: NodeKind::Fanout(FanoutSpec {
                 child: vec!["arch-review".to_string(), "security-review".to_string()],
                 items: None,
-                aggregate: Some(ParallelAggregate {
-                    all_match: Some("LGTM".to_string()),
-                    any_match: None,
-                    then: "_complete".to_string(),
-                    r#else: "_complete".to_string(),
-                }),
             }),
             ..NodeDefinition::default()
         };

@@ -1,10 +1,9 @@
 use std::collections::HashMap;
 
 use crate::adaptor::gateway::workflow::domain_mapping::{
-    node_definition_to_domain, parallel_aggregate_to_domain, step_history_entries_to_domain,
-    step_history_entry_from_domain, step_output_from_domain, step_outputs_to_domain,
-    token_usage_from_domain, token_usage_to_domain, workflow_definition_to_domain,
-    workflow_execution_state_to_domain,
+    node_definition_to_domain, step_history_entries_to_domain, step_history_entry_from_domain,
+    step_output_from_domain, step_outputs_to_domain, token_usage_from_domain,
+    token_usage_to_domain, workflow_definition_to_domain, workflow_execution_state_to_domain,
 };
 use crate::adaptor::gateway::workflow::engine_error::{
     workflow_error_to_engine_error, WorkflowEngineError,
@@ -12,7 +11,7 @@ use crate::adaptor::gateway::workflow::engine_error::{
 use crate::adaptor::gateway::workflow::engine_start_guard;
 use crate::adaptor::gateway::workflow::event::FanoutParentRef;
 use crate::adaptor::gateway::workflow::runtime_commit::StepOutcome;
-use crate::adaptor::gateway::workflow::schema::{NodeKindName, ParallelAggregate, Workflow};
+use crate::adaptor::gateway::workflow::schema::{NodeKindName, Workflow};
 use crate::adaptor::gateway::workflow::state::{
     ApprovalOperations, NodeExecution, NodeExecutionFailure, NodeExecutionStatus, StepHistoryEntry,
     StepOutput, TokenUsage, WorkflowExecutionState, WorkflowStallObservation, WorkflowState,
@@ -68,7 +67,6 @@ pub(crate) struct WorkflowExecution {
 pub(crate) struct ParallelRunState {
     pub(crate) parent_step_name: String,
     pub(crate) parent_node_execution_id: String,
-    pub(crate) aggregate: Option<ParallelAggregate>,
     pub(crate) children: Vec<ParallelChildRun>,
 }
 
@@ -334,10 +332,6 @@ impl WorkflowExecution {
             .as_ref()
             .map(|parallel_run| workflow_domain::ParallelRunState {
                 parent_step_name: parallel_run.parent_step_name.clone(),
-                aggregate: parallel_run
-                    .aggregate
-                    .as_ref()
-                    .map(parallel_aggregate_to_domain),
                 children: parallel_run
                     .children
                     .iter()
@@ -496,8 +490,7 @@ impl WorkflowExecution {
     /// 親ブロック名と全子 step 名を一括で削除する。
     ///
     /// 同一 step がループで再実行される際、前回値が残ったままになると
-    /// `evaluate_aggregate` / `input_reference` / `apply_reduce` /
-    /// `inject_step_outputs` が前回値を引いてしまい、新しい実行で
+    /// `input_reference` / `inject_step_outputs` が前回値を引いてしまい、新しい実行で
     /// `structured_output` が更新されないケースや LLM が前回ターンの
     /// `<workflow_output>` を引用してきたケースで Contract 違反が
     /// 「正常完了（Done）」扱いされる不具合の原因となる。
@@ -551,49 +544,6 @@ impl WorkflowExecution {
         }
     }
 
-    /// ロック内で指定ステップへの遷移を適用する（サイクルガード検証含む）。
-    pub(crate) fn apply_transition(
-        &mut self,
-        target_step_name: &str,
-    ) -> Result<StepOutcome, WorkflowEngineError> {
-        if self.is_terminal() {
-            return Ok(StepOutcome::Persist(self.to_workflow_state()));
-        }
-
-        self.apply_transition_inner(target_step_name)
-    }
-
-    fn apply_transition_inner(
-        &mut self,
-        target_step_name: &str,
-    ) -> Result<StepOutcome, WorkflowEngineError> {
-        let workflow = workflow_definition_to_domain(&self.workflow);
-        match workflow_routing::guarded_target(
-            &workflow,
-            target_step_name.to_string(),
-            &self.step_execution_counts,
-        ) {
-            Ok(workflow_routing::RouteDecision::TransitionTo(name)) => {
-                let Some(idx) = self
-                    .workflow
-                    .nodes
-                    .iter()
-                    .position(|step| step.name == name)
-                else {
-                    return Ok(self.fail_validation(format!("node not found: {name}")));
-                };
-                self.apply_transition_index(idx, &name);
-                Ok(self.step_outcome_for_current_step())
-            }
-            Ok(workflow_routing::RouteDecision::Completed) => {
-                self.state = WorkflowExecutionState::Completed;
-                self.updated_at = current_timestamp();
-                Ok(StepOutcome::Persist(self.to_workflow_state()))
-            }
-            Err(err) => Ok(self.fail_validation(err.to_string())),
-        }
-    }
-
     fn fail_validation(&mut self, reason: impl Into<String>) -> StepOutcome {
         self.state = WorkflowExecutionState::Failed {
             reason: reason.into(),
@@ -622,8 +572,6 @@ impl WorkflowExecution {
         let step = &self.workflow.nodes[self.current_step_index];
         if step.is_fanout() {
             StepOutcome::StartParallel(self.to_workflow_state())
-        } else if step.collect.is_some() {
-            StepOutcome::ReduceAndTransition(self.to_workflow_state())
         } else {
             StepOutcome::TransitionAndStart(self.to_workflow_state())
         }

@@ -36,7 +36,6 @@ mod submission_tests {
             kind: NodeKind::Fanout(FanoutSpec {
                 child: children.into_iter().map(str::to_string).collect(),
                 items: None,
-                aggregate: None,
             }),
             ..Default::default()
         }

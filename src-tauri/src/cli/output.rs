@@ -954,7 +954,6 @@ mod tests {
                 artifact: None,
                 input: None,
                 inputs: Vec::new(),
-                collect: None,
                 rules: Vec::new(),
             }],
         };

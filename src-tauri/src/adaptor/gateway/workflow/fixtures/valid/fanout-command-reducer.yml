@@ -1,0 +1,42 @@
+name: fanout-command-reducer
+description: command reducer folds a fanout Artifact array into a boolean Artifact
+schemas:
+  review-verdict:
+    type: object
+    properties:
+      lgtm:
+        type: boolean
+    required: [lgtm]
+    additionalProperties: false
+  judge-result:
+    type: object
+    properties:
+      all_lgtm:
+        type: boolean
+    required: [all_lgtm]
+    additionalProperties: false
+nodes:
+  - name: review
+    fanout:
+      child: [review-a, review-b]
+    rules:
+      - next: judge
+  - name: review-a
+    command: >-
+      printf '{"lgtm":true}'
+    artifact: review-verdict
+  - name: review-b
+    command: >-
+      printf '{"lgtm":false}'
+    artifact: review-verdict
+  - name: judge
+    command: "echo '{{ review }}' | jq '{all_lgtm: all(.[]; .lgtm)}'"
+    inputs: [review]
+    artifact: judge-result
+    rules:
+      - when: { on: all_lgtm, then: ready }
+        next: fix
+  - name: ready
+    command: printf ready
+  - name: fix
+    command: printf fix

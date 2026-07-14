@@ -191,7 +191,6 @@ fn workflow_node_to_view(
         artifact: node.artifact,
         input: node.input,
         inputs: node.inputs,
-        collect: node.collect.map(collect_config_to_view),
         rules: node.rules.into_iter().map(rule_to_view).collect(),
     }
 }
@@ -209,7 +208,6 @@ fn fanout_spec_to_view(spec: workflow::FanoutSpec) -> workflow_wire::WorkflowFan
     workflow_wire::WorkflowFanoutSpecView {
         child: spec.child,
         items: spec.items.map(items_source_to_view),
-        aggregate: spec.aggregate.map(aggregate_config_to_view),
     }
 }
 
@@ -255,40 +253,6 @@ fn rule_to_view(rule: workflow::Rule) -> workflow_wire::WorkflowRuleView {
             on_exhausted,
         },
         workflow::Rule::Next(next) => workflow_wire::WorkflowRuleView::Next { next },
-    }
-}
-
-fn collect_config_to_view(
-    collect: workflow::CollectConfig,
-) -> workflow_wire::WorkflowCollectConfigView {
-    workflow_wire::WorkflowCollectConfigView {
-        from: collect.from,
-        reduce: reduce_strategy_to_view(collect.reduce),
-    }
-}
-
-fn reduce_strategy_to_view(
-    reduce: workflow::ReduceStrategy,
-) -> workflow_wire::WorkflowReduceStrategyView {
-    match reduce {
-        workflow::ReduceStrategy::Last => workflow_wire::WorkflowReduceStrategyView::Last,
-        workflow::ReduceStrategy::Concat => workflow_wire::WorkflowReduceStrategyView::Concat,
-        workflow::ReduceStrategy::Grouped => workflow_wire::WorkflowReduceStrategyView::Grouped,
-        workflow::ReduceStrategy::AnyNeedsFix => {
-            workflow_wire::WorkflowReduceStrategyView::AnyNeedsFix
-        }
-        workflow::ReduceStrategy::AllPassed => workflow_wire::WorkflowReduceStrategyView::AllPassed,
-    }
-}
-
-fn aggregate_config_to_view(
-    aggregate: workflow::ParallelAggregate,
-) -> workflow_wire::WorkflowAggregateConfigView {
-    workflow_wire::WorkflowAggregateConfigView {
-        all_match: aggregate.all_match,
-        any_match: aggregate.any_match,
-        then: aggregate.then,
-        r#else: aggregate.r#else,
     }
 }
 
@@ -708,7 +672,6 @@ mod tests {
                         node: "scan".to_string(),
                         field: "items".to_string(),
                     }),
-                    aggregate: None,
                 }),
                 ..NodeDefinition::default()
             }],

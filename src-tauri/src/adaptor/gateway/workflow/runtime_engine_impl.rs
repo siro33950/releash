@@ -15,7 +15,7 @@ use super::step_session_boundary::{dispatch_session_start, SessionStartGate};
 use super::step_session_boundary::{RealStepSessionDeps, StepSessionDeps};
 use crate::adaptor::gateway::workflow::approval_runtime as workflow_approval_runtime;
 use crate::adaptor::gateway::workflow::domain_mapping::{
-    node_kind_to_domain, parallel_aggregate_to_domain, workflow_schemas_to_domain,
+    node_kind_to_domain, workflow_schemas_to_domain,
 };
 use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::engine_start_guard as workflow_engine_start_guard;
@@ -86,8 +86,7 @@ use crate::domain::agent_session::PermissionMode;
 use crate::domain::workflow::services::contract as workflow_contract;
 use crate::domain::workflow::services::contract_schema as workflow_contract_schema;
 use crate::domain::workflow::services::failure_policy::{
-    ParallelFailurePolicy, ParallelPropagation, RepairDecision, RetryPolicy,
-    StructuredOutputRepairPolicy,
+    RepairDecision, RetryPolicy, StructuredOutputRepairPolicy,
 };
 use crate::domain::workflow::services::history::RuntimeStartFailureKind;
 use crate::domain::workflow::services::secret_masker as workflow_secret_masker;
@@ -199,6 +198,9 @@ impl ManagedWorktreeResolver for PassthroughManagedWorktreeResolver {
     }
 }
 
+#[cfg(test)]
+type AbortAfterLookupGate = Arc<Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>>;
+
 /// ワークフローのステップを順次実行するステートマシンエンジン。
 #[derive(Clone)]
 pub struct WorkflowRuntimeService {
@@ -229,8 +231,7 @@ pub struct WorkflowRuntimeService {
     #[cfg(test)]
     fail_next_required_event_append: Arc<AtomicBool>,
     #[cfg(test)]
-    abort_after_lookup_gate:
-        Arc<Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>>,
+    abort_after_lookup_gate: AbortAfterLookupGate,
 }
 
 struct FanoutChildStartedLogObserver<'a, R: tauri::Runtime> {
@@ -458,11 +459,6 @@ fn complete_fanout_parent_after_all_children(
             "parallel parent completion requires an active parallel run".to_string(),
         ));
     };
-    // An empty items expansion is an ordinary successful fanout completion. The temporary
-    // aggregate compatibility block must not route the zero-child case; parent rules do.
-    let aggregate = (!parallel_run.children.is_empty())
-        .then(|| parallel_run.aggregate.clone())
-        .flatten();
     let parent_step_name = parallel_run.parent_step_name.clone();
     let parent_node_execution_id = parallel_run.parent_node_execution_id.clone();
     let parent_run_index = exec
@@ -474,7 +470,6 @@ fn complete_fanout_parent_after_all_children(
     let completion_plan = workflow_parallel_runtime::plan_fanout_parent_completion(
         &parent_step_name,
         parent_run_index,
-        aggregate.as_ref(),
         &parallel_run.children,
         completed_at,
     );
@@ -510,15 +505,7 @@ fn complete_fanout_parent_after_all_children(
     exec.current_session_id = None;
     exec.step_history.push(completion_plan.history_entry);
 
-    let outcome = match completion_plan.transition {
-        workflow_parallel_runtime::FanoutParentCompletionTransition::Advance => {
-            exec.apply_advance()
-        }
-        workflow_parallel_runtime::FanoutParentCompletionTransition::TransitionTo {
-            target_node_name,
-            ..
-        } => exec.apply_transition(&target_node_name)?,
-    };
+    let outcome = exec.apply_advance();
 
     Ok(ParallelChildCompletionCommit {
         all_completed: true,
@@ -2675,7 +2662,7 @@ impl WorkflowRuntimeService {
                     attempt,
                     session_id.as_deref(),
                     None,
-                    None,
+                    Some(node_execution_id),
                     SubmissionViolation::MissingSubmitOutput,
                     None,
                 )
@@ -3334,160 +3321,102 @@ impl WorkflowRuntimeService {
 
             if child_failed {
                 let failure_kind = parallel_child_failure_kind(exit_code, failure_signal);
-                let aggregate = pr.aggregate.as_ref().map(parallel_aggregate_to_domain);
-                let propagation =
-                    ParallelFailurePolicy.on_child_failure(failure_kind, aggregate.as_ref());
                 child.state = ParallelChildState::Failed;
                 child.failure_kind = Some(failure_kind);
-                child.failure_disposition =
-                    if propagation == ParallelPropagation::DelegateToAggregate {
-                        Some(FailureDisposition::Partial)
-                    } else {
-                        None
-                    };
+                child.failure_disposition = None;
                 let child_name = child.step_name.clone();
                 let child_node_execution_id = child.node_execution_id.clone();
                 let child_token_usage = child.token_usage.clone();
-                if propagation == ParallelPropagation::DelegateToAggregate {
-                    child.result = Some(failure_kind.as_str().to_string());
-                    child.structured_output = None;
-                    child.completed_at = Some(current_timestamp());
-                    if let Some(execution) = exec
-                        .node_executions
-                        .iter_mut()
-                        .find(|execution| execution.id == child_node_execution_id)
-                    {
-                        execution.status = NodeExecutionStatus::Failed;
-                        execution.token_usage = Some(child_token_usage.clone());
-                        execution.failure = Some(
-                            crate::adaptor::gateway::workflow::state::NodeExecutionFailure {
-                                reason: format!("fanout child failed with exit code {exit_code}"),
-                                kind: failure_kind,
-                            },
-                        );
-                        execution.completed_at = child.completed_at;
+                let timestamp = current_timestamp();
+                child.result = Some(failure_kind.as_str().to_string());
+                child.structured_output = None;
+                child.completed_at = Some(timestamp);
+                let parent_node_execution_id = pr.parent_node_execution_id.clone();
+                let mut interrupted_session_ids = Vec::new();
+                let mut interrupted_command_ids = Vec::new();
+                let mut interrupted_execution_ids = Vec::new();
+                for sibling in &mut pr.children {
+                    if sibling.state != ParallelChildState::Running {
+                        continue;
                     }
-                    clear_stall_observations_for_session(
-                        &mut exec.current_stall_observations,
-                        session_id,
-                    );
-                    let progress_events = vec![WorkflowEvent::NodeFailed {
-                        run_id: exec.id.clone(),
-                        workflow_name: exec.workflow.name.clone(),
-                        node_execution_id: child_node_execution_id,
-                        node_name: child_name,
-                        reason: format!("fanout child failed with exit code {exit_code}"),
-                        failure_kind,
-                        retry_count: None,
-                        timestamp: current_timestamp(),
-                    }];
-                    break 'state_update (
-                        finalize_child_terminal_state(
-                            exec,
-                            exec_snapshot_before,
-                            progress_events,
-                            true,
-                            Some(FailureClassification::with_disposition(
-                                failure_kind,
-                                FailureDisposition::Partial,
-                            )),
-                        )?,
-                        Vec::new(),
-                        Vec::new(),
-                    );
-                } else {
-                    let timestamp = current_timestamp();
-                    child.result = Some(failure_kind.as_str().to_string());
-                    child.structured_output = None;
-                    child.completed_at = Some(timestamp);
-                    let parent_node_execution_id = pr.parent_node_execution_id.clone();
-                    let mut interrupted_session_ids = Vec::new();
-                    let mut interrupted_command_ids = Vec::new();
-                    let mut interrupted_execution_ids = Vec::new();
-                    for sibling in &mut pr.children {
-                        if sibling.state != ParallelChildState::Running {
-                            continue;
-                        }
-                        sibling.state = ParallelChildState::Interrupted;
-                        sibling.completed_at = Some(timestamp);
-                        interrupted_execution_ids.push(sibling.node_execution_id.clone());
-                        if sibling.session_id.is_empty() {
-                            interrupted_command_ids.push(sibling.node_execution_id.clone());
-                        } else {
-                            interrupted_session_ids.push(sibling.session_id.clone());
-                        }
+                    sibling.state = ParallelChildState::Interrupted;
+                    sibling.completed_at = Some(timestamp);
+                    interrupted_execution_ids.push(sibling.node_execution_id.clone());
+                    if sibling.session_id.is_empty() {
+                        interrupted_command_ids.push(sibling.node_execution_id.clone());
+                    } else {
+                        interrupted_session_ids.push(sibling.session_id.clone());
                     }
+                }
 
-                    let reason = format!(
-                        "fanout child '{}' failed (exit_code: {})",
-                        child_name, exit_code
-                    );
-                    exec.fail_node_execution(
-                        &child_node_execution_id,
-                        reason.clone(),
-                        failure_kind,
-                        timestamp,
-                    );
+                let reason = format!(
+                    "fanout child '{}' failed (exit_code: {})",
+                    child_name, exit_code
+                );
+                exec.fail_node_execution(
+                    &child_node_execution_id,
+                    reason.clone(),
+                    failure_kind,
+                    timestamp,
+                );
+                if let Some(node_execution) = exec
+                    .node_executions
+                    .iter_mut()
+                    .find(|execution| execution.id == child_node_execution_id)
+                {
+                    node_execution.token_usage = Some(child_token_usage);
+                }
+                for execution_id in interrupted_execution_ids {
                     if let Some(node_execution) = exec
                         .node_executions
                         .iter_mut()
-                        .find(|execution| execution.id == child_node_execution_id)
+                        .find(|execution| execution.id == execution_id)
                     {
-                        node_execution.token_usage = Some(child_token_usage);
+                        node_execution.status = NodeExecutionStatus::Aborted;
+                        node_execution.completed_at = Some(timestamp);
                     }
-                    for execution_id in interrupted_execution_ids {
-                        if let Some(node_execution) = exec
-                            .node_executions
-                            .iter_mut()
-                            .find(|execution| execution.id == execution_id)
-                        {
-                            node_execution.status = NodeExecutionStatus::Aborted;
-                            node_execution.completed_at = Some(timestamp);
-                        }
-                    }
-                    exec.fail_node_execution(
-                        &parent_node_execution_id,
-                        reason.clone(),
-                        failure_kind,
-                        timestamp,
-                    );
-                    exec.current_stall_observations.clear();
-                    exec.state = WorkflowExecutionState::Failed {
-                        reason: reason.clone(),
-                        kind: failure_kind,
-                        retry_count: None,
-                    };
-                    let history_entry =
-                        exec.make_step_history_entry(Some(reason.clone()), None, None);
-                    exec.step_history.push(history_entry);
-                    exec.parallel_run = None;
-                    exec.updated_at = timestamp;
-                    let progress_events = vec![WorkflowEvent::NodeFailed {
-                        run_id: exec.id.clone(),
-                        workflow_name: exec.workflow.name.clone(),
-                        node_execution_id: child_node_execution_id,
-                        node_name: child_name,
-                        reason,
-                        failure_kind,
-                        retry_count: None,
-                        timestamp,
-                    }];
-                    break 'state_update (
-                        ParallelChildCompletionCommit {
-                            all_completed: true,
-                            outcome: Some(StepOutcome::Persist(exec.to_workflow_state())),
-                            snapshot_before: exec_snapshot_before,
-                            progress_events,
-                            required_progress_events: true,
-                            failure_telemetry: Some(FailureClassification::with_disposition(
-                                failure_kind,
-                                FailureDisposition::Terminal,
-                            )),
-                        },
-                        interrupted_session_ids,
-                        interrupted_command_ids,
-                    );
                 }
+                exec.fail_node_execution(
+                    &parent_node_execution_id,
+                    reason.clone(),
+                    failure_kind,
+                    timestamp,
+                );
+                exec.current_stall_observations.clear();
+                exec.state = WorkflowExecutionState::Failed {
+                    reason: reason.clone(),
+                    kind: failure_kind,
+                    retry_count: None,
+                };
+                let history_entry = exec.make_step_history_entry(Some(reason.clone()), None, None);
+                exec.step_history.push(history_entry);
+                exec.parallel_run = None;
+                exec.updated_at = timestamp;
+                let progress_events = vec![WorkflowEvent::NodeFailed {
+                    run_id: exec.id.clone(),
+                    workflow_name: exec.workflow.name.clone(),
+                    node_execution_id: child_node_execution_id,
+                    node_name: child_name,
+                    reason,
+                    failure_kind,
+                    retry_count: None,
+                    timestamp,
+                }];
+                break 'state_update (
+                    ParallelChildCompletionCommit {
+                        all_completed: true,
+                        outcome: Some(StepOutcome::Persist(exec.to_workflow_state())),
+                        snapshot_before: exec_snapshot_before,
+                        progress_events,
+                        required_progress_events: true,
+                        failure_telemetry: Some(FailureClassification::with_disposition(
+                            failure_kind,
+                            FailureDisposition::Terminal,
+                        )),
+                    },
+                    interrupted_session_ids,
+                    interrupted_command_ids,
+                );
             }
 
             // 成功
@@ -5095,15 +5024,10 @@ impl WorkflowRuntimeService {
             }
             let snapshot_before = execution.clone();
             let workflow_name = execution.workflow.name.clone();
-            let (delegates_to_aggregate, parent_node_execution_id) = execution
+            let parent_node_execution_id = execution
                 .parallel_run
                 .as_ref()
-                .map(|run| {
-                    (
-                        run.aggregate.is_some(),
-                        run.parent_node_execution_id.clone(),
-                    )
-                })
+                .map(|run| run.parent_node_execution_id.clone())
                 .ok_or_else(|| {
                     WorkflowEngineError::InvalidState(
                         "fanout command failure requires an active fanout run".to_string(),
@@ -5127,8 +5051,7 @@ impl WorkflowRuntimeService {
             child.result = Some(failure_kind.as_str().to_string());
             child.structured_output = None;
             child.failure_kind = Some(failure_kind);
-            child.failure_disposition =
-                delegates_to_aggregate.then_some(FailureDisposition::Partial);
+            child.failure_disposition = None;
             child.completed_at = Some(timestamp);
             execution.fail_node_execution(
                 &input.node_execution_id,
@@ -5147,95 +5070,78 @@ impl WorkflowRuntimeService {
                 timestamp,
             }];
 
-            if delegates_to_aggregate {
-                (
-                    finalize_child_terminal_state(
-                        execution,
-                        snapshot_before,
-                        progress_events,
-                        true,
-                        Some(FailureClassification::with_disposition(
-                            failure_kind,
-                            FailureDisposition::Partial,
-                        )),
-                    )?,
-                    Vec::new(),
-                    Vec::new(),
-                )
-            } else {
-                let (interrupted_session_ids, interrupted_command_ids, interrupted_execution_ids) =
-                    execution
-                        .parallel_run
-                        .as_mut()
-                        .map(|run| {
-                            let mut sessions = Vec::new();
-                            let mut commands = Vec::new();
-                            let mut execution_ids = Vec::new();
-                            for child in &mut run.children {
-                                if child.node_execution_id == input.node_execution_id
-                                    || child.state != ParallelChildState::Running
-                                {
-                                    continue;
-                                }
-                                child.state = ParallelChildState::Interrupted;
-                                execution_ids.push(child.node_execution_id.clone());
-                                if child.session_id.is_empty() {
-                                    commands.push(child.node_execution_id.clone());
-                                } else {
-                                    sessions.push(child.session_id.clone());
-                                }
+            let (interrupted_session_ids, interrupted_command_ids, interrupted_execution_ids) =
+                execution
+                    .parallel_run
+                    .as_mut()
+                    .map(|run| {
+                        let mut sessions = Vec::new();
+                        let mut commands = Vec::new();
+                        let mut execution_ids = Vec::new();
+                        for child in &mut run.children {
+                            if child.node_execution_id == input.node_execution_id
+                                || child.state != ParallelChildState::Running
+                            {
+                                continue;
                             }
-                            (sessions, commands, execution_ids)
-                        })
-                        .unwrap_or_default();
-                for execution_id in interrupted_execution_ids {
-                    if let Some(node_execution) = execution
-                        .node_executions
-                        .iter_mut()
-                        .find(|candidate| candidate.id == execution_id)
-                    {
-                        node_execution.status = NodeExecutionStatus::Aborted;
-                        node_execution.completed_at = Some(timestamp);
-                    }
+                            child.state = ParallelChildState::Interrupted;
+                            execution_ids.push(child.node_execution_id.clone());
+                            if child.session_id.is_empty() {
+                                commands.push(child.node_execution_id.clone());
+                            } else {
+                                sessions.push(child.session_id.clone());
+                            }
+                        }
+                        (sessions, commands, execution_ids)
+                    })
+                    .unwrap_or_default();
+            for execution_id in interrupted_execution_ids {
+                if let Some(node_execution) = execution
+                    .node_executions
+                    .iter_mut()
+                    .find(|candidate| candidate.id == execution_id)
+                {
+                    node_execution.status = NodeExecutionStatus::Aborted;
+                    node_execution.completed_at = Some(timestamp);
                 }
-                execution.fail_node_execution(
-                    &parent_node_execution_id,
-                    format!("fanout child '{}' failed: {reason}", input.node_name),
-                    failure_kind,
-                    timestamp,
-                );
-                let entry = execution.make_step_history_entry(
-                    Some(format!(
-                        "fanout child '{}' failed: {reason}",
-                        input.node_name
-                    )),
-                    None,
-                    None,
-                );
-                execution.step_history.push(entry);
-                execution.state = WorkflowExecutionState::Failed {
-                    reason: format!("fanout child '{}' failed: {reason}", input.node_name),
-                    kind: failure_kind,
-                    retry_count: None,
-                };
-                execution.parallel_run = None;
-                execution.updated_at = timestamp;
-                (
-                    ParallelChildCompletionCommit {
-                        all_completed: true,
-                        outcome: Some(StepOutcome::Persist(execution.to_workflow_state())),
-                        snapshot_before,
-                        progress_events,
-                        required_progress_events: true,
-                        failure_telemetry: Some(FailureClassification::with_disposition(
-                            failure_kind,
-                            FailureDisposition::Terminal,
-                        )),
-                    },
-                    interrupted_session_ids,
-                    interrupted_command_ids,
-                )
             }
+            execution.fail_node_execution(
+                &parent_node_execution_id,
+                format!("fanout child '{}' failed: {reason}", input.node_name),
+                failure_kind,
+                timestamp,
+            );
+            let entry = execution.make_step_history_entry(
+                Some(format!(
+                    "fanout child '{}' failed: {reason}",
+                    input.node_name
+                )),
+                None,
+                None,
+            );
+            execution.step_history.push(entry);
+            execution.state = WorkflowExecutionState::Failed {
+                reason: format!("fanout child '{}' failed: {reason}", input.node_name),
+                kind: failure_kind,
+                retry_count: None,
+            };
+            execution.parallel_run = None;
+            execution.updated_at = timestamp;
+            (
+                ParallelChildCompletionCommit {
+                    all_completed: true,
+                    outcome: Some(StepOutcome::Persist(execution.to_workflow_state())),
+                    snapshot_before,
+                    progress_events,
+                    required_progress_events: true,
+                    failure_telemetry: Some(FailureClassification::with_disposition(
+                        failure_kind,
+                        FailureDisposition::Terminal,
+                    )),
+                },
+                interrupted_session_ids,
+                interrupted_command_ids,
+            )
         };
 
         if let Some(outcome) = completion.outcome {
@@ -6113,36 +6019,6 @@ impl WorkflowRuntimeService {
                 }
                 Ok(())
             }
-            StepOutcome::ReduceAndTransition(snapshot) => {
-                self.emit_post_commit_progress_events(
-                    app,
-                    commit_mode,
-                    workflow_runtime_events::PostCommitProgressEventPlan::ReduceAndTransition,
-                    &snapshot,
-                )?;
-
-                let reduce_transition =
-                    workflow_parallel_runtime::apply_reduce_transition_by_worktree(
-                        &self.executions,
-                        worktree_path,
-                        &snapshot,
-                    )
-                    .await?;
-                self.write_log(app, reduce_transition.output_collected_event);
-
-                // 次 outcome は新たな state mutation なので、再度 sync+persist が必要。
-                // execute_outcome 経由でフル経路を回す（spec [04] post-commit 内で発生する
-                // 派生 mutation も同じ atomic 境界に乗せる）。
-                Box::pin(self.execute_outcome(
-                    app,
-                    session_store,
-                    agent_runtime,
-                    worktree_path,
-                    reduce_transition.next_outcome,
-                    reduce_transition.snapshot_before,
-                ))
-                .await
-            }
             StepOutcome::StartParallel(snapshot) => {
                 self.emit_post_commit_progress_events(
                     app,
@@ -6641,7 +6517,6 @@ impl WorkflowRuntimeService {
                 }),
                 artifact: Some("approved-fix-policy".to_string()),
                 rules: vec![],
-                collect: None,
                 ..Default::default()
             }],
         };

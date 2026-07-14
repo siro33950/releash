@@ -319,7 +319,7 @@ pub(crate) fn pre_commit_required_events_for_outcome(
         StepOutcome::RetryCurrentStep { snapshot, .. } => {
             events.push(node_started_event_for_snapshot(snapshot)?);
         }
-        StepOutcome::TransitionAndStart(_) | StepOutcome::ReduceAndTransition(_) => {
+        StepOutcome::TransitionAndStart(_) => {
             if let Some(ev) = last_step_completed_event_for_snapshot(&mut snapshot)? {
                 events.push(ev);
             }
@@ -465,7 +465,6 @@ pub(crate) fn node_session_started_event_for_snapshot(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PostCommitProgressEventPlan {
     TransitionAndStart,
-    ReduceAndTransition,
     StartParallel,
 }
 
@@ -473,7 +472,6 @@ impl PostCommitProgressEventPlan {
     fn outcome_label(self) -> &'static str {
         match self {
             Self::TransitionAndStart => "TransitionAndStart",
-            Self::ReduceAndTransition => "ReduceAndTransition",
             Self::StartParallel => "StartParallel",
         }
     }
@@ -495,7 +493,6 @@ impl PostCommitProgressEventPlan {
         match self {
             Self::TransitionAndStart => node_started_event_for_snapshot(snapshot).map(Some),
             Self::StartParallel => fanout_parent_started_event_for_snapshot(snapshot).map(Some),
-            Self::ReduceAndTransition => Ok(None),
         }
     }
 }
@@ -615,12 +612,6 @@ pub(crate) fn required_events_for_approval_commit(
             }
             events.push(node_started_event_for_snapshot(snapshot)?);
         }
-        StepOutcome::ReduceAndTransition(snapshot) => {
-            if let Some(event) = last_step_completed_event_for_snapshot(snapshot)? {
-                events.push(event);
-            }
-            events.push(node_started_event_for_snapshot(snapshot)?);
-        }
         StepOutcome::StartParallel(snapshot) => {
             if let Some(event) = last_step_completed_event_for_snapshot(snapshot)? {
                 events.push(event);
@@ -696,7 +687,6 @@ pub(crate) fn workflow_event_timestamp(event: &WorkflowEvent) -> f64 {
         | WorkflowEvent::RunFailed { timestamp, .. }
         | WorkflowEvent::RunAborted { timestamp, .. }
         | WorkflowEvent::RunInterrupted { timestamp, .. }
-        | WorkflowEvent::OutputCollected { timestamp, .. }
         | WorkflowEvent::ContractRepairRequested { timestamp, .. }
         | WorkflowEvent::CliMutationRequested { timestamp, .. }
         | WorkflowEvent::ArtifactProduced { timestamp, .. }
@@ -719,7 +709,6 @@ pub(crate) fn set_workflow_event_timestamp(event: &mut WorkflowEvent, commit_tim
         | WorkflowEvent::RunFailed { timestamp, .. }
         | WorkflowEvent::RunAborted { timestamp, .. }
         | WorkflowEvent::RunInterrupted { timestamp, .. }
-        | WorkflowEvent::OutputCollected { timestamp, .. }
         | WorkflowEvent::ContractRepairRequested { timestamp, .. }
         | WorkflowEvent::CliMutationRequested { timestamp, .. }
         | WorkflowEvent::ArtifactProduced { timestamp, .. }
@@ -1046,10 +1035,6 @@ mod tests {
                 && fanout_parent.is_none()
                 && (timestamp - 42.0).abs() < f64::EPSILON
         ));
-        assert!(PostCommitProgressEventPlan::ReduceAndTransition
-            .followup_event(&snapshot)
-            .unwrap()
-            .is_none());
         assert!(matches!(
             PostCommitProgressEventPlan::StartParallel
                 .followup_event(&fanout_snapshot)

@@ -13,7 +13,7 @@ use crate::domain::workflow::value_objects::{
     ApprovalOperations, NodeDefinition, RunId, StepOutput, WorkflowStateSnapshot, WorktreePath,
 };
 use crate::domain::workflow::value_objects::{
-    ParallelAggregate, StepHistoryEntry, TokenUsage, WorkflowDefinition, WorkflowExecutionState,
+    StepHistoryEntry, TokenUsage, WorkflowDefinition, WorkflowExecutionState,
     WorkflowStepFailureKind, STEP_STATE_COMPLETED, STEP_STATE_PENDING,
 };
 use crate::domain::workflow::FailureDisposition;
@@ -44,7 +44,6 @@ pub struct WorkflowExecution {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParallelRunState {
     pub parent_step_name: String,
-    pub aggregate: Option<ParallelAggregate>,
     pub children: Vec<ParallelChildRun>,
 }
 
@@ -225,7 +224,6 @@ impl WorkflowExecution {
         &mut self,
         parent_node_name: &str,
         child_node_names: Vec<String>,
-        aggregate: Option<ParallelAggregate>,
         timestamp: f64,
     ) -> Result<(), WorkflowError> {
         self.current_step_index = self.node_index(parent_node_name)?;
@@ -249,7 +247,6 @@ impl WorkflowExecution {
             .collect();
         self.parallel_run = Some(ParallelRunState {
             parent_step_name: parent_node_name.to_string(),
-            aggregate,
             children,
         });
         self.updated_at = timestamp;
@@ -517,7 +514,6 @@ mod aggregate_tests {
             TestNodeKind::Fanout => NodeKind::Fanout(FanoutSpec {
                 child: vec!["a".to_string(), "b".to_string()],
                 items: None,
-                aggregate: None,
             }),
         };
         NodeDefinition {
@@ -616,7 +612,6 @@ mod aggregate_tests {
         exec.start_parallel(
             "parallel-review",
             vec!["a".to_string(), "b".to_string()],
-            None,
             1.1,
         )
         .unwrap();

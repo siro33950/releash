@@ -412,7 +412,6 @@ fn event_kind_display_name(kind: &str) -> &str {
         "run_failed" => "RunFailed",
         "run_aborted" => "RunAborted",
         "run_interrupted" => "RunInterrupted",
-        "output_collected" => "OutputCollected",
         "contract_repair_requested" => "ContractRepairRequested",
         "cli_mutation_requested" => "CliMutationRequested",
         "artifact_produced" => "ArtifactProduced",

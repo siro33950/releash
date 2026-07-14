@@ -12,9 +12,9 @@ mod workflow_step_context;
 
 pub use contract::{ContractType, ContractValidationResult, ContractViolation};
 pub use definition::{
-    CollectConfig, CommandSpec, FacetRefs, FanoutSpec, ItemsSource, NodeDefinition, NodeKind,
-    NodeKindName, ParallelAggregate, ReduceStrategy, Rule, SchemaDef, SessionGate, SessionSpec,
-    WorkflowDefinition, WorkflowSummary, MAX_FANOUT_CHILDREN, MAX_NODES_PER_WORKFLOW,
+    CommandSpec, FacetRefs, FanoutSpec, ItemsSource, NodeDefinition, NodeKind, NodeKindName, Rule,
+    SchemaDef, SessionGate, SessionSpec, WorkflowDefinition, WorkflowSummary, MAX_FANOUT_CHILDREN,
+    MAX_NODES_PER_WORKFLOW,
 };
 pub use facet::{FacetKey, FacetKind, FacetSummary};
 pub use failure::{

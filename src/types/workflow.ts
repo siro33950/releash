@@ -101,13 +101,6 @@ type Rule =
 export type NodeKind = "command" | "session" | "fanout";
 export type SessionGate = "auto" | "approval";
 
-interface AggregateConfig {
-	all_match?: string;
-	any_match?: string;
-	then: string;
-	else: string;
-}
-
 export interface FacetRefs {
 	policy?: string;
 	knowledge?: string;
@@ -128,7 +121,6 @@ export type FanoutItemsSource = JsonValue[] | string;
 interface FanoutSpec {
 	child: string[];
 	items?: FanoutItemsSource;
-	aggregate?: AggregateConfig;
 }
 
 export interface NodeDefinition {
@@ -140,23 +132,10 @@ export interface NodeDefinition {
 	artifact?: string;
 	input?: string;
 	inputs?: string[];
-	collect?: CollectConfig;
 	// 共通: rules は省略時 undefined（Rust 側で serde default 経路を持つが、frontend
 	// fixture では空配列を毎回書かなくて済むよう optional とする）
 	rules?: Rule[];
 }
-
-interface CollectConfig {
-	from: string[];
-	reduce: ReduceStrategy;
-}
-
-export type ReduceStrategy =
-	| "last"
-	| "concat"
-	| "grouped"
-	| "any_needs_fix"
-	| "all_passed";
 
 export interface Workflow {
 	name: string;

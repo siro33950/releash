@@ -178,10 +178,6 @@ fn explicit_targets<'a>(
     if let Some(fanout) = node.fanout() {
         targets.extend(fanout.child.iter().map(String::as_str));
     }
-    if let Some(aggregate) = node.fanout().and_then(|fanout| fanout.aggregate.as_ref()) {
-        targets.push(aggregate.then.as_str());
-        targets.push(aggregate.r#else.as_str());
-    }
     targets
 }
 
@@ -235,13 +231,7 @@ fn validate_fanout_child_leaf_constraints(
     }
 
     for source in &workflow.nodes {
-        for target in source.rules.iter().flat_map(rule_targets).chain(
-            source
-                .fanout()
-                .and_then(|fanout| fanout.aggregate.as_ref())
-                .into_iter()
-                .flat_map(|aggregate| [aggregate.then.as_str(), aggregate.r#else.as_str()]),
-        ) {
+        for target in source.rules.iter().flat_map(rule_targets) {
             let Some(parent) = parent_by_child.get(target).copied() else {
                 continue;
             };
@@ -708,7 +698,6 @@ mod routing_tests {
             kind: NodeKind::Fanout(FanoutSpec {
                 child: children.iter().map(|child| (*child).to_string()).collect(),
                 items: None,
-                aggregate: None,
             }),
             rules,
             ..Default::default()
