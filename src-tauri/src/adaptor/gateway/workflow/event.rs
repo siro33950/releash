@@ -230,19 +230,6 @@ pub enum WorkflowEvent {
         reason: String,
         timestamp: f64,
     },
-    /// collect step の reduce 結果。
-    OutputCollected {
-        run_id: String,
-        workflow_name: String,
-        node_name: String,
-        node_outputs: Vec<CollectedOutputEntry>,
-        reduce_strategy: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        reduce_result: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        reduce_structured_output: Option<serde_json::Value>,
-        timestamp: f64,
-    },
     /// artifact_contract repair prompt が送信された。
     ContractRepairRequested {
         run_id: String,
@@ -393,17 +380,6 @@ pub enum CliMutationRejectionReason {
     Other,
 }
 
-/// collect step の各子要素出力エントリ。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CollectedOutputEntry {
-    pub node_name: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub result: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub structured_output: Option<serde_json::Value>,
-}
-
 impl WorkflowEvent {
     /// event の primary key となる `run_id` を返す。
     pub fn run_id(&self) -> &str {
@@ -421,7 +397,6 @@ impl WorkflowEvent {
             | Self::RunFailed { run_id, .. }
             | Self::RunAborted { run_id, .. }
             | Self::RunInterrupted { run_id, .. }
-            | Self::OutputCollected { run_id, .. }
             | Self::ContractRepairRequested { run_id, .. }
             | Self::CliMutationRequested { run_id, .. }
             | Self::ArtifactProduced { run_id, .. }

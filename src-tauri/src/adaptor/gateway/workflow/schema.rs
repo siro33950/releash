@@ -155,8 +155,6 @@ pub struct FanoutSpec {
     pub child: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub items: Option<ItemsSource>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub aggregate: Option<ParallelAggregate>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -264,7 +262,6 @@ pub struct NodeDefinition {
     pub artifact: Option<String>,
     pub input: Option<String>,
     pub inputs: Vec<String>,
-    pub collect: Option<CollectConfig>,
     pub rules: Vec<Rule>,
 }
 
@@ -333,8 +330,6 @@ struct RawNodeDefinition {
     input: Option<String>,
     #[serde(default)]
     inputs: Vec<String>,
-    #[serde(default)]
-    collect: Option<CollectConfig>,
     #[serde(default, rename = "rules")]
     rules: Vec<Rule>,
 }
@@ -369,7 +364,6 @@ impl<'de> Deserialize<'de> for NodeDefinition {
             artifact: raw.artifact,
             input: raw.input,
             inputs: raw.inputs,
-            collect: raw.collect,
             rules: raw.rules,
         })
     }
@@ -392,7 +386,6 @@ impl Serialize for NodeDefinition {
         if !self.inputs.is_empty() {
             map.serialize_entry("inputs", &self.inputs)?;
         }
-        serialize_option(&mut map, "collect", &self.collect)?;
         if !self.rules.is_empty() {
             map.serialize_entry("rules", &self.rules)?;
         }
@@ -409,18 +402,6 @@ where
         map.serialize_entry(key, value)?;
     }
     Ok(())
-}
-
-/// fanout node 完了後の集約条件（#1330 まで fanout block 内で暫定維持）。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct ParallelAggregate {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub all_match: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub any_match: Option<String>,
-    pub then: String,
-    pub r#else: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -565,23 +546,6 @@ impl Serialize for Rule {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct CollectConfig {
-    pub from: Vec<String>,
-    pub reduce: ReduceStrategy,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum ReduceStrategy {
-    Last,
-    Concat,
-    Grouped,
-    AnyNeedsFix,
-    AllPassed,
-}
-
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Summary {
     pub name: String,
@@ -685,7 +649,7 @@ nodes:
     }
 
     #[test]
-    fn parse_fanout_node_with_aggregate() {
+    fn parse_fanout_node_with_artifact_items() {
         let yaml = r#"
 name: fanout
 description: fanout test
@@ -694,10 +658,6 @@ nodes:
     fanout:
       child: [arch-review, security-review]
       items: plan.targets
-      aggregate:
-        all_match: LGTM
-        then: report
-        else: implement
 "#;
         let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
         let fanout = wf.nodes[0].fanout().unwrap();
@@ -712,12 +672,6 @@ nodes:
                 field: "targets".to_string(),
             })
         );
-        let agg = fanout.aggregate.as_ref().unwrap();
-        assert_eq!(agg.all_match.as_deref(), Some("LGTM"));
-        assert!(agg.any_match.is_none());
-        assert_eq!(agg.then, "report");
-        assert_eq!(agg.r#else, "implement");
-
         let serialized = serde_saphyr::to_string(&wf).unwrap();
         let serialized_value: Value = serde_saphyr::from_str(&serialized).unwrap();
         assert_eq!(

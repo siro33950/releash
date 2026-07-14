@@ -1,9 +1,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::domain::workflow::value_objects::{
-    NodeKindName, ParallelAggregate, WorkflowStepFailureKind,
-};
+use crate::domain::workflow::value_objects::{NodeKindName, WorkflowStepFailureKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetryPolicy {
@@ -140,29 +138,6 @@ impl Default for TimeoutPolicy {
             stale_timeout_by_node_kind: HashMap::new(),
             stale_timeout_for_approval_session: None,
             stale_timeout_by_template: HashMap::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ParallelPropagation {
-    FailWorkflow,
-    DelegateToAggregate,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ParallelFailurePolicy;
-
-impl ParallelFailurePolicy {
-    pub fn on_child_failure(
-        &self,
-        kind: WorkflowStepFailureKind,
-        _aggregate: Option<&ParallelAggregate>,
-    ) -> ParallelPropagation {
-        if kind == WorkflowStepFailureKind::ModelRefusal {
-            ParallelPropagation::DelegateToAggregate
-        } else {
-            ParallelPropagation::FailWorkflow
         }
     }
 }
@@ -341,48 +316,6 @@ mod tests {
                 Some("heavy-review".to_string())
             )),
             Duration::from_secs(600)
-        );
-    }
-
-    fn aggregate() -> ParallelAggregate {
-        ParallelAggregate {
-            all_match: Some("LGTM".to_string()),
-            any_match: None,
-            then: "done".to_string(),
-            r#else: "fix".to_string(),
-        }
-    }
-
-    #[test]
-    fn parallel_failure_policy_delegates_model_refusal_with_or_without_aggregate() {
-        let policy = ParallelFailurePolicy;
-        let aggregate = aggregate();
-
-        assert_eq!(
-            policy.on_child_failure(WorkflowStepFailureKind::ModelRefusal, Some(&aggregate)),
-            ParallelPropagation::DelegateToAggregate
-        );
-        assert_eq!(
-            policy.on_child_failure(WorkflowStepFailureKind::ModelRefusal, None),
-            ParallelPropagation::DelegateToAggregate
-        );
-    }
-
-    #[test]
-    fn parallel_failure_policy_fails_non_model_refusal_with_or_without_aggregate() {
-        let policy = ParallelFailurePolicy;
-        let aggregate = aggregate();
-
-        assert_eq!(
-            policy.on_child_failure(
-                WorkflowStepFailureKind::InfrastructureCrash,
-                Some(&aggregate)
-            ),
-            ParallelPropagation::FailWorkflow
-        );
-        assert_eq!(
-            policy.on_child_failure(WorkflowStepFailureKind::InfrastructureCrash, None),
-            ParallelPropagation::FailWorkflow
         );
     }
 

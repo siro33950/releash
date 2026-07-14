@@ -454,17 +454,6 @@ function StepCard({ step, index }: { step: NodeDefinition; index: number }) {
 						</div>
 					)}
 
-					{/* Collect */}
-					{step.collect && (
-						<div className="flex flex-col gap-1">
-							<span className="font-medium text-muted-foreground">Collect</span>
-							<div className="text-muted-foreground">
-								From: {step.collect.from.join(", ")} | Reduce:{" "}
-								{step.collect.reduce}
-							</div>
-						</div>
-					)}
-
 					{/* Fanout children */}
 					{fanout && (
 						<div className="flex flex-col gap-1">
@@ -481,20 +470,6 @@ function StepCard({ step, index }: { step: NodeDefinition; index: number }) {
 									label="Items"
 									value={formatFanoutItems(fanout.items)}
 								/>
-							)}
-							{fanout.aggregate && (
-								<div className="mt-1">
-									<span className="font-medium text-muted-foreground">
-										Aggregate:{" "}
-									</span>
-									<span className="text-muted-foreground">
-										{fanout.aggregate.all_match
-											? `all_match("${fanout.aggregate.all_match}")`
-											: `any_match("${fanout.aggregate.any_match}")`}{" "}
-										→ then: {fanout.aggregate.then}, else:{" "}
-										{fanout.aggregate.else}
-									</span>
-								</div>
 							)}
 						</div>
 					)}

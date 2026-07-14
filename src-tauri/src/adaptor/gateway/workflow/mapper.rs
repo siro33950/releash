@@ -147,7 +147,6 @@ fn domain_node_to_legacy(
         artifact: node.artifact.clone(),
         input: node.input.clone(),
         inputs: node.inputs.clone(),
-        collect: node.collect.as_ref().map(domain_collect_to_legacy),
         rules: node
             .rules
             .iter()
@@ -183,7 +182,6 @@ fn domain_kind_to_legacy(
                 crate::adaptor::gateway::workflow::schema::FanoutSpec {
                     child: spec.child.clone(),
                     items: spec.items.as_ref().map(domain_items_source_to_schema),
-                    aggregate: spec.aggregate.as_ref().map(domain_aggregate_to_legacy),
                 },
             )
         }
@@ -224,42 +222,6 @@ fn domain_items_source_to_schema(
                 field: field.clone(),
             }
         }
-    }
-}
-
-fn domain_collect_to_legacy(
-    collect: &domain::CollectConfig,
-) -> crate::adaptor::gateway::workflow::schema::CollectConfig {
-    crate::adaptor::gateway::workflow::schema::CollectConfig {
-        from: collect.from.clone(),
-        reduce: match collect.reduce {
-            domain::ReduceStrategy::Last => {
-                crate::adaptor::gateway::workflow::schema::ReduceStrategy::Last
-            }
-            domain::ReduceStrategy::Concat => {
-                crate::adaptor::gateway::workflow::schema::ReduceStrategy::Concat
-            }
-            domain::ReduceStrategy::Grouped => {
-                crate::adaptor::gateway::workflow::schema::ReduceStrategy::Grouped
-            }
-            domain::ReduceStrategy::AnyNeedsFix => {
-                crate::adaptor::gateway::workflow::schema::ReduceStrategy::AnyNeedsFix
-            }
-            domain::ReduceStrategy::AllPassed => {
-                crate::adaptor::gateway::workflow::schema::ReduceStrategy::AllPassed
-            }
-        },
-    }
-}
-
-fn domain_aggregate_to_legacy(
-    aggregate: &domain::ParallelAggregate,
-) -> crate::adaptor::gateway::workflow::schema::ParallelAggregate {
-    crate::adaptor::gateway::workflow::schema::ParallelAggregate {
-        all_match: aggregate.all_match.clone(),
-        any_match: aggregate.any_match.clone(),
-        then: aggregate.then.clone(),
-        r#else: aggregate.r#else.clone(),
     }
 }
 
@@ -660,7 +622,6 @@ mod tests {
                     items: Some(ItemsSource::Literal(vec![serde_json::json!({
                         "path": "src/lib.rs"
                     })])),
-                    aggregate: None,
                 }),
                 ..Default::default()
             }],

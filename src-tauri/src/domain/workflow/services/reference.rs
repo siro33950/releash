@@ -386,7 +386,6 @@ mod tests {
             kind: NodeKind::Fanout(FanoutSpec {
                 child: vec![child.to_string()],
                 items: None,
-                aggregate: None,
             }),
             ..Default::default()
         }
