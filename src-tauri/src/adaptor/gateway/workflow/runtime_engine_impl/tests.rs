@@ -8217,6 +8217,203 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
+    async fn fanout_command_failure_clears_stall_observations_and_aborts_sibling_in_live_and_replay(
+    ) {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let (session_store, handles) = make_dispatch_deps(data_dir.clone());
+        let received_payloads: Arc<std::sync::Mutex<Vec<String>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let received_for_listener = Arc::clone(&received_payloads);
+        app.listen("workflow-state-changed", move |event| {
+            received_for_listener
+                .lock()
+                .unwrap()
+                .push(event.payload().to_string());
+        });
+
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/fanout-command-failure-stall";
+        let sibling_session_id = "fanout-command-failure-sibling-session";
+        let workflow = Workflow {
+            name: "fanout-command-failure-stall-wf".to_string(),
+            description: "fanout command failure stall".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![
+                make_fanout_step("parallel-review", vec!["shell-command", "review-b"]),
+                command_step("shell-command", "false", vec![]),
+                make_fanout_child("review-b"),
+            ],
+        };
+        let mut exec =
+            make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
+        exec.state = WorkflowExecutionState::Running;
+        exec.current_step_index = 0;
+        exec.current_session_id = None;
+        exec.step_execution_counts = HashMap::from([
+            ("parallel-review".to_string(), 1),
+            ("shell-command".to_string(), 1),
+            ("review-b".to_string(), 1),
+        ]);
+        exec.current_stall_observations = vec![workflow_stall_observation_fixture(
+            sibling_session_id,
+            "review-b",
+        )];
+        install_test_fanout_run(
+            &mut exec,
+            vec![
+                test_fanout_child_run("shell-command", "", ParallelChildState::Running, 0),
+                test_fanout_child_run(
+                    "review-b",
+                    sibling_session_id,
+                    ParallelChildState::Running,
+                    1,
+                ),
+            ],
+        );
+        let fanout_run = exec.parallel_run.as_ref().expect("fanout run");
+        let parent_node_execution_id = fanout_run.parent_node_execution_id.clone();
+        let command_node_execution_id = fanout_run.children[0].node_execution_id.clone();
+        let sibling_node_execution_id = fanout_run.children[1].node_execution_id.clone();
+        let command_node_execution = exec
+            .node_executions
+            .iter_mut()
+            .find(|execution| execution.id == command_node_execution_id)
+            .expect("command child node execution");
+        command_node_execution.kind = NodeKindName::Command;
+        command_node_execution.session_id = None;
+        append_started_events_for_execution(&data_dir, &exec);
+        WorkflowEventLog::new(&data_dir)
+            .append(&WorkflowEvent::WorkflowStallObserved {
+                run_id: run_id.clone(),
+                workflow_name: "fanout-command-failure-stall-wf".to_string(),
+                chat_session_id: sibling_session_id.to_string(),
+                step_name: "review-b".to_string(),
+                run_index: 1,
+                turn_phase: "streaming".to_string(),
+                idle_secs: 181,
+                signal_count: 1,
+                cap_reached: false,
+                timestamp: 1003.0,
+            })
+            .unwrap();
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+        engine.session_workflow_refs.lock().await.insert(
+            sibling_session_id.to_string(),
+            SessionWorkflowRef {
+                run_id: run_id.clone(),
+            },
+        );
+
+        let input = CommandExecutionInput {
+            run_id: run_id.clone(),
+            node_execution_id: command_node_execution_id.clone(),
+            node_name: "shell-command".to_string(),
+            run_index: 1,
+            worktree_path: worktree_path.to_string(),
+            command: "false".to_string(),
+            artifact_contract: None,
+            schemas: BTreeMap::new(),
+            fanout_parent: Some("parallel-review".to_string()),
+        };
+        engine
+            .fail_command_execution(
+                app.handle(),
+                &session_store,
+                &handles,
+                &input,
+                "command exited with status 1",
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            !engine.contains_execution_for_test(&run_id).await,
+            "terminal fanout command failure must release the run"
+        );
+        let run = engine
+            .run_store()
+            .get_run(&run_id)
+            .await
+            .expect("terminal run metadata must be stored");
+        assert_eq!(run.status, RunStatus::Failed);
+        assert_eq!(
+            run.error_reason.as_deref(),
+            Some("fanout child 'shell-command' failed: command exited with status 1")
+        );
+
+        let live_payload = received_payloads
+            .lock()
+            .unwrap()
+            .last()
+            .cloned()
+            .expect("terminal failure must broadcast live snapshot");
+        let live_json: serde_json::Value = serde_json::from_str(&live_payload).unwrap();
+        let live_stall_observations = live_json["workflowState"]["stallObservations"].as_array();
+        assert!(
+            live_stall_observations.map_or(true, |observations| observations.is_empty()),
+            "terminal fanout command failure must clear live stall observations: {live_json}"
+        );
+        let live_node_executions = live_json["workflowState"]["nodeExecutions"]
+            .as_array()
+            .expect("live payload must expose node executions");
+        let live_status_by_id = |node_execution_id: &str| {
+            live_node_executions
+                .iter()
+                .find(|execution| execution["id"] == node_execution_id)
+                .and_then(|execution| execution["status"].as_str())
+                .expect("node execution status must be present")
+        };
+        assert_eq!(live_status_by_id(&parent_node_execution_id), "failed");
+        assert_eq!(live_status_by_id(&command_node_execution_id), "failed");
+        assert_eq!(live_status_by_id(&sibling_node_execution_id), "aborted");
+
+        let events = read_dispatch_events(&app, &run_id);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::NodeFailed {
+                node_execution_id,
+                node_name,
+                reason,
+                failure_kind: WorkflowStepFailureKind::InfrastructureCrash,
+                ..
+            } if node_execution_id == &command_node_execution_id
+                && node_name == "shell-command"
+                && reason == "command exited with status 1"
+        )));
+        let projected = reconstruct_state_from_events(&run_id, &events)
+            .unwrap()
+            .unwrap();
+        assert!(
+            projected.stall_observations.is_empty(),
+            "RunFailed replay must clear stall observations"
+        );
+        let projected_status_by_id = |node_execution_id: &str| {
+            projected
+                .node_executions
+                .iter()
+                .find(|execution| execution.id == node_execution_id)
+                .map(|execution| execution.status)
+                .expect("projected node execution must exist")
+        };
+        assert_eq!(
+            projected_status_by_id(&parent_node_execution_id),
+            NodeExecutionStatus::Failed
+        );
+        assert_eq!(
+            projected_status_by_id(&command_node_execution_id),
+            NodeExecutionStatus::Failed
+        );
+        assert_eq!(
+            projected_status_by_id(&sibling_node_execution_id),
+            NodeExecutionStatus::Aborted
+        );
+    }
+
+    #[tokio::test]
     async fn fanout_parent_artifact_preserves_null_session_and_command_result_order() {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();

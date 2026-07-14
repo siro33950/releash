@@ -199,7 +199,8 @@ impl ManagedWorktreeResolver for PassthroughManagedWorktreeResolver {
 }
 
 #[cfg(test)]
-type AbortAfterLookupGate = Arc<Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>>;
+type AbortAfterLookupGate =
+    Arc<Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>>;
 
 /// ワークフローのステップを順次実行するステートマシンエンジン。
 #[derive(Clone)]
@@ -248,6 +249,22 @@ struct ParallelChildCompletionCommit {
     progress_events: Vec<WorkflowEvent>,
     required_progress_events: bool,
     failure_telemetry: Option<FailureClassification>,
+}
+
+struct FanoutChildFailureCommit {
+    completion: ParallelChildCompletionCommit,
+    interrupted_session_ids: Vec<String>,
+    interrupted_command_ids: Vec<String>,
+}
+
+struct FanoutChildFailureInput {
+    child_node_execution_id: String,
+    child_failure_reason: String,
+    terminal_reason: String,
+    failure_kind: WorkflowStepFailureKind,
+    retry_count: Option<u32>,
+    timestamp: f64,
+    record_child_token_usage: bool,
 }
 
 #[derive(Clone)]
@@ -556,6 +573,153 @@ fn finalize_child_terminal_state(
         required_progress_events,
         failure_telemetry,
     )
+}
+
+fn finalize_fanout_child_failure_state(
+    exec: &mut WorkflowExecution,
+    snapshot_before: WorkflowExecution,
+    input: FanoutChildFailureInput,
+) -> Result<FanoutChildFailureCommit, WorkflowEngineError> {
+    let workflow_name = exec.workflow.name.clone();
+    let run_id = exec.id.clone();
+    let failure_kind = input.failure_kind;
+    let retry_count = input.retry_count;
+    let timestamp = input.timestamp;
+    let (
+        parent_node_execution_id,
+        child_name,
+        child_token_usage,
+        interrupted_session_ids,
+        interrupted_command_ids,
+        interrupted_execution_ids,
+    ) = {
+        let Some(parallel_run) = exec.parallel_run.as_mut() else {
+            return Err(WorkflowEngineError::InvalidState(
+                "fanout child failure requires an active fanout run".to_string(),
+            ));
+        };
+        let Some(child_index) = parallel_run
+            .children
+            .iter()
+            .position(|child| child.node_execution_id == input.child_node_execution_id)
+        else {
+            return Err(WorkflowEngineError::InvalidState(format!(
+                "fanout child failure references unknown child '{}'",
+                input.child_node_execution_id
+            )));
+        };
+        let parent_node_execution_id = parallel_run.parent_node_execution_id.clone();
+        let mut child_name = String::new();
+        let mut child_token_usage = None;
+        let mut interrupted_session_ids = Vec::new();
+        let mut interrupted_command_ids = Vec::new();
+        let mut interrupted_execution_ids = Vec::new();
+
+        for (index, child) in parallel_run.children.iter_mut().enumerate() {
+            if index == child_index {
+                child.state = ParallelChildState::Failed;
+                child.result = Some(failure_kind.as_str().to_string());
+                child.structured_output = None;
+                child.failure_kind = Some(failure_kind);
+                child.failure_disposition = None;
+                child.completed_at = Some(timestamp);
+                child_name = child.step_name.clone();
+                if input.record_child_token_usage {
+                    child_token_usage = Some(child.token_usage.clone());
+                }
+                continue;
+            }
+            if child.state != ParallelChildState::Running {
+                continue;
+            }
+            child.state = ParallelChildState::Interrupted;
+            child.completed_at = Some(timestamp);
+            interrupted_execution_ids.push(child.node_execution_id.clone());
+            if child.session_id.is_empty() {
+                interrupted_command_ids.push(child.node_execution_id.clone());
+            } else {
+                interrupted_session_ids.push(child.session_id.clone());
+            }
+        }
+
+        (
+            parent_node_execution_id,
+            child_name,
+            child_token_usage,
+            interrupted_session_ids,
+            interrupted_command_ids,
+            interrupted_execution_ids,
+        )
+    };
+
+    exec.fail_node_execution(
+        &input.child_node_execution_id,
+        input.child_failure_reason.clone(),
+        failure_kind,
+        timestamp,
+    );
+    if let Some(child_token_usage) = child_token_usage {
+        if let Some(node_execution) = exec
+            .node_executions
+            .iter_mut()
+            .find(|execution| execution.id == input.child_node_execution_id)
+        {
+            node_execution.token_usage = Some(child_token_usage);
+        }
+    }
+    for execution_id in interrupted_execution_ids {
+        if let Some(node_execution) = exec
+            .node_executions
+            .iter_mut()
+            .find(|execution| execution.id == execution_id)
+        {
+            node_execution.status = NodeExecutionStatus::Aborted;
+            node_execution.completed_at = Some(timestamp);
+        }
+    }
+    exec.fail_node_execution(
+        &parent_node_execution_id,
+        input.terminal_reason.clone(),
+        failure_kind,
+        timestamp,
+    );
+    exec.current_stall_observations.clear();
+    exec.state = WorkflowExecutionState::Failed {
+        reason: input.terminal_reason.clone(),
+        kind: failure_kind,
+        retry_count,
+    };
+    let history_entry =
+        exec.make_step_history_entry(Some(input.terminal_reason.clone()), None, None);
+    exec.step_history.push(history_entry);
+    exec.parallel_run = None;
+    exec.updated_at = timestamp;
+    let progress_events = vec![WorkflowEvent::NodeFailed {
+        run_id,
+        workflow_name,
+        node_execution_id: input.child_node_execution_id,
+        node_name: child_name,
+        reason: input.child_failure_reason,
+        failure_kind,
+        retry_count,
+        timestamp,
+    }];
+
+    Ok(FanoutChildFailureCommit {
+        completion: ParallelChildCompletionCommit {
+            all_completed: true,
+            outcome: Some(StepOutcome::Persist(exec.to_workflow_state())),
+            snapshot_before,
+            progress_events,
+            required_progress_events: true,
+            failure_telemetry: Some(FailureClassification::with_disposition(
+                failure_kind,
+                FailureDisposition::Terminal,
+            )),
+        },
+        interrupted_session_ids,
+        interrupted_command_ids,
+    })
 }
 
 impl<R: tauri::Runtime> workflow_runtime_session::FanoutChildTurnObserver
@@ -3321,101 +3485,29 @@ impl WorkflowRuntimeService {
 
             if child_failed {
                 let failure_kind = parallel_child_failure_kind(exit_code, failure_signal);
-                child.state = ParallelChildState::Failed;
-                child.failure_kind = Some(failure_kind);
-                child.failure_disposition = None;
                 let child_name = child.step_name.clone();
                 let child_node_execution_id = child.node_execution_id.clone();
-                let child_token_usage = child.token_usage.clone();
-                let timestamp = current_timestamp();
-                child.result = Some(failure_kind.as_str().to_string());
-                child.structured_output = None;
-                child.completed_at = Some(timestamp);
-                let parent_node_execution_id = pr.parent_node_execution_id.clone();
-                let mut interrupted_session_ids = Vec::new();
-                let mut interrupted_command_ids = Vec::new();
-                let mut interrupted_execution_ids = Vec::new();
-                for sibling in &mut pr.children {
-                    if sibling.state != ParallelChildState::Running {
-                        continue;
-                    }
-                    sibling.state = ParallelChildState::Interrupted;
-                    sibling.completed_at = Some(timestamp);
-                    interrupted_execution_ids.push(sibling.node_execution_id.clone());
-                    if sibling.session_id.is_empty() {
-                        interrupted_command_ids.push(sibling.node_execution_id.clone());
-                    } else {
-                        interrupted_session_ids.push(sibling.session_id.clone());
-                    }
-                }
-
                 let reason = format!(
                     "fanout child '{}' failed (exit_code: {})",
                     child_name, exit_code
                 );
-                exec.fail_node_execution(
-                    &child_node_execution_id,
-                    reason.clone(),
-                    failure_kind,
-                    timestamp,
-                );
-                if let Some(node_execution) = exec
-                    .node_executions
-                    .iter_mut()
-                    .find(|execution| execution.id == child_node_execution_id)
-                {
-                    node_execution.token_usage = Some(child_token_usage);
-                }
-                for execution_id in interrupted_execution_ids {
-                    if let Some(node_execution) = exec
-                        .node_executions
-                        .iter_mut()
-                        .find(|execution| execution.id == execution_id)
-                    {
-                        node_execution.status = NodeExecutionStatus::Aborted;
-                        node_execution.completed_at = Some(timestamp);
-                    }
-                }
-                exec.fail_node_execution(
-                    &parent_node_execution_id,
-                    reason.clone(),
-                    failure_kind,
-                    timestamp,
-                );
-                exec.current_stall_observations.clear();
-                exec.state = WorkflowExecutionState::Failed {
-                    reason: reason.clone(),
-                    kind: failure_kind,
-                    retry_count: None,
-                };
-                let history_entry = exec.make_step_history_entry(Some(reason.clone()), None, None);
-                exec.step_history.push(history_entry);
-                exec.parallel_run = None;
-                exec.updated_at = timestamp;
-                let progress_events = vec![WorkflowEvent::NodeFailed {
-                    run_id: exec.id.clone(),
-                    workflow_name: exec.workflow.name.clone(),
-                    node_execution_id: child_node_execution_id,
-                    node_name: child_name,
-                    reason,
-                    failure_kind,
-                    retry_count: None,
-                    timestamp,
-                }];
-                break 'state_update (
-                    ParallelChildCompletionCommit {
-                        all_completed: true,
-                        outcome: Some(StepOutcome::Persist(exec.to_workflow_state())),
-                        snapshot_before: exec_snapshot_before,
-                        progress_events,
-                        required_progress_events: true,
-                        failure_telemetry: Some(FailureClassification::with_disposition(
-                            failure_kind,
-                            FailureDisposition::Terminal,
-                        )),
+                let failure_commit = finalize_fanout_child_failure_state(
+                    exec,
+                    exec_snapshot_before,
+                    FanoutChildFailureInput {
+                        child_node_execution_id,
+                        child_failure_reason: reason.clone(),
+                        terminal_reason: reason,
+                        failure_kind,
+                        retry_count: None,
+                        timestamp: current_timestamp(),
+                        record_child_token_usage: true,
                     },
-                    interrupted_session_ids,
-                    interrupted_command_ids,
+                )?;
+                break 'state_update (
+                    failure_commit.completion,
+                    failure_commit.interrupted_session_ids,
+                    failure_commit.interrupted_command_ids,
                 );
             }
 
@@ -5023,124 +5115,24 @@ impl WorkflowRuntimeService {
                 return Ok(());
             }
             let snapshot_before = execution.clone();
-            let workflow_name = execution.workflow.name.clone();
-            let parent_node_execution_id = execution
-                .parallel_run
-                .as_ref()
-                .map(|run| run.parent_node_execution_id.clone())
-                .ok_or_else(|| {
-                    WorkflowEngineError::InvalidState(
-                        "fanout command failure requires an active fanout run".to_string(),
-                    )
-                })?;
-            let child = execution
-                .parallel_run
-                .as_mut()
-                .and_then(|run| {
-                    run.children
-                        .iter_mut()
-                        .find(|child| child.node_execution_id == input.node_execution_id)
-                })
-                .ok_or_else(|| {
-                    WorkflowEngineError::InvalidState(format!(
-                        "fanout command child '{}' disappeared",
-                        input.node_execution_id
-                    ))
-                })?;
-            child.state = ParallelChildState::Failed;
-            child.result = Some(failure_kind.as_str().to_string());
-            child.structured_output = None;
-            child.failure_kind = Some(failure_kind);
-            child.failure_disposition = None;
-            child.completed_at = Some(timestamp);
-            execution.fail_node_execution(
-                &input.node_execution_id,
-                reason.to_string(),
-                failure_kind,
-                timestamp,
-            );
-            let progress_events = vec![WorkflowEvent::NodeFailed {
-                run_id: input.run_id.clone(),
-                workflow_name,
-                node_execution_id: input.node_execution_id.clone(),
-                node_name: input.node_name.clone(),
-                reason: reason.to_string(),
-                failure_kind,
-                retry_count: None,
-                timestamp,
-            }];
-
-            let (interrupted_session_ids, interrupted_command_ids, interrupted_execution_ids) =
-                execution
-                    .parallel_run
-                    .as_mut()
-                    .map(|run| {
-                        let mut sessions = Vec::new();
-                        let mut commands = Vec::new();
-                        let mut execution_ids = Vec::new();
-                        for child in &mut run.children {
-                            if child.node_execution_id == input.node_execution_id
-                                || child.state != ParallelChildState::Running
-                            {
-                                continue;
-                            }
-                            child.state = ParallelChildState::Interrupted;
-                            execution_ids.push(child.node_execution_id.clone());
-                            if child.session_id.is_empty() {
-                                commands.push(child.node_execution_id.clone());
-                            } else {
-                                sessions.push(child.session_id.clone());
-                            }
-                        }
-                        (sessions, commands, execution_ids)
-                    })
-                    .unwrap_or_default();
-            for execution_id in interrupted_execution_ids {
-                if let Some(node_execution) = execution
-                    .node_executions
-                    .iter_mut()
-                    .find(|candidate| candidate.id == execution_id)
-                {
-                    node_execution.status = NodeExecutionStatus::Aborted;
-                    node_execution.completed_at = Some(timestamp);
-                }
-            }
-            execution.fail_node_execution(
-                &parent_node_execution_id,
-                format!("fanout child '{}' failed: {reason}", input.node_name),
-                failure_kind,
-                timestamp,
-            );
-            let entry = execution.make_step_history_entry(
-                Some(format!(
-                    "fanout child '{}' failed: {reason}",
-                    input.node_name
-                )),
-                None,
-                None,
-            );
-            execution.step_history.push(entry);
-            execution.state = WorkflowExecutionState::Failed {
-                reason: format!("fanout child '{}' failed: {reason}", input.node_name),
-                kind: failure_kind,
-                retry_count: None,
-            };
-            execution.parallel_run = None;
-            execution.updated_at = timestamp;
-            (
-                ParallelChildCompletionCommit {
-                    all_completed: true,
-                    outcome: Some(StepOutcome::Persist(execution.to_workflow_state())),
-                    snapshot_before,
-                    progress_events,
-                    required_progress_events: true,
-                    failure_telemetry: Some(FailureClassification::with_disposition(
-                        failure_kind,
-                        FailureDisposition::Terminal,
-                    )),
+            let terminal_reason = format!("fanout child '{}' failed: {reason}", input.node_name);
+            let failure_commit = finalize_fanout_child_failure_state(
+                execution,
+                snapshot_before,
+                FanoutChildFailureInput {
+                    child_node_execution_id: input.node_execution_id.clone(),
+                    child_failure_reason: reason.to_string(),
+                    terminal_reason,
+                    failure_kind,
+                    retry_count: None,
+                    timestamp,
+                    record_child_token_usage: false,
                 },
-                interrupted_session_ids,
-                interrupted_command_ids,
+            )?;
+            (
+                failure_commit.completion,
+                failure_commit.interrupted_session_ids,
+                failure_commit.interrupted_command_ids,
             )
         };
 
