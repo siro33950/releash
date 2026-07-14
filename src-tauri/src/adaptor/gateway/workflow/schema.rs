@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::domain_mapping;
 use crate::domain::workflow as domain_workflow;
-use crate::domain::workflow::services::contract_schema;
+use crate::domain::workflow::services::{contract_schema, reference};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SchemaDef {
@@ -148,9 +148,89 @@ pub struct SessionSpec {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct FanoutSpec {
-    pub parallel_children: Vec<InterimChild>,
+    #[serde(
+        deserialize_with = "deserialize_fanout_children",
+        serialize_with = "serialize_fanout_children"
+    )]
+    pub child: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub items: Option<ItemsSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aggregate: Option<ParallelAggregate>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ItemsSource {
+    Literal(Vec<Value>),
+    ArtifactField { node: String, field: String },
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawFanoutChildren {
+    One(String),
+    Many(Vec<String>),
+}
+
+fn deserialize_fanout_children<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match RawFanoutChildren::deserialize(deserializer)? {
+        RawFanoutChildren::One(child) => Ok(vec![child]),
+        RawFanoutChildren::Many(children) => Ok(children),
+    }
+}
+
+fn serialize_fanout_children<S>(children: &[String], serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match children {
+        [child] => serializer.serialize_str(child),
+        children => children.serialize(serializer),
+    }
+}
+
+impl<'de> Deserialize<'de> for ItemsSource {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum RawItemsSource {
+            Literal(Vec<Value>),
+            ArtifactField(String),
+        }
+
+        match RawItemsSource::deserialize(deserializer)? {
+            RawItemsSource::Literal(items) => Ok(Self::Literal(items)),
+            RawItemsSource::ArtifactField(value) => match reference::parse_reference(&value) {
+                Ok(reference::ArtifactReference::Node {
+                    node,
+                    field: Some(field),
+                }) => Ok(Self::ArtifactField { node, field }),
+                _ => Err(de::Error::custom(
+                    "fanout.items must be a literal array or a <node>.<field> Artifact reference",
+                )),
+            },
+        }
+    }
+}
+
+impl Serialize for ItemsSource {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Literal(items) => items.serialize(serializer),
+            Self::ArtifactField { node, field } => {
+                serializer.serialize_str(&format!("{node}.{field}"))
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -331,31 +411,7 @@ where
     Ok(())
 }
 
-/// #1322 の暫定 fanout child。子は暗黙に session 扱いで、旧 `type:` と
-/// flat facet は持たない。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(deny_unknown_fields)]
-pub struct InterimChild {
-    pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub permission: Option<String>,
-    #[serde(default, skip_serializing_if = "FacetRefs::is_empty")]
-    pub facets: FacetRefs,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub artifact: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input: Option<String>,
-}
-
-impl InterimChild {
-    pub fn has_facet_refs(&self) -> bool {
-        !self.facets.is_empty()
-    }
-}
-
-/// parallel node 完了後の集約条件（#1330 まで fanout block 内で暫定維持）。
+/// fanout node 完了後の集約条件（#1330 まで fanout block 内で暫定維持）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ParallelAggregate {
@@ -636,19 +692,8 @@ description: fanout test
 nodes:
   - name: review
     fanout:
-      parallel_children:
-        - name: arch-review
-          model: test-model
-          permission: edit
-          facets:
-            policy: review
-            instruction: architecture-review
-        - name: security-review
-          model: test-model
-          permission: edit
-          facets:
-            policy: review
-            instruction: security-review
+      child: [arch-review, security-review]
+      items: plan.targets
       aggregate:
         all_match: LGTM
         then: report
@@ -656,17 +701,87 @@ nodes:
 "#;
         let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
         let fanout = wf.nodes[0].fanout().unwrap();
-        assert_eq!(fanout.parallel_children.len(), 2);
-        assert_eq!(fanout.parallel_children[0].name, "arch-review");
         assert_eq!(
-            fanout.parallel_children[0].facets.policy.as_deref(),
-            Some("review")
+            fanout.child,
+            vec!["arch-review".to_string(), "security-review".to_string()]
+        );
+        assert_eq!(
+            fanout.items,
+            Some(ItemsSource::ArtifactField {
+                node: "plan".to_string(),
+                field: "targets".to_string(),
+            })
         );
         let agg = fanout.aggregate.as_ref().unwrap();
         assert_eq!(agg.all_match.as_deref(), Some("LGTM"));
         assert!(agg.any_match.is_none());
         assert_eq!(agg.then, "report");
         assert_eq!(agg.r#else, "implement");
+
+        let serialized = serde_saphyr::to_string(&wf).unwrap();
+        let serialized_value: Value = serde_saphyr::from_str(&serialized).unwrap();
+        assert_eq!(
+            serialized_value["nodes"][0]["fanout"]["child"],
+            serde_json::json!(["arch-review", "security-review"])
+        );
+        assert_eq!(
+            serialized_value["nodes"][0]["fanout"]["items"],
+            Value::String("plan.targets".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_fanout_single_child_and_literal_items() {
+        let yaml = r#"
+name: fanout
+description: fanout test
+nodes:
+  - name: review
+    fanout:
+      child: reviewer
+      items: [api, cli]
+"#;
+
+        let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
+        let fanout = wf.nodes[0].fanout().unwrap();
+
+        assert_eq!(fanout.child, vec!["reviewer"]);
+        assert_eq!(
+            fanout.items,
+            Some(ItemsSource::Literal(vec![
+                Value::String("api".to_string()),
+                Value::String("cli".to_string()),
+            ]))
+        );
+        let serialized = serde_saphyr::to_string(&wf).unwrap();
+        let serialized_value: Value = serde_saphyr::from_str(&serialized).unwrap();
+        assert_eq!(
+            serialized_value["nodes"][0]["fanout"]["child"],
+            Value::String("reviewer".to_string())
+        );
+    }
+
+    #[test]
+    fn rejects_fanout_items_outside_literal_array_or_node_field_reference() {
+        for items in ["source", "source.field.nested", "item.field", "request"] {
+            let yaml = format!(
+                r#"
+name: invalid-items
+description: invalid
+nodes:
+  - name: review
+    fanout:
+      child: reviewer
+      items: {items}
+"#
+            );
+
+            let error = serde_saphyr::from_str::<Workflow>(&yaml).unwrap_err();
+            assert!(
+                error.to_string().contains("fanout.items"),
+                "{items}: {error}"
+            );
+        }
     }
 
     #[test]
@@ -1069,7 +1184,7 @@ nodes:
     fanout:
       facets:
         instruction: review
-      parallel_children: []
+      child: []
 "#;
         let err = serde_saphyr::from_str::<Workflow>(yaml).unwrap_err();
         assert!(err.to_string().contains("unknown field"));
@@ -1077,58 +1192,18 @@ nodes:
     }
 
     #[test]
-    fn rejects_fanout_child_legacy_type_field() {
+    fn rejects_legacy_parallel_children() {
         let yaml = r#"
-name: invalid-child-type
+name: invalid-parallel-children
 description: invalid
 nodes:
   - name: review
     fanout:
       parallel_children:
         - name: child
-          type: agent
-          permission: edit
-          facets:
-            instruction: review
 "#;
         let err = serde_saphyr::from_str::<Workflow>(yaml).unwrap_err();
         assert!(err.to_string().contains("unknown field"));
-        assert!(err.to_string().contains("type"));
-    }
-
-    #[test]
-    fn rejects_fanout_child_flat_facet_fields() {
-        let yaml = r#"
-name: invalid-child-flat-facet
-description: invalid
-nodes:
-  - name: review
-    fanout:
-      parallel_children:
-        - name: child
-          permission: edit
-          policy: review
-"#;
-        let err = serde_saphyr::from_str::<Workflow>(yaml).unwrap_err();
-        assert!(err.to_string().contains("unknown field"));
-        assert!(err.to_string().contains("policy"));
-    }
-
-    #[test]
-    fn rejects_fanout_child_unknown_field() {
-        let yaml = r#"
-name: invalid-child-unknown
-description: invalid
-nodes:
-  - name: review
-    fanout:
-      parallel_children:
-        - name: child
-          permission: edit
-          unexpected: value
-"#;
-        let err = serde_saphyr::from_str::<Workflow>(yaml).unwrap_err();
-        assert!(err.to_string().contains("unknown field"));
-        assert!(err.to_string().contains("unexpected"));
+        assert!(err.to_string().contains("parallel_children"));
     }
 }

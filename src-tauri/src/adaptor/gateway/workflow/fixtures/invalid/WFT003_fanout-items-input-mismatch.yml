@@ -1,0 +1,13 @@
+name: fanout-items-input-mismatch
+description: literal fanout items must match child input
+schemas:
+  target:
+    type: integer
+nodes:
+  - name: fanout
+    fanout:
+      child: worker
+      items: [not-an-integer]
+  - name: worker
+    input: target
+    command: echo {{ item }}

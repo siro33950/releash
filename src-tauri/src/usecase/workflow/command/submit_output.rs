@@ -9,6 +9,7 @@ use super::preflight::WorkflowRuntimeCommandPreflight;
 pub struct SubmitOutputCommand {
     pub run_id: String,
     pub step_name: String,
+    pub node_execution_id: Option<String>,
     pub contract: String,
     pub structured_output: serde_json::Value,
 }

@@ -1218,6 +1218,7 @@ mod tests {
         progress: StepProgress,
     ) -> StepSessionProjection {
         StepSessionProjection {
+            node_execution_id: None,
             session_id: session_id.map(str::to_string),
             step_name: step_name.to_string(),
             run_index,

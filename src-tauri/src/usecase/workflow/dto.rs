@@ -55,8 +55,18 @@ pub(crate) enum SessionGateDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub(crate) struct FanoutSpecDto {
-    pub parallel_children: Vec<InterimChildDto>,
+    pub child: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub items: Option<ItemsSourceDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aggregate: Option<ParallelAggregateDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub(crate) enum ItemsSourceDto {
+    Literal(Vec<serde_json::Value>),
+    ArtifactField(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -80,21 +90,6 @@ pub(crate) struct NodeDefinitionDto {
     pub collect: Option<CollectConfigDto>,
     #[serde(default, rename = "rules", skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<RuleDto>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct InterimChildDto {
-    pub name: String,
-    pub facets: FacetRefsDto,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub artifact: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub permission: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -284,23 +279,18 @@ fn session_to_dto(session: &domain::SessionSpec) -> SessionSpecDto {
 
 fn fanout_to_dto(fanout: &domain::FanoutSpec) -> FanoutSpecDto {
     FanoutSpecDto {
-        parallel_children: fanout
-            .parallel_children
-            .iter()
-            .map(child_node_to_dto)
-            .collect(),
+        child: fanout.child.clone(),
+        items: fanout.items.as_ref().map(items_source_to_dto),
         aggregate: fanout.aggregate.as_ref().map(aggregate_to_dto),
     }
 }
 
-fn child_node_to_dto(child: &domain::InterimChild) -> InterimChildDto {
-    InterimChildDto {
-        name: child.name.clone(),
-        facets: facet_refs_to_dto(&child.facets),
-        artifact: child.artifact.clone(),
-        input: child.input.clone(),
-        model: child.model.clone(),
-        permission: child.permission.clone(),
+fn items_source_to_dto(items: &domain::ItemsSource) -> ItemsSourceDto {
+    match items {
+        domain::ItemsSource::Literal(values) => ItemsSourceDto::Literal(values.clone()),
+        domain::ItemsSource::ArtifactField { node, field } => {
+            ItemsSourceDto::ArtifactField(format!("{node}.{field}"))
+        }
     }
 }
 
@@ -464,6 +454,37 @@ mod tests {
                     "input": "plan",
                     "rules": [{"type": "next", "next": "done"}]
                 }]
+            })
+        );
+    }
+
+    #[test]
+    fn fanout_spec_dto_serializes_child_and_items_sources() {
+        let literal = FanoutSpecDto {
+            child: vec!["review".to_string()],
+            items: Some(ItemsSourceDto::Literal(vec![serde_json::json!({
+                "thread_id": "thread-1"
+            })])),
+            aggregate: None,
+        };
+        assert_eq!(
+            serde_json::to_value(literal).unwrap(),
+            serde_json::json!({
+                "child": ["review"],
+                "items": [{"thread_id": "thread-1"}]
+            })
+        );
+
+        let reference = FanoutSpecDto {
+            child: vec!["review-opus".to_string(), "review-gpt".to_string()],
+            items: Some(ItemsSourceDto::ArtifactField("scan.threads".to_string())),
+            aggregate: None,
+        };
+        assert_eq!(
+            serde_json::to_value(reference).unwrap(),
+            serde_json::json!({
+                "child": ["review-opus", "review-gpt"],
+                "items": "scan.threads"
             })
         );
     }

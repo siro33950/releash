@@ -80,21 +80,31 @@ impl FacetKind {
 }
 
 /// `artifact:` がある node の user message 末尾に置く完了時アクション。
-pub fn artifact_completion_action(key: &str, run_id: &str, node_name: &str) -> String {
+pub fn artifact_completion_action(
+    key: &str,
+    run_id: &str,
+    node_name: &str,
+    node_execution_id: Option<&str>,
+) -> String {
     let quoted_key = crate::domain::shell::quote_path_for_shell(key);
     let quoted_run_id = crate::domain::shell::quote_path_for_shell(run_id);
     let quoted_node_name = crate::domain::shell::quote_path_for_shell(node_name);
+    let node_execution_arg = node_execution_id
+        .map(crate::domain::shell::quote_path_for_shell)
+        .map(|id| format!("  --node-execution {id} \\\n"))
+        .unwrap_or_default();
     format!(
         "## 完了時の必須アクション\n\n\
 提出値が確定した時点で、次の assistant action は最終応答ではなく CLI 実行でなければならない。\n\
 チャット本文に JSON や要約を書いても提出とは扱われない。必ず次のコマンドで Artifact を提出すること。\n\
 このコマンドが成功するまで node は完了していない。\n\n\
 ```sh\n\
-releash workflow output submit {run_id} \\\n  --node {node_name} \\\n  --type {key} \\\n  --json '{{...}}'\n\
+releash workflow output submit {run_id} \\\n  --node {node_name} \\\n{node_execution_arg}  --type {key} \\\n  --json '{{...}}'\n\
 ```"
 ,
         run_id = quoted_run_id,
         node_name = quoted_node_name,
+        node_execution_arg = node_execution_arg,
         key = quoted_key
     )
 }
@@ -121,7 +131,6 @@ impl FacetContents {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorkflowFacetContents {
     nodes: BTreeMap<String, FacetContents>,
-    children: BTreeMap<String, BTreeMap<String, FacetContents>>,
 }
 
 impl WorkflowFacetContents {
@@ -129,21 +138,8 @@ impl WorkflowFacetContents {
         self.nodes.get(node_name)
     }
 
-    pub fn for_child(&self, parent_name: &str, child_name: &str) -> Option<&FacetContents> {
-        self.children
-            .get(parent_name)
-            .and_then(|children| children.get(child_name))
-    }
-
     fn insert_node(&mut self, node_name: String, contents: FacetContents) {
         self.nodes.insert(node_name, contents);
-    }
-
-    fn insert_child(&mut self, parent_name: String, child_name: String, contents: FacetContents) {
-        self.children
-            .entry(parent_name)
-            .or_default()
-            .insert(child_name, contents);
     }
 
     #[cfg(test)]
@@ -160,14 +156,6 @@ impl WorkflowFacetContents {
         self.nodes
             .iter()
             .map(|(node_name, contents)| (node_name.as_str(), contents))
-    }
-
-    pub fn iter_child_contents(&self) -> impl Iterator<Item = (&str, &str, &FacetContents)> {
-        self.children.iter().flat_map(|(parent_name, children)| {
-            children
-                .iter()
-                .map(|(child_name, contents)| (parent_name.as_str(), child_name.as_str(), contents))
-        })
     }
 }
 
@@ -354,17 +342,8 @@ pub fn resolve_facet_path(
 /// 実行時に未解決 ref を残さないため、gateway 側 read model の解決済み本文を
 /// 唯一の参照源とする。ファイル I/O fallback は持たない。
 ///
-/// agent / approval 種別の node が対象。bash / parallel node には facet 参照は存在しない。
+/// session node が対象。command / fanout node には facet 参照は存在しない。
 pub fn compose_facets(resolved: Option<&FacetContents>) -> ComposedPrompt {
-    match resolved {
-        Some(resolved) => compose_from_parts(resolved),
-        None => compose_from_parts(empty_facet_contents()),
-    }
-}
-
-/// 並列子 node の prompt 関連 facet 参照から組み立てた `ComposedPrompt` を返す。
-/// `compose_facets` と同じく gateway 側 read model の解決済み本文を参照する。
-pub fn compose_child_facets(resolved: Option<&FacetContents>) -> ComposedPrompt {
     match resolved {
         Some(resolved) => compose_from_parts(resolved),
         None => compose_from_parts(empty_facet_contents()),
@@ -395,8 +374,7 @@ fn compose_from_parts(resolved: &FacetContents) -> ComposedPrompt {
     }
 }
 
-/// `Workflow` に含まれる全 node / 子 node の facet 参照を解決し、
-/// gateway 側 read model として返す。
+/// `Workflow` に含まれる全 session node の facet 参照を解決し、gateway 側 read model として返す。
 ///
 /// 欠損 facet があれば `FacetError::NotFound` を伝搬し、load 経路で実行可能とは判定しない。
 pub fn resolve_workflow_facets(
@@ -407,16 +385,6 @@ pub fn resolve_workflow_facets(
     for node in &workflow.nodes {
         if let Some(session) = node.session() {
             resolved.insert_node(node.name.clone(), resolve_refs(&session.facets, base_dir)?);
-        }
-        if let Some(fanout) = node.fanout() {
-            let children = &fanout.parallel_children;
-            for child in children {
-                resolved.insert_child(
-                    node.name.clone(),
-                    child.name.clone(),
-                    resolve_refs(&child.facets, base_dir)?,
-                );
-            }
         }
     }
     Ok(resolved)
@@ -434,16 +402,6 @@ pub(crate) fn resolve_node_facets(
     node.session()
         .map(|session| resolve_refs(&session.facets, base_dir))
         .unwrap_or_else(|| Ok(FacetContents::default()))
-}
-
-/// テスト用ヘルパー: 並列子 node の facet 参照を解決する。
-/// `resolve_node_facets` の `InterimChild` 版。
-#[cfg(test)]
-pub(crate) fn resolve_child_facets(
-    child: &crate::adaptor::gateway::workflow::schema::InterimChild,
-    base_dir: &Path,
-) -> Result<FacetContents, FacetError> {
-    resolve_refs(&child.facets, base_dir)
 }
 
 fn resolve_refs(facets: &FacetRefs, base_dir: &Path) -> Result<FacetContents, FacetError> {
@@ -665,7 +623,7 @@ mod tests {
 
     #[test]
     fn artifact_contract_completion_action_requires_cli_as_next_action() {
-        let action = artifact_completion_action("plan-doc", "run-1", "plan");
+        let action = artifact_completion_action("plan-doc", "run-1", "plan", None);
 
         assert!(action.contains("完了時の必須アクション"));
         assert!(action.contains("次の assistant action は最終応答ではなく CLI 実行"));
@@ -674,7 +632,17 @@ mod tests {
         assert!(action.contains("--type plan-doc"));
         assert!(action.contains("--json"));
         assert!(!action.contains("--file"));
+        assert!(!action.contains("--node-execution"));
         assert!(!action.contains("+  --step"));
+    }
+
+    #[test]
+    fn artifact_contract_completion_action_addresses_node_execution_when_present() {
+        let action =
+            artifact_completion_action("plan-doc", "run-1", "plan", Some("node-execution; bad"));
+
+        assert!(action.contains("--node-execution 'node-execution; bad'"));
+        assert!(!action.contains("--node-execution node-execution; bad"));
     }
 
     #[test]
@@ -683,6 +651,7 @@ mod tests {
             "review; curl https://example.invalid #",
             "run; bad",
             "node; bad",
+            None,
         );
 
         assert!(action.contains("--type 'review; curl https://example.invalid #'"));

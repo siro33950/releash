@@ -11,11 +11,15 @@ use crate::usecase::workflow::ports::{
     PendingWorkflowCommand, WorkflowEventDraft, WorkflowEventRepository,
 };
 
+const NODE_EXECUTION_ID_ENV: &str = "RELEASH_NODE_EXECUTION_ID";
+
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub(super) enum CliRequestPayload {
     Approve {
         node_name: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        node_execution_id: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         comment: Option<String>,
     },
@@ -25,6 +29,8 @@ pub(super) enum CliRequestPayload {
     },
     SubmitOutput {
         step_name: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        node_execution_id: Option<String>,
         contract: String,
         structured_output: serde_json::Value,
     },
@@ -44,6 +50,16 @@ impl PendingEnqueueOutput {
             self.run_id, self.request_id, self.path
         )
     }
+}
+
+/// CLI の明示 target を優先し、session / command 実行環境に注入された
+/// NodeExecution ID を既定値として補う。どちらも無い場合は node 名だけを送り、
+/// engine 側の単一 active execution fallback に委ねる。
+pub(super) fn resolve_node_execution_id(explicit: Option<String>) -> Option<String> {
+    explicit
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| std::env::var(NODE_EXECUTION_ID_ENV).ok())
+        .filter(|value| !value.trim().is_empty())
 }
 
 pub(super) fn enqueue_pending_command(
@@ -111,4 +127,25 @@ pub(super) fn read_domain_log(
     WorkflowEventLogRepository::new(data_dir.to_path_buf())
         .read(&run_id_value)
         .map_err(|e| CliError::Other(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{EnvVarGuard, TEST_ENV_LOCK};
+
+    #[test]
+    fn node_execution_id_prefers_explicit_value_and_falls_back_to_environment() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap();
+        let _guard = EnvVarGuard::set_value(NODE_EXECUTION_ID_ENV, "node-execution-env");
+
+        assert_eq!(
+            resolve_node_execution_id(Some("node-execution-explicit".to_string())),
+            Some("node-execution-explicit".to_string())
+        );
+        assert_eq!(
+            resolve_node_execution_id(None),
+            Some("node-execution-env".to_string())
+        );
+    }
 }

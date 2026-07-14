@@ -16,6 +16,7 @@ import {
 } from "@/hooks/useWorkspaceWorkflowStepDetail";
 import { useWorktreeSessionStatuses } from "@/hooks/useWorktreeSessionStatuses";
 import type { AgentState } from "@/types/protocol";
+import type { JsonValue } from "@/types/workflow";
 import type {
 	CenterSelection,
 	CenterSelectionRequest,
@@ -35,6 +36,7 @@ interface WorkflowGridPane {
 	sessionId?: string;
 	worktreePath: string;
 	agentState?: AgentState | null;
+	artifact?: JsonValue;
 }
 
 const WORKFLOW_GRID_MIN_TILE_WIDTH = 320;
@@ -123,6 +125,7 @@ function WorkspaceWorkflowStepGrid({
 					key: `${step.id}:empty`,
 					label: step.title,
 					worktreePath: step.worktreePath,
+					artifact: step.artifact,
 				},
 			];
 		}
@@ -170,7 +173,8 @@ function WorkflowStepHeader({ step }: { step: WorkspaceWorkflowStepDetail }) {
 				worktreePath: step.worktreePath,
 				runId: step.runId,
 				stepId: step.id,
-				stepName: step.title,
+				stepName: step.nodeName,
+				nodeExecutionId: step.nodeExecutionId,
 			});
 			if (!result) {
 				throw new Error("Workflow step action failed.");
@@ -222,13 +226,59 @@ function WorkflowStepHeaderContent({
 			<div className="flex min-w-0 items-center gap-2">
 				<WorkflowStepStatusIcon status={step.status} />
 				<span className="min-w-0 truncate text-sm font-medium">
-					{step.title}
+					{step.nodeName}
 				</span>
 				<span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
 					{step.stepType}
 				</span>
+				<span className="text-xs text-muted-foreground">
+					{step.nodeExecutionStatus ?? step.status}
+				</span>
+				<span className="text-xs text-muted-foreground">
+					attempt {step.attempt}
+				</span>
+				<span
+					className="max-w-36 truncate font-mono text-[10px] text-muted-foreground"
+					title={`NodeExecution ${step.nodeExecutionId ?? step.id}`}
+				>
+					{step.nodeExecutionId ?? step.id}
+				</span>
+				{step.sessionId && (
+					<span
+						className="max-w-32 truncate font-mono text-[10px] text-muted-foreground"
+						title={`Session ${step.sessionId}`}
+					>
+						{step.sessionId}
+					</span>
+				)}
+				{step.fanoutParent && (
+					<span
+						className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
+						title={`fanout parent ${step.fanoutParent.parentNode} attempt ${step.fanoutParent.parentAttempt}`}
+					>
+						{step.fanoutParent.parentNode}#{step.fanoutParent.parentAttempt}
+						{" · item "}
+						{step.fanoutParent.itemIndex ?? "–"}
+						{" · child "}
+						{step.fanoutParent.childIndex}
+					</span>
+				)}
 			</div>
 			<div className="ml-auto flex shrink-0 items-center gap-2">
+				{step.artifact !== undefined && (
+					<Popover>
+						<PopoverTrigger asChild>
+							<Button type="button" variant="outline" size="xs">
+								Artifact
+							</Button>
+						</PopoverTrigger>
+						<PopoverContent side="bottom" align="end" className="w-96 p-0">
+							<pre className="max-h-80 overflow-auto p-3 text-xs">
+								{JSON.stringify(step.artifact, null, 2)}
+							</pre>
+						</PopoverContent>
+					</Popover>
+				)}
 				{actionError && (
 					<Popover
 						open={actionErrorOpen}
@@ -356,6 +406,10 @@ function WorkflowStepPane({
 						sessionId={pane.sessionId}
 						worktreePath={pane.worktreePath}
 					/>
+				) : pane.artifact !== undefined ? (
+					<pre className="h-full overflow-auto p-4 text-xs">
+						{JSON.stringify(pane.artifact, null, 2)}
+					</pre>
 				) : (
 					<div className="flex h-full items-center justify-center px-4 text-center text-sm text-muted-foreground">
 						No agent conversation for this node.

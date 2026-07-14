@@ -219,6 +219,7 @@ impl WorkflowApprovalGateway for TauriWorkflowRuntimeCommandGateway {
                 &command.run_id,
                 command.comment,
                 &command.node_name,
+                command.node_execution_id.as_deref(),
             )
             .await
             .map_err(|err| WorkflowError::external(err.to_string()))
@@ -235,6 +236,7 @@ impl WorkflowSubmitOutputGateway for TauriWorkflowRuntimeCommandGateway {
                 &self.agent_runtime,
                 &command.run_id,
                 command.step_name,
+                command.node_execution_id,
                 command.contract,
                 command.structured_output,
                 None,
@@ -431,18 +433,26 @@ fn pending_runtime_payload_to_legacy(
     payload: PendingRuntimeCommandPayload,
 ) -> PendingCommandPayload {
     match payload {
-        PendingRuntimeCommandPayload::Approve { node_name, comment } => {
-            PendingCommandPayload::Approve { node_name, comment }
-        }
+        PendingRuntimeCommandPayload::Approve {
+            node_name,
+            node_execution_id,
+            comment,
+        } => PendingCommandPayload::Approve {
+            node_name,
+            node_execution_id,
+            comment,
+        },
         PendingRuntimeCommandPayload::Abort { node_name } => {
             PendingCommandPayload::Abort { node_name }
         }
         PendingRuntimeCommandPayload::SubmitOutput {
             step_name,
+            node_execution_id,
             contract,
             structured_output,
         } => PendingCommandPayload::SubmitOutput {
             step_name,
+            node_execution_id,
             contract,
             structured_output,
         },
@@ -482,6 +492,36 @@ mod tests {
         assert_eq!(
             domain_trigger_source_to_legacy(TriggerSource::Agent),
             crate::adaptor::gateway::workflow::run::TriggerSource::Agent
+        );
+    }
+
+    #[test]
+    fn pending_payload_mapping_preserves_node_execution_address() {
+        assert_eq!(
+            pending_runtime_payload_to_legacy(PendingRuntimeCommandPayload::Approve {
+                node_name: "review".to_string(),
+                node_execution_id: Some("node-execution-review".to_string()),
+                comment: None,
+            }),
+            PendingCommandPayload::Approve {
+                node_name: "review".to_string(),
+                node_execution_id: Some("node-execution-review".to_string()),
+                comment: None,
+            }
+        );
+        assert_eq!(
+            pending_runtime_payload_to_legacy(PendingRuntimeCommandPayload::SubmitOutput {
+                step_name: "review".to_string(),
+                node_execution_id: Some("node-execution-review".to_string()),
+                contract: "review-verdict".to_string(),
+                structured_output: serde_json::json!({"verdict": "LGTM"}),
+            }),
+            PendingCommandPayload::SubmitOutput {
+                step_name: "review".to_string(),
+                node_execution_id: Some("node-execution-review".to_string()),
+                contract: "review-verdict".to_string(),
+                structured_output: serde_json::json!({"verdict": "LGTM"}),
+            }
         );
     }
 }

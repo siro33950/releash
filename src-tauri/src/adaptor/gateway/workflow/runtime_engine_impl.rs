@@ -65,16 +65,15 @@ use crate::adaptor::gateway::workflow::runtime_state::{
 use crate::adaptor::gateway::workflow::schema::NodeDefinition;
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::schema::{
-    CommandSpec, FacetRefs, FanoutSpec, InterimChild, NodeKind, SessionGate, SessionSpec,
+    CommandSpec, FacetRefs, FanoutSpec, NodeKind, SessionGate, SessionSpec,
 };
 use crate::adaptor::gateway::workflow::schema::{NodeKindName, Workflow};
 use crate::adaptor::gateway::workflow::secret_source;
 #[cfg(test)]
-use crate::adaptor::gateway::workflow::state::ParallelStepState;
-#[cfg(test)]
 use crate::adaptor::gateway::workflow::state::StepHistoryEntry;
 use crate::adaptor::gateway::workflow::state::{
-    StepOutput, TokenUsage, WorkflowExecutionState, WorkflowStallObservation, WorkflowState,
+    NodeExecution, NodeExecutionStatus, StepOutput, TokenUsage, WorkflowExecutionState,
+    WorkflowStallObservation, WorkflowState,
 };
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::step_settings::resolve_step_settings;
@@ -96,8 +95,6 @@ use crate::domain::workflow::services::spec_directory as workflow_spec_directory
 use crate::domain::workflow::services::transition as workflow_transition;
 use crate::domain::workflow::OutcomeCommitMode;
 use crate::domain::workflow::WorkflowStepContext;
-#[cfg(test)]
-use crate::domain::workflow::STEP_STATE_RUNNING;
 use crate::domain::workflow::{
     ContractValidationResult, FailureClassification, FailureDisposition,
     SchemaDef as DomainSchemaDef, WorkflowStepFailureKind, STEP_STATE_FAILED,
@@ -214,11 +211,13 @@ pub struct WorkflowRuntimeService {
     session_workflow_refs: Arc<Mutex<HashMap<String, SessionWorkflowRef>>>,
     /// run_id → 解決済み facet 本文。workflow state / event には含めない runtime-local read model。
     run_facet_contents: Arc<Mutex<HashMap<String, WorkflowFacetContents>>>,
-    /// run_id → active command process shutdown handle.
+    /// node_execution_id → active command process shutdown handle.
     active_commands: Arc<Mutex<HashMap<String, ActiveCommandHandle>>>,
-    /// run_id → command completion observer task owned by this workflow runtime.
+    /// node_execution_id → owning workflow run_id.
+    active_command_runs: Arc<Mutex<HashMap<String, String>>>,
+    /// node_execution_id → command completion observer task owned by this workflow runtime.
     command_completion_observers: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
-    /// run_id → shutdown reason consumed by the completion observer.
+    /// node_execution_id → shutdown reason consumed by the completion observer.
     command_shutdown_reasons: Arc<Mutex<HashMap<String, ActiveCommandShutdownReason>>>,
     /// active な WorkflowRun の管理および run metadata の永続化を担う Run Store。
     /// worktree_path → active run_id の secondary index は Run Store 内で保持する。
@@ -234,12 +233,11 @@ pub struct WorkflowRuntimeService {
         Arc<Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>>,
 }
 
-struct ParallelChildStartedLogObserver<'a, R: tauri::Runtime> {
+struct FanoutChildStartedLogObserver<'a, R: tauri::Runtime> {
     engine: &'a WorkflowRuntimeService,
     app: &'a tauri::AppHandle<R>,
     execution_id: &'a str,
     workflow_name: &'a str,
-    parent_step_name: &'a str,
 }
 
 struct ParallelChildCompletionCommit {
@@ -251,14 +249,17 @@ struct ParallelChildCompletionCommit {
     failure_telemetry: Option<FailureClassification>,
 }
 
+#[derive(Clone)]
 struct CommandExecutionInput {
     run_id: String,
+    node_execution_id: String,
     node_name: String,
     run_index: u32,
     worktree_path: String,
     command: String,
     artifact_contract: Option<String>,
     schemas: BTreeMap<String, DomainSchemaDef>,
+    fanout_parent: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -273,10 +274,16 @@ struct CommandArtifact {
 }
 
 fn command_env(input: &CommandExecutionInput) -> Vec<(String, String)> {
-    vec![(
-        "RELEASH_WORKFLOW_EXECUTION_ID".to_string(),
-        input.run_id.clone(),
-    )]
+    vec![
+        (
+            "RELEASH_WORKFLOW_EXECUTION_ID".to_string(),
+            input.run_id.clone(),
+        ),
+        (
+            "RELEASH_NODE_EXECUTION_ID".to_string(),
+            input.node_execution_id.clone(),
+        ),
+    ]
 }
 
 fn build_command_artifact(
@@ -367,7 +374,79 @@ fn is_still_current_run(exec: &WorkflowExecution, node_name: &str, run_index: u3
         == run_index
 }
 
-fn complete_parallel_parent_after_all_children(
+fn resolve_active_node_execution_index(
+    exec: &WorkflowExecution,
+    node_name: &str,
+    node_execution_id: Option<&str>,
+) -> Result<usize, WorkflowEngineError> {
+    let candidates = exec
+        .node_executions
+        .iter()
+        .enumerate()
+        .filter(|(_, execution)| execution.node_name == node_name && execution.status.is_active())
+        .collect::<Vec<_>>();
+    if let Some(node_execution_id) = node_execution_id {
+        return candidates
+            .into_iter()
+            .find(|(_, execution)| execution.id == node_execution_id)
+            .map(|(index, _)| index)
+            .ok_or_else(|| {
+                WorkflowEngineError::InvalidState(format!(
+                    "active node execution '{node_execution_id}' for node '{node_name}' was not found"
+                ))
+            });
+    }
+    match candidates.as_slice() {
+        [(index, _)] => Ok(*index),
+        [] => Err(WorkflowEngineError::InvalidState(format!(
+            "node '{node_name}' has no active execution"
+        ))),
+        candidates => Err(WorkflowEngineError::InvalidState(format!(
+            "node '{node_name}' has {} active executions; node_execution_id is required",
+            candidates.len()
+        ))),
+    }
+}
+
+fn resolve_fanout_approval_node_execution_id(
+    exec: &WorkflowExecution,
+    node_name: &str,
+    node_execution_id: Option<&str>,
+) -> Result<Option<String>, WorkflowEngineError> {
+    let active_candidates = exec
+        .node_executions
+        .iter()
+        .filter(|candidate| {
+            candidate.node_name == node_name
+                && candidate.fanout_parent.is_some()
+                && candidate.status.is_active()
+        })
+        .collect::<Vec<_>>();
+
+    if let Some(requested_id) = node_execution_id {
+        return Ok(active_candidates
+            .into_iter()
+            .find(|candidate| {
+                candidate.id == requested_id
+                    && candidate.status == NodeExecutionStatus::WaitingApproval
+            })
+            .map(|candidate| candidate.id.clone()));
+    }
+
+    if active_candidates.len() > 1 {
+        return Err(WorkflowEngineError::InvalidState(format!(
+            "node '{node_name}' has {} active fanout executions; node_execution_id is required",
+            active_candidates.len()
+        )));
+    }
+
+    Ok(active_candidates
+        .into_iter()
+        .find(|candidate| candidate.status == NodeExecutionStatus::WaitingApproval)
+        .map(|candidate| candidate.id.clone()))
+}
+
+fn complete_fanout_parent_after_all_children(
     exec: &mut WorkflowExecution,
     snapshot_before: WorkflowExecution,
     mut progress_events: Vec<WorkflowEvent>,
@@ -379,41 +458,52 @@ fn complete_parallel_parent_after_all_children(
             "parallel parent completion requires an active parallel run".to_string(),
         ));
     };
-    let aggregate = parallel_run.aggregate.clone();
+    // An empty items expansion is an ordinary successful fanout completion. The temporary
+    // aggregate compatibility block must not route the zero-child case; parent rules do.
+    let aggregate = (!parallel_run.children.is_empty())
+        .then(|| parallel_run.aggregate.clone())
+        .flatten();
     let parent_step_name = parallel_run.parent_step_name.clone();
+    let parent_node_execution_id = parallel_run.parent_node_execution_id.clone();
     let parent_run_index = exec
         .step_execution_counts
         .get(&parent_step_name)
         .copied()
         .unwrap_or(1);
     let completed_at = current_timestamp();
-    let completion_plan = workflow_parallel_runtime::plan_parallel_parent_completion(
+    let completion_plan = workflow_parallel_runtime::plan_fanout_parent_completion(
         &parent_step_name,
         parent_run_index,
         aggregate.as_ref(),
         &parallel_run.children,
-        &exec.step_outputs,
         completed_at,
     );
-    let parallel_completed_result = match &completion_plan.transition {
-        workflow_parallel_runtime::ParallelParentCompletionTransition::Advance => {
-            "advance".to_string()
-        }
-        workflow_parallel_runtime::ParallelParentCompletionTransition::TransitionTo {
-            aggregate_result,
-            ..
-        } => aggregate_result.clone(),
-    };
-    progress_events.push(WorkflowEvent::ParallelCompleted {
+    let parent_artifact = completion_plan
+        .parent_step_output
+        .structured_output
+        .clone()
+        .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
+    let parent_token_usage = completion_plan.parent_step_output.token_usage.clone();
+    progress_events.push(WorkflowEvent::ArtifactProduced {
         run_id: exec.id.clone(),
         workflow_name: exec.workflow.name.clone(),
-        parent_node_name: parent_step_name.clone(),
-        aggregate_result: parallel_completed_result,
-        timestamp: current_timestamp(),
+        node_execution_id: parent_node_execution_id.clone(),
+        node_name: parent_step_name.clone(),
+        contract: None,
+        value: parent_artifact.clone(),
+        request_id: None,
+        submitted_at: None,
+        timestamp: completed_at,
     });
 
     exec.parallel_run = None;
     exec.updated_at = completed_at;
+    exec.complete_node_execution(
+        &parent_node_execution_id,
+        Some(parent_artifact),
+        parent_token_usage.clone(),
+        completed_at,
+    );
     exec.step_outputs
         .insert(parent_step_name.clone(), completion_plan.parent_step_output);
     exec.current_step_token_usage = TokenUsage::default();
@@ -421,10 +511,10 @@ fn complete_parallel_parent_after_all_children(
     exec.step_history.push(completion_plan.history_entry);
 
     let outcome = match completion_plan.transition {
-        workflow_parallel_runtime::ParallelParentCompletionTransition::Advance => {
+        workflow_parallel_runtime::FanoutParentCompletionTransition::Advance => {
             exec.apply_advance()
         }
-        workflow_parallel_runtime::ParallelParentCompletionTransition::TransitionTo {
+        workflow_parallel_runtime::FanoutParentCompletionTransition::TransitionTo {
             target_node_name,
             ..
         } => exec.apply_transition(&target_node_name)?,
@@ -472,7 +562,7 @@ fn finalize_child_terminal_state(
         });
     }
 
-    complete_parallel_parent_after_all_children(
+    complete_fanout_parent_after_all_children(
         exec,
         snapshot_before,
         progress_events,
@@ -481,22 +571,18 @@ fn finalize_child_terminal_state(
     )
 }
 
-impl<R: tauri::Runtime> workflow_runtime_session::ParallelChildTurnObserver
-    for ParallelChildStartedLogObserver<'_, R>
+impl<R: tauri::Runtime> workflow_runtime_session::FanoutChildTurnObserver
+    for FanoutChildStartedLogObserver<'_, R>
 {
-    fn child_turn_started(
-        &self,
-        started: workflow_runtime_session::ParallelChildStartedRuntime<'_>,
-    ) {
+    fn child_turn_started(&self, started: workflow_runtime_session::FanoutChildStartedRuntime<'_>) {
         self.engine.write_log(
             self.app,
-            WorkflowEvent::ParallelChildStarted {
+            WorkflowEvent::SessionAttached {
                 run_id: self.execution_id.to_string(),
                 workflow_name: self.workflow_name.to_string(),
-                parent_node_name: self.parent_step_name.to_string(),
-                child_node_name: started.step_name.to_string(),
+                node_execution_id: started.node_execution_id.to_string(),
+                node_name: started.step_name.to_string(),
                 session_id: started.session_id.to_string(),
-                execution_count: started.execution_count,
                 timestamp: current_timestamp(),
             },
         );
@@ -563,6 +649,7 @@ impl WorkflowRuntimeService {
             session_workflow_refs: Arc::new(Mutex::new(HashMap::new())),
             run_facet_contents: Arc::new(Mutex::new(HashMap::new())),
             active_commands: Arc::new(Mutex::new(HashMap::new())),
+            active_command_runs: Arc::new(Mutex::new(HashMap::new())),
             command_completion_observers: Arc::new(Mutex::new(HashMap::new())),
             command_shutdown_reasons: Arc::new(Mutex::new(HashMap::new())),
             run_store: Arc::new(RunStore::new()),
@@ -604,12 +691,19 @@ impl WorkflowRuntimeService {
             "seed_active_execution_for_test only accepts active states"
         );
         let current_node_name = workflow.nodes[0].name.clone();
+        let current_node_kind = workflow.nodes[0].kind_name();
+        let node_execution_status = if matches!(state, WorkflowExecutionState::WaitingApproval) {
+            NodeExecutionStatus::WaitingApproval
+        } else {
+            NodeExecutionStatus::Running
+        };
         let run_status = if matches!(state, WorkflowExecutionState::WaitingApproval) {
             RunStatus::WaitingApproval
         } else {
             RunStatus::Running
         };
         let now = 1000.0;
+        let node_execution_id = uuid::Uuid::new_v4().to_string();
         self.run_store
             .register_active(WorkflowRun {
                 run_id: run_id.clone(),
@@ -627,7 +721,8 @@ impl WorkflowRuntimeService {
             .await
             .unwrap();
         if let Some(data_dir) = self.run_store.data_dir_for_test().await {
-            WorkflowEventLog::new(&data_dir)
+            let event_log = WorkflowEventLog::new(&data_dir);
+            event_log
                 .append(&WorkflowEvent::RunStarted {
                     run_id: run_id.clone(),
                     workflow_name: workflow.name.clone(),
@@ -638,15 +733,27 @@ impl WorkflowRuntimeService {
                     timestamp: now,
                 })
                 .unwrap();
+            event_log
+                .append(&WorkflowEvent::NodeStarted {
+                    run_id: run_id.clone(),
+                    workflow_name: workflow.name.clone(),
+                    node_execution_id: node_execution_id.clone(),
+                    node_name: current_node_name.clone(),
+                    kind: current_node_kind,
+                    attempt: 1,
+                    fanout_parent: None,
+                    timestamp: now,
+                })
+                .unwrap();
         }
         self.executions.lock().await.insert(
             run_id.clone(),
             WorkflowExecution {
-                id: run_id,
+                id: run_id.clone(),
                 workflow,
                 state,
                 current_step_index: 0,
-                step_execution_counts: HashMap::from([(current_node_name, 1)]),
+                step_execution_counts: HashMap::from([(current_node_name.clone(), 1)]),
                 step_history: Vec::new(),
                 workflow_defaults: WorkflowDefaults {
                     backend_id: None,
@@ -658,6 +765,21 @@ impl WorkflowRuntimeService {
                 current_session_id: None,
                 current_step_token_usage: TokenUsage::default(),
                 step_outputs: HashMap::new(),
+                node_executions: vec![NodeExecution {
+                    id: node_execution_id,
+                    execution_id: run_id,
+                    node_name: current_node_name,
+                    kind: current_node_kind,
+                    attempt: 1,
+                    status: node_execution_status,
+                    session_id: None,
+                    artifact: None,
+                    token_usage: None,
+                    failure: None,
+                    fanout_parent: None,
+                    started_at: now,
+                    completed_at: None,
+                }],
                 task: None,
                 parallel_run: None,
                 current_stall_observations: Vec::new(),
@@ -804,6 +926,7 @@ impl WorkflowRuntimeService {
             current_session_id: None,
             current_step_token_usage: TokenUsage::default(),
             step_outputs,
+            node_executions: Vec::new(),
             task,
             parallel_run: None,
             current_stall_observations: Vec::new(),
@@ -813,7 +936,22 @@ impl WorkflowRuntimeService {
         let step_name = workflow.nodes[0].name.clone();
         let mut execs = self.executions.lock().await;
         WorkflowExecution::validate_start(&workflow, find_any_by_worktree(&execs, &worktree_path))?;
-        execution.step_execution_counts.insert(step_name, 1);
+        execution.step_execution_counts.insert(step_name.clone(), 1);
+        execution.node_executions.push(NodeExecution {
+            id: uuid::Uuid::new_v4().to_string(),
+            execution_id: run_id.clone(),
+            node_name: step_name,
+            kind: workflow.nodes[0].kind_name(),
+            attempt: 1,
+            status: NodeExecutionStatus::Running,
+            session_id: None,
+            artifact: None,
+            token_usage: None,
+            failure: None,
+            fanout_parent: None,
+            started_at: now,
+            completed_at: None,
+        });
         execs.insert(run_id.clone(), execution);
         Ok(execs.get(&run_id).unwrap().to_workflow_state())
     }
@@ -1061,12 +1199,23 @@ impl WorkflowRuntimeService {
             }
         };
 
-        // [04] commit point: RunStarted append が command 受理の唯一の不可逆な commit point。
-        // ChatSession への workflow_state 永続化は撤去済み（NDJSON event log + Run Store
-        // metadata が権威）。append 成功＝command 受理として扱い、以降の broadcast は
-        // best-effort な post-commit 副作用に位置付ける。
-        if let Err(e) = self.write_log_required(
-            app,
+        // [04] commit point: RunStarted と初回 NodeStarted を同一の required batch で
+        // append する。初回 NodeExecution は insert 時点で採番済みなので、両 event を
+        // atomic に記録しないと strict projection が run の第一級 id を復元できない。
+        let initial_node_started_event =
+            match workflow_runtime_events::node_started_event_for_snapshot(&snapshot) {
+                Ok(event) => event,
+                Err(error) => {
+                    self.executions.lock().await.remove(&run_id);
+                    self.release_run_facet_contents(&run_id).await;
+                    rollback_reservation(format!(
+                        "initial NodeStarted event construction failed: {error}"
+                    ))
+                    .await;
+                    return Err(error);
+                }
+            };
+        let required_start_events = vec![
             WorkflowEvent::RunStarted {
                 run_id: snapshot.execution_id.clone(),
                 workflow_name: snapshot.workflow_name.clone(),
@@ -1076,30 +1225,25 @@ impl WorkflowRuntimeService {
                 workflow_definition: workflow.clone(),
                 timestamp: now,
             },
-        ) {
+            initial_node_started_event,
+        ];
+        if let Err(e) = self.write_log_required_batch(app, &required_start_events) {
             let mut execs = self.executions.lock().await;
             execs.remove(&run_id);
             drop(execs);
             self.release_run_facet_contents(&run_id).await;
-            rollback_reservation(format!("RunStarted log failed: {e}")).await;
+            rollback_reservation(format!("initial workflow event batch failed: {e}")).await;
             return Err(WorkflowEngineError::SessionStore(format!(
-                "write RunStarted log failed: {e}"
+                "write initial workflow event batch failed: {e}"
             )));
         }
 
         // [04] post-commit: broadcast。RunStarted は append 済みのため command は既に受理。
         // session_workflow_refs への登録は step session 起動時（start_step_session /
-        // start_parallel_children）で行う。
+        // start_fanout_children）で行う。
         workflow_runtime_session::broadcast_state(app, &worktree_path, snapshot.clone()).await;
 
-        // NDJSONログ: node_started 以降は補助ログとして best effort で書き込む。
         let first_step_kind = workflow.nodes[0].kind_name();
-        if !matches!(first_step_kind, NodeKindName::Fanout) {
-            self.write_log(
-                app,
-                workflow_runtime_events::node_started_event_for_snapshot(&snapshot),
-            );
-        }
 
         // [04] post-commit: RunStarted append 済みのため start primitive は既に受理。
         //    初回 runtime 起動失敗は Failed 状態遷移として観測し、
@@ -1245,6 +1389,7 @@ impl WorkflowRuntimeService {
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
         step_name: String,
+        node_execution_id: Option<String>,
         contract: String,
         structured_output: serde_json::Value,
         request_id: Option<String>,
@@ -1256,6 +1401,7 @@ impl WorkflowRuntimeService {
             agent_runtime,
             run_id,
             step_name,
+            node_execution_id,
             contract,
             structured_output,
             request_id,
@@ -1272,12 +1418,18 @@ impl WorkflowRuntimeService {
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
         step_name: String,
+        node_execution_id: Option<String>,
         contract: String,
         structured_output: serde_json::Value,
         request_id: Option<String>,
         submitted_at: Option<f64>,
     ) -> Result<(), WorkflowEngineError> {
-        workflow_output_submission::validate_submit_output_request(run_id, &step_name, &contract)?;
+        workflow_output_submission::validate_submit_output_request(
+            run_id,
+            &step_name,
+            node_execution_id.as_deref(),
+            &contract,
+        )?;
 
         // 1. contract 適合判定（pure validator、副作用なし）。ロック取得前に行い、
         //    無効入力は writer lock を取らずに弾く。
@@ -1314,6 +1466,7 @@ impl WorkflowRuntimeService {
                         agent_runtime,
                         run_id,
                         &step_name,
+                        node_execution_id.as_deref(),
                         &contract,
                         request_id.as_deref(),
                         validation_error,
@@ -1337,6 +1490,7 @@ impl WorkflowRuntimeService {
                 exec,
                 run_id,
                 &step_name,
+                node_execution_id.as_deref(),
                 &contract,
                 &validated_output,
                 validated_result,
@@ -1351,6 +1505,7 @@ impl WorkflowRuntimeService {
         let event = workflow_output_submission::artifact_produced_event(
             run_id,
             &mutation.workflow_name,
+            &mutation.node_execution_id,
             &step_name,
             contract,
             validated_output,
@@ -1379,6 +1534,7 @@ impl WorkflowRuntimeService {
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
         step_name: &str,
+        node_execution_id: Option<&str>,
         contract: &str,
         request_id: Option<&str>,
         validation_error: workflow_output_submission::SubmissionValidationError,
@@ -1389,7 +1545,11 @@ impl WorkflowRuntimeService {
                 .get(run_id)
                 .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(run_id.to_string()))?;
             workflow_output_submission::validate_submission_target_context(
-                exec, run_id, step_name, contract,
+                exec,
+                run_id,
+                step_name,
+                node_execution_id,
+                contract,
             )
         };
         let target = match target {
@@ -1409,6 +1569,7 @@ impl WorkflowRuntimeService {
             target.run_index,
             target.session_id.as_deref(),
             request_id,
+            None,
             SubmissionViolation::InvalidSubmitOutput,
             schema_violations.as_deref(),
         )
@@ -1927,6 +2088,21 @@ impl WorkflowRuntimeService {
                     }
                     let snapshot_before = exec.clone();
                     let workflow_name = exec.workflow.name.clone();
+                    let node_execution_id = exec
+                        .active_current_node_execution_id()
+                        .map(ToOwned::to_owned)
+                        .ok_or_else(|| {
+                            WorkflowEngineError::InvalidState(format!(
+                                "active NodeExecution for approval node '{node_name}' was not found"
+                            ))
+                        })?;
+                    if let Some(execution) = exec
+                        .node_executions
+                        .iter_mut()
+                        .find(|execution| execution.id == node_execution_id)
+                    {
+                        execution.status = NodeExecutionStatus::WaitingApproval;
+                    }
                     exec.state = WorkflowExecutionState::WaitingApproval;
                     exec.updated_at = current_timestamp();
                     Ok(TurnCommit {
@@ -1934,6 +2110,7 @@ impl WorkflowRuntimeService {
                         required_events: vec![WorkflowEvent::ApprovalRequested {
                             run_id: exec.id.clone(),
                             workflow_name,
+                            node_execution_id,
                             node_name,
                             timestamp: exec.updated_at,
                         }],
@@ -2101,6 +2278,7 @@ impl WorkflowRuntimeService {
         run_id: &str,
         comment: Option<String>,
         expected_step_name: &str,
+        node_execution_id: Option<&str>,
     ) -> Result<(), WorkflowEngineError> {
         self.resolve_workflow_approval_with_commit_context(
             app,
@@ -2109,6 +2287,7 @@ impl WorkflowRuntimeService {
             run_id,
             comment,
             expected_step_name,
+            node_execution_id,
             None,
         )
         .await
@@ -2123,6 +2302,7 @@ impl WorkflowRuntimeService {
         run_id: &str,
         comment: Option<String>,
         expected_step_name: &str,
+        node_execution_id: Option<&str>,
         commit_context: Option<CommandCommitContext>,
     ) -> Result<(), WorkflowEngineError> {
         self.handle_approval(
@@ -2132,6 +2312,7 @@ impl WorkflowRuntimeService {
             run_id,
             comment,
             expected_step_name,
+            node_execution_id,
             commit_context,
         )
         .await
@@ -2148,8 +2329,35 @@ impl WorkflowRuntimeService {
         run_id: &str,
         comment: Option<String>,
         expected_step_name: &str,
+        node_execution_id: Option<&str>,
         commit_context: Option<CommandCommitContext>,
     ) -> Result<(), WorkflowEngineError> {
+        let fanout_node_execution_id = {
+            let executions = self.executions.lock().await;
+            let execution = executions
+                .get(run_id)
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(run_id.to_string()))?;
+            resolve_fanout_approval_node_execution_id(
+                execution,
+                expected_step_name,
+                node_execution_id,
+            )?
+        };
+        if let Some(fanout_node_execution_id) = fanout_node_execution_id {
+            return self
+                .handle_fanout_child_approval(
+                    app,
+                    session_store,
+                    agent_runtime,
+                    run_id,
+                    comment,
+                    expected_step_name,
+                    &fanout_node_execution_id,
+                    commit_context,
+                )
+                .await;
+        }
+
         // target検証 + session_id + worktree_path + contract 提出状態を1回のロックで取得
         let (
             current_session_id,
@@ -2159,6 +2367,7 @@ impl WorkflowRuntimeService {
             approval_artifact_contract,
             approval_run_index,
             approval_submitted_output,
+            resolved_node_execution_id,
         ) = {
             let execs = self.executions.lock().await;
             let exec = execs
@@ -2169,6 +2378,9 @@ impl WorkflowRuntimeService {
                 Some(run_id),
                 Some(expected_step_name),
             )?;
+            let execution_index =
+                resolve_active_node_execution_index(exec, expected_step_name, node_execution_id)?;
+            let resolved_node_execution_id = exec.node_executions[execution_index].id.clone();
             let node = &exec.workflow.nodes[exec.current_step_index];
             let artifact_contract = node.artifact.clone();
             let run_index = exec
@@ -2192,6 +2404,7 @@ impl WorkflowRuntimeService {
                 artifact_contract,
                 run_index,
                 submitted_output,
+                resolved_node_execution_id,
             )
         };
 
@@ -2218,6 +2431,7 @@ impl WorkflowRuntimeService {
                     contract,
                     approval_run_index,
                     current_session_id.as_deref(),
+                    None,
                     None,
                     SubmissionViolation::MissingSubmitOutput,
                     None,
@@ -2258,6 +2472,11 @@ impl WorkflowRuntimeService {
                 Some(run_id),
                 Some(expected_step_name),
             )?;
+            let execution_index = resolve_active_node_execution_index(
+                exec,
+                expected_step_name,
+                Some(&resolved_node_execution_id),
+            )?;
             let workflow_name = exec.workflow.name.clone();
             let node_name = exec.workflow.nodes[exec.current_step_index].name.clone();
             let snapshot_before = exec.clone();
@@ -2265,10 +2484,15 @@ impl WorkflowRuntimeService {
                 exec,
                 workflow_transition::ApprovalApplication {
                     effective_result,
-                    structured_output,
+                    structured_output: structured_output.clone(),
                     artifact_contract: application_artifact_contract,
                 },
             )?;
+            if let Some(node_execution) = exec.node_executions.get_mut(execution_index) {
+                node_execution.status = NodeExecutionStatus::Succeeded;
+                node_execution.artifact = structured_output.clone();
+                node_execution.completed_at = Some(current_timestamp());
+            }
             (outcome, snapshot_before, workflow_name, node_name)
         };
 
@@ -2291,6 +2515,7 @@ impl WorkflowRuntimeService {
         let approval_event = WorkflowEvent::ApprovalResolved {
             run_id: run_id.to_string(),
             workflow_name: workflow_name_for_event.clone(),
+            node_execution_id: resolved_node_execution_id,
             node_name: node_name_for_event.clone(),
             comment: event_comment,
             timestamp: approval_timestamp,
@@ -2368,6 +2593,199 @@ impl WorkflowRuntimeService {
             .await
         {
             log::warn!("workflow {run_id}: post-commit side effects failed: {e}");
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_fanout_child_approval<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
+        run_id: &str,
+        comment: Option<String>,
+        expected_node_name: &str,
+        node_execution_id: &str,
+        commit_context: Option<CommandCommitContext>,
+    ) -> Result<(), WorkflowEngineError> {
+        workflow_approval_runtime::validate_approve_comment(comment.as_deref())?;
+        let (
+            worktree_path,
+            workflow_name,
+            session_id,
+            attempt,
+            artifact_contract,
+            submitted_artifact,
+        ) = {
+            let executions = self.executions.lock().await;
+            let execution = executions
+                .get(run_id)
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(run_id.to_string()))?;
+            let node_execution = execution
+                .node_executions
+                .iter()
+                .find(|candidate| {
+                    candidate.id == node_execution_id
+                        && candidate.node_name == expected_node_name
+                        && candidate.fanout_parent.is_some()
+                        && candidate.status == NodeExecutionStatus::WaitingApproval
+                })
+                .ok_or_else(|| {
+                    WorkflowEngineError::UnauthorizedApprovalTarget(format!(
+                        "fanout approval NodeExecution '{node_execution_id}' is not waiting"
+                    ))
+                })?;
+            let node = execution
+                .workflow
+                .nodes
+                .iter()
+                .find(|node| node.name == expected_node_name && node.is_approval_session())
+                .ok_or_else(|| {
+                    WorkflowEngineError::UnauthorizedApprovalTarget(
+                        "node is not an approval session".to_string(),
+                    )
+                })?;
+            (
+                execution.worktree_path.clone(),
+                execution.workflow.name.clone(),
+                node_execution.session_id.clone(),
+                node_execution.attempt,
+                node.artifact.clone(),
+                node_execution.artifact.clone(),
+            )
+        };
+        let turn_phase = if let Some(session_id) = session_id.as_deref() {
+            agent_runtime.turn_phase(session_id).await
+        } else {
+            None
+        };
+        workflow_approval_runtime::validate_approval_turn_phase(turn_phase)?;
+        if let Some(contract) = artifact_contract.as_deref() {
+            if submitted_artifact.is_none() {
+                self.handle_missing_required_output(
+                    app,
+                    session_store,
+                    agent_runtime,
+                    &worktree_path,
+                    run_id,
+                    &workflow_name,
+                    expected_node_name,
+                    contract,
+                    attempt,
+                    session_id.as_deref(),
+                    None,
+                    None,
+                    SubmissionViolation::MissingSubmitOutput,
+                    None,
+                )
+                .await?;
+                return Err(WorkflowEngineError::ValidationError(
+                    "required structured output has not been submitted".to_string(),
+                ));
+            }
+        }
+
+        let event_comment = comment.map(|raw| {
+            let secrets = secret_source::collect_configured_secret_values(app);
+            workflow_secret_masker::mask_sensitive_text(&raw, &secrets)
+        });
+        let completed_at = current_timestamp();
+        let completion = {
+            let mut executions = self.executions.lock().await;
+            let execution = executions
+                .get_mut(run_id)
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(run_id.to_string()))?;
+            let snapshot_before = execution.clone();
+            let node_execution_index = execution
+                .node_executions
+                .iter()
+                .position(|candidate| {
+                    candidate.id == node_execution_id
+                        && candidate.status == NodeExecutionStatus::WaitingApproval
+                })
+                .ok_or_else(|| {
+                    WorkflowEngineError::UnauthorizedApprovalTarget(format!(
+                        "fanout approval NodeExecution '{node_execution_id}' is no longer waiting"
+                    ))
+                })?;
+            let child = execution
+                .parallel_run
+                .as_mut()
+                .and_then(|run| {
+                    run.children
+                        .iter_mut()
+                        .find(|child| child.node_execution_id == node_execution_id)
+                })
+                .ok_or_else(|| {
+                    WorkflowEngineError::InvalidState(format!(
+                        "fanout approval child '{node_execution_id}' disappeared"
+                    ))
+                })?;
+            child.state = ParallelChildState::Completed;
+            child.result = child.result.clone().or_else(|| Some("approve".to_string()));
+            child.structured_output = submitted_artifact.clone();
+            child.failure_kind = None;
+            child.failure_disposition = None;
+            child.completed_at = Some(completed_at);
+            let child_result = child.result.clone();
+            let child_tokens = child.token_usage.clone();
+            let child_session_id = child.session_id.clone();
+            let node_execution = &mut execution.node_executions[node_execution_index];
+            node_execution.status = NodeExecutionStatus::Succeeded;
+            node_execution.artifact = submitted_artifact.clone();
+            node_execution.token_usage = Some(child_tokens.clone());
+            node_execution.failure = None;
+            node_execution.completed_at = Some(completed_at);
+            execution.updated_at = completed_at;
+            let mut progress_events = vec![
+                WorkflowEvent::ApprovalResolved {
+                    run_id: run_id.to_string(),
+                    workflow_name: workflow_name.clone(),
+                    node_execution_id: node_execution_id.to_string(),
+                    node_name: expected_node_name.to_string(),
+                    comment: event_comment,
+                    timestamp: completed_at,
+                },
+                WorkflowEvent::NodeCompleted {
+                    run_id: run_id.to_string(),
+                    workflow_name: workflow_name.clone(),
+                    node_execution_id: node_execution_id.to_string(),
+                    node_name: expected_node_name.to_string(),
+                    result: child_result,
+                    session_id: Some(child_session_id),
+                    token_usage: Some(child_tokens),
+                    structured_output: submitted_artifact.clone(),
+                    run_index: Some(attempt),
+                    timestamp: completed_at,
+                },
+            ];
+            if let Some(context) = commit_context {
+                if let Some(event) = workflow_runtime_events::cli_mutation_requested_event(
+                    &workflow_name,
+                    context,
+                    completed_at,
+                ) {
+                    progress_events.push(event);
+                }
+            }
+            finalize_child_terminal_state(execution, snapshot_before, progress_events, true, None)?
+        };
+
+        if let Some(outcome) = completion.outcome {
+            let completed_sessions = session_id.into_iter().collect::<Vec<_>>();
+            self.commit_required_parallel_progress_events_and_execute_outcome(
+                app,
+                session_store,
+                agent_runtime,
+                &worktree_path,
+                outcome,
+                completion.snapshot_before,
+                completion.progress_events,
+                &completed_sessions,
+                completion.failure_telemetry,
+            )
+            .await?;
         }
         Ok(())
     }
@@ -2594,7 +3012,7 @@ impl WorkflowRuntimeService {
         // 4. [04] post-commit: interrupt_agent / cleanup / broadcast。
         //    RunAborted event は append 済み。Run Store / ChatSession は event 後の
         //    projection として同期済み、または warn として観測済み。
-        self.shutdown_active_command(run_id).await;
+        self.shutdown_active_commands_for_run(run_id).await;
         if let Some(ref step_sid) = current_step_session_id {
             workflow_runtime_session::interrupt_agent(agent_runtime, step_sid).await;
         }
@@ -2687,6 +3105,101 @@ impl WorkflowRuntimeService {
             .is_some_and(|run| run.status.is_terminal())
     }
 
+    async fn request_fanout_child_approval_if_needed<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        run_id: &str,
+        worktree_path: &str,
+        session_id: &str,
+        parent_node_name: &str,
+    ) -> Result<bool, WorkflowEngineError> {
+        let mutation = {
+            let mut executions = self.executions.lock().await;
+            let execution = executions
+                .get_mut(run_id)
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(run_id.to_string()))?;
+            let Some(run) = execution.parallel_run.as_ref() else {
+                return Ok(false);
+            };
+            if run.parent_step_name != parent_node_name {
+                return Ok(false);
+            }
+            let Some(child) = run
+                .children
+                .iter()
+                .find(|child| child.session_id == session_id)
+            else {
+                return Ok(false);
+            };
+            let Some(node) = execution
+                .workflow
+                .nodes
+                .iter()
+                .find(|node| node.name == child.step_name)
+            else {
+                return Ok(false);
+            };
+            if !node.is_approval_session() {
+                return Ok(false);
+            }
+            let node_execution_id = child.node_execution_id.clone();
+            let node_name = child.step_name.clone();
+            let workflow_name = execution.workflow.name.clone();
+            let Some(node_execution_index) = execution
+                .node_executions
+                .iter()
+                .position(|candidate| candidate.id == node_execution_id)
+            else {
+                return Err(WorkflowEngineError::InvalidState(format!(
+                    "fanout approval NodeExecution '{node_execution_id}' was not found"
+                )));
+            };
+            if execution.node_executions[node_execution_index].status
+                == NodeExecutionStatus::WaitingApproval
+            {
+                return Ok(true);
+            }
+            if execution.node_executions[node_execution_index].status
+                != NodeExecutionStatus::Running
+            {
+                return Ok(true);
+            }
+            let snapshot_before = execution.clone();
+            let timestamp = current_timestamp();
+            execution.node_executions[node_execution_index].status =
+                NodeExecutionStatus::WaitingApproval;
+            execution.updated_at = timestamp;
+            let snapshot = execution.to_workflow_state();
+            let event = WorkflowEvent::ApprovalRequested {
+                run_id: run_id.to_string(),
+                workflow_name,
+                node_execution_id,
+                node_name,
+                timestamp,
+            };
+            (snapshot_before, snapshot, event)
+        };
+
+        let (snapshot_before, snapshot, event) = mutation;
+        let run_store_snapshot_before = self.run_store.active_run_snapshot(run_id).await;
+        self.commit_required_events(
+            app,
+            session_store,
+            RequiredEventCommit {
+                run_id,
+                snapshot_for_commit: &snapshot,
+                snapshot_before,
+                run_store_snapshot_before,
+                required_events: vec![event],
+                append_error_context: "fanout ApprovalRequested append failed",
+            },
+        )
+        .await?;
+        workflow_runtime_session::broadcast_state(app, worktree_path, snapshot).await;
+        Ok(true)
+    }
+
     /// 並列子ステップの完了を処理する。
     #[allow(clippy::too_many_arguments)]
     async fn handle_parallel_child_complete<R: tauri::Runtime>(
@@ -2705,7 +3218,21 @@ impl WorkflowRuntimeService {
         // [08] parallel child の構造化出力は CLI / Tauri 経由の `SubmitOutput` で確定する。
         // artifact_contract がある child は、提出済み output が無い限り Completed にしない。
         let child_failed = exit_code != 0 || failure_signal.is_some();
-        let (submitted_child_output, missing_child_output) = if !child_failed {
+        if !child_failed
+            && self
+                .request_fanout_child_approval_if_needed(
+                    app,
+                    session_store,
+                    run_id,
+                    worktree_path,
+                    session_id,
+                    parent_step_name,
+                )
+                .await?
+        {
+            return Ok(());
+        }
+        let (child_result, child_structured_output, missing_child_output) = if !child_failed {
             let execs = self.executions.lock().await;
             let exec = execs
                 .get(run_id)
@@ -2722,31 +3249,38 @@ impl WorkflowRuntimeService {
             let Some(child) = pr.children.iter().find(|c| c.session_id == session_id) else {
                 return Ok(());
             };
+            let artifact = exec
+                .node_executions
+                .iter()
+                .find(|execution| execution.id == child.node_execution_id)
+                .and_then(|execution| execution.artifact.clone());
             if let Some(contract) = child.artifact_contract.clone() {
-                let submitted = workflow_output_submission::submitted_step_output_for(
-                    &exec.step_outputs,
-                    &child.step_name,
-                    child.run_index,
-                    &contract,
-                );
-                let missing = if submitted.is_none() {
+                let missing = if artifact.is_none() {
                     Some((
                         exec.workflow.name.clone(),
                         child.step_name.clone(),
+                        child.node_execution_id.clone(),
                         child.run_index,
                         contract.clone(),
                     ))
                 } else {
                     None
                 };
-                (submitted, missing)
+                (child.result.clone(), artifact, missing)
             } else {
-                (None, None)
+                (child.result.clone(), None, None)
             }
         } else {
-            (None, None)
+            (None, None, None)
         };
-        if let Some((workflow_name, child_name, child_run_index, contract)) = missing_child_output {
+        if let Some((
+            workflow_name,
+            child_name,
+            child_node_execution_id,
+            child_run_index,
+            contract,
+        )) = missing_child_output
+        {
             self.handle_missing_required_output(
                 app,
                 session_store,
@@ -2759,21 +3293,15 @@ impl WorkflowRuntimeService {
                 child_run_index,
                 Some(session_id),
                 None,
+                Some(&child_node_execution_id),
                 SubmissionViolation::MissingSubmitOutput,
                 None,
             )
             .await?;
             return Ok(());
         }
-        let child_result = submitted_child_output
-            .as_ref()
-            .and_then(|output| output.result.clone());
-        let child_structured_output = submitted_child_output
-            .as_ref()
-            .and_then(|output| output.structured_output.clone());
-
         // ロック内: 子ステップの状態更新 + 全完了チェック
-        let completion_commit = 'state_update: {
+        let (completion_commit, interrupted_session_ids, interrupted_command_ids) = 'state_update: {
             let mut execs = self.executions.lock().await;
             let exec = execs
                 .get_mut(run_id)
@@ -2792,8 +3320,6 @@ impl WorkflowRuntimeService {
             if pr.parent_step_name != parent_step_name {
                 return Ok(());
             }
-            let parent_node_name = pr.parent_step_name.clone();
-
             // 対象の子ステップを見つけて更新
             let Some(child) = pr.children.iter_mut().find(|c| c.session_id == session_id) else {
                 return Ok(());
@@ -2820,136 +3346,147 @@ impl WorkflowRuntimeService {
                         None
                     };
                 let child_name = child.step_name.clone();
+                let child_node_execution_id = child.node_execution_id.clone();
                 let child_token_usage = child.token_usage.clone();
-                let child_run_index = child.run_index;
-
                 if propagation == ParallelPropagation::DelegateToAggregate {
                     child.result = Some(failure_kind.as_str().to_string());
-                    child.structured_output = Some(serde_json::json!({
-                        "failureKind": failure_kind.as_str(),
-                        "disposition": "partial",
-                        "exitCode": exit_code,
-                    }));
-                    exec.step_outputs.insert(
-                        child_name.clone(),
-                        StepOutput {
-                            step_name: child_name.clone(),
-                            run_index: child_run_index,
-                            session_id: Some(session_id.to_string()),
-                            result: child.result.clone(),
-                            structured_output: child.structured_output.clone(),
-                            artifact_contract: child.artifact_contract.clone(),
-                            token_usage: Some(child_token_usage.clone()),
-                            completed_at: current_timestamp(),
-                        },
-                    );
+                    child.structured_output = None;
+                    child.completed_at = Some(current_timestamp());
+                    if let Some(execution) = exec
+                        .node_executions
+                        .iter_mut()
+                        .find(|execution| execution.id == child_node_execution_id)
+                    {
+                        execution.status = NodeExecutionStatus::Failed;
+                        execution.token_usage = Some(child_token_usage.clone());
+                        execution.failure = Some(
+                            crate::adaptor::gateway::workflow::state::NodeExecutionFailure {
+                                reason: format!("fanout child failed with exit code {exit_code}"),
+                                kind: failure_kind,
+                            },
+                        );
+                        execution.completed_at = child.completed_at;
+                    }
                     clear_stall_observations_for_session(
                         &mut exec.current_stall_observations,
                         session_id,
                     );
-                    let progress_events = vec![WorkflowEvent::ParallelChildCompleted {
+                    let progress_events = vec![WorkflowEvent::NodeFailed {
                         run_id: exec.id.clone(),
                         workflow_name: exec.workflow.name.clone(),
-                        parent_node_name: parent_node_name.clone(),
-                        child_node_name: child_name,
-                        result: child.result.clone(),
-                        session_id: session_id.to_string(),
-                        token_usage: Some(child_token_usage),
-                        structured_output: child.structured_output.clone(),
-                        run_index: child_run_index,
-                        state: STEP_STATE_FAILED.to_string(),
-                        failure_kind: Some(failure_kind),
-                        failure_disposition: Some(FailureDisposition::Partial),
+                        node_execution_id: child_node_execution_id,
+                        node_name: child_name,
+                        reason: format!("fanout child failed with exit code {exit_code}"),
+                        failure_kind,
+                        retry_count: None,
                         timestamp: current_timestamp(),
                     }];
-                    break 'state_update finalize_child_terminal_state(
-                        exec,
-                        exec_snapshot_before,
-                        progress_events,
-                        true,
-                        Some(FailureClassification::with_disposition(
-                            failure_kind,
-                            FailureDisposition::Partial,
-                        )),
-                    )?;
+                    break 'state_update (
+                        finalize_child_terminal_state(
+                            exec,
+                            exec_snapshot_before,
+                            progress_events,
+                            true,
+                            Some(FailureClassification::with_disposition(
+                                failure_kind,
+                                FailureDisposition::Partial,
+                            )),
+                        )?,
+                        Vec::new(),
+                        Vec::new(),
+                    );
                 } else {
-                    // 他の実行中子ステップのstateをInterruptedに更新し、IDを集める
-                    let running_ids: Vec<String> = pr
-                        .children
-                        .iter_mut()
-                        .filter(|c| c.state == ParallelChildState::Running)
-                        .map(|c| {
-                            c.state = ParallelChildState::Interrupted;
-                            c.session_id.clone()
-                        })
-                        .collect();
+                    let timestamp = current_timestamp();
+                    child.result = Some(failure_kind.as_str().to_string());
+                    child.structured_output = None;
+                    child.completed_at = Some(timestamp);
+                    let parent_node_execution_id = pr.parent_node_execution_id.clone();
+                    let mut interrupted_session_ids = Vec::new();
+                    let mut interrupted_command_ids = Vec::new();
+                    let mut interrupted_execution_ids = Vec::new();
+                    for sibling in &mut pr.children {
+                        if sibling.state != ParallelChildState::Running {
+                            continue;
+                        }
+                        sibling.state = ParallelChildState::Interrupted;
+                        sibling.completed_at = Some(timestamp);
+                        interrupted_execution_ids.push(sibling.node_execution_id.clone());
+                        if sibling.session_id.is_empty() {
+                            interrupted_command_ids.push(sibling.node_execution_id.clone());
+                        } else {
+                            interrupted_session_ids.push(sibling.session_id.clone());
+                        }
+                    }
 
+                    let reason = format!(
+                        "fanout child '{}' failed (exit_code: {})",
+                        child_name, exit_code
+                    );
+                    exec.fail_node_execution(
+                        &child_node_execution_id,
+                        reason.clone(),
+                        failure_kind,
+                        timestamp,
+                    );
+                    if let Some(node_execution) = exec
+                        .node_executions
+                        .iter_mut()
+                        .find(|execution| execution.id == child_node_execution_id)
+                    {
+                        node_execution.token_usage = Some(child_token_usage);
+                    }
+                    for execution_id in interrupted_execution_ids {
+                        if let Some(node_execution) = exec
+                            .node_executions
+                            .iter_mut()
+                            .find(|execution| execution.id == execution_id)
+                        {
+                            node_execution.status = NodeExecutionStatus::Aborted;
+                            node_execution.completed_at = Some(timestamp);
+                        }
+                    }
+                    exec.fail_node_execution(
+                        &parent_node_execution_id,
+                        reason.clone(),
+                        failure_kind,
+                        timestamp,
+                    );
                     exec.current_stall_observations.clear();
                     exec.state = WorkflowExecutionState::Failed {
-                        reason: format!(
-                            "Parallel child '{}' failed (exit_code: {})",
-                            child_name, exit_code
-                        ),
+                        reason: reason.clone(),
                         kind: failure_kind,
                         retry_count: None,
                     };
+                    let history_entry =
+                        exec.make_step_history_entry(Some(reason.clone()), None, None);
+                    exec.step_history.push(history_entry);
                     exec.parallel_run = None;
-                    exec.updated_at = current_timestamp();
-                    let snapshot = exec.to_workflow_state();
-                    drop(execs);
-
-                    // [05] pre-commit: terminal event を先に append。失敗時は engine state
-                    // を snapshot_before で一括復元し Err を返す。
-                    if let Err(e) = self.write_terminal_log(app, &snapshot) {
-                        let mut execs = self.executions.lock().await;
-                        if let Some(exec) = execs.get_mut(run_id) {
-                            *exec = exec_snapshot_before;
-                        }
-                        return Err(WorkflowEngineError::SessionStore(format!(
-                            "parallel child failure terminal event append failed: {e}"
-                        )));
-                    }
-
-                    if let Err(e) = workflow_runtime_commit::sync_run_store_from_snapshot(
-                        &self.run_store,
-                        run_id,
-                        &snapshot,
-                    )
-                    .await
-                    {
-                        workflow_runtime_commit::rollback_execution_projection_after_run_store_sync_failure(
-                        &self.executions,
-                        &self.run_store,
-                        run_id,
-                        &snapshot,
-                    )
-                    .await;
-                        return Err(e);
-                    }
-                    record_failed_snapshot_telemetry(&snapshot);
-                    // 他の子ステップをinterrupt
-                    for sid in &running_ids {
-                        workflow_runtime_session::interrupt_agent(agent_runtime, sid).await;
-                    }
-                    let mut cleanup_ids = running_ids;
-                    cleanup_ids.push(session_id.to_string());
-                    cleanup_ids.sort();
-                    cleanup_ids.dedup();
-                    for sid in cleanup_ids {
-                        workflow_runtime_session::release_completed_step_session(
-                            app,
-                            session_store,
-                            agent_runtime,
-                            &sid,
-                        )
-                        .await;
-                    }
-                    workflow_runtime_session::broadcast_state(app, worktree_path, snapshot.clone())
-                        .await;
-                    self.cleanup_session_workflow_refs_by_run_id(&snapshot.execution_id)
-                        .await;
-                    self.release_terminal_execution(run_id).await;
-                    return Ok(());
+                    exec.updated_at = timestamp;
+                    let progress_events = vec![WorkflowEvent::NodeFailed {
+                        run_id: exec.id.clone(),
+                        workflow_name: exec.workflow.name.clone(),
+                        node_execution_id: child_node_execution_id,
+                        node_name: child_name,
+                        reason,
+                        failure_kind,
+                        retry_count: None,
+                        timestamp,
+                    }];
+                    break 'state_update (
+                        ParallelChildCompletionCommit {
+                            all_completed: true,
+                            outcome: Some(StepOutcome::Persist(exec.to_workflow_state())),
+                            snapshot_before: exec_snapshot_before,
+                            progress_events,
+                            required_progress_events: true,
+                            failure_telemetry: Some(FailureClassification::with_disposition(
+                                failure_kind,
+                                FailureDisposition::Terminal,
+                            )),
+                        },
+                        interrupted_session_ids,
+                        interrupted_command_ids,
+                    );
                 }
             }
 
@@ -2960,30 +3497,54 @@ impl WorkflowRuntimeService {
             child.failure_kind = None;
             child.failure_disposition = None;
             let child_name = child.step_name.clone();
+            let child_node_execution_id = child.node_execution_id.clone();
             let child_token_usage = child.token_usage.clone();
             let child_run_index = child.run_index;
+            let completed_at = current_timestamp();
+            child.completed_at = Some(completed_at);
+            if let Some(execution) = exec
+                .node_executions
+                .iter_mut()
+                .find(|execution| execution.id == child_node_execution_id)
+            {
+                execution.status = NodeExecutionStatus::Succeeded;
+                execution.artifact = child_structured_output.clone();
+                execution.token_usage = Some(child_token_usage.clone());
+                execution.failure = None;
+                execution.completed_at = Some(completed_at);
+            }
 
             // [08] child の StepOutput は CLI / Tauri 経由の SubmitOutput でのみ確定する。
             // ここでは step_outputs slot に触れず、SubmitOutput 済みの値を保持したまま
-            // 親 ParallelChildCompleted の事実だけを event log に積む。
-            let progress_events = vec![WorkflowEvent::ParallelChildCompleted {
+            // fanout child も通常の NodeExecution として NodeCompleted を記録する。
+            let progress_events = vec![WorkflowEvent::NodeCompleted {
                 run_id: exec.id.clone(),
                 workflow_name: exec.workflow.name.clone(),
-                parent_node_name,
-                child_node_name: child_name,
+                node_execution_id: child_node_execution_id,
+                node_name: child_name,
                 result: child_result.clone(),
-                session_id: session_id.to_string(),
-                token_usage: Some(child_token_usage.clone()),
+                session_id: Some(session_id.to_string()),
+                token_usage: Some(crate::adaptor::gateway::workflow::event::TokenUsage {
+                    input_tokens: child_token_usage.input_tokens,
+                    output_tokens: child_token_usage.output_tokens,
+                }),
                 structured_output: child_structured_output.clone(),
-                run_index: child_run_index,
-                state: crate::domain::workflow::STEP_STATE_COMPLETED.to_string(),
-                failure_kind: None,
-                failure_disposition: None,
-                timestamp: current_timestamp(),
+                run_index: Some(child_run_index),
+                timestamp: completed_at,
             }];
             clear_stall_observations_for_session(&mut exec.current_stall_observations, session_id);
 
-            finalize_child_terminal_state(exec, exec_snapshot_before, progress_events, false, None)?
+            (
+                finalize_child_terminal_state(
+                    exec,
+                    exec_snapshot_before,
+                    progress_events,
+                    true,
+                    None,
+                )?,
+                Vec::new(),
+                Vec::new(),
+            )
         };
 
         let ParallelChildCompletionCommit {
@@ -2997,7 +3558,10 @@ impl WorkflowRuntimeService {
 
         if required_progress_events {
             if let Some(outcome) = outcome {
-                let completed_session_ids = [session_id.to_string()];
+                let mut completed_session_ids = interrupted_session_ids.clone();
+                completed_session_ids.push(session_id.to_string());
+                completed_session_ids.sort();
+                completed_session_ids.dedup();
                 self.commit_required_parallel_progress_events_and_execute_outcome(
                     app,
                     session_store,
@@ -3010,6 +3574,18 @@ impl WorkflowRuntimeService {
                     failure_telemetry,
                 )
                 .await?;
+            }
+            for interrupted_session_id in interrupted_session_ids {
+                workflow_runtime_session::interrupt_agent(agent_runtime, &interrupted_session_id)
+                    .await;
+            }
+            if !interrupted_command_ids.is_empty() {
+                let handles = self.active_commands.lock().await;
+                for node_execution_id in interrupted_command_ids {
+                    if let Some(handle) = handles.get(&node_execution_id) {
+                        handle.request_shutdown();
+                    }
+                }
             }
             return Ok(());
         }
@@ -3202,6 +3778,7 @@ impl WorkflowRuntimeService {
         run_index: u32,
         session_id: Option<&str>,
         request_id: Option<&str>,
+        node_execution_id: Option<&str>,
         violation: SubmissionViolation,
         schema_violations: Option<&[workflow_contract_schema::SchemaViolation]>,
     ) -> Result<(), WorkflowEngineError> {
@@ -3233,6 +3810,7 @@ impl WorkflowRuntimeService {
                     node_name,
                     contract,
                     &reason,
+                    node_execution_id,
                 )
                 .await;
         };
@@ -3254,6 +3832,7 @@ impl WorkflowRuntimeService {
                     node_name,
                     contract,
                     &format!("step session not found for contract repair: {session_id}"),
+                    node_execution_id,
                 )
                 .await;
         };
@@ -3316,6 +3895,7 @@ impl WorkflowRuntimeService {
                     &error.to_string(),
                     error.workflow_failure_kind(),
                     error.retry_count(),
+                    node_execution_id,
                 )
                 .await;
         }
@@ -3333,6 +3913,7 @@ impl WorkflowRuntimeService {
         node_name: &str,
         contract: &str,
         reason: &str,
+        node_execution_id: Option<&str>,
     ) -> Result<(), WorkflowEngineError> {
         self.fail_missing_required_output_with_metadata(
             app,
@@ -3345,6 +3926,7 @@ impl WorkflowRuntimeService {
             reason,
             WorkflowStepFailureKind::StructuredOutputMismatch,
             None,
+            node_execution_id,
         )
         .await
     }
@@ -3362,7 +3944,25 @@ impl WorkflowRuntimeService {
         reason: &str,
         failure_kind: WorkflowStepFailureKind,
         retry_count: Option<u32>,
+        node_execution_id: Option<&str>,
     ) -> Result<(), WorkflowEngineError> {
+        if let Some(node_execution_id) = node_execution_id {
+            return self
+                .fail_fanout_child_missing_required_output(
+                    app,
+                    session_store,
+                    agent_runtime,
+                    worktree_path,
+                    run_id,
+                    node_execution_id,
+                    node_name,
+                    contract,
+                    reason,
+                    failure_kind,
+                    retry_count,
+                )
+                .await;
+        }
         let (snapshot, snapshot_before) = {
             let mut execs = self.executions.lock().await;
             let exec = execs
@@ -3398,6 +3998,167 @@ impl WorkflowRuntimeService {
             snapshot_before,
         )
         .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn fail_fanout_child_missing_required_output<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
+        worktree_path: &str,
+        run_id: &str,
+        node_execution_id: &str,
+        node_name: &str,
+        contract: &str,
+        reason: &str,
+        failure_kind: WorkflowStepFailureKind,
+        retry_count: Option<u32>,
+    ) -> Result<(), WorkflowEngineError> {
+        let timestamp = current_timestamp();
+        let failure_reason = format!(
+            "Required structured output for step '{node_name}' was not submitted: {reason}"
+        );
+        let (
+            outcome,
+            snapshot_before,
+            progress_events,
+            interrupted_session_ids,
+            interrupted_command_ids,
+        ) = {
+            let mut execs = self.executions.lock().await;
+            let exec = execs
+                .get_mut(run_id)
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(run_id.to_string()))?;
+            if exec.is_terminal() {
+                return Ok(());
+            }
+            let snapshot_before = exec.clone();
+            let workflow_name = exec.workflow.name.clone();
+            let Some(parallel_run) = exec.parallel_run.as_mut() else {
+                return Err(WorkflowEngineError::InvalidState(format!(
+                    "fanout child missing-output failure requires an active fanout run for '{node_execution_id}'"
+                )));
+            };
+            let parent_node_execution_id = parallel_run.parent_node_execution_id.clone();
+            let Some(child_index) = parallel_run
+                .children
+                .iter()
+                .position(|child| child.node_execution_id == node_execution_id)
+            else {
+                return Err(WorkflowEngineError::InvalidState(format!(
+                    "fanout child missing-output failure references unknown child '{node_execution_id}'"
+                )));
+            };
+            let child_name = parallel_run.children[child_index].step_name.clone();
+            let mut interrupted_session_ids = Vec::new();
+            let mut interrupted_command_ids = Vec::new();
+            let mut interrupted_execution_ids = Vec::new();
+            for (index, child) in parallel_run.children.iter_mut().enumerate() {
+                if index == child_index {
+                    child.state = ParallelChildState::Failed;
+                    child.result = Some("contract_missing_output".to_string());
+                    child.structured_output = None;
+                    child.failure_kind = Some(failure_kind);
+                    child.failure_disposition = None;
+                    child.completed_at = Some(timestamp);
+                    continue;
+                }
+                if child.state != ParallelChildState::Running {
+                    continue;
+                }
+                child.state = ParallelChildState::Interrupted;
+                child.completed_at = Some(timestamp);
+                interrupted_execution_ids.push(child.node_execution_id.clone());
+                if child.session_id.is_empty() {
+                    interrupted_command_ids.push(child.node_execution_id.clone());
+                } else {
+                    interrupted_session_ids.push(child.session_id.clone());
+                }
+            }
+            exec.fail_node_execution(
+                node_execution_id,
+                failure_reason.clone(),
+                failure_kind,
+                timestamp,
+            );
+            for execution_id in interrupted_execution_ids {
+                if let Some(node_execution) = exec
+                    .node_executions
+                    .iter_mut()
+                    .find(|execution| execution.id == execution_id)
+                {
+                    node_execution.status = NodeExecutionStatus::Aborted;
+                    node_execution.completed_at = Some(timestamp);
+                }
+            }
+            exec.fail_node_execution(
+                &parent_node_execution_id,
+                failure_reason.clone(),
+                failure_kind,
+                timestamp,
+            );
+            exec.current_stall_observations.clear();
+            exec.state = WorkflowExecutionState::Failed {
+                reason: failure_reason.clone(),
+                kind: failure_kind,
+                retry_count,
+            };
+            let mut entry = exec.make_step_history_entry(
+                Some("contract_missing_output".to_string()),
+                None,
+                Some(contract.to_string()),
+            );
+            entry.state = STEP_STATE_FAILED.to_string();
+            exec.step_history.push(entry);
+            exec.parallel_run = None;
+            exec.updated_at = timestamp;
+            let progress_events = vec![WorkflowEvent::NodeFailed {
+                run_id: run_id.to_string(),
+                workflow_name,
+                node_execution_id: node_execution_id.to_string(),
+                node_name: child_name,
+                reason: failure_reason,
+                failure_kind,
+                retry_count,
+                timestamp,
+            }];
+            (
+                StepOutcome::Persist(exec.to_workflow_state()),
+                snapshot_before,
+                progress_events,
+                interrupted_session_ids,
+                interrupted_command_ids,
+            )
+        };
+
+        self.commit_required_parallel_progress_events_and_execute_outcome(
+            app,
+            session_store,
+            agent_runtime,
+            worktree_path,
+            outcome,
+            snapshot_before,
+            progress_events,
+            &[],
+            Some(FailureClassification::with_disposition(
+                failure_kind,
+                FailureDisposition::Terminal,
+            )),
+        )
+        .await?;
+        for session_id in interrupted_session_ids {
+            workflow_runtime_session::interrupt_agent(agent_runtime, &session_id).await;
+        }
+        if !interrupted_command_ids.is_empty() {
+            let handles = self.active_commands.lock().await;
+            for execution_id in interrupted_command_ids {
+                if let Some(handle) = handles.get(&execution_id) {
+                    handle.request_shutdown();
+                }
+            }
+        }
+        Ok(())
     }
 
     /// session_idがワークフロー実行中かどうか。
@@ -3548,8 +4309,14 @@ impl WorkflowRuntimeService {
                 return Ok(());
             }
             let snapshot_before = exec.clone();
+            let timestamp = current_timestamp();
+            if let WorkflowExecutionState::Failed { reason, kind, .. } = &new_state {
+                exec.fail_current_node_execution_and_abort_active_children(
+                    reason, *kind, timestamp,
+                );
+            }
             exec.state = new_state;
-            exec.updated_at = current_timestamp();
+            exec.updated_at = timestamp;
             (
                 exec.to_workflow_state(),
                 exec.id.clone(),
@@ -3757,6 +4524,7 @@ impl WorkflowRuntimeService {
                     run_index,
                     current_session_id.as_deref(),
                     None,
+                    None,
                     SubmissionViolation::MissingSubmitOutput,
                     None,
                 )
@@ -3821,7 +4589,7 @@ impl WorkflowRuntimeService {
                     .await
             }
             NodeKindName::Fanout => {
-                self.start_parallel_children(app, session_store, agent_runtime, worktree_path, true)
+                self.start_fanout_children(app, session_store, agent_runtime, worktree_path)
                     .await
             }
         }
@@ -3835,6 +4603,17 @@ impl WorkflowRuntimeService {
         worktree_path: &str,
     ) -> Result<(), WorkflowEngineError> {
         let input = self.command_execution_input(worktree_path).await?;
+        self.spawn_command_execution(app, session_store, agent_runtime, input)
+            .await
+    }
+
+    async fn spawn_command_execution<R: tauri::Runtime + 'static>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
+        input: CommandExecutionInput,
+    ) -> Result<(), WorkflowEngineError> {
         let running = match workflow_command_runner::spawn_shell_command(
             &input.worktree_path,
             &input.command,
@@ -3843,26 +4622,14 @@ impl WorkflowRuntimeService {
             Ok(running) => running,
             Err(CommandRunnerError::Spawn(error)) => {
                 let reason = format!("failed to spawn command: {error}");
-                self.fail_current_command_node(
-                    app,
-                    session_store,
-                    agent_runtime,
-                    &input.run_id,
-                    &reason,
-                )
-                .await?;
+                self.fail_command_execution(app, session_store, agent_runtime, &input, &reason)
+                    .await?;
                 return Err(WorkflowEngineError::SessionStore(reason));
             }
             Err(error) => {
                 let reason = format!("failed to prepare command: {error}");
-                self.fail_current_command_node(
-                    app,
-                    session_store,
-                    agent_runtime,
-                    &input.run_id,
-                    &reason,
-                )
-                .await?;
+                self.fail_command_execution(app, session_store, agent_runtime, &input, &reason)
+                    .await?;
                 return Err(WorkflowEngineError::SessionStore(reason));
             }
         };
@@ -3870,14 +4637,18 @@ impl WorkflowRuntimeService {
         self.active_commands
             .lock()
             .await
-            .insert(input.run_id.clone(), running.handle());
+            .insert(input.node_execution_id.clone(), running.handle());
+        self.active_command_runs
+            .lock()
+            .await
+            .insert(input.node_execution_id.clone(), input.run_id.clone());
         let engine = self.clone();
         let observer_app = app.clone();
         let observer_session_store = session_store.clone();
         let observer_agent_runtime = agent_runtime.clone();
-        let run_id = input.run_id.clone();
+        let node_execution_id = input.node_execution_id.clone();
         let still_current = self.command_execution_still_current(&input).await;
-        let observer_run_id = run_id.clone();
+        let observer_node_execution_id = node_execution_id.clone();
         let runtime_handle = tokio::runtime::Handle::current();
         let observer = tokio::task::spawn_blocking(move || {
             runtime_handle.block_on(async move {
@@ -3894,15 +4665,16 @@ impl WorkflowRuntimeService {
                     .command_completion_observers
                     .lock()
                     .await
-                    .remove(&observer_run_id);
+                    .remove(&observer_node_execution_id);
             });
         });
         self.command_completion_observers
             .lock()
             .await
-            .insert(run_id.clone(), observer);
+            .insert(node_execution_id.clone(), observer);
         if !still_current {
-            self.shutdown_active_command(&run_id).await;
+            self.shutdown_active_command_execution(&node_execution_id)
+                .await;
         }
         Ok(())
     }
@@ -3916,11 +4688,18 @@ impl WorkflowRuntimeService {
         running: workflow_command_runner::RunningCommand,
     ) {
         let output = running.wait().await;
-        self.active_commands.lock().await.remove(&input.run_id);
+        self.active_commands
+            .lock()
+            .await
+            .remove(&input.node_execution_id);
+        self.active_command_runs
+            .lock()
+            .await
+            .remove(&input.node_execution_id);
 
         match output {
             Ok(output) => {
-                let run_id = input.run_id.clone();
+                let failure_input = input.clone();
                 if let Err(error) = self
                     .commit_command_output(app, session_store, agent_runtime, input, output)
                     .await
@@ -3928,11 +4707,11 @@ impl WorkflowRuntimeService {
                     let reason = format!("command completion failed: {error}");
                     log::warn!("{reason}");
                     let _ = self
-                        .fail_current_command_node(
+                        .fail_command_execution(
                             app,
                             session_store,
                             agent_runtime,
-                            &run_id,
+                            &failure_input,
                             &reason,
                         )
                         .await;
@@ -3943,7 +4722,7 @@ impl WorkflowRuntimeService {
                     .command_shutdown_reasons
                     .lock()
                     .await
-                    .remove(&input.run_id);
+                    .remove(&input.node_execution_id);
                 if matches!(reason, Some(ActiveCommandShutdownReason::AppExit)) {
                     if let Err(error) = self
                         .interrupt_current_command_node(
@@ -3965,13 +4744,7 @@ impl WorkflowRuntimeService {
             Err(error) => {
                 let reason = format!("command runtime failed: {error}");
                 let _ = self
-                    .fail_current_command_node(
-                        app,
-                        session_store,
-                        agent_runtime,
-                        &input.run_id,
-                        &reason,
-                    )
+                    .fail_command_execution(app, session_store, agent_runtime, &input, &reason)
                     .await;
             }
         }
@@ -3999,14 +4772,33 @@ impl WorkflowRuntimeService {
             .get(&node.name)
             .copied()
             .unwrap_or(1);
+        let node_execution_id = exec
+            .node_executions
+            .iter()
+            .rev()
+            .find(|node_execution| {
+                node_execution.node_name == node.name
+                    && node_execution.attempt == run_index
+                    && node_execution.fanout_parent.is_none()
+                    && node_execution.status.is_active()
+            })
+            .map(|node_execution| node_execution.id.clone())
+            .ok_or_else(|| {
+                WorkflowEngineError::InvalidState(format!(
+                    "active NodeExecution for '{}' attempt {} is unavailable",
+                    node.name, run_index
+                ))
+            })?;
         Ok(CommandExecutionInput {
             run_id: run_id.clone(),
+            node_execution_id,
             node_name: node.name.clone(),
             run_index,
             worktree_path: exec.worktree_path.clone(),
             command: rendered_command,
             artifact_contract: node.artifact.clone(),
             schemas: workflow_schemas_to_domain(&exec.workflow.schemas),
+            fanout_parent: None,
         })
     }
 
@@ -4015,7 +4807,20 @@ impl WorkflowRuntimeService {
         let Some(exec) = execs.get(&input.run_id) else {
             return false;
         };
-        is_still_current_run(exec, &input.node_name, input.run_index)
+        let execution_is_active = exec.node_executions.iter().any(|node_execution| {
+            node_execution.id == input.node_execution_id && node_execution.status.is_active()
+        });
+        if input.fanout_parent.is_some() {
+            execution_is_active
+                && exec.parallel_run.as_ref().is_some_and(|run| {
+                    run.children.iter().any(|child| {
+                        child.node_execution_id == input.node_execution_id
+                            && child.state == ParallelChildState::Running
+                    })
+                })
+        } else {
+            is_still_current_run(exec, &input.node_name, input.run_index) && execution_is_active
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -4027,6 +4832,11 @@ impl WorkflowRuntimeService {
         input: CommandExecutionInput,
         output: CommandRunOutput,
     ) -> Result<(), WorkflowEngineError> {
+        if input.fanout_parent.is_some() {
+            return self
+                .commit_fanout_command_output(app, session_store, agent_runtime, input, output)
+                .await;
+        }
         let secrets = secret_source::collect_configured_secret_values(app);
         let artifact = build_command_artifact(
             &input.schemas,
@@ -4067,6 +4877,15 @@ impl WorkflowRuntimeService {
                     completed_at,
                 },
             );
+            if let Some(node_execution) = exec
+                .node_executions
+                .iter_mut()
+                .find(|node_execution| node_execution.id == input.node_execution_id)
+            {
+                node_execution.status = NodeExecutionStatus::Succeeded;
+                node_execution.artifact = Some(artifact_value.clone());
+                node_execution.completed_at = Some(timestamp);
+            }
             let outcome = exec.apply_advance();
             (
                 outcome,
@@ -4080,6 +4899,7 @@ impl WorkflowRuntimeService {
         let artifact_event = WorkflowEvent::ArtifactProduced {
             run_id: input.run_id.clone(),
             workflow_name,
+            node_execution_id: input.node_execution_id.clone(),
             node_name: input.node_name.clone(),
             contract: artifact_event_contract,
             value: artifact_value,
@@ -4125,6 +4945,327 @@ impl WorkflowRuntimeService {
         .await
     }
 
+    async fn commit_fanout_command_output<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
+        input: CommandExecutionInput,
+        output: CommandRunOutput,
+    ) -> Result<(), WorkflowEngineError> {
+        let secrets = secret_source::collect_configured_secret_values(app);
+        let artifact = build_command_artifact(
+            &input.schemas,
+            input.artifact_contract.as_deref(),
+            output,
+            &secrets,
+        );
+        let artifact_value = artifact.value;
+        let result_summary = artifact.result_summary;
+        let event_contract = artifact.event_contract;
+        let completed_at = current_timestamp();
+
+        let completion = {
+            let mut executions = self.executions.lock().await;
+            let Some(execution) = executions.get_mut(&input.run_id) else {
+                return Ok(());
+            };
+            if !self.command_input_is_active_fanout_child(execution, &input) {
+                return Ok(());
+            }
+            let snapshot_before = execution.clone();
+            let workflow_name = execution.workflow.name.clone();
+            let child = execution
+                .parallel_run
+                .as_mut()
+                .and_then(|run| {
+                    run.children
+                        .iter_mut()
+                        .find(|child| child.node_execution_id == input.node_execution_id)
+                })
+                .ok_or_else(|| {
+                    WorkflowEngineError::InvalidState(format!(
+                        "active fanout command child '{}' was not found",
+                        input.node_execution_id
+                    ))
+                })?;
+            child.state = ParallelChildState::Completed;
+            child.result = Some(result_summary.clone());
+            child.structured_output = Some(artifact_value.clone());
+            child.failure_kind = None;
+            child.failure_disposition = None;
+            child.completed_at = Some(completed_at);
+            if let Some(node_execution) = execution
+                .node_executions
+                .iter_mut()
+                .find(|node_execution| node_execution.id == input.node_execution_id)
+            {
+                node_execution.status = NodeExecutionStatus::Succeeded;
+                node_execution.artifact = Some(artifact_value.clone());
+                node_execution.failure = None;
+                node_execution.completed_at = Some(completed_at);
+            }
+            let progress_events = vec![
+                WorkflowEvent::ArtifactProduced {
+                    run_id: input.run_id.clone(),
+                    workflow_name: workflow_name.clone(),
+                    node_execution_id: input.node_execution_id.clone(),
+                    node_name: input.node_name.clone(),
+                    contract: event_contract,
+                    value: artifact_value.clone(),
+                    request_id: None,
+                    submitted_at: None,
+                    timestamp: completed_at,
+                },
+                WorkflowEvent::NodeCompleted {
+                    run_id: input.run_id.clone(),
+                    workflow_name,
+                    node_execution_id: input.node_execution_id.clone(),
+                    node_name: input.node_name.clone(),
+                    result: Some(result_summary),
+                    session_id: None,
+                    token_usage: None,
+                    structured_output: Some(artifact_value),
+                    run_index: Some(input.run_index),
+                    timestamp: completed_at,
+                },
+            ];
+            finalize_child_terminal_state(execution, snapshot_before, progress_events, true, None)?
+        };
+
+        if let Some(outcome) = completion.outcome {
+            self.commit_required_parallel_progress_events_and_execute_outcome(
+                app,
+                session_store,
+                agent_runtime,
+                &input.worktree_path,
+                outcome,
+                completion.snapshot_before,
+                completion.progress_events,
+                &[],
+                completion.failure_telemetry,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    fn command_input_is_active_fanout_child(
+        &self,
+        execution: &WorkflowExecution,
+        input: &CommandExecutionInput,
+    ) -> bool {
+        execution.is_active()
+            && execution.node_executions.iter().any(|node_execution| {
+                node_execution.id == input.node_execution_id
+                    && node_execution.status == NodeExecutionStatus::Running
+            })
+            && execution.parallel_run.as_ref().is_some_and(|run| {
+                input.fanout_parent.as_deref() == Some(run.parent_step_name.as_str())
+                    && run.children.iter().any(|child| {
+                        child.node_execution_id == input.node_execution_id
+                            && child.state == ParallelChildState::Running
+                    })
+            })
+    }
+
+    async fn fail_command_execution<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
+        input: &CommandExecutionInput,
+        reason: &str,
+    ) -> Result<(), WorkflowEngineError> {
+        if input.fanout_parent.is_none() {
+            return self
+                .fail_current_command_node(app, session_store, agent_runtime, &input.run_id, reason)
+                .await;
+        }
+
+        let failure_kind = WorkflowStepFailureKind::InfrastructureCrash;
+        let timestamp = current_timestamp();
+        let (completion, interrupted_session_ids, interrupted_command_ids) = {
+            let mut executions = self.executions.lock().await;
+            let Some(execution) = executions.get_mut(&input.run_id) else {
+                return Ok(());
+            };
+            if !self.command_input_is_active_fanout_child(execution, input) {
+                return Ok(());
+            }
+            let snapshot_before = execution.clone();
+            let workflow_name = execution.workflow.name.clone();
+            let (delegates_to_aggregate, parent_node_execution_id) = execution
+                .parallel_run
+                .as_ref()
+                .map(|run| {
+                    (
+                        run.aggregate.is_some(),
+                        run.parent_node_execution_id.clone(),
+                    )
+                })
+                .ok_or_else(|| {
+                    WorkflowEngineError::InvalidState(
+                        "fanout command failure requires an active fanout run".to_string(),
+                    )
+                })?;
+            let child = execution
+                .parallel_run
+                .as_mut()
+                .and_then(|run| {
+                    run.children
+                        .iter_mut()
+                        .find(|child| child.node_execution_id == input.node_execution_id)
+                })
+                .ok_or_else(|| {
+                    WorkflowEngineError::InvalidState(format!(
+                        "fanout command child '{}' disappeared",
+                        input.node_execution_id
+                    ))
+                })?;
+            child.state = ParallelChildState::Failed;
+            child.result = Some(failure_kind.as_str().to_string());
+            child.structured_output = None;
+            child.failure_kind = Some(failure_kind);
+            child.failure_disposition =
+                delegates_to_aggregate.then_some(FailureDisposition::Partial);
+            child.completed_at = Some(timestamp);
+            execution.fail_node_execution(
+                &input.node_execution_id,
+                reason.to_string(),
+                failure_kind,
+                timestamp,
+            );
+            let progress_events = vec![WorkflowEvent::NodeFailed {
+                run_id: input.run_id.clone(),
+                workflow_name,
+                node_execution_id: input.node_execution_id.clone(),
+                node_name: input.node_name.clone(),
+                reason: reason.to_string(),
+                failure_kind,
+                retry_count: None,
+                timestamp,
+            }];
+
+            if delegates_to_aggregate {
+                (
+                    finalize_child_terminal_state(
+                        execution,
+                        snapshot_before,
+                        progress_events,
+                        true,
+                        Some(FailureClassification::with_disposition(
+                            failure_kind,
+                            FailureDisposition::Partial,
+                        )),
+                    )?,
+                    Vec::new(),
+                    Vec::new(),
+                )
+            } else {
+                let (interrupted_session_ids, interrupted_command_ids, interrupted_execution_ids) =
+                    execution
+                        .parallel_run
+                        .as_mut()
+                        .map(|run| {
+                            let mut sessions = Vec::new();
+                            let mut commands = Vec::new();
+                            let mut execution_ids = Vec::new();
+                            for child in &mut run.children {
+                                if child.node_execution_id == input.node_execution_id
+                                    || child.state != ParallelChildState::Running
+                                {
+                                    continue;
+                                }
+                                child.state = ParallelChildState::Interrupted;
+                                execution_ids.push(child.node_execution_id.clone());
+                                if child.session_id.is_empty() {
+                                    commands.push(child.node_execution_id.clone());
+                                } else {
+                                    sessions.push(child.session_id.clone());
+                                }
+                            }
+                            (sessions, commands, execution_ids)
+                        })
+                        .unwrap_or_default();
+                for execution_id in interrupted_execution_ids {
+                    if let Some(node_execution) = execution
+                        .node_executions
+                        .iter_mut()
+                        .find(|candidate| candidate.id == execution_id)
+                    {
+                        node_execution.status = NodeExecutionStatus::Aborted;
+                        node_execution.completed_at = Some(timestamp);
+                    }
+                }
+                execution.fail_node_execution(
+                    &parent_node_execution_id,
+                    format!("fanout child '{}' failed: {reason}", input.node_name),
+                    failure_kind,
+                    timestamp,
+                );
+                let entry = execution.make_step_history_entry(
+                    Some(format!(
+                        "fanout child '{}' failed: {reason}",
+                        input.node_name
+                    )),
+                    None,
+                    None,
+                );
+                execution.step_history.push(entry);
+                execution.state = WorkflowExecutionState::Failed {
+                    reason: format!("fanout child '{}' failed: {reason}", input.node_name),
+                    kind: failure_kind,
+                    retry_count: None,
+                };
+                execution.parallel_run = None;
+                execution.updated_at = timestamp;
+                (
+                    ParallelChildCompletionCommit {
+                        all_completed: true,
+                        outcome: Some(StepOutcome::Persist(execution.to_workflow_state())),
+                        snapshot_before,
+                        progress_events,
+                        required_progress_events: true,
+                        failure_telemetry: Some(FailureClassification::with_disposition(
+                            failure_kind,
+                            FailureDisposition::Terminal,
+                        )),
+                    },
+                    interrupted_session_ids,
+                    interrupted_command_ids,
+                )
+            }
+        };
+
+        if let Some(outcome) = completion.outcome {
+            self.commit_required_parallel_progress_events_and_execute_outcome(
+                app,
+                session_store,
+                agent_runtime,
+                &input.worktree_path,
+                outcome,
+                completion.snapshot_before,
+                completion.progress_events,
+                &[],
+                completion.failure_telemetry,
+            )
+            .await?;
+        }
+        for session_id in interrupted_session_ids {
+            workflow_runtime_session::interrupt_agent(agent_runtime, &session_id).await;
+        }
+        if !interrupted_command_ids.is_empty() {
+            let handles = self.active_commands.lock().await;
+            for execution_id in interrupted_command_ids {
+                if let Some(handle) = handles.get(&execution_id) {
+                    handle.request_shutdown();
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn fail_current_command_node<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
@@ -4167,17 +5308,42 @@ impl WorkflowRuntimeService {
             let Some(exec) = execs.get_mut(&input.run_id) else {
                 return Ok(());
             };
-            if exec.is_terminal() || !is_still_current_run(exec, &input.node_name, input.run_index)
-            {
+            let command_is_active = exec.node_executions.iter().any(|node_execution| {
+                node_execution.id == input.node_execution_id
+                    && node_execution.node_name == input.node_name
+                    && node_execution.attempt == input.run_index
+                    && node_execution.status.is_active()
+            });
+            if exec.is_terminal() || !command_is_active {
                 return Ok(());
             }
 
             let snapshot_before = exec.clone();
+            let timestamp = current_timestamp();
+            for node_execution in exec
+                .node_executions
+                .iter_mut()
+                .filter(|node_execution| node_execution.status.is_active())
+            {
+                node_execution.status = NodeExecutionStatus::Aborted;
+                node_execution.completed_at = Some(timestamp);
+            }
+            if let Some(fanout) = exec.parallel_run.as_mut() {
+                for child in fanout
+                    .children
+                    .iter_mut()
+                    .filter(|child| child.state == ParallelChildState::Running)
+                {
+                    child.state = ParallelChildState::Interrupted;
+                    child.completed_at = Some(timestamp);
+                }
+            }
             let mut entry = exec.make_step_history_entry(None, None, None);
             entry.state = STEP_STATE_INTERRUPTED.to_string();
             exec.step_history.push(entry);
+            exec.parallel_run = None;
             exec.state = WorkflowExecutionState::Interrupted;
-            exec.updated_at = current_timestamp();
+            exec.updated_at = timestamp;
             (
                 exec.to_workflow_state(),
                 snapshot_before,
@@ -4209,21 +5375,46 @@ impl WorkflowRuntimeService {
         Ok(())
     }
 
-    async fn shutdown_active_command(&self, run_id: &str) {
-        if let Some(handle) = self.active_commands.lock().await.remove(run_id) {
+    async fn shutdown_active_command_execution(&self, node_execution_id: &str) {
+        if let Some(handle) = self.active_commands.lock().await.remove(node_execution_id) {
             handle.request_shutdown();
         }
         let observer = self
             .command_completion_observers
             .lock()
             .await
-            .remove(run_id);
+            .remove(node_execution_id);
         if let Some(observer) = observer {
             if let Err(error) = observer.await {
-                log::warn!("workflow {run_id}: command completion observer failed: {error}");
+                log::warn!(
+                    "node execution {node_execution_id}: command completion observer failed: {error}"
+                );
             }
         }
-        self.command_shutdown_reasons.lock().await.remove(run_id);
+        self.command_shutdown_reasons
+            .lock()
+            .await
+            .remove(node_execution_id);
+        self.active_command_runs
+            .lock()
+            .await
+            .remove(node_execution_id);
+    }
+
+    async fn shutdown_active_commands_for_run(&self, run_id: &str) {
+        let node_execution_ids = self
+            .active_command_runs
+            .lock()
+            .await
+            .iter()
+            .filter_map(|(node_execution_id, owner_run_id)| {
+                (owner_run_id == run_id).then_some(node_execution_id.clone())
+            })
+            .collect::<Vec<_>>();
+        for node_execution_id in node_execution_ids {
+            self.shutdown_active_command_execution(&node_execution_id)
+                .await;
+        }
     }
 
     pub(crate) async fn shutdown_all_active_commands(&self) {
@@ -4231,7 +5422,7 @@ impl WorkflowRuntimeService {
             let active_commands = self.active_commands.lock().await;
             active_commands
                 .iter()
-                .map(|(run_id, handle)| (run_id.clone(), handle.clone()))
+                .map(|(node_execution_id, handle)| (node_execution_id.clone(), handle.clone()))
                 .collect::<Vec<_>>()
         };
         if commands.is_empty() {
@@ -4239,8 +5430,11 @@ impl WorkflowRuntimeService {
         }
         {
             let mut reasons = self.command_shutdown_reasons.lock().await;
-            for (run_id, _) in &commands {
-                reasons.insert(run_id.clone(), ActiveCommandShutdownReason::AppExit);
+            for (node_execution_id, _) in &commands {
+                reasons.insert(
+                    node_execution_id.clone(),
+                    ActiveCommandShutdownReason::AppExit,
+                );
             }
         }
         for (_, handle) in &commands {
@@ -4250,7 +5444,7 @@ impl WorkflowRuntimeService {
             let mut observers = self.command_completion_observers.lock().await;
             commands
                 .iter()
-                .filter_map(|(run_id, _)| observers.remove(run_id))
+                .filter_map(|(node_execution_id, _)| observers.remove(node_execution_id))
                 .collect::<Vec<_>>()
         };
         for observer in observers {
@@ -4258,21 +5452,25 @@ impl WorkflowRuntimeService {
                 log::warn!("workflow command completion observer failed during shutdown: {error}");
             }
         }
-        let run_ids = commands
+        let node_execution_ids = commands
             .into_iter()
-            .map(|(run_id, _)| run_id)
+            .map(|(node_execution_id, _)| node_execution_id)
             .collect::<Vec<_>>();
         {
             let mut active_commands = self.active_commands.lock().await;
-            for run_id in &run_ids {
-                active_commands.remove(run_id);
+            for node_execution_id in &node_execution_ids {
+                active_commands.remove(node_execution_id);
             }
         }
         {
             let mut reasons = self.command_shutdown_reasons.lock().await;
-            for run_id in &run_ids {
-                reasons.remove(run_id);
+            for node_execution_id in &node_execution_ids {
+                reasons.remove(node_execution_id);
             }
+        }
+        let mut runs = self.active_command_runs.lock().await;
+        for node_execution_id in &node_execution_ids {
+            runs.remove(node_execution_id);
         }
     }
 
@@ -4336,6 +5534,23 @@ impl WorkflowRuntimeService {
                 .get(&step.name)
                 .copied()
                 .unwrap_or(1);
+            let node_execution_id = exec
+                .node_executions
+                .iter()
+                .rev()
+                .find(|node_execution| {
+                    node_execution.node_name == step.name
+                        && node_execution.attempt == step_run_index
+                        && node_execution.fanout_parent.is_none()
+                        && node_execution.status.is_active()
+                })
+                .map(|node_execution| node_execution.id.clone())
+                .ok_or_else(|| {
+                    WorkflowEngineError::InvalidState(format!(
+                        "active NodeExecution for '{}' attempt {} is unavailable",
+                        step.name, step_run_index
+                    ))
+                })?;
             (
                 run_id.clone(),
                 step.clone(),
@@ -4344,6 +5559,7 @@ impl WorkflowRuntimeService {
                 exec.workflow_defaults.clone(),
                 WorkflowStepContext {
                     run_id: run_id.clone(),
+                    node_execution_id,
                     workflow_name: exec.workflow.name.clone(),
                     step_name: step.name.clone(),
                     run_index: step_run_index,
@@ -4381,6 +5597,7 @@ impl WorkflowRuntimeService {
             &step_outputs_clone,
         );
         // ステップ設定の解決 → セッション生成（workflow_defaults を継承元に注入）
+        let node_execution_id = workflow_step_context.node_execution_id.clone();
         let step_session = deps
             .create_step_session(
                 worktree_path,
@@ -4428,6 +5645,13 @@ impl WorkflowRuntimeService {
             let mut execs = self.executions.lock().await;
             if let Some(exec) = execs.get_mut(&run_id_for_ref) {
                 exec.current_session_id = Some(step_session_id.clone());
+                if let Some(node_execution) = exec
+                    .node_executions
+                    .iter_mut()
+                    .find(|node_execution| node_execution.id == node_execution_id)
+                {
+                    node_execution.session_id = Some(step_session_id.clone());
+                }
                 Some(exec.to_workflow_state())
             } else {
                 None
@@ -4783,7 +6007,7 @@ impl WorkflowRuntimeService {
     ///
     /// snapshot は既に persist 済みである前提で、outcome variant に応じた残りの副作用
     /// （NodeStarted 書き込み・start_step_session・reduce + 派生 mutation の再帰・
-    /// start_parallel_children・auto-approve approval primitive）のみを担当する。`execute_outcome`
+    /// start_fanout_children・auto-approve approval primitive）のみを担当する。`execute_outcome`
     /// （non-command 経路）と `handle_approval` などの 4 command handler の双方から
     /// 呼ばれ、副作用ロジックの単一 source of truth として機能する。失敗は warn 化して
     /// command 結果に伝播させない設計に揃える（spec [04] post-commit 境界）。
@@ -4811,6 +6035,7 @@ impl WorkflowRuntimeService {
                         &run_id,
                         None,
                         &step_name,
+                        None,
                     ))
                     .await;
                 }
@@ -4820,7 +6045,7 @@ impl WorkflowRuntimeService {
                 if commit_mode.should_emit_progress_events() {
                     self.write_log(
                         app,
-                        workflow_runtime_events::node_started_event_for_snapshot(&snapshot),
+                        workflow_runtime_events::node_started_event_for_snapshot(&snapshot)?,
                     );
                 }
                 if let Err(e) = Box::pin(self.start_current_node_runtime(
@@ -4925,15 +6150,13 @@ impl WorkflowRuntimeService {
                     workflow_runtime_events::PostCommitProgressEventPlan::StartParallel,
                     &snapshot,
                 )?;
-                if let Err(e) = self
-                    .start_parallel_children(
-                        app,
-                        session_store,
-                        agent_runtime,
-                        worktree_path,
-                        commit_mode.should_emit_progress_events(),
-                    )
-                    .await
+                if let Err(e) = Box::pin(self.start_fanout_children(
+                    app,
+                    session_store,
+                    agent_runtime,
+                    worktree_path,
+                ))
+                .await
                 {
                     let failed_state =
                         workflow_runtime_session::record_post_commit_runtime_start_failure(
@@ -4972,26 +6195,25 @@ impl WorkflowRuntimeService {
         if let Err(e) = self.write_last_step_completed_log(app, snapshot) {
             return Err(plan.node_completed_append_error(e));
         }
-        if let Some(event) = plan.followup_event(snapshot) {
+        if let Some(event) = plan.followup_event(snapshot)? {
             self.write_log(app, event);
         }
         Ok(())
     }
 
-    /// 並列ブロックの子ステップをすべて起動する。
+    /// fanout の子 node execution を展開して起動する。
     #[allow(clippy::too_many_arguments)]
-    async fn start_parallel_children<R: tauri::Runtime>(
+    async fn start_fanout_children<R: tauri::Runtime + 'static>(
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         worktree_path: &str,
-        emit_parallel_started: bool,
     ) -> Result<(), WorkflowEngineError> {
-        let workflow_runtime_session::ParallelStartRuntimeInputs {
-            parallel_start,
+        let workflow_runtime_session::FanoutStartRuntimeInputs {
+            fanout_start,
             prompt_inputs,
-        } = workflow_runtime_session::load_parallel_start_runtime_inputs(
+        } = workflow_runtime_session::load_fanout_start_runtime_inputs(
             &self.executions,
             worktree_path,
         )
@@ -5003,47 +6225,180 @@ impl WorkflowRuntimeService {
             exec.workflow.clone()
         };
         let facet_contents = self
-            .facet_contents_for_run(&parallel_start.execution_id, &workflow_for_facets)
+            .facet_contents_for_run(&fanout_start.execution_id, &workflow_for_facets)
             .await?;
-
-        // ParallelStarted ログ
-        if emit_parallel_started {
-            self.write_log(app, parallel_start.started_event(current_timestamp()));
-        }
+        let command_artifacts = workflow_prompt::artifact_values(
+            &prompt_inputs.step_outputs,
+            fanout_start.task.as_deref(),
+        );
+        let command_schemas = workflow_schemas_to_domain(&workflow_for_facets.schemas);
+        let command_inputs = fanout_start
+            .children
+            .iter()
+            .filter_map(|child| {
+                let command = child.node.command()?;
+                Some(CommandExecutionInput {
+                    run_id: fanout_start.execution_id.clone(),
+                    node_execution_id: child.node_execution_id.clone(),
+                    node_name: child.node.name.clone(),
+                    run_index: child.attempt,
+                    worktree_path: worktree_path.to_string(),
+                    command: workflow_prompt::render_artifact_references(
+                        command,
+                        &command_artifacts,
+                        child.item.as_ref(),
+                    ),
+                    artifact_contract: child.node.artifact.clone(),
+                    schemas: command_schemas.clone(),
+                    fanout_parent: Some(fanout_start.parent_step_name.clone()),
+                })
+            })
+            .collect::<Vec<_>>();
 
         // Phase 1: セッション生成 + ref登録 + プロンプト構築（AgentSessionはまだ起動しない）
-        let child_setups = workflow_runtime_session::prepare_parallel_child_session_setups(
+        let child_setups = workflow_runtime_session::prepare_fanout_child_session_setups(
             app,
             agent_runtime.backend_registry(),
             session_store,
             &self.session_workflow_refs,
             worktree_path,
-            &parallel_start,
+            &fanout_start,
             &prompt_inputs,
             &facet_contents,
         )
         .await?;
 
-        let observer = ParallelChildStartedLogObserver {
+        let timestamp = current_timestamp();
+        let (snapshot_before, snapshot) = {
+            let mut executions = self.executions.lock().await;
+            let execution = find_by_worktree_mut(&mut executions, worktree_path)
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
+            let snapshot_before = execution.clone();
+            let snapshot = workflow_parallel_runtime::apply_fanout_run_state(
+                execution,
+                &fanout_start,
+                &child_setups,
+                timestamp,
+            )?;
+            (snapshot_before, snapshot)
+        };
+
+        // Child IDs are allocated during expansion, after the parent transition commit. Commit
+        // their NodeStarted facts atomically with the expanded live state before activating any
+        // runtime; otherwise replay could miss children that are already running in memory.
+        if !fanout_start.children.is_empty() {
+            let started_events = fanout_start
+                .children
+                .iter()
+                .map(|child| WorkflowEvent::NodeStarted {
+                    run_id: fanout_start.execution_id.clone(),
+                    workflow_name: fanout_start.workflow_name.clone(),
+                    node_execution_id: child.node_execution_id.clone(),
+                    node_name: child.node.name.clone(),
+                    kind: child.node.kind_name(),
+                    attempt: child.attempt,
+                    fanout_parent: Some(
+                        crate::adaptor::gateway::workflow::event::FanoutParentRef {
+                            parent_node: fanout_start.parent_step_name.clone(),
+                            parent_attempt: fanout_start.parent_run_index,
+                            item_index: child.item_index,
+                            child_index: child.child_index,
+                        },
+                    ),
+                    timestamp,
+                })
+                .collect::<Vec<_>>();
+            let run_store_snapshot_before = self
+                .run_store
+                .active_run_snapshot(&fanout_start.execution_id)
+                .await;
+            if let Err(error) = self
+                .commit_required_events(
+                    app,
+                    session_store,
+                    RequiredEventCommit {
+                        run_id: &fanout_start.execution_id,
+                        snapshot_for_commit: &snapshot,
+                        snapshot_before: snapshot_before.clone(),
+                        run_store_snapshot_before,
+                        required_events: started_events,
+                        append_error_context: "fanout child NodeStarted append failed",
+                    },
+                )
+                .await
+            {
+                return Err(
+                    workflow_runtime_session::rollback_prepared_fanout_child_sessions(
+                        app,
+                        session_store,
+                        &self.session_workflow_refs,
+                        &child_setups,
+                        error,
+                    )
+                    .await,
+                );
+            }
+        }
+
+        if fanout_start.children.is_empty() {
+            let completion = {
+                let mut executions = self.executions.lock().await;
+                let execution =
+                    executions
+                        .get_mut(&fanout_start.execution_id)
+                        .ok_or_else(|| {
+                            WorkflowEngineError::ExecutionNotFound(
+                                fanout_start.execution_id.clone(),
+                            )
+                        })?;
+                complete_fanout_parent_after_all_children(
+                    execution,
+                    snapshot_before,
+                    Vec::new(),
+                    true,
+                    None,
+                )?
+            };
+            if let Some(outcome) = completion.outcome {
+                self.commit_required_parallel_progress_events_and_execute_outcome(
+                    app,
+                    session_store,
+                    agent_runtime,
+                    worktree_path,
+                    outcome,
+                    completion.snapshot_before,
+                    completion.progress_events,
+                    &[],
+                    completion.failure_telemetry,
+                )
+                .await?;
+            }
+            return Ok(());
+        }
+
+        let observer = FanoutChildStartedLogObserver {
             engine: self,
             app,
-            execution_id: &parallel_start.execution_id,
-            workflow_name: &parallel_start.workflow_name,
-            parent_step_name: &parallel_start.parent_step_name,
+            execution_id: &fanout_start.execution_id,
+            workflow_name: &fanout_start.workflow_name,
         };
-        workflow_runtime_session::activate_parallel_child_sessions(
+        workflow_runtime_session::activate_fanout_child_sessions(
             app,
             self.branch_diff_context.clone(),
             session_store,
             agent_runtime,
             &self.open_tabs,
-            &self.executions,
             worktree_path,
-            &parallel_start,
             &child_setups,
+            snapshot,
             &observer,
         )
         .await?;
+
+        for input in command_inputs {
+            self.spawn_command_execution(app, session_store, agent_runtime, input)
+                .await?;
+        }
 
         Ok(())
     }
@@ -5290,6 +6645,11 @@ impl WorkflowRuntimeService {
                 ..Default::default()
             }],
         };
+        let node_status = if matches!(state, WorkflowExecutionState::WaitingApproval) {
+            NodeExecutionStatus::WaitingApproval
+        } else {
+            NodeExecutionStatus::Running
+        };
         let exec = WorkflowExecution {
             id: "exec-approval-chat".to_string(),
             workflow,
@@ -5302,6 +6662,21 @@ impl WorkflowRuntimeService {
             current_session_id: Some(current_session_id.to_string()),
             current_step_token_usage: TokenUsage::default(),
             step_outputs: HashMap::new(),
+            node_executions: vec![NodeExecution {
+                id: "node-exec-approval".to_string(),
+                execution_id: "exec-approval-chat".to_string(),
+                node_name: "implementation_fix_policy".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                status: node_status,
+                session_id: Some(current_session_id.to_string()),
+                artifact: None,
+                token_usage: None,
+                failure: None,
+                fanout_parent: None,
+                started_at: 1000.0,
+                completed_at: None,
+            }],
             task: None,
             parallel_run: None,
             current_stall_observations: Vec::new(),

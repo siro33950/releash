@@ -1,6 +1,10 @@
 import type { AgentState } from "./protocol";
 import type { SessionState, SessionSummary } from "./session";
-import type { WorkflowRunSummary } from "./workflow";
+import type {
+	JsonValue,
+	NodeExecutionStatus,
+	WorkflowRunSummary,
+} from "./workflow";
 
 export type CenterSelection =
 	| {
@@ -50,17 +54,31 @@ export type WorkspaceStepStatus =
 
 type WorkspaceStepType = "command" | "session" | "fanout";
 
+export interface WorkspaceFanoutParent {
+	parentNode: string;
+	parentAttempt: number;
+	itemIndex?: number;
+	childIndex: number;
+}
+
 export interface WorkspaceWorkflowStepNode {
 	kind: "step";
 	id: string;
 	runId: string;
 	worktreePath: string;
 	title: string;
+	nodeName: string;
 	status: WorkspaceStepStatus;
 	stepType: WorkspaceStepType;
+	nodeExecutionStatus?: NodeExecutionStatus;
 	canApprove?: boolean;
 	updatedAt: number;
 	runIndex?: number | null;
+	attempt: number;
+	nodeExecutionId?: string;
+	sessionId?: string;
+	artifact?: JsonValue;
+	fanoutParent?: WorkspaceFanoutParent;
 	sessions: WorkspaceSessionNode[];
 }
 

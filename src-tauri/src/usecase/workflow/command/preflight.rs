@@ -63,7 +63,11 @@ impl WorkflowRuntimeCommandPreflight {
         RunId::new(command.run_id.clone())?;
         RunId::new(command.request_id.clone())?;
         match &command.payload {
-            PendingRuntimeCommandPayload::Approve { node_name, comment } => {
+            PendingRuntimeCommandPayload::Approve {
+                node_name,
+                node_execution_id: _,
+                comment,
+            } => {
                 NodeName::new(node_name.clone())?;
                 approval_rules::validate_optional_comment_text(
                     comment.as_deref(),
@@ -76,6 +80,7 @@ impl WorkflowRuntimeCommandPreflight {
             }
             PendingRuntimeCommandPayload::SubmitOutput {
                 step_name,
+                node_execution_id: _,
                 contract,
                 structured_output: _,
             } => {

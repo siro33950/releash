@@ -53,6 +53,7 @@ pub async fn workflow_submit_output(
     worktree_path: String,
     run_id: String,
     step_name: String,
+    node_execution_id: Option<String>,
     contract: String,
     structured_output: serde_json::Value,
 ) -> Result<(), String> {
@@ -61,6 +62,7 @@ pub async fn workflow_submit_output(
         .submit_output(SubmitOutputCommand {
             run_id,
             step_name,
+            node_execution_id,
             contract,
             structured_output,
         })

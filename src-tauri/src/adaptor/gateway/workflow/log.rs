@@ -431,6 +431,7 @@ mod tests {
             WorkflowEvent::ApprovalResolved {
                 run_id: run_id.to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "node-execution-review".to_string(),
                 node_name: "review".to_string(),
                 comment: None,
                 timestamp: 1000.0,
@@ -466,6 +467,7 @@ mod tests {
         log.append(&WorkflowEvent::ApprovalResolved {
             run_id: run_id.to_string(),
             workflow_name: "wf".to_string(),
+            node_execution_id: "node-execution-review".to_string(),
             node_name: "review".to_string(),
             comment: None,
             timestamp: 1.0,
@@ -503,6 +505,7 @@ mod tests {
             WorkflowEvent::ApprovalResolved {
                 run_id: "00000000-0000-0000-0000-000000000903".to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "node-execution-review".to_string(),
                 node_name: "review".to_string(),
                 comment: None,
                 timestamp: 1.0,
@@ -559,13 +562,17 @@ mod tests {
         let event2 = WorkflowEvent::NodeStarted {
             run_id: "00000000-0000-0000-0000-000000000906".to_string(),
             workflow_name: "test-wf".to_string(),
+            node_execution_id: "node-execution-plan-1".to_string(),
             node_name: "plan".to_string(),
-            execution_count: 1,
+            kind: crate::adaptor::gateway::workflow::schema::NodeKindName::Session,
+            attempt: 1,
+            fanout_parent: None,
             timestamp: 1001.0,
         };
         let event3 = WorkflowEvent::NodeCompleted {
             run_id: "00000000-0000-0000-0000-000000000906".to_string(),
             workflow_name: "test-wf".to_string(),
+            node_execution_id: "node-execution-plan-1".to_string(),
             node_name: "plan".to_string(),
             result: Some("done".to_string()),
             session_id: Some("sess-1".to_string()),
@@ -674,8 +681,11 @@ mod tests {
             WorkflowEvent::NodeStarted {
                 run_id: "00000000-0000-0000-0000-000000000911".to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "node-execution-s1".to_string(),
                 node_name: "s1".to_string(),
-                execution_count: 1,
+                kind: crate::adaptor::gateway::workflow::schema::NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: None,
                 timestamp: 2.0,
             },
             WorkflowEvent::WorkflowStallObserved {
@@ -699,6 +709,7 @@ mod tests {
             WorkflowEvent::NodeCompleted {
                 run_id: "00000000-0000-0000-0000-000000000911".to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "node-execution-s1".to_string(),
                 node_name: "s1".to_string(),
                 result: None,
                 session_id: None,
@@ -710,6 +721,7 @@ mod tests {
             WorkflowEvent::NodeFailed {
                 run_id: "00000000-0000-0000-0000-000000000911".to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "node-execution-s1".to_string(),
                 node_name: "s1".to_string(),
                 reason: "error".to_string(),
                 failure_kind: crate::domain::workflow::WorkflowStepFailureKind::InfrastructureCrash,
@@ -719,12 +731,14 @@ mod tests {
             WorkflowEvent::ApprovalRequested {
                 run_id: "00000000-0000-0000-0000-000000000911".to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "node-execution-s1".to_string(),
                 node_name: "s1".to_string(),
                 timestamp: 4.5,
             },
             WorkflowEvent::ApprovalResolved {
                 run_id: "00000000-0000-0000-0000-000000000911".to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "node-execution-s1".to_string(),
                 node_name: "s1".to_string(),
                 comment: None,
                 timestamp: 4.7,
@@ -766,46 +780,64 @@ mod tests {
                 reduce_structured_output: None,
                 timestamp: 8.0,
             },
-            WorkflowEvent::ParallelStarted {
+            WorkflowEvent::NodeStarted {
                 run_id: "00000000-0000-0000-0000-000000000911".to_string(),
                 workflow_name: "wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                child_node_names: vec!["arch-review".to_string(), "security-review".to_string()],
+                node_execution_id: "node-execution-fanout".to_string(),
+                node_name: "parallel-review".to_string(),
+                kind: crate::adaptor::gateway::workflow::schema::NodeKindName::Fanout,
+                attempt: 1,
+                fanout_parent: None,
                 timestamp: 9.0,
             },
-            WorkflowEvent::ParallelChildStarted {
+            WorkflowEvent::NodeStarted {
                 run_id: "00000000-0000-0000-0000-000000000911".to_string(),
                 workflow_name: "wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                child_node_name: "arch-review".to_string(),
-                session_id: "sess-1".to_string(),
-                execution_count: 1,
+                node_execution_id: "node-execution-arch".to_string(),
+                node_name: "arch-review".to_string(),
+                kind: crate::adaptor::gateway::workflow::schema::NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: Some(crate::adaptor::gateway::workflow::event::FanoutParentRef {
+                    parent_node: "parallel-review".to_string(),
+                    parent_attempt: 1,
+                    item_index: Some(0),
+                    child_index: 0,
+                }),
                 timestamp: 10.0,
             },
-            WorkflowEvent::ParallelChildCompleted {
+            WorkflowEvent::SessionAttached {
                 run_id: "00000000-0000-0000-0000-000000000911".to_string(),
                 workflow_name: "wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                child_node_name: "arch-review".to_string(),
-                result: None,
+                node_execution_id: "node-execution-arch".to_string(),
+                node_name: "arch-review".to_string(),
                 session_id: "sess-1".to_string(),
+                timestamp: 10.0,
+            },
+            WorkflowEvent::ArtifactProduced {
+                run_id: "00000000-0000-0000-0000-000000000911".to_string(),
+                workflow_name: "wf".to_string(),
+                node_execution_id: "node-execution-arch".to_string(),
+                node_name: "arch-review".to_string(),
+                contract: None,
+                value: serde_json::json!({"verdict": "LGTM"}),
+                request_id: None,
+                submitted_at: None,
+                timestamp: 10.5,
+            },
+            WorkflowEvent::NodeCompleted {
+                run_id: "00000000-0000-0000-0000-000000000911".to_string(),
+                workflow_name: "wf".to_string(),
+                node_execution_id: "node-execution-arch".to_string(),
+                node_name: "arch-review".to_string(),
+                result: None,
+                session_id: Some("sess-1".to_string()),
                 token_usage: Some(TokenUsage {
                     input_tokens: 50,
                     output_tokens: 25,
                 }),
                 structured_output: None,
-                run_index: 0,
-                state: "completed".to_string(),
-                failure_kind: None,
-                failure_disposition: None,
+                run_index: Some(1),
                 timestamp: 11.0,
-            },
-            WorkflowEvent::ParallelCompleted {
-                run_id: "00000000-0000-0000-0000-000000000911".to_string(),
-                workflow_name: "wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                aggregate_result: "then".to_string(),
-                timestamp: 12.0,
             },
             WorkflowEvent::ContractRepairRequested {
                 run_id: "00000000-0000-0000-0000-000000000911".to_string(),
@@ -916,14 +948,18 @@ mod tests {
         log.append(&WorkflowEvent::NodeStarted {
             run_id: "00000000-0000-0000-0000-000000000906".to_string(),
             workflow_name: "test-wf".to_string(),
+            node_execution_id: "node-execution-plan-1".to_string(),
             node_name: "plan".to_string(),
-            execution_count: 1,
+            kind: crate::adaptor::gateway::workflow::schema::NodeKindName::Session,
+            attempt: 1,
+            fanout_parent: None,
             timestamp: 1001.0,
         })
         .unwrap();
         log.append(&WorkflowEvent::NodeCompleted {
             run_id: "00000000-0000-0000-0000-000000000906".to_string(),
             workflow_name: "test-wf".to_string(),
+            node_execution_id: "node-execution-plan-1".to_string(),
             node_name: "plan".to_string(),
             result: Some("done".to_string()),
             session_id: Some("sess-plan".to_string()),
@@ -939,14 +975,18 @@ mod tests {
         log.append(&WorkflowEvent::NodeStarted {
             run_id: "00000000-0000-0000-0000-000000000906".to_string(),
             workflow_name: "test-wf".to_string(),
+            node_execution_id: "node-execution-implement-1".to_string(),
             node_name: "implement".to_string(),
-            execution_count: 1,
+            kind: crate::adaptor::gateway::workflow::schema::NodeKindName::Session,
+            attempt: 1,
+            fanout_parent: None,
             timestamp: 1003.0,
         })
         .unwrap();
         log.append(&WorkflowEvent::NodeCompleted {
             run_id: "00000000-0000-0000-0000-000000000906".to_string(),
             workflow_name: "test-wf".to_string(),
+            node_execution_id: "node-execution-implement-1".to_string(),
             node_name: "implement".to_string(),
             result: None,
             session_id: Some("sess-impl".to_string()),
@@ -1033,14 +1073,18 @@ mod tests {
         log.append(&WorkflowEvent::NodeStarted {
             run_id: "00000000-0000-0000-0000-000000000907".to_string(),
             workflow_name: "test-wf".to_string(),
+            node_execution_id: "node-execution-plan-1".to_string(),
             node_name: "plan".to_string(),
-            execution_count: 1,
+            kind: crate::adaptor::gateway::workflow::schema::NodeKindName::Session,
+            attempt: 1,
+            fanout_parent: None,
             timestamp: 2001.0,
         })
         .unwrap();
         log.append(&WorkflowEvent::NodeFailed {
             run_id: "00000000-0000-0000-0000-000000000907".to_string(),
             workflow_name: "test-wf".to_string(),
+            node_execution_id: "node-execution-plan-1".to_string(),
             node_name: "plan".to_string(),
             reason: "exit code 1".to_string(),
             failure_kind: crate::domain::workflow::WorkflowStepFailureKind::InfrastructureCrash,
@@ -1075,32 +1119,22 @@ mod tests {
         assert_eq!(state.total_steps, wf.nodes.len());
     }
 
-    /// 並列ブロックを含むワークフローのNDJSON復元テスト。
-    /// ParallelCompleted + NodeCompleted で親ステップが重複しないことを検証する。
+    /// fanout parent と child を全て通常 NodeExecution event で復元する。
+    /// child artifact は NodeExecution にだけ保持し、node-name map / history へ漏らさない。
     #[test]
-    fn reconstruct_state_parallel_block_no_duplicate_history() {
+    fn reconstruct_state_fanout_uses_node_executions_without_child_name_outputs() {
+        use crate::adaptor::gateway::workflow::event::FanoutParentRef;
         use crate::adaptor::gateway::workflow::schema::{
-            FacetRefs, FanoutSpec, InterimChild, NodeDefinition, NodeKind, ParallelAggregate,
+            FanoutSpec, NodeDefinition, NodeKind, NodeKindName, ParallelAggregate,
         };
 
         let tmp = TempDir::new().unwrap();
         let log = WorkflowEventLog::new(tmp.path());
-
-        let make_child = |name: &str, instruction: &str| InterimChild {
-            name: name.to_string(),
-            facets: FacetRefs {
-                instruction: Some(instruction.to_string()),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let parallel_review = NodeDefinition {
-            name: "parallel-review".to_string(),
+        let fanout_review = NodeDefinition {
+            name: "fanout-review".to_string(),
             kind: NodeKind::Fanout(FanoutSpec {
-                parallel_children: vec![
-                    make_child("arch-review", "arch"),
-                    make_child("security-review", "security"),
-                ],
+                child: vec!["arch-review".to_string(), "security-review".to_string()],
+                items: None,
                 aggregate: Some(ParallelAggregate {
                     all_match: Some("LGTM".to_string()),
                     any_match: None,
@@ -1111,164 +1145,181 @@ mod tests {
             ..NodeDefinition::default()
         };
         let wf = Workflow {
-            name: "parallel-wf".to_string(),
-            description: "".to_string(),
+            name: "fanout-wf".to_string(),
+            description: String::new(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![make_agent_node("plan", "plan"), parallel_review],
+            nodes: vec![
+                make_agent_node("plan", "plan"),
+                fanout_review,
+                make_agent_node("arch-review", "arch"),
+                make_agent_node("security-review", "security"),
+            ],
         };
-
+        let run_id = "00000000-0000-0000-0000-000000000912";
+        let child_ref = |child_index| FanoutParentRef {
+            parent_node: "fanout-review".to_string(),
+            parent_attempt: 1,
+            item_index: None,
+            child_index,
+        };
+        let arch_artifact = serde_json::json!({"verdict": "LGTM", "reviewer": "arch"});
+        let security_artifact = serde_json::json!({"verdict": "LGTM", "reviewer": "security"});
+        let parent_artifact = serde_json::json!([arch_artifact.clone(), security_artifact.clone()]);
         let events = vec![
             WorkflowEvent::RunStarted {
-                run_id: "00000000-0000-0000-0000-000000000912".to_string(),
-                workflow_name: "parallel-wf".to_string(),
-                workflow_file_stem: "parallel-wf".to_string(),
+                run_id: run_id.to_string(),
+                workflow_name: "fanout-wf".to_string(),
+                workflow_file_stem: "fanout-wf".to_string(),
                 worktree_path: "/repo".to_string(),
                 request: String::new(),
-                workflow_definition: wf.clone(),
+                workflow_definition: wf,
                 timestamp: 1000.0,
             },
             WorkflowEvent::NodeStarted {
-                run_id: "00000000-0000-0000-0000-000000000912".to_string(),
-                workflow_name: "parallel-wf".to_string(),
+                run_id: run_id.to_string(),
+                workflow_name: "fanout-wf".to_string(),
+                node_execution_id: "ne-plan".to_string(),
                 node_name: "plan".to_string(),
-                execution_count: 1,
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: None,
                 timestamp: 1001.0,
             },
             WorkflowEvent::NodeCompleted {
-                run_id: "00000000-0000-0000-0000-000000000912".to_string(),
-                workflow_name: "parallel-wf".to_string(),
+                run_id: run_id.to_string(),
+                workflow_name: "fanout-wf".to_string(),
+                node_execution_id: "ne-plan".to_string(),
                 node_name: "plan".to_string(),
                 result: Some("done".to_string()),
                 session_id: Some("sess-plan".to_string()),
-                token_usage: Some(TokenUsage {
-                    input_tokens: 100,
-                    output_tokens: 50,
-                }),
+                token_usage: None,
                 structured_output: Some(serde_json::json!({"text": "plan output"})),
                 run_index: Some(1),
                 timestamp: 1002.0,
             },
-            WorkflowEvent::ParallelStarted {
-                run_id: "00000000-0000-0000-0000-000000000912".to_string(),
-                workflow_name: "parallel-wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                child_node_names: vec!["arch-review".to_string(), "security-review".to_string()],
+            WorkflowEvent::NodeStarted {
+                run_id: run_id.to_string(),
+                workflow_name: "fanout-wf".to_string(),
+                node_execution_id: "ne-parent".to_string(),
+                node_name: "fanout-review".to_string(),
+                kind: NodeKindName::Fanout,
+                attempt: 1,
+                fanout_parent: None,
                 timestamp: 1003.0,
             },
-            WorkflowEvent::ParallelChildStarted {
-                run_id: "00000000-0000-0000-0000-000000000912".to_string(),
-                workflow_name: "parallel-wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                child_node_name: "arch-review".to_string(),
-                session_id: "sess-arch".to_string(),
-                execution_count: 1,
+            WorkflowEvent::NodeStarted {
+                run_id: run_id.to_string(),
+                workflow_name: "fanout-wf".to_string(),
+                node_execution_id: "ne-arch".to_string(),
+                node_name: "arch-review".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: Some(child_ref(0)),
                 timestamp: 1004.0,
             },
-            WorkflowEvent::ParallelChildStarted {
-                run_id: "00000000-0000-0000-0000-000000000912".to_string(),
-                workflow_name: "parallel-wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                child_node_name: "security-review".to_string(),
-                session_id: "sess-sec".to_string(),
-                execution_count: 1,
-                timestamp: 1004.0,
-            },
-            WorkflowEvent::ParallelChildCompleted {
-                run_id: "00000000-0000-0000-0000-000000000912".to_string(),
-                workflow_name: "parallel-wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                child_node_name: "arch-review".to_string(),
-                result: Some("LGTM".to_string()),
-                session_id: "sess-arch".to_string(),
-                token_usage: Some(TokenUsage {
-                    input_tokens: 200,
-                    output_tokens: 100,
-                }),
-                structured_output: Some(serde_json::json!({"verdict": "LGTM"})),
-                run_index: 1,
-                state: "completed".to_string(),
-                failure_kind: None,
-                failure_disposition: None,
+            WorkflowEvent::ArtifactProduced {
+                run_id: run_id.to_string(),
+                workflow_name: "fanout-wf".to_string(),
+                node_execution_id: "ne-arch".to_string(),
+                node_name: "arch-review".to_string(),
+                contract: None,
+                value: arch_artifact.clone(),
+                request_id: None,
+                submitted_at: None,
                 timestamp: 1005.0,
             },
-            WorkflowEvent::ParallelChildCompleted {
-                run_id: "00000000-0000-0000-0000-000000000912".to_string(),
-                workflow_name: "parallel-wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                child_node_name: "security-review".to_string(),
+            WorkflowEvent::NodeCompleted {
+                run_id: run_id.to_string(),
+                workflow_name: "fanout-wf".to_string(),
+                node_execution_id: "ne-arch".to_string(),
+                node_name: "arch-review".to_string(),
                 result: Some("LGTM".to_string()),
-                session_id: "sess-sec".to_string(),
-                token_usage: Some(TokenUsage {
-                    input_tokens: 150,
-                    output_tokens: 75,
-                }),
-                structured_output: Some(serde_json::json!({"verdict": "LGTM"})),
-                run_index: 1,
-                state: "completed".to_string(),
-                failure_kind: None,
-                failure_disposition: None,
+                session_id: Some("sess-arch".to_string()),
+                token_usage: None,
+                structured_output: Some(arch_artifact.clone()),
+                run_index: Some(1),
+                timestamp: 1005.0,
+            },
+            WorkflowEvent::NodeStarted {
+                run_id: run_id.to_string(),
+                workflow_name: "fanout-wf".to_string(),
+                node_execution_id: "ne-security".to_string(),
+                node_name: "security-review".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: Some(child_ref(1)),
+                timestamp: 1004.0,
+            },
+            WorkflowEvent::ArtifactProduced {
+                run_id: run_id.to_string(),
+                workflow_name: "fanout-wf".to_string(),
+                node_execution_id: "ne-security".to_string(),
+                node_name: "security-review".to_string(),
+                contract: None,
+                value: security_artifact.clone(),
+                request_id: None,
+                submitted_at: None,
                 timestamp: 1006.0,
             },
-            WorkflowEvent::ParallelCompleted {
-                run_id: "00000000-0000-0000-0000-000000000912".to_string(),
-                workflow_name: "parallel-wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                aggregate_result: "then".to_string(),
+            WorkflowEvent::NodeCompleted {
+                run_id: run_id.to_string(),
+                workflow_name: "fanout-wf".to_string(),
+                node_execution_id: "ne-security".to_string(),
+                node_name: "security-review".to_string(),
+                result: Some("LGTM".to_string()),
+                session_id: Some("sess-security".to_string()),
+                token_usage: None,
+                structured_output: Some(security_artifact.clone()),
+                run_index: Some(1),
+                timestamp: 1006.0,
+            },
+            WorkflowEvent::ArtifactProduced {
+                run_id: run_id.to_string(),
+                workflow_name: "fanout-wf".to_string(),
+                node_execution_id: "ne-parent".to_string(),
+                node_name: "fanout-review".to_string(),
+                contract: None,
+                value: parent_artifact.clone(),
+                request_id: None,
+                submitted_at: None,
                 timestamp: 1007.0,
             },
-            // engine.rsのwrite_last_step_completed_logが親ステップのNodeCompletedを出力
             WorkflowEvent::NodeCompleted {
-                run_id: "00000000-0000-0000-0000-000000000912".to_string(),
-                workflow_name: "parallel-wf".to_string(),
-                node_name: "parallel-review".to_string(),
+                run_id: run_id.to_string(),
+                workflow_name: "fanout-wf".to_string(),
+                node_execution_id: "ne-parent".to_string(),
+                node_name: "fanout-review".to_string(),
                 result: Some("then".to_string()),
                 session_id: None,
-                token_usage: Some(TokenUsage {
-                    input_tokens: 350,
-                    output_tokens: 175,
-                }),
-                structured_output: None,
+                token_usage: None,
+                structured_output: Some(parent_artifact.clone()),
                 run_index: Some(1),
                 timestamp: 1007.0,
             },
             WorkflowEvent::RunCompleted {
-                run_id: "00000000-0000-0000-0000-000000000912".to_string(),
-                workflow_name: "parallel-wf".to_string(),
-                total_token_usage: TokenUsage {
-                    input_tokens: 450,
-                    output_tokens: 225,
-                },
+                run_id: run_id.to_string(),
+                workflow_name: "fanout-wf".to_string(),
+                total_token_usage: TokenUsage::default(),
                 timestamp: 1008.0,
             },
         ];
+        log.append_batch(&events).unwrap();
 
-        for event in &events {
-            log.append(event).unwrap();
-        }
+        let state = reconstruct_state_via_log(&log, run_id).unwrap().unwrap();
 
-        let state = reconstruct_state_via_log(&log, "00000000-0000-0000-0000-000000000912")
-            .unwrap()
-            .unwrap();
-
-        assert_eq!(
-            state.step_history.len(),
-            2,
-            "step_history should have exactly 2 entries, not duplicated"
-        );
+        assert_eq!(state.step_history.len(), 2);
         assert_eq!(state.step_history[0].step_name, "plan");
-        assert_eq!(state.step_history[1].step_name, "parallel-review");
-        assert_eq!(state.step_history[1].result, Some("then".to_string()));
-        assert_eq!(state.step_history[1].structured_output, None);
-
-        assert_eq!(state.current_step_name, "parallel-review");
-        assert_eq!(state.current_step_index, 1);
-
-        assert!(state.step_outputs.contains_key("arch-review"));
-        assert!(state.step_outputs.contains_key("security-review"));
-
-        assert!(state.active_parallel_steps.is_empty());
-
+        assert_eq!(state.step_history[1].step_name, "fanout-review");
+        assert_eq!(state.node_executions.len(), 4);
+        assert_eq!(state.node_executions[2].artifact, Some(arch_artifact));
+        assert_eq!(state.node_executions[3].artifact, Some(security_artifact));
+        assert!(!state.step_outputs.contains_key("arch-review"));
+        assert!(!state.step_outputs.contains_key("security-review"));
+        assert_eq!(
+            state.step_outputs["fanout-review"].structured_output,
+            Some(parent_artifact)
+        );
         assert_eq!(state.state, WorkflowExecutionState::Completed);
     }
 
@@ -1295,14 +1346,18 @@ mod tests {
         log.append(&WorkflowEvent::NodeStarted {
             run_id: "00000000-0000-0000-0000-000000000914".to_string(),
             workflow_name: "test-wf".to_string(),
+            node_execution_id: "node-execution-review-1".to_string(),
             node_name: "review".to_string(),
-            execution_count: 1,
+            kind: crate::adaptor::gateway::workflow::schema::NodeKindName::Session,
+            attempt: 1,
+            fanout_parent: None,
             timestamp: 1001.0,
         })
         .unwrap();
         log.append(&WorkflowEvent::ApprovalRequested {
             run_id: "00000000-0000-0000-0000-000000000914".to_string(),
             workflow_name: "test-wf".to_string(),
+            node_execution_id: "node-execution-review-1".to_string(),
             node_name: "review".to_string(),
             timestamp: 1002.0,
         })
@@ -1352,14 +1407,18 @@ mod tests {
         log.append(&WorkflowEvent::NodeStarted {
             run_id: "00000000-0000-0000-0000-000000000915".to_string(),
             workflow_name: "approval-then-next".to_string(),
+            node_execution_id: "node-execution-review-1".to_string(),
             node_name: "review".to_string(),
-            execution_count: 1,
+            kind: crate::adaptor::gateway::workflow::schema::NodeKindName::Session,
+            attempt: 1,
+            fanout_parent: None,
             timestamp: 2001.0,
         })
         .unwrap();
         log.append(&WorkflowEvent::ApprovalRequested {
             run_id: "00000000-0000-0000-0000-000000000915".to_string(),
             workflow_name: "approval-then-next".to_string(),
+            node_execution_id: "node-execution-review-1".to_string(),
             node_name: "review".to_string(),
             timestamp: 2002.0,
         })
@@ -1367,6 +1426,7 @@ mod tests {
         log.append(&WorkflowEvent::ApprovalResolved {
             run_id: "00000000-0000-0000-0000-000000000915".to_string(),
             workflow_name: "approval-then-next".to_string(),
+            node_execution_id: "node-execution-review-1".to_string(),
             node_name: "review".to_string(),
             comment: None,
             timestamp: 2003.0,
@@ -1375,6 +1435,7 @@ mod tests {
         log.append(&WorkflowEvent::NodeCompleted {
             run_id: "00000000-0000-0000-0000-000000000915".to_string(),
             workflow_name: "approval-then-next".to_string(),
+            node_execution_id: "node-execution-review-1".to_string(),
             node_name: "review".to_string(),
             result: Some("approve".to_string()),
             session_id: Some("sess-review".to_string()),
@@ -1387,8 +1448,11 @@ mod tests {
         log.append(&WorkflowEvent::NodeStarted {
             run_id: "00000000-0000-0000-0000-000000000915".to_string(),
             workflow_name: "approval-then-next".to_string(),
+            node_execution_id: "node-execution-ship-1".to_string(),
             node_name: "ship".to_string(),
-            execution_count: 1,
+            kind: crate::adaptor::gateway::workflow::schema::NodeKindName::Session,
+            attempt: 1,
+            fanout_parent: None,
             timestamp: 2005.0,
         })
         .unwrap();

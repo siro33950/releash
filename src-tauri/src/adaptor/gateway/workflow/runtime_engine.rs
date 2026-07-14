@@ -65,6 +65,7 @@ pub(crate) trait WorkflowRuntimeEngine: PendingCommandRuntime<tauri::Wry> {
         run_id: &str,
         comment: Option<String>,
         node_name: &str,
+        node_execution_id: Option<&str>,
     ) -> Result<(), WorkflowEngineError>;
 
     async fn is_running(&self, session_id: &str) -> bool;
@@ -208,6 +209,7 @@ impl WorkflowRuntimeEngine for WorkflowRuntimeService {
         run_id: &str,
         comment: Option<String>,
         node_name: &str,
+        node_execution_id: Option<&str>,
     ) -> Result<(), WorkflowEngineError> {
         WorkflowRuntimeService::resolve_workflow_approval(
             self,
@@ -217,6 +219,7 @@ impl WorkflowRuntimeEngine for WorkflowRuntimeService {
             run_id,
             comment,
             node_name,
+            node_execution_id,
         )
         .await
     }

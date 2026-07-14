@@ -95,9 +95,11 @@ pub fn run() -> i32 {
                 WorkflowSubcommand::Approve {
                     run_id,
                     node,
+                    node_execution,
                     comment,
-                } => resolve()
-                    .and_then(|data_dir| workflow::cmd_approve(&data_dir, &run_id, node, comment)),
+                } => resolve().and_then(|data_dir| {
+                    workflow::cmd_approve(&data_dir, &run_id, node, node_execution, comment)
+                }),
                 WorkflowSubcommand::Abort { run_id, node } => {
                     resolve().and_then(|data_dir| workflow::cmd_abort(&data_dir, &run_id, node))
                 }
@@ -106,11 +108,18 @@ pub fn run() -> i32 {
                         OutputSubcommand::Submit {
                             run_id,
                             step,
+                            node_execution,
                             contract,
                             json,
                             file,
                         } => output::cmd_output_submit(
-                            &data_dir, &run_id, &step, &contract, json, file,
+                            &data_dir,
+                            &run_id,
+                            &step,
+                            node_execution,
+                            &contract,
+                            json,
+                            file,
                         ),
                         OutputSubcommand::Validate { run_id, step, file } => {
                             output::cmd_output_validate(&data_dir, &run_id, &step, &file)

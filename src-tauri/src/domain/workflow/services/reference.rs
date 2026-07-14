@@ -139,23 +139,15 @@ pub(crate) fn validate_workflow_reference_diagnostics(
             }
         }
         let mut template_errors = Vec::new();
-        validate_node_templates(node, &context, false, &mut template_errors);
+        validate_node_templates(
+            node,
+            &context,
+            context.fanout_child_names.contains(node.name.as_str()),
+            &mut template_errors,
+        );
         errors.extend(template_errors.into_iter().map(|error| {
             ReferenceResolveDiagnostic::new(error, ReferenceResolveContext::Template)
         }));
-
-        if let Some(fanout) = node.fanout() {
-            for child in &fanout.parallel_children {
-                if is_reserved_artifact_name(&child.name) {
-                    errors.push(ReferenceResolveDiagnostic::new(
-                        ReferenceResolveError::ReservedNodeName {
-                            name: child.name.clone(),
-                        },
-                        ReferenceResolveContext::Inputs,
-                    ));
-                }
-            }
-        }
     }
 
     errors
@@ -174,7 +166,7 @@ pub fn validate_template_references(
 
 struct ReferenceValidationContext<'a> {
     top_level_nodes: HashMap<&'a str, &'a NodeDefinition>,
-    child_names: HashSet<&'a str>,
+    fanout_child_names: HashSet<&'a str>,
     schemas: &'a BTreeMap<String, SchemaDef>,
 }
 
@@ -186,16 +178,11 @@ impl<'a> ReferenceValidationContext<'a> {
                 .iter()
                 .map(|node| (node.name.as_str(), node))
                 .collect(),
-            child_names: workflow
+            fanout_child_names: workflow
                 .nodes
                 .iter()
                 .filter_map(NodeDefinition::fanout)
-                .flat_map(|fanout| {
-                    fanout
-                        .parallel_children
-                        .iter()
-                        .map(|child| child.name.as_str())
-                })
+                .flat_map(|fanout| fanout.child.iter().map(String::as_str))
                 .collect(),
             schemas: &workflow.schemas,
         }
@@ -238,7 +225,7 @@ fn validate_reference(
         Ok(ArtifactReference::Item { .. }) if allow_item => {}
         Ok(ArtifactReference::Item { .. }) => errors.push(ReferenceResolveError::ItemOutOfScope),
         Ok(ArtifactReference::Node { node, field }) => {
-            if context.child_names.contains(node.as_str()) {
+            if context.fanout_child_names.contains(node.as_str()) {
                 errors.push(ReferenceResolveError::UnavailableArtifact { name: node });
                 return;
             }
@@ -263,6 +250,54 @@ fn validate_reference(
             value: raw.to_string(),
         }),
     }
+}
+
+pub(crate) fn artifact_field_schema<'a>(
+    workflow: &'a WorkflowDefinition,
+    node_name: &str,
+    field: &str,
+) -> Result<Option<&'a SchemaDef>, ReferenceResolveError> {
+    let context = ReferenceValidationContext::new(workflow);
+    if context.fanout_child_names.contains(node_name) {
+        return Err(ReferenceResolveError::UnavailableArtifact {
+            name: node_name.to_string(),
+        });
+    }
+    let Some(node) = context.top_level_nodes.get(node_name).copied() else {
+        return Err(ReferenceResolveError::UnknownNode {
+            name: node_name.to_string(),
+        });
+    };
+    if !node_has_artifact(node) {
+        return Err(ReferenceResolveError::UnavailableArtifact {
+            name: node_name.to_string(),
+        });
+    }
+    if node.kind_name() == NodeKindName::Command
+        && crate::domain::workflow::services::contract_schema::COMMAND_RESERVED_FIELDS
+            .contains(&field)
+    {
+        return Ok(None);
+    }
+    let Some(contract) = node.artifact.as_deref() else {
+        return Err(ReferenceResolveError::UnknownField {
+            reference: node_name.to_string(),
+            field: field.to_string(),
+        });
+    };
+    let Some(SchemaDef::Object { properties, .. }) = context.schemas.get(contract) else {
+        return Err(ReferenceResolveError::UnknownField {
+            reference: node_name.to_string(),
+            field: field.to_string(),
+        });
+    };
+    properties
+        .get(field)
+        .map(Some)
+        .ok_or_else(|| ReferenceResolveError::UnknownField {
+            reference: node_name.to_string(),
+            field: field.to_string(),
+        })
 }
 
 pub(crate) fn resolve_runtime_reference(
@@ -333,6 +368,37 @@ fn node_field_available(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::workflow::{CommandSpec, FanoutSpec, NodeKind};
+
+    fn command_node(name: &str, command: &str) -> NodeDefinition {
+        NodeDefinition {
+            name: name.to_string(),
+            kind: NodeKind::Command(CommandSpec {
+                command: command.to_string(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn fanout_node(name: &str, child: &str) -> NodeDefinition {
+        NodeDefinition {
+            name: name.to_string(),
+            kind: NodeKind::Fanout(FanoutSpec {
+                child: vec![child.to_string()],
+                items: None,
+                aggregate: None,
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn workflow(nodes: Vec<NodeDefinition>) -> WorkflowDefinition {
+        WorkflowDefinition {
+            name: "wf".to_string(),
+            nodes,
+            ..Default::default()
+        }
+    }
 
     #[test]
     fn test_reference_parse_request_node_and_item() {
@@ -350,5 +416,35 @@ mod tests {
                 field: Some("path".to_string())
             })
         );
+    }
+
+    #[test]
+    fn fanout_child_artifact_is_not_globally_referenceable() {
+        let workflow = workflow(vec![
+            fanout_node("fanout", "worker"),
+            command_node("worker", "echo work"),
+            command_node("consume", "echo {{ worker.stdout }}"),
+        ]);
+
+        let diagnostics = validate_workflow_reference_diagnostics(&workflow);
+
+        assert!(diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.error,
+            ReferenceResolveError::UnavailableArtifact { name } if name == "worker"
+        )));
+    }
+
+    #[test]
+    fn item_template_reference_is_available_on_top_level_fanout_child() {
+        let workflow = workflow(vec![
+            fanout_node("fanout", "worker"),
+            command_node("worker", "echo {{ item.path }}"),
+        ]);
+
+        let diagnostics = validate_workflow_reference_diagnostics(&workflow);
+
+        assert!(!diagnostics
+            .iter()
+            .any(|diagnostic| matches!(&diagnostic.error, ReferenceResolveError::ItemOutOfScope)));
     }
 }

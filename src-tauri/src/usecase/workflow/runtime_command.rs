@@ -340,6 +340,7 @@ mod tests {
             .resolve_approval(ApprovalCommand {
                 run_id: "00000000-0000-0000-0000-000000000001".to_string(),
                 node_name: "review".to_string(),
+                node_execution_id: Some("node-execution-1".to_string()),
                 comment: None,
             })
             .await
@@ -348,6 +349,7 @@ mod tests {
             .submit_output(SubmitOutputCommand {
                 run_id: "00000000-0000-0000-0000-000000000001".to_string(),
                 step_name: "review".to_string(),
+                node_execution_id: Some("node-execution-1".to_string()),
                 contract: "review-fix-tasks".to_string(),
                 structured_output: serde_json::json!({}),
             })
@@ -548,6 +550,7 @@ mod tests {
             .resolve_approval(ApprovalCommand {
                 run_id: "00000000-0000-0000-0000-000000000001".to_string(),
                 node_name: " ".to_string(),
+                node_execution_id: None,
                 comment: None,
             })
             .await
@@ -558,6 +561,7 @@ mod tests {
             .submit_output(SubmitOutputCommand {
                 run_id: "00000000-0000-0000-0000-000000000001".to_string(),
                 step_name: "review".to_string(),
+                node_execution_id: None,
                 contract: " ".to_string(),
                 structured_output: serde_json::json!({}),
             })

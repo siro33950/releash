@@ -1,0 +1,8 @@
+name: fanout-child-entry
+description: fanout child cannot be the workflow entry
+nodes:
+  - name: worker
+    command: echo work
+  - name: fanout
+    fanout:
+      child: worker

@@ -1,0 +1,6 @@
+name: unknown-fanout-child
+description: fanout child must reference a top-level node
+nodes:
+  - name: fanout
+    fanout:
+      child: missing

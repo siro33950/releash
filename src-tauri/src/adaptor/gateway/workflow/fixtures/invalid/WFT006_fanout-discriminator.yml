@@ -13,16 +13,18 @@ nodes:
   - name: fanout
     artifact: verdict
     fanout:
-      parallel_children:
-        - name: child
-          permission: edit
-          facets:
-            instruction: child
+      child: child
     rules:
       - when:
           on: passed
           then: done
         next: done
+  - name: child
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        instruction: child
   - name: done
     session:
       permission: edit

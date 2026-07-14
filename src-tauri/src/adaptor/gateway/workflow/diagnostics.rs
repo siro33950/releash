@@ -483,37 +483,13 @@ fn parse_shape_diagnostics(
             check_allowed_fields(
                 fanout,
                 &format!("{node_path}.fanout"),
-                &["parallel_children", "aggregate"],
-                &[],
+                &["child", "items", "aggregate"],
+                &["parallel_children"],
                 span_map,
                 workflow_name,
                 Some(step_name),
                 &mut diagnostics,
             );
-            if let Some(children) = fanout
-                .get("parallel_children")
-                .and_then(serde_json::Value::as_array)
-            {
-                for (child_index, child) in children.iter().enumerate() {
-                    let child_path = format!("{node_path}.fanout.parallel_children[{child_index}]");
-                    if let Some(child_obj) = child.as_object() {
-                        let child_name = child_obj
-                            .get("name")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or("<unknown>");
-                        check_allowed_fields(
-                            child_obj,
-                            &child_path,
-                            &["name", "model", "permission", "facets", "artifact", "input"],
-                            &["type", "mode", "prompt", "inline_prompt", "output_contract"],
-                            span_map,
-                            workflow_name,
-                            Some(child_name),
-                            &mut diagnostics,
-                        );
-                    }
-                }
-            }
         }
         if let Some(rules) = node_obj.get("rules").and_then(serde_json::Value::as_array) {
             for (rule_index, rule) in rules.iter().enumerate() {
@@ -687,14 +663,18 @@ fn validation_error_code_stage(
         | ValidationError::InvalidChars { .. }
         | ValidationError::EmptySteps
         | ValidationError::DuplicateStep { .. }
-        | ValidationError::ParallelChildNameConflict { .. }
+        | ValidationError::EmptyFanoutChildren { .. }
         | ValidationError::EmptyCommand { .. }
         | ValidationError::DisallowedFieldForKind { .. }
         | ValidationError::TooManyNodes { .. }
-        | ValidationError::TooManyParallelChildren { .. } => "WFS006",
+        | ValidationError::TooManyFanoutChildren { .. } => "WFS006",
         ValidationError::UnknownRuleTarget { .. }
+        | ValidationError::UnknownFanoutChild { .. }
         | ValidationError::AggregateUnknownTarget { .. }
         | ValidationError::UnknownCollectFrom { .. } => "WFR001",
+        ValidationError::InvalidFanoutItemsReference { .. } => "WFR003",
+        ValidationError::FanoutInputMismatch { .. } => "WFT003",
+        ValidationError::FanoutChildLeafViolation { .. } => "WFC006",
         ValidationError::UnknownSchemaRef { .. } => "WFR002",
         ValidationError::InvalidSchemaRef { .. } => "WFR002",
         ValidationError::InvalidSchema { kind, .. } => match kind {
@@ -730,8 +710,7 @@ fn validation_error_code_stage(
         },
         ValidationError::UnreachableNode { .. } => "WFC001",
         ValidationError::AggregateInvalidConfig { .. } => "WFC002",
-        ValidationError::MissingFacet { .. }
-        | ValidationError::ParallelChildMissingFacet { .. } => "WFR900",
+        ValidationError::MissingFacet { .. } => "WFR900",
         ValidationError::InvalidPermissionMode { .. }
         | ValidationError::MissingPermissionMode { .. }
         | ValidationError::UnknownModel { .. }
@@ -781,7 +760,10 @@ fn span_for_validation_error(
             let (step_name, field) = validation_error_context(error);
             match (step_name.as_deref(), field.as_deref()) {
                 (Some(step_name), Some(field)) => step_field_path(wf, step_name, field)
-                    .and_then(|path| span_map.field_span(&path)),
+                    .and_then(|path| span_map.field_span(&path))
+                    .or_else(|| {
+                        step_base_path(wf, step_name).and_then(|path| span_map.nearest_span(&path))
+                    }),
                 (Some(step_name), None) => {
                     step_base_path(wf, step_name).and_then(|path| span_map.nearest_span(&path))
                 }
@@ -860,36 +842,17 @@ fn step_base_path(wf: &Workflow, step_name: &str) -> Option<String> {
         if node.name == step_name {
             return Some(format!("nodes[{index}]"));
         }
-        if let Some(fanout) = node.fanout() {
-            for (child_index, child) in fanout.parallel_children.iter().enumerate() {
-                if child.name == step_name {
-                    return Some(format!(
-                        "nodes[{index}].fanout.parallel_children[{child_index}]"
-                    ));
-                }
-            }
-        }
     }
     None
 }
 
 fn step_field_path(wf: &Workflow, step_name: &str, field: &str) -> Option<String> {
     let base = step_base_path(wf, step_name)?;
-    let suffix = if base.contains("parallel_children") {
-        match field {
-            "permission" | "model" | "artifact" | "input" | "facets" => field.to_string(),
-            field => field.replace("parallel_children.", ""),
-        }
-    } else {
-        match field {
-            "permission" | "model" => format!("session.{field}"),
-            "facets" => "session.facets".to_string(),
-            "rules.next" => "rules".to_string(),
-            "parallel_children" | "parallel_children.facets" => {
-                "fanout.parallel_children".to_string()
-            }
-            field => field.to_string(),
-        }
+    let suffix = match field {
+        "permission" | "model" => format!("session.{field}"),
+        "facets" => "session.facets".to_string(),
+        "rules.next" => "rules".to_string(),
+        field => field.to_string(),
     };
     Some(format!("{base}.{suffix}"))
 }
@@ -1110,23 +1073,25 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
         }
         ValidationError::EmptySteps => (None, Some("steps".to_string())),
         ValidationError::DuplicateStep { name } => (Some(name.clone()), Some("name".to_string())),
-        ValidationError::ParallelChildNameConflict { child } => (
-            Some(child.clone()),
-            Some("parallel_children.name".to_string()),
-        ),
+        ValidationError::EmptyFanoutChildren { step } => {
+            (Some(step.clone()), Some("fanout.child".to_string()))
+        }
+        ValidationError::UnknownFanoutChild { step, .. } => {
+            (Some(step.clone()), Some("fanout.child".to_string()))
+        }
+        ValidationError::InvalidFanoutItemsReference { step, .. }
+        | ValidationError::FanoutInputMismatch { step, .. } => {
+            (Some(step.clone()), Some("fanout.items".to_string()))
+        }
+        ValidationError::FanoutChildLeafViolation { step, .. } => {
+            (Some(step.clone()), Some("fanout.child".to_string()))
+        }
         ValidationError::AggregateInvalidConfig { step, .. } => {
             (Some(step.clone()), Some("aggregate".to_string()))
         }
         ValidationError::AggregateUnknownTarget { step, .. } => {
             (Some(step.clone()), Some("aggregate".to_string()))
         }
-        ValidationError::ParallelChildMissingFacet { parent, .. } => (
-            Some(parent.clone()),
-            // 旧ラベル "parallel.facets" と同じく、policy/knowledge/instruction/artifact_contract
-            // のいずれかの欠落を表す論理グループ名として "facets" を用いる
-            // （新 schema の YAML キーは個別だが、`MissingFacet` 側も "facets" 表現）。
-            Some("parallel_children.facets".to_string()),
-        ),
         ValidationError::UnknownRuleTarget { step, .. } => {
             (Some(step.clone()), Some("rules.next".to_string()))
         }
@@ -1162,8 +1127,8 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
             (Some(step.clone()), Some(field.to_string()))
         }
         ValidationError::TooManyNodes { .. } => (None, Some("nodes".to_string())),
-        ValidationError::TooManyParallelChildren { step, .. } => {
-            (Some(step.clone()), Some("parallel_children".to_string()))
+        ValidationError::TooManyFanoutChildren { step, .. } => {
+            (Some(step.clone()), Some("fanout.child".to_string()))
         }
         ValidationError::UnknownSchemaRef { step, slot, .. }
         | ValidationError::InvalidSchemaRef { step, slot, .. } => {
@@ -1265,28 +1230,6 @@ fn diagnose_workflow(
                         .and_then(|session| session.facets.instruction.as_deref()),
                 },
             );
-
-        // parallel block の子step 診断
-        if let Some(fanout) = step.fanout() {
-            let children = &fanout.parallel_children;
-            for child in children {
-                FacetRefCheckContext::new(
-                    name,
-                    all_facet_keys,
-                    items,
-                    workflow_summaries,
-                    facet_usage,
-                )
-                .check_step(
-                    &child.name,
-                    &FacetRefs {
-                        policy: child.facets.policy.as_deref(),
-                        knowledge: child.facets.knowledge.as_deref(),
-                        instruction: child.facets.instruction.as_deref(),
-                    },
-                );
-            }
-        }
     }
 }
 
@@ -1453,12 +1396,8 @@ fn check_facet_template_references(
 
 fn facet_usage_allows_item(workflow: &Workflow, step_name: &str) -> bool {
     workflow.nodes.iter().any(|node| {
-        node.fanout().is_some_and(|fanout| {
-            fanout
-                .parallel_children
-                .iter()
-                .any(|child| child.name == step_name)
-        })
+        node.fanout()
+            .is_some_and(|fanout| fanout.child.iter().any(|child| child == step_name))
     })
 }
 
@@ -1542,7 +1481,7 @@ fn increment_summary(
 mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::schema::{
-        CollectConfig, CommandSpec, FacetRefs, FanoutSpec, InterimChild, NodeKind, ReduceStrategy,
+        CollectConfig, CommandSpec, FacetRefs, FanoutSpec, ItemsSource, NodeKind, ReduceStrategy,
         Rule, SchemaDef, SessionSpec, Workflow,
     };
     use std::fs;
@@ -1563,23 +1502,27 @@ mod tests {
         }
     }
 
-    fn make_child(name: &str, instruction: Option<&str>) -> InterimChild {
-        InterimChild {
+    fn make_child(name: &str, instruction: Option<&str>) -> NodeDefinition {
+        NodeDefinition {
             name: name.to_string(),
-            permission: Some("edit".to_string()),
-            facets: FacetRefs {
-                instruction: instruction.map(str::to_string),
+            kind: NodeKind::Session(SessionSpec {
+                permission: Some("edit".to_string()),
+                facets: FacetRefs {
+                    instruction: instruction.map(str::to_string),
+                    ..Default::default()
+                },
                 ..Default::default()
-            },
-            ..Default::default()
+            }),
+            ..NodeDefinition::default()
         }
     }
 
-    fn make_fanout(name: &str, children: Vec<InterimChild>) -> NodeDefinition {
+    fn make_fanout(name: &str, children: Vec<&str>) -> NodeDefinition {
         NodeDefinition {
             name: name.to_string(),
             kind: NodeKind::Fanout(FanoutSpec {
-                parallel_children: children,
+                child: children.into_iter().map(str::to_string).collect(),
+                items: None,
                 aggregate: None,
             }),
             ..NodeDefinition::default()
@@ -2251,8 +2194,8 @@ nodes:
     }
 
     #[test]
-    fn diagnose_missing_input_schema_ref_in_parallel_child() {
-        // Scenario: parallel child の input でも存在しない schemas Contract
+    fn diagnose_missing_input_schema_ref_in_fanout_child() {
+        // Scenario: fanout child の input でも存在しない schemas Contract
         // 参照を検出する
         let tmp = TempDir::new().unwrap();
         let wf_dir = tmp.path();
@@ -2263,18 +2206,13 @@ nodes:
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![make_fanout(
-                "parent",
-                vec![InterimChild {
-                    name: "child1".to_string(),
-                    facets: FacetRefs {
-                        instruction: Some("impl".to_string()),
-                        ..Default::default()
-                    },
+            nodes: vec![
+                make_fanout("parent", vec!["child1"]),
+                NodeDefinition {
                     input: Some("nonexistent-contract".to_string()),
-                    ..Default::default()
-                }],
-            )],
+                    ..make_child("child1", Some("impl"))
+                },
+            ],
         };
         save_workflow_yaml(wf_dir, &wf);
 
@@ -2804,27 +2742,41 @@ nodes:
     }
 
     #[test]
-    fn diagnose_parallel_child_item_reference_passes() {
+    fn diagnose_fanout_child_item_reference_passes() {
         let tmp = TempDir::new().unwrap();
         let wf_dir = tmp.path();
         setup_facet(wf_dir, "instructions", "task", "{{ item.path }}");
 
+        let mut fanout = make_fanout("par", vec!["child1"]);
+        let NodeKind::Fanout(fanout_spec) = &mut fanout.kind else {
+            unreachable!();
+        };
+        fanout_spec.items = Some(ItemsSource::Literal(vec![serde_json::json!({
+            "path": "src/lib.rs"
+        })]));
         let wf = Workflow {
             name: "par-item".to_string(),
             description: "test".to_string(),
             builtin: false,
-            schemas: Default::default(),
-            nodes: vec![make_fanout(
-                "par",
-                vec![InterimChild {
-                    name: "child1".to_string(),
-                    facets: FacetRefs {
-                        instruction: Some("task".to_string()),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                }],
-            )],
+            schemas: [(
+                "item-contract".to_string(),
+                SchemaDef::Object {
+                    properties: [("path".to_string(), SchemaDef::String { r#enum: None })]
+                        .into_iter()
+                        .collect(),
+                    required: ["path".to_string()].into_iter().collect(),
+                    additional_properties: false,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            nodes: vec![
+                fanout,
+                NodeDefinition {
+                    input: Some("item-contract".to_string()),
+                    ..make_child("child1", Some("task"))
+                },
+            ],
         };
         save_workflow_yaml(wf_dir, &wf);
 
@@ -2833,7 +2785,7 @@ nodes:
             !report.items.iter().any(|i| i.severity == Severity::Error
                 && i.step_name.as_deref() == Some("child1")
                 && i.field.as_deref() == Some("inputs")),
-            "item reference inside parallel child should not be an error, got: {:?}",
+            "item reference inside fanout child should not be an error, got: {:?}",
             report.items
         );
     }
@@ -2844,20 +2796,18 @@ nodes:
         let wf_dir = tmp.path();
         setup_facet(wf_dir, "instructions", "task", "content");
 
-        let mut fanout = make_fanout(
-            "par",
-            vec![
-                make_child("child1", Some("task")),
-                make_child("child2", Some("task")),
-            ],
-        );
+        let mut fanout = make_fanout("par", vec!["child1", "child2"]);
         fanout.inputs = vec!["request".to_string()];
         let wf = Workflow {
             name: "fanout-inputs".to_string(),
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![fanout],
+            nodes: vec![
+                fanout,
+                make_child("child1", Some("task")),
+                make_child("child2", Some("task")),
+            ],
         };
         save_workflow_yaml(wf_dir, &wf);
 

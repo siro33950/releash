@@ -155,16 +155,19 @@ export async function submitWorkspaceWorkflowStepAction({
 	runId,
 	stepId,
 	stepName,
+	nodeExecutionId,
 }: {
 	worktreePath: string;
 	runId: string;
 	stepId: string;
 	stepName: string;
+	nodeExecutionId?: string;
 }): Promise<WorkspaceWorkflowStepDetail | null> {
 	await invoke("approve_workflow_step", {
 		args: {
 			runId,
 			stepName,
+			nodeExecutionId: nodeExecutionId ?? null,
 			comment: null,
 		},
 	});

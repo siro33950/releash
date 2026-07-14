@@ -99,11 +99,20 @@ function applyLiveWorkflowStatuses(
 		steps: node.steps.map((step) => ({
 			...step,
 			status:
-				stepStatuses.steps.get(
-					workflowStepStatusKey(node.runId, step.title, step.runIndex),
-				) ?? step.status,
+				step.nodeExecutionId == null
+					? (stepStatuses.steps.get(
+							workflowStepStatusKey(node.runId, step.title, step.runIndex),
+						) ?? step.status)
+					: step.status,
 		})),
 	};
+}
+
+function fanoutCoordinateLabel(step: WorkspaceWorkflowStepNode): string | null {
+	const parent = step.fanoutParent;
+	if (!parent) return null;
+	const item = parent.itemIndex == null ? "–" : String(parent.itemIndex);
+	return `item ${item} · child ${parent.childIndex}`;
 }
 
 function repoNameFromPath(path: string): string {
@@ -347,6 +356,9 @@ function WorktreeWorkflowStepRow({
 	selected?: boolean;
 	onSelect: () => void;
 }) {
+	const coordinateLabel = fanoutCoordinateLabel(step);
+	const executionId = step.nodeExecutionId ?? step.id;
+	const executionStatus = step.nodeExecutionStatus ?? step.status;
 	return (
 		<button
 			type="button"
@@ -358,6 +370,8 @@ function WorktreeWorkflowStepRow({
 			style={{ paddingLeft: indentPx }}
 			onClick={onSelect}
 			aria-current={selected ? "page" : undefined}
+			aria-label={`${step.nodeName}, ${step.stepType}, attempt ${step.attempt}, ${executionStatus}, ${executionId}`}
+			data-node-execution-id={step.nodeExecutionId}
 		>
 			<WorkflowStepStatusIcon
 				status={step.status}
@@ -366,6 +380,22 @@ function WorktreeWorkflowStepRow({
 				circleClassName="size-2"
 			/>
 			<span className="min-w-0 flex-1 truncate">{step.title}</span>
+			{step.nodeExecutionId && (
+				<span
+					className="shrink-0 text-[10px] text-muted-foreground"
+					title={`NodeExecution ${step.nodeExecutionId}, attempt ${step.attempt}`}
+				>
+					#{step.attempt}
+				</span>
+			)}
+			{coordinateLabel && (
+				<span
+					className="shrink-0 rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground"
+					title={`fanout parent ${step.fanoutParent?.parentNode} attempt ${step.fanoutParent?.parentAttempt}`}
+				>
+					{coordinateLabel}
+				</span>
+			)}
 		</button>
 	);
 }
@@ -473,7 +503,7 @@ function WorktreeTreeItem({
 				worktreePath: branch.worktree_path,
 				runId: workflow.runId,
 				stepId: step.id,
-				stepName: step.title,
+				stepName: step.nodeName,
 			});
 		},
 		[branch.worktree_path, selectCenter],

@@ -73,6 +73,11 @@ pub enum RoutingValidationError {
     UnreachableNode {
         step: String,
     },
+    FanoutChildLeafViolation {
+        fanout: String,
+        child: String,
+        reason: String,
+    },
 }
 
 pub fn validate_rules(workflow: &WorkflowDefinition) -> Vec<RoutingValidationError> {
@@ -86,6 +91,7 @@ pub fn validate_rules(workflow: &WorkflowDefinition) -> Vec<RoutingValidationErr
     for node in &workflow.nodes {
         errors.extend(validate_node_rules(workflow, node, &node_names));
     }
+    errors.extend(validate_fanout_child_leaf_constraints(workflow));
     errors.extend(validate_cycles_have_loop_guard(workflow));
 
     errors
@@ -143,6 +149,7 @@ fn reachable_nodes_from_entry(workflow: &WorkflowDefinition) -> HashSet<&str> {
         return HashSet::new();
     };
     let mut reachable = HashSet::new();
+    let fanout_child_names = fanout_child_names(workflow);
     let mut queue = VecDeque::from([entry.name.as_str()]);
     while let Some(current) = queue.pop_front() {
         if !reachable.insert(current) {
@@ -151,7 +158,7 @@ fn reachable_nodes_from_entry(workflow: &WorkflowDefinition) -> HashSet<&str> {
         let Some(node) = node_by_name.get(current).copied() else {
             continue;
         };
-        for target in explicit_targets(node) {
+        for target in explicit_targets(node, &fanout_child_names) {
             if node_by_name.contains_key(target) && !reachable.contains(target) {
                 queue.push_back(target);
             }
@@ -160,13 +167,96 @@ fn reachable_nodes_from_entry(workflow: &WorkflowDefinition) -> HashSet<&str> {
     reachable
 }
 
-fn explicit_targets(node: &NodeDefinition) -> Vec<&str> {
+fn explicit_targets<'a>(
+    node: &'a NodeDefinition,
+    fanout_child_names: &HashSet<&str>,
+) -> Vec<&'a str> {
+    if fanout_child_names.contains(node.name.as_str()) {
+        return Vec::new();
+    }
     let mut targets = node.rules.iter().flat_map(rule_targets).collect::<Vec<_>>();
+    if let Some(fanout) = node.fanout() {
+        targets.extend(fanout.child.iter().map(String::as_str));
+    }
     if let Some(aggregate) = node.fanout().and_then(|fanout| fanout.aggregate.as_ref()) {
         targets.push(aggregate.then.as_str());
         targets.push(aggregate.r#else.as_str());
     }
     targets
+}
+
+fn fanout_child_names(workflow: &WorkflowDefinition) -> HashSet<&str> {
+    workflow
+        .nodes
+        .iter()
+        .filter_map(NodeDefinition::fanout)
+        .flat_map(|fanout| fanout.child.iter().map(String::as_str))
+        .collect()
+}
+
+fn validate_fanout_child_leaf_constraints(
+    workflow: &WorkflowDefinition,
+) -> Vec<RoutingValidationError> {
+    let node_by_name: BTreeMap<_, _> = workflow
+        .nodes
+        .iter()
+        .map(|node| (node.name.as_str(), node))
+        .collect();
+    let entry = workflow.nodes.first().map(|node| node.name.as_str());
+    let mut parent_by_child = BTreeMap::new();
+    let mut errors = Vec::new();
+
+    for parent in &workflow.nodes {
+        let Some(fanout) = parent.fanout() else {
+            continue;
+        };
+        for child in &fanout.child {
+            parent_by_child
+                .entry(child.as_str())
+                .or_insert(parent.name.as_str());
+            if entry == Some(child.as_str()) {
+                errors.push(RoutingValidationError::FanoutChildLeafViolation {
+                    fanout: parent.name.clone(),
+                    child: child.clone(),
+                    reason: "fanout child cannot be the workflow entry node".to_string(),
+                });
+            }
+            if node_by_name
+                .get(child.as_str())
+                .is_some_and(|node| node.is_fanout())
+            {
+                errors.push(RoutingValidationError::FanoutChildLeafViolation {
+                    fanout: parent.name.clone(),
+                    child: child.clone(),
+                    reason: "fanout child must be a command or session node".to_string(),
+                });
+            }
+        }
+    }
+
+    for source in &workflow.nodes {
+        for target in source.rules.iter().flat_map(rule_targets).chain(
+            source
+                .fanout()
+                .and_then(|fanout| fanout.aggregate.as_ref())
+                .into_iter()
+                .flat_map(|aggregate| [aggregate.then.as_str(), aggregate.r#else.as_str()]),
+        ) {
+            let Some(parent) = parent_by_child.get(target).copied() else {
+                continue;
+            };
+            errors.push(RoutingValidationError::FanoutChildLeafViolation {
+                fanout: parent.to_string(),
+                child: target.to_string(),
+                reason: format!(
+                    "fanout child cannot be a normal transition target from node '{}'",
+                    source.name
+                ),
+            });
+        }
+    }
+
+    errors
 }
 
 #[cfg(test)]
@@ -441,8 +531,12 @@ fn validate_cycles_have_loop_guard(workflow: &WorkflowDefinition) -> Vec<Routing
         .map(|node| node.name.as_str())
         .collect();
     let mut graph: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    let fanout_child_names = fanout_child_names(workflow);
     for node in &workflow.nodes {
         graph.entry(node.name.as_str()).or_default();
+        if fanout_child_names.contains(node.name.as_str()) {
+            continue;
+        }
         for target in node.rules.iter().flat_map(rule_targets) {
             if node_names.contains(target) {
                 graph.entry(node.name.as_str()).or_default().insert(target);
@@ -542,7 +636,9 @@ fn is_reachable<'a>(
 #[cfg(test)]
 mod routing_tests {
     use super::*;
-    use crate::domain::workflow::value_objects::{CommandSpec, FacetRefs, NodeKind, SessionSpec};
+    use crate::domain::workflow::value_objects::{
+        CommandSpec, FacetRefs, FanoutSpec, NodeKind, SessionSpec,
+    };
     use proptest::prelude::*;
 
     fn bool_schema(field: &str) -> SchemaDef {
@@ -601,6 +697,19 @@ mod routing_tests {
                 command: "true".to_string(),
             }),
             artifact: artifact.map(ToOwned::to_owned),
+            rules,
+            ..Default::default()
+        }
+    }
+
+    fn fanout_node(name: &str, children: &[&str], rules: Vec<Rule>) -> NodeDefinition {
+        NodeDefinition {
+            name: name.to_string(),
+            kind: NodeKind::Fanout(FanoutSpec {
+                child: children.iter().map(|child| (*child).to_string()).collect(),
+                items: None,
+                aggregate: None,
+            }),
             rules,
             ..Default::default()
         }
@@ -672,9 +781,28 @@ mod routing_tests {
             RoutingValidationError::CycleWithoutLoopGuard { .. } => {
                 "cycle reachable from this node has no loop_guard on cycle nodes".to_string()
             }
+            RoutingValidationError::FanoutChildLeafViolation { reason, .. } => reason.clone(),
             RoutingValidationError::UnknownRuleTarget { .. }
             | RoutingValidationError::UnreachableNode { .. } => String::new(),
         }
+    }
+
+    #[test]
+    fn fanout_edges_reach_children_but_child_rules_do_not_escape_leaf_scope() {
+        let wf = workflow(
+            vec![
+                fanout_node("fanout", &["worker"], vec![Rule::Next("done".to_string())]),
+                session_node("worker", None, vec![Rule::Next("fanout".to_string())]),
+                session_node("done", None, vec![]),
+            ],
+            BTreeMap::new(),
+        );
+
+        assert!(validate_rules(&wf).is_empty());
+        assert_eq!(
+            reachable_node_names(&wf),
+            BTreeSet::from(["done", "fanout", "worker"])
+        );
     }
 
     #[test]

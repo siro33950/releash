@@ -1,0 +1,14 @@
+name: fanout-children
+description: valid fanout with multiple top-level children
+nodes:
+  - name: fanout
+    fanout:
+      child: [lint, test]
+    rules:
+      - next: done
+  - name: lint
+    command: cargo clippy
+  - name: test
+    command: cargo test
+  - name: done
+    command: echo done

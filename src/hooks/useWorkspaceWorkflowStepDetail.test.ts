@@ -30,10 +30,13 @@ function stepDetail(
 		runId: "run-1",
 		worktreePath: "/repo",
 		title: "review",
+		nodeName: "review",
 		status: "running",
 		stepType: "session",
 		updatedAt: 1_000,
 		runIndex: 1,
+		attempt: 1,
+		nodeExecutionId: "ne-review",
 		sessions: [
 			{
 				kind: "session",
@@ -74,6 +77,7 @@ function workflowPayload(
 			},
 			totalTokenUsage: { inputTokens: 0, outputTokens: 0 },
 			stepStates: {},
+			nodeExecutions: [],
 			startedAt: 1_000,
 			updatedAt: 2_000,
 		},
@@ -383,12 +387,14 @@ describe("useWorkspaceWorkflowStepDetail", () => {
 				runId: "run-1",
 				stepId: "run-1:review:1",
 				stepName: "review",
+				nodeExecutionId: "ne-review",
 			});
 
 			expect(mockInvoke).toHaveBeenNthCalledWith(1, "approve_workflow_step", {
 				args: {
 					runId: "run-1",
 					stepName: "review",
+					nodeExecutionId: "ne-review",
 					comment: null,
 				},
 			});

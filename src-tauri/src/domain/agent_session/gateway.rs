@@ -26,6 +26,8 @@ pub struct SessionSpec {
     pub startup_timeout: Option<Duration>,
     pub startup_max_retries: Option<u32>,
     pub stale_timeout: Option<Duration>,
+    /// Environment inherited only by the agent process for this session.
+    pub extra_env: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]

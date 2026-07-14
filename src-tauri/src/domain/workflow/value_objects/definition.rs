@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde_json::Value;
+
 pub const MAX_NODES_PER_WORKFLOW: usize = 256;
-pub const MAX_PARALLEL_CHILDREN: usize = 64;
+pub const MAX_FANOUT_CHILDREN: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct WorkflowDefinition {
@@ -106,8 +108,15 @@ pub struct SessionSpec {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct FanoutSpec {
-    pub parallel_children: Vec<InterimChild>,
+    pub child: Vec<String>,
+    pub items: Option<ItemsSource>,
     pub aggregate: Option<ParallelAggregate>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ItemsSource {
+    Literal(Vec<Value>),
+    ArtifactField { node: String, field: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -189,22 +198,6 @@ impl NodeDefinition {
     pub fn permission(&self) -> Option<&str> {
         self.session()
             .and_then(|session| session.permission.as_deref())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct InterimChild {
-    pub name: String,
-    pub model: Option<String>,
-    pub permission: Option<String>,
-    pub facets: FacetRefs,
-    pub artifact: Option<String>,
-    pub input: Option<String>,
-}
-
-impl InterimChild {
-    pub fn has_facet_refs(&self) -> bool {
-        !self.facets.is_empty()
     }
 }
 

@@ -9,12 +9,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::adaptor::gateway::workflow::failure_wire::default_failure_kind;
-use crate::adaptor::gateway::workflow::schema::Workflow;
-use crate::domain::workflow::{FailureDisposition, WorkflowStepFailureKind, STEP_STATE_COMPLETED};
-
-fn default_parallel_child_completed_state() -> String {
-    STEP_STATE_COMPLETED.to_string()
-}
+use crate::adaptor::gateway::workflow::schema::{NodeKindName, Workflow};
+use crate::domain::workflow::WorkflowStepFailureKind;
 
 fn default_contract_repair_run_index() -> u32 {
     1
@@ -32,6 +28,21 @@ impl TokenUsage {
         self.input_tokens += other.input_tokens;
         self.output_tokens += other.output_tokens;
     }
+}
+
+/// fanout child の NodeExecution を親 fanout execution へ結び付ける参照。
+///
+/// child execution の並び順は `item_index`（items なしでは `None`）の昇順、
+/// 次に `child_index` の昇順で決まる。親は node 名と attempt で表し、
+/// fanout 専用 event は持たない。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FanoutParentRef {
+    pub parent_node: String,
+    pub parent_attempt: u32,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub item_index: Option<usize>,
+    pub child_index: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -100,18 +111,20 @@ pub enum WorkflowEvent {
     NodeStarted {
         run_id: String,
         workflow_name: String,
+        node_execution_id: String,
         node_name: String,
-        execution_count: u32,
+        kind: NodeKindName,
+        attempt: u32,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        fanout_parent: Option<FanoutParentRef>,
         timestamp: f64,
     },
-    /// 逐次 step の AgentSession が起動された（session_id を観測経路に露出する）。
-    /// `ParallelChildStarted` 相当の単発版で、event projection から
-    /// `current_session_id` を populate するために用いる。
-    StepSessionStarted {
+    /// NodeExecution に AgentSession が接続された。
+    SessionAttached {
         run_id: String,
         workflow_name: String,
+        node_execution_id: String,
         node_name: String,
-        execution_count: u32,
         session_id: String,
         timestamp: f64,
     },
@@ -139,6 +152,7 @@ pub enum WorkflowEvent {
     NodeCompleted {
         run_id: String,
         workflow_name: String,
+        node_execution_id: String,
         node_name: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         result: Option<String>,
@@ -156,6 +170,7 @@ pub enum WorkflowEvent {
     NodeFailed {
         run_id: String,
         workflow_name: String,
+        node_execution_id: String,
         node_name: String,
         reason: String,
         #[serde(default = "default_failure_kind")]
@@ -168,6 +183,7 @@ pub enum WorkflowEvent {
     ApprovalRequested {
         run_id: String,
         workflow_name: String,
+        node_execution_id: String,
         node_name: String,
         timestamp: f64,
     },
@@ -175,6 +191,7 @@ pub enum WorkflowEvent {
     ApprovalResolved {
         run_id: String,
         workflow_name: String,
+        node_execution_id: String,
         node_name: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         comment: Option<String>,
@@ -226,54 +243,6 @@ pub enum WorkflowEvent {
         reduce_structured_output: Option<serde_json::Value>,
         timestamp: f64,
     },
-    /// 並列ブロックが開始された（parent node の入口マーカー）。
-    ParallelStarted {
-        run_id: String,
-        workflow_name: String,
-        parent_node_name: String,
-        child_node_names: Vec<String>,
-        timestamp: f64,
-    },
-    /// 並列ブロックの子 node が実行開始された。
-    ParallelChildStarted {
-        run_id: String,
-        workflow_name: String,
-        parent_node_name: String,
-        child_node_name: String,
-        session_id: String,
-        execution_count: u32,
-        timestamp: f64,
-    },
-    /// 並列ブロックの子 node が完了した。
-    ParallelChildCompleted {
-        run_id: String,
-        workflow_name: String,
-        parent_node_name: String,
-        child_node_name: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        result: Option<String>,
-        session_id: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        token_usage: Option<TokenUsage>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        structured_output: Option<serde_json::Value>,
-        run_index: u32,
-        #[serde(default = "default_parallel_child_completed_state")]
-        state: String,
-        #[serde(skip_serializing_if = "Option::is_none", default)]
-        failure_kind: Option<WorkflowStepFailureKind>,
-        #[serde(skip_serializing_if = "Option::is_none", default)]
-        failure_disposition: Option<FailureDisposition>,
-        timestamp: f64,
-    },
-    /// 並列ブロック全体が完了し、aggregate 評価結果に基づき遷移する。
-    ParallelCompleted {
-        run_id: String,
-        workflow_name: String,
-        parent_node_name: String,
-        aggregate_result: String,
-        timestamp: f64,
-    },
     /// artifact_contract repair prompt が送信された。
     ContractRepairRequested {
         run_id: String,
@@ -321,6 +290,7 @@ pub enum WorkflowEvent {
     ArtifactProduced {
         run_id: String,
         workflow_name: String,
+        node_execution_id: String,
         node_name: String,
         /// 対象 step の `artifact_contract`。command stdout など contract を持たない
         /// Artifact では `None`。
@@ -440,7 +410,7 @@ impl WorkflowEvent {
         match self {
             Self::RunStarted { run_id, .. }
             | Self::NodeStarted { run_id, .. }
-            | Self::StepSessionStarted { run_id, .. }
+            | Self::SessionAttached { run_id, .. }
             | Self::WorkflowStallObserved { run_id, .. }
             | Self::WorkflowStallCleared { run_id, .. }
             | Self::NodeCompleted { run_id, .. }
@@ -452,10 +422,6 @@ impl WorkflowEvent {
             | Self::RunAborted { run_id, .. }
             | Self::RunInterrupted { run_id, .. }
             | Self::OutputCollected { run_id, .. }
-            | Self::ParallelStarted { run_id, .. }
-            | Self::ParallelChildStarted { run_id, .. }
-            | Self::ParallelChildCompleted { run_id, .. }
-            | Self::ParallelCompleted { run_id, .. }
             | Self::ContractRepairRequested { run_id, .. }
             | Self::CliMutationRequested { run_id, .. }
             | Self::ArtifactProduced { run_id, .. }
@@ -515,6 +481,7 @@ mod tests {
             "event": "node_failed",
             "run_id": "run-1",
             "workflow_name": "wf",
+            "node_execution_id": "ne-review-1",
             "node_name": "review",
             "reason": "legacy failure",
             "timestamp": 1.0
@@ -528,6 +495,46 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn node_started_serializes_node_execution_identity_and_fanout_parent() {
+        let event = WorkflowEvent::NodeStarted {
+            run_id: "run-1".to_string(),
+            workflow_name: "wf".to_string(),
+            node_execution_id: "ne-child-1".to_string(),
+            node_name: "review".to_string(),
+            kind: NodeKindName::Session,
+            attempt: 2,
+            fanout_parent: Some(FanoutParentRef {
+                parent_node: "reviews".to_string(),
+                parent_attempt: 1,
+                item_index: Some(3),
+                child_index: 0,
+            }),
+            timestamp: 1.0,
+        };
+
+        let value = serde_json::to_value(event).unwrap();
+        assert_eq!(value["node_execution_id"], "ne-child-1");
+        assert_eq!(value["kind"], "session");
+        assert_eq!(value["attempt"], 2);
+        assert_eq!(value["fanout_parent"]["parentNode"], "reviews");
+        assert_eq!(value["fanout_parent"]["itemIndex"], 3);
+    }
+
+    #[test]
+    fn legacy_parallel_event_is_not_deserialized() {
+        let legacy = serde_json::json!({
+            "event": "parallel_started",
+            "run_id": "run-1",
+            "workflow_name": "wf",
+            "parent_node_name": "reviews",
+            "child_node_names": ["review"],
+            "timestamp": 1.0
+        });
+
+        assert!(serde_json::from_value::<WorkflowEvent>(legacy).is_err());
     }
 
     #[test]
@@ -582,6 +589,7 @@ mod tests {
         let event = WorkflowEvent::ApprovalResolved {
             run_id: "00000000-0000-0000-0000-000000000002".to_string(),
             workflow_name: "wf".to_string(),
+            node_execution_id: "ne-review-1".to_string(),
             node_name: "review".to_string(),
             comment: Some("c".to_string()),
             timestamp: 2.0,
@@ -666,15 +674,18 @@ mod tests {
             WorkflowEvent::NodeStarted {
                 run_id: rid.to_string(),
                 workflow_name: "w".to_string(),
+                node_execution_id: "ne-n-1".to_string(),
                 node_name: "n".to_string(),
-                execution_count: 1,
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: None,
                 timestamp: 0.0,
             },
-            WorkflowEvent::StepSessionStarted {
+            WorkflowEvent::SessionAttached {
                 run_id: rid.to_string(),
                 workflow_name: "w".to_string(),
+                node_execution_id: "ne-n-1".to_string(),
                 node_name: "n".to_string(),
-                execution_count: 1,
                 session_id: "s".to_string(),
                 timestamp: 0.0,
             },
@@ -699,6 +710,7 @@ mod tests {
             WorkflowEvent::NodeCompleted {
                 run_id: rid.to_string(),
                 workflow_name: "w".to_string(),
+                node_execution_id: "ne-n-1".to_string(),
                 node_name: "n".to_string(),
                 result: None,
                 session_id: None,
@@ -710,6 +722,7 @@ mod tests {
             WorkflowEvent::NodeFailed {
                 run_id: rid.to_string(),
                 workflow_name: "w".to_string(),
+                node_execution_id: "ne-n-1".to_string(),
                 node_name: "n".to_string(),
                 reason: "x".to_string(),
                 failure_kind: WorkflowStepFailureKind::InfrastructureCrash,
@@ -719,12 +732,14 @@ mod tests {
             WorkflowEvent::ApprovalRequested {
                 run_id: rid.to_string(),
                 workflow_name: "w".to_string(),
+                node_execution_id: "ne-n-1".to_string(),
                 node_name: "n".to_string(),
                 timestamp: 0.0,
             },
             WorkflowEvent::ApprovalResolved {
                 run_id: rid.to_string(),
                 workflow_name: "w".to_string(),
+                node_execution_id: "ne-n-1".to_string(),
                 node_name: "n".to_string(),
                 comment: None,
                 timestamp: 0.0,

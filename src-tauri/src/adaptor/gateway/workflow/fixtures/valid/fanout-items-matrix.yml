@@ -1,0 +1,27 @@
+name: fanout-items-matrix
+description: valid fanout matrix with literal items
+schemas:
+  target:
+    type: object
+    properties:
+      path:
+        type: string
+    required: [path]
+    additionalProperties: false
+nodes:
+  - name: fanout
+    fanout:
+      child: [lint, test]
+      items:
+        - path: src/lib.rs
+        - path: src/main.rs
+    rules:
+      - next: done
+  - name: lint
+    input: target
+    command: echo {{ item.path }}
+  - name: test
+    input: target
+    command: echo {{ item.path }}
+  - name: done
+    command: echo done

@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::facet::FacetContents;
-use crate::adaptor::gateway::workflow::schema::{InterimChild, NodeDefinition};
+use crate::adaptor::gateway::workflow::schema::NodeDefinition;
 use crate::adaptor::gateway::workflow::state::StepOutput;
 use crate::domain::workflow::services::reference::{
     self, resolve_runtime_reference, REQUEST_ARTIFACT,
@@ -88,6 +88,19 @@ fn input_artifacts_block(inputs: &[String], artifacts: &HashMap<String, Value>) 
     (!blocks.is_empty()).then(|| format!("\n\n{}", blocks.join("\n\n")))
 }
 
+fn inject_fanout_item(prompt: &str, input_contract: Option<&str>, item: Option<&Value>) -> String {
+    let (Some(input_contract), Some(item)) = (input_contract, item) else {
+        return prompt.to_string();
+    };
+    let json = serde_json::to_string_pretty(item).unwrap_or_else(|_| "null".to_string());
+    let block = format!("## input: item ({input_contract})\n```json\n{json}\n```");
+    if prompt.is_empty() {
+        block
+    } else {
+        format!("{prompt}\n\n{block}")
+    }
+}
+
 fn value_to_template_string(value: Value) -> String {
     match value {
         Value::String(value) => value,
@@ -145,8 +158,8 @@ pub(crate) fn render_step_workflow_instruction(
     render_workflow_instruction(facet_contents?.instruction.as_ref()?, &artifacts, None)
 }
 
-pub(crate) fn render_child_workflow_instruction(
-    _step: &InterimChild,
+pub(crate) fn render_fanout_child_workflow_instruction(
+    _step: &NodeDefinition,
     facet_contents: Option<&FacetContents>,
     request: Option<&str>,
     step_outputs: &HashMap<String, StepOutput>,
@@ -161,12 +174,16 @@ pub(crate) fn append_artifact_completion_action(
     artifact: Option<&str>,
     run_id: &str,
     step_name: &str,
+    node_execution_id: Option<&str>,
 ) {
     let Some(contract) = artifact else {
         return;
     };
     let action = crate::adaptor::gateway::workflow::facet::artifact_completion_action(
-        contract, run_id, step_name,
+        contract,
+        run_id,
+        step_name,
+        node_execution_id,
     );
     if !prompt.is_empty() {
         prompt.push_str("\n\n");
@@ -202,36 +219,46 @@ pub(crate) fn build_step_prompt(
         .map(|content| render_prompt_content(&content, &artifacts, None));
     let rendered_user = render_prompt_content(&composed.user_message, &artifacts, None);
     let mut prompt = inject_input_artifacts(&rendered_user, &step.inputs, &artifacts);
-    append_artifact_completion_action(&mut prompt, step.artifact.as_deref(), run_id, &step.name);
+    append_artifact_completion_action(
+        &mut prompt,
+        step.artifact.as_deref(),
+        run_id,
+        &step.name,
+        None,
+    );
     Ok((system_prompt, prompt))
 }
 
-pub(crate) fn build_parallel_step_prompt(
-    step: &InterimChild,
+pub(crate) fn build_fanout_child_prompt(
+    step: &NodeDefinition,
     facet_contents: Option<&FacetContents>,
     run_id: &str,
     request: Option<&str>,
     step_outputs: &HashMap<String, StepOutput>,
     item: Option<&Value>,
+    node_execution_id: &str,
 ) -> Result<(Option<String>, String), WorkflowEngineError> {
     if step.has_facet_refs() && facet_contents.is_none_or(FacetContents::is_empty) {
         return Err(WorkflowEngineError::InvalidWorkflow(format!(
-            "Parallel child '{}' has unresolved facet refs (workflow must go through load pipeline)",
+            "Fanout child '{}' has unresolved facet refs (workflow must go through load pipeline)",
             step.name
         )));
     }
 
     let artifacts = artifact_values(step_outputs, request);
-    let composed = crate::adaptor::gateway::workflow::facet::compose_child_facets(facet_contents);
+    let composed = crate::adaptor::gateway::workflow::facet::compose_facets(facet_contents);
     let system_prompt = composed
         .system_prompt
         .map(|content| render_prompt_content(&content, &artifacts, item));
-    let mut user_message = render_prompt_content(&composed.user_message, &artifacts, item);
+    let rendered_user = render_prompt_content(&composed.user_message, &artifacts, item);
+    let rendered_user = inject_input_artifacts(&rendered_user, &step.inputs, &artifacts);
+    let mut user_message = inject_fanout_item(&rendered_user, step.input.as_deref(), item);
     append_artifact_completion_action(
         &mut user_message,
         step.artifact.as_deref(),
         run_id,
         &step.name,
+        Some(node_execution_id),
     );
 
     Ok((system_prompt, user_message))
@@ -327,5 +354,69 @@ mod tests {
             build_step_prompt(&step, Some(&resolved), "run-1", Some(""), &outputs).unwrap();
 
         assert!(prompt.contains("Spec dir: docs/specs/foo"));
+    }
+
+    #[test]
+    fn build_fanout_child_prompt_binds_item_as_declared_input() {
+        let mut step = make_test_step("worker", "Review {{ item.path }}");
+        step.input = Some("work-item".to_string());
+        let resolved = instruction_contents("Review {{ item.path }}");
+        let item = serde_json::json!({"path": "src/lib.rs", "priority": 2});
+
+        let (_system, prompt) = build_fanout_child_prompt(
+            &step,
+            Some(&resolved),
+            "run-1",
+            None,
+            &HashMap::new(),
+            Some(&item),
+            "node-execution-1",
+        )
+        .unwrap();
+
+        assert!(prompt.contains("Review src/lib.rs"));
+        assert!(prompt.contains("## input: item (work-item)"));
+        assert!(prompt.contains("\"priority\": 2"));
+    }
+
+    #[test]
+    fn build_fanout_child_prompt_injects_ordinary_inputs_and_binds_item() {
+        let mut step = make_test_step("worker", "Review {{ item.path }} for {{ request }}");
+        step.inputs = vec!["request".to_string(), "plan".to_string()];
+        step.input = Some("work-item".to_string());
+        let resolved = instruction_contents("Review {{ item.path }} for {{ request }}");
+        let outputs = HashMap::from([(
+            "plan".to_string(),
+            StepOutput {
+                step_name: "plan".to_string(),
+                run_index: 1,
+                session_id: None,
+                result: None,
+                structured_output: Some(serde_json::json!({"summary": "ready"})),
+                artifact_contract: Some("plan".to_string()),
+                token_usage: None,
+                completed_at: 1.0,
+            },
+        )]);
+        let item = serde_json::json!({"path": "src/lib.rs", "priority": 2});
+
+        let (_system, prompt) = build_fanout_child_prompt(
+            &step,
+            Some(&resolved),
+            "run-1",
+            Some("ship"),
+            &outputs,
+            Some(&item),
+            "node-execution-1",
+        )
+        .unwrap();
+
+        assert!(prompt.contains("Review src/lib.rs for ship"));
+        assert!(prompt.contains("## input: request"));
+        assert!(prompt.contains("\"ship\""));
+        assert!(prompt.contains("## input: plan"));
+        assert!(prompt.contains("\"summary\": \"ready\""));
+        assert!(prompt.contains("## input: item (work-item)"));
+        assert!(prompt.contains("\"priority\": 2"));
     }
 }

@@ -34,6 +34,8 @@ pub(crate) struct ApproveWorkflowStepArgs {
     pub run_id: String,
     pub step_name: String,
     #[serde(default)]
+    pub node_execution_id: Option<String>,
+    #[serde(default)]
     pub comment: Option<String>,
 }
 
@@ -115,6 +117,7 @@ pub async fn approve_workflow_step(
     let ApproveWorkflowStepArgs {
         run_id,
         step_name,
+        node_execution_id,
         comment,
     } = args;
     validate_run_id(&run_id)?;
@@ -122,6 +125,7 @@ pub async fn approve_workflow_step(
         .resolve_approval(ApprovalCommand {
             run_id,
             node_name: step_name,
+            node_execution_id,
             comment,
         })
         .await
@@ -176,4 +180,35 @@ pub async fn send_workflow_approval_chat_message(
     )
     .await;
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn approve_args_accept_optional_node_execution_address() {
+        let args = parse_approve_workflow_step_args(&serde_json::json!({
+            "runId": "00000000-0000-0000-0000-000000000001",
+            "stepName": "review",
+            "nodeExecutionId": "node-execution-review",
+        }))
+        .unwrap();
+
+        assert_eq!(
+            args.node_execution_id.as_deref(),
+            Some("node-execution-review")
+        );
+    }
+
+    #[test]
+    fn approve_args_keep_single_name_fallback_when_address_is_omitted() {
+        let args = parse_approve_workflow_step_args(&serde_json::json!({
+            "runId": "00000000-0000-0000-0000-000000000001",
+            "stepName": "review",
+        }))
+        .unwrap();
+
+        assert!(args.node_execution_id.is_none());
+    }
 }

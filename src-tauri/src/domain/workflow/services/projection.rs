@@ -5,10 +5,8 @@
 //! objects, but the rules for derived fields live here.
 
 use crate::domain::workflow::value_objects::{
-    ApprovalOperations, NodeDefinition, ParallelStepState, StepHistoryEntry, TokenUsage,
-    WorkflowExecutionState,
+    ApprovalOperations, NodeDefinition, StepHistoryEntry, TokenUsage, WorkflowExecutionState,
 };
-use crate::domain::workflow::ParallelRunState;
 #[cfg(test)]
 use crate::domain::workflow::STEP_STATE_COMPLETED;
 
@@ -36,41 +34,11 @@ pub fn approval_operations(
     Some(ApprovalOperations { can_approve: true })
 }
 
-pub fn active_parallel_steps(parallel_run: Option<&ParallelRunState>) -> Vec<ParallelStepState> {
-    let Some(parallel_run) = parallel_run else {
-        return Vec::new();
-    };
-    parallel_run
-        .children
-        .iter()
-        .map(|child| ParallelStepState {
-            step_name: child.step_name.clone(),
-            state: child.state.as_str().to_string(),
-            session_id: if child.session_id.is_empty() {
-                None
-            } else {
-                Some(child.session_id.clone())
-            },
-            result: child.result.clone(),
-            run_index: child.run_index,
-            completed_at: None,
-            structured_output: child.structured_output.clone(),
-            artifact_contract: child.artifact_contract.clone(),
-            failure_kind: child.failure_kind,
-            failure_disposition: child.failure_disposition,
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::workflow::{
-        value_objects::{
-            FacetRefs, FailureDisposition, NodeDefinition, NodeKind, SessionGate, SessionSpec,
-            WorkflowStepFailureKind,
-        },
-        ParallelChildRun, ParallelChildState, ParallelRunState,
+    use crate::domain::workflow::value_objects::{
+        FacetRefs, NodeDefinition, NodeKind, SessionGate, SessionSpec,
     };
 
     #[test]
@@ -161,81 +129,6 @@ mod tests {
         assert_eq!(
             approval_operations(&WorkflowExecutionState::Running, Some(&approval_step)),
             None
-        );
-    }
-
-    #[test]
-    fn active_parallel_steps_projects_children_and_omits_empty_session_id() {
-        let steps = active_parallel_steps(Some(&ParallelRunState {
-            parent_step_name: "parallel-review".to_string(),
-            aggregate: None,
-            children: vec![
-                ParallelChildRun {
-                    step_name: "review-structure".to_string(),
-                    session_id: "session-a".to_string(),
-                    state: ParallelChildState::Running,
-                    result: None,
-                    structured_output: None,
-                    artifact_contract: None,
-                    failure_kind: None,
-                    failure_disposition: None,
-                    token_usage: TokenUsage::default(),
-                    run_index: 1,
-                },
-                ParallelChildRun {
-                    step_name: "review-test".to_string(),
-                    session_id: String::new(),
-                    state: ParallelChildState::Completed,
-                    result: Some("ok".to_string()),
-                    structured_output: Some(serde_json::json!({ "status": "ok" })),
-                    artifact_contract: Some("contract".to_string()),
-                    failure_kind: None,
-                    failure_disposition: None,
-                    token_usage: TokenUsage::default(),
-                    run_index: 2,
-                },
-            ],
-        }));
-
-        assert_eq!(steps.len(), 2);
-        assert_eq!(steps[0].state, "running");
-        assert_eq!(steps[0].session_id.as_deref(), Some("session-a"));
-        assert_eq!(steps[1].state, "completed");
-        assert_eq!(steps[1].session_id, None);
-        assert_eq!(steps[1].result.as_deref(), Some("ok"));
-        assert_eq!(steps[1].artifact_contract.as_deref(), Some("contract"));
-    }
-
-    #[test]
-    fn active_parallel_steps_preserves_partial_failure_metadata() {
-        let steps = active_parallel_steps(Some(&ParallelRunState {
-            parent_step_name: "parallel-review".to_string(),
-            aggregate: None,
-            children: vec![ParallelChildRun {
-                step_name: "review-policy".to_string(),
-                session_id: "session-a".to_string(),
-                state: ParallelChildState::Failed,
-                result: Some("model_refusal".to_string()),
-                structured_output: Some(serde_json::json!({
-                    "failureKind": "model_refusal",
-                    "disposition": "partial",
-                })),
-                artifact_contract: None,
-                failure_kind: Some(WorkflowStepFailureKind::ModelRefusal),
-                failure_disposition: Some(FailureDisposition::Partial),
-                token_usage: TokenUsage::default(),
-                run_index: 1,
-            }],
-        }));
-
-        assert_eq!(steps.len(), 1);
-        assert_eq!(
-            steps[0].failure_kind,
-            Some(WorkflowStepFailureKind::ModelRefusal)
-        );
-        assert_eq!(
-            steps[0].failure_disposition,
-            Some(FailureDisposition::Partial)
         );
     }
 }
