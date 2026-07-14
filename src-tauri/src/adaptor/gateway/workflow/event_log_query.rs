@@ -88,6 +88,7 @@ mod tests {
             .append_batch(&[WorkflowEvent::ArtifactProduced {
                 run_id: run_id.clone(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: uuid(3),
                 node_name: "review".to_string(),
                 contract: Some("review-verdict".to_string()),
                 value: serde_json::json!({"verdict": "LGTM"}),

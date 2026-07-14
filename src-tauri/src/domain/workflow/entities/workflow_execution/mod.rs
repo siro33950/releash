@@ -14,8 +14,7 @@ use crate::domain::workflow::value_objects::{
 };
 use crate::domain::workflow::value_objects::{
     ParallelAggregate, StepHistoryEntry, TokenUsage, WorkflowDefinition, WorkflowExecutionState,
-    WorkflowStepFailureKind, STEP_STATE_COMPLETED, STEP_STATE_FAILED, STEP_STATE_INTERRUPTED,
-    STEP_STATE_PENDING, STEP_STATE_RUNNING,
+    WorkflowStepFailureKind, STEP_STATE_COMPLETED, STEP_STATE_PENDING,
 };
 use crate::domain::workflow::FailureDisposition;
 #[cfg(test)]
@@ -161,7 +160,7 @@ impl WorkflowExecution {
             total_token_usage,
             step_states,
             step_outputs: self.step_outputs.clone(),
-            active_parallel_steps: projection::active_parallel_steps(self.parallel_run.as_ref()),
+            node_executions: Vec::new(),
             approval_operations: self.build_approval_operations(),
             stall_observations: Vec::new(),
             started_at: self.started_at,
@@ -300,7 +299,7 @@ impl WorkflowExecution {
 
     pub fn record_parallel_child_completed(&mut self, completion: ParallelChildCompletion) {
         let prior = self.step_outputs.get(&completion.child_node_name).cloned();
-        let output_merge = parallel::merge_parallel_child_completion_output(
+        let output_merge = parallel::merge_fanout_child_completion_output(
             completion.structured_output.clone(),
             prior
                 .as_ref()
@@ -436,15 +435,6 @@ impl WorkflowExecution {
 }
 
 impl ParallelChildState {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Running => STEP_STATE_RUNNING,
-            Self::Completed => STEP_STATE_COMPLETED,
-            Self::Failed => STEP_STATE_FAILED,
-            Self::Interrupted => STEP_STATE_INTERRUPTED,
-        }
-    }
-
     pub fn is_completed(self) -> bool {
         matches!(self, Self::Completed)
     }
@@ -486,8 +476,7 @@ pub fn compute_step_states(
 mod aggregate_tests {
     use super::*;
     use crate::domain::workflow::value_objects::{
-        CommandSpec, FacetRefs, FanoutSpec, InterimChild, NodeKind, SessionGate, SessionSpec,
-        WorkflowDefinition,
+        CommandSpec, FacetRefs, FanoutSpec, NodeKind, SessionGate, SessionSpec, WorkflowDefinition,
     };
 
     fn run_id() -> RunId {
@@ -526,24 +515,14 @@ mod aggregate_tests {
                 command: "cargo test".to_string(),
             }),
             TestNodeKind::Fanout => NodeKind::Fanout(FanoutSpec {
-                parallel_children: vec![child("a"), child("b")],
+                child: vec!["a".to_string(), "b".to_string()],
+                items: None,
                 aggregate: None,
             }),
         };
         NodeDefinition {
             name: name.to_string(),
             kind,
-            ..Default::default()
-        }
-    }
-
-    fn child(name: &str) -> InterimChild {
-        InterimChild {
-            name: name.to_string(),
-            facets: FacetRefs {
-                instruction: Some("implement".to_string()),
-                ..Default::default()
-            },
             ..Default::default()
         }
     }
@@ -624,7 +603,11 @@ mod aggregate_tests {
     fn abort_parallel_records_parent_with_child_snapshots() {
         let mut exec = WorkflowExecution::new(
             run_id(),
-            workflow(vec![node("parallel-review", TestNodeKind::Fanout)]),
+            workflow(vec![
+                node("parallel-review", TestNodeKind::Fanout),
+                node("a", TestNodeKind::Session),
+                node("b", TestNodeKind::Session),
+            ]),
             worktree(),
             None,
             1.0,
@@ -652,7 +635,7 @@ mod aggregate_tests {
         exec.abort_run(2.0);
         let snapshot = exec.to_snapshot();
         assert_eq!(snapshot.state, WorkflowExecutionState::Aborted);
-        assert!(snapshot.active_parallel_steps.is_empty());
+        assert!(snapshot.node_executions.is_empty());
         let parent = snapshot.step_history.first().unwrap();
         assert_eq!(parent.step_name, "parallel-review");
         assert_eq!(parent.state, "aborted");

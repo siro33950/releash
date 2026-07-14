@@ -220,8 +220,9 @@ fn latest_artifact_produced_from_drafts(
 mod tests {
     use super::*;
     use crate::domain::workflow::{
-        FacetRefs, NodeDefinition, NodeKind, RunStatus, RunStatusFilter, SessionGate, SessionSpec,
-        TriggerSource, WorkflowExecutionState, WorkflowRunRecord,
+        FacetRefs, NodeDefinition, NodeExecution, NodeExecutionStatus, NodeKind, NodeKindName,
+        RunStatus, RunStatusFilter, SessionGate, SessionSpec, TriggerSource,
+        WorkflowExecutionState, WorkflowRunRecord,
     };
     use std::collections::HashMap;
     use std::sync::Mutex;
@@ -577,7 +578,21 @@ mod tests {
             total_token_usage: Default::default(),
             step_states: HashMap::new(),
             step_outputs: HashMap::new(),
-            active_parallel_steps: Vec::new(),
+            node_executions: vec![NodeExecution {
+                id: "ne-review-1".to_string(),
+                execution_id: run_id.to_string(),
+                node_name: "review".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                status: NodeExecutionStatus::Running,
+                session_id: None,
+                artifact: None,
+                token_usage: None,
+                failure: None,
+                fanout_parent: None,
+                started_at: 1.0,
+                completed_at: None,
+            }],
             approval_operations: None,
             stall_observations: Vec::new(),
             started_at: 1.0,
@@ -867,6 +882,8 @@ mod tests {
 
         assert_eq!(state.execution_id, test_run_id());
         assert_eq!(state.workflow_name, "wf");
+        assert_eq!(state.node_executions[0].id, "ne-review-1");
+        assert_eq!(state.node_executions[0].node_name, "review");
         assert!(fixture.service.get_run_state("not-a-uuid").is_err());
     }
 

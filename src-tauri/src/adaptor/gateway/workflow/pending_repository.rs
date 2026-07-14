@@ -150,18 +150,26 @@ fn pending_payload_to_runtime_payload(
     payload: PendingCommandPayload,
 ) -> PendingRuntimeCommandPayload {
     match payload {
-        PendingCommandPayload::Approve { node_name, comment } => {
-            PendingRuntimeCommandPayload::Approve { node_name, comment }
-        }
+        PendingCommandPayload::Approve {
+            node_name,
+            node_execution_id,
+            comment,
+        } => PendingRuntimeCommandPayload::Approve {
+            node_name,
+            node_execution_id,
+            comment,
+        },
         PendingCommandPayload::Abort { node_name } => {
             PendingRuntimeCommandPayload::Abort { node_name }
         }
         PendingCommandPayload::SubmitOutput {
             step_name,
+            node_execution_id,
             contract,
             structured_output,
         } => PendingRuntimeCommandPayload::SubmitOutput {
             step_name,
+            node_execution_id,
             contract,
             structured_output,
         },

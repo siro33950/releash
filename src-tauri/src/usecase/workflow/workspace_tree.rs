@@ -10,9 +10,9 @@ use crate::domain::workflow::status_aggregation::{
 use crate::usecase::workflow::query_service::WorkflowQueryService;
 use crate::{
     domain::workflow::{
-        RunId, RunListFilter, RunStatus, WorkflowError, WorkflowRunManualArchiveRecord,
-        WorkflowRunSummary, WorkflowStateSnapshot, WorkflowStepContext,
-        WORKFLOW_ARCHIVE_REASON_MANUAL,
+        FanoutParentRef, NodeExecution, NodeExecutionStatus, RunId, RunListFilter, RunStatus,
+        WorkflowError, WorkflowRunManualArchiveRecord, WorkflowRunSummary, WorkflowStateSnapshot,
+        WorkflowStepContext, WORKFLOW_ARCHIVE_REASON_MANUAL,
     },
     other::utils::unix_timestamp_seconds,
 };
@@ -104,14 +104,36 @@ pub(crate) struct WorkspaceWorkflowStepNodeDto {
     pub run_id: String,
     pub worktree_path: String,
     pub title: String,
+    pub node_name: String,
     pub status: String,
     pub step_type: &'static str,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_execution_status: Option<&'static str>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub can_approve: Option<bool>,
     pub updated_at: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_index: Option<u32>,
+    pub attempt: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_execution_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fanout_parent: Option<WorkspaceFanoutParentDto>,
     pub sessions: Vec<WorkspaceSessionNodeDto>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WorkspaceFanoutParentDto {
+    pub parent_node: String,
+    pub parent_attempt: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_index: Option<usize>,
+    pub child_index: usize,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -128,6 +150,7 @@ pub(crate) struct WorkspaceWorkflowHistoryItemDto {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct StepSessionRef {
+    node_execution_id: Option<String>,
     session_id: Option<String>,
     step_name: String,
     run_index: Option<u32>,
@@ -314,7 +337,13 @@ fn project_workspace_tree_nodes(
             }
             let state = states.get(&run.run_id).and_then(|state| state.as_ref());
             let step_refs = step_refs_for_run(&run.run_id, &workflow_sessions, state);
-            Some(workflow_node(run, &workflow_sessions, step_refs, state))
+            Some(workflow_node(
+                run,
+                &workflow_sessions,
+                step_refs,
+                state,
+                false,
+            ))
         })
         .collect();
 
@@ -336,8 +365,15 @@ fn workflow_node(
     workflow_sessions: &HashMap<String, WorkspaceSessionInput>,
     step_refs: Vec<StepSessionRef>,
     state: Option<&WorkflowStateSnapshot>,
+    include_execution_artifact: bool,
 ) -> WorkspaceWorkflowNodeDto {
-    let steps = workflow_steps(&run, workflow_sessions, &step_refs, state);
+    let steps = workflow_steps(
+        &run,
+        workflow_sessions,
+        &step_refs,
+        state,
+        include_execution_artifact,
+    );
     let status = workflow_status_for_steps(&steps)
         .unwrap_or_else(|| run_status_representative(run.status))
         .as_str()
@@ -362,7 +398,7 @@ fn workflow_step_detail_node(
     step_id: &str,
 ) -> Option<WorkspaceWorkflowStepNodeDto> {
     let step_refs = step_refs_for_run(&run.run_id, workflow_sessions, state);
-    workflow_node(run, workflow_sessions, step_refs, state)
+    workflow_node(run, workflow_sessions, step_refs, state, true)
         .steps
         .into_iter()
         .find(|step| step.id == step_id)
@@ -417,6 +453,7 @@ fn context_step_session_ref(
     state_ref: Option<&StepSessionRef>,
 ) -> StepSessionRef {
     StepSessionRef {
+        node_execution_id: Some(context.node_execution_id.clone()),
         session_id: Some(session.id.clone()),
         step_name: context.step_name.clone(),
         run_index: Some(context.run_index),
@@ -441,6 +478,7 @@ fn retain_unique_step_refs(refs: &mut Vec<StepSessionRef>) {
     let mut seen = HashSet::new();
     refs.retain(|step_ref| {
         seen.insert((
+            step_ref.node_execution_id.clone(),
             step_ref.session_id.clone(),
             step_ref.step_name.clone(),
             step_ref.run_index,
@@ -551,6 +589,7 @@ fn collect_step_session_refs(state: &WorkflowStateSnapshot) -> Vec<StepSessionRe
     session_projection::collect_step_session_projections(state)
         .into_iter()
         .map(|projection| StepSessionRef {
+            node_execution_id: projection.node_execution_id,
             session_id: projection.session_id,
             step_name: projection.step_name,
             run_index: projection.run_index,
@@ -567,7 +606,12 @@ fn workflow_steps(
     workflow_sessions: &HashMap<String, WorkspaceSessionInput>,
     step_refs: &[StepSessionRef],
     state: Option<&WorkflowStateSnapshot>,
+    include_execution_artifact: bool,
 ) -> Vec<WorkspaceWorkflowStepNodeDto> {
+    if let Some(state) = state.filter(|state| !state.node_executions.is_empty()) {
+        return node_execution_steps(run, workflow_sessions, state, include_execution_artifact);
+    }
+
     let mut grouped_refs: BTreeMap<(String, Option<u32>), Vec<&StepSessionRef>> = BTreeMap::new();
     for step_ref in step_refs {
         grouped_refs
@@ -614,11 +658,18 @@ fn workflow_steps(
                     run_id: run.run_id.clone(),
                     worktree_path: run.worktree_path.clone(),
                     title: step_name.clone(),
+                    node_name: step_name.clone(),
                     status: step_status_for_group(&step_name, run_index, &refs, state).to_string(),
                     step_type: step_type_for_group(&step_name, state),
+                    node_execution_status: None,
                     can_approve: step_can_approve(&step_name, run_index, state),
                     updated_at,
                     run_index,
+                    attempt: run_index.unwrap_or(1),
+                    node_execution_id: None,
+                    session_id: sessions.first().map(|session| session.id.clone()),
+                    artifact: None,
+                    fanout_parent: None,
                     sessions,
                 },
             )
@@ -631,6 +682,96 @@ fn workflow_steps(
             .then_with(|| a.id.cmp(&b.id))
     });
     steps.into_iter().map(|(_, step)| step).collect()
+}
+
+fn node_execution_steps(
+    run: &WorkflowRunSummary,
+    workflow_sessions: &HashMap<String, WorkspaceSessionInput>,
+    state: &WorkflowStateSnapshot,
+    include_artifact: bool,
+) -> Vec<WorkspaceWorkflowStepNodeDto> {
+    state
+        .node_executions
+        .iter()
+        .map(|execution| {
+            let sessions = execution
+                .session_id
+                .as_ref()
+                .and_then(|session_id| workflow_sessions.get(session_id))
+                .cloned()
+                .map(|session| {
+                    vec![session_node(
+                        session,
+                        Some(execution.node_name.clone()),
+                        Some(execution.attempt),
+                    )]
+                })
+                .unwrap_or_default();
+
+            WorkspaceWorkflowStepNodeDto {
+                kind: "step",
+                id: execution.id.clone(),
+                run_id: run.run_id.clone(),
+                worktree_path: run.worktree_path.clone(),
+                title: execution.node_name.clone(),
+                node_name: execution.node_name.clone(),
+                status: node_execution_status(execution.status).to_string(),
+                step_type: execution.kind.as_str(),
+                node_execution_status: Some(execution.status.as_str()),
+                can_approve: node_execution_can_approve(execution, state),
+                updated_at: execution
+                    .completed_at
+                    .unwrap_or_else(|| run.updated_at.max(execution.started_at)),
+                run_index: Some(execution.attempt),
+                attempt: execution.attempt,
+                node_execution_id: Some(execution.id.clone()),
+                session_id: execution.session_id.clone(),
+                artifact: include_artifact
+                    .then(|| execution.artifact.clone())
+                    .flatten(),
+                fanout_parent: execution
+                    .fanout_parent
+                    .as_ref()
+                    .map(workspace_fanout_parent),
+                sessions,
+            }
+        })
+        .collect()
+}
+
+fn node_execution_status(status: NodeExecutionStatus) -> &'static str {
+    match status {
+        NodeExecutionStatus::Running => "running",
+        NodeExecutionStatus::WaitingApproval => "waiting",
+        NodeExecutionStatus::Succeeded => "completed",
+        NodeExecutionStatus::Failed => "failed",
+        NodeExecutionStatus::Aborted => "aborted",
+    }
+}
+
+fn node_execution_can_approve(
+    execution: &NodeExecution,
+    state: &WorkflowStateSnapshot,
+) -> Option<bool> {
+    if execution.status != NodeExecutionStatus::WaitingApproval {
+        return None;
+    }
+    if execution.fanout_parent.is_some() {
+        return Some(true);
+    }
+    state
+        .approval_operations
+        .as_ref()
+        .map(|operations| operations.can_approve)
+}
+
+fn workspace_fanout_parent(parent: &FanoutParentRef) -> WorkspaceFanoutParentDto {
+    WorkspaceFanoutParentDto {
+        parent_node: parent.parent_node.clone(),
+        parent_attempt: parent.parent_attempt,
+        item_index: parent.item_index,
+        child_index: parent.child_index,
+    }
 }
 
 fn workflow_step_id(run_id: &str, step_name: &str, run_index: Option<u32>) -> String {
@@ -765,7 +906,7 @@ mod tests {
     use super::*;
     use crate::domain::workflow::{
         ApprovalOperations, ChildOutputSnapshot, CommandSpec, FacetRefs, FanoutSpec,
-        NodeDefinition, NodeKind, ParallelStepState, SessionGate, SessionSpec, StepHistoryEntry,
+        NodeDefinition, NodeKind, NodeKindName, SessionGate, SessionSpec, StepHistoryEntry,
         TriggerSource, WorkflowDefinition, WorkflowExecutionState, STEP_STATE_ABORTED,
         STEP_STATE_COMPLETED, STEP_STATE_FAILED, STEP_STATE_RUNNING, STEP_STATE_WAITING_APPROVAL,
     };
@@ -824,6 +965,7 @@ mod tests {
     ) -> WorkflowStepContext {
         WorkflowStepContext {
             run_id: run_id.to_string(),
+            node_execution_id: format!("{run_id}:{step_name}:{run_index}"),
             workflow_name: "wf".to_string(),
             step_name: step_name.to_string(),
             run_index,
@@ -915,18 +1057,7 @@ mod tests {
             total_token_usage: Default::default(),
             step_states: HashMap::new(),
             step_outputs: HashMap::new(),
-            active_parallel_steps: vec![ParallelStepState {
-                step_name: "parallel-lint".to_string(),
-                state: STEP_STATE_RUNNING.to_string(),
-                session_id: Some("step-parallel".to_string()),
-                result: None,
-                run_index: 1,
-                completed_at: None,
-                structured_output: None,
-                artifact_contract: None,
-                failure_kind: None,
-                failure_disposition: None,
-            }],
+            node_executions: Vec::new(),
             approval_operations: None,
             stall_observations: Vec::new(),
             started_at: 1.0,
@@ -978,7 +1109,6 @@ mod tests {
                 session("step-plan", "old plan title", true),
                 session("step-build", "old build title", true),
                 session("step-child", "old child title", true),
-                session("step-parallel", "old parallel title", true),
                 session("unmatched-step", "orphan", true),
             ],
             vec![run("run-1", "Implement")],
@@ -1007,10 +1137,7 @@ mod tests {
             .map(|session| session.title.as_str())
             .collect::<Vec<_>>();
         titles.sort();
-        assert_eq!(
-            titles,
-            vec!["build", "child-review", "parallel-lint", "plan"]
-        );
+        assert_eq!(titles, vec!["build", "child-review", "plan"]);
         assert!(sessions
             .iter()
             .any(|session| session.id == "step-build" && session.run_index == Some(3)));
@@ -1026,7 +1153,7 @@ mod tests {
         snapshot.current_step_name = "wrong-state-step".to_string();
         snapshot.current_session_id = Some("ctx-plan".to_string());
         snapshot.step_history = Vec::new();
-        snapshot.active_parallel_steps = Vec::new();
+        snapshot.node_executions = Vec::new();
 
         let nodes = project_workspace_tree_nodes(
             vec![session_with_context(
@@ -1050,13 +1177,13 @@ mod tests {
     }
 
     #[test]
-    fn explicit_parallel_child_context_groups_sessions_under_parent_step() {
+    fn explicit_fanout_child_context_groups_sessions_under_parent_step_without_execution_state() {
         let archives = Vec::new();
         let mut snapshot = state("run-1");
         snapshot.state = WorkflowExecutionState::Completed;
         snapshot.current_session_id = None;
         snapshot.step_history = Vec::new();
-        snapshot.active_parallel_steps = Vec::new();
+        snapshot.node_executions = Vec::new();
         snapshot.workflow_definition.nodes = vec![fanout_node("parallel-review")];
 
         let nodes = project_workspace_tree_nodes(
@@ -1092,6 +1219,218 @@ mod tests {
                 .map(|session| (session.id.as_str(), session.title.as_str()))
                 .collect::<Vec<_>>(),
             vec![("child-b", "review-gpt55"), ("child-a", "review-opus")]
+        );
+    }
+
+    #[test]
+    fn matrix_fanout_children_with_the_same_name_are_distinct_node_execution_rows() {
+        let archives = Vec::new();
+        let mut snapshot = state("run-1");
+        snapshot.current_step_name = "parallel-review".to_string();
+        snapshot.current_session_id = None;
+        snapshot.step_history = Vec::new();
+        snapshot.node_executions = vec![
+            NodeExecution {
+                id: "ne-parent".to_string(),
+                execution_id: "run-1".to_string(),
+                node_name: "parallel-review".to_string(),
+                kind: NodeKindName::Fanout,
+                attempt: 1,
+                status: NodeExecutionStatus::Running,
+                session_id: None,
+                artifact: Some(serde_json::json!([])),
+                token_usage: None,
+                failure: None,
+                fanout_parent: None,
+                started_at: 1.0,
+                completed_at: None,
+            },
+            NodeExecution {
+                id: "ne-review-item-0".to_string(),
+                execution_id: "run-1".to_string(),
+                node_name: "review".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                status: NodeExecutionStatus::Running,
+                session_id: Some("matrix-session-0".to_string()),
+                artifact: Some(serde_json::json!({ "item": 0 })),
+                token_usage: None,
+                failure: None,
+                fanout_parent: Some(FanoutParentRef {
+                    parent_node: "parallel-review".to_string(),
+                    parent_attempt: 1,
+                    item_index: Some(0),
+                    child_index: 0,
+                }),
+                started_at: 2.0,
+                completed_at: None,
+            },
+            NodeExecution {
+                id: "ne-review-item-1".to_string(),
+                execution_id: "run-1".to_string(),
+                node_name: "review".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                status: NodeExecutionStatus::WaitingApproval,
+                session_id: Some("matrix-session-1".to_string()),
+                artifact: None,
+                token_usage: None,
+                failure: None,
+                fanout_parent: Some(FanoutParentRef {
+                    parent_node: "parallel-review".to_string(),
+                    parent_attempt: 1,
+                    item_index: Some(1),
+                    child_index: 0,
+                }),
+                started_at: 3.0,
+                completed_at: None,
+            },
+        ];
+        snapshot.approval_operations = Some(ApprovalOperations { can_approve: true });
+
+        let matrix_sessions = vec![
+            session("matrix-session-0", "old item zero", true),
+            session("matrix-session-1", "old item one", true),
+        ];
+        let workflow_sessions = matrix_sessions
+            .iter()
+            .cloned()
+            .map(|session| (session.id.clone(), session))
+            .collect::<HashMap<_, _>>();
+        let detail = workflow_step_detail_node(
+            run("run-1", "Implement"),
+            &workflow_sessions,
+            Some(&snapshot),
+            "ne-review-item-0",
+        )
+        .expect("matrix child detail");
+        assert_eq!(detail.artifact, Some(serde_json::json!({ "item": 0 })));
+
+        let nodes = project_workspace_tree_nodes(
+            matrix_sessions,
+            vec![run("run-1", "Implement")],
+            HashMap::from([("run-1".to_string(), Some(snapshot))]),
+            &archives,
+        );
+
+        let WorkspaceTreeNodeDto::Workflow(workflow) = &nodes[0] else {
+            panic!("expected workflow node");
+        };
+        let children = workflow
+            .steps
+            .iter()
+            .filter(|step| step.node_name == "review")
+            .collect::<Vec<_>>();
+
+        assert_eq!(children.len(), 2);
+        assert_eq!(children[0].id, "ne-review-item-0");
+        assert_eq!(children[1].id, "ne-review-item-1");
+        assert_eq!(
+            children[0].node_execution_id.as_deref(),
+            Some("ne-review-item-0")
+        );
+        assert_eq!(
+            children[1].node_execution_id.as_deref(),
+            Some("ne-review-item-1")
+        );
+        assert_eq!(children[0].session_id.as_deref(), Some("matrix-session-0"));
+        assert_eq!(children[1].session_id.as_deref(), Some("matrix-session-1"));
+        assert_eq!(
+            children[0].fanout_parent.as_ref().unwrap().item_index,
+            Some(0)
+        );
+        assert_eq!(
+            children[1].fanout_parent.as_ref().unwrap().item_index,
+            Some(1)
+        );
+        assert_eq!(children[1].can_approve, Some(true));
+        assert!(children.iter().all(|child| child.artifact.is_none()));
+
+        let value = serde_json::to_value(children[1]).expect("child row serializes");
+        assert_eq!(value["id"], "ne-review-item-1");
+        assert_eq!(value["nodeName"], "review");
+        assert_eq!(value["stepType"], "session");
+        assert_eq!(value["nodeExecutionStatus"], "waiting_approval");
+        assert_eq!(value["attempt"], 1);
+        assert_eq!(value["fanoutParent"]["parentNode"], "parallel-review");
+        assert_eq!(value["fanoutParent"]["itemIndex"], 1);
+        assert_eq!(value["fanoutParent"]["childIndex"], 0);
+    }
+
+    #[test]
+    fn waiting_approval_fanout_child_is_approvable_while_parent_workflow_remains_running() {
+        let mut snapshot = state("run-1");
+        snapshot.state = WorkflowExecutionState::Running;
+        snapshot.current_step_name = "review-fanout".to_string();
+        snapshot.current_session_id = None;
+        snapshot.step_history = Vec::new();
+        snapshot.approval_operations = None;
+        snapshot.node_executions = vec![
+            NodeExecution {
+                id: "ne-fanout-parent".to_string(),
+                execution_id: "run-1".to_string(),
+                node_name: "review-fanout".to_string(),
+                kind: NodeKindName::Fanout,
+                attempt: 1,
+                status: NodeExecutionStatus::Running,
+                session_id: None,
+                artifact: None,
+                token_usage: None,
+                failure: None,
+                fanout_parent: None,
+                started_at: 1.0,
+                completed_at: None,
+            },
+            NodeExecution {
+                id: "ne-review-child".to_string(),
+                execution_id: "run-1".to_string(),
+                node_name: "review".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                status: NodeExecutionStatus::WaitingApproval,
+                session_id: Some("review-child-session".to_string()),
+                artifact: None,
+                token_usage: None,
+                failure: None,
+                fanout_parent: Some(FanoutParentRef {
+                    parent_node: "review-fanout".to_string(),
+                    parent_attempt: 1,
+                    item_index: Some(0),
+                    child_index: 0,
+                }),
+                started_at: 2.0,
+                completed_at: None,
+            },
+        ];
+
+        let workflow = workflow_node(
+            run("run-1", "Review"),
+            &HashMap::new(),
+            Vec::new(),
+            Some(&snapshot),
+            false,
+        );
+
+        assert!(matches!(snapshot.state, WorkflowExecutionState::Running));
+        assert_eq!(workflow.status, "running");
+        let parent = workflow
+            .steps
+            .iter()
+            .find(|step| step.id == "ne-fanout-parent")
+            .expect("fanout parent row");
+        assert_eq!(parent.status, "running");
+        assert_eq!(parent.can_approve, None);
+
+        let child = workflow
+            .steps
+            .iter()
+            .find(|step| step.id == "ne-review-child")
+            .expect("waiting fanout child row");
+        assert_eq!(child.node_execution_status, Some("waiting_approval"));
+        assert_eq!(child.can_approve, Some(true));
+        assert_eq!(
+            serde_json::to_value(child).unwrap()["canApprove"],
+            serde_json::json!(true)
         );
     }
 
@@ -1149,7 +1488,7 @@ mod tests {
             child_outputs: None,
             state: STEP_STATE_COMPLETED.to_string(),
         }];
-        snapshot.active_parallel_steps = Vec::new();
+        snapshot.node_executions = Vec::new();
 
         let nodes = project_workspace_tree_nodes(
             vec![session_with_context(
@@ -1310,7 +1649,7 @@ mod tests {
             child_outputs: None,
             state: STEP_STATE_COMPLETED.to_string(),
         }];
-        snapshot.active_parallel_steps = Vec::new();
+        snapshot.node_executions = Vec::new();
 
         let archives = Vec::new();
         let nodes = project_workspace_tree_nodes(
@@ -1372,7 +1711,7 @@ mod tests {
             child_outputs: None,
             state: STEP_STATE_COMPLETED.to_string(),
         }];
-        snapshot.active_parallel_steps = Vec::new();
+        snapshot.node_executions = Vec::new();
         snapshot.workflow_definition.nodes = vec![
             command_node("script"),
             command_node("lint"),
@@ -1415,7 +1754,7 @@ mod tests {
         snapshot.current_session_id = None;
         snapshot.step_execution_counts = HashMap::new();
         snapshot.step_states = HashMap::new();
-        snapshot.active_parallel_steps = Vec::new();
+        snapshot.node_executions = Vec::new();
         snapshot.step_history = vec![StepHistoryEntry {
             step_name: "priority".to_string(),
             completed_at: 1.0,

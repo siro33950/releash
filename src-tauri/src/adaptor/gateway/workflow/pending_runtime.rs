@@ -40,6 +40,7 @@ pub(crate) trait PendingCommandRuntime<R: tauri::Runtime>: Send + Sync {
         run_id: &str,
         comment: Option<String>,
         node_name: &str,
+        node_execution_id: Option<&str>,
         commit_context: Option<CommandCommitContext>,
     ) -> Result<(), WorkflowEngineError>;
 
@@ -60,6 +61,7 @@ pub(crate) trait PendingCommandRuntime<R: tauri::Runtime>: Send + Sync {
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
         step_name: String,
+        node_execution_id: Option<String>,
         contract: String,
         structured_output: serde_json::Value,
         request_id: Option<String>,
@@ -133,6 +135,7 @@ where
         run_id: &str,
         comment: Option<String>,
         node_name: &str,
+        node_execution_id: Option<&str>,
         commit_context: Option<CommandCommitContext>,
     ) -> Result<(), WorkflowEngineError> {
         self.as_ref()
@@ -143,6 +146,7 @@ where
                 run_id,
                 comment,
                 node_name,
+                node_execution_id,
                 commit_context,
             )
             .await
@@ -176,6 +180,7 @@ where
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
         step_name: String,
+        node_execution_id: Option<String>,
         contract: String,
         structured_output: serde_json::Value,
         request_id: Option<String>,
@@ -188,6 +193,7 @@ where
                 agent_runtime,
                 run_id,
                 step_name,
+                node_execution_id,
                 contract,
                 structured_output,
                 request_id,
@@ -273,6 +279,7 @@ impl<R: tauri::Runtime> PendingCommandRuntime<R> for WorkflowRuntimeService {
         run_id: &str,
         comment: Option<String>,
         node_name: &str,
+        node_execution_id: Option<&str>,
         commit_context: Option<CommandCommitContext>,
     ) -> Result<(), WorkflowEngineError> {
         WorkflowRuntimeService::resolve_workflow_approval_with_commit_context(
@@ -283,6 +290,7 @@ impl<R: tauri::Runtime> PendingCommandRuntime<R> for WorkflowRuntimeService {
             run_id,
             comment,
             node_name,
+            node_execution_id,
             commit_context,
         )
         .await
@@ -316,6 +324,7 @@ impl<R: tauri::Runtime> PendingCommandRuntime<R> for WorkflowRuntimeService {
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         run_id: &str,
         step_name: String,
+        node_execution_id: Option<String>,
         contract: String,
         structured_output: serde_json::Value,
         request_id: Option<String>,
@@ -328,6 +337,7 @@ impl<R: tauri::Runtime> PendingCommandRuntime<R> for WorkflowRuntimeService {
             agent_runtime,
             run_id,
             step_name,
+            node_execution_id,
             contract,
             structured_output,
             request_id,

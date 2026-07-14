@@ -107,10 +107,13 @@ function stepDetail(
 		runId: "run-1",
 		worktreePath: "/repo",
 		title: "review",
+		nodeName: "review",
 		status: "running",
 		stepType: "fanout",
 		updatedAt: 1000,
 		runIndex: 1,
+		attempt: 1,
+		nodeExecutionId: "ne-review",
 		sessions: [
 			{
 				kind: "session",
@@ -330,8 +333,44 @@ describe("WorkflowView", () => {
 				runId: "run-1",
 				stepId: "run-1:review:1",
 				stepName: "review",
+				nodeExecutionId: "ne-review",
 			});
 		});
+	});
+
+	it("shows NodeExecution identity, fanout coordinates, session, and artifact", () => {
+		useWorkspaceWorkflowStepDetailMock.mockReturnValue(
+			stepDetailState({
+				id: "ne-review-item-2",
+				nodeExecutionId: "ne-review-item-2",
+				nodeName: "review",
+				title: "review",
+				stepType: "session",
+				attempt: 2,
+				sessionId: "session-item-2",
+				artifact: { verdict: "pass" },
+				fanoutParent: {
+					parentNode: "parallel-review",
+					parentAttempt: 1,
+					itemIndex: 2,
+					childIndex: 0,
+				},
+				sessions: [],
+			}),
+		);
+
+		render(<WorkflowView worktreePath="/repo" selectionRequest={selection} />);
+
+		expect(screen.getByText("ne-review-item-2")).toBeInTheDocument();
+		expect(screen.getByText("session-item-2")).toBeInTheDocument();
+		expect(screen.getByText("attempt 2")).toBeInTheDocument();
+		expect(
+			screen.getByText("parallel-review#1 · item 2 · child 0"),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: "Artifact" }),
+		).toBeInTheDocument();
+		expect(screen.getByText(/"verdict": "pass"/)).toBeInTheDocument();
 	});
 
 	it("keeps the action error icon after closing the error popup", async () => {

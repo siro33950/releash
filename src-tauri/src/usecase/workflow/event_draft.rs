@@ -133,22 +133,6 @@ fn lookup_node_artifact_contract(
         if node.get("name").and_then(Value::as_str) == Some(node_name) {
             return artifact_contract_from_node(node);
         }
-        if let Some(contract) = lookup_child_artifact_contract(
-            node.get("parallel_children"),
-            node_name,
-            "parallel_children",
-        )? {
-            return Ok(Some(contract));
-        }
-        if let Some(fanout) = node.get("fanout") {
-            if let Some(contract) = lookup_child_artifact_contract(
-                fanout.get("parallel_children"),
-                node_name,
-                "fanout.parallel_children",
-            )? {
-                return Ok(Some(contract));
-            }
-        }
     }
     Ok(None)
 }
@@ -162,59 +146,8 @@ fn workflow_contains_node(workflow: &Value, node_name: &str) -> Result<bool, Str
         if node.get("name").and_then(Value::as_str) == Some(node_name) {
             return Ok(true);
         }
-        if child_contains_node(
-            node.get("parallel_children"),
-            node_name,
-            "parallel_children",
-        )? {
-            return Ok(true);
-        }
-        if let Some(fanout) = node.get("fanout") {
-            if child_contains_node(
-                fanout.get("parallel_children"),
-                node_name,
-                "fanout.parallel_children",
-            )? {
-                return Ok(true);
-            }
-        }
     }
     Ok(false)
-}
-
-fn child_contains_node(
-    children: Option<&Value>,
-    node_name: &str,
-    field_path: &str,
-) -> Result<bool, String> {
-    let Some(children) = children else {
-        return Ok(false);
-    };
-    let children = children
-        .as_array()
-        .ok_or_else(|| format!("{field_path} must be an array"))?;
-    Ok(children
-        .iter()
-        .any(|child| child.get("name").and_then(Value::as_str) == Some(node_name)))
-}
-
-fn lookup_child_artifact_contract(
-    children: Option<&Value>,
-    node_name: &str,
-    field_path: &str,
-) -> Result<Option<String>, String> {
-    let Some(children) = children else {
-        return Ok(None);
-    };
-    let children = children
-        .as_array()
-        .ok_or_else(|| format!("{field_path} must be an array"))?;
-    for child in children {
-        if child.get("name").and_then(Value::as_str) == Some(node_name) {
-            return artifact_contract_from_node(child);
-        }
-    }
-    Ok(None)
 }
 
 fn artifact_contract_from_node(node: &Value) -> Result<Option<String>, String> {
@@ -319,7 +252,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_node_artifact_contract_from_drafts_reads_fanout_child_contract() {
+    fn resolve_node_artifact_contract_from_drafts_reads_top_level_fanout_child_contract() {
         let events = vec![WorkflowEventDraft {
             run_id: "run-1".to_string(),
             event_kind: "run_started".to_string(),
@@ -330,14 +263,17 @@ mod tests {
                     "description": "",
                     "builtin": false,
                     "variables": {},
-                    "nodes": [{
-                        "name": "review",
+                    "nodes": [
+                    {
+                        "name": "review-fanout",
                         "fanout": {
-                            "parallel_children": [{
-                                "name": "security-review",
-                                "artifact": "review-verdict"
-                            }]
+                            "child": "security-review"
                         }
+                    },
+                    {
+                        "name": "security-review",
+                        "session": {},
+                        "artifact": "review-verdict"
                     }]
                 }
             }),
@@ -345,7 +281,7 @@ mod tests {
 
         let contract =
             resolve_node_artifact_contract_from_drafts(&events, "security-review", "run-1")
-                .expect("fanout child contract should resolve");
+                .expect("top-level fanout child contract should resolve");
 
         assert_eq!(contract, "review-verdict");
     }

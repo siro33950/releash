@@ -54,6 +54,8 @@ pub enum PendingCommandPayload {
     Approve {
         node_name: String,
         #[serde(skip_serializing_if = "Option::is_none", default)]
+        node_execution_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
         comment: Option<String>,
     },
     Abort {
@@ -64,6 +66,8 @@ pub enum PendingCommandPayload {
     /// engine 側 dispatcher が submit-output runtime primitive に変換する。
     SubmitOutput {
         step_name: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        node_execution_id: Option<String>,
         contract: String,
         structured_output: serde_json::Value,
     },
@@ -739,6 +743,7 @@ mod tests {
     fn approve_payload() -> CliRequestPayload {
         CliRequestPayload::Approve {
             node_name: "review".to_string(),
+            node_execution_id: Some("node-execution-review".to_string()),
             comment: Some("looks good".to_string()),
         }
     }
@@ -820,12 +825,41 @@ mod tests {
             approve_payload(),
             abort_payload(Some("review")),
             abort_payload(None),
+            CliRequestPayload::SubmitOutput {
+                step_name: "review".to_string(),
+                node_execution_id: Some("node-execution-review".to_string()),
+                contract: "review-verdict".to_string(),
+                structured_output: serde_json::json!({"verdict": "LGTM"}),
+            },
         ] {
             let cmd = PendingCommand::new(test_uuid(10), p.clone(), 1.0);
             let json = serde_json::to_string(&cmd).unwrap();
             let back: PendingCommand = serde_json::from_str(&json).unwrap();
             assert_eq!(back, cmd);
         }
+    }
+
+    #[test]
+    fn payload_accepts_missing_node_execution_id_for_single_name_fallback() {
+        let json = serde_json::json!({
+            "id": test_uuid(13),
+            "run_id": test_uuid(14),
+            "payload": {
+                "kind": "approve",
+                "node_name": "review"
+            },
+            "requested_at": 1.0
+        });
+
+        let command: PendingCommand = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            command.payload,
+            PendingCommandPayload::Approve {
+                node_name: "review".to_string(),
+                node_execution_id: None,
+                comment: None,
+            }
+        );
     }
 
     #[test]

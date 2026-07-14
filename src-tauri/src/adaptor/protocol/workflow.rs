@@ -58,8 +58,8 @@ pub struct WorkflowStateFieldsView {
     pub step_states: HashMap<String, String>,
     #[serde(default)]
     pub step_outputs: HashMap<String, StepOutputView>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub active_parallel_steps: Vec<ParallelStepStateView>,
+    #[serde(default)]
+    pub node_executions: Vec<NodeExecutionView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval_operations: Option<ApprovalOperationsView>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -108,7 +108,7 @@ pub struct ApprovalOperationsView {
     pub can_approve: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenUsageView {
     pub input_tokens: u64,
@@ -172,9 +172,18 @@ pub struct WorkflowSessionSpecView {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct WorkflowFanoutSpecView {
-    pub parallel_children: Vec<WorkflowInterimChildView>,
+    pub child: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub items: Option<WorkflowItemsSourceView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aggregate: Option<WorkflowAggregateConfigView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum WorkflowItemsSourceView {
+    Literal(Vec<serde_json::Value>),
+    ArtifactField(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -198,22 +207,6 @@ pub struct WorkflowNodeDefinitionView {
     // 共通: rules は空配列でも送る（frontend では非 optional として扱う）
     #[serde(default)]
     pub rules: Vec<WorkflowRuleView>,
-}
-
-/// fanout 配下の暫定 child API 表現。子は暗黙に session 扱い。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct WorkflowInterimChildView {
-    pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub permission: Option<String>,
-    #[serde(default, skip_serializing_if = "WorkflowFacetRefsView::is_empty")]
-    pub facets: WorkflowFacetRefsView,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub artifact: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -307,26 +300,55 @@ pub struct ChildOutputSnapshotView {
     pub failure_disposition: Option<FailureDisposition>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeExecutionStatusView {
+    Running,
+    WaitingApproval,
+    Succeeded,
+    Failed,
+    Aborted,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct ParallelStepStateView {
-    pub step_name: String,
-    pub state: String,
+pub struct FanoutParentRefView {
+    pub parent_node: String,
+    pub parent_attempt: u32,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub item_index: Option<usize>,
+    pub child_index: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeExecutionFailureView {
+    pub reason: String,
+    pub kind: WorkflowStepFailureKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeExecutionView {
+    pub id: String,
+    pub execution_id: String,
+    pub node_name: String,
+    pub kind: WorkflowNodeKindView,
+    pub attempt: u32,
+    pub status: NodeExecutionStatusView,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub result: Option<String>,
-    pub run_index: u32,
+    pub artifact: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub token_usage: Option<TokenUsageView>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub failure: Option<NodeExecutionFailureView>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub fanout_parent: Option<FanoutParentRefView>,
+    pub started_at: f64,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub completed_at: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub structured_output: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub artifact_contract: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub failure_kind: Option<WorkflowStepFailureKind>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub failure_disposition: Option<FailureDisposition>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -373,7 +395,7 @@ mod tests {
             total_token_usage: TokenUsageView::default(),
             step_states: HashMap::new(),
             step_outputs: HashMap::new(),
-            active_parallel_steps: Vec::new(),
+            node_executions: Vec::new(),
             approval_operations: None,
             stall_observations: Vec::new(),
             started_at: 1.0,
@@ -406,6 +428,7 @@ mod tests {
         );
         assert!(value["runtimeStates"][session_id]["runtime_active"].is_null());
         assert!(value["runtimeStates"][session_id]["tab_open"].is_null());
+        assert_eq!(value["nodeExecutions"], serde_json::json!([]));
     }
 
     #[test]
@@ -447,6 +470,37 @@ mod tests {
     }
 
     #[test]
+    fn workflow_fanout_spec_view_serializes_literal_and_reference_items() {
+        let literal = WorkflowFanoutSpecView {
+            child: vec!["worker".to_string()],
+            items: Some(WorkflowItemsSourceView::Literal(vec![
+                serde_json::json!("first"),
+                serde_json::json!("second"),
+            ])),
+            aggregate: None,
+        };
+        assert_eq!(
+            serde_json::to_value(literal).unwrap(),
+            serde_json::json!({"child": ["worker"], "items": ["first", "second"]})
+        );
+
+        let reference = WorkflowFanoutSpecView {
+            child: vec!["worker-a".to_string(), "worker-b".to_string()],
+            items: Some(WorkflowItemsSourceView::ArtifactField(
+                "scan.items".to_string(),
+            )),
+            aggregate: None,
+        };
+        assert_eq!(
+            serde_json::to_value(reference).unwrap(),
+            serde_json::json!({
+                "child": ["worker-a", "worker-b"],
+                "items": "scan.items"
+            })
+        );
+    }
+
+    #[test]
     fn child_output_snapshot_view_exposes_failed_child_contract() {
         let view = ChildOutputSnapshotView {
             step_name: "review-a".to_string(),
@@ -469,25 +523,43 @@ mod tests {
     }
 
     #[test]
-    fn parallel_step_state_view_exposes_live_partial_failure_contract() {
-        let view = ParallelStepStateView {
-            step_name: "review-a".to_string(),
-            state: STEP_STATE_FAILED_VIEW.to_string(),
+    fn node_execution_view_exposes_fanout_identity_artifact_and_failure() {
+        let view = NodeExecutionView {
+            id: "ne-000042".to_string(),
+            execution_id: "exec-1".to_string(),
+            node_name: "review".to_string(),
+            kind: WorkflowNodeKindView::Session,
+            attempt: 2,
+            status: NodeExecutionStatusView::Failed,
             session_id: Some("session-a".to_string()),
-            result: Some("model_refusal".to_string()),
-            run_index: 1,
-            completed_at: None,
-            structured_output: None,
-            artifact_contract: None,
-            failure_kind: Some(WorkflowStepFailureKind::ModelRefusal),
-            failure_disposition: Some(FailureDisposition::Partial),
+            artifact: Some(serde_json::json!({ "verdict": "needs_fix" })),
+            token_usage: None,
+            failure: Some(NodeExecutionFailureView {
+                reason: "model_refusal".to_string(),
+                kind: WorkflowStepFailureKind::ModelRefusal,
+            }),
+            fanout_parent: Some(FanoutParentRefView {
+                parent_node: "review-all".to_string(),
+                parent_attempt: 1,
+                item_index: Some(3),
+                child_index: 0,
+            }),
+            started_at: 1.0,
+            completed_at: Some(2.0),
         };
 
-        let value = serde_json::to_value(view).expect("parallel step serializes");
+        let value = serde_json::to_value(view).expect("node execution serializes");
 
-        assert_eq!(value["state"], "failed");
-        assert_eq!(value["failureKind"], "model_refusal");
-        assert_eq!(value["failureDisposition"], "partial");
+        assert_eq!(value["id"], "ne-000042");
+        assert_eq!(value["nodeName"], "review");
+        assert_eq!(value["kind"], "session");
+        assert_eq!(value["status"], "failed");
+        assert_eq!(value["artifact"]["verdict"], "needs_fix");
+        assert_eq!(value["failure"]["kind"], "model_refusal");
+        assert_eq!(value["fanoutParent"]["parentNode"], "review-all");
+        assert_eq!(value["fanoutParent"]["parentAttempt"], 1);
+        assert_eq!(value["fanoutParent"]["itemIndex"], 3);
+        assert_eq!(value["fanoutParent"]["childIndex"], 0);
     }
 
     /// [02] schema 境界: 旧表現（`workflowDefinition.steps`）を含む WorkflowState JSON は

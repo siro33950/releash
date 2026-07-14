@@ -7,6 +7,7 @@ use crate::adaptor::gateway::workflow::failure_wire::{
     submission_violation_reason, SubmissionViolation,
 };
 use crate::adaptor::gateway::workflow::runtime_state::{LoopGuardResult, TurnCompleteAction};
+use crate::adaptor::gateway::workflow::state::FanoutParentRef;
 use crate::domain::agent_session::entities::PermissionResponse;
 use crate::domain::agent_session::gateway::{
     AgentBackend, AgentBackendError, AgentRuntimeEvent, AgentSessionRuntime, ForkSessionRequest,
@@ -23,6 +24,32 @@ use tauri::{Listener, Manager};
 const TEST_PARENT_SESSION_ID: &str = "11111111-1111-4111-8111-111111111111";
 const TEST_STEP_SESSION_ID: &str = "22222222-2222-4222-8222-222222222222";
 const TEST_REGULAR_SESSION_ID: &str = "33333333-3333-4333-8333-333333333333";
+
+fn node_execution_fixture(
+    execution_id: &str,
+    id: &str,
+    node_name: &str,
+    attempt: u32,
+    status: NodeExecutionStatus,
+    session_id: Option<&str>,
+    fanout_parent: Option<FanoutParentRef>,
+) -> NodeExecution {
+    NodeExecution {
+        id: id.to_string(),
+        execution_id: execution_id.to_string(),
+        node_name: node_name.to_string(),
+        kind: NodeKindName::Session,
+        attempt,
+        status,
+        session_id: session_id.map(str::to_string),
+        artifact: None,
+        token_usage: None,
+        failure: None,
+        fanout_parent,
+        started_at: 1000.0,
+        completed_at: None,
+    }
+}
 
 struct WorkflowMockBackend {
     backend_id: String,
@@ -431,32 +458,38 @@ async fn terminal_state_cleanup_targets_current_and_parallel_step_sessions() {
         )
         .await;
     exec.current_session_id = Some("current-step-session".to_string());
-    exec.active_parallel_steps = vec![
-        ParallelStepState {
-            step_name: "review-a".to_string(),
-            state: STEP_STATE_RUNNING.to_string(),
-            session_id: Some("parallel-a-session".to_string()),
-            result: None,
-            run_index: 1,
-            completed_at: None,
-            structured_output: None,
-            artifact_contract: None,
-            failure_kind: None,
-            failure_disposition: None,
-        },
-        ParallelStepState {
-            step_name: "review-b".to_string(),
-            state: STEP_STATE_RUNNING.to_string(),
-            session_id: Some("parallel-b-session".to_string()),
-            result: None,
-            run_index: 1,
-            completed_at: None,
-            structured_output: None,
-            artifact_contract: None,
-            failure_kind: None,
-            failure_disposition: None,
-        },
-    ];
+    exec.node_executions[0].session_id = exec.current_session_id.clone();
+    let execution_id = exec.execution_id.clone();
+    exec.node_executions.extend([
+        node_execution_fixture(
+            &execution_id,
+            "node-execution-review-a",
+            "review-a",
+            1,
+            NodeExecutionStatus::Running,
+            Some("parallel-a-session"),
+            Some(FanoutParentRef {
+                parent_node: "parallel-review".to_string(),
+                parent_attempt: 1,
+                item_index: None,
+                child_index: 0,
+            }),
+        ),
+        node_execution_fixture(
+            &execution_id,
+            "node-execution-review-b",
+            "review-b",
+            1,
+            NodeExecutionStatus::Running,
+            Some("parallel-b-session"),
+            Some(FanoutParentRef {
+                parent_node: "parallel-review".to_string(),
+                parent_attempt: 1,
+                item_index: None,
+                child_index: 1,
+            }),
+        ),
+    ]);
 
     assert_eq!(
         workflow_runtime_commit::terminal_step_session_ids(&exec),
@@ -611,6 +644,15 @@ fn make_minimal_approval_exec(
         current_session_id: Some(current_session_id.to_string()),
         current_step_token_usage: TokenUsage::default(),
         step_outputs: HashMap::new(),
+        node_executions: vec![node_execution_fixture(
+            execution_id,
+            "node-execution-approval",
+            step_name,
+            1,
+            NodeExecutionStatus::WaitingApproval,
+            Some(current_session_id),
+            None,
+        )],
         task: None,
         parallel_run: None,
         current_stall_observations: Vec::new(),
@@ -623,14 +665,16 @@ fn make_minimal_approval_exec(
 }
 
 #[test]
-fn current_step_for_stall_observation_ignores_terminal_parallel_children() {
+fn current_step_for_stall_observation_ignores_terminal_fanout_children() {
     let mut exec = make_minimal_approval_exec("run-stall-lookup", "regular-session", "review");
     exec.current_session_id = None;
     exec.parallel_run = Some(ParallelRunState {
         parent_step_name: "parallel-review".to_string(),
+        parent_node_execution_id: "node-execution-parallel-review".to_string(),
         aggregate: None,
         children: vec![
             ParallelChildRun {
+                node_execution_id: "node-execution-running-child".to_string(),
                 step_name: "running-child".to_string(),
                 session_id: "running-session".to_string(),
                 state: ParallelChildState::Running,
@@ -641,8 +685,10 @@ fn current_step_for_stall_observation_ignores_terminal_parallel_children() {
                 failure_disposition: None,
                 token_usage: TokenUsage::default(),
                 run_index: 2,
+                completed_at: None,
             },
             ParallelChildRun {
+                node_execution_id: "node-execution-completed-child".to_string(),
                 step_name: "completed-child".to_string(),
                 session_id: "completed-session".to_string(),
                 state: ParallelChildState::Completed,
@@ -653,8 +699,10 @@ fn current_step_for_stall_observation_ignores_terminal_parallel_children() {
                 failure_disposition: None,
                 token_usage: TokenUsage::default(),
                 run_index: 1,
+                completed_at: Some(1000.0),
             },
             ParallelChildRun {
+                node_execution_id: "node-execution-failed-child".to_string(),
                 step_name: "failed-child".to_string(),
                 session_id: "failed-session".to_string(),
                 state: ParallelChildState::Failed,
@@ -665,6 +713,7 @@ fn current_step_for_stall_observation_ignores_terminal_parallel_children() {
                 failure_disposition: Some(FailureDisposition::Partial),
                 token_usage: TokenUsage::default(),
                 run_index: 1,
+                completed_at: Some(1000.0),
             },
         ],
     });
@@ -744,15 +793,18 @@ async fn agent_stall_observed_updates_workflow_state_without_completing_step() {
             WorkflowEvent::NodeStarted {
                 run_id: run_id.clone(),
                 workflow_name: exec.workflow.name.clone(),
+                node_execution_id: "node-execution-stall".to_string(),
                 node_name: step_name.to_string(),
-                execution_count: 1,
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: None,
                 timestamp: exec.started_at,
             },
-            WorkflowEvent::StepSessionStarted {
+            WorkflowEvent::SessionAttached {
                 run_id: run_id.clone(),
                 workflow_name: exec.workflow.name.clone(),
+                node_execution_id: "node-execution-stall".to_string(),
                 node_name: step_name.to_string(),
-                execution_count: 1,
                 session_id: session_id.to_string(),
                 timestamp: exec.started_at,
             },
@@ -1104,13 +1156,14 @@ fn make_approval_gated_session(name: &str, instruction: &str, rules: Vec<Rule>) 
 
 fn make_fanout_step(
     name: &str,
-    children: Vec<InterimChild>,
+    children: Vec<&str>,
     aggregate: Option<ParallelAggregate>,
 ) -> NodeDefinition {
     NodeDefinition {
         name: name.to_string(),
         kind: NodeKind::Fanout(FanoutSpec {
-            parallel_children: children,
+            child: children.into_iter().map(str::to_string).collect(),
+            items: None,
             aggregate,
         }),
         ..Default::default()
@@ -1187,13 +1240,12 @@ fn instruction_contents(
     }
 }
 
-/// テストヘルパー: 並列子 node の facet 参照を解決する。
-/// `crate::adaptor::gateway::workflow::facet::resolve_child_facets` への委譲。
-fn resolve_child_facets_for_test(
-    child: &crate::adaptor::gateway::workflow::schema::InterimChild,
+/// テストヘルパー: fanout child node の facet 参照を解決する。
+fn resolve_fanout_child_facets_for_test(
+    child: &NodeDefinition,
     base_dir: &std::path::Path,
 ) -> crate::adaptor::gateway::workflow::facet::FacetContents {
-    crate::adaptor::gateway::workflow::facet::resolve_child_facets(child, base_dir)
+    crate::adaptor::gateway::workflow::facet::resolve_node_facets(child, base_dir)
         .expect("facet refs must resolve in tests; missing facet indicates a fixture bug")
 }
 
@@ -1254,6 +1306,7 @@ fn workflow_execution_to_workflow_state() {
         current_session_id: None,
         current_step_token_usage: TokenUsage::default(),
         step_outputs: HashMap::new(),
+        node_executions: Vec::new(),
         task: None,
         parallel_run: None,
         current_stall_observations: Vec::new(),
@@ -1290,6 +1343,7 @@ fn is_active_running() {
         current_session_id: None,
         current_step_token_usage: TokenUsage::default(),
         step_outputs: HashMap::new(),
+        node_executions: Vec::new(),
         task: None,
         parallel_run: None,
         current_stall_observations: Vec::new(),
@@ -1316,6 +1370,7 @@ fn is_active_waiting_approval() {
         current_session_id: None,
         current_step_token_usage: TokenUsage::default(),
         step_outputs: HashMap::new(),
+        node_executions: Vec::new(),
         task: None,
         parallel_run: None,
         current_stall_observations: Vec::new(),
@@ -1342,6 +1397,7 @@ fn is_active_completed() {
         current_session_id: None,
         current_step_token_usage: TokenUsage::default(),
         step_outputs: HashMap::new(),
+        node_executions: Vec::new(),
         task: None,
         parallel_run: None,
         current_stall_observations: Vec::new(),
@@ -1372,6 +1428,7 @@ fn is_active_failed() {
         current_session_id: None,
         current_step_token_usage: TokenUsage::default(),
         step_outputs: HashMap::new(),
+        node_executions: Vec::new(),
         task: None,
         parallel_run: None,
         current_stall_observations: Vec::new(),
@@ -1398,6 +1455,7 @@ fn is_active_aborted() {
         current_session_id: None,
         current_step_token_usage: TokenUsage::default(),
         step_outputs: HashMap::new(),
+        node_executions: Vec::new(),
         task: None,
         parallel_run: None,
         current_stall_observations: Vec::new(),
@@ -1427,6 +1485,7 @@ fn to_workflow_state_waiting_approval() {
         current_session_id: None,
         current_step_token_usage: TokenUsage::default(),
         step_outputs: HashMap::new(),
+        node_executions: Vec::new(),
         task: None,
         parallel_run: None,
         current_stall_observations: Vec::new(),
@@ -1450,7 +1509,7 @@ fn to_workflow_state_waiting_approval_exposes_approval_operation() {
         id: "exec-1".to_string(),
         workflow,
         state: WorkflowExecutionState::WaitingApproval,
-        current_step_index: 0,
+        current_step_index: 3,
         step_execution_counts: HashMap::new(),
         step_history: Vec::new(),
         started_at: 1000.0,
@@ -1458,6 +1517,7 @@ fn to_workflow_state_waiting_approval_exposes_approval_operation() {
         current_session_id: None,
         current_step_token_usage: TokenUsage::default(),
         step_outputs: HashMap::new(),
+        node_executions: Vec::new(),
         task: None,
         parallel_run: None,
         current_stall_observations: Vec::new(),
@@ -1501,6 +1561,7 @@ fn to_workflow_state_failed() {
         current_session_id: None,
         current_step_token_usage: TokenUsage::default(),
         step_outputs: HashMap::new(),
+        node_executions: Vec::new(),
         task: None,
         parallel_run: None,
         current_stall_observations: Vec::new(),
@@ -1538,6 +1599,7 @@ fn to_workflow_state_aborted() {
         current_session_id: None,
         current_step_token_usage: TokenUsage::default(),
         step_outputs: HashMap::new(),
+        node_executions: Vec::new(),
         task: None,
         parallel_run: None,
         current_stall_observations: Vec::new(),
@@ -1566,6 +1628,7 @@ fn to_workflow_state_completed() {
         current_session_id: None,
         current_step_token_usage: TokenUsage::default(),
         step_outputs: HashMap::new(),
+        node_executions: Vec::new(),
         task: None,
         parallel_run: None,
         current_stall_observations: Vec::new(),
@@ -1627,6 +1690,7 @@ fn make_exec(step_index: usize) -> WorkflowExecution {
         step_execution_counts: HashMap::new(),
         step_history: Vec::new(),
         step_outputs: HashMap::new(),
+        node_executions: Vec::new(),
         started_at: 1000.0,
         updated_at: 1000.0,
         current_session_id: None,
@@ -1651,6 +1715,7 @@ fn workflow_exec(workflow: Workflow, step_index: usize) -> WorkflowExecution {
         step_execution_counts: HashMap::new(),
         step_history: Vec::new(),
         step_outputs: HashMap::new(),
+        node_executions: Vec::new(),
         started_at: 1000.0,
         updated_at: 1000.0,
         current_session_id: None,
@@ -2822,6 +2887,7 @@ fn approved_policy_workflow_event_log_readback_redacts_sensitive_values() {
     log.append(&WorkflowEvent::NodeCompleted {
         run_id: exec.id.clone(),
         workflow_name: exec.workflow.name.clone(),
+        node_execution_id: "node-execution-policy-review".to_string(),
         node_name: entry.step_name.clone(),
         result: entry.result.clone(),
         session_id: entry.session_id.clone(),
@@ -3519,6 +3585,7 @@ fn insert_single_step_execution(
     execs: &mut HashMap<String, WorkflowExecution>,
     step: NodeDefinition,
 ) {
+    let node_name = step.name.clone();
     let workflow = Workflow {
         name: "regression-workflow".to_string(),
         description: "regression test".to_string(),
@@ -3531,13 +3598,22 @@ fn insert_single_step_execution(
         workflow,
         state: WorkflowExecutionState::Running,
         current_step_index: 0,
-        step_execution_counts: HashMap::new(),
+        step_execution_counts: HashMap::from([(node_name.clone(), 1)]),
         step_history: Vec::new(),
         started_at: 1000.0,
         updated_at: 1000.0,
         current_session_id: None,
         current_step_token_usage: TokenUsage::default(),
         step_outputs: HashMap::new(),
+        node_executions: vec![node_execution_fixture(
+            "exec-id",
+            "node-execution-current",
+            &node_name,
+            1,
+            NodeExecutionStatus::Running,
+            None,
+            None,
+        )],
         task: None,
         parallel_run: None,
         current_stall_observations: Vec::new(),
@@ -3705,6 +3781,7 @@ async fn start_step_session_with_deps_invokes_side_effects_in_order_on_success()
         deps.created_contexts(),
         vec![WorkflowStepContext {
             run_id: "exec-id".to_string(),
+            node_execution_id: "node-execution-current".to_string(),
             workflow_name: "regression-workflow".to_string(),
             step_name: "ok-step".to_string(),
             run_index: 1,
@@ -3833,18 +3910,21 @@ async fn start_step_session_with_deps_propagates_node_session_append_failure() {
     );
 }
 
-// ---- build_parallel_step_prompt (並列子ステップの合成ルール) ----
+// ---- build_fanout_child_prompt (fanout child の合成ルール) ----
 
-fn make_parallel_step(name: &str) -> crate::adaptor::gateway::workflow::schema::InterimChild {
-    crate::adaptor::gateway::workflow::schema::InterimChild {
+fn make_fanout_child(name: &str) -> NodeDefinition {
+    NodeDefinition {
         name: name.to_string(),
-        permission: Some("edit".to_string()),
-        ..crate::adaptor::gateway::workflow::schema::InterimChild::default()
+        kind: NodeKind::Session(SessionSpec {
+            permission: Some("edit".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
     }
 }
 
 #[test]
-fn build_parallel_step_prompt_splits_facets_into_system_and_user() {
+fn build_fanout_child_prompt_splits_facets_into_system_and_user() {
     // Scenario: 並列ステップの子ステップでも同じ合成ルールが適用される
     // 並列子ステップに policy / knowledge / instruction と artifact を指定し、
     // policy が system_prompt に、knowledge + instruction + artifact action が user_message に
@@ -3864,19 +3944,25 @@ fn build_parallel_step_prompt_splits_facets_into_system_and_user() {
     std::fs::write(instructions.join("inst.md"), "PARALLEL_INSTRUCTION_BODY").unwrap();
     std::fs::write(contracts.join("oc.md"), "PARALLEL_CONTRACT_BODY").unwrap();
 
-    let mut ps = make_parallel_step("child");
-    ps.facets.policy = Some("pol".to_string());
-    ps.facets.knowledge = Some("know".to_string());
-    ps.facets.instruction = Some("inst".to_string());
-    ps.artifact = Some("oc".to_string());
-    let facet_contents = resolve_child_facets_for_test(&ps, base);
-    let (system_prompt, user_message) = workflow_prompt::build_parallel_step_prompt(
-        &ps,
+    let mut child = make_fanout_child("child");
+    set_session_facets(
+        &mut child,
+        FacetRefs {
+            policy: Some("pol".to_string()),
+            knowledge: Some("know".to_string()),
+            instruction: Some("inst".to_string()),
+        },
+    );
+    child.artifact = Some("oc".to_string());
+    let facet_contents = resolve_fanout_child_facets_for_test(&child, base);
+    let (system_prompt, user_message) = workflow_prompt::build_fanout_child_prompt(
+        &child,
         Some(&facet_contents),
         "11111111-1111-1111-1111-111111111111",
         None,
         &HashMap::new(),
         None,
+        "22222222-2222-4222-8222-222222222222",
     )
     .unwrap();
 
@@ -3889,8 +3975,8 @@ fn build_parallel_step_prompt_splits_facets_into_system_and_user() {
     // knowledge / instruction と Artifact 由来の完了時アクションは user_message に集約される。
     assert!(user_message.contains("PARALLEL_KNOWLEDGE_BODY"));
     assert!(user_message.contains("PARALLEL_INSTRUCTION_BODY"));
-    let instruction = workflow_prompt::render_child_workflow_instruction(
-        &ps,
+    let instruction = workflow_prompt::render_fanout_child_workflow_instruction(
+        &child,
         Some(&facet_contents),
         None,
         &HashMap::new(),
@@ -3910,7 +3996,7 @@ fn build_parallel_step_prompt_splits_facets_into_system_and_user() {
 }
 
 #[test]
-fn build_parallel_step_prompt_no_policy_or_contract_returns_none_system_prompt() {
+fn build_fanout_child_prompt_no_policy_or_contract_returns_none_system_prompt() {
     // 並列子ステップでも policy がない場合は system_prompt が None になる。
     let tmp = tempfile::TempDir::new().unwrap();
     let base = tmp.path();
@@ -3918,23 +4004,24 @@ fn build_parallel_step_prompt_no_policy_or_contract_returns_none_system_prompt()
     std::fs::create_dir_all(&instructions).unwrap();
     std::fs::write(instructions.join("inst.md"), "INSTR").unwrap();
 
-    let mut ps = make_parallel_step("child");
-    ps.facets.instruction = Some("inst".to_string());
-    let facet_contents = resolve_child_facets_for_test(&ps, base);
-    let (system_prompt, user_message) = workflow_prompt::build_parallel_step_prompt(
-        &ps,
+    let mut child = make_fanout_child("child");
+    child.session_mut().unwrap().facets.instruction = Some("inst".to_string());
+    let facet_contents = resolve_fanout_child_facets_for_test(&child, base);
+    let (system_prompt, user_message) = workflow_prompt::build_fanout_child_prompt(
+        &child,
         Some(&facet_contents),
         "11111111-1111-1111-1111-111111111111",
         None,
         &HashMap::new(),
         None,
+        "22222222-2222-4222-8222-222222222222",
     )
     .unwrap();
 
     assert!(system_prompt.is_none());
     assert!(user_message.contains("INSTR"));
-    let instruction = workflow_prompt::render_child_workflow_instruction(
-        &ps,
+    let instruction = workflow_prompt::render_fanout_child_workflow_instruction(
+        &child,
         Some(&facet_contents),
         None,
         &HashMap::new(),
@@ -3969,6 +4056,7 @@ fn make_approval_exec(state: WorkflowExecutionState, rules: Vec<Rule>) -> Workfl
         current_session_id: None,
         current_step_token_usage: TokenUsage::default(),
         step_outputs: HashMap::new(),
+        node_executions: Vec::new(),
         task: None,
         parallel_run: None,
         current_stall_observations: Vec::new(),
@@ -4382,6 +4470,7 @@ fn apply_approval_application_records_approved_policy_and_advances_once() {
         current_session_id: Some("policy-session".to_string()),
         current_step_token_usage: TokenUsage::default(),
         step_outputs: HashMap::new(),
+        node_executions: Vec::new(),
         task: None,
         parallel_run: None,
         current_stall_observations: Vec::new(),
@@ -4472,6 +4561,7 @@ fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
         current_session_id: Some("policy-session".to_string()),
         current_step_token_usage: TokenUsage::default(),
         step_outputs: HashMap::new(),
+        node_executions: Vec::new(),
         task: None,
         parallel_run: None,
         current_stall_observations: Vec::new(),
@@ -4591,6 +4681,7 @@ async fn execute_outcome_auto_approve_persist_adopts_policy_and_starts_fix_once(
         current_session_id: Some(policy_session_id.clone()),
         current_step_token_usage: TokenUsage::default(),
         step_outputs: HashMap::new(),
+        node_executions: Vec::new(),
         task: None,
         parallel_run: None,
         current_stall_observations: Vec::new(),
@@ -4718,6 +4809,7 @@ fn make_normal_step_exec_with_stall_observation() -> WorkflowExecution {
         current_session_id: Some("normal-session".to_string()),
         current_step_token_usage: TokenUsage::default(),
         step_outputs: HashMap::new(),
+        node_executions: Vec::new(),
         task: None,
         parallel_run: None,
         current_stall_observations: Vec::new(),
@@ -4773,6 +4865,7 @@ fn make_step_history_entry_saves_contract_result_to_step_output() {
         current_session_id: Some("session-1".to_string()),
         current_step_token_usage: TokenUsage::default(),
         step_outputs: HashMap::new(),
+        node_executions: Vec::new(),
         task: None,
         parallel_run: None,
         current_stall_observations: Vec::new(),
@@ -4823,6 +4916,7 @@ fn make_step_history_entry_no_structured_output_no_step_output() {
         current_session_id: Some("session-1".to_string()),
         current_step_token_usage: TokenUsage::default(),
         step_outputs: HashMap::new(),
+        node_executions: Vec::new(),
         task: None,
         parallel_run: None,
         current_stall_observations: Vec::new(),
@@ -4891,6 +4985,7 @@ fn on_exhausted_transitions_to_fallback_step() {
         },
         step_history: vec![],
         step_outputs: HashMap::new(),
+        node_executions: Vec::new(),
         started_at: 1000.0,
         updated_at: 1000.0,
         current_session_id: None,
@@ -4928,6 +5023,7 @@ fn check_loop_guard_exceeded_with_on_exhausted() {
         },
         step_history: vec![],
         step_outputs: HashMap::new(),
+        node_executions: Vec::new(),
         started_at: 1000.0,
         updated_at: 1000.0,
         current_session_id: None,
@@ -4999,6 +5095,7 @@ fn on_exhausted_chain_transitions() {
         },
         step_history: vec![],
         step_outputs: HashMap::new(),
+        node_executions: Vec::new(),
         started_at: 1000.0,
         updated_at: 1000.0,
         current_session_id: None,
@@ -5169,14 +5266,11 @@ fn apply_transition_clears_step_outputs_for_target_step() {
 }
 
 #[test]
-fn apply_transition_to_parallel_block_clears_block_and_children() {
-    // 並列ブロックへの遷移では、ブロック自身と全子 step の前回出力が破棄される。
-    let parallel_block = make_fanout_step(
+fn apply_transition_to_fanout_clears_parent_output_without_child_map_entries() {
+    // fanout child artifact は親配列だけに保持されるため、node 名 output map では親だけを消す。
+    let fanout = make_fanout_step(
         "code_review_parallel",
-        vec![
-            make_parallel_step("review_security"),
-            make_parallel_step("review_style"),
-        ],
+        vec!["review_security", "review_style"],
         None,
     );
     let wf = Workflow {
@@ -5186,7 +5280,9 @@ fn apply_transition_to_parallel_block_clears_block_and_children() {
         schemas: Default::default(),
         nodes: vec![
             make_test_step("fix", TestKind::Session, "Fix", vec![], None),
-            parallel_block,
+            fanout,
+            make_fanout_child("review_security"),
+            make_fanout_child("review_style"),
         ],
     };
     let mut exec = WorkflowExecution {
@@ -5202,17 +5298,10 @@ fn apply_transition_to_parallel_block_clears_block_and_children() {
                 "code_review_parallel".to_string(),
                 make_step_output_fixture("code_review_parallel", 1),
             );
-            m.insert(
-                "review_security".to_string(),
-                make_step_output_fixture("review_security", 1),
-            );
-            m.insert(
-                "review_style".to_string(),
-                make_step_output_fixture("review_style", 1),
-            );
             m.insert("fix".to_string(), make_step_output_fixture("fix", 1));
             m
         },
+        node_executions: Vec::new(),
         started_at: 1000.0,
         updated_at: 1000.0,
         current_session_id: None,
@@ -5232,7 +5321,7 @@ fn apply_transition_to_parallel_block_clears_block_and_children() {
     assert!(!exec.step_outputs.contains_key("code_review_parallel"));
     assert!(!exec.step_outputs.contains_key("review_security"));
     assert!(!exec.step_outputs.contains_key("review_style"));
-    // 並列ブロック外の step の前回出力は破棄されない。
+    // fanout 外の node の前回出力は破棄されない。
     assert!(exec.step_outputs.contains_key("fix"));
 }
 
@@ -5327,7 +5416,7 @@ fn resolve_step_settings_nothing_specified_clears_model_to_unset() {
 }
 
 #[test]
-fn resolve_step_settings_parallel_children_different_configs() {
+fn resolve_step_settings_fanout_children_different_configs() {
     // ステップA: model=opus-4, permission=ask
     let result_a = resolve_step_settings(
         Some("opus-4".to_string()),
@@ -5498,6 +5587,7 @@ async fn engine_run_id_consistency_across_execution_and_run_store_metadata() {
         current_session_id: None,
         current_step_token_usage: TokenUsage::default(),
         step_outputs: HashMap::new(),
+        node_executions: Vec::new(),
         task: None,
         parallel_run: None,
         current_stall_observations: Vec::new(),
@@ -5580,6 +5670,7 @@ async fn engine_validate_start_rejects_duplicate_active_run_on_same_worktree() {
         current_session_id: None,
         current_step_token_usage: TokenUsage::default(),
         step_outputs: HashMap::new(),
+        node_executions: Vec::new(),
         task: None,
         parallel_run: None,
         current_stall_observations: Vec::new(),
@@ -5657,7 +5748,7 @@ async fn engine_state_transitions_sync_to_run_store_active_and_completed() {
         total_token_usage: TokenUsage::default(),
         step_states: HashMap::new(),
         step_outputs: HashMap::new(),
-        active_parallel_steps: vec![],
+        node_executions: vec![],
         stall_observations: Vec::new(),
         approval_operations: None,
         started_at: 100.0,
@@ -5815,6 +5906,7 @@ async fn handle_auto_complete_fixture_uses_run_id_as_executions_key() {
         current_session_id: Some("sess".to_string()),
         current_step_token_usage: TokenUsage::default(),
         step_outputs: HashMap::new(),
+        node_executions: Vec::new(),
         task: None,
         parallel_run: None,
         current_stall_observations: Vec::new(),
@@ -5856,6 +5948,7 @@ fn make_exec_with(
         current_session_id: None,
         current_step_token_usage: TokenUsage::default(),
         step_outputs: HashMap::new(),
+        node_executions: Vec::new(),
         task: None,
         parallel_run: None,
         current_stall_observations: Vec::new(),
@@ -6120,7 +6213,7 @@ async fn run_store_completed_listing_includes_completed_failed_aborted_via_autho
             total_token_usage: TokenUsage::default(),
             step_states: HashMap::new(),
             step_outputs: HashMap::new(),
-            active_parallel_steps: vec![],
+            node_executions: vec![],
             stall_observations: Vec::new(),
             approval_operations: None,
             started_at: 100.0,
@@ -6573,7 +6666,7 @@ async fn run_store_terminal_statuses_propagate_status_field_in_completed_listing
             total_token_usage: TokenUsage::default(),
             step_states: HashMap::new(),
             step_outputs: HashMap::new(),
-            active_parallel_steps: vec![],
+            node_executions: vec![],
             stall_observations: Vec::new(),
             approval_operations: None,
             started_at: 100.0,
@@ -6738,7 +6831,7 @@ mod dispatch_boundary_tests {
     use crate::adaptor::gateway::workflow::run::{
         RunStatus, TerminalRunStatus, TriggerSource, WorkflowRun,
     };
-    use crate::adaptor::gateway::workflow::schema::{Rule, Workflow};
+    use crate::adaptor::gateway::workflow::schema::{ItemsSource, Rule, Workflow};
     use crate::adaptor::gateway::workflow::state::WorkflowExecutionState;
     use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
     use crate::usecase::agent_session::session::MessagePart;
@@ -6883,20 +6976,19 @@ mod dispatch_boundary_tests {
         }
     }
 
-    fn make_approval_then_session_workflow() -> Workflow {
+    fn make_running_session_workflow() -> Workflow {
         Workflow {
             name: "boundary-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![
-                make_approval_gated_session(
-                    "review",
-                    "review",
-                    vec![Rule::Next("fix".to_string())],
-                ),
-                make_test_step("fix", TestKind::Session, "fix", vec![], None),
-            ],
+            nodes: vec![make_test_step(
+                "fix",
+                TestKind::Session,
+                "fix",
+                vec![],
+                None,
+            )],
         }
     }
 
@@ -6910,12 +7002,15 @@ mod dispatch_boundary_tests {
         worktree_path: &str,
         workflow: Workflow,
     ) -> WorkflowExecution {
+        let node_name = workflow.nodes[0].name.clone();
+        let node_kind = workflow.nodes[0].kind_name();
+        let node_execution_id = format!("{run_id}-{node_name}-1");
         WorkflowExecution {
             id: run_id.to_string(),
             workflow,
             state: WorkflowExecutionState::WaitingApproval,
             current_step_index: 0,
-            step_execution_counts: HashMap::from([("review".to_string(), 1)]),
+            step_execution_counts: HashMap::from([(node_name.clone(), 1)]),
             step_history: Vec::new(),
             worktree_path: worktree_path.to_string(),
             started_at: 1000.0,
@@ -6923,6 +7018,21 @@ mod dispatch_boundary_tests {
             current_session_id: Some("sess-1".to_string()),
             current_step_token_usage: TokenUsage::default(),
             step_outputs: HashMap::new(),
+            node_executions: vec![NodeExecution {
+                id: node_execution_id,
+                execution_id: run_id.to_string(),
+                node_name,
+                kind: node_kind,
+                attempt: 1,
+                status: NodeExecutionStatus::WaitingApproval,
+                session_id: Some("sess-1".to_string()),
+                artifact: None,
+                token_usage: None,
+                failure: None,
+                fanout_parent: None,
+                started_at: 1000.0,
+                completed_at: None,
+            }],
             task: None,
             parallel_run: None,
             current_stall_observations: Vec::new(),
@@ -6931,6 +7041,185 @@ mod dispatch_boundary_tests {
                 permission_mode: "edit".to_string(),
             },
         }
+    }
+
+    fn test_fanout_child_run(
+        node_name: &str,
+        session_id: &str,
+        state: ParallelChildState,
+        child_index: usize,
+    ) -> ParallelChildRun {
+        ParallelChildRun {
+            node_execution_id: format!("ne-{node_name}-{child_index}"),
+            step_name: node_name.to_string(),
+            session_id: session_id.to_string(),
+            state,
+            result: None,
+            structured_output: None,
+            artifact_contract: None,
+            failure_kind: None,
+            failure_disposition: None,
+            token_usage: TokenUsage::default(),
+            run_index: 1,
+            completed_at: None,
+        }
+    }
+
+    fn install_test_fanout_run(
+        exec: &mut WorkflowExecution,
+        children: Vec<ParallelChildRun>,
+        aggregate: Option<ParallelAggregate>,
+    ) {
+        let parent = exec
+            .node_executions
+            .first_mut()
+            .expect("fanout parent NodeExecution");
+        parent.status = NodeExecutionStatus::Running;
+        parent.kind = NodeKindName::Fanout;
+        let parent_node = parent.node_name.clone();
+        let parent_attempt = parent.attempt;
+        let parent_node_execution_id = parent.id.clone();
+        exec.node_executions
+            .extend(
+                children
+                    .iter()
+                    .enumerate()
+                    .map(|(child_index, child)| NodeExecution {
+                        id: child.node_execution_id.clone(),
+                        execution_id: exec.id.clone(),
+                        node_name: child.step_name.clone(),
+                        kind: NodeKindName::Session,
+                        attempt: child.run_index,
+                        status: match child.state {
+                            ParallelChildState::Running => NodeExecutionStatus::Running,
+                            ParallelChildState::Completed => NodeExecutionStatus::Succeeded,
+                            ParallelChildState::Failed => NodeExecutionStatus::Failed,
+                            ParallelChildState::Interrupted => NodeExecutionStatus::Aborted,
+                        },
+                        session_id: Some(child.session_id.clone()),
+                        artifact: child.structured_output.clone(),
+                        token_usage: Some(child.token_usage.clone()),
+                        failure: child.failure_kind.map(|kind| {
+                            crate::adaptor::gateway::workflow::state::NodeExecutionFailure {
+                                reason: child
+                                    .result
+                                    .clone()
+                                    .unwrap_or_else(|| "failed".to_string()),
+                                kind,
+                            }
+                        }),
+                        fanout_parent: Some(FanoutParentRef {
+                            parent_node: parent_node.clone(),
+                            parent_attempt,
+                            item_index: None,
+                            child_index,
+                        }),
+                        started_at: exec.started_at,
+                        completed_at: child.completed_at,
+                    }),
+            );
+        exec.parallel_run = Some(ParallelRunState {
+            parent_step_name: parent_node,
+            parent_node_execution_id,
+            aggregate,
+            children,
+        });
+    }
+
+    fn append_started_events_for_execution(data_dir: &std::path::Path, exec: &WorkflowExecution) {
+        let mut events = vec![WorkflowEvent::RunStarted {
+            run_id: exec.id.clone(),
+            workflow_name: exec.workflow.name.clone(),
+            workflow_file_stem: exec.workflow.name.clone(),
+            worktree_path: exec.worktree_path.clone(),
+            request: String::new(),
+            workflow_definition: exec.workflow.clone(),
+            timestamp: exec.started_at,
+        }];
+        for node_execution in &exec.node_executions {
+            events.push(WorkflowEvent::NodeStarted {
+                run_id: exec.id.clone(),
+                workflow_name: exec.workflow.name.clone(),
+                node_execution_id: node_execution.id.clone(),
+                node_name: node_execution.node_name.clone(),
+                kind: node_execution.kind,
+                attempt: node_execution.attempt,
+                fanout_parent: node_execution.fanout_parent.clone(),
+                timestamp: node_execution.started_at,
+            });
+            if let Some(session_id) = node_execution.session_id.as_ref() {
+                events.push(WorkflowEvent::SessionAttached {
+                    run_id: exec.id.clone(),
+                    workflow_name: exec.workflow.name.clone(),
+                    node_execution_id: node_execution.id.clone(),
+                    node_name: node_execution.node_name.clone(),
+                    session_id: session_id.clone(),
+                    timestamp: node_execution.started_at,
+                });
+            }
+        }
+        WorkflowEventLog::new(data_dir)
+            .append_batch(&events)
+            .unwrap();
+    }
+
+    fn same_name_fanout_approval_execution() -> WorkflowExecution {
+        let mut exec = make_waiting_approval_execution("run-fanout-approval", "/wt/fanout");
+        exec.state = WorkflowExecutionState::Running;
+        exec.current_session_id = None;
+        install_test_fanout_run(
+            &mut exec,
+            vec![
+                test_fanout_child_run(
+                    "review-child",
+                    "session-review-0",
+                    ParallelChildState::Running,
+                    0,
+                ),
+                test_fanout_child_run(
+                    "review-child",
+                    "session-review-1",
+                    ParallelChildState::Running,
+                    1,
+                ),
+            ],
+            None,
+        );
+        exec.node_executions
+            .iter_mut()
+            .find(|execution| execution.id == "ne-review-child-0")
+            .unwrap()
+            .status = NodeExecutionStatus::WaitingApproval;
+        exec
+    }
+
+    #[test]
+    fn name_only_fanout_approval_requires_id_for_multiple_active_same_name_children() {
+        let exec = same_name_fanout_approval_execution();
+
+        let error =
+            resolve_fanout_approval_node_execution_id(&exec, "review-child", None).unwrap_err();
+
+        assert!(matches!(
+            error,
+            WorkflowEngineError::InvalidState(message)
+                if message.contains("2 active fanout executions")
+                    && message.contains("node_execution_id is required")
+        ));
+    }
+
+    #[test]
+    fn fanout_approval_id_selects_waiting_child_among_same_name_active_children() {
+        let exec = same_name_fanout_approval_execution();
+
+        let selected = resolve_fanout_approval_node_execution_id(
+            &exec,
+            "review-child",
+            Some("ne-review-child-0"),
+        )
+        .unwrap();
+
+        assert_eq!(selected.as_deref(), Some("ne-review-child-0"));
     }
 
     type DispatchTestApp = tauri::App<tauri::test::MockRuntime>;
@@ -7111,7 +7400,10 @@ mod dispatch_boundary_tests {
         let step_name = "review";
         let mut exec = make_waiting_approval_execution(&run_id, worktree_path);
         exec.state = WorkflowExecutionState::Running;
+        exec.node_executions[0].status = NodeExecutionStatus::Running;
         exec.current_session_id = Some(session_id.to_string());
+        exec.node_executions[0].session_id = Some(session_id.to_string());
+        let node_execution_id = exec.node_executions[0].id.clone();
         exec.current_stall_observations =
             vec![workflow_stall_observation_fixture(session_id, step_name)];
         WorkflowEventLog::new(&data_dir)
@@ -7128,15 +7420,18 @@ mod dispatch_boundary_tests {
                 WorkflowEvent::NodeStarted {
                     run_id: run_id.clone(),
                     workflow_name: exec.workflow.name.clone(),
+                    node_execution_id: node_execution_id.clone(),
                     node_name: step_name.to_string(),
-                    execution_count: 1,
+                    kind: NodeKindName::Session,
+                    attempt: 1,
+                    fanout_parent: None,
                     timestamp: exec.started_at,
                 },
-                WorkflowEvent::StepSessionStarted {
+                WorkflowEvent::SessionAttached {
                     run_id: run_id.clone(),
                     workflow_name: exec.workflow.name.clone(),
+                    node_execution_id,
                     node_name: step_name.to_string(),
-                    execution_count: 1,
                     session_id: session_id.to_string(),
                     timestamp: exec.started_at,
                 },
@@ -7380,7 +7675,13 @@ mod dispatch_boundary_tests {
 
     async fn wait_for_active_command(engine: &WorkflowRuntimeService, run_id: &str) {
         for _ in 0..100 {
-            if engine.active_commands.lock().await.contains_key(run_id) {
+            if engine
+                .active_command_runs
+                .lock()
+                .await
+                .values()
+                .any(|owner_run_id| owner_run_id == run_id)
+            {
                 return;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -7388,9 +7689,43 @@ mod dispatch_boundary_tests {
         panic!("command process for run '{run_id}' did not become active");
     }
 
+    async fn wait_for_fanout_child_session(
+        engine: &WorkflowRuntimeService,
+        run_id: &str,
+        child_name: &str,
+    ) -> String {
+        for _ in 0..500 {
+            let session_id = {
+                let execs = engine.executions.lock().await;
+                execs
+                    .get(run_id)
+                    .and_then(|exec| exec.parallel_run.as_ref())
+                    .and_then(|run| {
+                        run.children
+                            .iter()
+                            .find(|child| {
+                                child.step_name == child_name && !child.session_id.is_empty()
+                            })
+                            .map(|child| child.session_id.clone())
+                    })
+            };
+            if let Some(session_id) = session_id {
+                return session_id;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("fanout child session for '{child_name}' in run '{run_id}' did not start");
+    }
+
     async fn wait_for_inactive_command(engine: &WorkflowRuntimeService, run_id: &str) {
         for _ in 0..500 {
-            if !engine.active_commands.lock().await.contains_key(run_id) {
+            if !engine
+                .active_command_runs
+                .lock()
+                .await
+                .values()
+                .any(|owner_run_id| owner_run_id == run_id)
+            {
                 return;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -7793,6 +8128,213 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
+    async fn command_runtime_forwards_node_execution_id_env() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let worktree = TempDir::new().unwrap();
+        let workflow = Workflow {
+            name: "command-node-env-forwarding".to_string(),
+            description: "command node env forwarding".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![command_step(
+                "print_node_env",
+                "printf '%s' \"$RELEASH_NODE_EXECUTION_ID\"",
+                vec![],
+            )],
+        };
+
+        let run_id =
+            start_command_workflow_for_test(&app, &engine, workflow, worktree.path()).await;
+        let events = read_dispatch_events(&app, &run_id);
+        let node_started_id = events
+            .iter()
+            .find_map(|event| match event {
+                WorkflowEvent::NodeStarted {
+                    node_name,
+                    node_execution_id,
+                    ..
+                } if node_name == "print_node_env" => Some(node_execution_id.clone()),
+                _ => None,
+            })
+            .expect("command NodeStarted must be recorded");
+        let (artifact_node_execution_id, value) = events
+            .iter()
+            .find_map(|event| match event {
+                WorkflowEvent::ArtifactProduced {
+                    node_name,
+                    node_execution_id,
+                    value,
+                    ..
+                } if node_name == "print_node_env" => {
+                    Some((node_execution_id.clone(), value.clone()))
+                }
+                _ => None,
+            })
+            .expect("command ArtifactProduced must be recorded");
+
+        assert_eq!(artifact_node_execution_id, node_started_id);
+        assert_eq!(value["stdout"].as_str(), Some(node_started_id.as_str()));
+        assert_ne!(
+            value["stdout"].as_str(),
+            Some(run_id.as_str()),
+            "RELEASH_NODE_EXECUTION_ID must not be populated with run_id"
+        );
+    }
+
+    #[tokio::test]
+    async fn fanout_command_child_forwards_own_node_execution_id_env() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let worktree = TempDir::new().unwrap();
+        let workflow = Workflow {
+            name: "fanout-command-node-env-forwarding".to_string(),
+            description: "fanout command node env forwarding".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![
+                make_fanout_step("commands", vec!["print_child_env"], None),
+                command_step(
+                    "print_child_env",
+                    "printf '%s' \"$RELEASH_NODE_EXECUTION_ID\"",
+                    vec![],
+                ),
+            ],
+        };
+
+        let run_id =
+            start_command_workflow_for_test(&app, &engine, workflow, worktree.path()).await;
+        let events = read_dispatch_events(&app, &run_id);
+        let parent_node_execution_id = events
+            .iter()
+            .find_map(|event| match event {
+                WorkflowEvent::NodeStarted {
+                    node_name,
+                    node_execution_id,
+                    fanout_parent: None,
+                    ..
+                } if node_name == "commands" => Some(node_execution_id.clone()),
+                _ => None,
+            })
+            .expect("fanout parent NodeStarted must be recorded");
+        let child_node_execution_id = events
+            .iter()
+            .find_map(|event| match event {
+                WorkflowEvent::NodeStarted {
+                    node_name,
+                    node_execution_id,
+                    fanout_parent: Some(_),
+                    ..
+                } if node_name == "print_child_env" => Some(node_execution_id.clone()),
+                _ => None,
+            })
+            .expect("fanout command child NodeStarted must be recorded");
+        let (artifact_node_execution_id, value) = events
+            .iter()
+            .find_map(|event| match event {
+                WorkflowEvent::ArtifactProduced {
+                    node_name,
+                    node_execution_id,
+                    value,
+                    ..
+                } if node_name == "print_child_env" => {
+                    Some((node_execution_id.clone(), value.clone()))
+                }
+                _ => None,
+            })
+            .expect("fanout command child ArtifactProduced must be recorded");
+
+        assert_eq!(artifact_node_execution_id, child_node_execution_id);
+        assert_eq!(
+            value["stdout"].as_str(),
+            Some(child_node_execution_id.as_str())
+        );
+        assert_ne!(child_node_execution_id, parent_node_execution_id);
+        assert_ne!(value["stdout"].as_str(), Some(run_id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn fanout_parent_artifact_preserves_null_session_and_command_result_order() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let (session_store, handles) = make_dispatch_deps(data_dir);
+        let worktree = TempDir::new().unwrap();
+        let workflow = Workflow {
+            name: "fanout-mixed-child-artifact".to_string(),
+            description: "fanout mixed child artifact".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![
+                make_fanout_step(
+                    "parallel-review",
+                    vec!["review-session", "shell-command"],
+                    None,
+                ),
+                make_fanout_child("review-session"),
+                command_step(
+                    "shell-command",
+                    "printf command-out; printf command-err >&2",
+                    vec![],
+                ),
+            ],
+        };
+        let run_id = engine
+            .start_resolved_workflow(
+                app.handle(),
+                &session_store,
+                &handles,
+                workflow,
+                worktree.path().to_string_lossy().to_string(),
+                "fanout-mixed-child-artifact",
+                Some("run mixed fanout".to_string()),
+                TriggerSource::DesktopUi,
+                crate::domain::agent_session::PermissionMode::Edit,
+            )
+            .await
+            .unwrap();
+        let review_session_id =
+            wait_for_fanout_child_session(&engine, &run_id, "review-session").await;
+
+        engine
+            .on_turn_complete(
+                app.handle(),
+                &session_store,
+                &handles,
+                &review_session_id,
+                0,
+                None,
+                &[MessagePart::Text {
+                    content: "LGTM".to_string(),
+                    parent_tool_use_id: None,
+                }],
+                None,
+            )
+            .await
+            .unwrap();
+        wait_for_run_terminal(&app, &engine, &run_id).await;
+
+        let events = read_dispatch_events(&app, &run_id);
+        let (_, value) = artifact_event_for_node(&events, "parallel-review");
+        let values = value
+            .as_array()
+            .expect("fanout parent ArtifactProduced value must be an array");
+
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[0], serde_json::Value::Null);
+        assert_eq!(values[1]["ok"], true);
+        assert_eq!(values[1]["exit_code"], 0);
+        assert_eq!(values[1]["stdout"], "command-out");
+        assert_eq!(values[1]["stderr"], "command-err");
+        assert!(
+            values[1]["duration"].as_u64().is_some(),
+            "command standard result must include duration: {}",
+            values[1]
+        );
+    }
+
+    #[tokio::test]
     async fn command_runtime_start_returns_before_long_running_command_completes_and_abort_still_works(
     ) {
         let app = make_dispatch_app();
@@ -7892,6 +8434,59 @@ mod dispatch_boundary_tests {
                 .map(|entry| entry.state.as_str()),
             Some(crate::domain::workflow::STEP_STATE_INTERRUPTED)
         );
+        assert!(projected.node_executions.iter().all(|node_execution| {
+            node_execution.status == NodeExecutionStatus::Aborted
+                && node_execution.completed_at.is_some()
+        }));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn app_exit_shutdown_interrupts_fanout_command_child_by_node_execution_id() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let worktree = TempDir::new().unwrap();
+        let workflow = Workflow {
+            name: "fanout-command-app-exit".to_string(),
+            description: "fanout command app exit".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![
+                make_fanout_step("commands", vec!["long-child"], None),
+                command_step("long-child", "sleep 30", vec![]),
+            ],
+        };
+
+        let run_id =
+            start_command_workflow_nowait_for_test(&app, &engine, workflow, worktree.path()).await;
+        wait_for_active_command(&engine, &run_id).await;
+
+        engine.shutdown_all_active_commands().await;
+
+        wait_for_inactive_command(&engine, &run_id).await;
+        let run = engine.run_store().get_run(&run_id).await.unwrap();
+        assert_eq!(run.status, RunStatus::Interrupted);
+        let events = read_dispatch_events(&app, &run_id);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::RunInterrupted { reason, .. } if reason == "app_exit"
+        )));
+        let projected = reconstruct_state_from_events(&run_id, &events)
+            .unwrap()
+            .unwrap();
+        assert_eq!(projected.state, WorkflowExecutionState::Interrupted);
+        let parent = projected
+            .node_executions
+            .iter()
+            .find(|execution| execution.node_name == "commands")
+            .expect("fanout parent execution");
+        let child = projected
+            .node_executions
+            .iter()
+            .find(|execution| execution.node_name == "long-child")
+            .expect("fanout child execution");
+        assert_eq!(parent.status, NodeExecutionStatus::Aborted);
+        assert_eq!(child.status, NodeExecutionStatus::Aborted);
     }
 
     #[tokio::test]
@@ -8108,18 +8703,27 @@ mod dispatch_boundary_tests {
 
         let run_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/parallel-prompt-failure";
-        let mut child = make_parallel_step("missing-facet-child");
-        child.facets.policy = Some(format!(
-            "nonexistent_policy_{}",
-            uuid::Uuid::new_v4().simple()
-        ));
+        let mut child = make_fanout_child("missing-facet-child");
+        set_session_facets(
+            &mut child,
+            FacetRefs {
+                policy: Some(format!(
+                    "nonexistent_policy_{}",
+                    uuid::Uuid::new_v4().simple()
+                )),
+                ..Default::default()
+            },
+        );
 
         let workflow = Workflow {
             name: "parallel-prompt-failure-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![make_fanout_step("parallel-review", vec![child], None)],
+            nodes: vec![
+                make_fanout_step("parallel-review", vec!["missing-facet-child"], None),
+                child,
+            ],
         };
         let mut exec =
             make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
@@ -8130,7 +8734,7 @@ mod dispatch_boundary_tests {
         insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
 
         let result = engine
-            .start_parallel_children(app.handle(), &session_store, &handles, worktree_path, false)
+            .start_fanout_children(app.handle(), &session_store, &handles, worktree_path)
             .await;
 
         let err = result.expect_err("unresolved child facet must fail before side effects");
@@ -8198,14 +8802,11 @@ mod dispatch_boundary_tests {
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![make_fanout_step(
-                "parallel-review",
-                vec![
-                    make_parallel_step("review-a"),
-                    make_parallel_step("review-b"),
-                ],
-                None,
-            )],
+            nodes: vec![
+                make_fanout_step("parallel-review", vec!["review-a", "review-b"], None),
+                make_fanout_child("review-a"),
+                make_fanout_child("review-b"),
+            ],
         };
         let mut exec =
             make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
@@ -8216,7 +8817,7 @@ mod dispatch_boundary_tests {
         insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
 
         let result = engine
-            .start_parallel_children(app.handle(), &session_store, &handles, worktree_path, false)
+            .start_fanout_children(app.handle(), &session_store, &handles, worktree_path)
             .await;
 
         let err = result.expect_err("second child save failure must fail setup");
@@ -8264,6 +8865,78 @@ mod dispatch_boundary_tests {
         );
     }
 
+    #[tokio::test]
+    async fn fanout_child_started_append_failure_rolls_back_sessions_refs_and_expansion() {
+        let app = make_dispatch_app();
+        let data_dir = dispatch_data_dir(app.handle());
+        let engine = WorkflowRuntimeService::new_for_test();
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let (session_store, handles) = make_dispatch_deps(data_dir.clone());
+
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/fanout-child-started-rollback";
+        let workflow = Workflow {
+            name: "fanout-child-started-rollback-wf".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![
+                make_fanout_step("fanout-review", vec!["review-a", "review-b"], None),
+                make_fanout_child("review-a"),
+                make_fanout_child("review-b"),
+            ],
+        };
+        let mut exec =
+            make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
+        exec.state = WorkflowExecutionState::Running;
+        exec.current_session_id = None;
+        exec.node_executions[0].status = NodeExecutionStatus::Running;
+        exec.step_execution_counts = HashMap::from([("fanout-review".to_string(), 1)]);
+        let parent_node_execution_id = exec.node_executions[0].id.clone();
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+
+        engine.fail_next_required_event_append_for_test();
+        let error = engine
+            .start_fanout_children(app.handle(), &session_store, &handles, worktree_path)
+            .await
+            .expect_err("fanout child NodeStarted append failure must be propagated");
+
+        assert!(
+            matches!(error, WorkflowEngineError::SessionStore(_)),
+            "required append failure must surface as SessionStore: {error:?}"
+        );
+        assert!(
+            session_store
+                .list_sessions(&data_dir, worktree_path)
+                .unwrap()
+                .is_empty(),
+            "prepared child sessions must be removed after event rollback"
+        );
+        assert!(
+            engine.session_workflow_refs.lock().await.is_empty(),
+            "prepared child session refs must be removed after event rollback"
+        );
+        let executions = engine.executions.lock().await;
+        let execution = executions.get(&run_id).expect("parent run remains active");
+        assert!(execution.parallel_run.is_none());
+        assert_eq!(execution.node_executions.len(), 1);
+        assert_eq!(execution.node_executions[0].id, parent_node_execution_id);
+        assert_eq!(
+            execution.step_execution_counts,
+            HashMap::from([("fanout-review".to_string(), 1)])
+        );
+        drop(executions);
+        assert!(read_dispatch_events(&app, &run_id).iter().all(|event| {
+            !matches!(
+                event,
+                WorkflowEvent::NodeStarted {
+                    fanout_parent: Some(_),
+                    ..
+                }
+            )
+        }));
+    }
+
     /// Spec [04]: ApprovalResolved event は approve の事実だけを表し、コメントを
     /// comment field に伝播する。decision field を持たないことを担保する。
     #[test]
@@ -8275,6 +8948,7 @@ mod dispatch_boundary_tests {
         let event = WorkflowEvent::ApprovalResolved {
             run_id: run_id.to_string(),
             workflow_name: "boundary-wf".to_string(),
+            node_execution_id: "node-execution-review".to_string(),
             node_name: "review".to_string(),
             comment: Some("lgtm".to_string()),
             timestamp: 1234.0,
@@ -8376,7 +9050,21 @@ mod dispatch_boundary_tests {
             total_token_usage: TokenUsage::default(),
             step_states: HashMap::new(),
             step_outputs: HashMap::new(),
-            active_parallel_steps: vec![],
+            node_executions: vec![NodeExecution {
+                id: "ne-node-1".to_string(),
+                execution_id: run_id.to_string(),
+                node_name: "node-1".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                status: NodeExecutionStatus::Running,
+                session_id: None,
+                artifact: None,
+                token_usage: None,
+                failure: None,
+                fanout_parent: None,
+                started_at: 0.0,
+                completed_at: None,
+            }],
             stall_observations: Vec::new(),
             approval_operations: None,
             started_at: 0.0,
@@ -8408,6 +9096,7 @@ mod dispatch_boundary_tests {
         let complete = InternalNodeCommand::CompleteNode {
             run_id: "00000000-0000-0000-0000-000000000602".to_string(),
             workflow_name: "wf".to_string(),
+            node_execution_id: "ne-node-1".to_string(),
             node_name: "node-1".to_string(),
             result: Some("ok".to_string()),
             session_id: Some("sess-1".to_string()),
@@ -8437,6 +9126,7 @@ mod dispatch_boundary_tests {
         let fail = InternalNodeCommand::FailNode {
             run_id: "00000000-0000-0000-0000-000000000603".to_string(),
             workflow_name: "wf".to_string(),
+            node_execution_id: "ne-node-1".to_string(),
             node_name: "node-1".to_string(),
             reason: "boom".to_string(),
             failure_kind: crate::domain::workflow::WorkflowStepFailureKind::InfrastructureCrash,
@@ -8474,6 +9164,7 @@ mod dispatch_boundary_tests {
         let mismatched_cmd = InternalNodeCommand::CompleteNode {
             run_id: "00000000-0000-0000-0000-000000000604".to_string(),
             workflow_name: "wf".to_string(),
+            node_execution_id: "ne-node-1".to_string(),
             node_name: "node-1".to_string(),
             result: None,
             session_id: None,
@@ -8521,6 +9212,7 @@ mod dispatch_boundary_tests {
             InternalNodeCommand::CompleteNode {
                 run_id: "00000000-0000-0000-0000-000000000620".to_string(),
                 workflow_name: "table-wf".to_string(),
+                node_execution_id: "ne-node-1".to_string(),
                 node_name: "node-1".to_string(),
                 result: Some("ok".to_string()),
                 session_id: Some("sess-1".to_string()),
@@ -8698,6 +9390,7 @@ mod dispatch_boundary_tests {
             InternalNodeCommand::FailNode {
                 run_id: "00000000-0000-0000-0000-000000000621".to_string(),
                 workflow_name: "fail-wf".to_string(),
+                node_execution_id: "ne-node-1".to_string(),
                 node_name: "node-1".to_string(),
                 reason: "boom".to_string(),
                 failure_kind: crate::domain::workflow::WorkflowStepFailureKind::InfrastructureCrash,
@@ -8772,14 +9465,16 @@ mod dispatch_boundary_tests {
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
 
         let worktree_path = "/wt/engine-node-failure";
-        let workflow = make_approval_then_session_workflow();
         let run_id = uuid::Uuid::new_v4().to_string();
-        let mut exec =
-            make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
-        exec.state = WorkflowExecutionState::Running;
-        exec.current_step_index = 1; // node-1 = "fix"
-        exec.current_session_id = None;
-        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+        engine
+            .seed_active_execution_for_test(
+                run_id.clone(),
+                make_running_session_workflow(),
+                WorkflowExecutionState::Running,
+                worktree_path.to_string(),
+                TriggerSource::DesktopUi,
+            )
+            .await;
 
         // 実 production 経路: set_execution_state → Failed への遷移を engine 経由で実施。
         // write_terminal_log + sync_run_store_from_snapshot がこの経路の中で連続して
@@ -8851,15 +9546,15 @@ mod dispatch_boundary_tests {
 
         let startup_run_id = uuid::Uuid::new_v4().to_string();
         let startup_worktree_path = "/wt/engine-startup-timeout-telemetry";
-        let mut startup_exec = make_waiting_approval_execution_with_workflow(
-            &startup_run_id,
-            startup_worktree_path,
-            make_approval_then_session_workflow(),
-        );
-        startup_exec.state = WorkflowExecutionState::Running;
-        startup_exec.current_step_index = 1;
-        startup_exec.current_session_id = None;
-        insert_execution_and_active_run(&engine, startup_exec, TriggerSource::DesktopUi).await;
+        engine
+            .seed_active_execution_for_test(
+                startup_run_id.clone(),
+                make_running_session_workflow(),
+                WorkflowExecutionState::Running,
+                startup_worktree_path.to_string(),
+                TriggerSource::DesktopUi,
+            )
+            .await;
         engine
             .set_execution_state(
                 app.handle(),
@@ -8877,15 +9572,15 @@ mod dispatch_boundary_tests {
 
         let validation_run_id = uuid::Uuid::new_v4().to_string();
         let validation_worktree_path = "/wt/engine-validation-failure-telemetry";
-        let mut validation_exec = make_waiting_approval_execution_with_workflow(
-            &validation_run_id,
-            validation_worktree_path,
-            make_approval_then_session_workflow(),
-        );
-        validation_exec.state = WorkflowExecutionState::Running;
-        validation_exec.current_step_index = 1;
-        validation_exec.current_session_id = None;
-        insert_execution_and_active_run(&engine, validation_exec, TriggerSource::DesktopUi).await;
+        engine
+            .seed_active_execution_for_test(
+                validation_run_id.clone(),
+                make_running_session_workflow(),
+                WorkflowExecutionState::Running,
+                validation_worktree_path.to_string(),
+                TriggerSource::DesktopUi,
+            )
+            .await;
         engine
             .set_execution_state(
                 app.handle(),
@@ -9038,14 +9733,11 @@ mod dispatch_boundary_tests {
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![make_fanout_step(
-                "parallel-review",
-                vec![
-                    make_parallel_step("review-a"),
-                    make_parallel_step("review-b"),
-                ],
-                None,
-            )],
+            nodes: vec![
+                make_fanout_step("parallel-review", vec!["review-a", "review-b"], None),
+                make_fanout_child("review-a"),
+                make_fanout_child("review-b"),
+            ],
         };
         let mut exec =
             make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
@@ -9057,36 +9749,27 @@ mod dispatch_boundary_tests {
             ("review-a".to_string(), 1),
             ("review-b".to_string(), 1),
         ]);
-        exec.parallel_run = Some(ParallelRunState {
-            parent_step_name: "parallel-review".to_string(),
-            aggregate: None,
-            children: vec![
-                ParallelChildRun {
-                    step_name: "review-a".to_string(),
-                    session_id: failed_child_session_id.to_string(),
-                    state: ParallelChildState::Running,
-                    result: None,
-                    structured_output: None,
-                    artifact_contract: None,
-                    failure_kind: None,
-                    failure_disposition: None,
-                    token_usage: TokenUsage::default(),
-                    run_index: 1,
-                },
-                ParallelChildRun {
-                    step_name: "review-b".to_string(),
-                    session_id: interrupted_child_session_id.to_string(),
-                    state: ParallelChildState::Running,
-                    result: None,
-                    structured_output: None,
-                    artifact_contract: None,
-                    failure_kind: None,
-                    failure_disposition: None,
-                    token_usage: TokenUsage::default(),
-                    run_index: 1,
-                },
+        install_test_fanout_run(
+            &mut exec,
+            vec![
+                test_fanout_child_run(
+                    "review-a",
+                    failed_child_session_id,
+                    ParallelChildState::Running,
+                    0,
+                ),
+                test_fanout_child_run(
+                    "review-b",
+                    interrupted_child_session_id,
+                    ParallelChildState::Running,
+                    1,
+                ),
             ],
-        });
+            None,
+        );
+        let fanout_run = exec.parallel_run.as_ref().expect("fanout run");
+        let parent_node_execution_id = fanout_run.parent_node_execution_id.clone();
+        let failed_child_node_execution_id = fanout_run.children[0].node_execution_id.clone();
         insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
         {
             let mut refs = engine.session_workflow_refs.lock().await;
@@ -9130,9 +9813,25 @@ mod dispatch_boundary_tests {
         assert_eq!(stored.status, RunStatus::Failed);
         assert_eq!(
             stored.error_reason.as_deref(),
-            Some("Parallel child 'review-a' failed (exit_code: 1)")
+            Some("fanout child 'review-a' failed (exit_code: 1)")
         );
         let events = WorkflowEventLog::new(&data_dir).read_log(&run_id).unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::NodeFailed {
+                node_execution_id,
+                node_name,
+                ..
+            } if node_execution_id == &failed_child_node_execution_id && node_name == "review-a"
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::NodeFailed {
+                node_execution_id,
+                node_name,
+                ..
+            } if node_execution_id == &parent_node_execution_id && node_name == "parallel-review"
+        )));
         assert!(
             events
                 .iter()
@@ -9164,14 +9863,11 @@ mod dispatch_boundary_tests {
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![make_fanout_step(
-                "parallel-review",
-                vec![
-                    make_parallel_step("review-a"),
-                    make_parallel_step("review-b"),
-                ],
-                None,
-            )],
+            nodes: vec![
+                make_fanout_step("parallel-review", vec!["review-a", "review-b"], None),
+                make_fanout_child("review-a"),
+                make_fanout_child("review-b"),
+            ],
         };
         let mut exec =
             make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
@@ -9187,36 +9883,24 @@ mod dispatch_boundary_tests {
             workflow_stall_observation_fixture(completed_child_session_id, "review-a"),
             workflow_stall_observation_fixture(waiting_child_session_id, "review-b"),
         ];
-        exec.parallel_run = Some(ParallelRunState {
-            parent_step_name: "parallel-review".to_string(),
-            aggregate: None,
-            children: vec![
-                ParallelChildRun {
-                    step_name: "review-a".to_string(),
-                    session_id: completed_child_session_id.to_string(),
-                    state: ParallelChildState::Running,
-                    result: None,
-                    structured_output: None,
-                    artifact_contract: None,
-                    failure_kind: None,
-                    failure_disposition: None,
-                    token_usage: TokenUsage::default(),
-                    run_index: 1,
-                },
-                ParallelChildRun {
-                    step_name: "review-b".to_string(),
-                    session_id: waiting_child_session_id.to_string(),
-                    state: ParallelChildState::Running,
-                    result: None,
-                    structured_output: None,
-                    artifact_contract: None,
-                    failure_kind: None,
-                    failure_disposition: None,
-                    token_usage: TokenUsage::default(),
-                    run_index: 1,
-                },
+        install_test_fanout_run(
+            &mut exec,
+            vec![
+                test_fanout_child_run(
+                    "review-a",
+                    completed_child_session_id,
+                    ParallelChildState::Running,
+                    0,
+                ),
+                test_fanout_child_run(
+                    "review-b",
+                    waiting_child_session_id,
+                    ParallelChildState::Running,
+                    1,
+                ),
             ],
-        });
+            None,
+        );
         insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
         engine.session_workflow_refs.lock().await.insert(
             completed_child_session_id.to_string(),
@@ -9280,14 +9964,11 @@ mod dispatch_boundary_tests {
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![make_fanout_step(
-                "parallel-review",
-                vec![
-                    make_parallel_step("review-a"),
-                    make_parallel_step("review-b"),
-                ],
-                None,
-            )],
+            nodes: vec![
+                make_fanout_step("parallel-review", vec!["review-a", "review-b"], None),
+                make_fanout_child("review-a"),
+                make_fanout_child("review-b"),
+            ],
         };
         let mut exec =
             make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
@@ -9316,40 +9997,33 @@ mod dispatch_boundary_tests {
                 completed_at: 1001.0,
             },
         );
-        exec.parallel_run = Some(ParallelRunState {
-            parent_step_name: "parallel-review".to_string(),
-            aggregate: None,
-            children: vec![
-                ParallelChildRun {
-                    step_name: "review-a".to_string(),
-                    session_id: "parallel-child-refusal-session".to_string(),
-                    state: ParallelChildState::Failed,
-                    result: Some("model_refusal".to_string()),
-                    structured_output: Some(serde_json::json!({
-                        "failureKind": "model_refusal",
-                        "disposition": "partial",
-                        "exitCode": 1,
-                    })),
-                    artifact_contract: None,
-                    failure_kind: Some(WorkflowStepFailureKind::ModelRefusal),
-                    failure_disposition: Some(FailureDisposition::Partial),
-                    token_usage: TokenUsage::default(),
-                    run_index: 1,
-                },
-                ParallelChildRun {
-                    step_name: "review-b".to_string(),
-                    session_id: successful_child_session_id.to_string(),
-                    state: ParallelChildState::Running,
-                    result: None,
-                    structured_output: None,
-                    artifact_contract: None,
-                    failure_kind: None,
-                    failure_disposition: None,
-                    token_usage: TokenUsage::default(),
-                    run_index: 1,
-                },
+        let mut failed_child = test_fanout_child_run(
+            "review-a",
+            "parallel-child-refusal-session",
+            ParallelChildState::Failed,
+            0,
+        );
+        failed_child.result = Some("model_refusal".to_string());
+        failed_child.structured_output = Some(serde_json::json!({
+            "failureKind": "model_refusal",
+            "disposition": "partial",
+            "exitCode": 1,
+        }));
+        failed_child.failure_kind = Some(WorkflowStepFailureKind::ModelRefusal);
+        failed_child.failure_disposition = Some(FailureDisposition::Partial);
+        install_test_fanout_run(
+            &mut exec,
+            vec![
+                failed_child,
+                test_fanout_child_run(
+                    "review-b",
+                    successful_child_session_id,
+                    ParallelChildState::Running,
+                    1,
+                ),
             ],
-        });
+            None,
+        );
         insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
         engine.session_workflow_refs.lock().await.insert(
             successful_child_session_id.to_string(),
@@ -9379,8 +10053,12 @@ mod dispatch_boundary_tests {
         assert!(
             events
                 .iter()
-                .any(|event| matches!(event, WorkflowEvent::ParallelCompleted { .. })),
-            "parent parallel must complete once all children are Completed or Failed; got {events:?}"
+                .any(|event| matches!(
+                    event,
+                    WorkflowEvent::ArtifactProduced { node_name, value, .. }
+                        if node_name == "parallel-review" && value.is_array()
+                )),
+            "fanout parent must produce its artifact once all children are terminal; got {events:?}"
         );
         assert!(
             !engine.contains_execution_for_test(&run_id).await,
@@ -9400,18 +10078,18 @@ mod dispatch_boundary_tests {
         let worktree_path = "/wt/parallel-zero-exit-refusal";
         let refused_child_session_id = "parallel-child-zero-refusal-session";
         let waiting_child_session_id = "parallel-child-waiting-session";
-        let mut review_a = make_parallel_step("review-a");
+        let mut review_a = make_fanout_child("review-a");
         review_a.artifact = Some("review-verdict".to_string());
         let workflow = Workflow {
             name: "parallel-zero-refusal-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![make_fanout_step(
-                "parallel-review",
-                vec![review_a, make_parallel_step("review-b")],
-                None,
-            )],
+            nodes: vec![
+                make_fanout_step("parallel-review", vec!["review-a", "review-b"], None),
+                review_a,
+                make_fanout_child("review-b"),
+            ],
         };
         let mut exec =
             make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
@@ -9427,36 +10105,26 @@ mod dispatch_boundary_tests {
             workflow_stall_observation_fixture(refused_child_session_id, "review-a"),
             workflow_stall_observation_fixture(waiting_child_session_id, "review-b"),
         ];
-        exec.parallel_run = Some(ParallelRunState {
-            parent_step_name: "parallel-review".to_string(),
-            aggregate: None,
-            children: vec![
-                ParallelChildRun {
-                    step_name: "review-a".to_string(),
-                    session_id: refused_child_session_id.to_string(),
-                    state: ParallelChildState::Running,
-                    result: None,
-                    structured_output: None,
-                    artifact_contract: Some("review-verdict".to_string()),
-                    failure_kind: None,
-                    failure_disposition: None,
-                    token_usage: TokenUsage::default(),
-                    run_index: 1,
-                },
-                ParallelChildRun {
-                    step_name: "review-b".to_string(),
-                    session_id: waiting_child_session_id.to_string(),
-                    state: ParallelChildState::Running,
-                    result: None,
-                    structured_output: None,
-                    artifact_contract: None,
-                    failure_kind: None,
-                    failure_disposition: None,
-                    token_usage: TokenUsage::default(),
-                    run_index: 1,
-                },
+        let mut refused_child = test_fanout_child_run(
+            "review-a",
+            refused_child_session_id,
+            ParallelChildState::Running,
+            0,
+        );
+        refused_child.artifact_contract = Some("review-verdict".to_string());
+        install_test_fanout_run(
+            &mut exec,
+            vec![
+                refused_child,
+                test_fanout_child_run(
+                    "review-b",
+                    waiting_child_session_id,
+                    ParallelChildState::Running,
+                    1,
+                ),
             ],
-        });
+            None,
+        );
         insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
         engine.session_workflow_refs.lock().await.insert(
             refused_child_session_id.to_string(),
@@ -9527,13 +10195,11 @@ mod dispatch_boundary_tests {
         assert!(
             events.iter().any(|event| matches!(
                 event,
-                WorkflowEvent::ParallelChildCompleted {
-                    child_node_name,
-                    state,
-                    failure_kind: Some(WorkflowStepFailureKind::ModelRefusal),
-                    failure_disposition: Some(FailureDisposition::Partial),
+                WorkflowEvent::NodeFailed {
+                    node_name,
+                    failure_kind: WorkflowStepFailureKind::ModelRefusal,
                     ..
-                } if child_node_name == "review-a" && state == STEP_STATE_FAILED
+                } if node_name == "review-a"
             )),
             "zero-exit model refusal must be recorded as partial child failure; got {events:?}"
         );
@@ -9562,14 +10228,11 @@ mod dispatch_boundary_tests {
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![make_fanout_step(
-                "parallel-review",
-                vec![
-                    make_parallel_step("review-a"),
-                    make_parallel_step("review-b"),
-                ],
-                None,
-            )],
+            nodes: vec![
+                make_fanout_step("parallel-review", vec!["review-a", "review-b"], None),
+                make_fanout_child("review-a"),
+                make_fanout_child("review-b"),
+            ],
         };
         let mut exec =
             make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
@@ -9582,36 +10245,24 @@ mod dispatch_boundary_tests {
             ("review-a".to_string(), 1),
             ("review-b".to_string(), 1),
         ]);
-        exec.parallel_run = Some(ParallelRunState {
-            parent_step_name: "parallel-review".to_string(),
-            aggregate: None,
-            children: vec![
-                ParallelChildRun {
-                    step_name: "review-a".to_string(),
-                    session_id: refused_child_session_id.to_string(),
-                    state: ParallelChildState::Running,
-                    result: None,
-                    structured_output: None,
-                    artifact_contract: None,
-                    failure_kind: None,
-                    failure_disposition: None,
-                    token_usage: TokenUsage::default(),
-                    run_index: 1,
-                },
-                ParallelChildRun {
-                    step_name: "review-b".to_string(),
-                    session_id: waiting_child_session_id.to_string(),
-                    state: ParallelChildState::Running,
-                    result: None,
-                    structured_output: None,
-                    artifact_contract: None,
-                    failure_kind: None,
-                    failure_disposition: None,
-                    token_usage: TokenUsage::default(),
-                    run_index: 1,
-                },
+        install_test_fanout_run(
+            &mut exec,
+            vec![
+                test_fanout_child_run(
+                    "review-a",
+                    refused_child_session_id,
+                    ParallelChildState::Running,
+                    0,
+                ),
+                test_fanout_child_run(
+                    "review-b",
+                    waiting_child_session_id,
+                    ParallelChildState::Running,
+                    1,
+                ),
             ],
-        });
+            None,
+        );
         insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
         let stored_before = engine
             .run_store
@@ -9683,15 +10334,354 @@ mod dispatch_boundary_tests {
         assert!(
             events.iter().all(|event| !matches!(
                 event,
-                WorkflowEvent::ParallelChildCompleted {
-                    child_node_name,
-                    failure_kind: Some(WorkflowStepFailureKind::ModelRefusal),
-                    failure_disposition: Some(FailureDisposition::Partial),
+                WorkflowEvent::NodeFailed {
+                    node_name,
+                    failure_kind: WorkflowStepFailureKind::ModelRefusal,
                     ..
-                } if child_node_name == "review-a"
+                } if node_name == "review-a"
             )),
             "partial failure event must not be present when required append fails; got {events:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn fanout_child_missing_output_after_repair_limit_fails_child_siblings_and_parent_in_live_and_replay(
+    ) {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let (session_store, handles) = make_dispatch_deps(data_dir.clone());
+        let received_payloads: Arc<std::sync::Mutex<Vec<String>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let received_for_listener = Arc::clone(&received_payloads);
+        app.listen("workflow-state-changed", move |event| {
+            received_for_listener
+                .lock()
+                .unwrap()
+                .push(event.payload().to_string());
+        });
+
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/fanout-missing-output-repair-limit";
+        let missing_child_session_id = "fanout-missing-output-limit-session";
+        let sibling_session_id = "fanout-missing-output-limit-sibling-session";
+        let mut review_a = make_fanout_child("review-a");
+        review_a.artifact = Some("review-verdict".to_string());
+        let workflow = Workflow {
+            name: "fanout-missing-output-limit-wf".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![
+                make_fanout_step("parallel-review", vec!["review-a", "review-b"], None),
+                review_a,
+                make_fanout_child("review-b"),
+            ],
+        };
+        let mut exec =
+            make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
+        exec.state = WorkflowExecutionState::Running;
+        exec.current_step_index = 0;
+        exec.current_session_id = None;
+        exec.step_execution_counts = HashMap::from([
+            ("parallel-review".to_string(), 1),
+            ("review-a".to_string(), 1),
+            ("review-b".to_string(), 1),
+        ]);
+        let mut missing_child = test_fanout_child_run(
+            "review-a",
+            missing_child_session_id,
+            ParallelChildState::Running,
+            0,
+        );
+        missing_child.artifact_contract = Some("review-verdict".to_string());
+        install_test_fanout_run(
+            &mut exec,
+            vec![
+                missing_child,
+                test_fanout_child_run(
+                    "review-b",
+                    sibling_session_id,
+                    ParallelChildState::Running,
+                    1,
+                ),
+            ],
+            None,
+        );
+        append_started_events_for_execution(&data_dir, &exec);
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+        {
+            let mut refs = engine.session_workflow_refs.lock().await;
+            refs.insert(
+                missing_child_session_id.to_string(),
+                SessionWorkflowRef {
+                    run_id: run_id.clone(),
+                },
+            );
+            refs.insert(
+                sibling_session_id.to_string(),
+                SessionWorkflowRef {
+                    run_id: run_id.clone(),
+                },
+            );
+        }
+        let log = WorkflowEventLog::new(&data_dir);
+        for attempt in 1..=2 {
+            log.append(&WorkflowEvent::ContractRepairRequested {
+                run_id: run_id.clone(),
+                workflow_name: "fanout-missing-output-limit-wf".to_string(),
+                node_name: "review-a".to_string(),
+                run_index: 1,
+                request_id: None,
+                attempt,
+                violation_reason: submission_violation_reason(
+                    SubmissionViolation::MissingSubmitOutput,
+                )
+                .to_string(),
+                timestamp: 1000.0 + f64::from(attempt),
+            })
+            .unwrap();
+        }
+
+        engine
+            .on_turn_complete(
+                app.handle(),
+                &session_store,
+                &handles,
+                missing_child_session_id,
+                0,
+                None,
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            !engine.contains_execution_for_test(&run_id).await,
+            "repair limit fanout missing-output failure must release the terminal run"
+        );
+        let live_payload = received_payloads
+            .lock()
+            .unwrap()
+            .last()
+            .cloned()
+            .expect("terminal failure must broadcast live snapshot");
+        let live_json: serde_json::Value = serde_json::from_str(&live_payload).unwrap();
+        let live_node_executions = live_json["workflowState"]["nodeExecutions"]
+            .as_array()
+            .expect("live payload must expose node executions");
+        let live_status = |node_name: &str| {
+            live_node_executions
+                .iter()
+                .find(|execution| execution["nodeName"] == node_name)
+                .and_then(|execution| execution["status"].as_str())
+                .expect("node execution status must be present")
+        };
+        assert_eq!(live_status("parallel-review"), "failed");
+        assert_eq!(live_status("review-a"), "failed");
+        assert_eq!(live_status("review-b"), "aborted");
+
+        let events = read_dispatch_events(&app, &run_id);
+        let projected = reconstruct_state_from_events(&run_id, &events)
+            .unwrap()
+            .unwrap();
+        let projected_status = |node_name: &str| {
+            projected
+                .node_executions
+                .iter()
+                .find(|execution| execution.node_name == node_name)
+                .map(|execution| execution.status)
+                .expect("projected node execution must exist")
+        };
+        assert_eq!(
+            projected_status("parallel-review"),
+            NodeExecutionStatus::Failed
+        );
+        assert_eq!(projected_status("review-a"), NodeExecutionStatus::Failed);
+        assert_eq!(projected_status("review-b"), NodeExecutionStatus::Aborted);
+        assert!(projected
+            .node_executions
+            .iter()
+            .all(|execution| !execution.status.is_active()));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::RunFailed {
+                failure_kind: WorkflowStepFailureKind::StructuredOutputMismatch,
+                ..
+            }
+        )));
+    }
+
+    #[tokio::test]
+    async fn fanout_child_missing_output_repair_start_failure_fails_child_siblings_and_parent_in_live_and_replay(
+    ) {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let (session_store, handles) = make_dispatch_deps(data_dir.clone());
+        let received_payloads: Arc<std::sync::Mutex<Vec<String>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let received_for_listener = Arc::clone(&received_payloads);
+        app.listen("workflow-state-changed", move |event| {
+            received_for_listener
+                .lock()
+                .unwrap()
+                .push(event.payload().to_string());
+        });
+
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/fanout-missing-output-repair-start";
+        let missing_child_session_id = "aaaaaaaa-0000-4000-8000-000000000132";
+        let sibling_session_id = "fanout-missing-output-start-sibling-session";
+        let mut review_a = make_fanout_child("review-a");
+        review_a.artifact = Some("review-verdict".to_string());
+        let workflow = Workflow {
+            name: "fanout-missing-output-start-wf".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![
+                make_fanout_step("parallel-review", vec!["review-a", "review-b"], None),
+                review_a,
+                make_fanout_child("review-b"),
+            ],
+        };
+        let mut exec =
+            make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
+        exec.state = WorkflowExecutionState::Running;
+        exec.current_step_index = 0;
+        exec.current_session_id = None;
+        exec.step_execution_counts = HashMap::from([
+            ("parallel-review".to_string(), 1),
+            ("review-a".to_string(), 1),
+            ("review-b".to_string(), 1),
+        ]);
+        let mut missing_child = test_fanout_child_run(
+            "review-a",
+            missing_child_session_id,
+            ParallelChildState::Running,
+            0,
+        );
+        missing_child.artifact_contract = Some("review-verdict".to_string());
+        install_test_fanout_run(
+            &mut exec,
+            vec![
+                missing_child,
+                test_fanout_child_run(
+                    "review-b",
+                    sibling_session_id,
+                    ParallelChildState::Running,
+                    1,
+                ),
+            ],
+            None,
+        );
+        append_started_events_for_execution(&data_dir, &exec);
+        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+        {
+            let mut refs = engine.session_workflow_refs.lock().await;
+            refs.insert(
+                missing_child_session_id.to_string(),
+                SessionWorkflowRef {
+                    run_id: run_id.clone(),
+                },
+            );
+            refs.insert(
+                sibling_session_id.to_string(),
+                SessionWorkflowRef {
+                    run_id: run_id.clone(),
+                },
+            );
+        }
+        session_store
+            .save_full_session_for_migration_or_restore(
+                &data_dir,
+                &chat_session_for_test(missing_child_session_id, worktree_path, None, true),
+            )
+            .unwrap();
+        handles
+            .insert_failing_runtime_state_for_test(missing_child_session_id)
+            .await;
+
+        engine
+            .on_turn_complete(
+                app.handle(),
+                &session_store,
+                &handles,
+                missing_child_session_id,
+                0,
+                None,
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            !engine.contains_execution_for_test(&run_id).await,
+            "repair start failure must release the terminal fanout run"
+        );
+        let live_payload = received_payloads
+            .lock()
+            .unwrap()
+            .last()
+            .cloned()
+            .expect("terminal failure must broadcast live snapshot");
+        let live_json: serde_json::Value = serde_json::from_str(&live_payload).unwrap();
+        let live_node_executions = live_json["workflowState"]["nodeExecutions"]
+            .as_array()
+            .expect("live payload must expose node executions");
+        let live_status = |node_name: &str| {
+            live_node_executions
+                .iter()
+                .find(|execution| execution["nodeName"] == node_name)
+                .and_then(|execution| execution["status"].as_str())
+                .expect("node execution status must be present")
+        };
+        assert_eq!(live_status("parallel-review"), "failed");
+        assert_eq!(live_status("review-a"), "failed");
+        assert_eq!(live_status("review-b"), "aborted");
+
+        let events = read_dispatch_events(&app, &run_id);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::ContractRepairRequested {
+                node_name,
+                attempt: 1,
+                ..
+            } if node_name == "review-a"
+        )));
+        let projected = reconstruct_state_from_events(&run_id, &events)
+            .unwrap()
+            .unwrap();
+        let projected_status = |node_name: &str| {
+            projected
+                .node_executions
+                .iter()
+                .find(|execution| execution.node_name == node_name)
+                .map(|execution| execution.status)
+                .expect("projected node execution must exist")
+        };
+        assert_eq!(
+            projected_status("parallel-review"),
+            NodeExecutionStatus::Failed
+        );
+        assert_eq!(projected_status("review-a"), NodeExecutionStatus::Failed);
+        assert_eq!(projected_status("review-b"), NodeExecutionStatus::Aborted);
+        assert!(projected
+            .node_executions
+            .iter()
+            .all(|execution| !execution.status.is_active()));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::RunFailed {
+                failure_kind: WorkflowStepFailureKind::InfrastructureCrash,
+                ..
+            }
+        )));
     }
 
     /// Spec [05] commit 境界: production 経路 `execute_outcome` の pre-commit phase で
@@ -9713,14 +10703,16 @@ mod dispatch_boundary_tests {
 
         let worktree_path = "/wt/append-failure";
 
-        let workflow = make_approval_then_session_workflow();
         let run_id = uuid::Uuid::new_v4().to_string();
-        let mut exec =
-            make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
-        exec.state = WorkflowExecutionState::Running;
-        exec.current_step_index = 1; // node "fix"
-        exec.current_session_id = None;
-        insert_execution_and_active_run(&engine, exec, TriggerSource::DesktopUi).await;
+        engine
+            .seed_active_execution_for_test(
+                run_id.clone(),
+                make_running_session_workflow(),
+                WorkflowExecutionState::Running,
+                worktree_path.to_string(),
+                TriggerSource::DesktopUi,
+            )
+            .await;
 
         // workflow_logs ディレクトリを通常ファイルで塞いで append を恒常失敗させる。
         let log_dir = data_dir.join("workflow_logs");
@@ -9771,13 +10763,16 @@ mod dispatch_boundary_tests {
             "RunStore error_reason must remain unset when event log append fails"
         );
 
-        // workflow_logs ディレクトリを復旧して NDJSON が空であることを確認する。
+        // workflow_logs ディレクトリを復旧して terminal event が増えていないことを確認する。
         std::fs::remove_file(&log_dir).unwrap();
         std::fs::create_dir_all(&log_dir).unwrap();
         let events = WorkflowEventLog::new(&data_dir).read_log(&run_id).unwrap();
         assert!(
-            events.is_empty(),
-            "NDJSON event log must be empty when pre-commit append fails; got {events:?}"
+            events.iter().all(|event| !matches!(
+                event,
+                WorkflowEvent::NodeFailed { .. } | WorkflowEvent::RunFailed { .. }
+            )),
+            "terminal events must not be appended when pre-commit append fails; got {events:?}"
         );
     }
 
@@ -9805,18 +10800,32 @@ mod dispatch_boundary_tests {
             current_session_id: None,
             total_steps: 1,
             step_history: vec![],
-            step_execution_counts: HashMap::new(),
+            step_execution_counts: HashMap::from([("step-1".to_string(), 1)]),
             workflow_definition: crate::adaptor::gateway::workflow::schema::Workflow {
                 name: "fail-wf".to_string(),
                 description: String::new(),
                 builtin: false,
                 schemas: Default::default(),
-                nodes: vec![],
+                nodes: vec![make_test_step(
+                    "step-1",
+                    TestKind::Session,
+                    "step-1",
+                    vec![],
+                    None,
+                )],
             },
             total_token_usage: TokenUsage::default(),
             step_states: HashMap::new(),
             step_outputs: HashMap::new(),
-            active_parallel_steps: vec![],
+            node_executions: vec![node_execution_fixture(
+                &run_id,
+                "node-execution-step-1",
+                "step-1",
+                1,
+                NodeExecutionStatus::Failed,
+                None,
+                None,
+            )],
             stall_observations: Vec::new(),
             approval_operations: None,
             started_at: 900.0,
@@ -10073,14 +11082,18 @@ mod dispatch_boundary_tests {
         log.append(&WorkflowEvent::NodeStarted {
             run_id: run_id.clone(),
             workflow_name: workflow.name.clone(),
+            node_execution_id: "node-execution-review-1".to_string(),
             node_name: "review".to_string(),
-            execution_count: 1,
+            kind: NodeKindName::Session,
+            attempt: 1,
+            fanout_parent: None,
             timestamp: 1001.0,
         })
         .unwrap();
         log.append(&WorkflowEvent::NodeCompleted {
             run_id: run_id.clone(),
             workflow_name: workflow.name.clone(),
+            node_execution_id: "node-execution-review-1".to_string(),
             node_name: "review".to_string(),
             result: Some("approve".to_string()),
             session_id: Some("sess-1".to_string()),
@@ -10214,6 +11227,7 @@ mod dispatch_boundary_tests {
                 &run_id,
                 Some("lgtm".to_string()),
                 "review",
+                None,
             )
             .await;
 
@@ -10438,8 +11452,7 @@ mod dispatch_boundary_tests {
             .unwrap()
             .to_string_lossy()
             .to_string();
-        let log_dir_path = dispatch_data_dir(app.handle()).join("workflow_logs");
-        std::fs::write(&log_dir_path, b"not a directory").unwrap();
+        engine.fail_next_required_event_append_for_test();
 
         let stem = crate::adaptor::gateway::workflow::builtin::list_builtin_workflows()
             .into_iter()
@@ -10468,6 +11481,11 @@ mod dispatch_boundary_tests {
             "RunStarted append rollback must release run_facet_contents"
         );
         assert!(engine.list_active_runs().await.is_empty());
+        let log_dir_path = dispatch_data_dir(app.handle()).join("workflow_logs");
+        assert!(
+            !log_dir_path.exists() || std::fs::read_dir(&log_dir_path).unwrap().next().is_none(),
+            "RunStarted and initial NodeStarted must be one atomic batch"
+        );
         let sessions = session_store
             .list_worktree_sessions(&dispatch_data_dir(app.handle()), &worktree)
             .unwrap();
@@ -10648,56 +11666,15 @@ mod dispatch_boundary_tests {
             schemas: Default::default(),
             nodes: vec![make_fanout_step("parallel-review", vec![], None)],
         };
-        let exec = WorkflowExecution {
-            id: "exec-abort-parallel".to_string(),
-            workflow,
-            state: WorkflowExecutionState::Running,
-            current_step_index: 0,
-            step_execution_counts: HashMap::from([("parallel-review".to_string(), 1)]),
-            step_history: Vec::new(),
-            worktree_path: "/wt".to_string(),
-            started_at: 0.0,
-            updated_at: 0.0,
-            current_session_id: None,
-            current_step_token_usage: TokenUsage::default(),
-            step_outputs: HashMap::new(),
-            task: None,
-            parallel_run: Some(ParallelRunState {
-                parent_step_name: "parallel-review".to_string(),
-                aggregate: None,
-                children: vec![
-                    ParallelChildRun {
-                        step_name: "child-a".to_string(),
-                        session_id: "session-a".to_string(),
-                        state: ParallelChildState::Completed,
-                        result: Some("LGTM".to_string()),
-                        structured_output: None,
-                        artifact_contract: None,
-                        failure_kind: None,
-                        failure_disposition: None,
-                        token_usage: TokenUsage::default(),
-                        run_index: 1,
-                    },
-                    ParallelChildRun {
-                        step_name: "child-b".to_string(),
-                        session_id: "session-b".to_string(),
-                        state: ParallelChildState::Running,
-                        result: None,
-                        structured_output: None,
-                        artifact_contract: None,
-                        failure_kind: None,
-                        failure_disposition: None,
-                        token_usage: TokenUsage::default(),
-                        run_index: 1,
-                    },
-                ],
-            }),
-            current_stall_observations: Vec::new(),
-            workflow_defaults: WorkflowDefaults {
-                backend_id: None,
-                permission_mode: "edit".to_string(),
-            },
-        };
+        let mut exec =
+            make_waiting_approval_execution_with_workflow("exec-abort-parallel", "/wt", workflow);
+        exec.state = WorkflowExecutionState::Running;
+        exec.current_session_id = None;
+        let mut child_a =
+            test_fanout_child_run("child-a", "session-a", ParallelChildState::Completed, 0);
+        child_a.result = Some("LGTM".to_string());
+        let child_b = test_fanout_child_run("child-b", "session-b", ParallelChildState::Running, 1);
+        install_test_fanout_run(&mut exec, vec![child_a, child_b], None);
 
         let entry = exec
             .make_aborted_parallel_history_entry(123.0)
@@ -11131,6 +12108,7 @@ mod dispatch_boundary_tests {
                 &run_id,
                 Some("lgtm".to_string()),
                 "review",
+                None,
             )
             .await
             .unwrap();
@@ -11172,6 +12150,7 @@ mod dispatch_boundary_tests {
                 &missing_run_id,
                 None,
                 "review",
+                None,
             )
             .await;
         assert!(matches!(
@@ -11193,6 +12172,7 @@ mod dispatch_boundary_tests {
                 &stale_run_id,
                 None,
                 "old-review",
+                None,
             )
             .await;
         assert!(matches!(
@@ -11226,6 +12206,7 @@ mod dispatch_boundary_tests {
                 &resolved_run_id,
                 None,
                 "review",
+                None,
             )
             .await;
         assert!(matches!(
@@ -11277,6 +12258,7 @@ mod dispatch_boundary_tests {
                 &run_id,
                 Some("lgtm".to_string()),
                 "review",
+                None,
             )
             .await;
 
@@ -11541,6 +12523,7 @@ mod dispatch_boundary_tests {
                 agent_runtime,
                 run_id,
                 step_name.to_string(),
+                None,
                 contract.to_string(),
                 structured_output,
                 request_id,
@@ -11686,10 +12669,16 @@ mod dispatch_boundary_tests {
             .await;
         {
             let mut execs = engine.executions.lock().await;
-            execs
-                .get_mut(&run_id)
-                .expect("seeded execution")
-                .current_session_id = Some(session_id.to_string());
+            let exec = execs.get_mut(&run_id).expect("seeded execution");
+            exec.current_session_id = Some(session_id.to_string());
+            exec.node_executions
+                .iter_mut()
+                .find(|node_execution| {
+                    node_execution.node_name == "review"
+                        && node_execution.status == NodeExecutionStatus::Running
+                })
+                .expect("seeded review NodeExecution")
+                .session_id = Some(session_id.to_string());
         }
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         session_store
@@ -11767,10 +12756,16 @@ mod dispatch_boundary_tests {
             .await;
         {
             let mut execs = engine.executions.lock().await;
-            execs
-                .get_mut(&run_id)
-                .expect("seeded execution")
-                .current_session_id = Some(session_id.to_string());
+            let exec = execs.get_mut(&run_id).expect("seeded execution");
+            exec.current_session_id = Some(session_id.to_string());
+            exec.node_executions
+                .iter_mut()
+                .find(|node_execution| {
+                    node_execution.node_name == "review"
+                        && node_execution.status == NodeExecutionStatus::Running
+                })
+                .expect("seeded review NodeExecution")
+                .session_id = Some(session_id.to_string());
         }
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         session_store
@@ -11790,6 +12785,7 @@ mod dispatch_boundary_tests {
             run_id.clone(),
             crate::adaptor::gateway::workflow::pending_command::CliRequestPayload::SubmitOutput {
                 step_name: "review".to_string(),
+                node_execution_id: None,
                 contract: "spec-directory".to_string(),
                 structured_output: serde_json::json!({}),
             },
@@ -12270,6 +13266,7 @@ mod dispatch_boundary_tests {
                 1,
                 Some(session_id),
                 None,
+                None,
                 SubmissionViolation::MissingSubmitOutput,
                 None,
             )
@@ -12343,6 +13340,7 @@ mod dispatch_boundary_tests {
                 "review-verdict",
                 1,
                 Some(session_id),
+                None,
                 None,
                 SubmissionViolation::MissingSubmitOutput,
                 None,
@@ -12424,6 +13422,7 @@ mod dispatch_boundary_tests {
                 &error.to_string(),
                 error.workflow_failure_kind(),
                 error.retry_count(),
+                None,
             )
             .await
             .unwrap();
@@ -12498,6 +13497,7 @@ mod dispatch_boundary_tests {
                 "review-verdict",
                 1,
                 Some("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+                None,
                 None,
                 SubmissionViolation::MissingSubmitOutput,
                 None,
@@ -12584,6 +13584,7 @@ mod dispatch_boundary_tests {
                 "review-verdict",
                 2,
                 Some(session_id),
+                None,
                 None,
                 SubmissionViolation::MissingSubmitOutput,
                 None,
@@ -12689,5 +13690,445 @@ mod dispatch_boundary_tests {
         assert!(events_after
             .iter()
             .all(|e| !matches!(e, WorkflowEvent::ArtifactProduced { .. })));
+    }
+
+    #[tokio::test]
+    async fn fanout_empty_items_completes_parent_with_empty_artifact_and_follows_parent_rules() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let (session_store, handles) = make_dispatch_deps(data_dir);
+
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/fanout-empty-items";
+        let mut fanout = make_fanout_step(
+            "fanout-empty",
+            vec!["review-child"],
+            Some(ParallelAggregate {
+                all_match: Some("LGTM".to_string()),
+                any_match: None,
+                then: "aggregate-target".to_string(),
+                r#else: "aggregate-target".to_string(),
+            }),
+        );
+        fanout.rules = vec![Rule::Next("after-empty".to_string())];
+        let NodeKind::Fanout(spec) = &mut fanout.kind else {
+            panic!("fanout test fixture must contain a fanout node");
+        };
+        spec.items = Some(ItemsSource::Literal(Vec::new()));
+        let mut child = make_fanout_child("review-child");
+        child.input = Some("fanout-item".to_string());
+        let workflow = Workflow {
+            name: "fanout-empty-items-wf".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            schemas: [(
+                "fanout-item".to_string(),
+                object_schema_for_test(&["value"]),
+            )]
+            .into_iter()
+            .collect(),
+            nodes: vec![
+                fanout,
+                child,
+                make_approval_gated_session("after-empty", "review-summary", vec![]),
+                make_approval_gated_session("aggregate-target", "review-summary", vec![]),
+            ],
+        };
+        engine
+            .seed_active_execution_for_test(
+                run_id.clone(),
+                workflow,
+                WorkflowExecutionState::Running,
+                worktree_path.to_string(),
+                TriggerSource::DesktopUi,
+            )
+            .await;
+
+        engine
+            .start_fanout_children(app.handle(), &session_store, &handles, worktree_path)
+            .await
+            .unwrap();
+
+        let executions = engine.executions.lock().await;
+        let execution = executions.get(&run_id).expect("run must remain active");
+        assert_eq!(
+            execution.workflow.nodes[execution.current_step_index].name,
+            "after-empty"
+        );
+        assert!(execution.parallel_run.is_none());
+        assert!(
+            execution
+                .node_executions
+                .iter()
+                .all(|node_execution| node_execution.fanout_parent.is_none()),
+            "items=[] must not create a child NodeExecution"
+        );
+        let parent_execution = execution
+            .node_executions
+            .iter()
+            .find(|node_execution| node_execution.node_name == "fanout-empty")
+            .expect("fanout parent NodeExecution");
+        assert_eq!(parent_execution.status, NodeExecutionStatus::Succeeded);
+        assert_eq!(parent_execution.artifact, Some(serde_json::json!([])));
+        drop(executions);
+
+        let events = read_dispatch_events(&app, &run_id);
+        let artifact_position = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    WorkflowEvent::ArtifactProduced {
+                        node_name,
+                        contract: None,
+                        value,
+                        ..
+                    } if node_name == "fanout-empty" && value == &serde_json::json!([])
+                )
+            })
+            .expect("fanout parent must produce [] with contract=null");
+        let completed_position = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    WorkflowEvent::NodeCompleted { node_name, .. }
+                        if node_name == "fanout-empty"
+                )
+            })
+            .expect("fanout parent must complete as a normal node");
+        let next_started_position = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    WorkflowEvent::NodeStarted { node_name, .. }
+                        if node_name == "after-empty"
+                )
+            })
+            .expect("fanout parent rules must start the next node");
+        assert!(artifact_position < completed_position);
+        assert!(completed_position < next_started_position);
+        assert!(events.iter().all(|event| {
+            !matches!(
+                event,
+                WorkflowEvent::NodeStarted { node_name, .. }
+                    if node_name == "review-child"
+            )
+        }));
+    }
+
+    #[tokio::test]
+    async fn fanout_child_completion_ignores_child_rules_and_uses_parent_rules() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let (session_store, handles) = make_dispatch_deps(data_dir);
+
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/fanout-child-rules-ignored";
+        let child_session_id = "fanout-child-rules-session";
+        let mut fanout = make_fanout_step("fanout-review", vec!["review-child"], None);
+        fanout.rules = vec![Rule::Next("parent-next".to_string())];
+        let mut child = make_fanout_child("review-child");
+        child.rules = vec![Rule::Next("child-next".to_string())];
+        let workflow = Workflow {
+            name: "fanout-child-rules-wf".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![
+                fanout,
+                child,
+                make_approval_gated_session("child-next", "review-summary", vec![]),
+                make_approval_gated_session("parent-next", "review-summary", vec![]),
+            ],
+        };
+        let mut execution =
+            make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
+        execution.state = WorkflowExecutionState::Running;
+        execution.current_session_id = None;
+        execution.step_execution_counts = HashMap::from([("fanout-review".to_string(), 1)]);
+        install_test_fanout_run(
+            &mut execution,
+            vec![test_fanout_child_run(
+                "review-child",
+                child_session_id,
+                ParallelChildState::Running,
+                0,
+            )],
+            None,
+        );
+        insert_execution_and_active_run(&engine, execution, TriggerSource::DesktopUi).await;
+        engine.session_workflow_refs.lock().await.insert(
+            child_session_id.to_string(),
+            SessionWorkflowRef {
+                run_id: run_id.clone(),
+            },
+        );
+
+        engine
+            .on_turn_complete(
+                app.handle(),
+                &session_store,
+                &handles,
+                child_session_id,
+                0,
+                None,
+                &[MessagePart::Text {
+                    content: "LGTM".to_string(),
+                    parent_tool_use_id: None,
+                }],
+                None,
+            )
+            .await
+            .unwrap();
+
+        let executions = engine.executions.lock().await;
+        let execution = executions.get(&run_id).expect("run must remain active");
+        assert_eq!(
+            execution.workflow.nodes[execution.current_step_index].name,
+            "parent-next"
+        );
+        assert_eq!(execution.step_execution_counts.get("parent-next"), Some(&1));
+        assert!(!execution.step_execution_counts.contains_key("child-next"));
+        drop(executions);
+
+        let events = read_dispatch_events(&app, &run_id);
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                WorkflowEvent::NodeCompleted { node_name, .. }
+                    if node_name == "review-child"
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                WorkflowEvent::NodeCompleted { node_name, .. }
+                    if node_name == "fanout-review"
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                WorkflowEvent::NodeStarted { node_name, .. }
+                    if node_name == "parent-next"
+            )
+        }));
+        assert!(events.iter().all(|event| {
+            !matches!(
+                event,
+                WorkflowEvent::NodeStarted { node_name, .. }
+                    if node_name == "child-next"
+            )
+        }));
+    }
+
+    #[tokio::test]
+    async fn fanout_activation_failure_aborts_children_in_live_snapshot_and_replay() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let (handles, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                data_dir.clone(),
+            );
+        controller.fail_next_start_turn();
+        let received_payloads: Arc<std::sync::Mutex<Vec<String>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let received_for_listener = Arc::clone(&received_payloads);
+        app.listen("workflow-state-changed", move |event| {
+            received_for_listener
+                .lock()
+                .unwrap()
+                .push(event.payload().to_string());
+        });
+
+        let worktree = TempDir::new().unwrap();
+        let worktree_path = worktree.path().to_string_lossy().to_string();
+        let workflow = Workflow {
+            name: "fanout-activation-failure-wf".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![
+                make_fanout_step("fanout-review", vec!["review-a", "review-b"], None),
+                make_fanout_child("review-a"),
+                make_fanout_child("review-b"),
+            ],
+        };
+
+        let run_id = engine
+            .start_resolved_workflow(
+                app.handle(),
+                &session_store,
+                &handles,
+                workflow,
+                worktree_path,
+                "fanout-activation-failure-wf",
+                None,
+                TriggerSource::DesktopUi,
+                crate::domain::agent_session::PermissionMode::Edit,
+            )
+            .await
+            .expect("initial event batch commits before runtime activation");
+
+        assert!(
+            !engine.contains_execution_for_test(&run_id).await,
+            "terminal activation failure must release the live execution"
+        );
+        let run = engine.run_store().get_run(&run_id).await.unwrap();
+        assert_eq!(run.status, RunStatus::Failed);
+
+        let payloads = received_payloads.lock().unwrap().clone();
+        let live_payload = payloads
+            .last()
+            .expect("terminal failure must broadcast its final snapshot");
+        let live_json: serde_json::Value = serde_json::from_str(live_payload).unwrap();
+        let live_node_executions = live_json["workflowState"]["nodeExecutions"]
+            .as_array()
+            .expect("live payload must expose node executions");
+        let live_status = |node_name: &str| {
+            live_node_executions
+                .iter()
+                .find(|execution| execution["nodeName"] == node_name)
+                .and_then(|execution| execution["status"].as_str())
+                .expect("node execution status must be present")
+        };
+        assert_eq!(live_status("fanout-review"), "failed");
+        assert_eq!(live_status("review-a"), "aborted");
+        assert_eq!(live_status("review-b"), "aborted");
+
+        let events = read_dispatch_events(&app, &run_id);
+        let projected = reconstruct_state_from_events(&run_id, &events)
+            .unwrap()
+            .unwrap();
+        let projected_status = |node_name: &str| {
+            projected
+                .node_executions
+                .iter()
+                .find(|execution| execution.node_name == node_name)
+                .map(|execution| execution.status)
+                .expect("projected node execution must exist")
+        };
+        assert_eq!(
+            projected_status("fanout-review"),
+            NodeExecutionStatus::Failed
+        );
+        assert_eq!(projected_status("review-a"), NodeExecutionStatus::Aborted);
+        assert_eq!(projected_status("review-b"), NodeExecutionStatus::Aborted);
+        assert!(projected
+            .node_executions
+            .iter()
+            .all(|execution| execution.completed_at.is_some()));
+    }
+
+    #[tokio::test]
+    async fn last_fanout_session_child_append_failure_rolls_back_parent_artifact_and_completion() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_run_store_data_dir(data_dir.clone()).await;
+        let (session_store, handles) = make_dispatch_deps(data_dir);
+
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/fanout-child-completion-rollback";
+        let child_session_id = "fanout-child-completion-session";
+        let workflow = Workflow {
+            name: "fanout-child-completion-rollback-wf".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![
+                make_fanout_step("fanout-review", vec!["review-child"], None),
+                make_fanout_child("review-child"),
+            ],
+        };
+        let mut execution =
+            make_waiting_approval_execution_with_workflow(&run_id, worktree_path, workflow);
+        execution.state = WorkflowExecutionState::Running;
+        execution.current_session_id = None;
+        execution.step_execution_counts = HashMap::from([("fanout-review".to_string(), 1)]);
+        install_test_fanout_run(
+            &mut execution,
+            vec![test_fanout_child_run(
+                "review-child",
+                child_session_id,
+                ParallelChildState::Running,
+                0,
+            )],
+            None,
+        );
+        let parent_node_execution_id = execution.node_executions[0].id.clone();
+        let child_node_execution_id = execution.node_executions[1].id.clone();
+        insert_execution_and_active_run(&engine, execution, TriggerSource::DesktopUi).await;
+        engine.session_workflow_refs.lock().await.insert(
+            child_session_id.to_string(),
+            SessionWorkflowRef {
+                run_id: run_id.clone(),
+            },
+        );
+
+        engine.fail_next_required_event_append_for_test();
+        let error = engine
+            .on_turn_complete(
+                app.handle(),
+                &session_store,
+                &handles,
+                child_session_id,
+                0,
+                None,
+                &[MessagePart::Text {
+                    content: "LGTM".to_string(),
+                    parent_tool_use_id: None,
+                }],
+                None,
+            )
+            .await
+            .expect_err("last child completion must fail when its event batch cannot append");
+        assert!(
+            matches!(error, WorkflowEngineError::SessionStore(_)),
+            "required append failure must propagate: {error:?}"
+        );
+
+        let executions = engine.executions.lock().await;
+        let execution = executions.get(&run_id).expect("run must be rolled back");
+        assert_eq!(execution.state, WorkflowExecutionState::Running);
+        assert!(execution.parallel_run.as_ref().is_some_and(|run| {
+            run.children.len() == 1 && run.children[0].state == ParallelChildState::Running
+        }));
+        let parent = execution
+            .node_executions
+            .iter()
+            .find(|candidate| candidate.id == parent_node_execution_id)
+            .unwrap();
+        let child = execution
+            .node_executions
+            .iter()
+            .find(|candidate| candidate.id == child_node_execution_id)
+            .unwrap();
+        assert_eq!(parent.status, NodeExecutionStatus::Running);
+        assert_eq!(parent.artifact, None);
+        assert_eq!(child.status, NodeExecutionStatus::Running);
+        assert!(execution.step_history.is_empty());
+        assert!(!execution.step_outputs.contains_key("fanout-review"));
+        drop(executions);
+
+        let events = read_dispatch_events(&app, &run_id);
+        assert!(events.iter().all(|event| {
+            !matches!(
+                event,
+                WorkflowEvent::NodeCompleted { .. }
+                    | WorkflowEvent::ArtifactProduced { .. }
+                    | WorkflowEvent::RunCompleted { .. }
+            )
+        }));
     }
 }

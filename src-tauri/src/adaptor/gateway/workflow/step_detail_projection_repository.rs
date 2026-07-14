@@ -48,7 +48,7 @@ mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::event::WorkflowEvent;
     use crate::adaptor::gateway::workflow::schema::{
-        FacetRefs, NodeDefinition, NodeKind, SessionSpec, Workflow,
+        FacetRefs, NodeDefinition, NodeKind, NodeKindName, SessionSpec, Workflow,
     };
     use tempfile::TempDir;
 
@@ -86,14 +86,18 @@ mod tests {
         log.append(&WorkflowEvent::NodeStarted {
             run_id: run_id.to_string(),
             workflow_name: "wf".to_string(),
+            node_execution_id: "00000000-0000-4000-8000-000000000303".to_string(),
             node_name: "plan".to_string(),
-            execution_count: 1,
+            kind: NodeKindName::Session,
+            attempt: 1,
+            fanout_parent: None,
             timestamp: 11.0,
         })
         .unwrap();
         log.append(&WorkflowEvent::NodeCompleted {
             run_id: run_id.to_string(),
             workflow_name: "wf".to_string(),
+            node_execution_id: "00000000-0000-4000-8000-000000000303".to_string(),
             node_name: "plan".to_string(),
             result: Some("done".to_string()),
             session_id: None,

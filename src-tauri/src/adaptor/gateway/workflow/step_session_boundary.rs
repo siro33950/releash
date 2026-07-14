@@ -187,7 +187,7 @@ impl<'a, R: tauri::Runtime> StepSessionDeps for RealStepSessionDeps<'a, R> {
         snapshot: &WorkflowState,
     ) -> Result<(), WorkflowEngineError> {
         let Some(event) =
-            workflow_runtime_events::node_session_started_event_for_snapshot(snapshot)
+            workflow_runtime_events::node_session_started_event_for_snapshot(snapshot)?
         else {
             return Ok(());
         };

@@ -84,6 +84,7 @@ impl CodexSessionRuntime {
             &spec.session_id,
             Some(&spec.cwd),
             spec.base_branch.as_deref(),
+            &spec.extra_env,
         )
         .await
         .map_err(AgentBackendError::Other)?;
@@ -659,6 +660,7 @@ exec sleep 30
             startup_timeout: None,
             startup_max_retries: None,
             stale_timeout: None,
+            extra_env: Vec::new(),
         }
     }
 

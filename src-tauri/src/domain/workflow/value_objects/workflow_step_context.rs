@@ -1,6 +1,7 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowStepContext {
     pub run_id: String,
+    pub node_execution_id: String,
     pub workflow_name: String,
     pub step_name: String,
     pub run_index: u32,

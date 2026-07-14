@@ -9,6 +9,7 @@ use super::preflight::WorkflowRuntimeCommandPreflight;
 pub struct ApprovalCommand {
     pub run_id: String,
     pub node_name: String,
+    pub node_execution_id: Option<String>,
     pub comment: Option<String>,
 }
 

@@ -13,6 +13,14 @@ use crate::infrastructure::process::pid_registry::{
     save_pgid, wait_for_cleanup_gate, PidRegistration,
 };
 
+fn codex_child_env(
+    session_id: &str,
+    base_branch: Option<&str>,
+    extra_env: &[(String, String)],
+) -> AgentChildEnv {
+    AgentChildEnv::for_session(session_id, base_branch, extra_env.iter().cloned(), [])
+}
+
 #[derive(Clone)]
 pub(crate) struct CodexAppServerHandle {
     child: Arc<Mutex<Child>>,
@@ -58,6 +66,7 @@ impl CodexAppServerProcess {
         session_id: &str,
         cwd: Option<&str>,
         base_branch: Option<&str>,
+        extra_env: &[(String, String)],
     ) -> Result<Self, String> {
         wait_for_cleanup_gate().await;
 
@@ -70,7 +79,7 @@ impl CodexAppServerProcess {
         if let Some(cwd) = cwd {
             command.current_dir(cwd);
         }
-        AgentChildEnv::for_session(session_id, base_branch, [], []).apply(&mut command);
+        codex_child_env(session_id, base_branch, extra_env).apply(&mut command);
         configure_process_group(&mut command);
 
         let mut child = command
@@ -142,5 +151,32 @@ mod tests {
         assert!(line.ends_with(b"\n"));
         let decoded = decode_jsonrpc_line(std::str::from_utf8(&line).unwrap().trim()).unwrap();
         assert_eq!(decoded["id"], 1);
+    }
+
+    #[test]
+    fn codex_child_env_includes_workflow_execution_ids() {
+        let env = codex_child_env(
+            "session-1",
+            None,
+            &[
+                (
+                    "RELEASH_WORKFLOW_EXECUTION_ID".to_string(),
+                    "run-1".to_string(),
+                ),
+                (
+                    "RELEASH_NODE_EXECUTION_ID".to_string(),
+                    "node-1".to_string(),
+                ),
+            ],
+        );
+
+        assert!(env.envs().contains(&(
+            "RELEASH_WORKFLOW_EXECUTION_ID".to_string(),
+            "run-1".to_string()
+        )));
+        assert!(env.envs().contains(&(
+            "RELEASH_NODE_EXECUTION_ID".to_string(),
+            "node-1".to_string()
+        )));
     }
 }

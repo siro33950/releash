@@ -181,7 +181,7 @@ impl CodexBackend {
         method: &str,
         params: Value,
     ) -> Result<Value, AgentBackendError> {
-        let mut process = CodexAppServerProcess::spawn(self.cli_path(), session_id, cwd, None)
+        let mut process = CodexAppServerProcess::spawn(self.cli_path(), session_id, cwd, None, &[])
             .await
             .map_err(AgentBackendError::Other)?;
         let handle = process.handle();

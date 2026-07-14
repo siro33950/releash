@@ -332,6 +332,7 @@ impl MessageMention {
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowStepContextDto {
     pub run_id: String,
+    pub node_execution_id: String,
     pub workflow_name: String,
     pub step_name: String,
     pub run_index: u32,
@@ -355,6 +356,7 @@ pub(crate) mod workflow_step_context_mapper {
     pub(crate) fn to_dto(context: WorkflowStepContext) -> WorkflowStepContextDto {
         WorkflowStepContextDto {
             run_id: context.run_id,
+            node_execution_id: context.node_execution_id,
             workflow_name: context.workflow_name,
             step_name: context.step_name,
             run_index: context.run_index,
@@ -370,6 +372,7 @@ pub(crate) mod workflow_step_context_mapper {
     pub(crate) fn to_domain(context: WorkflowStepContextDto) -> WorkflowStepContext {
         WorkflowStepContext {
             run_id: context.run_id,
+            node_execution_id: context.node_execution_id,
             workflow_name: context.workflow_name,
             step_name: context.step_name,
             run_index: context.run_index,
@@ -1649,6 +1652,7 @@ mod tests {
     fn workflow_step_context_for_test() -> WorkflowStepContext {
         WorkflowStepContext {
             run_id: "run-1".to_string(),
+            node_execution_id: "node-execution-1".to_string(),
             workflow_name: "workflow".to_string(),
             step_name: "review".to_string(),
             run_index: 1,
@@ -3173,6 +3177,7 @@ mod workflow_step_context_meta_tests {
     fn step_context_dto() -> WorkflowStepContextDto {
         WorkflowStepContextDto {
             run_id: "run-1".to_string(),
+            node_execution_id: "node-execution-1".to_string(),
             workflow_name: "wf".to_string(),
             step_name: "step-a".to_string(),
             run_index: 0,
@@ -3210,6 +3215,7 @@ mod workflow_step_context_meta_tests {
     fn workflow_step_context_is_workflow_state_only() {
         let dto = workflow_step_context_mapper::to_dto(WorkflowStepContext {
             run_id: "run-1".to_string(),
+            node_execution_id: "node-execution-1".to_string(),
             workflow_name: "wf".to_string(),
             step_name: "step-a".to_string(),
             run_index: 0,

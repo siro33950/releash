@@ -41,7 +41,7 @@ impl RepresentativeStatus {
             "error" => Self::Error,
             "waiting" | "waiting_approval" => Self::Waiting,
             "aborted" | "interrupted" => Self::Aborted,
-            "completed" => Self::Completed,
+            "completed" | "succeeded" => Self::Completed,
             "queued" | "pending" => Self::Queued,
             _ => Self::Queued,
         }
@@ -65,7 +65,7 @@ impl StepProgress {
             "waiting_approval" | "waiting" => Self::WaitingApproval,
             "running" => Self::Running,
             "aborted" | "interrupted" => Self::Aborted,
-            "completed" => Self::Completed,
+            "completed" | "succeeded" => Self::Completed,
             "pending" | "queued" => Self::Queued,
             _ => Self::Queued,
         }

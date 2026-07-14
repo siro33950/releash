@@ -181,11 +181,8 @@ fn domain_kind_to_legacy(
         domain::NodeKind::Fanout(spec) => {
             crate::adaptor::gateway::workflow::schema::NodeKind::Fanout(
                 crate::adaptor::gateway::workflow::schema::FanoutSpec {
-                    parallel_children: spec
-                        .parallel_children
-                        .iter()
-                        .map(domain_child_node_to_legacy)
-                        .collect(),
+                    child: spec.child.clone(),
+                    items: spec.items.as_ref().map(domain_items_source_to_schema),
                     aggregate: spec.aggregate.as_ref().map(domain_aggregate_to_legacy),
                 },
             )
@@ -214,16 +211,19 @@ fn domain_facets_to_legacy(
     }
 }
 
-fn domain_child_node_to_legacy(
-    child: &domain::InterimChild,
-) -> crate::adaptor::gateway::workflow::schema::InterimChild {
-    crate::adaptor::gateway::workflow::schema::InterimChild {
-        name: child.name.clone(),
-        facets: domain_facets_to_legacy(&child.facets),
-        artifact: child.artifact.clone(),
-        input: child.input.clone(),
-        model: child.model.clone(),
-        permission: child.permission.clone(),
+fn domain_items_source_to_schema(
+    items: &domain::ItemsSource,
+) -> crate::adaptor::gateway::workflow::schema::ItemsSource {
+    match items {
+        domain::ItemsSource::Literal(values) => {
+            crate::adaptor::gateway::workflow::schema::ItemsSource::Literal(values.clone())
+        }
+        domain::ItemsSource::ArtifactField { node, field } => {
+            crate::adaptor::gateway::workflow::schema::ItemsSource::ArtifactField {
+                node: node.clone(),
+                field: field.clone(),
+            }
+        }
     }
 }
 
@@ -398,6 +398,7 @@ pub(crate) fn domain_event_draft_to_legacy(
             #[serde(rename_all = "camelCase")]
             struct Payload {
                 workflow_name: String,
+                node_execution_id: String,
                 node_name: String,
                 comment: Option<String>,
             }
@@ -406,6 +407,7 @@ pub(crate) fn domain_event_draft_to_legacy(
             Ok(legacy_event::WorkflowEvent::ApprovalResolved {
                 run_id: event.run_id.clone(),
                 workflow_name: payload.workflow_name,
+                node_execution_id: payload.node_execution_id,
                 node_name: payload.node_name,
                 comment: payload.comment,
                 timestamp: event.timestamp,
@@ -416,6 +418,7 @@ pub(crate) fn domain_event_draft_to_legacy(
             #[serde(rename_all = "camelCase")]
             struct Payload {
                 workflow_name: String,
+                node_execution_id: String,
                 node_name: String,
                 contract: Option<String>,
                 value: serde_json::Value,
@@ -425,6 +428,7 @@ pub(crate) fn domain_event_draft_to_legacy(
             Ok(legacy_event::WorkflowEvent::ArtifactProduced {
                 run_id: event.run_id.clone(),
                 workflow_name: payload.workflow_name,
+                node_execution_id: payload.node_execution_id,
                 node_name: payload.node_name,
                 contract: payload.contract,
                 value: payload.value,
@@ -512,7 +516,8 @@ fn domain_schema_to_legacy(
 mod tests {
     use super::*;
     use crate::domain::workflow::{
-        FacetRefs, NodeDefinition, NodeKind, RunListFilter, RunStatus, SessionSpec, TriggerSource,
+        FacetRefs, FanoutSpec, ItemsSource, NodeDefinition, NodeKind, RunListFilter, RunStatus,
+        SessionSpec, TriggerSource,
     };
 
     #[test]
@@ -639,6 +644,40 @@ mod tests {
                 .as_deref(),
             Some("inst")
         );
+    }
+
+    #[test]
+    fn workflow_mapping_round_trips_fanout_child_and_literal_items() {
+        let definition = domain::WorkflowDefinition {
+            name: "wf".to_string(),
+            description: "desc".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![NodeDefinition {
+                name: "fanout".to_string(),
+                kind: NodeKind::Fanout(FanoutSpec {
+                    child: vec!["worker".to_string()],
+                    items: Some(ItemsSource::Literal(vec![serde_json::json!({
+                        "path": "src/lib.rs"
+                    })])),
+                    aggregate: None,
+                }),
+                ..Default::default()
+            }],
+        };
+
+        let legacy = domain_workflow_to_legacy(&definition).unwrap();
+        assert_eq!(
+            legacy.nodes[0].fanout().unwrap().items,
+            Some(
+                crate::adaptor::gateway::workflow::schema::ItemsSource::Literal(vec![
+                    serde_json::json!({"path": "src/lib.rs"}),
+                ])
+            )
+        );
+
+        let mapped = legacy_workflow_to_domain(legacy).unwrap();
+        assert_eq!(mapped, definition);
     }
 
     #[test]

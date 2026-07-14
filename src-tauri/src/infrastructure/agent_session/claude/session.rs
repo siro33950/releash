@@ -59,6 +59,7 @@ struct ClaudeRuntimeState {
     startup_timeout: Option<std::time::Duration>,
     startup_max_retries: Option<u32>,
     stale_timeout: Option<std::time::Duration>,
+    extra_env: Vec<(String, String)>,
     turn_active: bool,
     aborting: bool,
     abort_generation: u64,
@@ -135,6 +136,7 @@ impl ClaudeRuntimeState {
             startup_timeout: spec.startup_timeout,
             startup_max_retries: spec.startup_max_retries,
             stale_timeout: spec.stale_timeout,
+            extra_env: spec.extra_env.clone(),
             turn_active: false,
             aborting: false,
             abort_generation: 0,
@@ -165,6 +167,7 @@ impl ClaudeRuntimeState {
             startup_timeout: self.startup_timeout,
             startup_max_retries: self.startup_max_retries,
             stale_timeout: self.stale_timeout,
+            extra_env: self.extra_env.clone(),
         }
     }
 }
@@ -665,6 +668,7 @@ exec sleep 30
             startup_timeout: None,
             startup_max_retries: None,
             stale_timeout: None,
+            extra_env: Vec::new(),
         }
     }
 

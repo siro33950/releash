@@ -6,9 +6,9 @@ use crate::adaptor::gateway::workflow::domain_mapping::{
     step_history_entries_to_domain, workflow_definition_to_domain,
     workflow_execution_state_to_domain,
 };
-pub use crate::adaptor::gateway::workflow::event::TokenUsage;
+pub use crate::adaptor::gateway::workflow::event::{FanoutParentRef, TokenUsage};
 use crate::adaptor::gateway::workflow::failure_wire::default_failure_kind;
-use crate::adaptor::gateway::workflow::schema::Workflow;
+use crate::adaptor::gateway::workflow::schema::{NodeKindName, Workflow};
 use crate::domain::workflow::{
     FailureDisposition, WorkflowStepFailureKind, STEP_STATE_ABORTED, STEP_STATE_COMPLETED,
     STEP_STATE_FAILED, STEP_STATE_RUNNING, STEP_STATE_WAITING_APPROVAL,
@@ -33,7 +33,7 @@ pub struct WorkflowState {
     #[serde(default)]
     pub step_outputs: HashMap<String, StepOutput>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub active_parallel_steps: Vec<ParallelStepState>,
+    pub node_executions: Vec<NodeExecution>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval_operations: Option<ApprovalOperations>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -59,6 +59,63 @@ pub struct WorkflowStallObservation {
     pub signal_count: u32,
     pub cap_reached: bool,
     pub observed_at: f64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeExecutionStatus {
+    Running,
+    WaitingApproval,
+    Succeeded,
+    Failed,
+    Aborted,
+}
+
+impl NodeExecutionStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::WaitingApproval => "waiting_approval",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Aborted => "aborted",
+        }
+    }
+
+    pub fn is_active(self) -> bool {
+        matches!(self, Self::Running | Self::WaitingApproval)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NodeExecutionFailure {
+    pub reason: String,
+    pub kind: WorkflowStepFailureKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NodeExecution {
+    pub id: String,
+    pub execution_id: String,
+    pub node_name: String,
+    pub kind: NodeKindName,
+    pub attempt: u32,
+    pub status: NodeExecutionStatus,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub artifact: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub token_usage: Option<TokenUsage>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub failure: Option<NodeExecutionFailure>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub fanout_parent: Option<FanoutParentRef>,
+    pub started_at: f64,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub completed_at: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -166,28 +223,6 @@ pub struct ChildOutputSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ParallelStepState {
-    pub step_name: String,
-    pub state: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub session_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub result: Option<String>,
-    pub run_index: u32,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub completed_at: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub structured_output: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub artifact_contract: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub failure_kind: Option<WorkflowStepFailureKind>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub failure_disposition: Option<FailureDisposition>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct StepOutput {
     pub step_name: String,
     pub run_index: u32,
@@ -231,10 +266,10 @@ pub(crate) fn workflow_state_to_domain_snapshot(
             .into_iter()
             .map(|(key, output)| (key, step_output_to_domain(output)))
             .collect(),
-        active_parallel_steps: state
-            .active_parallel_steps
+        node_executions: state
+            .node_executions
             .into_iter()
-            .map(parallel_step_state_to_domain)
+            .map(node_execution_to_domain)
             .collect(),
         approval_operations: state.approval_operations.map(|operations| {
             crate::domain::workflow::ApprovalOperations {
@@ -308,20 +343,47 @@ fn child_output_to_domain(
     }
 }
 
-fn parallel_step_state_to_domain(
-    state: ParallelStepState,
-) -> crate::domain::workflow::ParallelStepState {
-    crate::domain::workflow::ParallelStepState {
-        step_name: state.step_name,
-        state: state.state,
-        session_id: state.session_id,
-        result: state.result,
-        run_index: state.run_index,
-        completed_at: state.completed_at,
-        structured_output: state.structured_output,
-        artifact_contract: state.artifact_contract,
-        failure_kind: state.failure_kind,
-        failure_disposition: state.failure_disposition,
+fn node_execution_to_domain(execution: NodeExecution) -> crate::domain::workflow::NodeExecution {
+    crate::domain::workflow::NodeExecution {
+        id: execution.id,
+        execution_id: execution.execution_id,
+        node_name: execution.node_name,
+        kind: match execution.kind {
+            NodeKindName::Command => crate::domain::workflow::NodeKindName::Command,
+            NodeKindName::Session => crate::domain::workflow::NodeKindName::Session,
+            NodeKindName::Fanout => crate::domain::workflow::NodeKindName::Fanout,
+        },
+        attempt: execution.attempt,
+        status: match execution.status {
+            NodeExecutionStatus::Running => crate::domain::workflow::NodeExecutionStatus::Running,
+            NodeExecutionStatus::WaitingApproval => {
+                crate::domain::workflow::NodeExecutionStatus::WaitingApproval
+            }
+            NodeExecutionStatus::Succeeded => {
+                crate::domain::workflow::NodeExecutionStatus::Succeeded
+            }
+            NodeExecutionStatus::Failed => crate::domain::workflow::NodeExecutionStatus::Failed,
+            NodeExecutionStatus::Aborted => crate::domain::workflow::NodeExecutionStatus::Aborted,
+        },
+        session_id: execution.session_id,
+        artifact: execution.artifact,
+        token_usage: execution.token_usage.map(token_usage_to_domain),
+        failure: execution
+            .failure
+            .map(|failure| crate::domain::workflow::NodeExecutionFailure {
+                reason: failure.reason,
+                kind: failure.kind,
+            }),
+        fanout_parent: execution.fanout_parent.map(|parent| {
+            crate::domain::workflow::FanoutParentRef {
+                parent_node: parent.parent_node,
+                parent_attempt: parent.parent_attempt,
+                item_index: parent.item_index,
+                child_index: parent.child_index,
+            }
+        }),
+        started_at: execution.started_at,
+        completed_at: execution.completed_at,
     }
 }
 
@@ -357,5 +419,39 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn node_execution_serde_preserves_fanout_identity() {
+        let execution = NodeExecution {
+            id: "ne-2".to_string(),
+            execution_id: "exec-1".to_string(),
+            node_name: "review".to_string(),
+            kind: NodeKindName::Session,
+            attempt: 1,
+            status: NodeExecutionStatus::WaitingApproval,
+            session_id: Some("session-2".to_string()),
+            artifact: Some(serde_json::json!({"verdict": "LGTM"})),
+            token_usage: None,
+            failure: None,
+            fanout_parent: Some(FanoutParentRef {
+                parent_node: "reviews".to_string(),
+                parent_attempt: 2,
+                item_index: Some(4),
+                child_index: 1,
+            }),
+            started_at: 10.0,
+            completed_at: None,
+        };
+
+        let value = serde_json::to_value(&execution).unwrap();
+        assert_eq!(value["id"], "ne-2");
+        assert_eq!(value["status"], "waiting_approval");
+        assert_eq!(value["fanoutParent"]["parentAttempt"], 2);
+        assert_eq!(value["fanoutParent"]["childIndex"], 1);
+        assert_eq!(
+            serde_json::from_value::<NodeExecution>(value).unwrap(),
+            execution
+        );
     }
 }

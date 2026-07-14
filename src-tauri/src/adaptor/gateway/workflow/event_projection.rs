@@ -13,26 +13,29 @@ use crate::adaptor::gateway::workflow::domain_mapping::{
 };
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::event::{
-    CliMutationRejectionReason, CliMutationRequestRecord, CollectedOutputEntry,
+    CliMutationRejectionReason, CliMutationRequestRecord, CollectedOutputEntry, FanoutParentRef,
 };
 use crate::adaptor::gateway::workflow::event::{
     RunAbortedChildOutcome, RunAbortedChildOutputSnapshot, RunAbortedStepSnapshot,
     TokenUsage as EventTokenUsage, WorkflowEvent,
 };
+#[cfg(test)]
+use crate::adaptor::gateway::workflow::schema::NodeKindName;
 use crate::adaptor::gateway::workflow::schema::Workflow;
 use crate::adaptor::gateway::workflow::state::{
-    ApprovalOperations, ChildOutputSnapshot, ParallelStepState, StepHistoryEntry, StepOutput,
-    TokenUsage, WorkflowExecutionState, WorkflowStallObservation, WorkflowState,
+    ApprovalOperations, ChildOutputSnapshot, NodeExecution, NodeExecutionFailure,
+    NodeExecutionStatus, StepHistoryEntry, StepOutput, TokenUsage, WorkflowExecutionState,
+    WorkflowStallObservation, WorkflowState,
 };
 use crate::domain::workflow::services::{
-    contract as workflow_contract, parallel as workflow_parallel, projection as workflow_projection,
-};
-use crate::domain::workflow::{
-    ContractValidationResult, STEP_STATE_ABORTED, STEP_STATE_COMPLETED, STEP_STATE_FAILED,
-    STEP_STATE_INTERRUPTED, STEP_STATE_PENDING, STEP_STATE_RUNNING,
+    contract as workflow_contract, projection as workflow_projection,
 };
 #[cfg(test)]
-use crate::domain::workflow::{FailureDisposition, WorkflowStepFailureKind};
+use crate::domain::workflow::WorkflowStepFailureKind;
+use crate::domain::workflow::{
+    ContractValidationResult, STEP_STATE_ABORTED, STEP_STATE_COMPLETED, STEP_STATE_INTERRUPTED,
+    STEP_STATE_PENDING,
+};
 
 /// 秒単位の f64 タイムスタンプ（engine 内 `current_timestamp()` 由来）を
 /// frontend 表示用のミリ秒単位に変換するための係数。
@@ -85,20 +88,13 @@ fn child_output_from_run_aborted_snapshot(
     }
 }
 
-fn completed_parallel_history_result(aggregate_result: &str) -> String {
-    if aggregate_result == "advance" {
-        "complete".to_string()
-    } else {
-        aggregate_result.to_string()
-    }
-}
-
-/// spec issues-1023: event 列から (step_name, run_index) ごとの started/completed/duration を
+/// spec issues-1023: event 列から NodeExecution ID ごとの started/completed/duration を
 /// 集約する純粋関数。engine 側 event projection の責務として、所要時間計算と
 /// 単位変換（秒 → ミリ秒）を担う（frontend は表示用フォーマットのみ）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowStepTimingView {
+    pub node_execution_id: String,
     pub step_name: String,
     pub run_index: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -110,74 +106,51 @@ pub struct WorkflowStepTimingView {
 }
 
 pub(crate) fn compute_step_timings(events: &[WorkflowEvent]) -> Vec<WorkflowStepTimingView> {
-    // (step_name, run_index) -> (started_at, completed_at) 秒単位。
-    let mut buckets: HashMap<(String, u32), (Option<f64>, Option<f64>)> = HashMap::new();
-    let mut last_started_idx: HashMap<String, u32> = HashMap::new();
-    let mut order: Vec<(String, u32)> = Vec::new();
+    // node_execution_id -> (node_name, attempt, started_at, completed_at) 秒単位。
+    let mut buckets: HashMap<String, (String, u32, Option<f64>, Option<f64>)> = HashMap::new();
+    let mut order: Vec<String> = Vec::new();
 
     for event in events {
         match event {
             WorkflowEvent::NodeStarted {
+                node_execution_id,
                 node_name,
-                execution_count,
-                timestamp,
-                ..
-            }
-            | WorkflowEvent::StepSessionStarted {
-                node_name,
-                execution_count,
+                attempt,
                 timestamp,
                 ..
             } => {
-                let key = (node_name.clone(), *execution_count);
-                last_started_idx.insert(node_name.clone(), *execution_count);
-                let entry = buckets.entry(key.clone()).or_insert((None, None));
-                if entry.0.is_none() {
-                    entry.0 = Some(*timestamp);
-                    order.push(key);
+                let entry = buckets.entry(node_execution_id.clone()).or_insert_with(|| {
+                    order.push(node_execution_id.clone());
+                    (node_name.clone(), *attempt, None, None)
+                });
+                if entry.2.is_none() {
+                    entry.2 = Some(*timestamp);
                 }
             }
             WorkflowEvent::NodeCompleted {
+                node_execution_id,
                 node_name,
                 run_index,
                 timestamp,
                 ..
             } => {
-                let idx = run_index
-                    .or_else(|| last_started_idx.get(node_name).copied())
-                    .unwrap_or(0);
-                let key = (node_name.clone(), idx);
-                let entry = buckets.entry(key.clone()).or_insert((None, None));
-                entry.1 = Some(*timestamp);
-                if !order.contains(&key) {
-                    order.push(key);
-                }
+                let entry = buckets.entry(node_execution_id.clone()).or_insert_with(|| {
+                    order.push(node_execution_id.clone());
+                    (node_name.clone(), run_index.unwrap_or(0), None, None)
+                });
+                entry.3 = Some(*timestamp);
             }
-            WorkflowEvent::ParallelChildStarted {
-                child_node_name,
-                execution_count,
+            WorkflowEvent::NodeFailed {
+                node_execution_id,
+                node_name,
                 timestamp,
                 ..
             } => {
-                let key = (child_node_name.clone(), *execution_count);
-                let entry = buckets.entry(key.clone()).or_insert((None, None));
-                if entry.0.is_none() {
-                    entry.0 = Some(*timestamp);
-                    order.push(key);
-                }
-            }
-            WorkflowEvent::ParallelChildCompleted {
-                child_node_name,
-                run_index,
-                timestamp,
-                ..
-            } => {
-                let key = (child_node_name.clone(), *run_index);
-                let entry = buckets.entry(key.clone()).or_insert((None, None));
-                entry.1 = Some(*timestamp);
-                if !order.contains(&key) {
-                    order.push(key);
-                }
+                let entry = buckets.entry(node_execution_id.clone()).or_insert_with(|| {
+                    order.push(node_execution_id.clone());
+                    (node_name.clone(), 0, None, None)
+                });
+                entry.3 = Some(*timestamp);
             }
             _ => {}
         }
@@ -185,15 +158,18 @@ pub(crate) fn compute_step_timings(events: &[WorkflowEvent]) -> Vec<WorkflowStep
 
     order
         .into_iter()
-        .map(|key| {
-            let (started_at, completed_at) = buckets.remove(&key).unwrap_or((None, None));
+        .map(|node_execution_id| {
+            let (node_name, attempt, started_at, completed_at) = buckets
+                .remove(&node_execution_id)
+                .unwrap_or_else(|| (String::new(), 0, None, None));
             let duration = match (started_at, completed_at) {
                 (Some(s), Some(c)) if c >= s => Some(c - s),
                 _ => None,
             };
             WorkflowStepTimingView {
-                step_name: key.0,
-                run_index: key.1,
+                node_execution_id,
+                step_name: node_name,
+                run_index: attempt,
                 started_at_ms: started_at.map(seconds_to_ms),
                 completed_at_ms: completed_at.map(seconds_to_ms),
                 duration_ms: duration.map(seconds_to_ms),
@@ -227,16 +203,20 @@ pub enum WorkflowEventView {
     NodeStarted {
         run_id: String,
         workflow_name: String,
+        node_execution_id: String,
         node_name: String,
-        execution_count: u32,
+        kind: NodeKindName,
+        attempt: u32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        fanout_parent: Option<FanoutParentRef>,
         #[serde(rename = "timestampMs")]
         timestamp_ms: f64,
     },
-    StepSessionStarted {
+    SessionAttached {
         run_id: String,
         workflow_name: String,
+        node_execution_id: String,
         node_name: String,
-        execution_count: u32,
         session_id: String,
         #[serde(rename = "timestampMs")]
         timestamp_ms: f64,
@@ -264,6 +244,7 @@ pub enum WorkflowEventView {
     NodeCompleted {
         run_id: String,
         workflow_name: String,
+        node_execution_id: String,
         node_name: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         result: Option<String>,
@@ -281,6 +262,7 @@ pub enum WorkflowEventView {
     NodeFailed {
         run_id: String,
         workflow_name: String,
+        node_execution_id: String,
         node_name: String,
         reason: String,
         failure_kind: WorkflowStepFailureKind,
@@ -292,6 +274,7 @@ pub enum WorkflowEventView {
     ApprovalRequested {
         run_id: String,
         workflow_name: String,
+        node_execution_id: String,
         node_name: String,
         #[serde(rename = "timestampMs")]
         timestamp_ms: f64,
@@ -299,6 +282,7 @@ pub enum WorkflowEventView {
     ApprovalResolved {
         run_id: String,
         workflow_name: String,
+        node_execution_id: String,
         node_name: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         comment: Option<String>,
@@ -360,53 +344,6 @@ pub enum WorkflowEventView {
         #[serde(rename = "timestampMs")]
         timestamp_ms: f64,
     },
-    ParallelStarted {
-        run_id: String,
-        workflow_name: String,
-        parent_node_name: String,
-        child_node_names: Vec<String>,
-        #[serde(rename = "timestampMs")]
-        timestamp_ms: f64,
-    },
-    ParallelChildStarted {
-        run_id: String,
-        workflow_name: String,
-        parent_node_name: String,
-        child_node_name: String,
-        session_id: String,
-        execution_count: u32,
-        #[serde(rename = "timestampMs")]
-        timestamp_ms: f64,
-    },
-    ParallelChildCompleted {
-        run_id: String,
-        workflow_name: String,
-        parent_node_name: String,
-        child_node_name: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        result: Option<String>,
-        session_id: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        token_usage: Option<EventTokenUsage>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        structured_output: Option<serde_json::Value>,
-        run_index: u32,
-        state: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        failure_kind: Option<WorkflowStepFailureKind>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        failure_disposition: Option<FailureDisposition>,
-        #[serde(rename = "timestampMs")]
-        timestamp_ms: f64,
-    },
-    ParallelCompleted {
-        run_id: String,
-        workflow_name: String,
-        parent_node_name: String,
-        aggregate_result: String,
-        #[serde(rename = "timestampMs")]
-        timestamp_ms: f64,
-    },
     CliMutationRequested {
         run_id: String,
         workflow_name: String,
@@ -420,6 +357,7 @@ pub enum WorkflowEventView {
     ArtifactProduced {
         run_id: String,
         workflow_name: String,
+        node_execution_id: String,
         node_name: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         contract: Option<String>,
@@ -470,28 +408,34 @@ impl From<WorkflowEvent> for WorkflowEventView {
             WorkflowEvent::NodeStarted {
                 run_id,
                 workflow_name,
+                node_execution_id,
                 node_name,
-                execution_count,
+                kind,
+                attempt,
+                fanout_parent,
                 timestamp,
             } => WorkflowEventView::NodeStarted {
                 run_id,
                 workflow_name,
+                node_execution_id,
                 node_name,
-                execution_count,
+                kind,
+                attempt,
+                fanout_parent,
                 timestamp_ms: seconds_to_ms(timestamp),
             },
-            WorkflowEvent::StepSessionStarted {
+            WorkflowEvent::SessionAttached {
                 run_id,
                 workflow_name,
+                node_execution_id,
                 node_name,
-                execution_count,
                 session_id,
                 timestamp,
-            } => WorkflowEventView::StepSessionStarted {
+            } => WorkflowEventView::SessionAttached {
                 run_id,
                 workflow_name,
+                node_execution_id,
                 node_name,
-                execution_count,
                 session_id,
                 timestamp_ms: seconds_to_ms(timestamp),
             },
@@ -532,6 +476,7 @@ impl From<WorkflowEvent> for WorkflowEventView {
             WorkflowEvent::NodeCompleted {
                 run_id,
                 workflow_name,
+                node_execution_id,
                 node_name,
                 result,
                 session_id,
@@ -542,6 +487,7 @@ impl From<WorkflowEvent> for WorkflowEventView {
             } => WorkflowEventView::NodeCompleted {
                 run_id,
                 workflow_name,
+                node_execution_id,
                 node_name,
                 result,
                 session_id,
@@ -553,6 +499,7 @@ impl From<WorkflowEvent> for WorkflowEventView {
             WorkflowEvent::NodeFailed {
                 run_id,
                 workflow_name,
+                node_execution_id,
                 node_name,
                 reason,
                 failure_kind,
@@ -561,6 +508,7 @@ impl From<WorkflowEvent> for WorkflowEventView {
             } => WorkflowEventView::NodeFailed {
                 run_id,
                 workflow_name,
+                node_execution_id,
                 node_name,
                 reason,
                 failure_kind,
@@ -570,23 +518,27 @@ impl From<WorkflowEvent> for WorkflowEventView {
             WorkflowEvent::ApprovalRequested {
                 run_id,
                 workflow_name,
+                node_execution_id,
                 node_name,
                 timestamp,
             } => WorkflowEventView::ApprovalRequested {
                 run_id,
                 workflow_name,
+                node_execution_id,
                 node_name,
                 timestamp_ms: seconds_to_ms(timestamp),
             },
             WorkflowEvent::ApprovalResolved {
                 run_id,
                 workflow_name,
+                node_execution_id,
                 node_name,
                 comment,
                 timestamp,
             } => WorkflowEventView::ApprovalResolved {
                 run_id,
                 workflow_name,
+                node_execution_id,
                 node_name,
                 comment,
                 timestamp_ms: seconds_to_ms(timestamp),
@@ -676,78 +628,6 @@ impl From<WorkflowEvent> for WorkflowEventView {
                 violation_reason,
                 timestamp_ms: seconds_to_ms(timestamp),
             },
-            WorkflowEvent::ParallelStarted {
-                run_id,
-                workflow_name,
-                parent_node_name,
-                child_node_names,
-                timestamp,
-            } => WorkflowEventView::ParallelStarted {
-                run_id,
-                workflow_name,
-                parent_node_name,
-                child_node_names,
-                timestamp_ms: seconds_to_ms(timestamp),
-            },
-            WorkflowEvent::ParallelChildStarted {
-                run_id,
-                workflow_name,
-                parent_node_name,
-                child_node_name,
-                session_id,
-                execution_count,
-                timestamp,
-            } => WorkflowEventView::ParallelChildStarted {
-                run_id,
-                workflow_name,
-                parent_node_name,
-                child_node_name,
-                session_id,
-                execution_count,
-                timestamp_ms: seconds_to_ms(timestamp),
-            },
-            WorkflowEvent::ParallelChildCompleted {
-                run_id,
-                workflow_name,
-                parent_node_name,
-                child_node_name,
-                result,
-                session_id,
-                token_usage,
-                structured_output,
-                run_index,
-                state,
-                failure_kind,
-                failure_disposition,
-                timestamp,
-            } => WorkflowEventView::ParallelChildCompleted {
-                run_id,
-                workflow_name,
-                parent_node_name,
-                child_node_name,
-                result,
-                session_id,
-                token_usage,
-                structured_output,
-                run_index,
-                state,
-                failure_kind,
-                failure_disposition,
-                timestamp_ms: seconds_to_ms(timestamp),
-            },
-            WorkflowEvent::ParallelCompleted {
-                run_id,
-                workflow_name,
-                parent_node_name,
-                aggregate_result,
-                timestamp,
-            } => WorkflowEventView::ParallelCompleted {
-                run_id,
-                workflow_name,
-                parent_node_name,
-                aggregate_result,
-                timestamp_ms: seconds_to_ms(timestamp),
-            },
             WorkflowEvent::CliMutationRequested {
                 run_id,
                 workflow_name,
@@ -766,6 +646,7 @@ impl From<WorkflowEvent> for WorkflowEventView {
             WorkflowEvent::ArtifactProduced {
                 run_id,
                 workflow_name,
+                node_execution_id,
                 node_name,
                 contract,
                 value,
@@ -775,6 +656,7 @@ impl From<WorkflowEvent> for WorkflowEventView {
             } => WorkflowEventView::ArtifactProduced {
                 run_id,
                 workflow_name,
+                node_execution_id,
                 node_name,
                 contract,
                 value,
@@ -819,6 +701,8 @@ pub(crate) fn events_with_ms_timestamps(events: Vec<WorkflowEvent>) -> Vec<Workf
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowStepDetailView {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_execution_id: Option<String>,
     pub step_name: String,
     pub node_type: String,
     pub run_index: u32,
@@ -876,31 +760,20 @@ fn node_input_from_definition(
             input: node.input.clone(),
             ..WorkflowStepInputView::default()
         };
-        // 直前 top-level node の出力を input として参照する境界。
-        if let Some(idx) = workflow.nodes.iter().position(|n| n.name == node_name) {
+        // fanout child は top-level NodeDefinition だが、入力の親は宣言上の直前 node
+        // ではなく参照元 fanout。通常 node だけ従来どおり直前 node を用いる。
+        if let Some(parent) = workflow.nodes.iter().find(|candidate| {
+            candidate
+                .fanout()
+                .is_some_and(|fanout| fanout.child.iter().any(|child| child == node_name))
+        }) {
+            view.previous_step_name = Some(parent.name.clone());
+        } else if let Some(idx) = workflow.nodes.iter().position(|n| n.name == node_name) {
             if idx > 0 {
                 view.previous_step_name = Some(workflow.nodes[idx - 1].name.clone());
             }
         }
         return (Some(node.kind_name().as_str()), view);
-    }
-    // parallel child node
-    for parent in &workflow.nodes {
-        if let Some(fanout) = parent.fanout() {
-            let children = &fanout.parallel_children;
-            if let Some(child) = children.iter().find(|c| c.name == node_name) {
-                let view = WorkflowStepInputView {
-                    instruction: child.facets.instruction.clone(),
-                    policy: child.facets.policy.clone(),
-                    knowledge: child.facets.knowledge.clone(),
-                    artifact: child.artifact.clone(),
-                    input: child.input.clone(),
-                    previous_step_name: Some(parent.name.clone()),
-                    ..WorkflowStepInputView::default()
-                };
-                return (Some("session"), view);
-            }
-        }
     }
     (None, WorkflowStepInputView::default())
 }
@@ -977,12 +850,24 @@ pub(crate) fn compute_step_detail(
     let timing = timings
         .iter()
         .find(|t| t.step_name == node_name && t.run_index == resolved_run_index);
+    let matching_execution = state.node_executions.iter().rev().find(|execution| {
+        execution.node_name == node_name
+            && (run_index.is_none() || run_index == Some(execution.attempt))
+    });
+    let timing = matching_execution
+        .and_then(|execution| {
+            timings
+                .iter()
+                .find(|timing| timing.node_execution_id == execution.id)
+        })
+        .or(timing);
 
     if let Some(entry) = history_entry {
         // history detail は実行回 (run_index) 単位の表示。state.step_states は
         // step_name 単位の最新状態しか保持しないため、過去 run を開いた際に
         // 最新 run の state で上書きされないよう entry.state を使う。
         return Some(WorkflowStepDetailView {
+            node_execution_id: matching_execution.map(|execution| execution.id.clone()),
             step_name: node_name.to_string(),
             node_type: node_type_str.unwrap_or("unknown").to_string(),
             run_index: entry.run_index,
@@ -1000,22 +885,28 @@ pub(crate) fn compute_step_detail(
         });
     }
 
-    // parallel child（active）
-    for ps in &state.active_parallel_steps {
-        if ps.step_name == node_name && (run_index.is_none() || run_index == Some(ps.run_index)) {
+    // fanout child を含む NodeExecution read model。
+    for execution in state.node_executions.iter().rev() {
+        if execution.node_name == node_name
+            && (run_index.is_none() || run_index == Some(execution.attempt))
+        {
+            let timing = timings
+                .iter()
+                .find(|timing| timing.node_execution_id == execution.id);
             return Some(WorkflowStepDetailView {
+                node_execution_id: Some(execution.id.clone()),
                 step_name: node_name.to_string(),
-                node_type: node_type_str.unwrap_or("unknown").to_string(),
-                run_index: ps.run_index,
-                state: ps.state.clone(),
-                session_id: ps.session_id.clone(),
-                result: ps.result.clone(),
-                structured_output: ps.structured_output.clone(),
-                token_usage: None,
+                node_type: execution.kind.as_str().to_string(),
+                run_index: execution.attempt,
+                state: execution.status.as_str().to_string(),
+                session_id: execution.session_id.clone(),
+                result: None,
+                structured_output: execution.artifact.clone(),
+                token_usage: execution.token_usage.clone(),
                 started_at_ms: timing.and_then(|t| t.started_at_ms),
                 completed_at_ms: timing
                     .and_then(|t| t.completed_at_ms)
-                    .or(ps.completed_at.map(seconds_to_ms)),
+                    .or(execution.completed_at.map(seconds_to_ms)),
                 duration_ms: timing.and_then(|t| t.duration_ms),
                 input: input_view,
             });
@@ -1031,6 +922,7 @@ pub(crate) fn compute_step_detail(
             .cloned()
             .unwrap_or_else(|| state.state.as_str().to_string());
         return Some(WorkflowStepDetailView {
+            node_execution_id: matching_execution.map(|execution| execution.id.clone()),
             step_name: node_name.to_string(),
             node_type: node_type_str.unwrap_or("unknown").to_string(),
             run_index: state
@@ -1053,6 +945,7 @@ pub(crate) fn compute_step_detail(
     // 上記いずれにも該当しない既知 node は pending 扱い（input のみ返す）。
     if node_type_str.is_some() {
         return Some(WorkflowStepDetailView {
+            node_execution_id: None,
             step_name: node_name.to_string(),
             node_type: node_type_str.unwrap_or("unknown").to_string(),
             run_index: 0,
@@ -1116,6 +1009,7 @@ pub(crate) fn reconstruct_state_from_events(
     let mut step_history: Vec<StepHistoryEntry> = Vec::new();
     let mut step_execution_counts: HashMap<String, u32> = HashMap::new();
     let mut step_outputs: HashMap<String, StepOutput> = HashMap::new();
+    let mut node_executions: Vec<NodeExecution> = Vec::new();
     let mut total_token_usage = TokenUsage::default();
     let mut exec_state = WorkflowExecutionState::Running;
     let mut current_step_name = workflow
@@ -1126,7 +1020,6 @@ pub(crate) fn reconstruct_state_from_events(
     let mut current_step_index = 0usize;
     let mut current_session_id: Option<String> = None;
     let mut workflow_name = String::new();
-    let mut active_parallel_steps: Vec<ParallelStepState> = Vec::new();
     let mut stall_observations: Vec<WorkflowStallObservation> = Vec::new();
 
     for event in events {
@@ -1148,48 +1041,91 @@ pub(crate) fn reconstruct_state_from_events(
                 );
             }
             WorkflowEvent::NodeStarted {
+                node_execution_id,
                 node_name,
-                execution_count,
+                kind,
+                attempt,
+                fanout_parent,
                 timestamp,
                 ..
             } => {
-                current_step_name = node_name.clone();
-                current_step_index = workflow
-                    .nodes
+                if node_executions
                     .iter()
-                    .position(|s| s.name == *node_name)
-                    .unwrap_or(0);
-                step_execution_counts.insert(node_name.clone(), *execution_count);
-                // 新しい node が始まった時点では session 起動前。
-                // `StepSessionStarted` が後続で観測されるまで current_session_id は None。
-                current_session_id = None;
-                stall_observations.clear();
-                // [04] approval を経て次 node が開始した場合に exec_state を
-                // Running へ復元する。ApprovalRequested で WaitingApproval に
-                // 切り替わったまま NodeStarted が来ると、復元 state が承認待ち
-                // のまま固定されてしまうため、本イベントで Running に戻す。
-                if matches!(exec_state, WorkflowExecutionState::WaitingApproval) {
-                    exec_state = WorkflowExecutionState::Running;
+                    .any(|execution| execution.id == *node_execution_id)
+                {
+                    return Err(format!(
+                        "duplicate NodeStarted node_execution_id '{node_execution_id}'"
+                    ));
+                }
+                node_executions.push(NodeExecution {
+                    id: node_execution_id.clone(),
+                    execution_id: run_id.to_string(),
+                    node_name: node_name.clone(),
+                    kind: *kind,
+                    attempt: *attempt,
+                    status: NodeExecutionStatus::Running,
+                    session_id: None,
+                    artifact: None,
+                    token_usage: None,
+                    failure: None,
+                    fanout_parent: fanout_parent.clone(),
+                    started_at: *timestamp,
+                    completed_at: None,
+                });
+                step_execution_counts
+                    .entry(node_name.clone())
+                    .and_modify(|count| *count = (*count).max(*attempt))
+                    .or_insert(*attempt);
+
+                // fanout child は通常 NodeExecution だが workflow の current node は親のまま。
+                if fanout_parent.is_none() {
+                    current_step_name = node_name.clone();
+                    current_step_index = workflow
+                        .nodes
+                        .iter()
+                        .position(|s| s.name == *node_name)
+                        .unwrap_or(0);
+                    current_session_id = None;
+                    stall_observations.clear();
+                    if matches!(exec_state, WorkflowExecutionState::WaitingApproval) {
+                        exec_state = WorkflowExecutionState::Running;
+                    }
                 }
                 updated_at = *timestamp;
             }
-            WorkflowEvent::StepSessionStarted {
+            WorkflowEvent::SessionAttached {
+                node_execution_id,
                 node_name,
                 session_id,
-                execution_count,
                 timestamp,
                 ..
             } => {
-                current_step_name = node_name.clone();
-                current_step_index = workflow
-                    .nodes
-                    .iter()
-                    .position(|s| s.name == *node_name)
-                    .unwrap_or(0);
-                current_session_id = Some(session_id.clone());
-                step_execution_counts.insert(node_name.clone(), *execution_count);
-                if matches!(exec_state, WorkflowExecutionState::WaitingApproval) {
-                    exec_state = WorkflowExecutionState::Running;
+                let execution = node_executions
+                    .iter_mut()
+                    .find(|execution| execution.id == *node_execution_id)
+                    .ok_or_else(|| {
+                        format!(
+                            "SessionAttached references unknown node_execution_id '{node_execution_id}'"
+                        )
+                    })?;
+                if execution.node_name != *node_name {
+                    return Err(format!(
+                        "SessionAttached node mismatch for node_execution_id '{node_execution_id}': event='{node_name}', execution='{}'",
+                        execution.node_name
+                    ));
+                }
+                execution.session_id = Some(session_id.clone());
+                if execution.fanout_parent.is_none() {
+                    current_step_name = node_name.clone();
+                    current_step_index = workflow
+                        .nodes
+                        .iter()
+                        .position(|s| s.name == *node_name)
+                        .unwrap_or(0);
+                    current_session_id = Some(session_id.clone());
+                    if matches!(exec_state, WorkflowExecutionState::WaitingApproval) {
+                        exec_state = WorkflowExecutionState::Running;
+                    }
                 }
                 updated_at = *timestamp;
             }
@@ -1226,6 +1162,7 @@ pub(crate) fn reconstruct_state_from_events(
                 updated_at = *timestamp;
             }
             WorkflowEvent::NodeCompleted {
+                node_execution_id,
                 node_name,
                 result,
                 session_id,
@@ -1235,111 +1172,209 @@ pub(crate) fn reconstruct_state_from_events(
                 timestamp,
                 ..
             } => {
+                let execution = node_executions
+                    .iter_mut()
+                    .find(|execution| execution.id == *node_execution_id)
+                    .ok_or_else(|| {
+                        format!(
+                            "NodeCompleted references unknown node_execution_id '{node_execution_id}'"
+                        )
+                    })?;
+                if execution.node_name != *node_name {
+                    return Err(format!(
+                        "NodeCompleted node mismatch for node_execution_id '{node_execution_id}': event='{node_name}', execution='{}'",
+                        execution.node_name
+                    ));
+                }
+                execution.status = NodeExecutionStatus::Succeeded;
+                execution.session_id = session_id.clone().or_else(|| execution.session_id.clone());
+                execution.token_usage = token_usage.clone();
+                execution.completed_at = Some(*timestamp);
+                let is_fanout_child = execution.fanout_parent.is_some();
                 let ri = run_index
                     .unwrap_or_else(|| step_execution_counts.get(node_name).copied().unwrap_or(0));
-                let completed_entry = StepHistoryEntry {
-                    step_name: node_name.clone(),
-                    completed_at: *timestamp,
-                    result: result.clone(),
-                    session_id: session_id.clone(),
-                    token_usage: token_usage.clone(),
-                    structured_output: structured_output.clone(),
-                    run_index: ri,
-                    child_outputs: None,
-                    state: crate::adaptor::gateway::workflow::state::default_step_entry_state(),
-                };
-                if let Some(existing) = step_history
-                    .last_mut()
-                    .filter(|entry| entry.step_name == *node_name && entry.run_index == ri)
-                {
-                    existing.completed_at = completed_entry.completed_at;
-                    existing.result = completed_entry.result.or(existing.result.take());
-                    existing.session_id = completed_entry.session_id.or(existing.session_id.take());
-                    existing.token_usage =
-                        completed_entry.token_usage.or(existing.token_usage.take());
-                    existing.structured_output = completed_entry
-                        .structured_output
-                        .or(existing.structured_output.take());
-                    existing.state = completed_entry.state;
-                } else {
-                    step_history.push(completed_entry);
+                if !is_fanout_child {
+                    let completed_entry = StepHistoryEntry {
+                        step_name: node_name.clone(),
+                        completed_at: *timestamp,
+                        result: result.clone(),
+                        session_id: session_id.clone(),
+                        token_usage: token_usage.clone(),
+                        structured_output: structured_output.clone(),
+                        run_index: ri,
+                        child_outputs: None,
+                        state: crate::adaptor::gateway::workflow::state::default_step_entry_state(),
+                    };
+                    if let Some(existing) = step_history
+                        .last_mut()
+                        .filter(|entry| entry.step_name == *node_name && entry.run_index == ri)
+                    {
+                        existing.completed_at = completed_entry.completed_at;
+                        existing.result = completed_entry.result.or(existing.result.take());
+                        existing.session_id =
+                            completed_entry.session_id.or(existing.session_id.take());
+                        existing.token_usage =
+                            completed_entry.token_usage.or(existing.token_usage.take());
+                        existing.structured_output = completed_entry
+                            .structured_output
+                            .or(existing.structured_output.take());
+                        existing.state = completed_entry.state;
+                    } else {
+                        step_history.push(completed_entry);
+                    }
+                    let prior_output = step_outputs.get(node_name).cloned();
+                    let merged_structured_output = structured_output.clone().or_else(|| {
+                        prior_output
+                            .as_ref()
+                            .and_then(|p| p.structured_output.clone())
+                    });
+                    if merged_structured_output.is_some() || prior_output.is_some() {
+                        step_outputs.insert(
+                            node_name.clone(),
+                            StepOutput {
+                                step_name: node_name.clone(),
+                                run_index: ri,
+                                session_id: session_id.clone().or_else(|| {
+                                    prior_output.as_ref().and_then(|p| p.session_id.clone())
+                                }),
+                                result: result.clone().or_else(|| {
+                                    prior_output.as_ref().and_then(|p| p.result.clone())
+                                }),
+                                structured_output: merged_structured_output,
+                                artifact_contract: prior_output
+                                    .as_ref()
+                                    .and_then(|p| p.artifact_contract.clone()),
+                                token_usage: token_usage.clone().or_else(|| {
+                                    prior_output.as_ref().and_then(|p| p.token_usage.clone())
+                                }),
+                                completed_at: *timestamp,
+                            },
+                        );
+                    }
                 }
-                let prior_output = step_outputs.get(node_name).cloned();
-                let merged_structured_output = structured_output.clone().or_else(|| {
-                    prior_output
-                        .as_ref()
-                        .and_then(|p| p.structured_output.clone())
-                });
-                if merged_structured_output.is_some() || prior_output.is_some() {
-                    step_outputs.insert(
-                        node_name.clone(),
-                        StepOutput {
-                            step_name: node_name.clone(),
-                            run_index: ri,
-                            session_id: session_id.clone().or_else(|| {
-                                prior_output.as_ref().and_then(|p| p.session_id.clone())
-                            }),
-                            result: result
-                                .clone()
-                                .or_else(|| prior_output.as_ref().and_then(|p| p.result.clone())),
-                            structured_output: merged_structured_output,
-                            artifact_contract: prior_output
-                                .as_ref()
-                                .and_then(|p| p.artifact_contract.clone()),
-                            token_usage: token_usage.clone().or_else(|| {
-                                prior_output.as_ref().and_then(|p| p.token_usage.clone())
-                            }),
-                            completed_at: *timestamp,
-                        },
-                    );
+                // fanout child usage is folded into the parent fanout NodeCompleted usage.
+                // Counting both lifecycle events would double the run total on replay.
+                if !is_fanout_child {
+                    if let Some(ref usage) = token_usage {
+                        total_token_usage.add(usage);
+                    }
                 }
-                if let Some(ref usage) = token_usage {
-                    total_token_usage.add(usage);
+                if !is_fanout_child {
+                    current_session_id = None;
+                    stall_observations.clear();
+                } else if let Some(session_id) = session_id {
+                    stall_observations.retain(|observation| observation.session_id != *session_id);
                 }
-                current_session_id = None;
-                stall_observations.clear();
                 updated_at = *timestamp;
             }
             WorkflowEvent::NodeFailed {
+                node_execution_id,
+                node_name,
                 reason,
                 failure_kind,
                 retry_count,
                 timestamp,
                 ..
             } => {
-                for ps in &mut active_parallel_steps {
-                    if ps.state == STEP_STATE_RUNNING {
-                        ps.state = STEP_STATE_FAILED.to_string();
-                    }
+                let execution = node_executions
+                    .iter_mut()
+                    .find(|execution| execution.id == *node_execution_id)
+                    .ok_or_else(|| {
+                        format!(
+                            "NodeFailed references unknown node_execution_id '{node_execution_id}'"
+                        )
+                    })?;
+                if execution.node_name != *node_name {
+                    return Err(format!(
+                        "NodeFailed node mismatch for node_execution_id '{node_execution_id}': event='{node_name}', execution='{}'",
+                        execution.node_name
+                    ));
                 }
-                exec_state = WorkflowExecutionState::Failed {
+                execution.status = NodeExecutionStatus::Failed;
+                execution.failure = Some(NodeExecutionFailure {
                     reason: reason.clone(),
                     kind: *failure_kind,
-                    retry_count: *retry_count,
-                };
-                current_session_id = None;
-                stall_observations.clear();
+                });
+                execution.completed_at = Some(*timestamp);
+                let is_fanout_child = execution.fanout_parent.is_some();
+                let failed_session_id = execution.session_id.clone();
+                if !is_fanout_child {
+                    exec_state = WorkflowExecutionState::Failed {
+                        reason: reason.clone(),
+                        kind: *failure_kind,
+                        retry_count: *retry_count,
+                    };
+                    current_session_id = None;
+                    stall_observations.clear();
+                } else if let Some(session_id) = failed_session_id {
+                    stall_observations.retain(|observation| observation.session_id != session_id);
+                }
                 updated_at = *timestamp;
             }
             WorkflowEvent::ApprovalRequested {
+                node_execution_id,
                 node_name,
                 timestamp,
                 ..
             } => {
-                // [04] approval 到達は state 上 WaitingApproval を意味する。
-                // event 列から復元した state が Running のまま残ると、UI / observer から
-                // 承認待ち run を識別できなくなる。current_step_name / current_step_index も
-                // approval 対象 node に揃える。
-                current_step_name = node_name.clone();
-                current_step_index = workflow
-                    .nodes
-                    .iter()
-                    .position(|s| s.name == *node_name)
-                    .unwrap_or(current_step_index);
-                exec_state = WorkflowExecutionState::WaitingApproval;
+                let execution = node_executions
+                    .iter_mut()
+                    .find(|execution| execution.id == *node_execution_id)
+                    .ok_or_else(|| {
+                        format!(
+                            "ApprovalRequested references unknown node_execution_id '{node_execution_id}'"
+                        )
+                    })?;
+                if execution.node_name != *node_name {
+                    return Err(format!(
+                        "ApprovalRequested node mismatch for node_execution_id '{node_execution_id}': event='{node_name}', execution='{}'",
+                        execution.node_name
+                    ));
+                }
+                execution.status = NodeExecutionStatus::WaitingApproval;
+                let is_fanout_child = execution.fanout_parent.is_some();
+                // fanout child approval is local to that NodeExecution. The workflow remains
+                // Running on its parent fanout; only a top-level approval node gates the run.
+                if !is_fanout_child {
+                    current_step_name = node_name.clone();
+                    current_step_index = workflow
+                        .nodes
+                        .iter()
+                        .position(|s| s.name == *node_name)
+                        .unwrap_or(current_step_index);
+                    exec_state = WorkflowExecutionState::WaitingApproval;
+                }
                 updated_at = *timestamp;
             }
-            WorkflowEvent::ApprovalResolved { timestamp, .. } => {
+            WorkflowEvent::ApprovalResolved {
+                node_execution_id,
+                node_name,
+                timestamp,
+                ..
+            } => {
+                let execution = node_executions
+                    .iter_mut()
+                    .find(|execution| execution.id == *node_execution_id)
+                    .ok_or_else(|| {
+                        format!(
+                            "ApprovalResolved references unknown node_execution_id '{node_execution_id}'"
+                        )
+                    })?;
+                if execution.node_name != *node_name {
+                    return Err(format!(
+                        "ApprovalResolved node mismatch for node_execution_id '{node_execution_id}': event='{node_name}', execution='{}'",
+                        execution.node_name
+                    ));
+                }
+                execution.status = NodeExecutionStatus::Running;
+                exec_state = if node_executions.iter().any(|execution| {
+                    execution.fanout_parent.is_none()
+                        && execution.status == NodeExecutionStatus::WaitingApproval
+                }) {
+                    WorkflowExecutionState::WaitingApproval
+                } else {
+                    WorkflowExecutionState::Running
+                };
                 updated_at = *timestamp;
             }
             WorkflowEvent::RunCompleted {
@@ -1349,12 +1384,6 @@ pub(crate) fn reconstruct_state_from_events(
             } => {
                 exec_state = WorkflowExecutionState::Completed;
                 total_token_usage = tu.clone();
-                // [04] 終端遷移では active_parallel_steps を必ず空にする。
-                // `WorkflowState.active_parallel_steps` は engine ライブ state では
-                // 「現在進行中の並列子のみ」を意味し、`ParallelCompleted` を経由せずに
-                // 終端へ到達した経路（NodeFailed → RunFailed 等）でも UI が stale な
-                // 並列子を表示しないよう projection 側でも同じ不変条件を担保する。
-                active_parallel_steps.clear();
                 current_session_id = None;
                 stall_observations.clear();
                 updated_at = *timestamp;
@@ -1371,7 +1400,16 @@ pub(crate) fn reconstruct_state_from_events(
                     kind: *failure_kind,
                     retry_count: *retry_count,
                 };
-                active_parallel_steps.clear();
+                // Fatal fanout event streams record NodeFailed for the failing child and parent,
+                // then close the run. Siblings have no dedicated event, so RunFailed closes every
+                // execution that is still active while preserving Failed/Succeeded executions.
+                for execution in node_executions
+                    .iter_mut()
+                    .filter(|execution| execution.status.is_active())
+                {
+                    execution.status = NodeExecutionStatus::Aborted;
+                    execution.completed_at = Some(*timestamp);
+                }
                 current_session_id = None;
                 stall_observations.clear();
                 updated_at = *timestamp;
@@ -1382,6 +1420,13 @@ pub(crate) fn reconstruct_state_from_events(
                 ..
             } => {
                 exec_state = WorkflowExecutionState::Aborted;
+                for execution in node_executions
+                    .iter_mut()
+                    .filter(|execution| execution.status.is_active())
+                {
+                    execution.status = NodeExecutionStatus::Aborted;
+                    execution.completed_at = Some(*timestamp);
+                }
 
                 if let Some(aborted_step) = aborted_step {
                     let aborted_step = step_history_entry_from_run_aborted_snapshot(aborted_step);
@@ -1394,10 +1439,9 @@ pub(crate) fn reconstruct_state_from_events(
                         step_history.push(aborted_step);
                     }
                 } else {
-                    // spec issues-1023: 中断時に走っていた current step / parallel
-                    // children を `step_history` に "aborted" 状態として記録する。
-                    // session log への到達経路（child の session_id）を残すために
-                    // active_parallel_steps の snapshot を child_outputs に転写する。
+                    // spec issues-1023: 中断時に走っていた current step を
+                    // `step_history` に "aborted" 状態として記録する。fanout child の
+                    // session / status は NodeExecution read model に保持する。
                     // 旧 RunAborted event は通常 step の current_session_id を持たないため、
                     // 通常 step entry の session_id は None になる。
                     // spec issues-1023: 同名 step の retry を中断したケース（例:
@@ -1411,50 +1455,7 @@ pub(crate) fn reconstruct_state_from_events(
                     });
                     let current_started = current_run_index.is_some();
 
-                    if !active_parallel_steps.is_empty() {
-                        let parent_run_index = step_execution_counts
-                            .get(&current_step_name)
-                            .copied()
-                            .unwrap_or(0);
-                        let child_snapshots: Vec<
-                            crate::adaptor::gateway::workflow::state::ChildOutputSnapshot,
-                        > = active_parallel_steps
-                            .iter()
-                            .map(|child| {
-                                let snapshot_state = if child.state == STEP_STATE_COMPLETED {
-                                    STEP_STATE_COMPLETED
-                                } else {
-                                    STEP_STATE_ABORTED
-                                };
-                                crate::adaptor::gateway::workflow::state::ChildOutputSnapshot {
-                                    step_name: child.step_name.clone(),
-                                    session_id: child.session_id.clone(),
-                                    result: child.result.clone(),
-                                    run_index: child.run_index,
-                                    completed_at: child.completed_at.unwrap_or(*timestamp),
-                                    structured_output: child.structured_output.clone(),
-                                    artifact_contract: child.artifact_contract.clone(),
-                                    state: snapshot_state.to_string(),
-                                    failure_kind: None,
-                                    failure_disposition: None,
-                                }
-                            })
-                            .collect();
-                        step_history.push(StepHistoryEntry {
-                            step_name: current_step_name.clone(),
-                            completed_at: *timestamp,
-                            result: None,
-                            session_id: None,
-                            token_usage: None,
-                            structured_output: None,
-                            run_index: parent_run_index,
-                            child_outputs: Some(child_snapshots),
-                            state: STEP_STATE_ABORTED.to_string(),
-                        });
-                    } else if current_started
-                        && !already_in_history
-                        && !current_step_name.is_empty()
-                    {
+                    if current_started && !already_in_history && !current_step_name.is_empty() {
                         let run_index = step_execution_counts
                             .get(&current_step_name)
                             .copied()
@@ -1473,13 +1474,19 @@ pub(crate) fn reconstruct_state_from_events(
                     }
                 }
 
-                active_parallel_steps.clear();
                 current_session_id = None;
                 stall_observations.clear();
                 updated_at = *timestamp;
             }
             WorkflowEvent::RunInterrupted { timestamp, .. } => {
                 exec_state = WorkflowExecutionState::Interrupted;
+                for execution in node_executions
+                    .iter_mut()
+                    .filter(|execution| execution.status.is_active())
+                {
+                    execution.status = NodeExecutionStatus::Aborted;
+                    execution.completed_at = Some(*timestamp);
+                }
                 let current_run_index = step_execution_counts.get(&current_step_name).copied();
                 let already_in_history = step_history.last().is_some_and(|entry| {
                     entry.step_name == current_step_name
@@ -1503,238 +1510,11 @@ pub(crate) fn reconstruct_state_from_events(
                     });
                 }
 
-                active_parallel_steps.clear();
                 current_session_id = None;
                 stall_observations.clear();
                 updated_at = *timestamp;
             }
             WorkflowEvent::OutputCollected { timestamp, .. } => {
-                updated_at = *timestamp;
-            }
-            WorkflowEvent::ParallelStarted {
-                parent_node_name,
-                child_node_names,
-                timestamp,
-                ..
-            } => {
-                current_step_name = parent_node_name.clone();
-                current_step_index = workflow
-                    .nodes
-                    .iter()
-                    .position(|s| s.name == *parent_node_name)
-                    .unwrap_or(current_step_index);
-                // parallel parent には逐次 session が無い。
-                current_session_id = None;
-                if matches!(exec_state, WorkflowExecutionState::WaitingApproval) {
-                    exec_state = WorkflowExecutionState::Running;
-                }
-                active_parallel_steps = child_node_names
-                    .iter()
-                    .map(|name| ParallelStepState {
-                        step_name: name.clone(),
-                        state: STEP_STATE_RUNNING.to_string(),
-                        session_id: None,
-                        result: None,
-                        run_index: 0,
-                        completed_at: None,
-                        structured_output: None,
-                        artifact_contract: None,
-                        failure_kind: None,
-                        failure_disposition: None,
-                    })
-                    .collect();
-                updated_at = *timestamp;
-            }
-            WorkflowEvent::ParallelChildStarted {
-                child_node_name,
-                session_id,
-                execution_count,
-                timestamp,
-                ..
-            } => {
-                step_execution_counts.insert(child_node_name.clone(), *execution_count);
-                if let Some(ps) = active_parallel_steps
-                    .iter_mut()
-                    .find(|p| p.step_name == *child_node_name)
-                {
-                    ps.state = STEP_STATE_RUNNING.to_string();
-                    ps.session_id = Some(session_id.clone());
-                    ps.result = None;
-                    ps.run_index = *execution_count;
-                    ps.completed_at = None;
-                } else {
-                    active_parallel_steps.push(ParallelStepState {
-                        step_name: child_node_name.clone(),
-                        state: STEP_STATE_RUNNING.to_string(),
-                        session_id: Some(session_id.clone()),
-                        result: None,
-                        run_index: *execution_count,
-                        completed_at: None,
-                        structured_output: None,
-                        artifact_contract: None,
-                        failure_kind: None,
-                        failure_disposition: None,
-                    });
-                }
-                updated_at = *timestamp;
-            }
-            WorkflowEvent::ParallelChildCompleted {
-                child_node_name,
-                result,
-                session_id,
-                token_usage,
-                structured_output,
-                run_index,
-                state,
-                failure_kind,
-                failure_disposition,
-                timestamp,
-                ..
-            } => {
-                // [08] 先行する ArtifactProduced で確定済みの structured_output /
-                //   artifact_contract は ParallelChildCompleted（prose 抽出廃止後は
-                //   `structured_output: None` 固定）で上書きしない。reload 経路でも
-                //   live と同じく「経路非依存に提出済み output を参照できる」
-                //   （spec [08] Rule 3 Scenario 1）を満たすため、既存 slot から
-                //   merge する。
-                let prior = step_outputs.get(child_node_name).cloned();
-                let output_merge = workflow_parallel::merge_parallel_child_completion_output(
-                    structured_output.clone(),
-                    prior.as_ref().and_then(|p| p.structured_output.clone()),
-                    prior.as_ref().and_then(|p| p.artifact_contract.clone()),
-                );
-                let merged_structured_output = output_merge.structured_output;
-                let merged_artifact_contract = output_merge.artifact_contract;
-                if let Some(ps) = active_parallel_steps
-                    .iter_mut()
-                    .find(|p| p.step_name == *child_node_name)
-                {
-                    ps.state = state.clone();
-                    ps.result = result.clone();
-                    ps.completed_at = Some(*timestamp);
-                    ps.structured_output = merged_structured_output.clone();
-                    ps.artifact_contract = merged_artifact_contract.clone();
-                    ps.failure_kind = *failure_kind;
-                    ps.failure_disposition = *failure_disposition;
-                }
-                step_outputs.insert(
-                    child_node_name.clone(),
-                    StepOutput {
-                        step_name: child_node_name.clone(),
-                        run_index: *run_index,
-                        session_id: Some(session_id.clone()),
-                        result: result.clone(),
-                        structured_output: merged_structured_output,
-                        artifact_contract: merged_artifact_contract,
-                        token_usage: token_usage.clone(),
-                        completed_at: *timestamp,
-                    },
-                );
-                if let Some(ref usage) = token_usage {
-                    total_token_usage.add(usage);
-                }
-                stall_observations.retain(|observation| observation.session_id != *session_id);
-                updated_at = *timestamp;
-            }
-            WorkflowEvent::ParallelCompleted {
-                parent_node_name,
-                aggregate_result,
-                timestamp,
-                ..
-            } => {
-                let parent_run_index = step_execution_counts
-                    .get(parent_node_name)
-                    .copied()
-                    .unwrap_or_else(|| {
-                        step_history
-                            .iter()
-                            .filter(|entry| entry.step_name == *parent_node_name)
-                            .count() as u32
-                            + 1
-                    });
-                let mut combined_tokens = TokenUsage::default();
-                let mut child_tokens_seen = false;
-                let mut children_output = serde_json::Map::new();
-                let child_snapshots = active_parallel_steps
-                    .iter()
-                    .map(|child| {
-                        let output = step_outputs.get(&child.step_name);
-                        if let Some(usage) = output.and_then(|output| output.token_usage.as_ref()) {
-                            child_tokens_seen = true;
-                            combined_tokens.add(usage);
-                        }
-                        if let Some(output) = output {
-                            children_output.insert(
-                                child.step_name.clone(),
-                                output
-                                    .structured_output
-                                    .clone()
-                                    .unwrap_or(serde_json::Value::Null),
-                            );
-                        } else if let Some(structured_output) = child.structured_output.clone() {
-                            children_output.insert(child.step_name.clone(), structured_output);
-                        }
-                        ChildOutputSnapshot {
-                            step_name: child.step_name.clone(),
-                            session_id: output
-                                .and_then(|output| output.session_id.clone())
-                                .or_else(|| child.session_id.clone()),
-                            result: output
-                                .and_then(|output| output.result.clone())
-                                .or_else(|| child.result.clone()),
-                            run_index: if child.run_index == 0 {
-                                output.map(|output| output.run_index).unwrap_or(0)
-                            } else {
-                                child.run_index
-                            },
-                            completed_at: output
-                                .map(|output| output.completed_at)
-                                .or(child.completed_at)
-                                .unwrap_or(*timestamp),
-                            structured_output: child.structured_output.clone().or_else(|| {
-                                output.and_then(|output| output.structured_output.clone())
-                            }),
-                            artifact_contract: child.artifact_contract.clone().or_else(|| {
-                                output.and_then(|output| output.artifact_contract.clone())
-                            }),
-                            state: child.state.clone(),
-                            failure_kind: child.failure_kind,
-                            failure_disposition: child.failure_disposition,
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                if !child_snapshots.is_empty() {
-                    step_outputs.insert(
-                        parent_node_name.clone(),
-                        StepOutput {
-                            step_name: parent_node_name.clone(),
-                            run_index: parent_run_index,
-                            session_id: None,
-                            result: None,
-                            structured_output: Some(serde_json::Value::Object(children_output)),
-                            artifact_contract: None,
-                            token_usage: Some(combined_tokens.clone()),
-                            completed_at: *timestamp,
-                        },
-                    );
-                    step_history.push(StepHistoryEntry {
-                        step_name: parent_node_name.clone(),
-                        completed_at: *timestamp,
-                        result: Some(completed_parallel_history_result(aggregate_result)),
-                        session_id: None,
-                        token_usage: if child_tokens_seen {
-                            Some(combined_tokens)
-                        } else {
-                            None
-                        },
-                        structured_output: None,
-                        run_index: parent_run_index,
-                        child_outputs: Some(child_snapshots),
-                        state: crate::adaptor::gateway::workflow::state::default_step_entry_state(),
-                    });
-                }
-                active_parallel_steps.clear();
-                stall_observations.clear();
                 updated_at = *timestamp;
             }
             WorkflowEvent::ContractRepairRequested { timestamp, .. } => {
@@ -1745,16 +1525,42 @@ pub(crate) fn reconstruct_state_from_events(
                 // engine domain state には影響しない。
             }
             WorkflowEvent::ArtifactProduced {
+                node_execution_id,
                 node_name,
                 contract,
                 value,
                 timestamp,
                 ..
             } => {
+                let is_fanout_child = node_executions
+                    .iter_mut()
+                    .find(|execution| execution.id == *node_execution_id)
+                    .ok_or_else(|| {
+                        format!(
+                            "ArtifactProduced references unknown node_execution_id '{node_execution_id}'"
+                        )
+                    })
+                    .and_then(|execution| {
+                        if execution.node_name != *node_name {
+                            return Err(format!(
+                                "ArtifactProduced node mismatch for node_execution_id '{node_execution_id}': event='{node_name}', execution='{}'",
+                                execution.node_name
+                            ));
+                        }
+                        execution.artifact = Some(value.clone());
+                        Ok(execution.fanout_parent.is_some())
+                    })?;
                 // [08] CLI / in-process 経由で確定した step output を state に復元する。
                 // 後続 step が `input_reference` で経路非依存に参照できる shape に揃える。
                 // `result` は engine の live state と同じ値（contract validator の戻り値）
                 // を再導出する。これにより live と reload 経路で aggregate 評価が乖離しない。
+                if is_fanout_child {
+                    // fanout child Artifact は NodeExecution にだけ保持し、node-name map
+                    // には載せない。親 fanout の ArtifactProduced(array) が唯一の参照面。
+                    updated_at = *timestamp;
+                    continue;
+                }
+
                 let ri = step_execution_counts.get(node_name).copied().unwrap_or(0);
                 let restored_result = if let Some(contract) = contract {
                     match workflow_contract::validate_artifact_value(
@@ -1826,7 +1632,7 @@ pub(crate) fn reconstruct_state_from_events(
         total_token_usage,
         step_outputs,
         step_states,
-        active_parallel_steps,
+        node_executions,
         approval_operations,
         stall_observations,
         started_at,
@@ -1838,7 +1644,8 @@ pub(crate) fn reconstruct_state_from_events(
 mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::schema::{
-        FacetRefs, NodeDefinition, NodeKind, SchemaDef, SessionGate, SessionSpec, Workflow,
+        FacetRefs, FanoutSpec, NodeDefinition, NodeKind, SchemaDef, SessionGate, SessionSpec,
+        Workflow,
     };
 
     fn agent_node(name: &str) -> NodeDefinition {
@@ -1922,8 +1729,11 @@ mod tests {
         let events = vec![WorkflowEvent::NodeStarted {
             run_id: "exec-x".to_string(),
             workflow_name: "wf".to_string(),
+            node_execution_id: "ne-a-1".to_string(),
             node_name: "a".to_string(),
-            execution_count: 1,
+            kind: NodeKindName::Session,
+            attempt: 1,
+            fanout_parent: None,
             timestamp: 1.0,
         }];
         let result = reconstruct_state_from_events("exec-x", &events).unwrap();
@@ -1934,15 +1744,243 @@ mod tests {
     }
 
     #[test]
+    fn projection_rejects_lifecycle_event_with_unknown_node_execution_id() {
+        let run_id = "run-unknown-node-execution";
+        let events = vec![
+            run_started(run_id, workflow_with_nodes("wf", vec!["implement"])),
+            WorkflowEvent::NodeCompleted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_execution_id: "missing".to_string(),
+                node_name: "implement".to_string(),
+                result: Some("done".to_string()),
+                session_id: None,
+                token_usage: None,
+                structured_output: None,
+                run_index: Some(1),
+                timestamp: 1001.0,
+            },
+        ];
+
+        let error = reconstruct_state_from_events(run_id, &events).unwrap_err();
+
+        assert!(error.contains("unknown node_execution_id 'missing'"));
+    }
+
+    #[test]
+    fn projection_run_failed_aborts_active_fanout_siblings() {
+        let run_id = "run-fanout-terminal-failure";
+        let failure_kind = WorkflowStepFailureKind::InfrastructureCrash;
+        let events = vec![
+            run_started(
+                run_id,
+                workflow_with_nodes("wf", vec!["fanout", "child-a", "child-b"]),
+            ),
+            WorkflowEvent::NodeStarted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_execution_id: "ne-parent".to_string(),
+                node_name: "fanout".to_string(),
+                kind: NodeKindName::Fanout,
+                attempt: 1,
+                fanout_parent: None,
+                timestamp: 1001.0,
+            },
+            WorkflowEvent::NodeStarted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_execution_id: "ne-child-a".to_string(),
+                node_name: "child-a".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: Some(FanoutParentRef {
+                    parent_node: "fanout".to_string(),
+                    parent_attempt: 1,
+                    item_index: None,
+                    child_index: 0,
+                }),
+                timestamp: 1002.0,
+            },
+            WorkflowEvent::NodeStarted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_execution_id: "ne-child-b".to_string(),
+                node_name: "child-b".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: Some(FanoutParentRef {
+                    parent_node: "fanout".to_string(),
+                    parent_attempt: 1,
+                    item_index: None,
+                    child_index: 1,
+                }),
+                timestamp: 1002.0,
+            },
+            WorkflowEvent::NodeFailed {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_execution_id: "ne-child-a".to_string(),
+                node_name: "child-a".to_string(),
+                reason: "child failed".to_string(),
+                failure_kind,
+                retry_count: None,
+                timestamp: 1003.0,
+            },
+            WorkflowEvent::NodeFailed {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_execution_id: "ne-parent".to_string(),
+                node_name: "fanout".to_string(),
+                reason: "fanout failed".to_string(),
+                failure_kind,
+                retry_count: None,
+                timestamp: 1004.0,
+            },
+            WorkflowEvent::RunFailed {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                reason: "fanout failed".to_string(),
+                failure_kind,
+                retry_count: None,
+                timestamp: 1005.0,
+            },
+        ];
+
+        let state = reconstruct_state_from_events(run_id, &events)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(state.state, WorkflowExecutionState::Failed { .. }));
+        let status = |id: &str| {
+            state
+                .node_executions
+                .iter()
+                .find(|execution| execution.id == id)
+                .map(|execution| (execution.status, execution.completed_at))
+                .expect("node execution must be projected")
+        };
+        assert_eq!(status("ne-parent").0, NodeExecutionStatus::Failed);
+        assert_eq!(status("ne-child-a").0, NodeExecutionStatus::Failed);
+        assert_eq!(
+            status("ne-child-b"),
+            (NodeExecutionStatus::Aborted, Some(1005.0))
+        );
+        assert!(
+            state
+                .node_executions
+                .iter()
+                .all(|execution| !execution.status.is_active()),
+            "RunFailed replay must leave no live fanout child"
+        );
+    }
+
+    #[test]
+    fn projection_run_completed_keeps_completed_fanout_child_succeeded_and_leaves_no_active_nodes()
+    {
+        let run_id = "run-fanout-normal-complete";
+        let events = vec![
+            run_started(run_id, workflow_with_nodes("wf", vec!["fanout", "child-a"])),
+            WorkflowEvent::NodeStarted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_execution_id: "ne-parent".to_string(),
+                node_name: "fanout".to_string(),
+                kind: NodeKindName::Fanout,
+                attempt: 1,
+                fanout_parent: None,
+                timestamp: 1001.0,
+            },
+            WorkflowEvent::NodeStarted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_execution_id: "ne-child-a".to_string(),
+                node_name: "child-a".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: Some(FanoutParentRef {
+                    parent_node: "fanout".to_string(),
+                    parent_attempt: 1,
+                    item_index: None,
+                    child_index: 0,
+                }),
+                timestamp: 1002.0,
+            },
+            WorkflowEvent::NodeCompleted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_execution_id: "ne-child-a".to_string(),
+                node_name: "child-a".to_string(),
+                result: Some("LGTM".to_string()),
+                session_id: Some("session-child-a".to_string()),
+                token_usage: None,
+                structured_output: Some(serde_json::json!({ "verdict": "LGTM" })),
+                run_index: Some(1),
+                timestamp: 1003.0,
+            },
+            WorkflowEvent::NodeCompleted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_execution_id: "ne-parent".to_string(),
+                node_name: "fanout".to_string(),
+                result: Some("complete".to_string()),
+                session_id: None,
+                token_usage: None,
+                structured_output: Some(serde_json::json!([{ "verdict": "LGTM" }])),
+                run_index: Some(1),
+                timestamp: 1004.0,
+            },
+            WorkflowEvent::RunCompleted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                total_token_usage: TokenUsage::default(),
+                timestamp: 1005.0,
+            },
+        ];
+
+        let state = reconstruct_state_from_events(run_id, &events)
+            .unwrap()
+            .unwrap();
+        let status = |id: &str| {
+            state
+                .node_executions
+                .iter()
+                .find(|execution| execution.id == id)
+                .map(|execution| execution.status)
+                .expect("node execution must be projected")
+        };
+
+        assert_eq!(state.state, WorkflowExecutionState::Completed);
+        assert_eq!(status("ne-parent"), NodeExecutionStatus::Succeeded);
+        assert_eq!(status("ne-child-a"), NodeExecutionStatus::Succeeded);
+        assert!(
+            state
+                .node_executions
+                .iter()
+                .all(|execution| !execution.status.is_active()),
+            "RunCompleted replay must leave no active fanout node execution"
+        );
+    }
+
+    #[test]
     fn projection_restores_approval_operations_for_approval_gate_waiting_state() {
         let run_id = "exec-approval-ops";
         let mut workflow = workflow_with_nodes("wf", vec!["review"]);
         workflow.nodes[0].kind = approval_session_kind("review the diff");
         let events = vec![
             run_started(run_id, workflow),
+            WorkflowEvent::NodeStarted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_execution_id: "ne-review-1".to_string(),
+                node_name: "review".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: None,
+                timestamp: 1000.5,
+            },
             WorkflowEvent::ApprovalRequested {
                 run_id: run_id.to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-review-1".to_string(),
                 node_name: "review".to_string(),
                 timestamp: 1001.0,
             },
@@ -1968,9 +2006,20 @@ mod tests {
         let workflow = workflow_with_nodes("wf", vec!["review"]);
         let events = vec![
             run_started(run_id, workflow),
+            WorkflowEvent::NodeStarted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_execution_id: "ne-review-1".to_string(),
+                node_name: "review".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: None,
+                timestamp: 1000.5,
+            },
             WorkflowEvent::ApprovalRequested {
                 run_id: run_id.to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-review-1".to_string(),
                 node_name: "review".to_string(),
                 timestamp: 1001.0,
             },
@@ -1985,6 +2034,79 @@ mod tests {
     }
 
     #[test]
+    fn projection_keeps_workflow_running_when_fanout_child_requests_approval() {
+        let run_id = "exec-fanout-approval";
+        let mut workflow = workflow_with_nodes("wf", vec!["fanout-review", "review"]);
+        workflow.nodes[0].kind = NodeKind::Fanout(FanoutSpec {
+            child: vec!["review".to_string()],
+            items: None,
+            aggregate: None,
+        });
+        workflow.nodes[1].kind = approval_session_kind("review the diff");
+        let events = vec![
+            run_started(run_id, workflow),
+            WorkflowEvent::NodeStarted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_execution_id: "ne-parent".to_string(),
+                node_name: "fanout-review".to_string(),
+                kind: NodeKindName::Fanout,
+                attempt: 1,
+                fanout_parent: None,
+                timestamp: 1000.5,
+            },
+            WorkflowEvent::NodeStarted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_execution_id: "ne-review-1".to_string(),
+                node_name: "review".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: Some(FanoutParentRef {
+                    parent_node: "fanout-review".to_string(),
+                    parent_attempt: 1,
+                    item_index: None,
+                    child_index: 0,
+                }),
+                timestamp: 1000.6,
+            },
+            WorkflowEvent::ApprovalRequested {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_execution_id: "ne-review-1".to_string(),
+                node_name: "review".to_string(),
+                timestamp: 1001.0,
+            },
+        ];
+
+        let state = reconstruct_state_from_events(run_id, &events)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(state.state, WorkflowExecutionState::Running);
+        assert_eq!(state.current_step_name, "fanout-review");
+        assert!(state.approval_operations.is_none());
+        assert_eq!(
+            state
+                .node_executions
+                .iter()
+                .find(|execution| execution.id == "ne-parent")
+                .unwrap()
+                .status,
+            NodeExecutionStatus::Running
+        );
+        assert_eq!(
+            state
+                .node_executions
+                .iter()
+                .find(|execution| execution.id == "ne-review-1")
+                .unwrap()
+                .status,
+            NodeExecutionStatus::WaitingApproval
+        );
+    }
+
+    #[test]
     fn projection_restores_workflow_stall_observations() {
         let run_id = "exec-stall";
         let workflow = workflow_with_nodes("wf", vec!["review"]);
@@ -1993,15 +2115,18 @@ mod tests {
             WorkflowEvent::NodeStarted {
                 run_id: run_id.to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-review-1".to_string(),
                 node_name: "review".to_string(),
-                execution_count: 1,
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: None,
                 timestamp: 1001.0,
             },
-            WorkflowEvent::StepSessionStarted {
+            WorkflowEvent::SessionAttached {
                 run_id: run_id.to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-review-1".to_string(),
                 node_name: "review".to_string(),
-                execution_count: 1,
                 session_id: "session-1".to_string(),
                 timestamp: 1002.0,
             },
@@ -2046,15 +2171,18 @@ mod tests {
             WorkflowEvent::NodeStarted {
                 run_id: run_id.to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-review-1".to_string(),
                 node_name: "review".to_string(),
-                execution_count: 1,
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: None,
                 timestamp: 1001.0,
             },
-            WorkflowEvent::StepSessionStarted {
+            WorkflowEvent::SessionAttached {
                 run_id: run_id.to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-review-1".to_string(),
                 node_name: "review".to_string(),
-                execution_count: 1,
                 session_id: "session-1".to_string(),
                 timestamp: 1002.0,
             },
@@ -2095,15 +2223,18 @@ mod tests {
             WorkflowEvent::NodeStarted {
                 run_id: run_id.to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-review-1".to_string(),
                 node_name: "review".to_string(),
-                execution_count: 1,
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: None,
                 timestamp: 1001.0,
             },
-            WorkflowEvent::StepSessionStarted {
+            WorkflowEvent::SessionAttached {
                 run_id: run_id.to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-review-1".to_string(),
                 node_name: "review".to_string(),
-                execution_count: 1,
                 session_id: "session-1".to_string(),
                 timestamp: 1002.0,
             },
@@ -2129,15 +2260,18 @@ mod tests {
             WorkflowEvent::NodeStarted {
                 run_id: run_id.to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-review-1".to_string(),
                 node_name: "review".to_string(),
-                execution_count: 1,
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: None,
                 timestamp: 1001.0,
             },
-            WorkflowEvent::StepSessionStarted {
+            WorkflowEvent::SessionAttached {
                 run_id: run_id.to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-review-1".to_string(),
                 node_name: "review".to_string(),
-                execution_count: 1,
                 session_id: "session-1".to_string(),
                 timestamp: 1002.0,
             },
@@ -2145,6 +2279,7 @@ mod tests {
             WorkflowEvent::NodeCompleted {
                 run_id: run_id.to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-review-1".to_string(),
                 node_name: "review".to_string(),
                 result: Some("ok".to_string()),
                 session_id: Some("session-1".to_string()),
@@ -2172,15 +2307,18 @@ mod tests {
             WorkflowEvent::NodeStarted {
                 run_id: run_id.to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-plan-1".to_string(),
                 node_name: "plan".to_string(),
-                execution_count: 1,
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: None,
                 timestamp: 1001.0,
             },
-            WorkflowEvent::StepSessionStarted {
+            WorkflowEvent::SessionAttached {
                 run_id: run_id.to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-plan-1".to_string(),
                 node_name: "plan".to_string(),
-                execution_count: 1,
                 session_id: "session-plan".to_string(),
                 timestamp: 1002.0,
             },
@@ -2188,8 +2326,11 @@ mod tests {
             WorkflowEvent::NodeStarted {
                 run_id: run_id.to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-review-1".to_string(),
                 node_name: "review".to_string(),
-                execution_count: 1,
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: None,
                 timestamp: 1004.0,
             },
         ];
@@ -2212,15 +2353,18 @@ mod tests {
             WorkflowEvent::NodeStarted {
                 run_id: run_id.to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-review-1".to_string(),
                 node_name: "review".to_string(),
-                execution_count: 1,
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: None,
                 timestamp: 1001.0,
             },
-            WorkflowEvent::StepSessionStarted {
+            WorkflowEvent::SessionAttached {
                 run_id: run_id.to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-review-1".to_string(),
                 node_name: "review".to_string(),
-                execution_count: 1,
                 session_id: "session-1".to_string(),
                 timestamp: 1002.0,
             },
@@ -2243,119 +2387,97 @@ mod tests {
     }
 
     #[test]
-    fn projection_clears_workflow_stall_observations_on_parallel_completion() {
-        let run_id = "exec-stall-parallel";
-        let workflow = workflow_with_nodes("wf", vec!["parallel-review"]);
+    fn projection_clears_only_completed_fanout_child_stall_observation() {
+        let run_id = "exec-stall-parallel-child";
+        let workflow = workflow_with_nodes("wf", vec!["parallel-review", "review-a", "review-b"]);
         let events = vec![
             run_started(run_id, workflow),
-            WorkflowEvent::ParallelStarted {
+            WorkflowEvent::NodeStarted {
                 run_id: run_id.to_string(),
                 workflow_name: "wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                child_node_names: vec!["review-a".to_string(), "review-b".to_string()],
+                node_execution_id: "ne-parent".to_string(),
+                node_name: "parallel-review".to_string(),
+                kind: NodeKindName::Fanout,
+                attempt: 1,
+                fanout_parent: None,
                 timestamp: 1001.0,
             },
-            stall_observed(run_id, "session-review-a", "review-a"),
-            WorkflowEvent::ParallelCompleted {
+            WorkflowEvent::NodeStarted {
                 run_id: run_id.to_string(),
                 workflow_name: "wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                aggregate_result: "advance".to_string(),
+                node_execution_id: "ne-a".to_string(),
+                node_name: "review-a".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: Some(FanoutParentRef {
+                    parent_node: "parallel-review".to_string(),
+                    parent_attempt: 1,
+                    item_index: None,
+                    child_index: 0,
+                }),
+                timestamp: 1002.0,
+            },
+            WorkflowEvent::SessionAttached {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_execution_id: "ne-a".to_string(),
+                node_name: "review-a".to_string(),
+                session_id: "session-review-a".to_string(),
+                timestamp: 1002.0,
+            },
+            WorkflowEvent::NodeStarted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_execution_id: "ne-b".to_string(),
+                node_name: "review-b".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: Some(FanoutParentRef {
+                    parent_node: "parallel-review".to_string(),
+                    parent_attempt: 1,
+                    item_index: None,
+                    child_index: 1,
+                }),
+                timestamp: 1002.0,
+            },
+            WorkflowEvent::SessionAttached {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_execution_id: "ne-b".to_string(),
+                node_name: "review-b".to_string(),
+                session_id: "session-review-b".to_string(),
+                timestamp: 1002.0,
+            },
+            stall_observed(run_id, "session-review-a", "review-a"),
+            stall_observed(run_id, "session-review-b", "review-b"),
+            WorkflowEvent::NodeCompleted {
+                run_id: run_id.to_string(),
+                workflow_name: "wf".to_string(),
+                node_execution_id: "ne-a".to_string(),
+                node_name: "review-a".to_string(),
+                result: Some("LGTM".to_string()),
+                session_id: Some("session-review-a".to_string()),
+                token_usage: None,
+                structured_output: None,
+                run_index: Some(1),
                 timestamp: 1004.0,
             },
         ];
 
         let state = reconstruct_state_from_events(run_id, &events)
-            .unwrap()
-            .unwrap();
-
-        assert!(state.stall_observations.is_empty());
-        assert!(state.active_parallel_steps.is_empty());
-    }
-
-    #[test]
-    fn projection_clears_workflow_stall_observation_on_parallel_child_completion() {
-        let run_id = "exec-stall-parallel-child";
-        let workflow = workflow_with_nodes("wf", vec!["parallel-review"]);
-        let base_events = vec![
-            run_started(run_id, workflow),
-            WorkflowEvent::ParallelStarted {
-                run_id: run_id.to_string(),
-                workflow_name: "wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                child_node_names: vec!["review-a".to_string(), "review-b".to_string()],
-                timestamp: 1001.0,
-            },
-            WorkflowEvent::ParallelChildStarted {
-                run_id: run_id.to_string(),
-                workflow_name: "wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                child_node_name: "review-a".to_string(),
-                session_id: "session-review-a".to_string(),
-                execution_count: 1,
-                timestamp: 1002.0,
-            },
-            WorkflowEvent::ParallelChildStarted {
-                run_id: run_id.to_string(),
-                workflow_name: "wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                child_node_name: "review-b".to_string(),
-                session_id: "session-review-b".to_string(),
-                execution_count: 1,
-                timestamp: 1002.0,
-            },
-            stall_observed(run_id, "session-review-a", "review-a"),
-            stall_observed(run_id, "session-review-b", "review-b"),
-            WorkflowEvent::ParallelChildCompleted {
-                run_id: run_id.to_string(),
-                workflow_name: "wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                child_node_name: "review-a".to_string(),
-                session_id: "session-review-a".to_string(),
-                run_index: 1,
-                result: Some("LGTM".to_string()),
-                token_usage: None,
-                structured_output: None,
-                state: STEP_STATE_COMPLETED.to_string(),
-                failure_kind: None,
-                failure_disposition: None,
-                timestamp: 1004.0,
-            },
-        ];
-
-        let state = reconstruct_state_from_events(run_id, &base_events)
             .unwrap()
             .unwrap();
 
         assert_eq!(state.stall_observations.len(), 1);
         assert_eq!(state.stall_observations[0].session_id, "session-review-b");
-
-        let mut events = base_events;
-        events.push(WorkflowEvent::ParallelChildCompleted {
-            run_id: run_id.to_string(),
-            workflow_name: "wf".to_string(),
-            parent_node_name: "parallel-review".to_string(),
-            child_node_name: "review-b".to_string(),
-            session_id: "session-review-b".to_string(),
-            run_index: 1,
-            result: Some("model_refusal".to_string()),
-            token_usage: None,
-            structured_output: Some(serde_json::json!({
-                "failureKind": "model_refusal",
-                "disposition": "partial",
-                "exitCode": 1,
-            })),
-            state: STEP_STATE_FAILED.to_string(),
-            failure_kind: Some(WorkflowStepFailureKind::ModelRefusal),
-            failure_disposition: Some(FailureDisposition::Partial),
-            timestamp: 1005.0,
-        });
-
-        let state = reconstruct_state_from_events(run_id, &events)
-            .unwrap()
-            .unwrap();
-
-        assert!(state.stall_observations.is_empty());
+        assert_eq!(
+            state.node_executions[1].status,
+            NodeExecutionStatus::Succeeded
+        );
+        assert_eq!(
+            state.node_executions[2].status,
+            NodeExecutionStatus::Running
+        );
     }
 
     #[test]
@@ -2366,15 +2488,18 @@ mod tests {
             WorkflowEvent::NodeStarted {
                 run_id: "exec-1".to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-implement-1".to_string(),
                 node_name: "implement".to_string(),
-                execution_count: 1,
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: None,
                 timestamp: 1001.0,
             },
-            WorkflowEvent::StepSessionStarted {
+            WorkflowEvent::SessionAttached {
                 run_id: "exec-1".to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-implement-1".to_string(),
                 node_name: "implement".to_string(),
-                execution_count: 1,
                 session_id: "step-session-1".to_string(),
                 timestamp: 1002.0,
             },
@@ -2401,13 +2526,17 @@ mod tests {
             WorkflowEvent::NodeStarted {
                 run_id: "exec-snap".to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-plan-1".to_string(),
                 node_name: "plan".to_string(),
-                execution_count: 1,
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: None,
                 timestamp: 1001.0,
             },
             WorkflowEvent::NodeCompleted {
                 run_id: "exec-snap".to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-plan-1".to_string(),
                 node_name: "plan".to_string(),
                 result: Some("ok".to_string()),
                 session_id: None,
@@ -2434,141 +2563,6 @@ mod tests {
         assert_eq!(state.workflow_definition.nodes.len(), 3);
     }
 
-    /// 並列 child を抱えたまま `RunCompleted` で終端した場合、`active_parallel_steps`
-    /// は空になる（[04] C2: ライブ state の不変条件 — 「現在進行中の並列子のみ」 — を
-    /// projection でも担保する）。
-    #[test]
-    fn projection_clears_active_parallel_steps_on_run_completed() {
-        let snapshot = workflow_with_nodes("wf", vec!["parallel-review"]);
-        let events = vec![
-            run_started("exec-pc", snapshot),
-            WorkflowEvent::ParallelStarted {
-                run_id: "exec-pc".to_string(),
-                workflow_name: "wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                child_node_names: vec!["a".to_string(), "b".to_string()],
-                timestamp: 1.0,
-            },
-            WorkflowEvent::RunCompleted {
-                run_id: "exec-pc".to_string(),
-                workflow_name: "wf".to_string(),
-                total_token_usage: TokenUsage::default(),
-                timestamp: 2.0,
-            },
-        ];
-        let state = reconstruct_state_from_events("exec-pc", &events)
-            .unwrap()
-            .unwrap();
-        assert_eq!(state.state, WorkflowExecutionState::Completed);
-        assert!(
-            state.active_parallel_steps.is_empty(),
-            "RunCompleted では active_parallel_steps は空"
-        );
-    }
-
-    /// `ParallelStarted` 後に `NodeFailed` → `RunFailed` で終端しても、
-    /// `active_parallel_steps` は空になる（`ParallelCompleted` を経由しない経路）。
-    #[test]
-    fn projection_clears_active_parallel_steps_on_run_failed() {
-        let snapshot = workflow_with_nodes("wf", vec!["parallel-review"]);
-        let events = vec![
-            run_started("exec-pf", snapshot),
-            WorkflowEvent::ParallelStarted {
-                run_id: "exec-pf".to_string(),
-                workflow_name: "wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                child_node_names: vec!["a".to_string(), "b".to_string()],
-                timestamp: 1.0,
-            },
-            WorkflowEvent::NodeFailed {
-                run_id: "exec-pf".to_string(),
-                workflow_name: "wf".to_string(),
-                node_name: "a".to_string(),
-                reason: "boom".to_string(),
-                failure_kind: WorkflowStepFailureKind::InfrastructureCrash,
-                retry_count: None,
-                timestamp: 2.0,
-            },
-            WorkflowEvent::RunFailed {
-                run_id: "exec-pf".to_string(),
-                workflow_name: "wf".to_string(),
-                reason: "child failed".to_string(),
-                failure_kind: WorkflowStepFailureKind::InfrastructureCrash,
-                retry_count: None,
-                timestamp: 3.0,
-            },
-        ];
-        let state = reconstruct_state_from_events("exec-pf", &events)
-            .unwrap()
-            .unwrap();
-        assert!(matches!(state.state, WorkflowExecutionState::Failed { .. }));
-        assert!(
-            state.active_parallel_steps.is_empty(),
-            "RunFailed では active_parallel_steps は空"
-        );
-    }
-
-    /// `ParallelStarted` 後に `RunAborted` で終端した場合、`active_parallel_steps` は
-    /// 空になり、parent step が "aborted" entry として step_history に積まれる。
-    /// 未完了 child は child_outputs に "aborted" 状態で snapshot される。
-    ///
-    /// spec issues-1023: 中断時に走っていた parallel children も step_history に
-    /// 集約することで、UI から session log への到達経路を保ち続ける。
-    #[test]
-    fn projection_clears_active_parallel_steps_on_run_aborted() {
-        let snapshot = workflow_with_nodes("wf", vec!["parallel-review"]);
-        let events = vec![
-            run_started("exec-pa", snapshot),
-            WorkflowEvent::NodeStarted {
-                run_id: "exec-pa".to_string(),
-                workflow_name: "wf".to_string(),
-                node_name: "parallel-review".to_string(),
-                execution_count: 1,
-                timestamp: 1.0,
-            },
-            WorkflowEvent::ParallelStarted {
-                run_id: "exec-pa".to_string(),
-                workflow_name: "wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                child_node_names: vec!["a".to_string(), "b".to_string()],
-                timestamp: 1.0,
-            },
-            WorkflowEvent::RunAborted {
-                run_id: "exec-pa".to_string(),
-                workflow_name: "wf".to_string(),
-                aborted_step: None,
-                timestamp: 2.0,
-            },
-        ];
-        let state = reconstruct_state_from_events("exec-pa", &events)
-            .unwrap()
-            .unwrap();
-        assert_eq!(state.state, WorkflowExecutionState::Aborted);
-        assert!(
-            state.active_parallel_steps.is_empty(),
-            "RunAborted では active_parallel_steps は空"
-        );
-        assert_eq!(
-            state.step_history.len(),
-            1,
-            "RunAborted で parent entry が 1 件積まれる"
-        );
-        let parent = &state.step_history[0];
-        assert_eq!(parent.step_name, "parallel-review");
-        assert_eq!(parent.state, "aborted");
-        let children = parent
-            .child_outputs
-            .as_ref()
-            .expect("aborted parallel parent は child_outputs を持つ");
-        assert_eq!(children.len(), 2, "全 child が snapshot される");
-        for child in children {
-            assert_eq!(
-                child.state, "aborted",
-                "未完了 child は aborted として snapshot される"
-            );
-        }
-    }
-
     /// spec issues-1023: 通常 step が走っている最中に `RunAborted` で終端した場合、
     /// 当該 step が `state="aborted"` の entry として step_history に積まれる。
     /// projection 経路では `current_session_id` を追えないため session_id は None。
@@ -2580,8 +2574,11 @@ mod tests {
             WorkflowEvent::NodeStarted {
                 run_id: "exec-abort-current".to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-plan-1".to_string(),
                 node_name: "plan".to_string(),
-                execution_count: 1,
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: None,
                 timestamp: 1.0,
             },
             WorkflowEvent::RunAborted {
@@ -2614,8 +2611,11 @@ mod tests {
             WorkflowEvent::NodeStarted {
                 run_id: "exec-abort-snapshot".to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-plan-1".to_string(),
                 node_name: "plan".to_string(),
-                execution_count: 1,
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: None,
                 timestamp: 1.0,
             },
             WorkflowEvent::RunAborted {
@@ -2679,385 +2679,234 @@ mod tests {
         assert_eq!(aborted_child.state.as_str(), STEP_STATE_ABORTED);
     }
 
-    /// spec issues-1023: parallel ブロック実行中に一部 child が完了し、残りが
-    /// 未完了のまま `RunAborted` が来ると、parent entry の child_outputs は
-    /// 完了 child を "completed"、未完了 child を "aborted" として snapshot する。
     #[test]
-    fn projection_records_aborted_parallel_with_mixed_child_states() {
-        let snapshot = workflow_with_nodes("wf", vec!["parallel-review"]);
-        let events = vec![
-            run_started("exec-mixed", snapshot),
+    fn projection_keeps_repeated_fanout_child_artifacts_by_execution_id_only() {
+        let run_id = "exec-fanout-items";
+        let workflow = workflow_with_nodes("wf", vec!["workers", "worker"]);
+        let mut events = vec![
+            run_started(run_id, workflow),
             WorkflowEvent::NodeStarted {
-                run_id: "exec-mixed".to_string(),
+                run_id: run_id.to_string(),
                 workflow_name: "wf".to_string(),
-                node_name: "parallel-review".to_string(),
-                execution_count: 1,
+                node_execution_id: "ne-parent".to_string(),
+                node_name: "workers".to_string(),
+                kind: NodeKindName::Fanout,
+                attempt: 1,
+                fanout_parent: None,
                 timestamp: 1.0,
             },
-            WorkflowEvent::ParallelStarted {
-                run_id: "exec-mixed".to_string(),
+        ];
+
+        for (item_index, node_execution_id, value) in
+            [(0, "ne-worker-0", 10), (1, "ne-worker-1", 20)]
+        {
+            events.extend([
+                WorkflowEvent::NodeStarted {
+                    run_id: run_id.to_string(),
+                    workflow_name: "wf".to_string(),
+                    node_execution_id: node_execution_id.to_string(),
+                    node_name: "worker".to_string(),
+                    kind: NodeKindName::Command,
+                    attempt: 1,
+                    fanout_parent: Some(FanoutParentRef {
+                        parent_node: "workers".to_string(),
+                        parent_attempt: 1,
+                        item_index: Some(item_index),
+                        child_index: 0,
+                    }),
+                    timestamp: 2.0 + item_index as f64,
+                },
+                WorkflowEvent::ArtifactProduced {
+                    run_id: run_id.to_string(),
+                    workflow_name: "wf".to_string(),
+                    node_execution_id: node_execution_id.to_string(),
+                    node_name: "worker".to_string(),
+                    contract: None,
+                    value: serde_json::json!({"value": value}),
+                    request_id: None,
+                    submitted_at: None,
+                    timestamp: 4.0 + item_index as f64,
+                },
+                WorkflowEvent::NodeCompleted {
+                    run_id: run_id.to_string(),
+                    workflow_name: "wf".to_string(),
+                    node_execution_id: node_execution_id.to_string(),
+                    node_name: "worker".to_string(),
+                    result: None,
+                    session_id: None,
+                    token_usage: None,
+                    structured_output: None,
+                    run_index: Some(1),
+                    timestamp: 6.0 + item_index as f64,
+                },
+            ]);
+        }
+
+        let parent_artifact = serde_json::json!([{"value": 10}, {"value": 20}]);
+        events.extend([
+            WorkflowEvent::ArtifactProduced {
+                run_id: run_id.to_string(),
                 workflow_name: "wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                child_node_names: vec!["a".to_string(), "b".to_string()],
-                timestamp: 1.0,
+                node_execution_id: "ne-parent".to_string(),
+                node_name: "workers".to_string(),
+                contract: None,
+                value: parent_artifact.clone(),
+                request_id: None,
+                submitted_at: None,
+                timestamp: 8.0,
             },
-            WorkflowEvent::ParallelChildStarted {
-                run_id: "exec-mixed".to_string(),
+            WorkflowEvent::NodeCompleted {
+                run_id: run_id.to_string(),
                 workflow_name: "wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                child_node_name: "a".to_string(),
-                session_id: "session-a".to_string(),
-                execution_count: 1,
-                timestamp: 1.1,
-            },
-            WorkflowEvent::ParallelChildStarted {
-                run_id: "exec-mixed".to_string(),
-                workflow_name: "wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                child_node_name: "b".to_string(),
-                session_id: "session-b".to_string(),
-                execution_count: 1,
-                timestamp: 1.1,
-            },
-            WorkflowEvent::ParallelChildCompleted {
-                run_id: "exec-mixed".to_string(),
-                workflow_name: "wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                child_node_name: "a".to_string(),
-                session_id: "session-a".to_string(),
-                run_index: 1,
-                result: Some("LGTM".to_string()),
+                node_execution_id: "ne-parent".to_string(),
+                node_name: "workers".to_string(),
+                result: Some("complete".to_string()),
+                session_id: None,
                 token_usage: None,
                 structured_output: None,
-                state: STEP_STATE_COMPLETED.to_string(),
-                failure_kind: None,
-                failure_disposition: None,
-                timestamp: 1.5,
+                run_index: Some(1),
+                timestamp: 9.0,
             },
-            WorkflowEvent::RunAborted {
-                run_id: "exec-mixed".to_string(),
-                workflow_name: "wf".to_string(),
-                aborted_step: None,
-                timestamp: 2.0,
-            },
-        ];
-        let state = reconstruct_state_from_events("exec-mixed", &events)
+        ]);
+
+        let state = reconstruct_state_from_events(run_id, &events)
             .unwrap()
             .unwrap();
-        assert_eq!(state.state, WorkflowExecutionState::Aborted);
-        assert_eq!(state.step_history.len(), 1);
-        let parent = &state.step_history[0];
-        assert_eq!(parent.state, "aborted");
-        let children = parent.child_outputs.as_ref().unwrap();
-        assert_eq!(children.len(), 2);
-        let child_a = children.iter().find(|c| c.step_name == "a").unwrap();
-        let child_b = children.iter().find(|c| c.step_name == "b").unwrap();
-        assert_eq!(
-            child_a.state, "completed",
-            "ParallelChildCompleted 済み child は completed のまま snapshot"
-        );
-        assert_eq!(
-            child_a.session_id.as_deref(),
-            Some("session-a"),
-            "完了済み child の session_id が child_outputs に残る"
-        );
-        assert_eq!(child_b.state, "aborted", "未完了 child は aborted snapshot");
-        assert_eq!(
-            child_b.session_id.as_deref(),
-            Some("session-b"),
-            "未完了 child でも ParallelChildStarted で得た session_id が残る"
-        );
-    }
 
-    #[test]
-    fn projection_records_completed_parallel_child_sessions_in_parent_history() {
-        let snapshot = workflow_with_nodes("wf", vec!["parallel-review", "done"]);
-        let events = vec![
-            run_started("exec-parallel-complete", snapshot),
-            WorkflowEvent::NodeStarted {
-                run_id: "exec-parallel-complete".to_string(),
-                workflow_name: "wf".to_string(),
-                node_name: "parallel-review".to_string(),
-                execution_count: 1,
-                timestamp: 1.0,
-            },
-            WorkflowEvent::ParallelStarted {
-                run_id: "exec-parallel-complete".to_string(),
-                workflow_name: "wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                child_node_names: vec!["review-a".to_string(), "review-b".to_string()],
-                timestamp: 1.1,
-            },
-            WorkflowEvent::ParallelChildStarted {
-                run_id: "exec-parallel-complete".to_string(),
-                workflow_name: "wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                child_node_name: "review-a".to_string(),
-                session_id: "session-review-a".to_string(),
-                execution_count: 1,
-                timestamp: 1.2,
-            },
-            WorkflowEvent::ParallelChildStarted {
-                run_id: "exec-parallel-complete".to_string(),
-                workflow_name: "wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                child_node_name: "review-b".to_string(),
-                session_id: "session-review-b".to_string(),
-                execution_count: 1,
-                timestamp: 1.2,
-            },
-            WorkflowEvent::ArtifactProduced {
-                run_id: "exec-parallel-complete".to_string(),
-                workflow_name: "wf".to_string(),
-                node_name: "review-a".to_string(),
-                contract: Some("review-verdict".to_string()),
-                value: serde_json::json!({ "verdict": "LGTM" }),
-                request_id: None,
-                submitted_at: Some(1.3),
-                timestamp: 1.3,
-            },
-            WorkflowEvent::ParallelChildCompleted {
-                run_id: "exec-parallel-complete".to_string(),
-                workflow_name: "wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                child_node_name: "review-a".to_string(),
-                session_id: "session-review-a".to_string(),
-                run_index: 1,
-                result: Some("LGTM".to_string()),
-                token_usage: Some(TokenUsage {
-                    input_tokens: 10,
-                    output_tokens: 3,
-                }),
-                structured_output: None,
-                state: STEP_STATE_COMPLETED.to_string(),
-                failure_kind: None,
-                failure_disposition: None,
-                timestamp: 1.5,
-            },
-            WorkflowEvent::ParallelChildCompleted {
-                run_id: "exec-parallel-complete".to_string(),
-                workflow_name: "wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                child_node_name: "review-b".to_string(),
-                session_id: "session-review-b".to_string(),
-                run_index: 1,
-                result: Some("LGTM".to_string()),
-                token_usage: Some(TokenUsage {
-                    input_tokens: 7,
-                    output_tokens: 2,
-                }),
-                structured_output: Some(serde_json::json!({ "verdict": "LGTM" })),
-                state: STEP_STATE_COMPLETED.to_string(),
-                failure_kind: None,
-                failure_disposition: None,
-                timestamp: 1.6,
-            },
-            WorkflowEvent::ParallelCompleted {
-                run_id: "exec-parallel-complete".to_string(),
-                workflow_name: "wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                aggregate_result: "advance".to_string(),
-                timestamp: 1.7,
-            },
-        ];
-
-        let state = reconstruct_state_from_events("exec-parallel-complete", &events)
-            .unwrap()
-            .unwrap();
-        assert!(
-            state.active_parallel_steps.is_empty(),
-            "ParallelCompleted 後は active_parallel_steps を空にする"
+        assert_eq!(state.node_executions.len(), 3);
+        assert_eq!(state.current_step_name, "workers");
+        assert_eq!(
+            state.node_executions[1].artifact,
+            Some(serde_json::json!({"value": 10}))
+        );
+        assert_eq!(
+            state.node_executions[2].artifact,
+            Some(serde_json::json!({"value": 20}))
+        );
+        assert!(state.step_outputs.get("worker").is_none());
+        assert_eq!(
+            state
+                .step_outputs
+                .get("workers")
+                .and_then(|output| output.structured_output.clone()),
+            Some(parent_artifact)
         );
         assert_eq!(state.step_history.len(), 1);
-        let parent = &state.step_history[0];
-        assert_eq!(parent.step_name, "parallel-review");
-        assert_eq!(parent.result.as_deref(), Some("complete"));
-        assert_eq!(parent.run_index, 1);
-        assert_eq!(
-            parent.token_usage.as_ref().map(|usage| usage.input_tokens),
-            Some(17)
-        );
-        assert_eq!(
-            parent.token_usage.as_ref().map(|usage| usage.output_tokens),
-            Some(5)
-        );
-        let children = parent
-            .child_outputs
-            .as_ref()
-            .expect("completed parallel parent は child_outputs を持つ");
-        assert_eq!(children.len(), 2);
-        let child_a = children
+        assert_eq!(state.step_history[0].step_name, "workers");
+
+        let timings = compute_step_timings(&events);
+        assert!(timings
             .iter()
-            .find(|child| child.step_name == "review-a")
-            .expect("review-a snapshot");
-        assert_eq!(child_a.session_id.as_deref(), Some("session-review-a"));
-        assert_eq!(child_a.state.as_str(), STEP_STATE_COMPLETED);
-        assert_eq!(
-            child_a.structured_output,
-            Some(serde_json::json!({ "verdict": "LGTM" }))
-        );
-        assert_eq!(child_a.artifact_contract.as_deref(), Some("review-verdict"));
-        let child_b = children
+            .any(|timing| timing.node_execution_id == "ne-worker-0"));
+        assert!(timings
             .iter()
-            .find(|child| child.step_name == "review-b")
-            .expect("review-b snapshot");
-        assert_eq!(child_b.session_id.as_deref(), Some("session-review-b"));
-        assert_eq!(child_b.state.as_str(), STEP_STATE_COMPLETED);
+            .any(|timing| timing.node_execution_id == "ne-worker-1"));
     }
 
     #[test]
-    fn projection_preserves_delegated_parallel_child_failure_state() {
-        let snapshot = workflow_with_nodes("wf", vec!["parallel-review", "done"]);
-        let events = vec![
-            run_started("exec-parallel-partial", snapshot),
+    fn projection_counts_fanout_token_usage_once_via_parent_completion() {
+        let run_id = "exec-fanout-token-usage";
+        let mut workflow = workflow_with_nodes("wf", vec!["fanout-review", "review-a", "review-b"]);
+        workflow.nodes[0].kind = NodeKind::Fanout(FanoutSpec {
+            child: vec!["review-a".to_string(), "review-b".to_string()],
+            items: None,
+            aggregate: None,
+        });
+        let mut events = vec![
+            run_started(run_id, workflow),
             WorkflowEvent::NodeStarted {
-                run_id: "exec-parallel-partial".to_string(),
+                run_id: run_id.to_string(),
                 workflow_name: "wf".to_string(),
-                node_name: "parallel-review".to_string(),
-                execution_count: 1,
+                node_execution_id: "ne-parent".to_string(),
+                node_name: "fanout-review".to_string(),
+                kind: NodeKindName::Fanout,
+                attempt: 1,
+                fanout_parent: None,
                 timestamp: 1.0,
             },
-            WorkflowEvent::ParallelStarted {
-                run_id: "exec-parallel-partial".to_string(),
-                workflow_name: "wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                child_node_names: vec!["review-a".to_string()],
-                timestamp: 1.1,
-            },
-            WorkflowEvent::ParallelChildStarted {
-                run_id: "exec-parallel-partial".to_string(),
-                workflow_name: "wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                child_node_name: "review-a".to_string(),
-                session_id: "session-review-a".to_string(),
-                execution_count: 1,
-                timestamp: 1.2,
-            },
-            WorkflowEvent::ParallelChildCompleted {
-                run_id: "exec-parallel-partial".to_string(),
-                workflow_name: "wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                child_node_name: "review-a".to_string(),
-                session_id: "session-review-a".to_string(),
-                run_index: 1,
-                result: Some("model_refusal: provider policy".to_string()),
-                token_usage: None,
-                structured_output: Some(serde_json::json!({
-                    "failure_kind": "model_refusal",
-                    "failure_disposition": "partial",
-                })),
-                state: STEP_STATE_FAILED.to_string(),
-                failure_kind: Some(WorkflowStepFailureKind::ModelRefusal),
-                failure_disposition: Some(FailureDisposition::Partial),
-                timestamp: 1.5,
-            },
-            WorkflowEvent::ParallelCompleted {
-                run_id: "exec-parallel-partial".to_string(),
-                workflow_name: "wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                aggregate_result: "fix".to_string(),
-                timestamp: 1.7,
-            },
         ];
+        for (child_index, (node_execution_id, node_name, input_tokens, output_tokens)) in [
+            ("ne-review-a", "review-a", 3, 5),
+            ("ne-review-b", "review-b", 7, 11),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            events.extend([
+                WorkflowEvent::NodeStarted {
+                    run_id: run_id.to_string(),
+                    workflow_name: "wf".to_string(),
+                    node_execution_id: node_execution_id.to_string(),
+                    node_name: node_name.to_string(),
+                    kind: NodeKindName::Session,
+                    attempt: 1,
+                    fanout_parent: Some(FanoutParentRef {
+                        parent_node: "fanout-review".to_string(),
+                        parent_attempt: 1,
+                        item_index: None,
+                        child_index,
+                    }),
+                    timestamp: 2.0 + child_index as f64,
+                },
+                WorkflowEvent::NodeCompleted {
+                    run_id: run_id.to_string(),
+                    workflow_name: "wf".to_string(),
+                    node_execution_id: node_execution_id.to_string(),
+                    node_name: node_name.to_string(),
+                    result: Some("LGTM".to_string()),
+                    session_id: Some(format!("session-{node_name}")),
+                    token_usage: Some(TokenUsage {
+                        input_tokens,
+                        output_tokens,
+                    }),
+                    structured_output: None,
+                    run_index: Some(1),
+                    timestamp: 4.0 + child_index as f64,
+                },
+            ]);
+        }
 
-        let state = reconstruct_state_from_events("exec-parallel-partial", &events)
+        let child_only_state = reconstruct_state_from_events(run_id, &events)
             .unwrap()
             .unwrap();
+        assert_eq!(child_only_state.total_token_usage, TokenUsage::default());
 
-        let parent = state.step_history.first().expect("parallel parent history");
-        let child = parent
-            .child_outputs
-            .as_ref()
-            .and_then(|children| children.iter().find(|child| child.step_name == "review-a"))
-            .expect("delegated failed child snapshot");
-        assert_eq!(child.state.as_str(), STEP_STATE_FAILED);
-        assert_eq!(
-            child.result.as_deref(),
-            Some("model_refusal: provider policy")
-        );
-        assert_eq!(
-            child.structured_output,
-            Some(serde_json::json!({
-                "failure_kind": "model_refusal",
-                "failure_disposition": "partial",
-            }))
-        );
-        assert_eq!(
-            child.failure_kind,
-            Some(WorkflowStepFailureKind::ModelRefusal)
-        );
-        assert_eq!(child.failure_disposition, Some(FailureDisposition::Partial));
-    }
+        events.push(WorkflowEvent::NodeCompleted {
+            run_id: run_id.to_string(),
+            workflow_name: "wf".to_string(),
+            node_execution_id: "ne-parent".to_string(),
+            node_name: "fanout-review".to_string(),
+            result: Some("complete".to_string()),
+            session_id: None,
+            token_usage: Some(TokenUsage {
+                input_tokens: 10,
+                output_tokens: 16,
+            }),
+            structured_output: None,
+            run_index: Some(1),
+            timestamp: 6.0,
+        });
 
-    #[test]
-    fn projection_keeps_submitted_parallel_child_output_on_child_completed() {
-        let snapshot = workflow_with_nodes("wf", vec!["parallel-review"]);
-        let events = vec![
-            run_started("exec-parallel-output", snapshot),
-            WorkflowEvent::ParallelStarted {
-                run_id: "exec-parallel-output".to_string(),
-                workflow_name: "wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                child_node_names: vec!["review-a".to_string()],
-                timestamp: 1.0,
-            },
-            WorkflowEvent::ParallelChildStarted {
-                run_id: "exec-parallel-output".to_string(),
-                workflow_name: "wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                child_node_name: "review-a".to_string(),
-                session_id: "session-review-a".to_string(),
-                execution_count: 1,
-                timestamp: 1.1,
-            },
-            WorkflowEvent::ArtifactProduced {
-                run_id: "exec-parallel-output".to_string(),
-                workflow_name: "wf".to_string(),
-                node_name: "review-a".to_string(),
-                contract: Some("review-verdict".to_string()),
-                value: serde_json::json!({ "verdict": "LGTM" }),
-                request_id: None,
-                submitted_at: Some(1.2),
-                timestamp: 1.2,
-            },
-            WorkflowEvent::ParallelChildCompleted {
-                run_id: "exec-parallel-output".to_string(),
-                workflow_name: "wf".to_string(),
-                parent_node_name: "parallel-review".to_string(),
-                child_node_name: "review-a".to_string(),
-                session_id: "session-review-a".to_string(),
-                run_index: 1,
-                result: Some("LGTM".to_string()),
-                token_usage: None,
-                structured_output: None,
-                state: STEP_STATE_COMPLETED.to_string(),
-                failure_kind: None,
-                failure_disposition: None,
-                timestamp: 1.5,
-            },
-        ];
-
-        let state = reconstruct_state_from_events("exec-parallel-output", &events)
+        let completed_state = reconstruct_state_from_events(run_id, &events)
             .unwrap()
             .unwrap();
-        let output = state.step_outputs.get("review-a").unwrap();
-        assert_eq!(output.artifact_contract.as_deref(), Some("review-verdict"));
         assert_eq!(
-            output.structured_output,
-            Some(serde_json::json!({ "verdict": "LGTM" }))
-        );
-        let active_child = state
-            .active_parallel_steps
-            .iter()
-            .find(|step| step.step_name == "review-a")
-            .unwrap();
-        assert_eq!(
-            active_child.artifact_contract.as_deref(),
-            Some("review-verdict")
+            completed_state.total_token_usage,
+            TokenUsage {
+                input_tokens: 10,
+                output_tokens: 16,
+            }
         );
         assert_eq!(
-            active_child.structured_output,
-            Some(serde_json::json!({ "verdict": "LGTM" }))
+            completed_state
+                .node_executions
+                .iter()
+                .find(|execution| execution.id == "ne-parent")
+                .and_then(|execution| execution.token_usage.clone()),
+            Some(TokenUsage {
+                input_tokens: 10,
+                output_tokens: 16,
+            })
         );
     }
 
@@ -3074,8 +2923,11 @@ mod tests {
             WorkflowEvent::NodeStarted {
                 run_id: "exec-cli".to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-plan-1".to_string(),
                 node_name: "plan".to_string(),
-                execution_count: 1,
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: None,
                 timestamp: 1001.0,
             },
             WorkflowEvent::CliMutationRequested {
@@ -3108,13 +2960,17 @@ mod tests {
             WorkflowEvent::NodeStarted {
                 run_id: "r".to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-plan-1".to_string(),
                 node_name: "plan".to_string(),
-                execution_count: 1,
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: None,
                 timestamp: 1000.0,
             },
             WorkflowEvent::NodeCompleted {
                 run_id: "r".to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-plan-1".to_string(),
                 node_name: "plan".to_string(),
                 result: Some("LGTM".to_string()),
                 session_id: Some("s1".to_string()),
@@ -3136,53 +2992,68 @@ mod tests {
     }
 
     #[test]
-    fn compute_step_timings_handles_parallel_children() {
+    fn compute_step_timings_handles_fanout_child_node_execution() {
         let events = vec![
-            WorkflowEvent::ParallelChildStarted {
+            WorkflowEvent::NodeStarted {
                 run_id: "r".to_string(),
                 workflow_name: "wf".to_string(),
-                parent_node_name: "parent".to_string(),
-                child_node_name: "child-a".to_string(),
-                session_id: "s-a".to_string(),
-                execution_count: 1,
-                timestamp: 100.0,
-            },
-            WorkflowEvent::ParallelChildCompleted {
-                run_id: "r".to_string(),
-                workflow_name: "wf".to_string(),
-                parent_node_name: "parent".to_string(),
-                child_node_name: "child-a".to_string(),
-                result: None,
-                session_id: "s-a".to_string(),
-                token_usage: None,
-                structured_output: None,
-                run_index: 1,
-                state: STEP_STATE_COMPLETED.to_string(),
-                failure_kind: None,
-                failure_disposition: None,
-                timestamp: 300.0,
-            },
-        ];
-        let timings = compute_step_timings(&events);
-        assert_eq!(timings.len(), 1);
-        assert_eq!(timings[0].step_name, "child-a");
-        assert_eq!(timings[0].duration_ms, Some(200_000.0));
-    }
-
-    #[test]
-    fn compute_step_timings_uses_node_session_started_as_start_marker() {
-        let events = vec![
-            WorkflowEvent::StepSessionStarted {
-                run_id: "r".to_string(),
-                workflow_name: "wf".to_string(),
-                node_name: "plan".to_string(),
-                execution_count: 1,
-                session_id: "s1".to_string(),
+                node_execution_id: "ne-child-a".to_string(),
+                node_name: "child-a".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: Some(FanoutParentRef {
+                    parent_node: "parent".to_string(),
+                    parent_attempt: 1,
+                    item_index: Some(0),
+                    child_index: 0,
+                }),
                 timestamp: 100.0,
             },
             WorkflowEvent::NodeCompleted {
                 run_id: "r".to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-child-a".to_string(),
+                node_name: "child-a".to_string(),
+                result: None,
+                session_id: Some("s-a".to_string()),
+                token_usage: None,
+                structured_output: None,
+                run_index: Some(1),
+                timestamp: 300.0,
+            },
+        ];
+        let timings = compute_step_timings(&events);
+        assert_eq!(timings.len(), 1);
+        assert_eq!(timings[0].node_execution_id, "ne-child-a");
+        assert_eq!(timings[0].step_name, "child-a");
+        assert_eq!(timings[0].duration_ms, Some(200_000.0));
+    }
+
+    #[test]
+    fn compute_step_timings_uses_node_started_and_ignores_session_attach_time() {
+        let events = vec![
+            WorkflowEvent::NodeStarted {
+                run_id: "r".to_string(),
+                workflow_name: "wf".to_string(),
+                node_execution_id: "ne-plan".to_string(),
+                node_name: "plan".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: None,
+                timestamp: 100.0,
+            },
+            WorkflowEvent::SessionAttached {
+                run_id: "r".to_string(),
+                workflow_name: "wf".to_string(),
+                node_execution_id: "ne-plan".to_string(),
+                node_name: "plan".to_string(),
+                session_id: "s1".to_string(),
+                timestamp: 125.0,
+            },
+            WorkflowEvent::NodeCompleted {
+                run_id: "r".to_string(),
+                workflow_name: "wf".to_string(),
+                node_execution_id: "ne-plan".to_string(),
                 node_name: "plan".to_string(),
                 result: None,
                 session_id: Some("s1".to_string()),
@@ -3205,6 +3076,7 @@ mod tests {
         let events = vec![WorkflowEvent::NodeCompleted {
             run_id: "r".to_string(),
             workflow_name: "wf".to_string(),
+            node_execution_id: "ne-plan-1".to_string(),
             node_name: "plan".to_string(),
             result: None,
             session_id: None,
@@ -3229,8 +3101,11 @@ mod tests {
             WorkflowEvent::NodeStarted {
                 run_id: "exec-ms".to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-plan-1".to_string(),
                 node_name: "plan".to_string(),
-                execution_count: 1,
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: None,
                 timestamp: 1.5,
             },
         ];
@@ -3261,13 +3136,17 @@ mod tests {
             WorkflowEvent::NodeStarted {
                 run_id: "exec-detail".to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-plan-1".to_string(),
                 node_name: "plan".to_string(),
-                execution_count: 1,
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: None,
                 timestamp: 1100.0,
             },
             WorkflowEvent::NodeCompleted {
                 run_id: "exec-detail".to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-plan-1".to_string(),
                 node_name: "plan".to_string(),
                 result: Some("ok".to_string()),
                 session_id: Some("plan-session".to_string()),
@@ -3279,13 +3158,17 @@ mod tests {
             WorkflowEvent::NodeStarted {
                 run_id: "exec-detail".to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-review-1".to_string(),
                 node_name: "review".to_string(),
-                execution_count: 1,
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: None,
                 timestamp: 1300.0,
             },
             WorkflowEvent::NodeCompleted {
                 run_id: "exec-detail".to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-review-1".to_string(),
                 node_name: "review".to_string(),
                 result: Some("LGTM".to_string()),
                 session_id: Some("review-session".to_string()),
@@ -3331,8 +3214,11 @@ mod tests {
             WorkflowEvent::NodeStarted {
                 run_id: "exec-pending".to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-plan-1".to_string(),
                 node_name: "plan".to_string(),
-                execution_count: 1,
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: None,
                 timestamp: 1.0,
             },
         ];
@@ -3370,13 +3256,17 @@ mod tests {
             WorkflowEvent::NodeStarted {
                 run_id: "exec-submit".to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-review-1".to_string(),
                 node_name: "review".to_string(),
-                execution_count: 1,
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: None,
                 timestamp: 1001.0,
             },
             WorkflowEvent::ArtifactProduced {
                 run_id: "exec-submit".to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-review-1".to_string(),
                 node_name: "review".to_string(),
                 contract: Some("review-verdict".to_string()),
                 value: serde_json::json!({"verdict": "LGTM"}),
@@ -3421,13 +3311,17 @@ mod tests {
             WorkflowEvent::NodeStarted {
                 run_id: "exec-submit-complete".to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-review-1".to_string(),
                 node_name: "review".to_string(),
-                execution_count: 1,
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: None,
                 timestamp: 1001.0,
             },
             WorkflowEvent::ArtifactProduced {
                 run_id: "exec-submit-complete".to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-review-1".to_string(),
                 node_name: "review".to_string(),
                 contract: Some("review-verdict".to_string()),
                 value: artifact_value.clone(),
@@ -3444,6 +3338,7 @@ mod tests {
         events.push(WorkflowEvent::NodeCompleted {
             run_id: "exec-submit-complete".to_string(),
             workflow_name: "wf".to_string(),
+            node_execution_id: "ne-review-1".to_string(),
             node_name: "review".to_string(),
             result: Some("LGTM".to_string()),
             session_id: Some("session-review".to_string()),
@@ -3493,13 +3388,17 @@ mod tests {
             WorkflowEvent::NodeStarted {
                 run_id: "exec-spec".to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-spec-1".to_string(),
                 node_name: "spec".to_string(),
-                execution_count: 1,
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: None,
                 timestamp: 1001.0,
             },
             WorkflowEvent::ArtifactProduced {
                 run_id: "exec-spec".to_string(),
                 workflow_name: "wf".to_string(),
+                node_execution_id: "ne-spec-1".to_string(),
                 node_name: "spec".to_string(),
                 contract: Some("spec-directory".to_string()),
                 value: serde_json::json!({"spec_dir": "docs/specs/feat-issues-978"}),

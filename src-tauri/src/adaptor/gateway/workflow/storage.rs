@@ -344,7 +344,11 @@ fn validate_resolved_facet_references(
     facet_contents: &facet::WorkflowFacetContents,
 ) -> Result<(), ValidationError> {
     let domain_workflow = workflow_definition_to_domain(workflow);
-    for (_node_name, contents) in facet_contents.iter_node_contents() {
+    for (node_name, contents) in facet_contents.iter_node_contents() {
+        let allow_item = workflow.nodes.iter().any(|node| {
+            node.fanout()
+                .is_some_and(|fanout| fanout.child.iter().any(|child| child == node_name))
+        });
         for content in [
             contents.policy.as_deref(),
             contents.knowledge.as_deref(),
@@ -354,25 +358,7 @@ fn validate_resolved_facet_references(
         .flatten()
         {
             if let Some(err) =
-                validation::validate_template_references(&domain_workflow, content, false)
-                    .into_iter()
-                    .next()
-            {
-                return Err(err);
-            }
-        }
-    }
-    for (_parent_name, _child_name, contents) in facet_contents.iter_child_contents() {
-        for content in [
-            contents.policy.as_deref(),
-            contents.knowledge.as_deref(),
-            contents.instruction.as_deref(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            if let Some(err) =
-                validation::validate_template_references(&domain_workflow, content, true)
+                validation::validate_template_references(&domain_workflow, content, allow_item)
                     .into_iter()
                     .next()
             {
@@ -817,7 +803,8 @@ steps:
     }
 
     /// [02] schema 境界: load 経路で 3 種全 facet (policy/knowledge/instruction)
-    /// が node と fanout child の read model に解決済みで格納されることを担保する。
+    /// が通常の top-level node（fanout child を含む）の read model に解決済みで
+    /// 格納されることを担保する。
     #[test]
     fn load_workflow_resolves_all_three_facets_for_node_and_child() {
         let tmp = TempDir::new().unwrap();
@@ -851,23 +838,23 @@ nodes:
       - next: par
   - name: par
     fanout:
-      parallel_children:
-        - name: c1
-          permission: ask
-          facets:
-            policy: pc
-            knowledge: kc
-            instruction: ic
-        - name: c2
-          permission: ask
-          facets:
-            policy: pc
-            knowledge: kc
-            instruction: ic
-      aggregate:
-        all_match: LGTM
-        then: lead
-        else: lead
+      child: [c1, c2]
+  - name: c1
+    session:
+      permission: ask
+      gate: auto
+      facets:
+        policy: pc
+        knowledge: kc
+        instruction: ic
+  - name: c2
+    session:
+      permission: ask
+      gate: auto
+      facets:
+        policy: pc
+        knowledge: kc
+        instruction: ic
 "#;
         let file_path = dir.join("facet-all.yml");
         std::fs::write(&file_path, yaml).unwrap();
@@ -880,7 +867,7 @@ nodes:
         assert_eq!(lead_contents.instruction.as_deref(), Some("INSTRUCTION"));
 
         for child_name in ["c1", "c2"] {
-            let child_contents = resolved.for_child("par", child_name).unwrap();
+            let child_contents = resolved.for_node(child_name).unwrap();
             assert_eq!(child_contents.policy.as_deref(), Some("CHILD_POLICY"));
             assert_eq!(child_contents.knowledge.as_deref(), Some("CHILD_KNOWLEDGE"));
             assert_eq!(

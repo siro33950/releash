@@ -42,6 +42,19 @@ pub(crate) struct ClaudeProcessConfig {
     pub env: Vec<(String, String)>,
 }
 
+fn claude_child_env(spec: &SessionSpec, config: &ClaudeProcessConfig) -> AgentChildEnv {
+    AgentChildEnv::for_session(
+        &spec.session_id,
+        spec.base_branch.as_deref(),
+        config
+            .env
+            .iter()
+            .cloned()
+            .chain(spec.extra_env.iter().cloned()),
+        CLAUDE_SCRUBBED_ENV.iter().copied(),
+    )
+}
+
 #[derive(Clone)]
 pub(crate) struct ClaudeStdioHandle {
     child: Arc<Mutex<Child>>,
@@ -115,13 +128,7 @@ impl ClaudeStdioProcess {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        AgentChildEnv::for_session(
-            &spec.session_id,
-            spec.base_branch.as_deref(),
-            config.env,
-            CLAUDE_SCRUBBED_ENV.iter().copied(),
-        )
-        .apply(&mut command);
+        claude_child_env(spec, &config).apply(&mut command);
         configure_process_group(&mut command);
 
         let mut child = command
@@ -400,6 +407,7 @@ mod tests {
             startup_timeout: None,
             startup_max_retries: None,
             stale_timeout: Some(Duration::from_secs(42)),
+            extra_env: Vec::new(),
         }
     }
 
@@ -427,6 +435,32 @@ mod tests {
         assert!(env.contains(&("CLAUDE_ENABLE_STREAM_WATCHDOG".to_string(), "1".to_string())));
         assert!(env.contains(&("CLAUDE_ENABLE_BYTE_WATCHDOG".to_string(), "1".to_string())));
         assert!(env.contains(&("CLAUDE_CODE_MAX_RETRIES".to_string(), "10".to_string())));
+    }
+
+    #[test]
+    fn claude_child_env_includes_workflow_execution_ids() {
+        let mut spec = spec();
+        spec.extra_env = vec![
+            (
+                "RELEASH_WORKFLOW_EXECUTION_ID".to_string(),
+                "run-1".to_string(),
+            ),
+            (
+                "RELEASH_NODE_EXECUTION_ID".to_string(),
+                "node-1".to_string(),
+            ),
+        ];
+        let config = build_process_config("claude".to_string(), &spec, None);
+        let env = claude_child_env(&spec, &config);
+
+        assert!(env.envs().contains(&(
+            "RELEASH_WORKFLOW_EXECUTION_ID".to_string(),
+            "run-1".to_string()
+        )));
+        assert!(env.envs().contains(&(
+            "RELEASH_NODE_EXECUTION_ID".to_string(),
+            "node-1".to_string()
+        )));
     }
 
     #[test]

@@ -1,0 +1,26 @@
+name: fanout-items-reference
+description: valid fanout with artifact field items
+schemas:
+  target:
+    type: string
+  source-output:
+    type: object
+    properties:
+      targets:
+        type: array
+        items: target
+    required: [targets]
+    additionalProperties: false
+nodes:
+  - name: source
+    artifact: source-output
+    command: echo source
+    rules:
+      - next: fanout
+  - name: fanout
+    fanout:
+      child: worker
+      items: source.targets
+  - name: worker
+    input: target
+    command: echo {{ item }}

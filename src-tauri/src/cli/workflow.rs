@@ -61,6 +61,10 @@ pub(super) enum WorkflowSubcommand {
         /// 対象 node。WorkflowExecution の現在の承認待ち node と一致する必要がある。
         #[arg(long)]
         node: String,
+        /// 同名の active NodeExecution が複数ある場合の対象 ID。
+        /// 省略時は RELEASH_NODE_EXECUTION_ID を使用する。
+        #[arg(long = "node-execution", value_name = "NODE_EXECUTION_ID")]
+        node_execution: Option<String>,
         /// 任意の承認コメント。`ApprovalResolved.comment` に伝播する。
         #[arg(long)]
         comment: Option<String>,
@@ -205,6 +209,7 @@ pub(super) fn cmd_approve(
     data_dir: &Path,
     run_id: &str,
     node: String,
+    node_execution: Option<String>,
     comment: Option<String>,
 ) -> Result<String, CliError> {
     validate_optional_cli_text_len(comment.as_deref(), "--comment")?;
@@ -213,6 +218,7 @@ pub(super) fn cmd_approve(
         run_id,
         workflow_io::CliRequestPayload::Approve {
             node_name: node,
+            node_execution_id: workflow_io::resolve_node_execution_id(node_execution),
             comment,
         },
     )
@@ -397,7 +403,7 @@ fn event_kind_display_name(kind: &str) -> &str {
     match kind {
         "run_started" => "RunStarted",
         "node_started" => "NodeStarted",
-        "step_session_started" => "StepSessionStarted",
+        "session_attached" => "SessionAttached",
         "node_completed" => "NodeCompleted",
         "node_failed" => "NodeFailed",
         "approval_requested" => "ApprovalRequested",
@@ -407,10 +413,6 @@ fn event_kind_display_name(kind: &str) -> &str {
         "run_aborted" => "RunAborted",
         "run_interrupted" => "RunInterrupted",
         "output_collected" => "OutputCollected",
-        "parallel_started" => "ParallelStarted",
-        "parallel_child_started" => "ParallelChildStarted",
-        "parallel_child_completed" => "ParallelChildCompleted",
-        "parallel_completed" => "ParallelCompleted",
         "contract_repair_requested" => "ContractRepairRequested",
         "cli_mutation_requested" => "CliMutationRequested",
         "artifact_produced" => "ArtifactProduced",
@@ -646,6 +648,7 @@ mod tests {
       "completedAt": 100.0
     }}
   }},
+  "nodeExecutions": [],
   "startedAt": 100.0,
   "updatedAt": 100.0
 }}
@@ -1237,6 +1240,8 @@ mod tests {
                 run_id,
                 "--node",
                 "review",
+                "--node-execution",
+                "node-execution-review",
                 "--comment",
                 "LGTM",
             ],
@@ -1283,6 +1288,7 @@ mod tests {
             tmp.path(),
             &run_id,
             "review".to_string(),
+            Some("node-execution-review".to_string()),
             Some("LGTM".to_string()),
         )
         .unwrap();
@@ -1291,6 +1297,7 @@ mod tests {
         assert!(stdout.ends_with('\n'));
         let expected = CliRequestPayload::Approve {
             node_name: "review".to_string(),
+            node_execution_id: Some("node-execution-review".to_string()),
             comment: Some("LGTM".to_string()),
         };
         let entries = PendingCommandStore::new(tmp.path()).list_pending().unwrap();
@@ -1311,8 +1318,14 @@ mod tests {
         );
         let oversized = "x".repeat(MAX_APPROVAL_COMMENT_CHARS + 1);
 
-        let err =
-            cmd_approve(tmp.path(), &run_id, "review".to_string(), Some(oversized)).unwrap_err();
+        let err = cmd_approve(
+            tmp.path(),
+            &run_id,
+            "review".to_string(),
+            None,
+            Some(oversized),
+        )
+        .unwrap_err();
 
         assert!(matches!(err, CliError::InvalidInput(_)));
         assert!(PendingCommandStore::new(tmp.path())
@@ -1335,6 +1348,7 @@ mod tests {
         );
         let payload = CliRequestPayload::Approve {
             node_name: "review".to_string(),
+            node_execution_id: None,
             comment: Some("LGTM".to_string()),
         };
         let output = enqueue_pending_command(tmp.path(), &run_id, payload.clone()).unwrap();
@@ -1391,6 +1405,7 @@ mod tests {
         let unknown_run_id = test_uuid(99);
         let payload = CliRequestPayload::Approve {
             node_name: "review".to_string(),
+            node_execution_id: None,
             comment: Some("x".to_string()),
         };
         let err = enqueue_pending_command(tmp.path(), &unknown_run_id, payload).unwrap_err();

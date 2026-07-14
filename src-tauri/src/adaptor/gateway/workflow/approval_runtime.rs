@@ -197,7 +197,7 @@ mod tests {
             total_token_usage: TokenUsage::default(),
             step_states: HashMap::new(),
             step_outputs: HashMap::new(),
-            active_parallel_steps: Vec::new(),
+            node_executions: Vec::new(),
             stall_observations: Vec::new(),
             approval_operations: None,
             started_at: 1.0,

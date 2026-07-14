@@ -1,0 +1,25 @@
+name: invalid-fanout-items-ref
+description: fanout items must resolve to a declared artifact array field
+schemas:
+  source-output:
+    type: object
+    properties:
+      values:
+        type: string
+    required: [values]
+    additionalProperties: false
+  target:
+    type: string
+nodes:
+  - name: source
+    artifact: source-output
+    command: echo source
+    rules:
+      - next: fanout
+  - name: fanout
+    fanout:
+      child: worker
+      items: source.missing
+  - name: worker
+    input: target
+    command: echo {{ item }}

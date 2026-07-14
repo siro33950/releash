@@ -33,6 +33,7 @@ fn apply_internal_node_command_state_mutation(
         InternalNodeCommand::CompleteNode {
             run_id,
             workflow_name,
+            node_execution_id,
             node_name,
             result,
             session_id,
@@ -53,6 +54,13 @@ fn apply_internal_node_command_state_mutation(
                     snapshot.workflow_name
                 )));
             }
+            validate_top_level_node_execution(
+                snapshot,
+                node_execution_id,
+                node_name,
+                *run_index,
+                "CompleteNode",
+            )?;
             let Some(last_entry) = snapshot.step_history.last() else {
                 return Err(WorkflowEngineError::ValidationError(format!(
                     "CompleteNode for node '{node_name}' but snapshot.step_history is empty"
@@ -101,6 +109,7 @@ fn apply_internal_node_command_state_mutation(
         InternalNodeCommand::FailNode {
             run_id,
             workflow_name,
+            node_execution_id,
             node_name,
             reason,
             failure_kind,
@@ -119,6 +128,13 @@ fn apply_internal_node_command_state_mutation(
                     snapshot.workflow_name
                 )));
             }
+            validate_top_level_node_execution(
+                snapshot,
+                node_execution_id,
+                node_name,
+                snapshot.step_execution_counts.get(node_name).copied(),
+                "FailNode",
+            )?;
             if *node_name != snapshot.current_step_name {
                 return Err(WorkflowEngineError::ValidationError(format!(
                     "FailNode node_name mismatch: command='{node_name}', snapshot='{}'",
@@ -138,6 +154,34 @@ fn apply_internal_node_command_state_mutation(
     }
 }
 
+fn validate_top_level_node_execution(
+    snapshot: &WorkflowState,
+    node_execution_id: &str,
+    node_name: &str,
+    attempt: Option<u32>,
+    command_name: &str,
+) -> Result<(), WorkflowEngineError> {
+    let execution = snapshot
+        .node_executions
+        .iter()
+        .find(|execution| execution.id == node_execution_id)
+        .ok_or_else(|| {
+            WorkflowEngineError::ValidationError(format!(
+                "{command_name} references unknown node_execution_id '{node_execution_id}'"
+            ))
+        })?;
+    if execution.execution_id != snapshot.execution_id
+        || execution.node_name != node_name
+        || execution.fanout_parent.is_some()
+        || attempt.is_some_and(|attempt| execution.attempt != attempt)
+    {
+        return Err(WorkflowEngineError::ValidationError(format!(
+            "{command_name} node execution mismatch: id='{node_execution_id}', node='{node_name}', attempt={attempt:?}"
+        )));
+    }
+    Ok(())
+}
+
 fn map_internal_node_command_to_event(
     command: InternalNodeCommand,
 ) -> Result<WorkflowEvent, WorkflowEngineError> {
@@ -145,6 +189,7 @@ fn map_internal_node_command_to_event(
         InternalNodeCommand::CompleteNode {
             run_id,
             workflow_name,
+            node_execution_id,
             node_name,
             result,
             session_id,
@@ -155,6 +200,7 @@ fn map_internal_node_command_to_event(
         } => Ok(WorkflowEvent::NodeCompleted {
             run_id,
             workflow_name,
+            node_execution_id,
             node_name,
             result,
             session_id,
@@ -166,6 +212,7 @@ fn map_internal_node_command_to_event(
         InternalNodeCommand::FailNode {
             run_id,
             workflow_name,
+            node_execution_id,
             node_name,
             reason,
             failure_kind,
@@ -174,6 +221,7 @@ fn map_internal_node_command_to_event(
         } => Ok(WorkflowEvent::NodeFailed {
             run_id,
             workflow_name,
+            node_execution_id,
             node_name,
             reason,
             failure_kind,
@@ -269,14 +317,19 @@ pub(crate) fn pre_commit_required_events_for_outcome(
             }
         }
         StepOutcome::RetryCurrentStep { snapshot, .. } => {
-            events.push(node_started_event_for_snapshot(snapshot));
+            events.push(node_started_event_for_snapshot(snapshot)?);
         }
-        StepOutcome::TransitionAndStart(_)
-        | StepOutcome::ReduceAndTransition(_)
-        | StepOutcome::StartParallel(_) => {
+        StepOutcome::TransitionAndStart(_) | StepOutcome::ReduceAndTransition(_) => {
             if let Some(ev) = last_step_completed_event_for_snapshot(&mut snapshot)? {
                 events.push(ev);
             }
+            events.push(node_started_event_for_snapshot(&snapshot)?);
+        }
+        StepOutcome::StartParallel(_) => {
+            if let Some(ev) = last_step_completed_event_for_snapshot(&mut snapshot)? {
+                events.push(ev);
+            }
+            events.push(fanout_parent_started_event_for_snapshot(&snapshot)?);
         }
     }
     Ok(events)
@@ -319,6 +372,11 @@ pub(crate) fn last_step_completed_event_for_snapshot(
     let command = InternalNodeCommand::CompleteNode {
         run_id: snapshot.execution_id.clone(),
         workflow_name: snapshot.workflow_name.clone(),
+        node_execution_id: top_level_node_execution_id(
+            snapshot,
+            &last_entry.step_name,
+            last_entry.run_index,
+        )?,
         node_name: last_entry.step_name,
         result: last_entry.result,
         session_id: last_entry.session_id,
@@ -330,38 +388,78 @@ pub(crate) fn last_step_completed_event_for_snapshot(
     dispatch_internal_node_command(snapshot, command).map(Some)
 }
 
-pub(crate) fn node_started_event_for_snapshot(snapshot: &WorkflowState) -> WorkflowEvent {
-    let exec_count = snapshot
+fn current_node_attempt(snapshot: &WorkflowState) -> u32 {
+    snapshot
         .step_execution_counts
         .get(&snapshot.current_step_name)
         .copied()
-        .unwrap_or(1);
-    WorkflowEvent::NodeStarted {
+        .unwrap_or(1)
+}
+
+fn top_level_node_execution<'a>(
+    snapshot: &'a WorkflowState,
+    node_name: &str,
+    attempt: u32,
+) -> Result<&'a crate::adaptor::gateway::workflow::state::NodeExecution, WorkflowEngineError> {
+    snapshot
+        .node_executions
+        .iter()
+        .rev()
+        .find(|execution| {
+            execution.node_name == node_name
+                && execution.attempt == attempt
+                && execution.fanout_parent.is_none()
+        })
+        .ok_or_else(|| {
+            WorkflowEngineError::InvalidState(format!(
+                "top-level NodeExecution for node '{node_name}' attempt {attempt} is unavailable"
+            ))
+        })
+}
+
+fn top_level_node_execution_id(
+    snapshot: &WorkflowState,
+    node_name: &str,
+    attempt: u32,
+) -> Result<String, WorkflowEngineError> {
+    Ok(top_level_node_execution(snapshot, node_name, attempt)?
+        .id
+        .clone())
+}
+
+pub(crate) fn node_started_event_for_snapshot(
+    snapshot: &WorkflowState,
+) -> Result<WorkflowEvent, WorkflowEngineError> {
+    let attempt = current_node_attempt(snapshot);
+    let execution = top_level_node_execution(snapshot, &snapshot.current_step_name, attempt)?;
+    Ok(WorkflowEvent::NodeStarted {
         run_id: snapshot.execution_id.clone(),
         workflow_name: snapshot.workflow_name.clone(),
+        node_execution_id: execution.id.clone(),
         node_name: snapshot.current_step_name.clone(),
-        execution_count: exec_count,
+        kind: execution.kind,
+        attempt,
+        fanout_parent: None,
         timestamp: snapshot.updated_at,
-    }
+    })
 }
 
 pub(crate) fn node_session_started_event_for_snapshot(
     snapshot: &WorkflowState,
-) -> Option<WorkflowEvent> {
-    let session_id = snapshot.current_session_id.clone()?;
-    let exec_count = snapshot
-        .step_execution_counts
-        .get(&snapshot.current_step_name)
-        .copied()
-        .unwrap_or(1);
-    Some(WorkflowEvent::StepSessionStarted {
+) -> Result<Option<WorkflowEvent>, WorkflowEngineError> {
+    let Some(session_id) = snapshot.current_session_id.clone() else {
+        return Ok(None);
+    };
+    let attempt = current_node_attempt(snapshot);
+    let execution = top_level_node_execution(snapshot, &snapshot.current_step_name, attempt)?;
+    Ok(Some(WorkflowEvent::SessionAttached {
         run_id: snapshot.execution_id.clone(),
         workflow_name: snapshot.workflow_name.clone(),
+        node_execution_id: execution.id.clone(),
         node_name: snapshot.current_step_name.clone(),
-        execution_count: exec_count,
         session_id,
         timestamp: snapshot.updated_at,
-    })
+    }))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -390,34 +488,35 @@ impl PostCommitProgressEventPlan {
         ))
     }
 
-    pub(crate) fn followup_event(self, snapshot: &WorkflowState) -> Option<WorkflowEvent> {
+    pub(crate) fn followup_event(
+        self,
+        snapshot: &WorkflowState,
+    ) -> Result<Option<WorkflowEvent>, WorkflowEngineError> {
         match self {
-            Self::TransitionAndStart => Some(node_started_event_for_snapshot(snapshot)),
-            Self::ReduceAndTransition | Self::StartParallel => None,
+            Self::TransitionAndStart => node_started_event_for_snapshot(snapshot).map(Some),
+            Self::StartParallel => fanout_parent_started_event_for_snapshot(snapshot).map(Some),
+            Self::ReduceAndTransition => Ok(None),
         }
     }
 }
 
-pub(crate) fn parallel_started_event_for_snapshot(
+pub(crate) fn fanout_parent_started_event_for_snapshot(
     snapshot: &WorkflowState,
-) -> Option<WorkflowEvent> {
-    let node = snapshot
-        .workflow_definition
-        .nodes
-        .get(snapshot.current_step_index)?;
-    let child_node_names: Vec<String> = node
-        .fanout()?
-        .parallel_children
-        .iter()
-        .map(|child| child.name.clone())
-        .collect();
-    Some(WorkflowEvent::ParallelStarted {
-        run_id: snapshot.execution_id.clone(),
-        workflow_name: snapshot.workflow_name.clone(),
-        parent_node_name: snapshot.current_step_name.clone(),
-        child_node_names,
-        timestamp: snapshot.updated_at,
-    })
+) -> Result<WorkflowEvent, WorkflowEngineError> {
+    let event = node_started_event_for_snapshot(snapshot)?;
+    if !matches!(
+        event,
+        WorkflowEvent::NodeStarted {
+            kind: crate::adaptor::gateway::workflow::schema::NodeKindName::Fanout,
+            ..
+        }
+    ) {
+        return Err(WorkflowEngineError::InvalidState(format!(
+            "fanout parent '{}' does not reference a fanout NodeExecution",
+            snapshot.current_step_name
+        )));
+    }
+    Ok(event)
 }
 
 pub(crate) fn terminal_events_for_snapshot(
@@ -449,6 +548,15 @@ pub(crate) fn terminal_events_for_snapshot(
             let fail_command = InternalNodeCommand::FailNode {
                 run_id: run_id.clone(),
                 workflow_name: workflow_name.clone(),
+                node_execution_id: top_level_node_execution_id(
+                    snapshot,
+                    &node_name,
+                    snapshot
+                        .step_execution_counts
+                        .get(&node_name)
+                        .copied()
+                        .unwrap_or(1),
+                )?,
                 node_name,
                 reason: reason.clone(),
                 failure_kind,
@@ -499,27 +607,25 @@ pub(crate) fn required_events_for_approval_commit(
             }
         }
         StepOutcome::RetryCurrentStep { snapshot, .. } => {
-            events.push(node_started_event_for_snapshot(snapshot));
+            events.push(node_started_event_for_snapshot(snapshot)?);
         }
         StepOutcome::TransitionAndStart(snapshot) => {
             if let Some(event) = last_step_completed_event_for_snapshot(snapshot)? {
                 events.push(event);
             }
-            events.push(node_started_event_for_snapshot(snapshot));
+            events.push(node_started_event_for_snapshot(snapshot)?);
         }
         StepOutcome::ReduceAndTransition(snapshot) => {
             if let Some(event) = last_step_completed_event_for_snapshot(snapshot)? {
                 events.push(event);
             }
-            events.push(node_started_event_for_snapshot(snapshot));
+            events.push(node_started_event_for_snapshot(snapshot)?);
         }
         StepOutcome::StartParallel(snapshot) => {
             if let Some(event) = last_step_completed_event_for_snapshot(snapshot)? {
                 events.push(event);
             }
-            if let Some(event) = parallel_started_event_for_snapshot(snapshot) {
-                events.push(event);
-            }
+            events.push(fanout_parent_started_event_for_snapshot(snapshot)?);
         }
     }
     let commit_timestamp = events
@@ -579,7 +685,7 @@ pub(crate) fn workflow_event_timestamp(event: &WorkflowEvent) -> f64 {
     match event {
         WorkflowEvent::RunStarted { timestamp, .. }
         | WorkflowEvent::NodeStarted { timestamp, .. }
-        | WorkflowEvent::StepSessionStarted { timestamp, .. }
+        | WorkflowEvent::SessionAttached { timestamp, .. }
         | WorkflowEvent::WorkflowStallObserved { timestamp, .. }
         | WorkflowEvent::WorkflowStallCleared { timestamp, .. }
         | WorkflowEvent::NodeCompleted { timestamp, .. }
@@ -591,10 +697,6 @@ pub(crate) fn workflow_event_timestamp(event: &WorkflowEvent) -> f64 {
         | WorkflowEvent::RunAborted { timestamp, .. }
         | WorkflowEvent::RunInterrupted { timestamp, .. }
         | WorkflowEvent::OutputCollected { timestamp, .. }
-        | WorkflowEvent::ParallelStarted { timestamp, .. }
-        | WorkflowEvent::ParallelChildStarted { timestamp, .. }
-        | WorkflowEvent::ParallelChildCompleted { timestamp, .. }
-        | WorkflowEvent::ParallelCompleted { timestamp, .. }
         | WorkflowEvent::ContractRepairRequested { timestamp, .. }
         | WorkflowEvent::CliMutationRequested { timestamp, .. }
         | WorkflowEvent::ArtifactProduced { timestamp, .. }
@@ -606,7 +708,7 @@ pub(crate) fn set_workflow_event_timestamp(event: &mut WorkflowEvent, commit_tim
     match event {
         WorkflowEvent::RunStarted { timestamp, .. }
         | WorkflowEvent::NodeStarted { timestamp, .. }
-        | WorkflowEvent::StepSessionStarted { timestamp, .. }
+        | WorkflowEvent::SessionAttached { timestamp, .. }
         | WorkflowEvent::WorkflowStallObserved { timestamp, .. }
         | WorkflowEvent::WorkflowStallCleared { timestamp, .. }
         | WorkflowEvent::NodeCompleted { timestamp, .. }
@@ -618,10 +720,6 @@ pub(crate) fn set_workflow_event_timestamp(event: &mut WorkflowEvent, commit_tim
         | WorkflowEvent::RunAborted { timestamp, .. }
         | WorkflowEvent::RunInterrupted { timestamp, .. }
         | WorkflowEvent::OutputCollected { timestamp, .. }
-        | WorkflowEvent::ParallelStarted { timestamp, .. }
-        | WorkflowEvent::ParallelChildStarted { timestamp, .. }
-        | WorkflowEvent::ParallelChildCompleted { timestamp, .. }
-        | WorkflowEvent::ParallelCompleted { timestamp, .. }
         | WorkflowEvent::ContractRepairRequested { timestamp, .. }
         | WorkflowEvent::CliMutationRequested { timestamp, .. }
         | WorkflowEvent::ArtifactProduced { timestamp, .. }
@@ -634,9 +732,10 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
-    use crate::adaptor::gateway::workflow::schema::Workflow;
+    use crate::adaptor::gateway::workflow::schema::{NodeKindName, Workflow};
     use crate::adaptor::gateway::workflow::state::{
-        default_step_entry_state, ChildOutputSnapshot, StepHistoryEntry, TokenUsage,
+        default_step_entry_state, ChildOutputSnapshot, NodeExecution, NodeExecutionStatus,
+        StepHistoryEntry, TokenUsage,
     };
     use crate::{
         adaptor::gateway::workflow::event::CliMutationRejectionReason,
@@ -660,12 +759,51 @@ mod tests {
             total_token_usage: TokenUsage::default(),
             step_states: HashMap::new(),
             step_outputs: HashMap::new(),
-            active_parallel_steps: Vec::new(),
+            node_executions: vec![NodeExecution {
+                id: "node-execution-implement-3".to_string(),
+                execution_id: "run-1".to_string(),
+                node_name: "implement".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 3,
+                status: NodeExecutionStatus::Running,
+                session_id: None,
+                artifact: None,
+                token_usage: None,
+                failure: None,
+                fanout_parent: None,
+                started_at: 40.0,
+                completed_at: None,
+            }],
             stall_observations: Vec::new(),
             approval_operations: None,
             started_at: 1.0,
             updated_at: 42.0,
         }
+    }
+
+    fn fanout_workflow_state_fixture() -> WorkflowState {
+        let mut snapshot = workflow_state_fixture();
+        snapshot.current_step_name = "reviews".to_string();
+        snapshot.current_step_index = 1;
+        snapshot
+            .step_execution_counts
+            .insert("reviews".to_string(), 1);
+        snapshot.node_executions = vec![NodeExecution {
+            id: "node-execution-reviews-1".to_string(),
+            execution_id: "run-1".to_string(),
+            node_name: "reviews".to_string(),
+            kind: NodeKindName::Fanout,
+            attempt: 1,
+            status: NodeExecutionStatus::Running,
+            session_id: None,
+            artifact: None,
+            token_usage: None,
+            failure: None,
+            fanout_parent: None,
+            started_at: 42.0,
+            completed_at: None,
+        }];
+        snapshot
     }
 
     #[test]
@@ -766,15 +904,73 @@ mod tests {
             WorkflowEvent::NodeStarted {
                 run_id,
                 workflow_name,
+                node_execution_id,
                 node_name,
-                execution_count,
+                kind,
+                attempt,
+                fanout_parent,
                 timestamp,
             } if run_id == "run-1"
                 && workflow_name == "wf"
+                && node_execution_id == "node-execution-implement-3"
                 && node_name == "implement"
-                && *execution_count == 3
+                && *kind == NodeKindName::Session
+                && *attempt == 3
+                && fanout_parent.is_none()
                 && (*timestamp - 42.0).abs() < f64::EPSILON
         ));
+    }
+
+    #[test]
+    fn pre_commit_required_events_for_fanout_includes_parent_node_started() {
+        let snapshot = fanout_workflow_state_fixture();
+
+        let events =
+            pre_commit_required_events_for_outcome(&StepOutcome::StartParallel(snapshot)).unwrap();
+
+        assert!(matches!(
+            events.as_slice(),
+            [WorkflowEvent::NodeStarted {
+                node_execution_id,
+                node_name,
+                kind: NodeKindName::Fanout,
+                fanout_parent: None,
+                ..
+            }] if node_execution_id == "node-execution-reviews-1" && node_name == "reviews"
+        ));
+    }
+
+    #[test]
+    fn session_attached_event_uses_current_node_execution_id() {
+        let mut snapshot = workflow_state_fixture();
+        snapshot.current_session_id = Some("session-3".to_string());
+
+        let event = node_session_started_event_for_snapshot(&snapshot)
+            .unwrap()
+            .expect("current session should produce an event");
+
+        assert!(matches!(
+            event,
+            WorkflowEvent::SessionAttached {
+                node_execution_id,
+                node_name,
+                session_id,
+                ..
+            } if node_execution_id == "node-execution-implement-3"
+                && node_name == "implement"
+                && session_id == "session-3"
+        ));
+    }
+
+    #[test]
+    fn node_started_event_rejects_missing_node_execution() {
+        let mut snapshot = workflow_state_fixture();
+        snapshot.node_executions.clear();
+
+        let error = node_started_event_for_snapshot(&snapshot).unwrap_err();
+
+        assert!(matches!(error, WorkflowEngineError::InvalidState(message)
+            if message.contains("NodeExecution") && message.contains("implement")));
     }
 
     #[test]
@@ -826,27 +1022,46 @@ mod tests {
     #[test]
     fn post_commit_progress_event_plan_emits_only_next_node_start() {
         let snapshot = workflow_state_fixture();
+        let fanout_snapshot = fanout_workflow_state_fixture();
 
         assert!(matches!(
-            PostCommitProgressEventPlan::TransitionAndStart.followup_event(&snapshot),
+            PostCommitProgressEventPlan::TransitionAndStart
+                .followup_event(&snapshot)
+                .unwrap(),
             Some(WorkflowEvent::NodeStarted {
                 run_id,
                 workflow_name,
+                node_execution_id,
                 node_name,
-                execution_count,
+                kind,
+                attempt,
+                fanout_parent,
                 timestamp,
             }) if run_id == "run-1"
                 && workflow_name == "wf"
+                && node_execution_id == "node-execution-implement-3"
                 && node_name == "implement"
-                && execution_count == 3
+                && kind == NodeKindName::Session
+                && attempt == 3
+                && fanout_parent.is_none()
                 && (timestamp - 42.0).abs() < f64::EPSILON
         ));
         assert!(PostCommitProgressEventPlan::ReduceAndTransition
             .followup_event(&snapshot)
+            .unwrap()
             .is_none());
-        assert!(PostCommitProgressEventPlan::StartParallel
-            .followup_event(&snapshot)
-            .is_none());
+        assert!(matches!(
+            PostCommitProgressEventPlan::StartParallel
+                .followup_event(&fanout_snapshot)
+                .unwrap(),
+            Some(WorkflowEvent::NodeStarted {
+                node_execution_id,
+                node_name,
+                kind: NodeKindName::Fanout,
+                fanout_parent: None,
+                ..
+            }) if node_execution_id == "node-execution-reviews-1" && node_name == "reviews"
+        ));
     }
 
     #[test]

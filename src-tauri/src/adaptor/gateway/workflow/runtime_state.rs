@@ -1,21 +1,21 @@
 use std::collections::HashMap;
 
 use crate::adaptor::gateway::workflow::domain_mapping::{
-    node_definition_to_domain, parallel_aggregate_to_domain, parallel_step_state_from_domain,
-    step_history_entries_to_domain, step_history_entry_from_domain, step_output_from_domain,
-    step_outputs_to_domain, token_usage_from_domain, token_usage_to_domain,
-    workflow_definition_to_domain, workflow_execution_state_to_domain,
+    node_definition_to_domain, parallel_aggregate_to_domain, step_history_entries_to_domain,
+    step_history_entry_from_domain, step_output_from_domain, step_outputs_to_domain,
+    token_usage_from_domain, token_usage_to_domain, workflow_definition_to_domain,
+    workflow_execution_state_to_domain,
 };
 use crate::adaptor::gateway::workflow::engine_error::{
     workflow_error_to_engine_error, WorkflowEngineError,
 };
 use crate::adaptor::gateway::workflow::engine_start_guard;
-use crate::adaptor::gateway::workflow::output_submission as workflow_output_submission;
+use crate::adaptor::gateway::workflow::event::FanoutParentRef;
 use crate::adaptor::gateway::workflow::runtime_commit::StepOutcome;
-use crate::adaptor::gateway::workflow::schema::{ParallelAggregate, Workflow};
+use crate::adaptor::gateway::workflow::schema::{NodeKindName, ParallelAggregate, Workflow};
 use crate::adaptor::gateway::workflow::state::{
-    ApprovalOperations, StepHistoryEntry, StepOutput, TokenUsage, WorkflowExecutionState,
-    WorkflowStallObservation, WorkflowState,
+    ApprovalOperations, NodeExecution, NodeExecutionFailure, NodeExecutionStatus, StepHistoryEntry,
+    StepOutput, TokenUsage, WorkflowExecutionState, WorkflowStallObservation, WorkflowState,
 };
 use crate::adaptor::gateway::workflow::step_settings::WorkflowDefaults;
 use crate::domain::workflow as workflow_domain;
@@ -52,6 +52,9 @@ pub(crate) struct WorkflowExecution {
     pub(crate) current_step_token_usage: TokenUsage,
     /// step_name → 最新StepOutput のマップ。
     pub(crate) step_outputs: HashMap<String, StepOutput>,
+    /// event log / UI の第一級 read model となる node 実行列。
+    /// fanout child も同じ列へ格納し、`fanout_parent` から親子関係を導出する。
+    pub(crate) node_executions: Vec<NodeExecution>,
     /// ワークフロー実行時のタスク内容（テンプレート変数 {{ request }} の展開に使用）。
     pub(crate) task: Option<String>,
     /// 並列実行中の場合の状態。
@@ -64,6 +67,7 @@ pub(crate) struct WorkflowExecution {
 #[derive(Clone)]
 pub(crate) struct ParallelRunState {
     pub(crate) parent_step_name: String,
+    pub(crate) parent_node_execution_id: String,
     pub(crate) aggregate: Option<ParallelAggregate>,
     pub(crate) children: Vec<ParallelChildRun>,
 }
@@ -71,6 +75,7 @@ pub(crate) struct ParallelRunState {
 /// 並列子ステップの実行状態。
 #[derive(Clone)]
 pub(crate) struct ParallelChildRun {
+    pub(crate) node_execution_id: String,
     pub(crate) step_name: String,
     pub(crate) session_id: String,
     pub(crate) state: ParallelChildState,
@@ -81,6 +86,7 @@ pub(crate) struct ParallelChildRun {
     pub(crate) failure_disposition: Option<FailureDisposition>,
     pub(crate) token_usage: TokenUsage,
     pub(crate) run_index: u32,
+    pub(crate) completed_at: Option<f64>,
 }
 
 /// 並列子ステップの状態。
@@ -90,17 +96,6 @@ pub(crate) enum ParallelChildState {
     Completed,
     Failed,
     Interrupted,
-}
-
-impl From<&ParallelChildState> for workflow_output_submission::SubmissionParallelChildState {
-    fn from(state: &ParallelChildState) -> Self {
-        match state {
-            ParallelChildState::Running => Self::Running,
-            ParallelChildState::Completed => Self::Completed,
-            ParallelChildState::Failed => Self::Failed,
-            ParallelChildState::Interrupted => Self::Interrupted,
-        }
-    }
 }
 
 /// session_workflow_refsの値型。session_id → run_id の逆引き索引。
@@ -135,6 +130,157 @@ impl WorkflowExecution {
         )
     }
 
+    pub(crate) fn start_node_execution(
+        &mut self,
+        node_name: String,
+        kind: NodeKindName,
+        attempt: u32,
+        fanout_parent: Option<FanoutParentRef>,
+        node_execution_id: Option<String>,
+        timestamp: f64,
+    ) -> String {
+        let id = node_execution_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        self.node_executions.push(NodeExecution {
+            id: id.clone(),
+            execution_id: self.id.clone(),
+            node_name,
+            kind,
+            attempt,
+            status: NodeExecutionStatus::Running,
+            session_id: None,
+            artifact: None,
+            token_usage: None,
+            failure: None,
+            fanout_parent,
+            started_at: timestamp,
+            completed_at: None,
+        });
+        id
+    }
+
+    pub(crate) fn start_current_node_execution(&mut self, timestamp: f64) -> String {
+        let node_name = self.workflow.nodes[self.current_step_index].name.clone();
+        let kind = self.workflow.nodes[self.current_step_index].kind_name();
+        let attempt = self
+            .step_execution_counts
+            .get(&node_name)
+            .copied()
+            .unwrap_or(1);
+        self.start_node_execution(node_name, kind, attempt, None, None, timestamp)
+    }
+
+    pub(crate) fn active_current_node_execution_id(&self) -> Option<&str> {
+        let node = self.workflow.nodes.get(self.current_step_index)?;
+        let attempt = self
+            .step_execution_counts
+            .get(&node.name)
+            .copied()
+            .unwrap_or(1);
+        self.node_executions
+            .iter()
+            .rev()
+            .find(|execution| {
+                execution.node_name == node.name
+                    && execution.attempt == attempt
+                    && execution.fanout_parent.is_none()
+                    && execution.status.is_active()
+            })
+            .map(|execution| execution.id.as_str())
+    }
+
+    pub(crate) fn complete_node_execution(
+        &mut self,
+        node_execution_id: &str,
+        artifact: Option<serde_json::Value>,
+        token_usage: Option<TokenUsage>,
+        timestamp: f64,
+    ) {
+        if let Some(execution) = self
+            .node_executions
+            .iter_mut()
+            .find(|execution| execution.id == node_execution_id)
+        {
+            execution.status = NodeExecutionStatus::Succeeded;
+            execution.artifact = artifact;
+            execution.token_usage = token_usage;
+            execution.failure = None;
+            execution.completed_at = Some(timestamp);
+        }
+    }
+
+    pub(crate) fn fail_node_execution(
+        &mut self,
+        node_execution_id: &str,
+        reason: String,
+        kind: WorkflowStepFailureKind,
+        timestamp: f64,
+    ) {
+        if let Some(execution) = self
+            .node_executions
+            .iter_mut()
+            .find(|execution| execution.id == node_execution_id)
+        {
+            execution.status = NodeExecutionStatus::Failed;
+            execution.failure = Some(NodeExecutionFailure { reason, kind });
+            execution.completed_at = Some(timestamp);
+        }
+    }
+
+    /// A terminal runtime failure belongs to the active top-level node. Any other active
+    /// executions are concurrent work that can no longer complete and must be closed as aborted.
+    pub(crate) fn fail_current_node_execution_and_abort_active_children(
+        &mut self,
+        reason: &str,
+        kind: WorkflowStepFailureKind,
+        timestamp: f64,
+    ) {
+        let current_node_name = self
+            .workflow
+            .nodes
+            .get(self.current_step_index)
+            .map(|node| node.name.as_str());
+        let current_attempt = current_node_name
+            .and_then(|name| self.step_execution_counts.get(name))
+            .copied()
+            .unwrap_or(1);
+        let current_node_execution_id = current_node_name.and_then(|name| {
+            self.node_executions
+                .iter()
+                .rev()
+                .find(|execution| {
+                    execution.node_name == name
+                        && execution.attempt == current_attempt
+                        && execution.fanout_parent.is_none()
+                })
+                .map(|execution| execution.id.clone())
+        });
+
+        for execution in &mut self.node_executions {
+            if current_node_execution_id.as_deref() == Some(execution.id.as_str()) {
+                execution.status = NodeExecutionStatus::Failed;
+                execution.failure = Some(NodeExecutionFailure {
+                    reason: reason.to_string(),
+                    kind,
+                });
+                execution.completed_at = Some(timestamp);
+            } else if execution.status.is_active() {
+                execution.status = NodeExecutionStatus::Aborted;
+                execution.completed_at = Some(timestamp);
+            }
+        }
+
+        if let Some(run) = self.parallel_run.as_mut() {
+            for child in &mut run.children {
+                if child.state == ParallelChildState::Running {
+                    child.state = ParallelChildState::Interrupted;
+                    child.completed_at = Some(timestamp);
+                }
+            }
+        }
+        self.current_session_id = None;
+        self.current_stall_observations.clear();
+    }
+
     /// ワークフロー開始の事前条件を検証する（純粋関数）。
     ///
     /// executions ロック内の defense-in-depth で呼ばれる。Run Store の active index と
@@ -154,13 +300,6 @@ impl WorkflowExecution {
         let domain_history = step_history_entries_to_domain(&self.step_history);
         let total_token_usage =
             token_usage_from_domain(&workflow_projection::total_token_usage(&domain_history));
-        let domain_parallel_run = self.domain_parallel_run();
-        let active_parallel_steps =
-            workflow_projection::active_parallel_steps(domain_parallel_run.as_ref())
-                .into_iter()
-                .map(parallel_step_state_from_domain)
-                .collect();
-
         let step_states = crate::adaptor::gateway::workflow::state::compute_step_states(
             &self.workflow,
             self.current_step_index,
@@ -182,7 +321,7 @@ impl WorkflowExecution {
             total_token_usage,
             step_states,
             step_outputs: self.step_outputs.clone(),
-            active_parallel_steps,
+            node_executions: self.node_executions.clone(),
             approval_operations: self.build_approval_operations(),
             stall_observations: self.current_stall_observations.clone(),
             started_at: self.started_at,
@@ -282,7 +421,7 @@ impl WorkflowExecution {
     /// session_id は child runtime / step_outputs から維持する（session log 到達経路維持）。
     ///
     /// 呼出し側は本関数で entry を組み立てた後、`self.parallel_run = None;` を明示
-    /// セットすること（`build_active_parallel_steps()` 経由の二重表示を防ぐ）。
+    /// セットし、fanout の live child state を残さないこと。
     pub(crate) fn make_aborted_parallel_history_entry(
         &self,
         timestamp: f64,
@@ -405,6 +544,7 @@ impl WorkflowExecution {
         self.current_stall_observations.clear();
         self.clear_step_outputs_for_new_execution(step_index);
         self.updated_at = current_timestamp();
+        self.start_current_node_execution(self.updated_at);
         StepOutcome::RetryCurrentStep {
             snapshot: self.to_workflow_state(),
             completed_session_id,
@@ -475,6 +615,7 @@ impl WorkflowExecution {
         self.current_stall_observations.clear();
         self.clear_step_outputs_for_new_execution(step_index);
         self.updated_at = current_timestamp();
+        self.start_current_node_execution(self.updated_at);
     }
 
     fn step_outcome_for_current_step(&self) -> StepOutcome {
