@@ -1,4 +1,4 @@
-use super::{NodeKindName, TokenUsage, WorkflowStepFailureKind};
+use super::{Artifact, NodeExecutionFailureKind, NodeKindName, TokenUsage};
 
 /// fanout child execution が属する親 fanout と、宣言順上の位置。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,7 +37,7 @@ impl NodeExecutionStatus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeExecutionFailure {
     pub reason: String,
-    pub kind: WorkflowStepFailureKind,
+    pub kind: NodeExecutionFailureKind,
 }
 
 /// event replay から構築する node 実行 1 回分の read model。
@@ -50,7 +50,8 @@ pub struct NodeExecution {
     pub attempt: u32,
     pub status: NodeExecutionStatus,
     pub session_id: Option<String>,
-    pub artifact: Option<serde_json::Value>,
+    pub result_summary: Option<String>,
+    pub artifact: Option<Artifact>,
     pub token_usage: Option<TokenUsage>,
     pub failure: Option<NodeExecutionFailure>,
     pub fanout_parent: Option<FanoutParentRef>,

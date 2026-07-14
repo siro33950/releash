@@ -39,12 +39,12 @@ pub(crate) async fn process_pending_command_entry<R, E>(
     E: PendingCommandRuntime<R> + ?Sized,
 {
     let entry_id = entry.command.id.clone();
-    let run_id = entry.command.run_id.clone();
+    let execution_id = entry.command.execution_id.clone();
     let claimed = match store.claim_pending(&entry) {
         Ok(Some(claimed)) => claimed,
         Ok(None) => return,
         Err(e) => {
-            log::warn!("pending command claim failed: id={entry_id} run_id={run_id} reason={e}");
+            log::warn!("pending command claim failed: id={entry_id} execution_id={execution_id} reason={e}");
             return;
         }
     };
@@ -59,30 +59,30 @@ pub(crate) async fn process_pending_command_entry<R, E>(
     .await
     {
         PendingCommandDispatchOutcome::Accepted => {
-            log::info!("pending command dispatched: id={entry_id} run_id={run_id}");
+            log::info!("pending command dispatched: id={entry_id} execution_id={execution_id}");
             if let Err(e) = store.mark_processed(&claimed.entry) {
                 log::warn!(
-                    "Failed to mark pending command processed: id={entry_id} run_id={run_id} reason={e}"
+                    "Failed to mark pending command processed: id={entry_id} execution_id={execution_id} reason={e}"
                 );
             }
         }
         PendingCommandDispatchOutcome::RejectedFinal(reason) => {
             log::warn!(
-                "pending command dispatch rejected: id={entry_id} run_id={run_id} reason={reason}"
+                "pending command dispatch rejected: id={entry_id} execution_id={execution_id} reason={reason}"
             );
             if let Err(e) = store.mark_processed(&claimed.entry) {
                 log::warn!(
-                    "Failed to mark rejected pending command processed: id={entry_id} run_id={run_id} reason={e}"
+                    "Failed to mark rejected pending command processed: id={entry_id} execution_id={execution_id} reason={e}"
                 );
             }
         }
         PendingCommandDispatchOutcome::RetryableFailure(reason) => {
             log::warn!(
-                "pending command dispatch retryable failure: id={entry_id} run_id={run_id} reason={reason}"
+                "pending command dispatch retryable failure: id={entry_id} execution_id={execution_id} reason={reason}"
             );
             if let Err(e) = store.release_claim(&claimed.entry) {
                 log::warn!(
-                    "Failed to release pending command claim: id={entry_id} run_id={run_id} reason={e}"
+                    "Failed to release pending command claim: id={entry_id} execution_id={execution_id} reason={e}"
                 );
             }
         }
@@ -100,14 +100,14 @@ where
     R: tauri::Runtime,
     E: PendingCommandRuntime<R> + ?Sized,
 {
-    if uuid::Uuid::parse_str(&pending.run_id).is_err() {
+    if uuid::Uuid::parse_str(&pending.execution_id).is_err() {
         return PendingCommandDispatchOutcome::RejectedFinal(
-            "pending command run_id must be UUID".to_string(),
+            "pending command execution_id must be UUID".to_string(),
         );
     }
 
     let PendingCommand {
-        run_id,
+        execution_id,
         id,
         payload,
         requested_at,
@@ -122,23 +122,23 @@ where
     // 他の CLI mutation（Approve / Abort）は従来通り `CliPending` を運ぶ。
     let (commit_context, request_id) = if is_submit_output {
         // 5-3 修正: SubmitOutput の拒否時にも `CliMutationRejected` を補助履歴として
-        // 残せるよう、step_name と contract を commit_context に保持する。
-        let (step_name, contract) = match &payload {
+        // 残せるよう、node_name と contract を commit_context に保持する。
+        let (node_name, contract) = match &payload {
             PendingCommandPayload::SubmitOutput {
-                step_name,
+                node_name,
                 contract,
                 ..
-            } => (step_name.clone(), contract.clone()),
+            } => (node_name.clone(), contract.clone()),
             _ => unreachable!("is_submit_output guard guarantees SubmitOutput variant"),
         };
         (
-            CommandCommitContext::submit_output(id.clone(), requested_at, step_name, contract),
+            CommandCommitContext::submit_output(id.clone(), requested_at, node_name, contract),
             id.clone(),
         )
     } else {
         let request = payload_to_cli_request(&payload);
         let metadata = WorkflowMutationContext::new(
-            run_id.clone(),
+            execution_id.clone(),
             WorkflowMutationSource::CliPendingCommand {
                 request_id: id.clone(),
             },
@@ -150,9 +150,9 @@ where
     let dispatch_payload = payload_to_runtime_dispatch(payload);
 
     let already_recorded = if is_submit_output {
-        engine.artifact_produced_already_recorded(app, &run_id, &request_id)
+        engine.artifact_produced_already_recorded(app, &execution_id, &request_id)
     } else {
-        engine.cli_mutation_already_recorded(app, &run_id, &request_id)
+        engine.cli_mutation_already_recorded(app, &execution_id, &request_id)
     };
     match already_recorded {
         Ok(true) => return PendingCommandDispatchOutcome::Accepted,
@@ -161,11 +161,18 @@ where
     }
 
     if let Err(e) = engine
-        .ensure_execution_loaded_for_external(app, session_store, &run_id)
+        .ensure_execution_loaded_for_external(app, session_store, &execution_id)
         .await
     {
-        return handle_rejected_dispatch(app, engine, e, commit_context, &run_id, is_submit_output)
-            .await;
+        return handle_rejected_dispatch(
+            app,
+            engine,
+            e,
+            commit_context,
+            &execution_id,
+            is_submit_output,
+        )
+        .await;
     }
 
     match dispatch_runtime_payload(
@@ -173,7 +180,7 @@ where
         engine,
         session_store,
         agent_runtime,
-        &run_id,
+        &execution_id,
         dispatch_payload,
         commit_context.clone(),
         &request_id,
@@ -183,8 +190,15 @@ where
     {
         Ok(()) => PendingCommandDispatchOutcome::Accepted,
         Err(e) => {
-            handle_rejected_dispatch(app, engine, e, commit_context, &run_id, is_submit_output)
-                .await
+            handle_rejected_dispatch(
+                app,
+                engine,
+                e,
+                commit_context,
+                &execution_id,
+                is_submit_output,
+            )
+            .await
         }
     }
 }
@@ -195,7 +209,7 @@ async fn dispatch_runtime_payload<R, E>(
     engine: &E,
     session_store: &Arc<SessionStore>,
     agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
-    run_id: &str,
+    execution_id: &str,
     payload: PendingRuntimeDispatchPayload,
     commit_context: CommandCommitContext,
     request_id: &str,
@@ -216,7 +230,7 @@ where
                     app,
                     session_store,
                     agent_runtime,
-                    run_id,
+                    execution_id,
                     comment,
                     &node_name,
                     node_execution_id.as_deref(),
@@ -226,32 +240,32 @@ where
         }
         PendingRuntimeDispatchPayload::Abort { expected_node_name } => {
             engine
-                .abort_workflow_run_with_commit_context(
+                .abort_workflow_execution_with_commit_context(
                     app,
                     session_store,
                     agent_runtime,
-                    run_id,
+                    execution_id,
                     expected_node_name.as_deref(),
                     Some(commit_context),
                 )
                 .await
         }
         PendingRuntimeDispatchPayload::SubmitOutput {
-            step_name,
+            node_name,
             node_execution_id,
             contract,
-            structured_output,
+            artifact,
         } => {
             engine
                 .submit_workflow_output(
                     app,
                     session_store,
                     agent_runtime,
-                    run_id,
-                    step_name,
+                    execution_id,
+                    node_name,
                     node_execution_id,
                     contract,
-                    structured_output,
+                    artifact,
                     Some(request_id.to_string()),
                     Some(requested_at),
                 )
@@ -265,7 +279,7 @@ async fn handle_rejected_dispatch<R, E>(
     engine: &E,
     error: WorkflowEngineError,
     commit_context: CommandCommitContext,
-    run_id: &str,
+    execution_id: &str,
     is_submit_output: bool,
 ) -> PendingCommandDispatchOutcome
 where
@@ -295,7 +309,7 @@ where
             engine
                 .append_cli_mutation_rejected_for_submit_output(
                     app,
-                    run_id,
+                    execution_id,
                     &commit_context,
                     &error,
                 )
@@ -364,10 +378,10 @@ enum PendingRuntimeDispatchPayload {
         expected_node_name: Option<String>,
     },
     SubmitOutput {
-        step_name: String,
+        node_name: String,
         node_execution_id: Option<String>,
         contract: String,
-        structured_output: serde_json::Value,
+        artifact: serde_json::Value,
     },
 }
 
@@ -386,15 +400,15 @@ fn payload_to_runtime_dispatch(payload: PendingCommandPayload) -> PendingRuntime
             expected_node_name: node_name,
         },
         PendingCommandPayload::SubmitOutput {
-            step_name,
+            node_name,
             node_execution_id,
             contract,
-            structured_output,
+            artifact,
         } => PendingRuntimeDispatchPayload::SubmitOutput {
-            step_name,
+            node_name,
             node_execution_id,
             contract,
-            structured_output,
+            artifact,
         },
     }
 }
@@ -426,7 +440,7 @@ mod tests {
 
     #[derive(Debug)]
     struct ApprovalRuntimeCall {
-        run_id: String,
+        execution_id: String,
         comment: Option<String>,
         node_name: String,
         node_execution_id: Option<String>,
@@ -438,11 +452,11 @@ mod tests {
 
     #[derive(Debug)]
     struct SubmitRuntimeCall {
-        run_id: String,
-        step_name: String,
+        execution_id: String,
+        node_name: String,
         node_execution_id: Option<String>,
         contract: String,
-        structured_output: serde_json::Value,
+        artifact: serde_json::Value,
         request_id: Option<String>,
         submitted_at: Option<f64>,
     }
@@ -491,7 +505,7 @@ mod tests {
             _app: &tauri::AppHandle<tauri::test::MockRuntime>,
             _session_store: &Arc<SessionStore>,
             _agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
-            run_id: &str,
+            execution_id: &str,
             comment: Option<String>,
             node_name: &str,
             node_execution_id: Option<&str>,
@@ -501,7 +515,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(ApprovalRuntimeCall {
-                    run_id: run_id.to_string(),
+                    execution_id: execution_id.to_string(),
                     comment,
                     node_name: node_name.to_string(),
                     node_execution_id: node_execution_id.map(str::to_string),
@@ -513,16 +527,16 @@ mod tests {
             }
         }
 
-        async fn abort_workflow_run_with_commit_context(
+        async fn abort_workflow_execution_with_commit_context(
             &self,
             _app: &tauri::AppHandle<tauri::test::MockRuntime>,
             _session_store: &Arc<SessionStore>,
             _agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
-            run_id: &str,
+            execution_id: &str,
             expected_node_name: Option<&str>,
             commit_context: Option<CommandCommitContext>,
         ) -> Result<(), WorkflowEngineError> {
-            let _ = (run_id, expected_node_name, commit_context);
+            let _ = (execution_id, expected_node_name, commit_context);
             self.abort_calls.lock().unwrap().push(AbortRuntimeCall);
             match self.next_abort_error.lock().unwrap().take() {
                 Some(error) => Err(error),
@@ -535,20 +549,20 @@ mod tests {
             _app: &tauri::AppHandle<tauri::test::MockRuntime>,
             _session_store: &Arc<SessionStore>,
             _agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
-            run_id: &str,
-            step_name: String,
+            execution_id: &str,
+            node_name: String,
             node_execution_id: Option<String>,
             contract: String,
-            structured_output: serde_json::Value,
+            artifact: serde_json::Value,
             request_id: Option<String>,
             submitted_at: Option<f64>,
         ) -> Result<(), WorkflowEngineError> {
             self.submit_calls.lock().unwrap().push(SubmitRuntimeCall {
-                run_id: run_id.to_string(),
-                step_name,
+                execution_id: execution_id.to_string(),
+                node_name,
                 node_execution_id,
                 contract,
-                structured_output,
+                artifact,
                 request_id,
                 submitted_at,
             });
@@ -573,12 +587,12 @@ mod tests {
         async fn append_cli_mutation_rejected_for_submit_output(
             &self,
             _app: &tauri::AppHandle<tauri::test::MockRuntime>,
-            run_id: &str,
+            execution_id: &str,
             commit_context: &CommandCommitContext,
             error: &WorkflowEngineError,
         ) -> Result<(), WorkflowEngineError> {
             self.rejected_submit_contexts.lock().unwrap().push((
-                run_id.to_string(),
+                execution_id.to_string(),
                 commit_context.clone(),
                 error.to_string(),
             ));
@@ -633,8 +647,9 @@ mod tests {
         let mutation = context
             .cli_pending_mutation()
             .expect("context must be CliPending");
-        let (run_id, request, requested_at, _request_id) = mutation.clone().into_event_parts();
-        assert_eq!(run_id, expected_run_id);
+        let (execution_id, request, requested_at, _request_id) =
+            mutation.clone().into_event_parts();
+        assert_eq!(execution_id, expected_run_id);
         assert_eq!(request, expected_request);
         assert!((requested_at - expected_requested_at).abs() < f64::EPSILON);
     }
@@ -674,10 +689,10 @@ mod tests {
         let app = make_dispatch_app();
         let runtime = FakePendingRuntime::default();
         let (session_store, agent_runtime) = make_dispatch_deps();
-        let run_id = uuid::Uuid::new_v4().to_string();
+        let execution_id = uuid::Uuid::new_v4().to_string();
 
         let pending = PendingCommand::new(
-            run_id.clone(),
+            execution_id.clone(),
             CliRequestPayload::Approve {
                 node_name: "review".to_string(),
                 node_execution_id: Some("node-execution-review".to_string()),
@@ -699,7 +714,7 @@ mod tests {
         let calls = runtime.approval_calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
         let call = &calls[0];
-        assert_eq!(call.run_id, run_id);
+        assert_eq!(call.execution_id, execution_id);
         assert_eq!(call.comment.as_deref(), Some("cli-lgtm"));
         assert_eq!(call.node_name, "review");
         assert_eq!(
@@ -710,7 +725,7 @@ mod tests {
             call.commit_context
                 .as_ref()
                 .expect("approval call must carry commit context"),
-            &run_id,
+            &execution_id,
             CliMutationRequestRecord::Approve {
                 node_name: "review".to_string(),
                 comment: Some("cli-lgtm".to_string()),
@@ -729,11 +744,11 @@ mod tests {
         let temp_dir = make_pending_store_dir();
         let data_dir = temp_dir.path().to_path_buf();
         let (session_store, agent_runtime) = make_dispatch_deps();
-        let run_id = uuid::Uuid::new_v4().to_string();
+        let execution_id = uuid::Uuid::new_v4().to_string();
 
         let store = PendingCommandStore::new(&data_dir);
         let pending = PendingCommand::new(
-            run_id.clone(),
+            execution_id.clone(),
             CliRequestPayload::Approve {
                 node_name: "stale-review".to_string(),
                 node_execution_id: None,
@@ -780,11 +795,11 @@ mod tests {
         let temp_dir = make_pending_store_dir();
         let data_dir = temp_dir.path().to_path_buf();
         let (session_store, agent_runtime) = make_dispatch_deps();
-        let run_id = uuid::Uuid::new_v4().to_string();
+        let execution_id = uuid::Uuid::new_v4().to_string();
 
         let store = PendingCommandStore::new(&data_dir);
         let pending = PendingCommand::new(
-            run_id.clone(),
+            execution_id.clone(),
             CliRequestPayload::Approve {
                 node_name: "review".to_string(),
                 node_execution_id: None,
@@ -818,15 +833,15 @@ mod tests {
         let app = make_dispatch_app();
         let runtime = FakePendingRuntime::default();
         let (session_store, agent_runtime) = make_dispatch_deps();
-        let run_id = uuid::Uuid::new_v4().to_string();
+        let execution_id = uuid::Uuid::new_v4().to_string();
 
         let pending = PendingCommand::new(
-            run_id.clone(),
+            execution_id.clone(),
             CliRequestPayload::SubmitOutput {
-                step_name: "review".to_string(),
+                node_name: "review".to_string(),
                 node_execution_id: Some("node-execution-review".to_string()),
                 contract: "review-verdict".to_string(),
-                structured_output: serde_json::json!({"verdict": "LGTM"}),
+                artifact: serde_json::json!({"verdict": "LGTM"}),
             },
             950.5,
         );
@@ -845,17 +860,14 @@ mod tests {
         let calls = runtime.submit_calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
         let call = &calls[0];
-        assert_eq!(call.run_id, run_id);
-        assert_eq!(call.step_name, "review");
+        assert_eq!(call.execution_id, execution_id);
+        assert_eq!(call.node_name, "review");
         assert_eq!(
             call.node_execution_id.as_deref(),
             Some("node-execution-review")
         );
         assert_eq!(call.contract, "review-verdict");
-        assert_eq!(
-            call.structured_output,
-            serde_json::json!({"verdict": "LGTM"})
-        );
+        assert_eq!(call.artifact, serde_json::json!({"verdict": "LGTM"}));
         assert_eq!(call.request_id.as_deref(), Some(pending_id.as_str()));
         assert_eq!(call.submitted_at, Some(950.5));
     }
@@ -870,19 +882,19 @@ mod tests {
         let app = make_dispatch_app();
         let runtime = FakePendingRuntime::default();
         runtime.reject_next_submit(WorkflowEngineError::ValidationError(
-            "contract mismatch: step 'review' expects 'review-verdict', got 'spec-directory'"
+            "contract mismatch: node 'review' expects 'review-verdict', got 'spec-directory'"
                 .to_string(),
         ));
         let (session_store, agent_runtime) = make_dispatch_deps();
-        let run_id = uuid::Uuid::new_v4().to_string();
+        let execution_id = uuid::Uuid::new_v4().to_string();
 
         let pending = PendingCommand::new(
-            run_id.clone(),
+            execution_id.clone(),
             CliRequestPayload::SubmitOutput {
-                step_name: "review".to_string(),
+                node_name: "review".to_string(),
                 node_execution_id: None,
                 contract: "spec-directory".to_string(),
-                structured_output: serde_json::json!({"spec_dir": "/not/relative"}),
+                artifact: serde_json::json!({"spec_dir": "/not/relative"}),
             },
             960.0,
         );
@@ -904,14 +916,14 @@ mod tests {
         assert!(runtime.append_contexts.lock().unwrap().is_empty());
         let rejected = runtime.rejected_submit_contexts.lock().unwrap();
         assert_eq!(rejected.len(), 1);
-        assert_eq!(rejected[0].0, run_id);
-        let (request_id, requested_at, step_name, contract) = rejected[0]
+        assert_eq!(rejected[0].0, execution_id);
+        let (request_id, requested_at, node_name, contract) = rejected[0]
             .1
             .submit_output_rejection_parts()
             .expect("submit rejection context must carry submit metadata");
         assert_eq!(request_id, pending_id);
         assert!((requested_at - 960.0).abs() < f64::EPSILON);
-        assert_eq!(step_name, "review");
+        assert_eq!(node_name, "review");
         assert_eq!(contract, "spec-directory");
         assert!(
             rejected[0].2.contains("contract mismatch"),
@@ -928,7 +940,7 @@ mod tests {
         let cases: Vec<(WorkflowEngineError, R)> = vec![
             (
                 WorkflowEngineError::ExecutionNotFound("run".to_string()),
-                R::RunNotFound,
+                R::ExecutionNotFound,
             ),
             (
                 WorkflowEngineError::UnauthorizedApprovalTarget("target".to_string()),
@@ -936,31 +948,31 @@ mod tests {
             ),
             (
                 WorkflowEngineError::ValidationError(
-                    "contract mismatch: step 'r' expects 'a', got 'b'".to_string(),
+                    "contract mismatch: node 'r' expects 'a', got 'b'".to_string(),
                 ),
                 R::ContractMismatch,
             ),
             (
                 WorkflowEngineError::ValidationError(
-                    "step 'r' is not a valid submission target".to_string(),
+                    "node 'r' is not a valid submission target".to_string(),
                 ),
                 R::NodeNotFound,
             ),
             (
                 WorkflowEngineError::InvalidState(
-                    "step 'r' is not currently accepting structured output".to_string(),
+                    "node 'r' is not currently accepting structured output".to_string(),
                 ),
-                R::StepNotAccepting,
+                R::NodeNotAccepting,
             ),
             (
-                WorkflowEngineError::InvalidState("run x is already terminal".to_string()),
-                R::RunNotActive,
+                WorkflowEngineError::InvalidState("execution x is already terminal".to_string()),
+                R::ExecutionNotActive,
             ),
             (
                 WorkflowEngineError::InvalidState(
-                    "run x is not accepting structured output (state: Completed)".to_string(),
+                    "execution x is not accepting structured output (state: Completed)".to_string(),
                 ),
-                R::RunNotActive,
+                R::ExecutionNotActive,
             ),
             (
                 WorkflowEngineError::InvalidState("something else".to_string()),

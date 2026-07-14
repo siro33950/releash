@@ -2,7 +2,7 @@ use crate::adaptor::gateway::workflow::event::CliMutationRejectionReason;
 use crate::adaptor::gateway::workflow::resolver::{
     ManagedWorktreeResolverError, WorkflowDefinitionResolverError,
 };
-use crate::domain::workflow::WorkflowStepFailureKind;
+use crate::domain::workflow::NodeExecutionFailureKind;
 use crate::usecase::agent_session::runtime::usecase::AgentRuntimeError;
 
 /// ワークフローエンジンのエラー型。
@@ -31,7 +31,7 @@ pub enum WorkflowEngineError {
     /// Agent runtime が分類済み failure metadata とともに返したエラー
     AgentRuntime {
         message: String,
-        failure_kind: WorkflowStepFailureKind,
+        failure_kind: NodeExecutionFailureKind,
         retry_count: Option<u32>,
     },
 }
@@ -60,11 +60,11 @@ impl std::fmt::Display for WorkflowEngineError {
 }
 
 impl WorkflowEngineError {
-    pub(crate) fn workflow_failure_kind(&self) -> WorkflowStepFailureKind {
+    pub(crate) fn workflow_failure_kind(&self) -> NodeExecutionFailureKind {
         match self {
             Self::AgentRuntime { failure_kind, .. } => *failure_kind,
             Self::SessionStore(_) | Self::AgentSession(_) => {
-                WorkflowStepFailureKind::InfrastructureCrash
+                NodeExecutionFailureKind::InfrastructureCrash
             }
             Self::ExecutionNotFound(_)
             | Self::SessionNotFound(_)
@@ -73,7 +73,7 @@ impl WorkflowEngineError {
             | Self::InvalidState(_)
             | Self::ValidationError(_)
             | Self::UnauthorizedWorktree(_)
-            | Self::UnauthorizedApprovalTarget(_) => WorkflowStepFailureKind::ValidationFailure,
+            | Self::UnauthorizedApprovalTarget(_) => NodeExecutionFailureKind::ValidationFailure,
         }
     }
 
@@ -92,7 +92,7 @@ impl WorkflowEngineError {
         match error {
             error @ AgentRuntimeError::StartupTimeout { retry_count, .. } => Self::AgentRuntime {
                 message: format!("{context}: {error}"),
-                failure_kind: WorkflowStepFailureKind::StartupTimeout,
+                failure_kind: NodeExecutionFailureKind::StartupTimeout,
                 retry_count: Some(retry_count),
             },
             AgentRuntimeError::Other(message) => {
@@ -107,7 +107,7 @@ impl From<AgentRuntimeError> for WorkflowEngineError {
         match error {
             error @ AgentRuntimeError::StartupTimeout { retry_count, .. } => Self::AgentRuntime {
                 message: error.to_string(),
-                failure_kind: WorkflowStepFailureKind::StartupTimeout,
+                failure_kind: NodeExecutionFailureKind::StartupTimeout,
                 retry_count: Some(retry_count),
             },
             AgentRuntimeError::Other(message) => Self::AgentSession(message),
@@ -140,18 +140,18 @@ impl From<ManagedWorktreeResolverError> for WorkflowEngineError {
     }
 }
 
-impl From<crate::usecase::workflow::step_lifecycle::WorkflowStepLifecycleError>
+impl From<crate::usecase::workflow::step_lifecycle::NodeExecutionLifecycleError>
     for WorkflowEngineError
 {
-    fn from(e: crate::usecase::workflow::step_lifecycle::WorkflowStepLifecycleError) -> Self {
+    fn from(e: crate::usecase::workflow::step_lifecycle::NodeExecutionLifecycleError) -> Self {
         match e {
-            crate::usecase::workflow::step_lifecycle::WorkflowStepLifecycleError::SessionNotFound(id) => {
+            crate::usecase::workflow::step_lifecycle::NodeExecutionLifecycleError::SessionNotFound(id) => {
                 Self::SessionNotFound(id)
             }
-            crate::usecase::workflow::step_lifecycle::WorkflowStepLifecycleError::SessionStore(message) => {
+            crate::usecase::workflow::step_lifecycle::NodeExecutionLifecycleError::SessionStore(message) => {
                 Self::SessionStore(message)
             }
-            crate::usecase::workflow::step_lifecycle::WorkflowStepLifecycleError::AgentSession(message) => {
+            crate::usecase::workflow::step_lifecycle::NodeExecutionLifecycleError::AgentSession(message) => {
                 Self::AgentSession(message)
             }
         }
@@ -168,7 +168,7 @@ pub(crate) fn workflow_error_to_engine_error(
         crate::domain::workflow::WorkflowError::Validation(message) => {
             if let Some(node_name) = message.strip_prefix("node not found: ") {
                 WorkflowEngineError::InvalidWorkflow(format!(
-                    "Step '{node_name}' not found in workflow"
+                    "Node '{node_name}' not found in workflow"
                 ))
             } else {
                 WorkflowEngineError::InvalidWorkflow(message)
@@ -202,7 +202,7 @@ pub(crate) fn classify_cli_mutation_rejection_reason(
 ) -> CliMutationRejectionReason {
     use CliMutationRejectionReason::*;
     match error {
-        WorkflowEngineError::ExecutionNotFound(_) => RunNotFound,
+        WorkflowEngineError::ExecutionNotFound(_) => ExecutionNotFound,
         WorkflowEngineError::UnauthorizedApprovalTarget(_) => NotWaitingApproval,
         WorkflowEngineError::UnauthorizedWorktree(_) => Other,
         WorkflowEngineError::ValidationError(msg) => {
@@ -216,11 +216,11 @@ pub(crate) fn classify_cli_mutation_rejection_reason(
         }
         WorkflowEngineError::InvalidState(msg) => {
             if msg.contains("is not currently accepting structured output") {
-                StepNotAccepting
+                NodeNotAccepting
             } else if msg.contains("is already terminal")
                 || msg.contains("is not accepting structured output (state:")
             {
-                RunNotActive
+                ExecutionNotActive
             } else {
                 Other
             }
@@ -248,7 +248,7 @@ mod tests {
         for error in validation_errors {
             assert_eq!(
                 error.workflow_failure_kind(),
-                WorkflowStepFailureKind::ValidationFailure,
+                NodeExecutionFailureKind::ValidationFailure,
                 "unexpected failure kind for {error:?}"
             );
         }
@@ -260,7 +260,7 @@ mod tests {
         for error in infrastructure_errors {
             assert_eq!(
                 error.workflow_failure_kind(),
-                WorkflowStepFailureKind::InfrastructureCrash,
+                NodeExecutionFailureKind::InfrastructureCrash,
                 "unexpected failure kind for {error:?}"
             );
         }
@@ -275,7 +275,7 @@ mod tests {
 
         assert_eq!(
             error.workflow_failure_kind(),
-            WorkflowStepFailureKind::StartupTimeout
+            NodeExecutionFailureKind::StartupTimeout
         );
         assert_eq!(error.retry_count(), Some(1));
     }
@@ -307,7 +307,7 @@ mod tests {
         let cases: Vec<(WorkflowEngineError, R)> = vec![
             (
                 WorkflowEngineError::ExecutionNotFound("run".to_string()),
-                R::RunNotFound,
+                R::ExecutionNotFound,
             ),
             (
                 WorkflowEngineError::UnauthorizedApprovalTarget("target".to_string()),
@@ -315,31 +315,31 @@ mod tests {
             ),
             (
                 WorkflowEngineError::ValidationError(
-                    "contract mismatch: step 'r' expects 'a', got 'b'".to_string(),
+                    "contract mismatch: node 'r' expects 'a', got 'b'".to_string(),
                 ),
                 R::ContractMismatch,
             ),
             (
                 WorkflowEngineError::ValidationError(
-                    "step 'r' is not a valid submission target".to_string(),
+                    "node 'r' is not a valid submission target".to_string(),
                 ),
                 R::NodeNotFound,
             ),
             (
                 WorkflowEngineError::InvalidState(
-                    "step 'r' is not currently accepting structured output".to_string(),
+                    "node 'r' is not currently accepting structured output".to_string(),
                 ),
-                R::StepNotAccepting,
+                R::NodeNotAccepting,
             ),
             (
-                WorkflowEngineError::InvalidState("run x is already terminal".to_string()),
-                R::RunNotActive,
+                WorkflowEngineError::InvalidState("execution x is already terminal".to_string()),
+                R::ExecutionNotActive,
             ),
             (
                 WorkflowEngineError::InvalidState(
-                    "run x is not accepting structured output (state: Completed)".to_string(),
+                    "execution x is not accepting structured output (state: Completed)".to_string(),
                 ),
-                R::RunNotActive,
+                R::ExecutionNotActive,
             ),
             (
                 WorkflowEngineError::InvalidState("something else".to_string()),

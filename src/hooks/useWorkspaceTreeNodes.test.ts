@@ -1,7 +1,10 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionStatus } from "@/types/session";
-import type { WorkflowState, WorkflowStatePayload } from "@/types/workflow";
+import type {
+	WorkflowExecution,
+	WorkflowExecutionChangedPayload,
+} from "@/types/workflow";
 import type { WorkspaceTreeNode } from "@/types/workspace-tree";
 import { useWorkspaceTreeNodes } from "./useWorkspaceTreeNodes";
 
@@ -31,7 +34,7 @@ function makeSessionNode(id: string): WorkspaceTreeNode {
 		title: id,
 		state: "active",
 		updatedAt: 1_000,
-		workflowStepSession: false,
+		workflowNodeSession: false,
 		agentState: "running",
 	};
 }
@@ -51,30 +54,25 @@ function makeStatus(overrides: Partial<SessionStatus> = {}): SessionStatus {
 	};
 }
 
-function makeWorkflowState(
-	overrides: Partial<WorkflowState> = {},
-): WorkflowState {
+function makeWorkflowExecution(
+	overrides: Partial<WorkflowExecution> = {},
+): WorkflowExecution {
 	return {
-		executionId: "run-1",
+		id: "execution-1",
 		workflowName: "workflow",
-		state: { type: "running" },
-		currentStepIndex: 0,
-		currentStepName: "step",
-		totalSteps: 1,
-		stepHistory: [],
-		stepExecutionCounts: {},
-		stepOutputs: {},
-		workflowDefinition: {
-			name: "workflow",
-			description: "",
-			builtin: false,
-			nodes: [],
-		},
-		totalTokenUsage: { inputTokens: 0, outputTokens: 0 },
-		stepStates: {},
-		nodeExecutions: [],
+		status: "running",
+		currentNode: "review",
+		worktreePath: "/repo",
+		createdFrom: "desktop_ui",
 		startedAt: 1_000,
 		updatedAt: 1_000,
+		completedAt: null,
+		errorReason: null,
+		totalTokenUsage: { inputTokens: 0, outputTokens: 0 },
+		nodeExecutions: [],
+		artifacts: [],
+		fanouts: [],
+		approvalTarget: null,
 		...overrides,
 	};
 }
@@ -186,7 +184,7 @@ describe("useWorkspaceTreeNodes", () => {
 				if (event === "session-status-changed") {
 					return Promise.resolve(unlistenStatus);
 				}
-				if (event === "workflow-state-changed") {
+				if (event === "workflow-execution-changed") {
 					return Promise.resolve(unlistenWorkflow);
 				}
 				return Promise.resolve(vi.fn());
@@ -237,7 +235,7 @@ describe("useWorkspaceTreeNodes", () => {
 				if (event === "session-status-changed") {
 					return Promise.resolve(unlistenStatus);
 				}
-				if (event === "workflow-state-changed") {
+				if (event === "workflow-execution-changed") {
 					return pendingWorkflow.promise;
 				}
 				return Promise.resolve(vi.fn());
@@ -336,41 +334,41 @@ describe("useWorkspaceTreeNodes", () => {
 		expect(countTreeFetches()).toBe(1);
 	});
 
-	it("does not refresh the tree for known workflow step session status updates", async () => {
+	it("does not refresh the tree for known workflow node session updates", async () => {
 		treeResponses.push([
 			{
 				kind: "workflow",
-				runId: "run-1",
+				executionId: "execution-1",
 				worktreePath: "/repo",
 				workflowName: "workflow",
 				title: "workflow",
 				status: "running",
 				canStop: true,
 				updatedAt: 1_000,
-				steps: [
+				nodeExecutions: [
 					{
-						kind: "step",
-						id: "run-1:review:1",
-						runId: "run-1",
+						kind: "node",
+						nodeExecutionId: "node-review-1",
+						executionId: "execution-1",
 						worktreePath: "/repo",
 						title: "review",
 						nodeName: "review",
 						status: "running",
-						stepType: "session",
+						nodeKind: "session",
 						updatedAt: 1_000,
-						runIndex: 1,
 						attempt: 1,
 						sessions: [
 							{
 								kind: "session",
-								id: "step-session-1",
+								id: "node-session-1",
 								worktreePath: "/repo",
 								title: "review",
 								state: "active",
 								updatedAt: 1_000,
-								workflowStepSession: true,
-								stepName: "review",
-								runIndex: 1,
+								workflowNodeSession: true,
+								nodeExecutionId: "node-review-1",
+								nodeName: "review",
+								attempt: 1,
 							},
 						],
 					},
@@ -389,7 +387,7 @@ describe("useWorkspaceTreeNodes", () => {
 
 		await act(async () => {
 			listeners["session-status-changed"]?.[0]?.({
-				payload: makeStatus({ chat_session_id: "step-session-1" }),
+				payload: makeStatus({ chat_session_id: "node-session-1" }),
 			});
 			await waitForScheduledRefresh();
 		});
@@ -429,14 +427,14 @@ describe("useWorkspaceTreeNodes", () => {
 		treeResponses.push([
 			{
 				kind: "workflow",
-				runId: "run-1",
+				executionId: "execution-1",
 				worktreePath: "/repo",
 				workflowName: "workflow",
 				title: "workflow",
 				status: "running",
 				canStop: true,
 				updatedAt: 1_000,
-				steps: [],
+				nodeExecutions: [],
 			},
 		]);
 
@@ -446,18 +444,18 @@ describe("useWorkspaceTreeNodes", () => {
 			expect(countTreeFetches()).toBe(1);
 		});
 		await waitFor(() => {
-			expect(listeners["workflow-state-changed"]?.length).toBe(1);
+			expect(listeners["workflow-execution-changed"]?.length).toBe(1);
 		});
 
 		treeResponses.push([]);
-		const payload: WorkflowStatePayload = {
+		const payload: WorkflowExecutionChangedPayload = {
 			worktreePath: "/repo",
-			workflowState: makeWorkflowState({
-				state: { type: "completed" },
+			workflowExecution: makeWorkflowExecution({
+				status: "completed",
 			}),
 		};
 		await act(async () => {
-			listeners["workflow-state-changed"]?.[0]?.({ payload });
+			listeners["workflow-execution-changed"]?.[0]?.({ payload });
 			await waitForScheduledRefresh();
 		});
 
@@ -470,14 +468,14 @@ describe("useWorkspaceTreeNodes", () => {
 		treeResponses.push([
 			{
 				kind: "workflow",
-				runId: "run-1",
+				executionId: "execution-1",
 				worktreePath: "/repo",
 				workflowName: "workflow",
 				title: "workflow",
 				status: "running",
 				canStop: true,
 				updatedAt: 1_000,
-				steps: [],
+				nodeExecutions: [],
 			},
 		]);
 
@@ -487,30 +485,30 @@ describe("useWorkspaceTreeNodes", () => {
 			expect(countTreeFetches()).toBe(1);
 		});
 		await waitFor(() => {
-			expect(listeners["workflow-state-changed"]?.length).toBe(1);
+			expect(listeners["workflow-execution-changed"]?.length).toBe(1);
 		});
 
 		treeResponses.push([
 			{
 				kind: "workflow",
-				runId: "run-1",
+				executionId: "execution-1",
 				worktreePath: "/repo",
 				workflowName: "workflow",
 				title: "workflow",
 				status: "waiting",
 				canStop: true,
 				updatedAt: 2_000,
-				steps: [],
+				nodeExecutions: [],
 			},
 		]);
-		const payload: WorkflowStatePayload = {
+		const payload: WorkflowExecutionChangedPayload = {
 			worktreePath: "/repo",
-			workflowState: makeWorkflowState({
-				state: { type: "waiting_approval" },
+			workflowExecution: makeWorkflowExecution({
+				status: "waiting_approval",
 			}),
 		};
 		await act(async () => {
-			listeners["workflow-state-changed"]?.[0]?.({ payload });
+			listeners["workflow-execution-changed"]?.[0]?.({ payload });
 			await waitForScheduledRefresh();
 		});
 

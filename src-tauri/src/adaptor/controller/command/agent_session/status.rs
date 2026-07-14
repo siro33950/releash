@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tauri::State;
 
 use crate::usecase::agent_session::status::{
-    AgentStatusCenter, SessionStatus, WorkspaceStatus, WorktreeStepStatusView,
+    AgentStatusCenter, SessionStatus, WorkspaceStatus, WorktreeNodeStatusView,
 };
 
 #[tauri::command]
@@ -33,20 +33,20 @@ pub fn list_session_statuses(center: State<'_, Arc<AgentStatusCenter>>) -> Vec<S
 }
 
 #[tauri::command]
-pub fn query_worktree_step_statuses(
+pub fn query_worktree_node_statuses(
     worktree_path: String,
     center: State<'_, Arc<AgentStatusCenter>>,
-) -> WorktreeStepStatusView {
-    center.query_worktree_step_statuses(&worktree_path)
+) -> WorktreeNodeStatusView {
+    center.query_worktree_node_statuses(&worktree_path)
 }
 
 #[tauri::command]
-pub fn sync_worktree_step_statuses(
+pub fn sync_worktree_node_statuses(
     worktree_path: String,
     app: tauri::AppHandle,
     center: State<'_, Arc<AgentStatusCenter>>,
 ) {
-    crate::adaptor::presenter::agent_status::emit_worktree_step_status_snapshot(
+    crate::adaptor::presenter::agent_status::emit_worktree_node_status_snapshot(
         &app,
         center.inner().as_ref(),
         &worktree_path,

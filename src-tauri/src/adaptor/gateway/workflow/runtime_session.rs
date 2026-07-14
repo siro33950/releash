@@ -15,7 +15,7 @@ use crate::adaptor::gateway::workflow::parallel_runtime::{
 };
 use crate::adaptor::gateway::workflow::prompt_rendering as workflow_prompt;
 use crate::adaptor::gateway::workflow::runtime_state::{SessionWorkflowRef, WorkflowExecution};
-use crate::adaptor::gateway::workflow::state::{WorkflowExecutionState, WorkflowState};
+use crate::adaptor::gateway::workflow::state::{RuntimeExecutionState, WorkflowState};
 use crate::adaptor::gateway::workflow::step_settings::{
     resolve_step_settings, ResolvedStepSettings, WorkflowDefaults,
 };
@@ -24,7 +24,7 @@ use crate::domain::workflow::services::history::{
     self as workflow_history, RuntimeStartFailureKind,
 };
 use crate::domain::workflow::{
-    NodeKindName, RetryPolicy, TimeoutContext, WorkflowStepContext, WorkflowStepFailureKind,
+    NodeExecutionFailureKind, NodeKindName, RetryPolicy, TimeoutContext, WorkflowNodeContext,
 };
 use crate::usecase::agent_session::backend_registry::AgentBackendRegistry;
 use crate::usecase::agent_session::context::BranchDiffContextPort;
@@ -61,33 +61,33 @@ fn runtime_start_failure_reason(
 pub(crate) fn runtime_start_failed_state(
     failure: RuntimeStartFailureKind,
     error: &WorkflowEngineError,
-) -> WorkflowExecutionState {
-    WorkflowExecutionState::Failed {
+) -> RuntimeExecutionState {
+    RuntimeExecutionState::Failed {
         reason: runtime_start_failure_reason(failure, error),
         kind: error.workflow_failure_kind(),
         retry_count: error.retry_count(),
     }
 }
 
-pub(crate) async fn record_step_session_start_failed_by_run_id(
+pub(crate) async fn record_node_session_start_failed_by_execution_id(
     executions: &Mutex<HashMap<String, WorkflowExecution>>,
-    run_id: &str,
+    execution_id: &str,
     error: &WorkflowEngineError,
 ) {
     let mut execs = executions.lock().await;
-    if let Some(exec) = execs.get_mut(run_id) {
-        exec.record_step_session_start_failed(error.to_string());
+    if let Some(exec) = execs.get_mut(execution_id) {
+        exec.record_node_session_start_failed(error.to_string());
     }
 }
 
-pub(crate) async fn record_step_session_start_failed_by_worktree(
+pub(crate) async fn record_node_session_start_failed_by_worktree(
     executions: &Mutex<HashMap<String, WorkflowExecution>>,
     worktree_path: &str,
     error: &WorkflowEngineError,
 ) {
     let mut execs = executions.lock().await;
     if let Some(exec) = find_by_worktree_mut(&mut execs, worktree_path) {
-        exec.record_step_session_start_failed(error.to_string());
+        exec.record_node_session_start_failed(error.to_string());
     }
 }
 
@@ -96,9 +96,9 @@ pub(crate) async fn record_post_commit_runtime_start_failure(
     worktree_path: &str,
     failure: RuntimeStartFailureKind,
     error: &WorkflowEngineError,
-) -> WorkflowExecutionState {
+) -> RuntimeExecutionState {
     if matches!(failure, RuntimeStartFailureKind::StepSession) {
-        record_step_session_start_failed_by_worktree(executions, worktree_path, error).await;
+        record_node_session_start_failed_by_worktree(executions, worktree_path, error).await;
     }
     runtime_start_failed_state(failure, error)
 }
@@ -210,11 +210,11 @@ fn create_step_session_from_resolved_settings(
     data_dir: &Path,
     worktree_path: &str,
     settings: StepSessionCreationSettings,
-    workflow_step_context: WorkflowStepContext,
+    workflow_node_context: WorkflowNodeContext,
     kind_context: StepRuntimeKindContext,
 ) -> Result<ChatSession, WorkflowEngineError> {
-    let workflow_step_context =
-        workflow_step_context_with_runtime_timeouts(&settings, workflow_step_context, kind_context);
+    let workflow_node_context =
+        workflow_node_context_with_runtime_timeouts(&settings, workflow_node_context, kind_context);
     crate::usecase::agent_session::session::create_session_internal_with_attributes(
         session_store,
         data_dir,
@@ -223,33 +223,33 @@ fn create_step_session_from_resolved_settings(
         settings.permission_mode,
         crate::usecase::agent_session::session::SessionCreationAttributes {
             selected_model: settings.selected_model,
-            workflow_step_session: true,
-            workflow_step_context: Some(workflow_step_context),
+            workflow_node_session: true,
+            workflow_node_context: Some(workflow_node_context),
             ..Default::default()
         },
     )
-    .map_err(|e| WorkflowEngineError::SessionStore(format!("create step session: {e}")))
+    .map_err(|e| WorkflowEngineError::SessionStore(format!("create node session: {e}")))
 }
 
-fn workflow_step_context_with_runtime_timeouts(
+fn workflow_node_context_with_runtime_timeouts(
     settings: &StepSessionCreationSettings,
-    mut workflow_step_context: WorkflowStepContext,
+    mut workflow_node_context: WorkflowNodeContext,
     kind_context: StepRuntimeKindContext,
-) -> WorkflowStepContext {
+) -> WorkflowNodeContext {
     let timeout_context = TimeoutContext::new(
         settings.selected_model.clone(),
         kind_context.node_kind,
-        Some(workflow_step_context.workflow_name.clone()),
+        Some(workflow_node_context.workflow_name.clone()),
     )
     .with_approval_gate(kind_context.approval_gate);
     let policy = workflow_runtime_timeout_policy();
-    workflow_step_context.startup_timeout_secs =
+    workflow_node_context.startup_timeout_secs =
         Some(policy.startup_timeout(&timeout_context).as_secs());
-    workflow_step_context.startup_max_retries =
-        Some(RetryPolicy::default().max_retries(WorkflowStepFailureKind::StartupTimeout));
-    workflow_step_context.stale_timeout_secs =
+    workflow_node_context.startup_max_retries =
+        Some(RetryPolicy::default().max_retries(NodeExecutionFailureKind::StartupTimeout));
+    workflow_node_context.stale_timeout_secs =
         Some(policy.stale_timeout(&timeout_context).as_secs());
-    workflow_step_context
+    workflow_node_context
 }
 
 /// ステップ設定の解決 → セッション生成 → 解決済み設定の反映 → 保存を一括で行う。
@@ -262,7 +262,7 @@ pub(crate) fn create_step_session_with_settings(
     step_model: Option<String>,
     step_permission: Option<String>,
     workflow_defaults: &WorkflowDefaults,
-    workflow_step_context: WorkflowStepContext,
+    workflow_node_context: WorkflowNodeContext,
     kind_context: StepRuntimeKindContext,
 ) -> Result<ChatSession, WorkflowEngineError> {
     let settings = resolve_step_session_creation_settings(
@@ -276,7 +276,7 @@ pub(crate) fn create_step_session_with_settings(
         data_dir,
         worktree_path,
         settings,
-        workflow_step_context,
+        workflow_node_context,
         kind_context,
     )
 }
@@ -288,7 +288,7 @@ pub(crate) async fn broadcast_state<R: tauri::Runtime>(
     worktree_path: &str,
     workflow_state: WorkflowState,
 ) {
-    crate::adaptor::gateway::workflow::emit_workflow_state_snapshot(
+    crate::adaptor::gateway::workflow::emit_workflow_execution_from_snapshot(
         app,
         worktree_path,
         crate::adaptor::gateway::workflow::state::workflow_state_to_domain_snapshot(workflow_state),
@@ -298,17 +298,13 @@ pub(crate) async fn broadcast_state<R: tauri::Runtime>(
 
 pub(crate) async fn emit_workflow_runtime_projection<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-    runtime: &Arc<AgentSessionRuntimeUsecase>,
-    open_tabs: &OpenTabRegistry,
     worktree_path: &str,
     workflow_state: WorkflowState,
 ) {
-    crate::adaptor::gateway::workflow::emit_workflow_state_from_snapshot(
+    crate::adaptor::gateway::workflow::emit_workflow_execution_from_snapshot(
         app,
         worktree_path,
         crate::adaptor::gateway::workflow::state::workflow_state_to_domain_snapshot(workflow_state),
-        runtime.as_ref(),
-        open_tabs,
     )
     .await;
 }
@@ -372,7 +368,7 @@ pub(crate) async fn prepare_fanout_child_session_setups<R: tauri::Runtime>(
             &data_dir,
             worktree_path,
             creation_plan.settings,
-            creation_plan.workflow_step_context,
+            creation_plan.workflow_node_context,
             creation_plan.kind_context,
         ) {
             Ok(session) => session,
@@ -395,7 +391,7 @@ pub(crate) async fn prepare_fanout_child_session_setups<R: tauri::Runtime>(
             map.insert(
                 step_session_id.clone(),
                 SessionWorkflowRef {
-                    run_id: fanout_start.execution_id.clone(),
+                    execution_id: fanout_start.execution_id.clone(),
                 },
             );
         }
@@ -403,7 +399,7 @@ pub(crate) async fn prepare_fanout_child_session_setups<R: tauri::Runtime>(
 
         child_setups.push(FanoutChildSessionSetup {
             node_execution_id: child.node_execution_id.clone(),
-            step_name: child.node.name.clone(),
+            node_name: child.node.name.clone(),
             session_id: step_session_id,
             system_prompt: creation_plan.system_prompt,
             workflow_instruction: creation_plan.workflow_instruction,
@@ -417,7 +413,7 @@ pub(crate) async fn prepare_fanout_child_session_setups<R: tauri::Runtime>(
 
 struct FanoutChildPromptPlan {
     expansion_index: usize,
-    run_index: u32,
+    attempt: u32,
     system_prompt: Option<String>,
     user_message: String,
     workflow_instruction: Option<String>,
@@ -429,7 +425,7 @@ struct FanoutChildCreationPlan {
     user_message: String,
     workflow_instruction: Option<String>,
     settings: StepSessionCreationSettings,
-    workflow_step_context: WorkflowStepContext,
+    workflow_node_context: WorkflowNodeContext,
     kind_context: StepRuntimeKindContext,
 }
 
@@ -448,21 +444,21 @@ fn prepare_fanout_child_prompt_plans(
                 &child.node,
                 facet_contents.for_node(&child.node.name),
                 &fanout_start.execution_id,
-                fanout_start.task.as_deref(),
-                &prompt_inputs.step_outputs,
+                fanout_start.request.as_deref(),
+                &prompt_inputs.artifacts,
                 child.item.as_ref(),
                 &child.node_execution_id,
             )?;
             Ok(FanoutChildPromptPlan {
                 expansion_index,
-                run_index: child.attempt,
+                attempt: child.attempt,
                 system_prompt,
                 user_message,
                 workflow_instruction: workflow_prompt::render_fanout_child_workflow_instruction(
                     &child.node,
                     facet_contents.for_node(&child.node.name),
-                    fanout_start.task.as_deref(),
-                    &prompt_inputs.step_outputs,
+                    fanout_start.request.as_deref(),
+                    &prompt_inputs.artifacts,
                     child.item.as_ref(),
                 ),
             })
@@ -495,14 +491,14 @@ fn prepare_fanout_child_creation_plans(
             system_prompt: prompt_plan.system_prompt,
             user_message: prompt_plan.user_message,
             settings,
-            workflow_step_context: WorkflowStepContext {
-                run_id: fanout_start.execution_id.clone(),
+            workflow_node_context: WorkflowNodeContext {
+                execution_id: fanout_start.execution_id.clone(),
                 node_execution_id: child.node_execution_id.clone(),
                 workflow_name: fanout_start.workflow_name.clone(),
-                step_name: child.node.name.clone(),
-                run_index: prompt_plan.run_index,
-                parent_step_name: Some(fanout_start.parent_step_name.clone()),
-                parent_run_index: Some(fanout_start.parent_run_index),
+                node_name: child.node.name.clone(),
+                attempt: prompt_plan.attempt,
+                parent_node_name: Some(fanout_start.parent_node_name.clone()),
+                parent_attempt: Some(fanout_start.parent_attempt),
                 order: fanout_start.order,
                 startup_timeout_secs: None,
                 startup_max_retries: None,
@@ -614,7 +610,6 @@ where
 
 pub(crate) struct FanoutChildStartedRuntime<'a> {
     pub(crate) node_execution_id: &'a str,
-    pub(crate) step_name: &'a str,
     pub(crate) session_id: &'a str,
 }
 
@@ -645,7 +640,7 @@ where
         runtime_guards.push(runtime_guard);
         open_tabs.add(&setup.session_id);
         if let Some(state) = workflow_state_for_projection.clone() {
-            emit_workflow_runtime_projection(app, runtime, open_tabs, worktree_path, state).await;
+            emit_workflow_runtime_projection(app, worktree_path, state).await;
         }
         created_session_ids.push(setup.session_id.clone());
     }
@@ -670,7 +665,7 @@ where
             return Err(WorkflowEngineError::with_agent_runtime_context(
                 format!(
                     "Failed to start turn for fanout child '{}'",
-                    setup.step_name
+                    setup.node_name
                 ),
                 e,
             ));
@@ -679,7 +674,6 @@ where
 
         observer.child_turn_started(FanoutChildStartedRuntime {
             node_execution_id: &setup.node_execution_id,
-            step_name: &setup.step_name,
             session_id: &setup.session_id,
         });
     }
@@ -693,14 +687,14 @@ mod tests {
     use crate::adaptor::gateway::workflow::schema::{
         FanoutSpec, NodeDefinition, NodeKind, Workflow,
     };
-    use crate::adaptor::gateway::workflow::state::{StepOutput, TokenUsage};
+    use crate::adaptor::gateway::workflow::state::{RuntimeArtifact, TokenUsage};
     use crate::domain::agent_session::gateway::{
         AgentBackend, AgentBackendError, AgentSessionRuntime, ForkSessionRequest, SessionSpec,
     };
     use crate::domain::agent_session::value_objects::{
         BackendCapabilities, ModelDescriptor, ModelId, SkillEntry,
     };
-    use crate::domain::workflow::{NodeKindName, WorkflowStepFailureKind};
+    use crate::domain::workflow::{NodeExecutionFailureKind, NodeKindName};
     use crate::usecase::agent_session::runtime::usecase::AgentRuntimeError;
     use async_trait::async_trait;
 
@@ -792,15 +786,15 @@ mod tests {
         registry
     }
 
-    fn workflow_context_for_test() -> WorkflowStepContext {
-        WorkflowStepContext {
-            run_id: "run-1".to_string(),
+    fn workflow_context_for_test() -> WorkflowNodeContext {
+        WorkflowNodeContext {
+            execution_id: "run-1".to_string(),
             node_execution_id: "node-execution-1".to_string(),
             workflow_name: "workflow".to_string(),
-            step_name: "step".to_string(),
-            run_index: 0,
-            parent_step_name: None,
-            parent_run_index: None,
+            node_name: "step".to_string(),
+            attempt: 0,
+            parent_node_name: None,
+            parent_attempt: None,
             order: 1,
             startup_timeout_secs: None,
             startup_max_retries: None,
@@ -808,36 +802,38 @@ mod tests {
         }
     }
 
-    fn workflow_execution_fixture(run_id: &str, worktree_path: &str) -> WorkflowExecution {
-        let step_name = "plan".to_string();
+    fn workflow_execution_fixture(execution_id: &str, worktree_path: &str) -> WorkflowExecution {
+        let node_name = "plan".to_string();
         WorkflowExecution {
-            id: run_id.to_string(),
+            id: execution_id.to_string(),
             workflow: Workflow {
                 name: "test-workflow".to_string(),
                 description: String::new(),
                 builtin: false,
                 schemas: Default::default(),
                 nodes: vec![NodeDefinition {
-                    name: step_name.clone(),
+                    name: node_name.clone(),
                     ..Default::default()
                 }],
             },
-            state: WorkflowExecutionState::Running,
-            current_step_index: 0,
-            step_execution_counts: HashMap::from([(step_name, 1)]),
-            step_history: Vec::new(),
+            state: RuntimeExecutionState::Running,
+            current_node_index: 0,
+            node_execution_counts: HashMap::from([(node_name, 1)]),
+            node_history: Vec::new(),
             workflow_defaults: WorkflowDefaults {
                 backend_id: None,
                 permission_mode: "edit".to_string(),
             },
             worktree_path: worktree_path.to_string(),
+            created_from: crate::domain::workflow::ExecutionOrigin::Cli,
+            error_reason: None,
             started_at: 1.0,
             updated_at: 1.0,
             current_session_id: Some("session-1".to_string()),
             current_step_token_usage: TokenUsage::default(),
-            step_outputs: HashMap::new(),
+            artifacts: HashMap::new(),
             node_executions: Vec::new(),
-            task: None,
+            request: None,
             parallel_run: None,
             current_stall_observations: Vec::new(),
         }
@@ -920,7 +916,7 @@ mod tests {
 
         assert_eq!(
             runtime_start_failure_reason(RuntimeStartFailureKind::StepSession, &error),
-            "Failed to start step session: backend unavailable"
+            "Failed to start node session: backend unavailable"
         );
         assert_eq!(
             runtime_start_failure_reason(RuntimeStartFailureKind::ParallelChildren, &error),
@@ -928,8 +924,8 @@ mod tests {
         );
         assert!(matches!(
             runtime_start_failed_state(RuntimeStartFailureKind::StepSession, &error),
-            WorkflowExecutionState::Failed { reason, .. }
-                if reason == "Failed to start step session: backend unavailable"
+            RuntimeExecutionState::Failed { reason, .. }
+                if reason == "Failed to start node session: backend unavailable"
         ));
     }
 
@@ -944,9 +940,9 @@ mod tests {
 
         assert!(matches!(
             state,
-            WorkflowExecutionState::Failed {
+            RuntimeExecutionState::Failed {
                 reason,
-                kind: WorkflowStepFailureKind::StartupTimeout,
+                kind: NodeExecutionFailureKind::StartupTimeout,
                 retry_count: Some(2),
             } if reason.contains("Timed out waiting for agent session startup")
         ));
@@ -960,36 +956,36 @@ mod tests {
 
         assert!(matches!(
             state,
-            WorkflowExecutionState::Failed {
+            RuntimeExecutionState::Failed {
                 reason,
-                kind: WorkflowStepFailureKind::ValidationFailure,
+                kind: NodeExecutionFailureKind::ValidationFailure,
                 retry_count: None,
-            } if reason == "Failed to start step session: missing facet: review"
+            } if reason == "Failed to start node session: missing facet: review"
         ));
     }
 
     #[test]
-    fn workflow_step_context_with_runtime_timeouts_injects_gateway_policy_values() {
+    fn workflow_node_context_with_runtime_timeouts_injects_gateway_policy_values() {
         let settings = StepSessionCreationSettings {
             backend_id: Some("codex".to_string()),
             selected_model: Some("gpt-5.5".to_string()),
             permission_mode: PermissionMode::Edit,
         };
-        let context = WorkflowStepContext {
-            run_id: "run-1".to_string(),
+        let context = WorkflowNodeContext {
+            execution_id: "run-1".to_string(),
             node_execution_id: "node-execution-1".to_string(),
             workflow_name: "05_review-fix_gpt55".to_string(),
-            step_name: "review".to_string(),
-            run_index: 1,
-            parent_step_name: None,
-            parent_run_index: None,
+            node_name: "review".to_string(),
+            attempt: 1,
+            parent_node_name: None,
+            parent_attempt: None,
             order: 0,
             startup_timeout_secs: None,
             startup_max_retries: None,
             stale_timeout_secs: None,
         };
 
-        let context = workflow_step_context_with_runtime_timeouts(
+        let context = workflow_node_context_with_runtime_timeouts(
             &settings,
             context,
             StepRuntimeKindContext::session(),
@@ -1001,27 +997,27 @@ mod tests {
     }
 
     #[test]
-    fn workflow_step_context_with_runtime_timeouts_injects_template_only_policy_values() {
+    fn workflow_node_context_with_runtime_timeouts_injects_template_only_policy_values() {
         let settings = StepSessionCreationSettings {
             backend_id: Some("codex".to_string()),
             selected_model: Some("unknown-fast".to_string()),
             permission_mode: PermissionMode::Edit,
         };
-        let context = WorkflowStepContext {
-            run_id: "run-1".to_string(),
+        let context = WorkflowNodeContext {
+            execution_id: "run-1".to_string(),
             node_execution_id: "node-execution-1".to_string(),
             workflow_name: "05_review-fix_gpt55".to_string(),
-            step_name: "review".to_string(),
-            run_index: 1,
-            parent_step_name: None,
-            parent_run_index: None,
+            node_name: "review".to_string(),
+            attempt: 1,
+            parent_node_name: None,
+            parent_attempt: None,
             order: 0,
             startup_timeout_secs: None,
             startup_max_retries: None,
             stale_timeout_secs: None,
         };
 
-        let context = workflow_step_context_with_runtime_timeouts(
+        let context = workflow_node_context_with_runtime_timeouts(
             &settings,
             context,
             StepRuntimeKindContext::session(),
@@ -1033,27 +1029,27 @@ mod tests {
     }
 
     #[test]
-    fn workflow_step_context_with_runtime_timeouts_injects_approval_gate_policy_values() {
+    fn workflow_node_context_with_runtime_timeouts_injects_approval_gate_policy_values() {
         let settings = StepSessionCreationSettings {
             backend_id: Some("codex".to_string()),
             selected_model: Some("unknown-fast".to_string()),
             permission_mode: PermissionMode::Edit,
         };
-        let context = WorkflowStepContext {
-            run_id: "run-1".to_string(),
+        let context = WorkflowNodeContext {
+            execution_id: "run-1".to_string(),
             node_execution_id: "node-execution-1".to_string(),
             workflow_name: "unknown-template".to_string(),
-            step_name: "approval".to_string(),
-            run_index: 1,
-            parent_step_name: None,
-            parent_run_index: None,
+            node_name: "approval".to_string(),
+            attempt: 1,
+            parent_node_name: None,
+            parent_attempt: None,
             order: 0,
             startup_timeout_secs: None,
             startup_max_retries: None,
             stale_timeout_secs: None,
         };
 
-        let context = workflow_step_context_with_runtime_timeouts(
+        let context = workflow_node_context_with_runtime_timeouts(
             &settings,
             context,
             StepRuntimeKindContext::new(NodeKindName::Session, true),
@@ -1065,18 +1061,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn record_step_session_start_failed_by_run_id_appends_history_entry() {
+    async fn record_node_session_start_failed_by_execution_id_appends_history_entry() {
         let executions = Mutex::new(HashMap::from([(
             "run-1".to_string(),
             workflow_execution_fixture("run-1", "/tmp/repo"),
         )]));
         let error = WorkflowEngineError::AgentSession("turn failed".to_string());
 
-        record_step_session_start_failed_by_run_id(&executions, "run-1", &error).await;
+        record_node_session_start_failed_by_execution_id(&executions, "run-1", &error).await;
 
         let execs = executions.lock().await;
         let exec = execs.get("run-1").unwrap();
-        let entry = exec.step_history.last().unwrap();
+        let entry = exec.node_history.last().unwrap();
         assert_eq!(
             entry.result.as_deref(),
             Some("session_start_failed: turn failed")
@@ -1086,20 +1082,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn record_step_session_start_failed_by_worktree_uses_active_execution() {
+    async fn record_node_session_start_failed_by_worktree_uses_active_execution() {
         let executions = Mutex::new(HashMap::from([(
             "run-1".to_string(),
             workflow_execution_fixture("run-1", "/tmp/repo"),
         )]));
         let error = WorkflowEngineError::AgentSession("session failed".to_string());
 
-        record_step_session_start_failed_by_worktree(&executions, "/tmp/repo", &error).await;
+        record_node_session_start_failed_by_worktree(&executions, "/tmp/repo", &error).await;
 
         let execs = executions.lock().await;
         let exec = execs.get("run-1").unwrap();
-        assert_eq!(exec.step_history.len(), 1);
+        assert_eq!(exec.node_history.len(), 1);
         assert_eq!(
-            exec.step_history[0].result.as_deref(),
+            exec.node_history[0].result.as_deref(),
             Some("session_start_failed: session failed")
         );
     }
@@ -1122,13 +1118,13 @@ mod tests {
 
         assert!(matches!(
             state,
-            WorkflowExecutionState::Failed { reason, .. }
-                if reason == "Failed to start step session: start failed"
+            RuntimeExecutionState::Failed { reason, .. }
+                if reason == "Failed to start node session: start failed"
         ));
         let execs = executions.lock().await;
-        assert_eq!(execs["run-1"].step_history.len(), 1);
+        assert_eq!(execs["run-1"].node_history.len(), 1);
         assert_eq!(
-            execs["run-1"].step_history[0].result.as_deref(),
+            execs["run-1"].node_history[0].result.as_deref(),
             Some("session_start_failed: start failed")
         );
     }
@@ -1151,11 +1147,11 @@ mod tests {
 
         assert!(matches!(
             state,
-            WorkflowExecutionState::Failed { reason, .. }
+            RuntimeExecutionState::Failed { reason, .. }
                 if reason == "Failed to start parallel children: parallel failed"
         ));
         let execs = executions.lock().await;
-        assert!(execs["run-1"].step_history.is_empty());
+        assert!(execs["run-1"].node_history.is_empty());
     }
 
     #[tokio::test]
@@ -1173,15 +1169,15 @@ mod tests {
             name: "review-a".to_string(),
             ..Default::default()
         });
-        exec.step_outputs.insert(
+        exec.artifacts.insert(
             "plan".to_string(),
-            StepOutput {
-                step_name: "plan".to_string(),
-                run_index: 1,
+            RuntimeArtifact {
+                node_name: "plan".to_string(),
+                attempt: 1,
                 session_id: Some("plan-session".to_string()),
                 result: Some("DONE".to_string()),
-                structured_output: Some(serde_json::json!({ "status": "ok" })),
-                artifact_contract: None,
+                artifact: Some(serde_json::json!({ "status": "ok" })),
+                contract: None,
                 token_usage: None,
                 completed_at: 2.0,
             },
@@ -1192,13 +1188,13 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(inputs.fanout_start.parent_step_name, "fanout-review");
+        assert_eq!(inputs.fanout_start.parent_node_name, "fanout-review");
         assert_eq!(
-            inputs.fanout_start.child_step_names(),
+            inputs.fanout_start.child_node_names(),
             vec!["review-a".to_string()]
         );
         assert_eq!(
-            inputs.prompt_inputs.step_outputs["plan"].structured_output,
+            inputs.prompt_inputs.artifacts["plan"].artifact,
             Some(serde_json::json!({ "status": "ok" }))
         );
     }

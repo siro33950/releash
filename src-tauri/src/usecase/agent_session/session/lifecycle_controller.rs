@@ -64,7 +64,7 @@ impl<'a> SessionLifecycleController<'a> {
         self.session_store
             .set_session_state(self.data_dir, &session.id, SessionState::Idle)?;
         Ok(RestoreSessionResponse {
-            restored_workflow_step: false,
+            restored_workflow_node: false,
         })
     }
 
@@ -142,7 +142,7 @@ mod tests {
             Some("claude".to_string()),
         )
         .unwrap();
-        session.workflow_step_session = true;
+        session.workflow_node_session = true;
         session.state = SessionState::Closed;
         store
             .save_full_session_for_migration_or_restore(temp.path(), &session)

@@ -8,19 +8,19 @@ use std::sync::Arc;
 use serde_json::{Map, Value};
 
 use crate::domain::workflow::{
-    FacetKind, FacetRepository, FacetSummary, RunId, RunListFilter, WorkflowDefinition,
-    WorkflowDefinitionRepository, WorkflowError, WorkflowName, WorkflowRunRepository,
-    WorkflowRunSummary, WorkflowStateSnapshot, WorkflowSummary,
+    ExecutionListFilter, FacetKind, FacetRepository, FacetSummary, NodeExecution,
+    WorkflowDefinition, WorkflowDefinitionRepository, WorkflowError, WorkflowExecution,
+    WorkflowExecutionId, WorkflowExecutionRepository, WorkflowExecutionSummary, WorkflowName,
+    WorkflowSummary,
 };
 
 use super::event_draft;
 use super::ports::{
     WorkflowDefinitionSourceGateway, WorkflowEventDraft, WorkflowEventRepository,
-    WorkflowStateProjectionRepository, WorkflowStepDetailProjectionRepository,
+    WorkflowExecutionProjectionRepository,
 };
 
 pub type WorkflowEventView = Value;
-pub type WorkflowStepDetailView = Value;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum WorkflowGetOutputResult {
@@ -36,51 +36,54 @@ pub enum WorkflowGetOutputResult {
 
 #[derive(Clone)]
 pub struct WorkflowQueryService {
-    runs: Arc<dyn WorkflowRunRepository>,
+    executions: Arc<dyn WorkflowExecutionRepository>,
     definitions: Arc<dyn WorkflowDefinitionRepository>,
     definition_sources: Arc<dyn WorkflowDefinitionSourceGateway>,
     facets: Arc<dyn FacetRepository>,
     events: Arc<dyn WorkflowEventRepository>,
-    state_projection: Arc<dyn WorkflowStateProjectionRepository>,
-    step_details: Arc<dyn WorkflowStepDetailProjectionRepository>,
+    execution_projection: Arc<dyn WorkflowExecutionProjectionRepository>,
 }
 
 impl WorkflowQueryService {
     pub fn new(
-        runs: Arc<dyn WorkflowRunRepository>,
+        executions: Arc<dyn WorkflowExecutionRepository>,
         definitions: Arc<dyn WorkflowDefinitionRepository>,
         definition_sources: Arc<dyn WorkflowDefinitionSourceGateway>,
         facets: Arc<dyn FacetRepository>,
         events: Arc<dyn WorkflowEventRepository>,
-        state_projection: Arc<dyn WorkflowStateProjectionRepository>,
-        step_details: Arc<dyn WorkflowStepDetailProjectionRepository>,
+        execution_projection: Arc<dyn WorkflowExecutionProjectionRepository>,
     ) -> Self {
         Self {
-            runs,
+            executions,
             definitions,
             definition_sources,
             facets,
             events,
-            state_projection,
-            step_details,
+            execution_projection,
         }
     }
 
-    pub fn list_runs(
+    pub fn list_executions(
         &self,
-        filter: RunListFilter,
-    ) -> Result<Vec<WorkflowRunSummary>, WorkflowError> {
-        self.runs.list_runs(filter)
+        filter: ExecutionListFilter,
+    ) -> Result<Vec<WorkflowExecutionSummary>, WorkflowError> {
+        self.executions.list_executions(filter)
     }
 
-    pub fn get_run(&self, run_id: &str) -> Result<Option<WorkflowRunSummary>, WorkflowError> {
-        let run_id = RunId::new(run_id.to_string())?;
-        self.runs.get_run(&run_id)
+    pub fn get_execution(
+        &self,
+        execution_id: &str,
+    ) -> Result<Option<WorkflowExecutionSummary>, WorkflowError> {
+        let execution_id = WorkflowExecutionId::new(execution_id.to_string())?;
+        self.executions.get_execution(&execution_id)
     }
 
-    pub fn resolve_worktree_by_run(&self, run_id: &str) -> Result<Option<String>, WorkflowError> {
-        let run_id = RunId::new(run_id.to_string())?;
-        self.runs.resolve_worktree_by_run(&run_id)
+    pub fn resolve_worktree_by_execution(
+        &self,
+        execution_id: &str,
+    ) -> Result<Option<String>, WorkflowError> {
+        let execution_id = WorkflowExecutionId::new(execution_id.to_string())?;
+        self.executions.resolve_worktree_by_execution(&execution_id)
     }
 
     pub fn list_workflows(
@@ -105,15 +108,18 @@ impl WorkflowQueryService {
 
     pub(in crate::usecase::workflow) fn read_events(
         &self,
-        run_id: &str,
+        execution_id: &str,
     ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
-        let run_id = RunId::new(run_id.to_string())?;
-        self.events.read(&run_id)
+        let execution_id = WorkflowExecutionId::new(execution_id.to_string())?;
+        self.events.read(&execution_id)
     }
 
-    pub fn get_run_log(&self, run_id: &str) -> Result<Vec<WorkflowEventView>, WorkflowError> {
+    pub fn get_execution_log(
+        &self,
+        execution_id: &str,
+    ) -> Result<Vec<WorkflowEventView>, WorkflowError> {
         Ok(self
-            .read_events(run_id)?
+            .read_events(execution_id)?
             .into_iter()
             .map(event_draft_to_log_view)
             .collect())
@@ -121,31 +127,35 @@ impl WorkflowQueryService {
 
     pub fn get_output(
         &self,
-        run_id: &str,
-        step_name: &str,
+        execution_id: &str,
+        node_name: &str,
     ) -> Result<WorkflowGetOutputResult, WorkflowError> {
-        let events = self.read_events(run_id)?;
-        Ok(latest_artifact_produced_from_drafts(&events, step_name)
+        let events = self.read_events(execution_id)?;
+        Ok(latest_artifact_produced_from_drafts(&events, node_name)
             .unwrap_or(WorkflowGetOutputResult::NotSubmitted))
     }
 
-    pub fn get_run_state(
+    pub fn get_execution_state(
         &self,
-        run_id: &str,
-    ) -> Result<Option<WorkflowStateSnapshot>, WorkflowError> {
-        let run_id = RunId::new(run_id.to_string())?;
-        self.state_projection.get_state(&run_id)
+        execution_id: &str,
+    ) -> Result<Option<WorkflowExecution>, WorkflowError> {
+        let execution_id = WorkflowExecutionId::new(execution_id.to_string())?;
+        self.execution_projection.get_execution(&execution_id)
     }
 
-    pub fn get_step_detail(
+    pub fn get_node_detail(
         &self,
-        run_id: &str,
-        node_name: &str,
-        run_index: Option<u32>,
-    ) -> Result<Option<WorkflowStepDetailView>, WorkflowError> {
-        let run_id = RunId::new(run_id.to_string())?;
-        self.step_details
-            .get_step_detail(&run_id, node_name, run_index)
+        execution_id: &str,
+        node_execution_id: &str,
+    ) -> Result<Option<NodeExecution>, WorkflowError> {
+        Ok(self
+            .get_execution_state(execution_id)?
+            .and_then(|execution| {
+                execution
+                    .node_executions
+                    .into_iter()
+                    .find(|node_execution| node_execution.id == node_execution_id)
+            }))
     }
 
     pub fn list_facets(&self, kind: FacetKind) -> Result<Vec<String>, WorkflowError> {
@@ -177,7 +187,10 @@ fn event_draft_to_log_view(event: WorkflowEventDraft) -> WorkflowEventView {
     rename_seconds_field_to_ms(&mut object, "requested_at", "requestedAtMs");
     rename_seconds_field_to_ms(&mut object, "submitted_at", "submittedAtMs");
     object.insert("event".to_string(), Value::String(event.event_kind));
-    object.insert("run_id".to_string(), Value::String(event.run_id));
+    object.insert(
+        "execution_id".to_string(),
+        Value::String(event.execution_id),
+    );
     object.insert(
         "timestampMs".to_string(),
         serde_json::json!(seconds_to_ms(event.timestamp)),
@@ -203,9 +216,9 @@ fn seconds_to_ms(seconds: f64) -> f64 {
 
 fn latest_artifact_produced_from_drafts(
     events: &[WorkflowEventDraft],
-    step_name: &str,
+    node_name: &str,
 ) -> Option<WorkflowGetOutputResult> {
-    event_draft::latest_artifact_produced_from_drafts(events, step_name).map(|snapshot| {
+    event_draft::latest_artifact_produced_from_drafts(events, node_name).map(|snapshot| {
         WorkflowGetOutputResult::Submitted {
             contract: snapshot.contract,
             structured_output: snapshot.value,
@@ -220,78 +233,98 @@ fn latest_artifact_produced_from_drafts(
 mod tests {
     use super::*;
     use crate::domain::workflow::{
-        FacetRefs, NodeDefinition, NodeExecution, NodeExecutionStatus, NodeKind, NodeKindName,
-        RunStatus, RunStatusFilter, SessionGate, SessionSpec, TriggerSource,
-        WorkflowExecutionState, WorkflowRunRecord,
+        ExecutionOrigin, ExecutionStatus, ExecutionStatusFilter, FacetRefs, NodeDefinition,
+        NodeExecution, NodeExecutionStatus, NodeKind, NodeKindName, SessionGate, SessionSpec,
+        TokenUsage, WorkflowExecutionRecord,
     };
     use std::collections::HashMap;
     use std::sync::Mutex;
 
     #[derive(Default)]
-    struct FakeRunRepository {
-        runs: Mutex<HashMap<String, WorkflowRunSummary>>,
+    struct FakeExecutionRepository {
+        executions: Mutex<HashMap<String, WorkflowExecutionSummary>>,
     }
 
-    impl FakeRunRepository {
-        fn seed(&self, run: WorkflowRunSummary) {
-            self.runs.lock().unwrap().insert(run.run_id.clone(), run);
+    impl FakeExecutionRepository {
+        fn seed(&self, execution: WorkflowExecutionSummary) {
+            self.executions
+                .lock()
+                .unwrap()
+                .insert(execution.execution_id.clone(), execution);
         }
     }
 
-    impl crate::domain::workflow::WorkflowRunRepository for FakeRunRepository {
-        fn register_active(&self, _run: WorkflowRunRecord) -> Result<(), WorkflowError> {
-            Ok(())
-        }
-
-        fn complete_run(
+    impl crate::domain::workflow::WorkflowExecutionRepository for FakeExecutionRepository {
+        fn register_active(
             &self,
-            _run_id: &RunId,
-            _completed: WorkflowRunRecord,
+            _execution: WorkflowExecutionRecord,
         ) -> Result<(), WorkflowError> {
             Ok(())
         }
 
-        fn list_runs(
+        fn complete_execution(
             &self,
-            filter: RunListFilter,
-        ) -> Result<Vec<WorkflowRunSummary>, WorkflowError> {
-            let mut runs: Vec<_> = self.runs.lock().unwrap().values().cloned().collect();
+            _execution_id: &WorkflowExecutionId,
+            _completed: WorkflowExecutionRecord,
+        ) -> Result<(), WorkflowError> {
+            Ok(())
+        }
+
+        fn list_executions(
+            &self,
+            filter: ExecutionListFilter,
+        ) -> Result<Vec<WorkflowExecutionSummary>, WorkflowError> {
+            let mut executions: Vec<_> =
+                self.executions.lock().unwrap().values().cloned().collect();
             if let Some(status) = filter.status {
-                runs.retain(|run| match status {
-                    RunStatusFilter::Active => !run.status.is_terminal(),
-                    RunStatusFilter::Terminal => run.status.is_terminal(),
+                executions.retain(|execution| match status {
+                    ExecutionStatusFilter::Active => !execution.status.is_terminal(),
+                    ExecutionStatusFilter::Terminal => execution.status.is_terminal(),
                 });
             }
             if let Some(worktree_path) = filter.worktree_path {
-                runs.retain(|run| run.worktree_path == worktree_path);
+                executions.retain(|execution| execution.worktree_path == worktree_path);
             }
-            Ok(runs)
+            Ok(executions)
         }
 
-        fn get_run(&self, run_id: &RunId) -> Result<Option<WorkflowRunSummary>, WorkflowError> {
-            Ok(self.runs.lock().unwrap().get(run_id.as_str()).cloned())
+        fn get_execution(
+            &self,
+            execution_id: &WorkflowExecutionId,
+        ) -> Result<Option<WorkflowExecutionSummary>, WorkflowError> {
+            Ok(self
+                .executions
+                .lock()
+                .unwrap()
+                .get(execution_id.as_str())
+                .cloned())
         }
 
-        fn resolve_active_run_by_worktree(
+        fn resolve_active_execution_by_worktree(
             &self,
             worktree_path: &str,
-        ) -> Result<Option<RunId>, WorkflowError> {
-            self.runs
+        ) -> Result<Option<WorkflowExecutionId>, WorkflowError> {
+            self.executions
                 .lock()
                 .unwrap()
                 .values()
-                .find(|run| run.worktree_path == worktree_path && !run.status.is_terminal())
-                .map(|run| RunId::new(run.run_id.clone()))
+                .find(|execution| {
+                    execution.worktree_path == worktree_path && !execution.status.is_terminal()
+                })
+                .map(|execution| WorkflowExecutionId::new(execution.execution_id.clone()))
                 .transpose()
         }
 
-        fn resolve_worktree_by_run(&self, run_id: &RunId) -> Result<Option<String>, WorkflowError> {
+        fn resolve_worktree_by_execution(
+            &self,
+            execution_id: &WorkflowExecutionId,
+        ) -> Result<Option<String>, WorkflowError> {
             Ok(self
-                .runs
+                .executions
                 .lock()
                 .unwrap()
-                .get(run_id.as_str())
-                .map(|run| run.worktree_path.clone()))
+                .get(execution_id.as_str())
+                .map(|execution| execution.worktree_path.clone()))
         }
     }
 
@@ -414,88 +447,53 @@ mod tests {
             Ok(())
         }
 
-        fn read(&self, _run_id: &RunId) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
+        fn read(
+            &self,
+            _execution_id: &WorkflowExecutionId,
+        ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
             Ok(self.events.lock().unwrap().clone())
         }
     }
 
     #[derive(Default)]
-    struct FakeStateProjectionRepository {
-        states: Mutex<HashMap<String, WorkflowStateSnapshot>>,
+    struct FakeExecutionProjectionRepository {
+        executions: Mutex<HashMap<String, WorkflowExecution>>,
     }
 
-    impl FakeStateProjectionRepository {
-        fn seed(&self, state: WorkflowStateSnapshot) {
-            self.states
+    impl FakeExecutionProjectionRepository {
+        fn seed(&self, execution: WorkflowExecution) {
+            self.executions
                 .lock()
                 .unwrap()
-                .insert(state.execution_id.clone(), state);
+                .insert(execution.id.clone(), execution);
         }
     }
 
-    impl WorkflowStateProjectionRepository for FakeStateProjectionRepository {
-        fn get_state(
+    impl WorkflowExecutionProjectionRepository for FakeExecutionProjectionRepository {
+        fn get_execution(
             &self,
-            run_id: &RunId,
-        ) -> Result<Option<WorkflowStateSnapshot>, WorkflowError> {
-            Ok(self.states.lock().unwrap().get(run_id.as_str()).cloned())
-        }
-    }
-
-    type StepDetailKey = (String, String, Option<u32>);
-
-    #[derive(Default)]
-    struct FakeStepDetailProjectionRepository {
-        details: Mutex<HashMap<StepDetailKey, serde_json::Value>>,
-    }
-
-    impl FakeStepDetailProjectionRepository {
-        fn seed(
-            &self,
-            run_id: &str,
-            node_name: &str,
-            run_index: Option<u32>,
-            detail: serde_json::Value,
-        ) {
-            self.details.lock().unwrap().insert(
-                (run_id.to_string(), node_name.to_string(), run_index),
-                detail,
-            );
-        }
-    }
-
-    impl WorkflowStepDetailProjectionRepository for FakeStepDetailProjectionRepository {
-        fn get_step_detail(
-            &self,
-            run_id: &RunId,
-            node_name: &str,
-            run_index: Option<u32>,
-        ) -> Result<Option<serde_json::Value>, WorkflowError> {
+            execution_id: &WorkflowExecutionId,
+        ) -> Result<Option<WorkflowExecution>, WorkflowError> {
             Ok(self
-                .details
+                .executions
                 .lock()
                 .unwrap()
-                .get(&(
-                    run_id.as_str().to_string(),
-                    node_name.to_string(),
-                    run_index,
-                ))
+                .get(execution_id.as_str())
                 .cloned())
         }
     }
 
     struct Fixture {
         service: WorkflowQueryService,
-        runs: Arc<FakeRunRepository>,
+        executions: Arc<FakeExecutionRepository>,
         facets: Arc<FakeFacetRepository>,
         events: Arc<FakeEventRepository>,
-        states: Arc<FakeStateProjectionRepository>,
-        step_details: Arc<FakeStepDetailProjectionRepository>,
+        projections: Arc<FakeExecutionProjectionRepository>,
     }
 
     impl Fixture {
         fn new() -> Self {
-            let runs = Arc::new(FakeRunRepository::default());
+            let executions = Arc::new(FakeExecutionRepository::default());
             let definitions = Arc::new(FakeDefinitionRepository {
                 workflow: workflow(),
             });
@@ -504,24 +502,21 @@ mod tests {
             });
             let facets = Arc::new(FakeFacetRepository::default());
             let events = Arc::new(FakeEventRepository::default());
-            let states = Arc::new(FakeStateProjectionRepository::default());
-            let step_details = Arc::new(FakeStepDetailProjectionRepository::default());
+            let projections = Arc::new(FakeExecutionProjectionRepository::default());
             let service = WorkflowQueryService::new(
-                runs.clone(),
+                executions.clone(),
                 definitions,
                 definition_sources,
                 facets.clone(),
                 events.clone(),
-                states.clone(),
-                step_details.clone(),
+                projections.clone(),
             );
             Self {
                 service,
-                runs,
+                executions,
                 facets,
                 events,
-                states,
-                step_details,
+                projections,
             }
         }
     }
@@ -547,45 +542,48 @@ mod tests {
         }
     }
 
-    fn run(run_id: &str, status: RunStatus, worktree_path: &str) -> WorkflowRunSummary {
-        WorkflowRunSummary {
-            run_id: run_id.to_string(),
+    fn execution_summary(
+        execution_id: &str,
+        status: ExecutionStatus,
+        worktree_path: &str,
+    ) -> WorkflowExecutionSummary {
+        WorkflowExecutionSummary {
+            execution_id: execution_id.to_string(),
             workflow_name: "wf".to_string(),
-            task: None,
             status,
             worktree_path: worktree_path.to_string(),
-            current_node_name: Some("review".to_string()),
-            trigger_source: TriggerSource::DesktopUi,
+            current_node: Some("review".to_string()),
+            created_from: ExecutionOrigin::DesktopUi,
             started_at: 1.0,
             updated_at: 1.0,
             completed_at: None,
             error_reason: None,
+            total_token_usage: TokenUsage::default(),
         }
     }
 
-    fn state_snapshot(run_id: &str) -> WorkflowStateSnapshot {
-        WorkflowStateSnapshot {
-            execution_id: run_id.to_string(),
+    fn execution_projection(execution_id: &str) -> WorkflowExecution {
+        WorkflowExecution {
+            id: execution_id.to_string(),
             workflow_name: "wf".to_string(),
-            state: WorkflowExecutionState::Running,
-            current_step_index: 0,
-            current_step_name: "review".to_string(),
-            current_session_id: None,
-            total_steps: 1,
-            step_history: Vec::new(),
-            step_execution_counts: HashMap::new(),
-            workflow_definition: workflow(),
-            total_token_usage: Default::default(),
-            step_states: HashMap::new(),
-            step_outputs: HashMap::new(),
+            status: ExecutionStatus::Running,
+            current_node: Some("review".to_string()),
+            created_from: ExecutionOrigin::DesktopUi,
+            worktree_path: "/repo".to_string(),
+            started_at: 1.0,
+            updated_at: 1.0,
+            completed_at: None,
+            error_reason: None,
+            total_token_usage: TokenUsage::default(),
             node_executions: vec![NodeExecution {
                 id: "ne-review-1".to_string(),
-                execution_id: run_id.to_string(),
+                execution_id: execution_id.to_string(),
                 node_name: "review".to_string(),
                 kind: NodeKindName::Session,
                 attempt: 1,
                 status: NodeExecutionStatus::Running,
                 session_id: None,
+                result_summary: None,
                 artifact: None,
                 token_usage: None,
                 failure: None,
@@ -593,19 +591,18 @@ mod tests {
                 started_at: 1.0,
                 completed_at: None,
             }],
-            approval_operations: None,
-            stall_observations: Vec::new(),
-            started_at: 1.0,
-            updated_at: 1.0,
+            artifacts: Vec::new(),
+            fanouts: Vec::new(),
+            approval_target: None,
         }
     }
 
-    fn test_run_id() -> &'static str {
+    fn test_execution_id() -> &'static str {
         "00000000-0000-4000-8000-000000000101"
     }
 
     fn artifact_produced(
-        run_id: &str,
+        execution_id: &str,
         node_name: &str,
         contract: &str,
         structured_output: serde_json::Value,
@@ -613,11 +610,11 @@ mod tests {
         request_id: &str,
     ) -> WorkflowEventDraft {
         WorkflowEventDraft {
-            run_id: run_id.to_string(),
+            execution_id: execution_id.to_string(),
             event_kind: "artifact_produced".to_string(),
             timestamp,
             payload: serde_json::json!({
-                "workflow_name": "wf",
+                "node_execution_id": format!("{execution_id}:{node_name}:1"),
                 "node_name": node_name,
                 "contract": contract,
                 "value": structured_output,
@@ -628,32 +625,34 @@ mod tests {
     }
 
     #[test]
-    fn list_runs_applies_repository_filters() {
+    fn list_executions_applies_repository_filters() {
         let fixture = Fixture::new();
-        fixture
-            .runs
-            .seed(run(test_run_id(), RunStatus::Running, "/repo/a"));
-        fixture.runs.seed(run(
-            "00000000-0000-4000-8000-000000000102",
-            RunStatus::Completed,
+        fixture.executions.seed(execution_summary(
+            test_execution_id(),
+            ExecutionStatus::Running,
             "/repo/a",
         ));
-        fixture.runs.seed(run(
+        fixture.executions.seed(execution_summary(
+            "00000000-0000-4000-8000-000000000102",
+            ExecutionStatus::Completed,
+            "/repo/a",
+        ));
+        fixture.executions.seed(execution_summary(
             "00000000-0000-4000-8000-000000000103",
-            RunStatus::Running,
+            ExecutionStatus::Running,
             "/repo/b",
         ));
 
-        let runs = fixture
+        let executions = fixture
             .service
-            .list_runs(RunListFilter {
-                status: Some(RunStatusFilter::Active),
+            .list_executions(ExecutionListFilter {
+                status: Some(ExecutionStatusFilter::Active),
                 worktree_path: Some("/repo/a".to_string()),
             })
             .unwrap();
 
-        assert_eq!(runs.len(), 1);
-        assert_eq!(runs[0].run_id, test_run_id());
+        assert_eq!(executions.len(), 1);
+        assert_eq!(executions[0].execution_id, test_execution_id());
     }
 
     #[test]
@@ -669,13 +668,13 @@ mod tests {
     }
 
     #[test]
-    fn event_and_facet_queries_validate_run_ids_and_delegate() {
+    fn event_and_facet_queries_validate_execution_ids_and_delegate() {
         let fixture = Fixture::new();
         fixture
             .events
             .append(&WorkflowEventDraft {
-                run_id: test_run_id().to_string(),
-                event_kind: "run_started".to_string(),
+                execution_id: test_execution_id().to_string(),
+                event_kind: "execution_started".to_string(),
                 timestamp: 1.0,
                 payload: serde_json::json!({}),
             })
@@ -685,7 +684,14 @@ mod tests {
             "instruction body".to_string(),
         );
 
-        assert_eq!(fixture.service.read_events(test_run_id()).unwrap().len(), 1);
+        assert_eq!(
+            fixture
+                .service
+                .read_events(test_execution_id())
+                .unwrap()
+                .len(),
+            1
+        );
         assert!(matches!(
             fixture.service.read_events("not-a-uuid").unwrap_err(),
             WorkflowError::Validation(_)
@@ -708,13 +714,13 @@ mod tests {
     }
 
     #[test]
-    fn get_run_log_projects_event_drafts_to_wire_timestamp_fields() {
+    fn get_execution_log_projects_event_drafts_to_wire_timestamp_fields() {
         let fixture = Fixture::new();
         fixture
             .events
             .append(&WorkflowEventDraft {
-                run_id: test_run_id().to_string(),
-                event_kind: "run_started".to_string(),
+                execution_id: test_execution_id().to_string(),
+                event_kind: "execution_started".to_string(),
                 timestamp: 1.25,
                 payload: serde_json::json!({
                     "workflow_name": "wf",
@@ -724,23 +730,26 @@ mod tests {
             })
             .unwrap();
 
-        let events = fixture.service.get_run_log(test_run_id()).unwrap();
+        let events = fixture
+            .service
+            .get_execution_log(test_execution_id())
+            .unwrap();
 
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0]["event"], "run_started");
-        assert_eq!(events[0]["run_id"], test_run_id());
+        assert_eq!(events[0]["event"], "execution_started");
+        assert_eq!(events[0]["execution_id"], test_execution_id());
         assert_eq!(events[0]["workflow_name"], "wf");
         assert_eq!(events[0]["timestampMs"].as_f64(), Some(1250.0));
         assert!(events[0].get("timestamp").is_none());
     }
 
     #[test]
-    fn get_run_log_renames_caller_timestamps_to_millisecond_fields() {
+    fn get_execution_log_renames_caller_timestamps_to_millisecond_fields() {
         let fixture = Fixture::new();
         fixture
             .events
             .append(&WorkflowEventDraft {
-                run_id: test_run_id().to_string(),
+                execution_id: test_execution_id().to_string(),
                 event_kind: "cli_mutation_requested".to_string(),
                 timestamp: 3.0,
                 payload: serde_json::json!({
@@ -754,11 +763,11 @@ mod tests {
         fixture
             .events
             .append(&WorkflowEventDraft {
-                run_id: test_run_id().to_string(),
+                execution_id: test_execution_id().to_string(),
                 event_kind: "artifact_produced".to_string(),
                 timestamp: 4.0,
                 payload: serde_json::json!({
-                    "workflow_name": "wf",
+                    "node_execution_id": format!("{}:review:1", test_execution_id()),
                     "node_name": "review",
                     "contract": "review-result",
                     "value": {"status": "ok"},
@@ -768,7 +777,10 @@ mod tests {
             })
             .unwrap();
 
-        let events = fixture.service.get_run_log(test_run_id()).unwrap();
+        let events = fixture
+            .service
+            .get_execution_log(test_execution_id())
+            .unwrap();
 
         assert_eq!(events[0]["requestedAtMs"].as_f64(), Some(2000.0));
         assert!(events[0].get("requested_at").is_none());
@@ -779,12 +791,12 @@ mod tests {
     }
 
     #[test]
-    fn get_output_returns_latest_submitted_snapshot_for_step() {
+    fn get_output_returns_latest_submitted_snapshot_for_node() {
         let fixture = Fixture::new();
         fixture
             .events
             .append(&artifact_produced(
-                test_run_id(),
+                test_execution_id(),
                 "review",
                 "review-result",
                 serde_json::json!({"status":"old"}),
@@ -795,7 +807,7 @@ mod tests {
         fixture
             .events
             .append(&artifact_produced(
-                test_run_id(),
+                test_execution_id(),
                 "review",
                 "review-result",
                 serde_json::json!({"status":"new"}),
@@ -804,7 +816,10 @@ mod tests {
             ))
             .unwrap();
 
-        let result = fixture.service.get_output(test_run_id(), "review").unwrap();
+        let result = fixture
+            .service
+            .get_output(test_execution_id(), "review")
+            .unwrap();
 
         assert_eq!(
             result,
@@ -819,23 +834,23 @@ mod tests {
         assert_eq!(
             fixture
                 .service
-                .get_output(test_run_id(), "missing")
+                .get_output(test_execution_id(), "missing")
                 .unwrap(),
             WorkflowGetOutputResult::NotSubmitted
         );
     }
 
     #[test]
-    fn get_output_returns_contractless_standard_artifact_for_step() {
+    fn get_output_returns_contractless_standard_artifact_for_node() {
         let fixture = Fixture::new();
         fixture
             .events
             .append(&WorkflowEventDraft {
-                run_id: test_run_id().to_string(),
+                execution_id: test_execution_id().to_string(),
                 event_kind: "artifact_produced".to_string(),
                 timestamp: 4.0,
                 payload: serde_json::json!({
-                    "workflow_name": "wf",
+                    "node_execution_id": format!("{}:review:1", test_execution_id()),
                     "node_name": "review",
                     "contract": null,
                     "value": {
@@ -849,7 +864,10 @@ mod tests {
             })
             .unwrap();
 
-        let result = fixture.service.get_output(test_run_id(), "review").unwrap();
+        let result = fixture
+            .service
+            .get_output(test_execution_id(), "review")
+            .unwrap();
 
         assert_eq!(
             result,
@@ -870,44 +888,43 @@ mod tests {
     }
 
     #[test]
-    fn get_run_state_delegates_to_state_projection_port() {
+    fn get_execution_state_delegates_to_execution_projection_port() {
         let fixture = Fixture::new();
-        fixture.states.seed(state_snapshot(test_run_id()));
+        fixture
+            .projections
+            .seed(execution_projection(test_execution_id()));
 
         let state = fixture
             .service
-            .get_run_state(test_run_id())
+            .get_execution_state(test_execution_id())
             .unwrap()
             .unwrap();
 
-        assert_eq!(state.execution_id, test_run_id());
+        assert_eq!(state.id, test_execution_id());
         assert_eq!(state.workflow_name, "wf");
         assert_eq!(state.node_executions[0].id, "ne-review-1");
         assert_eq!(state.node_executions[0].node_name, "review");
-        assert!(fixture.service.get_run_state("not-a-uuid").is_err());
+        assert!(fixture.service.get_execution_state("not-a-uuid").is_err());
     }
 
     #[test]
-    fn get_step_detail_delegates_to_step_detail_projection_port() {
+    fn get_node_detail_is_derived_from_the_execution_projection() {
         let fixture = Fixture::new();
-        fixture.step_details.seed(
-            test_run_id(),
-            "review",
-            Some(2),
-            serde_json::json!({"stepName":"review","runIndex":2}),
-        );
+        fixture
+            .projections
+            .seed(execution_projection(test_execution_id()));
 
         let detail = fixture
             .service
-            .get_step_detail(test_run_id(), "review", Some(2))
+            .get_node_detail(test_execution_id(), "ne-review-1")
             .unwrap()
             .unwrap();
 
-        assert_eq!(detail["stepName"], "review");
-        assert_eq!(detail["runIndex"].as_u64(), Some(2));
+        assert_eq!(detail.node_name, "review");
+        assert_eq!(detail.attempt, 1);
         assert!(fixture
             .service
-            .get_step_detail("not-a-uuid", "review", None)
+            .get_node_detail("not-a-uuid", "ne-review-1")
             .is_err());
     }
 }

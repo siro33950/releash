@@ -53,7 +53,7 @@ pub fn mask_json_strings(value: &mut serde_json::Value, configured_secrets: &[St
     }
 }
 
-pub fn mask_sensitive_structured_output(
+pub fn mask_sensitive_artifact(
     contract: &str,
     mut value: serde_json::Value,
     secrets: &[String],

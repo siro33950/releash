@@ -2,13 +2,15 @@ use std::sync::Arc;
 
 use tauri::State;
 
-use crate::adaptor::controller_support::WorkflowStepLifecycleUsecaseState;
+use crate::adaptor::controller_support::NodeExecutionLifecycleUsecaseState;
 use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
 use crate::usecase::agent_session::backend_registry::AgentBackendRegistry;
 use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
+#[cfg(test)]
+use crate::usecase::agent_session::session::OpenTabRegistry;
 use crate::usecase::agent_session::session::{
-    add_message_internal, ChatMessage, ChatSession, MessageRole, OpenTabRegistry,
-    RestoreSessionResponse, SessionStore, SessionSummary, StoredSessionLifecycleUsecase,
+    add_message_internal, ChatMessage, ChatSession, MessageRole, RestoreSessionResponse,
+    SessionStore, SessionSummary, StoredSessionLifecycleUsecase,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -166,8 +168,7 @@ fn update_session_agent_info_in_store(
 pub async fn close_session(
     state: State<'_, Arc<SessionStore>>,
     runtime: State<'_, Arc<AgentSessionRuntimeUsecase>>,
-    open_tabs: State<'_, Arc<OpenTabRegistry>>,
-    step_lifecycle: State<'_, WorkflowStepLifecycleUsecaseState>,
+    step_lifecycle: State<'_, NodeExecutionLifecycleUsecaseState>,
     app: tauri::AppHandle,
     session_id: String,
 ) -> Result<(), String> {
@@ -175,14 +176,12 @@ pub async fn close_session(
         .close_tab_target(&session_id)
         .await
         .map_err(|_| {
-            crate::adaptor::controller::command::workflow::session_errors::workflow_step_tab_operation_failed()
+            crate::adaptor::controller::command::workflow::session_errors::workflow_node_tab_operation_failed()
         })?
     {
-        crate::adaptor::controller_support::emit_workflow_step_target_state(
+        crate::adaptor::controller_support::emit_workflow_node_target_state(
             &app,
             &target,
-            runtime.inner(),
-            open_tabs.inner(),
         )
         .await;
         return Ok(());
@@ -224,9 +223,7 @@ where
 pub async fn restore_session(
     lifecycle: State<'_, Arc<StoredSessionLifecycleUsecase>>,
     registry: State<'_, Arc<AgentBackendRegistry>>,
-    runtime: State<'_, Arc<AgentSessionRuntimeUsecase>>,
-    open_tabs: State<'_, Arc<OpenTabRegistry>>,
-    step_lifecycle: State<'_, WorkflowStepLifecycleUsecaseState>,
+    step_lifecycle: State<'_, NodeExecutionLifecycleUsecaseState>,
     app: tauri::AppHandle,
     session_id: String,
 ) -> Result<RestoreSessionResponse, String> {
@@ -234,18 +231,16 @@ pub async fn restore_session(
         .try_open_tab(&session_id)
         .await
         .map_err(|_| {
-            crate::adaptor::controller::command::workflow::session_errors::workflow_step_tab_operation_failed()
+            crate::adaptor::controller::command::workflow::session_errors::workflow_node_tab_operation_failed()
         })?
     {
-        crate::adaptor::controller_support::emit_workflow_step_target_state(
+        crate::adaptor::controller_support::emit_workflow_node_target_state(
             &app,
             &target,
-            runtime.inner(),
-            open_tabs.inner(),
         )
         .await;
         return Ok(RestoreSessionResponse {
-            restored_workflow_step: true,
+            restored_workflow_node: true,
         });
     }
 
@@ -256,7 +251,7 @@ pub async fn restore_session(
 }
 
 #[cfg(test)]
-fn restore_workflow_step_session_tab_state(
+fn restore_workflow_node_session_tab_state(
     session_store: &SessionStore,
     data_dir: &std::path::Path,
     open_tabs: &OpenTabRegistry,
@@ -268,7 +263,7 @@ fn restore_workflow_step_session_tab_state(
         session_id,
     )
     .map_err(|_| {
-        crate::adaptor::controller::command::workflow::session_errors::workflow_step_tab_operation_failed()
+        crate::adaptor::controller::command::workflow::session_errors::workflow_node_tab_operation_failed()
     })?
     else {
         return Ok(None);
@@ -280,11 +275,11 @@ fn restore_workflow_step_session_tab_state(
         &target.session_id,
     )
     .map_err(|_| {
-        crate::adaptor::controller::command::workflow::session_errors::workflow_step_tab_operation_failed()
+        crate::adaptor::controller::command::workflow::session_errors::workflow_node_tab_operation_failed()
     })?;
     Ok(Some((
         RestoreSessionResponse {
-            restored_workflow_step: true,
+            restored_workflow_node: true,
         },
         target.worktree_path,
     )))
@@ -295,7 +290,7 @@ mod tests {
     use super::*;
     use crate::usecase::agent_session::session::SessionState;
 
-    fn workflow_step_session_for_test(
+    fn workflow_node_session_for_test(
         session_id: &str,
     ) -> crate::usecase::agent_session::session::ChatSession {
         crate::usecase::agent_session::session::ChatSession {
@@ -314,14 +309,14 @@ mod tests {
             backend_id: Some(
                 crate::infrastructure::agent_session::claude::CLAUDE_BACKEND_ID.to_string(),
             ),
-            workflow_step_session: true,
-            workflow_step_context: None,
+            workflow_node_session: true,
+            workflow_node_context: None,
             context_epoch: None,
         }
     }
 
     #[tokio::test]
-    async fn restore_workflow_step_session_tab_reopens_history_without_starting_runtime() {
+    async fn restore_workflow_node_session_tab_reopens_history_without_starting_runtime() {
         let tmp = tempfile::TempDir::new().unwrap();
         let session_store = crate::test_support::build_session_store();
         let open_tabs = OpenTabRegistry::default();
@@ -330,20 +325,20 @@ mod tests {
         session_store
             .save_full_session_for_migration_or_restore(
                 tmp.path(),
-                &workflow_step_session_for_test(&session_id),
+                &workflow_node_session_for_test(&session_id),
             )
             .unwrap();
 
-        let (response, worktree_path) = restore_workflow_step_session_tab_state(
+        let (response, worktree_path) = restore_workflow_node_session_tab_state(
             &session_store,
             tmp.path(),
             &open_tabs,
             &session_id,
         )
         .unwrap()
-        .expect("workflow step restore outcome");
+        .expect("workflow node restore outcome");
 
-        assert!(response.restored_workflow_step);
+        assert!(response.restored_workflow_node);
         assert_eq!(worktree_path, "/repo");
         assert!(open_tabs.contains(&session_id));
         let session = session_store

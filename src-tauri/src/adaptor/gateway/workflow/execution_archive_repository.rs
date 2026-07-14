@@ -7,15 +7,15 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::workflow::{
-    RunId, WorkflowError, WorkflowRunArchiveRepository, WorkflowRunManualArchiveRecord,
-    WORKFLOW_ARCHIVE_REASON_MANUAL,
+    WorkflowError, WorkflowExecutionArchiveRepository, WorkflowExecutionId,
+    WorkflowExecutionManualArchiveRecord, WORKFLOW_ARCHIVE_REASON_MANUAL,
 };
 
-const WORKFLOW_ARCHIVES_FILE: &str = "workflow_run_archives.json";
+const WORKFLOW_EXECUTION_ARCHIVES_FILE: &str = "workflow_execution_archives.json";
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-struct WorkflowRunArchiveRecord {
+struct WorkflowExecutionArchiveRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     archived_at: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -26,24 +26,24 @@ struct WorkflowRunArchiveRecord {
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-struct WorkflowRunArchiveIndex {
+struct WorkflowExecutionArchiveIndex {
     #[serde(default)]
-    runs: BTreeMap<String, WorkflowRunArchiveRecord>,
+    executions: BTreeMap<String, WorkflowExecutionArchiveRecord>,
 }
 
 #[derive(Debug)]
-pub(crate) struct WorkflowRunArchiveFileRepository {
+pub(crate) struct WorkflowExecutionArchiveFileRepository {
     data_dir: PathBuf,
     lock: Mutex<()>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct WorkflowRunArchivePruneResult {
+pub(crate) struct WorkflowExecutionArchivePruneResult {
     pub(crate) records_removed: u64,
     pub(crate) reclaimed_bytes: u64,
 }
 
-impl WorkflowRunArchiveFileRepository {
+impl WorkflowExecutionArchiveFileRepository {
     pub(crate) fn new(data_dir: impl Into<PathBuf>) -> Self {
         Self {
             data_dir: data_dir.into(),
@@ -52,44 +52,49 @@ impl WorkflowRunArchiveFileRepository {
     }
 
     fn archive_index_path(&self) -> PathBuf {
-        self.data_dir.join(WORKFLOW_ARCHIVES_FILE)
+        self.data_dir.join(WORKFLOW_EXECUTION_ARCHIVES_FILE)
     }
 
-    fn load_index_unlocked(&self) -> Result<WorkflowRunArchiveIndex, WorkflowError> {
+    fn load_index_unlocked(&self) -> Result<WorkflowExecutionArchiveIndex, WorkflowError> {
         let path = self.archive_index_path();
         match fs::read_to_string(&path) {
             Ok(content) => serde_json::from_str(&content).map_err(|e| {
-                WorkflowError::external(format!("Failed to parse workflow run archives: {e}"))
+                WorkflowError::external(format!("Failed to parse workflow execution archives: {e}"))
             }),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                Ok(WorkflowRunArchiveIndex::default())
+                Ok(WorkflowExecutionArchiveIndex::default())
             }
             Err(e) => Err(WorkflowError::external(format!(
-                "Failed to read workflow run archives: {e}"
+                "Failed to read workflow execution archives: {e}"
             ))),
         }
     }
 
-    fn save_index_unlocked(&self, index: &WorkflowRunArchiveIndex) -> Result<(), WorkflowError> {
+    fn save_index_unlocked(
+        &self,
+        index: &WorkflowExecutionArchiveIndex,
+    ) -> Result<(), WorkflowError> {
         fs::create_dir_all(&self.data_dir).map_err(|e| {
             WorkflowError::external(format!("Failed to create app data directory: {e}"))
         })?;
         let json = serde_json::to_string_pretty(index).map_err(|e| {
-            WorkflowError::external(format!("Failed to serialize workflow run archives: {e}"))
+            WorkflowError::external(format!(
+                "Failed to serialize workflow execution archives: {e}"
+            ))
         })?;
         atomic_write(&self.archive_index_path(), &json).map_err(|e| {
-            WorkflowError::external(format!("Failed to write workflow run archives: {e}"))
+            WorkflowError::external(format!("Failed to write workflow execution archives: {e}"))
         })
     }
 
     fn update_index(
         &self,
-        update: impl FnOnce(&mut WorkflowRunArchiveIndex),
+        update: impl FnOnce(&mut WorkflowExecutionArchiveIndex),
     ) -> Result<(), WorkflowError> {
         let _guard = self
             .lock
             .lock()
-            .map_err(|_| WorkflowError::external("workflow run archive lock poisoned"))?;
+            .map_err(|_| WorkflowError::external("workflow execution archive lock poisoned"))?;
         let mut index = self.load_index_unlocked()?;
         update(&mut index);
         self.save_index_unlocked(&index)
@@ -97,15 +102,15 @@ impl WorkflowRunArchiveFileRepository {
 
     pub(crate) fn prune_records(
         &self,
-        run_ids: &HashSet<String>,
-    ) -> Result<WorkflowRunArchivePruneResult, WorkflowError> {
-        if run_ids.is_empty() {
-            return Ok(WorkflowRunArchivePruneResult::default());
+        execution_ids: &HashSet<String>,
+    ) -> Result<WorkflowExecutionArchivePruneResult, WorkflowError> {
+        if execution_ids.is_empty() {
+            return Ok(WorkflowExecutionArchivePruneResult::default());
         }
         let _guard = self
             .lock
             .lock()
-            .map_err(|_| WorkflowError::external("workflow run archive lock poisoned"))?;
+            .map_err(|_| WorkflowError::external("workflow execution archive lock poisoned"))?;
         let path = self.archive_index_path();
         let before = match fs::symlink_metadata(&path) {
             Ok(metadata) if metadata.file_type().is_file() => metadata.len(),
@@ -113,71 +118,87 @@ impl WorkflowRunArchiveFileRepository {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
             Err(error) => {
                 return Err(WorkflowError::external(format!(
-                    "Failed to read workflow run archives metadata: {error}"
+                    "Failed to read workflow execution archives metadata: {error}"
                 )));
             }
         };
         let mut index = self.load_index_unlocked()?;
         let mut removed = 0;
-        for run_id in run_ids {
-            if index.runs.remove(run_id).is_some() {
+        for execution_id in execution_ids {
+            if index.executions.remove(execution_id).is_some() {
                 removed += 1;
             }
         }
         if removed == 0 {
-            return Ok(WorkflowRunArchivePruneResult::default());
+            return Ok(WorkflowExecutionArchivePruneResult::default());
         }
         self.save_index_unlocked(&index)?;
         let after = fs::symlink_metadata(&path)
             .map(|metadata| metadata.len())
             .unwrap_or(0);
-        Ok(WorkflowRunArchivePruneResult {
+        Ok(WorkflowExecutionArchivePruneResult {
             records_removed: removed,
             reclaimed_bytes: before.saturating_sub(after),
         })
     }
 }
 
-impl WorkflowRunArchiveRepository for WorkflowRunArchiveFileRepository {
-    fn archive_manual(&self, run_id: &RunId, archived_at: f64) -> Result<(), WorkflowError> {
+impl WorkflowExecutionArchiveRepository for WorkflowExecutionArchiveFileRepository {
+    fn archive_manual(
+        &self,
+        execution_id: &WorkflowExecutionId,
+        archived_at: f64,
+    ) -> Result<(), WorkflowError> {
         self.update_index(|index| {
-            let record = index.runs.entry(run_id.to_string()).or_default();
+            let record = index
+                .executions
+                .entry(execution_id.to_string())
+                .or_default();
             record.archived_at = Some(archived_at);
             record.archive_reason = Some(WORKFLOW_ARCHIVE_REASON_MANUAL.to_string());
         })
     }
 
-    fn restore_manual(&self, run_id: &RunId, restored_at: f64) -> Result<(), WorkflowError> {
+    fn restore_manual(
+        &self,
+        execution_id: &WorkflowExecutionId,
+        restored_at: f64,
+    ) -> Result<(), WorkflowError> {
         self.update_index(|index| {
-            let record = index.runs.entry(run_id.to_string()).or_default();
+            let record = index
+                .executions
+                .entry(execution_id.to_string())
+                .or_default();
             record.archived_at = None;
             record.archive_reason = None;
             record.restored_at = Some(restored_at);
         })
     }
 
-    fn manual_archive_records(&self) -> Result<Vec<WorkflowRunManualArchiveRecord>, WorkflowError> {
+    fn manual_archive_records(
+        &self,
+    ) -> Result<Vec<WorkflowExecutionManualArchiveRecord>, WorkflowError> {
         let _guard = self
             .lock
             .lock()
-            .map_err(|_| WorkflowError::external("workflow run archive lock poisoned"))?;
+            .map_err(|_| WorkflowError::external("workflow execution archive lock poisoned"))?;
         let index = self.load_index_unlocked()?;
         let mut records = index
-            .runs
+            .executions
             .into_iter()
-            .filter_map(|(run_id, record)| {
-                is_manual_archive_record(&record).then(|| WorkflowRunManualArchiveRecord {
-                    run_id,
+            .filter_map(|(execution_id, record)| {
+                is_manual_archive_record(&record).then(|| WorkflowExecutionManualArchiveRecord {
+                    execution_id,
                     archived_at: record.archived_at.unwrap_or_default(),
                 })
             })
             .collect::<Vec<_>>();
-        records.sort_by(|a, b| a.run_id.cmp(&b.run_id));
+        records.sort_by(|a, b| a.execution_id.cmp(&b.execution_id));
         Ok(records)
     }
 }
 
-fn is_manual_archive_record(record: &WorkflowRunArchiveRecord) -> bool {
+fn is_manual_archive_record(record: &WorkflowExecutionArchiveRecord) -> bool {
     record.archived_at.is_some()
         && record.archive_reason.as_deref() == Some(WORKFLOW_ARCHIVE_REASON_MANUAL)
 }
@@ -214,25 +235,26 @@ mod tests {
     #[test]
     fn missing_archive_index_loads_as_empty() {
         let temp = tempfile::tempdir().unwrap();
-        let repo = WorkflowRunArchiveFileRepository::new(temp.path());
+        let repo = WorkflowExecutionArchiveFileRepository::new(temp.path());
 
         let index = repo.load_index_unlocked().unwrap();
 
-        assert!(index.runs.is_empty());
+        assert!(index.executions.is_empty());
         assert!(!repo.archive_index_path().exists());
     }
 
     #[test]
     fn manual_archive_and_restore_persist_records() {
         let temp = tempfile::tempdir().unwrap();
-        let repo = WorkflowRunArchiveFileRepository::new(temp.path());
-        let run_id = RunId::new("11111111-1111-4111-8111-111111111111".to_string()).unwrap();
+        let repo = WorkflowExecutionArchiveFileRepository::new(temp.path());
+        let execution_id =
+            WorkflowExecutionId::new("11111111-1111-4111-8111-111111111111".to_string()).unwrap();
 
-        repo.archive_manual(&run_id, 10.0).unwrap();
-        repo.restore_manual(&run_id, 20.0).unwrap();
+        repo.archive_manual(&execution_id, 10.0).unwrap();
+        repo.restore_manual(&execution_id, 20.0).unwrap();
 
         let index = repo.load_index_unlocked().unwrap();
-        let record = &index.runs["11111111-1111-4111-8111-111111111111"];
+        let record = &index.executions["11111111-1111-4111-8111-111111111111"];
         assert_eq!(record.archived_at, None);
         assert_eq!(record.archive_reason, None);
         assert_eq!(record.restored_at, Some(20.0));
@@ -242,7 +264,7 @@ mod tests {
     #[test]
     fn lock_preserves_concurrent_manual_archive_updates() {
         let temp = tempfile::tempdir().unwrap();
-        let repo = Arc::new(WorkflowRunArchiveFileRepository::new(temp.path()));
+        let repo = Arc::new(WorkflowExecutionArchiveFileRepository::new(temp.path()));
         let (loaded_tx, loaded_rx) = mpsc::channel();
 
         let slow_repo = repo.clone();
@@ -251,7 +273,10 @@ mod tests {
                 .update_index(|index| {
                     loaded_tx.send(()).expect("archive load signal");
                     std::thread::sleep(Duration::from_millis(50));
-                    let record = index.runs.entry("slow-run".to_string()).or_default();
+                    let record = index
+                        .executions
+                        .entry("slow-execution".to_string())
+                        .or_default();
                     record.archived_at = Some(20.0);
                     record.archive_reason = Some(WORKFLOW_ARCHIVE_REASON_MANUAL.to_string());
                 })
@@ -259,18 +284,19 @@ mod tests {
         });
 
         loaded_rx.recv().expect("slow archive loaded index");
-        let manual_run_id = RunId::new("22222222-2222-4222-8222-222222222222".to_string()).unwrap();
-        repo.archive_manual(&manual_run_id, 30.0).unwrap();
+        let manual_execution_id =
+            WorkflowExecutionId::new("22222222-2222-4222-8222-222222222222".to_string()).unwrap();
+        repo.archive_manual(&manual_execution_id, 30.0).unwrap();
 
         slow_archive.join().unwrap();
 
         let index = repo.load_index_unlocked().unwrap();
         assert_eq!(
-            index.runs["slow-run"].archive_reason.as_deref(),
+            index.executions["slow-execution"].archive_reason.as_deref(),
             Some(WORKFLOW_ARCHIVE_REASON_MANUAL)
         );
         assert_eq!(
-            index.runs["22222222-2222-4222-8222-222222222222"]
+            index.executions["22222222-2222-4222-8222-222222222222"]
                 .archive_reason
                 .as_deref(),
             Some(WORKFLOW_ARCHIVE_REASON_MANUAL)
@@ -279,29 +305,31 @@ mod tests {
         assert_eq!(
             records
                 .iter()
-                .map(|record| record.run_id.as_str())
+                .map(|record| record.execution_id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["22222222-2222-4222-8222-222222222222", "slow-run"]
+            vec!["22222222-2222-4222-8222-222222222222", "slow-execution"]
         );
     }
 
     #[test]
-    fn prune_records_removes_selected_runs_with_atomic_index_update() {
+    fn prune_records_removes_selected_executions_with_atomic_index_update() {
         let temp = tempfile::tempdir().unwrap();
-        let repo = WorkflowRunArchiveFileRepository::new(temp.path());
-        let keep_run_id = RunId::new("11111111-1111-4111-8111-111111111111".to_string()).unwrap();
-        let prune_run_id = RunId::new("22222222-2222-4222-8222-222222222222".to_string()).unwrap();
-        repo.archive_manual(&keep_run_id, 10.0).unwrap();
-        repo.archive_manual(&prune_run_id, 20.0).unwrap();
+        let repo = WorkflowExecutionArchiveFileRepository::new(temp.path());
+        let keep_execution_id =
+            WorkflowExecutionId::new("11111111-1111-4111-8111-111111111111".to_string()).unwrap();
+        let prune_execution_id =
+            WorkflowExecutionId::new("22222222-2222-4222-8222-222222222222".to_string()).unwrap();
+        repo.archive_manual(&keep_execution_id, 10.0).unwrap();
+        repo.archive_manual(&prune_execution_id, 20.0).unwrap();
 
         let result = repo
-            .prune_records(&HashSet::from([prune_run_id.to_string()]))
+            .prune_records(&HashSet::from([prune_execution_id.to_string()]))
             .unwrap();
 
         assert_eq!(result.records_removed, 1);
         assert!(result.reclaimed_bytes > 0);
         let index = repo.load_index_unlocked().unwrap();
-        assert!(index.runs.contains_key(keep_run_id.as_str()));
-        assert!(!index.runs.contains_key(prune_run_id.as_str()));
+        assert!(index.executions.contains_key(keep_execution_id.as_str()));
+        assert!(!index.executions.contains_key(prune_execution_id.as_str()));
     }
 }

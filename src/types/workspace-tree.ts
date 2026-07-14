@@ -1,9 +1,10 @@
 import type { AgentState } from "./protocol";
 import type { SessionState, SessionSummary } from "./session";
 import type {
-	JsonValue,
+	Artifact,
 	NodeExecutionStatus,
-	WorkflowRunSummary,
+	NodeKind,
+	WorkflowExecutionSummary,
 } from "./workflow";
 
 export type CenterSelection =
@@ -17,11 +18,11 @@ export type CenterSelection =
 			worktreePath: string;
 	  }
 	| {
-			kind: "workflowStep";
+			kind: "workflowNode";
 			worktreePath: string;
-			runId: string;
-			stepId: string;
-			stepName: string;
+			executionId: string;
+			nodeExecutionId: string;
+			nodeName: string;
 	  };
 
 export type CenterSelectionRequest = CenterSelection & {
@@ -37,13 +38,14 @@ export interface WorkspaceSessionNode {
 	title: string;
 	state: SessionState;
 	updatedAt: number;
-	workflowStepSession: boolean;
-	stepName?: string | null;
-	runIndex?: number | null;
+	workflowNodeSession: boolean;
+	nodeExecutionId?: string | null;
+	nodeName?: string | null;
+	attempt?: number | null;
 	agentState?: AgentState | null;
 }
 
-export type WorkspaceStepStatus =
+export type WorkspaceNodeStatus =
 	| "queued"
 	| "running"
 	| "failed"
@@ -52,8 +54,6 @@ export type WorkspaceStepStatus =
 	| "aborted"
 	| "completed";
 
-type WorkspaceStepType = "command" | "session" | "fanout";
-
 export interface WorkspaceFanoutParent {
 	parentNode: string;
 	parentAttempt: number;
@@ -61,70 +61,71 @@ export interface WorkspaceFanoutParent {
 	childIndex: number;
 }
 
-export interface WorkspaceWorkflowStepNode {
-	kind: "step";
-	id: string;
-	runId: string;
+export interface WorkspaceWorkflowNodeExecution {
+	kind: "node";
+	nodeExecutionId: string;
+	executionId: string;
 	worktreePath: string;
 	title: string;
 	nodeName: string;
-	status: WorkspaceStepStatus;
-	stepType: WorkspaceStepType;
+	status: WorkspaceNodeStatus;
+	nodeKind: NodeKind;
 	nodeExecutionStatus?: NodeExecutionStatus;
 	canApprove?: boolean;
 	updatedAt: number;
-	runIndex?: number | null;
 	attempt: number;
-	nodeExecutionId?: string;
 	sessionId?: string;
-	artifact?: JsonValue;
+	artifact?: Artifact;
 	fanoutParent?: WorkspaceFanoutParent;
 	sessions: WorkspaceSessionNode[];
 }
 
-export type WorkspaceWorkflowStepDetail = WorkspaceWorkflowStepNode;
+export type WorkspaceWorkflowNodeDetail = WorkspaceWorkflowNodeExecution;
 
-export interface WorkspaceWorkflowNode {
+export interface WorkspaceWorkflowExecutionNode {
 	kind: "workflow";
-	runId: string;
+	executionId: string;
 	worktreePath: string;
 	workflowName: string;
 	title: string;
-	status: WorkspaceStepStatus;
+	status: WorkspaceNodeStatus;
 	canStop: boolean;
 	updatedAt: number;
-	steps: WorkspaceWorkflowStepNode[];
+	nodeExecutions: WorkspaceWorkflowNodeExecution[];
 }
 
 export interface WorkspaceWorkflowHistoryItem {
-	runId: string;
+	executionId: string;
 	worktreePath: string;
 	title: string;
-	status: WorkspaceStepStatus | WorkflowRunSummary["status"];
+	status: WorkspaceNodeStatus | WorkflowExecutionSummary["status"];
 	updatedAt: number;
 	archivedAt: number;
 	archiveReason: "auto_no_sessions" | "manual" | string;
 }
 
-export type WorkspaceTreeNode = WorkspaceSessionNode | WorkspaceWorkflowNode;
+export type WorkspaceTreeNode =
+	| WorkspaceSessionNode
+	| WorkspaceWorkflowExecutionNode;
 
 export type WorkspaceSessionHistoryItem = SessionSummary;
 
-interface WorkflowStepRepresentative {
+interface NodeExecutionRepresentative {
+	nodeExecutionId: string;
 	executionId: string;
-	stepName: string;
-	runIndex?: number | null;
-	representative: WorkspaceStepStatus;
+	nodeName: string;
+	attempt: number | null;
+	representative: WorkspaceNodeStatus;
 }
 
-interface WorkflowRepresentative {
+interface WorkflowExecutionRepresentative {
 	executionId: string;
-	representative: WorkspaceStepStatus;
+	representative: WorkspaceNodeStatus;
 }
 
-export interface WorktreeStepStatusView {
+export interface WorktreeNodeStatusView {
 	worktreePath: string;
 	version: number;
-	steps: WorkflowStepRepresentative[];
-	workflows: WorkflowRepresentative[];
+	nodeExecutions: NodeExecutionRepresentative[];
+	workflowExecutions: WorkflowExecutionRepresentative[];
 }

@@ -1,9 +1,9 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import type { DiagnosticItem } from "@/types/workflow";
-import { DiagnosticItemRow } from "./DiagnosticBadge";
+import type { DiagnosticView } from "@/types/workflow";
+import { DiagnosticViewRow } from "./DiagnosticBadge";
 
-function diagnostic(overrides: Partial<DiagnosticItem> = {}): DiagnosticItem {
+function diagnostic(overrides: Partial<DiagnosticView> = {}): DiagnosticView {
 	return {
 		code: "WFT001",
 		severity: "error",
@@ -13,10 +13,10 @@ function diagnostic(overrides: Partial<DiagnosticItem> = {}): DiagnosticItem {
 	};
 }
 
-describe("DiagnosticItemRow", () => {
+describe("DiagnosticViewRow", () => {
 	it("renders code, formatted stage, and span label when span is present", () => {
 		render(
-			<DiagnosticItemRow
+			<DiagnosticViewRow
 				item={diagnostic({
 					span: {
 						start_line: 12,
@@ -35,7 +35,7 @@ describe("DiagnosticItemRow", () => {
 
 	it("omits span label when span is absent and formats snake_case stage", () => {
 		render(
-			<DiagnosticItemRow
+			<DiagnosticViewRow
 				item={diagnostic({
 					code: "WFR003",
 					stage: "parse_shape",

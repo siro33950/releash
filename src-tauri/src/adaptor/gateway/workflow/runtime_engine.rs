@@ -9,11 +9,11 @@ use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::resolver::{
     ManagedWorktreeResolver, WorkflowDefinitionResolver,
 };
-use crate::adaptor::gateway::workflow::run::TriggerSource;
 use crate::adaptor::gateway::workflow::schema::Workflow;
 use crate::adaptor::gateway::workflow::state::WorkflowState;
 use crate::domain::agent_session::PermissionMode;
 use crate::domain::workflow::services::transition::SessionFailureSignal;
+use crate::domain::workflow::ExecutionOrigin;
 use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
 use crate::usecase::agent_session::session::{MessagePart, OpenTabRegistry, SessionStore};
@@ -21,16 +21,19 @@ use crate::usecase::agent_session::session::{MessagePart, OpenTabRegistry, Sessi
 #[allow(clippy::too_many_arguments)]
 #[async_trait]
 pub(crate) trait WorkflowRuntimeEngine: PendingCommandRuntime<tauri::Wry> {
-    async fn set_run_store_data_dir(&self, dir: PathBuf);
+    async fn set_execution_store_data_dir(&self, dir: PathBuf);
 
-    async fn recover_orphan_runs(&self, app: &tauri::AppHandle) -> Result<(), WorkflowEngineError>;
+    async fn recover_orphan_executions(
+        &self,
+        app: &tauri::AppHandle,
+    ) -> Result<(), WorkflowEngineError>;
 
-    async fn resolve_start_run_worktree(
+    async fn resolve_start_execution_worktree(
         &self,
         worktree_path: String,
     ) -> Result<String, WorkflowEngineError>;
 
-    async fn resolve_start_run_workflow(
+    async fn resolve_start_execution_workflow(
         &self,
         workflow_file_stem: &str,
     ) -> Result<Workflow, WorkflowEngineError>;
@@ -42,18 +45,17 @@ pub(crate) trait WorkflowRuntimeEngine: PendingCommandRuntime<tauri::Wry> {
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         workflow: Workflow,
         worktree_path: String,
-        file_stem: &str,
-        task: Option<String>,
-        trigger_source: TriggerSource,
+        request: Option<String>,
+        created_from: ExecutionOrigin,
         permission_mode: PermissionMode,
     ) -> Result<String, WorkflowEngineError>;
 
-    async fn abort_workflow_run(
+    async fn abort_workflow_execution(
         &self,
         app: &tauri::AppHandle,
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
-        run_id: &str,
+        execution_id: &str,
         expected_node_name: Option<&str>,
     ) -> Result<(), WorkflowEngineError>;
 
@@ -62,7 +64,7 @@ pub(crate) trait WorkflowRuntimeEngine: PendingCommandRuntime<tauri::Wry> {
         app: &tauri::AppHandle,
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
-        run_id: &str,
+        execution_id: &str,
         comment: Option<String>,
         node_name: &str,
         node_execution_id: Option<&str>,
@@ -98,13 +100,14 @@ pub(crate) trait WorkflowRuntimeEngine: PendingCommandRuntime<tauri::Wry> {
         session_id: &str,
     ) -> Result<(), WorkflowEngineError>;
 
-    async fn get_state_by_run_id(&self, run_id: &str) -> Option<WorkflowState>;
+    #[cfg(test)]
+    async fn get_state_by_execution_id(&self, execution_id: &str) -> Option<WorkflowState>;
 
     async fn get_state(&self, worktree_path: &str) -> Option<WorkflowState>;
 
     async fn resolve_chat_session_for_approval(
         &self,
-        run_id: &str,
+        execution_id: &str,
     ) -> Result<(String, String), WorkflowEngineError>;
 
     async fn validate_approval_chat_instruction(
@@ -132,27 +135,30 @@ pub(crate) fn new_workflow_runtime_engine(
 
 #[async_trait]
 impl WorkflowRuntimeEngine for WorkflowRuntimeService {
-    async fn set_run_store_data_dir(&self, dir: PathBuf) {
-        WorkflowRuntimeService::set_run_store_data_dir(self, dir).await;
+    async fn set_execution_store_data_dir(&self, dir: PathBuf) {
+        WorkflowRuntimeService::set_execution_store_data_dir(self, dir).await;
     }
 
-    async fn recover_orphan_runs(&self, app: &tauri::AppHandle) -> Result<(), WorkflowEngineError> {
-        WorkflowRuntimeService::recover_orphan_runs(self, app).await;
+    async fn recover_orphan_executions(
+        &self,
+        app: &tauri::AppHandle,
+    ) -> Result<(), WorkflowEngineError> {
+        WorkflowRuntimeService::recover_orphan_executions(self, app).await;
         Ok(())
     }
 
-    async fn resolve_start_run_worktree(
+    async fn resolve_start_execution_worktree(
         &self,
         worktree_path: String,
     ) -> Result<String, WorkflowEngineError> {
-        WorkflowRuntimeService::resolve_start_run_worktree(self, worktree_path).await
+        WorkflowRuntimeService::resolve_start_execution_worktree(self, worktree_path).await
     }
 
-    async fn resolve_start_run_workflow(
+    async fn resolve_start_execution_workflow(
         &self,
         workflow_file_stem: &str,
     ) -> Result<Workflow, WorkflowEngineError> {
-        WorkflowRuntimeService::resolve_start_run_workflow(self, workflow_file_stem).await
+        WorkflowRuntimeService::resolve_start_execution_workflow(self, workflow_file_stem).await
     }
 
     async fn start_resolved_workflow(
@@ -162,9 +168,8 @@ impl WorkflowRuntimeEngine for WorkflowRuntimeService {
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         workflow: Workflow,
         worktree_path: String,
-        file_stem: &str,
-        task: Option<String>,
-        trigger_source: TriggerSource,
+        request: Option<String>,
+        created_from: ExecutionOrigin,
         permission_mode: PermissionMode,
     ) -> Result<String, WorkflowEngineError> {
         WorkflowRuntimeService::start_resolved_workflow(
@@ -174,28 +179,27 @@ impl WorkflowRuntimeEngine for WorkflowRuntimeService {
             agent_runtime,
             workflow,
             worktree_path,
-            file_stem,
-            task,
-            trigger_source,
+            request,
+            created_from,
             permission_mode,
         )
         .await
     }
 
-    async fn abort_workflow_run(
+    async fn abort_workflow_execution(
         &self,
         app: &tauri::AppHandle,
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
-        run_id: &str,
+        execution_id: &str,
         expected_node_name: Option<&str>,
     ) -> Result<(), WorkflowEngineError> {
-        WorkflowRuntimeService::abort_workflow_run(
+        WorkflowRuntimeService::abort_workflow_execution(
             self,
             app,
             session_store,
             agent_runtime,
-            run_id,
+            execution_id,
             expected_node_name,
         )
         .await
@@ -206,7 +210,7 @@ impl WorkflowRuntimeEngine for WorkflowRuntimeService {
         app: &tauri::AppHandle,
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
-        run_id: &str,
+        execution_id: &str,
         comment: Option<String>,
         node_name: &str,
         node_execution_id: Option<&str>,
@@ -216,7 +220,7 @@ impl WorkflowRuntimeEngine for WorkflowRuntimeService {
             app,
             session_store,
             agent_runtime,
-            run_id,
+            execution_id,
             comment,
             node_name,
             node_execution_id,
@@ -282,8 +286,9 @@ impl WorkflowRuntimeEngine for WorkflowRuntimeService {
         WorkflowRuntimeService::on_agent_stall_cleared(self, app, session_id).await
     }
 
-    async fn get_state_by_run_id(&self, run_id: &str) -> Option<WorkflowState> {
-        WorkflowRuntimeService::get_state_by_run_id(self, run_id).await
+    #[cfg(test)]
+    async fn get_state_by_execution_id(&self, execution_id: &str) -> Option<WorkflowState> {
+        WorkflowRuntimeService::get_state_by_execution_id(self, execution_id).await
     }
 
     async fn get_state(&self, worktree_path: &str) -> Option<WorkflowState> {
@@ -292,9 +297,9 @@ impl WorkflowRuntimeEngine for WorkflowRuntimeService {
 
     async fn resolve_chat_session_for_approval(
         &self,
-        run_id: &str,
+        execution_id: &str,
     ) -> Result<(String, String), WorkflowEngineError> {
-        WorkflowRuntimeService::resolve_chat_session_for_approval(self, run_id).await
+        WorkflowRuntimeService::resolve_chat_session_for_approval(self, execution_id).await
     }
 
     async fn validate_approval_chat_instruction(

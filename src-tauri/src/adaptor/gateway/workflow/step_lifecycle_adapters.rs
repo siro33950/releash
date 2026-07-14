@@ -5,25 +5,25 @@ use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
 use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
 use crate::usecase::agent_session::session::{OpenTabRegistry, SessionState, SessionStore};
 use crate::usecase::workflow::step_lifecycle::{
-    release_step_runtime_on_done_with_gateways, ResolvedWorkflowStepSession,
-    WorkflowStepLifecycleError, WorkflowStepRuntimeGateway, WorkflowStepSessionGateway,
+    release_step_runtime_on_done_with_gateways, NodeExecutionLifecycleError,
+    NodeExecutionRuntimeGateway, ResolvedWorkflowNodeSession, WorkflowNodeSessionGateway,
 };
 
 pub(crate) fn resolve_step_session_with_data_dir(
     session_store: &SessionStore,
     data_dir: &std::path::Path,
     session_id: &str,
-) -> Result<Option<ResolvedWorkflowStepSession>, WorkflowStepLifecycleError> {
+) -> Result<Option<ResolvedWorkflowNodeSession>, NodeExecutionLifecycleError> {
     let Some(session) = session_store
         .get_session_meta(data_dir, session_id)
-        .map_err(|e| WorkflowStepLifecycleError::SessionStore(format!("get_session_meta: {e}")))?
+        .map_err(|e| NodeExecutionLifecycleError::SessionStore(format!("get_session_meta: {e}")))?
     else {
         return Ok(None);
     };
-    if !session.is_workflow_step_session() {
+    if !session.is_workflow_node_session() {
         return Ok(None);
     }
-    Ok(Some(ResolvedWorkflowStepSession {
+    Ok(Some(ResolvedWorkflowNodeSession {
         session_id: session_id.to_string(),
         worktree_path: session.worktree_path,
     }))
@@ -33,10 +33,10 @@ pub(crate) async fn close_idle_step_runtime_state<F, Fut>(
     runtime: &AgentSessionRuntimeUsecase,
     session_id: &str,
     close_runtime: F,
-) -> Result<(), WorkflowStepLifecycleError>
+) -> Result<(), NodeExecutionLifecycleError>
 where
     F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<(), WorkflowStepLifecycleError>>,
+    Fut: Future<Output = Result<(), NodeExecutionLifecycleError>>,
 {
     if should_release_runtime_on_tab_close(runtime, session_id).await {
         close_runtime().await?;
@@ -56,17 +56,19 @@ pub(crate) fn open_step_session_tab_state(
     data_dir: &std::path::Path,
     open_tabs: &OpenTabRegistry,
     session_id: &str,
-) -> Result<(), WorkflowStepLifecycleError> {
+) -> Result<(), NodeExecutionLifecycleError> {
     let session = session_store
         .get_session_meta(data_dir, session_id)
-        .map_err(|e| WorkflowStepLifecycleError::SessionStore(format!("get_session_meta: {e}")))?
-        .ok_or_else(|| WorkflowStepLifecycleError::SessionNotFound(session_id.to_string()))?;
+        .map_err(|e| NodeExecutionLifecycleError::SessionStore(format!("get_session_meta: {e}")))?
+        .ok_or_else(|| NodeExecutionLifecycleError::SessionNotFound(session_id.to_string()))?;
     if open_tabs.contains(session_id) && session.state == SessionState::Idle {
         return Ok(());
     }
     session_store
         .set_session_state(data_dir, session_id, SessionState::Idle)
-        .map_err(|e| WorkflowStepLifecycleError::SessionStore(format!("set_session_state: {e}")))?;
+        .map_err(|e| {
+            NodeExecutionLifecycleError::SessionStore(format!("set_session_state: {e}"))
+        })?;
     open_tabs.add(session_id);
     Ok(())
 }
@@ -75,10 +77,10 @@ fn set_step_session_tab_closed(
     session_store: &SessionStore,
     data_dir: &std::path::Path,
     session_id: &str,
-) -> Result<(), WorkflowStepLifecycleError> {
+) -> Result<(), NodeExecutionLifecycleError> {
     session_store
         .set_session_state(data_dir, session_id, SessionState::Closed)
-        .map_err(|e| WorkflowStepLifecycleError::SessionStore(format!("set_session_state: {e}")))
+        .map_err(|e| NodeExecutionLifecycleError::SessionStore(format!("set_session_state: {e}")))
 }
 
 #[cfg(test)]
@@ -92,7 +94,7 @@ pub(crate) fn close_step_session_tab_state(
         try_close_step_session_tab_state(session_store, data_dir, open_tabs, session_id)
     {
         log::warn!(
-            "workflow_step_tab_cleanup_failed code=session_state_update_failed message=failed_to_close_step_tab"
+            "workflow_node_tab_cleanup_failed code=session_state_update_failed message=failed_to_close_step_tab"
         );
     }
 }
@@ -102,7 +104,7 @@ pub(crate) fn try_close_step_session_tab_state(
     data_dir: &std::path::Path,
     open_tabs: Option<&OpenTabRegistry>,
     session_id: &str,
-) -> Result<bool, WorkflowStepLifecycleError> {
+) -> Result<bool, NodeExecutionLifecycleError> {
     let should_close_tab = open_tabs
         .map(|open_tabs| open_tabs.contains(session_id))
         .unwrap_or(true);
@@ -110,7 +112,7 @@ pub(crate) fn try_close_step_session_tab_state(
         if let Some(session) = session_store
             .get_session_meta(data_dir, session_id)
             .map_err(|e| {
-                WorkflowStepLifecycleError::SessionStore(format!("get_session_meta: {e}"))
+                NodeExecutionLifecycleError::SessionStore(format!("get_session_meta: {e}"))
             })?
         {
             if session.state != SessionState::Closed {
@@ -126,23 +128,23 @@ pub(crate) fn try_close_step_session_tab_state(
     Ok(true)
 }
 
-struct TauriWorkflowStepRuntimeGateway<'a, R: tauri::Runtime> {
+struct TauriNodeExecutionRuntimeGateway<'a, R: tauri::Runtime> {
     app: &'a tauri::AppHandle<R>,
     runtime: &'a AgentSessionRuntimeUsecase,
 }
 
 #[async_trait::async_trait]
-impl<R: tauri::Runtime> WorkflowStepRuntimeGateway for TauriWorkflowStepRuntimeGateway<'_, R> {
+impl<R: tauri::Runtime> NodeExecutionRuntimeGateway for TauriNodeExecutionRuntimeGateway<'_, R> {
     async fn close_idle_runtime_on_tab_close(
         &self,
         session_id: &str,
-    ) -> Result<(), WorkflowStepLifecycleError> {
+    ) -> Result<(), NodeExecutionLifecycleError> {
         let _lifecycle_guard = self.runtime.acquire_session_lock(session_id).await;
         close_idle_step_runtime_state(self.runtime, session_id, || async {
             self.runtime
                 .close_session(session_id)
                 .await
-                .map_err(|e| WorkflowStepLifecycleError::AgentSession(e.to_string()))
+                .map_err(|e| NodeExecutionLifecycleError::AgentSession(e.to_string()))
         })
         .await
     }
@@ -150,23 +152,23 @@ impl<R: tauri::Runtime> WorkflowStepRuntimeGateway for TauriWorkflowStepRuntimeG
     async fn close_runtime_on_step_done(
         &self,
         session_id: &str,
-    ) -> Result<(), WorkflowStepLifecycleError> {
+    ) -> Result<(), NodeExecutionLifecycleError> {
         let _ = self.app;
         self.runtime
             .close_session(session_id)
             .await
-            .map_err(|e| WorkflowStepLifecycleError::AgentSession(e.to_string()))
+            .map_err(|e| NodeExecutionLifecycleError::AgentSession(e.to_string()))
     }
 }
 
-pub(crate) struct TauriWorkflowStepLifecycleGateway {
+pub(crate) struct TauriNodeExecutionLifecycleGateway {
     app: tauri::AppHandle,
     session_store: Arc<SessionStore>,
     runtime: Arc<AgentSessionRuntimeUsecase>,
     open_tabs: Arc<OpenTabRegistry>,
 }
 
-impl TauriWorkflowStepLifecycleGateway {
+impl TauriNodeExecutionLifecycleGateway {
     pub(crate) fn new(
         app: tauri::AppHandle,
         session_store: Arc<SessionStore>,
@@ -181,22 +183,23 @@ impl TauriWorkflowStepLifecycleGateway {
         }
     }
 
-    fn data_dir(&self) -> Result<std::path::PathBuf, WorkflowStepLifecycleError> {
-        resolve_data_dir(&self.app)
-            .map_err(|e| WorkflowStepLifecycleError::SessionStore(format!("resolve_data_dir: {e}")))
+    fn data_dir(&self) -> Result<std::path::PathBuf, NodeExecutionLifecycleError> {
+        resolve_data_dir(&self.app).map_err(|e| {
+            NodeExecutionLifecycleError::SessionStore(format!("resolve_data_dir: {e}"))
+        })
     }
 }
 
-impl WorkflowStepSessionGateway for TauriWorkflowStepLifecycleGateway {
+impl WorkflowNodeSessionGateway for TauriNodeExecutionLifecycleGateway {
     fn resolve_step_session(
         &self,
         session_id: &str,
-    ) -> Result<Option<ResolvedWorkflowStepSession>, WorkflowStepLifecycleError> {
+    ) -> Result<Option<ResolvedWorkflowNodeSession>, NodeExecutionLifecycleError> {
         let data_dir = self.data_dir()?;
         resolve_step_session_with_data_dir(self.session_store.as_ref(), &data_dir, session_id)
     }
 
-    fn open_step_tab(&self, session_id: &str) -> Result<(), WorkflowStepLifecycleError> {
+    fn open_step_tab(&self, session_id: &str) -> Result<(), NodeExecutionLifecycleError> {
         let data_dir = self.data_dir()?;
         open_step_session_tab_state(
             self.session_store.as_ref(),
@@ -206,7 +209,7 @@ impl WorkflowStepSessionGateway for TauriWorkflowStepLifecycleGateway {
         )
     }
 
-    fn close_step_tab(&self, session_id: &str) -> Result<bool, WorkflowStepLifecycleError> {
+    fn close_step_tab(&self, session_id: &str) -> Result<bool, NodeExecutionLifecycleError> {
         let data_dir = self.data_dir()?;
         try_close_step_session_tab_state(
             self.session_store.as_ref(),
@@ -218,17 +221,17 @@ impl WorkflowStepSessionGateway for TauriWorkflowStepLifecycleGateway {
 }
 
 #[async_trait::async_trait]
-impl WorkflowStepRuntimeGateway for TauriWorkflowStepLifecycleGateway {
+impl NodeExecutionRuntimeGateway for TauriNodeExecutionLifecycleGateway {
     async fn close_idle_runtime_on_tab_close(
         &self,
         session_id: &str,
-    ) -> Result<(), WorkflowStepLifecycleError> {
+    ) -> Result<(), NodeExecutionLifecycleError> {
         let _lifecycle_guard = self.runtime.acquire_session_lock(session_id).await;
         close_idle_step_runtime_state(&self.runtime, session_id, || async {
             self.runtime
                 .close_session(session_id)
                 .await
-                .map_err(|e| WorkflowStepLifecycleError::AgentSession(e.to_string()))
+                .map_err(|e| NodeExecutionLifecycleError::AgentSession(e.to_string()))
         })
         .await
     }
@@ -236,11 +239,11 @@ impl WorkflowStepRuntimeGateway for TauriWorkflowStepLifecycleGateway {
     async fn close_runtime_on_step_done(
         &self,
         session_id: &str,
-    ) -> Result<(), WorkflowStepLifecycleError> {
+    ) -> Result<(), NodeExecutionLifecycleError> {
         self.runtime
             .close_session(session_id)
             .await
-            .map_err(|e| WorkflowStepLifecycleError::AgentSession(e.to_string()))
+            .map_err(|e| NodeExecutionLifecycleError::AgentSession(e.to_string()))
     }
 }
 
@@ -254,7 +257,7 @@ pub(crate) async fn release_step_runtime_on_done<R: tauri::Runtime>(
     runtime: &Arc<AgentSessionRuntimeUsecase>,
     session_id: &str,
 ) {
-    let runtime_gateway = TauriWorkflowStepRuntimeGateway {
+    let runtime_gateway = TauriNodeExecutionRuntimeGateway {
         app,
         runtime: runtime.as_ref(),
     };
@@ -273,7 +276,7 @@ mod tests {
     async fn release_step_runtime_on_done_state<F, Fut>(close_runtime: F)
     where
         F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = Result<(), WorkflowStepLifecycleError>>,
+        Fut: std::future::Future<Output = Result<(), NodeExecutionLifecycleError>>,
     {
         if let Err(_e) = close_runtime().await {
             log::warn!(
@@ -311,13 +314,13 @@ mod tests {
             runtime
                 .close_session(session_id)
                 .await
-                .map_err(|error| WorkflowStepLifecycleError::AgentSession(error.to_string()))?;
+                .map_err(|error| NodeExecutionLifecycleError::AgentSession(error.to_string()))?;
             Ok(())
         })
         .await;
     }
 
-    fn workflow_step_session_for_test(
+    fn workflow_node_session_for_test(
         session_id: &str,
     ) -> crate::usecase::agent_session::session::ChatSession {
         crate::usecase::agent_session::session::ChatSession {
@@ -346,8 +349,8 @@ mod tests {
             backend_id: Some(
                 crate::infrastructure::agent_session::claude::CLAUDE_BACKEND_ID.to_string(),
             ),
-            workflow_step_session: true,
-            workflow_step_context: None,
+            workflow_node_session: true,
+            workflow_node_context: None,
             context_epoch: None,
         }
     }
@@ -362,7 +365,7 @@ mod tests {
         session_store
             .save_full_session_for_migration_or_restore(
                 tmp.path(),
-                &workflow_step_session_for_test(&session_id),
+                &workflow_node_session_for_test(&session_id),
             )
             .unwrap();
         open_tabs.add(&session_id);
@@ -389,7 +392,7 @@ mod tests {
         session_store
             .save_full_session_for_migration_or_restore(
                 tmp.path(),
-                &workflow_step_session_for_test(&session_id),
+                &workflow_node_session_for_test(&session_id),
             )
             .unwrap();
         session_store
@@ -418,7 +421,7 @@ mod tests {
         session_store
             .save_full_session_for_migration_or_restore(
                 tmp.path(),
-                &workflow_step_session_for_test(&session_id),
+                &workflow_node_session_for_test(&session_id),
             )
             .unwrap();
 
@@ -446,7 +449,7 @@ mod tests {
         let open_tabs = OpenTabRegistry::default();
         let handles = runtime_for_test();
         let session_id = uuid::Uuid::new_v4().to_string();
-        let mut session = workflow_step_session_for_test(&session_id);
+        let mut session = workflow_node_session_for_test(&session_id);
         session.state = SessionState::Closed;
 
         session_store
@@ -499,50 +502,6 @@ mod tests {
         assert!(!should_release_runtime_on_tab_close(&handles, "step").await);
     }
 
-    fn workflow_state_for_test(session_id: &str) -> crate::domain::workflow::WorkflowStateSnapshot {
-        use crate::domain::workflow::{
-            StepHistoryEntry, TokenUsage, WorkflowDefinition, WorkflowExecutionState,
-            WorkflowStateSnapshot,
-        };
-        use std::collections::HashMap;
-        WorkflowStateSnapshot {
-            execution_id: "exec-1".to_string(),
-            workflow_name: "wf".to_string(),
-            state: WorkflowExecutionState::Completed,
-            current_step_index: 0,
-            current_step_name: "done".to_string(),
-            current_session_id: Some(session_id.to_string()),
-            total_steps: 1,
-            step_history: vec![StepHistoryEntry {
-                step_name: "done".to_string(),
-                completed_at: 1.0,
-                result: Some("ok".to_string()),
-                session_id: Some(session_id.to_string()),
-                token_usage: Some(TokenUsage::default()),
-                structured_output: None,
-                run_index: 1,
-                child_outputs: None,
-                state: crate::domain::workflow::value_objects::default_step_entry_state(),
-            }],
-            step_execution_counts: HashMap::new(),
-            workflow_definition: WorkflowDefinition {
-                name: "wf".to_string(),
-                description: String::new(),
-                builtin: false,
-                schemas: Default::default(),
-                nodes: vec![],
-            },
-            total_token_usage: TokenUsage::default(),
-            step_states: HashMap::new(),
-            step_outputs: HashMap::new(),
-            node_executions: vec![],
-            approval_operations: None,
-            stall_observations: Vec::new(),
-            started_at: 0.0,
-            updated_at: 1.0,
-        }
-    }
-
     #[tokio::test]
     async fn release_on_step_done_releases_runtime_without_closing_step() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -554,7 +513,7 @@ mod tests {
         session_store
             .save_full_session_for_migration_or_restore(
                 tmp.path(),
-                &workflow_step_session_for_test(&session_id),
+                &workflow_node_session_for_test(&session_id),
             )
             .unwrap();
         open_tabs.add(&session_id);
@@ -562,14 +521,8 @@ mod tests {
 
         release_on_step_done_for_test(&handles, &session_id).await;
 
-        let view = crate::adaptor::gateway::workflow::build_workflow_state_view_from_snapshot(
-            workflow_state_for_test(&session_id),
-            &handles,
-            &open_tabs,
-        )
-        .await;
-        assert!(!view.runtime_states[&session_id].runtime_active);
-        assert!(view.runtime_states[&session_id].tab_open);
+        assert!(!handles.has_live_runtime(&session_id).await);
+        assert!(open_tabs.contains(&session_id));
         let session = session_store
             .load_full_session_for_restore(tmp.path(), &session_id)
             .unwrap()
@@ -586,7 +539,7 @@ mod tests {
         let open_tabs = OpenTabRegistry::default();
         let handles = runtime_for_test();
         let session_id = uuid::Uuid::new_v4().to_string();
-        let mut session = workflow_step_session_for_test(&session_id);
+        let mut session = workflow_node_session_for_test(&session_id);
         session.state = SessionState::Closed;
 
         session_store
@@ -596,14 +549,8 @@ mod tests {
 
         release_on_step_done_for_test(&handles, &session_id).await;
 
-        let view = crate::adaptor::gateway::workflow::build_workflow_state_view_from_snapshot(
-            workflow_state_for_test(&session_id),
-            &handles,
-            &open_tabs,
-        )
-        .await;
-        assert!(!view.runtime_states[&session_id].runtime_active);
-        assert!(!view.runtime_states[&session_id].tab_open);
+        assert!(!handles.has_live_runtime(&session_id).await);
+        assert!(!open_tabs.contains(&session_id));
         let session = session_store
             .load_full_session_for_restore(tmp.path(), &session_id)
             .unwrap()
@@ -624,7 +571,7 @@ mod tests {
         session_store
             .save_full_session_for_migration_or_restore(
                 tmp.path(),
-                &workflow_step_session_for_test(&session_id),
+                &workflow_node_session_for_test(&session_id),
             )
             .unwrap();
         open_tabs.add(&session_id);
@@ -652,7 +599,7 @@ mod tests {
         session_store
             .save_full_session_for_migration_or_restore(
                 tmp.path(),
-                &workflow_step_session_for_test(&session_id),
+                &workflow_node_session_for_test(&session_id),
             )
             .unwrap();
         open_tabs.add(&session_id);
@@ -662,14 +609,8 @@ mod tests {
         try_close_step_session_tab_state(&session_store, tmp.path(), Some(&open_tabs), &session_id)
             .unwrap();
 
-        let view = crate::adaptor::gateway::workflow::build_workflow_state_view_from_snapshot(
-            workflow_state_for_test(&session_id),
-            &handles,
-            &open_tabs,
-        )
-        .await;
-        assert!(!view.runtime_states[&session_id].runtime_active);
-        assert!(!view.runtime_states[&session_id].tab_open);
+        assert!(!handles.has_live_runtime(&session_id).await);
+        assert!(!open_tabs.contains(&session_id));
     }
 
     // R4-01: Spec「runtime 起動中の step を再オープンしても runtime 状態は変化しない」
@@ -681,7 +622,7 @@ mod tests {
         let handles = runtime_for_test();
         let session_id = uuid::Uuid::new_v4().to_string();
 
-        let mut session = workflow_step_session_for_test(&session_id);
+        let mut session = workflow_node_session_for_test(&session_id);
         session.state = SessionState::Closed;
         session_store
             .save_full_session_for_migration_or_restore(tmp.path(), &session)
@@ -712,16 +653,16 @@ mod tests {
         session_store
             .save_full_session_for_migration_or_restore(
                 tmp.path(),
-                &workflow_step_session_for_test(&step_id),
+                &workflow_node_session_for_test(&step_id),
             )
             .unwrap();
         open_tabs.add(&step_id);
         insert_runtime(&handles, &step_id, TurnPhase::Idle, false).await;
 
-        // Non-workflow session (different id, workflow_step_session=false)
+        // Non-workflow session (different id, workflow_node_session=false)
         let non_workflow_id = uuid::Uuid::new_v4().to_string();
-        let mut non_workflow = workflow_step_session_for_test(&non_workflow_id);
-        non_workflow.workflow_step_session = false;
+        let mut non_workflow = workflow_node_session_for_test(&non_workflow_id);
+        non_workflow.workflow_node_session = false;
         session_store
             .save_full_session_for_migration_or_restore(tmp.path(), &non_workflow)
             .unwrap();
@@ -750,7 +691,7 @@ mod tests {
         session_store
             .save_full_session_for_migration_or_restore(
                 tmp.path(),
-                &workflow_step_session_for_test(&other_id),
+                &workflow_node_session_for_test(&other_id),
             )
             .unwrap();
         insert_runtime(&handles, &other_id, TurnPhase::Idle, false).await;
@@ -761,7 +702,7 @@ mod tests {
             open_step_session_tab_state(&session_store, tmp.path(), &open_tabs, &missing_id);
         assert!(matches!(
             result,
-            Err(WorkflowStepLifecycleError::SessionNotFound(_))
+            Err(NodeExecutionLifecycleError::SessionNotFound(_))
         ));
 
         // Runtime state for unrelated session is preserved
@@ -772,7 +713,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolver_accepts_workflow_step_session_flag_without_workflow_state_reference() {
+    async fn resolver_accepts_workflow_node_session_flag_without_workflow_state_reference() {
         let tmp = tempfile::TempDir::new().unwrap();
         let session_store = crate::test_support::build_session_store();
         let session_id = uuid::Uuid::new_v4().to_string();
@@ -780,13 +721,13 @@ mod tests {
         session_store
             .save_full_session_for_migration_or_restore(
                 tmp.path(),
-                &workflow_step_session_for_test(&session_id),
+                &workflow_node_session_for_test(&session_id),
             )
             .unwrap();
 
         let resolved = resolve_step_session_with_data_dir(&session_store, tmp.path(), &session_id)
             .unwrap()
-            .expect("workflow_step_session flag alone makes this a step session");
+            .expect("workflow_node_session flag alone makes this a step session");
 
         assert_eq!(resolved.session_id, session_id);
         assert_eq!(resolved.worktree_path, "/repo");

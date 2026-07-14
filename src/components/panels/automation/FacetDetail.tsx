@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import type { DiagnosticReport, FacetKind } from "@/types/workflow";
-import { DiagnosticItemRow } from "./DiagnosticBadge";
+import { DiagnosticViewRow } from "./DiagnosticBadge";
 import { extractTemplateVariables, facetKindToDirName } from "./utils";
 
 export function FacetDetail({
@@ -48,7 +48,7 @@ export function FacetDetail({
 				<div className="flex flex-col gap-1.5 rounded-md border border-border p-3">
 					<span className="text-xs font-medium">Diagnostics</span>
 					{diagnosticItems.map((item) => (
-						<DiagnosticItemRow
+						<DiagnosticViewRow
 							key={`${item.code}-${item.span?.start_line ?? "na"}-${item.span?.start_col ?? "na"}-${item.message}-${item.field ?? ""}`}
 							item={item}
 						/>
@@ -81,10 +81,10 @@ export function FacetDetail({
 					</span>
 					{usage.map((u) => (
 						<div
-							key={`${u.workflow_name}-${u.step_name}-${u.slot}`}
+							key={`${u.workflow_name}-${u.node_name}-${u.slot}`}
 							className="text-xs text-muted-foreground"
 						>
-							{u.workflow_name} → {u.step_name} ({u.slot})
+							{u.workflow_name} → {u.node_name} ({u.slot})
 						</div>
 					))}
 				</div>

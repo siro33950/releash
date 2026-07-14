@@ -293,8 +293,8 @@ mod tests {
             selected_model: None,
             permission_profile_id: None,
             backend_id: Some("codex".to_string()),
-            workflow_step_session: false,
-            workflow_step_context: None,
+            workflow_node_session: false,
+            workflow_node_context: None,
             context_epoch: None,
         }
     }

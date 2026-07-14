@@ -6,9 +6,7 @@ use crate::adaptor::gateway::workflow::pending_command::{
 };
 use crate::domain::agent_session::PermissionMode;
 use crate::domain::app_config::ConfigRepository;
-use crate::domain::workflow::{
-    TriggerSource, WorkflowDefinition, WorkflowError, WorkflowStateSnapshot,
-};
+use crate::domain::workflow::{WorkflowDefinition, WorkflowError, WorkflowRuntimeSnapshot};
 use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
 use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
@@ -16,14 +14,14 @@ use crate::usecase::agent_session::session::{MessagePart, OpenTabRegistry, Sessi
 use crate::usecase::agent_session::status::current_timestamp;
 use crate::usecase::repository_usecase::RepositoryUsecase;
 use crate::usecase::workflow::command::{
-    AbortRunCommand, ApprovalCommand, ResolvedStartRunCommand, SubmitOutputCommand,
+    AbortExecutionCommand, ApprovalCommand, ResolvedStartExecutionCommand, SubmitOutputCommand,
 };
 use crate::usecase::workflow::ports::{
     ApprovalChatTarget, PendingRuntimeCommand, PendingRuntimeCommandOutcome,
-    PendingRuntimeCommandPayload, WorkflowAbortRunGateway, WorkflowApprovalChatGateway,
+    PendingRuntimeCommandPayload, WorkflowAbortExecutionGateway, WorkflowApprovalChatGateway,
     WorkflowApprovalGateway, WorkflowPendingRuntimeCommandGateway, WorkflowRuntimeShutdownGateway,
     WorkflowRuntimeStateGateway, WorkflowStallObservedCommand, WorkflowStallObservedGateway,
-    WorkflowStartRunGateway, WorkflowSubmitOutputGateway, WorkflowTurnCompleteCommand,
+    WorkflowStartExecutionGateway, WorkflowSubmitOutputGateway, WorkflowTurnCompleteCommand,
     WorkflowTurnCompleteGateway, WorkflowTurnFailureSignal,
 };
 
@@ -95,9 +93,9 @@ impl TauriWorkflowRuntimeCommandGateway {
             let engine_for_init = engine.clone();
             let app_handle_for_init = app.clone();
             tauri::async_runtime::block_on(async move {
-                engine_for_init.set_run_store_data_dir(data_dir).await;
+                engine_for_init.set_execution_store_data_dir(data_dir).await;
                 let _ = engine_for_init
-                    .recover_orphan_runs(&app_handle_for_init)
+                    .recover_orphan_executions(&app_handle_for_init)
                     .await;
             });
         }
@@ -145,36 +143,36 @@ impl TauriWorkflowRuntimeCommandGateway {
 }
 
 #[async_trait::async_trait]
-impl WorkflowStartRunGateway for TauriWorkflowRuntimeCommandGateway {
-    async fn resolve_start_run_worktree(
+impl WorkflowStartExecutionGateway for TauriWorkflowRuntimeCommandGateway {
+    async fn resolve_start_execution_worktree(
         &self,
         worktree_path: String,
     ) -> Result<String, WorkflowError> {
         self.engine
-            .resolve_start_run_worktree(worktree_path)
+            .resolve_start_execution_worktree(worktree_path)
             .await
             .map_err(|err| WorkflowError::external(err.to_string()))
     }
 
-    async fn resolve_start_run_workflow(
+    async fn resolve_start_execution_workflow(
         &self,
         workflow_file_stem: &str,
     ) -> Result<WorkflowDefinition, WorkflowError> {
         let workflow = self
             .engine
-            .resolve_start_run_workflow(workflow_file_stem)
+            .resolve_start_execution_workflow(workflow_file_stem)
             .await
             .map_err(|err| WorkflowError::external(err.to_string()))?;
-        super::mapper::legacy_workflow_to_domain(workflow)
+        super::mapper::schema_workflow_to_domain(workflow)
     }
 
-    async fn start_resolved_run(
+    async fn start_resolved_execution(
         &self,
-        command: ResolvedStartRunCommand,
+        command: ResolvedStartExecutionCommand,
     ) -> Result<String, WorkflowError> {
         let permission_mode = PermissionMode::parse(&command.permission_mode)
             .map_err(|err| WorkflowError::validation(err.to_string()))?;
-        let workflow = super::mapper::domain_workflow_to_legacy(&command.workflow)?;
+        let workflow = super::mapper::domain_workflow_to_schema(&command.workflow)?;
         self.engine
             .start_resolved_workflow(
                 &self.app,
@@ -182,9 +180,8 @@ impl WorkflowStartRunGateway for TauriWorkflowRuntimeCommandGateway {
                 &self.agent_runtime,
                 workflow,
                 command.worktree_path,
-                &command.workflow_file_stem,
-                command.task,
-                domain_trigger_source_to_legacy(command.trigger_source),
+                command.request,
+                command.created_from,
                 permission_mode,
             )
             .await
@@ -193,14 +190,14 @@ impl WorkflowStartRunGateway for TauriWorkflowRuntimeCommandGateway {
 }
 
 #[async_trait::async_trait]
-impl WorkflowAbortRunGateway for TauriWorkflowRuntimeCommandGateway {
-    async fn abort_run(&self, command: AbortRunCommand) -> Result<(), WorkflowError> {
+impl WorkflowAbortExecutionGateway for TauriWorkflowRuntimeCommandGateway {
+    async fn abort_execution(&self, command: AbortExecutionCommand) -> Result<(), WorkflowError> {
         self.engine
-            .abort_workflow_run(
+            .abort_workflow_execution(
                 &self.app,
                 &self.session_store,
                 &self.agent_runtime,
-                &command.run_id,
+                &command.execution_id,
                 command.expected_node_name.as_deref(),
             )
             .await
@@ -216,7 +213,7 @@ impl WorkflowApprovalGateway for TauriWorkflowRuntimeCommandGateway {
                 &self.app,
                 &self.session_store,
                 &self.agent_runtime,
-                &command.run_id,
+                &command.execution_id,
                 command.comment,
                 &command.node_name,
                 command.node_execution_id.as_deref(),
@@ -234,11 +231,11 @@ impl WorkflowSubmitOutputGateway for TauriWorkflowRuntimeCommandGateway {
                 &self.app,
                 &self.session_store,
                 &self.agent_runtime,
-                &command.run_id,
-                command.step_name,
+                &command.execution_id,
+                command.node_name,
                 command.node_execution_id,
                 command.contract,
-                command.structured_output,
+                command.artifact,
                 None,
                 None,
             )
@@ -255,9 +252,9 @@ impl WorkflowPendingRuntimeCommandGateway for TauriWorkflowRuntimeCommandGateway
     ) -> PendingRuntimeCommandOutcome {
         let pending = PendingCommand {
             id: command.request_id,
-            run_id: command.run_id,
+            execution_id: command.execution_id,
             requested_at: command.requested_at,
-            payload: pending_runtime_payload_to_legacy(command.payload),
+            payload: pending_runtime_payload_to_gateway(command.payload),
         };
         dispatch_legacy_pending_command(
             &self.app,
@@ -357,13 +354,14 @@ impl WorkflowStallObservedGateway for TauriWorkflowRuntimeCommandGateway {
 
 #[async_trait::async_trait]
 impl WorkflowRuntimeStateGateway for TauriWorkflowRuntimeCommandGateway {
-    async fn get_state_by_run_id(
+    #[cfg(test)]
+    async fn get_state_by_execution_id(
         &self,
-        run_id: &str,
-    ) -> Result<Option<WorkflowStateSnapshot>, WorkflowError> {
+        execution_id: &str,
+    ) -> Result<Option<WorkflowRuntimeSnapshot>, WorkflowError> {
         Ok(self
             .engine
-            .get_state_by_run_id(run_id)
+            .get_state_by_execution_id(execution_id)
             .await
             .map(crate::adaptor::gateway::workflow::state::workflow_state_to_domain_snapshot))
     }
@@ -371,7 +369,7 @@ impl WorkflowRuntimeStateGateway for TauriWorkflowRuntimeCommandGateway {
     async fn get_state_by_worktree(
         &self,
         worktree_path: &str,
-    ) -> Result<Option<WorkflowStateSnapshot>, WorkflowError> {
+    ) -> Result<Option<WorkflowRuntimeSnapshot>, WorkflowError> {
         Ok(self
             .engine
             .get_state(worktree_path)
@@ -391,11 +389,11 @@ impl WorkflowRuntimeShutdownGateway for TauriWorkflowRuntimeCommandGateway {
 impl WorkflowApprovalChatGateway for TauriWorkflowRuntimeCommandGateway {
     async fn resolve_approval_chat_target(
         &self,
-        run_id: &str,
+        execution_id: &str,
     ) -> Result<ApprovalChatTarget, WorkflowError> {
         let (chat_session_id, worktree_path) = self
             .engine
-            .resolve_chat_session_for_approval(run_id)
+            .resolve_chat_session_for_approval(execution_id)
             .await
             .map_err(|err| WorkflowError::external(err.to_string()))?;
         Ok(ApprovalChatTarget {
@@ -416,20 +414,7 @@ impl WorkflowApprovalChatGateway for TauriWorkflowRuntimeCommandGateway {
     }
 }
 
-fn domain_trigger_source_to_legacy(
-    source: TriggerSource,
-) -> crate::adaptor::gateway::workflow::run::TriggerSource {
-    match source {
-        TriggerSource::DesktopUi => {
-            crate::adaptor::gateway::workflow::run::TriggerSource::DesktopUi
-        }
-        TriggerSource::Remote => crate::adaptor::gateway::workflow::run::TriggerSource::Remote,
-        TriggerSource::Cli => crate::adaptor::gateway::workflow::run::TriggerSource::Cli,
-        TriggerSource::Agent => crate::adaptor::gateway::workflow::run::TriggerSource::Agent,
-    }
-}
-
-fn pending_runtime_payload_to_legacy(
+fn pending_runtime_payload_to_gateway(
     payload: PendingRuntimeCommandPayload,
 ) -> PendingCommandPayload {
     match payload {
@@ -446,15 +431,15 @@ fn pending_runtime_payload_to_legacy(
             PendingCommandPayload::Abort { node_name }
         }
         PendingRuntimeCommandPayload::SubmitOutput {
-            step_name,
+            node_name,
             node_execution_id,
             contract,
-            structured_output,
+            artifact,
         } => PendingCommandPayload::SubmitOutput {
-            step_name,
+            node_name,
             node_execution_id,
             contract,
-            structured_output,
+            artifact,
         },
     }
 }
@@ -476,29 +461,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn maps_trigger_source_to_legacy_vocab() {
-        assert_eq!(
-            domain_trigger_source_to_legacy(TriggerSource::DesktopUi),
-            crate::adaptor::gateway::workflow::run::TriggerSource::DesktopUi
-        );
-        assert_eq!(
-            domain_trigger_source_to_legacy(TriggerSource::Remote),
-            crate::adaptor::gateway::workflow::run::TriggerSource::Remote
-        );
-        assert_eq!(
-            domain_trigger_source_to_legacy(TriggerSource::Cli),
-            crate::adaptor::gateway::workflow::run::TriggerSource::Cli
-        );
-        assert_eq!(
-            domain_trigger_source_to_legacy(TriggerSource::Agent),
-            crate::adaptor::gateway::workflow::run::TriggerSource::Agent
-        );
-    }
-
-    #[test]
     fn pending_payload_mapping_preserves_node_execution_address() {
         assert_eq!(
-            pending_runtime_payload_to_legacy(PendingRuntimeCommandPayload::Approve {
+            pending_runtime_payload_to_gateway(PendingRuntimeCommandPayload::Approve {
                 node_name: "review".to_string(),
                 node_execution_id: Some("node-execution-review".to_string()),
                 comment: None,
@@ -510,17 +475,17 @@ mod tests {
             }
         );
         assert_eq!(
-            pending_runtime_payload_to_legacy(PendingRuntimeCommandPayload::SubmitOutput {
-                step_name: "review".to_string(),
+            pending_runtime_payload_to_gateway(PendingRuntimeCommandPayload::SubmitOutput {
+                node_name: "review".to_string(),
                 node_execution_id: Some("node-execution-review".to_string()),
                 contract: "review-verdict".to_string(),
-                structured_output: serde_json::json!({"verdict": "LGTM"}),
+                artifact: serde_json::json!({"verdict": "LGTM"}),
             }),
             PendingCommandPayload::SubmitOutput {
-                step_name: "review".to_string(),
+                node_name: "review".to_string(),
                 node_execution_id: Some("node-execution-review".to_string()),
                 contract: "review-verdict".to_string(),
-                structured_output: serde_json::json!({"verdict": "LGTM"}),
+                artifact: serde_json::json!({"verdict": "LGTM"}),
             }
         );
     }

@@ -14,14 +14,14 @@ pub(crate) trait PendingCommandRuntime<R: tauri::Runtime>: Send + Sync {
     fn artifact_produced_already_recorded(
         &self,
         app: &tauri::AppHandle<R>,
-        run_id: &str,
+        execution_id: &str,
         request_id: &str,
     ) -> Result<bool, WorkflowEngineError>;
 
     fn cli_mutation_already_recorded(
         &self,
         app: &tauri::AppHandle<R>,
-        run_id: &str,
+        execution_id: &str,
         request_id: &str,
     ) -> Result<bool, WorkflowEngineError>;
 
@@ -29,7 +29,7 @@ pub(crate) trait PendingCommandRuntime<R: tauri::Runtime>: Send + Sync {
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        run_id: &str,
+        execution_id: &str,
     ) -> Result<(), WorkflowEngineError>;
 
     async fn resolve_workflow_approval_with_commit_context(
@@ -37,19 +37,19 @@ pub(crate) trait PendingCommandRuntime<R: tauri::Runtime>: Send + Sync {
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
-        run_id: &str,
+        execution_id: &str,
         comment: Option<String>,
         node_name: &str,
         node_execution_id: Option<&str>,
         commit_context: Option<CommandCommitContext>,
     ) -> Result<(), WorkflowEngineError>;
 
-    async fn abort_workflow_run_with_commit_context(
+    async fn abort_workflow_execution_with_commit_context(
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
-        run_id: &str,
+        execution_id: &str,
         expected_node_name: Option<&str>,
         commit_context: Option<CommandCommitContext>,
     ) -> Result<(), WorkflowEngineError>;
@@ -59,11 +59,11 @@ pub(crate) trait PendingCommandRuntime<R: tauri::Runtime>: Send + Sync {
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
-        run_id: &str,
-        step_name: String,
+        execution_id: &str,
+        node_name: String,
         node_execution_id: Option<String>,
         contract: String,
-        structured_output: serde_json::Value,
+        artifact: serde_json::Value,
         request_id: Option<String>,
         submitted_at: Option<f64>,
     ) -> Result<(), WorkflowEngineError>;
@@ -77,7 +77,7 @@ pub(crate) trait PendingCommandRuntime<R: tauri::Runtime>: Send + Sync {
     async fn append_cli_mutation_rejected_for_submit_output(
         &self,
         app: &tauri::AppHandle<R>,
-        run_id: &str,
+        execution_id: &str,
         commit_context: &CommandCommitContext,
         error: &WorkflowEngineError,
     ) -> Result<(), WorkflowEngineError>;
@@ -99,31 +99,31 @@ where
     fn artifact_produced_already_recorded(
         &self,
         app: &tauri::AppHandle<R>,
-        run_id: &str,
+        execution_id: &str,
         request_id: &str,
     ) -> Result<bool, WorkflowEngineError> {
         self.as_ref()
-            .artifact_produced_already_recorded(app, run_id, request_id)
+            .artifact_produced_already_recorded(app, execution_id, request_id)
     }
 
     fn cli_mutation_already_recorded(
         &self,
         app: &tauri::AppHandle<R>,
-        run_id: &str,
+        execution_id: &str,
         request_id: &str,
     ) -> Result<bool, WorkflowEngineError> {
         self.as_ref()
-            .cli_mutation_already_recorded(app, run_id, request_id)
+            .cli_mutation_already_recorded(app, execution_id, request_id)
     }
 
     async fn ensure_execution_loaded_for_external(
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        run_id: &str,
+        execution_id: &str,
     ) -> Result<(), WorkflowEngineError> {
         self.as_ref()
-            .ensure_execution_loaded_for_external(app, session_store, run_id)
+            .ensure_execution_loaded_for_external(app, session_store, execution_id)
             .await
     }
 
@@ -132,7 +132,7 @@ where
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
-        run_id: &str,
+        execution_id: &str,
         comment: Option<String>,
         node_name: &str,
         node_execution_id: Option<&str>,
@@ -143,7 +143,7 @@ where
                 app,
                 session_store,
                 agent_runtime,
-                run_id,
+                execution_id,
                 comment,
                 node_name,
                 node_execution_id,
@@ -152,21 +152,21 @@ where
             .await
     }
 
-    async fn abort_workflow_run_with_commit_context(
+    async fn abort_workflow_execution_with_commit_context(
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
-        run_id: &str,
+        execution_id: &str,
         expected_node_name: Option<&str>,
         commit_context: Option<CommandCommitContext>,
     ) -> Result<(), WorkflowEngineError> {
         self.as_ref()
-            .abort_workflow_run_with_commit_context(
+            .abort_workflow_execution_with_commit_context(
                 app,
                 session_store,
                 agent_runtime,
-                run_id,
+                execution_id,
                 expected_node_name,
                 commit_context,
             )
@@ -178,11 +178,11 @@ where
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
-        run_id: &str,
-        step_name: String,
+        execution_id: &str,
+        node_name: String,
         node_execution_id: Option<String>,
         contract: String,
-        structured_output: serde_json::Value,
+        artifact: serde_json::Value,
         request_id: Option<String>,
         submitted_at: Option<f64>,
     ) -> Result<(), WorkflowEngineError> {
@@ -191,11 +191,11 @@ where
                 app,
                 session_store,
                 agent_runtime,
-                run_id,
-                step_name,
+                execution_id,
+                node_name,
                 node_execution_id,
                 contract,
-                structured_output,
+                artifact,
                 request_id,
                 submitted_at,
             )
@@ -215,12 +215,17 @@ where
     async fn append_cli_mutation_rejected_for_submit_output(
         &self,
         app: &tauri::AppHandle<R>,
-        run_id: &str,
+        execution_id: &str,
         commit_context: &CommandCommitContext,
         error: &WorkflowEngineError,
     ) -> Result<(), WorkflowEngineError> {
         self.as_ref()
-            .append_cli_mutation_rejected_for_submit_output(app, run_id, commit_context, error)
+            .append_cli_mutation_rejected_for_submit_output(
+                app,
+                execution_id,
+                commit_context,
+                error,
+            )
             .await
     }
 
@@ -241,32 +246,37 @@ impl<R: tauri::Runtime> PendingCommandRuntime<R> for WorkflowRuntimeService {
     fn artifact_produced_already_recorded(
         &self,
         app: &tauri::AppHandle<R>,
-        run_id: &str,
+        execution_id: &str,
         request_id: &str,
     ) -> Result<bool, WorkflowEngineError> {
-        WorkflowRuntimeService::artifact_produced_already_recorded(self, app, run_id, request_id)
+        WorkflowRuntimeService::artifact_produced_already_recorded(
+            self,
+            app,
+            execution_id,
+            request_id,
+        )
     }
 
     fn cli_mutation_already_recorded(
         &self,
         app: &tauri::AppHandle<R>,
-        run_id: &str,
+        execution_id: &str,
         request_id: &str,
     ) -> Result<bool, WorkflowEngineError> {
-        WorkflowRuntimeService::cli_mutation_already_recorded(self, app, run_id, request_id)
+        WorkflowRuntimeService::cli_mutation_already_recorded(self, app, execution_id, request_id)
     }
 
     async fn ensure_execution_loaded_for_external(
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
-        run_id: &str,
+        execution_id: &str,
     ) -> Result<(), WorkflowEngineError> {
         WorkflowRuntimeService::ensure_execution_loaded_for_external(
             self,
             app,
             session_store,
-            run_id,
+            execution_id,
         )
         .await
     }
@@ -276,7 +286,7 @@ impl<R: tauri::Runtime> PendingCommandRuntime<R> for WorkflowRuntimeService {
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
-        run_id: &str,
+        execution_id: &str,
         comment: Option<String>,
         node_name: &str,
         node_execution_id: Option<&str>,
@@ -287,7 +297,7 @@ impl<R: tauri::Runtime> PendingCommandRuntime<R> for WorkflowRuntimeService {
             app,
             session_store,
             agent_runtime,
-            run_id,
+            execution_id,
             comment,
             node_name,
             node_execution_id,
@@ -296,21 +306,21 @@ impl<R: tauri::Runtime> PendingCommandRuntime<R> for WorkflowRuntimeService {
         .await
     }
 
-    async fn abort_workflow_run_with_commit_context(
+    async fn abort_workflow_execution_with_commit_context(
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
-        run_id: &str,
+        execution_id: &str,
         expected_node_name: Option<&str>,
         commit_context: Option<CommandCommitContext>,
     ) -> Result<(), WorkflowEngineError> {
-        WorkflowRuntimeService::abort_workflow_run_with_commit_context(
+        WorkflowRuntimeService::abort_workflow_execution_with_commit_context(
             self,
             app,
             session_store,
             agent_runtime,
-            run_id,
+            execution_id,
             expected_node_name,
             commit_context,
         )
@@ -322,11 +332,11 @@ impl<R: tauri::Runtime> PendingCommandRuntime<R> for WorkflowRuntimeService {
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
-        run_id: &str,
-        step_name: String,
+        execution_id: &str,
+        node_name: String,
         node_execution_id: Option<String>,
         contract: String,
-        structured_output: serde_json::Value,
+        artifact: serde_json::Value,
         request_id: Option<String>,
         submitted_at: Option<f64>,
     ) -> Result<(), WorkflowEngineError> {
@@ -335,11 +345,11 @@ impl<R: tauri::Runtime> PendingCommandRuntime<R> for WorkflowRuntimeService {
             app,
             session_store,
             agent_runtime,
-            run_id,
-            step_name,
+            execution_id,
+            node_name,
             node_execution_id,
             contract,
-            structured_output,
+            artifact,
             request_id,
             submitted_at,
         )
@@ -357,14 +367,14 @@ impl<R: tauri::Runtime> PendingCommandRuntime<R> for WorkflowRuntimeService {
     async fn append_cli_mutation_rejected_for_submit_output(
         &self,
         app: &tauri::AppHandle<R>,
-        run_id: &str,
+        execution_id: &str,
         commit_context: &CommandCommitContext,
         error: &WorkflowEngineError,
     ) -> Result<(), WorkflowEngineError> {
         WorkflowRuntimeService::append_cli_mutation_rejected_for_submit_output(
             self,
             app,
-            run_id,
+            execution_id,
             commit_context,
             error,
         )

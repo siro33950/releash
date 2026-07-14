@@ -139,13 +139,14 @@ export interface AgentStallObservation {
 	capReached: boolean;
 }
 
-interface WorkflowStepContext {
-	runId: string;
+interface WorkflowNodeContext {
+	executionId: string;
 	workflowName: string;
-	stepName: string;
-	runIndex: number;
-	parentStepName?: string | null;
-	parentRunIndex?: number | null;
+	nodeExecutionId: string;
+	nodeName: string;
+	attempt: number;
+	parentNodeName?: string | null;
+	parentAttempt?: number | null;
 	order: number;
 }
 
@@ -288,8 +289,8 @@ export interface ChatSession {
 	planMode?: PlanMode;
 	permissionProfileId?: string | null;
 	backendId?: string | null;
-	workflowStepSession?: boolean;
-	workflowStepContext?: WorkflowStepContext | null;
+	workflowNodeSession?: boolean;
+	workflowNodeContext?: WorkflowNodeContext | null;
 }
 
 export function getTextContent(parts: MessagePart[]): string {
@@ -313,8 +314,8 @@ export interface SessionSummary {
 	planMode?: PlanMode;
 	permissionProfileId?: string | null;
 	backendId?: string | null;
-	workflowStepSession?: boolean;
-	workflowStepContext?: WorkflowStepContext | null;
+	workflowNodeSession?: boolean;
+	workflowNodeContext?: WorkflowNodeContext | null;
 }
 
 export interface BackendInfo {
@@ -357,8 +358,11 @@ export interface SessionStatus {
 	pending_permission: boolean;
 	pending_permission_request?: PermissionRequest | null;
 	last_activity_at: number;
-	workflow_step?: string | null;
-	workflow_execution_state?: string | null;
+	workflow_execution_id?: string | null;
+	node_execution_id?: string | null;
+	workflow_node?: string | null;
+	workflow_attempt?: number | null;
+	workflow_execution_status?: string | null;
 }
 
 /**

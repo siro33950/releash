@@ -11,8 +11,8 @@ use crate::domain::workflow::value_objects::{
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ContractLookupError {
-    RunNotFound { run_id: String },
-    InvalidRunStartedPayload { details: String },
+    ExecutionNotFound { execution_id: String },
+    InvalidExecutionStartedPayload { details: String },
     NoArtifactContract { workflow_name: String, node: String },
 }
 
@@ -25,10 +25,7 @@ pub struct ArtifactSubmittedSnapshot {
     pub timestamp: f64,
 }
 
-pub fn lookup_node_artifact_contract(
-    workflow: &WorkflowDefinition,
-    node_name: &str,
-) -> Option<String> {
+pub fn lookup_node_contract(workflow: &WorkflowDefinition, node_name: &str) -> Option<String> {
     for node in &workflow.nodes {
         if node.name == node_name {
             return node
@@ -54,7 +51,7 @@ pub fn validate_artifact_value(
     match contract_schema::validate(&value, schema, schemas) {
         Ok(()) => ContractValidationResult::Valid {
             result: infer_result(&value),
-            structured_output: value,
+            artifact: value,
         },
         Err(violations) => ContractValidationResult::Invalid(ContractViolation {
             reason: "schema_violation".to_string(),
@@ -65,7 +62,7 @@ pub fn validate_artifact_value(
 
 pub fn build_missing_artifact_repair_prompt(
     cli_alias: &str,
-    run_id: &str,
+    execution_id: &str,
     node_name: &str,
     contract: &str,
 ) -> String {
@@ -73,7 +70,7 @@ pub fn build_missing_artifact_repair_prompt(
         "The required Artifact for this workflow node has not been submitted.\n\n\
 Submit it by running this command with a JSON value that satisfies the `{contract}` schema:\n\n\
 ```sh\n\
-{cli_alias} workflow output submit {run_id} \\\n  --node {node_name} \\\n  --type {contract} \\\n  --json '{{...}}'\n\
+{cli_alias} workflow output submit {execution_id} \\\n  --node {node_name} \\\n  --type {contract} \\\n  --json '{{...}}'\n\
 ```\n\n\
 Do not create a temporary JSON file for this. Do not finish the node until the command succeeds."
     )
@@ -81,7 +78,7 @@ Do not create a temporary JSON file for this. Do not finish the node until the c
 
 pub fn build_schema_violation_repair_prompt(
     cli_alias: &str,
-    run_id: &str,
+    execution_id: &str,
     node_name: &str,
     contract: &str,
     violations: &[SchemaViolation],
@@ -92,7 +89,7 @@ pub fn build_schema_violation_repair_prompt(
 Schema violations:\n{details}\n\n\
 Submit a corrected Artifact with:\n\n\
 ```sh\n\
-{cli_alias} workflow output submit {run_id} \\\n  --node {node_name} \\\n  --type {contract} \\\n  --json '{{...}}'\n\
+{cli_alias} workflow output submit {execution_id} \\\n  --node {node_name} \\\n  --type {contract} \\\n  --json '{{...}}'\n\
 ```"
     )
 }
@@ -164,9 +161,9 @@ mod contract_service_tests {
     }
 
     #[test]
-    fn test_lookup_node_artifact_contract_top_level_fanout_childも探索する() {
+    fn test_lookup_node_contract_top_level_fanout_childも探索する() {
         assert_eq!(
-            lookup_node_artifact_contract(&workflow(), "child").as_deref(),
+            lookup_node_contract(&workflow(), "child").as_deref(),
             Some("review")
         );
     }

@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listClosedSessions } from "@/hooks/useSessionStore";
 import type { SessionStatus } from "@/types/session";
-import type { WorkflowStatePayload } from "@/types/workflow";
+import type { WorkflowExecutionChangedPayload } from "@/types/workflow";
 import type {
 	WorkspaceSessionHistoryItem,
 	WorkspaceTreeNode,
@@ -86,7 +86,7 @@ export function useWorkspaceTreeNodes(
 			errorWorktreePathRef.current = null;
 			updateNodes(nextNodes);
 			setClosedSessions(
-				nextClosedSessions.filter((session) => !session.workflowStepSession),
+				nextClosedSessions.filter((session) => !session.workflowNodeSession),
 			);
 			setWorkflowHistory(nextWorkflowHistory);
 			setError(null);
@@ -121,8 +121,8 @@ export function useWorkspaceTreeNodes(
 			if (node.kind === "session") {
 				return node.id === sessionId;
 			}
-			return node.steps.some((step) =>
-				step.sessions.some((session) => session.id === sessionId),
+			return node.nodeExecutions.some((execution) =>
+				execution.sessions.some((session) => session.id === sessionId),
 			);
 		});
 	}, []);
@@ -170,14 +170,15 @@ export function useWorkspaceTreeNodes(
 			}
 			unlistenStatus = nextUnlistenStatus;
 
-			const nextUnlistenWorkflow = await listen<WorkflowStatePayload>(
-				"workflow-state-changed",
-				(event) => {
-					if (!mounted) return;
-					if (event.payload.worktreePath !== worktreePath) return;
-					scheduleRefresh();
-				},
-			);
+			const nextUnlistenWorkflow =
+				await listen<WorkflowExecutionChangedPayload>(
+					"workflow-execution-changed",
+					(event) => {
+						if (!mounted) return;
+						if (event.payload.worktreePath !== worktreePath) return;
+						scheduleRefresh();
+					},
+				);
 			if (!mounted) {
 				nextUnlistenWorkflow();
 				return;

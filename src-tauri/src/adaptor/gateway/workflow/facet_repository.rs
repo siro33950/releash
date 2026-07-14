@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::adaptor::gateway::workflow::{builtin, facet as legacy_facet, prompt_rendering};
+use crate::adaptor::gateway::workflow::{builtin, facet as gateway_facet, prompt_rendering};
 use crate::domain::workflow::{FacetKind, FacetRepository, FacetSummary, WorkflowError};
 
 use super::mapper;
@@ -20,13 +20,13 @@ impl WorkflowFacetFileRepository {
 
 impl FacetRepository for WorkflowFacetFileRepository {
     fn list(&self, kind: FacetKind) -> Result<Vec<String>, WorkflowError> {
-        legacy_facet::list_facets(mapper::domain_facet_kind_to_legacy(kind), &self.base_dir)
+        gateway_facet::list_facets(mapper::domain_facet_kind_to_gateway(kind), &self.base_dir)
             .map_err(|e| WorkflowError::external(e.to_string()))
     }
 
     fn get(&self, kind: FacetKind, key: &str) -> Result<String, WorkflowError> {
-        legacy_facet::load_facet(
-            mapper::domain_facet_kind_to_legacy(kind),
+        gateway_facet::load_facet(
+            mapper::domain_facet_kind_to_gateway(kind),
             key,
             &self.base_dir,
         )
@@ -40,8 +40,8 @@ impl FacetRepository for WorkflowFacetFileRepository {
         content: &str,
         is_new: bool,
     ) -> Result<(), WorkflowError> {
-        let legacy_kind = mapper::domain_facet_kind_to_legacy(kind);
-        if builtin::is_builtin_facet(legacy_kind, key) {
+        let gateway_kind = mapper::domain_facet_kind_to_gateway(kind);
+        if builtin::is_builtin_facet(gateway_kind, key) {
             return Err(WorkflowError::validation(
                 "ビルトインファセットは編集できません",
             ));
@@ -58,13 +58,13 @@ impl FacetRepository for WorkflowFacetFileRepository {
                 "ファセット '{key}' は既に存在します"
             )));
         }
-        legacy_facet::save_facet(legacy_kind, key, content, &self.base_dir)
+        gateway_facet::save_facet(gateway_kind, key, content, &self.base_dir)
             .map_err(|e| WorkflowError::external(e.to_string()))
     }
 
     fn delete(&self, kind: FacetKind, key: &str) -> Result<(), WorkflowError> {
-        legacy_facet::delete_facet(
-            mapper::domain_facet_kind_to_legacy(kind),
+        gateway_facet::delete_facet(
+            mapper::domain_facet_kind_to_gateway(kind),
             key,
             &self.base_dir,
         )
@@ -72,15 +72,15 @@ impl FacetRepository for WorkflowFacetFileRepository {
     }
 
     fn list_summaries(&self, kind: FacetKind) -> Result<Vec<FacetSummary>, WorkflowError> {
-        legacy_facet::list_facet_summaries(
-            mapper::domain_facet_kind_to_legacy(kind),
+        gateway_facet::list_facet_summaries(
+            mapper::domain_facet_kind_to_gateway(kind),
             &self.base_dir,
         )
         .map_err(|e| WorkflowError::external(e.to_string()))
         .map(|summaries| {
             summaries
                 .into_iter()
-                .map(mapper::legacy_facet_summary_to_domain)
+                .map(mapper::gateway_facet_summary_to_domain)
                 .collect()
         })
     }

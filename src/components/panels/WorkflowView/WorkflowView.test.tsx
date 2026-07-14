@@ -9,17 +9,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionStatus } from "@/types/session";
 import type {
 	CenterSelection,
-	WorkspaceWorkflowStepDetail,
+	WorkspaceWorkflowNodeDetail,
 } from "@/types/workspace-tree";
 
-const useWorkspaceWorkflowStepDetailMock = vi.fn();
-const submitWorkspaceWorkflowStepActionMock = vi.fn();
+const useWorkspaceWorkflowNodeDetailMock = vi.fn();
+const submitWorkspaceWorkflowNodeActionMock = vi.fn();
 
-vi.mock("@/hooks/useWorkspaceWorkflowStepDetail", () => ({
-	useWorkspaceWorkflowStepDetail: (input: unknown) =>
-		useWorkspaceWorkflowStepDetailMock(input),
-	submitWorkspaceWorkflowStepAction: (input: unknown) =>
-		submitWorkspaceWorkflowStepActionMock(input),
+vi.mock("@/hooks/useWorkspaceWorkflowNodeDetail", () => ({
+	useWorkspaceWorkflowNodeDetail: (input: unknown) =>
+		useWorkspaceWorkflowNodeDetailMock(input),
+	submitWorkspaceWorkflowNodeAction: (input: unknown) =>
+		submitWorkspaceWorkflowNodeActionMock(input),
 }));
 
 const worktreeSessionStatusesMock =
@@ -91,29 +91,27 @@ class ResizeObserverMock {
 }
 
 const selection: CenterSelection = {
-	kind: "workflowStep",
+	kind: "workflowNode",
 	worktreePath: "/repo",
-	runId: "run-1",
-	stepId: "run-1:review:1",
-	stepName: "review",
+	executionId: "execution-1",
+	nodeExecutionId: "node-review-1",
+	nodeName: "review",
 };
 
-function stepDetail(
-	overrides: Partial<WorkspaceWorkflowStepDetail> = {},
-): WorkspaceWorkflowStepDetail {
+function nodeDetail(
+	overrides: Partial<WorkspaceWorkflowNodeDetail> = {},
+): WorkspaceWorkflowNodeDetail {
 	return {
-		kind: "step",
-		id: "run-1:review:1",
-		runId: "run-1",
+		kind: "node",
+		nodeExecutionId: "node-review-1",
+		executionId: "execution-1",
 		worktreePath: "/repo",
 		title: "review",
 		nodeName: "review",
 		status: "running",
-		stepType: "fanout",
+		nodeKind: "fanout",
 		updatedAt: 1000,
-		runIndex: 1,
 		attempt: 1,
-		nodeExecutionId: "ne-review",
 		sessions: [
 			{
 				kind: "session",
@@ -122,9 +120,10 @@ function stepDetail(
 				title: "Pane A",
 				state: "active",
 				updatedAt: 1000,
-				workflowStepSession: true,
-				stepName: "review-a",
-				runIndex: 1,
+				workflowNodeSession: true,
+				nodeExecutionId: "node-review-a-1",
+				nodeName: "review-a",
+				attempt: 1,
 				agentState: "running",
 			},
 			{
@@ -134,9 +133,10 @@ function stepDetail(
 				title: "Pane B",
 				state: "active",
 				updatedAt: 1001,
-				workflowStepSession: true,
-				stepName: "review-b",
-				runIndex: 1,
+				workflowNodeSession: true,
+				nodeExecutionId: "node-review-b-1",
+				nodeName: "review-b",
+				attempt: 1,
 				agentState: "waiting",
 			},
 		],
@@ -144,8 +144,8 @@ function stepDetail(
 	};
 }
 
-function stepDetailState(overrides: Partial<WorkspaceWorkflowStepDetail> = {}) {
-	return { detail: stepDetail(overrides), loading: false, error: null };
+function nodeDetailState(overrides: Partial<WorkspaceWorkflowNodeDetail> = {}) {
+	return { detail: nodeDetail(overrides), loading: false, error: null };
 }
 
 function setElementSize(
@@ -163,7 +163,7 @@ function setElementSize(
 }
 
 function triggerWorkflowGridResize(width: number, height: number) {
-	const grid = screen.getByTestId("workflow-step-grid");
+	const grid = screen.getByTestId("workflow-node-grid");
 	const container = grid.parentElement as HTMLElement;
 	setElementSize(container, { width, height });
 	act(() => {
@@ -176,20 +176,20 @@ function triggerWorkflowGridResize(width: number, height: number) {
 
 function gridSessions(count: number) {
 	return Array.from({ length: count }, (_, index) => ({
-		...stepDetail().sessions[0],
+		...nodeDetail().sessions[0],
 		id: `session-${index + 1}`,
 		title: `Pane ${index + 1}`,
-		stepName: `review-${index + 1}`,
+		nodeName: `review-${index + 1}`,
 		updatedAt: 1_000 + index,
 	}));
 }
 
 describe("WorkflowView", () => {
 	beforeEach(() => {
-		useWorkspaceWorkflowStepDetailMock.mockReset();
-		useWorkspaceWorkflowStepDetailMock.mockReturnValue(stepDetailState());
-		submitWorkspaceWorkflowStepActionMock.mockReset();
-		submitWorkspaceWorkflowStepActionMock.mockResolvedValue(stepDetail());
+		useWorkspaceWorkflowNodeDetailMock.mockReset();
+		useWorkspaceWorkflowNodeDetailMock.mockReturnValue(nodeDetailState());
+		submitWorkspaceWorkflowNodeActionMock.mockReset();
+		submitWorkspaceWorkflowNodeActionMock.mockResolvedValue(nodeDetail());
 		worktreeSessionStatusesMock.mockReset();
 		worktreeSessionStatusesMock.mockReturnValue(
 			new Map([
@@ -201,14 +201,14 @@ describe("WorkflowView", () => {
 		vi.stubGlobal("ResizeObserver", ResizeObserverMock);
 	});
 
-	it("renders the selected workflow Step as an equal grid of Session panes", async () => {
+	it("renders the selected workflow node as an equal grid of session panes", async () => {
 		render(<WorkflowView worktreePath="/repo" selectionRequest={selection} />);
 		const { container, grid } = triggerWorkflowGridResize(700, 800);
 
-		expect(useWorkspaceWorkflowStepDetailMock).toHaveBeenCalledWith({
+		expect(useWorkspaceWorkflowNodeDetailMock).toHaveBeenCalledWith({
 			worktreePath: "/repo",
-			runId: "run-1",
-			stepId: "run-1:review:1",
+			executionId: "execution-1",
+			nodeExecutionId: "node-review-1",
 		});
 		expect(screen.getByText("review")).toBeInTheDocument();
 		expect(screen.getByText("fanout")).toBeInTheDocument();
@@ -219,7 +219,7 @@ describe("WorkflowView", () => {
 				gridTemplateRows: "repeat(1, 784px)",
 			});
 		});
-		const tiles = screen.getAllByTestId("workflow-step-grid-tile");
+		const tiles = screen.getAllByTestId("workflow-node-grid-tile");
 		expect(tiles).toHaveLength(2);
 		for (const tile of tiles) {
 			expect(tile).toHaveClass("overflow-hidden");
@@ -235,15 +235,15 @@ describe("WorkflowView", () => {
 		expect(screen.getByText("Pane B")).toBeInTheDocument();
 		expect(screen.getByTitle("running")).toBeInTheDocument();
 		expect(screen.getByTitle("waiting")).toBeInTheDocument();
-		expect(screen.queryByTestId("workflow-step-tab-list")).toBeNull();
-		expect(screen.queryByTestId("workflow-step-detail")).toBeNull();
+		expect(screen.queryByTestId("workflow-node-tab-list")).toBeNull();
+		expect(screen.queryByTestId("workflow-node-detail")).toBeNull();
 		expect(screen.queryByText("Event log")).toBeNull();
 		expect(screen.queryByRole("button", { name: /Close tab/ })).toBeNull();
 	});
 
-	it("lays out four Step sessions as two fixed-height rows", async () => {
-		useWorkspaceWorkflowStepDetailMock.mockReturnValue(
-			stepDetailState({ sessions: gridSessions(4) }),
+	it("lays out four node sessions as two fixed-height rows", async () => {
+		useWorkspaceWorkflowNodeDetailMock.mockReturnValue(
+			nodeDetailState({ sessions: gridSessions(4) }),
 		);
 
 		render(<WorkflowView worktreePath="/repo" selectionRequest={selection} />);
@@ -255,12 +255,12 @@ describe("WorkflowView", () => {
 				gridTemplateRows: "repeat(2, 388px)",
 			});
 		});
-		expect(screen.getAllByTestId("workflow-step-grid-tile")).toHaveLength(4);
+		expect(screen.getAllByTestId("workflow-node-grid-tile")).toHaveLength(4);
 	});
 
-	it("renders an empty state inside the grid for a Step without sessions", () => {
-		useWorkspaceWorkflowStepDetailMock.mockReturnValue(
-			stepDetailState({ sessions: [] }),
+	it("renders an empty state inside the grid for a node without sessions", () => {
+		useWorkspaceWorkflowNodeDetailMock.mockReturnValue(
+			nodeDetailState({ sessions: [] }),
 		);
 
 		render(<WorkflowView worktreePath="/repo" selectionRequest={selection} />);
@@ -268,16 +268,16 @@ describe("WorkflowView", () => {
 		expect(
 			screen.getByText("No agent conversation for this node."),
 		).toBeInTheDocument();
-		expect(screen.getAllByTestId("workflow-step-grid-tile")).toHaveLength(1);
+		expect(screen.getAllByTestId("workflow-node-grid-tile")).toHaveLength(1);
 		expect(screen.queryByTestId(/^bound-session-chat-/)).toBeNull();
 	});
 
-	it("renders the Step type from the Rust DTO instead of deriving it from status or session count", () => {
-		useWorkspaceWorkflowStepDetailMock.mockReturnValue(
-			stepDetailState({
+	it("renders the node kind from the Rust DTO instead of deriving it from status or session count", () => {
+		useWorkspaceWorkflowNodeDetailMock.mockReturnValue(
+			nodeDetailState({
 				status: "completed",
-				stepType: "session",
-				sessions: [stepDetail().sessions[0]],
+				nodeKind: "session",
+				sessions: [nodeDetail().sessions[0]],
 			}),
 		);
 
@@ -288,11 +288,11 @@ describe("WorkflowView", () => {
 	});
 
 	it("shows only Approve while an approval-gated session is waiting", () => {
-		useWorkspaceWorkflowStepDetailMock.mockReturnValue(
-			stepDetailState({
+		useWorkspaceWorkflowNodeDetailMock.mockReturnValue(
+			nodeDetailState({
 				status: "waiting",
 				canApprove: true,
-				sessions: [stepDetail().sessions[0]],
+				sessions: [nodeDetail().sessions[0]],
 			}),
 		);
 
@@ -303,10 +303,10 @@ describe("WorkflowView", () => {
 	});
 
 	it("does not show Approve for a waiting session without an approval gate", () => {
-		useWorkspaceWorkflowStepDetailMock.mockReturnValue(
-			stepDetailState({
+		useWorkspaceWorkflowNodeDetailMock.mockReturnValue(
+			nodeDetailState({
 				status: "waiting",
-				sessions: [stepDetail().sessions[0]],
+				sessions: [nodeDetail().sessions[0]],
 			}),
 		);
 
@@ -315,12 +315,12 @@ describe("WorkflowView", () => {
 		expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
 	});
 
-	it("submits Approve from the Step header", async () => {
-		useWorkspaceWorkflowStepDetailMock.mockReturnValue(
-			stepDetailState({
+	it("submits Approve from the node header", async () => {
+		useWorkspaceWorkflowNodeDetailMock.mockReturnValue(
+			nodeDetailState({
 				status: "waiting",
 				canApprove: true,
-				sessions: [stepDetail().sessions[0]],
+				sessions: [nodeDetail().sessions[0]],
 			}),
 		);
 
@@ -328,27 +328,29 @@ describe("WorkflowView", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Approve" }));
 
 		await waitFor(() => {
-			expect(submitWorkspaceWorkflowStepActionMock).toHaveBeenCalledWith({
+			expect(submitWorkspaceWorkflowNodeActionMock).toHaveBeenCalledWith({
 				worktreePath: "/repo",
-				runId: "run-1",
-				stepId: "run-1:review:1",
-				stepName: "review",
-				nodeExecutionId: "ne-review",
+				executionId: "execution-1",
+				nodeExecutionId: "node-review-1",
+				nodeName: "review",
 			});
 		});
 	});
 
 	it("shows NodeExecution identity, fanout coordinates, session, and artifact", () => {
-		useWorkspaceWorkflowStepDetailMock.mockReturnValue(
-			stepDetailState({
-				id: "ne-review-item-2",
+		useWorkspaceWorkflowNodeDetailMock.mockReturnValue(
+			nodeDetailState({
 				nodeExecutionId: "ne-review-item-2",
 				nodeName: "review",
 				title: "review",
-				stepType: "session",
+				nodeKind: "session",
 				attempt: 2,
 				sessionId: "session-item-2",
-				artifact: { verdict: "pass" },
+				artifact: {
+					nodeName: "review",
+					value: { verdict: "pass" },
+					producedAt: 2_000,
+				},
 				fanoutParent: {
 					parentNode: "parallel-review",
 					parentAttempt: 1,
@@ -374,14 +376,14 @@ describe("WorkflowView", () => {
 	});
 
 	it("keeps the action error icon after closing the error popup", async () => {
-		useWorkspaceWorkflowStepDetailMock.mockReturnValue(
-			stepDetailState({
+		useWorkspaceWorkflowNodeDetailMock.mockReturnValue(
+			nodeDetailState({
 				status: "waiting",
 				canApprove: true,
-				sessions: [stepDetail().sessions[0]],
+				sessions: [nodeDetail().sessions[0]],
 			}),
 		);
-		submitWorkspaceWorkflowStepActionMock.mockRejectedValue(
+		submitWorkspaceWorkflowNodeActionMock.mockRejectedValue(
 			new Error("approval failed"),
 		);
 
@@ -402,8 +404,8 @@ describe("WorkflowView", () => {
 		expect(await screen.findByText("approval failed")).toBeInTheDocument();
 	});
 
-	it("shows an unavailable state when no Step is selected", () => {
-		useWorkspaceWorkflowStepDetailMock.mockReturnValue({
+	it("shows an unavailable state when no node is selected", () => {
+		useWorkspaceWorkflowNodeDetailMock.mockReturnValue({
 			detail: null,
 			loading: false,
 			error: null,
@@ -411,16 +413,16 @@ describe("WorkflowView", () => {
 
 		render(<WorkflowView worktreePath="/repo" />);
 
-		expect(screen.getByText("Step unavailable")).toBeInTheDocument();
-		expect(useWorkspaceWorkflowStepDetailMock).toHaveBeenCalledWith({
+		expect(screen.getByText("Node unavailable")).toBeInTheDocument();
+		expect(useWorkspaceWorkflowNodeDetailMock).toHaveBeenCalledWith({
 			worktreePath: null,
-			runId: null,
-			stepId: null,
+			executionId: null,
+			nodeExecutionId: null,
 		});
 	});
 
-	it("shows the requested Step loading and error states without stale detail", () => {
-		useWorkspaceWorkflowStepDetailMock.mockReturnValue({
+	it("shows the requested node loading and error states without stale detail", () => {
+		useWorkspaceWorkflowNodeDetailMock.mockReturnValue({
 			detail: null,
 			loading: true,
 			error: null,
@@ -430,10 +432,10 @@ describe("WorkflowView", () => {
 			<WorkflowView worktreePath="/repo" selectionRequest={selection} />,
 		);
 
-		expect(screen.getByText("Loading Step...")).toBeInTheDocument();
+		expect(screen.getByText("Loading Node...")).toBeInTheDocument();
 		expect(screen.queryByText("review")).toBeNull();
 
-		useWorkspaceWorkflowStepDetailMock.mockReturnValue({
+		useWorkspaceWorkflowNodeDetailMock.mockReturnValue({
 			detail: null,
 			loading: false,
 			error: "detail failed",
@@ -442,7 +444,7 @@ describe("WorkflowView", () => {
 			<WorkflowView worktreePath="/repo" selectionRequest={selection} />,
 		);
 
-		expect(screen.getByText("Step unavailable")).toBeInTheDocument();
+		expect(screen.getByText("Node unavailable")).toBeInTheDocument();
 		expect(screen.getByText("detail failed")).toBeInTheDocument();
 		expect(screen.queryByText("review")).toBeNull();
 	});

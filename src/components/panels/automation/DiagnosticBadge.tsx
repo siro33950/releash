@@ -1,5 +1,5 @@
 import { AlertCircle, AlertTriangle, Info } from "lucide-react";
-import type { DiagnosticItem, DiagnosticSummary } from "@/types/workflow";
+import type { DiagnosticSummary, DiagnosticView } from "@/types/workflow";
 
 export function DiagnosticBadge({ summary }: { summary?: DiagnosticSummary }) {
 	if (!summary) return null;
@@ -29,7 +29,7 @@ export function DiagnosticBadge({ summary }: { summary?: DiagnosticSummary }) {
 	);
 }
 
-export function DiagnosticItemRow({ item }: { item: DiagnosticItem }) {
+export function DiagnosticViewRow({ item }: { item: DiagnosticView }) {
 	const icon =
 		item.severity === "error" ? (
 			<AlertCircle className="size-3 text-destructive shrink-0" />

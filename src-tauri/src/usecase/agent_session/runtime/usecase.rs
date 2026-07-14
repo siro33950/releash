@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
@@ -1044,13 +1044,13 @@ impl AgentSessionRuntimeUsecase {
             .list_sessions(&self.ctx.data_dir, worktree_path)
             .map_err(AgentRuntimeError::Other)?;
         for session in &sessions {
-            if session.is_workflow_step_session() && session.state != SessionState::Closed {
+            if session.is_workflow_node_session() && session.state != SessionState::Closed {
                 open_tabs.add(&session.id);
             }
         }
         let active_candidate = sessions
             .iter()
-            .find(|session| !session.is_workflow_step_session())
+            .find(|session| !session.is_workflow_node_session())
             .map(|session| session.id.clone());
         let active_mode = active_candidate.as_deref().and_then(|session_id| {
             sessions
@@ -1086,15 +1086,6 @@ impl AgentSessionRuntimeUsecase {
 
     pub async fn has_live_runtime(&self, session_id: &str) -> bool {
         self.live_runtime(session_id).await.is_some()
-    }
-
-    pub async fn active_session_ids(&self, candidates: &[String]) -> HashSet<String> {
-        let sessions = self.ctx.sessions.lock().await;
-        candidates
-            .iter()
-            .filter(|id| sessions.contains_key(*id))
-            .cloned()
-            .collect()
     }
 
     pub async fn acquire_session_lock(&self, session_id: &str) -> SessionRuntimeLockGuard {
@@ -2027,7 +2018,7 @@ async fn open_runtime_for_session(
             }
         }
     });
-    let extra_env = workflow_execution_env(session.workflow_step_context.as_ref());
+    let extra_env = workflow_execution_env(session.workflow_node_context.as_ref());
     let mut runtime = backend
         .open_session(SessionSpec {
             session_id: session.id.clone(),
@@ -2063,14 +2054,14 @@ async fn open_runtime_for_session(
 }
 
 fn workflow_execution_env(
-    context: Option<&crate::usecase::agent_session::session::WorkflowStepContextDto>,
+    context: Option<&crate::usecase::agent_session::session::WorkflowNodeContextDto>,
 ) -> Vec<(String, String)> {
     context
         .map(|context| {
             vec![
                 (
                     "RELEASH_WORKFLOW_EXECUTION_ID".to_string(),
-                    context.run_id.clone(),
+                    context.execution_id.clone(),
                 ),
                 (
                     "RELEASH_NODE_EXECUTION_ID".to_string(),
@@ -4279,8 +4270,8 @@ fn publish_status_change(
         .session_state
         .unwrap_or_else(|| session.state.clone());
     let worktree_path = session.worktree_path.clone();
-    let workflow_context = session.workflow_step_context.clone();
-    let workflow_execution_state = match change.turn_phase {
+    let workflow_context = session.workflow_node_context.clone();
+    let workflow_execution_status = match change.turn_phase {
         TurnPhase::Streaming | TurnPhase::WaitingPermission => {
             workflow_context.as_ref().map(|_| "running".to_string())
         }
@@ -4300,15 +4291,18 @@ fn publish_status_change(
         pending_permission: matches!(change.turn_phase, TurnPhase::WaitingPermission),
         pending_permission_request: change.pending_permission_request,
         last_activity_at: crate::usecase::agent_session::session::now_timestamp(),
-        workflow_step: workflow_context
+        workflow_node: workflow_context
             .as_ref()
-            .map(|context| context.step_name.clone()),
-        workflow_execution_state,
+            .map(|context| context.node_name.clone()),
+        workflow_execution_status,
         workflow_execution_id: workflow_context
             .as_ref()
-            .map(|context| context.run_id.clone()),
-        workflow_run_index: workflow_context.as_ref().map(|context| context.run_index),
-        workflow_step_progress: None,
+            .map(|context| context.execution_id.clone()),
+        node_execution_id: workflow_context
+            .as_ref()
+            .map(|context| context.node_execution_id.clone()),
+        workflow_attempt: workflow_context.as_ref().map(|context| context.attempt),
+        workflow_node_progress: None,
     };
     status_notifier.status_changed(status_center.update_session(status));
 }
@@ -4329,8 +4323,8 @@ fn session_telemetry_dimensions(
             &session.permission_mode,
         ),
         model: crate::other::telemetry::ModelFamily::normalize(session.selected_model.as_deref()),
-        context: crate::other::telemetry::TurnContext::from_workflow_step(
-            session.is_workflow_step_session(),
+        context: crate::other::telemetry::TurnContext::from_workflow_node(
+            session.is_workflow_node_session(),
         ),
         channel: crate::other::telemetry::Payload::TauriEvent,
         warm_path: crate::other::telemetry::WarmPath::QueryDirect,
@@ -4446,7 +4440,7 @@ mod tests {
     use crate::domain::agent_session::value_objects::{
         BackendCapabilities, ModelDescriptor, SkillEntry,
     };
-    use crate::domain::workflow::WorkflowStepContext;
+    use crate::domain::workflow::WorkflowNodeContext;
     use crate::test_support::{
         build_agent_runtime_usecase_with_controller,
         build_agent_runtime_usecase_with_controller_and_notifiers, build_session_store,
@@ -4499,8 +4493,8 @@ mod tests {
 
     #[test]
     fn workflow_execution_env_includes_run_and_node_execution_ids() {
-        let context = crate::usecase::agent_session::session::workflow_step_context_mapper::to_dto(
-            workflow_step_context(None, None, None),
+        let context = crate::usecase::agent_session::session::workflow_node_context_mapper::to_dto(
+            workflow_node_context(None, None, None),
         );
 
         assert_eq!(
@@ -4900,19 +4894,19 @@ mod tests {
         }
     }
 
-    fn workflow_step_context(
+    fn workflow_node_context(
         startup_timeout_secs: Option<u64>,
         startup_max_retries: Option<u32>,
         stale_timeout_secs: Option<u64>,
-    ) -> WorkflowStepContext {
-        WorkflowStepContext {
-            run_id: "run-1".to_string(),
+    ) -> WorkflowNodeContext {
+        WorkflowNodeContext {
+            execution_id: "run-1".to_string(),
             node_execution_id: "node-execution-1".to_string(),
             workflow_name: "workflow".to_string(),
-            step_name: "step".to_string(),
-            run_index: 0,
-            parent_step_name: None,
-            parent_run_index: None,
+            node_name: "step".to_string(),
+            attempt: 0,
+            parent_node_name: None,
+            parent_attempt: None,
             order: 1,
             startup_timeout_secs,
             startup_max_retries,
@@ -5001,8 +4995,8 @@ mod tests {
             SessionCreationAttributes {
                 selected_model: Some("claude-4-sonnet".to_string()),
                 plan_mode: false,
-                workflow_step_session: false,
-                workflow_step_context: None,
+                workflow_node_session: false,
+                workflow_node_context: None,
             },
         )
         .unwrap();
@@ -5077,8 +5071,8 @@ mod tests {
             SessionCreationAttributes {
                 selected_model: Some("claude-4-sonnet".to_string()),
                 plan_mode: false,
-                workflow_step_session: false,
-                workflow_step_context: None,
+                workflow_node_session: false,
+                workflow_node_context: None,
             },
         )
         .unwrap();
@@ -5140,8 +5134,8 @@ mod tests {
             SessionCreationAttributes {
                 selected_model: Some("claude-4-sonnet".to_string()),
                 plan_mode: false,
-                workflow_step_session: false,
-                workflow_step_context: None,
+                workflow_node_session: false,
+                workflow_node_context: None,
             },
         )
         .unwrap();
@@ -5702,8 +5696,8 @@ mod tests {
             SessionCreationAttributes {
                 selected_model: Some("claude-4-sonnet".to_string()),
                 plan_mode: false,
-                workflow_step_session: false,
-                workflow_step_context: None,
+                workflow_node_session: false,
+                workflow_node_context: None,
             },
         )
         .unwrap();
@@ -6121,7 +6115,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_init_sessionsは_workflow_step_tabを復元し_active_session_modeを返す() {
+    async fn test_init_sessionsは_workflow_node_tabを復元し_active_session_modeを返す() {
         let tmp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(build_session_store());
         let (usecase, _controller) =
@@ -6138,8 +6132,8 @@ mod tests {
             SessionCreationAttributes {
                 selected_model: Some("claude-4-sonnet".to_string()),
                 plan_mode: true,
-                workflow_step_session: false,
-                workflow_step_context: None,
+                workflow_node_session: false,
+                workflow_node_context: None,
             },
         )
         .unwrap();
@@ -6152,8 +6146,8 @@ mod tests {
             SessionCreationAttributes {
                 selected_model: Some("claude-4-sonnet".to_string()),
                 plan_mode: false,
-                workflow_step_session: true,
-                workflow_step_context: Some(workflow_step_context(None, None, None)),
+                workflow_node_session: true,
+                workflow_node_context: Some(workflow_node_context(None, None, None)),
             },
         )
         .unwrap();
@@ -6198,8 +6192,8 @@ mod tests {
             SessionCreationAttributes {
                 selected_model: Some("claude-4-sonnet".to_string()),
                 plan_mode: false,
-                workflow_step_session: false,
-                workflow_step_context: None,
+                workflow_node_session: false,
+                workflow_node_context: None,
             },
         )
         .unwrap();
@@ -6243,8 +6237,8 @@ mod tests {
             SessionCreationAttributes {
                 selected_model: Some("claude-4-sonnet".to_string()),
                 plan_mode: false,
-                workflow_step_session: false,
-                workflow_step_context: None,
+                workflow_node_session: false,
+                workflow_node_context: None,
             },
         )
         .unwrap();
@@ -6290,8 +6284,8 @@ mod tests {
             SessionCreationAttributes {
                 selected_model: Some("claude-4-sonnet".to_string()),
                 plan_mode: false,
-                workflow_step_session: false,
-                workflow_step_context: None,
+                workflow_node_session: false,
+                workflow_node_context: None,
             },
         )
         .unwrap();
@@ -6367,8 +6361,8 @@ mod tests {
             SessionCreationAttributes {
                 selected_model: Some("claude-4-sonnet".to_string()),
                 plan_mode: false,
-                workflow_step_session: false,
-                workflow_step_context: None,
+                workflow_node_session: false,
+                workflow_node_context: None,
             },
         )
         .unwrap();
@@ -6643,8 +6637,8 @@ mod tests {
             SessionCreationAttributes {
                 selected_model: Some("claude-4-sonnet".to_string()),
                 plan_mode: false,
-                workflow_step_session: true,
-                workflow_step_context: Some(workflow_step_context(None, None, Some(0))),
+                workflow_node_session: true,
+                workflow_node_context: Some(workflow_node_context(None, None, Some(0))),
             },
         )
         .unwrap();
@@ -7296,8 +7290,8 @@ mod tests {
             SessionCreationAttributes {
                 selected_model: Some("claude-4-sonnet".to_string()),
                 plan_mode: false,
-                workflow_step_session: false,
-                workflow_step_context: None,
+                workflow_node_session: false,
+                workflow_node_context: None,
             },
         )
         .unwrap();
@@ -7378,8 +7372,8 @@ mod tests {
             SessionCreationAttributes {
                 selected_model: Some("claude-4-sonnet".to_string()),
                 plan_mode: false,
-                workflow_step_session: false,
-                workflow_step_context: None,
+                workflow_node_session: false,
+                workflow_node_context: None,
             },
         )
         .unwrap();
@@ -7472,8 +7466,8 @@ mod tests {
             SessionCreationAttributes {
                 selected_model: Some("claude-4-sonnet".to_string()),
                 plan_mode: false,
-                workflow_step_session: false,
-                workflow_step_context: None,
+                workflow_node_session: false,
+                workflow_node_context: None,
             },
         )
         .unwrap();
@@ -7532,8 +7526,8 @@ mod tests {
             SessionCreationAttributes {
                 selected_model: Some("claude-4-sonnet".to_string()),
                 plan_mode: false,
-                workflow_step_session: true,
-                workflow_step_context: Some(workflow_step_context(Some(12), Some(3), Some(44))),
+                workflow_node_session: true,
+                workflow_node_context: Some(workflow_node_context(Some(12), Some(3), Some(44))),
             },
         )
         .unwrap();
@@ -7587,8 +7581,8 @@ mod tests {
             SessionCreationAttributes {
                 selected_model: Some("claude-4-sonnet".to_string()),
                 plan_mode: false,
-                workflow_step_session: true,
-                workflow_step_context: Some(workflow_step_context(None, None, Some(0))),
+                workflow_node_session: true,
+                workflow_node_context: Some(workflow_node_context(None, None, Some(0))),
             },
         )
         .unwrap();
@@ -7681,8 +7675,8 @@ mod tests {
             SessionCreationAttributes {
                 selected_model: Some("claude-4-sonnet".to_string()),
                 plan_mode: false,
-                workflow_step_session: true,
-                workflow_step_context: Some(workflow_step_context(None, None, Some(0))),
+                workflow_node_session: true,
+                workflow_node_context: Some(workflow_node_context(None, None, Some(0))),
             },
         )
         .unwrap();
@@ -7761,8 +7755,8 @@ mod tests {
             SessionCreationAttributes {
                 selected_model: Some("claude-4-sonnet".to_string()),
                 plan_mode: false,
-                workflow_step_session: true,
-                workflow_step_context: Some(workflow_step_context(None, None, Some(0))),
+                workflow_node_session: true,
+                workflow_node_context: Some(workflow_node_context(None, None, Some(0))),
             },
         )
         .unwrap();
@@ -7843,8 +7837,8 @@ mod tests {
             SessionCreationAttributes {
                 selected_model: Some("claude-4-sonnet".to_string()),
                 plan_mode: false,
-                workflow_step_session: true,
-                workflow_step_context: Some(workflow_step_context(None, None, None)),
+                workflow_node_session: true,
+                workflow_node_context: Some(workflow_node_context(None, None, None)),
             },
         )
         .unwrap();
@@ -7940,8 +7934,8 @@ mod tests {
             SessionCreationAttributes {
                 selected_model: Some("claude-4-sonnet".to_string()),
                 plan_mode: false,
-                workflow_step_session: true,
-                workflow_step_context: Some(workflow_step_context(None, None, None)),
+                workflow_node_session: true,
+                workflow_node_context: Some(workflow_node_context(None, None, None)),
             },
         )
         .unwrap();
@@ -8000,8 +7994,8 @@ mod tests {
             SessionCreationAttributes {
                 selected_model: Some("claude-4-sonnet".to_string()),
                 plan_mode: false,
-                workflow_step_session: true,
-                workflow_step_context: Some(workflow_step_context(None, None, None)),
+                workflow_node_session: true,
+                workflow_node_context: Some(workflow_node_context(None, None, None)),
             },
         )
         .unwrap();
@@ -8082,8 +8076,8 @@ mod tests {
             SessionCreationAttributes {
                 selected_model: Some("claude-4-sonnet".to_string()),
                 plan_mode: false,
-                workflow_step_session: true,
-                workflow_step_context: Some(workflow_step_context(None, None, Some(0))),
+                workflow_node_session: true,
+                workflow_node_context: Some(workflow_node_context(None, None, Some(0))),
             },
         )
         .unwrap();
@@ -8152,8 +8146,8 @@ mod tests {
             SessionCreationAttributes {
                 selected_model: Some("claude-4-sonnet".to_string()),
                 plan_mode: false,
-                workflow_step_session: true,
-                workflow_step_context: Some(workflow_step_context(None, None, Some(0))),
+                workflow_node_session: true,
+                workflow_node_context: Some(workflow_node_context(None, None, Some(0))),
             },
         )
         .unwrap();
@@ -8228,8 +8222,8 @@ mod tests {
             SessionCreationAttributes {
                 selected_model: Some("claude-4-sonnet".to_string()),
                 plan_mode: false,
-                workflow_step_session: true,
-                workflow_step_context: Some(workflow_step_context(None, None, Some(1))),
+                workflow_node_session: true,
+                workflow_node_context: Some(workflow_node_context(None, None, Some(1))),
             },
         )
         .unwrap();
@@ -8293,8 +8287,8 @@ mod tests {
             SessionCreationAttributes {
                 selected_model: Some("claude-4-sonnet".to_string()),
                 plan_mode: false,
-                workflow_step_session: true,
-                workflow_step_context: Some(workflow_step_context(None, None, Some(0))),
+                workflow_node_session: true,
+                workflow_node_context: Some(workflow_node_context(None, None, Some(0))),
             },
         )
         .unwrap();
@@ -8356,8 +8350,8 @@ mod tests {
             SessionCreationAttributes {
                 selected_model: Some("claude-4-sonnet".to_string()),
                 plan_mode: false,
-                workflow_step_session: true,
-                workflow_step_context: Some(workflow_step_context(None, None, Some(0))),
+                workflow_node_session: true,
+                workflow_node_context: Some(workflow_node_context(None, None, Some(0))),
             },
         )
         .unwrap();

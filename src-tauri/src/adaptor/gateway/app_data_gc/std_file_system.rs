@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use crate::adaptor::gateway::workflow::WorkflowRunArchiveFileRepository;
+use crate::adaptor::gateway::workflow::WorkflowExecutionArchiveFileRepository;
 use crate::usecase::app_data_gc::{
     gc_file_system_error, GcFileSystem, GcFileSystemError, WorkflowArchivePruneResult,
     WorkflowArchivePruner,
@@ -71,10 +71,10 @@ impl WorkflowArchivePruner for StdWorkflowArchivePruner {
     fn prune_workflow_archive_records(
         &self,
         app_data_dir: &Path,
-        run_ids: &HashSet<String>,
+        execution_ids: &HashSet<String>,
     ) -> Result<WorkflowArchivePruneResult, GcFileSystemError> {
-        let result = WorkflowRunArchiveFileRepository::new(app_data_dir)
-            .prune_records(run_ids)
+        let result = WorkflowExecutionArchiveFileRepository::new(app_data_dir)
+            .prune_records(execution_ids)
             .map_err(|error| GcFileSystemError::other(error.to_string()))?;
         Ok(WorkflowArchivePruneResult {
             records_removed: result.records_removed,

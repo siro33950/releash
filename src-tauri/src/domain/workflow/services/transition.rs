@@ -1,7 +1,7 @@
 //! Pure workflow transition decisions.
 
 use crate::domain::workflow::value_objects::{
-    NodeKindName, SessionGate, WorkflowDefinition, WorkflowExecutionState, WorkflowStepFailureKind,
+    NodeExecutionFailureKind, NodeKindName, RuntimeExecutionState, SessionGate, WorkflowDefinition,
 };
 use crate::domain::workflow::WorkflowError;
 
@@ -10,7 +10,7 @@ pub enum TurnCompleteDecision {
     SessionError {
         node_name: String,
         exit_code: i64,
-        kind: WorkflowStepFailureKind,
+        kind: NodeExecutionFailureKind,
     },
     AutoEvaluate {
         node_name: String,
@@ -28,7 +28,7 @@ pub enum TurnCompleteMutationPlan {
     SessionError {
         node_name: String,
         exit_code: i64,
-        kind: WorkflowStepFailureKind,
+        kind: NodeExecutionFailureKind,
         history_result: String,
         failure_reason: String,
     },
@@ -49,15 +49,15 @@ pub enum TurnCompleteMutationPlan {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ApprovalApplication {
     pub effective_result: String,
-    pub structured_output: Option<serde_json::Value>,
-    pub artifact_contract: Option<String>,
+    pub artifact: Option<serde_json::Value>,
+    pub contract: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ApprovalCompletion {
     pub result: String,
-    pub structured_output: Option<serde_json::Value>,
-    pub artifact_contract: Option<String>,
+    pub artifact: Option<serde_json::Value>,
+    pub contract: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -77,15 +77,15 @@ pub enum SessionFailureSignal {
 pub fn classify_session_error(
     exit_code: i64,
     signal: Option<SessionFailureSignal>,
-) -> WorkflowStepFailureKind {
+) -> NodeExecutionFailureKind {
     match signal {
         #[cfg(test)]
-        Some(SessionFailureSignal::Timeout) => WorkflowStepFailureKind::StaleRuntimeTimeout,
+        Some(SessionFailureSignal::Timeout) => NodeExecutionFailureKind::StaleRuntimeTimeout,
         #[cfg(test)]
-        Some(SessionFailureSignal::Crash) => WorkflowStepFailureKind::InfrastructureCrash,
-        Some(SessionFailureSignal::ModelRefusal) => WorkflowStepFailureKind::ModelRefusal,
-        None if exit_code == 124 => WorkflowStepFailureKind::StaleRuntimeTimeout,
-        None => WorkflowStepFailureKind::InfrastructureCrash,
+        Some(SessionFailureSignal::Crash) => NodeExecutionFailureKind::InfrastructureCrash,
+        Some(SessionFailureSignal::ModelRefusal) => NodeExecutionFailureKind::ModelRefusal,
+        None if exit_code == 124 => NodeExecutionFailureKind::StaleRuntimeTimeout,
+        None => NodeExecutionFailureKind::InfrastructureCrash,
     }
 }
 
@@ -93,7 +93,7 @@ pub fn classify_session_error(
 pub fn decide_turn_complete_action(
     workflow: &WorkflowDefinition,
     current_index: usize,
-    state: &WorkflowExecutionState,
+    state: &RuntimeExecutionState,
     exit_code: i64,
 ) -> Result<TurnCompleteDecision, WorkflowError> {
     decide_turn_complete_action_with_signal(workflow, current_index, state, exit_code, None)
@@ -102,11 +102,11 @@ pub fn decide_turn_complete_action(
 pub fn decide_turn_complete_action_with_signal(
     workflow: &WorkflowDefinition,
     current_index: usize,
-    state: &WorkflowExecutionState,
+    state: &RuntimeExecutionState,
     exit_code: i64,
     signal: Option<SessionFailureSignal>,
 ) -> Result<TurnCompleteDecision, WorkflowError> {
-    if !matches!(state, WorkflowExecutionState::Running) {
+    if !matches!(state, RuntimeExecutionState::Running) {
         return Ok(TurnCompleteDecision::NotRunning);
     }
 
@@ -142,7 +142,7 @@ pub fn decide_turn_complete_action_with_signal(
 pub fn plan_turn_complete_mutation(
     workflow: &WorkflowDefinition,
     current_index: usize,
-    state: &WorkflowExecutionState,
+    state: &RuntimeExecutionState,
     exit_code: i64,
 ) -> Result<TurnCompleteMutationPlan, WorkflowError> {
     plan_turn_complete_mutation_with_signal(workflow, current_index, state, exit_code, None)
@@ -151,7 +151,7 @@ pub fn plan_turn_complete_mutation(
 pub fn plan_turn_complete_mutation_with_signal(
     workflow: &WorkflowDefinition,
     current_index: usize,
-    state: &WorkflowExecutionState,
+    state: &RuntimeExecutionState,
     exit_code: i64,
     signal: Option<SessionFailureSignal>,
 ) -> Result<TurnCompleteMutationPlan, WorkflowError> {
@@ -165,7 +165,7 @@ pub fn plan_turn_complete_mutation_with_signal(
         } => TurnCompleteMutationPlan::SessionError {
             history_result: format!("error (exit_code: {exit_code})"),
             failure_reason: format!(
-                "AgentSession error at step '{node_name}' (exit_code: {exit_code})"
+                "AgentSession error at node '{node_name}' (exit_code: {exit_code})"
             ),
             node_name,
             exit_code,
@@ -192,7 +192,7 @@ pub fn plan_turn_complete_mutation_with_signal(
             kind,
         } => TurnCompleteMutationPlan::UnexpectedNodeKind {
             failure_reason: format!(
-                "Workflow engine reached turn_complete for unexpected node kind {kind:?} at step '{node_name}' (this should have been rejected upstream)"
+                "Workflow engine reached turn_complete for unexpected node kind {kind:?} at node '{node_name}' (this should have been rejected upstream)"
             ),
             node_name,
             kind,
@@ -205,9 +205,9 @@ pub fn plan_turn_complete_mutation_with_signal(
 pub fn decide_approve_action(
     workflow: &WorkflowDefinition,
     current_index: usize,
-    state: &WorkflowExecutionState,
+    state: &RuntimeExecutionState,
 ) -> Result<(), WorkflowError> {
-    if !matches!(state, WorkflowExecutionState::WaitingApproval) {
+    if !matches!(state, RuntimeExecutionState::WaitingApproval) {
         return Err(WorkflowError::invalid_state(
             "Workflow is not waiting for approval",
         ));
@@ -218,7 +218,7 @@ pub fn decide_approve_action(
     })?;
     if !node.is_approval_session() {
         return Err(WorkflowError::UnauthorizedApprovalTarget(
-            "current step is not an approval-gated session".to_string(),
+            "current node is not an approval-gated session".to_string(),
         ));
     }
     Ok(())
@@ -227,15 +227,15 @@ pub fn decide_approve_action(
 pub fn plan_approval_application(
     workflow: &WorkflowDefinition,
     current_index: usize,
-    state: &WorkflowExecutionState,
+    state: &RuntimeExecutionState,
     application: ApprovalApplication,
 ) -> Result<ApprovalApplicationPlan, WorkflowError> {
     decide_approve_action(workflow, current_index, state)?;
     Ok(ApprovalApplicationPlan {
         completion: ApprovalCompletion {
             result: application.effective_result,
-            structured_output: application.structured_output,
-            artifact_contract: application.artifact_contract,
+            artifact: application.artifact,
+            contract: application.contract,
         },
     })
 }
@@ -300,15 +300,15 @@ mod tests {
         ]);
 
         assert!(matches!(
-            decide_turn_complete_action(&workflow, 0, &WorkflowExecutionState::Running, 0).unwrap(),
+            decide_turn_complete_action(&workflow, 0, &RuntimeExecutionState::Running, 0).unwrap(),
             TurnCompleteDecision::AutoEvaluate { .. }
         ));
         assert_eq!(
-            decide_turn_complete_action(&workflow, 1, &WorkflowExecutionState::Running, 0).unwrap(),
+            decide_turn_complete_action(&workflow, 1, &RuntimeExecutionState::Running, 0).unwrap(),
             TurnCompleteDecision::WaitApproval
         );
         assert!(matches!(
-            decide_turn_complete_action(&workflow, 2, &WorkflowExecutionState::Running, 0).unwrap(),
+            decide_turn_complete_action(&workflow, 2, &RuntimeExecutionState::Running, 0).unwrap(),
             TurnCompleteDecision::UnexpectedNodeKind {
                 kind: NodeKindName::Command,
                 ..
@@ -320,17 +320,17 @@ mod tests {
     fn plan_turn_complete_mutation_builds_domain_failure_details() {
         let workflow = workflow(vec![node("agent", TestKind::Session)]);
 
-        let plan = plan_turn_complete_mutation(&workflow, 0, &WorkflowExecutionState::Running, 42)
-            .unwrap();
+        let plan =
+            plan_turn_complete_mutation(&workflow, 0, &RuntimeExecutionState::Running, 42).unwrap();
 
         assert_eq!(
             plan,
             TurnCompleteMutationPlan::SessionError {
                 node_name: "agent".to_string(),
                 exit_code: 42,
-                kind: WorkflowStepFailureKind::InfrastructureCrash,
+                kind: NodeExecutionFailureKind::InfrastructureCrash,
                 history_result: "error (exit_code: 42)".to_string(),
-                failure_reason: "AgentSession error at step 'agent' (exit_code: 42)".to_string()
+                failure_reason: "AgentSession error at node 'agent' (exit_code: 42)".to_string()
             }
         );
     }
@@ -342,7 +342,7 @@ mod tests {
         let plan = plan_turn_complete_mutation_with_signal(
             &workflow,
             0,
-            &WorkflowExecutionState::Running,
+            &RuntimeExecutionState::Running,
             0,
             Some(SessionFailureSignal::ModelRefusal),
         )
@@ -350,7 +350,7 @@ mod tests {
 
         match plan {
             TurnCompleteMutationPlan::SessionError { kind, .. } => {
-                assert_eq!(kind, WorkflowStepFailureKind::ModelRefusal);
+                assert_eq!(kind, NodeExecutionFailureKind::ModelRefusal);
             }
             other => panic!("unexpected plan: {other:?}"),
         }
@@ -360,19 +360,19 @@ mod tests {
     fn classify_session_error_maps_runtime_failure_sources() {
         assert_eq!(
             classify_session_error(124, Some(SessionFailureSignal::Timeout)),
-            WorkflowStepFailureKind::StaleRuntimeTimeout
+            NodeExecutionFailureKind::StaleRuntimeTimeout
         );
         assert_eq!(
             classify_session_error(-1, Some(SessionFailureSignal::Crash)),
-            WorkflowStepFailureKind::InfrastructureCrash
+            NodeExecutionFailureKind::InfrastructureCrash
         );
         assert_eq!(
             classify_session_error(1, Some(SessionFailureSignal::ModelRefusal)),
-            WorkflowStepFailureKind::ModelRefusal
+            NodeExecutionFailureKind::ModelRefusal
         );
         assert_eq!(
             classify_session_error(42, None),
-            WorkflowStepFailureKind::InfrastructureCrash
+            NodeExecutionFailureKind::InfrastructureCrash
         );
     }
 
@@ -384,18 +384,18 @@ mod tests {
         let plan = plan_approval_application(
             &workflow,
             0,
-            &WorkflowExecutionState::WaitingApproval,
+            &RuntimeExecutionState::WaitingApproval,
             ApprovalApplication {
                 effective_result: "approve".to_string(),
-                structured_output: Some(serde_json::json!({ "decision": "approve" })),
-                artifact_contract: Some("approval-contract".to_string()),
+                artifact: Some(serde_json::json!({ "decision": "approve" })),
+                contract: Some("approval-contract".to_string()),
             },
         )
         .unwrap();
 
         assert_eq!(plan.completion.result, "approve");
         assert_eq!(
-            plan.completion.artifact_contract.as_deref(),
+            plan.completion.contract.as_deref(),
             Some("approval-contract")
         );
     }
@@ -405,7 +405,7 @@ mod tests {
         let workflow = workflow(vec![node("implement", TestKind::Session)]);
 
         assert!(matches!(
-            decide_approve_action(&workflow, 0, &WorkflowExecutionState::WaitingApproval),
+            decide_approve_action(&workflow, 0, &RuntimeExecutionState::WaitingApproval),
             Err(WorkflowError::UnauthorizedApprovalTarget(_))
         ));
     }

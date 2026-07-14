@@ -1,12 +1,15 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionStatus } from "@/types/session";
-import type { WorkflowStatePayload } from "@/types/workflow";
-import type { WorkspaceWorkflowStepDetail } from "@/types/workspace-tree";
+import type {
+	WorkflowExecution,
+	WorkflowExecutionChangedPayload,
+} from "@/types/workflow";
+import type { WorkspaceWorkflowNodeDetail } from "@/types/workspace-tree";
 import {
-	submitWorkspaceWorkflowStepAction,
-	useWorkspaceWorkflowStepDetail,
-} from "./useWorkspaceWorkflowStepDetail";
+	submitWorkspaceWorkflowNodeAction,
+	useWorkspaceWorkflowNodeDetail,
+} from "./useWorkspaceWorkflowNodeDetail";
 
 const mockInvoke = vi.fn();
 const mockListen = vi.fn();
@@ -21,22 +24,20 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 type ListenerMap = Record<string, Array<(event: { payload: unknown }) => void>>;
 
-function stepDetail(
-	overrides: Partial<WorkspaceWorkflowStepDetail> = {},
-): WorkspaceWorkflowStepDetail {
+function nodeDetail(
+	overrides: Partial<WorkspaceWorkflowNodeDetail> = {},
+): WorkspaceWorkflowNodeDetail {
 	return {
-		kind: "step",
-		id: "run-1:review:1",
-		runId: "run-1",
+		kind: "node",
+		nodeExecutionId: "node-review-1",
+		executionId: "execution-1",
 		worktreePath: "/repo",
 		title: "review",
 		nodeName: "review",
 		status: "running",
-		stepType: "session",
+		nodeKind: "session",
 		updatedAt: 1_000,
-		runIndex: 1,
 		attempt: 1,
-		nodeExecutionId: "ne-review",
 		sessions: [
 			{
 				kind: "session",
@@ -45,42 +46,49 @@ function stepDetail(
 				title: "review",
 				state: "active",
 				updatedAt: 1_000,
-				workflowStepSession: true,
-				stepName: "review",
-				runIndex: 1,
+				workflowNodeSession: true,
+				nodeExecutionId: "node-review-1",
+				nodeName: "review",
+				attempt: 1,
 			},
 		],
 		...overrides,
 	};
 }
 
-function workflowPayload(
-	overrides: Partial<WorkflowStatePayload> = {},
-): WorkflowStatePayload {
+function workflowExecution(
+	overrides: Partial<WorkflowExecution> = {},
+): WorkflowExecution {
+	return {
+		id: "execution-1",
+		workflowName: "workflow",
+		status: "waiting_approval",
+		currentNode: "review",
+		worktreePath: "/repo",
+		createdFrom: "desktop_ui",
+		startedAt: 1_000,
+		updatedAt: 2_000,
+		completedAt: null,
+		errorReason: null,
+		totalTokenUsage: { inputTokens: 0, outputTokens: 0 },
+		nodeExecutions: [],
+		artifacts: [],
+		fanouts: [],
+		approvalTarget: {
+			nodeExecutionId: "node-review-1",
+			nodeName: "review",
+			sessionId: "session-1",
+		},
+		...overrides,
+	};
+}
+
+function executionPayload(
+	overrides: Partial<WorkflowExecutionChangedPayload> = {},
+): WorkflowExecutionChangedPayload {
 	return {
 		worktreePath: "/repo",
-		workflowState: {
-			executionId: "run-1",
-			workflowName: "workflow",
-			state: { type: "waiting_approval" },
-			currentStepIndex: 0,
-			currentStepName: "review",
-			totalSteps: 1,
-			stepHistory: [],
-			stepExecutionCounts: {},
-			stepOutputs: {},
-			workflowDefinition: {
-				name: "workflow",
-				description: "",
-				builtin: false,
-				nodes: [],
-			},
-			totalTokenUsage: { inputTokens: 0, outputTokens: 0 },
-			stepStates: {},
-			nodeExecutions: [],
-			startedAt: 1_000,
-			updatedAt: 2_000,
-		},
+		workflowExecution: workflowExecution(),
 		...overrides,
 	};
 }
@@ -100,11 +108,11 @@ function sessionStatus(overrides: Partial<SessionStatus> = {}): SessionStatus {
 	};
 }
 
-describe("useWorkspaceWorkflowStepDetail", () => {
+describe("useWorkspaceWorkflowNodeDetail", () => {
 	let listeners: ListenerMap;
 	let responses: Array<
-		| WorkspaceWorkflowStepDetail
-		| Promise<WorkspaceWorkflowStepDetail | null>
+		| WorkspaceWorkflowNodeDetail
+		| Promise<WorkspaceWorkflowNodeDetail | null>
 		| null
 	>;
 
@@ -113,24 +121,24 @@ describe("useWorkspaceWorkflowStepDetail", () => {
 		listeners = {};
 		responses = [];
 		mockListen.mockImplementation(
-			(event: string, fn: (event: { payload: unknown }) => void) => {
-				listeners[event] = [...(listeners[event] ?? []), fn];
+			(event: string, listener: (event: { payload: unknown }) => void) => {
+				listeners[event] = [...(listeners[event] ?? []), listener];
 				return Promise.resolve(vi.fn());
 			},
 		);
 		mockInvoke.mockImplementation(() => {
-			const response = responses.shift() ?? stepDetail();
+			const response = responses.shift() ?? nodeDetail();
 			return Promise.resolve(response);
 		});
 	});
 
-	it("reloads the selected Step detail when its workflow state changes", async () => {
-		responses.push(stepDetail(), stepDetail({ status: "waiting" }));
+	it("reloads the selected node detail when its execution changes", async () => {
+		responses.push(nodeDetail(), nodeDetail({ status: "waiting" }));
 		const { result } = renderHook(() =>
-			useWorkspaceWorkflowStepDetail({
+			useWorkspaceWorkflowNodeDetail({
 				worktreePath: "/repo",
-				runId: "run-1",
-				stepId: "run-1:review:1",
+				executionId: "execution-1",
+				nodeExecutionId: "node-review-1",
 			}),
 		);
 
@@ -138,12 +146,12 @@ describe("useWorkspaceWorkflowStepDetail", () => {
 			expect(result.current.detail?.status).toBe("running");
 		});
 		await waitFor(() => {
-			expect(listeners["workflow-state-changed"]?.length).toBe(1);
+			expect(listeners["workflow-execution-changed"]?.length).toBe(1);
 		});
 
 		await act(async () => {
-			listeners["workflow-state-changed"]?.[0]?.({
-				payload: workflowPayload(),
+			listeners["workflow-execution-changed"]?.[0]?.({
+				payload: executionPayload(),
 			});
 		});
 
@@ -153,13 +161,13 @@ describe("useWorkspaceWorkflowStepDetail", () => {
 		expect(mockInvoke).toHaveBeenCalledTimes(2);
 	});
 
-	it("keeps the displayed Step detail when a refresh returns null", async () => {
-		responses.push(stepDetail(), null);
+	it("keeps the displayed node detail when a refresh returns null", async () => {
+		responses.push(nodeDetail(), null);
 		const { result } = renderHook(() =>
-			useWorkspaceWorkflowStepDetail({
+			useWorkspaceWorkflowNodeDetail({
 				worktreePath: "/repo",
-				runId: "run-1",
-				stepId: "run-1:review:1",
+				executionId: "execution-1",
+				nodeExecutionId: "node-review-1",
 			}),
 		);
 
@@ -167,12 +175,12 @@ describe("useWorkspaceWorkflowStepDetail", () => {
 			expect(result.current.detail?.title).toBe("review");
 		});
 		await waitFor(() => {
-			expect(listeners["workflow-state-changed"]?.length).toBe(1);
+			expect(listeners["workflow-execution-changed"]?.length).toBe(1);
 		});
 
 		await act(async () => {
-			listeners["workflow-state-changed"]?.[0]?.({
-				payload: workflowPayload(),
+			listeners["workflow-execution-changed"]?.[0]?.({
+				payload: executionPayload(),
 			});
 		});
 
@@ -184,13 +192,13 @@ describe("useWorkspaceWorkflowStepDetail", () => {
 		expect(mockInvoke).toHaveBeenCalledTimes(2);
 	});
 
-	it("ignores workflow changes for another run", async () => {
-		responses.push(stepDetail());
+	it("ignores workflow changes for another execution", async () => {
+		responses.push(nodeDetail());
 		renderHook(() =>
-			useWorkspaceWorkflowStepDetail({
+			useWorkspaceWorkflowNodeDetail({
 				worktreePath: "/repo",
-				runId: "run-1",
-				stepId: "run-1:review:1",
+				executionId: "execution-1",
+				nodeExecutionId: "node-review-1",
 			}),
 		);
 
@@ -198,16 +206,13 @@ describe("useWorkspaceWorkflowStepDetail", () => {
 			expect(mockInvoke).toHaveBeenCalledTimes(1);
 		});
 		await waitFor(() => {
-			expect(listeners["workflow-state-changed"]?.length).toBe(1);
+			expect(listeners["workflow-execution-changed"]?.length).toBe(1);
 		});
 
 		await act(async () => {
-			listeners["workflow-state-changed"]?.[0]?.({
-				payload: workflowPayload({
-					workflowState: {
-						...workflowPayload().workflowState,
-						executionId: "run-2",
-					},
+			listeners["workflow-execution-changed"]?.[0]?.({
+				payload: executionPayload({
+					workflowExecution: workflowExecution({ id: "execution-2" }),
 				}),
 			});
 		});
@@ -215,13 +220,13 @@ describe("useWorkspaceWorkflowStepDetail", () => {
 		expect(mockInvoke).toHaveBeenCalledTimes(1);
 	});
 
-	it("reloads when a displayed Step session changes state", async () => {
-		responses.push(stepDetail(), stepDetail({ updatedAt: 2_000 }));
+	it("reloads when a displayed node session changes state", async () => {
+		responses.push(nodeDetail(), nodeDetail({ updatedAt: 2_000 }));
 		const { result } = renderHook(() =>
-			useWorkspaceWorkflowStepDetail({
+			useWorkspaceWorkflowNodeDetail({
 				worktreePath: "/repo",
-				runId: "run-1",
-				stepId: "run-1:review:1",
+				executionId: "execution-1",
+				nodeExecutionId: "node-review-1",
 			}),
 		);
 
@@ -243,24 +248,24 @@ describe("useWorkspaceWorkflowStepDetail", () => {
 		});
 	});
 
-	it("reloads when a Step session is closed before it is displayed", async () => {
+	it("reloads when a hidden node session is closed", async () => {
 		responses.push(
-			stepDetail({ sessions: [] }),
-			stepDetail({
+			nodeDetail({ sessions: [] }),
+			nodeDetail({
 				sessions: [
 					{
-						...stepDetail().sessions[0],
-						id: "closed-step-session",
+						...nodeDetail().sessions[0],
+						id: "closed-node-session",
 						state: "closed",
 					},
 				],
 			}),
 		);
 		const { result } = renderHook(() =>
-			useWorkspaceWorkflowStepDetail({
+			useWorkspaceWorkflowNodeDetail({
 				worktreePath: "/repo",
-				runId: "run-1",
-				stepId: "run-1:review:1",
+				executionId: "execution-1",
+				nodeExecutionId: "node-review-1",
 			}),
 		);
 
@@ -274,7 +279,7 @@ describe("useWorkspaceWorkflowStepDetail", () => {
 		await act(async () => {
 			listeners["session-status-changed"]?.[0]?.({
 				payload: sessionStatus({
-					chat_session_id: "closed-step-session",
+					chat_session_id: "closed-node-session",
 					session_state: "closed",
 				}),
 			});
@@ -282,33 +287,33 @@ describe("useWorkspaceWorkflowStepDetail", () => {
 
 		await waitFor(() => {
 			expect(result.current.detail?.sessions[0]?.id).toBe(
-				"closed-step-session",
+				"closed-node-session",
 			);
 		});
 		expect(result.current.detail?.sessions[0]?.state).toBe("closed");
 		expect(mockInvoke).toHaveBeenCalledTimes(2);
 	});
 
-	it("clears stale detail while a newly selected Step is loading", async () => {
-		let resolveNext: (value: WorkspaceWorkflowStepDetail | null) => void =
+	it("clears stale detail while a newly selected node is loading", async () => {
+		let resolveNext: (value: WorkspaceWorkflowNodeDetail | null) => void =
 			() => {};
 		responses.push(
-			stepDetail({ id: "run-1:review:1", title: "review" }),
-			new Promise<WorkspaceWorkflowStepDetail | null>((resolve) => {
+			nodeDetail({ nodeExecutionId: "node-review-1", title: "review" }),
+			new Promise<WorkspaceWorkflowNodeDetail | null>((resolve) => {
 				resolveNext = resolve;
 			}),
 		);
 		const { result, rerender } = renderHook(
-			({ runId, stepId }: { runId: string; stepId: string }) =>
-				useWorkspaceWorkflowStepDetail({
+			({ executionId, nodeExecutionId }) =>
+				useWorkspaceWorkflowNodeDetail({
 					worktreePath: "/repo",
-					runId,
-					stepId,
+					executionId,
+					nodeExecutionId,
 				}),
 			{
 				initialProps: {
-					runId: "run-1",
-					stepId: "run-1:review:1",
+					executionId: "execution-1",
+					nodeExecutionId: "node-review-1",
 				},
 			},
 		);
@@ -317,7 +322,10 @@ describe("useWorkspaceWorkflowStepDetail", () => {
 			expect(result.current.detail?.title).toBe("review");
 		});
 
-		rerender({ runId: "run-1", stepId: "run-1:build:1" });
+		rerender({
+			executionId: "execution-1",
+			nodeExecutionId: "node-build-1",
+		});
 
 		await waitFor(() => {
 			expect(result.current.loading).toBe(true);
@@ -325,7 +333,9 @@ describe("useWorkspaceWorkflowStepDetail", () => {
 		expect(result.current.detail).toBeNull();
 
 		await act(async () => {
-			resolveNext(stepDetail({ id: "run-1:build:1", title: "build" }));
+			resolveNext(
+				nodeDetail({ nodeExecutionId: "node-build-1", title: "build" }),
+			);
 		});
 
 		await waitFor(() => {
@@ -333,25 +343,25 @@ describe("useWorkspaceWorkflowStepDetail", () => {
 		});
 	});
 
-	it("does not restore stale detail when a newly selected Step fails to load", async () => {
+	it("does not restore stale detail when a newly selected node fails", async () => {
 		let rejectNext: (error: Error) => void = () => {};
 		responses.push(
-			stepDetail({ id: "run-1:review:1", title: "review" }),
-			new Promise<WorkspaceWorkflowStepDetail | null>((_, reject) => {
+			nodeDetail({ nodeExecutionId: "node-review-1", title: "review" }),
+			new Promise<WorkspaceWorkflowNodeDetail | null>((_, reject) => {
 				rejectNext = reject;
 			}),
 		);
 		const { result, rerender } = renderHook(
-			({ runId, stepId }: { runId: string; stepId: string }) =>
-				useWorkspaceWorkflowStepDetail({
+			({ executionId, nodeExecutionId }) =>
+				useWorkspaceWorkflowNodeDetail({
 					worktreePath: "/repo",
-					runId,
-					stepId,
+					executionId,
+					nodeExecutionId,
 				}),
 			{
 				initialProps: {
-					runId: "run-1",
-					stepId: "run-1:review:1",
+					executionId: "execution-1",
+					nodeExecutionId: "node-review-1",
 				},
 			},
 		);
@@ -360,8 +370,10 @@ describe("useWorkspaceWorkflowStepDetail", () => {
 			expect(result.current.detail?.title).toBe("review");
 		});
 
-		rerender({ runId: "run-1", stepId: "run-1:build:1" });
-
+		rerender({
+			executionId: "execution-1",
+			nodeExecutionId: "node-build-1",
+		});
 		await act(async () => {
 			rejectNext(new Error("detail failed"));
 		});
@@ -372,8 +384,8 @@ describe("useWorkspaceWorkflowStepDetail", () => {
 		expect(result.current.detail).toBeNull();
 	});
 
-	it("submits approve, refreshes the workspace tree, and returns reloaded detail", async () => {
-		const reloaded = stepDetail({ status: "completed" });
+	it("submits approval and returns the reloaded node detail", async () => {
+		const reloaded = nodeDetail({ status: "completed" });
 		const refreshEvents: Array<CustomEvent<{ worktreePath?: string }>> = [];
 		const onRefresh = (event: Event) => {
 			refreshEvents.push(event as CustomEvent<{ worktreePath?: string }>);
@@ -382,19 +394,18 @@ describe("useWorkspaceWorkflowStepDetail", () => {
 		mockInvoke.mockResolvedValueOnce(undefined).mockResolvedValueOnce(reloaded);
 
 		try {
-			const result = await submitWorkspaceWorkflowStepAction({
+			const result = await submitWorkspaceWorkflowNodeAction({
 				worktreePath: "/repo",
-				runId: "run-1",
-				stepId: "run-1:review:1",
-				stepName: "review",
-				nodeExecutionId: "ne-review",
+				executionId: "execution-1",
+				nodeExecutionId: "node-review-1",
+				nodeName: "review",
 			});
 
-			expect(mockInvoke).toHaveBeenNthCalledWith(1, "approve_workflow_step", {
+			expect(mockInvoke).toHaveBeenNthCalledWith(1, "approve_workflow_node", {
 				args: {
-					runId: "run-1",
-					stepName: "review",
-					nodeExecutionId: "ne-review",
+					executionId: "execution-1",
+					nodeName: "review",
+					nodeExecutionId: "node-review-1",
 					comment: null,
 				},
 			});
@@ -402,11 +413,11 @@ describe("useWorkspaceWorkflowStepDetail", () => {
 			expect(refreshEvents[0].detail).toEqual({ worktreePath: "/repo" });
 			expect(mockInvoke).toHaveBeenNthCalledWith(
 				2,
-				"get_workspace_workflow_step_detail",
+				"get_workspace_workflow_node_detail",
 				{
 					worktreePath: "/repo",
-					runId: "run-1",
-					stepId: "run-1:review:1",
+					executionId: "execution-1",
+					nodeExecutionId: "node-review-1",
 				},
 			);
 			expect(result).toBe(reloaded);

@@ -1,7 +1,10 @@
 import { Copy, Pencil, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { DiagnosticReport, WorkflowSummary } from "@/types/workflow";
+import type {
+	DiagnosticReport,
+	WorkflowDefinitionSummary,
+} from "@/types/workflow";
 import { DiagnosticBadge } from "./DiagnosticBadge";
 
 export function WorkflowList({
@@ -14,7 +17,7 @@ export function WorkflowList({
 	onEdit,
 	onCreate,
 }: {
-	workflows: WorkflowSummary[];
+	workflows: WorkflowDefinitionSummary[];
 	report: DiagnosticReport;
 	selectedName: string | null;
 	onSelect: (name: string) => void;

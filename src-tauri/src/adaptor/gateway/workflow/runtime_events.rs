@@ -1,17 +1,12 @@
 use crate::adaptor::gateway::workflow::engine_error::{
     classify_cli_mutation_rejection_reason, WorkflowEngineError,
 };
-use crate::adaptor::gateway::workflow::event::{
-    CliMutationRequestRecord, RunAbortedChildOutcome, RunAbortedChildOutputSnapshot,
-    RunAbortedStepSnapshot, WorkflowEvent,
-};
+use crate::adaptor::gateway::workflow::event::{CliMutationRequestRecord, WorkflowEvent};
 use crate::adaptor::gateway::workflow::internal_node_command::InternalNodeCommand;
 use crate::adaptor::gateway::workflow::route_context::CommandCommitContext;
 use crate::adaptor::gateway::workflow::runtime_commit::StepOutcome;
-use crate::adaptor::gateway::workflow::state::{
-    ChildOutputSnapshot, StepHistoryEntry, WorkflowExecutionState, WorkflowState,
-};
-use crate::domain::workflow::{STEP_STATE_ABORTED, STEP_STATE_COMPLETED};
+use crate::adaptor::gateway::workflow::state::{RuntimeExecutionState, WorkflowState};
+use crate::domain::workflow::NODE_STATUS_ABORTED;
 
 /// [05] internal dispatch path: engine 内部の node 完了 / 失敗 typed command の
 /// 単一 commit 関数。`InternalNodeCommand::CompleteNode` / `FailNode` を受け取り、
@@ -31,20 +26,20 @@ fn apply_internal_node_command_state_mutation(
 ) -> Result<(), WorkflowEngineError> {
     match command {
         InternalNodeCommand::CompleteNode {
-            run_id,
+            execution_id,
             workflow_name,
             node_execution_id,
             node_name,
             result,
             session_id,
             token_usage,
-            structured_output,
-            run_index,
+            artifact,
+            attempt,
             timestamp,
         } => {
-            if run_id != &snapshot.execution_id {
+            if execution_id != &snapshot.execution_id {
                 return Err(WorkflowEngineError::ValidationError(format!(
-                    "CompleteNode run_id mismatch: command='{run_id}', snapshot='{}'",
+                    "CompleteNode execution_id mismatch: command='{execution_id}', snapshot='{}'",
                     snapshot.execution_id
                 )));
             }
@@ -58,18 +53,18 @@ fn apply_internal_node_command_state_mutation(
                 snapshot,
                 node_execution_id,
                 node_name,
-                *run_index,
+                *attempt,
                 "CompleteNode",
             )?;
-            let Some(last_entry) = snapshot.step_history.last() else {
+            let Some(last_entry) = snapshot.node_history.last() else {
                 return Err(WorkflowEngineError::ValidationError(format!(
-                    "CompleteNode for node '{node_name}' but snapshot.step_history is empty"
+                    "CompleteNode for node '{node_name}' but snapshot.node_history is empty"
                 )));
             };
-            if last_entry.step_name != *node_name {
+            if last_entry.node_name != *node_name {
                 return Err(WorkflowEngineError::ValidationError(format!(
                     "CompleteNode node mismatch: command='{node_name}', snapshot last='{}'",
-                    last_entry.step_name
+                    last_entry.node_name
                 )));
             }
             if (last_entry.completed_at - *timestamp).abs() > f64::EPSILON {
@@ -93,32 +88,33 @@ fn apply_internal_node_command_state_mutation(
                     "CompleteNode token_usage mismatch for node '{node_name}'"
                 )));
             }
-            if last_entry.structured_output != *structured_output {
+            if last_entry.artifact != *artifact {
                 return Err(WorkflowEngineError::ValidationError(format!(
-                    "CompleteNode structured_output mismatch for node '{node_name}'"
+                    "CompleteNode artifact mismatch for node '{node_name}'"
                 )));
             }
-            if Some(last_entry.run_index) != *run_index {
+            if Some(last_entry.attempt) != *attempt {
                 return Err(WorkflowEngineError::ValidationError(format!(
-                    "CompleteNode run_index mismatch for node '{node_name}': command={run_index:?}, snapshot={}",
-                    last_entry.run_index
+                    "CompleteNode attempt mismatch for node '{node_name}': command={attempt:?}, snapshot={}",
+                    last_entry.attempt
                 )));
             }
             Ok(())
         }
         InternalNodeCommand::FailNode {
-            run_id,
+            execution_id,
             workflow_name,
             node_execution_id,
             node_name,
+            attempt,
             reason,
             failure_kind,
             retry_count,
             timestamp,
         } => {
-            if run_id != &snapshot.execution_id {
+            if execution_id != &snapshot.execution_id {
                 return Err(WorkflowEngineError::ValidationError(format!(
-                    "FailNode run_id mismatch: command='{run_id}', snapshot='{}'",
+                    "FailNode execution_id mismatch: command='{execution_id}', snapshot='{}'",
                     snapshot.execution_id
                 )));
             }
@@ -132,17 +128,17 @@ fn apply_internal_node_command_state_mutation(
                 snapshot,
                 node_execution_id,
                 node_name,
-                snapshot.step_execution_counts.get(node_name).copied(),
+                Some(*attempt),
                 "FailNode",
             )?;
-            if *node_name != snapshot.current_step_name {
+            if *node_name != snapshot.current_node_name {
                 return Err(WorkflowEngineError::ValidationError(format!(
                     "FailNode node_name mismatch: command='{node_name}', snapshot='{}'",
-                    snapshot.current_step_name
+                    snapshot.current_node_name
                 )));
             }
-            if !matches!(snapshot.state, WorkflowExecutionState::Failed { .. }) {
-                snapshot.state = WorkflowExecutionState::Failed {
+            if !matches!(snapshot.state, RuntimeExecutionState::Failed { .. }) {
+                snapshot.state = RuntimeExecutionState::Failed {
                     reason: reason.clone(),
                     kind: *failure_kind,
                     retry_count: *retry_count,
@@ -187,42 +183,43 @@ fn map_internal_node_command_to_event(
 ) -> Result<WorkflowEvent, WorkflowEngineError> {
     match command {
         InternalNodeCommand::CompleteNode {
-            run_id,
-            workflow_name,
+            execution_id,
+            workflow_name: _,
             node_execution_id,
             node_name,
             result,
-            session_id,
+            session_id: _,
             token_usage,
-            structured_output,
-            run_index,
+            artifact: _,
+            attempt,
             timestamp,
-        } => Ok(WorkflowEvent::NodeCompleted {
-            run_id,
-            workflow_name,
-            node_execution_id,
-            node_name,
-            result,
-            session_id,
-            token_usage,
-            structured_output,
-            run_index,
-            timestamp,
-        }),
+        } => {
+            let attempt = attempt.unwrap_or(1);
+            Ok(WorkflowEvent::NodeCompleted {
+                execution_id,
+                node_execution_id,
+                node_name,
+                attempt,
+                result_summary: result,
+                token_usage,
+                timestamp,
+            })
+        }
         InternalNodeCommand::FailNode {
-            run_id,
-            workflow_name,
+            execution_id,
+            workflow_name: _,
             node_execution_id,
             node_name,
+            attempt,
             reason,
             failure_kind,
             retry_count,
             timestamp,
         } => Ok(WorkflowEvent::NodeFailed {
-            run_id,
-            workflow_name,
+            execution_id,
             node_execution_id,
             node_name,
+            attempt,
             reason,
             failure_kind,
             retry_count,
@@ -232,15 +229,14 @@ fn map_internal_node_command_to_event(
 }
 
 pub(crate) fn cli_mutation_requested_event(
-    workflow_name: &str,
+    _workflow_name: &str,
     context: CommandCommitContext,
     timestamp: f64,
 ) -> Option<WorkflowEvent> {
     let mutation = context.into_cli_pending_mutation()?;
-    let (run_id, request, requested_at, request_id) = mutation.into_event_parts();
+    let (execution_id, request, requested_at, request_id) = mutation.into_event_parts();
     Some(WorkflowEvent::CliMutationRequested {
-        run_id,
-        workflow_name: workflow_name.to_string(),
+        execution_id,
         request_id,
         request,
         requested_at,
@@ -249,7 +245,7 @@ pub(crate) fn cli_mutation_requested_event(
 }
 
 pub(crate) fn cli_mutation_rejected_event(
-    workflow_name: String,
+    _workflow_name: String,
     context: &CommandCommitContext,
     error: &WorkflowEngineError,
     timestamp: f64,
@@ -259,10 +255,9 @@ pub(crate) fn cli_mutation_rejected_event(
             "append_cli_mutation_rejected requires CliPending context".to_string(),
         ));
     };
-    let (run_id, request, requested_at, request_id) = mutation.clone().into_event_parts();
+    let (execution_id, request, requested_at, request_id) = mutation.clone().into_event_parts();
     Ok(WorkflowEvent::CliMutationRejected {
-        run_id,
-        workflow_name,
+        execution_id,
         request_id,
         request,
         reason: classify_cli_mutation_rejection_reason(error),
@@ -273,13 +268,13 @@ pub(crate) fn cli_mutation_rejected_event(
 }
 
 pub(crate) fn submit_output_cli_mutation_rejected_event(
-    workflow_name: String,
-    run_id: &str,
+    _workflow_name: String,
+    execution_id: &str,
     context: &CommandCommitContext,
     error: &WorkflowEngineError,
     timestamp: f64,
 ) -> Result<WorkflowEvent, WorkflowEngineError> {
-    let (request_id, requested_at, step_name, contract) =
+    let (request_id, requested_at, node_name, contract) =
         context.submit_output_rejection_parts().ok_or_else(|| {
             WorkflowEngineError::InvalidState(
                 "append_cli_mutation_rejected_for_submit_output requires SubmitOutput context"
@@ -287,11 +282,10 @@ pub(crate) fn submit_output_cli_mutation_rejected_event(
             )
         })?;
     Ok(WorkflowEvent::CliMutationRejected {
-        run_id: run_id.to_string(),
-        workflow_name,
+        execution_id: execution_id.to_string(),
         request_id,
         request: CliMutationRequestRecord::SubmitOutput {
-            step_name,
+            node_name,
             contract,
         },
         reason: classify_cli_mutation_rejection_reason(error),
@@ -310,7 +304,7 @@ pub(crate) fn pre_commit_required_events_for_outcome(
         StepOutcome::Persist(s) => {
             let is_terminal = matches!(
                 s.state,
-                WorkflowExecutionState::Completed | WorkflowExecutionState::Failed { .. }
+                RuntimeExecutionState::Completed | RuntimeExecutionState::Failed { .. }
             );
             if is_terminal {
                 return terminal_required_events_for_snapshot(s);
@@ -340,7 +334,7 @@ pub(crate) fn terminal_required_events_for_snapshot(
 ) -> Result<Vec<WorkflowEvent>, WorkflowEngineError> {
     let mut local = snapshot.clone();
     let mut events = Vec::new();
-    if matches!(snapshot.state, WorkflowExecutionState::Completed) {
+    if matches!(snapshot.state, RuntimeExecutionState::Completed) {
         if let Some(event) = last_step_completed_event_for_snapshot(&mut local)? {
             events.push(event);
         }
@@ -366,23 +360,23 @@ pub(crate) fn terminal_events_for_append(
 pub(crate) fn last_step_completed_event_for_snapshot(
     snapshot: &mut WorkflowState,
 ) -> Result<Option<WorkflowEvent>, WorkflowEngineError> {
-    let Some(last_entry) = snapshot.step_history.last().cloned() else {
+    let Some(last_entry) = snapshot.node_history.last().cloned() else {
         return Ok(None);
     };
     let command = InternalNodeCommand::CompleteNode {
-        run_id: snapshot.execution_id.clone(),
+        execution_id: snapshot.execution_id.clone(),
         workflow_name: snapshot.workflow_name.clone(),
         node_execution_id: top_level_node_execution_id(
             snapshot,
-            &last_entry.step_name,
-            last_entry.run_index,
+            &last_entry.node_name,
+            last_entry.attempt,
         )?,
-        node_name: last_entry.step_name,
+        node_name: last_entry.node_name,
         result: last_entry.result,
         session_id: last_entry.session_id,
         token_usage: last_entry.token_usage,
-        structured_output: last_entry.structured_output,
-        run_index: Some(last_entry.run_index),
+        artifact: last_entry.artifact,
+        attempt: Some(last_entry.attempt),
         timestamp: last_entry.completed_at,
     };
     dispatch_internal_node_command(snapshot, command).map(Some)
@@ -390,8 +384,8 @@ pub(crate) fn last_step_completed_event_for_snapshot(
 
 fn current_node_attempt(snapshot: &WorkflowState) -> u32 {
     snapshot
-        .step_execution_counts
-        .get(&snapshot.current_step_name)
+        .node_execution_counts
+        .get(&snapshot.current_node_name)
         .copied()
         .unwrap_or(1)
 }
@@ -431,12 +425,11 @@ pub(crate) fn node_started_event_for_snapshot(
     snapshot: &WorkflowState,
 ) -> Result<WorkflowEvent, WorkflowEngineError> {
     let attempt = current_node_attempt(snapshot);
-    let execution = top_level_node_execution(snapshot, &snapshot.current_step_name, attempt)?;
+    let execution = top_level_node_execution(snapshot, &snapshot.current_node_name, attempt)?;
     Ok(WorkflowEvent::NodeStarted {
-        run_id: snapshot.execution_id.clone(),
-        workflow_name: snapshot.workflow_name.clone(),
+        execution_id: snapshot.execution_id.clone(),
         node_execution_id: execution.id.clone(),
-        node_name: snapshot.current_step_name.clone(),
+        node_name: snapshot.current_node_name.clone(),
         kind: execution.kind,
         attempt,
         fanout_parent: None,
@@ -451,12 +444,10 @@ pub(crate) fn node_session_started_event_for_snapshot(
         return Ok(None);
     };
     let attempt = current_node_attempt(snapshot);
-    let execution = top_level_node_execution(snapshot, &snapshot.current_step_name, attempt)?;
+    let execution = top_level_node_execution(snapshot, &snapshot.current_node_name, attempt)?;
     Ok(Some(WorkflowEvent::SessionAttached {
-        run_id: snapshot.execution_id.clone(),
-        workflow_name: snapshot.workflow_name.clone(),
+        execution_id: snapshot.execution_id.clone(),
         node_execution_id: execution.id.clone(),
-        node_name: snapshot.current_step_name.clone(),
         session_id,
         timestamp: snapshot.updated_at,
     }))
@@ -510,7 +501,7 @@ pub(crate) fn fanout_parent_started_event_for_snapshot(
     ) {
         return Err(WorkflowEngineError::InvalidState(format!(
             "fanout parent '{}' does not reference a fanout NodeExecution",
-            snapshot.current_step_name
+            snapshot.current_node_name
         )));
     }
     Ok(event)
@@ -520,41 +511,44 @@ pub(crate) fn terminal_events_for_snapshot(
     snapshot: &mut WorkflowState,
 ) -> Result<Vec<WorkflowEvent>, WorkflowEngineError> {
     match snapshot.state.clone() {
-        WorkflowExecutionState::Completed => Ok(vec![WorkflowEvent::RunCompleted {
-            run_id: snapshot.execution_id.clone(),
-            workflow_name: snapshot.workflow_name.clone(),
+        RuntimeExecutionState::Completed => Ok(vec![WorkflowEvent::ExecutionCompleted {
+            execution_id: snapshot.execution_id.clone(),
             total_token_usage: snapshot.total_token_usage.clone(),
             timestamp: snapshot.updated_at,
         }]),
-        WorkflowExecutionState::Interrupted => Ok(vec![WorkflowEvent::RunInterrupted {
-            run_id: snapshot.execution_id.clone(),
-            workflow_name: snapshot.workflow_name.clone(),
+        RuntimeExecutionState::Interrupted => Ok(vec![WorkflowEvent::ExecutionInterrupted {
+            execution_id: snapshot.execution_id.clone(),
             reason: "interrupted".to_string(),
             timestamp: snapshot.updated_at,
         }]),
-        WorkflowExecutionState::Failed {
+        RuntimeExecutionState::Failed {
             reason,
             kind,
             retry_count,
         } => {
-            let run_id = snapshot.execution_id.clone();
+            let execution_id = snapshot.execution_id.clone();
             let workflow_name = snapshot.workflow_name.clone();
-            let node_name = snapshot.current_step_name.clone();
+            let node_name = snapshot.current_node_name.clone();
             let failure_kind = kind;
             let timestamp = snapshot.updated_at;
             let fail_command = InternalNodeCommand::FailNode {
-                run_id: run_id.clone(),
+                execution_id: execution_id.clone(),
                 workflow_name: workflow_name.clone(),
                 node_execution_id: top_level_node_execution_id(
                     snapshot,
                     &node_name,
                     snapshot
-                        .step_execution_counts
+                        .node_execution_counts
                         .get(&node_name)
                         .copied()
                         .unwrap_or(1),
                 )?,
                 node_name,
+                attempt: snapshot
+                    .node_execution_counts
+                    .get(&snapshot.current_node_name)
+                    .copied()
+                    .unwrap_or(1),
                 reason: reason.clone(),
                 failure_kind,
                 retry_count,
@@ -563,12 +557,10 @@ pub(crate) fn terminal_events_for_snapshot(
             let node_failed = dispatch_internal_node_command(snapshot, fail_command)?;
             Ok(vec![
                 node_failed,
-                WorkflowEvent::RunFailed {
-                    run_id,
-                    workflow_name,
+                WorkflowEvent::ExecutionFailed {
+                    execution_id,
                     reason,
                     failure_kind,
-                    retry_count,
                     timestamp,
                 },
             ])
@@ -586,19 +578,18 @@ pub(crate) fn required_events_for_approval_commit(
         StepOutcome::Persist(snapshot) => {
             let is_terminal = matches!(
                 snapshot.state,
-                WorkflowExecutionState::Completed | WorkflowExecutionState::Failed { .. }
+                RuntimeExecutionState::Completed | RuntimeExecutionState::Failed { .. }
             );
             if is_terminal {
                 events.extend(terminal_required_events_for_snapshot(snapshot)?);
-            } else if matches!(snapshot.state, WorkflowExecutionState::Aborted) {
-                events.push(WorkflowEvent::RunAborted {
-                    run_id: snapshot.execution_id.clone(),
-                    workflow_name: snapshot.workflow_name.clone(),
-                    aborted_step: snapshot
-                        .step_history
+            } else if matches!(snapshot.state, RuntimeExecutionState::Aborted) {
+                events.push(WorkflowEvent::ExecutionAborted {
+                    execution_id: snapshot.execution_id.clone(),
+                    aborted_node: snapshot
+                        .node_history
                         .last()
-                        .filter(|entry| entry.state == STEP_STATE_ABORTED)
-                        .map(run_aborted_step_snapshot_from_history_entry),
+                        .filter(|entry| entry.state == NODE_STATUS_ABORTED)
+                        .map(|entry| entry.node_name.clone()),
                     timestamp: snapshot.updated_at,
                 });
             }
@@ -629,65 +620,22 @@ pub(crate) fn required_events_for_approval_commit(
     Ok(events)
 }
 
-pub(crate) fn run_aborted_step_snapshot_from_history_entry(
-    entry: &StepHistoryEntry,
-) -> RunAbortedStepSnapshot {
-    RunAbortedStepSnapshot {
-        step_name: entry.step_name.clone(),
-        completed_at: entry.completed_at,
-        result: entry.result.clone(),
-        session_id: entry.session_id.clone(),
-        token_usage: entry.token_usage.clone(),
-        structured_output: entry.structured_output.clone(),
-        run_index: entry.run_index,
-        child_outputs: entry.child_outputs.as_ref().map(|children| {
-            children
-                .iter()
-                .map(run_aborted_child_snapshot_from_child_output)
-                .collect()
-        }),
-    }
-}
-
-fn run_aborted_child_snapshot_from_child_output(
-    child: &ChildOutputSnapshot,
-) -> RunAbortedChildOutputSnapshot {
-    RunAbortedChildOutputSnapshot {
-        step_name: child.step_name.clone(),
-        session_id: child.session_id.clone(),
-        result: child.result.clone(),
-        run_index: child.run_index,
-        completed_at: child.completed_at,
-        structured_output: child.structured_output.clone(),
-        artifact_contract: child.artifact_contract.clone(),
-        outcome: run_aborted_child_outcome_from_state(&child.state),
-    }
-}
-
-fn run_aborted_child_outcome_from_state(state: &str) -> RunAbortedChildOutcome {
-    if state == STEP_STATE_COMPLETED {
-        RunAbortedChildOutcome::Completed
-    } else {
-        RunAbortedChildOutcome::Aborted
-    }
-}
-
 pub(crate) fn workflow_event_timestamp(event: &WorkflowEvent) -> f64 {
     match event {
-        WorkflowEvent::RunStarted { timestamp, .. }
+        WorkflowEvent::ExecutionStarted { timestamp, .. }
         | WorkflowEvent::NodeStarted { timestamp, .. }
         | WorkflowEvent::SessionAttached { timestamp, .. }
-        | WorkflowEvent::WorkflowStallObserved { timestamp, .. }
-        | WorkflowEvent::WorkflowStallCleared { timestamp, .. }
+        | WorkflowEvent::StallObserved { timestamp, .. }
+        | WorkflowEvent::StallCleared { timestamp, .. }
         | WorkflowEvent::NodeCompleted { timestamp, .. }
         | WorkflowEvent::NodeFailed { timestamp, .. }
         | WorkflowEvent::ApprovalRequested { timestamp, .. }
         | WorkflowEvent::ApprovalResolved { timestamp, .. }
-        | WorkflowEvent::RunCompleted { timestamp, .. }
-        | WorkflowEvent::RunFailed { timestamp, .. }
-        | WorkflowEvent::RunAborted { timestamp, .. }
-        | WorkflowEvent::RunInterrupted { timestamp, .. }
-        | WorkflowEvent::ContractRepairRequested { timestamp, .. }
+        | WorkflowEvent::ExecutionCompleted { timestamp, .. }
+        | WorkflowEvent::ExecutionFailed { timestamp, .. }
+        | WorkflowEvent::ExecutionAborted { timestamp, .. }
+        | WorkflowEvent::ExecutionInterrupted { timestamp, .. }
+        | WorkflowEvent::ContractViolated { timestamp, .. }
         | WorkflowEvent::CliMutationRequested { timestamp, .. }
         | WorkflowEvent::ArtifactProduced { timestamp, .. }
         | WorkflowEvent::CliMutationRejected { timestamp, .. } => *timestamp,
@@ -696,20 +644,20 @@ pub(crate) fn workflow_event_timestamp(event: &WorkflowEvent) -> f64 {
 
 pub(crate) fn set_workflow_event_timestamp(event: &mut WorkflowEvent, commit_timestamp: f64) {
     match event {
-        WorkflowEvent::RunStarted { timestamp, .. }
+        WorkflowEvent::ExecutionStarted { timestamp, .. }
         | WorkflowEvent::NodeStarted { timestamp, .. }
         | WorkflowEvent::SessionAttached { timestamp, .. }
-        | WorkflowEvent::WorkflowStallObserved { timestamp, .. }
-        | WorkflowEvent::WorkflowStallCleared { timestamp, .. }
+        | WorkflowEvent::StallObserved { timestamp, .. }
+        | WorkflowEvent::StallCleared { timestamp, .. }
         | WorkflowEvent::NodeCompleted { timestamp, .. }
         | WorkflowEvent::NodeFailed { timestamp, .. }
         | WorkflowEvent::ApprovalRequested { timestamp, .. }
         | WorkflowEvent::ApprovalResolved { timestamp, .. }
-        | WorkflowEvent::RunCompleted { timestamp, .. }
-        | WorkflowEvent::RunFailed { timestamp, .. }
-        | WorkflowEvent::RunAborted { timestamp, .. }
-        | WorkflowEvent::RunInterrupted { timestamp, .. }
-        | WorkflowEvent::ContractRepairRequested { timestamp, .. }
+        | WorkflowEvent::ExecutionCompleted { timestamp, .. }
+        | WorkflowEvent::ExecutionFailed { timestamp, .. }
+        | WorkflowEvent::ExecutionAborted { timestamp, .. }
+        | WorkflowEvent::ExecutionInterrupted { timestamp, .. }
+        | WorkflowEvent::ContractViolated { timestamp, .. }
         | WorkflowEvent::CliMutationRequested { timestamp, .. }
         | WorkflowEvent::ArtifactProduced { timestamp, .. }
         | WorkflowEvent::CliMutationRejected { timestamp, .. } => *timestamp = commit_timestamp,
@@ -723,9 +671,9 @@ mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::schema::{NodeKindName, Workflow};
     use crate::adaptor::gateway::workflow::state::{
-        default_step_entry_state, ChildOutputSnapshot, NodeExecution, NodeExecutionStatus,
-        StepHistoryEntry, TokenUsage,
+        NodeExecution, NodeExecutionStatus, NodeHistoryEntry, TokenUsage,
     };
+    use crate::domain::workflow::{ExecutionOrigin, NODE_STATUS_COMPLETED};
     use crate::{
         adaptor::gateway::workflow::event::CliMutationRejectionReason,
         adaptor::gateway::workflow::route_context::{
@@ -737,17 +685,21 @@ mod tests {
         WorkflowState {
             execution_id: "run-1".to_string(),
             workflow_name: "wf".to_string(),
-            state: WorkflowExecutionState::Running,
-            current_step_index: 0,
-            current_step_name: "implement".to_string(),
+            worktree_path: "/repo".to_string(),
+            created_from: ExecutionOrigin::Cli,
+            request: "ship it".to_string(),
+            error_reason: None,
+            state: RuntimeExecutionState::Running,
+            current_node_index: 0,
+            current_node_name: "implement".to_string(),
             current_session_id: None,
-            total_steps: 1,
-            step_history: Vec::new(),
-            step_execution_counts: HashMap::from([("implement".to_string(), 3)]),
+            total_nodes: 1,
+            node_history: Vec::new(),
+            node_execution_counts: HashMap::from([("implement".to_string(), 3)]),
             workflow_definition: Workflow::default(),
             total_token_usage: TokenUsage::default(),
-            step_states: HashMap::new(),
-            step_outputs: HashMap::new(),
+            node_statuses: HashMap::new(),
+            artifacts: HashMap::new(),
             node_executions: vec![NodeExecution {
                 id: "node-execution-implement-3".to_string(),
                 execution_id: "run-1".to_string(),
@@ -772,10 +724,10 @@ mod tests {
 
     fn fanout_workflow_state_fixture() -> WorkflowState {
         let mut snapshot = workflow_state_fixture();
-        snapshot.current_step_name = "reviews".to_string();
-        snapshot.current_step_index = 1;
+        snapshot.current_node_name = "reviews".to_string();
+        snapshot.current_node_index = 1;
         snapshot
-            .step_execution_counts
+            .node_execution_counts
             .insert("reviews".to_string(), 1);
         snapshot.node_executions = vec![NodeExecution {
             id: "node-execution-reviews-1".to_string(),
@@ -798,17 +750,17 @@ mod tests {
     #[test]
     fn terminal_required_events_for_completed_snapshot_includes_last_node_then_run_completed() {
         let mut snapshot = workflow_state_fixture();
-        snapshot.state = WorkflowExecutionState::Completed;
-        snapshot.step_history.push(StepHistoryEntry {
-            step_name: "implement".to_string(),
+        snapshot.state = RuntimeExecutionState::Completed;
+        snapshot.node_history.push(NodeHistoryEntry {
+            node_name: "implement".to_string(),
             completed_at: 41.0,
             result: Some("done".to_string()),
             session_id: Some("session-1".to_string()),
             token_usage: None,
-            structured_output: None,
-            run_index: 3,
-            child_outputs: None,
-            state: default_step_entry_state(),
+            artifact: None,
+            attempt: 3,
+            fanout_children: None,
+            state: NODE_STATUS_COMPLETED.to_string(),
         });
 
         let events = terminal_required_events_for_snapshot(&snapshot).unwrap();
@@ -817,31 +769,25 @@ mod tests {
         assert!(matches!(
             &events[0],
             WorkflowEvent::NodeCompleted {
-                run_id,
-                workflow_name,
+                execution_id,
                 node_name,
-                result,
-                session_id,
-                run_index,
+                result_summary,
+                attempt,
                 timestamp,
                 ..
-            } if run_id == "run-1"
-                && workflow_name == "wf"
+            } if execution_id == "run-1"
                 && node_name == "implement"
-                && result.as_deref() == Some("done")
-                && session_id.as_deref() == Some("session-1")
-                && *run_index == Some(3)
+                && result_summary.as_deref() == Some("done")
+                && *attempt == 3
                 && (*timestamp - 41.0).abs() < f64::EPSILON
         ));
         assert!(matches!(
             &events[1],
-            WorkflowEvent::RunCompleted {
-                run_id,
-                workflow_name,
+            WorkflowEvent::ExecutionCompleted {
+                execution_id,
                 timestamp,
                 ..
-            } if run_id == "run-1"
-                && workflow_name == "wf"
+            } if execution_id == "run-1"
                 && (*timestamp - 42.0).abs() < f64::EPSILON
         ));
     }
@@ -849,9 +795,9 @@ mod tests {
     #[test]
     fn terminal_required_events_for_failed_snapshot_preserves_retry_count() {
         let mut snapshot = workflow_state_fixture();
-        snapshot.state = WorkflowExecutionState::Failed {
+        snapshot.state = RuntimeExecutionState::Failed {
             reason: "startup exhausted".to_string(),
-            kind: crate::domain::workflow::WorkflowStepFailureKind::StartupTimeout,
+            kind: crate::domain::workflow::NodeExecutionFailureKind::StartupTimeout,
             retry_count: Some(2),
         };
 
@@ -864,17 +810,15 @@ mod tests {
                 failure_kind,
                 retry_count,
                 ..
-            } if *failure_kind == crate::domain::workflow::WorkflowStepFailureKind::StartupTimeout
+            } if *failure_kind == crate::domain::workflow::NodeExecutionFailureKind::StartupTimeout
                 && *retry_count == Some(2)
         ));
         assert!(matches!(
             &events[1],
-            WorkflowEvent::RunFailed {
+            WorkflowEvent::ExecutionFailed {
                 failure_kind,
-                retry_count,
                 ..
-            } if *failure_kind == crate::domain::workflow::WorkflowStepFailureKind::StartupTimeout
-                && *retry_count == Some(2)
+            } if *failure_kind == crate::domain::workflow::NodeExecutionFailureKind::StartupTimeout
         ));
     }
 
@@ -891,16 +835,14 @@ mod tests {
         assert!(matches!(
             &events[0],
             WorkflowEvent::NodeStarted {
-                run_id,
-                workflow_name,
+                execution_id,
                 node_execution_id,
                 node_name,
                 kind,
                 attempt,
                 fanout_parent,
                 timestamp,
-            } if run_id == "run-1"
-                && workflow_name == "wf"
+            } if execution_id == "run-1"
                 && node_execution_id == "node-execution-implement-3"
                 && node_name == "implement"
                 && *kind == NodeKindName::Session
@@ -942,11 +884,9 @@ mod tests {
             event,
             WorkflowEvent::SessionAttached {
                 node_execution_id,
-                node_name,
                 session_id,
                 ..
             } if node_execution_id == "node-execution-implement-3"
-                && node_name == "implement"
                 && session_id == "session-3"
         ));
     }
@@ -963,52 +903,6 @@ mod tests {
     }
 
     #[test]
-    fn run_aborted_snapshot_maps_child_display_state_to_typed_outcome() {
-        let entry = StepHistoryEntry {
-            step_name: "parallel-review".to_string(),
-            completed_at: 42.0,
-            result: None,
-            session_id: None,
-            token_usage: None,
-            structured_output: None,
-            run_index: 1,
-            child_outputs: Some(vec![
-                ChildOutputSnapshot {
-                    step_name: "child-a".to_string(),
-                    session_id: Some("session-a".to_string()),
-                    result: Some("ok".to_string()),
-                    run_index: 1,
-                    completed_at: 40.0,
-                    structured_output: None,
-                    artifact_contract: None,
-                    state: STEP_STATE_COMPLETED.to_string(),
-                    failure_kind: None,
-                    failure_disposition: None,
-                },
-                ChildOutputSnapshot {
-                    step_name: "child-b".to_string(),
-                    session_id: Some("session-b".to_string()),
-                    result: None,
-                    run_index: 1,
-                    completed_at: 42.0,
-                    structured_output: None,
-                    artifact_contract: None,
-                    state: STEP_STATE_ABORTED.to_string(),
-                    failure_kind: None,
-                    failure_disposition: None,
-                },
-            ]),
-            state: STEP_STATE_ABORTED.to_string(),
-        };
-
-        let snapshot = run_aborted_step_snapshot_from_history_entry(&entry);
-        let children = snapshot.child_outputs.expect("child outputs are preserved");
-
-        assert_eq!(children[0].outcome, RunAbortedChildOutcome::Completed);
-        assert_eq!(children[1].outcome, RunAbortedChildOutcome::Aborted);
-    }
-
-    #[test]
     fn post_commit_progress_event_plan_emits_only_next_node_start() {
         let snapshot = workflow_state_fixture();
         let fanout_snapshot = fanout_workflow_state_fixture();
@@ -1018,16 +912,14 @@ mod tests {
                 .followup_event(&snapshot)
                 .unwrap(),
             Some(WorkflowEvent::NodeStarted {
-                run_id,
-                workflow_name,
+                execution_id,
                 node_execution_id,
                 node_name,
                 kind,
                 attempt,
                 fanout_parent,
                 timestamp,
-            }) if run_id == "run-1"
-                && workflow_name == "wf"
+            }) if execution_id == "run-1"
                 && node_execution_id == "node-execution-implement-3"
                 && node_name == "implement"
                 && kind == NodeKindName::Session
@@ -1077,14 +969,12 @@ mod tests {
         assert!(matches!(
             event,
             Some(WorkflowEvent::CliMutationRequested {
-                run_id,
-                workflow_name,
+                execution_id,
                 request_id,
                 request: CliMutationRequestRecord::Abort { node_name: None },
                 requested_at,
                 timestamp,
-            }) if run_id == "run-1"
-                && workflow_name == "wf"
+            }) if execution_id == "run-1"
                 && request_id == "request-1"
                 && (requested_at - 10.0).abs() < f64::EPSILON
                 && (timestamp - 20.0).abs() < f64::EPSILON
@@ -1120,7 +1010,7 @@ mod tests {
         let event = cli_mutation_rejected_event(
             "wf".to_string(),
             &context,
-            &WorkflowEngineError::InvalidState("run is already terminal".to_string()),
+            &WorkflowEngineError::InvalidState("execution is already terminal".to_string()),
             60.0,
         )
         .unwrap();
@@ -1128,16 +1018,14 @@ mod tests {
         assert!(matches!(
             event,
             WorkflowEvent::CliMutationRejected {
-                run_id,
-                workflow_name,
+                execution_id,
                 request_id,
                 request: CliMutationRequestRecord::Approve { .. },
-                reason: CliMutationRejectionReason::RunNotActive,
+                reason: CliMutationRejectionReason::ExecutionNotActive,
                 requested_at,
                 timestamp,
                 ..
-            } if run_id == "run-2"
-                && workflow_name == "wf"
+            } if execution_id == "run-2"
                 && request_id == "request-2"
                 && (requested_at - 50.0).abs() < f64::EPSILON
                 && (timestamp - 60.0).abs() < f64::EPSILON
@@ -1165,21 +1053,19 @@ mod tests {
         assert!(matches!(
             event,
             WorkflowEvent::CliMutationRejected {
-                run_id,
-                workflow_name,
+                execution_id,
                 request_id,
                 request: CliMutationRequestRecord::SubmitOutput {
-                    step_name,
+                    node_name,
                     contract,
                 },
                 reason: CliMutationRejectionReason::ContractMismatch,
                 requested_at,
                 timestamp,
                 ..
-            } if run_id == "run-3"
-                && workflow_name == "wf"
+            } if execution_id == "run-3"
                 && request_id == "request-3"
-                && step_name == "review"
+                && node_name == "review"
                 && contract == "review-verdict"
                 && (requested_at - 70.0).abs() < f64::EPSILON
                 && (timestamp - 80.0).abs() < f64::EPSILON

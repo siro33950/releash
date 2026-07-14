@@ -233,24 +233,26 @@ const baseIpcHandler: Record<string, unknown> = {
 	save_workspace_state: null,
 
 	// Workflow
-	get_workflow_state: null,
 	list_workflows: [],
-	list_workflow_runs: [],
 	start_workflow: null,
 	abort_workflow: null,
-	approve_workflow_step: null,
-	complete_interactive_step: null,
+	approve_workflow_node: null,
 	delete_workflow: null,
 	open_workflow_in_editor: null,
 	list_workflow_executions: [],
+	get_workflow_execution: null,
 	get_workflow_execution_log: [],
 	get_workflow_execution_state: null,
+	get_workflow_node_detail: null,
+	resolve_active_execution_by_worktree: null,
+	resolve_worktree_by_execution: null,
 
 	// Workspace tree
 	list_workspace_worktree_nodes: [],
 	list_workspace_workflow_history: [],
-	archive_workspace_workflow_run: null,
-	restore_workspace_workflow_run: null,
+	get_workspace_workflow_node_detail: null,
+	archive_workspace_workflow_execution: null,
+	restore_workspace_workflow_execution: null,
 };
 
 // -------------------------------------------------------

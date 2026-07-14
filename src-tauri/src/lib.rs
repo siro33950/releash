@@ -380,7 +380,7 @@ pub fn run() {
                 .inner()
                 .clone();
             let workflow_step_lifecycle_usecase = Arc::new(
-                adaptor::controller::wiring::build_workflow_step_lifecycle_usecase(
+                adaptor::controller::wiring::build_node_execution_lifecycle_usecase(
                     app.handle().clone(),
                     session_store.clone(),
                     agent_runtime.clone(),

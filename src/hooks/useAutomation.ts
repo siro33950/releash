@@ -6,8 +6,8 @@ import type {
 	FacetKind,
 	FacetSummary,
 	SaveWorkflowSourceResponse,
-	Workflow,
-	WorkflowSummary,
+	WorkflowDefinition,
+	WorkflowDefinitionSummary,
 } from "@/types/workflow";
 
 const EMPTY_REPORT: DiagnosticReport = {
@@ -20,15 +20,14 @@ const EMPTY_REPORT: DiagnosticReport = {
 export type FacetSubTab = "policy" | "knowledge" | "instruction";
 
 export function useAutomation(open: boolean) {
-	const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
+	const [workflows, setWorkflows] = useState<WorkflowDefinitionSummary[]>([]);
 	const [facets, setFacets] = useState<FacetSummary[]>([]);
 	const [report, setReport] = useState<DiagnosticReport>(EMPTY_REPORT);
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
-	const [selectedWorkflow, setSelectedWorkflow] = useState<Workflow | null>(
-		null,
-	);
+	const [selectedWorkflow, setSelectedWorkflow] =
+		useState<WorkflowDefinition | null>(null);
 	const [selectedWorkflowName, setSelectedWorkflowName] = useState<
 		string | null
 	>(null);
@@ -54,7 +53,7 @@ export function useAutomation(open: boolean) {
 		setError(null);
 		try {
 			const [wfList, diagReport] = await Promise.all([
-				invoke<WorkflowSummary[]>("list_workflows"),
+				invoke<WorkflowDefinitionSummary[]>("list_workflows"),
 				invoke<DiagnosticReport>("diagnose_all_cmd"),
 			]);
 			setWorkflows(wfList);
@@ -161,7 +160,7 @@ export function useAutomation(open: boolean) {
 				const source = await invoke<string>("get_workflow_source", { name });
 				setSelectedWorkflowSource(source);
 				try {
-					const wf = await invoke<Workflow>("get_workflow", { name });
+					const wf = await invoke<WorkflowDefinition>("get_workflow", { name });
 					setSelectedWorkflow(wf);
 				} catch (e) {
 					setSelectedWorkflow(null);

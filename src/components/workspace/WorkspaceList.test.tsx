@@ -106,7 +106,7 @@ vi.mock("@/hooks/useWorkspaceTreeNodes", () => ({
 					title: "NewSession",
 					state: "idle",
 					updatedAt: 1000,
-					workflowStepSession: false,
+					workflowNodeSession: false,
 					agentState: null,
 				},
 				{
@@ -116,41 +116,42 @@ vi.mock("@/hooks/useWorkspaceTreeNodes", () => ({
 					title: "Direct session",
 					state: "active",
 					updatedAt: 1000,
-					workflowStepSession: false,
+					workflowNodeSession: false,
 					agentState: "done",
 				},
 				{
 					kind: "workflow",
-					runId: "run-1",
+					executionId: "execution-1",
 					worktreePath: "/repo/wt",
 					workflowName: "release",
 					title: "Deploy workflow",
 					status: "running",
 					canStop: true,
 					updatedAt: 1100,
-					steps: [
+					nodeExecutions: [
 						{
-							kind: "step",
-							id: "run-1:step-build",
-							runId: "run-1",
+							kind: "node",
+							nodeExecutionId: "node-build-1",
+							executionId: "execution-1",
 							worktreePath: "/repo/wt",
-							title: "Build step",
+							title: "Build node",
 							nodeName: "build",
 							status: "running",
-							stepType: "session",
+							nodeKind: "session",
 							updatedAt: 1100,
 							attempt: 1,
 							sessions: [
 								{
 									kind: "session",
-									id: "step-build",
+									id: "node-session-build",
 									worktreePath: "/repo/wt",
-									title: "Build step",
+									title: "Build node",
 									state: "active",
 									updatedAt: 1100,
-									workflowStepSession: true,
-									stepName: "build",
-									runIndex: 1,
+									workflowNodeSession: true,
+									nodeExecutionId: "node-build-1",
+									nodeName: "build",
+									attempt: 1,
 									agentState: "running",
 								},
 							],
@@ -159,47 +160,47 @@ vi.mock("@/hooks/useWorkspaceTreeNodes", () => ({
 				},
 				{
 					kind: "workflow",
-					runId: "run-waiting",
+					executionId: "execution-waiting",
 					worktreePath: "/repo/wt",
 					workflowName: "waiting-flow",
 					title: "Waiting workflow",
 					status: "waiting",
 					canStop: true,
 					updatedAt: 1101,
-					steps: [],
+					nodeExecutions: [],
 				},
 				{
 					kind: "workflow",
-					runId: "run-completed",
+					executionId: "execution-completed",
 					worktreePath: "/repo/wt",
 					workflowName: "completed-flow",
 					title: "Completed workflow",
 					status: "completed",
 					canStop: false,
 					updatedAt: 1102,
-					steps: [],
+					nodeExecutions: [],
 				},
 				{
 					kind: "workflow",
-					runId: "run-failed",
+					executionId: "execution-failed",
 					worktreePath: "/repo/wt",
 					workflowName: "failed-flow",
 					title: "Failed workflow",
 					status: "failed",
 					canStop: false,
 					updatedAt: 1103,
-					steps: [],
+					nodeExecutions: [],
 				},
 				{
 					kind: "workflow",
-					runId: "run-aborted",
+					executionId: "execution-aborted",
 					worktreePath: "/repo/wt",
 					workflowName: "aborted-flow",
 					title: "Aborted workflow",
 					status: "aborted",
 					canStop: false,
 					updatedAt: 1104,
-					steps: [],
+					nodeExecutions: [],
 				},
 			],
 			closedSessions: [
@@ -217,12 +218,12 @@ vi.mock("@/hooks/useWorkspaceTreeNodes", () => ({
 					planMode: false,
 					permissionProfileId: null,
 					backendId: null,
-					workflowStepSession: false,
+					workflowNodeSession: false,
 				},
 			],
 			workflowHistory: [
 				{
-					runId: "archived-run",
+					executionId: "archived-execution",
 					worktreePath: "/repo/wt",
 					title: "Archived workflow",
 					status: "completed",
@@ -247,15 +248,10 @@ vi.mock("@/hooks/useWorktreeList", () => ({
 vi.mock("@/hooks/useWorktreeSessionStatuses", () => ({
 	useWorktreeSessionStatuses: () => new Map(),
 }));
-vi.mock("@/hooks/useWorktreeStepStatuses", () => ({
-	workflowStepStatusKey: (
-		executionId: string,
-		stepName: string,
-		runIndex?: number | null,
-	) => `${executionId}:${stepName}:${runIndex ?? 1}`,
-	useWorktreeStepStatuses: () => ({
-		steps: new Map([["run-1:Build step:1", "waiting"]]),
-		workflows: new Map([["run-1", "failed"]]),
+vi.mock("@/hooks/useWorktreeNodeStatuses", () => ({
+	useWorktreeNodeStatuses: () => ({
+		nodes: new Map([["node-build-1", "waiting"]]),
+		executions: new Map([["execution-1", "failed"]]),
 	}),
 }));
 
@@ -492,30 +488,30 @@ describe("WorkspaceList", () => {
 
 		expect(screen.getByText("release")).toBeInTheDocument();
 		expect(screen.queryByText("Deploy workflow")).not.toBeInTheDocument();
-		expect(screen.getByText("Build step")).toBeInTheDocument();
+		expect(screen.getByText("Build node")).toBeInTheDocument();
 		await user.click(screen.getByText("release"));
 
-		expect(screen.queryByText("Build step")).not.toBeInTheDocument();
+		expect(screen.queryByText("Build node")).not.toBeInTheDocument();
 		expect(screen.queryByText("Running")).not.toBeInTheDocument();
 		expect(onSelectWorktree).not.toHaveBeenCalled();
 	});
 
-	it("emits a workflowStep selection when a Workflow Step row is clicked", async () => {
+	it("emits a workflowNode selection when a Workflow Node row is clicked", async () => {
 		const user = userEvent.setup();
 		const { onSelectWorktree } = renderWorkspaceList();
 
-		await user.click(screen.getByText("Build step"));
+		await user.click(screen.getByText("Build node"));
 
 		expect(onSelectWorktree).toHaveBeenCalledWith(
 			"/repo/wt",
 			"feature",
 			"repo",
 			{
-				kind: "workflowStep",
+				kind: "workflowNode",
 				worktreePath: "/repo/wt",
-				runId: "run-1",
-				stepId: "run-1:step-build",
-				stepName: "build",
+				executionId: "execution-1",
+				nodeExecutionId: "node-build-1",
+				nodeName: "build",
 			},
 		);
 	});
@@ -525,28 +521,26 @@ describe("WorkspaceList", () => {
 			nodes: [
 				{
 					kind: "workflow",
-					runId: "run-matrix",
+					executionId: "execution-matrix",
 					worktreePath: "/repo/matrix",
 					workflowName: "matrix",
 					title: "Matrix fanout",
 					status: "running",
 					canStop: true,
 					updatedAt: 2_000,
-					steps: [
+					nodeExecutions: [
 						{
-							kind: "step",
-							id: "ne-review-item-0",
-							runId: "run-matrix",
+							kind: "node",
+							nodeExecutionId: "ne-review-item-0",
+							executionId: "execution-matrix",
 							worktreePath: "/repo/matrix",
 							title: "review",
 							nodeName: "review",
 							status: "running",
-							stepType: "session",
+							nodeKind: "session",
 							nodeExecutionStatus: "running",
 							updatedAt: 2_000,
-							runIndex: 1,
 							attempt: 1,
-							nodeExecutionId: "ne-review-item-0",
 							sessionId: "session-item-0",
 							fanoutParent: {
 								parentNode: "parallel-review",
@@ -557,19 +551,17 @@ describe("WorkspaceList", () => {
 							sessions: [],
 						},
 						{
-							kind: "step",
-							id: "ne-review-item-1",
-							runId: "run-matrix",
+							kind: "node",
+							nodeExecutionId: "ne-review-item-1",
+							executionId: "execution-matrix",
 							worktreePath: "/repo/matrix",
 							title: "review",
 							nodeName: "review",
 							status: "waiting",
-							stepType: "session",
+							nodeKind: "session",
 							nodeExecutionStatus: "waiting_approval",
 							updatedAt: 2_001,
-							runIndex: 1,
 							attempt: 1,
-							nodeExecutionId: "ne-review-item-1",
 							sessionId: "session-item-1",
 							fanoutParent: {
 								parentNode: "parallel-review",
@@ -610,11 +602,11 @@ describe("WorkspaceList", () => {
 			"empty",
 			"repo",
 			{
-				kind: "workflowStep",
+				kind: "workflowNode",
 				worktreePath: "/repo/matrix",
-				runId: "run-matrix",
-				stepId: "ne-review-item-1",
-				stepName: "review",
+				executionId: "execution-matrix",
+				nodeExecutionId: "ne-review-item-1",
+				nodeName: "review",
 			},
 		);
 	});
@@ -629,7 +621,7 @@ describe("WorkspaceList", () => {
 
 		await waitFor(() => {
 			expect(mocks.invoke).toHaveBeenCalledWith("abort_workflow", {
-				runId: "run-1",
+				executionId: "execution-1",
 			});
 		});
 		expect(mocks.refreshTree).toHaveBeenCalled();
@@ -663,12 +655,12 @@ describe("WorkspaceList", () => {
 
 		await waitFor(() => {
 			expect(mocks.invoke).toHaveBeenCalledWith("abort_workflow", {
-				runId: "run-waiting",
+				executionId: "execution-waiting",
 			});
 		});
 	});
 
-	it("uses live representative statuses for Step and Workflow rows", () => {
+	it("uses live representative statuses for node and Workflow rows", () => {
 		renderWorkspaceList();
 
 		expect(screen.getAllByTitle("waiting").length).toBeGreaterThanOrEqual(2);
@@ -676,19 +668,19 @@ describe("WorkspaceList", () => {
 		expect(screen.getAllByTitle("completed").length).toBeGreaterThanOrEqual(1);
 	});
 
-	it("uses a fixed Workflow icon for Workflow rows and keeps Step row status icons", () => {
+	it("uses a fixed Workflow icon for Workflow rows and keeps node row status icons", () => {
 		renderWorkspaceList();
 
 		const workflowButton = screen.getByText("release").closest("button");
-		const stepButton = screen.getByText("Build step").closest("button");
+		const nodeButton = screen.getByText("Build node").closest("button");
 
 		expect(
 			workflowButton?.querySelector('[title="failed"] svg.lucide-workflow'),
 		).toBeInTheDocument();
 		expect(
-			stepButton?.querySelector('[title="waiting"] svg.lucide-clock'),
+			nodeButton?.querySelector('[title="waiting"] svg.lucide-clock'),
 		).toBeInTheDocument();
-		expect(stepButton?.querySelector("svg.lucide-workflow")).toBeNull();
+		expect(nodeButton?.querySelector("svg.lucide-workflow")).toBeNull();
 	});
 
 	it("does not enable Stop from a live representative status on a terminal Workflow", async () => {
@@ -733,10 +725,10 @@ describe("WorkspaceList", () => {
 
 		await waitFor(() => {
 			expect(mocks.invoke).toHaveBeenCalledWith(
-				"archive_workspace_workflow_run",
+				"archive_workspace_workflow_execution",
 				{
 					worktreePath: "/repo/wt",
-					runId: "run-1",
+					executionId: "execution-1",
 				},
 			);
 		});
