@@ -269,12 +269,15 @@ fn parse_status_filter(value: Option<&str>) -> Result<Option<ExecutionStatusFilt
 }
 
 fn parse_execution_origin(value: Option<&str>) -> Result<ExecutionOrigin, ApiError> {
-    match value {
-        None | Some("api") => Ok(ExecutionOrigin::Api),
-        Some("cli") => Ok(ExecutionOrigin::Cli),
-        Some("agent") => Ok(ExecutionOrigin::Agent),
-        Some(other) => Err(ApiError::invalid_request(format!(
-            "invalid created_from value: {other}"
+    let Some(value) = value else {
+        return Ok(ExecutionOrigin::Api);
+    };
+    match ExecutionOrigin::from_public_value(value) {
+        Ok(origin @ (ExecutionOrigin::Api | ExecutionOrigin::Cli | ExecutionOrigin::Agent)) => {
+            Ok(origin)
+        }
+        Ok(ExecutionOrigin::DesktopUi) | Err(_) => Err(ApiError::invalid_request(format!(
+            "invalid created_from value: {value}"
         ))),
     }
 }

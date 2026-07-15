@@ -474,7 +474,7 @@ pub struct ChatMessage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ChatSession {
     pub id: String,
     pub worktree_path: String,
@@ -2814,11 +2814,8 @@ mod tests {
         assert_eq!(activities, None);
     }
 
-    /// parent ChatSession 廃止後の在庫 JSON 互換性: 旧 `ChatSession.workflowState` フィールドを
-    /// 含む JSON は serde の unknown_fields 既定挙動で silently 読み捨てられ、deserialize は
-    /// 成功する（破棄前提でロスレスではないが、起動の阻害にならない）。
     #[test]
-    fn legacy_chat_session_with_old_workflow_state_is_silently_ignored() {
+    fn retired_workflow_state_field_is_rejected() {
         let json = r#"{
             "id": "s1",
             "worktreePath": "/repo",
@@ -2833,11 +2830,7 @@ mod tests {
                 "workflowName": "legacy"
             }
         }"#;
-        let result: Result<ChatSession, _> = serde_json::from_str(json);
-        assert!(
-            result.is_ok(),
-            "ChatSession.workflowState は撤去フィールド扱いで silently 読み捨てられる"
-        );
+        assert!(serde_json::from_str::<ChatSession>(json).is_err());
     }
 
     #[test]

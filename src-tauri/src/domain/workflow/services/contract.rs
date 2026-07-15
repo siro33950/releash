@@ -211,8 +211,8 @@ mod contract_service_tests {
             "```sh\nreleash-dev workflow output submit execution-1 \\\n  --node review \\\n  --type review \\\n  --json '{...}'\n```"
         ));
         assert!(!prompt.contains("\n+  --"));
-        let deprecated_node_flag = ["--", "step"].concat();
-        assert!(!prompt.contains(&deprecated_node_flag));
+        let deprecated_step_flag = ["--", "step"].concat();
+        assert!(!prompt.contains(&deprecated_step_flag));
     }
 
     #[test]
@@ -233,8 +233,8 @@ mod contract_service_tests {
             "```sh\nreleash-dev workflow output submit execution-1 \\\n  --node review \\\n  --type review \\\n  --json '{...}'\n```"
         ));
         assert!(!prompt.contains("\n+  --"));
-        let deprecated_node_flag = ["--", "step"].concat();
-        assert!(!prompt.contains(&deprecated_node_flag));
+        let deprecated_step_flag = ["--", "step"].concat();
+        assert!(!prompt.contains(&deprecated_step_flag));
     }
 
     #[test]

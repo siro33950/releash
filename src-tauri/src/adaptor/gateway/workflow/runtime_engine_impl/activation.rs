@@ -35,18 +35,34 @@ pub(super) async fn rollback_active_interruption(
     activation_gate: &RuntimeActivationGate,
     activation_was_paused: bool,
     projection: InterruptionRollback,
-) {
-    let _ = execution_store
+) -> Result<(), WorkflowEngineError> {
+    let reservation_error = execution_store
         .finish_active_interruption(reservation)
-        .await;
-    if let InterruptionRollback::RestoreActiveSnapshot(snapshot) = projection {
-        let _ = runtime_commit::restore_execution_store_active_snapshot(execution_store, snapshot)
-            .await;
-    }
+        .await
+        .err()
+        .map(|error| format!("interruption reservation rollback failed: {error}"));
+    let projection_error = match projection {
+        InterruptionRollback::ProjectionUnchanged => None,
+        InterruptionRollback::RestoreActiveSnapshot(snapshot) => {
+            runtime_commit::restore_execution_store_active_snapshot(execution_store, snapshot)
+                .await
+                .err()
+                .map(|error| format!("active metadata rollback failed: {error}"))
+        }
+    };
     if activation_was_paused {
         activation_gate.rollback_cancel();
     } else {
         activation_gate.reset_cancel();
+    }
+    let errors = [reservation_error, projection_error]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(WorkflowEngineError::SessionStore(errors.join("; ")))
     }
 }
 

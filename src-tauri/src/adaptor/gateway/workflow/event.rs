@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::adaptor::gateway::workflow::schema::{NodeKindName, Workflow};
+use crate::adaptor::gateway::workflow::schema::{NodeKindName, WorkflowDefinitionYaml};
 use crate::domain::workflow::{
     ExecutionInterruptionReason, ExecutionOrigin, NodeExecutionFailureKind,
 };
@@ -51,7 +51,7 @@ pub enum WorkflowEvent {
         created_from: ExecutionOrigin,
         request: String,
         permission_mode: String,
-        definition: Workflow,
+        definition: WorkflowDefinitionYaml,
         timestamp: f64,
     },
     NodeStarted {
@@ -263,12 +263,7 @@ mod execution_origin_serde {
     where
         S: Serializer,
     {
-        serializer.serialize_str(match origin {
-            ExecutionOrigin::DesktopUi => "desktop_ui",
-            ExecutionOrigin::Cli => "cli",
-            ExecutionOrigin::Agent => "agent",
-            ExecutionOrigin::Api => "api",
-        })
+        serializer.serialize_str(origin.as_public_value())
     }
 
     pub fn deserialize<'de, D>(deserializer: D) -> Result<ExecutionOrigin, D::Error>
@@ -276,16 +271,7 @@ mod execution_origin_serde {
         D: Deserializer<'de>,
     {
         let value = String::deserialize(deserializer)?;
-        match value.as_str() {
-            "desktop_ui" => Ok(ExecutionOrigin::DesktopUi),
-            "cli" => Ok(ExecutionOrigin::Cli),
-            "agent" => Ok(ExecutionOrigin::Agent),
-            "api" => Ok(ExecutionOrigin::Api),
-            _ => Err(serde::de::Error::unknown_variant(
-                &value,
-                &["desktop_ui", "cli", "agent", "api"],
-            )),
-        }
+        ExecutionOrigin::from_public_value(&value).map_err(serde::de::Error::custom)
     }
 }
 
@@ -296,8 +282,8 @@ mod tests {
         FacetRefs, NodeDefinition, NodeKind, SessionSpec,
     };
 
-    fn minimal_workflow() -> Workflow {
-        Workflow {
+    fn minimal_workflow() -> WorkflowDefinitionYaml {
+        WorkflowDefinitionYaml {
             name: "wf".to_string(),
             description: String::new(),
             builtin: false,

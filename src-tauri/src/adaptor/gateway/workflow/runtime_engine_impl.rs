@@ -13,14 +13,14 @@ use activation::{
     RuntimeActivationGate,
 };
 
+#[cfg(test)]
+use super::node_session_boundary::NodeSessionInfo;
+#[cfg(test)]
+use super::node_session_boundary::{dispatch_session_start, SessionStartGate};
+use super::node_session_boundary::{NodeSessionDeps, RealNodeSessionDeps};
 use super::runtime_session as workflow_runtime_session;
 #[cfg(test)]
-use super::runtime_session::resolve_step_model_with_registry;
-#[cfg(test)]
-use super::step_session_boundary::StepSessionInfo;
-#[cfg(test)]
-use super::step_session_boundary::{dispatch_session_start, SessionStartGate};
-use super::step_session_boundary::{RealStepSessionDeps, StepSessionDeps};
+use super::runtime_session::resolve_node_model_with_registry;
 use crate::adaptor::gateway::workflow::approval_runtime as workflow_approval_runtime;
 use crate::adaptor::gateway::workflow::domain_mapping::{
     node_kind_to_domain, workflow_schemas_to_domain,
@@ -40,11 +40,16 @@ use crate::adaptor::gateway::workflow::facet::WorkflowFacetContents;
 use crate::adaptor::gateway::workflow::failure_wire::{
     self as workflow_failure_wire, SubmissionViolation,
 };
+use crate::adaptor::gateway::workflow::fanout_runtime as workflow_fanout_runtime;
 use crate::adaptor::gateway::workflow::log::WorkflowEventLog;
+#[cfg(test)]
+use crate::adaptor::gateway::workflow::node_settings::resolve_node_settings;
+#[cfg(test)]
+use crate::adaptor::gateway::workflow::node_settings::ResolvedNodeSettings;
+use crate::adaptor::gateway::workflow::node_settings::WorkflowDefaults;
 use crate::adaptor::gateway::workflow::orphan_recovery as workflow_orphan_recovery;
 use crate::adaptor::gateway::workflow::output_limit as workflow_output_limit;
 use crate::adaptor::gateway::workflow::output_submission as workflow_output_submission;
-use crate::adaptor::gateway::workflow::parallel_runtime as workflow_parallel_runtime;
 use crate::adaptor::gateway::workflow::prompt_rendering as workflow_prompt;
 use crate::adaptor::gateway::workflow::resolver::{
     ManagedWorktreeResolver, WorkflowDefinitionResolver,
@@ -56,11 +61,11 @@ use crate::adaptor::gateway::workflow::resolver::{
 use crate::adaptor::gateway::workflow::resume_projection as workflow_resume_projection;
 use crate::adaptor::gateway::workflow::runtime_commit::{
     self as workflow_runtime_commit, AbortOutcome, AbortTargetLookup, CommandMutationRollback,
-    RequiredEventCommit, StepOutcome,
+    NodeOutcome, RequiredEventCommit,
 };
 use crate::adaptor::gateway::workflow::runtime_events as workflow_runtime_events;
 #[cfg(test)]
-use crate::adaptor::gateway::workflow::runtime_state::NextStepDecision;
+use crate::adaptor::gateway::workflow::runtime_state::NextNodeDecision;
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::runtime_state::{FanoutChildRuntime, FanoutRuntimeState};
 use crate::adaptor::gateway::workflow::runtime_state::{
@@ -72,19 +77,14 @@ use crate::adaptor::gateway::workflow::schema::NodeDefinition;
 use crate::adaptor::gateway::workflow::schema::{
     CommandSpec, FacetRefs, FanoutSpec, NodeKind, SessionGate, SessionSpec,
 };
-use crate::adaptor::gateway::workflow::schema::{NodeKindName, Workflow};
+use crate::adaptor::gateway::workflow::schema::{NodeKindName, WorkflowDefinitionYaml};
 use crate::adaptor::gateway::workflow::secret_source;
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::state::NodeHistoryEntry;
 use crate::adaptor::gateway::workflow::state::{
     NodeExecution, NodeExecutionStatus, NodeStallObservation, RuntimeArtifact,
-    RuntimeExecutionState, TokenUsage, WorkflowState,
+    RuntimeCommitSnapshot, RuntimeExecutionState, TokenUsage,
 };
-#[cfg(test)]
-use crate::adaptor::gateway::workflow::step_settings::resolve_step_settings;
-#[cfg(test)]
-use crate::adaptor::gateway::workflow::step_settings::ResolvedStepSettings;
-use crate::adaptor::gateway::workflow::step_settings::WorkflowDefaults;
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::turn_completion;
 use crate::domain::agent_session::PermissionMode;
@@ -94,7 +94,6 @@ use crate::domain::workflow::services::failure_policy::{
     RepairDecision, RetryPolicy, StructuredOutputRepairPolicy,
 };
 use crate::domain::workflow::services::secret_masker as workflow_secret_masker;
-use crate::domain::workflow::services::spec_directory as workflow_spec_directory;
 use crate::domain::workflow::services::transition as workflow_transition;
 use crate::domain::workflow::OutcomeCommitMode;
 use crate::domain::workflow::WorkflowNodeContext;
@@ -110,14 +109,14 @@ use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
 use crate::usecase::agent_session::session::{OpenTabRegistry, SessionStore};
 use crate::usecase::agent_session::status::current_timestamp;
 
-fn parallel_child_failure_kind(
+fn fanout_child_failure_kind(
     exit_code: i64,
     failure_signal: Option<workflow_transition::SessionFailureSignal>,
 ) -> NodeExecutionFailureKind {
     workflow_transition::classify_session_error(exit_code, failure_signal)
 }
 
-fn record_failed_snapshot_telemetry(snapshot: &WorkflowState) {
+fn record_failed_snapshot_telemetry(snapshot: &RuntimeCommitSnapshot) {
     if let RuntimeExecutionState::Failed {
         kind, retry_count, ..
     } = &snapshot.state
@@ -138,7 +137,7 @@ impl WorkflowDefinitionResolver for TestWorkflowDefinitionResolver {
     async fn resolve(
         &self,
         workflow_name: &str,
-    ) -> Result<Workflow, WorkflowDefinitionResolverError> {
+    ) -> Result<WorkflowDefinitionYaml, WorkflowDefinitionResolverError> {
         let workflow_name = workflow_name.to_string();
         tokio::task::spawn_blocking(move || {
             let dir = crate::adaptor::gateway::workflow::storage::workflows_dir();
@@ -215,7 +214,7 @@ struct FanoutChildStartedLogObserver<'a, R: tauri::Runtime> {
 
 struct FanoutChildCompletionCommit {
     all_completed: bool,
-    outcome: Option<StepOutcome>,
+    outcome: Option<NodeOutcome>,
     snapshot_before: WorkflowExecution,
     progress_events: Vec<WorkflowEvent>,
     required_progress_events: bool,
@@ -244,7 +243,7 @@ struct FanoutResumeChild {
     node_name: String,
     item_index: Option<usize>,
     child_index: usize,
-    reusable: workflow_parallel_runtime::ReusableFanoutChild,
+    reusable: workflow_fanout_runtime::ReusableFanoutChild,
 }
 
 #[derive(Clone)]
@@ -255,7 +254,7 @@ struct FanoutResumeCheckpoint {
 
 struct WorkflowExecutionInsert {
     execution_id: String,
-    workflow: Workflow,
+    workflow: WorkflowDefinitionYaml,
     worktree_path: String,
     request: Option<String>,
     created_from: ExecutionOrigin,
@@ -274,6 +273,7 @@ struct CommandExecutionInput {
     contract: Option<String>,
     schemas: BTreeMap<String, DomainSchemaDef>,
     fanout_parent: Option<String>,
+    session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -297,7 +297,7 @@ struct CommandArtifact {
 }
 
 fn command_env(input: &CommandExecutionInput) -> Vec<(String, String)> {
-    vec![
+    let mut env = vec![
         (
             "RELEASH_WORKFLOW_EXECUTION_ID".to_string(),
             input.execution_id.clone(),
@@ -306,7 +306,11 @@ fn command_env(input: &CommandExecutionInput) -> Vec<(String, String)> {
             "RELEASH_NODE_EXECUTION_ID".to_string(),
             input.node_execution_id.clone(),
         ),
-    ]
+    ];
+    if let Some(session_id) = input.session_id.as_ref() {
+        env.push(("RELEASH_SESSION_ID".to_string(), session_id.clone()));
+    }
+    env
 }
 
 fn build_command_artifact(
@@ -344,16 +348,12 @@ fn build_command_artifact(
             if let ContractValidationResult::Valid { artifact, .. } =
                 workflow_contract::validate_artifact_value(schemas, contract, parsed)
             {
-                let violations =
-                    workflow_spec_directory::validate_contract_value(contract, &artifact);
-                if violations.is_empty() {
-                    if let Some(fields) = artifact.as_object() {
-                        for (field, value) in fields {
-                            object.insert(field.clone(), value.clone());
-                        }
-                        validation_success = true;
-                        event_contract = Some(contract.to_string());
+                if let Some(fields) = artifact.as_object() {
+                    for (field, value) in fields {
+                        object.insert(field.clone(), value.clone());
                     }
+                    validation_success = true;
+                    event_contract = Some(contract.to_string());
                 }
             }
         }
@@ -394,7 +394,7 @@ fn is_still_current_execution(exec: &WorkflowExecution, node_name: &str, attempt
         == attempt
 }
 
-fn commit_snapshot_is_current(exec: &WorkflowExecution, snapshot: &WorkflowState) -> bool {
+fn commit_snapshot_is_current(exec: &WorkflowExecution, snapshot: &RuntimeCommitSnapshot) -> bool {
     exec.id == snapshot.execution_id
         && exec.updated_at == snapshot.updated_at
         && exec.state == snapshot.state
@@ -444,7 +444,7 @@ fn resolve_active_node_execution_index(
     }
 }
 
-fn resolve_fanout_approval_node_execution_id(
+fn resolve_fanout_approval_target_node_execution_id(
     exec: &WorkflowExecution,
     node_name: &str,
     node_execution_id: Option<&str>,
@@ -494,31 +494,31 @@ fn complete_fanout_parent_after_all_children(
     required_progress_events: bool,
     failure_telemetry: Option<FailureClassification>,
 ) -> Result<FanoutChildCompletionCommit, WorkflowEngineError> {
-    let Some(parallel_run) = exec.parallel_run.as_ref() else {
+    let Some(fanout_runtime) = exec.fanout_runtime.as_ref() else {
         return Err(WorkflowEngineError::InvalidState(
             "fanout parent completion requires an active fanout runtime".to_string(),
         ));
     };
-    let parent_node_name = parallel_run.parent_node_name.clone();
-    let parent_node_execution_id = parallel_run.parent_node_execution_id.clone();
+    let parent_node_name = fanout_runtime.parent_node_name.clone();
+    let parent_node_execution_id = fanout_runtime.parent_node_execution_id.clone();
     let parent_attempt = exec
         .node_execution_counts
         .get(&parent_node_name)
         .copied()
         .unwrap_or(1);
     let completed_at = current_timestamp();
-    let completion_plan = workflow_parallel_runtime::plan_fanout_parent_completion(
+    let completion_plan = workflow_fanout_runtime::plan_fanout_parent_completion(
         &parent_node_name,
         parent_attempt,
-        &parallel_run.children,
+        &fanout_runtime.children,
         completed_at,
     );
     let parent_artifact = completion_plan
-        .parent_step_output
+        .parent_artifact
         .artifact
         .clone()
         .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
-    let parent_token_usage = completion_plan.parent_step_output.token_usage.clone();
+    let parent_token_usage = completion_plan.parent_artifact.token_usage.clone();
     progress_events.push(WorkflowEvent::ArtifactProduced {
         execution_id: exec.id.clone(),
         node_execution_id: parent_node_execution_id.clone(),
@@ -530,7 +530,7 @@ fn complete_fanout_parent_after_all_children(
         timestamp: completed_at,
     });
 
-    exec.parallel_run = None;
+    exec.fanout_runtime = None;
     exec.updated_at = completed_at;
     exec.complete_node_execution(
         &parent_node_execution_id,
@@ -539,8 +539,8 @@ fn complete_fanout_parent_after_all_children(
         completed_at,
     );
     exec.artifacts
-        .insert(parent_node_name.clone(), completion_plan.parent_step_output);
-    exec.current_step_token_usage = TokenUsage::default();
+        .insert(parent_node_name.clone(), completion_plan.parent_artifact);
+    exec.current_node_token_usage = TokenUsage::default();
     exec.current_session_id = None;
     exec.node_history.push(completion_plan.history_entry);
 
@@ -563,12 +563,12 @@ fn finalize_child_terminal_state(
     required_progress_events: bool,
     failure_telemetry: Option<FailureClassification>,
 ) -> Result<FanoutChildCompletionCommit, WorkflowEngineError> {
-    let Some(parallel_run) = exec.parallel_run.as_ref() else {
+    let Some(fanout_runtime) = exec.fanout_runtime.as_ref() else {
         return Err(WorkflowEngineError::InvalidState(
             "fanout child terminal state requires an active fanout runtime".to_string(),
         ));
     };
-    let all_done = parallel_run.children.iter().all(|c| {
+    let all_done = fanout_runtime.children.iter().all(|c| {
         matches!(
             c.state,
             FanoutChildRuntimeState::Completed | FanoutChildRuntimeState::Failed
@@ -577,10 +577,10 @@ fn finalize_child_terminal_state(
 
     if !all_done {
         exec.updated_at = current_timestamp();
-        let snapshot = exec.to_workflow_state();
+        let snapshot = exec.to_commit_snapshot();
         return Ok(FanoutChildCompletionCommit {
             all_completed: false,
-            outcome: Some(StepOutcome::Persist(snapshot)),
+            outcome: Some(NodeOutcome::Persist(snapshot)),
             snapshot_before,
             progress_events,
             required_progress_events,
@@ -616,12 +616,12 @@ fn finalize_fanout_child_failure_state(
         interrupted_command_ids,
         interrupted_execution_ids,
     ) = {
-        let Some(parallel_run) = exec.parallel_run.as_mut() else {
+        let Some(fanout_runtime) = exec.fanout_runtime.as_mut() else {
             return Err(WorkflowEngineError::InvalidState(
                 "fanout child failure requires an active fanout runtime".to_string(),
             ));
         };
-        let Some(child_index) = parallel_run
+        let Some(child_index) = fanout_runtime
             .children
             .iter()
             .position(|child| child.node_execution_id == input.child_node_execution_id)
@@ -631,7 +631,7 @@ fn finalize_fanout_child_failure_state(
                 input.child_node_execution_id
             )));
         };
-        let parent_node_execution_id = parallel_run.parent_node_execution_id.clone();
+        let parent_node_execution_id = fanout_runtime.parent_node_execution_id.clone();
         let mut child_name = String::new();
         let mut child_attempt = 1;
         let mut child_token_usage = None;
@@ -639,7 +639,7 @@ fn finalize_fanout_child_failure_state(
         let mut interrupted_command_ids = Vec::new();
         let mut interrupted_execution_ids = Vec::new();
 
-        for (index, child) in parallel_run.children.iter_mut().enumerate() {
+        for (index, child) in fanout_runtime.children.iter_mut().enumerate() {
             if index == child_index {
                 child.state = FanoutChildRuntimeState::Failed;
                 child.result = Some(failure_kind.as_str().to_string());
@@ -737,7 +737,7 @@ fn finalize_fanout_child_failure_state(
         return Ok(FanoutChildFailureCommit {
             completion: FanoutChildCompletionCommit {
                 all_completed: true,
-                outcome: Some(StepOutcome::Persist(exec.to_workflow_state())),
+                outcome: Some(NodeOutcome::Persist(exec.to_commit_snapshot())),
                 snapshot_before,
                 progress_events,
                 required_progress_events: true,
@@ -765,13 +765,13 @@ fn finalize_fanout_child_failure_state(
     let history_entry =
         exec.make_node_history_entry(Some(input.terminal_reason.clone()), None, None);
     exec.node_history.push(history_entry);
-    exec.parallel_run = None;
+    exec.fanout_runtime = None;
     exec.updated_at = timestamp;
 
     Ok(FanoutChildFailureCommit {
         completion: FanoutChildCompletionCommit {
             all_completed: true,
-            outcome: Some(StepOutcome::Persist(exec.to_workflow_state())),
+            outcome: Some(NodeOutcome::Persist(exec.to_commit_snapshot())),
             snapshot_before,
             progress_events,
             required_progress_events: true,
@@ -801,12 +801,12 @@ impl<R: tauri::Runtime> workflow_runtime_session::FanoutChildTurnObserver
     }
 }
 
-fn current_step_for_stall_observation(
+fn current_node_for_stall_observation(
     exec: &WorkflowExecution,
     session_id: &str,
 ) -> Option<(String, String, u32)> {
-    if let Some(parallel_run) = exec.parallel_run.as_ref() {
-        if let Some(child) = parallel_run.children.iter().find(|child| {
+    if let Some(fanout_runtime) = exec.fanout_runtime.as_ref() {
+        if let Some(child) = fanout_runtime.children.iter().find(|child| {
             child.session_id == session_id && child.state == FanoutChildRuntimeState::Running
         }) {
             return Some((
@@ -859,7 +859,7 @@ fn upsert_stall_observation(
     observations.push(observation);
 }
 
-// [08] `lookup_step_contract` は domain の contract service に移動済み。
+// [08] `lookup_node_contract` は domain の contract service に移動済み。
 // engine と CLI の双方が同じ domain service を参照するため、本モジュールではメモのみ残す。
 
 impl WorkflowRuntimeService {
@@ -916,7 +916,7 @@ impl WorkflowRuntimeService {
     pub(crate) async fn seed_active_execution_for_test(
         &self,
         execution_id: String,
-        workflow: Workflow,
+        workflow: WorkflowDefinitionYaml,
         state: RuntimeExecutionState,
         worktree_path: String,
         created_from: ExecutionOrigin,
@@ -1005,11 +1005,11 @@ impl WorkflowRuntimeService {
                 started_at: now,
                 updated_at: now,
                 current_session_id: None,
-                current_step_token_usage: TokenUsage::default(),
+                current_node_token_usage: TokenUsage::default(),
                 artifacts: HashMap::new(),
                 node_executions: vec![NodeExecution {
                     id: node_execution_id,
-                    execution_id: execution_id,
+                    execution_id,
                     node_name: current_node,
                     kind: current_node_kind,
                     attempt: 1,
@@ -1023,7 +1023,7 @@ impl WorkflowRuntimeService {
                     completed_at: None,
                 }],
                 request: None,
-                parallel_run: None,
+                fanout_runtime: None,
                 current_stall_observations: Vec::new(),
             },
         );
@@ -1081,7 +1081,7 @@ impl WorkflowRuntimeService {
 
     async fn reserve_workflow_execution(
         &self,
-        workflow: &Workflow,
+        workflow: &WorkflowDefinitionYaml,
         worktree_path: &str,
         _request: Option<String>,
         created_from: ExecutionOrigin,
@@ -1117,7 +1117,7 @@ impl WorkflowRuntimeService {
     }
 
     fn resolve_facet_contents_for_workflow(
-        workflow: &Workflow,
+        workflow: &WorkflowDefinitionYaml,
     ) -> Result<WorkflowFacetContents, WorkflowEngineError> {
         crate::adaptor::gateway::workflow::storage::resolve_and_validate_workflow_facets(
             workflow,
@@ -1129,7 +1129,7 @@ impl WorkflowRuntimeService {
     async fn facet_contents_for_execution(
         &self,
         execution_id: &str,
-        workflow: &Workflow,
+        workflow: &WorkflowDefinitionYaml,
     ) -> Result<WorkflowFacetContents, WorkflowEngineError> {
         if let Some(contents) = self
             .execution_facet_contents
@@ -1151,7 +1151,7 @@ impl WorkflowRuntimeService {
     async fn insert_workflow_execution(
         &self,
         input: WorkflowExecutionInsert,
-    ) -> Result<WorkflowState, WorkflowEngineError> {
+    ) -> Result<RuntimeCommitSnapshot, WorkflowEngineError> {
         let WorkflowExecutionInsert {
             execution_id,
             workflow,
@@ -1165,7 +1165,7 @@ impl WorkflowRuntimeService {
         let mut artifacts = HashMap::new();
         artifacts.insert(
             crate::domain::workflow::services::reference::REQUEST_ARTIFACT.to_string(),
-            workflow_prompt::request_step_output(&request_text, now),
+            workflow_prompt::request_node_artifact(&request_text, now),
         );
         let mut execution = WorkflowExecution {
             id: execution_id.clone(),
@@ -1180,11 +1180,11 @@ impl WorkflowRuntimeService {
             started_at: now,
             updated_at: now,
             current_session_id: None,
-            current_step_token_usage: TokenUsage::default(),
+            current_node_token_usage: TokenUsage::default(),
             artifacts,
             node_executions: Vec::new(),
             request,
-            parallel_run: None,
+            fanout_runtime: None,
             current_stall_observations: Vec::new(),
             worktree_path: worktree_path.clone(),
         };
@@ -1209,13 +1209,13 @@ impl WorkflowRuntimeService {
             completed_at: None,
         });
         execs.insert(execution_id.clone(), execution);
-        Ok(execs.get(&execution_id).unwrap().to_workflow_state())
+        Ok(execs.get(&execution_id).unwrap().to_commit_snapshot())
     }
 
     #[cfg(test)]
     async fn start_workflow_common_core_for_test(
         &self,
-        workflow: Workflow,
+        workflow: WorkflowDefinitionYaml,
         worktree_path: String,
         request: Option<String>,
         created_from: ExecutionOrigin,
@@ -1450,7 +1450,7 @@ impl WorkflowRuntimeService {
     ///
     /// 戻り値は新しく払い出された `execution_id`。
     /// `execution_id` を `execution_id` として「昇格」させた値であり、ここ以外で採番されることはない。
-    /// state 変化の入口は resolved StartRun port からこの private handler に合流する。
+    /// state 変化の入口は resolved StartExecution port からこの private handler に合流する。
     /// 外部入口としては公開せず、usecase/gateway が解決済み workflow を渡す境界にする。
     #[allow(clippy::too_many_arguments)]
     async fn start_workflow<R: tauri::Runtime>(
@@ -1458,7 +1458,7 @@ impl WorkflowRuntimeService {
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
-        workflow: Workflow,
+        workflow: WorkflowDefinitionYaml,
         worktree_path: String,
         request: Option<String>,
         created_from: ExecutionOrigin,
@@ -1537,8 +1537,8 @@ impl WorkflowRuntimeService {
         };
 
         // parent ChatSession 機構撤去後は session を engine が作らない。
-        // workflow_defaults は StartRun の permission_mode 引数を workflow 全体の継承
-        // デフォルトとして capture する（schema 境界 [02]: 各 step は NodeDefinition.model
+        // workflow_defaults は StartExecution の permission_mode 引数を workflow 全体の継承
+        // デフォルトとして capture する（schema 境界 [02]: 各 node は NodeDefinition.model
         // 必須で個別解決される）。
         let _ = data_dir; // unused after parent session removal
         let workflow_defaults = WorkflowDefaults {
@@ -1611,7 +1611,7 @@ impl WorkflowRuntimeService {
         }
 
         // [04] post-commit: broadcast。ExecutionStarted は append 済みのため command は既に受理。
-        // session_workflow_refs への登録は step session 起動時（start_step_session /
+        // session_workflow_refs への登録は node session 起動時（start_node_session /
         // start_fanout_children）で行う。
         workflow_runtime_session::broadcast_state(app, &worktree_path, snapshot.clone()).await;
 
@@ -1649,7 +1649,7 @@ impl WorkflowRuntimeService {
     pub(crate) async fn resolve_start_execution_workflow(
         &self,
         workflow_name: &str,
-    ) -> Result<Workflow, WorkflowEngineError> {
+    ) -> Result<WorkflowDefinitionYaml, WorkflowEngineError> {
         crate::domain::workflow::validation::validate_name(workflow_name)
             .map_err(|e| WorkflowEngineError::ValidationError(format!("validation_error: {e}")))?;
         self.workflow_resolver
@@ -1664,7 +1664,7 @@ impl WorkflowRuntimeService {
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
-        workflow: Workflow,
+        workflow: WorkflowDefinitionYaml,
         worktree_path: String,
         request: Option<String>,
         created_from: ExecutionOrigin,
@@ -1689,7 +1689,7 @@ impl WorkflowRuntimeService {
     /// 2. `validate_contract_value` で contract 適合判定
     /// 3. 適合時のみ `artifacts` を更新し、
     ///    `ArtifactProduced` event を append
-    /// 4. 不適合・stale step・不在 step・契約タイプ不一致は副作用なしで `Err` を返し、
+    /// 4. 不適合・stale node・不在 node・契約タイプ不一致は副作用なしで `Err` を返し、
     ///    `artifacts` / event log を一切変更しない。
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn submit_workflow_output<R: tauri::Runtime>(
@@ -1778,7 +1778,7 @@ impl WorkflowRuntimeService {
         // 2. writer lock 取得後に state / contract / accepting target / attempt を
         //    再検証し、snapshot 採取と mutation を同一 lock スコープで行う
         //    （spec [08] 境界: ArtifactProduced の append は適合判定および state 更新と
-        //    同一トランザクション境界内。並行 dispatch によって stale step の output が
+        //    同一トランザクション境界内。並行 dispatch によって stale node の output が
         //    確定されないよう、validation と mutation のあいだに lock を手放さない）。
         let timestamp = current_timestamp();
         let mutation = {
@@ -1898,7 +1898,7 @@ impl WorkflowRuntimeService {
             }
 
             let Some((node_execution_id, node_name, attempt)) =
-                current_step_for_stall_observation(exec, session_id)
+                current_node_for_stall_observation(exec, session_id)
             else {
                 return Ok(());
             };
@@ -1929,7 +1929,7 @@ impl WorkflowRuntimeService {
                 timestamp: observation.observed_at,
             };
             (
-                exec.to_workflow_state(),
+                exec.to_commit_snapshot(),
                 snapshot_before,
                 exec.worktree_path.clone(),
                 exec.id.clone(),
@@ -1971,7 +1971,7 @@ impl WorkflowRuntimeService {
             }
             let snapshot_before = exec.clone();
             let Some((node_execution_id, _, _)) =
-                current_step_for_stall_observation(exec, session_id)
+                current_node_for_stall_observation(exec, session_id)
             else {
                 return Ok(());
             };
@@ -1990,7 +1990,7 @@ impl WorkflowRuntimeService {
                 timestamp: cleared_at,
             };
             (
-                exec.to_workflow_state(),
+                exec.to_commit_snapshot(),
                 snapshot_before,
                 exec.worktree_path.clone(),
                 exec.id.clone(),
@@ -2018,7 +2018,7 @@ impl WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle<R>,
         execution_id: &str,
-        snapshot: WorkflowState,
+        snapshot: RuntimeCommitSnapshot,
         snapshot_before: WorkflowExecution,
         execution_store_snapshot_before: Option<WorkflowExecutionMetadata>,
         worktree_path: String,
@@ -2090,20 +2090,20 @@ impl WorkflowRuntimeService {
         let Some(session_ref) = self.resolve_session_ref(session_id).await else {
             return Ok(());
         };
-        // parent ChatSession 機構撤去後は step session のみが登録されるため種別分岐なし。
-        // 逐次 step / 並列子 step の区別は WorkflowExecution.parallel_run に当該 session_id が
+        // parent ChatSession 機構撤去後は node session のみが登録されるため種別分岐なし。
+        // 逐次 node / 並列子 node の区別は WorkflowExecution.fanout_runtime に当該 session_id が
         // 含まれるかで判定する（Spec issues-929）。
 
         // SessionWorkflowRef.execution_id から exec を直接引き、属性として worktree_path を取得する
         // （Spec issues-1011: engine 内部キーも execution_id）。下流の handle_* は worktree_path を
         // 引数に取るため、ここで派生取得する。
-        let (worktree_path, parallel_parent): (String, Option<String>) = {
+        let (worktree_path, fanout_parent): (String, Option<String>) = {
             let execs = self.executions.lock().await;
             let Some(exec) = execs.get(&session_ref.execution_id) else {
                 return Ok(());
             };
             let wt = exec.worktree_path.clone();
-            let pp = exec.parallel_run.as_ref().and_then(|pr| {
+            let pp = exec.fanout_runtime.as_ref().and_then(|pr| {
                 pr.children
                     .iter()
                     .find(|c| c.session_id == session_id)
@@ -2112,9 +2112,9 @@ impl WorkflowRuntimeService {
             (wt, pp)
         };
 
-        if let Some(parent_node_name) = parallel_parent {
+        if let Some(parent_node_name) = fanout_parent {
             let failure_kind =
-                (exit_code != 0).then(|| parallel_child_failure_kind(exit_code, failure_signal));
+                (exit_code != 0).then(|| fanout_child_failure_kind(exit_code, failure_signal));
             let interruption_reason = match failure_kind {
                 Some(NodeExecutionFailureKind::StaleRuntimeTimeout) => {
                     Some(ExecutionInterruptionReason::Stale)
@@ -2136,7 +2136,7 @@ impl WorkflowRuntimeService {
                 return Ok(());
             }
             return self
-                .handle_parallel_child_complete(
+                .handle_fanout_child_complete(
                     app,
                     session_store,
                     agent_runtime,
@@ -2152,7 +2152,7 @@ impl WorkflowRuntimeService {
         }
 
         struct TurnCommit {
-            outcome: StepOutcome,
+            outcome: NodeOutcome,
             required_events: Vec<WorkflowEvent>,
             rollback_snapshot: (String, WorkflowExecution),
         }
@@ -2171,7 +2171,7 @@ impl WorkflowRuntimeService {
 
             // トークン使用量を現在のステップに累計
             if let Some((input, output)) = token_usage {
-                exec.current_step_token_usage.add(&TokenUsage {
+                exec.current_node_token_usage.add(&TokenUsage {
                     input_tokens: input,
                     output_tokens: output,
                 });
@@ -2209,7 +2209,7 @@ impl WorkflowRuntimeService {
                         _ => None,
                     };
                     let (outcome, required_events) = if retry_allowed {
-                        (exec.retry_current_step(), Vec::new())
+                        (exec.retry_current_node(), Vec::new())
                     } else if let Some(reason) = interruption_reason {
                         let timestamp = current_timestamp();
                         for node_execution in exec
@@ -2225,7 +2225,7 @@ impl WorkflowRuntimeService {
                         exec.current_stall_observations.clear();
                         exec.updated_at = timestamp;
                         (
-                            StepOutcome::Persist(exec.to_workflow_state()),
+                            NodeOutcome::Persist(exec.to_commit_snapshot()),
                             vec![WorkflowEvent::ExecutionInterrupted {
                                 execution_id: exec.id.clone(),
                                 reason,
@@ -2248,7 +2248,7 @@ impl WorkflowRuntimeService {
                             retry_count: Some(retry_count),
                         };
                         exec.updated_at = current_timestamp();
-                        (StepOutcome::Persist(exec.to_workflow_state()), Vec::new())
+                        (NodeOutcome::Persist(exec.to_commit_snapshot()), Vec::new())
                     };
                     Ok(TurnCommit {
                         outcome,
@@ -2266,7 +2266,7 @@ impl WorkflowRuntimeService {
                         .map(ToOwned::to_owned)
                         .ok_or_else(|| {
                             WorkflowEngineError::InvalidState(format!(
-                                "active NodeExecution for approval node '{node_name}' was not found"
+                                "active NodeExecution for approval-gated node '{node_name}' was not found"
                             ))
                         })?;
                     if let Some(execution) = exec
@@ -2279,7 +2279,7 @@ impl WorkflowRuntimeService {
                     exec.state = RuntimeExecutionState::WaitingApproval;
                     exec.updated_at = current_timestamp();
                     Ok(TurnCommit {
-                        outcome: StepOutcome::Persist(exec.to_workflow_state()),
+                        outcome: NodeOutcome::Persist(exec.to_commit_snapshot()),
                         required_events: vec![WorkflowEvent::ApprovalRequested {
                             execution_id: exec.id.clone(),
                             node_execution_id,
@@ -2307,7 +2307,7 @@ impl WorkflowRuntimeService {
                     };
                     exec.updated_at = current_timestamp();
                     Ok(TurnCommit {
-                        outcome: StepOutcome::Persist(exec.to_workflow_state()),
+                        outcome: NodeOutcome::Persist(exec.to_commit_snapshot()),
                         required_events: Vec::new(),
                         rollback_snapshot: (exec.id.clone(), snapshot_before),
                     })
@@ -2365,7 +2365,7 @@ impl WorkflowRuntimeService {
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         worktree_path: &str,
-        outcome: StepOutcome,
+        outcome: NodeOutcome,
         required_events: Vec<WorkflowEvent>,
         rollback_snapshot: Option<(String, WorkflowExecution)>,
     ) -> Result<(), WorkflowEngineError> {
@@ -2374,7 +2374,7 @@ impl WorkflowRuntimeService {
                 "required turn event commit missing rollback snapshot".to_string(),
             ));
         };
-        let completed_step_session_ids = outcome.completed_step_session_ids();
+        let completed_node_session_ids = outcome.completed_node_session_ids();
         let snapshot_for_commit = outcome.snapshot().clone();
         let execution_store_snapshot_before = self
             .execution_store
@@ -2395,17 +2395,17 @@ impl WorkflowRuntimeService {
         )
         .await?;
 
-        workflow_runtime_session::release_completed_step_sessions(
+        workflow_runtime_session::release_completed_node_sessions(
             app,
             session_store,
             agent_runtime,
-            &completed_step_session_ids,
+            &completed_node_session_ids,
         )
         .await;
         self.finalize_after_commit(app, &snapshot_for_commit, worktree_path, true)
             .await;
         if let Err(e) = self
-            .dispatch_step_outcome_side_effects(
+            .dispatch_node_outcome_side_effects(
                 app,
                 session_store,
                 agent_runtime,
@@ -2423,7 +2423,7 @@ impl WorkflowRuntimeService {
     fn apply_approval_application(
         exec: &mut WorkflowExecution,
         application: workflow_transition::ApprovalApplication,
-    ) -> Result<StepOutcome, WorkflowEngineError> {
+    ) -> Result<NodeOutcome, WorkflowEngineError> {
         let plan = exec.plan_approval_application(application)?;
         let completion = plan.completion;
         let entry = exec.make_node_history_entry(
@@ -2480,18 +2480,18 @@ impl WorkflowRuntimeService {
         expected_node_name: &str,
         node_execution_id: Option<&str>,
     ) -> Result<(), WorkflowEngineError> {
-        let fanout_node_execution_id = {
+        let fanout_target_node_execution_id = {
             let executions = self.executions.lock().await;
             let execution = executions
                 .get(execution_id)
                 .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(execution_id.to_string()))?;
-            resolve_fanout_approval_node_execution_id(
+            resolve_fanout_approval_target_node_execution_id(
                 execution,
                 expected_node_name,
                 node_execution_id,
             )?
         };
-        if let Some(fanout_node_execution_id) = fanout_node_execution_id {
+        if let Some(fanout_target_node_execution_id) = fanout_target_node_execution_id {
             return self
                 .handle_fanout_child_approval(
                     app,
@@ -2500,7 +2500,7 @@ impl WorkflowRuntimeService {
                     execution_id,
                     comment,
                     expected_node_name,
-                    &fanout_node_execution_id,
+                    &fanout_target_node_execution_id,
                 )
                 .await;
         }
@@ -2536,7 +2536,7 @@ impl WorkflowRuntimeService {
                 .copied()
                 .unwrap_or(1);
             let submitted_output = contract.as_deref().and_then(|contract| {
-                workflow_output_submission::submitted_step_output_for(
+                workflow_output_submission::submitted_node_artifact_for(
                     &exec.artifacts,
                     &node.name,
                     attempt,
@@ -2639,16 +2639,16 @@ impl WorkflowRuntimeService {
                 node_execution.artifact = artifact.clone();
                 node_execution.completed_at = Some(current_timestamp());
             }
-            // `apply_approval_application` builds the StepOutcome snapshot before the
+            // `apply_approval_application` builds the NodeOutcome snapshot before the
             // NodeExecution read model is finalized above. Refresh it while still holding the
             // execution lock so the durable commit snapshot and the live mutation are identical;
             // otherwise the commit CAS correctly rejects this command as stale.
-            *outcome.snapshot_mut() = exec.to_workflow_state();
+            *outcome.snapshot_mut() = exec.to_commit_snapshot();
             (outcome, snapshot_before, node_name)
         };
 
         let snapshot_for_commit = outcome.snapshot().clone();
-        let completed_step_session_ids = outcome.completed_step_session_ids();
+        let completed_node_session_ids = outcome.completed_node_session_ids();
         let execution_store_snapshot_before = self
             .execution_store
             .active_execution_snapshot(execution_id)
@@ -2714,19 +2714,19 @@ impl WorkflowRuntimeService {
 
         // [04] post-commit: required event append 済みのため、ここから先の失敗は
         // command failure に射影しない（spec [04] post-commit 境界）。session release /
-        // broadcast / terminal log / cleanup / 次 step 起動 / auto-approve primitive は
+        // broadcast / terminal log / cleanup / 次 node 起動 / auto-approve primitive は
         // ここで実行する。
-        workflow_runtime_session::release_completed_step_sessions(
+        workflow_runtime_session::release_completed_node_sessions(
             app,
             session_store,
             agent_runtime,
-            &completed_step_session_ids,
+            &completed_node_session_ids,
         )
         .await;
         self.finalize_after_commit(app, &snapshot_for_commit, &worktree_path, false)
             .await;
         if let Err(e) = self
-            .dispatch_step_outcome_side_effects(
+            .dispatch_node_outcome_side_effects(
                 app,
                 session_store,
                 agent_runtime,
@@ -2846,10 +2846,11 @@ impl WorkflowRuntimeService {
                     ))
                 })?;
             let child = execution
-                .parallel_run
+                .fanout_runtime
                 .as_mut()
-                .and_then(|run| {
-                    run.children
+                .and_then(|fanout| {
+                    fanout
+                        .children
                         .iter_mut()
                         .find(|child| child.node_execution_id == node_execution_id)
                 })
@@ -2906,7 +2907,7 @@ impl WorkflowRuntimeService {
 
         if let Some(outcome) = completion.outcome {
             let completed_sessions = session_id.into_iter().collect::<Vec<_>>();
-            self.commit_required_parallel_progress_events_and_execute_outcome(
+            self.commit_required_fanout_progress_events_and_execute_outcome(
                 app,
                 session_store,
                 agent_runtime,
@@ -3253,13 +3254,13 @@ impl WorkflowRuntimeService {
         // 1. 対象 execution の存在 + active 性を判定。
         //    非受理経路 (NotFound / AlreadyTerminal) ではどんな外部副作用も発生させない。
         let lookup = self.abort_target_lookup(execution_id).await;
-        let (current_step_session_id, parallel_session_ids) = match lookup {
+        let (current_node_session_id, fanout_session_ids) = match lookup {
             AbortTargetLookup::NotFound => return Ok(AbortOutcome::NotFound),
             AbortTargetLookup::AlreadyTerminal => return Ok(AbortOutcome::AlreadyTerminal),
             AbortTargetLookup::Active {
-                current_step_session_id,
-                parallel_session_ids,
-            } => (current_step_session_id, parallel_session_ids),
+                current_node_session_id,
+                fanout_session_ids,
+            } => (current_node_session_id, fanout_session_ids),
         };
         #[cfg(test)]
         self.wait_abort_after_lookup_for_test().await;
@@ -3304,7 +3305,7 @@ impl WorkflowRuntimeService {
             }
             let snapshot_before = exec.clone();
             let aborted_node_for_event = exec
-                .parallel_run
+                .fanout_runtime
                 .as_ref()
                 .map(|fanout| fanout.parent_node_name.clone())
                 .or_else(|| {
@@ -3314,16 +3315,16 @@ impl WorkflowRuntimeService {
                         .map(|node| node.name.clone())
                 });
 
-            // spec issues-1023: state を Aborted にする前に、中断時の current step /
-            // parallel children を `node_history` に "aborted" entry として記録する。
-            // これにより UI 側は既存 history 描画経路 + session_id を使って中断 step の
-            // session log にアクセスできるようになる。`exec.parallel_run = None` を
-            // 明示クリアして `to_workflow_state()` 経由の二重表示を防ぐ。
-            if exec.parallel_run.is_some() {
-                if let Some(entry) = exec.make_aborted_parallel_history_entry(timestamp) {
+            // spec issues-1023: state を Aborted にする前に、中断時の current node /
+            // fanout children を `node_history` に "aborted" entry として記録する。
+            // これにより UI 側は既存 history 描画経路 + session_id を使って中断 node の
+            // session log にアクセスできるようになる。`exec.fanout_runtime = None` を
+            // 明示クリアして `to_commit_snapshot()` 経由の二重表示を防ぐ。
+            if exec.fanout_runtime.is_some() {
+                if let Some(entry) = exec.make_aborted_fanout_history_entry(timestamp) {
                     exec.node_history.push(entry);
                 }
-                exec.parallel_run = None;
+                exec.fanout_runtime = None;
             } else {
                 let current_node_name = exec.workflow.nodes[exec.current_node_index].name.clone();
                 let current_attempt = exec
@@ -3343,7 +3344,7 @@ impl WorkflowRuntimeService {
             exec.state = RuntimeExecutionState::Aborted;
             exec.current_stall_observations.clear();
             exec.updated_at = timestamp;
-            let snapshot_state = exec.to_workflow_state();
+            let snapshot_state = exec.to_commit_snapshot();
             (snapshot_before, snapshot_state, aborted_node_for_event)
         };
 
@@ -3399,10 +3400,10 @@ impl WorkflowRuntimeService {
         //    projection として同期済み、または warn として観測済み。
         self.shutdown_active_commands_for_execution(execution_id)
             .await;
-        if let Some(ref step_sid) = current_step_session_id {
-            workflow_runtime_session::interrupt_agent(agent_runtime, step_sid).await;
+        if let Some(ref node_session_id) = current_node_session_id {
+            workflow_runtime_session::interrupt_agent(agent_runtime, node_session_id).await;
         }
-        if let Some(ref session_ids) = parallel_session_ids {
+        if let Some(ref session_ids) = fanout_session_ids {
             for sid in session_ids {
                 workflow_runtime_session::interrupt_agent(agent_runtime, sid).await;
             }
@@ -3420,7 +3421,7 @@ impl WorkflowRuntimeService {
 
     /// `abort_workflow_by_execution_id` の post-commit 区間。state は呼出し前に Aborted に
     /// 遷移済みで、`ExecutionAborted` event は必須 append 済み、かつ Execution Store sync も
-    /// 完了済みである前提。ChatSession persist / step session release / refs cleanup /
+    /// 完了済みである前提。ChatSession persist / node session release / refs cleanup /
     /// broadcast を実行する。
     ///
     /// [04] post-commit 失敗は warn ログのみで command 結果に伝播させない。観測可能な
@@ -3439,12 +3440,12 @@ impl WorkflowRuntimeService {
             let Some(exec) = execs.get(execution_id) else {
                 return;
             };
-            (exec.to_workflow_state(), exec.worktree_path.clone())
+            (exec.to_commit_snapshot(), exec.worktree_path.clone())
         };
 
         // terminal session の release と refs cleanup。
-        let terminal_session_ids = workflow_runtime_commit::terminal_step_session_ids(&snapshot);
-        workflow_runtime_session::release_completed_step_sessions(
+        let terminal_session_ids = workflow_runtime_commit::terminal_node_session_ids(&snapshot);
+        workflow_runtime_session::release_completed_node_sessions(
             app,
             session_store,
             agent_runtime,
@@ -3464,8 +3465,8 @@ impl WorkflowRuntimeService {
                 if !exec.is_active() {
                     return AbortTargetLookup::AlreadyTerminal;
                 }
-                let current_step_session_id = exec.current_session_id.clone();
-                let parallel_session_ids = exec.parallel_run.as_ref().map(|pr| {
+                let current_node_session_id = exec.current_session_id.clone();
+                let fanout_session_ids = exec.fanout_runtime.as_ref().map(|pr| {
                     pr.children
                         .iter()
                         .filter(|c| c.state == FanoutChildRuntimeState::Running)
@@ -3473,8 +3474,8 @@ impl WorkflowRuntimeService {
                         .collect::<Vec<_>>()
                 });
                 return AbortTargetLookup::Active {
-                    current_step_session_id,
-                    parallel_session_ids,
+                    current_node_session_id,
+                    fanout_session_ids,
                 };
             }
         }
@@ -3489,7 +3490,7 @@ impl WorkflowRuntimeService {
         self.execution_store
             .get_execution_record(execution_id)
             .await
-            .is_some_and(|run| run.status.is_terminal())
+            .is_some_and(|execution| execution.status.is_terminal())
     }
 
     async fn request_fanout_child_approval_if_needed<R: tauri::Runtime>(
@@ -3506,13 +3507,13 @@ impl WorkflowRuntimeService {
             let execution = executions
                 .get_mut(execution_id)
                 .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(execution_id.to_string()))?;
-            let Some(run) = execution.parallel_run.as_ref() else {
+            let Some(fanout) = execution.fanout_runtime.as_ref() else {
                 return Ok(false);
             };
-            if run.parent_node_name != parent_node_name {
+            if fanout.parent_node_name != parent_node_name {
                 return Ok(false);
             }
-            let Some(child) = run
+            let Some(child) = fanout
                 .children
                 .iter()
                 .find(|child| child.session_id == session_id)
@@ -3556,7 +3557,7 @@ impl WorkflowRuntimeService {
             execution.node_executions[node_execution_index].status =
                 NodeExecutionStatus::WaitingApproval;
             execution.updated_at = timestamp;
-            let snapshot = execution.to_workflow_state();
+            let snapshot = execution.to_commit_snapshot();
             let event = WorkflowEvent::ApprovalRequested {
                 execution_id: execution_id.to_string(),
                 node_execution_id,
@@ -3590,7 +3591,7 @@ impl WorkflowRuntimeService {
 
     /// 並列子ステップの完了を処理する。
     #[allow(clippy::too_many_arguments)]
-    async fn handle_parallel_child_complete<R: tauri::Runtime>(
+    async fn handle_fanout_child_complete<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
@@ -3603,7 +3604,7 @@ impl WorkflowRuntimeService {
         failure_signal: Option<workflow_transition::SessionFailureSignal>,
         token_usage: Option<(u64, u64)>,
     ) -> Result<(), WorkflowEngineError> {
-        // [08] parallel child の構造化出力は CLI / Tauri 経由の `SubmitOutput` で確定する。
+        // [08] fanout child の構造化出力は CLI / Tauri 経由の `SubmitOutput` で確定する。
         // contract がある child は、提出済み output が無い限り Completed にしない。
         let child_failed = exit_code != 0 || failure_signal.is_some();
         if !child_failed
@@ -3628,7 +3629,7 @@ impl WorkflowRuntimeService {
             if !exec.is_active() {
                 return Ok(());
             }
-            let Some(pr) = exec.parallel_run.as_ref() else {
+            let Some(pr) = exec.fanout_runtime.as_ref() else {
                 return Ok(());
             };
             if pr.parent_node_name != parent_node_name {
@@ -3697,7 +3698,7 @@ impl WorkflowRuntimeService {
             // pre-commit batch で append し、失敗時は engine state を snapshot_before で
             // 一括復元する（post-persist warn 廃止）。snapshot は mutation 前にここで取得する。
             let exec_snapshot_before = exec.clone();
-            let Some(pr) = exec.parallel_run.as_mut() else {
+            let Some(pr) = exec.fanout_runtime.as_mut() else {
                 return Ok(());
             };
             if pr.parent_node_name != parent_node_name {
@@ -3716,7 +3717,7 @@ impl WorkflowRuntimeService {
             }
 
             if child_failed {
-                let failure_kind = parallel_child_failure_kind(exit_code, failure_signal);
+                let failure_kind = fanout_child_failure_kind(exit_code, failure_signal);
                 let child_name = child.node_name.clone();
                 let child_node_execution_id = child.node_execution_id.clone();
                 let reason = format!(
@@ -3833,7 +3834,7 @@ impl WorkflowRuntimeService {
                 completed_session_ids.push(session_id.to_string());
                 completed_session_ids.sort();
                 completed_session_ids.dedup();
-                self.commit_required_parallel_progress_events_and_execute_outcome(
+                self.commit_required_fanout_progress_events_and_execute_outcome(
                     app,
                     session_store,
                     agent_runtime,
@@ -3878,7 +3879,7 @@ impl WorkflowRuntimeService {
                 .await?;
             } else {
                 // まだ完了していない → Persistのみ
-                if let StepOutcome::Persist(snapshot) = outcome {
+                if let NodeOutcome::Persist(snapshot) = outcome {
                     self.persist_release_and_broadcast(
                         app,
                         session_store,
@@ -3896,24 +3897,24 @@ impl WorkflowRuntimeService {
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn commit_required_parallel_progress_events_and_execute_outcome<R: tauri::Runtime>(
+    async fn commit_required_fanout_progress_events_and_execute_outcome<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         worktree_path: &str,
-        outcome: StepOutcome,
+        outcome: NodeOutcome,
         snapshot_before: WorkflowExecution,
         mut required_events: Vec<WorkflowEvent>,
-        extra_completed_step_session_ids: &[String],
+        extra_completed_node_session_ids: &[String],
         failure_telemetry: Option<FailureClassification>,
     ) -> Result<(), WorkflowEngineError> {
         let execution_id = outcome.snapshot().execution_id.clone();
         let snapshot_for_commit = outcome.snapshot().clone();
-        let mut completed_step_session_ids = outcome.completed_step_session_ids();
-        completed_step_session_ids.extend(extra_completed_step_session_ids.iter().cloned());
-        completed_step_session_ids.sort();
-        completed_step_session_ids.dedup();
+        let mut completed_node_session_ids = outcome.completed_node_session_ids();
+        completed_node_session_ids.extend(extra_completed_node_session_ids.iter().cloned());
+        completed_node_session_ids.sort();
+        completed_node_session_ids.dedup();
 
         let mut pre_commit_events =
             match workflow_runtime_events::pre_commit_required_events_for_outcome(&outcome) {
@@ -3941,7 +3942,7 @@ impl WorkflowRuntimeService {
                 snapshot_before,
                 execution_store_snapshot_before,
                 required_events,
-                append_error_context: "parallel child progress event append failed",
+                append_error_context: "fanout child progress event append failed",
             },
         )
         .await?;
@@ -3950,16 +3951,16 @@ impl WorkflowRuntimeService {
             crate::other::telemetry::record_workflow_node_failure(classification, None);
         }
 
-        workflow_runtime_session::release_completed_step_sessions(
+        workflow_runtime_session::release_completed_node_sessions(
             app,
             session_store,
             agent_runtime,
-            &completed_step_session_ids,
+            &completed_node_session_ids,
         )
         .await;
         self.finalize_after_commit(app, &snapshot_for_commit, worktree_path, false)
             .await;
-        self.dispatch_step_outcome_side_effects(
+        self.dispatch_node_outcome_side_effects(
             app,
             session_store,
             agent_runtime,
@@ -3980,16 +3981,21 @@ impl WorkflowRuntimeService {
     }
 
     /// 状態取得。`worktree_path` 属性で in-memory 実行表を検索する。
-    pub async fn get_state(&self, worktree_path: &str) -> Option<WorkflowState> {
+    pub async fn get_state(&self, worktree_path: &str) -> Option<RuntimeCommitSnapshot> {
         let execs = self.executions.lock().await;
-        find_by_worktree(&execs, worktree_path).map(|(_, e)| e.to_workflow_state())
+        find_by_worktree(&execs, worktree_path).map(|(_, e)| e.to_commit_snapshot())
     }
 
-    /// `execution_id` から `WorkflowState` を取得する。
+    /// `execution_id` から `RuntimeCommitSnapshot` を取得する。
     #[cfg(test)]
-    pub async fn get_state_by_execution_id(&self, execution_id: &str) -> Option<WorkflowState> {
+    pub async fn get_state_by_execution_id(
+        &self,
+        execution_id: &str,
+    ) -> Option<RuntimeCommitSnapshot> {
         let execs = self.executions.lock().await;
-        execs.get(execution_id).map(|exec| exec.to_workflow_state())
+        execs
+            .get(execution_id)
+            .map(|exec| exec.to_commit_snapshot())
     }
 
     async fn release_execution_facet_contents(&self, execution_id: &str) {
@@ -4219,7 +4225,7 @@ impl WorkflowRuntimeService {
                 contract,
             ),
         };
-        let permission_mode = PermissionMode::parse(&session.permission_mode)
+        let permission_mode = PermissionMode::parse_canonical(&session.permission_mode)
             .map_err(|e| WorkflowEngineError::InvalidWorkflow(e.to_string()))?;
         let _runtime_guard = agent_runtime.acquire_session_lock(session_id).await;
         let start_result = agent_runtime
@@ -4340,14 +4346,14 @@ impl WorkflowRuntimeService {
                 retry_count,
             };
             exec.updated_at = current_timestamp();
-            (exec.to_workflow_state(), snapshot_before)
+            (exec.to_commit_snapshot(), snapshot_before)
         };
         self.execute_outcome(
             app,
             session_store,
             agent_runtime,
             worktree_path,
-            StepOutcome::Persist(snapshot),
+            NodeOutcome::Persist(snapshot),
             snapshot_before,
         )
         .await
@@ -4407,7 +4413,7 @@ impl WorkflowRuntimeService {
             interrupted_command_ids,
         } = failure_commit;
         if let Some(outcome) = completion.outcome {
-            self.commit_required_parallel_progress_events_and_execute_outcome(
+            self.commit_required_fanout_progress_events_and_execute_outcome(
                 app,
                 session_store,
                 agent_runtime,
@@ -4443,11 +4449,11 @@ impl WorkflowRuntimeService {
         find_by_worktree(&execs, &worktree_path).is_some_and(|(_, e)| e.is_active())
     }
 
-    /// `execution_id` から approval 用 chat session（current step session）と worktree_path を解決する。
+    /// `execution_id` から approval 用 chat session（current node session）と worktree_path を解決する。
     /// Spec issues-1011 line 121: 起動以外の workflow 操作 API は execution_id を主語に取り、
     /// 内部の chat_session_id / worktree_path は engine が解決する。
     ///
-    /// Spec issues-1011 finding 3: 任意 step session への注入経路を塞ぐため、resolve 時点で
+    /// Spec issues-1011 finding 3: 任意 node session への注入経路を塞ぐため、resolve 時点で
     /// 以下を全て必須化する:
     ///   - 対象 execution が active であること
     ///   - state が `WaitingApproval` であること
@@ -4475,7 +4481,7 @@ impl WorkflowRuntimeService {
         let Some(session_ref) = self.resolve_session_ref(session_id).await else {
             return Ok(());
         };
-        // parent ChatSession 機構撤去後は step session のみが session_workflow_refs に登録される。
+        // parent ChatSession 機構撤去後は node session のみが session_workflow_refs に登録される。
 
         let execs = self.executions.lock().await;
         let Some(exec) = execs.get(&session_ref.execution_id) else {
@@ -4566,8 +4572,8 @@ impl WorkflowRuntimeService {
         _final_parts: &[crate::usecase::agent_session::session::MessagePart],
         node_name: &str,
     ) -> Result<(), WorkflowEngineError> {
-        // [08] prose 抽出経路廃止: agent step の structured output は CLI / Tauri 経由の
-        // `SubmitOutput` でしか確定しない。contract がある step は、提出済み
+        // [08] prose 抽出経路廃止: agent node の structured output は CLI / Tauri 経由の
+        // `SubmitOutput` でしか確定しない。contract がある node は、提出済み
         // output が見つからない限り完了扱いにせず、同じ session に修正ターンを投げる。
         let (execution_id, workflow_name, contract, attempt, current_session_id, submitted_output) = {
             let execs = self.executions.lock().await;
@@ -4581,7 +4587,7 @@ impl WorkflowRuntimeService {
                 .copied()
                 .unwrap_or(1);
             let submitted_output = contract.as_deref().and_then(|contract| {
-                workflow_output_submission::submitted_step_output_for(
+                workflow_output_submission::submitted_node_artifact_for(
                     &exec.artifacts,
                     &node.name,
                     attempt,
@@ -4670,7 +4676,7 @@ impl WorkflowRuntimeService {
                     .await
             }
             NodeKindName::Session => {
-                self.start_step_session(app, agent_runtime, session_store, worktree_path)
+                self.start_node_session(app, agent_runtime, session_store, worktree_path)
                     .await
             }
             NodeKindName::Fanout => {
@@ -4712,8 +4718,8 @@ impl WorkflowRuntimeService {
             });
             let input_is_current = if input.fanout_parent.is_some() {
                 node_execution_is_active
-                    && execution.parallel_run.as_ref().is_some_and(|run| {
-                        run.children.iter().any(|child| {
+                    && execution.fanout_runtime.as_ref().is_some_and(|fanout| {
+                        fanout.children.iter().any(|child| {
                             child.node_execution_id == input.node_execution_id
                                 && child.state == FanoutChildRuntimeState::Running
                         })
@@ -4924,6 +4930,12 @@ impl WorkflowRuntimeService {
             contract: node.artifact.clone(),
             schemas: workflow_schemas_to_domain(&exec.workflow.schemas),
             fanout_parent: None,
+            session_id: exec.current_session_id.clone().or_else(|| {
+                exec.node_executions
+                    .iter()
+                    .rev()
+                    .find_map(|node_execution| node_execution.session_id.clone())
+            }),
         })
     }
 
@@ -4937,8 +4949,8 @@ impl WorkflowRuntimeService {
         });
         if input.fanout_parent.is_some() {
             execution_is_active
-                && exec.parallel_run.as_ref().is_some_and(|run| {
-                    run.children.iter().any(|child| {
+                && exec.fanout_runtime.as_ref().is_some_and(|fanout| {
+                    fanout.children.iter().any(|child| {
                         child.node_execution_id == input.node_execution_id
                             && child.state == FanoutChildRuntimeState::Running
                     })
@@ -5010,7 +5022,7 @@ impl WorkflowRuntimeService {
             (
                 outcome,
                 snapshot_before,
-                exec.to_workflow_state(),
+                exec.to_commit_snapshot(),
                 exec.worktree_path.clone(),
             )
         };
@@ -5055,7 +5067,7 @@ impl WorkflowRuntimeService {
         .await?;
         self.finalize_after_commit(app, &snapshot_for_commit, &worktree_path, false)
             .await;
-        Box::pin(self.dispatch_step_outcome_side_effects(
+        Box::pin(self.dispatch_node_outcome_side_effects(
             app,
             session_store,
             agent_runtime,
@@ -5092,10 +5104,11 @@ impl WorkflowRuntimeService {
             }
             let snapshot_before = execution.clone();
             let child = execution
-                .parallel_run
+                .fanout_runtime
                 .as_mut()
-                .and_then(|run| {
-                    run.children
+                .and_then(|fanout| {
+                    fanout
+                        .children
                         .iter_mut()
                         .find(|child| child.node_execution_id == input.node_execution_id)
                 })
@@ -5146,7 +5159,7 @@ impl WorkflowRuntimeService {
         };
 
         if let Some(outcome) = completion.outcome {
-            self.commit_required_parallel_progress_events_and_execute_outcome(
+            self.commit_required_fanout_progress_events_and_execute_outcome(
                 app,
                 session_store,
                 agent_runtime,
@@ -5172,9 +5185,9 @@ impl WorkflowRuntimeService {
                 node_execution.id == input.node_execution_id
                     && node_execution.status == NodeExecutionStatus::Running
             })
-            && execution.parallel_run.as_ref().is_some_and(|run| {
-                input.fanout_parent.as_deref() == Some(run.parent_node_name.as_str())
-                    && run.children.iter().any(|child| {
+            && execution.fanout_runtime.as_ref().is_some_and(|fanout| {
+                input.fanout_parent.as_deref() == Some(fanout.parent_node_name.as_str())
+                    && fanout.children.iter().any(|child| {
                         child.node_execution_id == input.node_execution_id
                             && child.state == FanoutChildRuntimeState::Running
                     })
@@ -5235,7 +5248,7 @@ impl WorkflowRuntimeService {
                     activation_was_paused,
                     InterruptionRollback::ProjectionUnchanged,
                 )
-                .await;
+                .await?;
                 return Ok(false);
             };
             if !exec.is_active() {
@@ -5247,13 +5260,13 @@ impl WorkflowRuntimeService {
                     activation_was_paused,
                     InterruptionRollback::ProjectionUnchanged,
                 )
-                .await;
+                .await?;
                 return Ok(false);
             }
 
             let snapshot_before = exec.clone();
             let mut session_ids = exec.current_session_id.iter().cloned().collect::<Vec<_>>();
-            if let Some(fanout) = exec.parallel_run.as_ref() {
+            if let Some(fanout) = exec.fanout_runtime.as_ref() {
                 session_ids.extend(
                     fanout
                         .children
@@ -5274,7 +5287,7 @@ impl WorkflowRuntimeService {
                 node_execution.status = NodeExecutionStatus::Aborted;
                 node_execution.completed_at = Some(timestamp);
             }
-            if let Some(fanout) = exec.parallel_run.as_mut() {
+            if let Some(fanout) = exec.fanout_runtime.as_mut() {
                 for child in fanout
                     .children
                     .iter_mut()
@@ -5289,7 +5302,7 @@ impl WorkflowRuntimeService {
             exec.current_stall_observations.clear();
             exec.updated_at = timestamp;
             (
-                exec.to_workflow_state(),
+                exec.to_commit_snapshot(),
                 snapshot_before,
                 exec.worktree_path.clone(),
                 session_ids,
@@ -5307,7 +5320,7 @@ impl WorkflowRuntimeService {
                     activation_was_paused,
                     InterruptionRollback::ProjectionUnchanged,
                 )
-                .await;
+                .await?;
                 return Err(WorkflowEngineError::InvalidState(format!(
                     "execution {execution_id} disappeared before interruption commit"
                 )));
@@ -5321,7 +5334,7 @@ impl WorkflowRuntimeService {
                     activation_was_paused,
                     InterruptionRollback::ProjectionUnchanged,
                 )
-                .await;
+                .await?;
                 return Err(WorkflowEngineError::InvalidState(format!(
                     "execution {execution_id} changed before interruption commit"
                 )));
@@ -5342,7 +5355,7 @@ impl WorkflowRuntimeService {
         if let Err(error) = append_result {
             // The fact was not accepted. Release the transition guard before restoring the
             // active store/runtime snapshots.
-            rollback_active_interruption(
+            let rollback_result = rollback_active_interruption(
                 &self.execution_store,
                 interruption_reservation,
                 &activation_gate,
@@ -5350,6 +5363,11 @@ impl WorkflowRuntimeService {
                 InterruptionRollback::RestoreActiveSnapshot(execution_store_snapshot_before),
             )
             .await;
+            if let Err(rollback_error) = rollback_result {
+                return Err(WorkflowEngineError::SessionStore(format!(
+                    "ExecutionInterrupted log failed: {error}; rollback failed: {rollback_error}"
+                )));
+            }
             return Err(WorkflowEngineError::SessionStore(format!(
                 "ExecutionInterrupted log failed: {error}"
             )));
@@ -5373,7 +5391,7 @@ impl WorkflowRuntimeService {
         for session_id in &session_ids {
             workflow_runtime_session::interrupt_agent(agent_runtime, session_id).await;
         }
-        workflow_runtime_session::release_completed_step_sessions(
+        workflow_runtime_session::release_completed_node_sessions(
             app,
             session_store,
             agent_runtime,
@@ -5539,31 +5557,31 @@ impl WorkflowRuntimeService {
     /// 現在のステップ用に新しいChatSessionを生成し、AgentSessionを開始してプロンプトを送信する。
     /// ファセット方式と旧prompt方式を自動判別する。
     ///
-    /// production 経路。副作用境界を `RealStepSessionDeps` にラップし、コアロジック
-    /// `start_step_session_with_deps` に委譲する。
-    async fn start_step_session<R: tauri::Runtime>(
+    /// production 経路。副作用境界を `RealNodeSessionDeps` にラップし、コアロジック
+    /// `start_node_session_with_deps` に委譲する。
+    async fn start_node_session<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         session_store: &Arc<SessionStore>,
         worktree_path: &str,
     ) -> Result<(), WorkflowEngineError> {
-        let deps = RealStepSessionDeps {
+        let deps = RealNodeSessionDeps {
             app,
             branch_diff_context: self.branch_diff_context.clone(),
             agent_runtime,
             session_store,
             open_tabs: &self.open_tabs,
         };
-        self.start_step_session_with_deps(&deps, worktree_path)
+        self.start_node_session_with_deps(&deps, worktree_path)
             .await
     }
 
-    /// `start_step_session` のコアロジック。副作用境界は `StepSessionDeps` 経由で注入する。
+    /// `start_node_session` のコアロジック。副作用境界は `NodeSessionDeps` 経由で注入する。
     ///
     /// 呼び出し順序の不変条件:
-    /// 1. `build_step_prompt`（純粋関数）でプロンプト合成
-    /// 2. `deps.create_step_session`（`exec.workflow_defaults` を継承元に注入）
+    /// 1. `build_node_prompt`（純粋関数）でプロンプト合成
+    /// 2. `deps.create_node_session`（`exec.workflow_defaults` を継承元に注入）
     /// 3. `session_workflow_refs` への登録
     /// 4. `deps.dispatch_session_start`（AgentSession 開始）
     /// 5. `executions.current_session_id` 更新
@@ -5572,8 +5590,8 @@ impl WorkflowRuntimeService {
     ///
     /// 1 で失敗した場合、2 以降は一切実行されない（合成失敗時に
     /// ChatSession 生成や `session_workflow_refs` への孤立 entry が残らない）。
-    /// テストではこの順序保証を `StepSessionDeps` のテストダブル経由で検証する。
-    async fn start_step_session_with_deps<D: StepSessionDeps + ?Sized>(
+    /// テストではこの順序保証を `NodeSessionDeps` のテストダブル経由で検証する。
+    async fn start_node_session_with_deps<D: NodeSessionDeps + ?Sized>(
         &self,
         deps: &D,
         worktree_path: &str,
@@ -5588,7 +5606,7 @@ impl WorkflowRuntimeService {
         let _activation_guard = activation_gate.lock.lock().await;
         let (
             execution_id_for_ref,
-            step_clone,
+            node_clone,
             artifacts_clone,
             task_clone,
             workflow_defaults_clone,
@@ -5603,10 +5621,10 @@ impl WorkflowRuntimeService {
                     "worktree {worktree_path} changed execution before session activation"
                 )));
             }
-            let step = &exec.workflow.nodes[exec.current_node_index];
-            let step_attempt = exec
+            let node = &exec.workflow.nodes[exec.current_node_index];
+            let node_attempt = exec
                 .node_execution_counts
-                .get(&step.name)
+                .get(&node.name)
                 .copied()
                 .unwrap_or(1);
             let node_execution_id = exec
@@ -5614,8 +5632,8 @@ impl WorkflowRuntimeService {
                 .iter()
                 .rev()
                 .find(|node_execution| {
-                    node_execution.node_name == step.name
-                        && node_execution.attempt == step_attempt
+                    node_execution.node_name == node.name
+                        && node_execution.attempt == node_attempt
                         && node_execution.fanout_parent.is_none()
                         && node_execution.status.is_active()
                 })
@@ -5623,12 +5641,12 @@ impl WorkflowRuntimeService {
                 .ok_or_else(|| {
                     WorkflowEngineError::InvalidState(format!(
                         "active NodeExecution for '{}' attempt {} is unavailable",
-                        step.name, step_attempt
+                        node.name, node_attempt
                     ))
                 })?;
             (
                 execution_id.clone(),
-                step.clone(),
+                node.clone(),
                 exec.artifacts.clone(),
                 exec.request.clone(),
                 exec.workflow_defaults.clone(),
@@ -5636,8 +5654,8 @@ impl WorkflowRuntimeService {
                     execution_id: execution_id.clone(),
                     node_execution_id,
                     workflow_name: exec.workflow.name.clone(),
-                    node_name: step.name.clone(),
-                    attempt: step_attempt,
+                    node_name: node.name.clone(),
+                    attempt: node_attempt,
                     parent_node_name: None,
                     parent_attempt: None,
                     order: exec.node_history.len() as u32,
@@ -5651,53 +5669,53 @@ impl WorkflowRuntimeService {
         let facet_contents = self
             .facet_contents_for_execution(&execution_id_for_ref, &workflow_clone)
             .await?;
-        let step_facet_contents = facet_contents.for_node(&step_clone.name);
+        let node_facet_contents = facet_contents.for_node(&node_clone.name);
 
         // プロンプト合成（純粋関数）を最初に行う。
         // ここで失敗（参照先ファセットが存在しない等）した場合、後続の
         // ChatSession 生成・`session_workflow_refs` 登録・AgentSession 開始は一切
-        // 行われない。これにより、`start_step_session` がエラー経路で孤立した
+        // 行われない。これにより、`start_node_session` がエラー経路で孤立した
         // ChatSession や参照マップ entry を残さないことを構造的に保証する。
-        let (system_prompt, prompt) = workflow_prompt::build_step_prompt(
-            &step_clone,
-            step_facet_contents,
+        let (system_prompt, prompt) = workflow_prompt::build_node_prompt(
+            &node_clone,
+            node_facet_contents,
             &execution_id_for_ref,
             task_clone.as_deref(),
             &artifacts_clone,
         )?;
-        let workflow_instruction = workflow_prompt::render_step_workflow_instruction(
-            &step_clone,
-            step_facet_contents,
+        let workflow_instruction = workflow_prompt::render_node_workflow_instruction(
+            &node_clone,
+            node_facet_contents,
             task_clone.as_deref(),
             &artifacts_clone,
         );
         // ステップ設定の解決 → セッション生成（workflow_defaults を継承元に注入）
         let node_execution_id = workflow_node_context.node_execution_id.clone();
-        let step_session = deps
-            .create_step_session(
+        let node_session = deps
+            .create_node_session(
                 worktree_path,
-                step_clone
+                node_clone
                     .session()
                     .and_then(|session| session.model.clone()),
-                step_clone
+                node_clone
                     .session()
                     .and_then(|session| session.permission.clone()),
                 workflow_defaults_clone,
                 workflow_node_context,
-                workflow_runtime_session::StepRuntimeKindContext::new(
-                    node_kind_to_domain(&step_clone.kind).name(),
-                    step_clone.is_approval_session(),
+                workflow_runtime_session::NodeRuntimeKindContext::new(
+                    node_kind_to_domain(&node_clone.kind).name(),
+                    node_clone.is_approval_session(),
                 ),
             )
             .await?;
-        let permission_mode = step_session.permission_mode.clone();
-        let step_session_id = step_session.id.clone();
+        let permission_mode = node_session.permission_mode.clone();
+        let node_session_id = node_session.id.clone();
 
         // ステップセッションID → SessionWorkflowRefのマッピングを登録
         {
             let mut map = self.session_workflow_refs.lock().await;
             map.insert(
-                step_session_id.clone(),
+                node_session_id.clone(),
                 SessionWorkflowRef {
                     execution_id: execution_id_for_ref.clone(),
                 },
@@ -5706,28 +5724,28 @@ impl WorkflowRuntimeService {
 
         // 合成済み system_prompt を AgentSession 起動経路へ受け渡す。
         deps.dispatch_session_start(
-            &step_session_id,
+            &node_session_id,
             worktree_path,
             None,
             system_prompt.clone(),
             workflow_instruction.clone(),
         )
         .await?;
-        deps.mark_step_tab_open(&step_session_id).await;
+        deps.mark_node_tab_open(&node_session_id).await;
 
         // ステップセッションIDをワークフロー実行に紐付け
         let snapshot = {
             let mut execs = self.executions.lock().await;
             if let Some(exec) = execs.get_mut(&execution_id_for_ref) {
-                exec.current_session_id = Some(step_session_id.clone());
+                exec.current_session_id = Some(node_session_id.clone());
                 if let Some(node_execution) = exec
                     .node_executions
                     .iter_mut()
                     .find(|node_execution| node_execution.id == node_execution_id)
                 {
-                    node_execution.session_id = Some(step_session_id.clone());
+                    node_execution.session_id = Some(node_session_id.clone());
                 }
-                Some(exec.to_workflow_state())
+                Some(exec.to_commit_snapshot())
             } else {
                 None
             }
@@ -5744,7 +5762,7 @@ impl WorkflowRuntimeService {
             &execution_id_for_ref,
             "session",
             deps.start_agent_turn_locked(
-                &step_session_id,
+                &node_session_id,
                 worktree_path,
                 &permission_mode,
                 &prompt,
@@ -5755,30 +5773,30 @@ impl WorkflowRuntimeService {
         .await
     }
 
-    /// `build_step_prompt` で合成した `system_prompt` を `dispatch_session_start` 経由で
+    /// `build_node_prompt` で合成した `system_prompt` を `dispatch_session_start` 経由で
     /// gate に渡し、`prompt`（user_message 由来）を返すテスト用ヘルパー。
     ///
-    /// production では `start_step_session` 内で `build_step_prompt` →
-    /// `create_step_session_with_settings` → `dispatch_session_start` を順に呼ぶ
+    /// production では `start_node_session` 内で `build_node_prompt` →
+    /// `create_node_session_with_settings` → `dispatch_session_start` を順に呼ぶ
     /// 構造にしている（プロンプト合成失敗時に ChatSession・参照マップ登録が起きない
     /// 順序保証のため）。テストでは記録用 gate を注入することで、合成された
     /// `system_prompt` が None や空文字に置換されずバックエンドへ受け渡される
     /// 経路を直接検証する。
     #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
-    async fn build_and_dispatch_step_session<G: SessionStartGate + ?Sized>(
+    async fn build_and_dispatch_node_session<G: SessionStartGate + ?Sized>(
         gate: &G,
-        step: &NodeDefinition,
+        node: &NodeDefinition,
         facet_contents: Option<&crate::adaptor::gateway::workflow::facet::FacetContents>,
         execution_id: &str,
-        step_session_id: &str,
+        node_session_id: &str,
         worktree_path: &str,
         permission_mode: Option<String>,
         request: Option<&str>,
         artifacts: &HashMap<String, RuntimeArtifact>,
     ) -> Result<String, WorkflowEngineError> {
-        let (system_prompt, prompt) = workflow_prompt::build_step_prompt(
-            step,
+        let (system_prompt, prompt) = workflow_prompt::build_node_prompt(
+            node,
             facet_contents,
             execution_id,
             request,
@@ -5786,7 +5804,7 @@ impl WorkflowRuntimeService {
         )?;
         dispatch_session_start(
             gate,
-            step_session_id,
+            node_session_id,
             worktree_path,
             permission_mode,
             system_prompt,
@@ -5828,7 +5846,7 @@ impl WorkflowRuntimeService {
     /// Execution Store metadata はその projection として同期する。
     async fn sync_state_after_required_event_commit(
         &self,
-        snapshot: &WorkflowState,
+        snapshot: &RuntimeCommitSnapshot,
     ) -> Result<(), WorkflowEngineError> {
         let execution_id = snapshot.execution_id.clone();
         workflow_runtime_commit::sync_execution_store_from_snapshot(
@@ -5902,18 +5920,18 @@ impl WorkflowRuntimeService {
         Ok(())
     }
 
-    /// [04] pre-commit phase: sync_execution_store + release_completed_step_sessions を実行する。
+    /// [04] pre-commit phase: sync_execution_store + release_completed_node_sessions を実行する。
     /// 本 helper は本 issue scope 外の non-command 経路（NodeCompleted/NodeFailed 系の
     /// `persist_release_and_broadcast` 呼び出し）専用に温存する。
     /// 本 issue scope の command 受理 handler は required event append 前の rollback 可能な
-    /// projection と post-commit `release_completed_step_sessions` の組み合わせを使う。
+    /// projection と post-commit `release_completed_node_sessions` の組み合わせを使う。
     async fn sync_persist_release<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
-        snapshot: &WorkflowState,
-        completed_step_session_ids: &[String],
+        snapshot: &RuntimeCommitSnapshot,
+        completed_node_session_ids: &[String],
     ) -> Result<(), WorkflowEngineError> {
         let execution_id = snapshot.execution_id.clone();
         if let Err(e) = workflow_runtime_commit::sync_execution_store_from_snapshot(
@@ -5932,11 +5950,11 @@ impl WorkflowRuntimeService {
             .await;
             return Err(e);
         }
-        workflow_runtime_session::release_completed_step_sessions(
+        workflow_runtime_session::release_completed_node_sessions(
             app,
             session_store,
             agent_runtime,
-            completed_step_session_ids,
+            completed_node_session_ids,
         )
         .await;
         Ok(())
@@ -5947,7 +5965,7 @@ impl WorkflowRuntimeService {
     async fn finalize_after_commit<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
-        snapshot: &WorkflowState,
+        snapshot: &RuntimeCommitSnapshot,
         worktree_path: &str,
         write_terminal_events: bool,
     ) {
@@ -5962,7 +5980,7 @@ impl WorkflowRuntimeService {
             is_finished || matches!(snapshot.state, RuntimeExecutionState::Interrupted);
         if is_finished && write_terminal_events {
             if matches!(snapshot.state, RuntimeExecutionState::Completed) {
-                if let Err(e) = self.write_last_step_completed_log(app, snapshot) {
+                if let Err(e) = self.write_last_node_completed_log(app, snapshot) {
                     log::warn!("Failed to append NodeCompleted workflow event: {e}");
                 }
             }
@@ -5993,15 +6011,15 @@ impl WorkflowRuntimeService {
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         worktree_path: &str,
-        snapshot: WorkflowState,
-        completed_step_session_ids: &[String],
-    ) -> Result<WorkflowState, WorkflowEngineError> {
+        snapshot: RuntimeCommitSnapshot,
+        completed_node_session_ids: &[String],
+    ) -> Result<RuntimeCommitSnapshot, WorkflowEngineError> {
         self.sync_persist_release(
             app,
             session_store,
             agent_runtime,
             &snapshot,
-            completed_step_session_ids,
+            completed_node_session_ids,
         )
         .await?;
         self.finalize_after_commit(app, &snapshot, worktree_path, true)
@@ -6009,11 +6027,11 @@ impl WorkflowRuntimeService {
         Ok(snapshot)
     }
 
-    /// ロック外でStepOutcomeに応じた副作用（永続化・ブロードキャスト・AgentSession起動）を実行する。
+    /// ロック外でNodeOutcomeに応じた副作用（永続化・ブロードキャスト・AgentSession起動）を実行する。
     ///
     /// 本 helper は non-command 経路（NodeCompleted / NodeFailed 等）から呼ばれる。
     ///
-    /// [05] commit 境界: spec [04] commit_required_events を基盤に、StepOutcome から
+    /// [05] commit 境界: spec [04] commit_required_events を基盤に、NodeOutcome から
     /// `NodeCompleted` / `NodeFailed` / `ExecutionCompleted` / `ExecutionFailed` の必須 event を
     /// 組み立て、ExecutionStore sync → ChatSession persist → event log append の順で commit
     /// する。いずれかの phase で失敗した場合は engine state と Execution Store snapshot を
@@ -6028,10 +6046,10 @@ impl WorkflowRuntimeService {
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         worktree_path: &str,
-        outcome: StepOutcome,
+        outcome: NodeOutcome,
         snapshot_before: WorkflowExecution,
     ) -> Result<(), WorkflowEngineError> {
-        let completed_step_session_ids = outcome.completed_step_session_ids();
+        let completed_node_session_ids = outcome.completed_node_session_ids();
         let snapshot_for_commit = outcome.snapshot().clone();
         let execution_id = snapshot_for_commit.execution_id.clone();
 
@@ -6070,11 +6088,11 @@ impl WorkflowRuntimeService {
                 },
             )
             .await?;
-            workflow_runtime_session::release_completed_step_sessions(
+            workflow_runtime_session::release_completed_node_sessions(
                 app,
                 session_store,
                 agent_runtime,
-                &completed_step_session_ids,
+                &completed_node_session_ids,
             )
             .await;
         } else {
@@ -6084,7 +6102,7 @@ impl WorkflowRuntimeService {
                 session_store,
                 agent_runtime,
                 &snapshot_for_commit,
-                &completed_step_session_ids,
+                &completed_node_session_ids,
             )
             .await?;
         }
@@ -6093,7 +6111,7 @@ impl WorkflowRuntimeService {
         // write_terminal_events=false を渡し二重 append を避ける（commit 境界の単一性）。
         self.finalize_after_commit(app, &snapshot_for_commit, worktree_path, false)
             .await;
-        self.dispatch_step_outcome_side_effects(
+        self.dispatch_node_outcome_side_effects(
             app,
             session_store,
             agent_runtime,
@@ -6107,22 +6125,22 @@ impl WorkflowRuntimeService {
     /// [04] post-commit variant work（共通 side-effect helper）。
     ///
     /// snapshot は既に persist 済みである前提で、outcome variant に応じた残りの副作用
-    /// （NodeStarted 書き込み・start_step_session・reduce + 派生 mutation の再帰・
+    /// （NodeStarted 書き込み・start_node_session・reduce + 派生 mutation の再帰・
     /// start_fanout_children・auto-approve approval primitive）のみを担当する。`execute_outcome`
     /// （non-command 経路）と `handle_approval` などの 4 command handler の双方から
     /// 呼ばれ、副作用ロジックの単一 source of truth として機能する。失敗は warn 化して
     /// command 結果に伝播させない設計に揃える（spec [04] post-commit 境界）。
-    async fn dispatch_step_outcome_side_effects<R: tauri::Runtime>(
+    async fn dispatch_node_outcome_side_effects<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         worktree_path: &str,
-        outcome: StepOutcome,
+        outcome: NodeOutcome,
         commit_mode: OutcomeCommitMode,
     ) -> Result<(), WorkflowEngineError> {
         match outcome {
-            StepOutcome::Persist(snapshot) => {
+            NodeOutcome::Persist(snapshot) => {
                 if let Some((execution_id, node_name)) =
                     workflow_approval_runtime::auto_approve_target_for_persisted_snapshot(
                         &snapshot,
@@ -6142,7 +6160,7 @@ impl WorkflowRuntimeService {
                 }
                 Ok(())
             }
-            StepOutcome::RetryCurrentStep { snapshot, .. } => {
+            NodeOutcome::RetryCurrentNode { snapshot, .. } => {
                 if commit_mode.should_emit_progress_events() {
                     self.write_log(
                         app,
@@ -6170,7 +6188,7 @@ impl WorkflowRuntimeService {
                 }
                 Ok(())
             }
-            StepOutcome::TransitionAndStart(snapshot) => {
+            NodeOutcome::TransitionAndStart(snapshot) => {
                 self.emit_post_commit_progress_events(
                     app,
                     commit_mode,
@@ -6198,11 +6216,11 @@ impl WorkflowRuntimeService {
                 }
                 Ok(())
             }
-            StepOutcome::StartParallel(snapshot) => {
+            NodeOutcome::StartFanout(snapshot) => {
                 self.emit_post_commit_progress_events(
                     app,
                     commit_mode,
-                    workflow_runtime_events::PostCommitProgressEventPlan::StartParallel,
+                    workflow_runtime_events::PostCommitProgressEventPlan::StartFanout,
                     &snapshot,
                 )?;
                 if let Err(e) = Box::pin(self.start_fanout_children(
@@ -6234,12 +6252,12 @@ impl WorkflowRuntimeService {
         app: &tauri::AppHandle<R>,
         commit_mode: OutcomeCommitMode,
         plan: workflow_runtime_events::PostCommitProgressEventPlan,
-        snapshot: &WorkflowState,
+        snapshot: &RuntimeCommitSnapshot,
     ) -> Result<(), WorkflowEngineError> {
         if !commit_mode.should_emit_progress_events() {
             return Ok(());
         }
-        if let Err(e) = self.write_last_step_completed_log(app, snapshot) {
+        if let Err(e) = self.write_last_node_completed_log(app, snapshot) {
             return Err(plan.node_completed_append_error(e));
         }
         if let Some(event) = plan.followup_event(snapshot)? {
@@ -6354,6 +6372,7 @@ impl WorkflowRuntimeService {
                     contract: child.node.artifact.clone(),
                     schemas: command_schemas.clone(),
                     fanout_parent: Some(fanout_start.parent_node_name.clone()),
+                    session_id: None,
                 })
             })
             .collect::<Vec<_>>();
@@ -6377,7 +6396,7 @@ impl WorkflowRuntimeService {
             let execution = find_by_worktree_mut(&mut executions, worktree_path)
                 .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
             let snapshot_before = execution.clone();
-            let snapshot = workflow_parallel_runtime::apply_fanout_runtime_state(
+            let snapshot = workflow_fanout_runtime::apply_fanout_runtime_state(
                 execution,
                 &fanout_start,
                 &child_setups,
@@ -6475,9 +6494,10 @@ impl WorkflowRuntimeService {
             let executions = self.executions.lock().await;
             executions
                 .get(&fanout_start.execution_id)
-                .and_then(|execution| execution.parallel_run.as_ref())
-                .is_some_and(|run| {
-                    run.children
+                .and_then(|execution| execution.fanout_runtime.as_ref())
+                .is_some_and(|fanout| {
+                    fanout
+                        .children
                         .iter()
                         .all(|child| child.state == FanoutChildRuntimeState::Completed)
                 })
@@ -6507,7 +6527,7 @@ impl WorkflowRuntimeService {
                 )?
             };
             if let Some(outcome) = completion.outcome {
-                self.commit_required_parallel_progress_events_and_execute_outcome(
+                self.commit_required_fanout_progress_events_and_execute_outcome(
                     app,
                     session_store,
                     agent_runtime,
@@ -6555,7 +6575,7 @@ impl WorkflowRuntimeService {
     }
 
     /// 終了状態（Completed/Failed）のログを書き込む required append helper。
-    /// StepCompletedログは呼び出し元で書き込み済みのため、ここでは書かない。
+    /// NodeCompletedログは呼び出し元で書き込み済みのため、ここでは書かない。
     ///
     /// `Aborted` 状態の `ExecutionAborted` event は本 issue [04] の典型 typed command
     /// `AbortExecution` に対応する事実列であり、command handler 側で `write_log_required`
@@ -6571,7 +6591,7 @@ impl WorkflowRuntimeService {
     fn write_terminal_log<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
-        snapshot: &WorkflowState,
+        snapshot: &RuntimeCommitSnapshot,
     ) -> Result<(), String> {
         let events = workflow_runtime_events::terminal_events_for_append(snapshot)?;
         if events.is_empty() {
@@ -6585,12 +6605,12 @@ impl WorkflowRuntimeService {
     /// `NodeCompleted` を `write_log_required` で必須 append 経路に乗せる。
     /// append 失敗時は `Err` を返し、呼出側で commit 境界に乗せる（spec [05]:
     /// best-effort warn を廃止）。
-    fn write_last_step_completed_log<R: tauri::Runtime>(
+    fn write_last_node_completed_log<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
-        snapshot: &WorkflowState,
+        snapshot: &RuntimeCommitSnapshot,
     ) -> Result<(), String> {
-        match workflow_runtime_events::last_step_completed_event_for_append(snapshot)? {
+        match workflow_runtime_events::last_node_completed_event_for_append(snapshot)? {
             Some(event) => self.write_log_required(app, event),
             None => Ok(()),
         }
@@ -6642,7 +6662,7 @@ impl WorkflowRuntimeService {
         worktree_path: &str,
         expected_execution_id: Option<&str>,
         expected_node_name: Option<&str>,
-    ) -> Result<StepOutcome, WorkflowEngineError> {
+    ) -> Result<NodeOutcome, WorkflowEngineError> {
         let execution_id = {
             let execs = self.executions.lock().await;
             let (execution_id, _) = find_by_worktree(&execs, worktree_path).ok_or_else(|| {
@@ -6650,7 +6670,7 @@ impl WorkflowRuntimeService {
             })?;
             execution_id.clone()
         };
-        self.handle_approval_with_output_for_run_for_test(
+        self.handle_approval_with_output_for_execution_for_test(
             &execution_id,
             expected_execution_id,
             expected_node_name,
@@ -6659,7 +6679,7 @@ impl WorkflowRuntimeService {
     }
 
     /// [05] Test-only: 既に `Failed` state に遷移した snapshot に対して
-    /// `execute_outcome(StepOutcome::Persist(snapshot))` を実行する production 経路の
+    /// `execute_outcome(NodeOutcome::Persist(snapshot))` を実行する production 経路の
     /// ショートカット。pre-commit append 失敗時に ExecutionStore / state が persist されない
     /// ことを検証するために用いる（spec [05] commit 境界の継承）。
     #[cfg(test)]
@@ -6669,7 +6689,7 @@ impl WorkflowRuntimeService {
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         worktree_path: &str,
-        snapshot: WorkflowState,
+        snapshot: RuntimeCommitSnapshot,
     ) -> Result<(), WorkflowEngineError> {
         // テスト helper の snapshot_before は engine.executions の現在状態を採用する。
         // production 経路では call site が mutation 前に capture するが、本 helper は
@@ -6686,19 +6706,19 @@ impl WorkflowRuntimeService {
             session_store,
             agent_runtime,
             worktree_path,
-            StepOutcome::Persist(snapshot),
+            NodeOutcome::Persist(snapshot),
             snapshot_before,
         )
         .await
     }
 
     #[cfg(test)]
-    async fn handle_approval_with_output_for_run_for_test(
+    async fn handle_approval_with_output_for_execution_for_test(
         &self,
         execution_id: &str,
         expected_execution_id: Option<&str>,
         expected_node_name: Option<&str>,
-    ) -> Result<StepOutcome, WorkflowEngineError> {
+    ) -> Result<NodeOutcome, WorkflowEngineError> {
         {
             let execs = self.executions.lock().await;
             let exec = execs
@@ -6751,8 +6771,8 @@ impl WorkflowRuntimeService {
     async fn execute_outcome_persist_auto_approve_for_test(
         &self,
         worktree_path: &str,
-        snapshot: &WorkflowState,
-    ) -> Result<Option<StepOutcome>, WorkflowEngineError> {
+        snapshot: &RuntimeCommitSnapshot,
+    ) -> Result<Option<NodeOutcome>, WorkflowEngineError> {
         if let Some((execution_id, node_name)) =
             workflow_approval_runtime::auto_approve_target_for_persisted_snapshot(snapshot, true)
         {
@@ -6774,8 +6794,8 @@ impl WorkflowRuntimeService {
         worktree_path: &str,
         current_session_id: &str,
         state: RuntimeExecutionState,
-    ) -> WorkflowState {
-        let workflow = Workflow {
+    ) -> RuntimeCommitSnapshot {
+        let workflow = WorkflowDefinitionYaml {
             name: "test-approval-workflow".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -6810,7 +6830,7 @@ impl WorkflowRuntimeService {
             started_at: 1000.0,
             updated_at: 1000.0,
             current_session_id: Some(current_session_id.to_string()),
-            current_step_token_usage: TokenUsage::default(),
+            current_node_token_usage: TokenUsage::default(),
             artifacts: HashMap::new(),
             node_executions: vec![NodeExecution {
                 id: "node-exec-approval".to_string(),
@@ -6828,7 +6848,7 @@ impl WorkflowRuntimeService {
                 completed_at: None,
             }],
             request: None,
-            parallel_run: None,
+            fanout_runtime: None,
             current_stall_observations: Vec::new(),
             worktree_path: worktree_path.to_string(),
             created_from: ExecutionOrigin::DesktopUi,
@@ -6838,7 +6858,7 @@ impl WorkflowRuntimeService {
                 permission_mode: "edit".to_string(),
             },
         };
-        let snapshot = exec.to_workflow_state();
+        let snapshot = exec.to_commit_snapshot();
         let execution_id = exec.id.clone();
         self.executions
             .lock()

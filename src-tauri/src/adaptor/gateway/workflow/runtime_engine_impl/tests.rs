@@ -23,7 +23,7 @@ use async_trait::async_trait;
 use tauri::{Listener, Manager};
 
 const TEST_PARENT_SESSION_ID: &str = "11111111-1111-4111-8111-111111111111";
-const TEST_STEP_SESSION_ID: &str = "22222222-2222-4222-8222-222222222222";
+const TEST_NODE_SESSION_ID: &str = "22222222-2222-4222-8222-222222222222";
 const TEST_REGULAR_SESSION_ID: &str = "33333333-3333-4333-8333-333333333333";
 
 fn node_execution_fixture(
@@ -189,8 +189,8 @@ fn make_workflow_test_registry(
 }
 
 #[test]
-fn parallel_child_failure_kind_uses_typed_refusal_signal() {
-    let kind = parallel_child_failure_kind(
+fn fanout_child_failure_kind_uses_typed_refusal_signal() {
+    let kind = fanout_child_failure_kind(
         0,
         Some(workflow_transition::SessionFailureSignal::ModelRefusal),
     );
@@ -199,8 +199,8 @@ fn parallel_child_failure_kind_uses_typed_refusal_signal() {
 }
 
 #[test]
-fn parallel_child_failure_kind_without_signal_uses_session_error_classification() {
-    let kind = parallel_child_failure_kind(1, None);
+fn fanout_child_failure_kind_without_signal_uses_session_error_classification() {
+    let kind = fanout_child_failure_kind(1, None);
 
     assert_eq!(kind, NodeExecutionFailureKind::InfrastructureCrash);
 }
@@ -208,14 +208,14 @@ fn parallel_child_failure_kind_without_signal_uses_session_error_classification(
 #[test]
 fn workflow_resolve_unique_model_returns_owning_backend() {
     let registry = make_workflow_test_registry(&["claude-4"], &["gpt-5"]);
-    let result = resolve_step_model_with_registry(&registry, "claude-4").unwrap();
+    let result = resolve_node_model_with_registry(&registry, "claude-4").unwrap();
     assert_eq!(result, "claude");
 }
 
 #[test]
 fn workflow_resolve_rejects_ambiguous_model_in_multiple_backends() {
     let registry = make_workflow_test_registry(&["shared"], &["shared"]);
-    let err = resolve_step_model_with_registry(&registry, "shared").unwrap_err();
+    let err = resolve_node_model_with_registry(&registry, "shared").unwrap_err();
     match err {
         WorkflowEngineError::InvalidWorkflow(msg) => {
             assert!(msg.contains("could not be resolved"));
@@ -227,7 +227,7 @@ fn workflow_resolve_rejects_ambiguous_model_in_multiple_backends() {
 #[test]
 fn workflow_resolve_rejects_unknown_model() {
     let registry = make_workflow_test_registry(&["claude-4"], &[]);
-    let err = resolve_step_model_with_registry(&registry, "unknown").unwrap_err();
+    let err = resolve_node_model_with_registry(&registry, "unknown").unwrap_err();
     match err {
         WorkflowEngineError::InvalidWorkflow(msg) => {
             assert!(msg.contains("could not be resolved"));
@@ -240,7 +240,7 @@ fn workflow_resolve_rejects_unknown_model() {
 fn workflow_resolve_rejects_invalid_format() {
     let registry = make_workflow_test_registry(&["claude-4"], &[]);
     // 形式不正（空文字）は登録判定に進む前に拒否される
-    let err = resolve_step_model_with_registry(&registry, "").unwrap_err();
+    let err = resolve_node_model_with_registry(&registry, "").unwrap_err();
     match err {
         WorkflowEngineError::InvalidWorkflow(msg) => {
             assert!(msg.contains("invalid model"));
@@ -252,7 +252,7 @@ fn workflow_resolve_rejects_invalid_format() {
 fn chat_session_for_test(
     id: &str,
     worktree_path: &str,
-    _workflow_state: Option<WorkflowState>,
+    _commit_snapshot: Option<RuntimeCommitSnapshot>,
     workflow_node_session: bool,
 ) -> crate::usecase::agent_session::session::ChatSession {
     crate::usecase::agent_session::session::ChatSession {
@@ -314,7 +314,7 @@ fn chat_session_with_message_for_test(
 }
 
 #[test]
-fn workflow_step_summary_uses_persisted_session_flag() {
+fn workflow_node_summary_uses_persisted_session_flag() {
     let tmp = tempfile::TempDir::new().unwrap();
     let store = crate::test_support::build_session_store();
 
@@ -327,7 +327,7 @@ fn workflow_step_summary_uses_persisted_session_flag() {
     store
         .save_full_session_for_migration_or_restore(
             tmp.path(),
-            &chat_session_for_test(TEST_STEP_SESSION_ID, "/repo", None, true),
+            &chat_session_for_test(TEST_NODE_SESSION_ID, "/repo", None, true),
         )
         .unwrap();
     store
@@ -338,19 +338,19 @@ fn workflow_step_summary_uses_persisted_session_flag() {
         .unwrap();
 
     let summaries = store.list_sessions(tmp.path(), "/repo").unwrap();
-    let step_summary = summaries
+    let node_summary = summaries
         .iter()
-        .find(|session| session.id == TEST_STEP_SESSION_ID)
+        .find(|session| session.id == TEST_NODE_SESSION_ID)
         .unwrap();
-    assert!(step_summary.workflow_node_session);
+    assert!(node_summary.workflow_node_session);
 }
 
-// 撤去済み: persist_state は廃止された（NDJSON event log + Run Store metadata で永続化が完結）。
-// 旧 `persist_failure_still_runs_completed_step_cleanup` は persist_state 失敗時の cleanup 順序を
+// 撤去済み: persist_state は廃止された（NDJSON event log + Execution Store metadata で永続化が完結）。
+// 旧 `persist_failure_still_runs_completed_node_cleanup` は persist_state 失敗時の cleanup 順序を
 // 検証していたが、機構撤去により意味を失った。
 
 #[test]
-fn step_session_tab_cleanup_closes_session_and_preserves_history() {
+fn node_session_tab_cleanup_closes_session_and_preserves_history() {
     let tmp = tempfile::TempDir::new().unwrap();
     let store = crate::test_support::build_session_store();
     let open_tabs = Arc::new(crate::usecase::agent_session::session::OpenTabRegistry::default());
@@ -364,7 +364,7 @@ fn step_session_tab_cleanup_closes_session_and_preserves_history() {
         .unwrap();
     open_tabs.add(&session_id);
 
-    crate::adaptor::gateway::workflow::close_step_session_tab_state(
+    crate::adaptor::gateway::workflow::close_node_session_tab_state(
         &store,
         tmp.path(),
         Some(open_tabs.as_ref()),
@@ -385,12 +385,12 @@ fn step_session_tab_cleanup_closes_session_and_preserves_history() {
 }
 
 #[tokio::test]
-async fn persist_outcome_without_new_history_does_not_cleanup_last_step_session() {
+async fn persist_outcome_without_new_history_does_not_cleanup_last_node_session() {
     let engine = WorkflowRuntimeService::new_for_test();
     let mut snapshot = engine
         .insert_test_approval_execution(
             "/repo",
-            TEST_STEP_SESSION_ID,
+            TEST_NODE_SESSION_ID,
             RuntimeExecutionState::WaitingApproval,
         )
         .await;
@@ -398,7 +398,7 @@ async fn persist_outcome_without_new_history_does_not_cleanup_last_step_session(
         node_name: "previous".to_string(),
         completed_at: 1.0,
         result: Some("ok".to_string()),
-        session_id: Some(TEST_STEP_SESSION_ID.to_string()),
+        session_id: Some(TEST_NODE_SESSION_ID.to_string()),
         token_usage: None,
         artifact: None,
         attempt: 1,
@@ -406,14 +406,14 @@ async fn persist_outcome_without_new_history_does_not_cleanup_last_step_session(
         state: crate::domain::workflow::value_objects::default_node_history_status(),
     });
 
-    let persist = StepOutcome::Persist(snapshot.clone());
-    assert!(persist.completed_step_session_ids().is_empty());
+    let persist = NodeOutcome::Persist(snapshot.clone());
+    assert!(persist.completed_node_session_ids().is_empty());
 
     snapshot.state = RuntimeExecutionState::Completed;
-    let terminal = StepOutcome::Persist(snapshot);
+    let terminal = NodeOutcome::Persist(snapshot);
     assert_eq!(
-        terminal.completed_step_session_ids(),
-        vec![TEST_STEP_SESSION_ID.to_string()]
+        terminal.completed_node_session_ids(),
+        vec![TEST_NODE_SESSION_ID.to_string()]
     );
 }
 
@@ -423,7 +423,7 @@ async fn aborted_approval_outcome_cleans_current_session_not_last_history_entry(
     let mut snapshot = engine
         .insert_test_approval_execution(
             "/repo",
-            TEST_STEP_SESSION_ID,
+            TEST_NODE_SESSION_ID,
             RuntimeExecutionState::WaitingApproval,
         )
         .await;
@@ -441,24 +441,24 @@ async fn aborted_approval_outcome_cleans_current_session_not_last_history_entry(
     });
     snapshot.state = RuntimeExecutionState::Aborted;
 
-    let outcome = StepOutcome::Persist(snapshot);
+    let outcome = NodeOutcome::Persist(snapshot);
     assert_eq!(
-        outcome.completed_step_session_ids(),
+        outcome.completed_node_session_ids(),
         vec!["approval-session".to_string()]
     );
 }
 
 #[tokio::test]
-async fn terminal_state_cleanup_targets_current_and_parallel_step_sessions() {
+async fn terminal_state_cleanup_targets_current_and_fanout_node_sessions() {
     let engine = WorkflowRuntimeService::new_for_test();
     let mut exec = engine
         .insert_test_approval_execution(
             "/repo",
-            TEST_STEP_SESSION_ID,
+            TEST_NODE_SESSION_ID,
             RuntimeExecutionState::Running,
         )
         .await;
-    exec.current_session_id = Some("current-step-session".to_string());
+    exec.current_session_id = Some("current-node-session".to_string());
     exec.node_executions[0].session_id = exec.current_session_id.clone();
     let execution_id = exec.execution_id.clone();
     exec.node_executions.extend([
@@ -468,9 +468,9 @@ async fn terminal_state_cleanup_targets_current_and_parallel_step_sessions() {
             "review-a",
             1,
             NodeExecutionStatus::Running,
-            Some("parallel-a-session"),
+            Some("fanout-a-session"),
             Some(FanoutParentRef {
-                parent_node: "parallel-review".to_string(),
+                parent_node: "fanout-review".to_string(),
                 parent_attempt: 1,
                 item_index: None,
                 child_index: 0,
@@ -482,9 +482,9 @@ async fn terminal_state_cleanup_targets_current_and_parallel_step_sessions() {
             "review-b",
             1,
             NodeExecutionStatus::Running,
-            Some("parallel-b-session"),
+            Some("fanout-b-session"),
             Some(FanoutParentRef {
-                parent_node: "parallel-review".to_string(),
+                parent_node: "fanout-review".to_string(),
                 parent_attempt: 1,
                 item_index: None,
                 child_index: 1,
@@ -493,27 +493,27 @@ async fn terminal_state_cleanup_targets_current_and_parallel_step_sessions() {
     ]);
 
     assert_eq!(
-        workflow_runtime_commit::terminal_step_session_ids(&exec),
+        workflow_runtime_commit::terminal_node_session_ids(&exec),
         vec![
-            "current-step-session".to_string(),
-            "parallel-a-session".to_string(),
-            "parallel-b-session".to_string()
+            "current-node-session".to_string(),
+            "fanout-a-session".to_string(),
+            "fanout-b-session".to_string()
         ]
     );
 }
 
 #[tokio::test]
-async fn terminal_outcome_cleanup_includes_parent_entry_and_parallel_fanout_children() {
+async fn terminal_outcome_cleanup_includes_parent_entry_and_fanout_fanout_children() {
     let engine = WorkflowRuntimeService::new_for_test();
     let mut snapshot = engine
         .insert_test_approval_execution(
             "/repo",
-            TEST_STEP_SESSION_ID,
+            TEST_NODE_SESSION_ID,
             RuntimeExecutionState::Completed,
         )
         .await;
     snapshot.node_history.push(NodeHistoryEntry {
-        node_name: "parallel-review".to_string(),
+        node_name: "fanout-review".to_string(),
         completed_at: 1.0,
         result: Some("done".to_string()),
         session_id: Some("parent-entry-session".to_string()),
@@ -550,7 +550,7 @@ async fn terminal_outcome_cleanup_includes_parent_entry_and_parallel_fanout_chil
     });
 
     assert_eq!(
-        StepOutcome::Persist(snapshot).completed_step_session_ids(),
+        NodeOutcome::Persist(snapshot).completed_node_session_ids(),
         vec![
             "child-a-session".to_string(),
             "child-b-session".to_string(),
@@ -560,26 +560,26 @@ async fn terminal_outcome_cleanup_includes_parent_entry_and_parallel_fanout_chil
 }
 
 #[tokio::test]
-async fn retry_current_step_outcome_releases_previous_session_only() {
+async fn retry_current_node_outcome_releases_previous_session_only() {
     let engine = WorkflowRuntimeService::new_for_test();
     let snapshot = engine
         .insert_test_approval_execution(
             "/repo",
-            TEST_STEP_SESSION_ID,
+            TEST_NODE_SESSION_ID,
             RuntimeExecutionState::Running,
         )
         .await;
 
     assert_eq!(
-        StepOutcome::RetryCurrentStep {
+        NodeOutcome::RetryCurrentNode {
             snapshot,
             completed_session_id: Some("stale-session".to_string()),
         }
-        .completed_step_session_ids(),
+        .completed_node_session_ids(),
         vec!["stale-session".to_string()]
     );
 }
-use crate::adaptor::gateway::workflow::schema::{Rule, SchemaDef, Workflow};
+use crate::adaptor::gateway::workflow::schema::{Rule, SchemaDef, WorkflowDefinitionYaml};
 
 fn object_schema_for_test(fields: &[&str]) -> SchemaDef {
     SchemaDef::Object {
@@ -612,7 +612,7 @@ fn make_minimal_approval_exec(
     current_session_id: &str,
     node_name: &str,
 ) -> WorkflowExecution {
-    let workflow = Workflow {
+    let workflow = WorkflowDefinitionYaml {
         name: "test-workflow".to_string(),
         description: "minimal approval fixture".to_string(),
         builtin: false,
@@ -621,11 +621,11 @@ fn make_minimal_approval_exec(
             NodeDefinition {
                 name: node_name.to_string(),
                 kind: test_node_kind(TestKind::ApprovalSession, "approve"),
-                rules: vec![Rule::Next("next-step".to_string())],
+                rules: vec![Rule::Next("next-node".to_string())],
                 ..Default::default()
             },
             NodeDefinition {
-                name: "next-step".to_string(),
+                name: "next-node".to_string(),
                 kind: test_node_kind(TestKind::Session, "next"),
                 ..Default::default()
             },
@@ -641,7 +641,7 @@ fn make_minimal_approval_exec(
         started_at: 1000.0,
         updated_at: 1000.0,
         current_session_id: Some(current_session_id.to_string()),
-        current_step_token_usage: TokenUsage::default(),
+        current_node_token_usage: TokenUsage::default(),
         artifacts: HashMap::new(),
         node_executions: vec![node_execution_fixture(
             execution_id,
@@ -653,7 +653,7 @@ fn make_minimal_approval_exec(
             None,
         )],
         request: None,
-        parallel_run: None,
+        fanout_runtime: None,
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         created_from: ExecutionOrigin::Agent,
@@ -666,12 +666,13 @@ fn make_minimal_approval_exec(
 }
 
 #[test]
-fn current_step_for_stall_observation_ignores_terminal_fanout_children() {
-    let mut exec = make_minimal_approval_exec("run-stall-lookup", "regular-session", "review");
+fn current_node_for_stall_observation_ignores_terminal_fanout_children() {
+    let mut exec =
+        make_minimal_approval_exec("execution-stall-lookup", "regular-session", "review");
     exec.current_session_id = None;
-    exec.parallel_run = Some(FanoutRuntimeState {
-        parent_node_name: "parallel-review".to_string(),
-        parent_node_execution_id: "node-execution-parallel-review".to_string(),
+    exec.fanout_runtime = Some(FanoutRuntimeState {
+        parent_node_name: "fanout-review".to_string(),
+        parent_node_execution_id: "node-execution-fanout-review".to_string(),
         children: vec![
             FanoutChildRuntime {
                 node_execution_id: "node-execution-running-child".to_string(),
@@ -719,7 +720,7 @@ fn current_step_for_stall_observation_ignores_terminal_fanout_children() {
     });
 
     assert_eq!(
-        current_step_for_stall_observation(&exec, "running-session"),
+        current_node_for_stall_observation(&exec, "running-session"),
         Some((
             "node-execution-running-child".to_string(),
             "running-child".to_string(),
@@ -727,11 +728,11 @@ fn current_step_for_stall_observation_ignores_terminal_fanout_children() {
         ))
     );
     assert_eq!(
-        current_step_for_stall_observation(&exec, "completed-session"),
+        current_node_for_stall_observation(&exec, "completed-session"),
         None
     );
     assert_eq!(
-        current_step_for_stall_observation(&exec, "failed-session"),
+        current_node_for_stall_observation(&exec, "failed-session"),
         None
     );
 }
@@ -750,7 +751,7 @@ fn workflow_stall_observation_fixture(session_id: &str, node_name: &str) -> Node
 }
 
 #[tokio::test]
-async fn agent_stall_observed_updates_workflow_state_without_completing_step() {
+async fn agent_stall_observed_updates_commit_snapshot_without_completing_node() {
     let data_dir = tempfile::TempDir::new().unwrap();
     let app = tauri::test::mock_builder()
         .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
@@ -862,8 +863,16 @@ async fn agent_stall_observed_updates_workflow_state_without_completing_step() {
     ));
     assert_eq!(state.current_session_id.as_deref(), Some(session_id));
     assert_eq!(state.node_history.len(), 0);
-    assert_eq!(state.stall_observations.len(), 1);
-    let observation = &state.stall_observations[0];
+    let observations = engine
+        .executions
+        .lock()
+        .await
+        .get(&execution_id)
+        .unwrap()
+        .current_stall_observations
+        .clone();
+    assert_eq!(observations.len(), 1);
+    let observation = &observations[0];
     assert_eq!(observation.session_id, session_id);
     assert_eq!(observation.node_name, node_name);
     assert_eq!(observation.attempt, 1);
@@ -878,7 +887,7 @@ async fn agent_stall_observed_updates_workflow_state_without_completing_step() {
     assert!(matches!(
         events.last(),
         Some(WorkflowEvent::StallObserved {
-            execution_id: event_run_id,
+            execution_id: event_execution_id,
             node_execution_id,
             session_id: event_session_id,
             node_name: event_node_name,
@@ -888,7 +897,7 @@ async fn agent_stall_observed_updates_workflow_state_without_completing_step() {
             signal_count: 1,
             cap_reached: false,
             ..
-        }) if event_run_id == &execution_id
+        }) if event_execution_id == &execution_id
             && node_execution_id == "node-execution-approval"
             && event_session_id == session_id
             && event_node_name == node_name
@@ -912,12 +921,16 @@ async fn agent_stall_observed_updates_workflow_state_without_completing_step() {
         .await
         .unwrap();
 
-    let state = engine
-        .get_state_by_execution_id(&execution_id)
+    let observations = engine
+        .executions
+        .lock()
         .await
-        .unwrap();
-    assert_eq!(state.stall_observations.len(), 1);
-    let observation = &state.stall_observations[0];
+        .get(&execution_id)
+        .unwrap()
+        .current_stall_observations
+        .clone();
+    assert_eq!(observations.len(), 1);
+    let observation = &observations[0];
     assert_eq!(observation.session_id, session_id);
     assert_eq!(observation.idle_secs, 88);
     assert_eq!(observation.signal_count, 2);
@@ -935,22 +948,25 @@ async fn agent_stall_observed_updates_workflow_state_without_completing_step() {
         .await
         .unwrap();
 
-    let state = engine
-        .get_state_by_execution_id(&execution_id)
+    assert!(engine
+        .executions
+        .lock()
         .await
-        .unwrap();
-    assert!(state.stall_observations.is_empty());
+        .get(&execution_id)
+        .unwrap()
+        .current_stall_observations
+        .is_empty());
     let events = WorkflowEventLog::new(&log_data_dir)
         .read_log(&execution_id)
         .unwrap();
     assert!(matches!(
         events.last(),
         Some(WorkflowEvent::StallCleared {
-            execution_id: event_run_id,
+            execution_id: event_execution_id,
             node_execution_id,
             session_id: event_session_id,
             ..
-        }) if event_run_id == &execution_id
+        }) if event_execution_id == &execution_id
             && node_execution_id == "node-execution-approval"
             && event_session_id == session_id
     ));
@@ -1043,11 +1059,14 @@ async fn agent_stall_observed_append_failure_rolls_back_state_and_execution_stor
         format!("{err:?}").contains("workflow stall observed event append failed"),
         "append failure context must be surfaced; got {err:?}"
     );
-    let state = engine
-        .get_state_by_execution_id(&execution_id)
+    assert!(engine
+        .executions
+        .lock()
         .await
-        .unwrap();
-    assert!(state.stall_observations.is_empty());
+        .get(&execution_id)
+        .unwrap()
+        .current_stall_observations
+        .is_empty());
     let stored_after = engine
         .execution_store()
         .get_execution(&execution_id)
@@ -1146,12 +1165,16 @@ async fn agent_stall_cleared_append_failure_rolls_back_state_and_execution_store
         format!("{err:?}").contains("workflow stall cleared event append failed"),
         "append failure context must be surfaced; got {err:?}"
     );
-    let state = engine
-        .get_state_by_execution_id(&execution_id)
+    let observations = engine
+        .executions
+        .lock()
         .await
-        .unwrap();
-    assert_eq!(state.stall_observations.len(), 1);
-    assert_eq!(state.stall_observations[0].session_id, session_id);
+        .get(&execution_id)
+        .unwrap()
+        .current_stall_observations
+        .clone();
+    assert_eq!(observations.len(), 1);
+    assert_eq!(observations[0].session_id, session_id);
     let stored_after = engine
         .execution_store()
         .get_execution(&execution_id)
@@ -1174,7 +1197,7 @@ async fn agent_stall_cleared_append_failure_rolls_back_state_and_execution_store
 
 // ---- WorkflowExecution ----
 
-fn make_test_step(
+fn make_test_node(
     name: &str,
     kind: TestKind,
     instruction: &str,
@@ -1191,10 +1214,10 @@ fn make_test_step(
 }
 
 fn make_approval_gated_session(name: &str, instruction: &str, rules: Vec<Rule>) -> NodeDefinition {
-    make_test_step(name, TestKind::ApprovalSession, instruction, rules, None)
+    make_test_node(name, TestKind::ApprovalSession, instruction, rules, None)
 }
 
-fn make_fanout_step(name: &str, children: Vec<&str>) -> NodeDefinition {
+fn make_fanout_node(name: &str, children: Vec<&str>) -> NodeDefinition {
     NodeDefinition {
         name: name.to_string(),
         kind: NodeKind::Fanout(FanoutSpec {
@@ -1284,28 +1307,28 @@ fn resolve_fanout_child_facets_for_test(
         .expect("facet refs must resolve in tests; missing facet indicates a fixture bug")
 }
 
-fn make_test_workflow() -> Workflow {
-    Workflow {
+fn make_test_workflow() -> WorkflowDefinitionYaml {
+    WorkflowDefinitionYaml {
         name: "test-workflow".to_string(),
         description: "Test workflow".to_string(),
         builtin: false,
         schemas: Default::default(),
         nodes: vec![
-            make_test_step(
+            make_test_node(
                 "plan",
                 TestKind::Session,
                 "Plan the work",
                 vec![Rule::Next("implement".to_string())],
                 None,
             ),
-            make_test_step(
+            make_test_node(
                 "implement",
                 TestKind::Session,
                 "Implement the plan",
                 vec![Rule::Next("review".to_string())],
                 None,
             ),
-            make_test_step(
+            make_test_node(
                 "review",
                 TestKind::Session,
                 "Review the implementation",
@@ -1315,7 +1338,7 @@ fn make_test_workflow() -> Workflow {
                     on_exhausted: "report".to_string(),
                 }),
             ),
-            make_test_step(
+            make_test_node(
                 "report",
                 TestKind::ApprovalSession,
                 "Generate report",
@@ -1327,7 +1350,7 @@ fn make_test_workflow() -> Workflow {
 }
 
 #[test]
-fn workflow_execution_to_workflow_state() {
+fn workflow_execution_to_commit_snapshot() {
     let workflow = make_test_workflow();
     let exec = WorkflowExecution {
         id: "exec-1".to_string(),
@@ -1339,11 +1362,11 @@ fn workflow_execution_to_workflow_state() {
         started_at: 1000.0,
         updated_at: 1000.0,
         current_session_id: None,
-        current_step_token_usage: TokenUsage::default(),
+        current_node_token_usage: TokenUsage::default(),
         artifacts: HashMap::new(),
         node_executions: Vec::new(),
         request: None,
-        parallel_run: None,
+        fanout_runtime: None,
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         created_from: ExecutionOrigin::Agent,
@@ -1354,20 +1377,20 @@ fn workflow_execution_to_workflow_state() {
         },
     };
 
-    let state = exec.to_workflow_state();
+    let state = exec.to_commit_snapshot();
     assert_eq!(state.execution_id, "exec-1");
     assert_eq!(state.workflow_name, "test-workflow");
     assert_eq!(state.state, RuntimeExecutionState::Running);
     assert_eq!(state.current_node_index, 0);
     assert_eq!(state.current_node_name, "plan");
-    assert_eq!(state.total_nodes, 4);
+    assert_eq!(state.workflow_definition.nodes.len(), 4);
     assert!(state.node_history.is_empty());
 }
 
 // ---- is_active ----
 
 #[test]
-fn is_active_running() {
+fn is_active_executionning() {
     let exec = WorkflowExecution {
         id: "exec-1".to_string(),
         workflow: make_test_workflow(),
@@ -1378,11 +1401,11 @@ fn is_active_running() {
         started_at: 1000.0,
         updated_at: 1000.0,
         current_session_id: None,
-        current_step_token_usage: TokenUsage::default(),
+        current_node_token_usage: TokenUsage::default(),
         artifacts: HashMap::new(),
         node_executions: Vec::new(),
         request: None,
-        parallel_run: None,
+        fanout_runtime: None,
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         created_from: ExecutionOrigin::Agent,
@@ -1407,11 +1430,11 @@ fn is_active_waiting_approval() {
         started_at: 1000.0,
         updated_at: 1000.0,
         current_session_id: None,
-        current_step_token_usage: TokenUsage::default(),
+        current_node_token_usage: TokenUsage::default(),
         artifacts: HashMap::new(),
         node_executions: Vec::new(),
         request: None,
-        parallel_run: None,
+        fanout_runtime: None,
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         created_from: ExecutionOrigin::Agent,
@@ -1436,11 +1459,11 @@ fn is_active_completed() {
         started_at: 1000.0,
         updated_at: 1000.0,
         current_session_id: None,
-        current_step_token_usage: TokenUsage::default(),
+        current_node_token_usage: TokenUsage::default(),
         artifacts: HashMap::new(),
         node_executions: Vec::new(),
         request: None,
-        parallel_run: None,
+        fanout_runtime: None,
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         created_from: ExecutionOrigin::Agent,
@@ -1469,11 +1492,11 @@ fn is_active_failed() {
         started_at: 1000.0,
         updated_at: 1000.0,
         current_session_id: None,
-        current_step_token_usage: TokenUsage::default(),
+        current_node_token_usage: TokenUsage::default(),
         artifacts: HashMap::new(),
         node_executions: Vec::new(),
         request: None,
-        parallel_run: None,
+        fanout_runtime: None,
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         created_from: ExecutionOrigin::Agent,
@@ -1498,11 +1521,11 @@ fn is_active_aborted() {
         started_at: 1000.0,
         updated_at: 1000.0,
         current_session_id: None,
-        current_step_token_usage: TokenUsage::default(),
+        current_node_token_usage: TokenUsage::default(),
         artifacts: HashMap::new(),
         node_executions: Vec::new(),
         request: None,
-        parallel_run: None,
+        fanout_runtime: None,
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         created_from: ExecutionOrigin::Agent,
@@ -1515,10 +1538,10 @@ fn is_active_aborted() {
     assert!(!exec.is_active());
 }
 
-// ---- to_workflow_state: all state variants ----
+// ---- to_commit_snapshot: all state variants ----
 
 #[test]
-fn to_workflow_state_waiting_approval() {
+fn to_commit_snapshot_waiting_approval() {
     let workflow = make_test_workflow();
     let exec = WorkflowExecution {
         id: "exec-1".to_string(),
@@ -1530,11 +1553,11 @@ fn to_workflow_state_waiting_approval() {
         started_at: 1000.0,
         updated_at: 1001.0,
         current_session_id: None,
-        current_step_token_usage: TokenUsage::default(),
+        current_node_token_usage: TokenUsage::default(),
         artifacts: HashMap::new(),
         node_executions: Vec::new(),
         request: None,
-        parallel_run: None,
+        fanout_runtime: None,
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         created_from: ExecutionOrigin::Agent,
@@ -1544,46 +1567,14 @@ fn to_workflow_state_waiting_approval() {
             permission_mode: "edit".to_string(),
         },
     };
-    let ws = exec.to_workflow_state();
+    let ws = exec.to_commit_snapshot();
     assert_eq!(ws.state, RuntimeExecutionState::WaitingApproval);
     assert_eq!(ws.current_node_name, "report");
     assert_eq!(ws.current_node_index, 3);
-    assert!(ws.approval_operations.is_some());
 }
 
 #[test]
-fn to_workflow_state_waiting_approval_exposes_approval_operation() {
-    let workflow = make_test_workflow();
-    let exec = WorkflowExecution {
-        id: "exec-1".to_string(),
-        workflow,
-        state: RuntimeExecutionState::WaitingApproval,
-        current_node_index: 3,
-        node_execution_counts: HashMap::new(),
-        node_history: Vec::new(),
-        started_at: 1000.0,
-        updated_at: 1001.0,
-        current_session_id: None,
-        current_step_token_usage: TokenUsage::default(),
-        artifacts: HashMap::new(),
-        node_executions: Vec::new(),
-        request: None,
-        parallel_run: None,
-        current_stall_observations: Vec::new(),
-        worktree_path: "/repo".to_string(),
-        created_from: ExecutionOrigin::Agent,
-        error_reason: None,
-        workflow_defaults: WorkflowDefaults {
-            backend_id: None,
-            permission_mode: "edit".to_string(),
-        },
-    };
-    let ws = exec.to_workflow_state();
-    assert!(ws.approval_operations.is_some());
-}
-
-#[test]
-fn to_workflow_state_failed() {
+fn to_commit_snapshot_failed() {
     let workflow = make_test_workflow();
     let exec = WorkflowExecution {
         id: "exec-1".to_string(),
@@ -1610,11 +1601,11 @@ fn to_workflow_state_failed() {
         started_at: 1000.0,
         updated_at: 1001.0,
         current_session_id: None,
-        current_step_token_usage: TokenUsage::default(),
+        current_node_token_usage: TokenUsage::default(),
         artifacts: HashMap::new(),
         node_executions: Vec::new(),
         request: None,
-        parallel_run: None,
+        fanout_runtime: None,
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         created_from: ExecutionOrigin::Agent,
@@ -1624,7 +1615,7 @@ fn to_workflow_state_failed() {
             permission_mode: "edit".to_string(),
         },
     };
-    let ws = exec.to_workflow_state();
+    let ws = exec.to_commit_snapshot();
     assert_eq!(
         ws.state,
         RuntimeExecutionState::Failed {
@@ -1638,7 +1629,7 @@ fn to_workflow_state_failed() {
 }
 
 #[test]
-fn to_workflow_state_aborted() {
+fn to_commit_snapshot_aborted() {
     let workflow = make_test_workflow();
     let exec = WorkflowExecution {
         id: "exec-1".to_string(),
@@ -1650,11 +1641,11 @@ fn to_workflow_state_aborted() {
         started_at: 1000.0,
         updated_at: 1001.0,
         current_session_id: None,
-        current_step_token_usage: TokenUsage::default(),
+        current_node_token_usage: TokenUsage::default(),
         artifacts: HashMap::new(),
         node_executions: Vec::new(),
         request: None,
-        parallel_run: None,
+        fanout_runtime: None,
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         created_from: ExecutionOrigin::Agent,
@@ -1664,12 +1655,12 @@ fn to_workflow_state_aborted() {
             permission_mode: "edit".to_string(),
         },
     };
-    let ws = exec.to_workflow_state();
+    let ws = exec.to_commit_snapshot();
     assert_eq!(ws.state, RuntimeExecutionState::Aborted);
 }
 
 #[test]
-fn to_workflow_state_completed() {
+fn to_commit_snapshot_completed() {
     let workflow = make_test_workflow();
     let exec = WorkflowExecution {
         id: "exec-1".to_string(),
@@ -1681,11 +1672,11 @@ fn to_workflow_state_completed() {
         started_at: 1000.0,
         updated_at: 1002.0,
         current_session_id: None,
-        current_step_token_usage: TokenUsage::default(),
+        current_node_token_usage: TokenUsage::default(),
         artifacts: HashMap::new(),
         node_executions: Vec::new(),
         request: None,
-        parallel_run: None,
+        fanout_runtime: None,
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         created_from: ExecutionOrigin::Agent,
@@ -1695,9 +1686,9 @@ fn to_workflow_state_completed() {
             permission_mode: "edit".to_string(),
         },
     };
-    let ws = exec.to_workflow_state();
+    let ws = exec.to_commit_snapshot();
     assert_eq!(ws.state, RuntimeExecutionState::Completed);
-    assert_eq!(ws.total_nodes, 4);
+    assert_eq!(ws.workflow_definition.nodes.len(), 4);
 }
 
 // ---- loop_guard: boundary value at exactly max_iterations ----
@@ -1729,21 +1720,21 @@ fn check_loop_guard_at_exact_boundary_exceeded() {
 #[test]
 fn loop_guard_no_guard_defined() {
     let workflow = make_test_workflow();
-    let step = &workflow.nodes[0]; // plan (no loop_guard)
-    assert!(!step
+    let node = &workflow.nodes[0]; // plan (no loop_guard)
+    assert!(!node
         .rules
         .iter()
         .any(|rule| matches!(rule, Rule::LoopGuard { .. })));
 }
 
-// ---- decide_next_step ----
+// ---- decide_next_node ----
 
-fn make_exec(step_index: usize) -> WorkflowExecution {
+fn make_exec(node_index: usize) -> WorkflowExecution {
     WorkflowExecution {
         id: "exec-1".to_string(),
         workflow: make_test_workflow(),
         state: RuntimeExecutionState::Running,
-        current_node_index: step_index,
+        current_node_index: node_index,
         node_execution_counts: HashMap::new(),
         node_history: Vec::new(),
         artifacts: HashMap::new(),
@@ -1751,9 +1742,9 @@ fn make_exec(step_index: usize) -> WorkflowExecution {
         started_at: 1000.0,
         updated_at: 1000.0,
         current_session_id: None,
-        current_step_token_usage: TokenUsage::default(),
+        current_node_token_usage: TokenUsage::default(),
         request: None,
-        parallel_run: None,
+        fanout_runtime: None,
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         created_from: ExecutionOrigin::Agent,
@@ -1765,12 +1756,12 @@ fn make_exec(step_index: usize) -> WorkflowExecution {
     }
 }
 
-fn workflow_exec(workflow: Workflow, step_index: usize) -> WorkflowExecution {
+fn workflow_exec(workflow: WorkflowDefinitionYaml, node_index: usize) -> WorkflowExecution {
     WorkflowExecution {
         id: "exec-1".to_string(),
         workflow,
         state: RuntimeExecutionState::Running,
-        current_node_index: step_index,
+        current_node_index: node_index,
         node_execution_counts: HashMap::new(),
         node_history: Vec::new(),
         artifacts: HashMap::new(),
@@ -1778,9 +1769,9 @@ fn workflow_exec(workflow: Workflow, step_index: usize) -> WorkflowExecution {
         started_at: 1000.0,
         updated_at: 1000.0,
         current_session_id: None,
-        current_step_token_usage: TokenUsage::default(),
+        current_node_token_usage: TokenUsage::default(),
         request: None,
-        parallel_run: None,
+        fanout_runtime: None,
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         created_from: ExecutionOrigin::Agent,
@@ -1792,7 +1783,7 @@ fn workflow_exec(workflow: Workflow, step_index: usize) -> WorkflowExecution {
     }
 }
 
-fn structured_step_output(node_name: &str, value: serde_json::Value) -> RuntimeArtifact {
+fn structured_node_output(node_name: &str, value: serde_json::Value) -> RuntimeArtifact {
     RuntimeArtifact {
         node_name: node_name.to_string(),
         attempt: 1,
@@ -1841,14 +1832,14 @@ fn command_output_for_test(exit_code: i32, stdout: String, stderr: String) -> Co
 
 fn command_artifact_test_workflow(
     schemas: std::collections::BTreeMap<String, SchemaDef>,
-) -> Workflow {
-    Workflow {
+) -> WorkflowDefinitionYaml {
+    WorkflowDefinitionYaml {
         name: "command-artifact".to_string(),
         description: String::new(),
         builtin: false,
         schemas,
-        nodes: vec![make_test_step(
-            "run",
+        nodes: vec![make_test_node(
+            "execution",
             TestKind::Command,
             "printf test",
             vec![],
@@ -2005,32 +1996,32 @@ fn command_artifact_redacts_secrets_from_standard_and_artifact() {
 }
 
 #[test]
-fn decide_next_step_returns_next_node_name() {
+fn decide_next_node_returns_next_node_name() {
     let exec = make_exec(0); // plan → next is implement
     assert_eq!(
-        exec.decide_next_step(),
-        NextStepDecision::TransitionTo("implement".to_string())
+        exec.decide_next_node(),
+        NextNodeDecision::TransitionTo("implement".to_string())
     );
 }
 
 #[test]
-fn decide_next_step_returns_completed_at_last_step() {
+fn decide_next_node_returns_completed_at_last_node() {
     let exec = make_exec(3); // report (last)
-    assert_eq!(exec.decide_next_step(), NextStepDecision::Completed);
+    assert_eq!(exec.decide_next_node(), NextNodeDecision::Completed);
 }
 
 #[test]
-fn decide_next_step_middle_step() {
+fn decide_next_node_middle_node() {
     let exec = make_exec(1); // implement → next is review
     assert_eq!(
-        exec.decide_next_step(),
-        NextStepDecision::TransitionTo("review".to_string())
+        exec.decide_next_node(),
+        NextNodeDecision::TransitionTo("review".to_string())
     );
 }
 
 #[test]
-fn decide_next_step_routes_when_from_artifact() {
-    let workflow = Workflow {
+fn decide_next_node_routes_when_from_artifact() {
+    let workflow = WorkflowDefinitionYaml {
         name: "when-runtime".to_string(),
         description: String::new(),
         builtin: false,
@@ -2039,86 +2030,86 @@ fn decide_next_step_routes_when_from_artifact() {
             .collect(),
         nodes: vec![
             {
-                let mut step = make_test_step("judge", TestKind::Session, "judge", vec![], None);
-                step.artifact = Some("verdict".to_string());
-                step.rules = vec![Rule::When {
+                let mut node = make_test_node("judge", TestKind::Session, "judge", vec![], None);
+                node.artifact = Some("verdict".to_string());
+                node.rules = vec![Rule::When {
                     on: "passed".to_string(),
                     then: "done".to_string(),
                     next: "fix".to_string(),
                 }];
-                step
+                node
             },
-            make_test_step("done", TestKind::Session, "done", vec![], None),
-            make_test_step("fix", TestKind::Session, "fix", vec![], None),
+            make_test_node("done", TestKind::Session, "done", vec![], None),
+            make_test_node("fix", TestKind::Session, "fix", vec![], None),
         ],
     };
     let mut exec = workflow_exec(workflow, 0);
 
     exec.artifacts.insert(
         "judge".to_string(),
-        structured_step_output("judge", serde_json::json!({"passed": true})),
+        structured_node_output("judge", serde_json::json!({"passed": true})),
     );
     assert_eq!(
-        exec.decide_next_step(),
-        NextStepDecision::TransitionTo("done".to_string())
+        exec.decide_next_node(),
+        NextNodeDecision::TransitionTo("done".to_string())
     );
 
     exec.artifacts.insert(
         "judge".to_string(),
-        structured_step_output("judge", serde_json::json!({"passed": false})),
+        structured_node_output("judge", serde_json::json!({"passed": false})),
     );
     assert_eq!(
-        exec.decide_next_step(),
-        NextStepDecision::TransitionTo("fix".to_string())
+        exec.decide_next_node(),
+        NextNodeDecision::TransitionTo("fix".to_string())
     );
 }
 
 #[test]
-fn decide_next_step_routes_when_from_command_ok_field() {
-    let workflow = Workflow {
+fn decide_next_node_routes_when_from_command_ok_field() {
+    let workflow = WorkflowDefinitionYaml {
         name: "command-ok-routing".to_string(),
         description: String::new(),
         builtin: false,
         schemas: Default::default(),
         nodes: vec![
             {
-                let mut step =
-                    make_test_step("run_tests", TestKind::Command, "cargo test", vec![], None);
-                step.rules = vec![Rule::When {
+                let mut node =
+                    make_test_node("run_tests", TestKind::Command, "cargo test", vec![], None);
+                node.rules = vec![Rule::When {
                     on: "ok".to_string(),
                     then: "done".to_string(),
                     next: "fix".to_string(),
                 }];
-                step
+                node
             },
-            make_test_step("done", TestKind::Command, "printf done", vec![], None),
-            make_test_step("fix", TestKind::Command, "printf fix", vec![], None),
+            make_test_node("done", TestKind::Command, "printf done", vec![], None),
+            make_test_node("fix", TestKind::Command, "printf fix", vec![], None),
         ],
     };
     let mut exec = workflow_exec(workflow, 0);
 
     exec.artifacts.insert(
         "run_tests".to_string(),
-        structured_step_output("run_tests", serde_json::json!({"ok": true})),
+        structured_node_output("run_tests", serde_json::json!({"ok": true})),
     );
     assert_eq!(
-        exec.decide_next_step(),
-        NextStepDecision::TransitionTo("done".to_string())
+        exec.decide_next_node(),
+        NextNodeDecision::TransitionTo("done".to_string())
     );
 
     exec.artifacts.insert(
         "run_tests".to_string(),
-        structured_step_output("run_tests", serde_json::json!({"ok": false})),
+        structured_node_output("run_tests", serde_json::json!({"ok": false})),
     );
     assert_eq!(
-        exec.decide_next_step(),
-        NextStepDecision::TransitionTo("fix".to_string())
+        exec.decide_next_node(),
+        NextNodeDecision::TransitionTo("fix".to_string())
     );
 }
 
 #[test]
-fn decide_next_step_routes_switch_from_artifact() {
-    let workflow = Workflow {
+fn decide_next_node_routes_switch_from_artifact() {
+    let workflow = WorkflowDefinitionYaml {
         name: "switch-runtime".to_string(),
         description: String::new(),
         builtin: false,
@@ -2130,9 +2121,9 @@ fn decide_next_step_routes_switch_from_artifact() {
         .collect(),
         nodes: vec![
             {
-                let mut step = make_test_step("judge", TestKind::Session, "judge", vec![], None);
-                step.artifact = Some("verdict".to_string());
-                step.rules = vec![Rule::Switch {
+                let mut node = make_test_node("judge", TestKind::Session, "judge", vec![], None);
+                node.artifact = Some("verdict".to_string());
+                node.rules = vec![Rule::Switch {
                     on: "decision".to_string(),
                     cases: [
                         ("SHIP".to_string(), "done".to_string()),
@@ -2142,22 +2133,22 @@ fn decide_next_step_routes_switch_from_artifact() {
                     .collect(),
                     next: None,
                 }];
-                step
+                node
             },
-            make_test_step("done", TestKind::Session, "done", vec![], None),
-            make_test_step("fix", TestKind::Session, "fix", vec![], None),
+            make_test_node("done", TestKind::Session, "done", vec![], None),
+            make_test_node("fix", TestKind::Session, "fix", vec![], None),
         ],
     };
     let mut exec = workflow_exec(workflow, 0);
 
     exec.artifacts.insert(
         "judge".to_string(),
-        structured_step_output("judge", serde_json::json!({"decision": "FIX"})),
+        structured_node_output("judge", serde_json::json!({"decision": "FIX"})),
     );
 
     assert_eq!(
-        exec.decide_next_step(),
-        NextStepDecision::TransitionTo("fix".to_string())
+        exec.decide_next_node(),
+        NextNodeDecision::TransitionTo("fix".to_string())
     );
 }
 
@@ -2174,11 +2165,11 @@ fn apply_advance_routes_builtin_review_fix_switch_by_verdict() {
         .unwrap()
         .unwrap();
 
-        for (verdict, expected_step) in [("NEEDS_FIX", "implement_tasks"), ("LGTM", "report")] {
+        for (verdict, expected_node) in [("NEEDS_FIX", "implement_tasks"), ("LGTM", "report")] {
             let mut exec = workflow_exec(workflow.clone(), 0);
             exec.artifacts.insert(
                 "check_and_make_tasks".to_string(),
-                structured_step_output(
+                structured_node_output(
                     "check_and_make_tasks",
                     serde_json::json!({
                         "verdict": verdict,
@@ -2190,10 +2181,10 @@ fn apply_advance_routes_builtin_review_fix_switch_by_verdict() {
 
             let outcome = exec.apply_advance();
 
-            assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
+            assert!(matches!(outcome, NodeOutcome::TransitionAndStart(_)));
             assert_eq!(
-                exec.workflow.nodes[exec.current_node_index].name, expected_step,
-                "{workflow_name} verdict {verdict} must route to {expected_step}"
+                exec.workflow.nodes[exec.current_node_index].name, expected_node,
+                "{workflow_name} verdict {verdict} must route to {expected_node}"
             );
         }
     }
@@ -2213,11 +2204,11 @@ fn apply_advance_routes_builtin_implement_switch_by_verdict() {
             .position(|node| node.name == "fix")
             .expect("builtin implement workflow must have fix node");
 
-        for (verdict, expected_step) in [("fixed", "review_parallel"), ("completed", "report")] {
+        for (verdict, expected_node) in [("fixed", "review_fanout"), ("completed", "report")] {
             let mut exec = workflow_exec(workflow.clone(), fix_index);
             exec.artifacts.insert(
                 "fix".to_string(),
-                structured_step_output(
+                structured_node_output(
                     "fix",
                     serde_json::json!({
                         "verdict": verdict,
@@ -2228,14 +2219,14 @@ fn apply_advance_routes_builtin_implement_switch_by_verdict() {
 
             let outcome = exec.apply_advance();
 
-            match expected_step {
-                "review_parallel" => assert!(matches!(outcome, StepOutcome::StartParallel(_))),
-                "report" => assert!(matches!(outcome, StepOutcome::TransitionAndStart(_))),
+            match expected_node {
+                "review_fanout" => assert!(matches!(outcome, NodeOutcome::StartFanout(_))),
+                "report" => assert!(matches!(outcome, NodeOutcome::TransitionAndStart(_))),
                 _ => unreachable!("unexpected fixture target"),
             }
             assert_eq!(
-                exec.workflow.nodes[exec.current_node_index].name, expected_step,
-                "{workflow_name} verdict {verdict} must route to {expected_step}"
+                exec.workflow.nodes[exec.current_node_index].name, expected_node,
+                "{workflow_name} verdict {verdict} must route to {expected_node}"
             );
         }
     }
@@ -2243,7 +2234,7 @@ fn apply_advance_routes_builtin_implement_switch_by_verdict() {
 
 #[test]
 fn apply_advance_fails_on_switch_no_match_without_next() {
-    let workflow = Workflow {
+    let workflow = WorkflowDefinitionYaml {
         name: "switch-no-match".to_string(),
         description: String::new(),
         builtin: false,
@@ -2255,29 +2246,29 @@ fn apply_advance_fails_on_switch_no_match_without_next() {
         .collect(),
         nodes: vec![
             {
-                let mut step = make_test_step("judge", TestKind::Session, "judge", vec![], None);
-                step.artifact = Some("verdict".to_string());
-                step.rules = vec![Rule::Switch {
+                let mut node = make_test_node("judge", TestKind::Session, "judge", vec![], None);
+                node.artifact = Some("verdict".to_string());
+                node.rules = vec![Rule::Switch {
                     on: "decision".to_string(),
                     cases: [("SHIP".to_string(), "done".to_string())]
                         .into_iter()
                         .collect(),
                     next: None,
                 }];
-                step
+                node
             },
-            make_test_step("done", TestKind::Session, "done", vec![], None),
+            make_test_node("done", TestKind::Session, "done", vec![], None),
         ],
     };
     let mut exec = workflow_exec(workflow, 0);
     exec.artifacts.insert(
         "judge".to_string(),
-        structured_step_output("judge", serde_json::json!({"decision": "HOLD"})),
+        structured_node_output("judge", serde_json::json!({"decision": "HOLD"})),
     );
 
     let outcome = exec.apply_advance();
 
-    assert!(matches!(outcome, StepOutcome::Persist(_)));
+    assert!(matches!(outcome, NodeOutcome::Persist(_)));
     assert!(matches!(
         exec.state,
         RuntimeExecutionState::Failed {
@@ -2289,12 +2280,12 @@ fn apply_advance_fails_on_switch_no_match_without_next() {
 
 #[test]
 fn apply_advance_fails_on_unknown_route_target() {
-    let workflow = Workflow {
+    let workflow = WorkflowDefinitionYaml {
         name: "missing-target".to_string(),
         description: String::new(),
         builtin: false,
         schemas: Default::default(),
-        nodes: vec![make_test_step(
+        nodes: vec![make_test_node(
             "start",
             TestKind::Session,
             "start",
@@ -2351,7 +2342,7 @@ fn check_loop_guard_exceeded() {
 }
 
 #[test]
-fn check_loop_guard_step_not_found() {
+fn check_loop_guard_node_not_found() {
     let exec = make_exec(0);
     assert!(exec.check_loop_guard("nonexistent").is_err());
 }
@@ -2499,8 +2490,8 @@ fn decide_approve_action_not_waiting() {
 // ---- validate_start ----
 
 #[test]
-fn validate_start_empty_steps_returns_err() {
-    let workflow = Workflow {
+fn validate_start_empty_nodes_returns_err() {
+    let workflow = WorkflowDefinitionYaml {
         name: "empty".to_string(),
         description: String::new(),
         builtin: false,
@@ -2539,7 +2530,7 @@ fn validate_start_no_existing_returns_ok() {
 
 #[test]
 fn validate_start_accepts_command_node() {
-    let workflow = Workflow {
+    let workflow = WorkflowDefinitionYaml {
         name: "command-wf".to_string(),
         description: String::new(),
         builtin: false,
@@ -2582,7 +2573,7 @@ fn is_terminal_aborted() {
 }
 
 #[test]
-fn is_terminal_running_is_false() {
+fn is_terminal_executionning_is_false() {
     let exec = make_exec(0);
     assert!(!exec.is_terminal());
 }
@@ -2594,106 +2585,9 @@ fn is_terminal_waiting_approval_is_false() {
     assert!(!exec.is_terminal());
 }
 
-// ---- node_statuses computation ----
-
-#[test]
-fn node_statuses_all_pending_at_start() {
-    let exec = make_exec(0);
-    let ws = exec.to_workflow_state();
-    assert_eq!(ws.node_statuses["plan"], "running");
-    assert_eq!(ws.node_statuses["implement"], "pending");
-    assert_eq!(ws.node_statuses["review"], "pending");
-    assert_eq!(ws.node_statuses["report"], "pending");
-}
-
-#[test]
-fn node_statuses_completed_steps() {
-    let mut exec = make_exec(2);
-    exec.node_history = vec![
-        NodeHistoryEntry {
-            node_name: "plan".to_string(),
-            completed_at: 1000.5,
-            result: None,
-            session_id: None,
-            token_usage: None,
-            artifact: None,
-
-            attempt: 0,
-            fanout_children: None,
-            state: crate::domain::workflow::value_objects::default_node_history_status(),
-        },
-        NodeHistoryEntry {
-            node_name: "implement".to_string(),
-            completed_at: 1001.0,
-            result: None,
-            session_id: None,
-            token_usage: None,
-            artifact: None,
-
-            attempt: 0,
-            fanout_children: None,
-            state: crate::domain::workflow::value_objects::default_node_history_status(),
-        },
-    ];
-    let ws = exec.to_workflow_state();
-    assert_eq!(ws.node_statuses["plan"], "completed");
-    assert_eq!(ws.node_statuses["implement"], "completed");
-    assert_eq!(ws.node_statuses["review"], "running");
-    assert_eq!(ws.node_statuses["report"], "pending");
-}
-
-#[test]
-fn node_statuses_failed_step() {
-    let mut exec = make_exec(1);
-    exec.state = RuntimeExecutionState::Failed {
-        reason: "error".to_string(),
-        kind: crate::domain::workflow::NodeExecutionFailureKind::InfrastructureCrash,
-        retry_count: None,
-    };
-    exec.node_history = vec![NodeHistoryEntry {
-        node_name: "plan".to_string(),
-        completed_at: 1000.5,
-        result: None,
-        session_id: None,
-        token_usage: None,
-        artifact: None,
-
-        attempt: 0,
-        fanout_children: None,
-        state: crate::domain::workflow::value_objects::default_node_history_status(),
-    }];
-    let ws = exec.to_workflow_state();
-    assert_eq!(ws.node_statuses["plan"], "completed");
-    assert_eq!(ws.node_statuses["implement"], "failed");
-    assert_eq!(ws.node_statuses["review"], "pending");
-    assert_eq!(ws.node_statuses["report"], "pending");
-}
-
-#[test]
-fn node_statuses_waiting_approval() {
-    let mut exec = make_exec(1);
-    exec.state = RuntimeExecutionState::WaitingApproval;
-    exec.node_history = vec![NodeHistoryEntry {
-        node_name: "plan".to_string(),
-        completed_at: 1000.5,
-        result: None,
-        session_id: None,
-        token_usage: None,
-        artifact: None,
-
-        attempt: 0,
-        fanout_children: None,
-        state: crate::domain::workflow::value_objects::default_node_history_status(),
-    }];
-    let ws = exec.to_workflow_state();
-    assert_eq!(ws.node_statuses["plan"], "completed");
-    assert_eq!(ws.node_statuses["implement"], "waiting_approval");
-    assert_eq!(ws.node_statuses["review"], "pending");
-}
-
 // ---- inject_artifacts ----
 
-fn make_step_output(node_name: &str, output_text: &str, result: Option<&str>) -> RuntimeArtifact {
+fn make_node_output(node_name: &str, output_text: &str, result: Option<&str>) -> RuntimeArtifact {
     RuntimeArtifact {
         node_name: node_name.to_string(),
         attempt: 0,
@@ -2788,12 +2682,12 @@ fn environment_secret_values_include_only_named_secret_values_at_least_eight_byt
 }
 
 #[test]
-fn approved_fix_policy_artifact_is_masked_for_parallel_contract_path() {
+fn approved_fix_policy_artifact_is_masked_for_fanout_contract_path() {
     let masked = workflow_secret_masker::mask_sensitive_artifact(
         "approved-fix-policy",
         serde_json::json!({
             "policy": "Use password=secret123 and MY_TOKEN_VALUE_123456",
-            "review_step": "code_review_parallel",
+            "review_node": "code_review_fanout",
             "findings": []
         }),
         &["MY_TOKEN_VALUE_123456".to_string()],
@@ -2806,13 +2700,13 @@ fn approved_fix_policy_artifact_is_masked_for_parallel_contract_path() {
 
 #[test]
 fn approved_policy_injected_output_uses_sanitized_contract_payload_without_global_variables() {
-    let mut step = make_test_step("fix", TestKind::Session, "Fix", vec![], None);
+    let mut node = make_test_node("fix", TestKind::Session, "Fix", vec![], None);
     let facet_contents = instruction_contents("Fix");
-    step.inputs = vec!["implementation_fix_policy".to_string()];
+    node.inputs = vec!["implementation_fix_policy".to_string()];
 
     let sanitized = serde_json::json!({
         "policy": "Use password=[REDACTED] only in examples.",
-        "review_step": "code_review_parallel",
+        "review_node": "code_review_fanout",
         "findings": []
     });
     let mut outputs = HashMap::new();
@@ -2829,9 +2723,14 @@ fn approved_policy_injected_output_uses_sanitized_contract_payload_without_globa
             completed_at: 1000.0,
         },
     );
-    let (_sys, prompt) =
-        workflow_prompt::build_step_prompt(&step, Some(&facet_contents), "run-1", None, &outputs)
-            .unwrap();
+    let (_sys, prompt) = workflow_prompt::build_node_prompt(
+        &node,
+        Some(&facet_contents),
+        "execution-1",
+        None,
+        &outputs,
+    )
+    .unwrap();
     assert!(prompt.contains("[REDACTED]"));
     assert!(prompt.contains("## input: implementation_fix_policy"));
     assert!(!prompt.contains("<artifacts>"));
@@ -2842,7 +2741,7 @@ fn approved_policy_injected_output_uses_sanitized_contract_payload_without_globa
 fn approved_policy_masks_raw_secrets_before_state_variables_history_and_injection() {
     let mut structured = serde_json::json!({
         "policy": "Use password=secret123 with ghp_abcdefghijklmnopqrstuvwxyz1234567890 -----BEGIN PRIVATE KEY-----abc-----END PRIVATE KEY----- MY_TOKEN_VALUE_123456",
-        "review_step": "code_review_parallel",
+        "review_node": "code_review_fanout",
         "findings": []
     });
     workflow_secret_masker::mask_json_strings(
@@ -2860,7 +2759,7 @@ fn approved_policy_masks_raw_secrets_before_state_variables_history_and_injectio
         vec![Rule::Next("fix".to_string())],
     );
     exec.workflow.nodes[0].artifact = Some("approved-fix-policy".to_string());
-    let mut fix = make_test_step("fix", TestKind::Session, "Fix", vec![], None);
+    let mut fix = make_test_node("fix", TestKind::Session, "Fix", vec![], None);
     let facet_contents = instruction_contents("Fix");
     fix.inputs = vec!["review".to_string()];
     exec.workflow.nodes.push(fix);
@@ -2873,9 +2772,9 @@ fn approved_policy_masks_raw_secrets_before_state_variables_history_and_injectio
         },
     )
     .unwrap();
-    assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
+    assert!(matches!(outcome, NodeOutcome::TransitionAndStart(_)));
 
-    let state = exec.to_workflow_state();
+    let state = exec.to_commit_snapshot();
     let state_artifacts = state
         .artifacts
         .values()
@@ -2893,10 +2792,10 @@ fn approved_policy_masks_raw_secrets_before_state_variables_history_and_injectio
         .to_string()
         .contains("secret123"));
 
-    let (_sys, prompt) = workflow_prompt::build_step_prompt(
+    let (_sys, prompt) = workflow_prompt::build_node_prompt(
         &exec.workflow.nodes[exec.current_node_index],
         Some(&facet_contents),
-        "run-1",
+        "execution-1",
         None,
         &exec.artifacts,
     )
@@ -2918,7 +2817,7 @@ fn approved_policy_workflow_event_log_readback_redacts_sensitive_values() {
     let secret_env_value = "MY_TOKEN_VALUE_123456".to_string();
     let mut structured = serde_json::json!({
         "policy": "Use password=secret123 with ghp_abcdefghijklmnopqrstuvwxyz1234567890 -----BEGIN PRIVATE KEY-----abc-----END PRIVATE KEY----- MY_TOKEN_VALUE_123456",
-        "review_step": "spec_review_parallel",
+        "review_node": "spec_review_fanout",
         "findings": []
     });
     workflow_secret_masker::mask_json_strings(&mut structured, &[secret_env_value]);
@@ -2932,7 +2831,7 @@ fn approved_policy_workflow_event_log_readback_redacts_sensitive_values() {
         },
     )
     .unwrap();
-    assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
+    assert!(matches!(outcome, NodeOutcome::TransitionAndStart(_)));
 
     let entry = exec
         .node_history
@@ -3011,10 +2910,10 @@ fn approved_policy_workflow_event_log_readback_redacts_sensitive_values() {
 // ---- contract retry 判定テストは prose 抽出経路 ([08] で廃止) の付随物だったため削除した。
 //      contract 適合判定は CLI / Tauri 経由の SubmitOutput で発生し、retry は行わない。
 
-// ---- build_step_prompt ----
+// ---- build_node_prompt ----
 
 #[test]
-fn build_step_prompt_full_pipeline() {
+fn build_node_prompt_full_pipeline() {
     let tmp = tempfile::TempDir::new().unwrap();
     let base = tmp.path();
     let instructions = base.join("instructions");
@@ -3035,20 +2934,20 @@ fn build_step_prompt_full_pipeline() {
     .unwrap();
     std::fs::write(contracts.join("plan-doc.md"), "Output as markdown.").unwrap();
 
-    let mut step = make_test_step("build", TestKind::Session, "unused", vec![], None);
-    set_instruction_facet(&mut step, Some("impl".to_string()));
-    set_policy_facet(&mut step, Some("coding".to_string()));
-    step.artifact = Some("plan-doc".to_string());
-    step.inputs = vec!["plan".to_string()];
-    let facet_contents = resolve_node_facets_for_test(&step, base);
+    let mut node = make_test_node("build", TestKind::Session, "unused", vec![], None);
+    set_instruction_facet(&mut node, Some("impl".to_string()));
+    set_policy_facet(&mut node, Some("coding".to_string()));
+    node.artifact = Some("plan-doc".to_string());
+    node.inputs = vec!["plan".to_string()];
+    let facet_contents = resolve_node_facets_for_test(&node, base);
 
     let mut outputs = HashMap::new();
     outputs.insert(
         "plan".to_string(),
-        make_step_output("plan", "Plan output text", None),
+        make_node_output("plan", "Plan output text", None),
     );
-    let (sys, prompt) = workflow_prompt::build_step_prompt(
-        &step,
+    let (sys, prompt) = workflow_prompt::build_node_prompt(
+        &node,
         Some(&facet_contents),
         "00000000-0000-0000-0000-000000000000",
         Some("Fix bug"),
@@ -3059,8 +2958,8 @@ fn build_step_prompt_full_pipeline() {
     // policy + contract → system_prompt with request expansion
     let sys_str = sys.expect("system_prompt should be set");
     assert!(sys_str.contains("Coding policy for Fix bug."));
-    let instruction = workflow_prompt::render_step_workflow_instruction(
-        &step,
+    let instruction = workflow_prompt::render_node_workflow_instruction(
+        &node,
         Some(&facet_contents),
         Some("Fix bug"),
         &HashMap::new(),
@@ -3078,7 +2977,7 @@ fn build_step_prompt_full_pipeline() {
     assert!(prompt.contains("--type plan-doc"));
     assert!(prompt.contains("--json"));
     assert!(!prompt.contains("--file"));
-    assert!(!prompt.contains("+  --step"));
+    assert!(!prompt.contains("+  --node"));
     // explicit inputs include plan output as JSON
     assert!(prompt.contains("## input: plan"));
     assert!(prompt.contains("Plan output text"));
@@ -3089,11 +2988,11 @@ fn build_step_prompt_full_pipeline() {
 }
 
 #[test]
-fn build_step_prompt_no_facet_refs_returns_error() {
-    let mut step = make_test_step("empty", TestKind::Session, "unused", vec![], None);
-    set_session_facets(&mut step, FacetRefs::default());
-    let result = workflow_prompt::build_step_prompt(
-        &step,
+fn build_node_prompt_no_facet_refs_returns_error() {
+    let mut node = make_test_node("empty", TestKind::Session, "unused", vec![], None);
+    set_session_facets(&mut node, FacetRefs::default());
+    let result = workflow_prompt::build_node_prompt(
+        &node,
         None,
         "00000000-0000-0000-0000-000000000000",
         None,
@@ -3105,19 +3004,19 @@ fn build_step_prompt_no_facet_refs_returns_error() {
 }
 
 #[test]
-fn build_step_prompt_policy_only_system_prompt_set() {
+fn build_node_prompt_policy_only_system_prompt_set() {
     // Scenario: policyのみを指定したステップでも system_prompt が合成される
     let tmp = tempfile::TempDir::new().unwrap();
     let policies = tmp.path().join("policies");
     std::fs::create_dir_all(&policies).unwrap();
     std::fs::write(policies.join("review.md"), "Review carefully.").unwrap();
 
-    let mut step = make_test_step("review", TestKind::Session, "unused", vec![], None);
-    set_policy_facet(&mut step, Some("review".to_string()));
-    set_instruction_facet(&mut step, None);
-    let facet_contents = resolve_node_facets_for_test(&step, tmp.path());
-    let (sys, prompt) = workflow_prompt::build_step_prompt(
-        &step,
+    let mut node = make_test_node("review", TestKind::Session, "unused", vec![], None);
+    set_policy_facet(&mut node, Some("review".to_string()));
+    set_instruction_facet(&mut node, None);
+    let facet_contents = resolve_node_facets_for_test(&node, tmp.path());
+    let (sys, prompt) = workflow_prompt::build_node_prompt(
+        &node,
         Some(&facet_contents),
         "00000000-0000-0000-0000-000000000000",
         None,
@@ -3130,9 +3029,9 @@ fn build_step_prompt_policy_only_system_prompt_set() {
 }
 
 #[test]
-fn build_step_prompt_passes_composed_system_prompt_through() {
+fn build_node_prompt_passes_composed_system_prompt_through() {
     // Scenario: 合成された system_prompt は AgentSession 開始時にバックエンドへ受け渡される
-    // build_step_prompt の戻り値の Option<String> がそのまま AgentSession に渡される経路を検証する。
+    // build_node_prompt の戻り値の Option<String> がそのまま AgentSession に渡される経路を検証する。
     // ドロップ・空文字置換が起きないこと。
     let tmp = tempfile::TempDir::new().unwrap();
     let policies = tmp.path().join("policies");
@@ -3142,13 +3041,13 @@ fn build_step_prompt_passes_composed_system_prompt_through() {
     std::fs::write(policies.join("coding.md"), "POLICY_BODY").unwrap();
     std::fs::write(contracts.join("plan-doc.md"), "CONTRACT_BODY").unwrap();
 
-    let mut step = make_test_step("s", TestKind::Session, "unused", vec![], None);
-    set_policy_facet(&mut step, Some("coding".to_string()));
-    step.artifact = Some("plan-doc".to_string());
-    set_instruction_facet(&mut step, None);
-    let facet_contents = resolve_node_facets_for_test(&step, tmp.path());
-    let (sys, prompt) = workflow_prompt::build_step_prompt(
-        &step,
+    let mut node = make_test_node("s", TestKind::Session, "unused", vec![], None);
+    set_policy_facet(&mut node, Some("coding".to_string()));
+    node.artifact = Some("plan-doc".to_string());
+    set_instruction_facet(&mut node, None);
+    let facet_contents = resolve_node_facets_for_test(&node, tmp.path());
+    let (sys, prompt) = workflow_prompt::build_node_prompt(
+        &node,
         Some(&facet_contents),
         "00000000-0000-0000-0000-000000000000",
         None,
@@ -3164,11 +3063,11 @@ fn build_step_prompt_passes_composed_system_prompt_through() {
     assert!(prompt.contains("releash workflow output submit 00000000-0000-0000-0000-000000000000"));
     assert!(prompt.contains("--node s"));
     assert!(prompt.contains("--type plan-doc"));
-    assert!(!prompt.contains("+  --step"));
+    assert!(!prompt.contains("+  --node"));
 }
 
 #[test]
-fn build_step_prompt_expands_artifact_field_references_in_user_message() {
+fn build_node_prompt_expands_artifact_field_references_in_user_message() {
     let tmp = tempfile::TempDir::new().unwrap();
     let base = tmp.path();
     let instructions = base.join("instructions");
@@ -3186,12 +3085,12 @@ fn build_step_prompt_expands_artifact_field_references_in_user_message() {
     )
     .unwrap();
 
-    let mut step = make_test_step("impl", TestKind::Session, "unused", vec![], None);
-    set_instruction_facet(&mut step, Some("impl-vars".to_string()));
-    set_policy_facet(&mut step, Some("vars-policy".to_string()));
-    step.artifact = None;
-    step.inputs = vec!["authoring".to_string()];
-    let facet_contents = resolve_node_facets_for_test(&step, base);
+    let mut node = make_test_node("impl", TestKind::Session, "unused", vec![], None);
+    set_instruction_facet(&mut node, Some("impl-vars".to_string()));
+    set_policy_facet(&mut node, Some("vars-policy".to_string()));
+    node.artifact = None;
+    node.inputs = vec!["authoring".to_string()];
+    let facet_contents = resolve_node_facets_for_test(&node, base);
 
     let mut outputs = HashMap::new();
     outputs.insert(
@@ -3210,16 +3109,16 @@ fn build_step_prompt_expands_artifact_field_references_in_user_message() {
         },
     );
 
-    let (sys, prompt) = workflow_prompt::build_step_prompt(
-        &step,
+    let (sys, prompt) = workflow_prompt::build_node_prompt(
+        &node,
         Some(&facet_contents),
         "00000000-0000-0000-0000-000000000000",
         Some("implement the authored spec"),
         &outputs,
     )
     .unwrap();
-    let instruction = workflow_prompt::render_step_workflow_instruction(
-        &step,
+    let instruction = workflow_prompt::render_node_workflow_instruction(
+        &node,
         Some(&facet_contents),
         Some("implement the authored spec"),
         &outputs,
@@ -3340,15 +3239,15 @@ async fn dispatch_session_start_passes_composed_system_prompt_to_gate() {
     std::fs::write(policies.join("p.md"), "POLICY_BODY").unwrap();
     std::fs::write(contracts.join("c.md"), "CONTRACT_BODY").unwrap();
 
-    let mut step = make_test_step("s", TestKind::Session, "unused", vec![], None);
-    set_policy_facet(&mut step, Some("p".to_string()));
-    step.artifact = Some("c".to_string());
-    set_instruction_facet(&mut step, None);
-    let facet_contents = resolve_node_facets_for_test(&step, base);
+    let mut node = make_test_node("s", TestKind::Session, "unused", vec![], None);
+    set_policy_facet(&mut node, Some("p".to_string()));
+    node.artifact = Some("c".to_string());
+    set_instruction_facet(&mut node, None);
+    let facet_contents = resolve_node_facets_for_test(&node, base);
 
-    // build_step_prompt → dispatch_session_start の経路をそのまま再現する。
-    let (system_prompt, _prompt) = workflow_prompt::build_step_prompt(
-        &step,
+    // build_node_prompt → dispatch_session_start の経路をそのまま再現する。
+    let (system_prompt, _prompt) = workflow_prompt::build_node_prompt(
+        &node,
         Some(&facet_contents),
         "00000000-0000-0000-0000-000000000000",
         None,
@@ -3363,7 +3262,7 @@ async fn dispatch_session_start_passes_composed_system_prompt_to_gate() {
 
     dispatch_session_start(
         &gate,
-        "step-session-id",
+        "node-session-id",
         "/repo",
         None,
         system_prompt.clone(),
@@ -3379,7 +3278,7 @@ async fn dispatch_session_start_passes_composed_system_prompt_to_gate() {
         "gate.start_session must be invoked exactly once"
     );
     let r = &recorded[0];
-    assert_eq!(r.session_id, "step-session-id");
+    assert_eq!(r.session_id, "node-session-id");
     assert_eq!(r.worktree_path, "/repo");
     assert!(r.permission_mode.is_none());
     let sp = r
@@ -3394,9 +3293,9 @@ async fn dispatch_session_start_passes_composed_system_prompt_to_gate() {
 }
 
 #[tokio::test]
-async fn build_and_dispatch_step_session_forwards_composed_system_prompt_through_gate() {
+async fn build_and_dispatch_node_session_forwards_composed_system_prompt_through_gate() {
     // Scenario: 合成された system_prompt は AgentSession 開始時にバックエンドへ受け渡される
-    // start_step_session 側の経路（build_step_prompt → SessionStartGate）を切り出したヘルパーを
+    // start_node_session 側の経路（build_node_prompt → SessionStartGate）を切り出したヘルパーを
     // 記録用 gate で駆動し、合成された system_prompt が None / 空文字に置換されずに
     // gate に渡ることを直接 assert する。
     let tmp = tempfile::TempDir::new().unwrap();
@@ -3405,26 +3304,26 @@ async fn build_and_dispatch_step_session_forwards_composed_system_prompt_through
     let contracts = base.join("contracts");
     std::fs::create_dir_all(&policies).unwrap();
     std::fs::create_dir_all(&contracts).unwrap();
-    std::fs::write(policies.join("p.md"), "STEP_POLICY_BODY").unwrap();
-    std::fs::write(contracts.join("c.md"), "STEP_CONTRACT_BODY").unwrap();
+    std::fs::write(policies.join("p.md"), "NODE_POLICY_BODY").unwrap();
+    std::fs::write(contracts.join("c.md"), "NODE_CONTRACT_BODY").unwrap();
 
-    let mut step = make_test_step("s", TestKind::Session, "unused", vec![], None);
-    set_policy_facet(&mut step, Some("p".to_string()));
-    step.artifact = Some("c".to_string());
-    set_instruction_facet(&mut step, None);
-    let facet_contents = resolve_node_facets_for_test(&step, base);
+    let mut node = make_test_node("s", TestKind::Session, "unused", vec![], None);
+    set_policy_facet(&mut node, Some("p".to_string()));
+    node.artifact = Some("c".to_string());
+    set_instruction_facet(&mut node, None);
+    let facet_contents = resolve_node_facets_for_test(&node, base);
 
     let records = Arc::new(std::sync::Mutex::new(Vec::new()));
     let gate = RecordingSessionStartGate {
         records: records.clone(),
     };
 
-    let prompt = WorkflowRuntimeService::build_and_dispatch_step_session(
+    let prompt = WorkflowRuntimeService::build_and_dispatch_node_session(
         &gate,
-        &step,
+        &node,
         Some(&facet_contents),
         "00000000-0000-0000-0000-000000000000",
-        "step-session-id",
+        "node-session-id",
         "/repo",
         None,
         None,
@@ -3441,20 +3340,20 @@ async fn build_and_dispatch_step_session_forwards_composed_system_prompt_through
     assert_eq!(
         recorded.len(),
         1,
-        "gate.start_session must be invoked exactly once via build_and_dispatch_step_session"
+        "gate.start_session must be invoked exactly once via build_and_dispatch_node_session"
     );
     let r = &recorded[0];
-    assert_eq!(r.session_id, "step-session-id");
+    assert_eq!(r.session_id, "node-session-id");
     assert_eq!(r.worktree_path, "/repo");
     assert!(r.permission_mode.is_none());
     let sp = r.system_prompt.as_ref().expect(
-        "system_prompt must be passed through start_step_session path as Some(_), not dropped",
+        "system_prompt must be passed through start_node_session path as Some(_), not dropped",
     );
     assert!(
         !sp.is_empty(),
         "system_prompt must not be dropped or replaced with an empty string"
     );
-    assert!(sp.contains("STEP_POLICY_BODY"));
+    assert!(sp.contains("NODE_POLICY_BODY"));
 }
 
 #[tokio::test]
@@ -3466,11 +3365,11 @@ async fn dispatch_session_start_passes_none_when_no_facets() {
     std::fs::create_dir_all(&instructions).unwrap();
     std::fs::write(instructions.join("only-instr.md"), "Body").unwrap();
 
-    let mut step = make_test_step("s", TestKind::Session, "unused", vec![], None);
-    set_instruction_facet(&mut step, Some("only-instr".to_string()));
-    let facet_contents = resolve_node_facets_for_test(&step, tmp.path());
-    let (system_prompt, _prompt) = workflow_prompt::build_step_prompt(
-        &step,
+    let mut node = make_test_node("s", TestKind::Session, "unused", vec![], None);
+    set_instruction_facet(&mut node, Some("only-instr".to_string()));
+    let facet_contents = resolve_node_facets_for_test(&node, tmp.path());
+    let (system_prompt, _prompt) = workflow_prompt::build_node_prompt(
+        &node,
         Some(&facet_contents),
         "00000000-0000-0000-0000-000000000000",
         None,
@@ -3495,16 +3394,16 @@ async fn dispatch_session_start_passes_none_when_no_facets() {
     );
 }
 
-// ---- start_step_session_with_deps (副作用境界の注入による順序保証検証) ----
+// ---- start_node_session_with_deps (副作用境界の注入による順序保証検証) ----
 
-/// テスト用の `StepSessionDeps` 実装。副作用境界の各メソッドの呼び出し回数を
+/// テスト用の `NodeSessionDeps` 実装。副作用境界の各メソッドの呼び出し回数を
 /// 記録し、本番経路と同じ順序で副作用が発火することを assert できるようにする。
-/// プロンプト合成失敗時に `create_step_session` が呼ばれないこと等を検証する。
+/// プロンプト合成失敗時に `create_node_session` が呼ばれないこと等を検証する。
 #[derive(Default)]
-struct RecordingStepSessionDeps {
-    create_step_session_count: std::sync::atomic::AtomicUsize,
+struct RecordingNodeSessionDeps {
+    create_node_session_count: std::sync::atomic::AtomicUsize,
     dispatch_session_start_count: std::sync::atomic::AtomicUsize,
-    mark_step_tab_open_count: std::sync::atomic::AtomicUsize,
+    mark_node_tab_open_count: std::sync::atomic::AtomicUsize,
     append_node_session_started_count: std::sync::atomic::AtomicUsize,
     append_node_session_started_should_fail: std::sync::atomic::AtomicBool,
     broadcast_state_count: std::sync::atomic::AtomicUsize,
@@ -3514,9 +3413,9 @@ struct RecordingStepSessionDeps {
     started_workflow_instructions: std::sync::Mutex<Vec<Option<String>>>,
 }
 
-impl RecordingStepSessionDeps {
-    fn create_step_session_count(&self) -> usize {
-        self.create_step_session_count
+impl RecordingNodeSessionDeps {
+    fn create_node_session_count(&self) -> usize {
+        self.create_node_session_count
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
@@ -3525,8 +3424,8 @@ impl RecordingStepSessionDeps {
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    fn mark_step_tab_open_count(&self) -> usize {
-        self.mark_step_tab_open_count
+    fn mark_node_tab_open_count(&self) -> usize {
+        self.mark_node_tab_open_count
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
@@ -3567,31 +3466,31 @@ impl RecordingStepSessionDeps {
 }
 
 #[async_trait::async_trait]
-impl StepSessionDeps for RecordingStepSessionDeps {
-    async fn create_step_session(
+impl NodeSessionDeps for RecordingNodeSessionDeps {
+    async fn create_node_session(
         &self,
         _worktree_path: &str,
-        _step_model: Option<String>,
-        _step_permission: Option<String>,
+        _node_model: Option<String>,
+        _node_permission: Option<String>,
         _workflow_defaults: WorkflowDefaults,
         workflow_node_context: WorkflowNodeContext,
-        _kind_context: workflow_runtime_session::StepRuntimeKindContext,
-    ) -> Result<StepSessionInfo, WorkflowEngineError> {
-        self.create_step_session_count
+        _kind_context: workflow_runtime_session::NodeRuntimeKindContext,
+    ) -> Result<NodeSessionInfo, WorkflowEngineError> {
+        self.create_node_session_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.created_contexts
             .lock()
             .unwrap()
             .push(workflow_node_context);
-        Ok(StepSessionInfo {
-            id: "step-session-id".to_string(),
+        Ok(NodeSessionInfo {
+            id: "node-session-id".to_string(),
             permission_mode: "ask".to_string(),
         })
     }
 
     async fn dispatch_session_start(
         &self,
-        _step_session_id: &str,
+        _node_session_id: &str,
         _worktree_path: &str,
         _permission_mode: Option<String>,
         _system_prompt: Option<String>,
@@ -3606,19 +3505,19 @@ impl StepSessionDeps for RecordingStepSessionDeps {
         Ok(())
     }
 
-    async fn mark_step_tab_open(&self, _step_session_id: &str) {
-        self.mark_step_tab_open_count
+    async fn mark_node_tab_open(&self, _node_session_id: &str) {
+        self.mark_node_tab_open_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
-    async fn broadcast_state(&self, _worktree_path: &str, _snapshot: WorkflowState) {
+    async fn broadcast_state(&self, _worktree_path: &str, _snapshot: RuntimeCommitSnapshot) {
         self.broadcast_state_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
     async fn append_node_session_started(
         &self,
-        _snapshot: &WorkflowState,
+        _snapshot: &RuntimeCommitSnapshot,
     ) -> Result<(), WorkflowEngineError> {
         self.append_node_session_started_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -3627,7 +3526,7 @@ impl StepSessionDeps for RecordingStepSessionDeps {
             .load(std::sync::atomic::Ordering::SeqCst)
         {
             return Err(WorkflowEngineError::SessionStore(
-                "append step session started failed".to_string(),
+                "append node session started failed".to_string(),
             ));
         }
         Ok(())
@@ -3635,7 +3534,7 @@ impl StepSessionDeps for RecordingStepSessionDeps {
 
     async fn start_agent_turn_locked(
         &self,
-        step_session_id: &str,
+        node_session_id: &str,
         _worktree_path: &str,
         _permission_mode: &str,
         _prompt: &str,
@@ -3648,24 +3547,24 @@ impl StepSessionDeps for RecordingStepSessionDeps {
             .lock()
             .unwrap()
             .push(workflow_instruction);
-        let _ = step_session_id;
+        let _ = node_session_id;
         Ok(())
     }
 }
 
 /// `executions` に 1 ステップのワークフロー実行を登録する。
-/// 指定された step を current_node_index=0 として登録する。
-fn insert_single_step_execution(
+/// 指定された node を current_node_index=0 として登録する。
+fn insert_single_node_execution(
     execs: &mut HashMap<String, WorkflowExecution>,
-    step: NodeDefinition,
+    node: NodeDefinition,
 ) {
-    let node_name = step.name.clone();
-    let workflow = Workflow {
+    let node_name = node.name.clone();
+    let workflow = WorkflowDefinitionYaml {
         name: "regression-workflow".to_string(),
         description: "regression test".to_string(),
         builtin: false,
         schemas: Default::default(),
-        nodes: vec![step],
+        nodes: vec![node],
     };
     let exec = WorkflowExecution {
         id: "exec-id".to_string(),
@@ -3677,7 +3576,7 @@ fn insert_single_step_execution(
         started_at: 1000.0,
         updated_at: 1000.0,
         current_session_id: None,
-        current_step_token_usage: TokenUsage::default(),
+        current_node_token_usage: TokenUsage::default(),
         artifacts: HashMap::new(),
         node_executions: vec![node_execution_fixture(
             "exec-id",
@@ -3689,7 +3588,7 @@ fn insert_single_step_execution(
             None,
         )],
         request: None,
-        parallel_run: None,
+        fanout_runtime: None,
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         created_from: ExecutionOrigin::Agent,
@@ -3716,8 +3615,8 @@ async fn seed_single_node_facet_contents_for_test(
 }
 
 #[tokio::test]
-async fn start_step_session_with_deps_skips_side_effects_when_prompt_synthesis_fails() {
-    // 回帰防止: `start_step_session` 本番経路では、参照先ファセットが
+async fn start_node_session_with_deps_skips_side_effects_when_prompt_synthesis_fails() {
+    // 回帰防止: `start_node_session` 本番経路では、参照先ファセットが
     // 存在しないステップを起動した際にプロンプト合成段階で失敗し、
     // 後続の副作用（親セッション取得 / ChatSession 生成 / `session_workflow_refs`
     // 登録 / AgentSession 開始 / 永続化 / ブロードキャスト / ターン起動）は
@@ -3728,25 +3627,25 @@ async fn start_step_session_with_deps_skips_side_effects_when_prompt_synthesis_f
     // 参照先ファセットが存在しないステップを起動すると孤立した
     // ChatSession と参照マップ entry が残るバグがあった。
     //
-    // 本テストは `StepSessionDeps` 経由で副作用境界をテストダブルに差し替え、
-    // ファセット参照が解決不能な execution に対し `start_step_session_with_deps`
+    // 本テストは `NodeSessionDeps` 経由で副作用境界をテストダブルに差し替え、
+    // ファセット参照が解決不能な execution に対し `start_node_session_with_deps`
     // を実行することで:
     //   (a) `Err(InvalidWorkflow(_))` が返ること
-    //   (b) `create_step_session` の呼び出し回数が 0 であること
+    //   (b) `create_node_session` の呼び出し回数が 0 であること
     //   (c) `fetch_parent_session` 等 他の副作用境界メソッドも 0 回であること
     //   (d) `engine.session_workflow_refs` が空のままであること
     //   (e) `executions["/repo"].current_session_id` が `None` のままであること
-    // を assert する。`start_step_session` 内の順序を逆転（先に create_step_session
-    // → 後に build_step_prompt）させると (b) が 1 となりテストが失敗する。
+    // を assert する。`start_node_session` 内の順序を逆転（先に create_node_session
+    // → 後に build_node_prompt）させると (b) が 1 となりテストが失敗する。
     let engine = WorkflowRuntimeService::new_for_test();
 
-    // 参照先ファセットが解決不能な step を含む execution を登録する。
+    // 参照先ファセットが解決不能な node を含む execution を登録する。
     // facets_base_dir() 配下に "nonexistent_policy_<uuid>.md" が偶然存在することは
     // 実用上ありえないため、ファセット合成は必ず失敗する。
-    let mut step = make_test_step("missing-facet", TestKind::Session, "unused", vec![], None);
-    set_instruction_facet(&mut step, None);
+    let mut node = make_test_node("missing-facet", TestKind::Session, "unused", vec![], None);
+    set_instruction_facet(&mut node, None);
     set_policy_facet(
-        &mut step,
+        &mut node,
         Some(format!(
             "nonexistent_policy_{}",
             uuid::Uuid::new_v4().simple()
@@ -3755,17 +3654,17 @@ async fn start_step_session_with_deps_skips_side_effects_when_prompt_synthesis_f
 
     {
         let mut execs = engine.executions.lock().await;
-        insert_single_step_execution(&mut execs, step);
+        insert_single_node_execution(&mut execs, node);
     }
 
     // 事前条件: session_workflow_refs は空
     assert!(engine.session_workflow_refs.lock().await.is_empty());
 
-    let deps = RecordingStepSessionDeps::default();
-    let result = engine.start_step_session_with_deps(&deps, "/repo").await;
+    let deps = RecordingNodeSessionDeps::default();
+    let result = engine.start_node_session_with_deps(&deps, "/repo").await;
 
-    // (a) build_step_prompt 失敗で InvalidWorkflow エラーになる
-    let err = result.expect_err("missing facet must cause start_step_session_with_deps to fail");
+    // (a) build_node_prompt 失敗で InvalidWorkflow エラーになる
+    let err = result.expect_err("missing facet must cause start_node_session_with_deps to fail");
     assert!(
         matches!(err, WorkflowEngineError::InvalidWorkflow(_)),
         "missing facet must produce InvalidWorkflow error, got: {err:?}"
@@ -3773,9 +3672,9 @@ async fn start_step_session_with_deps_skips_side_effects_when_prompt_synthesis_f
 
     // (b)/(c) 副作用境界はいずれも呼ばれていない
     assert_eq!(
-        deps.create_step_session_count(),
+        deps.create_node_session_count(),
         0,
-        "create_step_session must NOT be invoked when prompt synthesis fails"
+        "create_node_session must NOT be invoked when prompt synthesis fails"
     );
     assert_eq!(
         deps.dispatch_session_start_count(),
@@ -3783,9 +3682,9 @@ async fn start_step_session_with_deps_skips_side_effects_when_prompt_synthesis_f
         "dispatch_session_start must NOT be invoked when prompt synthesis fails"
     );
     assert_eq!(
-        deps.mark_step_tab_open_count(),
+        deps.mark_node_tab_open_count(),
         0,
-        "mark_step_tab_open must NOT be invoked when prompt synthesis fails"
+        "mark_node_tab_open must NOT be invoked when prompt synthesis fails"
     );
     assert_eq!(
         deps.broadcast_state_count(),
@@ -3819,9 +3718,9 @@ async fn start_step_session_with_deps_skips_side_effects_when_prompt_synthesis_f
 }
 
 #[tokio::test]
-async fn start_step_session_with_deps_invokes_side_effects_in_order_on_success() {
+async fn start_node_session_with_deps_invokes_side_effects_in_order_on_success() {
     // 副作用境界が正しい順序で呼ばれる成功経路を併せて検証する。
-    // プロンプト合成が成功した場合は、create_step_session → dispatch_session_start
+    // プロンプト合成が成功した場合は、create_node_session → dispatch_session_start
     // → NodeSessionStarted append → broadcast_state → start_agent_turn の全境界が各 1 回ずつ呼ばれ、
     // engine.session_workflow_refs と executions["/repo"].current_session_id が
     // 期待通り更新されることを assert する。
@@ -3831,25 +3730,25 @@ async fn start_step_session_with_deps_invokes_side_effects_in_order_on_success()
     let instructions = tmp.path().join("instructions");
     std::fs::create_dir_all(&instructions).unwrap();
     std::fs::write(instructions.join("ok.md"), "hello").unwrap();
-    let step = make_test_step("ok-step", TestKind::Session, "ok", vec![], None);
-    let facet_contents = resolve_node_facets_for_test(&step, tmp.path());
+    let node = make_test_node("ok-node", TestKind::Session, "ok", vec![], None);
+    let facet_contents = resolve_node_facets_for_test(&node, tmp.path());
 
     {
         let mut execs = engine.executions.lock().await;
-        insert_single_step_execution(&mut execs, step);
+        insert_single_node_execution(&mut execs, node);
     }
-    seed_single_node_facet_contents_for_test(&engine, "ok-step", facet_contents).await;
+    seed_single_node_facet_contents_for_test(&engine, "ok-node", facet_contents).await;
 
-    let deps = RecordingStepSessionDeps::default();
+    let deps = RecordingNodeSessionDeps::default();
     engine
-        .start_step_session_with_deps(&deps, "/repo")
+        .start_node_session_with_deps(&deps, "/repo")
         .await
-        .expect("start_step_session_with_deps must succeed for instruction facet step");
+        .expect("start_node_session_with_deps must succeed for instruction facet node");
 
     // 各副作用境界が 1 回ずつ呼ばれている
-    assert_eq!(deps.create_step_session_count(), 1);
+    assert_eq!(deps.create_node_session_count(), 1);
     assert_eq!(deps.dispatch_session_start_count(), 1);
-    assert_eq!(deps.mark_step_tab_open_count(), 1);
+    assert_eq!(deps.mark_node_tab_open_count(), 1);
     assert_eq!(deps.append_node_session_started_count(), 1);
     assert_eq!(deps.broadcast_state_count(), 1);
     assert_eq!(deps.start_agent_turn_count(), 1);
@@ -3859,7 +3758,7 @@ async fn start_step_session_with_deps_invokes_side_effects_in_order_on_success()
             execution_id: "exec-id".to_string(),
             node_execution_id: "node-execution-current".to_string(),
             workflow_name: "regression-workflow".to_string(),
-            node_name: "ok-step".to_string(),
+            node_name: "ok-node".to_string(),
             attempt: 1,
             parent_node_name: None,
             parent_attempt: None,
@@ -3870,11 +3769,11 @@ async fn start_step_session_with_deps_invokes_side_effects_in_order_on_success()
         }]
     );
 
-    // session_workflow_refs に SequentialStep として登録されている
+    // session_workflow_refs に SequentialNode として登録されている
     let refs = engine.session_workflow_refs.lock().await;
     let entry = refs
-        .get("step-session-id")
-        .expect("session_workflow_refs must contain step-session-id");
+        .get("node-session-id")
+        .expect("session_workflow_refs must contain node-session-id");
     assert_eq!(entry.execution_id, "exec-id");
     drop(refs);
 
@@ -3883,13 +3782,13 @@ async fn start_step_session_with_deps_invokes_side_effects_in_order_on_success()
     let (_, exec) = find_by_worktree(&execs, "/repo").expect("execution must remain registered");
     assert_eq!(
         exec.current_session_id.as_deref(),
-        Some("step-session-id"),
-        "current_session_id must be updated to the created step session id"
+        Some("node-session-id"),
+        "current_session_id must be updated to the created node session id"
     );
 }
 
 #[tokio::test]
-async fn start_step_session_with_deps_keeps_workflow_instruction_outside_step_context() {
+async fn start_node_session_with_deps_keeps_workflow_instruction_outside_node_context() {
     let engine = WorkflowRuntimeService::new_for_test();
     let tmp = tempfile::TempDir::new().unwrap();
     let instructions = tmp.path().join("instructions");
@@ -3900,31 +3799,31 @@ async fn start_step_session_with_deps_keeps_workflow_instruction_outside_step_co
     )
     .unwrap();
 
-    let mut step = make_test_step(
-        "instruction-step",
+    let mut node = make_test_node(
+        "instruction-node",
         TestKind::Session,
         "unused",
         vec![],
         None,
     );
-    set_instruction_facet(&mut step, Some("impl".to_string()));
-    let facet_contents = resolve_node_facets_for_test(&step, tmp.path());
+    set_instruction_facet(&mut node, Some("impl".to_string()));
+    let facet_contents = resolve_node_facets_for_test(&node, tmp.path());
 
     {
         let mut execs = engine.executions.lock().await;
-        insert_single_step_execution(&mut execs, step);
+        insert_single_node_execution(&mut execs, node);
     }
-    seed_single_node_facet_contents_for_test(&engine, "instruction-step", facet_contents).await;
+    seed_single_node_facet_contents_for_test(&engine, "instruction-node", facet_contents).await;
 
-    let deps = RecordingStepSessionDeps::default();
+    let deps = RecordingNodeSessionDeps::default();
     engine
-        .start_step_session_with_deps(&deps, "/repo")
+        .start_node_session_with_deps(&deps, "/repo")
         .await
-        .expect("start_step_session_with_deps must succeed");
+        .expect("start_node_session_with_deps must succeed");
 
     let contexts = deps.created_contexts();
     assert_eq!(contexts.len(), 1);
-    assert_eq!(contexts[0].node_name, "instruction-step");
+    assert_eq!(contexts[0].node_name, "instruction-node");
     let dispatched = deps.dispatched_workflow_instructions();
     let started = deps.started_workflow_instructions();
     assert_eq!(dispatched.len(), 1);
@@ -3943,36 +3842,36 @@ async fn start_step_session_with_deps_keeps_workflow_instruction_outside_step_co
 }
 
 #[tokio::test]
-async fn start_step_session_with_deps_propagates_node_session_append_failure() {
+async fn start_node_session_with_deps_propagates_node_session_append_failure() {
     let engine = WorkflowRuntimeService::new_for_test();
 
     let tmp = tempfile::TempDir::new().unwrap();
     let instructions = tmp.path().join("instructions");
     std::fs::create_dir_all(&instructions).unwrap();
     std::fs::write(instructions.join("ok.md"), "hello").unwrap();
-    let step = make_test_step("ok-step", TestKind::Session, "ok", vec![], None);
-    let facet_contents = resolve_node_facets_for_test(&step, tmp.path());
+    let node = make_test_node("ok-node", TestKind::Session, "ok", vec![], None);
+    let facet_contents = resolve_node_facets_for_test(&node, tmp.path());
 
     {
         let mut execs = engine.executions.lock().await;
-        insert_single_step_execution(&mut execs, step);
+        insert_single_node_execution(&mut execs, node);
     }
-    seed_single_node_facet_contents_for_test(&engine, "ok-step", facet_contents).await;
+    seed_single_node_facet_contents_for_test(&engine, "ok-node", facet_contents).await;
 
-    let deps = RecordingStepSessionDeps::default();
+    let deps = RecordingNodeSessionDeps::default();
     deps.fail_append_node_session_started();
     let err = engine
-        .start_step_session_with_deps(&deps, "/repo")
+        .start_node_session_with_deps(&deps, "/repo")
         .await
         .expect_err("append failure must propagate to the start flow");
 
     assert!(
-        matches!(&err, WorkflowEngineError::SessionStore(message) if message.contains("append step session started failed")),
+        matches!(&err, WorkflowEngineError::SessionStore(message) if message.contains("append node session started failed")),
         "append failure must surface as SessionStore error, got: {err:?}"
     );
-    assert_eq!(deps.create_step_session_count(), 1);
+    assert_eq!(deps.create_node_session_count(), 1);
     assert_eq!(deps.dispatch_session_start_count(), 1);
-    assert_eq!(deps.mark_step_tab_open_count(), 1);
+    assert_eq!(deps.mark_node_tab_open_count(), 1);
     assert_eq!(deps.append_node_session_started_count(), 1);
     assert_eq!(
         deps.broadcast_state_count(),
@@ -4015,10 +3914,10 @@ fn build_fanout_child_prompt_splits_facets_into_system_and_user() {
     std::fs::create_dir_all(&knowledges).unwrap();
     std::fs::create_dir_all(&instructions).unwrap();
     std::fs::create_dir_all(&contracts).unwrap();
-    std::fs::write(policies.join("pol.md"), "PARALLEL_POLICY_BODY").unwrap();
-    std::fs::write(knowledges.join("know.md"), "PARALLEL_KNOWLEDGE_BODY").unwrap();
-    std::fs::write(instructions.join("inst.md"), "PARALLEL_INSTRUCTION_BODY").unwrap();
-    std::fs::write(contracts.join("oc.md"), "PARALLEL_CONTRACT_BODY").unwrap();
+    std::fs::write(policies.join("pol.md"), "FANOUT_POLICY_BODY").unwrap();
+    std::fs::write(knowledges.join("know.md"), "FANOUT_KNOWLEDGE_BODY").unwrap();
+    std::fs::write(instructions.join("inst.md"), "FANOUT_INSTRUCTION_BODY").unwrap();
+    std::fs::write(contracts.join("oc.md"), "FANOUT_CONTRACT_BODY").unwrap();
 
     let mut child = make_fanout_child("child");
     set_session_facets(
@@ -4042,15 +3941,15 @@ fn build_fanout_child_prompt_splits_facets_into_system_and_user() {
     )
     .unwrap();
 
-    let sp = system_prompt.expect("system_prompt must be set for parallel child with policy/oc");
+    let sp = system_prompt.expect("system_prompt must be set for fanout child with policy/oc");
     // policy の本文が system_prompt に集約される
-    assert!(sp.contains("PARALLEL_POLICY_BODY"));
-    assert!(!sp.contains("PARALLEL_KNOWLEDGE_BODY"));
-    assert!(!sp.contains("PARALLEL_INSTRUCTION_BODY"));
+    assert!(sp.contains("FANOUT_POLICY_BODY"));
+    assert!(!sp.contains("FANOUT_KNOWLEDGE_BODY"));
+    assert!(!sp.contains("FANOUT_INSTRUCTION_BODY"));
 
     // knowledge / instruction と Artifact 由来の完了時アクションは user_message に集約される。
-    assert!(user_message.contains("PARALLEL_KNOWLEDGE_BODY"));
-    assert!(user_message.contains("PARALLEL_INSTRUCTION_BODY"));
+    assert!(user_message.contains("FANOUT_KNOWLEDGE_BODY"));
+    assert!(user_message.contains("FANOUT_INSTRUCTION_BODY"));
     let instruction = workflow_prompt::render_fanout_child_workflow_instruction(
         &child,
         Some(&facet_contents),
@@ -4058,17 +3957,17 @@ fn build_fanout_child_prompt_splits_facets_into_system_and_user() {
         &HashMap::new(),
         None,
     )
-    .expect("parallel workflow instruction");
-    assert!(instruction.contains("PARALLEL_INSTRUCTION_BODY"));
+    .expect("fanout workflow instruction");
+    assert!(instruction.contains("FANOUT_INSTRUCTION_BODY"));
     assert!(user_message.contains("完了時の必須アクション"));
     assert!(user_message
         .contains("releash workflow output submit 11111111-1111-1111-1111-111111111111"));
     assert!(user_message.contains("--node child"));
     assert!(user_message.contains("--type oc"));
-    assert!(!user_message.contains("+  --step"));
+    assert!(!user_message.contains("+  --node"));
     // policy 本文と schema 名は user_message には余計に混ざらない。
-    assert!(!user_message.contains("PARALLEL_POLICY_BODY"));
-    assert!(!user_message.contains("PARALLEL_CONTRACT_BODY"));
+    assert!(!user_message.contains("FANOUT_POLICY_BODY"));
+    assert!(!user_message.contains("FANOUT_CONTRACT_BODY"));
 }
 
 #[test]
@@ -4103,7 +4002,7 @@ fn build_fanout_child_prompt_no_policy_or_contract_returns_none_system_prompt() 
         &HashMap::new(),
         None,
     )
-    .expect("parallel workflow instruction");
+    .expect("fanout workflow instruction");
     assert_eq!(instruction, "INSTR");
 }
 
@@ -4112,7 +4011,7 @@ fn build_fanout_child_prompt_no_policy_or_contract_returns_none_system_prompt() 
 fn make_approval_exec(state: RuntimeExecutionState, rules: Vec<Rule>) -> WorkflowExecution {
     WorkflowExecution {
         id: "exec-1".to_string(),
-        workflow: Workflow {
+        workflow: WorkflowDefinitionYaml {
             name: "test".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -4130,11 +4029,11 @@ fn make_approval_exec(state: RuntimeExecutionState, rules: Vec<Rule>) -> Workflo
         started_at: 1000.0,
         updated_at: 1000.0,
         current_session_id: None,
-        current_step_token_usage: TokenUsage::default(),
+        current_node_token_usage: TokenUsage::default(),
         artifacts: HashMap::new(),
         node_executions: Vec::new(),
         request: None,
-        parallel_run: None,
+        fanout_runtime: None,
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         created_from: ExecutionOrigin::Agent,
@@ -4188,7 +4087,7 @@ fn validate_approval_target_mismatch_returns_unauthorized_target() {
     let result = workflow_approval_runtime::validate_approval_target_snapshot(
         &exec,
         Some("exec-1"),
-        Some("other-step"),
+        Some("other-node"),
     );
     assert!(matches!(
         result.unwrap_err(),
@@ -4289,7 +4188,7 @@ fn validate_approval_turn_phase_rejects_unfinished_turns() {
 async fn validate_approval_chat_instruction_limits_current_approval_session() {
     let engine = WorkflowRuntimeService::new_for_test();
     let mut exec = make_approval_exec(RuntimeExecutionState::WaitingApproval, vec![]);
-    exec.current_session_id = Some("step-session".to_string());
+    exec.current_session_id = Some("node-session".to_string());
     let execution_id = exec.id.clone();
     {
         let mut execs = engine.executions.lock().await;
@@ -4298,7 +4197,7 @@ async fn validate_approval_chat_instruction_limits_current_approval_session() {
     {
         let mut refs = engine.session_workflow_refs.lock().await;
         refs.insert(
-            "step-session".to_string(),
+            "node-session".to_string(),
             SessionWorkflowRef {
                 execution_id: execution_id.clone(),
             },
@@ -4307,7 +4206,7 @@ async fn validate_approval_chat_instruction_limits_current_approval_session() {
 
     let result = engine
         .validate_approval_chat_instruction(
-            "step-session",
+            "node-session",
             &"x".repeat(MAX_APPROVAL_COMMENT_CHARS + 1),
         )
         .await;
@@ -4326,7 +4225,7 @@ async fn validate_approval_chat_instruction_limits_current_approval_session() {
 async fn validate_approval_chat_instruction_rejects_empty_or_whitespace_only_content() {
     let engine = WorkflowRuntimeService::new_for_test();
     let mut exec = make_approval_exec(RuntimeExecutionState::WaitingApproval, vec![]);
-    exec.current_session_id = Some("step-session".to_string());
+    exec.current_session_id = Some("node-session".to_string());
     let execution_id = exec.id.clone();
     {
         let mut execs = engine.executions.lock().await;
@@ -4335,7 +4234,7 @@ async fn validate_approval_chat_instruction_rejects_empty_or_whitespace_only_con
     {
         let mut refs = engine.session_workflow_refs.lock().await;
         refs.insert(
-            "step-session".to_string(),
+            "node-session".to_string(),
             SessionWorkflowRef {
                 execution_id: execution_id.clone(),
             },
@@ -4344,7 +4243,7 @@ async fn validate_approval_chat_instruction_rejects_empty_or_whitespace_only_con
 
     for content in ["", "   ", "\n\t \r\n"] {
         let err = engine
-            .validate_approval_chat_instruction("step-session", content)
+            .validate_approval_chat_instruction("node-session", content)
             .await
             .unwrap_err();
         assert!(
@@ -4358,7 +4257,7 @@ async fn validate_approval_chat_instruction_rejects_empty_or_whitespace_only_con
 async fn validate_approval_chat_instruction_rejects_current_gated_session_before_waiting() {
     let engine = WorkflowRuntimeService::new_for_test();
     let mut exec = make_approval_exec(RuntimeExecutionState::Running, vec![]);
-    exec.current_session_id = Some("step-session".to_string());
+    exec.current_session_id = Some("node-session".to_string());
     let execution_id = exec.id.clone();
     {
         let mut execs = engine.executions.lock().await;
@@ -4367,7 +4266,7 @@ async fn validate_approval_chat_instruction_rejects_current_gated_session_before
     {
         let mut refs = engine.session_workflow_refs.lock().await;
         refs.insert(
-            "step-session".to_string(),
+            "node-session".to_string(),
             SessionWorkflowRef {
                 execution_id: execution_id.clone(),
             },
@@ -4375,7 +4274,7 @@ async fn validate_approval_chat_instruction_rejects_current_gated_session_before
     }
 
     let result = engine
-        .validate_approval_chat_instruction("step-session", "Please adjust the policy")
+        .validate_approval_chat_instruction("node-session", "Please adjust the policy")
         .await;
     assert!(matches!(
         result.unwrap_err(),
@@ -4398,7 +4297,7 @@ async fn validate_approval_chat_instruction_rejects_stale_approved_policy_sessio
         token_usage: None,
         artifact: Some(serde_json::json!({
             "policy": "Already approved.",
-            "review_step": "code_review_parallel",
+            "review_node": "code_review_fanout",
             "findings": []
         })),
         attempt: 1,
@@ -4414,7 +4313,7 @@ async fn validate_approval_chat_instruction_rejects_stale_approved_policy_sessio
             result: Some("approved".to_string()),
             artifact: Some(serde_json::json!({
                 "policy": "Already approved.",
-                "review_step": "code_review_parallel",
+                "review_node": "code_review_fanout",
                 "findings": []
             })),
             contract: Some("approved-fix-policy".to_string()),
@@ -4517,22 +4416,22 @@ fn latest_assistant_output_after_approval_chat_adjustment_is_selected() {
 fn apply_approval_application_records_approved_policy_and_advances_once() {
     let mut exec = WorkflowExecution {
         id: "exec-1".to_string(),
-        workflow: Workflow {
+        workflow: WorkflowDefinitionYaml {
             name: "auto-approve".to_string(),
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
             nodes: vec![
                 {
-                    let mut step = make_approval_gated_session(
+                    let mut node = make_approval_gated_session(
                         "fix_policy",
                         "Review fix policy",
                         vec![Rule::Next("fix".to_string())],
                     );
-                    step.artifact = Some("approved-fix-policy".to_string());
-                    step
+                    node.artifact = Some("approved-fix-policy".to_string());
+                    node
                 },
-                make_test_step("fix", TestKind::Session, "Fix", vec![], None),
+                make_test_node("fix", TestKind::Session, "Fix", vec![], None),
             ],
         },
         state: RuntimeExecutionState::WaitingApproval,
@@ -4546,11 +4445,11 @@ fn apply_approval_application_records_approved_policy_and_advances_once() {
         started_at: 1000.0,
         updated_at: 1000.0,
         current_session_id: Some("policy-session".to_string()),
-        current_step_token_usage: TokenUsage::default(),
+        current_node_token_usage: TokenUsage::default(),
         artifacts: HashMap::new(),
         node_executions: Vec::new(),
         request: None,
-        parallel_run: None,
+        fanout_runtime: None,
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         created_from: ExecutionOrigin::Agent,
@@ -4562,7 +4461,7 @@ fn apply_approval_application_records_approved_policy_and_advances_once() {
     };
     let artifact = serde_json::json!({
         "policy": "Fix only the reported issues.",
-        "review_step": "code_review_parallel",
+        "review_node": "code_review_fanout",
         "findings": []
     });
     let first = WorkflowRuntimeService::apply_approval_application(
@@ -4574,7 +4473,7 @@ fn apply_approval_application_records_approved_policy_and_advances_once() {
         },
     )
     .unwrap();
-    assert!(matches!(first, StepOutcome::TransitionAndStart(_)));
+    assert!(matches!(first, NodeOutcome::TransitionAndStart(_)));
     assert_eq!(exec.current_node_index, 1);
     assert_eq!(exec.node_history.len(), 1);
     assert_eq!(*exec.node_execution_counts.get("fix").unwrap(), 1);
@@ -4585,7 +4484,7 @@ fn apply_approval_application_records_approved_policy_and_advances_once() {
             effective_result: "approved".to_string(),
             artifact: Some(serde_json::json!({
                 "policy": "Duplicate",
-                "review_step": "code_review_parallel",
+                "review_node": "code_review_fanout",
                 "findings": []
             })),
             contract: Some("approved-fix-policy".to_string()),
@@ -4603,24 +4502,24 @@ fn apply_approval_application_records_approved_policy_and_advances_once() {
 fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
     let mut exec = WorkflowExecution {
         id: "exec-auto-approve".to_string(),
-        workflow: Workflow {
+        workflow: WorkflowDefinitionYaml {
             name: "auto-approve-path".to_string(),
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
             nodes: vec![
                 {
-                    let mut step = make_approval_gated_session(
+                    let mut node = make_approval_gated_session(
                         "implementation_fix_policy",
                         "Review fix policy",
                         vec![Rule::Next("fix".to_string())],
                     );
-                    step.artifact = Some("approved-fix-policy".to_string());
-                    step.inputs = vec!["code_review_parallel".to_string()];
-                    step
+                    node.artifact = Some("approved-fix-policy".to_string());
+                    node.inputs = vec!["code_review_fanout".to_string()];
+                    node
                 },
-                make_test_step("fix", TestKind::Session, "Fix", vec![], None),
-                make_fanout_step("code_review_parallel", vec![]),
+                make_test_node("fix", TestKind::Session, "Fix", vec![], None),
+                make_fanout_node("code_review_fanout", vec![]),
             ],
         },
         state: RuntimeExecutionState::WaitingApproval,
@@ -4630,11 +4529,11 @@ fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
         started_at: 1000.0,
         updated_at: 1000.0,
         current_session_id: Some("policy-session".to_string()),
-        current_step_token_usage: TokenUsage::default(),
+        current_node_token_usage: TokenUsage::default(),
         artifacts: HashMap::new(),
         node_executions: Vec::new(),
         request: None,
-        parallel_run: None,
+        fanout_runtime: None,
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         created_from: ExecutionOrigin::Agent,
@@ -4644,7 +4543,7 @@ fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
             permission_mode: "edit".to_string(),
         },
     };
-    let snapshot = exec.to_workflow_state();
+    let snapshot = exec.to_commit_snapshot();
     assert_eq!(
         workflow_approval_runtime::auto_approve_target_for_persisted_snapshot(&snapshot, true),
         Some((
@@ -4657,7 +4556,7 @@ fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
     // を直接組み立てて apply_approval_application の遷移挙動を検証する。
     let artifact = serde_json::json!({
         "policy": "Fix only reviewed findings.",
-        "review_step": "code_review_parallel",
+        "review_node": "code_review_fanout",
         "findings": []
     });
     let outcome = WorkflowRuntimeService::apply_approval_application(
@@ -4670,7 +4569,7 @@ fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
     )
     .unwrap();
 
-    assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
+    assert!(matches!(outcome, NodeOutcome::TransitionAndStart(_)));
     assert_eq!(exec.current_node_index, 1);
     assert_eq!(exec.node_history.len(), 1);
     assert_eq!(exec.artifacts.len(), 1);
@@ -4689,7 +4588,7 @@ fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
             effective_result: "approved".to_string(),
             artifact: Some(serde_json::json!({
                 "policy": "Duplicate",
-                "review_step": "code_review_parallel",
+                "review_node": "code_review_fanout",
                 "findings": []
             })),
             contract: Some("approved-fix-policy".to_string()),
@@ -4709,27 +4608,27 @@ async fn execute_outcome_auto_approve_persist_adopts_policy_and_starts_fix_once(
     let worktree_path = "/repo";
     let policy_session_id = uuid::Uuid::new_v4().to_string();
 
-    let fix_step = make_test_step("fix", TestKind::Session, "Fix", vec![], None);
+    let fix_node = make_test_node("fix", TestKind::Session, "Fix", vec![], None);
     let exec = WorkflowExecution {
         id: "exec-auto-approve".to_string(),
-        workflow: Workflow {
+        workflow: WorkflowDefinitionYaml {
             name: "auto-approve-execute-outcome".to_string(),
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
             nodes: vec![
-                make_fanout_step("code_review_parallel", vec![]),
+                make_fanout_node("code_review_fanout", vec![]),
                 {
-                    let mut step = make_approval_gated_session(
+                    let mut node = make_approval_gated_session(
                         "implementation_fix_policy",
                         "Review fix policy",
                         vec![Rule::Next("fix".to_string())],
                     );
-                    step.artifact = Some("approved-fix-policy".to_string());
-                    step.inputs = vec!["code_review_parallel".to_string()];
-                    step
+                    node.artifact = Some("approved-fix-policy".to_string());
+                    node.inputs = vec!["code_review_fanout".to_string()];
+                    node
                 },
-                fix_step,
+                fix_node,
             ],
         },
         state: RuntimeExecutionState::WaitingApproval,
@@ -4739,11 +4638,11 @@ async fn execute_outcome_auto_approve_persist_adopts_policy_and_starts_fix_once(
         started_at: 1000.0,
         updated_at: 1000.0,
         current_session_id: Some(policy_session_id.clone()),
-        current_step_token_usage: TokenUsage::default(),
+        current_node_token_usage: TokenUsage::default(),
         artifacts: HashMap::new(),
         node_executions: Vec::new(),
         request: None,
-        parallel_run: None,
+        fanout_runtime: None,
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         created_from: ExecutionOrigin::Agent,
@@ -4753,7 +4652,7 @@ async fn execute_outcome_auto_approve_persist_adopts_policy_and_starts_fix_once(
             permission_mode: "edit".to_string(),
         },
     };
-    let snapshot = exec.to_workflow_state();
+    let snapshot = exec.to_commit_snapshot();
     let execution_id = exec.id.clone();
     engine
         .executions
@@ -4775,7 +4674,7 @@ async fn execute_outcome_auto_approve_persist_adopts_policy_and_starts_fix_once(
 
     let execs = engine.executions.lock().await;
     let (_, exec) = find_by_worktree(&execs, worktree_path).unwrap();
-    assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
+    assert!(matches!(outcome, NodeOutcome::TransitionAndStart(_)));
     assert_eq!(exec.node_execution_counts.get("fix"), Some(&1));
     assert_eq!(
         exec.node_history
@@ -4785,7 +4684,7 @@ async fn execute_outcome_auto_approve_persist_adopts_policy_and_starts_fix_once(
         1
     );
     // [08] prose 抽出経路は廃止済み。auto approve 経路でも artifact は
-    // 確定されず、step は output 無しで完了する（spec [08] Rule 4）。
+    // 確定されず、node は output 無しで完了する（spec [08] Rule 4）。
     assert!(exec
         .artifacts
         .get("implementation_fix_policy")
@@ -4794,10 +4693,10 @@ async fn execute_outcome_auto_approve_persist_adopts_policy_and_starts_fix_once(
 }
 
 #[test]
-fn execute_outcome_persist_path_builds_auto_approve_target_for_current_step() {
+fn execute_outcome_persist_path_builds_auto_approve_target_for_current_node() {
     let mut exec = make_approval_exec(RuntimeExecutionState::WaitingApproval, vec![]);
     exec.current_session_id = Some("policy-session".to_string());
-    let waiting = exec.to_workflow_state();
+    let waiting = exec.to_commit_snapshot();
 
     assert_eq!(
         workflow_approval_runtime::auto_approve_target_for_persisted_snapshot(&waiting, true),
@@ -4809,7 +4708,7 @@ fn execute_outcome_persist_path_builds_auto_approve_target_for_current_step() {
     );
 
     exec.state = RuntimeExecutionState::Running;
-    let running = exec.to_workflow_state();
+    let running = exec.to_commit_snapshot();
     assert_eq!(
         workflow_approval_runtime::auto_approve_target_for_persisted_snapshot(&running, true),
         None
@@ -4820,12 +4719,12 @@ fn execute_outcome_persist_path_builds_auto_approve_target_for_current_step() {
 fn workflow_approval_auto_approve_flag_controls_waiting_approval_snapshots() {
     let mut exec = make_approval_exec(RuntimeExecutionState::WaitingApproval, vec![]);
     exec.current_session_id = Some("policy-session".to_string());
-    let waiting = exec.to_workflow_state();
+    let waiting = exec.to_commit_snapshot();
     assert!(workflow_approval_runtime::should_auto_approve_workflow_approval(&waiting, true));
     assert!(!workflow_approval_runtime::should_auto_approve_workflow_approval(&waiting, false));
 
     exec.state = RuntimeExecutionState::Running;
-    let running = exec.to_workflow_state();
+    let running = exec.to_commit_snapshot();
     assert!(!workflow_approval_runtime::should_auto_approve_workflow_approval(&running, true));
 }
 
@@ -4835,7 +4734,7 @@ fn workflow_approval_auto_approve_disabled_ignores_agent_auto_approve_permission
     exec.current_session_id = Some("policy-session".to_string());
     let agent_auto_approve_permission_mode = "full";
     let workflow_approval_auto_approve_enabled = false;
-    let snapshot = exec.to_workflow_state();
+    let snapshot = exec.to_commit_snapshot();
 
     assert_eq!(agent_auto_approve_permission_mode, "full");
     assert!(
@@ -4853,23 +4752,23 @@ fn workflow_approval_auto_approve_disabled_ignores_agent_auto_approve_permission
     );
 }
 
-fn make_normal_step_exec_with_stall_observation() -> WorkflowExecution {
+fn make_normal_node_exec_with_stall_observation() -> WorkflowExecution {
     let mut exec = WorkflowExecution {
         id: "normal-stall-clear".to_string(),
-        workflow: Workflow {
+        workflow: WorkflowDefinitionYaml {
             name: "normal-stall-clear-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
             nodes: vec![
-                make_test_step(
+                make_test_node(
                     "plan",
                     TestKind::Session,
                     "plan",
                     vec![Rule::Next("implement".to_string())],
                     None,
                 ),
-                make_test_step("implement", TestKind::Session, "implement", vec![], None),
+                make_test_node("implement", TestKind::Session, "implement", vec![], None),
             ],
         },
         state: RuntimeExecutionState::Running,
@@ -4879,11 +4778,11 @@ fn make_normal_step_exec_with_stall_observation() -> WorkflowExecution {
         started_at: 1000.0,
         updated_at: 1000.0,
         current_session_id: Some("normal-session".to_string()),
-        current_step_token_usage: TokenUsage::default(),
+        current_node_token_usage: TokenUsage::default(),
         artifacts: HashMap::new(),
         node_executions: Vec::new(),
         request: None,
-        parallel_run: None,
+        fanout_runtime: None,
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         created_from: ExecutionOrigin::Agent,
@@ -4899,30 +4798,30 @@ fn make_normal_step_exec_with_stall_observation() -> WorkflowExecution {
 }
 
 #[test]
-fn normal_step_completion_retry_and_transition_clear_stall_observations() {
-    let mut completed = make_normal_step_exec_with_stall_observation();
+fn normal_node_completion_retry_and_transition_clear_stall_observations() {
+    let mut completed = make_normal_node_exec_with_stall_observation();
     let entry = completed.make_node_history_entry(Some("done".to_string()), None, None);
     completed.node_history.push(entry);
-    assert!(completed.to_workflow_state().stall_observations.is_empty());
+    assert!(completed.current_stall_observations.is_empty());
 
-    let mut retried = make_normal_step_exec_with_stall_observation();
-    let retry_snapshot = match retried.retry_current_step() {
-        StepOutcome::RetryCurrentStep { snapshot, .. } => snapshot,
-        _ => panic!("unexpected retry outcome"),
-    };
-    assert!(retry_snapshot.stall_observations.is_empty());
+    let mut retried = make_normal_node_exec_with_stall_observation();
+    assert!(matches!(
+        retried.retry_current_node(),
+        NodeOutcome::RetryCurrentNode { .. }
+    ));
+    assert!(retried.current_stall_observations.is_empty());
 
-    let mut transitioned = make_normal_step_exec_with_stall_observation();
-    let transition_snapshot = match transitioned.apply_advance() {
-        StepOutcome::TransitionAndStart(snapshot) => snapshot,
-        _ => panic!("unexpected transition outcome"),
-    };
-    assert!(transition_snapshot.stall_observations.is_empty());
+    let mut transitioned = make_normal_node_exec_with_stall_observation();
+    assert!(matches!(
+        transitioned.apply_advance(),
+        NodeOutcome::TransitionAndStart(_)
+    ));
+    assert!(transitioned.current_stall_observations.is_empty());
 }
 
 // R4-02: make_node_history_entryがcontract resultをRuntimeArtifact.resultに保存する
 #[test]
-fn make_node_history_entry_saves_contract_result_to_step_output() {
+fn make_node_history_entry_saves_contract_result_to_node_output() {
     let mut exec = WorkflowExecution {
         id: "test-exec".to_string(),
         workflow: make_test_workflow(),
@@ -4937,11 +4836,11 @@ fn make_node_history_entry_saves_contract_result_to_step_output() {
         started_at: 1000.0,
         updated_at: 1000.0,
         current_session_id: Some("session-1".to_string()),
-        current_step_token_usage: TokenUsage::default(),
+        current_node_token_usage: TokenUsage::default(),
         artifacts: HashMap::new(),
         node_executions: Vec::new(),
         request: None,
-        parallel_run: None,
+        fanout_runtime: None,
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         created_from: ExecutionOrigin::Agent,
@@ -4962,17 +4861,17 @@ fn make_node_history_entry_saves_contract_result_to_step_output() {
     assert_eq!(entry.result.as_deref(), Some("LGTM"));
     assert_eq!(entry.artifact, Some(structured.clone()));
 
-    let step_output = exec
+    let node_output = exec
         .artifacts
         .get("plan")
         .expect("RuntimeArtifact should exist");
-    assert_eq!(step_output.result.as_deref(), Some("LGTM"));
-    assert_eq!(step_output.artifact, Some(structured));
-    assert_eq!(step_output.contract.as_deref(), Some("review-verdict"));
+    assert_eq!(node_output.result.as_deref(), Some("LGTM"));
+    assert_eq!(node_output.artifact, Some(structured));
+    assert_eq!(node_output.contract.as_deref(), Some("review-verdict"));
 }
 
 #[test]
-fn make_node_history_entry_no_artifact_no_step_output() {
+fn make_node_history_entry_no_artifact_no_node_output() {
     let mut exec = WorkflowExecution {
         id: "test-exec".to_string(),
         workflow: make_test_workflow(),
@@ -4987,11 +4886,11 @@ fn make_node_history_entry_no_artifact_no_step_output() {
         started_at: 1000.0,
         updated_at: 1000.0,
         current_session_id: Some("session-1".to_string()),
-        current_step_token_usage: TokenUsage::default(),
+        current_node_token_usage: TokenUsage::default(),
         artifacts: HashMap::new(),
         node_executions: Vec::new(),
         request: None,
-        parallel_run: None,
+        fanout_runtime: None,
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         created_from: ExecutionOrigin::Agent,
@@ -5011,14 +4910,14 @@ fn make_node_history_entry_no_artifact_no_step_output() {
 
 // ---- on_exhausted: production routing テスト ----
 
-fn make_on_exhausted_workflow() -> Workflow {
-    Workflow {
+fn make_on_exhausted_workflow() -> WorkflowDefinitionYaml {
+    WorkflowDefinitionYaml {
         name: "on-exhausted-test".to_string(),
         description: "Test on_exhausted".to_string(),
         builtin: false,
         schemas: Default::default(),
         nodes: vec![
-            make_test_step(
+            make_test_node(
                 "fix",
                 TestKind::Session,
                 "Fix issues",
@@ -5028,14 +4927,14 @@ fn make_on_exhausted_workflow() -> Workflow {
                     on_exhausted: "approval".to_string(),
                 }),
             ),
-            make_test_step(
+            make_test_node(
                 "review",
                 TestKind::Session,
                 "Review",
                 vec![Rule::Next("fix".to_string())],
                 None,
             ),
-            make_test_step(
+            make_test_node(
                 "approval",
                 TestKind::Session,
                 "Approve",
@@ -5047,7 +4946,7 @@ fn make_on_exhausted_workflow() -> Workflow {
 }
 
 #[test]
-fn on_exhausted_transitions_to_fallback_step() {
+fn on_exhausted_transitions_to_fallback_node() {
     let mut exec = WorkflowExecution {
         id: "exec-1".to_string(),
         workflow: make_on_exhausted_workflow(),
@@ -5064,9 +4963,9 @@ fn on_exhausted_transitions_to_fallback_step() {
         started_at: 1000.0,
         updated_at: 1000.0,
         current_session_id: None,
-        current_step_token_usage: TokenUsage::default(),
+        current_node_token_usage: TokenUsage::default(),
         request: None,
-        parallel_run: None,
+        fanout_runtime: None,
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         created_from: ExecutionOrigin::Agent,
@@ -5079,7 +4978,7 @@ fn on_exhausted_transitions_to_fallback_step() {
 
     // review の next=fix → ガード超過 → on_exhausted で approval へ
     let outcome = exec.apply_advance();
-    assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
+    assert!(matches!(outcome, NodeOutcome::TransitionAndStart(_)));
     assert_eq!(
         exec.workflow.nodes[exec.current_node_index].name,
         "approval"
@@ -5104,9 +5003,9 @@ fn check_loop_guard_exceeded_with_on_exhausted() {
         started_at: 1000.0,
         updated_at: 1000.0,
         current_session_id: None,
-        current_step_token_usage: TokenUsage::default(),
+        current_node_token_usage: TokenUsage::default(),
         request: None,
-        parallel_run: None,
+        fanout_runtime: None,
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         created_from: ExecutionOrigin::Agent,
@@ -5131,41 +5030,41 @@ fn check_loop_guard_exceeded_with_on_exhausted() {
 
 #[test]
 fn on_exhausted_chain_transitions() {
-    // start → step_a → (exhausted) → step_b → (exhausted) → step_c
-    let wf = Workflow {
+    // start → node_a → (exhausted) → node_b → (exhausted) → node_c
+    let wf = WorkflowDefinitionYaml {
         name: "chain-test".to_string(),
         description: "test".to_string(),
         builtin: false,
         schemas: Default::default(),
         nodes: vec![
-            make_test_step(
+            make_test_node(
                 "start",
                 TestKind::Session,
                 "Start",
-                vec![Rule::Next("step_a".to_string())],
+                vec![Rule::Next("node_a".to_string())],
                 None,
             ),
-            make_test_step(
-                "step_a",
+            make_test_node(
+                "node_a",
                 TestKind::Session,
                 "A",
                 vec![],
                 Some(Rule::LoopGuard {
                     max_iterations: 1,
-                    on_exhausted: "step_b".to_string(),
+                    on_exhausted: "node_b".to_string(),
                 }),
             ),
-            make_test_step(
-                "step_b",
+            make_test_node(
+                "node_b",
                 TestKind::Session,
                 "B",
                 vec![],
                 Some(Rule::LoopGuard {
                     max_iterations: 1,
-                    on_exhausted: "step_c".to_string(),
+                    on_exhausted: "node_c".to_string(),
                 }),
             ),
-            make_test_step("step_c", TestKind::Session, "C", vec![], None),
+            make_test_node("node_c", TestKind::Session, "C", vec![], None),
         ],
     };
     let mut exec = WorkflowExecution {
@@ -5175,8 +5074,8 @@ fn on_exhausted_chain_transitions() {
         current_node_index: 0,
         node_execution_counts: {
             let mut m = HashMap::new();
-            m.insert("step_a".to_string(), 1);
-            m.insert("step_b".to_string(), 1);
+            m.insert("node_a".to_string(), 1);
+            m.insert("node_b".to_string(), 1);
             m
         },
         node_history: vec![],
@@ -5185,9 +5084,9 @@ fn on_exhausted_chain_transitions() {
         started_at: 1000.0,
         updated_at: 1000.0,
         current_session_id: None,
-        current_step_token_usage: TokenUsage::default(),
+        current_node_token_usage: TokenUsage::default(),
         request: None,
-        parallel_run: None,
+        fanout_runtime: None,
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         created_from: ExecutionOrigin::Agent,
@@ -5198,44 +5097,44 @@ fn on_exhausted_chain_transitions() {
         },
     };
 
-    // start の next=step_a → exhausted → step_b → exhausted → step_c
+    // start の next=node_a → exhausted → node_b → exhausted → node_c
     let outcome = exec.apply_advance();
-    assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
-    assert_eq!(exec.workflow.nodes[exec.current_node_index].name, "step_c");
+    assert!(matches!(outcome, NodeOutcome::TransitionAndStart(_)));
+    assert_eq!(exec.workflow.nodes[exec.current_node_index].name, "node_c");
 }
 
-fn make_on_exhausted_depth_exceeded_workflow() -> Workflow {
-    Workflow {
+fn make_on_exhausted_depth_exceeded_workflow() -> WorkflowDefinitionYaml {
+    WorkflowDefinitionYaml {
         name: "chain-depth-test".to_string(),
         description: "test".to_string(),
         builtin: false,
         schemas: Default::default(),
         nodes: vec![
-            make_test_step(
+            make_test_node(
                 "start",
                 TestKind::Session,
                 "start",
-                vec![Rule::Next("step_a".to_string())],
+                vec![Rule::Next("node_a".to_string())],
                 None,
             ),
-            make_test_step(
-                "step_a",
+            make_test_node(
+                "node_a",
                 TestKind::Session,
                 "A",
                 vec![],
                 Some(Rule::LoopGuard {
                     max_iterations: 1,
-                    on_exhausted: "step_b".to_string(),
+                    on_exhausted: "node_b".to_string(),
                 }),
             ),
-            make_test_step(
-                "step_b",
+            make_test_node(
+                "node_b",
                 TestKind::Session,
                 "B",
                 vec![],
                 Some(Rule::LoopGuard {
                     max_iterations: 1,
-                    on_exhausted: "step_a".to_string(),
+                    on_exhausted: "node_a".to_string(),
                 }),
             ),
         ],
@@ -5246,11 +5145,11 @@ fn make_on_exhausted_depth_exceeded_workflow() -> Workflow {
 fn apply_advance_fails_on_on_exhausted_chain_depth_exceeded() {
     let mut exec = workflow_exec(make_on_exhausted_depth_exceeded_workflow(), 0);
     exec.node_execution_counts =
-        HashMap::from([("step_a".to_string(), 1), ("step_b".to_string(), 1)]);
+        HashMap::from([("node_a".to_string(), 1), ("node_b".to_string(), 1)]);
 
     let outcome = exec.apply_advance();
 
-    assert!(matches!(outcome, StepOutcome::Persist(_)));
+    assert!(matches!(outcome, NodeOutcome::Persist(_)));
     assert!(matches!(
         exec.state,
         RuntimeExecutionState::Failed {
@@ -5262,21 +5161,21 @@ fn apply_advance_fails_on_on_exhausted_chain_depth_exceeded() {
 }
 
 #[test]
-fn decide_next_step_fails_on_on_exhausted_chain_depth_exceeded() {
+fn decide_next_node_fails_on_on_exhausted_chain_depth_exceeded() {
     let mut exec = workflow_exec(make_on_exhausted_depth_exceeded_workflow(), 0);
     exec.node_execution_counts =
-        HashMap::from([("step_a".to_string(), 1), ("step_b".to_string(), 1)]);
+        HashMap::from([("node_a".to_string(), 1), ("node_b".to_string(), 1)]);
 
     assert!(matches!(
-        exec.decide_next_step(),
-        NextStepDecision::Failed { ref reason }
+        exec.decide_next_node(),
+        NextNodeDecision::Failed { ref reason }
             if reason == "validation_error: loop_guard on_exhausted chain depth exceeded"
     ));
 }
 
-// ---- step が新しい実行を開始する瞬間に artifacts から前回値を破棄する（Spec issues-989） ----
+// ---- node が新しい実行を開始する瞬間に artifacts から前回値を破棄する（Spec issues-989） ----
 
-fn make_step_output_fixture(node_name: &str, attempt: u32) -> RuntimeArtifact {
+fn make_node_output_fixture(node_name: &str, attempt: u32) -> RuntimeArtifact {
     RuntimeArtifact {
         node_name: node_name.to_string(),
         attempt,
@@ -5290,21 +5189,21 @@ fn make_step_output_fixture(node_name: &str, attempt: u32) -> RuntimeArtifact {
 }
 
 #[test]
-fn apply_advance_clears_artifacts_for_new_step() {
-    // ループで同一 step が再実行されるとき、advance による遷移で
-    // 遷移先 step の前回出力が artifacts から破棄されることを検証する。
+fn apply_advance_clears_artifacts_for_new_node() {
+    // ループで同一 node が再実行されるとき、advance による遷移で
+    // 遷移先 node の前回出力が artifacts から破棄されることを検証する。
     let mut exec = make_exec(0); // plan → implement
     exec.current_session_id = Some("plan-session".to_string());
     exec.artifacts.insert(
         "implement".to_string(),
-        make_step_output_fixture("implement", 1),
+        make_node_output_fixture("implement", 1),
     );
-    // 他 step の前回出力は残り続けることも併せて確認。
+    // 他 node の前回出力は残り続けることも併せて確認。
     exec.artifacts
-        .insert("plan".to_string(), make_step_output_fixture("plan", 1));
+        .insert("plan".to_string(), make_node_output_fixture("plan", 1));
 
     let outcome = exec.apply_advance();
-    assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
+    assert!(matches!(outcome, NodeOutcome::TransitionAndStart(_)));
     assert_eq!(
         exec.workflow.nodes[exec.current_node_index].name,
         "implement"
@@ -5315,17 +5214,17 @@ fn apply_advance_clears_artifacts_for_new_step() {
 }
 
 #[test]
-fn apply_advance_clears_artifacts_for_loop_target_step() {
+fn apply_advance_clears_artifacts_for_loop_target_node() {
     // ループで前ステップ（review）に戻る遷移でも、遷移先の前回出力が破棄される。
     let mut exec = make_exec(2); // review
     exec.current_session_id = Some("review-session".to_string());
     exec.artifacts.insert(
         "implement".to_string(),
-        make_step_output_fixture("implement", 1),
+        make_node_output_fixture("implement", 1),
     );
 
     let outcome = exec.apply_advance();
-    assert!(matches!(outcome, StepOutcome::TransitionAndStart(_)));
+    assert!(matches!(outcome, NodeOutcome::TransitionAndStart(_)));
     assert_eq!(
         exec.workflow.nodes[exec.current_node_index].name,
         "implement"
@@ -5337,21 +5236,21 @@ fn apply_advance_clears_artifacts_for_loop_target_step() {
 #[test]
 fn apply_advance_to_fanout_clears_parent_output_without_child_map_entries() {
     // fanout child artifact は親配列だけに保持されるため、node 名 output map では親だけを消す。
-    let fanout = make_fanout_step(
-        "code_review_parallel",
+    let fanout = make_fanout_node(
+        "code_review_fanout",
         vec!["review_security", "review_style"],
     );
-    let wf = Workflow {
-        name: "loop-parallel".to_string(),
+    let wf = WorkflowDefinitionYaml {
+        name: "loop-fanout".to_string(),
         description: "test".to_string(),
         builtin: false,
         schemas: Default::default(),
         nodes: vec![
-            make_test_step(
+            make_test_node(
                 "fix",
                 TestKind::Session,
                 "Fix",
-                vec![Rule::Next("code_review_parallel".to_string())],
+                vec![Rule::Next("code_review_fanout".to_string())],
                 None,
             ),
             fanout,
@@ -5369,19 +5268,19 @@ fn apply_advance_to_fanout_clears_parent_output_without_child_map_entries() {
         artifacts: {
             let mut m = HashMap::new();
             m.insert(
-                "code_review_parallel".to_string(),
-                make_step_output_fixture("code_review_parallel", 1),
+                "code_review_fanout".to_string(),
+                make_node_output_fixture("code_review_fanout", 1),
             );
-            m.insert("fix".to_string(), make_step_output_fixture("fix", 1));
+            m.insert("fix".to_string(), make_node_output_fixture("fix", 1));
             m
         },
         node_executions: Vec::new(),
         started_at: 1000.0,
         updated_at: 1000.0,
         current_session_id: None,
-        current_step_token_usage: TokenUsage::default(),
+        current_node_token_usage: TokenUsage::default(),
         request: None,
-        parallel_run: None,
+        fanout_runtime: None,
         current_stall_observations: Vec::new(),
         worktree_path: "/repo".to_string(),
         created_from: ExecutionOrigin::Agent,
@@ -5393,19 +5292,19 @@ fn apply_advance_to_fanout_clears_parent_output_without_child_map_entries() {
     };
 
     let outcome = exec.apply_advance();
-    assert!(matches!(outcome, StepOutcome::StartParallel(_)));
-    assert!(!exec.artifacts.contains_key("code_review_parallel"));
+    assert!(matches!(outcome, NodeOutcome::StartFanout(_)));
+    assert!(!exec.artifacts.contains_key("code_review_fanout"));
     assert!(!exec.artifacts.contains_key("review_security"));
     assert!(!exec.artifacts.contains_key("review_style"));
     // fanout 外の node の前回出力は破棄されない。
     assert!(exec.artifacts.contains_key("fix"));
 }
 
-// ---- resolve_step_settings ----
+// ---- resolve_node_settings ----
 
 #[test]
-fn resolve_step_settings_model_and_permission_specified() {
-    let result = resolve_step_settings(
+fn resolve_node_settings_model_and_permission_specified() {
+    let result = resolve_node_settings(
         Some("codex-mini".to_string()),
         Some("full".to_string()),
         Some("codex".to_string()),
@@ -5416,7 +5315,7 @@ fn resolve_step_settings_model_and_permission_specified() {
     );
     assert_eq!(
         result,
-        ResolvedStepSettings {
+        ResolvedNodeSettings {
             backend_id: Some("codex".to_string()),
             selected_model: Some("codex-mini".to_string()),
             permission_mode: "full".to_string(),
@@ -5425,8 +5324,8 @@ fn resolve_step_settings_model_and_permission_specified() {
 }
 
 #[test]
-fn resolve_step_settings_model_only() {
-    let result = resolve_step_settings(
+fn resolve_node_settings_model_only() {
+    let result = resolve_node_settings(
         Some("haiku".to_string()),
         None,
         Some("claude".to_string()),
@@ -5437,7 +5336,7 @@ fn resolve_step_settings_model_only() {
     );
     assert_eq!(
         result,
-        ResolvedStepSettings {
+        ResolvedNodeSettings {
             backend_id: Some("claude".to_string()),
             selected_model: Some("haiku".to_string()),
             permission_mode: "edit".to_string(),
@@ -5446,10 +5345,10 @@ fn resolve_step_settings_model_only() {
 }
 
 #[test]
-fn resolve_step_settings_permission_only_clears_model_to_unset() {
-    // Spec: workflow 経路では step model 未指定なら親の選択モデルへフォールバックしない。
+fn resolve_node_settings_permission_only_clears_model_to_unset() {
+    // Spec: workflow 経路では node model 未指定なら親の選択モデルへフォールバックしない。
     // permission のみ指定でも selected_model は None になる。
-    let result = resolve_step_settings(
+    let result = resolve_node_settings(
         None,
         Some("ask".to_string()),
         None,
@@ -5460,7 +5359,7 @@ fn resolve_step_settings_permission_only_clears_model_to_unset() {
     );
     assert_eq!(
         result,
-        ResolvedStepSettings {
+        ResolvedNodeSettings {
             backend_id: Some("claude".to_string()),
             selected_model: None,
             permission_mode: "ask".to_string(),
@@ -5469,10 +5368,10 @@ fn resolve_step_settings_permission_only_clears_model_to_unset() {
 }
 
 #[test]
-fn resolve_step_settings_nothing_specified_clears_model_to_unset() {
+fn resolve_node_settings_nothing_specified_clears_model_to_unset() {
     // Spec: model 未指定（None）は未指定状態のまま。親の selected_model へ
     // 暗黙フォールバックしない。
-    let result = resolve_step_settings(
+    let result = resolve_node_settings(
         None,
         None,
         None,
@@ -5483,7 +5382,7 @@ fn resolve_step_settings_nothing_specified_clears_model_to_unset() {
     );
     assert_eq!(
         result,
-        ResolvedStepSettings {
+        ResolvedNodeSettings {
             backend_id: Some("claude".to_string()),
             selected_model: None,
             permission_mode: "edit".to_string(),
@@ -5492,9 +5391,9 @@ fn resolve_step_settings_nothing_specified_clears_model_to_unset() {
 }
 
 #[test]
-fn resolve_step_settings_fanout_children_different_configs() {
+fn resolve_node_settings_fanout_children_different_configs() {
     // ステップA: model=opus-4, permission=ask
-    let result_a = resolve_step_settings(
+    let result_a = resolve_node_settings(
         Some("opus-4".to_string()),
         Some("ask".to_string()),
         Some("claude".to_string()),
@@ -5505,7 +5404,7 @@ fn resolve_step_settings_fanout_children_different_configs() {
     );
     assert_eq!(
         result_a,
-        ResolvedStepSettings {
+        ResolvedNodeSettings {
             backend_id: Some("claude".to_string()),
             selected_model: Some("opus-4".to_string()),
             permission_mode: "ask".to_string(),
@@ -5513,7 +5412,7 @@ fn resolve_step_settings_fanout_children_different_configs() {
     );
 
     // ステップB: model=codex-mini, permission=full
-    let result_b = resolve_step_settings(
+    let result_b = resolve_node_settings(
         Some("codex-mini".to_string()),
         Some("full".to_string()),
         Some("codex".to_string()),
@@ -5524,7 +5423,7 @@ fn resolve_step_settings_fanout_children_different_configs() {
     );
     assert_eq!(
         result_b,
-        ResolvedStepSettings {
+        ResolvedNodeSettings {
             backend_id: Some("codex".to_string()),
             selected_model: Some("codex-mini".to_string()),
             permission_mode: "full".to_string(),
@@ -5537,19 +5436,19 @@ fn resolve_step_settings_fanout_children_different_configs() {
     assert_ne!(result_a.permission_mode, result_b.permission_mode);
 }
 
-// ---- ワークフロー step session の attributes 永続化 ----
+// ---- ワークフロー node session の attributes 永続化 ----
 
-// Spec issues-947: ワークフロー step session 作成は
+// Spec issues-947: ワークフロー node session 作成は
 // `create_session_internal_with_attributes` 経由で permission_mode / selected_model /
-// workflow_node_session=true を初回保存で確定する。create_step_session_with_settings の
-// 後段（resolve_step_settings の結果を attributes に流して save する経路）が
+// workflow_node_session=true を初回保存で確定する。create_node_session_with_settings の
+// 後段（resolve_node_settings の結果を attributes に流して save する経路）が
 // 二段階保存に逆戻りしないことをガードする。
 #[test]
-fn step_session_persists_permission_workflow_flag_and_model_on_initial_save() {
+fn node_session_persists_permission_workflow_flag_and_model_on_initial_save() {
     let tmp = tempfile::TempDir::new().unwrap();
     let store = crate::test_support::build_session_store();
 
-    let settings = resolve_step_settings(
+    let settings = resolve_node_settings(
         Some("opus-4".to_string()),
         Some("edit".to_string()),
         Some("claude".to_string()),
@@ -5559,7 +5458,8 @@ fn step_session_persists_permission_workflow_flag_and_model_on_initial_save() {
         },
     );
     let permission_mode =
-        crate::domain::agent_session::PermissionMode::parse(&settings.permission_mode).unwrap();
+        crate::domain::agent_session::PermissionMode::parse_canonical(&settings.permission_mode)
+            .unwrap();
     let session = crate::usecase::agent_session::session::create_session_internal_with_attributes(
         &store,
         tmp.path(),
@@ -5594,13 +5494,13 @@ fn step_session_persists_permission_workflow_flag_and_model_on_initial_save() {
 }
 
 // 親セッションから permission_mode/backend_id を継承する経路でも初回保存で確定することを確認する。
-// selected_model は Spec issues-946 により暗黙フォールバック禁止のため、step 未指定なら None。
+// selected_model は Spec issues-946 により暗黙フォールバック禁止のため、node 未指定なら None。
 #[test]
-fn step_session_inherits_parent_permission_and_backend_on_initial_save() {
+fn node_session_inherits_parent_permission_and_backend_on_initial_save() {
     let tmp = tempfile::TempDir::new().unwrap();
     let store = crate::test_support::build_session_store();
 
-    let settings = resolve_step_settings(
+    let settings = resolve_node_settings(
         None,
         None,
         None,
@@ -5610,7 +5510,8 @@ fn step_session_inherits_parent_permission_and_backend_on_initial_save() {
         },
     );
     let permission_mode =
-        crate::domain::agent_session::PermissionMode::parse(&settings.permission_mode).unwrap();
+        crate::domain::agent_session::PermissionMode::parse_canonical(&settings.permission_mode)
+            .unwrap();
     let session = crate::usecase::agent_session::session::create_session_internal_with_attributes(
         &store,
         tmp.path(),
@@ -5636,18 +5537,18 @@ fn step_session_inherits_parent_permission_and_backend_on_initial_save() {
 // ---- execution_id 主体性に関する engine レベル統合テスト ----
 
 /// engine が WorkflowExecution を登録する際に、`WorkflowExecution.id` と
-/// Run Store の `WorkflowExecutionSummary.execution_id` が同一 execution_id を共有することを検証する。
+/// Execution Store の `WorkflowExecutionSummary.execution_id` が同一 execution_id を共有することを検証する。
 /// finding 13 対応: `return 値 execution_id = WorkflowExecution.id = active summary の execution_id
 /// = workflow_executions/{execution_id}.json の execution_id` の一致を engine レベルで検証する。
 #[tokio::test]
-async fn engine_run_id_consistency_across_execution_and_execution_store_metadata() {
+async fn engine_execution_id_consistency_across_execution_and_execution_store_metadata() {
     let tmp = tempfile::TempDir::new().unwrap();
     let engine = WorkflowRuntimeService::new_for_test();
     engine
         .set_execution_store_data_dir(tmp.path().to_path_buf())
         .await;
 
-    // Run Store API 境界の UUID 検証を満たすため UUID を採用する。
+    // Execution Store API 境界の UUID 検証を満たすため UUID を採用する。
     let execution_id = uuid::Uuid::new_v4().to_string();
     let worktree_path = "/wt/a";
     let workflow = make_minimal_workflow();
@@ -5661,11 +5562,11 @@ async fn engine_run_id_consistency_across_execution_and_execution_store_metadata
         started_at: 100.0,
         updated_at: 100.0,
         current_session_id: None,
-        current_step_token_usage: TokenUsage::default(),
+        current_node_token_usage: TokenUsage::default(),
         artifacts: HashMap::new(),
         node_executions: Vec::new(),
         request: None,
-        parallel_run: None,
+        fanout_runtime: None,
         current_stall_observations: Vec::new(),
         worktree_path: worktree_path.to_string(),
         created_from: ExecutionOrigin::Agent,
@@ -5705,7 +5606,7 @@ async fn engine_run_id_consistency_across_execution_and_execution_store_metadata
     };
     assert_eq!(exec_id, execution_id);
 
-    // (2) Run Store active summary の execution_id
+    // (2) Execution Store active summary の execution_id
     let active = engine.list_active_executions().await;
     assert_eq!(active.len(), 1);
     assert_eq!(active[0].execution_id, execution_id);
@@ -5738,13 +5639,13 @@ async fn engine_run_id_consistency_across_execution_and_execution_store_metadata
 /// finding 14 対応: 既存 active な実行が同一 worktree に存在する間、
 /// validate_start は `AlreadyActive` を返す。
 #[tokio::test]
-async fn engine_validate_start_rejects_duplicate_active_run_on_same_worktree() {
+async fn engine_validate_start_rejects_duplicate_active_execution_on_same_worktree() {
     let engine = WorkflowRuntimeService::new_for_test();
     let workflow = make_minimal_workflow();
     let worktree_path = "/wt/dup";
 
     let exec = WorkflowExecution {
-        id: "existing-run".to_string(),
+        id: "existing-execution".to_string(),
         workflow: workflow.clone(),
         state: RuntimeExecutionState::Running,
         current_node_index: 0,
@@ -5753,11 +5654,11 @@ async fn engine_validate_start_rejects_duplicate_active_run_on_same_worktree() {
         started_at: 100.0,
         updated_at: 100.0,
         current_session_id: None,
-        current_step_token_usage: TokenUsage::default(),
+        current_node_token_usage: TokenUsage::default(),
         artifacts: HashMap::new(),
         node_executions: Vec::new(),
         request: None,
-        parallel_run: None,
+        fanout_runtime: None,
         current_stall_observations: Vec::new(),
         worktree_path: worktree_path.to_string(),
         created_from: ExecutionOrigin::Agent,
@@ -5786,7 +5687,7 @@ async fn engine_validate_start_rejects_duplicate_active_run_on_same_worktree() {
     assert_eq!(still_there.worktree_path, worktree_path);
 }
 
-/// engine が状態遷移を反映した際に Run Store の active / completed 一覧および
+/// engine が状態遷移を反映した際に Execution Store の active / completed 一覧および
 /// metadata が同期されることを検証する。
 /// finding 15 対応: Running -> WaitingApproval -> Completed の遷移で
 /// list_active / list_completed と metadata が正しく更新される。
@@ -5825,7 +5726,7 @@ async fn engine_state_transitions_sync_to_execution_store_active_and_completed()
         .unwrap();
 
     // Running -> WaitingApproval
-    let snapshot_waiting = WorkflowState {
+    let snapshot_waiting = RuntimeCommitSnapshot {
         execution_id: execution_id.clone(),
         workflow_name: workflow.name.clone(),
         worktree_path: worktree_path.to_string(),
@@ -5836,16 +5737,12 @@ async fn engine_state_transitions_sync_to_execution_store_active_and_completed()
         current_node_index: 0,
         current_node_name: workflow.nodes[0].name.clone(),
         current_session_id: None,
-        total_nodes: workflow.nodes.len(),
         node_history: vec![],
         node_execution_counts: HashMap::new(),
         workflow_definition: workflow.clone(),
         total_token_usage: TokenUsage::default(),
-        node_statuses: HashMap::new(),
         artifacts: HashMap::new(),
         node_executions: vec![],
-        stall_observations: Vec::new(),
-        approval_operations: None,
         started_at: 100.0,
         updated_at: 200.0,
     };
@@ -5862,7 +5759,7 @@ async fn engine_state_transitions_sync_to_execution_store_active_and_completed()
     assert_eq!(active[0].status, ExecutionStatus::WaitingApproval);
 
     // Completed
-    let snapshot_completed = WorkflowState {
+    let snapshot_completed = RuntimeCommitSnapshot {
         state: RuntimeExecutionState::Completed,
         updated_at: 300.0,
         ..snapshot_waiting.clone()
@@ -5877,7 +5774,7 @@ async fn engine_state_transitions_sync_to_execution_store_active_and_completed()
     let active_after = engine.list_active_executions().await;
     assert!(
         active_after.is_empty(),
-        "completed run must leave the active set"
+        "completed execution must leave the active set"
     );
     let completed = engine.list_completed_executions().await;
     assert!(completed.iter().any(|r| r.execution_id == execution_id));
@@ -5894,18 +5791,18 @@ async fn engine_state_transitions_sync_to_execution_store_active_and_completed()
     );
 }
 
-fn make_minimal_workflow() -> Workflow {
-    Workflow {
+fn make_minimal_workflow() -> WorkflowDefinitionYaml {
+    WorkflowDefinitionYaml {
         name: "engine-test-wf".to_string(),
         description: "minimal".to_string(),
         builtin: false,
         schemas: Default::default(),
         nodes: vec![{
-            let mut step = make_test_step("only-step", TestKind::Session, "do", vec![], None);
-            step.session_mut()
-                .expect("minimal workflow step must be a session")
+            let mut node = make_test_node("only-node", TestKind::Session, "do", vec![], None);
+            node.session_mut()
+                .expect("minimal workflow node must be a session")
                 .permission = Some("edit".to_string());
-            step
+            node
         }],
     }
 }
@@ -5917,7 +5814,7 @@ fn make_minimal_workflow() -> Workflow {
 #[test]
 fn validate_workflow_shape_rejects_empty_and_accepts_command_workflows_without_side_effects() {
     // 空 nodes は InvalidWorkflow
-    let empty = Workflow {
+    let empty = WorkflowDefinitionYaml {
         name: "wf".to_string(),
         description: "".to_string(),
         builtin: false,
@@ -5930,13 +5827,13 @@ fn validate_workflow_shape_rejects_empty_and_accepts_command_workflows_without_s
     ));
 
     // command node を含む workflow は実行可能
-    let command = Workflow {
+    let command = WorkflowDefinitionYaml {
         name: "wf".to_string(),
         description: "".to_string(),
         builtin: false,
         schemas: Default::default(),
-        nodes: vec![make_test_step(
-            "bash-step",
+        nodes: vec![make_test_node(
+            "command-node",
             TestKind::Command,
             "echo test",
             vec![],
@@ -5950,11 +5847,11 @@ fn validate_workflow_shape_rejects_empty_and_accepts_command_workflows_without_s
     assert!(workflow_engine_start_guard::validate_workflow_shape(&ok).is_ok());
 }
 
-/// G3: `execution_id_for_worktree` を Run Store 経由で参照すれば、parent ChatSession 作成より前に
+/// G3: `execution_id_for_worktree` を Execution Store 経由で参照すれば、parent ChatSession 作成より前に
 /// 重複起動を検出できる。`start_workflow` Phase 1 で副作用前に判定する経路の主要な
-/// 構成要素（Run Store の active index）を直接検証する。
+/// 構成要素（Execution Store の active index）を直接検証する。
 #[tokio::test]
-async fn execution_store_active_index_resolves_worktree_to_run_id_for_duplicate_check() {
+async fn execution_store_active_index_resolves_worktree_to_execution_id_for_duplicate_check() {
     let engine = WorkflowRuntimeService::new_for_test();
     let tmp = tempfile::TempDir::new().unwrap();
     engine
@@ -5986,7 +5883,7 @@ async fn execution_store_active_index_resolves_worktree_to_run_id_for_duplicate_
     assert_eq!(
         engine.execution_id_for_worktree(worktree_path).await,
         Some(execution_id),
-        "Phase 1 重複判定は Run Store の active index で成立する"
+        "Phase 1 重複判定は Execution Store の active index で成立する"
     );
 }
 
@@ -5994,10 +5891,10 @@ async fn execution_store_active_index_resolves_worktree_to_run_id_for_duplicate_
 /// （production と同じ execution_id キー）。fixture が `worktree_path` をキーとして使う旧バグの
 /// 回帰防止。
 #[tokio::test]
-async fn handle_auto_complete_fixture_uses_run_id_as_executions_key() {
+async fn handle_auto_complete_fixture_uses_execution_id_as_executions_key() {
     let engine = WorkflowRuntimeService::new_for_test();
     let exec = WorkflowExecution {
-        id: "auto-complete-run".to_string(),
+        id: "auto-complete-execution".to_string(),
         workflow: make_minimal_workflow(),
         state: RuntimeExecutionState::Running,
         current_node_index: 0,
@@ -6006,11 +5903,11 @@ async fn handle_auto_complete_fixture_uses_run_id_as_executions_key() {
         started_at: 0.0,
         updated_at: 0.0,
         current_session_id: Some("sess".to_string()),
-        current_step_token_usage: TokenUsage::default(),
+        current_node_token_usage: TokenUsage::default(),
         artifacts: HashMap::new(),
         node_executions: Vec::new(),
         request: None,
-        parallel_run: None,
+        fanout_runtime: None,
         current_stall_observations: Vec::new(),
         worktree_path: "/wt/auto-complete".to_string(),
         created_from: ExecutionOrigin::Agent,
@@ -6054,11 +5951,11 @@ fn make_exec_with(
         started_at: 100.0,
         updated_at: 110.0,
         current_session_id: None,
-        current_step_token_usage: TokenUsage::default(),
+        current_node_token_usage: TokenUsage::default(),
         artifacts: HashMap::new(),
         node_executions: Vec::new(),
         request: None,
-        parallel_run: None,
+        fanout_runtime: None,
         current_stall_observations: Vec::new(),
         worktree_path: worktree_path.to_string(),
         created_from: ExecutionOrigin::Agent,
@@ -6072,38 +5969,38 @@ fn make_exec_with(
 
 /// Spec issues-1011 finding 1/7: `find_by_worktree` / `find_by_worktree_mut` は
 /// terminal な execution を返さず、active な execution のみを返す。同一 worktree に
-/// terminal run と active run が共存しても production 経路で取り違えない。
+/// terminal execution と active execution が共存しても production 経路で取り違えない。
 #[tokio::test]
-async fn find_by_worktree_filters_terminal_runs_and_returns_active_only() {
+async fn find_by_worktree_filters_terminal_executions_and_returns_active_only() {
     let engine = WorkflowRuntimeService::new_for_test();
     let worktree_path = "/wt/shared";
-    let terminal_run_id = "terminal-run".to_string();
-    let active_run_id = "active-run".to_string();
+    let terminal_execution_id = "terminal-execution".to_string();
+    let active_execution_id = "active-execution".to_string();
     let terminal_exec = make_exec_with(
-        &terminal_run_id,
+        &terminal_execution_id,
         worktree_path,
         RuntimeExecutionState::Completed,
     );
     let active_exec = make_exec_with(
-        &active_run_id,
+        &active_execution_id,
         worktree_path,
         RuntimeExecutionState::Running,
     );
 
     {
         let mut execs = engine.executions.lock().await;
-        execs.insert(terminal_run_id.clone(), terminal_exec);
-        execs.insert(active_run_id.clone(), active_exec);
+        execs.insert(terminal_execution_id.clone(), terminal_exec);
+        execs.insert(active_execution_id.clone(), active_exec);
     }
 
     // find_by_worktree は active のみを返す
     {
         let execs = engine.executions.lock().await;
         let (found_id, found_exec) =
-            find_by_worktree(&execs, worktree_path).expect("active run must be findable");
-        assert_eq!(found_id, &active_run_id);
+            find_by_worktree(&execs, worktree_path).expect("active execution must be findable");
+        assert_eq!(found_id, &active_execution_id);
         assert!(found_exec.is_active());
-        assert_ne!(found_id, &terminal_run_id);
+        assert_ne!(found_id, &terminal_execution_id);
     }
 
     // find_any_by_worktree は terminal/active を問わず返す（validate_start 経路用）
@@ -6114,27 +6011,28 @@ async fn find_by_worktree_filters_terminal_runs_and_returns_active_only() {
 }
 
 /// Spec issues-1011 finding 11: `abort_workflow_by_execution_id` は terminal な execution_id に対して
-/// no-op を返し、同一 worktree の active run を誤って中断しない。
+/// no-op を返し、同一 worktree の active execution を誤って中断しない。
 #[tokio::test]
-async fn abort_workflow_by_execution_id_is_noop_for_terminal_run_even_if_active_shares_worktree() {
+async fn abort_workflow_by_execution_id_is_noop_for_terminal_execution_even_if_active_shares_worktree(
+) {
     let engine = WorkflowRuntimeService::new_for_test();
     let worktree_path = "/wt/coexist";
-    let terminal_run_id = "terminal-abort-target".to_string();
-    let active_run_id = "active-bystander".to_string();
+    let terminal_execution_id = "terminal-abort-target".to_string();
+    let active_execution_id = "active-bystander".to_string();
     {
         let mut execs = engine.executions.lock().await;
         execs.insert(
-            terminal_run_id.clone(),
+            terminal_execution_id.clone(),
             make_exec_with(
-                &terminal_run_id,
+                &terminal_execution_id,
                 worktree_path,
                 RuntimeExecutionState::Completed,
             ),
         );
         execs.insert(
-            active_run_id.clone(),
+            active_execution_id.clone(),
             make_exec_with(
-                &active_run_id,
+                &active_execution_id,
                 worktree_path,
                 RuntimeExecutionState::Running,
             ),
@@ -6143,23 +6041,23 @@ async fn abort_workflow_by_execution_id_is_noop_for_terminal_run_even_if_active_
 
     // execution_id 主語の abort 経路: terminal な exec の execution_id を渡すと、内部の
     // `is_active()` ガードで即 Ok(()) を返し、worktree 主語の下流処理に委譲しない。
-    // → 同一 worktree の active run は影響を受けない。
+    // → 同一 worktree の active execution は影響を受けない。
     // ここでは executions の lookup 経路だけを検証する（AppHandle が要らない範囲）。
     let abort_target_active = {
         let execs = engine.executions.lock().await;
-        execs.get(&terminal_run_id).map(|e| e.is_active())
+        execs.get(&terminal_execution_id).map(|e| e.is_active())
     };
     assert_eq!(abort_target_active, Some(false));
-    // active な run は依然として is_active
+    // active な execution は依然として is_active
     let bystander_active = {
         let execs = engine.executions.lock().await;
-        execs.get(&active_run_id).map(|e| e.is_active())
+        execs.get(&active_execution_id).map(|e| e.is_active())
     };
     assert_eq!(bystander_active, Some(true));
 }
 
 /// Spec issues-1011 finding 5/8: `start_workflow` のアトミック性。並行起動で
-/// Run Store reservation に負けた場合、parent ChatSession は作成されないため
+/// Execution Store reservation に負けた場合、parent ChatSession は作成されないため
 /// 「孤立 parent session」が構造的に発生しないことを保証する。
 /// reservation は最初の副作用であり、失敗時は他の副作用が走らない。
 #[tokio::test]
@@ -6172,16 +6070,16 @@ async fn start_workflow_reservation_is_first_side_effect_so_no_orphan_session_on
     let worktree_path = "/wt/reserve";
 
     // 既に active な reservation がある状態を作る。
-    let existing_run_id = uuid::Uuid::new_v4().to_string();
+    let existing_execution_id = uuid::Uuid::new_v4().to_string();
     engine
         .execution_store
         .register_active_execution(
             crate::adaptor::gateway::workflow::execution_store::WorkflowExecutionMetadata {
-                execution_id: existing_run_id.clone(),
+                execution_id: existing_execution_id.clone(),
                 workflow_name: "wf".to_string(),
                 status: ExecutionStatus::Running,
                 worktree_path: worktree_path.to_string(),
-                current_node: Some("only-step".to_string()),
+                current_node: Some("only-node".to_string()),
                 created_from: ExecutionOrigin::DesktopUi,
                 started_at: 100.0,
                 updated_at: 100.0,
@@ -6196,16 +6094,16 @@ async fn start_workflow_reservation_is_first_side_effect_so_no_orphan_session_on
         .unwrap();
 
     // 同一 worktree への 2 回目の reservation は WorktreeAlreadyActive で拒否される。
-    let new_run_id = uuid::Uuid::new_v4().to_string();
+    let new_execution_id = uuid::Uuid::new_v4().to_string();
     let result = engine
         .execution_store
         .register_active_execution(
             crate::adaptor::gateway::workflow::execution_store::WorkflowExecutionMetadata {
-                execution_id: new_run_id.clone(),
+                execution_id: new_execution_id.clone(),
                 workflow_name: "wf".to_string(),
                 status: ExecutionStatus::Running,
                 worktree_path: worktree_path.to_string(),
-                current_node: Some("only-step".to_string()),
+                current_node: Some("only-node".to_string()),
                 created_from: ExecutionOrigin::DesktopUi,
                 started_at: 200.0,
                 updated_at: 200.0,
@@ -6225,7 +6123,7 @@ async fn start_workflow_reservation_is_first_side_effect_so_no_orphan_session_on
     let path = tmp
         .path()
         .join("workflow_executions")
-        .join(format!("{new_run_id}.json"));
+        .join(format!("{new_execution_id}.json"));
     assert!(
         !path.exists(),
         "新 execution_id の metadata が作成されていないこと（reservation が副作用の最初の境界）"
@@ -6233,7 +6131,7 @@ async fn start_workflow_reservation_is_first_side_effect_so_no_orphan_session_on
     // active は existing のみ
     let active = engine.list_active_executions().await;
     assert_eq!(active.len(), 1);
-    assert_eq!(active[0].execution_id, existing_run_id);
+    assert_eq!(active[0].execution_id, existing_execution_id);
 }
 
 #[tokio::test]
@@ -6271,7 +6169,7 @@ async fn reserve_workflow_execution_maps_execution_store_worktree_conflict_to_al
 }
 
 /// Spec issues-1011 finding 10: authoritative sync により、active な execution が
-/// terminal に遷移したとき Run Store の active から外れて completed に
+/// terminal に遷移したとき Execution Store の active から外れて completed に
 /// 追加され、failed/aborted も同じく completed 一覧に現れる。
 /// `sync_execution_store_from_snapshot` を terminal snapshot 3 種で走査して検証する。
 #[tokio::test]
@@ -6306,7 +6204,7 @@ async fn execution_store_completed_listing_includes_completed_failed_aborted_via
                     workflow_name: "wf".to_string(),
                     status: ExecutionStatus::Running,
                     worktree_path: format!("/wt/{execution_id}"),
-                    current_node: Some("only-step".to_string()),
+                    current_node: Some("only-node".to_string()),
                     created_from: ExecutionOrigin::DesktopUi,
                     started_at: 100.0,
                     updated_at: 100.0,
@@ -6320,7 +6218,7 @@ async fn execution_store_completed_listing_includes_completed_failed_aborted_via
             .await
             .unwrap();
         // 権威遷移経路で使われる sync helper を直接呼ぶ
-        let snapshot = WorkflowState {
+        let snapshot = RuntimeCommitSnapshot {
             execution_id: execution_id.clone(),
             workflow_name: "wf".to_string(),
             worktree_path: format!("/wt/{execution_id}"),
@@ -6329,18 +6227,14 @@ async fn execution_store_completed_listing_includes_completed_failed_aborted_via
             error_reason: None,
             state,
             current_node_index: 0,
-            current_node_name: "only-step".to_string(),
+            current_node_name: "only-node".to_string(),
             current_session_id: None,
-            total_nodes: 1,
             node_history: vec![],
             node_execution_counts: HashMap::new(),
             workflow_definition: make_minimal_workflow(),
             total_token_usage: TokenUsage::default(),
-            node_statuses: HashMap::new(),
             artifacts: HashMap::new(),
             node_executions: vec![],
-            stall_observations: Vec::new(),
-            approval_operations: None,
             started_at: 100.0,
             updated_at: 200.0,
         };
@@ -6363,7 +6257,7 @@ async fn execution_store_completed_listing_includes_completed_failed_aborted_via
     for id in &ids {
         assert!(
             completed_ids.contains(id.as_str()),
-            "completed listing must include run {id}"
+            "completed listing must include execution {id}"
         );
     }
 }
@@ -6385,7 +6279,7 @@ async fn execution_store_sync_failure_rolls_engine_projection_back_to_active_sta
                 workflow_name: "wf".to_string(),
                 status: ExecutionStatus::Running,
                 worktree_path: worktree_path.to_string(),
-                current_node: Some("only-step".to_string()),
+                current_node: Some("only-node".to_string()),
                 created_from: ExecutionOrigin::DesktopUi,
                 started_at: 100.0,
                 updated_at: 100.0,
@@ -6416,7 +6310,7 @@ async fn execution_store_sync_failure_rolls_engine_projection_back_to_active_sta
         .await
         .get(&execution_id)
         .unwrap()
-        .to_workflow_state();
+        .to_commit_snapshot();
     let err = workflow_runtime_commit::sync_execution_store_from_snapshot(
         engine.execution_store(),
         &execution_id,
@@ -6446,35 +6340,35 @@ async fn execution_store_sync_failure_rolls_engine_projection_back_to_active_sta
     assert_eq!(
         engine.execution_id_for_worktree(worktree_path).await,
         Some(execution_id),
-        "Run Store rollback keeps the active worktree index authoritative"
+        "Execution Store rollback keeps the active worktree index authoritative"
     );
 }
 
 /// Spec issues-1011 finding 16: `abort_workflow_by_execution_id` 経路の境界回帰検出。
 /// AppHandle を要するため `abort_workflow_by_execution_id` 自体は production 経路で起動できないが、
-/// 内部 lookup 段階で「terminal run へ no-op を返し、同一 worktree の active run の状態を
+/// 内部 lookup 段階で「terminal execution へ no-op を返し、同一 worktree の active execution の状態を
 /// 変更しない」ことを直接検証する。terminal/active 共存時に execution_id 主語の lookup が
 /// 取り違えないことを engine state 観測で保証する。
 #[tokio::test]
-async fn abort_workflow_by_execution_id_does_not_modify_sibling_active_run_state() {
+async fn abort_workflow_by_execution_id_does_not_modify_sibling_active_execution_state() {
     let engine = WorkflowRuntimeService::new_for_test();
     let worktree_path = "/wt/sibling";
-    let terminal_run_id = uuid::Uuid::new_v4().to_string();
-    let active_run_id = uuid::Uuid::new_v4().to_string();
+    let terminal_execution_id = uuid::Uuid::new_v4().to_string();
+    let active_execution_id = uuid::Uuid::new_v4().to_string();
     {
         let mut execs = engine.executions.lock().await;
         execs.insert(
-            terminal_run_id.clone(),
+            terminal_execution_id.clone(),
             make_exec_with(
-                &terminal_run_id,
+                &terminal_execution_id,
                 worktree_path,
                 RuntimeExecutionState::Completed,
             ),
         );
         execs.insert(
-            active_run_id.clone(),
+            active_execution_id.clone(),
             make_exec_with(
-                &active_run_id,
+                &active_execution_id,
                 worktree_path,
                 RuntimeExecutionState::Running,
             ),
@@ -6484,61 +6378,61 @@ async fn abort_workflow_by_execution_id_does_not_modify_sibling_active_run_state
     // execution_id ベース lookup: terminal を引いても active のスナップショットには影響しない。
     let initial_active_state = {
         let execs = engine.executions.lock().await;
-        execs.get(&active_run_id).map(|e| e.state.clone())
+        execs.get(&active_execution_id).map(|e| e.state.clone())
     };
     assert_eq!(initial_active_state, Some(RuntimeExecutionState::Running));
 
     // abort_workflow_by_execution_id が production で使う lookup helper は、terminal target を
-    // `AlreadyTerminal` として返す。worktree_path で sibling active run を探索しない。
+    // `AlreadyTerminal` として返す。worktree_path で sibling active execution を探索しない。
     assert!(matches!(
-        engine.abort_target_lookup(&terminal_run_id).await,
+        engine.abort_target_lookup(&terminal_execution_id).await,
         AbortTargetLookup::AlreadyTerminal
     ));
 
-    // active run には触れていない（同一 worktree でも誤って中断しない）
+    // active execution には触れていない（同一 worktree でも誤って中断しない）
     let final_active_state = {
         let execs = engine.executions.lock().await;
-        execs.get(&active_run_id).map(|e| e.state.clone())
+        execs.get(&active_execution_id).map(|e| e.state.clone())
     };
     assert_eq!(final_active_state, Some(RuntimeExecutionState::Running));
 }
 
 /// Spec issues-1011 finding 17: approve は execution_id を主語に対象 execution を
-/// 直接更新し、同一 worktree に別 run が存在しても指定 run 以外へ適用しない。
+/// 直接更新し、同一 worktree に別 execution が存在しても指定 execution 以外へ適用しない。
 #[tokio::test]
-async fn approval_for_run_id_updates_only_target_run_when_worktree_is_shared() {
+async fn approval_for_execution_id_updates_only_target_execution_when_worktree_is_shared() {
     let engine = WorkflowRuntimeService::new_for_test();
     let worktree_path = "/wt/approval-shared";
-    let target_run_id = uuid::Uuid::new_v4().to_string();
-    let sibling_run_id = uuid::Uuid::new_v4().to_string();
+    let target_execution_id = uuid::Uuid::new_v4().to_string();
+    let sibling_execution_id = uuid::Uuid::new_v4().to_string();
 
     let mut target = make_approval_exec(RuntimeExecutionState::WaitingApproval, vec![]);
-    target.id = target_run_id.clone();
+    target.id = target_execution_id.clone();
     target.worktree_path = worktree_path.to_string();
 
     let mut sibling = make_approval_exec(RuntimeExecutionState::WaitingApproval, vec![]);
-    sibling.id = sibling_run_id.clone();
+    sibling.id = sibling_execution_id.clone();
     sibling.worktree_path = worktree_path.to_string();
 
     {
         let mut execs = engine.executions.lock().await;
-        execs.insert(target_run_id.clone(), target);
-        execs.insert(sibling_run_id.clone(), sibling);
+        execs.insert(target_execution_id.clone(), target);
+        execs.insert(sibling_execution_id.clone(), sibling);
     }
 
     let outcome = engine
-        .handle_approval_with_output_for_run_for_test(
-            &target_run_id,
-            Some(&target_run_id),
+        .handle_approval_with_output_for_execution_for_test(
+            &target_execution_id,
+            Some(&target_execution_id),
             Some("review"),
         )
         .await
         .unwrap();
-    assert!(matches!(outcome, StepOutcome::Persist(_)));
+    assert!(matches!(outcome, NodeOutcome::Persist(_)));
 
     let execs = engine.executions.lock().await;
-    let target = execs.get(&target_run_id).unwrap();
-    let sibling = execs.get(&sibling_run_id).unwrap();
+    let target = execs.get(&target_execution_id).unwrap();
+    let sibling = execs.get(&sibling_execution_id).unwrap();
     assert_eq!(target.state, RuntimeExecutionState::Completed);
     assert_eq!(target.node_history.len(), 1);
     assert_eq!(sibling.state, RuntimeExecutionState::WaitingApproval);
@@ -6549,7 +6443,7 @@ async fn approval_for_run_id_updates_only_target_run_when_worktree_is_shared() {
 /// execution_id と、`WorkflowExecution.id` / active summary / workflow_executions/{execution_id}.json が
 /// 一貫し、同一 worktree への重複起動を拒否することを直接検証する。
 #[tokio::test]
-async fn start_workflow_core_records_run_id_and_rejects_duplicate_worktree() {
+async fn start_workflow_core_records_execution_id_and_rejects_duplicate_worktree() {
     let tmp = tempfile::TempDir::new().unwrap();
     let engine = WorkflowRuntimeService::new_for_test();
     engine
@@ -6612,7 +6506,7 @@ async fn start_workflow_core_records_run_id_and_rejects_duplicate_worktree() {
     assert_eq!(metadata["createdFrom"].as_str(), Some("desktop_ui"));
     assert!(metadata.get("task").is_none());
     assert!(metadata.get("request").is_none());
-    // worktree -> run の双方向解決も一貫している
+    // worktree -> execution の双方向解決も一貫している
     assert_eq!(
         engine.execution_id_for_worktree(worktree_path).await,
         Some(execution_id.clone())
@@ -6636,7 +6530,7 @@ async fn start_workflow_core_records_run_id_and_rejects_duplicate_worktree() {
         Err(WorkflowEngineError::AlreadyActive(_))
     ));
 
-    let empty_request_run_id = engine
+    let empty_request_execution_id = engine
         .start_workflow_common_core_for_test(
             make_minimal_workflow(),
             "/wt/start-empty-request".to_string(),
@@ -6648,7 +6542,7 @@ async fn start_workflow_core_records_run_id_and_rejects_duplicate_worktree() {
         .unwrap();
     let execs = engine.executions.lock().await;
     let empty_request = execs
-        .get(&empty_request_run_id)
+        .get(&empty_request_execution_id)
         .unwrap()
         .artifacts
         .get(crate::domain::workflow::services::reference::REQUEST_ARTIFACT)
@@ -6657,7 +6551,7 @@ async fn start_workflow_core_records_run_id_and_rejects_duplicate_worktree() {
 }
 
 /// Spec issues-1011 finding 14: 同一 worktree への重複起動は reservation 段階で拒否され、
-/// 新規 metadata / parent session / refs が孤立しない。Run Store の reservation は
+/// 新規 metadata / parent session / refs が孤立しない。Execution Store の reservation は
 /// 起動経路上の「最初の副作用」であり、失敗時には他の副作用が一切走らない構造を保証する。
 #[tokio::test]
 async fn start_workflow_duplicate_reservation_does_not_leak_metadata_or_refs() {
@@ -6669,16 +6563,16 @@ async fn start_workflow_duplicate_reservation_does_not_leak_metadata_or_refs() {
     let worktree_path = "/wt/dup-leak";
 
     // 既存 active reservation
-    let existing_run_id = uuid::Uuid::new_v4().to_string();
+    let existing_execution_id = uuid::Uuid::new_v4().to_string();
     engine
         .execution_store
         .register_active_execution(
             crate::adaptor::gateway::workflow::execution_store::WorkflowExecutionMetadata {
-                execution_id: existing_run_id.clone(),
+                execution_id: existing_execution_id.clone(),
                 workflow_name: "wf".to_string(),
                 status: ExecutionStatus::Running,
                 worktree_path: worktree_path.to_string(),
-                current_node: Some("only-step".to_string()),
+                current_node: Some("only-node".to_string()),
                 created_from: ExecutionOrigin::DesktopUi,
                 started_at: 100.0,
                 updated_at: 100.0,
@@ -6693,16 +6587,16 @@ async fn start_workflow_duplicate_reservation_does_not_leak_metadata_or_refs() {
         .unwrap();
 
     // 2 回目の reservation 失敗 → 新 metadata / refs / executions に何も追加されない
-    let new_run_id = uuid::Uuid::new_v4().to_string();
+    let new_execution_id = uuid::Uuid::new_v4().to_string();
     let result = engine
         .execution_store
         .register_active_execution(
             crate::adaptor::gateway::workflow::execution_store::WorkflowExecutionMetadata {
-                execution_id: new_run_id.clone(),
+                execution_id: new_execution_id.clone(),
                 workflow_name: "wf".to_string(),
                 status: ExecutionStatus::Running,
                 worktree_path: worktree_path.to_string(),
-                current_node: Some("only-step".to_string()),
+                current_node: Some("only-node".to_string()),
                 created_from: ExecutionOrigin::DesktopUi,
                 started_at: 200.0,
                 updated_at: 200.0,
@@ -6722,18 +6616,21 @@ async fn start_workflow_duplicate_reservation_does_not_leak_metadata_or_refs() {
     let path = tmp
         .path()
         .join("workflow_executions")
-        .join(format!("{new_run_id}.json"));
+        .join(format!("{new_execution_id}.json"));
     assert!(!path.exists());
     // (2) session_workflow_refs に新規エントリ無し（reservation 失敗の段階で副作用が走らない）
     let refs = engine.session_workflow_refs.lock().await;
     assert!(!refs
         .values()
-        .any(|r: &SessionWorkflowRef| r.execution_id == new_run_id));
+        .any(|r: &SessionWorkflowRef| r.execution_id == new_execution_id));
     // (3) executions にも新 execution_id が無い
     let execs = engine.executions.lock().await;
-    assert!(!execs.contains_key(&new_run_id));
+    assert!(!execs.contains_key(&new_execution_id));
     // (4) active は existing のみ
-    assert_eq!(active_only_summary(&engine).await, vec![existing_run_id]);
+    assert_eq!(
+        active_only_summary(&engine).await,
+        vec![existing_execution_id]
+    );
 }
 
 // 撤去済み: rollback_created_parent_session は parent ChatSession 機構撤去で消滅した。
@@ -6751,7 +6648,7 @@ async fn active_only_summary(engine: &WorkflowRuntimeService) -> Vec<String> {
 /// Spec issues-1011 finding 15: completed / failed / aborted の代表経路で
 /// active 一覧から消えて completed 一覧に status 付きで現れる。
 /// production の権威遷移経路で必ず呼ばれる `sync_execution_store_from_snapshot` を直接呼び、
-/// 3 ステータスすべてで「Run Store の owner が active → completed に推移する」ことを
+/// 3 ステータスすべてで「Execution Store の owner が active → completed に推移する」ことを
 /// 1 つのテストでまとめて検証する（既存の同種テストとは別に、status 観測も加える）。
 #[tokio::test]
 async fn execution_store_terminal_statuses_propagate_status_field_in_completed_listing() {
@@ -6787,7 +6684,7 @@ async fn execution_store_terminal_statuses_propagate_status_field_in_completed_l
                     workflow_name: "wf".to_string(),
                     status: ExecutionStatus::Running,
                     worktree_path: format!("/wt/{execution_id}"),
-                    current_node: Some("only-step".to_string()),
+                    current_node: Some("only-node".to_string()),
                     created_from: ExecutionOrigin::DesktopUi,
                     started_at: 100.0,
                     updated_at: 100.0,
@@ -6800,7 +6697,7 @@ async fn execution_store_terminal_statuses_propagate_status_field_in_completed_l
             )
             .await
             .unwrap();
-        let snapshot = WorkflowState {
+        let snapshot = RuntimeCommitSnapshot {
             execution_id: execution_id.clone(),
             workflow_name: "wf".to_string(),
             worktree_path: format!("/wt/{execution_id}"),
@@ -6809,18 +6706,14 @@ async fn execution_store_terminal_statuses_propagate_status_field_in_completed_l
             error_reason: None,
             state,
             current_node_index: 0,
-            current_node_name: "only-step".to_string(),
+            current_node_name: "only-node".to_string(),
             current_session_id: None,
-            total_nodes: 1,
             node_history: vec![],
             node_execution_counts: HashMap::new(),
             workflow_definition: make_minimal_workflow(),
             total_token_usage: TokenUsage::default(),
-            node_statuses: HashMap::new(),
             artifacts: HashMap::new(),
             node_executions: vec![],
-            stall_observations: Vec::new(),
-            approval_operations: None,
             started_at: 100.0,
             updated_at: 200.0,
         };
@@ -6843,7 +6736,7 @@ async fn execution_store_terminal_statuses_propagate_status_field_in_completed_l
         let entry = completed
             .iter()
             .find(|r| &r.execution_id == id)
-            .expect("completed listing must include run");
+            .expect("completed listing must include execution");
         assert_eq!(
             entry.status, *expected_status,
             "status must propagate to completed summary for {id}"
@@ -6851,15 +6744,15 @@ async fn execution_store_terminal_statuses_propagate_status_field_in_completed_l
     }
 }
 
-/// Spec issues-1011 finding 3: `resolve_chat_session_for_approval` は run state が
-/// `WaitingApproval` でない場合に Err を返す（任意 step session への注入経路を塞ぐ）。
+/// Spec issues-1011 finding 3: `resolve_chat_session_for_approval` は execution state が
+/// `WaitingApproval` でない場合に Err を返す（任意 node session への注入経路を塞ぐ）。
 #[tokio::test]
 async fn resolve_chat_session_for_approval_rejects_non_waiting_approval_state() {
     let engine = WorkflowRuntimeService::new_for_test();
     let execution_id = uuid::Uuid::new_v4().to_string();
     let mut exec = make_exec_with(&execution_id, "/wt/x", RuntimeExecutionState::Running);
     exec.workflow.nodes[0].kind = test_node_kind(TestKind::ApprovalSession, "review");
-    exec.current_session_id = Some("step-sess".to_string());
+    exec.current_session_id = Some("node-sess".to_string());
     engine
         .executions
         .lock()
@@ -6885,7 +6778,7 @@ async fn resolve_chat_session_for_approval_rejects_non_approval_current_node() {
         RuntimeExecutionState::WaitingApproval,
     );
     // current node は通常 session のまま（make_minimal_workflow が auto session を返す）
-    exec.current_session_id = Some("step-sess".to_string());
+    exec.current_session_id = Some("node-sess".to_string());
     engine
         .executions
         .lock()
@@ -6910,7 +6803,7 @@ async fn resolve_chat_session_for_approval_accepts_fully_valid_state() {
         RuntimeExecutionState::WaitingApproval,
     );
     exec.workflow.nodes[0].kind = test_node_kind(TestKind::ApprovalSession, "review");
-    exec.current_session_id = Some("step-sess".to_string());
+    exec.current_session_id = Some("node-sess".to_string());
     engine
         .executions
         .lock()
@@ -6921,19 +6814,19 @@ async fn resolve_chat_session_for_approval_accepts_fully_valid_state() {
         .resolve_chat_session_for_approval(&execution_id)
         .await
         .unwrap();
-    assert_eq!(sid, "step-sess");
+    assert_eq!(sid, "node-sess");
     assert_eq!(wt, "/wt/x");
 }
 
-/// Spec issues-1011 finding 3: terminal run の approval 解決は拒否される。
+/// Spec issues-1011 finding 3: terminal execution の approval 解決は拒否される。
 /// 同一 worktree に terminal + active がある状況で terminal 側を狙う注入経路を防ぐ。
 #[tokio::test]
-async fn resolve_chat_session_for_approval_rejects_terminal_run() {
+async fn resolve_chat_session_for_approval_rejects_terminal_execution() {
     let engine = WorkflowRuntimeService::new_for_test();
     let execution_id = uuid::Uuid::new_v4().to_string();
     let mut exec = make_exec_with(&execution_id, "/wt/x", RuntimeExecutionState::Completed);
     exec.workflow.nodes[0].kind = test_node_kind(TestKind::ApprovalSession, "review");
-    exec.current_session_id = Some("step-sess".to_string());
+    exec.current_session_id = Some("node-sess".to_string());
     engine
         .executions
         .lock()
@@ -6948,46 +6841,46 @@ async fn resolve_chat_session_for_approval_rejects_terminal_run() {
 }
 
 /// Spec issues-1011 finding 5: terminal transition 経路で `cleanup_session_workflow_refs_by_execution_id`
-/// は対象 run の refs のみを削除し、同一 worktree の別 active run の refs は残す。
+/// は対象 execution の refs のみを削除し、同一 worktree の別 active execution の refs は残す。
 #[tokio::test]
-async fn cleanup_session_workflow_refs_by_execution_id_preserves_sibling_run_refs() {
+async fn cleanup_session_workflow_refs_by_execution_id_preserves_sibling_execution_refs() {
     let engine = WorkflowRuntimeService::new_for_test();
-    let terminal_run_id = uuid::Uuid::new_v4().to_string();
-    let active_run_id = uuid::Uuid::new_v4().to_string();
+    let terminal_execution_id = uuid::Uuid::new_v4().to_string();
+    let active_execution_id = uuid::Uuid::new_v4().to_string();
 
-    // 両 run の refs を入れる（同一 worktree 想定）
+    // 両 execution の refs を入れる（同一 worktree 想定）
     {
         let mut refs = engine.session_workflow_refs.lock().await;
         refs.insert(
             "parent-terminal".to_string(),
             SessionWorkflowRef {
-                execution_id: terminal_run_id.clone(),
+                execution_id: terminal_execution_id.clone(),
             },
         );
         refs.insert(
-            "step-terminal".to_string(),
+            "node-terminal".to_string(),
             SessionWorkflowRef {
-                execution_id: terminal_run_id.clone(),
+                execution_id: terminal_execution_id.clone(),
             },
         );
         refs.insert(
             "parent-active".to_string(),
             SessionWorkflowRef {
-                execution_id: active_run_id.clone(),
+                execution_id: active_execution_id.clone(),
             },
         );
     }
 
     engine
-        .cleanup_session_workflow_refs_by_execution_id(&terminal_run_id)
+        .cleanup_session_workflow_refs_by_execution_id(&terminal_execution_id)
         .await;
 
     let refs = engine.session_workflow_refs.lock().await;
     assert!(!refs.contains_key("parent-terminal"));
-    assert!(!refs.contains_key("step-terminal"));
+    assert!(!refs.contains_key("node-terminal"));
     assert!(
         refs.contains_key("parent-active"),
-        "sibling active run の refs は残るべき"
+        "sibling active execution の refs は残るべき"
     );
 }
 
@@ -7007,7 +6900,7 @@ mod dispatch_boundary_tests {
     };
     use crate::adaptor::gateway::workflow::internal_node_command::InternalNodeCommand;
     use crate::adaptor::gateway::workflow::log::WorkflowEventLog;
-    use crate::adaptor::gateway::workflow::schema::{ItemsSource, Rule, Workflow};
+    use crate::adaptor::gateway::workflow::schema::{ItemsSource, Rule, WorkflowDefinitionYaml};
     use crate::adaptor::gateway::workflow::state::RuntimeExecutionState;
     use crate::domain::workflow::WorkflowError;
     use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
@@ -7162,8 +7055,8 @@ mod dispatch_boundary_tests {
             .expect("mock app data dir must resolve")
     }
 
-    fn make_approval_only_workflow() -> Workflow {
-        Workflow {
+    fn make_approval_only_workflow() -> WorkflowDefinitionYaml {
+        WorkflowDefinitionYaml {
             name: "boundary-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -7172,13 +7065,13 @@ mod dispatch_boundary_tests {
         }
     }
 
-    fn make_running_session_workflow() -> Workflow {
-        Workflow {
+    fn make_running_session_workflow() -> WorkflowDefinitionYaml {
+        WorkflowDefinitionYaml {
             name: "boundary-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![make_test_step(
+            nodes: vec![make_test_node(
                 "fix",
                 TestKind::Session,
                 "fix",
@@ -7199,7 +7092,7 @@ mod dispatch_boundary_tests {
     fn make_waiting_approval_execution_with_workflow(
         execution_id: &str,
         worktree_path: &str,
-        workflow: Workflow,
+        workflow: WorkflowDefinitionYaml,
     ) -> WorkflowExecution {
         let node_name = workflow.nodes[0].name.clone();
         let node_kind = workflow.nodes[0].kind_name();
@@ -7217,7 +7110,7 @@ mod dispatch_boundary_tests {
             started_at: 1000.0,
             updated_at: 1000.0,
             current_session_id: Some("sess-1".to_string()),
-            current_step_token_usage: TokenUsage::default(),
+            current_node_token_usage: TokenUsage::default(),
             artifacts: HashMap::new(),
             node_executions: vec![NodeExecution {
                 id: node_execution_id,
@@ -7235,7 +7128,7 @@ mod dispatch_boundary_tests {
                 completed_at: None,
             }],
             request: None,
-            parallel_run: None,
+            fanout_runtime: None,
             current_stall_observations: Vec::new(),
             workflow_defaults: WorkflowDefaults {
                 backend_id: Some("claude".to_string()),
@@ -7244,7 +7137,7 @@ mod dispatch_boundary_tests {
         }
     }
 
-    fn test_fanout_child_run(
+    fn test_fanout_child(
         node_name: &str,
         session_id: &str,
         state: FanoutChildRuntimeState,
@@ -7266,7 +7159,7 @@ mod dispatch_boundary_tests {
         }
     }
 
-    fn install_test_fanout_run(exec: &mut WorkflowExecution, children: Vec<FanoutChildRuntime>) {
+    fn install_test_fanout(exec: &mut WorkflowExecution, children: Vec<FanoutChildRuntime>) {
         let parent = exec
             .node_executions
             .first_mut()
@@ -7315,7 +7208,7 @@ mod dispatch_boundary_tests {
                         completed_at: child.completed_at,
                     }),
             );
-        exec.parallel_run = Some(FanoutRuntimeState {
+        exec.fanout_runtime = Some(FanoutRuntimeState {
             parent_node_name: parent_node,
             parent_node_execution_id,
             children,
@@ -7358,19 +7251,19 @@ mod dispatch_boundary_tests {
     }
 
     fn same_name_fanout_approval_execution() -> WorkflowExecution {
-        let mut exec = make_waiting_approval_execution("run-fanout-approval", "/wt/fanout");
+        let mut exec = make_waiting_approval_execution("execution-fanout-approval", "/wt/fanout");
         exec.state = RuntimeExecutionState::Running;
         exec.current_session_id = None;
-        install_test_fanout_run(
+        install_test_fanout(
             &mut exec,
             vec![
-                test_fanout_child_run(
+                test_fanout_child(
                     "review-child",
                     "session-review-0",
                     FanoutChildRuntimeState::Running,
                     0,
                 ),
-                test_fanout_child_run(
+                test_fanout_child(
                     "review-child",
                     "session-review-1",
                     FanoutChildRuntimeState::Running,
@@ -7390,8 +7283,8 @@ mod dispatch_boundary_tests {
     fn name_only_fanout_approval_requires_id_for_multiple_active_same_name_children() {
         let exec = same_name_fanout_approval_execution();
 
-        let error =
-            resolve_fanout_approval_node_execution_id(&exec, "review-child", None).unwrap_err();
+        let error = resolve_fanout_approval_target_node_execution_id(&exec, "review-child", None)
+            .unwrap_err();
 
         assert!(matches!(
             error,
@@ -7407,7 +7300,7 @@ mod dispatch_boundary_tests {
     fn fanout_approval_id_selects_waiting_child_among_same_name_active_children() {
         let exec = same_name_fanout_approval_execution();
 
-        let selected = resolve_fanout_approval_node_execution_id(
+        let selected = resolve_fanout_approval_target_node_execution_id(
             &exec,
             "review-child",
             Some("ne-review-child-0"),
@@ -7650,20 +7543,20 @@ mod dispatch_boundary_tests {
                     created_from: ExecutionOrigin::Agent,
                     request: String::new(),
                     permission_mode: "ask".to_string(),
-                    definition: Workflow {
+                    definition: WorkflowDefinitionYaml {
                         name: "wf".to_string(),
                         description: String::new(),
                         builtin: false,
                         schemas: Default::default(),
                         nodes: vec![
-                            make_test_step(
+                            make_test_node(
                                 "plan",
                                 TestKind::Session,
                                 "implement",
                                 vec![Rule::Next("review".to_string())],
                                 None,
                             ),
-                            make_test_step("review", TestKind::Session, "implement", vec![], None),
+                            make_test_node("review", TestKind::Session, "implement", vec![], None),
                         ],
                     },
                     timestamp: 100.0,
@@ -7760,7 +7653,7 @@ mod dispatch_boundary_tests {
                 },
             ])
             .unwrap();
-        insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+        insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
 
         let outcome = engine
             .abort_workflow_by_execution_id(
@@ -7774,12 +7667,12 @@ mod dispatch_boundary_tests {
             .unwrap();
 
         assert!(matches!(outcome, AbortOutcome::Aborted));
-        let stored_run = engine
+        let stored_execution = engine
             .execution_store()
             .get_execution(&execution_id)
             .await
             .unwrap();
-        assert_eq!(stored_run.status, ExecutionStatus::Aborted);
+        assert_eq!(stored_execution.status, ExecutionStatus::Aborted);
         let payloads = received_payloads.lock().unwrap().clone();
         let live_payload = payloads
             .last()
@@ -7854,7 +7747,7 @@ mod dispatch_boundary_tests {
         }
     }
 
-    async fn insert_execution_and_active_run(
+    async fn insert_execution_and_register_active(
         engine: &WorkflowRuntimeService,
         exec: WorkflowExecution,
         created_from: ExecutionOrigin,
@@ -7886,20 +7779,20 @@ mod dispatch_boundary_tests {
     }
 
     fn resumable_two_node_execution(execution_id: &str, worktree_path: &str) -> WorkflowExecution {
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "resume-checkpoint-wf".to_string(),
             description: "resume from the last confirmed node".to_string(),
             builtin: false,
             schemas: Default::default(),
             nodes: vec![
-                make_test_step(
+                make_test_node(
                     "prepare",
                     TestKind::Session,
                     "implement",
                     vec![Rule::Next("execute".to_string())],
                     None,
                 ),
-                make_test_step("execute", TestKind::Session, "implement", vec![], None),
+                make_test_node("execute", TestKind::Session, "implement", vec![], None),
             ],
         };
         WorkflowExecution {
@@ -7918,7 +7811,7 @@ mod dispatch_boundary_tests {
             started_at: 1000.0,
             updated_at: 1003.0,
             current_session_id: Some("old-unconfirmed-session".to_string()),
-            current_step_token_usage: TokenUsage::default(),
+            current_node_token_usage: TokenUsage::default(),
             artifacts: HashMap::new(),
             node_executions: vec![
                 NodeExecution {
@@ -7953,7 +7846,7 @@ mod dispatch_boundary_tests {
                 },
             ],
             request: Some("continue safely".to_string()),
-            parallel_run: None,
+            fanout_runtime: None,
             current_stall_observations: Vec::new(),
             workflow_defaults: WorkflowDefaults {
                 backend_id: None,
@@ -8045,7 +7938,7 @@ mod dispatch_boundary_tests {
             resumable_two_node_execution(&execution_id, worktree.path().to_string_lossy().as_ref());
         exec.workflow_defaults.permission_mode = permission_mode.to_string();
         append_resumable_two_node_events(&data_dir, &exec);
-        insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+        insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
 
         if reason == ExecutionInterruptionReason::Stop {
             engine
@@ -8182,7 +8075,7 @@ mod dispatch_boundary_tests {
         let exec =
             resumable_two_node_execution(&execution_id, worktree.path().to_string_lossy().as_ref());
         append_resumable_two_node_events(&data_dir, &exec);
-        insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+        insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
         engine
             .stop_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
             .await
@@ -8279,7 +8172,7 @@ mod dispatch_boundary_tests {
         let exec =
             resumable_two_node_execution(&execution_id, worktree.path().to_string_lossy().as_ref());
         append_resumable_two_node_events(&data_dir, &exec);
-        insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+        insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
         engine
             .stop_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
             .await
@@ -8352,7 +8245,7 @@ mod dispatch_boundary_tests {
         let exec =
             resumable_two_node_execution(&execution_id, worktree.path().to_string_lossy().as_ref());
         append_resumable_two_node_events(&data_dir, &exec);
-        insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+        insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
         engine
             .stop_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
             .await
@@ -8418,15 +8311,15 @@ mod dispatch_boundary_tests {
         let worktree = TempDir::new().unwrap();
         let worktree_path = worktree.path().to_string_lossy().to_string();
         let execution_id = uuid::Uuid::new_v4().to_string();
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "partial-fanout-resume".to_string(),
             description: "reuse confirmed fanout artifacts".to_string(),
             builtin: false,
             schemas: Default::default(),
             nodes: vec![
-                make_fanout_step("parallel-review", vec!["review-a", "review-b"]),
-                make_test_step("review-a", TestKind::Session, "implement", vec![], None),
-                make_test_step("review-b", TestKind::Session, "implement", vec![], None),
+                make_fanout_node("fanout-review", vec!["review-a", "review-b"]),
+                make_test_node("review-a", TestKind::Session, "implement", vec![], None),
+                make_test_node("review-b", TestKind::Session, "implement", vec![], None),
             ],
         };
         let parent_v1 = format!("{execution_id}-parent-1");
@@ -8439,7 +8332,7 @@ mod dispatch_boundary_tests {
                     workflow_name: workflow.name.clone(),
                     worktree_path: worktree_path.clone(),
                     created_from: ExecutionOrigin::DesktopUi,
-                    request: "review in parallel".to_string(),
+                    request: "review in fanout".to_string(),
                     permission_mode: "ask".to_string(),
                     definition: workflow.clone(),
                     timestamp: 1.0,
@@ -8447,7 +8340,7 @@ mod dispatch_boundary_tests {
                 WorkflowEvent::NodeStarted {
                     execution_id: execution_id.clone(),
                     node_execution_id: parent_v1,
-                    node_name: "parallel-review".to_string(),
+                    node_name: "fanout-review".to_string(),
                     kind: NodeKindName::Fanout,
                     attempt: 1,
                     fanout_parent: None,
@@ -8460,7 +8353,7 @@ mod dispatch_boundary_tests {
                     kind: NodeKindName::Session,
                     attempt: 1,
                     fanout_parent: Some(FanoutParentRef {
-                        parent_node: "parallel-review".to_string(),
+                        parent_node: "fanout-review".to_string(),
                         parent_attempt: 1,
                         item_index: None,
                         child_index: 0,
@@ -8502,7 +8395,7 @@ mod dispatch_boundary_tests {
                     kind: NodeKindName::Session,
                     attempt: 1,
                     fanout_parent: Some(FanoutParentRef {
-                        parent_node: "parallel-review".to_string(),
+                        parent_node: "fanout-review".to_string(),
                         parent_attempt: 1,
                         item_index: None,
                         child_index: 1,
@@ -8529,7 +8422,7 @@ mod dispatch_boundary_tests {
                 workflow_name: workflow.name.clone(),
                 status: ExecutionStatus::Running,
                 worktree_path: worktree_path.clone(),
-                current_node: Some("parallel-review".to_string()),
+                current_node: Some("fanout-review".to_string()),
                 created_from: ExecutionOrigin::DesktopUi,
                 started_at: 1.0,
                 updated_at: 5.0,
@@ -8546,7 +8439,7 @@ mod dispatch_boundary_tests {
             .interrupt_execution(
                 &execution_id,
                 ExecutionInterruptionReason::Crash,
-                Some("parallel-review".to_string()),
+                Some("fanout-review".to_string()),
                 6.0,
             )
             .await
@@ -8561,10 +8454,10 @@ mod dispatch_boundary_tests {
         let resumed = executions
             .get(&execution_id)
             .expect("resumed fanout runtime");
-        assert_eq!(resumed.node_execution_counts["parallel-review"], 2);
+        assert_eq!(resumed.node_execution_counts["fanout-review"], 2);
         assert_eq!(resumed.node_execution_counts["review-a"], 2);
         assert_eq!(resumed.node_execution_counts["review-b"], 2);
-        let fanout = resumed.parallel_run.as_ref().expect("active fanout");
+        let fanout = resumed.fanout_runtime.as_ref().expect("active fanout");
         let reused = fanout
             .children
             .iter()
@@ -8644,7 +8537,7 @@ mod dispatch_boundary_tests {
             )
             .await
             .unwrap();
-        wait_for_run_terminal(&app, &engine, &execution_id).await;
+        wait_for_execution_terminal(&app, &engine, &execution_id).await;
 
         let completed = engine
             .execution_store()
@@ -8669,7 +8562,7 @@ mod dispatch_boundary_tests {
             .find_map(|event| match event {
                 WorkflowEvent::ArtifactProduced {
                     node_name, value, ..
-                } if node_name == "parallel-review" => Some(value),
+                } if node_name == "fanout-review" => Some(value),
                 _ => None,
             })
             .expect("resumed fanout parent artifact");
@@ -8683,7 +8576,7 @@ mod dispatch_boundary_tests {
                 node_name,
                 attempt: 2,
                 ..
-            } if node_name == "parallel-review"
+            } if node_name == "fanout-review"
         )));
         assert!(completed_events.iter().any(|event| matches!(
             event,
@@ -8707,7 +8600,7 @@ mod dispatch_boundary_tests {
             worktree.path().to_string_lossy().as_ref(),
         );
         append_started_events_for_execution(&data_dir, &exec);
-        insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+        insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
 
         engine
             .stop_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
@@ -8742,17 +8635,17 @@ mod dispatch_boundary_tests {
         controller.pause_start_turn();
         let worktree = TempDir::new().unwrap();
         let worktree_path = worktree.path().to_string_lossy().to_string();
-        let mut review_step =
-            make_test_step("review", TestKind::Session, "implement", vec![], None);
-        if let NodeKind::Session(session) = &mut review_step.kind {
+        let mut review_node =
+            make_test_node("review", TestKind::Session, "implement", vec![], None);
+        if let NodeKind::Session(session) = &mut review_node.kind {
             session.model = Some("claude-4-sonnet".to_string());
         }
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "stop-during-session-activation".to_string(),
             description: String::new(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![review_step],
+            nodes: vec![review_node],
         };
 
         let start_engine = engine.clone();
@@ -8875,17 +8768,17 @@ mod dispatch_boundary_tests {
         controller.pause_start_turn();
         let worktree = TempDir::new().unwrap();
         let worktree_path = worktree.path().to_string_lossy().to_string();
-        let mut review_step =
-            make_test_step("review", TestKind::Session, "implement", vec![], None);
-        if let NodeKind::Session(session) = &mut review_step.kind {
+        let mut review_node =
+            make_test_node("review", TestKind::Session, "implement", vec![], None);
+        if let NodeKind::Session(session) = &mut review_node.kind {
             session.model = Some("claude-4-sonnet".to_string());
         }
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "stop-append-failure-during-activation".to_string(),
             description: String::new(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![review_step],
+            nodes: vec![review_node],
         };
         let start_engine = engine.clone();
         let start_app = app.handle().clone();
@@ -8929,6 +8822,9 @@ mod dispatch_boundary_tests {
         };
 
         engine.fail_next_required_event_append_for_test();
+        engine
+            .execution_store
+            .fail_next_active_interruption_rollback_for_test();
         let stop_error = tokio::time::timeout(
             std::time::Duration::from_secs(2),
             engine.stop_workflow_execution(
@@ -8942,6 +8838,10 @@ mod dispatch_boundary_tests {
         .expect("failed stop append must roll back without waiting for the paused backend")
         .expect_err("injected stop append failure must be returned");
         assert!(matches!(stop_error, WorkflowEngineError::SessionStore(_)));
+        let stop_error = stop_error.to_string();
+        assert!(stop_error.contains("ExecutionInterrupted log failed"));
+        assert!(stop_error.contains("interruption reservation rollback failed"));
+        assert!(stop_error.contains("active metadata rollback failed"));
 
         let restored = engine
             .execution_store()
@@ -8957,6 +8857,19 @@ mod dispatch_boundary_tests {
         assert!(!controller
             .call_kinds_for(&session_id)
             .contains(&crate::test_support::TestRuntimeCallKind::Interrupt));
+
+        // The injected rollback failure deliberately leaves the transition reservation in place.
+        // Clear it so the remainder of this activation test can verify a later successful stop.
+        engine
+            .execution_store
+            .finish_active_interruption(
+                crate::adaptor::gateway::workflow::execution_store::ActiveInterruptionReservation {
+                    execution_id: execution_id.clone(),
+                    worktree_path: worktree_path.clone(),
+                },
+            )
+            .await
+            .unwrap();
 
         controller.release_start_turn();
         let started_execution_id =
@@ -8991,17 +8904,17 @@ mod dispatch_boundary_tests {
         controller.pause_start_turn();
         let worktree = TempDir::new().unwrap();
         let worktree_path = worktree.path().to_string_lossy().to_string();
-        let mut review_step =
-            make_test_step("review", TestKind::Session, "implement", vec![], None);
-        if let NodeKind::Session(session) = &mut review_step.kind {
+        let mut review_node =
+            make_test_node("review", TestKind::Session, "implement", vec![], None);
+        if let NodeKind::Session(session) = &mut review_node.kind {
             session.model = Some("claude-4-sonnet".to_string());
         }
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "abort-during-session-activation".to_string(),
             description: String::new(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![review_step],
+            nodes: vec![review_node],
         };
         let start_engine = engine.clone();
         let start_app = app.handle().clone();
@@ -9096,12 +9009,12 @@ mod dispatch_boundary_tests {
         controller.pause_start_turn();
         let worktree = TempDir::new().unwrap();
         let worktree_path = worktree.path().to_string_lossy().to_string();
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "abort-projection-failure-during-activation".to_string(),
             description: String::new(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![make_test_step(
+            nodes: vec![make_test_node(
                 "review",
                 TestKind::Session,
                 "implement",
@@ -9291,12 +9204,12 @@ mod dispatch_boundary_tests {
                     created_from: ExecutionOrigin::Api,
                     request: String::new(),
                     permission_mode: "ask".to_string(),
-                    definition: Workflow {
+                    definition: WorkflowDefinitionYaml {
                         name: "state-validation".to_string(),
                         description: String::new(),
                         builtin: false,
                         schemas: Default::default(),
-                        nodes: vec![make_test_step(
+                        nodes: vec![make_test_node(
                             "review",
                             TestKind::Session,
                             "review",
@@ -9504,25 +9417,25 @@ mod dispatch_boundary_tests {
         config_repository.save(config).unwrap();
     }
 
-    fn command_step(name: &str, command: &str, rules: Vec<Rule>) -> NodeDefinition {
-        make_test_step(name, TestKind::Command, command, rules, None)
+    fn command_node(name: &str, command: &str, rules: Vec<Rule>) -> NodeDefinition {
+        make_test_node(name, TestKind::Command, command, rules, None)
     }
 
-    fn command_step_with_artifact(
+    fn command_node_with_artifact(
         name: &str,
         command: &str,
         artifact: &str,
         rules: Vec<Rule>,
     ) -> NodeDefinition {
-        let mut step = command_step(name, command, rules);
-        step.artifact = Some(artifact.to_string());
-        step
+        let mut node = command_node(name, command, rules);
+        node.artifact = Some(artifact.to_string());
+        node
     }
 
     async fn start_command_workflow_nowait_for_test(
         app: &DispatchTestApp,
         engine: &WorkflowRuntimeService,
-        workflow: Workflow,
+        workflow: WorkflowDefinitionYaml,
         worktree_path: &std::path::Path,
     ) -> String {
         let data_dir = dispatch_data_dir(app.handle());
@@ -9546,12 +9459,12 @@ mod dispatch_boundary_tests {
     async fn start_command_workflow_for_test(
         app: &DispatchTestApp,
         engine: &WorkflowRuntimeService,
-        workflow: Workflow,
+        workflow: WorkflowDefinitionYaml,
         worktree_path: &std::path::Path,
     ) -> String {
         let execution_id =
             start_command_workflow_nowait_for_test(app, engine, workflow, worktree_path).await;
-        wait_for_run_terminal(app, engine, &execution_id).await;
+        wait_for_execution_terminal(app, engine, &execution_id).await;
         execution_id
     }
 
@@ -9590,13 +9503,13 @@ mod dispatch_boundary_tests {
                 .lock()
                 .await
                 .values()
-                .any(|owner_run_id| owner_run_id == execution_id)
+                .any(|owner_execution_id| owner_execution_id == execution_id)
             {
                 return;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        panic!("command process for run '{execution_id}' did not become active");
+        panic!("command process for execution '{execution_id}' did not become active");
     }
 
     async fn wait_for_fanout_child_session(
@@ -9609,9 +9522,10 @@ mod dispatch_boundary_tests {
                 let execs = engine.executions.lock().await;
                 execs
                     .get(execution_id)
-                    .and_then(|exec| exec.parallel_run.as_ref())
-                    .and_then(|run| {
-                        run.children
+                    .and_then(|exec| exec.fanout_runtime.as_ref())
+                    .and_then(|fanout| {
+                        fanout
+                            .children
                             .iter()
                             .find(|child| {
                                 child.node_name == child_name && !child.session_id.is_empty()
@@ -9624,7 +9538,9 @@ mod dispatch_boundary_tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        panic!("fanout child session for '{child_name}' in run '{execution_id}' did not start");
+        panic!(
+            "fanout child session for '{child_name}' in execution '{execution_id}' did not start"
+        );
     }
 
     async fn wait_for_inactive_command(engine: &WorkflowRuntimeService, execution_id: &str) {
@@ -9634,13 +9550,13 @@ mod dispatch_boundary_tests {
                 .lock()
                 .await
                 .values()
-                .any(|owner_run_id| owner_run_id == execution_id)
+                .any(|owner_execution_id| owner_execution_id == execution_id)
             {
                 return;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        panic!("command process for run '{execution_id}' did not stop");
+        panic!("command process for execution '{execution_id}' did not stop");
     }
 
     #[cfg(unix)]
@@ -9677,7 +9593,7 @@ mod dispatch_boundary_tests {
         std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
     }
 
-    async fn wait_for_run_terminal(
+    async fn wait_for_execution_terminal(
         app: &DispatchTestApp,
         engine: &WorkflowRuntimeService,
         execution_id: &str,
@@ -9688,7 +9604,7 @@ mod dispatch_boundary_tests {
                 .execution_store()
                 .get_execution(execution_id)
                 .await
-                .is_some_and(|run| run.status.is_terminal());
+                .is_some_and(|execution| execution.status.is_terminal());
             let log_terminal = WorkflowEventLog::new(&data_dir)
                 .read_log(execution_id)
                 .unwrap_or_default()
@@ -9712,11 +9628,11 @@ mod dispatch_boundary_tests {
             .read_log(execution_id)
             .unwrap_or_default();
         panic!(
-            "run '{execution_id}' did not become terminal; status={status:?}; events={events:?}"
+            "execution '{execution_id}' did not become terminal; status={status:?}; events={events:?}"
         );
     }
 
-    async fn wait_for_run_status(
+    async fn wait_for_execution_status(
         engine: &WorkflowRuntimeService,
         execution_id: &str,
         expected: ExecutionStatus,
@@ -9733,7 +9649,929 @@ mod dispatch_boundary_tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         let status = engine.execution_store().get_execution(execution_id).await;
-        panic!("run '{execution_id}' did not become {expected:?}; status={status:?}");
+        panic!("execution '{execution_id}' did not become {expected:?}; status={status:?}");
+    }
+
+    fn canonical_full_pipeline_runtime_workflow(
+        run_tests_command: Option<&str>,
+        judge_command: Option<&str>,
+        list_threads_command: Option<&str>,
+    ) -> WorkflowDefinitionYaml {
+        let source = include_str!("../../../../../../docs/examples/full-pipeline.yml");
+        let diagnosis = crate::adaptor::gateway::workflow::diagnostics::diagnose_workflow_source(
+            source,
+            Some("full-pipeline"),
+        );
+        assert!(
+            diagnosis.diagnostics.is_empty(),
+            "canonical full-pipeline example must stay diagnostic-free: {:?}",
+            diagnosis.diagnostics
+        );
+        let mut workflow = diagnosis
+            .workflow
+            .expect("diagnostic-free full-pipeline source must deserialize");
+        for node in &mut workflow.nodes {
+            match &mut node.kind {
+                NodeKind::Command(command) => {
+                    let replacement = match node.name.as_str() {
+                        "run_tests" => run_tests_command,
+                        "judge" => judge_command,
+                        "list_threads" => list_threads_command,
+                        other => panic!("unexpected full-pipeline command node: {other}"),
+                    };
+                    if let Some(replacement) = replacement {
+                        command.command = replacement.to_string();
+                    }
+                }
+                NodeKind::Session(session) => {
+                    // The canonical example intentionally names conceptual facets. Runtime
+                    // integration isolates engine behavior from the user's facet inventory by
+                    // resolving every stub session through one installed test instruction.
+                    session.facets = FacetRefs {
+                        instruction: Some("implement".to_string()),
+                        ..Default::default()
+                    };
+                }
+                NodeKind::Fanout(_) => {}
+            }
+        }
+        workflow
+    }
+
+    fn install_full_pipeline_cli() -> crate::test_support::EnvVarGuard {
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        // Unit-test executables are Rust test harnesses, not the production CLI. Build the real
+        // binary so the command node crosses the same process/parser boundary as users do.
+        let status = std::process::Command::new(cargo)
+            .args(["build", "--quiet", "--locked", "--bin", "releash"])
+            .current_dir(&manifest_dir)
+            .status()
+            .expect("the production releash CLI binary must build for the canonical example");
+        assert!(
+            status.success(),
+            "the production releash CLI binary must build"
+        );
+        let target_dir = std::env::var_os("CARGO_TARGET_DIR")
+            .map(std::path::PathBuf::from)
+            .map(|path| {
+                if path.is_absolute() {
+                    path
+                } else {
+                    manifest_dir.join(path)
+                }
+            })
+            .unwrap_or_else(|| manifest_dir.join("target"));
+        let binary_dir = target_dir.join("debug");
+        let binary = binary_dir.join(if cfg!(windows) {
+            "releash.exe"
+        } else {
+            "releash"
+        });
+        assert!(
+            binary.is_file(),
+            "missing releash CLI: {}",
+            binary.display()
+        );
+        let current_path = std::env::var("PATH").unwrap_or_default();
+        crate::test_support::EnvVarGuard::set_value(
+            "PATH",
+            &format!("{}:{current_path}", binary_dir.display()),
+        )
+    }
+
+    fn install_full_pipeline_worktree_fixture(worktree: &std::path::Path) {
+        std::fs::create_dir_all(worktree.join("src")).unwrap();
+        std::fs::write(
+            worktree.join("Cargo.toml"),
+            "[package]\nname = \"full-pipeline-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            worktree.join("src/lib.rs"),
+            "#[cfg(test)]\nmod tests {\n    #[test]\n    fn pipeline_fixture() {\n        assert!(false);\n    }\n}\n",
+        )
+        .unwrap();
+    }
+
+    fn make_full_pipeline_tests_pass(worktree: &std::path::Path) {
+        std::fs::write(
+            worktree.join("src/lib.rs"),
+            "#[cfg(test)]\nmod tests {\n    #[test]\n    fn pipeline_fixture() {\n        assert!(true);\n    }\n}\n",
+        )
+        .unwrap();
+    }
+
+    async fn wait_for_top_level_session(
+        engine: &WorkflowRuntimeService,
+        execution_id: &str,
+        node_name: &str,
+    ) -> (String, String) {
+        for _ in 0..500 {
+            let target = {
+                let executions = engine.executions.lock().await;
+                executions.get(execution_id).and_then(|execution| {
+                    let current = &execution.workflow.nodes[execution.current_node_index];
+                    if current.name != node_name {
+                        return None;
+                    }
+                    let session_id = execution.current_session_id.clone()?;
+                    let node_execution_id = execution
+                        .node_executions
+                        .iter()
+                        .rev()
+                        .find(|candidate| {
+                            candidate.node_name == node_name
+                                && candidate.fanout_parent.is_none()
+                                && matches!(
+                                    candidate.status,
+                                    NodeExecutionStatus::Running
+                                        | NodeExecutionStatus::WaitingApproval
+                                )
+                        })?
+                        .id
+                        .clone();
+                    Some((session_id, node_execution_id))
+                })
+            };
+            if let Some(target) = target {
+                return target;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let live = {
+            let executions = engine.executions.lock().await;
+            executions.get(execution_id).map(|execution| {
+                (
+                    execution.state.clone(),
+                    execution.workflow.nodes[execution.current_node_index]
+                        .name
+                        .clone(),
+                    execution.current_session_id.clone(),
+                    execution.error_reason.clone(),
+                )
+            })
+        };
+        let metadata = engine.execution_store().get_execution(execution_id).await;
+        panic!(
+            "top-level session '{node_name}' did not start in execution '{execution_id}'; live={live:?}; metadata={metadata:?}"
+        );
+    }
+
+    async fn wait_for_active_fanout_children(
+        engine: &WorkflowRuntimeService,
+        execution_id: &str,
+        parent_node: &str,
+        expected_count: usize,
+    ) -> Vec<(String, String, String)> {
+        for _ in 0..500 {
+            let children = {
+                let executions = engine.executions.lock().await;
+                executions
+                    .get(execution_id)
+                    .and_then(|execution| execution.fanout_runtime.as_ref())
+                    .filter(|fanout| fanout.parent_node_name == parent_node)
+                    .map(|fanout| {
+                        fanout
+                            .children
+                            .iter()
+                            .filter(|child| {
+                                child.state == FanoutChildRuntimeState::Running
+                                    && !child.session_id.is_empty()
+                            })
+                            .map(|child| {
+                                (
+                                    child.node_name.clone(),
+                                    child.session_id.clone(),
+                                    child.node_execution_id.clone(),
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            };
+            if children.len() == expected_count {
+                return children;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!(
+            "fanout '{parent_node}' did not start {expected_count} children in execution '{execution_id}'"
+        );
+    }
+
+    async fn wait_for_stub_session_turn_activation(
+        agent_runtime: &AgentSessionRuntimeUsecase,
+        session_id: &str,
+    ) {
+        for _ in 0..500 {
+            if agent_runtime.turn_phase(session_id).await
+                == Some(crate::usecase::agent_session::status::TurnPhase::Streaming)
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("stub session '{session_id}' did not activate its turn");
+    }
+
+    async fn complete_top_level_session(
+        app: &DispatchTestApp,
+        engine: &WorkflowRuntimeService,
+        session_store: &Arc<crate::usecase::agent_session::session::SessionStore>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
+        execution_id: &str,
+        node_name: &str,
+        artifact: Option<(&str, serde_json::Value)>,
+    ) {
+        let (session_id, node_execution_id) =
+            wait_for_top_level_session(engine, execution_id, node_name).await;
+        wait_for_stub_session_turn_activation(agent_runtime, &session_id).await;
+        if let Some((contract, value)) = artifact {
+            engine
+                .submit_workflow_output(
+                    app.handle(),
+                    session_store,
+                    agent_runtime,
+                    execution_id,
+                    node_name.to_string(),
+                    Some(node_execution_id),
+                    contract.to_string(),
+                    value,
+                )
+                .await
+                .unwrap();
+        }
+        engine
+            .on_turn_complete(
+                app.handle(),
+                session_store,
+                agent_runtime,
+                &session_id,
+                0,
+                None,
+                &[MessagePart::Text {
+                    content: format!("stub completed {node_name}"),
+                    parent_tool_use_id: None,
+                }],
+                None,
+            )
+            .await
+            .unwrap();
+    }
+
+    async fn complete_review_fanout(
+        app: &DispatchTestApp,
+        engine: &WorkflowRuntimeService,
+        session_store: &Arc<crate::usecase::agent_session::session::SessionStore>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
+        execution_id: &str,
+        lgtm: bool,
+    ) {
+        let children = wait_for_active_fanout_children(engine, execution_id, "review", 2).await;
+        for (node_name, _, node_execution_id) in &children {
+            engine
+                .submit_workflow_output(
+                    app.handle(),
+                    session_store,
+                    agent_runtime,
+                    execution_id,
+                    node_name.clone(),
+                    Some(node_execution_id.clone()),
+                    "review_verdict".to_string(),
+                    serde_json::json!({"lgtm": lgtm}),
+                )
+                .await
+                .unwrap();
+        }
+        for (node_name, session_id, _) in children {
+            wait_for_stub_session_turn_activation(agent_runtime, &session_id).await;
+            engine
+                .on_turn_complete(
+                    app.handle(),
+                    session_store,
+                    agent_runtime,
+                    &session_id,
+                    0,
+                    None,
+                    &[MessagePart::Text {
+                        content: format!("stub completed {node_name}"),
+                        parent_tool_use_id: None,
+                    }],
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+    }
+
+    async fn complete_and_approve_fix_fanout(
+        app: &DispatchTestApp,
+        engine: &WorkflowRuntimeService,
+        session_store: &Arc<crate::usecase::agent_session::session::SessionStore>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
+        execution_id: &str,
+    ) {
+        let mut children =
+            wait_for_active_fanout_children(engine, execution_id, "fix_each", 1).await;
+        let (node_name, session_id, node_execution_id) = children.pop().unwrap();
+        wait_for_stub_session_turn_activation(agent_runtime, &session_id).await;
+        engine
+            .submit_workflow_output(
+                app.handle(),
+                session_store,
+                agent_runtime,
+                execution_id,
+                node_name.clone(),
+                Some(node_execution_id.clone()),
+                "fix_result".to_string(),
+                serde_json::json!({"fixed": true}),
+            )
+            .await
+            .unwrap();
+        engine
+            .on_turn_complete(
+                app.handle(),
+                session_store,
+                agent_runtime,
+                &session_id,
+                0,
+                None,
+                &[MessagePart::Text {
+                    content: "stub fix complete".to_string(),
+                    parent_tool_use_id: None,
+                }],
+                None,
+            )
+            .await
+            .unwrap();
+        agent_runtime
+            .insert_runtime_state_for_test(
+                &session_id,
+                crate::usecase::agent_session::status::TurnPhase::Idle,
+                false,
+            )
+            .await;
+        engine
+            .resolve_workflow_approval(
+                app.handle(),
+                session_store,
+                agent_runtime,
+                execution_id,
+                Some("approved stub fix".to_string()),
+                &node_name,
+                Some(&node_execution_id),
+            )
+            .await
+            .unwrap();
+    }
+
+    async fn complete_and_approve_terminal_session(
+        app: &DispatchTestApp,
+        engine: &WorkflowRuntimeService,
+        session_store: &Arc<crate::usecase::agent_session::session::SessionStore>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
+        execution_id: &str,
+        node_name: &str,
+    ) {
+        let (session_id, node_execution_id) =
+            wait_for_top_level_session(engine, execution_id, node_name).await;
+        wait_for_stub_session_turn_activation(agent_runtime, &session_id).await;
+        engine
+            .on_turn_complete(
+                app.handle(),
+                session_store,
+                agent_runtime,
+                &session_id,
+                0,
+                None,
+                &[MessagePart::Text {
+                    content: format!("stub completed {node_name}"),
+                    parent_tool_use_id: None,
+                }],
+                None,
+            )
+            .await
+            .unwrap();
+        agent_runtime
+            .insert_runtime_state_for_test(
+                &session_id,
+                crate::usecase::agent_session::status::TurnPhase::Idle,
+                false,
+            )
+            .await;
+        engine
+            .resolve_workflow_approval(
+                app.handle(),
+                session_store,
+                agent_runtime,
+                execution_id,
+                Some(format!("approved {node_name}")),
+                node_name,
+                Some(&node_execution_id),
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn canonical_full_pipeline_executes_command_fanout_approval_loop_and_switch_path() {
+        let _env_lock = crate::test_support::TEST_ENV_LOCK.lock().unwrap();
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_execution_store_data_dir(data_dir.clone()).await;
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
+        let worktree = TempDir::new().unwrap();
+        install_full_pipeline_worktree_fixture(worktree.path());
+        let _path = install_full_pipeline_cli();
+        let _data_dir = crate::test_support::EnvVarGuard::set_path("RELEASH_DATA_DIR", &data_dir);
+        let worktree_path = worktree.path().to_string_lossy().into_owned();
+        let review_actor = crate::domain::comment::ReviewActor::human();
+        let review_usecase = crate::adaptor::controller::wiring::build_review_comment_usecase();
+        let open_thread = review_usecase
+            .create_thread(
+                &data_dir,
+                &worktree_path,
+                review_actor.clone(),
+                crate::domain::comment::ReviewTarget {
+                    file_path: Some("src/lib.rs".to_string()),
+                    line_number: Some(1),
+                    end_line: None,
+                },
+                "full-pipeline review fixture".to_string(),
+            )
+            .unwrap();
+        let workflow = canonical_full_pipeline_runtime_workflow(None, None, None);
+
+        let execution_id = engine
+            .start_resolved_workflow(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                workflow,
+                worktree_path.clone(),
+                Some("exercise the canonical pipeline".to_string()),
+                ExecutionOrigin::DesktopUi,
+                crate::domain::agent_session::PermissionMode::Ask,
+            )
+            .await
+            .unwrap();
+
+        wait_for_top_level_session(&engine, &execution_id, "fix_tests").await;
+        make_full_pipeline_tests_pass(worktree.path());
+        complete_top_level_session(
+            &app,
+            &engine,
+            &session_store,
+            &agent_runtime,
+            &execution_id,
+            "fix_tests",
+            None,
+        )
+        .await;
+        complete_review_fanout(
+            &app,
+            &engine,
+            &session_store,
+            &agent_runtime,
+            &execution_id,
+            false,
+        )
+        .await;
+        complete_top_level_session(
+            &app,
+            &engine,
+            &session_store,
+            &agent_runtime,
+            &execution_id,
+            "apply_fixes",
+            None,
+        )
+        .await;
+        complete_review_fanout(
+            &app,
+            &engine,
+            &session_store,
+            &agent_runtime,
+            &execution_id,
+            true,
+        )
+        .await;
+        complete_and_approve_fix_fanout(
+            &app,
+            &engine,
+            &session_store,
+            &agent_runtime,
+            &execution_id,
+        )
+        .await;
+        review_usecase
+            .resolve_thread(
+                &data_dir,
+                &worktree_path,
+                review_actor,
+                &open_thread.id,
+                "fixed".to_string(),
+                "full-pipeline fixture resolved".to_string(),
+            )
+            .unwrap();
+        complete_top_level_session(
+            &app,
+            &engine,
+            &session_store,
+            &agent_runtime,
+            &execution_id,
+            "triage",
+            Some(("ship_decision", serde_json::json!({"verdict": "HOLD"}))),
+        )
+        .await;
+        complete_and_approve_terminal_session(
+            &app,
+            &engine,
+            &session_store,
+            &agent_runtime,
+            &execution_id,
+            "done",
+        )
+        .await;
+        wait_for_execution_terminal(&app, &engine, &execution_id).await;
+
+        let metadata = engine
+            .execution_store()
+            .get_execution(&execution_id)
+            .await
+            .unwrap();
+        assert_eq!(metadata.status, ExecutionStatus::Completed);
+        let events = read_dispatch_events(&app, &execution_id);
+        let completed = completed_node_names(&events);
+        let count = |node: &str| {
+            completed
+                .iter()
+                .filter(|name| name.as_str() == node)
+                .count()
+        };
+        assert_eq!(
+            count("run_tests"),
+            2,
+            "command false and true routes must run"
+        );
+        assert_eq!(count("fix_tests"), 1);
+        assert_eq!(count("review"), 2);
+        assert_eq!(count("review_opus"), 2);
+        assert_eq!(count("review_gpt"), 2);
+        assert_eq!(
+            count("judge"),
+            2,
+            "typed command routing must take both branches"
+        );
+        assert_eq!(count("apply_fixes"), 1);
+        assert_eq!(
+            count("list_threads"),
+            2,
+            "has_open true and false routes must run"
+        );
+        assert_eq!(count("fix_each"), 1);
+        assert_eq!(count("fix_one"), 1);
+        assert_eq!(count("triage"), 1);
+        assert_eq!(count("done"), 1);
+        let list_thread_artifacts = events
+            .iter()
+            .filter_map(|event| match event {
+                WorkflowEvent::ArtifactProduced {
+                    node_name, value, ..
+                } if node_name == "list_threads" => Some(value.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(list_thread_artifacts.len(), 2);
+        assert_eq!(list_thread_artifacts[0]["has_open"], true);
+        assert_eq!(
+            list_thread_artifacts[0]["threads"],
+            serde_json::json!([{"thread_id": open_thread.id}])
+        );
+        assert_eq!(list_thread_artifacts[1]["has_open"], false);
+        assert_eq!(list_thread_artifacts[1]["threads"], serde_json::json!([]));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::ApprovalResolved { node_name, .. } if node_name == "fix_one"
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::ApprovalResolved { node_name, .. } if node_name == "done"
+        )));
+        let (_, fix_each_artifact) = artifact_event_for_node(&events, "fix_each");
+        assert_eq!(fix_each_artifact, serde_json::json!([{"fixed": true}]));
+    }
+
+    #[tokio::test]
+    async fn canonical_full_pipeline_loop_guard_exhaustion_routes_to_give_up() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_execution_store_data_dir(data_dir.clone()).await;
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir);
+        let worktree = TempDir::new().unwrap();
+        let workflow = canonical_full_pipeline_runtime_workflow(
+            Some("exit 1"),
+            Some(r#"printf '%s' '{"all_lgtm":true}'"#),
+            Some(r#"printf '%s' '{"threads":[],"has_open":false}'"#),
+        );
+        let execution_id = engine
+            .start_resolved_workflow(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                workflow,
+                worktree.path().to_string_lossy().to_string(),
+                None,
+                ExecutionOrigin::DesktopUi,
+                crate::domain::agent_session::PermissionMode::Ask,
+            )
+            .await
+            .unwrap();
+
+        for _ in 0..3 {
+            complete_top_level_session(
+                &app,
+                &engine,
+                &session_store,
+                &agent_runtime,
+                &execution_id,
+                "fix_tests",
+                None,
+            )
+            .await;
+        }
+        complete_and_approve_terminal_session(
+            &app,
+            &engine,
+            &session_store,
+            &agent_runtime,
+            &execution_id,
+            "give_up",
+        )
+        .await;
+        wait_for_execution_terminal(&app, &engine, &execution_id).await;
+
+        let events = read_dispatch_events(&app, &execution_id);
+        let completed = completed_node_names(&events);
+        assert_eq!(
+            completed.iter().filter(|node| *node == "run_tests").count(),
+            4
+        );
+        assert_eq!(
+            completed.iter().filter(|node| *node == "fix_tests").count(),
+            3
+        );
+        assert!(completed.iter().any(|node| node == "give_up"));
+        assert!(completed.iter().all(|node| node != "review"));
+    }
+
+    #[tokio::test]
+    async fn canonical_full_pipeline_apply_fixes_loop_guard_exhaustion_routes_to_give_up() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_execution_store_data_dir(data_dir.clone()).await;
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir);
+        let worktree = TempDir::new().unwrap();
+        let workflow = canonical_full_pipeline_runtime_workflow(
+            Some("exit 0"),
+            Some(r#"printf '%s' '{"all_lgtm":false}'"#),
+            Some(r#"printf '%s' '{"threads":[],"has_open":false}'"#),
+        );
+        let execution_id = engine
+            .start_resolved_workflow(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                workflow,
+                worktree.path().to_string_lossy().to_string(),
+                None,
+                ExecutionOrigin::DesktopUi,
+                crate::domain::agent_session::PermissionMode::Ask,
+            )
+            .await
+            .unwrap();
+
+        for attempt in 0..4 {
+            complete_review_fanout(
+                &app,
+                &engine,
+                &session_store,
+                &agent_runtime,
+                &execution_id,
+                true,
+            )
+            .await;
+            if attempt < 3 {
+                complete_top_level_session(
+                    &app,
+                    &engine,
+                    &session_store,
+                    &agent_runtime,
+                    &execution_id,
+                    "apply_fixes",
+                    None,
+                )
+                .await;
+            }
+        }
+        complete_and_approve_terminal_session(
+            &app,
+            &engine,
+            &session_store,
+            &agent_runtime,
+            &execution_id,
+            "give_up",
+        )
+        .await;
+        wait_for_execution_terminal(&app, &engine, &execution_id).await;
+
+        let events = read_dispatch_events(&app, &execution_id);
+        let completed = completed_node_names(&events);
+        assert_eq!(completed.iter().filter(|node| *node == "review").count(), 4);
+        assert_eq!(completed.iter().filter(|node| *node == "judge").count(), 4);
+        assert_eq!(
+            completed
+                .iter()
+                .filter(|node| *node == "apply_fixes")
+                .count(),
+            3
+        );
+        assert!(completed.iter().any(|node| node == "give_up"));
+        assert!(completed.iter().all(|node| node != "list_threads"));
+    }
+
+    #[tokio::test]
+    async fn canonical_full_pipeline_triage_loop_guard_exhaustion_routes_to_escalate() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_execution_store_data_dir(data_dir.clone()).await;
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir);
+        let worktree = TempDir::new().unwrap();
+        let workflow = canonical_full_pipeline_runtime_workflow(
+            Some("exit 0"),
+            Some(r#"printf '%s' '{"all_lgtm":true}'"#),
+            Some(r#"printf '%s' '{"threads":[{"thread_id":"T-1"}],"has_open":true}'"#),
+        );
+        let execution_id = engine
+            .start_resolved_workflow(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                workflow,
+                worktree.path().to_string_lossy().to_string(),
+                None,
+                ExecutionOrigin::DesktopUi,
+                crate::domain::agent_session::PermissionMode::Ask,
+            )
+            .await
+            .unwrap();
+
+        complete_review_fanout(
+            &app,
+            &engine,
+            &session_store,
+            &agent_runtime,
+            &execution_id,
+            true,
+        )
+        .await;
+        for _ in 0..2 {
+            complete_and_approve_fix_fanout(
+                &app,
+                &engine,
+                &session_store,
+                &agent_runtime,
+                &execution_id,
+            )
+            .await;
+            complete_top_level_session(
+                &app,
+                &engine,
+                &session_store,
+                &agent_runtime,
+                &execution_id,
+                "triage",
+                Some(("ship_decision", serde_json::json!({"verdict": "HOLD"}))),
+            )
+            .await;
+        }
+        complete_and_approve_fix_fanout(
+            &app,
+            &engine,
+            &session_store,
+            &agent_runtime,
+            &execution_id,
+        )
+        .await;
+        complete_and_approve_terminal_session(
+            &app,
+            &engine,
+            &session_store,
+            &agent_runtime,
+            &execution_id,
+            "escalate",
+        )
+        .await;
+        wait_for_execution_terminal(&app, &engine, &execution_id).await;
+
+        let events = read_dispatch_events(&app, &execution_id);
+        let completed = completed_node_names(&events);
+        assert_eq!(
+            completed
+                .iter()
+                .filter(|node| *node == "list_threads")
+                .count(),
+            3
+        );
+        assert_eq!(
+            completed.iter().filter(|node| *node == "fix_each").count(),
+            3
+        );
+        assert_eq!(completed.iter().filter(|node| *node == "triage").count(), 2);
+        assert!(completed.iter().any(|node| node == "escalate"));
+    }
+
+    #[tokio::test]
+    async fn canonical_full_pipeline_switch_executes_ship_and_escalate_cases() {
+        for (verdict, terminal_node) in [("SHIP", "done"), ("ESCALATE", "escalate")] {
+            let app = make_dispatch_app();
+            let engine = WorkflowRuntimeService::new_for_test();
+            let data_dir = dispatch_data_dir(app.handle());
+            engine.set_execution_store_data_dir(data_dir.clone()).await;
+            let (session_store, agent_runtime) = make_dispatch_deps(data_dir);
+            let worktree = TempDir::new().unwrap();
+            let workflow = canonical_full_pipeline_runtime_workflow(
+                Some("exit 0"),
+                Some(r#"printf '%s' '{"all_lgtm":true}'"#),
+                Some(r#"printf '%s' '{"threads":[{"thread_id":"T-1"}],"has_open":true}'"#),
+            );
+            let execution_id = engine
+                .start_resolved_workflow(
+                    app.handle(),
+                    &session_store,
+                    &agent_runtime,
+                    workflow,
+                    worktree.path().to_string_lossy().to_string(),
+                    None,
+                    ExecutionOrigin::DesktopUi,
+                    crate::domain::agent_session::PermissionMode::Ask,
+                )
+                .await
+                .unwrap();
+
+            complete_review_fanout(
+                &app,
+                &engine,
+                &session_store,
+                &agent_runtime,
+                &execution_id,
+                true,
+            )
+            .await;
+            complete_and_approve_fix_fanout(
+                &app,
+                &engine,
+                &session_store,
+                &agent_runtime,
+                &execution_id,
+            )
+            .await;
+            complete_top_level_session(
+                &app,
+                &engine,
+                &session_store,
+                &agent_runtime,
+                &execution_id,
+                "triage",
+                Some(("ship_decision", serde_json::json!({"verdict": verdict}))),
+            )
+            .await;
+            complete_and_approve_terminal_session(
+                &app,
+                &engine,
+                &session_store,
+                &agent_runtime,
+                &execution_id,
+                terminal_node,
+            )
+            .await;
+            wait_for_execution_terminal(&app, &engine, &execution_id).await;
+
+            let events = read_dispatch_events(&app, &execution_id);
+            let completed = completed_node_names(&events);
+            assert!(completed.iter().any(|node| node == terminal_node));
+            let other_terminal = if terminal_node == "done" {
+                "escalate"
+            } else {
+                "done"
+            };
+            assert!(completed.iter().all(|node| node != other_terminal));
+        }
     }
 
     #[tokio::test]
@@ -9741,12 +10579,12 @@ mod dispatch_boundary_tests {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let worktree = TempDir::new().unwrap();
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "command-standard".to_string(),
             description: "command standard artifact".to_string(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![command_step(
+            nodes: vec![command_node(
                 "pwd",
                 "printf '%s' \"$PWD\"; printf '%s' err >&2",
                 vec![],
@@ -9792,13 +10630,13 @@ mod dispatch_boundary_tests {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let worktree = TempDir::new().unwrap();
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "command-exit-routing".to_string(),
             description: "command ok routing".to_string(),
             builtin: false,
             schemas: Default::default(),
             nodes: vec![
-                command_step(
+                command_node(
                     "run_tests",
                     "exit 7",
                     vec![Rule::When {
@@ -9807,8 +10645,8 @@ mod dispatch_boundary_tests {
                         next: "fix".to_string(),
                     }],
                 ),
-                command_step("done", "printf done", vec![]),
-                command_step("fix", "printf fix", vec![]),
+                command_node("done", "printf done", vec![]),
+                command_node("fix", "printf fix", vec![]),
             ],
         };
 
@@ -9830,7 +10668,7 @@ mod dispatch_boundary_tests {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let worktree = TempDir::new().unwrap();
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "command-contract-routing".to_string(),
             description: "command stdout json artifact".to_string(),
             builtin: false,
@@ -9838,7 +10676,7 @@ mod dispatch_boundary_tests {
                 .into_iter()
                 .collect(),
             nodes: vec![
-                command_step_with_artifact(
+                command_node_with_artifact(
                     "judge",
                     r#"printf '{"passed":true}'"#,
                     "verdict",
@@ -9848,8 +10686,8 @@ mod dispatch_boundary_tests {
                         next: "fix".to_string(),
                     }],
                 ),
-                command_step("done", "printf done", vec![]),
-                command_step("fix", "printf fix", vec![]),
+                command_node("done", "printf done", vec![]),
+                command_node("fix", "printf fix", vec![]),
             ],
         };
 
@@ -9872,7 +10710,7 @@ mod dispatch_boundary_tests {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let worktree = TempDir::new().unwrap();
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "command-contract-failure".to_string(),
             description: "command stdout json artifact failure".to_string(),
             builtin: false,
@@ -9880,7 +10718,7 @@ mod dispatch_boundary_tests {
                 .into_iter()
                 .collect(),
             nodes: vec![
-                command_step_with_artifact(
+                command_node_with_artifact(
                     "judge",
                     r#"printf '{"passed":"yes"}'"#,
                     "verdict",
@@ -9890,8 +10728,8 @@ mod dispatch_boundary_tests {
                         next: "fix".to_string(),
                     }],
                 ),
-                command_step("done", "printf done", vec![]),
-                command_step("fix", "printf fix", vec![]),
+                command_node("done", "printf done", vec![]),
+                command_node("fix", "printf fix", vec![]),
             ],
         };
 
@@ -9915,7 +10753,7 @@ mod dispatch_boundary_tests {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let worktree = TempDir::new().unwrap();
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "command-contract-parse-failure".to_string(),
             description: "command stdout json parse failure".to_string(),
             builtin: false,
@@ -9923,7 +10761,7 @@ mod dispatch_boundary_tests {
                 .into_iter()
                 .collect(),
             nodes: vec![
-                command_step_with_artifact(
+                command_node_with_artifact(
                     "judge",
                     "printf not-json",
                     "verdict",
@@ -9933,8 +10771,8 @@ mod dispatch_boundary_tests {
                         next: "fix".to_string(),
                     }],
                 ),
-                command_step("done", "printf done", vec![]),
-                command_step("fix", "printf fix", vec![]),
+                command_node("done", "printf done", vec![]),
+                command_node("fix", "printf fix", vec![]),
             ],
         };
 
@@ -9963,63 +10801,18 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
-    async fn command_runtime_spec_directory_secondary_validation_routes_to_fix() {
-        let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
-        let worktree = TempDir::new().unwrap();
-        let workflow = Workflow {
-            name: "command-spec-directory-validation".to_string(),
-            description: "command spec-directory secondary validation".to_string(),
-            builtin: false,
-            schemas: [(
-                "spec-directory".to_string(),
-                object_schema_for_test(&["spec_dir"]),
-            )]
-            .into_iter()
-            .collect(),
-            nodes: vec![
-                command_step_with_artifact(
-                    "plan",
-                    r#"printf '{"spec_dir":"../outside"}'"#,
-                    "spec-directory",
-                    vec![Rule::When {
-                        on: "ok".to_string(),
-                        then: "done".to_string(),
-                        next: "fix".to_string(),
-                    }],
-                ),
-                command_step("done", "printf done", vec![]),
-                command_step("fix", "printf fix", vec![]),
-            ],
-        };
-
-        let execution_id =
-            start_command_workflow_for_test(&app, &engine, workflow, worktree.path()).await;
-        let events = read_dispatch_events(&app, &execution_id);
-        let (contract, value) = artifact_event_for_node(&events, "plan");
-
-        assert_eq!(contract, None);
-        assert_eq!(value["ok"], false);
-        assert!(value.get("spec_dir").is_none());
-        assert_eq!(
-            completed_node_names(&events),
-            vec!["plan".to_string(), "fix".to_string()]
-        );
-    }
-
-    #[tokio::test]
     async fn command_runtime_contract_success_with_nonzero_exit_records_contract_but_ok_false() {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let worktree = TempDir::new().unwrap();
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "command-contract-nonzero".to_string(),
             description: "command contract success nonzero exit".to_string(),
             builtin: false,
             schemas: [("verdict".to_string(), bool_object_schema("passed"))]
                 .into_iter()
                 .collect(),
-            nodes: vec![command_step_with_artifact(
+            nodes: vec![command_node_with_artifact(
                 "judge",
                 r#"printf '{"passed":true}'; exit 7"#,
                 "verdict",
@@ -10043,12 +10836,12 @@ mod dispatch_boundary_tests {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let worktree = TempDir::new().unwrap();
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "command-env-forwarding".to_string(),
             description: "command env forwarding".to_string(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![command_step(
+            nodes: vec![command_node(
                 "print_env",
                 "printf '%s' \"$RELEASH_WORKFLOW_EXECUTION_ID\"",
                 vec![],
@@ -10068,12 +10861,12 @@ mod dispatch_boundary_tests {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let worktree = TempDir::new().unwrap();
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "command-node-env-forwarding".to_string(),
             description: "command node env forwarding".to_string(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![command_step(
+            nodes: vec![command_node(
                 "print_node_env",
                 "printf '%s' \"$RELEASH_NODE_EXECUTION_ID\"",
                 vec![],
@@ -10123,14 +10916,14 @@ mod dispatch_boundary_tests {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let worktree = TempDir::new().unwrap();
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "fanout-command-node-env-forwarding".to_string(),
             description: "fanout command node env forwarding".to_string(),
             builtin: false,
             schemas: Default::default(),
             nodes: vec![
-                make_fanout_step("commands", vec!["print_child_env"]),
-                command_step(
+                make_fanout_node("commands", vec!["print_child_env"]),
+                command_node(
                     "print_child_env",
                     "printf '%s' \"$RELEASH_NODE_EXECUTION_ID\"",
                     vec![],
@@ -10209,14 +11002,14 @@ mod dispatch_boundary_tests {
         let execution_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/fanout-command-failure-stall";
         let sibling_session_id = "fanout-command-failure-sibling-session";
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "fanout-command-failure-stall-wf".to_string(),
             description: "fanout command failure stall".to_string(),
             builtin: false,
             schemas: Default::default(),
             nodes: vec![
-                make_fanout_step("parallel-review", vec!["shell-command", "review-b"]),
-                command_step("shell-command", "false", vec![]),
+                make_fanout_node("fanout-review", vec!["shell-command", "review-b"]),
+                command_node("shell-command", "false", vec![]),
                 make_fanout_child("review-b"),
             ],
         };
@@ -10226,7 +11019,7 @@ mod dispatch_boundary_tests {
         exec.current_node_index = 0;
         exec.current_session_id = None;
         exec.node_execution_counts = HashMap::from([
-            ("parallel-review".to_string(), 1),
+            ("fanout-review".to_string(), 1),
             ("shell-command".to_string(), 1),
             ("review-b".to_string(), 1),
         ]);
@@ -10234,11 +11027,11 @@ mod dispatch_boundary_tests {
             sibling_session_id,
             "review-b",
         )];
-        install_test_fanout_run(
+        install_test_fanout(
             &mut exec,
             vec![
-                test_fanout_child_run("shell-command", "", FanoutChildRuntimeState::Running, 0),
-                test_fanout_child_run(
+                test_fanout_child("shell-command", "", FanoutChildRuntimeState::Running, 0),
+                test_fanout_child(
                     "review-b",
                     sibling_session_id,
                     FanoutChildRuntimeState::Running,
@@ -10246,10 +11039,10 @@ mod dispatch_boundary_tests {
                 ),
             ],
         );
-        let fanout_run = exec.parallel_run.as_ref().expect("fanout run");
-        let parent_node_execution_id = fanout_run.parent_node_execution_id.clone();
-        let command_node_execution_id = fanout_run.children[0].node_execution_id.clone();
-        let sibling_node_execution_id = fanout_run.children[1].node_execution_id.clone();
+        let fanout = exec.fanout_runtime.as_ref().expect("fanout");
+        let parent_node_execution_id = fanout.parent_node_execution_id.clone();
+        let command_node_execution_id = fanout.children[0].node_execution_id.clone();
+        let sibling_node_execution_id = fanout.children[1].node_execution_id.clone();
         let command_node_execution = exec
             .node_executions
             .iter_mut()
@@ -10272,7 +11065,7 @@ mod dispatch_boundary_tests {
                 timestamp: 1003.0,
             })
             .unwrap();
-        insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+        insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
         engine.session_workflow_refs.lock().await.insert(
             sibling_session_id.to_string(),
             SessionWorkflowRef {
@@ -10295,18 +11088,18 @@ mod dispatch_boundary_tests {
             !engine.contains_execution_for_test(&execution_id).await,
             "interrupted fanout command must release the live runtime"
         );
-        let run = engine
+        let execution = engine
             .execution_store()
             .get_execution(&execution_id)
             .await
-            .expect("interrupted run metadata must be stored");
-        assert_eq!(run.status, ExecutionStatus::Interrupted);
+            .expect("interrupted execution metadata must be stored");
+        assert_eq!(execution.status, ExecutionStatus::Interrupted);
         assert_eq!(
-            run.interruption_reason,
+            execution.interruption_reason,
             Some(ExecutionInterruptionReason::Crash)
         );
-        assert_eq!(run.resume_from_node.as_deref(), Some("parallel-review"));
-        assert!(run.completed_at.is_none());
+        assert_eq!(execution.resume_from_node.as_deref(), Some("fanout-review"));
+        assert!(execution.completed_at.is_none());
 
         let live_payload = received_payloads
             .lock()
@@ -10322,12 +11115,12 @@ mod dispatch_boundary_tests {
         );
         assert_eq!(
             live_json["workflowExecution"]["resumeFromNode"],
-            "parallel-review"
+            "fanout-review"
         );
         let live_stall_observations =
             live_json["workflowExecution"]["stallObservations"].as_array();
         assert!(
-            live_stall_observations.map_or(true, |observations| observations.is_empty()),
+            live_stall_observations.is_none_or(|observations| observations.is_empty()),
             "fanout command interruption must clear live stall observations: {live_json}"
         );
         let live_node_executions = live_json["workflowExecution"]["nodeExecutions"]
@@ -10360,10 +11153,7 @@ mod dispatch_boundary_tests {
             projected.interruption_reason,
             Some(ExecutionInterruptionReason::Crash)
         );
-        assert_eq!(
-            projected.resume_from_node.as_deref(),
-            Some("parallel-review")
-        );
+        assert_eq!(projected.resume_from_node.as_deref(), Some("fanout-review"));
         let projected_status_by_id = |node_execution_id: &str| {
             projected
                 .node_executions
@@ -10394,15 +11184,15 @@ mod dispatch_boundary_tests {
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, handles) = make_dispatch_deps(data_dir);
         let worktree = TempDir::new().unwrap();
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "fanout-mixed-child-artifact".to_string(),
             description: "fanout mixed child artifact".to_string(),
             builtin: false,
             schemas: Default::default(),
             nodes: vec![
-                make_fanout_step("parallel-review", vec!["review-session", "shell-command"]),
+                make_fanout_node("fanout-review", vec!["review-session", "shell-command"]),
                 make_fanout_child("review-session"),
-                command_step(
+                command_node(
                     "shell-command",
                     "printf command-out; printf command-err >&2",
                     vec![],
@@ -10441,10 +11231,10 @@ mod dispatch_boundary_tests {
             )
             .await
             .unwrap();
-        wait_for_run_terminal(&app, &engine, &execution_id).await;
+        wait_for_execution_terminal(&app, &engine, &execution_id).await;
 
         let events = read_dispatch_events(&app, &execution_id);
-        let (_, value) = artifact_event_for_node(&events, "parallel-review");
+        let (_, value) = artifact_event_for_node(&events, "fanout-review");
         let values = value
             .as_array()
             .expect("fanout parent ArtifactProduced value must be an array");
@@ -10467,18 +11257,18 @@ mod dispatch_boundary_tests {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let worktree = TempDir::new().unwrap();
-        let workflow: Workflow =
+        let workflow: WorkflowDefinitionYaml =
             serde_saphyr::from_str(include_str!("../fixtures/valid/fanout-command-reducer.yml"))
                 .unwrap();
 
         let execution_id =
             start_command_workflow_for_test(&app, &engine, workflow, worktree.path()).await;
-        let run = engine
+        let execution = engine
             .execution_store()
             .get_execution(&execution_id)
             .await
             .unwrap();
-        assert_eq!(run.status, ExecutionStatus::Completed);
+        assert_eq!(execution.status, ExecutionStatus::Completed);
 
         let events = read_dispatch_events(&app, &execution_id);
         let (_, fanout_value) = artifact_event_for_node(&events, "review");
@@ -10507,7 +11297,7 @@ mod dispatch_boundary_tests {
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let (session_store, handles) = make_dispatch_deps(data_dir);
         let worktree = TempDir::new().unwrap();
-        let workflow: Workflow =
+        let workflow: WorkflowDefinitionYaml =
             serde_saphyr::from_str(include_str!("../fixtures/valid/fanout-session-reducer.yml"))
                 .unwrap();
         let judge_index = workflow
@@ -10531,10 +11321,10 @@ mod dispatch_boundary_tests {
             completed_at: 1000.0,
         };
         let outputs = HashMap::from([("review".to_string(), review_output.clone())]);
-        let (_, prompt) = workflow_prompt::build_step_prompt(
+        let (_, prompt) = workflow_prompt::build_node_prompt(
             &judge,
             Some(&instruction_contents("Reduce the review verdicts.")),
-            "session-reducer-run",
+            "session-reducer-execution",
             None,
             &outputs,
         )
@@ -10565,7 +11355,7 @@ mod dispatch_boundary_tests {
             Some(judge_session_id),
             None,
         )];
-        insert_execution_and_active_run(&engine, execution, ExecutionOrigin::DesktopUi).await;
+        insert_execution_and_register_active(&engine, execution, ExecutionOrigin::DesktopUi).await;
         engine.session_workflow_refs.lock().await.insert(
             judge_session_id.to_string(),
             SessionWorkflowRef {
@@ -10600,14 +11390,14 @@ mod dispatch_boundary_tests {
             )
             .await
             .unwrap();
-        wait_for_run_terminal(&app, &engine, &execution_id).await;
+        wait_for_execution_terminal(&app, &engine, &execution_id).await;
 
-        let run = engine
+        let execution = engine
             .execution_store()
             .get_execution(&execution_id)
             .await
             .unwrap();
-        assert_eq!(run.status, ExecutionStatus::Completed);
+        assert_eq!(execution.status, ExecutionStatus::Completed);
         let events = read_dispatch_events(&app, &execution_id);
         let (_, judge_value) = artifact_event_for_node(&events, "judge");
         assert_eq!(judge_value["verdict"], "NEEDS_FIX");
@@ -10622,12 +11412,12 @@ mod dispatch_boundary_tests {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let worktree = TempDir::new().unwrap();
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "command-nonblocking-start".to_string(),
             description: "command nonblocking start".to_string(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![command_step("long", "sleep 30", vec![])],
+            nodes: vec![command_node("long", "sleep 30", vec![])],
         };
 
         let execution_id = tokio::time::timeout(
@@ -10673,12 +11463,12 @@ mod dispatch_boundary_tests {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let worktree = TempDir::new().unwrap();
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "command-explicit-stop".to_string(),
             description: "stop kills command process group".to_string(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![command_step(
+            nodes: vec![command_node(
                 "long",
                 "sleep 30 & echo $! > child.pid; wait",
                 vec![],
@@ -10728,12 +11518,12 @@ mod dispatch_boundary_tests {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let worktree = TempDir::new().unwrap();
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "command-stop-resume".to_string(),
             description: "resume starts a fresh command attempt".to_string(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![command_step(
+            nodes: vec![command_node(
                 "long",
                 "if [ -f resumed ]; then printf resumed; else touch resumed; sleep 30 & echo $! > child.pid; wait; fi",
                 vec![],
@@ -10771,7 +11561,7 @@ mod dispatch_boundary_tests {
             .resume_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
             .await
             .unwrap();
-        wait_for_run_terminal(&app, &engine, &execution_id).await;
+        wait_for_execution_terminal(&app, &engine, &execution_id).await;
 
         let metadata = engine
             .execution_store()
@@ -10810,12 +11600,12 @@ mod dispatch_boundary_tests {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let worktree = TempDir::new().unwrap();
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "command-stop-projection-failure".to_string(),
             description: "durable stop must still kill".to_string(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![command_step(
+            nodes: vec![command_node(
                 "long",
                 "sleep 30 & echo $! > child.pid; wait",
                 vec![],
@@ -10863,12 +11653,12 @@ mod dispatch_boundary_tests {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let worktree = TempDir::new().unwrap();
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "command-app-exit-shutdown".to_string(),
             description: "command app exit shutdown".to_string(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![command_step(
+            nodes: vec![command_node(
                 "long",
                 "sleep 30 & echo $! > child.pid; wait",
                 vec![],
@@ -10884,12 +11674,12 @@ mod dispatch_boundary_tests {
 
         wait_for_inactive_command(&engine, &execution_id).await;
         wait_for_process_exit(child_pid).await;
-        let run = engine
+        let execution = engine
             .execution_store()
             .get_execution(&execution_id)
             .await
             .unwrap();
-        assert_eq!(run.status, ExecutionStatus::Interrupted);
+        assert_eq!(execution.status, ExecutionStatus::Interrupted);
         let events = read_dispatch_events(&app, &execution_id);
         assert!(events.iter().any(|event| {
             matches!(
@@ -10922,14 +11712,14 @@ mod dispatch_boundary_tests {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let worktree = TempDir::new().unwrap();
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "fanout-command-app-exit".to_string(),
             description: "fanout command app exit".to_string(),
             builtin: false,
             schemas: Default::default(),
             nodes: vec![
-                make_fanout_step("commands", vec!["long-child"]),
-                command_step("long-child", "sleep 30", vec![]),
+                make_fanout_node("commands", vec!["long-child"]),
+                command_node("long-child", "sleep 30", vec![]),
             ],
         };
 
@@ -10940,12 +11730,12 @@ mod dispatch_boundary_tests {
         engine.shutdown_all_active_commands().await;
 
         wait_for_inactive_command(&engine, &execution_id).await;
-        let run = engine
+        let execution = engine
             .execution_store()
             .get_execution(&execution_id)
             .await
             .unwrap();
-        assert_eq!(run.status, ExecutionStatus::Interrupted);
+        assert_eq!(execution.status, ExecutionStatus::Interrupted);
         let events = read_dispatch_events(&app, &execution_id);
         assert!(events.iter().any(|event| matches!(
             event,
@@ -10981,12 +11771,12 @@ mod dispatch_boundary_tests {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let worktree = TempDir::new().unwrap();
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "command-append-failure".to_string(),
             description: "command append failure".to_string(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![command_step(
+            nodes: vec![command_node(
                 "gate",
                 "while [ ! -f .command-go ]; do sleep 0.02; done; printf done",
                 vec![],
@@ -10998,20 +11788,20 @@ mod dispatch_boundary_tests {
         wait_for_active_command(&engine, &execution_id).await;
         engine.fail_next_required_event_append_for_test();
         std::fs::write(worktree.path().join(".command-go"), "go").unwrap();
-        wait_for_run_status(&engine, &execution_id, ExecutionStatus::Interrupted).await;
+        wait_for_execution_status(&engine, &execution_id, ExecutionStatus::Interrupted).await;
 
-        let run = engine
+        let execution = engine
             .execution_store()
             .get_execution(&execution_id)
             .await
             .unwrap();
-        assert_eq!(run.status, ExecutionStatus::Interrupted);
+        assert_eq!(execution.status, ExecutionStatus::Interrupted);
         assert_eq!(
-            run.interruption_reason,
+            execution.interruption_reason,
             Some(ExecutionInterruptionReason::Crash)
         );
-        assert_eq!(run.resume_from_node.as_deref(), Some("gate"));
-        assert!(run.error_reason.is_none());
+        assert_eq!(execution.resume_from_node.as_deref(), Some("gate"));
+        assert!(execution.error_reason.is_none());
         let events = read_dispatch_events(&app, &execution_id);
         assert!(events.iter().any(|event| matches!(
             event,
@@ -11052,12 +11842,12 @@ mod dispatch_boundary_tests {
             configured_secret,
         )
         .unwrap();
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "command-secret-redaction".to_string(),
             description: "command secret redaction".to_string(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![command_step(
+            nodes: vec![command_node(
                 "print_secret",
                 "cat configured-secret.txt; printf '%s' \"$RELEASH_COMMAND_SECRET_TEST\" >&2",
                 vec![],
@@ -11103,15 +11893,15 @@ mod dispatch_boundary_tests {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let worktree = TempDir::new().unwrap();
-        let mut echo = command_step("echo_thread", "printf '{{ list_threads.stdout }}'", vec![]);
+        let mut echo = command_node("echo_thread", "printf '{{ list_threads.stdout }}'", vec![]);
         echo.inputs = vec!["list_threads".to_string()];
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "command-input-reference".to_string(),
             description: "command input artifact reference".to_string(),
             builtin: false,
             schemas: Default::default(),
             nodes: vec![
-                command_step(
+                command_node(
                     "list_threads",
                     "printf thread-42",
                     vec![Rule::Next("echo_thread".to_string())],
@@ -11138,12 +11928,12 @@ mod dispatch_boundary_tests {
         let (session_store, handles) = make_dispatch_deps(data_dir);
         let worktree = TempDir::new().unwrap();
         let execution_id = uuid::Uuid::new_v4().to_string();
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "command-abort".to_string(),
             description: "abort command runtime".to_string(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![command_step("long", "sleep 30", vec![])],
+            nodes: vec![command_node("long", "sleep 30", vec![])],
         };
         engine
             .seed_active_execution_for_test(
@@ -11205,7 +11995,7 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
-    async fn parallel_child_prompt_failure_skips_sessions_refs_and_execution_mutation() {
+    async fn fanout_child_prompt_failure_skips_sessions_refs_and_execution_mutation() {
         let app = make_dispatch_app();
         let data_dir = dispatch_data_dir(app.handle());
         let engine = WorkflowRuntimeService::new_for_test();
@@ -11213,7 +12003,7 @@ mod dispatch_boundary_tests {
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
 
         let execution_id = uuid::Uuid::new_v4().to_string();
-        let worktree_path = "/wt/parallel-prompt-failure";
+        let worktree_path = "/wt/fanout-prompt-failure";
         let mut child = make_fanout_child("missing-facet-child");
         set_session_facets(
             &mut child,
@@ -11226,13 +12016,13 @@ mod dispatch_boundary_tests {
             },
         );
 
-        let workflow = Workflow {
-            name: "parallel-prompt-failure-wf".to_string(),
+        let workflow = WorkflowDefinitionYaml {
+            name: "fanout-prompt-failure-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
             nodes: vec![
-                make_fanout_step("parallel-review", vec!["missing-facet-child"]),
+                make_fanout_node("fanout-review", vec!["missing-facet-child"]),
                 child,
             ],
         };
@@ -11241,8 +12031,8 @@ mod dispatch_boundary_tests {
         exec.state = RuntimeExecutionState::Running;
         exec.current_node_index = 0;
         exec.current_session_id = None;
-        exec.node_execution_counts = HashMap::from([("parallel-review".to_string(), 1)]);
-        insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+        exec.node_execution_counts = HashMap::from([("fanout-review".to_string(), 1)]);
+        insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
 
         let result = engine
             .start_fanout_children(app.handle(), &session_store, &handles, worktree_path)
@@ -11258,7 +12048,7 @@ mod dispatch_boundary_tests {
                 .list_sessions(&data_dir, worktree_path)
                 .unwrap()
                 .is_empty(),
-            "prompt failure must not persist Workflow Step Sessions"
+            "prompt failure must not persist Workflow Node Sessions"
         );
         assert!(
             engine.session_workflow_refs.lock().await.is_empty(),
@@ -11269,8 +12059,8 @@ mod dispatch_boundary_tests {
         let (_, exec) = find_by_worktree(&execs, worktree_path)
             .expect("execution must remain registered after prompt failure");
         assert!(
-            exec.parallel_run.is_none(),
-            "prompt failure must not apply parallel_run state"
+            exec.fanout_runtime.is_none(),
+            "prompt failure must not apply fanout_runtime state"
         );
         assert!(
             exec.current_session_id.is_none(),
@@ -11278,14 +12068,13 @@ mod dispatch_boundary_tests {
         );
         assert_eq!(
             exec.node_execution_counts,
-            HashMap::from([("parallel-review".to_string(), 1)]),
-            "prompt failure must not record child run indices"
+            HashMap::from([("fanout-review".to_string(), 1)]),
+            "prompt failure must not record child execution indices"
         );
     }
 
     #[tokio::test]
-    async fn parallel_child_setup_failure_rolls_back_created_sessions_refs_and_execution_mutation()
-    {
+    async fn fanout_child_setup_failure_rolls_back_created_sessions_refs_and_execution_mutation() {
         let app = make_dispatch_app();
         let data_dir = dispatch_data_dir(app.handle());
         let engine = WorkflowRuntimeService::new_for_test();
@@ -11307,14 +12096,14 @@ mod dispatch_boundary_tests {
         }));
 
         let execution_id = uuid::Uuid::new_v4().to_string();
-        let worktree_path = "/wt/parallel-setup-rollback";
-        let workflow = Workflow {
-            name: "parallel-setup-rollback-wf".to_string(),
+        let worktree_path = "/wt/fanout-setup-rollback";
+        let workflow = WorkflowDefinitionYaml {
+            name: "fanout-setup-rollback-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
             nodes: vec![
-                make_fanout_step("parallel-review", vec!["review-a", "review-b"]),
+                make_fanout_node("fanout-review", vec!["review-a", "review-b"]),
                 make_fanout_child("review-a"),
                 make_fanout_child("review-b"),
             ],
@@ -11324,8 +12113,8 @@ mod dispatch_boundary_tests {
         exec.state = RuntimeExecutionState::Running;
         exec.current_node_index = 0;
         exec.current_session_id = None;
-        exec.node_execution_counts = HashMap::from([("parallel-review".to_string(), 1)]);
-        insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+        exec.node_execution_counts = HashMap::from([("fanout-review".to_string(), 1)]);
+        insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
 
         let result = engine
             .start_fanout_children(app.handle(), &session_store, &handles, worktree_path)
@@ -11362,8 +12151,8 @@ mod dispatch_boundary_tests {
         let (_, exec) = find_by_worktree(&execs, worktree_path)
             .expect("execution must remain registered after setup failure");
         assert!(
-            exec.parallel_run.is_none(),
-            "setup failure must not apply parallel_run state"
+            exec.fanout_runtime.is_none(),
+            "setup failure must not apply fanout_runtime state"
         );
         assert!(
             exec.current_session_id.is_none(),
@@ -11371,8 +12160,8 @@ mod dispatch_boundary_tests {
         );
         assert_eq!(
             exec.node_execution_counts,
-            HashMap::from([("parallel-review".to_string(), 1)]),
-            "setup failure must not record child run indices"
+            HashMap::from([("fanout-review".to_string(), 1)]),
+            "setup failure must not record child execution indices"
         );
     }
 
@@ -11386,13 +12175,13 @@ mod dispatch_boundary_tests {
 
         let execution_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/fanout-child-started-rollback";
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "fanout-child-started-rollback-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
             nodes: vec![
-                make_fanout_step("fanout-review", vec!["review-a", "review-b"]),
+                make_fanout_node("fanout-review", vec!["review-a", "review-b"]),
                 make_fanout_child("review-a"),
                 make_fanout_child("review-b"),
             ],
@@ -11404,7 +12193,7 @@ mod dispatch_boundary_tests {
         exec.node_executions[0].status = NodeExecutionStatus::Running;
         exec.node_execution_counts = HashMap::from([("fanout-review".to_string(), 1)]);
         let parent_node_execution_id = exec.node_executions[0].id.clone();
-        insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+        insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
 
         engine.fail_next_required_event_append_for_test();
         let error = engine
@@ -11430,8 +12219,8 @@ mod dispatch_boundary_tests {
         let executions = engine.executions.lock().await;
         let execution = executions
             .get(&execution_id)
-            .expect("parent run remains active");
-        assert!(execution.parallel_run.is_none());
+            .expect("parent execution remains active");
+        assert!(execution.fanout_runtime.is_none());
         assert_eq!(execution.node_executions.len(), 1);
         assert_eq!(execution.node_executions[0].id, parent_node_execution_id);
         assert_eq!(
@@ -11499,7 +12288,7 @@ mod dispatch_boundary_tests {
 
         let exec = make_waiting_approval_execution(&execution_id, "/wt/atomic");
         let before_history_len = exec.node_history.len();
-        let before_step_index = exec.current_node_index;
+        let before_node_index = exec.current_node_index;
         let before_state = exec.state.clone();
         let snapshot_before = exec.clone();
 
@@ -11534,10 +12323,10 @@ mod dispatch_boundary_tests {
         }
 
         let execs = engine.executions.lock().await;
-        let restored = execs.get(&execution_id).expect("run must remain");
+        let restored = execs.get(&execution_id).expect("execution must remain");
         assert_eq!(restored.state, before_state, "WaitingApproval が復元される");
         assert_eq!(
-            restored.current_node_index, before_step_index,
+            restored.current_node_index, before_node_index,
             "current_node_index が復元される"
         );
         assert_eq!(
@@ -11547,8 +12336,11 @@ mod dispatch_boundary_tests {
         );
     }
 
-    fn dispatch_internal_test_snapshot(execution_id: &str, workflow_name: &str) -> WorkflowState {
-        WorkflowState {
+    fn dispatch_internal_test_snapshot(
+        execution_id: &str,
+        workflow_name: &str,
+    ) -> RuntimeCommitSnapshot {
+        RuntimeCommitSnapshot {
             execution_id: execution_id.to_string(),
             workflow_name: workflow_name.to_string(),
             worktree_path: "/repo".to_string(),
@@ -11559,18 +12351,17 @@ mod dispatch_boundary_tests {
             current_node_index: 0,
             current_node_name: "node-1".to_string(),
             current_session_id: None,
-            total_nodes: 1,
             node_history: vec![],
             node_execution_counts: HashMap::new(),
-            workflow_definition: crate::adaptor::gateway::workflow::schema::Workflow {
-                name: workflow_name.to_string(),
-                description: String::new(),
-                builtin: false,
-                schemas: Default::default(),
-                nodes: vec![],
-            },
+            workflow_definition:
+                crate::adaptor::gateway::workflow::schema::WorkflowDefinitionYaml {
+                    name: workflow_name.to_string(),
+                    description: String::new(),
+                    builtin: false,
+                    schemas: Default::default(),
+                    nodes: vec![],
+                },
             total_token_usage: TokenUsage::default(),
-            node_statuses: HashMap::new(),
             artifacts: HashMap::new(),
             node_executions: vec![NodeExecution {
                 id: "ne-node-1".to_string(),
@@ -11587,8 +12378,6 @@ mod dispatch_boundary_tests {
                 started_at: 0.0,
                 completed_at: None,
             }],
-            stall_observations: Vec::new(),
-            approval_operations: None,
             started_at: 0.0,
             updated_at: 0.0,
         }
@@ -11712,7 +12501,7 @@ mod dispatch_boundary_tests {
     /// が `ValidationError` を返すことを境界仕様として担保する（policy 指示）。
     #[test]
     fn dispatch_internal_complete_node_validates_all_effect_fields() {
-        fn base_snapshot() -> WorkflowState {
+        fn base_snapshot() -> RuntimeCommitSnapshot {
             let mut s =
                 dispatch_internal_test_snapshot("00000000-0000-0000-0000-000000000620", "table-wf");
             s.node_history.push(NodeHistoryEntry {
@@ -11903,7 +12692,7 @@ mod dispatch_boundary_tests {
     /// 各次元で snapshot との mismatch を ValidationError として検出することを担保する。
     #[test]
     fn dispatch_internal_fail_node_validates_all_effect_fields() {
-        fn base_snapshot() -> WorkflowState {
+        fn base_snapshot() -> RuntimeCommitSnapshot {
             let mut s =
                 dispatch_internal_test_snapshot("00000000-0000-0000-0000-000000000621", "fail-wf");
             s.current_node_name = "node-1".to_string();
@@ -11986,13 +12775,13 @@ mod dispatch_boundary_tests {
 
         let execution_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/stale-policy-terminal";
-        let step_session_id = "stale-step-session";
-        let workflow = Workflow {
+        let node_session_id = "stale-node-session";
+        let workflow = WorkflowDefinitionYaml {
             name: "stale-policy-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![make_test_step(
+            nodes: vec![make_test_node(
                 "review",
                 TestKind::Session,
                 "review",
@@ -12003,10 +12792,10 @@ mod dispatch_boundary_tests {
         let mut exec =
             make_waiting_approval_execution_with_workflow(&execution_id, worktree_path, workflow);
         exec.state = RuntimeExecutionState::Running;
-        exec.current_session_id = Some(step_session_id.to_string());
-        insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+        exec.current_session_id = Some(node_session_id.to_string());
+        insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
         engine.session_workflow_refs.lock().await.insert(
-            step_session_id.to_string(),
+            node_session_id.to_string(),
             SessionWorkflowRef {
                 execution_id: execution_id.clone(),
             },
@@ -12017,7 +12806,7 @@ mod dispatch_boundary_tests {
                 app.handle(),
                 &session_store,
                 &handles,
-                step_session_id,
+                node_session_id,
                 124,
                 None,
                 &[],
@@ -12030,18 +12819,18 @@ mod dispatch_boundary_tests {
             !engine.contains_execution_for_test(&execution_id).await,
             "stale timeout releases live runtime after checkpointing"
         );
-        let run = engine
+        let execution = engine
             .execution_store
             .get_execution(&execution_id)
             .await
             .expect("ExecutionStore must keep interrupted checkpoint metadata");
-        assert_eq!(run.status, ExecutionStatus::Interrupted);
+        assert_eq!(execution.status, ExecutionStatus::Interrupted);
         assert_eq!(
-            run.interruption_reason,
+            execution.interruption_reason,
             Some(ExecutionInterruptionReason::Stale)
         );
-        assert_eq!(run.resume_from_node.as_deref(), Some("review"));
-        assert!(run.error_reason.is_none());
+        assert_eq!(execution.resume_from_node.as_deref(), Some("review"));
+        assert!(execution.error_reason.is_none());
 
         let events = WorkflowEventLog::new(&data_dir)
             .read_log(&execution_id)
@@ -12059,7 +12848,7 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
-    async fn parallel_child_crash_releases_interrupted_execution_after_broadcast() {
+    async fn fanout_child_crash_releases_interrupted_execution_after_broadcast() {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
@@ -12067,16 +12856,16 @@ mod dispatch_boundary_tests {
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
 
         let execution_id = uuid::Uuid::new_v4().to_string();
-        let worktree_path = "/wt/parallel-child-failure";
-        let failed_child_session_id = "parallel-child-failed-session";
-        let interrupted_child_session_id = "parallel-child-interrupted-session";
-        let workflow = Workflow {
-            name: "parallel-failure-wf".to_string(),
+        let worktree_path = "/wt/fanout-child-failure";
+        let failed_child_session_id = "fanout-child-failed-session";
+        let interrupted_child_session_id = "fanout-child-interrupted-session";
+        let workflow = WorkflowDefinitionYaml {
+            name: "fanout-failure-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
             nodes: vec![
-                make_fanout_step("parallel-review", vec!["review-a", "review-b"]),
+                make_fanout_node("fanout-review", vec!["review-a", "review-b"]),
                 make_fanout_child("review-a"),
                 make_fanout_child("review-b"),
             ],
@@ -12087,20 +12876,20 @@ mod dispatch_boundary_tests {
         exec.current_node_index = 0;
         exec.current_session_id = None;
         exec.node_execution_counts = HashMap::from([
-            ("parallel-review".to_string(), 1),
+            ("fanout-review".to_string(), 1),
             ("review-a".to_string(), 1),
             ("review-b".to_string(), 1),
         ]);
-        install_test_fanout_run(
+        install_test_fanout(
             &mut exec,
             vec![
-                test_fanout_child_run(
+                test_fanout_child(
                     "review-a",
                     failed_child_session_id,
                     FanoutChildRuntimeState::Running,
                     0,
                 ),
-                test_fanout_child_run(
+                test_fanout_child(
                     "review-b",
                     interrupted_child_session_id,
                     FanoutChildRuntimeState::Running,
@@ -12108,7 +12897,7 @@ mod dispatch_boundary_tests {
                 ),
             ],
         );
-        insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+        insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
         {
             let mut refs = engine.session_workflow_refs.lock().await;
             refs.insert(
@@ -12141,7 +12930,7 @@ mod dispatch_boundary_tests {
 
         assert!(
             !engine.contains_execution_for_test(&execution_id).await,
-            "parallel child crash must release live runtime after checkpointing"
+            "fanout child crash must release live runtime after checkpointing"
         );
         let stored = engine
             .execution_store
@@ -12153,7 +12942,7 @@ mod dispatch_boundary_tests {
             stored.interruption_reason,
             Some(ExecutionInterruptionReason::Crash)
         );
-        assert_eq!(stored.resume_from_node.as_deref(), Some("parallel-review"));
+        assert_eq!(stored.resume_from_node.as_deref(), Some("fanout-review"));
         assert!(stored.error_reason.is_none());
         let events = WorkflowEventLog::new(&data_dir)
             .read_log(&execution_id)
@@ -12166,18 +12955,18 @@ mod dispatch_boundary_tests {
                     ..
                 }
             )),
-            "parallel child crash must append ExecutionInterrupted(Crash); got {events:?}"
+            "fanout child crash must append ExecutionInterrupted(Crash); got {events:?}"
         );
         let refs = engine.session_workflow_refs.lock().await;
         assert!(
             refs.values()
                 .all(|session_ref| session_ref.execution_id != execution_id),
-            "interruption cleanup must remove all session refs for the parallel run"
+            "interruption cleanup must remove all session refs for the fanout"
         );
     }
 
     #[tokio::test]
-    async fn parallel_child_success_clears_live_stall_observation_for_child() {
+    async fn fanout_child_success_clears_live_stall_observation_for_child() {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
@@ -12185,16 +12974,16 @@ mod dispatch_boundary_tests {
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
 
         let execution_id = uuid::Uuid::new_v4().to_string();
-        let worktree_path = "/wt/parallel-child-stall-success";
-        let completed_child_session_id = "parallel-child-stall-completed-session";
-        let waiting_child_session_id = "parallel-child-stall-waiting-session";
-        let workflow = Workflow {
-            name: "parallel-stall-success-wf".to_string(),
+        let worktree_path = "/wt/fanout-child-stall-success";
+        let completed_child_session_id = "fanout-child-stall-completed-session";
+        let waiting_child_session_id = "fanout-child-stall-waiting-session";
+        let workflow = WorkflowDefinitionYaml {
+            name: "fanout-stall-success-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
             nodes: vec![
-                make_fanout_step("parallel-review", vec!["review-a", "review-b"]),
+                make_fanout_node("fanout-review", vec!["review-a", "review-b"]),
                 make_fanout_child("review-a"),
                 make_fanout_child("review-b"),
             ],
@@ -12205,7 +12994,7 @@ mod dispatch_boundary_tests {
         exec.current_node_index = 0;
         exec.current_session_id = None;
         exec.node_execution_counts = HashMap::from([
-            ("parallel-review".to_string(), 1),
+            ("fanout-review".to_string(), 1),
             ("review-a".to_string(), 1),
             ("review-b".to_string(), 1),
         ]);
@@ -12213,16 +13002,16 @@ mod dispatch_boundary_tests {
             workflow_stall_observation_fixture(completed_child_session_id, "review-a"),
             workflow_stall_observation_fixture(waiting_child_session_id, "review-b"),
         ];
-        install_test_fanout_run(
+        install_test_fanout(
             &mut exec,
             vec![
-                test_fanout_child_run(
+                test_fanout_child(
                     "review-a",
                     completed_child_session_id,
                     FanoutChildRuntimeState::Running,
                     0,
                 ),
-                test_fanout_child_run(
+                test_fanout_child(
                     "review-b",
                     waiting_child_session_id,
                     FanoutChildRuntimeState::Running,
@@ -12230,7 +13019,7 @@ mod dispatch_boundary_tests {
                 ),
             ],
         );
-        insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+        insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
         engine.session_workflow_refs.lock().await.insert(
             completed_child_session_id.to_string(),
             SessionWorkflowRef {
@@ -12256,7 +13045,9 @@ mod dispatch_boundary_tests {
             .unwrap();
 
         let execs = engine.executions.lock().await;
-        let exec = execs.get(&execution_id).expect("run must stay active");
+        let exec = execs
+            .get(&execution_id)
+            .expect("execution must stay active");
         let observations = &exec.current_stall_observations;
         assert_eq!(observations.len(), 1);
         assert_eq!(
@@ -12264,9 +13055,9 @@ mod dispatch_boundary_tests {
             "completed child stall observation must be removed while running sibling remains"
         );
         let completed_child = exec
-            .parallel_run
+            .fanout_runtime
             .as_ref()
-            .expect("parallel run must stay active")
+            .expect("fanout must stay active")
             .children
             .iter()
             .find(|child| child.node_name == "review-a")
@@ -12278,8 +13069,7 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
-    async fn parallel_model_refusal_checkpoints_confirmed_child_and_resume_completes_pending_child()
-    {
+    async fn fanout_model_refusal_checkpoints_confirmed_child_and_resume_completes_pending_child() {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
@@ -12287,18 +13077,18 @@ mod dispatch_boundary_tests {
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
 
         let execution_id = uuid::Uuid::new_v4().to_string();
-        let worktree_path = "/wt/parallel-zero-exit-refusal";
-        let refused_child_session_id = "parallel-child-zero-refusal-session";
-        let waiting_child_session_id = "parallel-child-waiting-session";
+        let worktree_path = "/wt/fanout-zero-exit-refusal";
+        let refused_child_session_id = "fanout-child-zero-refusal-session";
+        let waiting_child_session_id = "fanout-child-waiting-session";
         let mut review_b = make_fanout_child("review-b");
         review_b.artifact = Some("review-verdict".to_string());
-        let workflow = Workflow {
-            name: "parallel-zero-refusal-wf".to_string(),
+        let workflow = WorkflowDefinitionYaml {
+            name: "fanout-zero-refusal-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
             schemas: submit_test_schemas(),
             nodes: vec![
-                make_fanout_step("parallel-review", vec!["review-a", "review-b"]),
+                make_fanout_node("fanout-review", vec!["review-a", "review-b"]),
                 make_fanout_child("review-a"),
                 review_b,
             ],
@@ -12309,7 +13099,7 @@ mod dispatch_boundary_tests {
         exec.current_node_index = 0;
         exec.current_session_id = None;
         exec.node_execution_counts = HashMap::from([
-            ("parallel-review".to_string(), 1),
+            ("fanout-review".to_string(), 1),
             ("review-a".to_string(), 1),
             ("review-b".to_string(), 1),
         ]);
@@ -12317,22 +13107,22 @@ mod dispatch_boundary_tests {
             workflow_stall_observation_fixture(refused_child_session_id, "review-a"),
             workflow_stall_observation_fixture(waiting_child_session_id, "review-b"),
         ];
-        let refused_child = test_fanout_child_run(
+        let refused_child = test_fanout_child(
             "review-a",
             refused_child_session_id,
             FanoutChildRuntimeState::Running,
             0,
         );
-        let mut confirmed_child = test_fanout_child_run(
+        let mut confirmed_child = test_fanout_child(
             "review-b",
             waiting_child_session_id,
             FanoutChildRuntimeState::Running,
             1,
         );
         confirmed_child.contract = Some("review-verdict".to_string());
-        install_test_fanout_run(&mut exec, vec![refused_child, confirmed_child]);
+        install_test_fanout(&mut exec, vec![refused_child, confirmed_child]);
         append_started_events_for_execution(&data_dir, &exec);
-        insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+        insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
         {
             let mut refs = engine.session_workflow_refs.lock().await;
             for session_id in [refused_child_session_id, waiting_child_session_id] {
@@ -12423,7 +13213,7 @@ mod dispatch_boundary_tests {
             stored.interruption_reason,
             Some(ExecutionInterruptionReason::Crash)
         );
-        assert_eq!(stored.resume_from_node.as_deref(), Some("parallel-review"));
+        assert_eq!(stored.resume_from_node.as_deref(), Some("fanout-review"));
 
         let events = WorkflowEventLog::new(&data_dir)
             .read_log(&execution_id)
@@ -12461,7 +13251,7 @@ mod dispatch_boundary_tests {
             .all(|event| !matches!(event, WorkflowEvent::ExecutionFailed { .. })));
         assert!(events.iter().all(|event| !matches!(
             event,
-            WorkflowEvent::ArtifactProduced { node_name, .. } if node_name == "parallel-review"
+            WorkflowEvent::ArtifactProduced { node_name, .. } if node_name == "fanout-review"
         )));
         assert!(
             events
@@ -12478,7 +13268,7 @@ mod dispatch_boundary_tests {
             let execs = engine.executions.lock().await;
             let resumed = execs.get(&execution_id).expect("resumed fanout runtime");
             let fanout = resumed
-                .parallel_run
+                .fanout_runtime
                 .as_ref()
                 .expect("active resumed fanout");
             let reused = fanout
@@ -12549,7 +13339,7 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
-    async fn parallel_terminal_failure_append_failure_rolls_back_child_state_and_execution_store() {
+    async fn fanout_terminal_failure_append_failure_rolls_back_child_state_and_execution_store() {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
@@ -12557,16 +13347,16 @@ mod dispatch_boundary_tests {
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
 
         let execution_id = uuid::Uuid::new_v4().to_string();
-        let worktree_path = "/wt/parallel-terminal-append-failure";
-        let refused_child_session_id = "parallel-child-refusal-append-failure-session";
-        let waiting_child_session_id = "parallel-child-still-running-session";
-        let workflow = Workflow {
-            name: "parallel-terminal-append-failure-wf".to_string(),
+        let worktree_path = "/wt/fanout-terminal-append-failure";
+        let refused_child_session_id = "fanout-child-refusal-append-failure-session";
+        let waiting_child_session_id = "fanout-child-still-running-session";
+        let workflow = WorkflowDefinitionYaml {
+            name: "fanout-terminal-append-failure-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
             nodes: vec![
-                make_fanout_step("parallel-review", vec!["review-a", "review-b"]),
+                make_fanout_node("fanout-review", vec!["review-a", "review-b"]),
                 make_fanout_child("review-a"),
                 make_fanout_child("review-b"),
             ],
@@ -12578,20 +13368,20 @@ mod dispatch_boundary_tests {
         exec.current_session_id = None;
         exec.updated_at = 1000.0;
         exec.node_execution_counts = HashMap::from([
-            ("parallel-review".to_string(), 1),
+            ("fanout-review".to_string(), 1),
             ("review-a".to_string(), 1),
             ("review-b".to_string(), 1),
         ]);
-        install_test_fanout_run(
+        install_test_fanout(
             &mut exec,
             vec![
-                test_fanout_child_run(
+                test_fanout_child(
                     "review-a",
                     refused_child_session_id,
                     FanoutChildRuntimeState::Running,
                     0,
                 ),
-                test_fanout_child_run(
+                test_fanout_child(
                     "review-b",
                     waiting_child_session_id,
                     FanoutChildRuntimeState::Running,
@@ -12599,12 +13389,12 @@ mod dispatch_boundary_tests {
                 ),
             ],
         );
-        insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+        insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
         let stored_before = engine
             .execution_store
             .get_execution(&execution_id)
             .await
-            .expect("run store must hold active run before append failure");
+            .expect("execution store must hold active execution before append failure");
         engine.session_workflow_refs.lock().await.insert(
             refused_child_session_id.to_string(),
             SessionWorkflowRef {
@@ -12627,16 +13417,18 @@ mod dispatch_boundary_tests {
             .await
             .expect_err("terminal child failure event append failure must abort commit");
         assert!(
-            format!("{err:?}").contains("parallel child progress event append failed"),
+            format!("{err:?}").contains("fanout child progress event append failed"),
             "append failure context must be surfaced; got {err:?}"
         );
 
         let execs = engine.executions.lock().await;
-        let exec = execs.get(&execution_id).expect("run must remain active");
+        let exec = execs
+            .get(&execution_id)
+            .expect("execution must remain active");
         let child = exec
-            .parallel_run
+            .fanout_runtime
             .as_ref()
-            .expect("parallel run must be restored")
+            .expect("fanout must be restored")
             .children
             .iter()
             .find(|child| child.node_name == "review-a")
@@ -12657,7 +13449,7 @@ mod dispatch_boundary_tests {
             .execution_store
             .get_execution(&execution_id)
             .await
-            .expect("run store must be restored to active projection");
+            .expect("execution store must be restored to active projection");
         assert_eq!(stored_after.status, stored_before.status);
         assert_eq!(stored_after.current_node, stored_before.current_node);
         assert_eq!(stored_after.updated_at, stored_before.updated_at);
@@ -12702,13 +13494,13 @@ mod dispatch_boundary_tests {
         let sibling_session_id = "fanout-missing-output-limit-sibling-session";
         let mut review_a = make_fanout_child("review-a");
         review_a.artifact = Some("review-verdict".to_string());
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "fanout-missing-output-limit-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
             nodes: vec![
-                make_fanout_step("parallel-review", vec!["review-a", "review-b"]),
+                make_fanout_node("fanout-review", vec!["review-a", "review-b"]),
                 review_a,
                 make_fanout_child("review-b"),
             ],
@@ -12719,22 +13511,22 @@ mod dispatch_boundary_tests {
         exec.current_node_index = 0;
         exec.current_session_id = None;
         exec.node_execution_counts = HashMap::from([
-            ("parallel-review".to_string(), 1),
+            ("fanout-review".to_string(), 1),
             ("review-a".to_string(), 1),
             ("review-b".to_string(), 1),
         ]);
-        let mut missing_child = test_fanout_child_run(
+        let mut missing_child = test_fanout_child(
             "review-a",
             missing_child_session_id,
             FanoutChildRuntimeState::Running,
             0,
         );
         missing_child.contract = Some("review-verdict".to_string());
-        install_test_fanout_run(
+        install_test_fanout(
             &mut exec,
             vec![
                 missing_child,
-                test_fanout_child_run(
+                test_fanout_child(
                     "review-b",
                     sibling_session_id,
                     FanoutChildRuntimeState::Running,
@@ -12743,7 +13535,7 @@ mod dispatch_boundary_tests {
             ],
         );
         append_started_events_for_execution(&data_dir, &exec);
-        insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+        insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
         {
             let mut refs = engine.session_workflow_refs.lock().await;
             refs.insert(
@@ -12797,7 +13589,7 @@ mod dispatch_boundary_tests {
 
         assert!(
             !engine.contains_execution_for_test(&execution_id).await,
-            "repair limit fanout missing-output failure must release the interrupted run"
+            "repair limit fanout missing-output failure must release the interrupted execution"
         );
         let live_payload = received_payloads
             .lock()
@@ -12816,7 +13608,7 @@ mod dispatch_boundary_tests {
                 .and_then(|execution| execution["status"].as_str())
                 .expect("node execution status must be present")
         };
-        assert_eq!(live_status("parallel-review"), "aborted");
+        assert_eq!(live_status("fanout-review"), "aborted");
         assert_eq!(live_status("review-a"), "failed");
         assert_eq!(live_status("review-b"), "aborted");
 
@@ -12833,7 +13625,7 @@ mod dispatch_boundary_tests {
                 .expect("projected node execution must exist")
         };
         assert_eq!(
-            projected_status("parallel-review"),
+            projected_status("fanout-review"),
             crate::domain::workflow::NodeExecutionStatus::Aborted
         );
         assert_eq!(
@@ -12862,7 +13654,7 @@ mod dispatch_boundary_tests {
             .await
             .expect("repair exhaustion remains resumable");
         assert_eq!(stored.status, ExecutionStatus::Interrupted);
-        assert_eq!(stored.resume_from_node.as_deref(), Some("parallel-review"));
+        assert_eq!(stored.resume_from_node.as_deref(), Some("fanout-review"));
     }
 
     #[tokio::test]
@@ -12889,13 +13681,13 @@ mod dispatch_boundary_tests {
         let sibling_session_id = "approval-fanout-missing-output-limit-sibling-session";
         let mut review_a = make_approval_gated_session("review-a", "review-a", vec![]);
         review_a.artifact = Some("review-verdict".to_string());
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "approval-fanout-missing-output-limit-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
             nodes: vec![
-                make_fanout_step("parallel-review", vec!["review-a", "review-b"]),
+                make_fanout_node("fanout-review", vec!["review-a", "review-b"]),
                 review_a,
                 make_fanout_child("review-b"),
             ],
@@ -12906,22 +13698,22 @@ mod dispatch_boundary_tests {
         exec.current_node_index = 0;
         exec.current_session_id = None;
         exec.node_execution_counts = HashMap::from([
-            ("parallel-review".to_string(), 1),
+            ("fanout-review".to_string(), 1),
             ("review-a".to_string(), 1),
             ("review-b".to_string(), 1),
         ]);
-        let mut approval_child = test_fanout_child_run(
+        let mut approval_child = test_fanout_child(
             "review-a",
             approval_child_session_id,
             FanoutChildRuntimeState::Running,
             0,
         );
         approval_child.contract = Some("review-verdict".to_string());
-        install_test_fanout_run(
+        install_test_fanout(
             &mut exec,
             vec![
                 approval_child,
-                test_fanout_child_run(
+                test_fanout_child(
                     "review-b",
                     sibling_session_id,
                     FanoutChildRuntimeState::Running,
@@ -12929,10 +13721,10 @@ mod dispatch_boundary_tests {
                 ),
             ],
         );
-        let fanout_run = exec.parallel_run.as_ref().expect("fanout run");
-        let parent_node_execution_id = fanout_run.parent_node_execution_id.clone();
-        let approval_child_node_execution_id = fanout_run.children[0].node_execution_id.clone();
-        let sibling_node_execution_id = fanout_run.children[1].node_execution_id.clone();
+        let fanout = exec.fanout_runtime.as_ref().expect("fanout");
+        let parent_node_execution_id = fanout.parent_node_execution_id.clone();
+        let approval_child_node_execution_id = fanout.children[0].node_execution_id.clone();
+        let sibling_node_execution_id = fanout.children[1].node_execution_id.clone();
         let approval_node_execution = exec
             .node_executions
             .iter_mut()
@@ -12940,7 +13732,7 @@ mod dispatch_boundary_tests {
             .expect("approval child node execution");
         approval_node_execution.status = NodeExecutionStatus::WaitingApproval;
         append_started_events_for_execution(&data_dir, &exec);
-        insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+        insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
         engine.session_workflow_refs.lock().await.insert(
             approval_child_session_id.to_string(),
             SessionWorkflowRef {
@@ -12996,7 +13788,7 @@ mod dispatch_boundary_tests {
         ));
         assert!(
             !engine.contains_execution_for_test(&execution_id).await,
-            "repair limit approval fanout missing-output failure must release the interrupted run"
+            "repair limit approval fanout missing-output failure must release the interrupted execution"
         );
         let live_payload = received_payloads
             .lock()
@@ -13090,13 +13882,13 @@ mod dispatch_boundary_tests {
         let sibling_session_id = "fanout-missing-output-start-sibling-session";
         let mut review_a = make_fanout_child("review-a");
         review_a.artifact = Some("review-verdict".to_string());
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "fanout-missing-output-start-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
             nodes: vec![
-                make_fanout_step("parallel-review", vec!["review-a", "review-b"]),
+                make_fanout_node("fanout-review", vec!["review-a", "review-b"]),
                 review_a,
                 make_fanout_child("review-b"),
             ],
@@ -13107,22 +13899,22 @@ mod dispatch_boundary_tests {
         exec.current_node_index = 0;
         exec.current_session_id = None;
         exec.node_execution_counts = HashMap::from([
-            ("parallel-review".to_string(), 1),
+            ("fanout-review".to_string(), 1),
             ("review-a".to_string(), 1),
             ("review-b".to_string(), 1),
         ]);
-        let mut missing_child = test_fanout_child_run(
+        let mut missing_child = test_fanout_child(
             "review-a",
             missing_child_session_id,
             FanoutChildRuntimeState::Running,
             0,
         );
         missing_child.contract = Some("review-verdict".to_string());
-        install_test_fanout_run(
+        install_test_fanout(
             &mut exec,
             vec![
                 missing_child,
-                test_fanout_child_run(
+                test_fanout_child(
                     "review-b",
                     sibling_session_id,
                     FanoutChildRuntimeState::Running,
@@ -13131,7 +13923,7 @@ mod dispatch_boundary_tests {
             ],
         );
         append_started_events_for_execution(&data_dir, &exec);
-        insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+        insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
         {
             let mut refs = engine.session_workflow_refs.lock().await;
             refs.insert(
@@ -13173,7 +13965,7 @@ mod dispatch_boundary_tests {
 
         assert!(
             !engine.contains_execution_for_test(&execution_id).await,
-            "repair start failure must release the terminal fanout run"
+            "repair start failure must release the terminal fanout"
         );
         let live_payload = received_payloads
             .lock()
@@ -13192,7 +13984,7 @@ mod dispatch_boundary_tests {
                 .and_then(|execution| execution["status"].as_str())
                 .expect("node execution status must be present")
         };
-        assert_eq!(live_status("parallel-review"), "failed");
+        assert_eq!(live_status("fanout-review"), "failed");
         assert_eq!(live_status("review-a"), "failed");
         assert_eq!(live_status("review-b"), "aborted");
 
@@ -13217,7 +14009,7 @@ mod dispatch_boundary_tests {
                 .expect("projected node execution must exist")
         };
         assert_eq!(
-            projected_status("parallel-review"),
+            projected_status("fanout-review"),
             crate::domain::workflow::NodeExecutionStatus::Failed
         );
         assert_eq!(
@@ -13281,7 +14073,7 @@ mod dispatch_boundary_tests {
         // snapshot を Failed terminal に遷移させ、execute_outcome に persist 経路で渡す。
         let mut snapshot = {
             let execs = engine.executions.lock().await;
-            execs.get(&execution_id).unwrap().to_workflow_state()
+            execs.get(&execution_id).unwrap().to_commit_snapshot()
         };
         snapshot.state = RuntimeExecutionState::Failed {
             reason: "node failure".to_string(),
@@ -13309,7 +14101,7 @@ mod dispatch_boundary_tests {
             .execution_store
             .get_execution(&execution_id)
             .await
-            .expect("ExecutionStore must still hold the run");
+            .expect("ExecutionStore must still hold the execution");
         assert!(
             !stored.status.is_terminal(),
             "ExecutionStore status must NOT be terminal when event log append fails; got {:?}",
@@ -13338,15 +14130,15 @@ mod dispatch_boundary_tests {
     /// Spec [05] Rule: snapshot に Failed state が反映済みの場合、`write_terminal_log` の
     /// 単体経路 (`terminal_events_for_snapshot` → `write_log_required_batch`) が
     /// startup timeout の `failure_kind` / retry count を保ったまま
-    /// `NodeFailed` + `RunFailed` を順序通り append することを直接検証する。
+    /// `NodeFailed` + `ExecutionFailed` を順序通り append することを直接検証する。
     #[test]
-    fn write_terminal_log_emits_startup_timeout_node_failed_followed_by_run_failed() {
+    fn write_terminal_log_emits_startup_timeout_node_failed_followed_by_execution_failed() {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         let execution_id = "00000000-0000-0000-0000-000000000605".to_string();
 
-        let snapshot = WorkflowState {
+        let snapshot = RuntimeCommitSnapshot {
             execution_id: execution_id.clone(),
             workflow_name: "fail-wf".to_string(),
             worktree_path: "/repo".to_string(),
@@ -13359,38 +14151,35 @@ mod dispatch_boundary_tests {
                 retry_count: Some(2),
             },
             current_node_index: 0,
-            current_node_name: "step-1".to_string(),
+            current_node_name: "node-1".to_string(),
             current_session_id: None,
-            total_nodes: 1,
             node_history: vec![],
-            node_execution_counts: HashMap::from([("step-1".to_string(), 1)]),
-            workflow_definition: crate::adaptor::gateway::workflow::schema::Workflow {
-                name: "fail-wf".to_string(),
-                description: String::new(),
-                builtin: false,
-                schemas: Default::default(),
-                nodes: vec![make_test_step(
-                    "step-1",
-                    TestKind::Session,
-                    "step-1",
-                    vec![],
-                    None,
-                )],
-            },
+            node_execution_counts: HashMap::from([("node-1".to_string(), 1)]),
+            workflow_definition:
+                crate::adaptor::gateway::workflow::schema::WorkflowDefinitionYaml {
+                    name: "fail-wf".to_string(),
+                    description: String::new(),
+                    builtin: false,
+                    schemas: Default::default(),
+                    nodes: vec![make_test_node(
+                        "node-1",
+                        TestKind::Session,
+                        "node-1",
+                        vec![],
+                        None,
+                    )],
+                },
             total_token_usage: TokenUsage::default(),
-            node_statuses: HashMap::new(),
             artifacts: HashMap::new(),
             node_executions: vec![node_execution_fixture(
                 &execution_id,
-                "node-execution-step-1",
-                "step-1",
+                "node-execution-node-1",
+                "node-1",
                 1,
                 NodeExecutionStatus::Failed,
                 None,
                 None,
             )],
-            stall_observations: Vec::new(),
-            approval_operations: None,
             started_at: 900.0,
             updated_at: 1000.0,
         };
@@ -13405,19 +14194,19 @@ mod dispatch_boundary_tests {
         assert_eq!(
             events.len(),
             2,
-            "terminal log must contain NodeFailed + RunFailed; got {events:?}"
+            "terminal log must contain NodeFailed + ExecutionFailed; got {events:?}"
         );
         match &events[0] {
             WorkflowEvent::NodeFailed {
-                execution_id: ev_run_id,
+                execution_id: ev_execution_id,
                 node_name,
                 reason,
                 failure_kind,
                 retry_count,
                 ..
             } => {
-                assert_eq!(ev_run_id, &execution_id);
-                assert_eq!(node_name, "step-1");
+                assert_eq!(ev_execution_id, &execution_id);
+                assert_eq!(node_name, "node-1");
                 assert_eq!(reason, "startup timeout");
                 assert_eq!(
                     *failure_kind,
@@ -13429,19 +14218,19 @@ mod dispatch_boundary_tests {
         }
         match &events[1] {
             WorkflowEvent::ExecutionFailed {
-                execution_id: ev_run_id,
+                execution_id: ev_execution_id,
                 reason,
                 failure_kind,
                 ..
             } => {
-                assert_eq!(ev_run_id, &execution_id);
+                assert_eq!(ev_execution_id, &execution_id);
                 assert_eq!(reason, "startup timeout");
                 assert_eq!(
                     *failure_kind,
                     crate::domain::workflow::NodeExecutionFailureKind::StartupTimeout
                 );
             }
-            other => panic!("expected RunFailed second, got {other:?}"),
+            other => panic!("expected ExecutionFailed second, got {other:?}"),
         }
     }
 
@@ -13449,7 +14238,7 @@ mod dispatch_boundary_tests {
     /// `abort_target_lookup` は `executions` に存在しない execution_id を `NotFound` と
     /// 判定し、後段の dispatch では非受理にマッピングされる構造を担保する。
     #[tokio::test]
-    async fn abort_target_lookup_returns_not_found_for_unknown_run_id() {
+    async fn abort_target_lookup_returns_not_found_for_unknown_execution_id() {
         let engine = WorkflowRuntimeService::new_for_test();
         match engine
             .abort_target_lookup("00000000-0000-0000-0000-000000000700")
@@ -13460,11 +14249,11 @@ mod dispatch_boundary_tests {
         }
     }
 
-    /// Spec [04] Rule「既に終了した run に対する操作 command が要求される」:
-    /// terminal な run（Completed/Failed/Aborted）に対する Abort は `AlreadyTerminal`
+    /// Spec [04] Rule「既に終了した execution に対する操作 command が要求される」:
+    /// terminal な execution（Completed/Failed/Aborted）に対する Abort は `AlreadyTerminal`
     /// として lookup 段階で非受理になる。
     #[tokio::test]
-    async fn abort_target_lookup_returns_already_terminal_for_terminal_run() {
+    async fn abort_target_lookup_returns_already_terminal_for_terminal_execution() {
         let engine = WorkflowRuntimeService::new_for_test();
         let execution_id = uuid::Uuid::new_v4().to_string();
         for terminal_state in [
@@ -13495,7 +14284,7 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
-    async fn abort_target_lookup_returns_already_terminal_for_released_terminal_run_record() {
+    async fn abort_target_lookup_returns_already_terminal_for_released_terminal_execution_record() {
         let engine = WorkflowRuntimeService::new_for_test();
         let tmp = TempDir::new().unwrap();
         engine
@@ -13512,7 +14301,7 @@ mod dispatch_boundary_tests {
         ] {
             let execution_id = uuid::Uuid::new_v4().to_string();
             let exec = make_waiting_approval_execution(&execution_id, "/wt/released-terminal");
-            insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+            insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
             engine
                 .execution_store
                 .complete_execution(&execution_id, terminal_status, 2000.0, error_reason)
@@ -13523,16 +14312,18 @@ mod dispatch_boundary_tests {
             match engine.abort_target_lookup(&execution_id).await {
                 AbortTargetLookup::AlreadyTerminal => {}
                 other => {
-                    panic!("expected AlreadyTerminal for released terminal run, got {other:?}")
+                    panic!(
+                        "expected AlreadyTerminal for released terminal execution, got {other:?}"
+                    )
                 }
             }
         }
     }
 
-    /// Spec [04] Rule: active run に対する `abort_target_lookup` は `Active` を返し、
+    /// Spec [04] Rule: active execution に対する `abort_target_lookup` は `Active` を返し、
     /// その後の state 遷移経路（mutation → required append → finalize）に乗る。
     #[tokio::test]
-    async fn abort_target_lookup_returns_active_for_running_run() {
+    async fn abort_target_lookup_returns_active_for_running_execution() {
         let engine = WorkflowRuntimeService::new_for_test();
         let execution_id = uuid::Uuid::new_v4().to_string();
         let mut exec = make_waiting_approval_execution(&execution_id, "/wt/active");
@@ -13546,12 +14337,12 @@ mod dispatch_boundary_tests {
 
         match engine.abort_target_lookup(&execution_id).await {
             AbortTargetLookup::Active {
-                current_step_session_id,
+                current_node_session_id,
                 ..
             } => {
-                assert_eq!(current_step_session_id.as_deref(), Some("sess-X"));
+                assert_eq!(current_node_session_id.as_deref(), Some("sess-X"));
             }
-            other => panic!("expected Active for running run, got {other:?}"),
+            other => panic!("expected Active for running execution, got {other:?}"),
         }
     }
 
@@ -13600,23 +14391,28 @@ mod dispatch_boundary_tests {
             );
         }
 
-        let active_run_id = uuid::Uuid::new_v4().to_string();
-        let mut active = make_waiting_approval_execution(&active_run_id, "/wt/active-release");
+        let active_execution_id = uuid::Uuid::new_v4().to_string();
+        let mut active =
+            make_waiting_approval_execution(&active_execution_id, "/wt/active-release");
         active.state = RuntimeExecutionState::Running;
         engine
             .executions
             .lock()
             .await
-            .insert(active_run_id.clone(), active);
+            .insert(active_execution_id.clone(), active);
         engine.execution_facet_contents.lock().await.insert(
-            active_run_id.clone(),
+            active_execution_id.clone(),
             crate::adaptor::gateway::workflow::facet::WorkflowFacetContents::default(),
         );
 
-        engine.release_terminal_execution(&active_run_id).await;
+        engine
+            .release_terminal_execution(&active_execution_id)
+            .await;
 
         assert!(
-            engine.contains_execution_for_test(&active_run_id).await,
+            engine
+                .contains_execution_for_test(&active_execution_id)
+                .await,
             "active execution must not be released"
         );
         assert!(
@@ -13624,7 +14420,7 @@ mod dispatch_boundary_tests {
                 .execution_facet_contents
                 .lock()
                 .await
-                .contains_key(&active_run_id),
+                .contains_key(&active_execution_id),
             "active facet contents must not be released"
         );
         assert_eq!(engine.executions_len_for_test().await, 1);
@@ -13641,7 +14437,7 @@ mod dispatch_boundary_tests {
         let worktree_path = "/wt/reconstruct-terminal";
         let exec = make_waiting_approval_execution(&execution_id, worktree_path);
         let workflow = exec.workflow.clone();
-        insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+        insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
 
         let log = WorkflowEventLog::new(&data_dir);
         log.append(&WorkflowEvent::ExecutionStarted {
@@ -13759,11 +14555,11 @@ mod dispatch_boundary_tests {
     }
 
     /// Spec [04] atomic mutation 境界（Abort 経路）: `abort_workflow_execution`
-    /// が受理されると `RunAborted` event は `write_log_required` 経由で必須 append
+    /// が受理されると `ExecutionAborted` event は `write_log_required` 経由で必須 append
     /// される。NDJSON に正しく snake_case で記録され、observer が typed event として
     /// 読めることを担保する。
     #[test]
-    fn run_aborted_event_required_append_writes_typed_ndjson() {
+    fn execution_aborted_event_required_append_writes_typed_ndjson() {
         let tmp = TempDir::new().unwrap();
         let log = WorkflowEventLog::new(tmp.path());
         let execution_id = "00000000-0000-0000-0000-000000000800";
@@ -13773,7 +14569,7 @@ mod dispatch_boundary_tests {
             aborted_node: None,
             timestamp: 4321.0,
         })
-        .expect("RunAborted は write_log_required 経由で append される");
+        .expect("ExecutionAborted は write_log_required 経由で append される");
 
         let events = log.read_log(execution_id).unwrap();
         assert_eq!(events.len(), 1);
@@ -13781,12 +14577,12 @@ mod dispatch_boundary_tests {
             WorkflowEvent::ExecutionAborted {
                 execution_id: rid, ..
             } => assert_eq!(rid, execution_id),
-            other => panic!("expected RunAborted, got {other:?}"),
+            other => panic!("expected ExecutionAborted, got {other:?}"),
         }
     }
 
     /// Spec [04] rollback: production dispatch 経由で event append が失敗した場合、
-    /// WorkflowExecution / Run Store / event log は command 受理前 snapshot に戻る。
+    /// WorkflowExecution / Execution Store / event log は command 受理前 snapshot に戻る。
     #[tokio::test]
     async fn dispatch_approve_node_append_failure_rolls_back_full_snapshot() {
         let app = make_dispatch_app();
@@ -13801,7 +14597,7 @@ mod dispatch_boundary_tests {
         let mut exec = make_waiting_approval_execution(&execution_id, worktree_path);
         exec.current_session_id = None;
         let snapshot_before = exec.clone();
-        insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+        insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
 
         let log_dir_path = dispatch_data_dir(app.handle()).join("workflow_execution_logs");
         std::fs::write(&log_dir_path, b"not a directory").unwrap();
@@ -13821,7 +14617,7 @@ mod dispatch_boundary_tests {
         assert!(matches!(result, Err(WorkflowEngineError::SessionStore(_))));
 
         let execs = engine.executions.lock().await;
-        let restored = execs.get(&execution_id).expect("run must remain");
+        let restored = execs.get(&execution_id).expect("execution must remain");
         assert_eq!(
             restored.state, snapshot_before.state,
             "state は snapshot で一括復元される"
@@ -13843,10 +14639,11 @@ mod dispatch_boundary_tests {
         assert!(read_dispatch_events(&app, &execution_id).is_empty());
     }
 
-    /// Spec [04] rollback: AbortRun の required event append が失敗した場合も、
-    /// WorkflowExecution / Run Store / ChatSession workflow_state は mutation 前へ戻る。
+    /// Spec [04] rollback: AbortExecution の required event append が失敗した場合も、
+    /// WorkflowExecution / Execution Store / ChatSession workflow_state は mutation 前へ戻る。
     #[tokio::test]
-    async fn dispatch_abort_run_append_failure_rolls_back_execution_execution_store_and_session() {
+    async fn dispatch_abort_execution_append_failure_rolls_back_execution_execution_store_and_session(
+    ) {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let tmp = TempDir::new().unwrap();
@@ -13860,7 +14657,7 @@ mod dispatch_boundary_tests {
         exec.current_session_id = None;
         exec.state = RuntimeExecutionState::Running;
         let snapshot_before = exec.clone();
-        insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+        insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
 
         let log_dir_path = dispatch_data_dir(app.handle()).join("workflow_execution_logs");
         std::fs::write(&log_dir_path, b"not a directory").unwrap();
@@ -13871,7 +14668,7 @@ mod dispatch_boundary_tests {
 
         assert!(matches!(result, Err(WorkflowEngineError::SessionStore(_))));
         let execs = engine.executions.lock().await;
-        let restored = execs.get(&execution_id).expect("run must remain");
+        let restored = execs.get(&execution_id).expect("execution must remain");
         assert_eq!(restored.state, snapshot_before.state);
         assert_eq!(
             restored.node_history.len(),
@@ -13937,12 +14734,12 @@ mod dispatch_boundary_tests {
                     created_from: ExecutionOrigin::DesktopUi,
                     request: String::new(),
                     permission_mode: "ask".to_string(),
-                    definition: Workflow {
+                    definition: WorkflowDefinitionYaml {
                         name: "wf".to_string(),
                         description: String::new(),
                         builtin: false,
                         schemas: Default::default(),
-                        nodes: vec![make_test_step(
+                        nodes: vec![make_test_node(
                             "plan",
                             TestKind::Session,
                             "implement",
@@ -13995,10 +14792,10 @@ mod dispatch_boundary_tests {
         assert!(checkpoint.completed_at.is_none());
     }
 
-    /// Spec [04] テスト境界: StartRun は production start primitive 入口で
+    /// Spec [04] テスト境界: StartExecution は production start primitive 入口で
     /// validation され、拒否時は state / event を変更しない。
     #[tokio::test]
-    async fn start_run_primitive_rejects_invalid_name_without_state_change() {
+    async fn start_execution_primitive_rejects_invalid_name_without_state_change() {
         let engine = WorkflowRuntimeService::new_for_test();
         let execution_store_dir = TempDir::new().unwrap();
         engine
@@ -14015,10 +14812,10 @@ mod dispatch_boundary_tests {
         assert!(engine.list_active_executions().await.is_empty());
     }
 
-    /// Spec [04] テスト境界: StartRun の正常系は production start primitive 経由で
-    /// execution_id を返し、execution / Run Store / RunStarted event を作成する。
+    /// Spec [04] テスト境界: StartExecution の正常系は production start primitive 経由で
+    /// execution_id を返し、execution / Execution Store / ExecutionStarted event を作成する。
     #[tokio::test]
-    async fn start_run_primitive_accepts_creates_run_and_appends_event() {
+    async fn start_execution_primitive_accepts_creates_execution_and_appends_event() {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let execution_store_dir = TempDir::new().unwrap();
@@ -14057,11 +14854,11 @@ mod dispatch_boundary_tests {
             .unwrap();
         assert!(
             engine.executions.lock().await.contains_key(&execution_id),
-            "StartRun must register a WorkflowExecution"
+            "StartExecution must register a WorkflowExecution"
         );
         assert!(
             engine.get_execution(&execution_id).await.is_some(),
-            "StartRun must create a Run Store entry"
+            "StartExecution must create a Execution Store entry"
         );
         assert!(read_dispatch_events(&app, &execution_id)
             .iter()
@@ -14077,10 +14874,159 @@ mod dispatch_boundary_tests {
             }));
     }
 
+    /// #1337 final gate: every bundled workflow must pass the production load/start path,
+    /// create its initial NodeExecution, and activate the stubbed session runtime.
+    #[tokio::test]
+    async fn all_twelve_builtin_workflows_activate_their_initial_node_execution() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_execution_store_data_dir(data_dir.clone()).await;
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir);
+        let summaries = crate::adaptor::gateway::workflow::builtin::list_builtin_workflows();
+        assert_eq!(
+            summaries.len(),
+            12,
+            "the canonical builtin set must stay at 12"
+        );
+
+        for summary in summaries {
+            let (repo_parent, _worktree_parent, worktree_path) = make_managed_worktree();
+            configure_managed_repo(&app, repo_parent.path().join("repo").as_path());
+            let resolved_worktree = engine
+                .resolve_start_execution_worktree(worktree_path.to_string_lossy().to_string())
+                .await
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "builtin '{}' worktree must resolve before start: {error}",
+                        summary.name
+                    )
+                });
+            let workflow = engine
+                .resolve_start_execution_workflow(&summary.name)
+                .await
+                .unwrap_or_else(|error| {
+                    panic!("builtin '{}' must load before start: {error}", summary.name)
+                });
+            let initial_node = workflow
+                .nodes
+                .first()
+                .unwrap_or_else(|| panic!("builtin '{}' must have a node", summary.name));
+            let initial_node_name = initial_node.name.clone();
+            let initial_node_kind = initial_node.kind_name();
+            let expected_fanout_children = initial_node.fanout().map(|fanout| {
+                let item_count = match fanout.items.as_ref() {
+                    None => 1,
+                    Some(ItemsSource::Literal(items)) => items.len(),
+                    Some(ItemsSource::ArtifactField { node, field }) => panic!(
+                        "builtin '{}' initial fanout cannot source items from {node}.{field}",
+                        summary.name
+                    ),
+                };
+                fanout.child.len() * item_count
+            });
+
+            let execution_id = engine
+                .start_resolved_workflow(
+                    app.handle(),
+                    &session_store,
+                    &agent_runtime,
+                    workflow,
+                    resolved_worktree,
+                    Some(format!("start builtin {}", summary.name)),
+                    ExecutionOrigin::DesktopUi,
+                    crate::domain::agent_session::PermissionMode::Edit,
+                )
+                .await
+                .unwrap_or_else(|error| panic!("builtin '{}' must start: {error}", summary.name));
+
+            match initial_node_kind {
+                NodeKindName::Session => {
+                    let (session_id, _) =
+                        wait_for_top_level_session(&engine, &execution_id, &initial_node_name)
+                            .await;
+                    wait_for_stub_session_turn_activation(&agent_runtime, &session_id).await;
+                }
+                NodeKindName::Fanout => {
+                    let children = wait_for_active_fanout_children(
+                        &engine,
+                        &execution_id,
+                        &initial_node_name,
+                        expected_fanout_children.expect("fanout child count must be available"),
+                    )
+                    .await;
+                    for (_, session_id, _) in children {
+                        wait_for_stub_session_turn_activation(&agent_runtime, &session_id).await;
+                    }
+                }
+                NodeKindName::Command => {
+                    for _ in 0..500 {
+                        if read_dispatch_events(&app, &execution_id)
+                            .iter()
+                            .any(|event| {
+                                matches!(
+                                    event,
+                                    WorkflowEvent::NodeStarted {
+                                        node_name,
+                                        kind: NodeKindName::Command,
+                                        ..
+                                    } if node_name == &initial_node_name
+                                )
+                            })
+                        {
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+                }
+            }
+
+            assert!(
+                read_dispatch_events(&app, &execution_id)
+                    .iter()
+                    .any(|event| matches!(
+                        event,
+                        WorkflowEvent::NodeStarted {
+                            node_name,
+                            kind,
+                            attempt: 1,
+                            fanout_parent: None,
+                            ..
+                        } if node_name == &initial_node_name && *kind == initial_node_kind
+                    )),
+                "builtin '{}' must append its initial top-level NodeStarted event",
+                summary.name
+            );
+
+            if engine
+                .execution_store()
+                .get_execution(&execution_id)
+                .await
+                .is_some_and(|execution| !execution.status.is_terminal())
+            {
+                engine
+                    .abort_workflow_execution(
+                        app.handle(),
+                        &session_store,
+                        &agent_runtime,
+                        &execution_id,
+                        None,
+                    )
+                    .await
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "builtin '{}' cleanup abort must succeed: {error}",
+                            summary.name
+                        )
+                    });
+            }
+        }
+    }
+
     /// Task 1326 regression: reservation 後の validate_start 失敗 rollback で、
     /// runtime-local facet read model を残さない。
     #[tokio::test]
-    async fn start_run_validate_start_failure_releases_execution_facet_contents() {
+    async fn start_execution_validate_start_failure_releases_execution_facet_contents() {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let execution_store_dir = TempDir::new().unwrap();
@@ -14089,15 +15035,18 @@ mod dispatch_boundary_tests {
             .await;
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         let worktree = "/wt/start-validate-start-failure".to_string();
-        let existing_run_id = uuid::Uuid::new_v4().to_string();
-        let mut existing =
-            make_exec_with(&existing_run_id, &worktree, RuntimeExecutionState::Running);
+        let existing_execution_id = uuid::Uuid::new_v4().to_string();
+        let mut existing = make_exec_with(
+            &existing_execution_id,
+            &worktree,
+            RuntimeExecutionState::Running,
+        );
         existing.workflow.name = "existing-active-wf".to_string();
         engine
             .executions
             .lock()
             .await
-            .insert(existing_run_id.clone(), existing);
+            .insert(existing_execution_id.clone(), existing);
 
         let stem = crate::adaptor::gateway::workflow::builtin::list_builtin_workflows()
             .into_iter()
@@ -14131,16 +15080,18 @@ mod dispatch_boundary_tests {
             "failed reservation must be cancelled"
         );
         assert!(
-            engine.contains_execution_for_test(&existing_run_id).await,
+            engine
+                .contains_execution_for_test(&existing_execution_id)
+                .await,
             "pre-existing execution must remain"
         );
         assert_eq!(engine.executions_len_for_test().await, 1);
     }
 
-    /// Spec [04] rollback: StartRun の RunStarted append が失敗した場合、
+    /// Spec [04] rollback: StartExecution の ExecutionStarted append が失敗した場合、
     /// reservation / execution / parent ChatSession を command 受理前へ戻す。
     #[tokio::test]
-    async fn start_run_primitive_append_failure_clears_created_parent_workflow_state() {
+    async fn start_execution_primitive_append_failure_clears_created_parent_commit_snapshot() {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let execution_store_dir = TempDir::new().unwrap();
@@ -14182,31 +15133,31 @@ mod dispatch_boundary_tests {
         assert!(engine.executions.lock().await.is_empty());
         assert!(
             engine.execution_facet_contents.lock().await.is_empty(),
-            "RunStarted append rollback must release execution_facet_contents"
+            "ExecutionStarted append rollback must release execution_facet_contents"
         );
         assert!(engine.list_active_executions().await.is_empty());
         let log_dir_path = dispatch_data_dir(app.handle()).join("workflow_execution_logs");
         assert!(
             !log_dir_path.exists() || std::fs::read_dir(&log_dir_path).unwrap().next().is_none(),
-            "RunStarted and initial NodeStarted must be one atomic batch"
+            "ExecutionStarted and initial NodeStarted must be one atomic batch"
         );
         let sessions = session_store
             .list_worktree_sessions(&dispatch_data_dir(app.handle()), &worktree)
             .unwrap();
         assert!(
             sessions.is_empty(),
-            "RunStarted が存在しない失敗 run の parent ChatSession は残さない"
+            "ExecutionStarted が存在しない失敗 execution の parent ChatSession は残さない"
         );
     }
 
-    // 撤去済み: persist_state は廃止された（NDJSON event log + Run Store metadata で永続化が完結）。
-    // 旧 `dispatch_start_run_persist_failure_rolls_back_execution_execution_store_and_parent_session` テストは
+    // 撤去済み: persist_state は廃止された（NDJSON event log + Execution Store metadata で永続化が完結）。
+    // 旧 `dispatch_start_execution_persist_failure_rolls_back_execution_execution_store_and_parent_session` テストは
     // persist_state 注入失敗時の rollback を検証していたが、機構撤去により意味を失った。
 
-    /// Spec [04] テスト境界: AbortRun は production dispatch 経由で Aborted に遷移し、
-    /// RunAborted typed event を append する。
+    /// Spec [04] テスト境界: AbortExecution は production dispatch 経由で Aborted に遷移し、
+    /// ExecutionAborted typed event を append する。
     #[tokio::test]
-    async fn dispatch_abort_run_accepts_mutates_state_and_appends_event() {
+    async fn dispatch_abort_execution_accepts_mutates_state_and_appends_event() {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
@@ -14218,10 +15169,10 @@ mod dispatch_boundary_tests {
         let workflow = exec.workflow.clone();
         // spec issues-1023: session log 到達経路の維持を検証するため、
         // current_session_id を入れた状態で abort する。
-        exec.current_session_id = Some("aborted-step-session".to_string());
+        exec.current_session_id = Some("aborted-node-session".to_string());
         exec.state = RuntimeExecutionState::Running;
         let node_execution_id = exec.node_executions[0].id.clone();
-        insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+        insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
         WorkflowEventLog::new(&data_dir)
             .append_batch(&[
                 WorkflowEvent::ExecutionStarted {
@@ -14246,7 +15197,7 @@ mod dispatch_boundary_tests {
                 WorkflowEvent::SessionAttached {
                     execution_id: execution_id.clone(),
                     node_execution_id,
-                    session_id: "aborted-step-session".to_string(),
+                    session_id: "aborted-node-session".to_string(),
                     timestamp: 1000.0,
                 },
             ])
@@ -14285,7 +15236,9 @@ mod dispatch_boundary_tests {
                 &events,
             )
             .unwrap()
-            .expect("released aborted run history must reconstruct from Event Log projection");
+            .expect(
+                "released aborted execution history must reconstruct from Event Log projection",
+            );
         assert_eq!(reconstructed.status, ExecutionStatus::Aborted);
         let aborted_executions = reconstructed
             .node_executions
@@ -14301,13 +15254,13 @@ mod dispatch_boundary_tests {
         );
         assert_eq!(
             aborted_executions[0].session_id.as_deref(),
-            Some("aborted-step-session"),
+            Some("aborted-node-session"),
             "reconstructed state must preserve the session log reachability"
         );
     }
 
     #[tokio::test]
-    async fn dispatch_abort_run_snapshots_current_attempt_for_retried_step() {
+    async fn dispatch_abort_execution_snapshots_current_attempt_for_retried_node() {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
@@ -14332,7 +15285,7 @@ mod dispatch_boundary_tests {
             state: crate::domain::workflow::value_objects::default_node_history_status(),
         });
         let retried_node_execution_id = format!("{execution_id}-review-2");
-        insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+        insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
         WorkflowEventLog::new(&data_dir)
             .append_batch(&[
                 WorkflowEvent::ExecutionStarted {
@@ -14375,7 +15328,7 @@ mod dispatch_boundary_tests {
                 WorkflowEvent::ExecutionAborted { aborted_node, .. } => aborted_node.as_ref(),
                 _ => None,
             })
-            .expect("retried current step must be persisted as aborted_node");
+            .expect("retried current node must be persisted as aborted_node");
         assert_eq!(aborted_node, "review");
 
         let reconstructed =
@@ -14400,24 +15353,24 @@ mod dispatch_boundary_tests {
         );
     }
 
-    /// spec issues-1023: `make_aborted_parallel_history_entry` の単体検証。
-    /// parallel ブロック中断時に parent step を 1 entry として、children を
+    /// spec issues-1023: `make_aborted_fanout_history_entry` の単体検証。
+    /// fanout ブロック中断時に parent node を 1 entry として、children を
     /// `fanout_children` に snapshot し、完了済み child は "completed"、それ以外は
     /// "aborted" 状態で記録される。session_id は全 child で残されることを担保する。
     #[test]
-    fn make_aborted_parallel_history_entry_snapshots_mixed_child_states() {
-        let workflow = Workflow {
+    fn make_aborted_fanout_history_entry_snapshots_mixed_child_states() {
+        let workflow = WorkflowDefinitionYaml {
             name: "wf".to_string(),
             description: String::new(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![make_fanout_step("parallel-review", vec![])],
+            nodes: vec![make_fanout_node("fanout-review", vec![])],
         };
         let mut exec =
-            make_waiting_approval_execution_with_workflow("exec-abort-parallel", "/wt", workflow);
+            make_waiting_approval_execution_with_workflow("exec-abort-fanout", "/wt", workflow);
         exec.state = RuntimeExecutionState::Running;
         exec.current_session_id = None;
-        let mut child_a = test_fanout_child_run(
+        let mut child_a = test_fanout_child(
             "child-a",
             "session-a",
             FanoutChildRuntimeState::Completed,
@@ -14425,13 +15378,13 @@ mod dispatch_boundary_tests {
         );
         child_a.result = Some("LGTM".to_string());
         let child_b =
-            test_fanout_child_run("child-b", "session-b", FanoutChildRuntimeState::Running, 1);
-        install_test_fanout_run(&mut exec, vec![child_a, child_b]);
+            test_fanout_child("child-b", "session-b", FanoutChildRuntimeState::Running, 1);
+        install_test_fanout(&mut exec, vec![child_a, child_b]);
 
         let entry = exec
-            .make_aborted_parallel_history_entry(123.0)
-            .expect("parallel_run が Some なら entry が返る");
-        assert_eq!(entry.node_name, "parallel-review");
+            .make_aborted_fanout_history_entry(123.0)
+            .expect("fanout_runtime が Some なら entry が返る");
+        assert_eq!(entry.node_name, "fanout-review");
         assert_eq!(entry.state, "aborted");
         assert_eq!(entry.completed_at, 123.0);
         let children = entry.fanout_children.expect("fanout_children が Some");
@@ -14448,10 +15401,11 @@ mod dispatch_boundary_tests {
         );
     }
 
-    /// Spec [06] テスト境界: node 限定 AbortRun は現在 node を照合した上で run abort として
-    /// 扱い、Running / WaitingApproval のどちらでも `RunAborted` を append する。
+    /// Spec [06] テスト境界: node 限定 AbortExecution は現在 node を照合した上で execution abort として
+    /// 扱い、Running / WaitingApproval のどちらでも `ExecutionAborted` を append する。
     #[tokio::test]
-    async fn dispatch_abort_run_with_expected_node_validates_node_and_appends_run_aborted() {
+    async fn dispatch_abort_execution_with_expected_node_validates_node_and_appends_execution_aborted(
+    ) {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let tmp = TempDir::new().unwrap();
@@ -14463,7 +15417,7 @@ mod dispatch_boundary_tests {
         let worktree_path = "/wt/dispatch-approval-abort";
         let mut exec = make_waiting_approval_execution(&execution_id, worktree_path);
         exec.current_session_id = None;
-        insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+        insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
 
         engine
             .abort_workflow_execution(
@@ -14485,16 +15439,16 @@ mod dispatch_boundary_tests {
         assert!(matches!(events[0], WorkflowEvent::ExecutionAborted { .. }));
     }
 
-    // 撤去済み: dispatch_abort_run_with_expected_node_persist_failure_rolls_back は
+    // 撤去済み: dispatch_abort_execution_with_expected_node_persist_failure_rolls_back は
     // persist_state 注入失敗を介して rollback を検証していたが、persist_state 機構の撤去で
-    // 意味を失った（NDJSON event log + Run Store metadata が権威）。
+    // 意味を失った（NDJSON event log + Execution Store metadata が権威）。
     // required event append 失敗時の rollback は下記
-    // `dispatch_abort_run_with_expected_node_append_failure_rolls_back` で引き続き検証する。
+    // `dispatch_abort_execution_with_expected_node_append_failure_rolls_back` で引き続き検証する。
 
-    /// Spec [04] rollback: approval UI 由来の AbortRun で required event append が失敗した場合も、
-    /// WorkflowExecution / Run Store / ChatSession workflow_state は mutation 前へ戻る。
+    /// Spec [04] rollback: approval UI 由来の AbortExecution で required event append が失敗した場合も、
+    /// WorkflowExecution / Execution Store / ChatSession workflow_state は mutation 前へ戻る。
     #[tokio::test]
-    async fn dispatch_abort_run_with_expected_node_append_failure_rolls_back() {
+    async fn dispatch_abort_execution_with_expected_node_append_failure_rolls_back() {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let tmp = TempDir::new().unwrap();
@@ -14507,7 +15461,7 @@ mod dispatch_boundary_tests {
         let mut exec = make_waiting_approval_execution(&execution_id, worktree_path);
         exec.current_session_id = None;
         let snapshot_before = exec.clone();
-        insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+        insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
         let log_dir_path = dispatch_data_dir(app.handle()).join("workflow_execution_logs");
         std::fs::write(&log_dir_path, b"not a directory").unwrap();
 
@@ -14540,9 +15494,9 @@ mod dispatch_boundary_tests {
     }
 
     /// Spec [04] Rule「対象不在 / 既に終了した command は受理されない」:
-    /// AbortRun の dispatch 拒否経路は state を変化させず event を append しない。
+    /// AbortExecution の dispatch 拒否経路は state を変化させず event を append しない。
     #[tokio::test]
-    async fn dispatch_abort_run_rejects_not_found_and_terminal_without_append() {
+    async fn dispatch_abort_execution_rejects_not_found_and_terminal_without_append() {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let tmp = TempDir::new().unwrap();
@@ -14550,14 +15504,14 @@ mod dispatch_boundary_tests {
             .set_execution_store_data_dir(tmp.path().to_path_buf())
             .await;
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
-        let missing_run_id = uuid::Uuid::new_v4().to_string();
+        let missing_execution_id = uuid::Uuid::new_v4().to_string();
 
         let missing = engine
             .abort_workflow_execution(
                 app.handle(),
                 &session_store,
                 &handles,
-                &missing_run_id,
+                &missing_execution_id,
                 None,
             )
             .await;
@@ -14565,15 +15519,16 @@ mod dispatch_boundary_tests {
             missing,
             Err(WorkflowEngineError::ExecutionNotFound(_))
         ));
-        assert!(read_dispatch_events(&app, &missing_run_id).is_empty());
+        assert!(read_dispatch_events(&app, &missing_execution_id).is_empty());
 
-        let terminal_run_id = uuid::Uuid::new_v4().to_string();
-        let terminal = make_waiting_approval_execution(&terminal_run_id, "/wt/terminal-abort");
-        insert_execution_and_active_run(&engine, terminal, ExecutionOrigin::DesktopUi).await;
+        let terminal_execution_id = uuid::Uuid::new_v4().to_string();
+        let terminal =
+            make_waiting_approval_execution(&terminal_execution_id, "/wt/terminal-abort");
+        insert_execution_and_register_active(&engine, terminal, ExecutionOrigin::DesktopUi).await;
         let snapshot_before = {
             let mut executions = engine.executions.lock().await;
             let terminal = executions
-                .get_mut(&terminal_run_id)
+                .get_mut(&terminal_execution_id)
                 .expect("live terminal fixture");
             terminal.state = RuntimeExecutionState::Completed;
             terminal.clone()
@@ -14581,7 +15536,7 @@ mod dispatch_boundary_tests {
         engine
             .execution_store
             .complete_execution(
-                &terminal_run_id,
+                &terminal_execution_id,
                 TerminalExecutionStatus::Completed,
                 2000.0,
                 None,
@@ -14594,7 +15549,7 @@ mod dispatch_boundary_tests {
                 app.handle(),
                 &session_store,
                 &handles,
-                &terminal_run_id,
+                &terminal_execution_id,
                 None,
             )
             .await;
@@ -14603,24 +15558,30 @@ mod dispatch_boundary_tests {
             Err(WorkflowEngineError::InvalidState(_))
         ));
         let execs = engine.executions.lock().await;
-        let restored = execs.get(&terminal_run_id).unwrap();
+        let restored = execs.get(&terminal_execution_id).unwrap();
         assert_eq!(restored.state, snapshot_before.state);
         assert_eq!(
             restored.node_history.len(),
             snapshot_before.node_history.len()
         );
         drop(execs);
-        assert!(read_dispatch_events(&app, &terminal_run_id).is_empty());
+        assert!(read_dispatch_events(&app, &terminal_execution_id).is_empty());
 
-        let released_terminal_run_id = uuid::Uuid::new_v4().to_string();
-        let released_terminal =
-            make_waiting_approval_execution(&released_terminal_run_id, "/wt/released-terminal");
-        insert_execution_and_active_run(&engine, released_terminal, ExecutionOrigin::DesktopUi)
-            .await;
+        let released_terminal_execution_id = uuid::Uuid::new_v4().to_string();
+        let released_terminal = make_waiting_approval_execution(
+            &released_terminal_execution_id,
+            "/wt/released-terminal",
+        );
+        insert_execution_and_register_active(
+            &engine,
+            released_terminal,
+            ExecutionOrigin::DesktopUi,
+        )
+        .await;
         engine
             .execution_store
             .complete_execution(
-                &released_terminal_run_id,
+                &released_terminal_execution_id,
                 TerminalExecutionStatus::Completed,
                 2000.0,
                 None,
@@ -14631,14 +15592,14 @@ mod dispatch_boundary_tests {
             .executions
             .lock()
             .await
-            .remove(&released_terminal_run_id);
+            .remove(&released_terminal_execution_id);
 
         let released_terminal_result = engine
             .abort_workflow_execution(
                 app.handle(),
                 &session_store,
                 &handles,
-                &released_terminal_run_id,
+                &released_terminal_execution_id,
                 None,
             )
             .await;
@@ -14646,11 +15607,11 @@ mod dispatch_boundary_tests {
             released_terminal_result,
             Err(WorkflowEngineError::InvalidState(_))
         ));
-        assert!(read_dispatch_events(&app, &released_terminal_run_id).is_empty());
+        assert!(read_dispatch_events(&app, &released_terminal_execution_id).is_empty());
     }
 
     #[tokio::test]
-    async fn dispatch_abort_run_treats_execution_released_after_lookup_as_already_terminal() {
+    async fn dispatch_abort_execution_treats_execution_released_after_lookup_as_already_terminal() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
         let data_dir = dispatch_data_dir(app.handle());
@@ -14659,7 +15620,7 @@ mod dispatch_boundary_tests {
 
         let execution_id = uuid::Uuid::new_v4().to_string();
         let exec = make_waiting_approval_execution(&execution_id, "/wt/released-after-lookup");
-        insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+        insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
 
         let lookup_completed = Arc::new(tokio::sync::Notify::new());
         let continue_precommit = Arc::new(tokio::sync::Notify::new());
@@ -14670,7 +15631,7 @@ mod dispatch_boundary_tests {
         let abort_engine = engine.clone();
         let abort_session_store = session_store.clone();
         let abort_handles = handles.clone();
-        let abort_run_id = execution_id.clone();
+        let abort_execution_id = execution_id.clone();
         let app_handle = app.handle().clone();
         let abort_task = tokio::spawn(async move {
             abort_engine
@@ -14678,7 +15639,7 @@ mod dispatch_boundary_tests {
                     &app_handle,
                     &abort_session_store,
                     &abort_handles,
-                    &abort_run_id,
+                    &abort_execution_id,
                     None,
                 )
                 .await
@@ -14720,8 +15681,8 @@ mod dispatch_boundary_tests {
     }
 
     /// Spec [04] no-op 不変条件: target 指定付きの
-    /// `AbortRun { expected_node_name: Some(_) }` でも、対象不在・stale node・既決 node は
-    /// production dispatch 経由で state / Run Store を変化させず event を append しない。
+    /// `AbortExecution { expected_node_name: Some(_) }` でも、対象不在・stale node・既決 node は
+    /// production dispatch 経由で state / Execution Store を変化させず event を append しない。
     #[tokio::test]
     async fn dispatch_targeted_abort_rejects_missing_stale_and_resolved_targets_without_append() {
         let app = make_dispatch_app();
@@ -14732,13 +15693,13 @@ mod dispatch_boundary_tests {
             .await;
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
 
-        let missing_run_id = uuid::Uuid::new_v4().to_string();
+        let missing_execution_id = uuid::Uuid::new_v4().to_string();
         let missing = engine
             .abort_workflow_execution(
                 app.handle(),
                 &session_store,
                 &handles,
-                &missing_run_id,
+                &missing_execution_id,
                 Some("review"),
             )
             .await;
@@ -14748,14 +15709,14 @@ mod dispatch_boundary_tests {
         ));
         assert!(engine.list_active_executions().await.is_empty());
         assert!(engine.list_completed_executions().await.is_empty());
-        assert!(read_dispatch_events(&app, &missing_run_id).is_empty());
+        assert!(read_dispatch_events(&app, &missing_execution_id).is_empty());
 
-        let stale_run_id = uuid::Uuid::new_v4().to_string();
+        let stale_execution_id = uuid::Uuid::new_v4().to_string();
         let stale_worktree = "/wt/approval-abort-stale";
-        let mut stale_exec = make_waiting_approval_execution(&stale_run_id, stale_worktree);
+        let mut stale_exec = make_waiting_approval_execution(&stale_execution_id, stale_worktree);
         stale_exec.current_session_id = None;
         let stale_before = stale_exec.clone();
-        insert_execution_and_active_run(&engine, stale_exec, ExecutionOrigin::DesktopUi).await;
+        insert_execution_and_register_active(&engine, stale_exec, ExecutionOrigin::DesktopUi).await;
         let stale_active_before = engine.list_active_executions().await;
 
         let stale = engine
@@ -14763,7 +15724,7 @@ mod dispatch_boundary_tests {
                 app.handle(),
                 &session_store,
                 &handles,
-                &stale_run_id,
+                &stale_execution_id,
                 Some("old-review"),
             )
             .await;
@@ -14772,7 +15733,7 @@ mod dispatch_boundary_tests {
             Err(WorkflowEngineError::UnauthorizedApprovalTarget(_))
         ));
         let execs = engine.executions.lock().await;
-        let stale_after = execs.get(&stale_run_id).unwrap();
+        let stale_after = execs.get(&stale_execution_id).unwrap();
         assert_eq!(stale_after.state, stale_before.state);
         assert_eq!(
             stale_after.current_node_index,
@@ -14790,12 +15751,12 @@ mod dispatch_boundary_tests {
             stale_active_before[0].execution_id
         );
         assert_eq!(stale_active_after[0].status, stale_active_before[0].status);
-        assert!(read_dispatch_events(&app, &stale_run_id).is_empty());
+        assert!(read_dispatch_events(&app, &stale_execution_id).is_empty());
 
-        let resolved_run_id = uuid::Uuid::new_v4().to_string();
+        let resolved_execution_id = uuid::Uuid::new_v4().to_string();
         let resolved_worktree = "/wt/approval-abort-resolved";
         let mut resolved_exec =
-            make_waiting_approval_execution(&resolved_run_id, resolved_worktree);
+            make_waiting_approval_execution(&resolved_execution_id, resolved_worktree);
         resolved_exec.current_session_id = None;
         resolved_exec.state = RuntimeExecutionState::Completed;
         let resolved_before = resolved_exec.clone();
@@ -14803,11 +15764,11 @@ mod dispatch_boundary_tests {
             .executions
             .lock()
             .await
-            .insert(resolved_run_id.clone(), resolved_exec);
+            .insert(resolved_execution_id.clone(), resolved_exec);
         engine
             .execution_store
             .register_active_execution(WorkflowExecutionMetadata {
-                execution_id: resolved_run_id.clone(),
+                execution_id: resolved_execution_id.clone(),
                 workflow_name: "boundary-wf".to_string(),
                 status: ExecutionStatus::WaitingApproval,
                 worktree_path: resolved_worktree.to_string(),
@@ -14826,7 +15787,7 @@ mod dispatch_boundary_tests {
         engine
             .execution_store
             .complete_execution(
-                &resolved_run_id,
+                &resolved_execution_id,
                 TerminalExecutionStatus::Completed,
                 2000.0,
                 None,
@@ -14840,7 +15801,7 @@ mod dispatch_boundary_tests {
                 app.handle(),
                 &session_store,
                 &handles,
-                &resolved_run_id,
+                &resolved_execution_id,
                 Some("review"),
             )
             .await;
@@ -14849,7 +15810,7 @@ mod dispatch_boundary_tests {
             Err(WorkflowEngineError::InvalidState(_))
         ));
         let execs = engine.executions.lock().await;
-        let resolved_after = execs.get(&resolved_run_id).unwrap();
+        let resolved_after = execs.get(&resolved_execution_id).unwrap();
         assert_eq!(resolved_after.state, resolved_before.state);
         assert_eq!(
             resolved_after.node_history.len(),
@@ -14863,7 +15824,7 @@ mod dispatch_boundary_tests {
             completed_before[0].execution_id
         );
         assert_eq!(completed_after[0].status, completed_before[0].status);
-        assert!(read_dispatch_events(&app, &resolved_run_id).is_empty());
+        assert!(read_dispatch_events(&app, &resolved_execution_id).is_empty());
     }
 
     /// Spec [04] テスト境界: approval-gated session の Approve は production dispatch 経由で受理され、
@@ -14881,7 +15842,7 @@ mod dispatch_boundary_tests {
         let worktree_path = "/wt/dispatch-approve";
         let mut exec = make_waiting_approval_execution(&execution_id, worktree_path);
         exec.current_session_id = None;
-        insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+        insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
 
         engine
             .resolve_workflow_approval(
@@ -14924,13 +15885,13 @@ mod dispatch_boundary_tests {
             .set_execution_store_data_dir(tmp.path().to_path_buf())
             .await;
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
-        let missing_run_id = uuid::Uuid::new_v4().to_string();
+        let missing_execution_id = uuid::Uuid::new_v4().to_string();
         let missing = engine
             .resolve_workflow_approval(
                 app.handle(),
                 &session_store,
                 &handles,
-                &missing_run_id,
+                &missing_execution_id,
                 None,
                 "review",
                 None,
@@ -14940,19 +15901,20 @@ mod dispatch_boundary_tests {
             missing,
             Err(WorkflowEngineError::ExecutionNotFound(_))
         ));
-        assert!(read_dispatch_events(&app, &missing_run_id).is_empty());
+        assert!(read_dispatch_events(&app, &missing_execution_id).is_empty());
 
-        let stale_run_id = uuid::Uuid::new_v4().to_string();
-        let mut stale_exec = make_waiting_approval_execution(&stale_run_id, "/wt/approve-stale");
+        let stale_execution_id = uuid::Uuid::new_v4().to_string();
+        let mut stale_exec =
+            make_waiting_approval_execution(&stale_execution_id, "/wt/approve-stale");
         stale_exec.current_session_id = None;
         let stale_before = stale_exec.clone();
-        insert_execution_and_active_run(&engine, stale_exec, ExecutionOrigin::DesktopUi).await;
+        insert_execution_and_register_active(&engine, stale_exec, ExecutionOrigin::DesktopUi).await;
         let stale = engine
             .resolve_workflow_approval(
                 app.handle(),
                 &session_store,
                 &handles,
-                &stale_run_id,
+                &stale_execution_id,
                 None,
                 "old-review",
                 None,
@@ -14963,16 +15925,16 @@ mod dispatch_boundary_tests {
             Err(WorkflowEngineError::UnauthorizedApprovalTarget(_))
         ));
         let execs = engine.executions.lock().await;
-        let restored = execs.get(&stale_run_id).unwrap();
+        let restored = execs.get(&stale_execution_id).unwrap();
         assert_eq!(restored.state, stale_before.state);
         assert_eq!(restored.current_node_index, stale_before.current_node_index);
         assert_eq!(restored.node_history.len(), stale_before.node_history.len());
         drop(execs);
-        assert!(read_dispatch_events(&app, &stale_run_id).is_empty());
+        assert!(read_dispatch_events(&app, &stale_execution_id).is_empty());
 
-        let resolved_run_id = uuid::Uuid::new_v4().to_string();
+        let resolved_execution_id = uuid::Uuid::new_v4().to_string();
         let mut resolved_exec =
-            make_waiting_approval_execution(&resolved_run_id, "/wt/approve-resolved");
+            make_waiting_approval_execution(&resolved_execution_id, "/wt/approve-resolved");
         resolved_exec.current_session_id = None;
         resolved_exec.state = RuntimeExecutionState::Completed;
         let resolved_before = resolved_exec.clone();
@@ -14980,13 +15942,13 @@ mod dispatch_boundary_tests {
             .executions
             .lock()
             .await
-            .insert(resolved_run_id.clone(), resolved_exec);
+            .insert(resolved_execution_id.clone(), resolved_exec);
         let resolved = engine
             .resolve_workflow_approval(
                 app.handle(),
                 &session_store,
                 &handles,
-                &resolved_run_id,
+                &resolved_execution_id,
                 None,
                 "review",
                 None,
@@ -14997,14 +15959,14 @@ mod dispatch_boundary_tests {
             Err(WorkflowEngineError::InvalidState(_))
         ));
         let execs = engine.executions.lock().await;
-        let restored = execs.get(&resolved_run_id).unwrap();
+        let restored = execs.get(&resolved_execution_id).unwrap();
         assert_eq!(restored.state, resolved_before.state);
         assert_eq!(
             restored.node_history.len(),
             resolved_before.node_history.len()
         );
         drop(execs);
-        assert!(read_dispatch_events(&app, &resolved_run_id).is_empty());
+        assert!(read_dispatch_events(&app, &resolved_execution_id).is_empty());
     }
 
     // 撤去済み: persist_state 注入失敗を介した rollback テストは persist_state 機構の撤去で
@@ -15024,11 +15986,11 @@ mod dispatch_boundary_tests {
             .await;
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         let execution_id = uuid::Uuid::new_v4().to_string();
-        let worktree_path = "/wt/run-store-sync-rollback";
+        let worktree_path = "/wt/execution-store-sync-rollback";
         let mut exec = make_waiting_approval_execution(&execution_id, worktree_path);
         exec.current_session_id = None;
         let snapshot_before = exec.clone();
-        insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+        insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
 
         let bad_data_dir = tmp.path().join("not-a-directory");
         std::fs::write(&bad_data_dir, "file").unwrap();
@@ -15070,13 +16032,13 @@ mod dispatch_boundary_tests {
 
     // 撤去済み: persist_state 注入失敗テストは parent ChatSession 機構撤去で意味を失った。
 
-    /// Spec [04] atomic mutation 境界（A3 AbortRun terminal sync post-commit 化）:
-    /// `abort_workflow_by_execution_id` は append 失敗時に Run Store / external 副作用を
+    /// Spec [04] atomic mutation 境界（A3 AbortExecution terminal sync post-commit 化）:
+    /// `abort_workflow_by_execution_id` は append 失敗時に Execution Store / external 副作用を
     /// 一切実行しないことが構造的不変条件。本テストは pre-commit が in-memory state
     /// 変更のみであり、append 失敗時に snapshot 一括復元のみで完全に元状態へ戻せる
     /// ことを直接確認する（外部依存の差し替えを必要としない経路）。
     #[tokio::test]
-    async fn abort_run_pre_commit_holds_only_in_memory_mutation() {
+    async fn abort_execution_pre_commit_holds_only_in_memory_mutation() {
         let engine = WorkflowRuntimeService::new_for_test();
         let execution_id = uuid::Uuid::new_v4().to_string();
         let mut exec = make_waiting_approval_execution(&execution_id, "/wt/pre-commit");
@@ -15089,12 +16051,15 @@ mod dispatch_boundary_tests {
             .insert(execution_id.clone(), exec);
 
         // pre-commit 区間で行う state mutation を再現（abort_workflow_by_execution_id 内の
-        // step 2 と同等）。
+        // node 2 と同等）。
         let mutated_timestamp = 1234.0;
         {
             let mut execs = engine.executions.lock().await;
             let exec = execs.get_mut(&execution_id).unwrap();
-            assert!(exec.is_active(), "active な run でなければ mutation しない");
+            assert!(
+                exec.is_active(),
+                "active な execution でなければ mutation しない"
+            );
             exec.state = RuntimeExecutionState::Aborted;
             exec.updated_at = mutated_timestamp;
         }
@@ -15106,7 +16071,7 @@ mod dispatch_boundary_tests {
         }
 
         // append 失敗を擬制した snapshot 一括復元（A3: pre-commit 区間は in-memory のみ
-        // のため、Run Store / interrupt_agent / persist 等の外部副作用は不要）。
+        // のため、Execution Store / interrupt_agent / persist 等の外部副作用は不要）。
         {
             let mut execs = engine.executions.lock().await;
             if let Some(exec) = execs.get_mut(&execution_id) {
@@ -15114,7 +16079,7 @@ mod dispatch_boundary_tests {
             }
         }
         let execs = engine.executions.lock().await;
-        let restored = execs.get(&execution_id).expect("run must remain");
+        let restored = execs.get(&execution_id).expect("execution must remain");
         assert_eq!(
             restored.state,
             RuntimeExecutionState::Running,
@@ -15126,7 +16091,7 @@ mod dispatch_boundary_tests {
         );
     }
 
-    /// 起動時 recovery: 前回起動中に確定 event が書かれないまま終了した run について、
+    /// 起動時 recovery: 前回起動中に確定 event が書かれないまま終了した execution について、
     /// `recover_orphan_executions` が NDJSON 末尾に `ExecutionInterrupted(Orphan)` を append し、
     /// metadata 上に再開 checkpoint を残す。既定で abort せず、abort / resume のどちらも
     /// typed command の許可状態になる。
@@ -15310,7 +16275,7 @@ mod dispatch_boundary_tests {
     /// 起動時 recovery: 既に terminal な metadata は変更されない（idempotent）。
     /// recovery 二回目以降は append も persist も走らない。
     #[tokio::test]
-    async fn recover_orphan_executions_is_idempotent_for_already_terminal_runs() {
+    async fn recover_orphan_executions_is_idempotent_for_already_terminal_executions() {
         let app = make_dispatch_app();
         let data_dir = dispatch_data_dir(app.handle());
 
@@ -15350,7 +16315,7 @@ mod dispatch_boundary_tests {
         assert_eq!(
             events_before.len(),
             events_after.len(),
-            "terminal な run には event を append しない"
+            "terminal な execution には event を append しない"
         );
         let summary = engine
             .execution_store
@@ -15387,9 +16352,9 @@ mod dispatch_boundary_tests {
             })
             .await
             .unwrap();
-        let definition = Workflow {
+        let definition = WorkflowDefinitionYaml {
             name: "wf".to_string(),
-            nodes: vec![make_test_step(
+            nodes: vec![make_test_node(
                 "plan",
                 TestKind::Session,
                 "plan",
@@ -15498,9 +16463,9 @@ mod dispatch_boundary_tests {
                     created_from: ExecutionOrigin::DesktopUi,
                     request: String::new(),
                     permission_mode: "ask".to_string(),
-                    definition: Workflow {
+                    definition: WorkflowDefinitionYaml {
                         name: "wf".to_string(),
-                        nodes: vec![make_test_step(
+                        nodes: vec![make_test_node(
                             "plan",
                             TestKind::Session,
                             "plan",
@@ -15642,16 +16607,16 @@ mod dispatch_boundary_tests {
             .await
     }
 
-    fn make_submit_output_workflow() -> Workflow {
-        Workflow {
+    fn make_submit_output_workflow() -> WorkflowDefinitionYaml {
+        WorkflowDefinitionYaml {
             name: "submit-wf".to_string(),
             description: String::new(),
             builtin: false,
             schemas: submit_test_schemas(),
             nodes: vec![{
-                let mut step = make_test_step("review", TestKind::Session, "review", vec![], None);
-                step.artifact = Some("review-verdict".to_string());
-                step
+                let mut node = make_test_node("review", TestKind::Session, "review", vec![], None);
+                node.artifact = Some("review-verdict".to_string());
+                node
             }],
         }
     }
@@ -15665,7 +16630,7 @@ mod dispatch_boundary_tests {
             .unwrap_or_default()
     }
 
-    async fn step_output_for(
+    async fn node_output_for(
         engine: &WorkflowRuntimeService,
         execution_id: &str,
         node_name: &str,
@@ -15679,9 +16644,9 @@ mod dispatch_boundary_tests {
     }
 
     /// [08] 振る舞い定義 Rule 1（適合する場合）: contract に適合する構造化出力は
-    /// step output として確定し、後続 step から参照可能になり、事実履歴に記録される。
+    /// node output として確定し、後続 node から参照可能になり、事実履歴に記録される。
     #[tokio::test]
-    async fn submit_output_persists_step_output_and_appends_event_when_contract_satisfied() {
+    async fn submit_output_persists_node_output_and_appends_event_when_contract_satisfied() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
         let data_dir =
@@ -15712,11 +16677,11 @@ mod dispatch_boundary_tests {
         .unwrap();
 
         // artifacts slot に書き込まれている
-        let step_output = step_output_for(&engine, &execution_id, "review")
+        let node_output = node_output_for(&engine, &execution_id, "review")
             .await
             .expect("artifacts must be updated");
-        assert_eq!(step_output.contract.as_deref(), Some("review-verdict"));
-        assert_eq!(step_output.artifact.as_ref().unwrap()["verdict"], "LGTM");
+        assert_eq!(node_output.contract.as_deref(), Some("review-verdict"));
+        assert_eq!(node_output.artifact.as_ref().unwrap()["verdict"], "LGTM");
 
         // ArtifactProduced event が追記されている
         let events = read_submit_output_events(&app, &execution_id);
@@ -15743,6 +16708,68 @@ mod dispatch_boundary_tests {
         assert_eq!(submitted.1["verdict"], "LGTM");
         assert_eq!(submitted.2, None);
         assert_eq!(submitted.3, None);
+    }
+
+    #[tokio::test]
+    async fn arbitrary_contract_submit_redacts_env_secret_in_state_log_and_api_response() {
+        let secret = "ARBITRARY_CONTRACT_SECRET_12345";
+        let _secret =
+            crate::test_support::EnvVarGuard::set_value("RELEASH_ARBITRARY_SUBMIT_SECRET", secret);
+        let app = make_dispatch_app();
+        let engine = Arc::new(WorkflowRuntimeService::new_for_test());
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_execution_store_data_dir(data_dir.clone()).await;
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        engine
+            .seed_active_execution_for_test(
+                execution_id.clone(),
+                make_submit_output_workflow(),
+                RuntimeExecutionState::Running,
+                "/wt/arbitrary-contract-redaction".to_string(),
+                ExecutionOrigin::DesktopUi,
+            )
+            .await;
+
+        submit_output_for_test(
+            &engine,
+            app.handle(),
+            &execution_id,
+            "review",
+            "review-verdict",
+            serde_json::json!({"verdict": format!("LGTM {secret}")}),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let state = node_output_for(&engine, &execution_id, "review")
+            .await
+            .unwrap();
+        let state_text = serde_json::to_string(&state.artifact).unwrap();
+        assert!(state_text.contains("[REDACTED]"));
+        assert!(!state_text.contains(secret));
+
+        let ndjson = std::fs::read_to_string(
+            data_dir
+                .join("workflow_execution_logs")
+                .join(format!("{execution_id}.ndjson")),
+        )
+        .unwrap();
+        assert!(ndjson.contains("[REDACTED]"));
+        assert!(!ndjson.contains(secret));
+
+        let (router, _, _) =
+            crate::adaptor::controller::api::test_support::test_router(&data_dir, "secret");
+        let (status, response) = crate::adaptor::controller::api::test_support::get_json(
+            &router,
+            &format!("/v1/workflow/executions/{execution_id}/artifacts/review"),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let response_text = serde_json::to_string(&response).unwrap();
+        assert_eq!(response["value"]["verdict"], "LGTM [REDACTED]");
+        assert!(!response_text.contains(secret));
     }
 
     /// #1250: contract 不適合の SubmitOutput は即 reject せず repair policy に渡す。
@@ -15812,7 +16839,7 @@ mod dispatch_boundary_tests {
         .unwrap();
 
         // artifacts は更新されない
-        assert!(step_output_for(&engine, &execution_id, "review")
+        assert!(node_output_for(&engine, &execution_id, "review")
             .await
             .is_none());
         // ArtifactProduced event も書かれない
@@ -15850,13 +16877,13 @@ mod dispatch_boundary_tests {
         let worktree_path = "/wt/fanout-submit-invalid";
         let mut child = make_fanout_child("review-child");
         child.artifact = Some("spec-directory".to_string());
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "fanout-submit-wf".to_string(),
             description: String::new(),
             builtin: false,
             schemas: submit_test_schemas(),
             nodes: vec![
-                make_fanout_step("parallel-review", vec!["review-child"]),
+                make_fanout_node("fanout-review", vec!["review-child"]),
                 child,
             ],
         };
@@ -15873,7 +16900,7 @@ mod dispatch_boundary_tests {
             let mut executions = engine.executions.lock().await;
             let execution = executions.get_mut(&execution_id).expect("seeded execution");
             execution.current_session_id = None;
-            install_test_fanout_run(
+            install_test_fanout(
                 execution,
                 vec![
                     FanoutChildRuntime {
@@ -15956,9 +16983,9 @@ mod dispatch_boundary_tests {
         )));
     }
 
-    /// [08] 振る舞い定義 Rule 1: 不在 step に対する提出は副作用なしで拒否される。
+    /// [08] 振る舞い定義 Rule 1: 不在 node に対する提出は副作用なしで拒否される。
     #[tokio::test]
-    async fn submit_output_rejects_unknown_step_without_side_effects() {
+    async fn submit_output_rejects_unknown_node_without_side_effects() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
         let data_dir =
@@ -15979,7 +17006,7 @@ mod dispatch_boundary_tests {
             &engine,
             app.handle(),
             &execution_id,
-            "ghost-step",
+            "ghost-node",
             "review-verdict",
             serde_json::json!({"verdict": "LGTM"}),
             None,
@@ -15994,9 +17021,9 @@ mod dispatch_boundary_tests {
             .all(|e| !matches!(e, WorkflowEvent::ArtifactProduced { .. })));
     }
 
-    /// [08] 振る舞い定義 Rule 1: 不在 run （UUID 未登録）に対する提出は ExecutionNotFound で拒否。
+    /// [08] 振る舞い定義 Rule 1: 不在 execution （UUID 未登録）に対する提出は ExecutionNotFound で拒否。
     #[tokio::test]
-    async fn submit_output_rejects_unknown_run() {
+    async fn submit_output_rejects_unknown_execution() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
         let data_dir =
@@ -16052,16 +17079,16 @@ mod dispatch_boundary_tests {
         .await
         .unwrap_err();
         assert!(matches!(err, WorkflowEngineError::ValidationError(_)));
-        assert!(step_output_for(&engine, &execution_id, "review")
+        assert!(node_output_for(&engine, &execution_id, "review")
             .await
             .is_none());
     }
 
-    /// [08] 振る舞い定義 Rule 3: 提出済み output は後続 step から
+    /// [08] 振る舞い定義 Rule 3: 提出済み output は後続 node から
     /// `input_reference` 経路で経路非依存に参照できる。artifacts に
     /// 書き込まれた entry が contract 由来の `contract` を保持することを担保する。
     #[tokio::test]
-    async fn submit_output_step_output_carries_contract_for_downstream_reference() {
+    async fn submit_output_node_output_carries_contract_for_downstream_reference() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
         let data_dir =
@@ -16090,15 +17117,15 @@ mod dispatch_boundary_tests {
         )
         .await
         .unwrap();
-        let step_output = step_output_for(&engine, &execution_id, "review")
+        let node_output = node_output_for(&engine, &execution_id, "review")
             .await
             .expect("artifacts slot must be populated");
-        assert_eq!(step_output.contract.as_deref(), Some("review-verdict"));
+        assert_eq!(node_output.contract.as_deref(), Some("review-verdict"));
         // artifact が後続経路に渡る shape で保持される
-        assert!(step_output.artifact.is_some());
+        assert!(node_output.artifact.is_some());
     }
 
-    /// [08] spec-directory artifact が submit された場合、step output に
+    /// [08] spec-directory artifact が submit された場合、node output に
     /// 検証済み artifact が保存される。
     #[tokio::test]
     async fn submit_output_stores_spec_dir_artifact_without_workflow_variable_side_effects() {
@@ -16108,15 +17135,15 @@ mod dispatch_boundary_tests {
             crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let execution_id = uuid::Uuid::new_v4().to_string();
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "spec-wf".to_string(),
             description: String::new(),
             builtin: false,
             schemas: submit_test_schemas(),
             nodes: vec![{
-                let mut step = make_test_step("plan", TestKind::Session, "plan", vec![], None);
-                step.artifact = Some("spec-directory".to_string());
-                step
+                let mut node = make_test_node("plan", TestKind::Session, "plan", vec![], None);
+                node.artifact = Some("spec-directory".to_string());
+                node
             }],
         };
         engine
@@ -16150,33 +17177,33 @@ mod dispatch_boundary_tests {
         );
     }
 
-    /// [08] 振る舞い定義 Rule 1 Scenario 3: 既に出力を受け付けられる状態にない step に
+    /// [08] 振る舞い定義 Rule 1 Scenario 3: 既に出力を受け付けられる状態にない node に
     /// 対する提出は拒否され、state と event log が変化しないことを確認する。
     #[tokio::test]
-    async fn submit_output_rejects_non_accepting_step_without_side_effects() {
+    async fn submit_output_rejects_non_accepting_node_without_side_effects() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
         let data_dir =
             crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let execution_id = uuid::Uuid::new_v4().to_string();
-        let workflow = Workflow {
-            name: "multi-step".to_string(),
+        let workflow = WorkflowDefinitionYaml {
+            name: "multi-node".to_string(),
             description: String::new(),
             builtin: false,
             schemas: submit_test_schemas(),
             nodes: vec![
                 {
-                    let mut step =
-                        make_test_step("first", TestKind::Session, "first", vec![], None);
-                    step.artifact = Some("review-verdict".to_string());
-                    step
+                    let mut node =
+                        make_test_node("first", TestKind::Session, "first", vec![], None);
+                    node.artifact = Some("review-verdict".to_string());
+                    node
                 },
                 {
-                    let mut step =
-                        make_test_step("second", TestKind::Session, "second", vec![], None);
-                    step.artifact = Some("review-verdict".to_string());
-                    step
+                    let mut node =
+                        make_test_node("second", TestKind::Session, "second", vec![], None);
+                    node.artifact = Some("review-verdict".to_string());
+                    node
                 },
             ],
         };
@@ -16190,7 +17217,7 @@ mod dispatch_boundary_tests {
             )
             .await;
 
-        // current step を `second` に進めて、`first` を提出受付対象から外す。
+        // current node を `second` に進めて、`first` を提出受付対象から外す。
         engine
             .force_current_node_index_for_test(&execution_id, 1)
             .await;
@@ -16236,11 +17263,11 @@ mod dispatch_boundary_tests {
             .all(|e| !matches!(e, WorkflowEvent::ArtifactProduced { .. })));
     }
 
-    /// [08] 振る舞い定義 Rule 4: agent step の自由文出力に `<workflow_output>` 相当の
+    /// [08] 振る舞い定義 Rule 4: agent node の自由文出力に `<workflow_output>` 相当の
     /// 表現が含まれていても、明示的提出が無い限り artifacts は更新されず、
     /// ArtifactProduced event も追記されない（prose 抽出経路の完全廃止）。
     #[tokio::test]
-    async fn agent_free_text_workflow_output_block_does_not_confirm_step_output() {
+    async fn agent_free_text_workflow_output_block_does_not_confirm_node_output() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
         let data_dir =
@@ -16275,7 +17302,7 @@ mod dispatch_boundary_tests {
 
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         // 自由文経路は prose 抽出を行わないため、artifacts は変化せず、
-        // contract がある step は明示的提出なしでは完了しない。
+        // contract がある node は明示的提出なしでは完了しない。
         // [08] handle_auto_complete のエラーを .ok() で握り潰さないこと（review 指摘）。
         // 完了経路を通って初めて「自由文出力中の `<workflow_output>` は無視される」を
         // 検証できるため、.expect で経路実行を保証する。
@@ -16318,7 +17345,7 @@ mod dispatch_boundary_tests {
             .count();
         assert_eq!(
             node_completed, 0,
-            "handle_auto_complete must not advance a contract step without SubmitOutput"
+            "handle_auto_complete must not advance a contract node without SubmitOutput"
         );
         assert!(
             !engine.contains_execution_for_test(&execution_id).await,
@@ -16389,7 +17416,7 @@ mod dispatch_boundary_tests {
 
         assert!(
             engine.contains_execution_for_test(&execution_id).await,
-            "repairable mismatch must keep the run active"
+            "repairable mismatch must keep the execution active"
         );
         let events = WorkflowEventLog::new(&data_dir)
             .read_log(&execution_id)
@@ -16409,7 +17436,7 @@ mod dispatch_boundary_tests {
             events
                 .iter()
                 .all(|event| !matches!(event, WorkflowEvent::ExecutionFailed { .. })),
-            "within-limit repair request must not terminally fail the run; got {events:?}"
+            "within-limit repair request must not terminally fail the execution; got {events:?}"
         );
     }
 
@@ -16466,7 +17493,7 @@ mod dispatch_boundary_tests {
 
         assert!(
             !engine.contains_execution_for_test(&execution_id).await,
-            "repair start failure must terminally release the run"
+            "repair start failure must terminally release the execution"
         );
         let events = WorkflowEventLog::new(&data_dir)
             .read_log(&execution_id)
@@ -16482,7 +17509,7 @@ mod dispatch_boundary_tests {
             )),
             "the attempted repair must be observable before terminal failure; got {events:?}"
         );
-        let run_failed = events.iter().find_map(|event| match event {
+        let execution_failed = events.iter().find_map(|event| match event {
             WorkflowEvent::ExecutionFailed {
                 reason,
                 failure_kind,
@@ -16490,8 +17517,8 @@ mod dispatch_boundary_tests {
             } => Some((reason, failure_kind)),
             _ => None,
         });
-        let Some((reason, failure_kind)) = run_failed else {
-            panic!("repair start failure must append RunFailed; got {events:?}");
+        let Some((reason, failure_kind)) = execution_failed else {
+            panic!("repair start failure must append ExecutionFailed; got {events:?}");
         };
         assert_eq!(*failure_kind, NodeExecutionFailureKind::InfrastructureCrash);
         assert!(
@@ -16645,17 +17672,17 @@ mod dispatch_boundary_tests {
 
         assert!(
             !engine.contains_execution_for_test(&execution_id).await,
-            "exhausted repair attempts must terminally release the run"
+            "exhausted repair attempts must terminally release the execution"
         );
         let events = WorkflowEventLog::new(&data_dir)
             .read_log(&execution_id)
             .unwrap();
-        let run_failed_kind = events.iter().find_map(|event| match event {
+        let execution_failed_kind = events.iter().find_map(|event| match event {
             WorkflowEvent::ExecutionFailed { failure_kind, .. } => Some(*failure_kind),
             _ => None,
         });
         assert_eq!(
-            run_failed_kind,
+            execution_failed_kind,
             Some(NodeExecutionFailureKind::StructuredOutputMismatch)
         );
     }
@@ -16668,7 +17695,7 @@ mod dispatch_boundary_tests {
             crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let execution_id = uuid::Uuid::new_v4().to_string();
-        let worktree_path = "/wt/repair-run-index";
+        let worktree_path = "/wt/repair-execution-index";
         engine
             .seed_active_execution_for_test(
                 execution_id.clone(),
@@ -16808,7 +17835,7 @@ mod dispatch_boundary_tests {
             crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let execution_id = uuid::Uuid::new_v4().to_string();
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "spec-wf".to_string(),
             description: String::new(),
             builtin: false,
@@ -16819,9 +17846,9 @@ mod dispatch_boundary_tests {
             .into_iter()
             .collect(),
             nodes: vec![{
-                let mut step = make_test_step("plan", TestKind::Session, "plan", vec![], None);
-                step.artifact = Some("spec-directory".to_string());
-                step
+                let mut node = make_test_node("plan", TestKind::Session, "plan", vec![], None);
+                node.artifact = Some("spec-directory".to_string());
+                node
             }],
         };
         engine
@@ -16888,7 +17915,7 @@ mod dispatch_boundary_tests {
 
         let execution_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/fanout-empty-items";
-        let mut fanout = make_fanout_step("fanout-empty", vec!["review-child"]);
+        let mut fanout = make_fanout_node("fanout-empty", vec!["review-child"]);
         fanout.rules = vec![Rule::Next("after-empty".to_string())];
         let NodeKind::Fanout(spec) = &mut fanout.kind else {
             panic!("fanout test fixture must contain a fanout node");
@@ -16896,7 +17923,7 @@ mod dispatch_boundary_tests {
         spec.items = Some(ItemsSource::Literal(Vec::new()));
         let mut child = make_fanout_child("review-child");
         child.input = Some("fanout-item".to_string());
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "fanout-empty-items-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -16930,12 +17957,12 @@ mod dispatch_boundary_tests {
         let executions = engine.executions.lock().await;
         let execution = executions
             .get(&execution_id)
-            .expect("run must remain active");
+            .expect("execution must remain active");
         assert_eq!(
             execution.workflow.nodes[execution.current_node_index].name,
             "after-empty"
         );
-        assert!(execution.parallel_run.is_none());
+        assert!(execution.fanout_runtime.is_none());
         assert!(
             execution
                 .node_executions
@@ -17009,11 +18036,11 @@ mod dispatch_boundary_tests {
         let execution_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/fanout-child-rules-ignored";
         let child_session_id = "fanout-child-rules-session";
-        let mut fanout = make_fanout_step("fanout-review", vec!["review-child"]);
+        let mut fanout = make_fanout_node("fanout-review", vec!["review-child"]);
         fanout.rules = vec![Rule::Next("parent-next".to_string())];
         let mut child = make_fanout_child("review-child");
         child.rules = vec![Rule::Next("child-next".to_string())];
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "fanout-child-rules-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
@@ -17030,16 +18057,16 @@ mod dispatch_boundary_tests {
         execution.state = RuntimeExecutionState::Running;
         execution.current_session_id = None;
         execution.node_execution_counts = HashMap::from([("fanout-review".to_string(), 1)]);
-        install_test_fanout_run(
+        install_test_fanout(
             &mut execution,
-            vec![test_fanout_child_run(
+            vec![test_fanout_child(
                 "review-child",
                 child_session_id,
                 FanoutChildRuntimeState::Running,
                 0,
             )],
         );
-        insert_execution_and_active_run(&engine, execution, ExecutionOrigin::DesktopUi).await;
+        insert_execution_and_register_active(&engine, execution, ExecutionOrigin::DesktopUi).await;
         engine.session_workflow_refs.lock().await.insert(
             child_session_id.to_string(),
             SessionWorkflowRef {
@@ -17067,7 +18094,7 @@ mod dispatch_boundary_tests {
         let executions = engine.executions.lock().await;
         let execution = executions
             .get(&execution_id)
-            .expect("run must remain active");
+            .expect("execution must remain active");
         assert_eq!(
             execution.workflow.nodes[execution.current_node_index].name,
             "parent-next"
@@ -17132,13 +18159,13 @@ mod dispatch_boundary_tests {
 
         let worktree = TempDir::new().unwrap();
         let worktree_path = worktree.path().to_string_lossy().to_string();
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "fanout-activation-failure-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
             nodes: vec![
-                make_fanout_step("fanout-review", vec!["review-a", "review-b"]),
+                make_fanout_node("fanout-review", vec!["review-a", "review-b"]),
                 make_fanout_child("review-a"),
                 make_fanout_child("review-b"),
             ],
@@ -17162,17 +18189,17 @@ mod dispatch_boundary_tests {
             !engine.contains_execution_for_test(&execution_id).await,
             "activation crash must release the live execution after checkpointing"
         );
-        let run = engine
+        let execution = engine
             .execution_store()
             .get_execution(&execution_id)
             .await
             .unwrap();
-        assert_eq!(run.status, ExecutionStatus::Interrupted);
+        assert_eq!(execution.status, ExecutionStatus::Interrupted);
         assert_eq!(
-            run.interruption_reason,
+            execution.interruption_reason,
             Some(ExecutionInterruptionReason::Crash)
         );
-        assert_eq!(run.resume_from_node.as_deref(), Some("fanout-review"));
+        assert_eq!(execution.resume_from_node.as_deref(), Some("fanout-review"));
 
         let payloads = received_payloads.lock().unwrap().clone();
         let live_payload = payloads
@@ -17235,13 +18262,13 @@ mod dispatch_boundary_tests {
         let execution_id = uuid::Uuid::new_v4().to_string();
         let worktree_path = "/wt/fanout-child-completion-rollback";
         let child_session_id = "fanout-child-completion-session";
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "fanout-child-completion-rollback-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
             nodes: vec![
-                make_fanout_step("fanout-review", vec!["review-child"]),
+                make_fanout_node("fanout-review", vec!["review-child"]),
                 make_fanout_child("review-child"),
             ],
         };
@@ -17250,9 +18277,9 @@ mod dispatch_boundary_tests {
         execution.state = RuntimeExecutionState::Running;
         execution.current_session_id = None;
         execution.node_execution_counts = HashMap::from([("fanout-review".to_string(), 1)]);
-        install_test_fanout_run(
+        install_test_fanout(
             &mut execution,
-            vec![test_fanout_child_run(
+            vec![test_fanout_child(
                 "review-child",
                 child_session_id,
                 FanoutChildRuntimeState::Running,
@@ -17261,7 +18288,7 @@ mod dispatch_boundary_tests {
         );
         let parent_node_execution_id = execution.node_executions[0].id.clone();
         let child_node_execution_id = execution.node_executions[1].id.clone();
-        insert_execution_and_active_run(&engine, execution, ExecutionOrigin::DesktopUi).await;
+        insert_execution_and_register_active(&engine, execution, ExecutionOrigin::DesktopUi).await;
         engine.session_workflow_refs.lock().await.insert(
             child_session_id.to_string(),
             SessionWorkflowRef {
@@ -17294,10 +18321,11 @@ mod dispatch_boundary_tests {
         let executions = engine.executions.lock().await;
         let execution = executions
             .get(&execution_id)
-            .expect("run must be rolled back");
+            .expect("execution must be rolled back");
         assert_eq!(execution.state, RuntimeExecutionState::Running);
-        assert!(execution.parallel_run.as_ref().is_some_and(|run| {
-            run.children.len() == 1 && run.children[0].state == FanoutChildRuntimeState::Running
+        assert!(execution.fanout_runtime.as_ref().is_some_and(|fanout| {
+            fanout.children.len() == 1
+                && fanout.children[0].state == FanoutChildRuntimeState::Running
         }));
         let parent = execution
             .node_executions

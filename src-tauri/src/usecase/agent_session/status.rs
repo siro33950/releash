@@ -1,8 +1,8 @@
 use crate::domain::path::to_canonical_forward_slash;
 use crate::domain::workflow::services::node_session_projection::NodeSessionProjection;
 use crate::domain::workflow::status_aggregation::{
-    aggregate_representative_statuses, session_result, RepresentativeStatus, SessionActivity,
-    StepProgress,
+    aggregate_representative_statuses, session_result, NodeProgress, RepresentativeStatus,
+    SessionActivity,
 };
 use crate::usecase::agent_session::session::{PermissionRequestMsg, SessionState};
 use parking_lot::RwLock;
@@ -58,7 +58,7 @@ pub struct SessionStatus {
     pub node_execution_id: Option<String>,
     pub workflow_attempt: Option<u32>,
     #[serde(skip_serializing)]
-    pub workflow_node_progress: Option<StepProgress>,
+    pub workflow_node_progress: Option<NodeProgress>,
 }
 
 /// `TurnPhase` は `agent_sdk` 側で `Copy + Serialize` だが `Eq` を持たないため、
@@ -167,7 +167,7 @@ struct WorkflowNodeSessionStatusInput {
     node_execution_id: String,
     node_name: String,
     attempt: Option<u32>,
-    progress: StepProgress,
+    progress: NodeProgress,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1208,7 +1208,7 @@ mod tests {
         id: &str,
         node_name: &str,
         attempt: Option<u32>,
-        progress: StepProgress,
+        progress: NodeProgress,
         agent_state: AgentState,
     ) -> SessionStatus {
         let mut session = mk_session("unused", "/repo", TurnPhase::Idle, SessionState::Done);
@@ -1244,7 +1244,7 @@ mod tests {
         node_name: &str,
         attempt: Option<u32>,
         representative: RepresentativeStatus,
-        progress: StepProgress,
+        progress: NodeProgress,
     ) -> NodeSessionProjection {
         NodeSessionProjection {
             node_execution_id: Some(format!("{node_name}-{}", attempt.unwrap_or(1))),
@@ -1542,7 +1542,7 @@ mod tests {
             "step-a",
             "build",
             Some(3),
-            StepProgress::Running,
+            NodeProgress::Running,
             AgentState::Running,
         );
 
@@ -1564,7 +1564,7 @@ mod tests {
             "node-execution-build-1",
             "build",
             Some(1),
-            StepProgress::Running,
+            NodeProgress::Running,
             AgentState::Running,
         ));
 
@@ -1998,7 +1998,7 @@ mod tests {
             "step-a",
             "build",
             Some(1),
-            StepProgress::Queued,
+            NodeProgress::Queued,
             AgentState::Done,
         );
         let initial = center.update_session(queued);
@@ -2012,7 +2012,7 @@ mod tests {
             "step-a",
             "build",
             Some(1),
-            StepProgress::Queued,
+            NodeProgress::Queued,
             AgentState::Running,
         );
         let changes = center.update_session(running);
@@ -2038,7 +2038,7 @@ mod tests {
             "step-a",
             "build",
             Some(1),
-            StepProgress::Queued,
+            NodeProgress::Queued,
             AgentState::Done,
         ));
 
@@ -2067,7 +2067,7 @@ mod tests {
                 "build",
                 Some(2),
                 RepresentativeStatus::Running,
-                StepProgress::Running,
+                NodeProgress::Running,
             )],
         );
         assert!(sync_changes.is_empty());
@@ -2089,7 +2089,7 @@ mod tests {
         );
         assert_eq!(session.workflow_execution_id.as_deref(), Some("exec-1"));
         assert_eq!(session.workflow_attempt, Some(2));
-        assert_eq!(session.workflow_node_progress, Some(StepProgress::Running));
+        assert_eq!(session.workflow_node_progress, Some(NodeProgress::Running));
         assert_eq!(changes.workflow_node_views.len(), 1);
         let view = &changes.workflow_node_views[0];
         assert_eq!(view.node_executions.len(), 1);
@@ -2124,7 +2124,7 @@ mod tests {
                 "build",
                 Some(2),
                 RepresentativeStatus::Queued,
-                StepProgress::Queued,
+                NodeProgress::Queued,
             )],
         );
         center.sync_workflow_node_session_statuses("/repo", "exec-1", "running", Vec::new());
@@ -2168,9 +2168,9 @@ mod tests {
                     session_id: Some("completed-session".to_string()),
                     node_name: "review-a".to_string(),
                     attempt: Some(1),
-                    group_node_name: "parallel-review".to_string(),
+                    group_node_name: "review-fanout".to_string(),
                     group_attempt: Some(1),
-                    progress: StepProgress::Completed,
+                    progress: NodeProgress::Completed,
                     representative: RepresentativeStatus::Completed,
                     order: 0,
                 },
@@ -2179,9 +2179,9 @@ mod tests {
                     session_id: Some("running-session".to_string()),
                     node_name: "review-b".to_string(),
                     attempt: Some(1),
-                    group_node_name: "parallel-review".to_string(),
+                    group_node_name: "review-fanout".to_string(),
                     group_attempt: Some(1),
-                    progress: StepProgress::Running,
+                    progress: NodeProgress::Running,
                     representative: RepresentativeStatus::Running,
                     order: 1,
                 },
@@ -2205,14 +2205,14 @@ mod tests {
             "step-a",
             "plan",
             Some(1),
-            StepProgress::Completed,
+            NodeProgress::Completed,
             AgentState::Done,
         ));
         center.update_session(workflow_session(
             "step-b",
             "test",
             Some(1),
-            StepProgress::WaitingApproval,
+            NodeProgress::WaitingApproval,
             AgentState::Error,
         ));
         center.update_session(SessionStatus {
@@ -2231,7 +2231,7 @@ mod tests {
             workflow_execution_id: Some("exec-other".to_string()),
             node_execution_id: Some("deploy-1".to_string()),
             workflow_attempt: Some(1),
-            workflow_node_progress: Some(StepProgress::Running),
+            workflow_node_progress: Some(NodeProgress::Running),
         });
 
         let view = center.query_worktree_node_statuses("/repo");
@@ -2269,7 +2269,7 @@ mod tests {
             "step-a",
             "build",
             Some(1),
-            StepProgress::Queued,
+            NodeProgress::Queued,
             AgentState::Done,
         ));
         let initial_version = initial.workflow_node_views[0].version;
@@ -2296,7 +2296,7 @@ mod tests {
             "step-a",
             "build",
             Some(1),
-            StepProgress::Running,
+            NodeProgress::Running,
             AgentState::Running,
         ));
 
@@ -2314,14 +2314,14 @@ mod tests {
             "step-some",
             "build",
             Some(1),
-            StepProgress::Running,
+            NodeProgress::Running,
             AgentState::Running,
         ));
         center.update_session(workflow_session(
             "step-none",
             "build",
             None,
-            StepProgress::Running,
+            NodeProgress::Running,
             AgentState::Running,
         ));
 
@@ -2378,14 +2378,14 @@ mod tests {
                     "live",
                     Some(1),
                     RepresentativeStatus::Queued,
-                    StepProgress::Queued,
+                    NodeProgress::Queued,
                 ),
                 projection(
                     None,
                     "failed-history",
                     Some(1),
                     RepresentativeStatus::Failed,
-                    StepProgress::Failed,
+                    NodeProgress::Failed,
                 ),
             ],
         );
@@ -2394,7 +2394,7 @@ mod tests {
             "step-live",
             "live",
             Some(1),
-            StepProgress::Queued,
+            NodeProgress::Queued,
             AgentState::Waiting,
         );
         let changes = center.update_session(live_waiting);
@@ -2416,7 +2416,7 @@ mod tests {
             "step-live",
             "live",
             Some(1),
-            StepProgress::Queued,
+            NodeProgress::Queued,
             AgentState::Done,
         ));
 
@@ -2429,7 +2429,7 @@ mod tests {
                 "live",
                 Some(1),
                 RepresentativeStatus::Queued,
-                StepProgress::Running,
+                NodeProgress::Running,
             )],
         );
 
@@ -2459,14 +2459,14 @@ mod tests {
                 "live",
                 Some(1),
                 RepresentativeStatus::Queued,
-                StepProgress::Queued,
+                NodeProgress::Queued,
             )],
         );
         center.update_session(workflow_session(
             "step-live",
             "live",
             Some(1),
-            StepProgress::Queued,
+            NodeProgress::Queued,
             AgentState::Running,
         ));
 

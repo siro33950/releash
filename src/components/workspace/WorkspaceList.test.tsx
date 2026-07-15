@@ -570,7 +570,7 @@ describe("WorkspaceList", () => {
 							attempt: 1,
 							sessionId: "session-item-0",
 							fanoutParent: {
-								parentNode: "parallel-review",
+								parentNode: "review-fanout",
 								parentAttempt: 1,
 								itemIndex: 0,
 								childIndex: 0,
@@ -591,7 +591,7 @@ describe("WorkspaceList", () => {
 							attempt: 1,
 							sessionId: "session-item-1",
 							fanoutParent: {
-								parentNode: "parallel-review",
+								parentNode: "review-fanout",
 								parentAttempt: 1,
 								itemIndex: 1,
 								childIndex: 0,

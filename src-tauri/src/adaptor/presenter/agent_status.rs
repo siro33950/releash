@@ -126,7 +126,7 @@ mod tests {
     use std::sync::{mpsc, Arc, Mutex};
     use std::thread;
 
-    use crate::domain::workflow::status_aggregation::StepProgress;
+    use crate::domain::workflow::status_aggregation::NodeProgress;
     use crate::usecase::agent_session::session::SessionState;
     use crate::usecase::agent_session::status::{
         AgentState, AgentStatusCenter, SessionStatus, TurnPhaseRepr,
@@ -136,7 +136,7 @@ mod tests {
 
     fn workflow_session(
         session_id: &str,
-        progress: StepProgress,
+        progress: NodeProgress,
         agent_state: AgentState,
     ) -> SessionStatus {
         SessionStatus {
@@ -164,7 +164,7 @@ mod tests {
         let center = Arc::new(AgentStatusCenter::new());
         let initial = center.update_session(workflow_session(
             "step-a",
-            StepProgress::Queued,
+            NodeProgress::Queued,
             AgentState::Done,
         ));
         let initial_version = initial.workflow_node_views[0].version;
@@ -188,7 +188,7 @@ mod tests {
 
         let live = center.update_session(workflow_session(
             "step-a",
-            StepProgress::Queued,
+            NodeProgress::Queued,
             AgentState::Running,
         ));
         let live_view = live

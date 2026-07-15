@@ -1,8 +1,38 @@
 use std::collections::BTreeMap;
 
+use serde::Serialize;
 use serde_saphyr::granit_parser::{Event, Parser, ScanError, Span as ParserSpan};
 
-use super::diagnostics::DiagnosticSpan;
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+pub(crate) struct DiagnosticSpan {
+    pub(crate) start_line: usize,
+    pub(crate) start_col: usize,
+    pub(crate) end_line: usize,
+    pub(crate) end_col: usize,
+}
+
+impl DiagnosticSpan {
+    pub(crate) fn from_location(location: serde_saphyr::Location) -> Self {
+        let line = usize::try_from(location.line()).unwrap_or(usize::MAX);
+        let col = usize::try_from(location.column()).unwrap_or(usize::MAX);
+        Self {
+            start_line: line,
+            start_col: col,
+            end_line: line,
+            end_col: col.saturating_add(1),
+        }
+    }
+
+    pub(crate) fn from_scan_error(error: &ScanError) -> Self {
+        let marker = error.marker();
+        Self {
+            start_line: marker.line(),
+            start_col: marker.col() + 1,
+            end_line: marker.line(),
+            end_col: marker.col() + 2,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct YamlSpanMap {

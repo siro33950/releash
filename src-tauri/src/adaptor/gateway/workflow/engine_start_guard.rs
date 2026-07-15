@@ -1,16 +1,18 @@
 use crate::adaptor::gateway::workflow::domain_mapping::workflow_definition_to_domain;
 use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
-use crate::adaptor::gateway::workflow::schema::Workflow;
+use crate::adaptor::gateway::workflow::schema::WorkflowDefinitionYaml;
 use crate::domain::workflow as domain;
 
-pub(crate) fn validate_workflow_shape(workflow: &Workflow) -> Result<(), WorkflowEngineError> {
+pub(crate) fn validate_workflow_shape(
+    workflow: &WorkflowDefinitionYaml,
+) -> Result<(), WorkflowEngineError> {
     let definition = workflow_definition_to_domain(workflow);
     domain::validation::validate_workflow_shape(&definition)
         .map_err(|err| domain_validation_to_engine_error(err, &definition))
 }
 
 pub(crate) fn validate_start(
-    workflow: &Workflow,
+    workflow: &WorkflowDefinitionYaml,
     existing_active_workflow_name: Option<&str>,
 ) -> Result<(), WorkflowEngineError> {
     validate_workflow_shape(workflow)?;
@@ -46,8 +48,8 @@ mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::schema::NodeDefinition;
 
-    fn workflow(nodes: Vec<NodeDefinition>) -> Workflow {
-        Workflow {
+    fn workflow(nodes: Vec<NodeDefinition>) -> WorkflowDefinitionYaml {
+        WorkflowDefinitionYaml {
             name: "wf".to_string(),
             description: String::new(),
             builtin: false,

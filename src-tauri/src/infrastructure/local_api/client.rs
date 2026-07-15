@@ -8,6 +8,8 @@ use url::Url;
 
 use super::{local_api_discovery_path, LocalApiDiscovery};
 
+pub(crate) const WORKFLOW_START_REQUEST_TIMEOUT: Duration = Duration::from_secs(305);
+
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum LocalApiClientError {
     #[error("local API discovery file の読み込みに失敗しました ({}): {source}", path.display())]
@@ -112,6 +114,19 @@ impl LocalApiHttpClient {
     ) -> Result<T, LocalApiClientError> {
         let url = self.endpoint(segments)?;
         self.send(self.client.post(url).json(body))
+    }
+
+    pub(crate) fn post_workflow_start<B: Serialize + ?Sized, T: DeserializeOwned>(
+        &self,
+        body: &B,
+    ) -> Result<T, LocalApiClientError> {
+        let url = self.endpoint(&["v1", "workflow", "executions"])?;
+        self.send(
+            self.client
+                .post(url)
+                .timeout(WORKFLOW_START_REQUEST_TIMEOUT)
+                .json(body),
+        )
     }
 
     pub(crate) fn post_empty<T: DeserializeOwned>(
@@ -308,6 +323,42 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(error, LocalApiClientError::Request(_)));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn workflow_start_timeout_covers_the_runtime_startup_boundary() {
+        assert!(WORKFLOW_START_REQUEST_TIMEOUT > Duration::from_secs(5));
+        assert!(WORKFLOW_START_REQUEST_TIMEOUT >= Duration::from_secs(300));
+    }
+
+    #[test]
+    fn workflow_start_returns_a_committed_id_after_more_than_five_seconds() {
+        let target = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let target_port = target.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = target.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request);
+            std::thread::sleep(Duration::from_millis(5_100));
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 54\r\nConnection: close\r\n\r\n{\"executionId\":\"00000000-0000-4000-8000-000000000777\"}",
+                )
+                .unwrap();
+        });
+        let temp = TempDir::new().unwrap();
+        write_discovery(temp.path(), target_port, "secret");
+        let client = LocalApiHttpClient::discover(temp.path()).unwrap().unwrap();
+
+        let response: serde_json::Value = client
+            .post_workflow_start(&serde_json::json!({"workflowName": "slow-start"}))
+            .unwrap();
+
+        assert_eq!(
+            response["executionId"],
+            "00000000-0000-4000-8000-000000000777"
+        );
         server.join().unwrap();
     }
 }

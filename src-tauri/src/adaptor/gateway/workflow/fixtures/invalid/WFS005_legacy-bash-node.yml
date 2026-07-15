@@ -1,0 +1,6 @@
+name: legacy-bash-node
+description: bash is not a node kind
+nodes:
+  - name: run
+    bash: printf done
+    command: printf done

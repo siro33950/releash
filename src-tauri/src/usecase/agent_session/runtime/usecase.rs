@@ -3798,7 +3798,7 @@ fn system_context_block(snapshot: &ContextSnapshot) -> Option<String> {
         ContextSourceKind::OpenEditorSelection => "releash_open_editor_selection",
         ContextSourceKind::Mentions => "releash_mentions",
         ContextSourceKind::TerminalLogSummary => "releash_terminal_log_summary",
-        ContextSourceKind::WorkflowState => "releash_workflow_state",
+        ContextSourceKind::WorkflowContext => "releash_workflow_state",
         ContextSourceKind::ProjectInstructions => "releash_project_instructions",
         ContextSourceKind::BackendModelIdentity => "releash_backend_model_identity",
     };

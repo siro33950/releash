@@ -23,14 +23,14 @@ impl std::fmt::Display for NodeExecutionLifecycleError {
 }
 
 pub(crate) trait WorkflowNodeSessionGateway: Send + Sync {
-    fn resolve_step_session(
+    fn resolve_node_session(
         &self,
         session_id: &str,
     ) -> Result<Option<ResolvedWorkflowNodeSession>, NodeExecutionLifecycleError>;
 
-    fn open_step_tab(&self, session_id: &str) -> Result<(), NodeExecutionLifecycleError>;
+    fn open_node_tab(&self, session_id: &str) -> Result<(), NodeExecutionLifecycleError>;
 
-    fn close_step_tab(&self, session_id: &str) -> Result<bool, NodeExecutionLifecycleError>;
+    fn close_node_tab(&self, session_id: &str) -> Result<bool, NodeExecutionLifecycleError>;
 }
 
 #[async_trait::async_trait]
@@ -40,7 +40,7 @@ pub(crate) trait NodeExecutionRuntimeGateway: Send + Sync {
         session_id: &str,
     ) -> Result<(), NodeExecutionLifecycleError>;
 
-    async fn close_runtime_on_step_done(
+    async fn close_runtime_on_node_done(
         &self,
         session_id: &str,
     ) -> Result<(), NodeExecutionLifecycleError>;
@@ -88,21 +88,21 @@ impl NodeExecutionLifecycleUsecase {
 }
 
 impl<'a> NodeExecutionLifecycle<'a> {
-    fn resolve_step_session(
+    fn resolve_node_session(
         &self,
         session_id: &str,
     ) -> Result<Option<ResolvedWorkflowNodeSession>, NodeExecutionLifecycleError> {
-        self.sessions.resolve_step_session(session_id)
+        self.sessions.resolve_node_session(session_id)
     }
 
     pub async fn try_open_tab(
         &self,
         session_id: &str,
     ) -> Result<Option<ResolvedWorkflowNodeSession>, NodeExecutionLifecycleError> {
-        let Some(target) = self.resolve_step_session(session_id)? else {
+        let Some(target) = self.resolve_node_session(session_id)? else {
             return Ok(None);
         };
-        self.sessions.open_step_tab(&target.session_id)?;
+        self.sessions.open_node_tab(&target.session_id)?;
         Ok(Some(target))
     }
 
@@ -110,29 +110,29 @@ impl<'a> NodeExecutionLifecycle<'a> {
         &self,
         session_id: &str,
     ) -> Result<Option<ResolvedWorkflowNodeSession>, NodeExecutionLifecycleError> {
-        let Some(target) = self.resolve_step_session(session_id)? else {
+        let Some(target) = self.resolve_node_session(session_id)? else {
             return Ok(None);
         };
         let runtime_result = self
             .runtime
             .close_idle_runtime_on_tab_close(&target.session_id)
             .await;
-        let tab_result = self.sessions.close_step_tab(&target.session_id);
+        let tab_result = self.sessions.close_node_tab(&target.session_id);
         runtime_result?;
         tab_result?;
         Ok(Some(target))
     }
 }
 
-pub(crate) async fn release_step_runtime_on_done_with_gateways(
+pub(crate) async fn release_node_runtime_on_done_with_gateways(
     runtime: &dyn NodeExecutionRuntimeGateway,
     session_id: &str,
 ) {
     // The turn_complete handler holds session_runtime_lock across workflow
     // completion cleanup. Runtime gateways must not re-acquire it on this path.
-    if let Err(_e) = runtime.close_runtime_on_step_done(session_id).await {
+    if let Err(_e) = runtime.close_runtime_on_node_done(session_id).await {
         log::warn!(
-            "workflow_step_runtime_cleanup_failed code=runtime_close_failed message=failed_to_close_runtime"
+            "workflow_node_runtime_cleanup_failed code=runtime_close_failed message=failed_to_close_runtime"
         );
     }
 }
@@ -177,7 +177,7 @@ mod tests {
     }
 
     impl WorkflowNodeSessionGateway for FakeWorkflowNodeSessionGateway {
-        fn resolve_step_session(
+        fn resolve_node_session(
             &self,
             session_id: &str,
         ) -> Result<Option<ResolvedWorkflowNodeSession>, NodeExecutionLifecycleError> {
@@ -190,12 +190,12 @@ mod tests {
             }))
         }
 
-        fn open_step_tab(&self, _session_id: &str) -> Result<(), NodeExecutionLifecycleError> {
+        fn open_node_tab(&self, _session_id: &str) -> Result<(), NodeExecutionLifecycleError> {
             self.state.lock().unwrap().tab_open = true;
             Ok(())
         }
 
-        fn close_step_tab(&self, _session_id: &str) -> Result<bool, NodeExecutionLifecycleError> {
+        fn close_node_tab(&self, _session_id: &str) -> Result<bool, NodeExecutionLifecycleError> {
             let mut state = self.state.lock().unwrap();
             state.tab_close_calls += 1;
             let was_open = state.tab_open;
@@ -225,7 +225,7 @@ mod tests {
             Ok(())
         }
 
-        async fn close_runtime_on_step_done(
+        async fn close_runtime_on_node_done(
             &self,
             _session_id: &str,
         ) -> Result<(), NodeExecutionLifecycleError> {
@@ -256,11 +256,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn release_step_runtime_on_done_with_gateways_closes_runtime_only() {
+    async fn release_node_runtime_on_done_with_gateways_closes_runtime_only() {
         let state = Arc::new(StdMutex::new(FakeLifecycleState::open_runtime_and_tab()));
         let (_, runtime) = fake_lifecycle_gateways(Arc::clone(&state));
 
-        release_step_runtime_on_done_with_gateways(&runtime, "step").await;
+        release_node_runtime_on_done_with_gateways(&runtime, "node").await;
 
         let state = state.lock().unwrap();
         assert_eq!(state.runtime_done_close_calls, 1);
@@ -271,14 +271,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn release_step_runtime_on_done_with_gateways_keeps_tab_after_runtime_error() {
+    async fn release_node_runtime_on_done_with_gateways_keeps_tab_after_runtime_error() {
         let state = Arc::new(StdMutex::new(FakeLifecycleState {
             fail_done_runtime_close: true,
             ..FakeLifecycleState::open_runtime_and_tab()
         }));
         let (_, runtime) = fake_lifecycle_gateways(Arc::clone(&state));
 
-        release_step_runtime_on_done_with_gateways(&runtime, "step").await;
+        release_node_runtime_on_done_with_gateways(&runtime, "node").await;
 
         let state = state.lock().unwrap();
         assert_eq!(state.runtime_done_close_calls, 1);
@@ -300,7 +300,7 @@ mod tests {
             runtime: &runtime,
         };
 
-        let result = lifecycle.close_tab_target("step").await;
+        let result = lifecycle.close_tab_target("node").await;
 
         assert!(matches!(
             result,

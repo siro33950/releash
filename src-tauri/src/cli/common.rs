@@ -298,7 +298,7 @@ models = ["opus"]
             created_from: ExecutionOrigin::Cli,
             request: String::new(),
             permission_mode: "ask".to_string(),
-            definition: crate::adaptor::gateway::workflow::schema::Workflow {
+            definition: crate::adaptor::gateway::workflow::schema::WorkflowDefinitionYaml {
                 name: workflow_name.to_string(),
                 description: "test".to_string(),
                 builtin: false,

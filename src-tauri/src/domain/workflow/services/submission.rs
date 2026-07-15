@@ -2,17 +2,17 @@
 
 use crate::domain::workflow::value_objects::WorkflowDefinition;
 
-pub fn step_output_keys_to_clear_for_new_execution(
+pub fn artifact_keys_to_clear_for_new_node_execution(
     workflow: &WorkflowDefinition,
-    step_index: usize,
+    node_index: usize,
 ) -> Vec<String> {
-    let Some(step) = workflow.nodes.get(step_index) else {
+    let Some(node) = workflow.nodes.get(node_index) else {
         return Vec::new();
     };
     // Fanout child artifacts are retained only in the parent artifact array. They are not
     // addressable through the workflow-wide node-name output map, so only the parent key can
     // be stale when a new execution starts.
-    vec![step.name.clone()]
+    vec![node.name.clone()]
 }
 
 #[cfg(test)]
@@ -53,17 +53,17 @@ mod submission_tests {
 
     #[test]
     fn output_keys_to_clear_include_only_fanout_parent() {
-        let parallel = fanout_node("parallel-review", vec!["quality", "security"]);
-        let workflow = workflow(vec![session_node("draft"), parallel]);
+        let fanout = fanout_node("fanout-review", vec!["quality", "security"]);
+        let workflow = workflow(vec![session_node("draft"), fanout]);
 
         assert_eq!(
-            step_output_keys_to_clear_for_new_execution(&workflow, 1),
-            vec!["parallel-review"]
+            artifact_keys_to_clear_for_new_node_execution(&workflow, 1),
+            vec!["fanout-review"]
         );
         assert_eq!(
-            step_output_keys_to_clear_for_new_execution(&workflow, 0),
+            artifact_keys_to_clear_for_new_node_execution(&workflow, 0),
             vec!["draft"]
         );
-        assert!(step_output_keys_to_clear_for_new_execution(&workflow, 99).is_empty());
+        assert!(artifact_keys_to_clear_for_new_node_execution(&workflow, 99).is_empty());
     }
 }

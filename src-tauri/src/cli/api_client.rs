@@ -11,6 +11,7 @@ use crate::usecase::workflow::dto::{WorkflowExecutionSummaryDto, WorkflowSummary
 use crate::usecase::workflow::{WorkflowGetOutputResult, WorkflowValidateOutputResult};
 
 const NODE_EXECUTION_ID_ENV: &str = "RELEASH_NODE_EXECUTION_ID";
+const RECONCILIATION_PAGE_LIMIT: usize = 100;
 
 #[derive(Debug)]
 pub(super) enum ApiRequestError {
@@ -71,13 +72,77 @@ impl LocalApiClient {
             .map_err(ApiRequestError::from)
     }
 
+    fn execution_page(
+        &self,
+        status: Option<&str>,
+        worktree: Option<&str>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<WorkflowExecutionSummaryDto>, ApiRequestError> {
+        let limit = limit.to_string();
+        let offset = offset.to_string();
+        let mut query = Vec::new();
+        if let Some(status) = status {
+            query.push(("status", status));
+        }
+        if let Some(worktree) = worktree {
+            query.push(("worktree", worktree));
+        }
+        query.push(("limit", limit.as_str()));
+        query.push(("offset", offset.as_str()));
+        self.transport
+            .get_json(&["v1", "workflow", "executions"], &query)
+            .map_err(ApiRequestError::from)
+    }
+
     pub(super) fn start_workflow(
         &self,
         request: &StartExecutionRequest,
     ) -> Result<StartExecutionResponse, ApiRequestError> {
-        self.transport
-            .post_json(&["v1", "workflow", "executions"], request)
-            .map_err(ApiRequestError::from)
+        match self.transport.post_workflow_start(request) {
+            Ok(response) => Ok(response),
+            Err(
+                error @ (LocalApiClientError::Request(_)
+                | LocalApiClientError::HttpStatus { status: 409, .. }),
+            ) => self
+                .reconcile_started_execution(request)
+                .map(|execution_id| StartExecutionResponse { execution_id })
+                .ok_or_else(|| ApiRequestError::from(error)),
+            Err(error) => Err(ApiRequestError::from(error)),
+        }
+    }
+
+    fn reconcile_started_execution(&self, request: &StartExecutionRequest) -> Option<String> {
+        let mut offset = 0;
+        let mut matched_execution_id = None;
+        loop {
+            let executions = self
+                .execution_page(
+                    Some("active"),
+                    Some(request.worktree_path.as_str()),
+                    RECONCILIATION_PAGE_LIMIT,
+                    offset,
+                )
+                .ok()?;
+            let page_len = executions.len();
+            for execution in executions {
+                if execution.workflow_name == request.workflow_name
+                    && paths_refer_to_same_worktree(
+                        &execution.worktree_path,
+                        request.worktree_path.as_str(),
+                    )
+                {
+                    if matched_execution_id.is_some() {
+                        return None;
+                    }
+                    matched_execution_id = Some(execution.execution_id);
+                }
+            }
+            if page_len < RECONCILIATION_PAGE_LIMIT {
+                return matched_execution_id;
+            }
+            offset = offset.checked_add(RECONCILIATION_PAGE_LIMIT)?;
+        }
     }
 
     pub(super) fn execution_status(
@@ -196,6 +261,14 @@ impl LocalApiClient {
     }
 }
 
+fn paths_refer_to_same_worktree(left: &str, right: &str) -> bool {
+    left == right
+        || std::fs::canonicalize(left)
+            .ok()
+            .zip(std::fs::canonicalize(right).ok())
+            .is_some_and(|(left, right)| left == right)
+}
+
 pub(super) fn read_with_fallback<T>(
     data_dir: &Path,
     api_request: impl FnOnce(&LocalApiClient) -> Result<T, ApiRequestError>,
@@ -270,6 +343,8 @@ fn ensure_mutation_ok(response: MutationResponse) -> Result<(), ApiRequestError>
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::path::PathBuf;
     use std::sync::Arc;
 
@@ -282,7 +357,7 @@ mod tests {
         approve_workflow_node_with_runtime, ApproveWorkflowNodeArgs,
     };
     use crate::adaptor::gateway::workflow::schema::{
-        CommandSpec, NodeDefinition, NodeKind, Workflow,
+        CommandSpec, NodeDefinition, NodeKind, WorkflowDefinitionYaml,
     };
     use crate::adaptor::gateway::workflow::storage;
     use crate::cli::{file_direct, output, workflow};
@@ -299,8 +374,8 @@ mod tests {
         .unwrap();
     }
 
-    fn command_workflow(name: &str) -> Workflow {
-        Workflow {
+    fn command_workflow(name: &str) -> WorkflowDefinitionYaml {
+        WorkflowDefinitionYaml {
             name: name.to_string(),
             description: "live local API boundary fixture".to_string(),
             nodes: vec![NodeDefinition {
@@ -310,7 +385,7 @@ mod tests {
                 }),
                 ..NodeDefinition::default()
             }],
-            ..Workflow::default()
+            ..WorkflowDefinitionYaml::default()
         }
     }
 
@@ -650,6 +725,131 @@ mod tests {
         assert!(
             matches!(error, CliError::Other(message) if message.contains("アプリの起動が必要"))
         );
+    }
+
+    fn assert_start_reconciles_committed_execution(first_response: Option<&'static [u8]>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let worktree = TempDir::new().unwrap();
+        let worktree_path = worktree.path().to_string_lossy().into_owned();
+        let response_worktree = worktree_path.clone();
+        let execution_id = "00000000-0000-4000-8000-000000000777";
+        let server = std::thread::spawn(move || {
+            for request_index in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+                    .unwrap();
+                let mut bytes = Vec::new();
+                let mut buffer = [0_u8; 4096];
+                while !bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream.read(&mut buffer).unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    bytes.extend_from_slice(&buffer[..read]);
+                }
+                if request_index == 0 {
+                    if let Some(response) = first_response {
+                        stream.write_all(response).unwrap();
+                    }
+                    continue;
+                }
+                let request = String::from_utf8_lossy(&bytes);
+                let request_target = request
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap();
+                let request_url =
+                    url::Url::parse(&format!("http://localhost{request_target}")).unwrap();
+                assert_eq!(request_url.path(), "/v1/workflow/executions");
+                let query = request_url
+                    .query_pairs()
+                    .collect::<std::collections::BTreeMap<_, _>>();
+                assert_eq!(
+                    query.get("status").map(|value| value.as_ref()),
+                    Some("active")
+                );
+                assert_eq!(
+                    query.get("worktree").map(|value| value.as_ref()),
+                    Some(response_worktree.as_str())
+                );
+                assert_eq!(query.get("limit").map(|value| value.as_ref()), Some("100"));
+                let expected_offset = if request_index == 1 { "0" } else { "100" };
+                assert_eq!(
+                    query.get("offset").map(|value| value.as_ref()),
+                    Some(expected_offset)
+                );
+                let body = if request_index == 1 {
+                    (0..RECONCILIATION_PAGE_LIMIT)
+                        .map(|index| {
+                            serde_json::json!({
+                                "executionId": format!("00000000-0000-4000-8000-{index:012}"),
+                                "workflowName": "another-workflow",
+                                "status": "running",
+                                "worktreePath": response_worktree,
+                                "currentNode": "review",
+                                "createdFrom": "cli",
+                                "startedAt": 1.0,
+                                "updatedAt": 1.0,
+                                "totalTokenUsage": {"inputTokens": 0, "outputTokens": 0}
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    vec![serde_json::json!({
+                        "executionId": execution_id,
+                        "workflowName": "slow-start",
+                        "status": "running",
+                        "worktreePath": response_worktree,
+                        "currentNode": "review",
+                        "createdFrom": "cli",
+                        "startedAt": 1.0,
+                        "updatedAt": 1.0,
+                        "totalTokenUsage": {"inputTokens": 0, "outputTokens": 0}
+                    })]
+                };
+                let body = serde_json::to_string(&body).unwrap();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .unwrap();
+            }
+        });
+        let data = TempDir::new().unwrap();
+        write_discovery(data.path(), port, "secret");
+        let client = LocalApiClient::discover(data.path()).unwrap().unwrap();
+
+        let response = client
+            .start_workflow(&StartExecutionRequest {
+                workflow_name: "slow-start".to_string(),
+                worktree_path,
+                request: String::new(),
+                permission_mode: None,
+                created_from: Some("cli".to_string()),
+            })
+            .unwrap();
+
+        assert_eq!(response.execution_id, execution_id);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn start_reconciles_the_committed_execution_after_an_unknown_transport_result() {
+        // The server committed the start but the connection disappeared before the response
+        // reached the CLI, reproducing the unknown-result boundary.
+        assert_start_reconciles_committed_execution(None);
+    }
+
+    #[test]
+    fn repeated_start_recovers_the_existing_execution_from_worktree_conflict() {
+        assert_start_reconciles_committed_execution(Some(
+            b"HTTP/1.1 409 Conflict\r\nContent-Type: application/json\r\nContent-Length: 51\r\nConnection: close\r\n\r\n{\"code\":\"invalid_state\",\"message\":\"already active\"}",
+        ));
     }
 
     #[test]

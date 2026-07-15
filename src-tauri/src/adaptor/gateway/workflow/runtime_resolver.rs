@@ -5,7 +5,7 @@ use crate::adaptor::gateway::workflow::resolver::{
     ManagedWorktreeResolver, ManagedWorktreeResolverError, WorkflowDefinitionResolver,
     WorkflowDefinitionResolverError,
 };
-use crate::adaptor::gateway::workflow::schema::Workflow;
+use crate::adaptor::gateway::workflow::schema::WorkflowDefinitionYaml;
 use crate::domain::app_config::ConfigRepository;
 use crate::usecase::repository_usecase::RepositoryUsecase;
 
@@ -16,7 +16,7 @@ impl WorkflowDefinitionResolver for DefaultWorkflowDefinitionResolver {
     async fn resolve(
         &self,
         workflow_name: &str,
-    ) -> Result<Workflow, WorkflowDefinitionResolverError> {
+    ) -> Result<WorkflowDefinitionYaml, WorkflowDefinitionResolverError> {
         let workflow_name = workflow_name.to_string();
         tokio::task::spawn_blocking(move || {
             let dir = crate::adaptor::gateway::workflow::storage::workflows_dir();
@@ -41,7 +41,7 @@ pub(crate) fn resolve_workflow_by_name(
     workflows_dir: &Path,
     facets_base_dir: &Path,
     workflow_name: &str,
-) -> Result<Workflow, WorkflowDefinitionResolverError> {
+) -> Result<WorkflowDefinitionYaml, WorkflowDefinitionResolverError> {
     let mut matches = Vec::new();
     let mut exact_file_error = None;
 
@@ -113,18 +113,42 @@ pub(crate) fn resolve_workflow_by_name(
     }
 }
 
+pub(crate) struct AppConfigManagedWorktreeResolver {
+    usecase: Arc<RepositoryUsecase>,
+    config: Arc<dyn ConfigRepository>,
+}
+
+impl AppConfigManagedWorktreeResolver {
+    pub(crate) fn new(usecase: Arc<RepositoryUsecase>, config: Arc<dyn ConfigRepository>) -> Self {
+        Self { usecase, config }
+    }
+}
+
+#[async_trait::async_trait]
+impl ManagedWorktreeResolver for AppConfigManagedWorktreeResolver {
+    async fn resolve(&self, worktree_path: String) -> Result<String, ManagedWorktreeResolverError> {
+        super::worktree_gateway::canonicalize_managed_worktree_path(
+            Arc::clone(&self.usecase),
+            Arc::clone(&self.config),
+            worktree_path,
+        )
+        .await
+        .map_err(ManagedWorktreeResolverError::Validation)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::TempDir;
 
     use super::resolve_workflow_by_name;
     use crate::adaptor::gateway::workflow::schema::{
-        CommandSpec, NodeDefinition, NodeKind, Workflow,
+        CommandSpec, NodeDefinition, NodeKind, WorkflowDefinitionYaml,
     };
     use crate::adaptor::gateway::workflow::storage;
 
-    fn workflow(name: &str) -> Workflow {
-        Workflow {
+    fn workflow(name: &str) -> WorkflowDefinitionYaml {
+        WorkflowDefinitionYaml {
             name: name.to_string(),
             description: "test workflow".to_string(),
             nodes: vec![NodeDefinition {
@@ -134,7 +158,7 @@ mod tests {
                 }),
                 ..NodeDefinition::default()
             }],
-            ..Workflow::default()
+            ..WorkflowDefinitionYaml::default()
         }
     }
 
@@ -168,29 +192,5 @@ mod tests {
 
         assert!(error.to_string().contains("WFS006"));
         assert!(error.to_string().contains("duplicate-name"));
-    }
-}
-
-pub(crate) struct AppConfigManagedWorktreeResolver {
-    usecase: Arc<RepositoryUsecase>,
-    config: Arc<dyn ConfigRepository>,
-}
-
-impl AppConfigManagedWorktreeResolver {
-    pub(crate) fn new(usecase: Arc<RepositoryUsecase>, config: Arc<dyn ConfigRepository>) -> Self {
-        Self { usecase, config }
-    }
-}
-
-#[async_trait::async_trait]
-impl ManagedWorktreeResolver for AppConfigManagedWorktreeResolver {
-    async fn resolve(&self, worktree_path: String) -> Result<String, ManagedWorktreeResolverError> {
-        super::worktree_gateway::canonicalize_managed_worktree_path(
-            Arc::clone(&self.usecase),
-            Arc::clone(&self.config),
-            worktree_path,
-        )
-        .await
-        .map_err(ManagedWorktreeResolverError::Validation)
     }
 }

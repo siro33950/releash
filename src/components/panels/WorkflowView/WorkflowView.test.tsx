@@ -446,7 +446,7 @@ describe("WorkflowView", () => {
 					producedAt: 2_000,
 				},
 				fanoutParent: {
-					parentNode: "parallel-review",
+					parentNode: "review-fanout",
 					parentAttempt: 1,
 					itemIndex: 2,
 					childIndex: 0,
@@ -461,7 +461,7 @@ describe("WorkflowView", () => {
 		expect(screen.getByText("session-item-2")).toBeInTheDocument();
 		expect(screen.getByText("attempt 2")).toBeInTheDocument();
 		expect(
-			screen.getByText("parallel-review#1 · item 2 · child 0"),
+			screen.getByText("review-fanout#1 · item 2 · child 0"),
 		).toBeInTheDocument();
 		expect(
 			screen.getByRole("button", { name: "Artifact" }),

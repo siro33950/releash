@@ -234,7 +234,7 @@ mod tests {
             builtin: false,
             schemas: Default::default(),
             nodes: vec![NodeDefinition {
-                name: "step".to_string(),
+                name: "node".to_string(),
                 kind: NodeKind::Session(SessionSpec {
                     permission: Some("edit".to_string()),
                     facets: FacetRefs {
@@ -260,7 +260,7 @@ mod tests {
 name: {name}
 description: source workflow
 nodes:
-  - name: step
+  - name: node
     session:
       permission: edit
       gate: auto
@@ -276,7 +276,7 @@ nodes:
 name: {name}
 description: invalid workflow
 nodes:
-  - name: step
+  - name: node
     type: agent
     instruction: implement
 "#

@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::domain::workflow::status_aggregation::{RepresentativeStatus, StepProgress};
+use crate::domain::workflow::status_aggregation::{NodeProgress, RepresentativeStatus};
 use crate::domain::workflow::WorkflowRuntimeSnapshot;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,7 +11,7 @@ pub struct NodeSessionProjection {
     pub attempt: Option<u32>,
     pub group_node_name: String,
     pub group_attempt: Option<u32>,
-    pub progress: StepProgress,
+    pub progress: NodeProgress,
     pub representative: RepresentativeStatus,
     pub order: usize,
 }
@@ -43,7 +43,7 @@ fn projection(input: ProjectionInput<'_>) -> NodeSessionProjection {
         attempt: input.attempt,
         group_node_name: input.group_node_name,
         group_attempt: input.group_attempt,
-        progress: StepProgress::from_status_str(input.status),
+        progress: NodeProgress::from_status_str(input.status),
         representative: RepresentativeStatus::from_status_str(input.status),
         order: input.order,
     }
@@ -176,7 +176,6 @@ mod tests {
             current_node_index: 1,
             current_node_name: "current".to_string(),
             current_session_id: Some("current-session".to_string()),
-            total_nodes: 2,
             node_history: vec![NodeHistoryEntry {
                 node_name: "done".to_string(),
                 completed_at: 1.0,
@@ -208,7 +207,6 @@ mod tests {
                 nodes: Vec::new(),
             },
             total_token_usage: Default::default(),
-            node_statuses: HashMap::new(),
             artifacts: HashMap::new(),
             node_executions: vec![NodeExecution {
                 id: "ne-child".to_string(),
@@ -217,7 +215,7 @@ mod tests {
                 kind: NodeKindName::Session,
                 attempt: 1,
                 status: NodeExecutionStatus::Running,
-                session_id: Some("parallel-session".to_string()),
+                session_id: Some("fanout-session".to_string()),
                 result_summary: None,
                 artifact: None,
                 token_usage: None,
@@ -231,8 +229,6 @@ mod tests {
                 started_at: 1.5,
                 completed_at: None,
             }],
-            approval_operations: None,
-            stall_observations: Vec::new(),
             started_at: 0.0,
             updated_at: 2.0,
         }
@@ -242,7 +238,7 @@ mod tests {
     fn collects_session_ids_only_from_node_executions_when_they_are_available() {
         let ids = collect_node_session_ids(&state());
 
-        assert_eq!(ids, HashSet::from(["parallel-session".to_string()]));
+        assert_eq!(ids, HashSet::from(["fanout-session".to_string()]));
     }
 
     #[test]
@@ -250,15 +246,15 @@ mod tests {
         let projections = collect_node_session_projections(&state());
 
         assert_eq!(projections.len(), 1);
-        let parallel = &projections[0];
-        assert_eq!(parallel.node_name, "running-child");
-        assert_eq!(parallel.node_execution_id.as_deref(), Some("ne-child"));
-        assert_eq!(parallel.attempt, Some(1));
-        assert_eq!(parallel.group_node_name, "current");
-        assert_eq!(parallel.group_attempt, Some(1));
-        assert_eq!(parallel.progress, StepProgress::Running);
-        assert_eq!(parallel.representative, RepresentativeStatus::Running);
-        assert_eq!(parallel.order, 0);
+        let fanout = &projections[0];
+        assert_eq!(fanout.node_name, "running-child");
+        assert_eq!(fanout.node_execution_id.as_deref(), Some("ne-child"));
+        assert_eq!(fanout.attempt, Some(1));
+        assert_eq!(fanout.group_node_name, "current");
+        assert_eq!(fanout.group_attempt, Some(1));
+        assert_eq!(fanout.progress, NodeProgress::Running);
+        assert_eq!(fanout.representative, RepresentativeStatus::Running);
+        assert_eq!(fanout.order, 0);
     }
 
     #[test]
@@ -272,7 +268,7 @@ mod tests {
     fn terminal_node_session_ids_use_current_and_active_node_executions() {
         let ids = collect_terminal_node_session_ids(&state());
 
-        assert_eq!(ids, vec!["current-session", "parallel-session"]);
+        assert_eq!(ids, vec!["current-session", "fanout-session"]);
     }
 
     #[test]
@@ -288,7 +284,6 @@ mod tests {
             current_node_index: 0,
             current_node_name: "plan".to_string(),
             current_session_id: None,
-            total_nodes: 1,
             node_history: vec![
                 NodeHistoryEntry {
                     node_name: "plan".to_string(),
@@ -302,7 +297,7 @@ mod tests {
                     state: NODE_STATUS_ABORTED.to_string(),
                 },
                 NodeHistoryEntry {
-                    node_name: "parallel-review".to_string(),
+                    node_name: "fanout-review".to_string(),
                     completed_at: 2.0,
                     result: None,
                     session_id: None,
@@ -347,11 +342,8 @@ mod tests {
                 nodes: Vec::new(),
             },
             total_token_usage: Default::default(),
-            node_statuses: HashMap::new(),
             artifacts: HashMap::new(),
             node_executions: vec![],
-            approval_operations: None,
-            stall_observations: Vec::new(),
             started_at: 0.0,
             updated_at: 2.0,
         };
@@ -364,9 +356,9 @@ mod tests {
     #[test]
     fn duplicate_legacy_history_session_is_not_projected_twice() {
         let mut state = state();
-        state.node_history[0].session_id = Some("parallel-session".to_string());
+        state.node_history[0].session_id = Some("fanout-session".to_string());
         state.node_history[0].fanout_children.as_mut().unwrap()[0].session_id =
-            Some("parallel-session".to_string());
+            Some("fanout-session".to_string());
 
         let projections = collect_node_session_projections(&state);
 

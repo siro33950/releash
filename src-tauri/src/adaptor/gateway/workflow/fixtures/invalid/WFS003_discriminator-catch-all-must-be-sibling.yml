@@ -1,0 +1,20 @@
+name: discriminator-catch-all-must-be-sibling
+description: a when catch-all cannot be a separate next rule element
+schemas:
+  verdict:
+    type: object
+    properties:
+      passed:
+        type: boolean
+    required: [passed]
+nodes:
+  - name: judge
+    artifact: verdict
+    command: printf '{"passed":true}'
+    rules:
+      - when: { on: passed, then: done }
+      - next: fix
+  - name: done
+    command: printf done
+  - name: fix
+    command: printf fix

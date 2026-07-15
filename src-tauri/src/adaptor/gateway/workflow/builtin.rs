@@ -3,7 +3,7 @@ use std::fmt;
 use super::diagnostics;
 use super::domain_mapping::workflow_definition_to_domain;
 use super::facet::{self, FacetError, FacetKind};
-use super::schema::{Summary, Workflow};
+use super::schema::{Summary, WorkflowDefinitionYaml};
 use super::storage;
 use crate::domain::workflow::validation::{self, ValidationError};
 
@@ -165,7 +165,9 @@ impl std::error::Error for BuiltinError {}
 ///
 /// `Result::Ok(None)` は「`name` に対応する builtin が存在しない」を表し、
 /// load 失敗とは区別する。
-pub fn load_builtin_workflow_resolved(name: &str) -> Result<Option<Workflow>, BuiltinError> {
+pub fn load_builtin_workflow_resolved(
+    name: &str,
+) -> Result<Option<WorkflowDefinitionYaml>, BuiltinError> {
     let Some(entry) = BUILTINS
         .iter()
         .find(|e| e.filename.strip_suffix(".yml") == Some(name))
@@ -179,10 +181,11 @@ pub fn load_builtin_workflow_resolved(name: &str) -> Result<Option<Workflow>, Bu
             diagnostics: diagnosis.diagnostics,
         });
     }
-    let mut wf: Workflow = diagnosis.workflow.ok_or_else(|| BuiltinError::YamlParse {
-        filename: entry.filename,
-        message: "workflow source could not be parsed".to_string(),
-    })?;
+    let mut wf: WorkflowDefinitionYaml =
+        diagnosis.workflow.ok_or_else(|| BuiltinError::YamlParse {
+            filename: entry.filename,
+            message: "workflow source could not be parsed".to_string(),
+        })?;
     wf.builtin = true;
     validation::validate(&workflow_definition_to_domain(&wf)).map_err(|err| {
         BuiltinError::Validation {
@@ -511,8 +514,8 @@ mod tests {
     #[test]
     fn review_builtins_route_fanouts_with_next_rules() {
         let cases = [
-            ("03_review", "review-parallel", "reporting"),
-            ("03_full-review", "review-parallel", "verify-and-classify"),
+            ("03_review", "review-fanout", "reporting"),
+            ("03_full-review", "review-fanout", "verify-and-classify"),
             ("03_full-review", "verify-and-classify", "reporting"),
         ];
 
@@ -544,7 +547,7 @@ mod tests {
     }
 
     #[test]
-    fn draft_authoring_workflow_is_document_steps() {
+    fn draft_authoring_workflow_is_document_nodes() {
         let name = "01_authoring_draft";
         let wf = load_builtin_workflow_resolved(name)
             .unwrap_or_else(|err| panic!("builtin '{name}' must load: {err}"))
@@ -554,7 +557,7 @@ mod tests {
         assert_eq!(
             node_names,
             vec!["write_requirements", "write_behavior", "write_design"],
-            "draft authoring must stay document-step based"
+            "draft authoring must stay document-node based"
         );
 
         for node in &wf.nodes {
@@ -607,12 +610,13 @@ mod tests {
     #[test]
     fn builtin_entries_description_matches_yaml() {
         for entry in BUILTINS {
-            let wf: Workflow = serde_saphyr::from_str(entry.content).unwrap_or_else(|err| {
-                panic!(
-                    "Invalid builtin workflow '{}' fixture: {err}",
-                    entry.filename
-                )
-            });
+            let wf: WorkflowDefinitionYaml =
+                serde_saphyr::from_str(entry.content).unwrap_or_else(|err| {
+                    panic!(
+                        "Invalid builtin workflow '{}' fixture: {err}",
+                        entry.filename
+                    )
+                });
             assert_eq!(
                 entry.description, wf.description,
                 "BuiltinEntry.description for '{}' does not match YAML; update BUILTINS metadata when changing YAML description",
@@ -733,7 +737,7 @@ mod tests {
 
     // 旧 C 層テスト（spec_driven_development_structural_snapshot /
     // spec_driven_development_routes_plan_review_needs_fix_to_policy_approval /
-    // spec_driven_development_passes_approved_policy_to_fix_steps）は削除した。
+    // spec_driven_development_passes_approved_policy_to_fix_nodes）は削除した。
     // これらは YAML の中身を Rust に書き写しているだけで、YAML の変更があれば
     // テストも書き換えるだけ、という冗長な摩擦のみを生んでいた。
     // load パイプライン正常性は `load_builtin_workflow_resolved_returns_valid_workflow_for_all_builtins`、
@@ -830,7 +834,7 @@ mod tests {
     }
 
     /// 全 builtin ワークフローの inputs を持つノードについて、
-    /// engine が組み立てる step prompt に JSON Artifact 入力が含まれることを検証する。
+    /// engine が組み立てる node prompt に JSON Artifact 入力が含まれることを検証する。
     #[test]
     fn builtin_inputs_compose_into_prompt_as_json_artifacts() {
         use crate::adaptor::gateway::workflow::prompt_rendering;
@@ -873,14 +877,14 @@ mod tests {
                         },
                     );
                 }
-                let (_sys, prompt) = prompt_rendering::build_step_prompt(
+                let (_sys, prompt) = prompt_rendering::build_node_prompt(
                     node,
                     resolved.for_node(&node.name),
                     "00000000-0000-0000-0000-000000000000",
                     Some(TASK_TEXT),
                     &artifacts,
                 )
-                .expect("build_step_prompt must succeed");
+                .expect("build_node_prompt must succeed");
                 for input in &node.inputs {
                     assert!(
                         prompt.contains(&format!("## input: {input}")),
@@ -912,18 +916,18 @@ mod tests {
                     && n.session()
                         .is_some_and(|session| session.facets.instruction.is_some())
             }) {
-                let (_sys, prompt) = prompt_rendering::build_step_prompt(
+                let (_sys, prompt) = prompt_rendering::build_node_prompt(
                     node,
                     resolved.for_node(&node.name),
                     "00000000-0000-0000-0000-000000000000",
                     Some("issues-123"),
                     &HashMap::new(),
                 )
-                .expect("build_step_prompt must succeed");
+                .expect("build_node_prompt must succeed");
 
                 assert!(
                     !prompt.contains("<task>\n"),
-                    "'{name}/{}' prompt must not contain engine-injected <task> block for step without input",
+                    "'{name}/{}' prompt must not contain engine-injected <task> block for node without input",
                     node.name
                 );
                 let legacy_variables_tag = concat!("<workflow", "_variables>");
@@ -961,14 +965,14 @@ mod tests {
             concat!("<workflow", "_variables>"),
             concat!("workflow", "_variables")
         );
-        let (_sys, prompt) = prompt_rendering::build_step_prompt(
+        let (_sys, prompt) = prompt_rendering::build_node_prompt(
             node,
             resolved.for_node(&node.name),
             "00000000-0000-0000-0000-000000000000",
             Some(&evil),
             &HashMap::new(),
         )
-        .expect("build_step_prompt must succeed");
+        .expect("build_node_prompt must succeed");
 
         assert!(
             prompt.contains("## input: request"),

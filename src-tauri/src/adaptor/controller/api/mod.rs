@@ -42,7 +42,8 @@ pub(crate) mod test_support {
 
     use crate::adaptor::gateway::workflow::execution_store::WorkflowExecutionMetadata;
     use crate::adaptor::gateway::workflow::schema::{
-        CommandSpec, NodeDefinition, NodeKind, Workflow as GatewayWorkflow,
+        CommandSpec, NodeDefinition, NodeKind,
+        WorkflowDefinitionYaml as GatewayWorkflowDefinitionYaml,
     };
     use crate::adaptor::gateway::workflow::storage;
     use crate::adaptor::gateway::workflow::WorkflowEventLogRepository;
@@ -90,6 +91,7 @@ pub(crate) mod test_support {
     pub(crate) struct RecordingRuntimeGateway {
         pub(crate) commands: Mutex<RecordedRuntimeCommands>,
         workflow_resolution: Mutex<Option<(PathBuf, PathBuf)>>,
+        output_persistence_data_dir: Mutex<Option<PathBuf>>,
         errors: Mutex<RecordedRuntimeErrors>,
     }
 
@@ -100,6 +102,10 @@ pub(crate) mod test_support {
             facets_base_dir: PathBuf,
         ) {
             *self.workflow_resolution.lock().unwrap() = Some((workflows_dir, facets_base_dir));
+        }
+
+        fn persist_submitted_outputs_to(&self, data_dir: PathBuf) {
+            *self.output_persistence_data_dir.lock().unwrap() = Some(data_dir);
         }
     }
 
@@ -203,6 +209,23 @@ pub(crate) mod test_support {
         async fn submit_output(&self, command: SubmitOutputCommand) -> Result<(), WorkflowError> {
             if let Some(error) = self.errors.lock().unwrap().output.clone() {
                 return Err(error);
+            }
+            if let Some(data_dir) = self.output_persistence_data_dir.lock().unwrap().clone() {
+                WorkflowEventLogRepository::new(data_dir)
+                    .append(&WorkflowEventDraft {
+                        execution_id: command.execution_id.clone(),
+                        event_kind: "artifact_produced".to_string(),
+                        timestamp: 110.0,
+                        payload: serde_json::json!({
+                            "node_execution_id": command.node_execution_id,
+                            "node_name": command.node_name,
+                            "contract": command.contract,
+                            "value": command.artifact,
+                            "submitted_at": 109.0,
+                            "request_id": "request-1"
+                        }),
+                    })
+                    .map_err(|error| WorkflowError::external(error.to_string()))?;
             }
             self.commands.lock().unwrap().outputs.push(command);
             Ok(())
@@ -339,7 +362,7 @@ pub(crate) mod test_support {
         (status, body)
     }
 
-    async fn get_json(router: &Router, uri: &str) -> (StatusCode, serde_json::Value) {
+    pub(crate) async fn get_json(router: &Router, uri: &str) -> (StatusCode, serde_json::Value) {
         let response = router
             .clone()
             .oneshot(
@@ -454,7 +477,7 @@ pub(crate) mod test_support {
     async fn start_resolves_definition_name_and_reports_duplicate_name_diagnostics() {
         let data = tempfile::tempdir().unwrap();
         let workflows = tempfile::tempdir().unwrap();
-        let definition = GatewayWorkflow {
+        let definition = GatewayWorkflowDefinitionYaml {
             name: "declared-name".to_string(),
             description: "API start fixture".to_string(),
             nodes: vec![NodeDefinition {
@@ -464,7 +487,7 @@ pub(crate) mod test_support {
                 }),
                 ..NodeDefinition::default()
             }],
-            ..GatewayWorkflow::default()
+            ..GatewayWorkflowDefinitionYaml::default()
         };
         storage::save_workflow(workflows.path(), &definition).unwrap();
         fs::rename(
@@ -894,12 +917,54 @@ pub(crate) mod test_support {
         assert_eq!(output.0, StatusCode::OK);
         assert_eq!(output.1["status"], "submitted");
         assert_eq!(output.1["contract"], "review-result");
-        assert_eq!(
-            output.1["structured_output"],
-            serde_json::json!({"status": "approved"})
-        );
+        assert_eq!(output.1["value"], serde_json::json!({"status": "approved"}));
         assert_eq!(output.1["submitted_at"], 109.0);
         assert_eq!(output.1["request_id"], "request-1");
+    }
+
+    #[tokio::test]
+    async fn submitted_artifact_round_trips_through_persistence_and_get_wire_response() {
+        let directory = tempfile::tempdir().unwrap();
+        let execution_id = "00000000-0000-4000-8000-000000000323";
+        seed_query_execution(directory.path(), execution_id);
+        WorkflowEventLogRepository::new(directory.path())
+            .append(&WorkflowEventDraft {
+                execution_id: execution_id.to_string(),
+                event_kind: "node_started".to_string(),
+                timestamp: 105.0,
+                payload: serde_json::json!({
+                    "node_execution_id": "ne-review-1",
+                    "node_name": "review",
+                    "kind": "session",
+                    "attempt": 1
+                }),
+            })
+            .unwrap();
+        let (router, _, gateway) = test_router(directory.path(), "secret");
+        gateway.persist_submitted_outputs_to(directory.path().to_path_buf());
+
+        let submit = send_json(
+            &router,
+            &format!("/v1/workflow/executions/{execution_id}/artifacts"),
+            serde_json::json!({
+                "node": "review",
+                "node_execution_id": "ne-review-1",
+                "contract": "review-result",
+                "value": {"status": "approved"}
+            }),
+        )
+        .await;
+        assert_eq!(submit, (StatusCode::OK, serde_json::json!({"ok": true})));
+
+        let output = get_json(
+            &router,
+            &format!("/v1/workflow/executions/{execution_id}/artifacts/review"),
+        )
+        .await;
+        assert_eq!(output.0, StatusCode::OK);
+        assert_eq!(output.1["status"], "submitted");
+        assert_eq!(output.1["value"], serde_json::json!({"status": "approved"}));
+        assert!(output.1.get("structured_output").is_none());
     }
 
     #[tokio::test]

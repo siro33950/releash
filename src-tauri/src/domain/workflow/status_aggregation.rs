@@ -53,7 +53,7 @@ impl RepresentativeStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum StepProgress {
+pub enum NodeProgress {
     Failed,
     WaitingApproval,
     Running,
@@ -62,7 +62,7 @@ pub enum StepProgress {
     Queued,
 }
 
-impl StepProgress {
+impl NodeProgress {
     pub(crate) fn from_status_str(status: &str) -> Self {
         match status {
             "failed" => Self::Failed,
@@ -85,34 +85,34 @@ pub enum SessionActivity {
 }
 
 pub(crate) fn session_result(
-    step: StepProgress,
+    node: NodeProgress,
     activity: SessionActivity,
 ) -> RepresentativeStatus {
     match activity {
         SessionActivity::Running => RepresentativeStatus::Running,
-        SessionActivity::Waiting => match step {
-            StepProgress::Failed => RepresentativeStatus::Failed,
-            StepProgress::WaitingApproval
-            | StepProgress::Running
-            | StepProgress::Aborted
-            | StepProgress::Completed
-            | StepProgress::Queued => RepresentativeStatus::Waiting,
+        SessionActivity::Waiting => match node {
+            NodeProgress::Failed => RepresentativeStatus::Failed,
+            NodeProgress::WaitingApproval
+            | NodeProgress::Running
+            | NodeProgress::Aborted
+            | NodeProgress::Completed
+            | NodeProgress::Queued => RepresentativeStatus::Waiting,
         },
-        SessionActivity::Done => match step {
-            StepProgress::Failed => RepresentativeStatus::Failed,
-            StepProgress::WaitingApproval => RepresentativeStatus::Waiting,
-            StepProgress::Running => RepresentativeStatus::Running,
-            StepProgress::Aborted => RepresentativeStatus::Aborted,
-            StepProgress::Completed => RepresentativeStatus::Completed,
-            StepProgress::Queued => RepresentativeStatus::Queued,
+        SessionActivity::Done => match node {
+            NodeProgress::Failed => RepresentativeStatus::Failed,
+            NodeProgress::WaitingApproval => RepresentativeStatus::Waiting,
+            NodeProgress::Running => RepresentativeStatus::Running,
+            NodeProgress::Aborted => RepresentativeStatus::Aborted,
+            NodeProgress::Completed => RepresentativeStatus::Completed,
+            NodeProgress::Queued => RepresentativeStatus::Queued,
         },
-        SessionActivity::Error => match step {
-            StepProgress::Failed => RepresentativeStatus::Failed,
-            StepProgress::WaitingApproval
-            | StepProgress::Running
-            | StepProgress::Aborted
-            | StepProgress::Completed
-            | StepProgress::Queued => RepresentativeStatus::Error,
+        SessionActivity::Error => match node {
+            NodeProgress::Failed => RepresentativeStatus::Failed,
+            NodeProgress::WaitingApproval
+            | NodeProgress::Running
+            | NodeProgress::Aborted
+            | NodeProgress::Completed
+            | NodeProgress::Queued => RepresentativeStatus::Error,
         },
     }
 }
@@ -146,10 +146,10 @@ mod tests {
     }
 
     #[test]
-    fn session_result_matches_step_by_agent_cross_table() {
+    fn session_result_matches_node_by_agent_cross_table() {
+        use NodeProgress as S;
         use RepresentativeStatus as R;
         use SessionActivity::{Done, Error, Running, Waiting};
-        use StepProgress as S;
 
         let cases = [
             (S::Failed, Running, R::Running),
@@ -178,8 +178,8 @@ mod tests {
             (S::Queued, Error, R::Error),
         ];
 
-        for (step, activity, expected) in cases {
-            assert_eq!(session_result(step, activity), expected);
+        for (node, activity, expected) in cases {
+            assert_eq!(session_result(node, activity), expected);
         }
     }
 

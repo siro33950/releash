@@ -198,28 +198,15 @@ mod execution_origin_serde {
     where
         S: Serializer,
     {
-        let value = match value {
-            ExecutionOrigin::DesktopUi => "desktop_ui",
-            ExecutionOrigin::Cli => "cli",
-            ExecutionOrigin::Agent => "agent",
-            ExecutionOrigin::Api => "api",
-        };
-        serializer.serialize_str(value)
+        serializer.serialize_str(value.as_public_value())
     }
 
     pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<ExecutionOrigin, D::Error>
     where
         D: Deserializer<'de>,
     {
-        match String::deserialize(deserializer)?.as_str() {
-            "desktop_ui" => Ok(ExecutionOrigin::DesktopUi),
-            "cli" => Ok(ExecutionOrigin::Cli),
-            "agent" => Ok(ExecutionOrigin::Agent),
-            "api" => Ok(ExecutionOrigin::Api),
-            value => Err(D::Error::custom(format!(
-                "unknown execution origin: {value}"
-            ))),
-        }
+        let value = String::deserialize(deserializer)?;
+        ExecutionOrigin::from_public_value(&value).map_err(D::Error::custom)
     }
 }
 
@@ -481,6 +468,100 @@ pub(crate) fn read_valid_execution_metadata(
     load_validated_metadata_entry(&executions_dir, &path).map(Some)
 }
 
+pub(crate) fn project_valid_execution_metadata_page(
+    data_dir: &Path,
+    filter: &ExecutionListFilter,
+    offset: usize,
+    limit: usize,
+) -> Vec<WorkflowExecutionSummary> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    let executions_dir = executions_dir(data_dir);
+    let entries = match fs::read_dir(&executions_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => {
+            log::warn!("ExecutionStore: failed to read executions dir: {error}");
+            return Vec::new();
+        }
+    };
+    let window_end = offset.saturating_add(limit);
+    let mut window = Vec::new();
+    for entry in entries {
+        let path = match entry {
+            Ok(entry) => entry.path(),
+            Err(error) => {
+                log::warn!("ExecutionStore: failed to read execution metadata entry: {error}");
+                continue;
+            }
+        };
+        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+            continue;
+        }
+        let execution = match load_validated_metadata_entry(&executions_dir, &path) {
+            Ok(execution) => execution,
+            Err(error) => {
+                log::warn!(
+                    "ExecutionStore: skip corrupted execution metadata at {}: {error}",
+                    path.display()
+                );
+                continue;
+            }
+        };
+        if !execution_matches_filter(&execution, filter) {
+            continue;
+        }
+        let insertion_index = window
+            .binary_search_by(|candidate| compare_execution_metadata(candidate, &execution))
+            .unwrap_or_else(|index| index);
+        if insertion_index < window_end {
+            window.insert(insertion_index, execution);
+            if window.len() > window_end {
+                window.pop();
+            }
+        }
+    }
+    window
+        .into_iter()
+        .skip(offset)
+        .map(|execution| WorkflowExecutionSummary::from(&execution))
+        .collect()
+}
+
+fn execution_matches_filter(
+    execution: &WorkflowExecutionMetadata,
+    filter: &ExecutionListFilter,
+) -> bool {
+    let status_matches = match filter.status {
+        Some(ExecutionStatusFilter::Active) => !execution.status.is_finished(),
+        Some(ExecutionStatusFilter::Terminal) => execution.status.is_finished(),
+        None => true,
+    };
+    status_matches
+        && filter
+            .worktree_path
+            .as_deref()
+            .is_none_or(|worktree| execution.worktree_path == worktree)
+}
+
+fn compare_execution_metadata(
+    left: &WorkflowExecutionMetadata,
+    right: &WorkflowExecutionMetadata,
+) -> std::cmp::Ordering {
+    match (!left.status.is_finished(), !right.status.is_finished()) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => {
+            let left_key = left.completed_at.unwrap_or(left.updated_at);
+            let right_key = right.completed_at.unwrap_or(right.updated_at);
+            right_key
+                .partial_cmp(&left_key)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }
+    }
+}
+
 pub(crate) fn iter_valid_execution_metadata(data_dir: &Path) -> Vec<WorkflowExecutionMetadata> {
     let WorkflowExecutionMetadataScan { executions, .. } = scan_valid_execution_metadata(data_dir);
     executions
@@ -570,6 +651,8 @@ pub struct ExecutionStore {
     allow_in_memory_without_data_dir: bool,
     #[cfg(test)]
     fail_next_resume_commit: AtomicBool,
+    #[cfg(test)]
+    fail_next_active_interruption_rollback: AtomicBool,
 }
 
 #[derive(Clone)]
@@ -616,6 +699,8 @@ impl ExecutionStore {
             allow_in_memory_without_data_dir: false,
             #[cfg(test)]
             fail_next_resume_commit: AtomicBool::new(false),
+            #[cfg(test)]
+            fail_next_active_interruption_rollback: AtomicBool::new(false),
         }
     }
 
@@ -626,6 +711,7 @@ impl ExecutionStore {
             data_dir: Mutex::new(None),
             allow_in_memory_without_data_dir: true,
             fail_next_resume_commit: AtomicBool::new(false),
+            fail_next_active_interruption_rollback: AtomicBool::new(false),
         }
     }
 
@@ -1165,6 +1251,15 @@ impl ExecutionStore {
         &self,
         reservation: ActiveInterruptionReservation,
     ) -> Result<(), ExecutionStoreError> {
+        #[cfg(test)]
+        if self
+            .fail_next_active_interruption_rollback
+            .swap(false, Ordering::AcqRel)
+        {
+            return Err(ExecutionStoreError::InterruptionReservationChanged {
+                execution_id: reservation.execution_id,
+            });
+        }
         let mut inner = self.inner.lock().await;
         let execution_reserved = inner
             .pending_interrupted_transitions
@@ -1184,6 +1279,12 @@ impl ExecutionStore {
             });
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_active_interruption_rollback_for_test(&self) {
+        self.fail_next_active_interruption_rollback
+            .store(true, Ordering::Release);
     }
 
     pub async fn interrupted_transition_pending(&self, execution_id: &str) -> bool {

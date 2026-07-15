@@ -8,8 +8,8 @@ use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::resolver::{
     ManagedWorktreeResolver, WorkflowDefinitionResolver,
 };
-use crate::adaptor::gateway::workflow::schema::Workflow;
-use crate::adaptor::gateway::workflow::state::WorkflowState;
+use crate::adaptor::gateway::workflow::schema::WorkflowDefinitionYaml;
+use crate::adaptor::gateway::workflow::state::RuntimeCommitSnapshot;
 use crate::domain::agent_session::PermissionMode;
 use crate::domain::workflow::services::transition::SessionFailureSignal;
 use crate::domain::workflow::ExecutionOrigin;
@@ -35,14 +35,14 @@ pub(crate) trait WorkflowRuntimeEngine: Send + Sync {
     async fn resolve_start_execution_workflow(
         &self,
         workflow_name: &str,
-    ) -> Result<Workflow, WorkflowEngineError>;
+    ) -> Result<WorkflowDefinitionYaml, WorkflowEngineError>;
 
     async fn start_resolved_workflow(
         &self,
         app: &tauri::AppHandle,
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
-        workflow: Workflow,
+        workflow: WorkflowDefinitionYaml,
         worktree_path: String,
         request: Option<String>,
         created_from: ExecutionOrigin,
@@ -128,9 +128,9 @@ pub(crate) trait WorkflowRuntimeEngine: Send + Sync {
     ) -> Result<(), WorkflowEngineError>;
 
     #[cfg(test)]
-    async fn get_state_by_execution_id(&self, execution_id: &str) -> Option<WorkflowState>;
+    async fn get_state_by_execution_id(&self, execution_id: &str) -> Option<RuntimeCommitSnapshot>;
 
-    async fn get_state(&self, worktree_path: &str) -> Option<WorkflowState>;
+    async fn get_state(&self, worktree_path: &str) -> Option<RuntimeCommitSnapshot>;
 
     async fn resolve_chat_session_for_approval(
         &self,
@@ -184,7 +184,7 @@ impl WorkflowRuntimeEngine for WorkflowRuntimeService {
     async fn resolve_start_execution_workflow(
         &self,
         workflow_name: &str,
-    ) -> Result<Workflow, WorkflowEngineError> {
+    ) -> Result<WorkflowDefinitionYaml, WorkflowEngineError> {
         WorkflowRuntimeService::resolve_start_execution_workflow(self, workflow_name).await
     }
 
@@ -193,7 +193,7 @@ impl WorkflowRuntimeEngine for WorkflowRuntimeService {
         app: &tauri::AppHandle,
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
-        workflow: Workflow,
+        workflow: WorkflowDefinitionYaml,
         worktree_path: String,
         request: Option<String>,
         created_from: ExecutionOrigin,
@@ -373,11 +373,11 @@ impl WorkflowRuntimeEngine for WorkflowRuntimeService {
     }
 
     #[cfg(test)]
-    async fn get_state_by_execution_id(&self, execution_id: &str) -> Option<WorkflowState> {
+    async fn get_state_by_execution_id(&self, execution_id: &str) -> Option<RuntimeCommitSnapshot> {
         WorkflowRuntimeService::get_state_by_execution_id(self, execution_id).await
     }
 
-    async fn get_state(&self, worktree_path: &str) -> Option<WorkflowState> {
+    async fn get_state(&self, worktree_path: &str) -> Option<RuntimeCommitSnapshot> {
         WorkflowRuntimeService::get_state(self, worktree_path).await
     }
 

@@ -1,4 +1,4 @@
-use crate::adaptor::gateway::workflow::schema::Workflow;
+use crate::adaptor::gateway::workflow::schema::WorkflowDefinitionYaml;
 
 #[derive(Debug)]
 pub(crate) enum WorkflowDefinitionResolverError {
@@ -36,7 +36,7 @@ pub(crate) trait WorkflowDefinitionResolver: Send + Sync {
     async fn resolve(
         &self,
         workflow_name: &str,
-    ) -> Result<Workflow, WorkflowDefinitionResolverError>;
+    ) -> Result<WorkflowDefinitionYaml, WorkflowDefinitionResolverError>;
 }
 
 /// WorkflowRuntimeService core が AppConfig / filesystem canonicalize / Git worktree 列挙を

@@ -32,7 +32,7 @@ pub struct FanoutChildCompletionInput {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FanoutParentCompletionPlan {
-    pub parent_step_output: RuntimeArtifact,
+    pub parent_artifact: RuntimeArtifact,
     pub history_entry: NodeHistoryEntry,
 }
 
@@ -204,7 +204,7 @@ pub fn plan_fanout_parent_completion(
         .collect();
 
     FanoutParentCompletionPlan {
-        parent_step_output: RuntimeArtifact {
+        parent_artifact: RuntimeArtifact {
             node_name: parent_node_name.to_string(),
             attempt: parent_attempt,
             session_id: None,
@@ -229,7 +229,7 @@ pub fn plan_fanout_parent_completion(
 }
 
 #[cfg(test)]
-mod parallel_tests {
+mod fanout_tests {
     use super::*;
 
     fn completed_child(node_name: &str, result: Option<&str>) -> FanoutChildCompletionInput {
@@ -339,9 +339,9 @@ mod parallel_tests {
             completed_child("review-a", Some("LGTM")),
             completed_child("review-b", Some("LGTM")),
         ];
-        let plan = plan_fanout_parent_completion("parallel-review", 2, &children, 12.0);
+        let plan = plan_fanout_parent_completion("fanout-review", 2, &children, 12.0);
 
-        assert_eq!(plan.history_entry.node_name, "parallel-review");
+        assert_eq!(plan.history_entry.node_name, "fanout-review");
         assert_eq!(plan.history_entry.result.as_deref(), Some("complete"));
         assert_eq!(
             plan.history_entry
@@ -351,7 +351,7 @@ mod parallel_tests {
             Some((4, 6))
         );
         assert_eq!(
-            plan.parent_step_output
+            plan.parent_artifact
                 .artifact
                 .as_ref()
                 .and_then(|value| value.as_array())
@@ -359,7 +359,7 @@ mod parallel_tests {
             Some(2)
         );
         assert_eq!(
-            plan.parent_step_output.artifact,
+            plan.parent_artifact.artifact,
             Some(serde_json::json!([
                 { "node": "review-a" },
                 { "node": "review-b" }

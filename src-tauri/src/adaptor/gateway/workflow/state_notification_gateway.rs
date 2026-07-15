@@ -247,7 +247,7 @@ mod tests {
     use crate::adaptor::gateway::workflow::event_projection::project_workflow_execution;
     use crate::adaptor::gateway::workflow::schema::{
         NodeDefinition as EventNodeDefinition, NodeKindName as EventNodeKindName,
-        Workflow as EventWorkflow,
+        WorkflowDefinitionYaml as EventWorkflowDefinitionYaml,
     };
     use crate::domain::workflow::{
         FanoutParentRef, NodeDefinition, NodeExecutionFailure, NodeExecutionFailureKind,
@@ -268,7 +268,7 @@ mod tests {
                 created_from: crate::domain::workflow::ExecutionOrigin::Cli,
                 request: "ship it".to_string(),
                 permission_mode: "ask".to_string(),
-                definition: EventWorkflow {
+                definition: EventWorkflowDefinitionYaml {
                     name: "review".to_string(),
                     nodes: vec![EventNodeDefinition {
                         name: "review".to_string(),
@@ -340,7 +340,6 @@ mod tests {
                 current_node_index: 0,
                 current_node_name: "review".to_string(),
                 current_session_id: None,
-                total_nodes: 1,
                 node_history: vec![NodeHistoryEntry {
                     node_name: "review".to_string(),
                     completed_at: 4.0,
@@ -369,7 +368,6 @@ mod tests {
                     input_tokens: 3,
                     output_tokens: 2,
                 },
-                node_statuses: HashMap::new(),
                 artifacts: HashMap::from([(
                     "review".to_string(),
                     RuntimeArtifact {
@@ -405,8 +403,6 @@ mod tests {
                     started_at: 2.0,
                     completed_at: Some(4.0),
                 }],
-                approval_operations: None,
-                stall_observations: Vec::new(),
                 started_at: 1.0,
                 updated_at: 5.0,
             });
@@ -431,7 +427,7 @@ mod tests {
                 created_from: crate::domain::workflow::ExecutionOrigin::Cli,
                 request: "ship it".to_string(),
                 permission_mode: "ask".to_string(),
-                definition: EventWorkflow {
+                definition: EventWorkflowDefinitionYaml {
                     name: "review".to_string(),
                     ..Default::default()
                 },
@@ -533,7 +529,6 @@ mod tests {
                 current_node_index: 0,
                 current_node_name: "reviews".to_string(),
                 current_session_id: None,
-                total_nodes: 2,
                 node_history: Vec::new(),
                 node_execution_counts: HashMap::from([
                     ("reviews".to_string(), 1),
@@ -544,7 +539,6 @@ mod tests {
                     ..Default::default()
                 },
                 total_token_usage: TokenUsage::default(),
-                node_statuses: HashMap::new(),
                 artifacts: HashMap::new(),
                 node_executions: vec![
                     node(
@@ -578,8 +572,6 @@ mod tests {
                         4.0,
                     ),
                 ],
-                approval_operations: None,
-                stall_observations: Vec::new(),
                 started_at: 1.0,
                 updated_at: 4.0,
             });
@@ -601,7 +593,6 @@ mod tests {
             current_node_index: 0,
             current_node_name: "review".to_string(),
             current_session_id: None,
-            total_nodes: 1,
             node_history: Vec::new(),
             node_execution_counts: HashMap::from([("review".to_string(), 1)]),
             workflow_definition: WorkflowDefinition {
@@ -609,7 +600,6 @@ mod tests {
                 ..Default::default()
             },
             total_token_usage: TokenUsage::default(),
-            node_statuses: HashMap::new(),
             artifacts: HashMap::new(),
             node_executions: vec![NodeExecution {
                 id: "review-1".to_string(),
@@ -627,8 +617,6 @@ mod tests {
                 started_at: 2.0,
                 completed_at: Some(3.0),
             }],
-            approval_operations: None,
-            stall_observations: Vec::new(),
             started_at: 1.0,
             updated_at: 3.0,
         });

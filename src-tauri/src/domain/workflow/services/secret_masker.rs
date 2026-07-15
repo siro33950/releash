@@ -54,13 +54,11 @@ pub fn mask_json_strings(value: &mut serde_json::Value, configured_secrets: &[St
 }
 
 pub fn mask_sensitive_artifact(
-    contract: &str,
+    _contract: &str,
     mut value: serde_json::Value,
     secrets: &[String],
 ) -> serde_json::Value {
-    if contract == "approved-fix-policy" {
-        mask_json_strings(&mut value, secrets);
-    }
+    mask_json_strings(&mut value, secrets);
     value
 }
 
@@ -127,6 +125,24 @@ mod secret_masker_tests {
         let text = serde_json::to_string(&value).unwrap();
         assert!(!text.contains("abc123456"));
         assert!(!text.contains("custom-secret"));
+    }
+
+    #[test]
+    fn test_secret_masker_contract名に依存せずartifactをredactする() {
+        let value = serde_json::json!({
+            "nested": ["configured-secret", {"message": "token=abc123456"}]
+        });
+
+        let masked = mask_sensitive_artifact(
+            "unrelated-contract",
+            value,
+            &["configured-secret".to_string()],
+        );
+        let text = serde_json::to_string(&masked).unwrap();
+
+        assert!(!text.contains("configured-secret"));
+        assert!(!text.contains("abc123456"));
+        assert!(text.contains("[REDACTED]"));
     }
 
     #[test]

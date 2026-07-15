@@ -1,0 +1,6 @@
+name: legacy-input-contracts
+description: input_contracts was replaced by input and inputs
+nodes:
+  - name: run
+    input_contracts: [request]
+    command: printf done

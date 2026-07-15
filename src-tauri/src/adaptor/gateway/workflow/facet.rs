@@ -1,5 +1,5 @@
 use super::builtin;
-use super::schema::{FacetRefs, Workflow};
+use super::schema::{FacetRefs, WorkflowDefinitionYaml};
 use super::storage;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -374,11 +374,11 @@ fn compose_from_parts(resolved: &FacetContents) -> ComposedPrompt {
     }
 }
 
-/// `Workflow` に含まれる全 session node の facet 参照を解決し、gateway 側 read model として返す。
+/// `WorkflowDefinitionYaml` に含まれる全 session node の facet 参照を解決し、gateway 側 read model として返す。
 ///
 /// 欠損 facet があれば `FacetError::NotFound` を伝搬し、load 経路で実行可能とは判定しない。
 pub fn resolve_workflow_facets(
-    workflow: &Workflow,
+    workflow: &WorkflowDefinitionYaml,
     base_dir: &Path,
 ) -> Result<WorkflowFacetContents, FacetError> {
     let mut resolved = WorkflowFacetContents::default();
@@ -841,7 +841,7 @@ mod tests {
 
         let task = Some("Fix the bug");
 
-        let (_system_prompt, rendered_user) = prompt_rendering::build_step_prompt(
+        let (_system_prompt, rendered_user) = prompt_rendering::build_node_prompt(
             &node,
             Some(&resolved),
             "execution-1",
@@ -849,7 +849,7 @@ mod tests {
             &std::collections::HashMap::new(),
         )
         .expect("prompt rendering");
-        let rendered_instruction = prompt_rendering::render_step_workflow_instruction(
+        let rendered_instruction = prompt_rendering::render_node_workflow_instruction(
             &node,
             Some(&resolved),
             task,

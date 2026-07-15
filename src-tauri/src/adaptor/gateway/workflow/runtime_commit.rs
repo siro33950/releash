@@ -9,7 +9,7 @@ use crate::adaptor::gateway::workflow::execution_store::{
     ExecutionStore, TerminalExecutionStatus, WorkflowExecutionMetadata,
 };
 use crate::adaptor::gateway::workflow::runtime_state::WorkflowExecution;
-use crate::adaptor::gateway::workflow::state::{RuntimeExecutionState, WorkflowState};
+use crate::adaptor::gateway::workflow::state::{RuntimeCommitSnapshot, RuntimeExecutionState};
 use crate::domain::workflow::{ExecutionInterruptionReason, ExecutionStatus};
 use crate::usecase::agent_session::status::current_timestamp;
 
@@ -19,8 +19,8 @@ pub(crate) enum AbortTargetLookup {
     NotFound,
     AlreadyTerminal,
     Active {
-        current_step_session_id: Option<String>,
-        parallel_session_ids: Option<Vec<String>>,
+        current_node_session_id: Option<String>,
+        fanout_session_ids: Option<Vec<String>>,
     },
 }
 
@@ -52,7 +52,7 @@ pub(crate) struct CommandMutationRollback<'a> {
 
 pub(crate) struct RequiredEventCommit<'a> {
     pub(crate) execution_id: &'a str,
-    pub(crate) snapshot_for_commit: &'a WorkflowState,
+    pub(crate) snapshot_for_commit: &'a RuntimeCommitSnapshot,
     pub(crate) snapshot_before: WorkflowExecution,
     pub(crate) execution_store_snapshot_before: Option<WorkflowExecutionMetadata>,
     pub(crate) required_events: Vec<WorkflowEvent>,
@@ -60,40 +60,40 @@ pub(crate) struct RequiredEventCommit<'a> {
 }
 
 /// ロック内で確定した遷移結果。ロック外で永続化・AgentSession起動を行うための情報を持つ。
-pub(crate) enum StepOutcome {
+pub(crate) enum NodeOutcome {
     /// 状態を永続化・ブロードキャストするだけ（終了状態遷移など）
-    Persist(WorkflowState),
+    Persist(RuntimeCommitSnapshot),
     /// 同一ステップを policy に従って再実行する
-    RetryCurrentStep {
-        snapshot: WorkflowState,
+    RetryCurrentNode {
+        snapshot: RuntimeCommitSnapshot,
         completed_session_id: Option<String>,
     },
     /// 次のステップに遷移し、AgentSession を起動する
-    TransitionAndStart(WorkflowState),
+    TransitionAndStart(RuntimeCommitSnapshot),
     /// 並列ブロックに遷移し、子ステップを並列起動する
-    StartParallel(WorkflowState),
+    StartFanout(RuntimeCommitSnapshot),
 }
 
-impl StepOutcome {
-    pub(crate) fn snapshot(&self) -> &WorkflowState {
+impl NodeOutcome {
+    pub(crate) fn snapshot(&self) -> &RuntimeCommitSnapshot {
         match self {
             Self::Persist(snapshot)
-            | Self::RetryCurrentStep { snapshot, .. }
+            | Self::RetryCurrentNode { snapshot, .. }
             | Self::TransitionAndStart(snapshot)
-            | Self::StartParallel(snapshot) => snapshot,
+            | Self::StartFanout(snapshot) => snapshot,
         }
     }
 
-    pub(crate) fn snapshot_mut(&mut self) -> &mut WorkflowState {
+    pub(crate) fn snapshot_mut(&mut self) -> &mut RuntimeCommitSnapshot {
         match self {
             Self::Persist(snapshot)
-            | Self::RetryCurrentStep { snapshot, .. }
+            | Self::RetryCurrentNode { snapshot, .. }
             | Self::TransitionAndStart(snapshot)
-            | Self::StartParallel(snapshot) => snapshot,
+            | Self::StartFanout(snapshot) => snapshot,
         }
     }
 
-    pub(crate) fn completed_step_session_ids(&self) -> Vec<String> {
+    pub(crate) fn completed_node_session_ids(&self) -> Vec<String> {
         match self {
             Self::Persist(snapshot) if matches!(snapshot.state, RuntimeExecutionState::Aborted) => {
                 snapshot.current_session_id.iter().cloned().collect()
@@ -104,33 +104,35 @@ impl StepOutcome {
                     RuntimeExecutionState::Completed | RuntimeExecutionState::Failed { .. }
                 ) =>
             {
-                completed_step_session_ids(snapshot)
+                completed_node_session_ids(snapshot)
             }
             Self::Persist(_) => Vec::new(),
-            Self::RetryCurrentStep {
+            Self::RetryCurrentNode {
                 completed_session_id,
                 ..
             } => completed_session_id.iter().cloned().collect(),
-            Self::TransitionAndStart(snapshot) | Self::StartParallel(snapshot) => {
-                completed_step_session_ids(snapshot)
+            Self::TransitionAndStart(snapshot) | Self::StartFanout(snapshot) => {
+                completed_node_session_ids(snapshot)
             }
         }
     }
 }
 
-fn completed_step_session_ids(snapshot: &WorkflowState) -> Vec<String> {
-    let snapshot = crate::adaptor::gateway::workflow::state::workflow_state_to_domain_snapshot(
-        snapshot.clone(),
-    );
+fn completed_node_session_ids(snapshot: &RuntimeCommitSnapshot) -> Vec<String> {
+    let snapshot =
+        crate::adaptor::gateway::workflow::state::runtime_commit_snapshot_to_domain_snapshot(
+            snapshot.clone(),
+        );
     crate::domain::workflow::services::node_session_projection::collect_completed_node_session_ids(
         &snapshot,
     )
 }
 
-pub(crate) fn terminal_step_session_ids(snapshot: &WorkflowState) -> Vec<String> {
-    let snapshot = crate::adaptor::gateway::workflow::state::workflow_state_to_domain_snapshot(
-        snapshot.clone(),
-    );
+pub(crate) fn terminal_node_session_ids(snapshot: &RuntimeCommitSnapshot) -> Vec<String> {
+    let snapshot =
+        crate::adaptor::gateway::workflow::state::runtime_commit_snapshot_to_domain_snapshot(
+            snapshot.clone(),
+        );
     crate::domain::workflow::services::node_session_projection::collect_terminal_node_session_ids(
         &snapshot,
     )
@@ -140,7 +142,7 @@ pub(crate) fn terminal_step_session_ids(snapshot: &WorkflowState) -> Vec<String>
 pub(crate) async fn sync_execution_store_from_snapshot(
     execution_store: &Arc<ExecutionStore>,
     execution_id: &str,
-    snapshot: &WorkflowState,
+    snapshot: &RuntimeCommitSnapshot,
 ) -> Result<(), WorkflowEngineError> {
     let now = current_timestamp();
     let total_token_usage = crate::domain::workflow::TokenUsage {
@@ -245,7 +247,7 @@ pub(crate) async fn rollback_execution_projection_after_execution_store_sync_fai
     executions: &Mutex<HashMap<String, WorkflowExecution>>,
     execution_store: &Arc<ExecutionStore>,
     execution_id: &str,
-    failed_snapshot: &WorkflowState,
+    failed_snapshot: &RuntimeCommitSnapshot,
 ) {
     let active_projection = execution_store
         .list_active()

@@ -1,0 +1,8 @@
+name: legacy-type-approval
+description: type approval was removed in favor of session gate approval
+nodes:
+  - name: approve
+    type: approval
+    session:
+      permission: ask
+      gate: approval

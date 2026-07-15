@@ -27,13 +27,16 @@ pub(crate) mod facet;
 mod facet_repository;
 pub(crate) mod failure_policy_config;
 mod failure_wire;
+pub(crate) mod fanout_runtime;
 pub(crate) mod internal_node_command;
 pub(crate) mod log;
 pub(crate) mod mapper;
+mod node_lifecycle_adapters;
+mod node_session_boundary;
+pub(crate) mod node_settings;
 pub(crate) mod orphan_recovery;
 pub(crate) mod output_limit;
 pub(crate) mod output_submission;
-pub(crate) mod parallel_runtime;
 pub(crate) mod prompt_rendering;
 pub(crate) mod resolver;
 pub(crate) mod resume_projection;
@@ -51,9 +54,6 @@ mod secret_source_gateway;
 pub(crate) mod span_map;
 pub(crate) mod state;
 mod state_notification_gateway;
-mod step_lifecycle_adapters;
-mod step_session_boundary;
-pub(crate) mod step_settings;
 pub(crate) mod storage;
 #[cfg(test)]
 pub(crate) mod test_support;
@@ -74,6 +74,15 @@ pub(crate) use execution_archive_repository::WorkflowExecutionArchiveFileReposit
 pub(crate) use execution_projection_repository::WorkflowExecutionProjectionLogRepository;
 pub(crate) use execution_repository::WorkflowExecutionFileRepository;
 pub(crate) use facet_repository::WorkflowFacetFileRepository;
+#[cfg(test)]
+pub(crate) use node_lifecycle_adapters::close_node_session_tab_state;
+pub(crate) use node_lifecycle_adapters::{
+    mark_started_node_tab_open, release_node_runtime_on_done, TauriNodeExecutionLifecycleGateway,
+};
+#[cfg(test)]
+pub(crate) use node_lifecycle_adapters::{
+    open_node_session_tab_state, resolve_node_session_with_data_dir,
+};
 pub(crate) use runtime_command_gateway::{
     TauriWorkflowRuntimeCommandGateway, TauriWorkflowRuntimeCommandGatewayDeps,
 };
@@ -83,15 +92,6 @@ pub(crate) use runtime_resolver::resolve_workflow_by_name;
 pub(crate) use secret_source_gateway::EmptySecretSourceGateway;
 pub(crate) use secret_source_gateway::WorkflowSecretSourceConfigGateway;
 pub(crate) use state_notification_gateway::emit_workflow_execution_from_snapshot;
-#[cfg(test)]
-pub(crate) use step_lifecycle_adapters::close_step_session_tab_state;
-pub(crate) use step_lifecycle_adapters::{
-    mark_started_step_tab_open, release_step_runtime_on_done, TauriNodeExecutionLifecycleGateway,
-};
-#[cfg(test)]
-pub(crate) use step_lifecycle_adapters::{
-    open_step_session_tab_state, resolve_step_session_with_data_dir,
-};
 pub(crate) use workspace_session::StoredWorkspaceSessionGateway;
 #[cfg(test)]
 pub(crate) use worktree_gateway::PassthroughManagedWorktreeGateway;

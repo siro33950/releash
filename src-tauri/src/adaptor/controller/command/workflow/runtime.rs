@@ -19,15 +19,11 @@ use crate::usecase::workflow::WorkflowRuntimeUsecase;
 fn parse_execution_origin(
     value: Option<String>,
 ) -> Result<crate::domain::workflow::ExecutionOrigin, String> {
-    match value.as_deref() {
-        Some("cli") => Ok(crate::domain::workflow::ExecutionOrigin::Cli),
-        Some("api") => Ok(crate::domain::workflow::ExecutionOrigin::Api),
-        Some("agent") => Ok(crate::domain::workflow::ExecutionOrigin::Agent),
-        Some("desktop_ui") | Some("desktop-ui") | None => {
-            Ok(crate::domain::workflow::ExecutionOrigin::DesktopUi)
-        }
-        Some(other) => Err(format!("unknown created_from: {other}")),
-    }
+    value
+        .as_deref()
+        .map(crate::domain::workflow::ExecutionOrigin::from_public_value)
+        .unwrap_or(Ok(crate::domain::workflow::ExecutionOrigin::DesktopUi))
+        .map_err(|error| error.to_string())
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

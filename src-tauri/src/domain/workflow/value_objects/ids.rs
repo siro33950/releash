@@ -27,9 +27,9 @@ impl std::fmt::Display for WorkflowExecutionId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct WorkflowName(String);
+pub struct WorkflowDefinitionName(String);
 
-impl WorkflowName {
+impl WorkflowDefinitionName {
     pub fn new(value: impl Into<String>) -> Result<Self, WorkflowError> {
         let value = value.into();
         if value.is_empty() {
@@ -52,16 +52,16 @@ impl WorkflowName {
     }
 }
 
-impl std::fmt::Display for WorkflowName {
+impl std::fmt::Display for WorkflowDefinitionName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct NodeName(String);
+pub struct NodeDefinitionName(String);
 
-impl NodeName {
+impl NodeDefinitionName {
     pub fn new(value: impl Into<String>) -> Result<Self, WorkflowError> {
         let value = value.into();
         if value.trim().is_empty() {
@@ -71,16 +71,16 @@ impl NodeName {
     }
 }
 
-impl std::fmt::Display for NodeName {
+impl std::fmt::Display for NodeDefinitionName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct WorktreePath(String);
+pub struct WorkspaceWorktreePath(String);
 
-impl WorktreePath {
+impl WorkspaceWorktreePath {
     pub fn new(value: impl Into<String>) -> Result<Self, WorkflowError> {
         let value = value.into();
         if value.trim().is_empty() {
@@ -90,7 +90,7 @@ impl WorktreePath {
     }
 }
 
-impl std::fmt::Display for WorktreePath {
+impl std::fmt::Display for WorkspaceWorktreePath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
     }
@@ -125,17 +125,17 @@ mod ids_tests {
     }
 
     #[test]
-    fn test_workflow_name_path要素を拒否する() {
-        assert!(WorkflowName::new("review").is_ok());
-        assert!(WorkflowName::new("../review").is_err());
-        assert!(WorkflowName::new("foo/bar").is_err());
-        assert!(WorkflowName::new("bad name!").is_err());
-        assert!(WorkflowName::new("_bad").is_err());
+    fn test_workflow_definition_name_path要素を拒否する() {
+        assert!(WorkflowDefinitionName::new("review").is_ok());
+        assert!(WorkflowDefinitionName::new("../review").is_err());
+        assert!(WorkflowDefinitionName::new("foo/bar").is_err());
+        assert!(WorkflowDefinitionName::new("bad name!").is_err());
+        assert!(WorkflowDefinitionName::new("_bad").is_err());
     }
 
     #[test]
-    fn test_worktree_path末尾スラッシュを正規化する() {
-        let path = WorktreePath::new("/tmp/repo/").unwrap();
+    fn test_workspace_worktree_path末尾スラッシュを正規化する() {
+        let path = WorkspaceWorktreePath::new("/tmp/repo/").unwrap();
         assert_eq!(path.to_string(), "/tmp/repo");
     }
 }

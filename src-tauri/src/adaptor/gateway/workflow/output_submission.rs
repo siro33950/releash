@@ -6,21 +6,20 @@ use crate::adaptor::gateway::workflow::domain_mapping::{
 use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::event::WorkflowEvent;
 use crate::adaptor::gateway::workflow::runtime_state::WorkflowExecution;
-use crate::adaptor::gateway::workflow::schema::Workflow;
+use crate::adaptor::gateway::workflow::schema::WorkflowDefinitionYaml;
 use crate::adaptor::gateway::workflow::state::{RuntimeArtifact, RuntimeExecutionState};
 use crate::domain::workflow::services::contract_schema::SchemaViolation;
 use crate::domain::workflow::services::{
     contract as workflow_contract, contract_schema, secret_masker,
-    spec_directory as workflow_spec_directory,
 };
-use crate::domain::workflow::{ContractType, ContractValidationResult, NodeName};
+use crate::domain::workflow::{ContractType, ContractValidationResult, NodeDefinitionName};
 
 #[derive(Debug)]
 pub(crate) struct SubmittedOutputMutation {
     pub(crate) workflow_name: String,
-    prior_step_output: Option<RuntimeArtifact>,
+    prior_artifact_entry: Option<RuntimeArtifact>,
     pub(crate) node_execution_id: String,
-    prior_node_artifact: Option<serde_json::Value>,
+    prior_node_execution_artifact: Option<serde_json::Value>,
     prior_fanout_child_output: Option<(Option<String>, Option<serde_json::Value>)>,
     fanout_child: bool,
 }
@@ -74,7 +73,7 @@ pub(crate) fn validate_submit_output_request(
     uuid::Uuid::parse_str(execution_id).map_err(|_| {
         WorkflowEngineError::ValidationError("execution_id must be UUID".to_string())
     })?;
-    NodeName::new(node_name).map_err(|_| {
+    NodeDefinitionName::new(node_name).map_err(|_| {
         WorkflowEngineError::ValidationError("node_name must not be empty".to_string())
     })?;
     ContractType::new(contract).map_err(|_| {
@@ -91,7 +90,7 @@ pub(crate) fn validate_submit_output_request(
 }
 
 pub(crate) fn validate_submission_output_with_secrets(
-    workflow: &Workflow,
+    workflow: &WorkflowDefinitionYaml,
     contract: &str,
     artifact: serde_json::Value,
     secrets: &[String],
@@ -100,14 +99,6 @@ pub(crate) fn validate_submission_output_with_secrets(
     let schemas = workflow_schemas_to_domain(&workflow.schemas);
     match workflow_contract::validate_artifact_value(&schemas, contract, redacted.clone()) {
         ContractValidationResult::Valid { artifact, result } => {
-            let violations = workflow_spec_directory::validate_contract_value(contract, &artifact);
-            if !violations.is_empty() {
-                let error = WorkflowEngineError::ValidationError(format!(
-                    "artifact schema validation failed (schema_violation): {}",
-                    workflow_contract::format_schema_violations(&violations)
-                ));
-                return Err(SubmissionValidationError::SchemaViolation { error, violations });
-            }
             Ok(ValidatedSubmissionOutput { artifact, result })
         }
         ContractValidationResult::Invalid(violation) => {
@@ -255,13 +246,14 @@ pub(crate) fn apply_validated_submission(
         })?;
     let mutation = SubmittedOutputMutation {
         workflow_name: target.workflow_name,
-        prior_step_output: (!target.fanout_child)
+        prior_artifact_entry: (!target.fanout_child)
             .then(|| exec.artifacts.get(node_name).cloned())
             .flatten(),
         node_execution_id: target.node_execution_id.clone(),
-        prior_node_artifact: exec.node_executions[execution_index].artifact.clone(),
-        prior_fanout_child_output: exec.parallel_run.as_ref().and_then(|run| {
-            run.children
+        prior_node_execution_artifact: exec.node_executions[execution_index].artifact.clone(),
+        prior_fanout_child_output: exec.fanout_runtime.as_ref().and_then(|fanout| {
+            fanout
+                .children
                 .iter()
                 .find(|child| child.node_execution_id == target.node_execution_id)
                 .map(|child| (child.result.clone(), child.artifact.clone()))
@@ -270,8 +262,9 @@ pub(crate) fn apply_validated_submission(
     };
     exec.node_executions[execution_index].artifact = Some(validated_output.clone());
     if target.fanout_child {
-        if let Some(child) = exec.parallel_run.as_mut().and_then(|run| {
-            run.children
+        if let Some(child) = exec.fanout_runtime.as_mut().and_then(|fanout| {
+            fanout
+                .children
                 .iter_mut()
                 .find(|child| child.node_execution_id == target.node_execution_id)
         }) {
@@ -303,8 +296,9 @@ pub(crate) fn rollback_validated_submission(
 ) {
     if mutation.fanout_child {
         if let Some((result, artifact)) = mutation.prior_fanout_child_output.clone() {
-            if let Some(child) = exec.parallel_run.as_mut().and_then(|run| {
-                run.children
+            if let Some(child) = exec.fanout_runtime.as_mut().and_then(|fanout| {
+                fanout
+                    .children
                     .iter_mut()
                     .find(|child| child.node_execution_id == mutation.node_execution_id)
             }) {
@@ -314,7 +308,7 @@ pub(crate) fn rollback_validated_submission(
         }
     }
     if !mutation.fanout_child {
-        match mutation.prior_step_output {
+        match mutation.prior_artifact_entry {
             Some(prior) => {
                 exec.artifacts.insert(node_name.to_string(), prior);
             }
@@ -328,7 +322,7 @@ pub(crate) fn rollback_validated_submission(
         .iter_mut()
         .find(|execution| execution.id == mutation.node_execution_id)
     {
-        execution.artifact = mutation.prior_node_artifact;
+        execution.artifact = mutation.prior_node_execution_artifact;
     }
 }
 
@@ -356,7 +350,7 @@ pub(crate) fn artifact_produced_event(
     }
 }
 
-pub(crate) fn submitted_step_output_for(
+pub(crate) fn submitted_node_artifact_for(
     artifacts: &HashMap<String, RuntimeArtifact>,
     node_name: &str,
     attempt: u32,
@@ -376,6 +370,7 @@ pub(crate) fn submitted_step_output_for(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adaptor::gateway::workflow::node_settings::WorkflowDefaults;
     use crate::adaptor::gateway::workflow::runtime_state::{
         FanoutChildRuntime, FanoutChildRuntimeState, FanoutRuntimeState, WorkflowExecution,
     };
@@ -385,10 +380,9 @@ mod tests {
     use crate::adaptor::gateway::workflow::state::{
         FanoutParentRef, NodeExecution, NodeExecutionStatus, RuntimeExecutionState, TokenUsage,
     };
-    use crate::adaptor::gateway::workflow::step_settings::WorkflowDefaults;
 
-    fn workflow_with_fanout() -> Workflow {
-        Workflow {
+    fn workflow_with_fanout() -> WorkflowDefinitionYaml {
+        WorkflowDefinitionYaml {
             name: "wf".to_string(),
             schemas: [(
                 "review-verdict".to_string(),
@@ -434,7 +428,7 @@ mod tests {
     ) -> NodeExecution {
         NodeExecution {
             id: id.to_string(),
-            execution_id: "run-1".to_string(),
+            execution_id: "execution-1".to_string(),
             node_name: node_name.to_string(),
             kind: NodeKindName::Session,
             attempt,
@@ -458,7 +452,7 @@ mod tests {
             ("review-a".to_string(), 3),
             ("review-b".to_string(), 4),
         ]);
-        exec.parallel_run = Some(FanoutRuntimeState {
+        exec.fanout_runtime = Some(FanoutRuntimeState {
             parent_node_name: "fanout-review".to_string(),
             parent_node_execution_id: "00000000-0000-4000-8000-000000000200".to_string(),
             children: vec![
@@ -547,7 +541,7 @@ mod tests {
                 child_index: 0,
             }),
         ));
-        exec.parallel_run
+        exec.fanout_runtime
             .as_mut()
             .unwrap()
             .children
@@ -568,7 +562,7 @@ mod tests {
         exec
     }
 
-    fn step_output(attempt: u32, contract: Option<&str>, structured: bool) -> RuntimeArtifact {
+    fn node_output(attempt: u32, contract: Option<&str>, structured: bool) -> RuntimeArtifact {
         RuntimeArtifact {
             node_name: "review-a".to_string(),
             attempt,
@@ -583,15 +577,15 @@ mod tests {
 
     fn running_execution() -> WorkflowExecution {
         WorkflowExecution {
-            id: "run-1".to_string(),
-            workflow: Workflow {
+            id: "execution-1".to_string(),
+            workflow: WorkflowDefinitionYaml {
                 name: "wf".to_string(),
                 nodes: vec![NodeDefinition {
                     name: "review".to_string(),
                     artifact: Some("review-verdict".to_string()),
                     ..NodeDefinition::default()
                 }],
-                ..Workflow::default()
+                ..WorkflowDefinitionYaml::default()
             },
             state: RuntimeExecutionState::Running,
             current_node_index: 0,
@@ -607,7 +601,7 @@ mod tests {
             started_at: 1.0,
             updated_at: 2.0,
             current_session_id: None,
-            current_step_token_usage: TokenUsage::default(),
+            current_node_token_usage: TokenUsage::default(),
             artifacts: HashMap::new(),
             node_executions: vec![node_execution(
                 "00000000-0000-4000-8000-000000000101",
@@ -618,27 +612,27 @@ mod tests {
                 None,
             )],
             request: None,
-            parallel_run: None,
+            fanout_runtime: None,
             current_stall_observations: Vec::new(),
         }
     }
 
     #[test]
-    fn submitted_step_output_requires_matching_attempt_contract_and_artifact() {
+    fn submitted_node_output_requires_matching_attempt_contract_and_artifact() {
         let outputs = HashMap::from([(
             "review-a".to_string(),
-            step_output(2, Some("review-verdict"), true),
+            node_output(2, Some("review-verdict"), true),
         )]);
 
-        assert!(submitted_step_output_for(&outputs, "review-a", 2, "review-verdict").is_some());
-        assert!(submitted_step_output_for(&outputs, "review-a", 1, "review-verdict").is_none());
-        assert!(submitted_step_output_for(&outputs, "review-a", 2, "other-contract").is_none());
+        assert!(submitted_node_artifact_for(&outputs, "review-a", 2, "review-verdict").is_some());
+        assert!(submitted_node_artifact_for(&outputs, "review-a", 1, "review-verdict").is_none());
+        assert!(submitted_node_artifact_for(&outputs, "review-a", 2, "other-contract").is_none());
 
         let outputs = HashMap::from([(
             "review-a".to_string(),
-            step_output(2, Some("review-verdict"), false),
+            node_output(2, Some("review-verdict"), false),
         )]);
-        assert!(submitted_step_output_for(&outputs, "review-a", 2, "review-verdict").is_none());
+        assert!(submitted_node_artifact_for(&outputs, "review-a", 2, "review-verdict").is_none());
     }
 
     #[test]
@@ -672,7 +666,7 @@ mod tests {
 
     #[test]
     fn validate_submission_output_with_secrets_accepts_schema_valid_artifact() {
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "wf".to_string(),
             description: String::new(),
             builtin: false,
@@ -738,46 +732,9 @@ mod tests {
     }
 
     #[test]
-    fn validate_submission_output_with_secrets_rejects_unsafe_spec_dir() {
-        let workflow = Workflow {
-            name: "wf".to_string(),
-            description: String::new(),
-            builtin: false,
-            schemas: [(
-                "spec-directory".to_string(),
-                SchemaDef::Object {
-                    properties: [("spec_dir".to_string(), SchemaDef::String { r#enum: None })]
-                        .into_iter()
-                        .collect(),
-                    required: ["spec_dir".to_string()].into_iter().collect(),
-                    additional_properties: false,
-                },
-            )]
-            .into_iter()
-            .collect(),
-            nodes: vec![],
-        };
-
-        for spec_dir in ["/tmp/spec", "../outside"] {
-            let err = validate_submission_output_with_secrets(
-                &workflow,
-                "spec-directory",
-                serde_json::json!({ "spec_dir": spec_dir }),
-                &[],
-            )
-            .unwrap_err();
-            assert!(matches!(
-                err,
-                SubmissionValidationError::SchemaViolation { ref violations, .. }
-                    if violations.iter().any(|violation| violation.path == "$.spec_dir")
-            ));
-        }
-    }
-
-    #[test]
     fn artifact_produced_event_preserves_external_shape() {
         let event = artifact_produced_event(
-            "run-1",
+            "execution-1",
             "wf",
             "node-execution-1",
             "review",
@@ -798,7 +755,7 @@ mod tests {
                 submitted_at: Some(submitted_at),
                 timestamp,
                 ..
-            } if execution_id == "run-1"
+            } if execution_id == "execution-1"
                 && node_name == "review"
                 && contract.as_deref() == Some("review-verdict")
                 && request_id == "request-1"
@@ -808,13 +765,18 @@ mod tests {
     }
 
     #[test]
-    fn validate_submission_target_context_returns_current_step_target_details() {
+    fn validate_submission_target_context_returns_current_node_target_details() {
         let mut exec = running_execution();
         exec.current_session_id = Some("session-current".to_string());
 
-        let target =
-            validate_submission_target_context(&exec, "run-1", "review", None, "review-verdict")
-                .unwrap();
+        let target = validate_submission_target_context(
+            &exec,
+            "execution-1",
+            "review",
+            None,
+            "review-verdict",
+        )
+        .unwrap();
 
         assert_eq!(target.workflow_name, "wf");
         assert_eq!(target.worktree_path, "/tmp/wt");
@@ -828,7 +790,7 @@ mod tests {
 
         let target = validate_submission_target_context(
             &exec,
-            "run-1",
+            "execution-1",
             "review-a",
             Some("00000000-0000-4000-8000-000000000201"),
             "review-verdict",
@@ -845,9 +807,14 @@ mod tests {
     fn validate_submission_target_context_requires_id_for_repeated_fanout_child() {
         let exec = repeated_fanout_child_execution();
 
-        let error =
-            validate_submission_target_context(&exec, "run-1", "review-a", None, "review-verdict")
-                .unwrap_err();
+        let error = validate_submission_target_context(
+            &exec,
+            "execution-1",
+            "review-a",
+            None,
+            "review-verdict",
+        )
+        .unwrap_err();
 
         assert!(matches!(
             error,
@@ -866,7 +833,7 @@ mod tests {
 
         let mutation = apply_validated_submission(
             &mut exec,
-            "run-1",
+            "execution-1",
             "review-a",
             Some(addressed_id),
             "review-verdict",
@@ -892,7 +859,7 @@ mod tests {
             .artifact
             .is_none());
         assert_eq!(
-            exec.parallel_run
+            exec.fanout_runtime
                 .as_ref()
                 .unwrap()
                 .children
@@ -912,7 +879,7 @@ mod tests {
             .artifact
             .is_none());
         assert!(exec
-            .parallel_run
+            .fanout_runtime
             .as_ref()
             .unwrap()
             .children
@@ -924,11 +891,11 @@ mod tests {
     }
 
     #[test]
-    fn apply_validated_submission_updates_step_output_without_workflow_variable_side_effects() {
+    fn apply_validated_submission_updates_node_output_without_legacy_variable_side_effects() {
         let mut exec = running_execution();
         let mutation = apply_validated_submission(
             &mut exec,
-            "run-1",
+            "execution-1",
             "review",
             None,
             "review-verdict",
@@ -951,7 +918,7 @@ mod tests {
         let mut exec = running_execution();
         let err = apply_validated_submission(
             &mut exec,
-            "run-1",
+            "execution-1",
             "review",
             None,
             "other-contract",
@@ -970,7 +937,7 @@ mod tests {
         let mut exec = fanout_execution();
         let err = apply_validated_submission(
             &mut exec,
-            "run-1",
+            "execution-1",
             "review-b",
             Some("00000000-0000-4000-8000-000000000202"),
             "review-verdict",
@@ -989,11 +956,11 @@ mod tests {
         let mut exec = running_execution();
         exec.artifacts.insert(
             "review".to_string(),
-            step_output(1, Some("review-verdict"), true),
+            node_output(1, Some("review-verdict"), true),
         );
         let mutation = apply_validated_submission(
             &mut exec,
-            "run-1",
+            "execution-1",
             "review",
             None,
             "review-verdict",

@@ -320,54 +320,54 @@ mod approval_rules_tests {
     }
 
     #[test]
-    fn resolve_approval_target_validates_run_and_step_identity() {
+    fn resolve_approval_target_validates_execution_and_node_identity() {
         let waiting = RuntimeExecutionState::WaitingApproval;
         let snapshot = ApprovalTargetSnapshot {
-            execution_id: "run-1",
+            execution_id: "execution-1",
             state: &waiting,
             current_node_name: "review",
             is_approval_gate_session: true,
         };
 
         assert_eq!(
-            resolve_approval_target(snapshot, Some("run-1"), Some("review")).unwrap(),
+            resolve_approval_target(snapshot, Some("execution-1"), Some("review")).unwrap(),
             "review"
         );
 
         let snapshot = ApprovalTargetSnapshot {
-            execution_id: "run-1",
+            execution_id: "execution-1",
             state: &waiting,
             current_node_name: "review",
             is_approval_gate_session: true,
         };
         assert_eq!(
-            resolve_approval_target(snapshot, Some("run-2"), Some("review"))
+            resolve_approval_target(snapshot, Some("execution-2"), Some("review"))
                 .unwrap_err()
                 .to_string(),
             "unauthorized_approval_target: execution_id does not match"
         );
 
         let snapshot = ApprovalTargetSnapshot {
-            execution_id: "run-1",
+            execution_id: "execution-1",
             state: &waiting,
             current_node_name: "review",
             is_approval_gate_session: true,
         };
         assert_eq!(
-            validate_approval_target(snapshot, Some("run-1"), None)
+            validate_approval_target(snapshot, Some("execution-1"), None)
                 .unwrap_err()
                 .to_string(),
             "unauthorized_approval_target: node_name is required"
         );
 
         let snapshot = ApprovalTargetSnapshot {
-            execution_id: "run-1",
+            execution_id: "execution-1",
             state: &waiting,
             current_node_name: "review",
             is_approval_gate_session: false,
         };
         assert_eq!(
-            resolve_approval_target(snapshot, Some("run-1"), Some("review"))
+            resolve_approval_target(snapshot, Some("execution-1"), Some("review"))
                 .unwrap_err()
                 .to_string(),
             "unauthorized_approval_target: current node is not an approval-gated session"

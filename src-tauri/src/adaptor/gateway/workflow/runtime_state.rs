@@ -1,23 +1,23 @@
 use std::collections::HashMap;
 
 use crate::adaptor::gateway::workflow::domain_mapping::{
-    artifacts_to_domain, node_definition_to_domain, node_history_entries_to_domain,
-    node_history_entry_from_domain, runtime_artifact_from_domain,
-    runtime_execution_state_to_domain, token_usage_from_domain, token_usage_to_domain,
-    workflow_definition_to_domain,
+    artifacts_to_domain, node_history_entries_to_domain, node_history_entry_from_domain,
+    runtime_artifact_from_domain, runtime_execution_state_to_domain, token_usage_from_domain,
+    token_usage_to_domain, workflow_definition_to_domain,
 };
 use crate::adaptor::gateway::workflow::engine_error::{
     workflow_error_to_engine_error, WorkflowEngineError,
 };
 use crate::adaptor::gateway::workflow::engine_start_guard;
 use crate::adaptor::gateway::workflow::event::FanoutParentRef;
-use crate::adaptor::gateway::workflow::runtime_commit::StepOutcome;
-use crate::adaptor::gateway::workflow::schema::{NodeKindName, Workflow};
+use crate::adaptor::gateway::workflow::node_settings::WorkflowDefaults;
+use crate::adaptor::gateway::workflow::runtime_commit::NodeOutcome;
+use crate::adaptor::gateway::workflow::schema::{NodeKindName, WorkflowDefinitionYaml};
 use crate::adaptor::gateway::workflow::state::{
-    ApprovalOperations, NodeExecution, NodeExecutionFailure, NodeExecutionStatus, NodeHistoryEntry,
-    NodeStallObservation, RuntimeArtifact, RuntimeExecutionState, TokenUsage, WorkflowState,
+    NodeExecution, NodeExecutionFailure, NodeExecutionStatus, NodeHistoryEntry,
+    NodeStallObservation, RuntimeArtifact, RuntimeCommitSnapshot, RuntimeExecutionState,
+    TokenUsage,
 };
-use crate::adaptor::gateway::workflow::step_settings::WorkflowDefaults;
 use crate::domain::workflow as workflow_domain;
 use crate::domain::workflow::services::history as workflow_history;
 use crate::domain::workflow::services::projection as workflow_projection;
@@ -30,15 +30,15 @@ use crate::usecase::agent_session::status::current_timestamp;
 /// ワークフロー実行の内部状態。
 #[derive(Clone)]
 pub(crate) struct WorkflowExecution {
-    /// `WorkflowState.execution_id` を `execution_id` として昇格させた識別子。
+    /// `RuntimeCommitSnapshot.execution_id` を `execution_id` として昇格させた識別子。
     /// `WorkflowRuntimeService.executions` の HashMap キーと一致する。
     pub(crate) id: String,
-    pub(crate) workflow: Workflow,
+    pub(crate) workflow: WorkflowDefinitionYaml,
     pub(crate) state: RuntimeExecutionState,
     pub(crate) current_node_index: usize,
     pub(crate) node_execution_counts: HashMap<String, u32>,
     pub(crate) node_history: Vec<NodeHistoryEntry>,
-    /// step / 並列子 step 起動時の継承デフォルト（permission_mode / backend_id / selected_model）。
+    /// node / 並列子 node 起動時の継承デフォルト（permission_mode / backend_id / selected_model）。
     /// `start_workflow` 時に capture し、以降は session_store を読み直さない（in-memory のみ）。
     pub(crate) workflow_defaults: WorkflowDefaults,
     /// execution が紐づく worktree。HashMap キーではなく属性として保持する。
@@ -51,7 +51,7 @@ pub(crate) struct WorkflowExecution {
     /// 現在のステップに対応するAgentSessionのセッションID。
     pub(crate) current_session_id: Option<String>,
     /// 現在のステップで累計したトークン使用量。
-    pub(crate) current_step_token_usage: TokenUsage,
+    pub(crate) current_node_token_usage: TokenUsage,
     /// node_name → 最新RuntimeArtifact のマップ。
     pub(crate) artifacts: HashMap<String, RuntimeArtifact>,
     /// event log / UI の第一級 read model となる node 実行列。
@@ -60,8 +60,8 @@ pub(crate) struct WorkflowExecution {
     /// ワークフロー実行時のタスク内容（テンプレート変数 {{ request }} の展開に使用）。
     pub(crate) request: Option<String>,
     /// 並列実行中の場合の状態。
-    pub(crate) parallel_run: Option<FanoutRuntimeState>,
-    /// 現在実行中の step session で観測した非終端 stall signal。
+    pub(crate) fanout_runtime: Option<FanoutRuntimeState>,
+    /// 現在実行中の node session で観測した非終端 stall signal。
     pub(crate) current_stall_observations: Vec<NodeStallObservation>,
 }
 
@@ -101,8 +101,8 @@ pub(crate) enum FanoutChildRuntimeState {
 
 /// session_workflow_refsの値型。session_id → execution_id の逆引き索引。
 ///
-/// parent ChatSession 機構撤去後は step session のみが登録されるため種別区別は不要
-/// （Spec issues-929: 「逐次 step と並列子 step は単一経路で扱う」/ Spec issues-1011:
+/// parent ChatSession 機構撤去後は node session のみが登録されるため種別区別は不要
+/// （Spec issues-929: 「逐次 node と並列子 node は単一経路で扱う」/ Spec issues-1011:
 /// engine 内部キーは execution_id に統一）。worktree_path は `WorkflowExecution.worktree_path`
 /// 属性として exec から取得する。
 #[derive(Clone)]
@@ -231,7 +231,7 @@ impl WorkflowExecution {
     /// executions ロック内の defense-in-depth で呼ばれる。Execution Store の active index と
     /// in-memory executions 表が一時的に不整合な場合に、最終的な atomic guard として機能する。
     pub(crate) fn validate_start(
-        workflow: &Workflow,
+        workflow: &WorkflowDefinitionYaml,
         existing: Option<&WorkflowExecution>,
     ) -> Result<(), WorkflowEngineError> {
         let existing_active_workflow_name = existing
@@ -240,19 +240,12 @@ impl WorkflowExecution {
         engine_start_guard::validate_start(workflow, existing_active_workflow_name)
     }
 
-    /// 永続化用の `WorkflowState` に変換する。
-    pub(crate) fn to_workflow_state(&self) -> WorkflowState {
+    /// 永続化用の `RuntimeCommitSnapshot` に変換する。
+    pub(crate) fn to_commit_snapshot(&self) -> RuntimeCommitSnapshot {
         let domain_history = node_history_entries_to_domain(&self.node_history);
         let total_token_usage =
             token_usage_from_domain(&workflow_projection::total_token_usage(&domain_history));
-        let node_statuses = crate::adaptor::gateway::workflow::state::compute_node_statuses(
-            &self.workflow,
-            self.current_node_index,
-            &self.state,
-            &self.node_history,
-        );
-
-        WorkflowState {
+        RuntimeCommitSnapshot {
             execution_id: self.id.clone(),
             workflow_name: self.workflow.name.clone(),
             worktree_path: self.worktree_path.clone(),
@@ -267,27 +260,23 @@ impl WorkflowExecution {
             current_node_index: self.current_node_index,
             current_node_name: self.workflow.nodes[self.current_node_index].name.clone(),
             current_session_id: self.current_session_id.clone(),
-            total_nodes: self.workflow.nodes.len(),
             node_history: self.node_history.clone(),
             node_execution_counts: self.node_execution_counts.clone(),
             workflow_definition: self.workflow.clone(),
             total_token_usage,
-            node_statuses,
             artifacts: self.artifacts.clone(),
             node_executions: self.node_executions.clone(),
-            approval_operations: self.build_approval_operations(),
-            stall_observations: self.current_stall_observations.clone(),
             started_at: self.started_at,
             updated_at: self.updated_at,
         }
     }
 
-    fn domain_parallel_run(&self) -> Option<workflow_domain::FanoutRuntimeState> {
-        self.parallel_run
+    fn domain_fanout_runtime(&self) -> Option<workflow_domain::FanoutRuntimeState> {
+        self.fanout_runtime
             .as_ref()
-            .map(|parallel_run| workflow_domain::FanoutRuntimeState {
-                parent_node_name: parallel_run.parent_node_name.clone(),
-                children: parallel_run
+            .map(|fanout_runtime| workflow_domain::FanoutRuntimeState {
+                parent_node_name: fanout_runtime.parent_node_name.clone(),
+                children: fanout_runtime
                     .children
                     .iter()
                     .map(|child| workflow_domain::FanoutChildRuntime {
@@ -319,21 +308,7 @@ impl WorkflowExecution {
             })
     }
 
-    fn build_approval_operations(&self) -> Option<ApprovalOperations> {
-        let state = runtime_execution_state_to_domain(&self.state);
-        let current_step = self
-            .workflow
-            .nodes
-            .get(self.current_node_index)
-            .map(node_definition_to_domain);
-        workflow_projection::approval_operations(&state, current_step.as_ref()).map(|operations| {
-            ApprovalOperations {
-                can_approve: operations.can_approve,
-            }
-        })
-    }
-
-    /// spec issues-1023: 中断された通常 step の `node_history` entry を作る。
+    /// spec issues-1023: 中断された通常 node の `node_history` entry を作る。
     ///
     /// 既存 `make_node_history_entry` の副作用（`current_session_id` reset /
     /// artifacts の前段クリーンアップ等）を**起こさない**点が違い。`abort_workflow_by_execution_id`
@@ -350,9 +325,9 @@ impl WorkflowExecution {
             .copied()
             .unwrap_or(1);
         // 中断時点までに累積した token_usage は entry に残す。
-        // current_step_token_usage 自体は take してクリアする
+        // current_node_token_usage 自体は take してクリアする
         // （post-commit 経路で参照されないため）。
-        let token_usage = std::mem::take(&mut self.current_step_token_usage);
+        let token_usage = std::mem::take(&mut self.current_node_token_usage);
         node_history_entry_from_domain(workflow_history::aborted_node_history_entry(
             node_name,
             attempt,
@@ -362,30 +337,30 @@ impl WorkflowExecution {
         ))
     }
 
-    /// spec issues-1023: 中断された parallel parent step の `node_history` entry を作る。
+    /// spec issues-1023: 中断された fanout parent node の `node_history` entry を作る。
     ///
-    /// `parallel_run.children` 全件を `fanout_children` に snapshot する。
+    /// `fanout_runtime.children` 全件を `fanout_children` に snapshot する。
     /// 完了済み child（`FanoutChildRuntimeState::Completed`）は `state="completed"`、
     /// それ以外（Running / Failed / Interrupted）は `state="aborted"` として記録し、
     /// session_id は child runtime / artifacts から維持する（session log 到達経路維持）。
     ///
-    /// 呼出し側は本関数で entry を組み立てた後、`self.parallel_run = None;` を明示
+    /// 呼出し側は本関数で entry を組み立てた後、`self.fanout_runtime = None;` を明示
     /// セットし、fanout の live child state を残さないこと。
-    pub(crate) fn make_aborted_parallel_history_entry(
+    pub(crate) fn make_aborted_fanout_history_entry(
         &self,
         timestamp: f64,
     ) -> Option<NodeHistoryEntry> {
-        let pr = self.parallel_run.as_ref()?;
+        let pr = self.fanout_runtime.as_ref()?;
         let parent_attempt = self
             .node_execution_counts
             .get(&pr.parent_node_name)
             .copied()
             .unwrap_or(1);
-        let domain_parallel_run = self.domain_parallel_run()?;
+        let domain_fanout_runtime = self.domain_fanout_runtime()?;
         let domain_artifacts = artifacts_to_domain(&self.artifacts);
         Some(node_history_entry_from_domain(
-            workflow_history::aborted_parallel_history_entry(
-                &domain_parallel_run,
+            workflow_history::aborted_fanout_history_entry(
+                &domain_fanout_runtime,
                 &domain_artifacts,
                 parent_attempt,
                 timestamp,
@@ -407,7 +382,7 @@ impl WorkflowExecution {
             .copied()
             .unwrap_or(1);
         let completed_at = current_timestamp();
-        let token_usage = std::mem::take(&mut self.current_step_token_usage);
+        let token_usage = std::mem::take(&mut self.current_node_token_usage);
         let entry = workflow_history::completed_node_history_entry(
             workflow_history::CompletedNodeHistoryInput {
                 node_name: node_name.clone(),
@@ -431,77 +406,77 @@ impl WorkflowExecution {
         node_history_entry_from_domain(entry)
     }
 
-    /// 指定インデックスの step が新しい実行を開始する瞬間に、当該 step の
+    /// 指定インデックスの node が新しい実行を開始する瞬間に、当該 node の
     /// 前回出力を `artifacts` から破棄する。並列ブロックの場合は
-    /// 親ブロック名と全子 step 名を一括で削除する。
+    /// 親ブロック名と全子 node 名を一括で削除する。
     ///
-    /// 同一 step がループで再実行される際、前回値が残ったままになると
+    /// 同一 node がループで再実行される際、前回値が残ったままになると
     /// `input_reference` / `inject_artifacts` が前回値を引いてしまい、新しい実行で
     /// `artifact` が更新されないケースや LLM が前回ターンの
     /// `<workflow_output>` を引用してきたケースで Contract 違反が
     /// 「正常完了（Done）」扱いされる不具合の原因となる。
-    pub(crate) fn clear_artifacts_for_new_execution(&mut self, step_index: usize) {
+    pub(crate) fn clear_artifacts_for_new_execution(&mut self, node_index: usize) {
         let workflow = workflow_definition_to_domain(&self.workflow);
-        for key in
-            workflow_submission::step_output_keys_to_clear_for_new_execution(&workflow, step_index)
-        {
+        for key in workflow_submission::artifact_keys_to_clear_for_new_node_execution(
+            &workflow, node_index,
+        ) {
             self.artifacts.remove(&key);
         }
     }
 
     /// ロック内で次ステップへの advance を適用する（純粋な状態変更）。
-    pub(crate) fn apply_advance(&mut self) -> StepOutcome {
-        let decision = self.decide_next_step();
+    pub(crate) fn apply_advance(&mut self) -> NodeOutcome {
+        let decision = self.decide_next_node();
         match decision {
-            NextStepDecision::Completed => {
+            NextNodeDecision::Completed => {
                 self.state = RuntimeExecutionState::Completed;
                 self.updated_at = current_timestamp();
-                StepOutcome::Persist(self.to_workflow_state())
+                NodeOutcome::Persist(self.to_commit_snapshot())
             }
-            NextStepDecision::Failed { reason } => self.fail_validation(reason),
-            NextStepDecision::TransitionTo(name) => {
+            NextNodeDecision::Failed { reason } => self.fail_validation(reason),
+            NextNodeDecision::TransitionTo(name) => {
                 let idx = self
                     .workflow
                     .nodes
                     .iter()
-                    .position(|step| step.name == name)
-                    .expect("decide_next_step returned unknown step");
+                    .position(|node| node.name == name)
+                    .expect("decide_next_node returned unknown node");
                 self.apply_transition_index(idx, &name);
-                self.step_outcome_for_current_step()
+                self.node_outcome_for_current_node()
             }
         }
     }
 
-    pub(crate) fn retry_current_step(&mut self) -> StepOutcome {
-        let step_index = self.current_node_index;
-        let node_name = self.workflow.nodes[step_index].name.clone();
+    pub(crate) fn retry_current_node(&mut self) -> NodeOutcome {
+        let node_index = self.current_node_index;
+        let node_name = self.workflow.nodes[node_index].name.clone();
         let completed_session_id = self.current_session_id.clone();
         self.state = RuntimeExecutionState::Running;
         *self.node_execution_counts.entry(node_name).or_insert(0) += 1;
         self.current_session_id = None;
-        self.current_step_token_usage = TokenUsage::default();
+        self.current_node_token_usage = TokenUsage::default();
         self.current_stall_observations.clear();
-        self.clear_artifacts_for_new_execution(step_index);
+        self.clear_artifacts_for_new_execution(node_index);
         self.updated_at = current_timestamp();
         self.start_current_node_execution(self.updated_at);
-        StepOutcome::RetryCurrentStep {
-            snapshot: self.to_workflow_state(),
+        NodeOutcome::RetryCurrentNode {
+            snapshot: self.to_commit_snapshot(),
             completed_session_id,
         }
     }
 
-    fn fail_validation(&mut self, reason: impl Into<String>) -> StepOutcome {
+    fn fail_validation(&mut self, reason: impl Into<String>) -> NodeOutcome {
         self.state = RuntimeExecutionState::Failed {
             reason: reason.into(),
             kind: NodeExecutionFailureKind::ValidationFailure,
             retry_count: None,
         };
         self.updated_at = current_timestamp();
-        StepOutcome::Persist(self.to_workflow_state())
+        NodeOutcome::Persist(self.to_commit_snapshot())
     }
 
-    fn apply_transition_index(&mut self, step_index: usize, node_name: &str) {
-        self.current_node_index = step_index;
+    fn apply_transition_index(&mut self, node_index: usize, node_name: &str) {
+        self.current_node_index = node_index;
         self.state = RuntimeExecutionState::Running;
         *self
             .node_execution_counts
@@ -509,22 +484,22 @@ impl WorkflowExecution {
             .or_insert(0) += 1;
         self.current_session_id = None;
         self.current_stall_observations.clear();
-        self.clear_artifacts_for_new_execution(step_index);
+        self.clear_artifacts_for_new_execution(node_index);
         self.updated_at = current_timestamp();
         self.start_current_node_execution(self.updated_at);
     }
 
-    fn step_outcome_for_current_step(&self) -> StepOutcome {
-        let step = &self.workflow.nodes[self.current_node_index];
-        if step.is_fanout() {
-            StepOutcome::StartParallel(self.to_workflow_state())
+    fn node_outcome_for_current_node(&self) -> NodeOutcome {
+        let node = &self.workflow.nodes[self.current_node_index];
+        if node.is_fanout() {
+            NodeOutcome::StartFanout(self.to_commit_snapshot())
         } else {
-            StepOutcome::TransitionAndStart(self.to_workflow_state())
+            NodeOutcome::TransitionAndStart(self.to_commit_snapshot())
         }
     }
 
     /// 次のステップ遷移先を判定する（純粋関数）。
-    pub(crate) fn decide_next_step(&self) -> NextStepDecision {
+    pub(crate) fn decide_next_node(&self) -> NextNodeDecision {
         let workflow = workflow_definition_to_domain(&self.workflow);
         match workflow_routing::route(
             &workflow,
@@ -532,11 +507,11 @@ impl WorkflowExecution {
             self.current_node_artifact(),
             &self.node_execution_counts,
         ) {
-            Ok(workflow_routing::RouteDecision::Completed) => NextStepDecision::Completed,
+            Ok(workflow_routing::RouteDecision::Completed) => NextNodeDecision::Completed,
             Ok(workflow_routing::RouteDecision::TransitionTo(name)) => {
-                NextStepDecision::TransitionTo(name)
+                NextNodeDecision::TransitionTo(name)
             }
-            Err(err) => NextStepDecision::Failed {
+            Err(err) => NextNodeDecision::Failed {
                 reason: err.to_string(),
             },
         }
@@ -612,23 +587,18 @@ impl WorkflowExecution {
                 exit_code,
                 kind,
             } => TurnCompleteAction::SessionError {
-                node_name: node_name,
+                node_name,
                 exit_code,
                 kind,
             },
             workflow_transition::TurnCompleteDecision::AutoEvaluate { node_name } => {
-                TurnCompleteAction::AutoEvaluate {
-                    node_name: node_name,
-                }
+                TurnCompleteAction::AutoEvaluate { node_name }
             }
             workflow_transition::TurnCompleteDecision::WaitApproval => {
                 TurnCompleteAction::WaitApproval
             }
             workflow_transition::TurnCompleteDecision::UnexpectedNodeKind { node_name, kind } => {
-                TurnCompleteAction::UnexpectedNodeKind {
-                    node_name: node_name,
-                    kind,
-                }
+                TurnCompleteAction::UnexpectedNodeKind { node_name, kind }
             }
         }
     }
@@ -678,7 +648,7 @@ impl WorkflowExecution {
 
 /// 次のステップ遷移の判定結果。
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum NextStepDecision {
+pub(crate) enum NextNodeDecision {
     /// ワークフロー完了（最後のステップを超えた）
     Completed,
     /// 指定ステップへ遷移
