@@ -1,6 +1,6 @@
 # Milestone 82 詳細設計（実装の正本）
 
-本書は milestone 82 の実装詳細設計であり、**全 goal はこの設計に従って実装する**。Codex は本書と矛盾する設計をやり直さない（矛盾・実装不能を発見した場合は理由付きで報告し、勝手に読み替えない）。仕様の由来は `plan.md`（設計判断 D1〜D7 / P1〜P14）、`docs/workflow-yaml-syntax.md`、`docs/workflow-engine-evolution-plan.md`、`docs/architecture/GLOSSARY.md`。
+本書は milestone 82 の実装詳細設計であり、**全 goal はこの設計に従って実装する**。Codex は本書と矛盾する設計をやり直さない（矛盾・実装不能を発見した場合は理由付きで報告し、勝手に読み替えない）。仕様の由来は `plan.md`（設計判断 D1〜D8 / P1〜P15）、`docs/workflow-yaml-syntax.md`、`docs/workflow-engine-evolution-plan.md`、`docs/architecture/GLOSSARY.md`。
 
 **Diagnostic code の割当は §7 の表が唯一の正**（本文中の code 参照は表に従属する）。
 
@@ -29,7 +29,9 @@
 | `cli/api_client.rs` | 新規 | discovery + HTTP client（#1332） |
 | `adaptor/gateway/workflow/orphan_recovery.rs` | 置換 | §8.5 interrupted 化（#1335） |
 | `src/components/panels/automation/` の StepEditor / WorkflowEditor フォーム編集 | 削除 | D7（#1322。削除対象はこの 2 系統のフィールド編集 UI とそのテスト） |
-| `src/types/workflow.ts`, `workspace-tree.ts` | 置換 | §13 frontend 型（#1322〜#1331） |
+| `src/types/workflow.ts`, `workspace-tree.ts` | 置換 | workflow API 型は §10、Workspace UI 型は §13 の再帰 read model（#1322〜#1331, #1454） |
+| `src/components/workspace/WorkspaceList.tsx`, `src/screens/MainLayout.tsx` | 置換 | 再帰 Workspace tree と単一 NodeContentView（#1454） |
+| `src/components/panels/WorkflowView/` | 削除 | Workflow/Fanout 独自中央 view を廃止（#1454） |
 
 ## 2. YAML schema 型設計（Rust）
 
@@ -262,6 +264,7 @@ NDJSON append-only（`log.rs`）。**最終形の variant を下表で固定**�
 | ExecutionStarted | workflow_name, worktree_path, definition（snapshot）, request: String |
 | NodeStarted | node_execution_id, node_name, kind, attempt, fanout_parent?: { parent_node, parent_attempt, item_index?, child_index } |
 | SessionAttached | node_execution_id, session_id |
+| CommandPrepared | node_execution_id, display_command（Artifact 参照展開後・secret mask 済み。raw command は永続化しない、#1454） |
 | ArtifactProduced | node_execution_id, node_name, contract: Option<String>, value（command stdout / session submit / CLI・API submit / fanout 配列の共通 event。artifact 無し command の標準結果と fanout 配列は contract = null。旧 OutputSubmitted 置換） |
 | NodeCompleted | node_execution_id, node_name, attempt, result_summary?, token_usage? |
 | NodeFailed | node_execution_id, node_name, attempt, reason, failure_kind, retry_count? |
@@ -297,6 +300,7 @@ pub struct NodeExecution {
     pub attempt: u32,                     // 同一 node の反復回（fanout child の並走個体は fanout_parent で識別）
     pub status: NodeStatus,               // Running | WaitingApproval | Succeeded | Failed | Aborted
     pub session_id: Option<String>,
+    pub display_command: Option<String>,  // command のみ。CommandPrepared から復元する mask 済み実行 snapshot
     pub artifact: Option<serde_json::Value>,
     pub token_usage: Option<TokenUsage>,
     pub failure: Option<{ reason, kind }>,
@@ -305,7 +309,9 @@ pub struct NodeExecution {
 }
 ```
 
-Fanout は「`fanout_parent` で子を束ねた derived view」（親 NodeExecution + 子 NodeExecution 列 + 配列 Artifact）。Artifact map（`request` 含む、fanout child を除く §5）も projection が提供。**公開 DTO / Tauri command / frontend 型はこの 2 型 + Fanout view + Diagnostic のみ**を語彙とし、旧 `WorkflowStateSnapshot` / `StepHistoryEntry` / `StepOutput` / `ParallelStepState` は削除。Tauri command rename は `goal-10-issue-1331.md` 実装内容 4 の一覧どおり。
+Fanout は「`fanout_parent` で子を束ねた derived view」（親 NodeExecution + 子 NodeExecution 列 + 配列 Artifact）。Artifact map（`request` 含む、fanout child を除く §5）も projection が提供。workflow API / CLI / event log はこの domain read modelを正とし、旧 `WorkflowStateSnapshot` / `StepHistoryEntry` / `StepOutput` / `ParallelStepState` は削除する。Tauri command rename は `goal-10-issue-1331.md` 実装内容 4 の一覧どおり。
+
+Workspace UI は domain read model の直接 mirror ではない。#1454 で §13 の UI 専用 query projectionを追加し、NodeExecutionのattempt列やfanout座標を画面構造へ露出しない。domainの事実は失わず、UIが必要とするtree summaryと選択Node detailへRustで投影する。
 
 ## 11. Local API（#1332、D1）
 
@@ -344,11 +350,39 @@ releash workflow output get <execution-id> --node <node>
 - `--node-execution` は同名 NodeExecution が複数 active な場合（fanout child 並走）に必須。**session 内から実行される CLI は env `RELEASH_NODE_EXECUTION_ID`（§5）を既定値に使う**ため、workflow の instruction は通常 `--node-execution` を書かなくてよい。
 - discovery ファイル（`local-api.json`）があれば API 経由（無ければ: mutation は「アプリ起動が必要」エラー、read-only のみ file-direct fallback）。`runs` / `run_id` / `--step` / `reject` は存在しない。CLI help の agent 注入文・repair prompt・instructions facet の CLI 例文も本表に揃える。
 
-## 13. Frontend（D7）
+## 13. Frontend（D7, D8）
 
 - **Automation panel**: WorkflowList（一覧・複製・削除）+ Monaco YAML editor + Diagnostic 表示（保存時に backend へ invoke → `Diagnostic[]` を受けインライン marker + 一覧表示）。フォーム編集（StepEditor / WorkflowEditor のフィールド UI）は削除。facet（policy/knowledge/instruction）の管理 UI は現行機能を維持する。
-- **WorkflowView**: WorkflowExecution summary / NodeExecution timeline（kind・status・attempt・fanout グループ表示）/ Artifact viewer（JSON）/ approve ボタン（gate: approval の waiting NodeExecution 単位。node_execution_id でアドレス）/ abort / stop / resume。reject UI なし。
-- **型**: `types/workflow.ts` は §10 の鏡像（WorkflowExecutionSummary / NodeExecutionView / DiagnosticView / SchemaDef 表示用）のみ。validation・分岐判断ロジックを frontend に置かない。
+- **Workspace tree（#1454）**: 一つの再帰 tree として表現する。`NewSession` は Workflow 非所属の単独 Node、Workflow は複数 Node を束ねる branch、Fanout は Workflow 内の複数 Node を束ねる branch、Node は `Session | Command` contentを持つleafとする。Session/Commandを追加のtree行にはしない。
+- **中央表示（#1454）**: `WorkflowView`を削除し、中央は常に単一の`NodeContentView`を使う。Session contentは単独Node・Workflow Nodeとも同じ`BoundSessionChat`を表示し、Command contentは実行時のmasked Command、status、exit code、duration、stdout、stderrを表示する。Workflow/Fanoutは独自detail viewを持たず、treeの展開・折り畳みだけを行う。
+- **Workspace UI read model（#1454）**: Rustが次の再帰summaryと選択Node detailを所有する。frontendは表示、選択IDの受け渡し、backend command呼び出しだけを行い、status集約・retry集約・fanout階層化・capability判定を行わない。
+
+```rust
+enum WorkspaceTreeItemDto {
+    Node(WorkspaceNodeDto),
+    Workflow(WorkspaceWorkflowDto),
+    Fanout(WorkspaceFanoutDto),
+}
+
+enum WorkspaceNodeContentDto {
+    Session { session_id: Option<String> },
+    Command {
+        display_command: Option<String>,
+        result: Option<WorkspaceCommandResultDto>,
+    },
+}
+```
+
+- `Node`は`id / title / status / content_kind / capabilities / updated_at`を持ち、childrenを持たない。
+- `Workflow`は`id / title / status / capabilities / children / updated_at`を持ち、contentを持たない。
+- `Fanout`は`id / title / status / children / updated_at`を持ち、contentと独自actionを持たない。
+- WorkflowDefinitionの宣言順を基準にtreeを作り、fanout childをWorkflow直下へ重複表示しない。未開始Nodeはqueuedで表示する。
+- retry/loopのattemptは同じUI Nodeへ集約する。独立したSession/Command contentはNodeとして残すが、NodeExecution/attemptごとの重複行は作らない。
+- `fanout_parent`は階層構築だけに使う。execution ID、NodeExecution ID、attempt、fanout parent attempt、item/child index、raw kindをheader/treeへ表示しない。
+- tree summaryにSession本文、Command output、Artifact本文を含めない。汎用`get_workspace_node_detail(worktree_path, node_id)`で選択Nodeだけを取得する。
+- `CenterSelection`は`{ kind: "node", worktreePath, nodeId }`へ統一する。NewSessionは選択variantではなく作成操作とし、作成後のNodeを表示する。
+- Workflow action（stop/resume/abort/archive）とNode action（approve、単独Sessionのclose）はRustが返すcapabilityに従う。
+- 初回表示用`preferred_node_id`はrunning/waiting Nodeを優先するが、更新時に表示中Nodeを勝手に切り替えない。retry後もUI Node IDを維持する。
 
 ## 14. 削除一覧（旧 → 処置）
 
@@ -369,6 +403,7 @@ releash workflow output get <execution-id> --node <node>
 | pending file 機構 / CliMutation* event / `--step` / `runs` | §11-12（#1332） |
 | abort-only orphan recovery | §8.5（#1335） |
 | docs の未確定・懸念節 / model-boundary doc / **full-pipeline.yml の不整合（fix_result 未宣言・permission: read・routing field の required 未宣言 = lgtm / all_lgtm / has_open / verdict）** / syntax doc への required 要件と rules 要素形（catch-all は when/switch の sibling `next`）の明記 | 正本化（#1337） |
+| 独立`WorkflowView` / `agentSession`対`workflowNode`中央表示分岐 / flat NodeExecution rows / attempt・fanout座標のUI表示 | §13の再帰Workspace tree + NodeContentViewへ置換（#1454） |
 
 ## 15. goal ↔ design 対応
 
@@ -387,3 +422,4 @@ releash workflow output get <execution-id> --node <node>
 | 11 (#1332) | §11, §12 |
 | 12 (#1335) | §8.5（stop / resume）, §9 Interrupted/Resumed |
 | 13 (#1337) | §14 の総ざらい + docs 正本化（full-pipeline の required 追加含む） + 実行検証 |
+| 14 (#1454) | §9 CommandPrepared, §10 Workspace UI projection境界, §13 Workspace tree / NodeContentView |
