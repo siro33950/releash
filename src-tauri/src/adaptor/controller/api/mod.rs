@@ -782,4 +782,65 @@ pub(crate) mod test_support {
         assert_eq!(output.1["submitted_at"], 109.0);
         assert_eq!(output.1["request_id"], "request-1");
     }
+
+    #[tokio::test]
+    async fn execution_and_log_queries_apply_validated_page_boundaries() {
+        let directory = tempfile::tempdir().unwrap();
+        let first_execution_id = "00000000-0000-4000-8000-000000000321";
+        let second_execution_id = "00000000-0000-4000-8000-000000000322";
+        seed_query_execution(directory.path(), first_execution_id);
+        seed_query_execution(directory.path(), second_execution_id);
+        seed_submitted_output(directory.path(), first_execution_id);
+        let worktree = directory.path().join("worktree");
+        fs::create_dir(&worktree).unwrap();
+        let canonical_worktree = fs::canonicalize(&worktree).unwrap();
+        for execution_id in [first_execution_id, second_execution_id] {
+            let metadata_path = directory
+                .path()
+                .join("workflow_executions")
+                .join(format!("{execution_id}.json"));
+            let mut metadata: WorkflowExecutionMetadata =
+                serde_json::from_slice(&fs::read(&metadata_path).unwrap()).unwrap();
+            metadata.worktree_path = canonical_worktree.to_string_lossy().into_owned();
+            fs::write(metadata_path, serde_json::to_vec_pretty(&metadata).unwrap()).unwrap();
+        }
+        let (router, _, _) = test_router(directory.path(), "secret");
+        let encoded_worktree: String =
+            url::form_urlencoded::byte_serialize(canonical_worktree.to_string_lossy().as_bytes())
+                .collect();
+
+        let executions = get_json(
+            &router,
+            &format!(
+                "/v1/workflow/executions?status=active&worktree={encoded_worktree}&limit=1&offset=1"
+            ),
+        )
+        .await;
+        assert_eq!(executions.0, StatusCode::OK);
+        assert_eq!(executions.1.as_array().unwrap().len(), 1);
+        assert_eq!(executions.1[0]["status"], "running");
+        assert_eq!(
+            executions.1[0]["worktreePath"],
+            canonical_worktree.to_string_lossy().as_ref()
+        );
+
+        let logs = get_json(
+            &router,
+            &format!("/v1/workflow/executions/{first_execution_id}/log?limit=1&offset=1"),
+        )
+        .await;
+        assert_eq!(logs.0, StatusCode::OK);
+        assert_eq!(logs.1.as_array().unwrap().len(), 1);
+        assert_eq!(logs.1[0]["event"], "node_started");
+
+        for uri in [
+            "/v1/workflow/executions?limit=0",
+            "/v1/workflow/executions?limit=201",
+            &format!("/v1/workflow/executions/{first_execution_id}/log?offset=-1"),
+        ] {
+            let response = get_json(&router, uri).await;
+            assert_eq!(response.0, StatusCode::BAD_REQUEST, "uri: {uri}");
+            assert_eq!(response.1["code"], "invalid_request");
+        }
+    }
 }

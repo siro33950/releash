@@ -6,7 +6,9 @@ use serde::Deserialize;
 
 use crate::adaptor::presenter::workflow::workflow_execution_to_view;
 use crate::adaptor::protocol::workflow::WorkflowExecutionView;
-use crate::domain::workflow::{ExecutionOrigin, ExecutionStatusFilter, WorkflowError};
+use crate::domain::workflow::{
+    ExecutionOrigin, ExecutionStatusFilter, WorkflowError, WorkflowPageRequest,
+};
 use crate::usecase::workflow::command::{
     AbortExecutionCommand, ApprovalCommand, StartExecutionCommand, SubmitOutputCommand,
 };
@@ -20,6 +22,9 @@ use super::protocol::{
 };
 use super::LocalApiState;
 
+const DEFAULT_PAGE_LIMIT: u64 = 100;
+const MAX_PAGE_LIMIT: u64 = 200;
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ExecutionListQuery {
@@ -27,6 +32,19 @@ struct ExecutionListQuery {
     worktree: Option<String>,
     #[serde(default)]
     status: Option<String>,
+    #[serde(default)]
+    limit: Option<u64>,
+    #[serde(default)]
+    offset: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExecutionLogQuery {
+    #[serde(default)]
+    limit: Option<u64>,
+    #[serde(default)]
+    offset: Option<u64>,
 }
 
 pub(super) fn router() -> Router<LocalApiState> {
@@ -78,9 +96,11 @@ async fn list_executions(
     let Query(query) = query.map_err(|error| ApiError::invalid_request(error.body_text()))?;
     let status = parse_status_filter(query.status.as_deref())?;
     let worktree = query.worktree;
+    let page = parse_page(query.limit, query.offset)?;
     let workflow = state.workflow;
     let executions =
-        blocking(move || workflow.list_executions_filtered(status, worktree.as_deref())).await?;
+        blocking(move || workflow.list_executions_filtered(status, worktree.as_deref(), page))
+            .await?;
     Ok(Json(executions))
 }
 
@@ -120,9 +140,12 @@ async fn get_execution(
 async fn get_execution_log(
     State(state): State<LocalApiState>,
     Path(execution_id): Path<String>,
+    query: Result<Query<ExecutionLogQuery>, QueryRejection>,
 ) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
+    let Query(query) = query.map_err(|error| ApiError::invalid_request(error.body_text()))?;
+    let page = parse_page(query.limit, query.offset)?;
     let workflow = state.workflow;
-    let events = blocking(move || workflow.get_execution_log(&execution_id)).await?;
+    let events = blocking(move || workflow.get_execution_log_page(&execution_id, page)).await?;
     Ok(Json(events))
 }
 
@@ -225,6 +248,18 @@ fn parse_execution_origin(value: Option<&str>) -> Result<ExecutionOrigin, ApiErr
     }
 }
 
+fn parse_page(limit: Option<u64>, offset: Option<u64>) -> Result<WorkflowPageRequest, ApiError> {
+    let limit = limit.unwrap_or(DEFAULT_PAGE_LIMIT);
+    if limit == 0 || limit > MAX_PAGE_LIMIT {
+        return Err(ApiError::invalid_request(format!(
+            "limit must be between 1 and {MAX_PAGE_LIMIT}"
+        )));
+    }
+    let offset = usize::try_from(offset.unwrap_or_default())
+        .map_err(|_| ApiError::invalid_request("offset is too large"))?;
+    Ok(WorkflowPageRequest::new(offset, limit as usize))
+}
+
 async fn blocking<T>(
     task: impl FnOnce() -> Result<T, WorkflowError> + Send + 'static,
 ) -> Result<T, ApiError>
@@ -254,5 +289,19 @@ mod tests {
             ExecutionOrigin::Cli
         );
         assert!(parse_execution_origin(Some("desktop_ui")).is_err());
+    }
+
+    #[test]
+    fn validates_page_limits_and_applies_defaults() {
+        assert_eq!(
+            parse_page(None, None).unwrap(),
+            WorkflowPageRequest::new(0, DEFAULT_PAGE_LIMIT as usize)
+        );
+        assert_eq!(
+            parse_page(Some(2), Some(3)).unwrap(),
+            WorkflowPageRequest::new(3, 2)
+        );
+        assert!(parse_page(Some(0), None).is_err());
+        assert!(parse_page(Some(MAX_PAGE_LIMIT + 1), None).is_err());
     }
 }

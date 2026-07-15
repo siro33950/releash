@@ -1,11 +1,4 @@
 use std::path::Path;
-use std::time::Duration;
-
-use reqwest::blocking::{Client, RequestBuilder};
-use reqwest::StatusCode;
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
-use url::Url;
 
 use super::common::CliError;
 use crate::adaptor::controller::api::protocol::{
@@ -13,7 +6,7 @@ use crate::adaptor::controller::api::protocol::{
     StartExecutionResponse, SubmitArtifactRequest, ValidateArtifactRequest,
     ValidateArtifactResponse,
 };
-use crate::infrastructure::local_api::{local_api_discovery_path, LocalApiDiscovery};
+use crate::infrastructure::local_api::{LocalApiClientError, LocalApiHttpClient};
 use crate::usecase::workflow::dto::{WorkflowExecutionSummaryDto, WorkflowSummaryDto};
 use crate::usecase::workflow::{WorkflowGetOutputResult, WorkflowValidateOutputResult};
 
@@ -31,64 +24,34 @@ impl From<CliError> for ApiRequestError {
     }
 }
 
-#[derive(Debug, Clone)]
-pub(super) struct LocalApiClient {
-    base_url: Url,
-    token: String,
-    client: Client,
+impl From<LocalApiClientError> for ApiRequestError {
+    fn from(error: LocalApiClientError) -> Self {
+        match error {
+            LocalApiClientError::Unavailable(_) => Self::Unavailable,
+            LocalApiClientError::HttpStatus { status, message } => {
+                Self::Cli(api_error(status, message.as_deref()))
+            }
+            error => Self::Cli(CliError::Other(error.to_string())),
+        }
+    }
 }
 
-#[derive(Debug, Deserialize)]
-struct ErrorResponse {
-    #[allow(dead_code)]
-    code: String,
-    message: String,
+#[derive(Debug, Clone)]
+pub(super) struct LocalApiClient {
+    transport: LocalApiHttpClient,
 }
 
 impl LocalApiClient {
     fn discover(data_dir: &Path) -> Result<Option<Self>, CliError> {
-        let path = local_api_discovery_path(data_dir);
-        let contents = match std::fs::read_to_string(&path) {
-            Ok(contents) => contents,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => {
-                return Err(CliError::Other(format!(
-                    "local API discovery file の読み込みに失敗しました ({}): {error}",
-                    path.display()
-                )));
-            }
-        };
-        let discovery: LocalApiDiscovery = serde_json::from_str(&contents).map_err(|error| {
-            CliError::Other(format!(
-                "local API discovery file が不正です ({}): {error}",
-                path.display()
-            ))
-        })?;
-        if discovery.port == 0 || discovery.token.trim().is_empty() {
-            return Err(CliError::Other(format!(
-                "local API discovery file が不正です ({}): port と token が必要です",
-                path.display()
-            )));
-        }
-        let base_url = Url::parse(&format!("http://127.0.0.1:{}/", discovery.port))
-            .map_err(|error| CliError::Other(format!("local API URL が不正です: {error}")))?;
-        let client = Client::builder()
-            .no_proxy()
-            .connect_timeout(Duration::from_secs(1))
-            .timeout(Duration::from_secs(5))
-            .build()
-            .map_err(|error| {
-                CliError::Other(format!("local API client の初期化に失敗しました: {error}"))
-            })?;
-        Ok(Some(Self {
-            base_url,
-            token: discovery.token,
-            client,
-        }))
+        LocalApiHttpClient::discover(data_dir)
+            .map(|client| client.map(|transport| Self { transport }))
+            .map_err(|error| CliError::Other(error.to_string()))
     }
 
     pub(super) fn workflows(&self) -> Result<Vec<WorkflowSummaryDto>, ApiRequestError> {
-        self.get(self.endpoint(&["v1", "workflows"])?)
+        self.transport
+            .get_json(&["v1", "workflows"], &[])
+            .map_err(ApiRequestError::from)
     }
 
     pub(super) fn executions(
@@ -96,38 +59,43 @@ impl LocalApiClient {
         status: Option<&str>,
         worktree: Option<&str>,
     ) -> Result<Vec<WorkflowExecutionSummaryDto>, ApiRequestError> {
-        let mut url = self.endpoint(&["v1", "workflow", "executions"])?;
-        {
-            let mut query = url.query_pairs_mut();
-            if let Some(status) = status {
-                query.append_pair("status", status);
-            }
-            if let Some(worktree) = worktree {
-                query.append_pair("worktree", worktree);
-            }
+        let mut query = Vec::new();
+        if let Some(status) = status {
+            query.push(("status", status));
         }
-        self.get(url)
+        if let Some(worktree) = worktree {
+            query.push(("worktree", worktree));
+        }
+        self.transport
+            .get_json(&["v1", "workflow", "executions"], &query)
+            .map_err(ApiRequestError::from)
     }
 
     pub(super) fn start_workflow(
         &self,
         request: &StartExecutionRequest,
     ) -> Result<StartExecutionResponse, ApiRequestError> {
-        self.post_json(self.endpoint(&["v1", "workflow", "executions"])?, request)
+        self.transport
+            .post_json(&["v1", "workflow", "executions"], request)
+            .map_err(ApiRequestError::from)
     }
 
     pub(super) fn execution_status(
         &self,
         execution_id: &str,
     ) -> Result<crate::adaptor::protocol::workflow::WorkflowExecutionView, ApiRequestError> {
-        self.get(self.endpoint(&["v1", "workflow", "executions", execution_id])?)
+        self.transport
+            .get_json(&["v1", "workflow", "executions", execution_id], &[])
+            .map_err(ApiRequestError::from)
     }
 
     pub(super) fn execution_log(
         &self,
         execution_id: &str,
     ) -> Result<Vec<serde_json::Value>, ApiRequestError> {
-        self.get(self.endpoint(&["v1", "workflow", "executions", execution_id, "log"])?)
+        self.transport
+            .get_json(&["v1", "workflow", "executions", execution_id, "log"], &[])
+            .map_err(ApiRequestError::from)
     }
 
     pub(super) fn approve(
@@ -135,21 +103,21 @@ impl LocalApiClient {
         execution_id: &str,
         request: &ApproveNodeRequest,
     ) -> Result<(), ApiRequestError> {
-        let response: MutationResponse = self.post_json(
-            self.endpoint(&["v1", "workflow", "executions", execution_id, "approve"])?,
-            request,
-        )?;
+        let response: MutationResponse = self
+            .transport
+            .post_json(
+                &["v1", "workflow", "executions", execution_id, "approve"],
+                request,
+            )
+            .map_err(ApiRequestError::from)?;
         ensure_mutation_ok(response)
     }
 
     pub(super) fn abort(&self, execution_id: &str) -> Result<(), ApiRequestError> {
-        let response: MutationResponse = self.post_empty(self.endpoint(&[
-            "v1",
-            "workflow",
-            "executions",
-            execution_id,
-            "abort",
-        ])?)?;
+        let response: MutationResponse = self
+            .transport
+            .post_empty(&["v1", "workflow", "executions", execution_id, "abort"])
+            .map_err(ApiRequestError::from)?;
         ensure_mutation_ok(response)
     }
 
@@ -158,10 +126,13 @@ impl LocalApiClient {
         execution_id: &str,
         request: &SubmitArtifactRequest,
     ) -> Result<(), ApiRequestError> {
-        let response: MutationResponse = self.post_json(
-            self.endpoint(&["v1", "workflow", "executions", execution_id, "artifacts"])?,
-            request,
-        )?;
+        let response: MutationResponse = self
+            .transport
+            .post_json(
+                &["v1", "workflow", "executions", execution_id, "artifacts"],
+                request,
+            )
+            .map_err(ApiRequestError::from)?;
         ensure_mutation_ok(response)
     }
 
@@ -170,16 +141,19 @@ impl LocalApiClient {
         execution_id: &str,
         request: &ValidateArtifactRequest,
     ) -> Result<WorkflowValidateOutputResult, ApiRequestError> {
-        let response: ValidateArtifactResponse = self.post_json(
-            self.endpoint(&[
-                "v1",
-                "workflow",
-                "executions",
-                execution_id,
-                "artifacts:validate",
-            ])?,
-            request,
-        )?;
+        let response: ValidateArtifactResponse = self
+            .transport
+            .post_json(
+                &[
+                    "v1",
+                    "workflow",
+                    "executions",
+                    execution_id,
+                    "artifacts:validate",
+                ],
+                request,
+            )
+            .map_err(ApiRequestError::from)?;
         Ok(response.into())
     }
 
@@ -188,64 +162,21 @@ impl LocalApiClient {
         execution_id: &str,
         node: &str,
     ) -> Result<WorkflowGetOutputResult, ApiRequestError> {
-        let response: GetArtifactResponse = self.get(self.endpoint(&[
-            "v1",
-            "workflow",
-            "executions",
-            execution_id,
-            "artifacts",
-            node,
-        ])?)?;
+        let response: GetArtifactResponse = self
+            .transport
+            .get_json(
+                &[
+                    "v1",
+                    "workflow",
+                    "executions",
+                    execution_id,
+                    "artifacts",
+                    node,
+                ],
+                &[],
+            )
+            .map_err(ApiRequestError::from)?;
         Ok(response.into())
-    }
-
-    fn endpoint(&self, segments: &[&str]) -> Result<Url, ApiRequestError> {
-        let mut url = self.base_url.clone();
-        url.path_segments_mut()
-            .map_err(|_| {
-                ApiRequestError::Cli(CliError::Other(
-                    "local API URL を構築できません".to_string(),
-                ))
-            })?
-            .extend(segments);
-        Ok(url)
-    }
-
-    fn get<T: DeserializeOwned>(&self, url: Url) -> Result<T, ApiRequestError> {
-        self.send(self.client.get(url))
-    }
-
-    fn post_json<B: Serialize + ?Sized, T: DeserializeOwned>(
-        &self,
-        url: Url,
-        body: &B,
-    ) -> Result<T, ApiRequestError> {
-        self.send(self.client.post(url).json(body))
-    }
-
-    fn post_empty<T: DeserializeOwned>(&self, url: Url) -> Result<T, ApiRequestError> {
-        self.send(self.client.post(url))
-    }
-
-    fn send<T: DeserializeOwned>(&self, request: RequestBuilder) -> Result<T, ApiRequestError> {
-        let response = self
-            .authenticated(request)
-            .send()
-            .map_err(classify_transport_error)?;
-        let status = response.status();
-        let bytes = response.bytes().map_err(classify_transport_error)?;
-        if !status.is_success() {
-            return Err(ApiRequestError::Cli(api_error(status, &bytes)));
-        }
-        serde_json::from_slice(&bytes).map_err(|error| {
-            ApiRequestError::Cli(CliError::Other(format!(
-                "local API response が不正です: {error}"
-            )))
-        })
-    }
-
-    fn authenticated(&self, request: RequestBuilder) -> RequestBuilder {
-        request.bearer_auth(&self.token)
     }
 }
 
@@ -298,30 +229,15 @@ fn app_must_be_running_error() -> CliError {
     CliError::Other("この操作には Releash アプリの起動が必要です".to_string())
 }
 
-fn classify_transport_error(error: reqwest::Error) -> ApiRequestError {
-    if error.is_connect() {
-        ApiRequestError::Unavailable
-    } else {
-        ApiRequestError::Cli(CliError::Other(format!(
-            "local API request に失敗しました: {error}"
-        )))
-    }
-}
-
-fn api_error(status: StatusCode, body: &[u8]) -> CliError {
-    let parsed = serde_json::from_slice::<ErrorResponse>(body).ok();
-    let message = parsed
-        .map(|error| error.message)
+fn api_error(status: u16, message: Option<&str>) -> CliError {
+    let message = message
         .filter(|message| !message.trim().is_empty())
+        .map(str::to_string)
         .unwrap_or_else(|| format!("local API error ({status})"));
     match status {
-        StatusCode::NOT_FOUND => CliError::NotFound(message),
-        StatusCode::BAD_REQUEST | StatusCode::CONFLICT | StatusCode::UNPROCESSABLE_ENTITY => {
-            CliError::InvalidInput(message)
-        }
-        StatusCode::UNAUTHORIZED => {
-            CliError::Other(format!("local API の認証に失敗しました: {message}"))
-        }
+        404 => CliError::NotFound(message),
+        400 | 409 | 422 => CliError::InvalidInput(message),
+        401 => CliError::Other(format!("local API の認証に失敗しました: {message}")),
         _ => CliError::Other(message),
     }
 }
@@ -338,12 +254,10 @@ fn ensure_mutation_ok(response: MutationResponse) -> Result<(), ApiRequestError>
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
     use std::path::PathBuf;
     use std::sync::Arc;
-    use std::time::Duration;
 
+    use axum::http::StatusCode;
     use tempfile::TempDir;
 
     use super::*;
@@ -357,6 +271,7 @@ mod tests {
     use crate::adaptor::gateway::workflow::storage;
     use crate::cli::{file_direct, output, workflow};
     use crate::domain::workflow::{ExecutionOrigin, ExecutionStatusFilter};
+    use crate::infrastructure::local_api::local_api_discovery_path;
     use crate::test_support::{EnvVarGuard, TEST_ENV_LOCK};
     use crate::usecase::workflow::command::ApprovalCommand;
 
@@ -475,8 +390,8 @@ mod tests {
         ) {
             Ok(binding) => binding,
             Err(error)
-                if error.contains("Operation not permitted")
-                    || error.contains("Permission denied") =>
+                if error.to_string().contains("Operation not permitted")
+                    || error.to_string().contains("Permission denied") =>
             {
                 eprintln!(
                     "skipping live loopback local API test because this sandbox forbids bind: {error}"
@@ -686,32 +601,6 @@ mod tests {
             matches!(duplicate, CliError::InvalidInput(message) if message.contains("WFS006") && message.contains("declared-name"))
         );
 
-        let discovery: LocalApiDiscovery = serde_json::from_str(
-            &std::fs::read_to_string(local_api_discovery_path(client_data.path())).unwrap(),
-        )
-        .unwrap();
-        let duplicate_response = reqwest::blocking::Client::new()
-            .post(format!(
-                "http://127.0.0.1:{}/v1/workflow/executions",
-                discovery.port
-            ))
-            .bearer_auth(discovery.token)
-            .json(&serde_json::json!({
-                "workflow_name": "declared-name",
-                "worktree_path": "/repo",
-                "request": "",
-                "permission_mode": "ask",
-                "created_from": "agent"
-            }))
-            .send()
-            .unwrap();
-        assert_eq!(duplicate_response.status(), StatusCode::BAD_REQUEST);
-        let duplicate_body: serde_json::Value = duplicate_response.json().unwrap();
-        assert_eq!(duplicate_body["code"], "validation_error");
-        assert!(duplicate_body["message"]
-            .as_str()
-            .unwrap()
-            .contains("WFS006"));
         assert_eq!(gateway.commands.lock().unwrap().starts.len(), 1);
 
         server.shutdown();
@@ -763,156 +652,14 @@ mod tests {
             temp.path(),
             |_| {
                 Err(ApiRequestError::Cli(api_error(
-                    StatusCode::UNAUTHORIZED,
-                    br#"{"code":"unauthorized","message":"bad token"}"#,
+                    StatusCode::UNAUTHORIZED.as_u16(),
+                    Some("bad token"),
                 )))
             },
             || panic!("401 must not fall back"),
         );
         let error = result.unwrap_err();
         assert!(matches!(error, CliError::Other(message) if message.contains("認証に失敗")));
-    }
-
-    #[test]
-    fn every_request_builder_receives_bearer_token() {
-        let temp = TempDir::new().unwrap();
-        write_discovery(temp.path(), 43123, "secret");
-        let client = LocalApiClient::discover(temp.path()).unwrap().unwrap();
-        let request = client
-            .authenticated(client.client.get(client.base_url.clone()))
-            .build()
-            .unwrap();
-        assert_eq!(
-            request
-                .headers()
-                .get(reqwest::header::AUTHORIZATION)
-                .unwrap(),
-            "Bearer secret"
-        );
-    }
-
-    #[test]
-    fn local_api_client_ignores_environment_proxy_and_connects_to_loopback() {
-        let _lock = TEST_ENV_LOCK.lock().unwrap();
-        let target = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let proxy = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        proxy.set_nonblocking(true).unwrap();
-        let proxy_url = format!("http://{}", proxy.local_addr().unwrap());
-        let _http_proxy = EnvVarGuard::set_value("HTTP_PROXY", &proxy_url);
-        let _http_proxy_lower = EnvVarGuard::set_value("http_proxy", &proxy_url);
-        let _all_proxy = EnvVarGuard::set_value("ALL_PROXY", &proxy_url);
-        let _all_proxy_lower = EnvVarGuard::set_value("all_proxy", &proxy_url);
-        let _no_proxy = EnvVarGuard::set_value("NO_PROXY", "");
-        let _no_proxy_lower = EnvVarGuard::set_value("no_proxy", "");
-        let target_port = target.local_addr().unwrap().port();
-        let received = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let received_for_server = received.clone();
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = target.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(1)))
-                .unwrap();
-            let mut request = Vec::new();
-            let mut buffer = [0_u8; 4096];
-            loop {
-                match stream.read(&mut buffer) {
-                    Ok(0) => break,
-                    Ok(read) => {
-                        request.extend_from_slice(&buffer[..read]);
-                        if request
-                            .windows(b"proxy-secret-marker".len())
-                            .any(|window| window == b"proxy-secret-marker")
-                        {
-                            break;
-                        }
-                    }
-                    Err(error)
-                        if matches!(
-                            error.kind(),
-                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                        ) =>
-                    {
-                        break;
-                    }
-                    Err(error) => panic!("failed to read direct request: {error}"),
-                }
-            }
-            *received_for_server.lock().unwrap() = request;
-            stream
-                .write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 55\r\nConnection: close\r\n\r\n{\"execution_id\":\"00000000-0000-4000-8000-000000000001\"}",
-                )
-                .unwrap();
-        });
-        let temp = TempDir::new().unwrap();
-        write_discovery(temp.path(), target_port, "proxy-secret-token");
-        let client = LocalApiClient::discover(temp.path()).unwrap().unwrap();
-        let response = client
-            .start_workflow(&StartExecutionRequest {
-                workflow_name: "proxy-secret-marker".to_string(),
-                worktree_path: "/repo".to_string(),
-                request: "proxy-secret-body".to_string(),
-                permission_mode: None,
-                created_from: Some("cli".to_string()),
-            })
-            .unwrap();
-        assert_eq!(
-            response.execution_id,
-            "00000000-0000-4000-8000-000000000001"
-        );
-        server.join().unwrap();
-        let direct_request = String::from_utf8_lossy(&received.lock().unwrap()).into_owned();
-        assert!(direct_request
-            .to_ascii_lowercase()
-            .contains("authorization: bearer proxy-secret-token"));
-        assert!(direct_request.contains("proxy-secret-body"));
-        assert!(
-            matches!(proxy.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
-        );
-    }
-
-    #[test]
-    fn response_body_timeout_is_an_api_error_and_does_not_fall_back() {
-        let target = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let target_port = target.local_addr().unwrap().port();
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = target.accept().unwrap();
-            let mut request = [0_u8; 4096];
-            let _ = stream.read(&mut request);
-            stream
-                .write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 64\r\n\r\n[",
-                )
-                .unwrap();
-            std::thread::sleep(Duration::from_millis(300));
-        });
-        let temp = TempDir::new().unwrap();
-        write_discovery(temp.path(), target_port, "secret");
-        let fallback_called = std::cell::Cell::new(false);
-        let result: Result<Vec<WorkflowSummaryDto>, CliError> = read_with_fallback(
-            temp.path(),
-            |discovered| {
-                let short_timeout = LocalApiClient {
-                    base_url: discovered.base_url.clone(),
-                    token: discovered.token.clone(),
-                    client: Client::builder()
-                        .no_proxy()
-                        .connect_timeout(Duration::from_millis(100))
-                        .timeout(Duration::from_millis(100))
-                        .build()
-                        .unwrap(),
-                };
-                short_timeout.workflows()
-            },
-            || {
-                fallback_called.set(true);
-                Ok(Vec::new())
-            },
-        );
-        let error = result.unwrap_err();
-        assert!(matches!(error, CliError::Other(message) if message.contains("local API request")));
-        assert!(!fallback_called.get());
-        server.join().unwrap();
     }
 
     #[test]

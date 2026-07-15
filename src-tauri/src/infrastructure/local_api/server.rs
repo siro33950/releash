@@ -1,3 +1,4 @@
+use std::io;
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -5,7 +6,7 @@ use std::sync::Arc;
 use axum::Router;
 use tokio::sync::oneshot;
 
-use super::{LocalApiDiscovery, LocalApiDiscoveryFile};
+use super::{LocalApiDiscovery, LocalApiDiscoveryFile, LocalApiServerError};
 
 pub(crate) struct LocalApiServerBinding {
     listener: std::net::TcpListener,
@@ -15,20 +16,24 @@ pub(crate) struct LocalApiServerBinding {
 }
 
 impl LocalApiServerBinding {
-    pub(crate) fn bind(data_dir: PathBuf) -> Result<Self, String> {
+    pub(crate) fn bind(data_dir: PathBuf) -> Result<Self, LocalApiServerError> {
         let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-            .map_err(|error| format!("failed to bind local API to 127.0.0.1: {error}"))?;
+            .map_err(LocalApiServerError::ListenerBind)?;
         let address = listener
             .local_addr()
-            .map_err(|error| format!("failed to resolve local API address: {error}"))?;
+            .map_err(LocalApiServerError::AddressResolution)?;
         if !address.ip().is_loopback() {
-            return Err(format!(
-                "local API unexpectedly bound to a non-loopback address: {address}"
-            ));
+            return Err(LocalApiServerError::NonLoopback {
+                address,
+                source: io::Error::new(
+                    io::ErrorKind::AddrNotAvailable,
+                    format!("bound address {address} is not loopback"),
+                ),
+            });
         }
         listener
             .set_nonblocking(true)
-            .map_err(|error| format!("failed to make local API listener nonblocking: {error}"))?;
+            .map_err(LocalApiServerError::Nonblocking)?;
 
         let token = Arc::<str>::from(generate_token());
         let discovery = LocalApiDiscoveryFile::create(
@@ -39,7 +44,7 @@ impl LocalApiServerBinding {
                 pid: std::process::id(),
             },
         )
-        .map_err(|error| format!("failed to write local API discovery file: {error}"))?;
+        .map_err(LocalApiServerError::Discovery)?;
 
         Ok(Self {
             listener,
@@ -130,6 +135,8 @@ fn generate_token() -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::error::Error;
+
     use super::*;
 
     #[test]
@@ -138,6 +145,40 @@ mod tests {
         let second = generate_token();
         assert_eq!(first.len(), 64);
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn server_error_variants_preserve_their_sources() {
+        let address: std::net::SocketAddr = "192.0.2.1:43123".parse().unwrap();
+        let errors = [
+            LocalApiServerError::ListenerBind(io::Error::other("bind")),
+            LocalApiServerError::AddressResolution(io::Error::other("address")),
+            LocalApiServerError::NonLoopback {
+                address,
+                source: io::Error::other("non-loopback"),
+            },
+            LocalApiServerError::Nonblocking(io::Error::other("nonblocking")),
+            LocalApiServerError::Discovery(io::Error::other("discovery")),
+        ];
+
+        for error in errors {
+            assert!(error.source().is_some(), "missing source for {error}");
+        }
+    }
+
+    #[test]
+    fn discovery_creation_failure_has_a_distinct_server_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let data_path = directory.path().join("not-a-directory");
+        std::fs::write(&data_path, "occupied").unwrap();
+
+        let error = match LocalApiServerBinding::bind(data_path) {
+            Ok(_) => panic!("discovery creation unexpectedly succeeded"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, LocalApiServerError::Discovery(_)));
+        assert!(error.source().is_some());
     }
 
     #[tokio::test]

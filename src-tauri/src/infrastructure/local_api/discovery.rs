@@ -49,9 +49,6 @@ impl LocalApiDiscoveryFile {
 
             // A previous process may have left stale discovery behind. The temporary
             // file is already complete and private before replacing it.
-            if path.exists() {
-                fs::remove_file(&path)?;
-            }
             fs::rename(&temporary_path, &path)
         })();
         if result.is_err() {

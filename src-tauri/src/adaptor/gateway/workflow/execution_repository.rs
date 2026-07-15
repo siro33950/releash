@@ -12,7 +12,7 @@ use crate::adaptor::gateway::workflow::log::WorkflowEventLog;
 use crate::domain::workflow::WorkflowExecutionRecord;
 use crate::domain::workflow::{
     ExecutionListFilter, WorkflowError, WorkflowExecutionId, WorkflowExecutionRepository,
-    WorkflowExecutionSummary,
+    WorkflowExecutionSummary, WorkflowPageRequest,
 };
 
 #[cfg(test)]
@@ -147,6 +147,20 @@ impl WorkflowExecutionRepository for WorkflowExecutionFileRepository {
         Ok(execution_store::project_executions_to_summaries(
             executions, &filter,
         ))
+    }
+
+    fn list_executions_page(
+        &self,
+        filter: ExecutionListFilter,
+        page: WorkflowPageRequest,
+    ) -> Result<Vec<WorkflowExecutionSummary>, WorkflowError> {
+        self.list_executions(filter).map(|executions| {
+            executions
+                .into_iter()
+                .skip(page.offset)
+                .take(page.limit)
+                .collect()
+        })
     }
 
     fn get_execution(

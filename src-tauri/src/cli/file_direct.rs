@@ -7,7 +7,7 @@ use std::path::Path;
 
 use super::common::{ensure_existing_data_dir, validate_execution_id, CliError};
 use crate::adaptor::presenter::workflow::workflow_execution_to_view;
-use crate::domain::workflow::{ExecutionStatusFilter, WorkflowError};
+use crate::domain::workflow::{ExecutionStatusFilter, WorkflowError, WorkflowPageRequest};
 use crate::usecase::workflow::dto::{WorkflowExecutionSummaryDto, WorkflowSummaryDto};
 use crate::usecase::workflow::{
     WorkflowGetOutputResult, WorkflowReadUsecase, WorkflowValidateOutputResult,
@@ -30,7 +30,7 @@ pub(super) fn list_executions(
 ) -> Result<Vec<WorkflowExecutionSummaryDto>, CliError> {
     ensure_existing_data_dir(data_dir)?;
     read_usecase(data_dir, None)?
-        .list_executions_filtered(status, worktree)
+        .list_executions_filtered(status, worktree, WorkflowPageRequest::new(0, usize::MAX))
         .map_err(workflow_error_to_cli_error)
 }
 

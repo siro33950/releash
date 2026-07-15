@@ -26,6 +26,18 @@ pub struct ExecutionListFilter {
     pub worktree_path: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkflowPageRequest {
+    pub offset: usize,
+    pub limit: usize,
+}
+
+impl WorkflowPageRequest {
+    pub const fn new(offset: usize, limit: usize) -> Self {
+        Self { offset, limit }
+    }
+}
+
 #[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkflowExecutionRecord {

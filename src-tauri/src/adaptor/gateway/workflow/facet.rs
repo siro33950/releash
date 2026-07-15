@@ -443,8 +443,8 @@ mod tests {
             ["run", "-id"].concat(),
             ["workflow_", "pending"].concat(),
             ["pending_", "command"].concat(),
-            ["climutation", "requested"].concat(),
-            ["climutation", "rejected"].concat(),
+            ["cli_", "mutation_", "requested"].concat(),
+            ["cli_", "mutation_", "rejected"].concat(),
         ];
         for term in deprecated_terms {
             assert!(
@@ -484,6 +484,22 @@ mod tests {
         fs::write(policies.join("review.md"), "Review carefully.").unwrap();
         fs::write(knowledge.join("architecture.md"), "The system uses Tauri.").unwrap();
         fs::write(instructions.join("implement.md"), "Implement the feature.").unwrap();
+    }
+
+    #[test]
+    fn deprecated_vocabulary_guard_rejects_retired_cli_mutation_event_names() {
+        for retired_name in [
+            ["cli_", "mutation_", "requested"].concat(),
+            ["cli_", "mutation_", "rejected"].concat(),
+        ] {
+            let result = std::panic::catch_unwind(|| {
+                assert_no_deprecated_workflow_vocabulary("fixture", &retired_name)
+            });
+            assert!(
+                result.is_err(),
+                "guard accepted retired name {retired_name}"
+            );
+        }
     }
 
     // --- validate_facet_key ---

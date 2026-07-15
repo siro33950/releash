@@ -26,6 +26,7 @@ use crate::domain::workflow::{
     ExecutionListFilter, ExecutionStatusFilter, FacetKind, FacetRepository, FacetSummary,
     ManagedWorktreeGateway, SecretSourceGateway, WorkflowDefinition, WorkflowDefinitionRepository,
     WorkflowError, WorkflowExecution, WorkflowExecutionArchiveRepository, WorkflowExecutionSummary,
+    WorkflowPageRequest,
 };
 use crate::usecase::workflow::ports::{
     ExternalEditorGateway, WorkflowConfigPathGateway, WorkflowDefinitionSourceGateway,
@@ -89,16 +90,20 @@ impl WorkflowReadUsecase {
         &self,
         status: Option<ExecutionStatusFilter>,
         worktree_path: Option<&str>,
+        page: WorkflowPageRequest,
     ) -> Result<Vec<dto::WorkflowExecutionSummaryDto>, WorkflowError> {
         let worktree_path = worktree_path
             .filter(|worktree_path| !worktree_path.is_empty())
             .map(|worktree_path| self.worktrees.resolve(worktree_path))
             .transpose()?;
         self.query
-            .list_executions(ExecutionListFilter {
-                status,
-                worktree_path,
-            })
+            .list_executions_page(
+                ExecutionListFilter {
+                    status,
+                    worktree_path,
+                },
+                page,
+            )
             .map(|executions| {
                 executions
                     .into_iter()
@@ -119,6 +124,14 @@ impl WorkflowReadUsecase {
         execution_id: &str,
     ) -> Result<Vec<WorkflowEventView>, WorkflowError> {
         self.query.get_execution_log(execution_id)
+    }
+
+    pub(crate) fn get_execution_log_page(
+        &self,
+        execution_id: &str,
+        page: WorkflowPageRequest,
+    ) -> Result<Vec<WorkflowEventView>, WorkflowError> {
+        self.query.get_execution_log_page(execution_id, page)
     }
 
     pub(crate) fn get_execution_state(
@@ -1255,7 +1268,11 @@ mod tests {
         assert!(workflows[1].is_running);
 
         let active = read
-            .list_executions_filtered(Some(ExecutionStatusFilter::Active), Some("repo"))
+            .list_executions_filtered(
+                Some(ExecutionStatusFilter::Active),
+                Some("repo"),
+                WorkflowPageRequest::new(0, 10),
+            )
             .unwrap();
         assert_eq!(active.len(), 1);
         assert_eq!(

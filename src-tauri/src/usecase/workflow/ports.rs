@@ -1,5 +1,5 @@
 use crate::domain::workflow::{
-    WorkflowDefinition, WorkflowError, WorkflowExecution, WorkflowExecutionId,
+    WorkflowDefinition, WorkflowError, WorkflowExecution, WorkflowExecutionId, WorkflowPageRequest,
     WorkflowRuntimeSnapshot,
 };
 
@@ -24,6 +24,19 @@ pub trait WorkflowEventRepository: Send + Sync {
         &self,
         execution_id: &WorkflowExecutionId,
     ) -> Result<Vec<WorkflowEventDraft>, WorkflowError>;
+    fn read_page(
+        &self,
+        execution_id: &WorkflowExecutionId,
+        page: WorkflowPageRequest,
+    ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
+        self.read(execution_id).map(|events| {
+            events
+                .into_iter()
+                .skip(page.offset)
+                .take(page.limit)
+                .collect()
+        })
+    }
 }
 
 pub trait WorkflowExecutionProjectionRepository: Send + Sync {
