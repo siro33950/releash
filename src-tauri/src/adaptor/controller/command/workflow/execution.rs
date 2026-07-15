@@ -18,12 +18,14 @@ pub async fn list_workflow_executions(
     status: Option<String>,
     worktree_path: String,
 ) -> Result<Vec<WorkflowExecutionSummaryDto>, String> {
-    let status = match status.as_deref() {
-        None | Some("") => None,
-        Some("active") => Some(crate::domain::workflow::ExecutionStatusFilter::Active),
-        Some("terminal") => Some(crate::domain::workflow::ExecutionStatusFilter::Terminal),
-        Some(other) => return Err(format!("Invalid status filter: {other}")),
-    };
+    let status =
+        crate::domain::workflow::ExecutionStatusFilter::from_public_filter(status.as_deref())
+            .map_err(|_| {
+                format!(
+                    "Invalid status filter: {}",
+                    status.as_deref().unwrap_or_default()
+                )
+            })?;
     let query = state.workflow_usecase.clone();
     tokio::task::spawn_blocking(move || {
         query
@@ -77,29 +79,11 @@ pub async fn get_workflow_execution_log(
     worktree_path: String,
     execution_id: String,
 ) -> Result<Option<Vec<WorkflowEventView>>, String> {
-    get_workflow_execution_log_inner(&state.workflow_usecase, worktree_path, execution_id).await
+    get_workflow_execution_log_impl(&state.workflow_usecase, worktree_path, execution_id).await
 }
 
 /// [05] 内部経路。Tauri command 側は injected state を受け取り本関数に委譲する。
-#[cfg(test)]
-pub(super) async fn get_workflow_execution_log_inner(
-    query: &Arc<crate::usecase::workflow::WorkflowUsecase>,
-    worktree_path: String,
-    execution_id: String,
-) -> Result<Option<Vec<WorkflowEventView>>, String> {
-    get_workflow_execution_log_inner_impl(query, worktree_path, execution_id).await
-}
-
-#[cfg(not(test))]
-async fn get_workflow_execution_log_inner(
-    query: &Arc<crate::usecase::workflow::WorkflowUsecase>,
-    worktree_path: String,
-    execution_id: String,
-) -> Result<Option<Vec<WorkflowEventView>>, String> {
-    get_workflow_execution_log_inner_impl(query, worktree_path, execution_id).await
-}
-
-async fn get_workflow_execution_log_inner_impl(
+pub(super) async fn get_workflow_execution_log_impl(
     query: &Arc<crate::usecase::workflow::WorkflowUsecase>,
     worktree_path: String,
     execution_id: String,
@@ -144,29 +128,11 @@ pub async fn get_workflow_execution_state(
     worktree_path: String,
     execution_id: String,
 ) -> Result<Option<WorkflowExecutionView>, String> {
-    get_workflow_execution_state_inner(&state.workflow_usecase, worktree_path, execution_id).await
+    get_workflow_execution_state_impl(&state.workflow_usecase, worktree_path, execution_id).await
 }
 
 /// [05] 内部経路。Tauri command 側は injected state を受け取り本関数に委譲する。
-#[cfg(test)]
-pub(super) async fn get_workflow_execution_state_inner(
-    query: &Arc<crate::usecase::workflow::WorkflowUsecase>,
-    worktree_path: String,
-    execution_id: String,
-) -> Result<Option<WorkflowExecutionView>, String> {
-    get_workflow_execution_state_inner_impl(query, worktree_path, execution_id).await
-}
-
-#[cfg(not(test))]
-async fn get_workflow_execution_state_inner(
-    query: &Arc<crate::usecase::workflow::WorkflowUsecase>,
-    worktree_path: String,
-    execution_id: String,
-) -> Result<Option<WorkflowExecutionView>, String> {
-    get_workflow_execution_state_inner_impl(query, worktree_path, execution_id).await
-}
-
-async fn get_workflow_execution_state_inner_impl(
+pub(super) async fn get_workflow_execution_state_impl(
     query: &Arc<crate::usecase::workflow::WorkflowUsecase>,
     worktree_path: String,
     execution_id: String,
@@ -200,7 +166,7 @@ pub async fn get_workflow_node_detail(
     execution_id: String,
     node_execution_id: String,
 ) -> Result<Option<NodeExecutionView>, String> {
-    get_workflow_node_detail_inner(
+    get_workflow_node_detail_impl(
         &state.workflow_usecase,
         worktree_path,
         execution_id,
@@ -209,27 +175,7 @@ pub async fn get_workflow_node_detail(
     .await
 }
 
-#[cfg(test)]
-pub(super) async fn get_workflow_node_detail_inner(
-    query: &Arc<crate::usecase::workflow::WorkflowUsecase>,
-    worktree_path: String,
-    execution_id: String,
-    node_execution_id: String,
-) -> Result<Option<NodeExecutionView>, String> {
-    get_workflow_node_detail_inner_impl(query, worktree_path, execution_id, node_execution_id).await
-}
-
-#[cfg(not(test))]
-async fn get_workflow_node_detail_inner(
-    query: &Arc<crate::usecase::workflow::WorkflowUsecase>,
-    worktree_path: String,
-    execution_id: String,
-    node_execution_id: String,
-) -> Result<Option<NodeExecutionView>, String> {
-    get_workflow_node_detail_inner_impl(query, worktree_path, execution_id, node_execution_id).await
-}
-
-async fn get_workflow_node_detail_inner_impl(
+pub(super) async fn get_workflow_node_detail_impl(
     query: &Arc<crate::usecase::workflow::WorkflowUsecase>,
     worktree_path: String,
     execution_id: String,

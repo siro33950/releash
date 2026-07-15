@@ -7,7 +7,7 @@
 use crate::domain::workflow::value_objects::WorkflowExecutionRecord;
 use crate::domain::workflow::value_objects::{
     ExecutionListFilter, FacetKind, FacetSummary, WorkflowDefinition, WorkflowExecutionId,
-    WorkflowExecutionSummary, WorkflowSummary,
+    WorkflowExecutionSummary, WorkflowPageRequest, WorkflowSummary,
 };
 use crate::domain::workflow::WorkflowError;
 
@@ -32,6 +32,19 @@ pub trait WorkflowExecutionRepository: Send + Sync {
         &self,
         filter: ExecutionListFilter,
     ) -> Result<Vec<WorkflowExecutionSummary>, WorkflowError>;
+    fn list_executions_page(
+        &self,
+        filter: ExecutionListFilter,
+        page: WorkflowPageRequest,
+    ) -> Result<Vec<WorkflowExecutionSummary>, WorkflowError> {
+        self.list_executions(filter).map(|executions| {
+            executions
+                .into_iter()
+                .skip(page.offset)
+                .take(page.limit)
+                .collect()
+        })
+    }
     fn get_execution(
         &self,
         execution_id: &WorkflowExecutionId,

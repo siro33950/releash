@@ -26,7 +26,7 @@ use crate::domain::workflow::{
     ExecutionListFilter, ExecutionStatusFilter, FacetKind, FacetRepository, FacetSummary,
     ManagedWorktreeGateway, SecretSourceGateway, WorkflowDefinition, WorkflowDefinitionRepository,
     WorkflowError, WorkflowExecution, WorkflowExecutionArchiveRepository, WorkflowExecutionSummary,
-    WorkflowSummary,
+    WorkflowPageRequest,
 };
 use crate::usecase::workflow::ports::{
     ExternalEditorGateway, WorkflowConfigPathGateway, WorkflowDefinitionSourceGateway,
@@ -35,7 +35,7 @@ use crate::usecase::workflow::ports::{
 
 use definition::WorkflowDefinitionUsecase;
 use facet::WorkflowFacetUsecase;
-use output::WorkflowOutputUsecase;
+pub(crate) use output::WorkflowOutputUsecase;
 pub use output::WorkflowValidateOutputResult;
 use query_service::WorkflowQueryService;
 pub use query_service::{WorkflowEventView, WorkflowGetOutputResult};
@@ -45,6 +45,125 @@ pub(crate) use workspace_tree::{
     WorkspaceSessionGateway, WorkspaceSessionInput, WorkspaceSessionState, WorkspaceTreeNodeDto,
     WorkspaceWorkflowHistoryItemDto, WorkspaceWorkflowNodeExecutionDto,
 };
+
+#[derive(Clone)]
+pub(crate) struct WorkflowReadUsecase {
+    query: WorkflowQueryService,
+    output: WorkflowOutputUsecase,
+    worktrees: std::sync::Arc<dyn ManagedWorktreeGateway>,
+}
+
+impl WorkflowReadUsecase {
+    pub(crate) fn new(
+        query: WorkflowQueryService,
+        worktrees: std::sync::Arc<dyn ManagedWorktreeGateway>,
+        secrets: std::sync::Arc<dyn SecretSourceGateway>,
+    ) -> Self {
+        Self {
+            output: WorkflowOutputUsecase::new(query.clone(), secrets),
+            query,
+            worktrees,
+        }
+    }
+
+    pub(crate) fn list_workflow_summaries(
+        &self,
+    ) -> Result<Vec<dto::WorkflowSummaryDto>, WorkflowError> {
+        let running_names = self
+            .query
+            .list_executions(ExecutionListFilter {
+                status: Some(ExecutionStatusFilter::Active),
+                worktree_path: None,
+            })?
+            .into_iter()
+            .map(|execution| execution.workflow_name)
+            .collect::<Vec<_>>();
+        self.query.list_workflows(&running_names).map(|summaries| {
+            summaries
+                .into_iter()
+                .map(dto::workflow_summary_to_dto)
+                .collect()
+        })
+    }
+
+    pub(crate) fn list_executions_filtered(
+        &self,
+        status: Option<ExecutionStatusFilter>,
+        worktree_path: Option<&str>,
+        page: WorkflowPageRequest,
+    ) -> Result<Vec<dto::WorkflowExecutionSummaryDto>, WorkflowError> {
+        let worktree_path = worktree_path
+            .filter(|worktree_path| !worktree_path.is_empty())
+            .map(|worktree_path| self.worktrees.resolve(worktree_path))
+            .transpose()?;
+        self.query
+            .list_executions_page(
+                ExecutionListFilter {
+                    status,
+                    worktree_path,
+                },
+                page,
+            )
+            .map(|executions| {
+                executions
+                    .into_iter()
+                    .map(dto::workflow_execution_summary_to_dto)
+                    .collect()
+            })
+    }
+
+    pub(crate) fn get_execution(
+        &self,
+        execution_id: &str,
+    ) -> Result<Option<WorkflowExecutionSummary>, WorkflowError> {
+        self.query.get_execution(execution_id)
+    }
+
+    pub(crate) fn get_execution_log(
+        &self,
+        execution_id: &str,
+    ) -> Result<Vec<WorkflowEventView>, WorkflowError> {
+        self.query.get_execution_log(execution_id)
+    }
+
+    pub(crate) fn get_execution_log_page(
+        &self,
+        execution_id: &str,
+        page: WorkflowPageRequest,
+    ) -> Result<Vec<WorkflowEventView>, WorkflowError> {
+        self.query.get_execution_log_page(execution_id, page)
+    }
+
+    pub(crate) fn get_execution_state(
+        &self,
+        execution_id: &str,
+    ) -> Result<Option<WorkflowExecution>, WorkflowError> {
+        self.query.get_execution_state(execution_id)
+    }
+
+    pub(crate) fn validate_output_for_contract(
+        &self,
+        execution_id: &str,
+        node_name: &str,
+        contract: &str,
+        structured_output: Value,
+    ) -> Result<WorkflowValidateOutputResult, WorkflowError> {
+        self.output.validate_output_for_contract(
+            execution_id,
+            node_name,
+            contract,
+            structured_output,
+        )
+    }
+
+    pub(crate) fn get_output(
+        &self,
+        execution_id: &str,
+        node_name: &str,
+    ) -> Result<WorkflowGetOutputResult, WorkflowError> {
+        self.output.get_output(execution_id, node_name)
+    }
+}
 
 #[derive(Clone)]
 pub struct WorkflowUsecase {
@@ -58,6 +177,7 @@ pub struct WorkflowUsecase {
     config_paths: std::sync::Arc<dyn WorkflowConfigPathGateway>,
     sessions: std::sync::Arc<dyn WorkspaceSessionGateway>,
     execution_archives: std::sync::Arc<dyn WorkflowExecutionArchiveRepository>,
+    read: WorkflowReadUsecase,
 }
 
 impl WorkflowUsecase {
@@ -78,6 +198,11 @@ impl WorkflowUsecase {
         let definition_commands = WorkflowDefinitionUsecase::new(definitions, definition_sources);
         let facet_commands = WorkflowFacetUsecase::new(facets.clone());
         let output = WorkflowOutputUsecase::new(query.clone(), secrets);
+        let read = WorkflowReadUsecase {
+            query: query.clone(),
+            output: output.clone(),
+            worktrees: worktrees.clone(),
+        };
         Self {
             query,
             definition_commands,
@@ -89,14 +214,12 @@ impl WorkflowUsecase {
             config_paths,
             sessions,
             execution_archives,
+            read,
         }
     }
 
-    pub fn list_executions(
-        &self,
-        filter: ExecutionListFilter,
-    ) -> Result<Vec<WorkflowExecutionSummary>, WorkflowError> {
-        self.query.list_executions(filter)
+    pub(crate) fn read_usecase(&self) -> WorkflowReadUsecase {
+        self.read.clone()
     }
 
     pub fn list_executions_for_worktree(
@@ -156,13 +279,6 @@ impl WorkflowUsecase {
 
     pub fn resolve_worktree_path(&self, worktree_path: &str) -> Result<String, WorkflowError> {
         self.worktrees.resolve(worktree_path)
-    }
-
-    pub fn list_workflows(
-        &self,
-        running_names: &[String],
-    ) -> Result<Vec<WorkflowSummary>, WorkflowError> {
-        self.query.list_workflows(running_names)
     }
 
     pub fn get_workflow(
@@ -319,7 +435,7 @@ mod tests {
     use crate::domain::workflow::{
         ExecutionListFilter, ExecutionOrigin, ExecutionStatus, ExecutionStatusFilter,
         WorkflowExecution, WorkflowExecutionId, WorkflowExecutionManualArchiveRecord,
-        WorkflowExecutionRecord, WorkflowExecutionRepository,
+        WorkflowExecutionRecord, WorkflowExecutionRepository, WorkflowSummary,
     };
     use crate::usecase::workflow::ports::{
         ExternalEditorGateway, WorkflowConfigPathGateway, WorkflowDiagnosticsGateway,
@@ -689,9 +805,31 @@ mod tests {
         definitions: Mutex<HashMap<String, WorkflowDefinition>>,
     }
 
+    impl FakeDefinitionRepository {
+        fn insert(&self, definition: WorkflowDefinition) {
+            self.definitions
+                .lock()
+                .unwrap()
+                .insert(definition.name.clone(), definition);
+        }
+    }
+
     impl WorkflowDefinitionRepository for FakeDefinitionRepository {
-        fn list(&self, _running_names: &[String]) -> Result<Vec<WorkflowSummary>, WorkflowError> {
-            Ok(Vec::new())
+        fn list(&self, running_names: &[String]) -> Result<Vec<WorkflowSummary>, WorkflowError> {
+            let mut summaries = self
+                .definitions
+                .lock()
+                .unwrap()
+                .values()
+                .map(|definition| WorkflowSummary {
+                    name: definition.name.clone(),
+                    description: definition.description.clone(),
+                    builtin: definition.builtin,
+                    is_running: running_names.contains(&definition.name),
+                })
+                .collect::<Vec<_>>();
+            summaries.sort_by(|left, right| left.name.cmp(&right.name));
+            Ok(summaries)
         }
 
         fn get(&self, file_stem: &str) -> Result<Option<WorkflowDefinition>, WorkflowError> {
@@ -966,6 +1104,7 @@ mod tests {
     struct Fixture {
         usecase: WorkflowUsecase,
         editors: Arc<FakeExternalEditorGateway>,
+        definitions: Arc<FakeDefinitionRepository>,
         definition_sources: Arc<FakeDefinitionSourceGateway>,
     }
 
@@ -1020,6 +1159,7 @@ mod tests {
             Self {
                 usecase,
                 editors,
+                definitions,
                 definition_sources,
             }
         }
@@ -1100,6 +1240,46 @@ mod tests {
             .usecase
             .list_executions_for_worktree(None, "reject")
             .is_err());
+    }
+
+    #[test]
+    fn workflow_read_facade_owns_active_aggregation_filtering_and_dto_projection() {
+        let executions = Arc::new(FakeExecutionRepository::default());
+        executions.insert(execution_summary(
+            "00000000-0000-0000-0000-000000000001",
+            "/canonical/repo",
+            ExecutionStatus::Running,
+        ));
+        executions.insert(execution_summary(
+            "00000000-0000-0000-0000-000000000002",
+            "/canonical/repo",
+            ExecutionStatus::Completed,
+        ));
+        let fixture = Fixture::with_executions(executions);
+        fixture.definitions.insert(workflow_definition("idle"));
+        fixture.definitions.insert(workflow_definition("wf"));
+        let read = fixture.usecase.read_usecase();
+
+        let workflows = read.list_workflow_summaries().unwrap();
+        assert_eq!(workflows.len(), 2);
+        assert_eq!(workflows[0].name, "idle");
+        assert!(!workflows[0].is_running);
+        assert_eq!(workflows[1].name, "wf");
+        assert!(workflows[1].is_running);
+
+        let active = read
+            .list_executions_filtered(
+                Some(ExecutionStatusFilter::Active),
+                Some("repo"),
+                WorkflowPageRequest::new(0, 10),
+            )
+            .unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(
+            active[0].execution_id,
+            "00000000-0000-0000-0000-000000000001"
+        );
+        assert_eq!(active[0].worktree_path, "/canonical/repo");
     }
 
     #[test]

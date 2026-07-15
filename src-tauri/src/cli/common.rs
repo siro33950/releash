@@ -46,7 +46,7 @@ impl From<String> for CliError {
     }
 }
 
-fn resolve_data_dir() -> Result<PathBuf, String> {
+pub(super) fn resolve_data_dir() -> Result<PathBuf, String> {
     resolve_data_dir_from_env(std::env::var("RELEASH_DATA_DIR").ok())
 }
 
@@ -105,6 +105,15 @@ pub(super) fn validate_execution_id(execution_id: &str) -> Result<(), CliError> 
         .map_err(|_| {
             CliError::InvalidInput("Invalid execution_id format (must be UUID)".to_string())
         })
+}
+
+pub(super) fn validate_node(node: &str) -> Result<(), CliError> {
+    if node.trim().is_empty() {
+        return Err(CliError::InvalidInput(
+            "--node must not be empty".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// 表示用の固定幅列に収まるよう文字列を短縮する。

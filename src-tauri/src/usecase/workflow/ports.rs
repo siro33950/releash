@@ -1,5 +1,5 @@
 use crate::domain::workflow::{
-    WorkflowDefinition, WorkflowError, WorkflowExecution, WorkflowExecutionId,
+    WorkflowDefinition, WorkflowError, WorkflowExecution, WorkflowExecutionId, WorkflowPageRequest,
     WorkflowRuntimeSnapshot,
 };
 
@@ -24,6 +24,19 @@ pub trait WorkflowEventRepository: Send + Sync {
         &self,
         execution_id: &WorkflowExecutionId,
     ) -> Result<Vec<WorkflowEventDraft>, WorkflowError>;
+    fn read_page(
+        &self,
+        execution_id: &WorkflowExecutionId,
+        page: WorkflowPageRequest,
+    ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
+        self.read(execution_id).map(|events| {
+            events
+                .into_iter()
+                .skip(page.offset)
+                .take(page.limit)
+                .collect()
+        })
+    }
 }
 
 pub trait WorkflowExecutionProjectionRepository: Send + Sync {
@@ -56,22 +69,6 @@ pub enum WorkflowSourceSaveError {
     Workflow(WorkflowError),
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct PendingWorkflowCommand {
-    pub command_id: String,
-    pub execution_id: String,
-    pub requested_at: f64,
-    pub payload: serde_json::Value,
-}
-
-pub trait PendingWorkflowCommandRepository: Send + Sync {
-    fn write_pending(&self, command: PendingWorkflowCommand) -> Result<(), WorkflowError>;
-    #[cfg(test)]
-    fn list_pending(&self) -> Result<Vec<PendingWorkflowCommand>, WorkflowError>;
-    #[cfg(test)]
-    fn mark_processed(&self, command_id: &str) -> Result<(), WorkflowError>;
-}
-
 pub trait ExternalEditorGateway: Send + Sync {
     fn open_workflow(&self, name: &str) -> Result<(), WorkflowError>;
     fn open_facet(&self, kind: &str, key: &str) -> Result<(), WorkflowError>;
@@ -93,7 +90,7 @@ pub trait WorkflowStartExecutionGateway: Send + Sync {
     ) -> Result<String, WorkflowError>;
     async fn resolve_start_execution_workflow(
         &self,
-        workflow_file_stem: &str,
+        workflow_name: &str,
     ) -> Result<WorkflowDefinition, WorkflowError>;
     async fn start_resolved_execution(
         &self,
@@ -117,17 +114,8 @@ pub trait WorkflowSubmitOutputGateway: Send + Sync {
 }
 
 #[async_trait::async_trait]
-pub trait WorkflowPendingRuntimeCommandGateway: Send + Sync {
-    async fn dispatch_pending_command(
-        &self,
-        command: PendingRuntimeCommand,
-    ) -> PendingRuntimeCommandOutcome;
-}
-
-#[async_trait::async_trait]
 pub trait WorkflowTurnCompleteGateway: Send + Sync {
     async fn is_session_running(&self, chat_session_id: &str) -> bool;
-    async fn pickup_pending_submit_outputs(&self);
     async fn complete_turn(
         &self,
         command: WorkflowTurnCompleteCommand,
@@ -180,7 +168,6 @@ pub trait WorkflowRuntimeCommandGateway:
     + WorkflowAbortExecutionGateway
     + WorkflowApprovalGateway
     + WorkflowSubmitOutputGateway
-    + WorkflowPendingRuntimeCommandGateway
     + WorkflowTurnCompleteGateway
     + WorkflowStallObservedGateway
     + WorkflowRuntimeStateGateway
@@ -194,7 +181,6 @@ impl<T> WorkflowRuntimeCommandGateway for T where
         + WorkflowAbortExecutionGateway
         + WorkflowApprovalGateway
         + WorkflowSubmitOutputGateway
-        + WorkflowPendingRuntimeCommandGateway
         + WorkflowTurnCompleteGateway
         + WorkflowStallObservedGateway
         + WorkflowRuntimeStateGateway
@@ -265,37 +251,4 @@ pub struct WorkflowStallObservedCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowStallClearedCommand {
     pub chat_session_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct PendingRuntimeCommand {
-    pub execution_id: String,
-    pub request_id: String,
-    pub requested_at: f64,
-    pub payload: PendingRuntimeCommandPayload,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum PendingRuntimeCommandPayload {
-    Approve {
-        node_name: String,
-        node_execution_id: Option<String>,
-        comment: Option<String>,
-    },
-    Abort {
-        node_name: Option<String>,
-    },
-    SubmitOutput {
-        node_name: String,
-        node_execution_id: Option<String>,
-        contract: String,
-        artifact: serde_json::Value,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PendingRuntimeCommandOutcome {
-    Accepted,
-    RejectedFinal(String),
-    RetryableFailure(String),
 }

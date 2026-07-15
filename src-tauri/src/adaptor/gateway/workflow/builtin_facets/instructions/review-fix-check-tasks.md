@@ -2,7 +2,7 @@
 
 {{ request }} のフルレビュー後修正について、Open Thread の `[FIX_POLICY_APPROVED]` と現在の実装差分を確認し、未実装・不足・方針不一致を Task にする。
 
-この Step は確認と Task 化だけを行う。コード変更、Thread への Comment 投稿、resolve は行わない。
+この node は確認と Task 化だけを行う。コード変更、Thread への Comment 投稿、resolve は行わない。
 
 # 入力
 
@@ -56,7 +56,7 @@ git diff "$(git merge-base "$RELEASH_BASE_BRANCH" HEAD)" HEAD
 
 未実装・不足・方針不一致がある場合だけ Task を作る。
 
-Task は、次の実装 Step が Thread を読まずに修正できる粒度で書く。
+Task は、次の実装 node が Thread を読まずに修正できる粒度で書く。
 
 Task は `review-fix-tasks` schema の exact key で作る。別名で代替しない。
 

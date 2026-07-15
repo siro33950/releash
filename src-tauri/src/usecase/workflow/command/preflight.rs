@@ -5,8 +5,8 @@ use crate::domain::workflow::{
 
 use super::{AbortExecutionCommand, ApprovalCommand, StartExecutionCommand, SubmitOutputCommand};
 use crate::usecase::workflow::ports::{
-    PendingRuntimeCommand, PendingRuntimeCommandPayload, WorkflowStallClearedNotification,
-    WorkflowStallObservedNotification, WorkflowTurnCompleteNotification,
+    WorkflowStallClearedNotification, WorkflowStallObservedNotification,
+    WorkflowTurnCompleteNotification,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -17,7 +17,7 @@ impl WorkflowRuntimeCommandPreflight {
         &self,
         command: &StartExecutionCommand,
     ) -> Result<(), WorkflowError> {
-        WorkflowName::new(command.workflow_file_stem.clone())?;
+        WorkflowName::new(command.workflow_name.clone())?;
         WorktreePath::new(command.worktree_path.clone())?;
         if command.permission_mode.trim().is_empty() {
             return Err(WorkflowError::validation(
@@ -54,41 +54,6 @@ impl WorkflowRuntimeCommandPreflight {
         NodeName::new(command.node_name.clone())?;
         ContractType::new(command.contract.clone())?;
         Ok(())
-    }
-
-    pub(crate) fn validate_pending_runtime_command(
-        &self,
-        command: &PendingRuntimeCommand,
-    ) -> Result<(), WorkflowError> {
-        WorkflowExecutionId::new(command.execution_id.clone())?;
-        WorkflowExecutionId::new(command.request_id.clone())?;
-        match &command.payload {
-            PendingRuntimeCommandPayload::Approve {
-                node_name,
-                node_execution_id: _,
-                comment,
-            } => {
-                NodeName::new(node_name.clone())?;
-                approval_rules::validate_optional_comment_text(
-                    comment.as_deref(),
-                    "Approve comment",
-                )
-                .map_err(|err| WorkflowError::validation(err.to_string()))
-            }
-            PendingRuntimeCommandPayload::Abort { node_name } => {
-                validate_optional_node_name(node_name.as_deref())
-            }
-            PendingRuntimeCommandPayload::SubmitOutput {
-                node_name,
-                node_execution_id: _,
-                contract,
-                artifact: _,
-            } => {
-                NodeName::new(node_name.clone())?;
-                ContractType::new(contract.clone())?;
-                Ok(())
-            }
-        }
     }
 
     pub(crate) fn validate_turn_complete(

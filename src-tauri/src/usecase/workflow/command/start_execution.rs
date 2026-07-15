@@ -7,7 +7,7 @@ use super::preflight::WorkflowRuntimeCommandPreflight;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartExecutionCommand {
-    pub workflow_file_stem: String,
+    pub workflow_name: String,
     pub worktree_path: String,
     pub request: Option<String>,
     pub created_from: ExecutionOrigin,
@@ -16,7 +16,7 @@ pub struct StartExecutionCommand {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedStartExecutionCommand {
-    pub workflow_file_stem: String,
+    pub workflow_name: String,
     pub workflow: WorkflowDefinition,
     pub worktree_path: String,
     pub request: Option<String>,
@@ -49,11 +49,11 @@ impl WorkflowStartExecutionUsecase {
             .await?;
         let workflow = self
             .runtime
-            .resolve_start_execution_workflow(&command.workflow_file_stem)
+            .resolve_start_execution_workflow(&command.workflow_name)
             .await?;
         self.runtime
             .start_resolved_execution(ResolvedStartExecutionCommand {
-                workflow_file_stem: command.workflow_file_stem,
+                workflow_name: command.workflow_name,
                 workflow,
                 worktree_path,
                 request: command.request,

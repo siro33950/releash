@@ -1,4 +1,4 @@
-{{ request }} のフルレビューで残った Open Thread を 1 件ずつ人間と確認し、実装前の修正方針を決定する。対応する Thread には `[FIX_POLICY_APPROVED]` 付きの方針 Comment を投稿し、対応見送り・誤検知・情報のみの Thread は方針と根拠を含めて resolve する。本 Step では実装しない。
+{{ request }} のフルレビューで残った Open Thread を 1 件ずつ人間と確認し、実装前の修正方針を決定する。対応する Thread には `[FIX_POLICY_APPROVED]` 付きの方針 Comment を投稿し、対応見送り・誤検知・情報のみの Thread は方針と根拠を含めて resolve する。この node では実装しない。
 
 ## 入力
 
@@ -34,7 +34,7 @@
 ```text
 [FIX_POLICY_APPROVED]
 処理区分: 修正対応
-修正方針: <何をどう変更するか。実装 Step がこの内容だけで着手できる粒度で書く>
+修正方針: <何をどう変更するか。実装 node がこの内容だけで着手できる粒度で書く>
 受入条件: <修正後に満たすべき条件。確認観点・期待動作・テスト観点を含める>
 根拠: <reviewer指摘・verifier判定・verifier修正方針・議論内容を踏まえた採用理由>
 対応しない範囲: <この Thread では扱わないこと。なければ `なし`>
@@ -58,7 +58,7 @@ CHANGE_REQUESTへの回答: <該当する場合のみ。差し戻しを修正方
 2. 各 Thread に対して `releash review get <thread-id> --session-id "$RELEASH_SESSION_ID" --json` と `releash review history <thread-id> --session-id "$RELEASH_SESSION_ID" --json` を実行する
 3. reviewer 指摘、verifier 判定、verifier 修正方針、既存 `[FIX_POLICY_APPROVED]`、`[FIX_POLICY_CHANGE_REQUEST]` を整理する
 
-Open Thread が 0 件なら、完了報告を出して Step を終える。
+Open Thread が 0 件なら、完了報告を出して node を終える。
 
 ### 2. 未完了 Thread を選ぶ
 
@@ -94,7 +94,7 @@ CHANGE_REQUEST対応案:
 <修正対応 / 対応見送り / 誤検知 / 情報のみ>
 
 修正方針案:
-<修正対応の場合、何をどう変更するか。実装 Step がこの内容だけで着手できる粒度で書く>
+<修正対応の場合、何をどう変更するか。実装 node がこの内容だけで着手できる粒度で書く>
 
 受入条件案:
 <修正後に満たすべき条件。確認観点・期待動作・テスト観点を含める>
@@ -108,7 +108,7 @@ CHANGE_REQUEST対応案:
 
 ### 4. 一問一答で合意する
 
-提示した Thread について、人間に次のいずれかを求める。修正対応の場合、approve は「修正するかどうか」ではなく「この修正方針・受入条件で実装 Step に渡してよいか」の承認として扱う。
+提示した Thread について、人間に次のいずれかを求める。修正対応の場合、approve は「修正するかどうか」ではなく「この修正方針・受入条件で実装 node に渡してよいか」の承認として扱う。
 
 - approve: 方針案を採用する
 - 修正指示: 方針案を修正して再提示する
@@ -162,7 +162,7 @@ CHANGE_REQUEST対応: <件数>件
 - 1 件の Thread が未確定のまま次の Thread に進むこと
 - approve されていない方針を `[FIX_POLICY_APPROVED]` として投稿すること
 - `[FIX_POLICY_CHANGE_REQUEST]` を無視して既存方針のまま完了扱いにすること
-- 修正対応する Thread を本 Step で resolve すること
-- 対応見送り・誤検知・情報のみの Thread を本 Step で resolve せず Open のまま残すこと
+- 修正対応する Thread をこの node で resolve すること
+- 対応見送り・誤検知・情報のみの Thread をこの node で resolve せず Open のまま残すこと
 - 対応見送り・誤検知・情報のみの Thread に `[FIX_POLICY_APPROVED]` Comment を投稿すること
 - 合意済み方針と異なる内容を Comment または resolve summary に書くこと

@@ -23,7 +23,7 @@ pub use execution::{
 #[cfg(test)]
 pub use execution_metadata::WorkflowExecutionRecord;
 pub use execution_metadata::{
-    ExecutionListFilter, ExecutionStatusFilter, WorkflowExecutionSummary,
+    ExecutionListFilter, ExecutionStatusFilter, WorkflowExecutionSummary, WorkflowPageRequest,
 };
 pub use facet::{FacetKey, FacetKind, FacetSummary};
 pub use failure::{

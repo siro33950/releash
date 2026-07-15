@@ -20,9 +20,6 @@ use crate::adaptor::gateway::workflow::domain_mapping::{
 use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::engine_start_guard as workflow_engine_start_guard;
 use crate::adaptor::gateway::workflow::event::{ContractViolationRecord, WorkflowEvent};
-use crate::adaptor::gateway::workflow::event_log_query::{
-    request_event_already_recorded, RequestEventKind, RequestEventLookupError,
-};
 use crate::adaptor::gateway::workflow::event_log_writer as workflow_event_log_writer;
 use crate::adaptor::gateway::workflow::execution_registry::{
     find_any_by_worktree, find_by_worktree, find_by_worktree_mut, ExecutionStateTarget,
@@ -31,7 +28,6 @@ use crate::adaptor::gateway::workflow::execution_store::{
     ExecutionOrigin, ExecutionStatus, ExecutionStore, ExecutionStoreError, TerminalExecutionStatus,
     WorkflowExecutionMetadata,
 };
-use crate::adaptor::gateway::workflow::external_execution_restore as workflow_external_restore;
 use crate::adaptor::gateway::workflow::facet::WorkflowFacetContents;
 use crate::adaptor::gateway::workflow::failure_wire::{
     self as workflow_failure_wire, SubmissionViolation,
@@ -49,7 +45,6 @@ use crate::adaptor::gateway::workflow::resolver::{
 use crate::adaptor::gateway::workflow::resolver::{
     ManagedWorktreeResolverError, WorkflowDefinitionResolverError,
 };
-use crate::adaptor::gateway::workflow::route_context::CommandCommitContext;
 use crate::adaptor::gateway::workflow::runtime_commit::{
     self as workflow_runtime_commit, AbortOutcome, AbortTargetLookup, CommandMutationRollback,
     RequiredEventCommit, StepOutcome,
@@ -107,18 +102,6 @@ use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
 use crate::usecase::agent_session::session::{OpenTabRegistry, SessionStore};
 use crate::usecase::agent_session::status::current_timestamp;
 
-use super::event_projection::project_workflow_execution;
-
-fn request_event_lookup_error_to_engine_error(err: RequestEventLookupError) -> WorkflowEngineError {
-    match err {
-        RequestEventLookupError::InvalidExecutionId(message)
-        | RequestEventLookupError::InvalidRequestId(message) => {
-            WorkflowEngineError::ValidationError(message)
-        }
-        RequestEventLookupError::ReadLog(message) => WorkflowEngineError::SessionStore(message),
-    }
-}
-
 fn parallel_child_failure_kind(
     exit_code: i64,
     failure_signal: Option<workflow_transition::SessionFailureSignal>,
@@ -144,41 +127,15 @@ struct TestWorkflowDefinitionResolver;
 #[cfg(test)]
 #[async_trait::async_trait]
 impl WorkflowDefinitionResolver for TestWorkflowDefinitionResolver {
-    async fn resolve(&self, file_stem: &str) -> Result<Workflow, WorkflowDefinitionResolverError> {
-        let load_stem = file_stem.to_string();
+    async fn resolve(
+        &self,
+        workflow_name: &str,
+    ) -> Result<Workflow, WorkflowDefinitionResolverError> {
+        let workflow_name = workflow_name.to_string();
         tokio::task::spawn_blocking(move || {
             let dir = crate::adaptor::gateway::workflow::storage::workflows_dir();
             let facets_base = crate::adaptor::gateway::workflow::facet::facets_base_dir();
-            let file_path = dir.join(format!("{load_stem}.yml"));
-            if file_path.exists() {
-                match crate::adaptor::gateway::workflow::storage::load_workflow(
-                    &file_path,
-                    &facets_base,
-                ) {
-                    Ok(wf) => return Ok(wf),
-                    Err(e)
-                        if crate::adaptor::gateway::workflow::builtin::is_builtin_workflow(
-                            &load_stem,
-                        ) =>
-                    {
-                        log::warn!(
-                            "user-side workflow '{load_stem}' failed to load ({e}); falling back to builtin"
-                        );
-                    }
-                    Err(e) => {
-                        return Err(WorkflowDefinitionResolverError::InvalidWorkflow(
-                            e.to_string(),
-                        ));
-                    }
-                }
-            }
-            crate::adaptor::gateway::workflow::builtin::load_builtin_workflow_resolved(&load_stem)
-                .map_err(|e| WorkflowDefinitionResolverError::InvalidWorkflow(e.to_string()))?
-                .ok_or_else(|| {
-                    WorkflowDefinitionResolverError::InvalidWorkflow(format!(
-                        "ワークフロー '{load_stem}' が見つかりません"
-                    ))
-                })
+            super::runtime_resolver::resolve_workflow_by_name(&dir, &facets_base, &workflow_name)
         })
         .await
         .map_err(|e| {
@@ -425,10 +382,17 @@ fn resolve_active_node_execution_index(
         [] => Err(WorkflowEngineError::InvalidState(format!(
             "node '{node_name}' has no active execution"
         ))),
-        candidates => Err(WorkflowEngineError::InvalidState(format!(
-            "node '{node_name}' has {} active executions; node_execution_id is required",
-            candidates.len()
-        ))),
+        candidates => {
+            let candidate_ids = candidates
+                .iter()
+                .map(|(_, execution)| execution.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(WorkflowEngineError::InvalidState(format!(
+                "node '{node_name}' has {} active executions; node_execution_id is required; candidates: [{candidate_ids}]",
+                candidates.len()
+            )))
+        }
     }
 }
 
@@ -458,9 +422,14 @@ fn resolve_fanout_approval_node_execution_id(
     }
 
     if active_candidates.len() > 1 {
+        let candidate_ids = active_candidates
+            .iter()
+            .map(|candidate| candidate.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
         return Err(WorkflowEngineError::InvalidState(format!(
-            "node '{node_name}' has {} active fanout executions; node_execution_id is required",
-            active_candidates.len()
+            "node '{node_name}' has {} active fanout executions; node_execution_id is required; candidates: [{candidate_ids}]",
+            active_candidates.len(),
         )));
     }
 
@@ -1516,12 +1485,12 @@ impl WorkflowRuntimeService {
 
     pub(crate) async fn resolve_start_execution_workflow(
         &self,
-        workflow_file_stem: &str,
+        workflow_name: &str,
     ) -> Result<Workflow, WorkflowEngineError> {
-        crate::domain::workflow::validation::validate_name(workflow_file_stem)
+        crate::domain::workflow::validation::validate_name(workflow_name)
             .map_err(|e| WorkflowEngineError::ValidationError(format!("validation_error: {e}")))?;
         self.workflow_resolver
-            .resolve(workflow_file_stem)
+            .resolve(workflow_name)
             .await
             .map_err(Into::into)
     }
@@ -1551,27 +1520,7 @@ impl WorkflowRuntimeService {
         .await
     }
 
-    /// [08] 指定 execution の event log 内に同じ `request_id` を持つ ArtifactProduced が既に
-    /// append されているかを判定する idempotency 用 helper。CLI pending command の
-    /// 再処理時に重複 ArtifactProduced を作らないように、dispatch 入口側で短絡する。
-    pub(crate) fn artifact_produced_already_recorded<R: tauri::Runtime>(
-        &self,
-        app: &tauri::AppHandle<R>,
-        execution_id: &str,
-        request_id: &str,
-    ) -> Result<bool, WorkflowEngineError> {
-        let data_dir = crate::infrastructure::platform::app_data_dir::resolve_data_dir(app)
-            .map_err(WorkflowEngineError::SessionStore)?;
-        request_event_already_recorded(
-            &data_dir,
-            RequestEventKind::ArtifactProduced,
-            execution_id,
-            request_id,
-        )
-        .map_err(request_event_lookup_error_to_engine_error)
-    }
-
-    /// [08] step に対する構造化出力提出の単一トランザクション handler。
+    /// [08] node に対する構造化出力提出の単一トランザクション handler。
     ///
     /// 1. execution / node / contract の妥当性検証
     /// 2. `validate_contract_value` で contract 適合判定
@@ -1590,8 +1539,6 @@ impl WorkflowRuntimeService {
         node_execution_id: Option<String>,
         contract: String,
         artifact: serde_json::Value,
-        request_id: Option<String>,
-        submitted_at: Option<f64>,
     ) -> Result<(), WorkflowEngineError> {
         self.handle_submit_output(
             app,
@@ -1602,8 +1549,6 @@ impl WorkflowRuntimeService {
             node_execution_id,
             contract,
             artifact,
-            request_id,
-            submitted_at,
         )
         .await
     }
@@ -1619,8 +1564,6 @@ impl WorkflowRuntimeService {
         node_execution_id: Option<String>,
         contract: String,
         artifact: serde_json::Value,
-        request_id: Option<String>,
-        submitted_at: Option<f64>,
     ) -> Result<(), WorkflowEngineError> {
         workflow_output_submission::validate_submit_output_request(
             execution_id,
@@ -1663,7 +1606,6 @@ impl WorkflowRuntimeService {
                         &node_name,
                         node_execution_id.as_deref(),
                         &contract,
-                        request_id.as_deref(),
                         validation_error,
                     )
                     .await;
@@ -1704,8 +1646,8 @@ impl WorkflowRuntimeService {
             &node_name,
             contract,
             validated_output,
-            request_id,
-            submitted_at,
+            None,
+            None,
             timestamp,
         );
         if let Err(append_err) = self.write_log_required(app, event) {
@@ -1731,7 +1673,6 @@ impl WorkflowRuntimeService {
         node_name: &str,
         node_execution_id: Option<&str>,
         contract: &str,
-        request_id: Option<&str>,
         validation_error: workflow_output_submission::SubmissionValidationError,
     ) -> Result<(), WorkflowEngineError> {
         let target = {
@@ -1763,235 +1704,12 @@ impl WorkflowRuntimeService {
             contract,
             target.attempt,
             target.session_id.as_deref(),
-            request_id,
             None,
+            Some(target.node_execution_id.as_str()),
             SubmissionViolation::InvalidSubmitOutput,
             schema_violations.as_deref(),
         )
         .await
-    }
-
-    pub(crate) async fn append_command_commit_context<R: tauri::Runtime>(
-        &self,
-        app: &tauri::AppHandle<R>,
-        context: CommandCommitContext,
-    ) -> Result<(), WorkflowEngineError> {
-        // SubmitOutput 経路は CliMutationRequested を emit せず、ArtifactProduced 単体で
-        // 記録する（spec [08]）。ここでは何もせず Ok を返す。
-        let Some(mutation_ref) = context.cli_pending_mutation() else {
-            return Ok(());
-        };
-        let execution_id = mutation_ref.execution_id().to_string();
-        let workflow_name = self
-            .workflow_name_for_external_execution(&execution_id)
-            .await?;
-        let event = workflow_runtime_events::cli_mutation_requested_event(
-            &workflow_name,
-            context,
-            current_timestamp(),
-        )
-        .expect("CliPending context must produce a CliMutationRequested event");
-        self.write_log_required(app, event)
-            .map_err(WorkflowEngineError::SessionStore)?;
-        Ok(())
-    }
-
-    pub(crate) async fn workflow_name_for_external_execution(
-        &self,
-        execution_id: &str,
-    ) -> Result<String, WorkflowEngineError> {
-        let execs = self.executions.lock().await;
-        if let Some(exec) = execs.get(execution_id) {
-            return Ok(exec.workflow.name.clone());
-        }
-        drop(execs);
-        self.execution_store
-            .get_execution_record(execution_id)
-            .await
-            .map(|execution| execution.workflow_name)
-            .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(execution_id.to_string()))
-    }
-
-    /// 5-3 / 5-4 修正: engine が拒否した CLI mutation を `CliMutationRejected`
-    /// event として補助履歴に追記する。
-    ///
-    /// 失敗時は呼び出し側に `WorkflowEngineError` として伝播し、dispatcher 側で
-    /// retryable / final を分類する。本 event は spec [08] Rule 1 の意味
-    /// （accepted のメイン履歴に出さない）を壊さない補助履歴である点に注意。
-    pub(crate) async fn append_cli_mutation_rejected<R: tauri::Runtime>(
-        &self,
-        app: &tauri::AppHandle<R>,
-        context: &CommandCommitContext,
-        error: &WorkflowEngineError,
-    ) -> Result<(), WorkflowEngineError> {
-        let execution_id = match context {
-            CommandCommitContext::CliPending { mutation } => mutation.execution_id().to_string(),
-            CommandCommitContext::SubmitOutput { .. } => {
-                // SubmitOutput 経路の execution_id は dispatcher 側が pending command から
-                // 取り出しているが、commit_context には保持していない。execution_id
-                // 解決は engine 側の `workflow_name_for_external_execution` でも引けず、
-                // SubmitOutput では呼び出し元（dispatcher）から別途渡してもらう
-                // 設計にする。本メソッドは CliPending を直接扱うバリアントに限定
-                // し、SubmitOutput 経路は専用 helper `append_cli_mutation_rejected_for_submit_output`
-                // を使う。
-                return Err(WorkflowEngineError::InvalidState(
-                    "append_cli_mutation_rejected requires CliPending context".to_string(),
-                ));
-            }
-        };
-        let workflow_name = self
-            .workflow_name_for_external_execution(&execution_id)
-            .await?;
-        let event = workflow_runtime_events::cli_mutation_rejected_event(
-            workflow_name,
-            context,
-            error,
-            current_timestamp(),
-        )?;
-        self.write_log_required(app, event)
-            .map_err(WorkflowEngineError::SessionStore)?;
-        Ok(())
-    }
-
-    /// 5-3 修正: SubmitOutput 経路用の `CliMutationRejected` append。
-    ///
-    /// SubmitOutput の commit_context は `WorkflowMutationContext` を持たないため、
-    /// `execution_id` は dispatcher 側から渡してもらう。spec [08] Rule 1 維持のため
-    /// `CliMutationRequested` は引き続き emit せず、本 event のみが補助履歴と
-    /// して残る。
-    pub(crate) async fn append_cli_mutation_rejected_for_submit_output<R: tauri::Runtime>(
-        &self,
-        app: &tauri::AppHandle<R>,
-        execution_id: &str,
-        context: &CommandCommitContext,
-        error: &WorkflowEngineError,
-    ) -> Result<(), WorkflowEngineError> {
-        let workflow_name = self
-            .workflow_name_for_external_execution(execution_id)
-            .await?;
-        let event = workflow_runtime_events::submit_output_cli_mutation_rejected_event(
-            workflow_name,
-            execution_id,
-            context,
-            error,
-            current_timestamp(),
-        )?;
-        self.write_log_required(app, event)
-            .map_err(WorkflowEngineError::SessionStore)?;
-        Ok(())
-    }
-
-    pub(crate) fn cli_mutation_already_recorded<R: tauri::Runtime>(
-        &self,
-        app: &tauri::AppHandle<R>,
-        execution_id: &str,
-        request_id: &str,
-    ) -> Result<bool, WorkflowEngineError> {
-        let data_dir = crate::infrastructure::platform::app_data_dir::resolve_data_dir(app)
-            .map_err(WorkflowEngineError::SessionStore)?;
-        request_event_already_recorded(
-            &data_dir,
-            RequestEventKind::CliMutationRequested,
-            execution_id,
-            request_id,
-        )
-        .map_err(request_event_lookup_error_to_engine_error)
-    }
-
-    /// 外部入口（CLI pending dispatcher / 将来追加される他経路）が dispatch
-    /// する前に、in-memory execution を `workflow_executions/` から再構成する。
-    ///
-    /// CLI pending dispatcher / 外部 mutation primitive 入口の前段で呼ぶことで、
-    /// 稼働アプリ再起動後でも `execution_id` 主語の mutation が認可・冪等性判定の対象
-    /// となる（spec [06] 経路非依存境界）。本関数は CLI 経路に限定されないため
-    /// `_for_external` で命名統一する（review R2-02）。
-    pub(crate) async fn ensure_execution_loaded_for_external<R: tauri::Runtime>(
-        &self,
-        app: &tauri::AppHandle<R>,
-        session_store: &Arc<SessionStore>,
-        execution_id: &str,
-    ) -> Result<(), WorkflowEngineError> {
-        {
-            let execs = self.executions.lock().await;
-            if execs.contains_key(execution_id) {
-                return Ok(());
-            }
-        }
-
-        let metadata = self
-            .execution_store
-            .get_execution_record(execution_id)
-            .await
-            .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(execution_id.to_string()))?;
-        workflow_external_restore::validate_execution_metadata_for_external_restore(
-            execution_id,
-            &metadata,
-        )?;
-
-        let data_dir = crate::infrastructure::platform::app_data_dir::resolve_data_dir(app)
-            .map_err(WorkflowEngineError::SessionStore)?;
-        let events = WorkflowEventLog::new(&data_dir)
-            .read_log(execution_id)
-            .map_err(WorkflowEngineError::SessionStore)?;
-        let projection = project_workflow_execution(execution_id, &events)
-            .map_err(WorkflowEngineError::SessionStore)?
-            .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(execution_id.to_string()))?;
-        let (definition, request) = events
-            .iter()
-            .find_map(|event| match event {
-                WorkflowEvent::ExecutionStarted {
-                    definition,
-                    request,
-                    ..
-                } => Some((definition.clone(), request.clone())),
-                _ => None,
-            })
-            .ok_or_else(|| {
-                WorkflowEngineError::SessionStore(format!(
-                    "execution {execution_id} is missing execution_started"
-                ))
-            })?;
-
-        if self
-            .execution_store
-            .active_execution_snapshot(execution_id)
-            .await
-            .is_none()
-        {
-            self.execution_store
-                .register_active_execution(metadata.clone())
-                .await
-                .map_err(|e| {
-                    WorkflowEngineError::SessionStore(format!("ExecutionStore restore failed: {e}"))
-                })?;
-        }
-
-        let restored = workflow_external_restore::restore_execution_from_projection(
-            execution_id,
-            metadata,
-            projection,
-            definition,
-            request,
-        )?;
-        let current_session_id = restored.current_session_id;
-        let exec = restored.execution;
-
-        let _ = session_store; // session_store は parent session 撤去後の本経路では未使用
-
-        let mut execs = self.executions.lock().await;
-        execs.entry(execution_id.to_string()).or_insert(exec);
-        drop(execs);
-
-        let mut refs = self.session_workflow_refs.lock().await;
-        if let Some(step_session_id) = current_session_id {
-            refs.insert(
-                step_session_id,
-                SessionWorkflowRef {
-                    execution_id: execution_id.to_string(),
-                },
-            );
-        }
-        Ok(())
     }
 
     /// AgentSession の無出力 timeout 到達を非終端 signal として workflow state に反映する。
@@ -2521,31 +2239,6 @@ impl WorkflowRuntimeService {
         expected_node_name: &str,
         node_execution_id: Option<&str>,
     ) -> Result<(), WorkflowEngineError> {
-        self.resolve_workflow_approval_with_commit_context(
-            app,
-            session_store,
-            agent_runtime,
-            execution_id,
-            comment,
-            expected_node_name,
-            node_execution_id,
-            None,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn resolve_workflow_approval_with_commit_context<R: tauri::Runtime>(
-        &self,
-        app: &tauri::AppHandle<R>,
-        session_store: &Arc<SessionStore>,
-        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
-        execution_id: &str,
-        comment: Option<String>,
-        expected_node_name: &str,
-        node_execution_id: Option<&str>,
-        commit_context: Option<CommandCommitContext>,
-    ) -> Result<(), WorkflowEngineError> {
         self.handle_approval(
             app,
             session_store,
@@ -2554,13 +2247,12 @@ impl WorkflowRuntimeService {
             comment,
             expected_node_name,
             node_execution_id,
-            commit_context,
         )
         .await
     }
 
-    /// [04] 内部 typed boundary: approval mutation の handler 実体。production gateway と
-    /// pending dispatcher は `resolve_workflow_approval*` からここに合流する。
+    /// [04] 内部 typed boundary: approval mutation の handler 実体。Tauri / local API は
+    /// `resolve_workflow_approval*` からここに合流する。
     #[allow(clippy::too_many_arguments)]
     async fn handle_approval<R: tauri::Runtime>(
         &self,
@@ -2571,7 +2263,6 @@ impl WorkflowRuntimeService {
         comment: Option<String>,
         expected_node_name: &str,
         node_execution_id: Option<&str>,
-        commit_context: Option<CommandCommitContext>,
     ) -> Result<(), WorkflowEngineError> {
         let fanout_node_execution_id = {
             let executions = self.executions.lock().await;
@@ -2594,7 +2285,6 @@ impl WorkflowRuntimeService {
                     comment,
                     expected_node_name,
                     &fanout_node_execution_id,
-                    commit_context,
                 )
                 .await;
         }
@@ -2703,7 +2393,7 @@ impl WorkflowRuntimeService {
         // 保持し、ApprovalResolved event append / persist のいずれかが失敗した場合は
         // `*exec = snapshot` で全フィールド（履歴・変数・state・current_node_index 等）を
         // 一括復元する。部分 rollback helper は使わない。
-        let (mut outcome, exec_snapshot_before, workflow_name_for_event, node_name_for_event) = {
+        let (mut outcome, exec_snapshot_before, node_name_for_event) = {
             let mut execs = self.executions.lock().await;
             let exec = execs
                 .get_mut(execution_id)
@@ -2733,12 +2423,7 @@ impl WorkflowRuntimeService {
                 node_execution.artifact = artifact.clone();
                 node_execution.completed_at = Some(current_timestamp());
             }
-            (
-                outcome,
-                snapshot_before,
-                exec.workflow.name.clone(),
-                node_name,
-            )
+            (outcome, snapshot_before, node_name)
         };
 
         let snapshot_for_commit = outcome.snapshot().clone();
@@ -2771,7 +2456,7 @@ impl WorkflowRuntimeService {
         // `dispatch_internal_node_command` の ValidationError 等が発生した場合は
         // approval commit 境界として失敗扱いし、snapshot_before で engine state /
         // Execution Store / ChatSession を一括復元してから Err を返す。
-        let mut commit_events = match workflow_runtime_events::required_events_for_approval_commit(
+        let commit_events = match workflow_runtime_events::required_events_for_approval_commit(
             approval_event,
             &mut outcome,
         ) {
@@ -2792,15 +2477,6 @@ impl WorkflowRuntimeService {
                 return Err(e);
             }
         };
-        if let Some(context) = commit_context {
-            if let Some(event) = workflow_runtime_events::cli_mutation_requested_event(
-                &workflow_name_for_event,
-                context,
-                current_timestamp(),
-            ) {
-                commit_events.push(event);
-            }
-        }
         self.commit_required_events(
             app,
             session_store,
@@ -2854,7 +2530,6 @@ impl WorkflowRuntimeService {
         comment: Option<String>,
         expected_node_name: &str,
         node_execution_id: &str,
-        commit_context: Option<CommandCommitContext>,
     ) -> Result<(), WorkflowEngineError> {
         workflow_approval_runtime::validate_approve_comment(comment.as_deref())?;
         let (worktree_path, workflow_name, session_id, attempt, contract, submitted_artifact) = {
@@ -3005,15 +2680,6 @@ impl WorkflowRuntimeService {
                 token_usage: Some(child_tokens),
                 timestamp: completed_at,
             });
-            if let Some(context) = commit_context {
-                if let Some(event) = workflow_runtime_events::cli_mutation_requested_event(
-                    &workflow_name,
-                    context,
-                    completed_at,
-                ) {
-                    progress_events.push(event);
-                }
-            }
             finalize_child_terminal_state(execution, snapshot_before, progress_events, true, None)?
         };
 
@@ -3043,27 +2709,6 @@ impl WorkflowRuntimeService {
         execution_id: &str,
         expected_node_name: Option<&str>,
     ) -> Result<(), WorkflowEngineError> {
-        self.abort_workflow_execution_with_commit_context(
-            app,
-            session_store,
-            agent_runtime,
-            execution_id,
-            expected_node_name,
-            None,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn abort_workflow_execution_with_commit_context<R: tauri::Runtime>(
-        &self,
-        app: &tauri::AppHandle<R>,
-        session_store: &Arc<SessionStore>,
-        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
-        execution_id: &str,
-        expected_node_name: Option<&str>,
-        commit_context: Option<CommandCommitContext>,
-    ) -> Result<(), WorkflowEngineError> {
         // execution 全体の Abort: NotFound / AlreadyTerminal は非受理として typed error
         // に射影する（Spec [04] Rule「対象不在 / 既に終了した command は受理されない」）。
         match self
@@ -3073,7 +2718,6 @@ impl WorkflowRuntimeService {
                 agent_runtime,
                 execution_id,
                 expected_node_name,
-                commit_context,
             )
             .await?
         {
@@ -3094,7 +2738,7 @@ impl WorkflowRuntimeService {
     /// worktree_path 経由の委譲を排除する。これにより、同一 worktree に terminal execution と
     /// active execution が共存しても誤って別 execution を中断する TOCTOU を構造的に排除する。
     ///
-    /// Spec [04]: `AbortRun` command handler の境界。
+    /// Spec [04]: `AbortExecution` command handler の境界。
     /// - 対象 execution が存在しない場合は `AbortOutcome::NotFound` を返す（非受理）。
     /// - 既に terminal な execution の場合は `AbortOutcome::AlreadyTerminal` を返す（非受理）。
     /// - 実際に Aborted に遷移し ExecutionAborted event を必須 append できた場合のみ
@@ -3113,7 +2757,6 @@ impl WorkflowRuntimeService {
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         execution_id: &str,
         expected_node_name: Option<&str>,
-        commit_context: Option<CommandCommitContext>,
     ) -> Result<AbortOutcome, WorkflowEngineError> {
         // 1. 対象 execution の存在 + active 性を判定。
         //    非受理経路 (NotFound / AlreadyTerminal) ではどんな外部副作用も発生させない。
@@ -3137,7 +2780,7 @@ impl WorkflowRuntimeService {
             .execution_store
             .active_execution_snapshot(execution_id)
             .await;
-        let (snapshot_before, snapshot_state, workflow_name_for_event, aborted_node_for_event) = {
+        let (snapshot_before, snapshot_state, aborted_node_for_event) = {
             let mut execs = self.executions.lock().await;
             let Some(exec) = execs.get_mut(execution_id) else {
                 drop(execs);
@@ -3168,7 +2811,6 @@ impl WorkflowRuntimeService {
                 }
             }
             let snapshot_before = exec.clone();
-            let workflow_name = exec.workflow.name.clone();
             let aborted_node_for_event = exec
                 .parallel_run
                 .as_ref()
@@ -3210,12 +2852,7 @@ impl WorkflowRuntimeService {
             exec.current_stall_observations.clear();
             exec.updated_at = timestamp;
             let snapshot_state = exec.to_workflow_state();
-            (
-                snapshot_before,
-                snapshot_state,
-                workflow_name,
-                aborted_node_for_event,
-            )
+            (snapshot_before, snapshot_state, aborted_node_for_event)
         };
 
         // 3. [04] commit point: ExecutionAborted を必須 append。失敗時は
@@ -3227,16 +2864,6 @@ impl WorkflowRuntimeService {
             aborted_node: aborted_node_for_event,
             timestamp,
         };
-        let mut required_events = vec![aborted_event];
-        if let Some(context) = commit_context {
-            if let Some(event) = workflow_runtime_events::cli_mutation_requested_event(
-                &workflow_name_for_event,
-                context,
-                current_timestamp(),
-            ) {
-                required_events.push(event);
-            }
-        }
         self.commit_required_events(
             app,
             session_store,
@@ -3245,7 +2872,7 @@ impl WorkflowRuntimeService {
                 snapshot_for_commit: &snapshot_state,
                 snapshot_before,
                 execution_store_snapshot_before,
-                required_events,
+                required_events: vec![aborted_event],
                 append_error_context: "ExecutionAborted log failed",
             },
         )
@@ -4505,7 +4132,7 @@ impl WorkflowRuntimeService {
         // を required event 列として集約し、ExecutionStore sync → ChatSession persist → event log
         // append の順序で commit する。いずれかが失敗した場合は engine state と Execution Store snapshot
         // を snapshot_before で一括復元する（spec [05] atomic mutation 境界 / best-effort warn 廃止）。
-        // Aborted は AbortRun command handler 側で別途 commit されるため本経路では event 集合に含めない。
+        // Aborted は AbortExecution command handler 側で別途 commit されるため本経路では event 集合に含めない。
         if is_terminal
             && !matches!(
                 snapshot.state,
@@ -4559,7 +4186,7 @@ impl WorkflowRuntimeService {
         }
 
         // 非 terminal / Aborted 経路: required event が無いため従来の sync→persist 順で commit する。
-        // Aborted は AbortRun command handler 側で event を別途 append 済み。
+        // Aborted は AbortExecution command handler 側で event を別途 append 済み。
         let rollback_engine_state =
             |execution_id_for_rollback: String, previous_snapshot: WorkflowExecution| async move {
                 let mut execs = self.executions.lock().await;
@@ -6410,9 +6037,9 @@ impl WorkflowRuntimeService {
     /// StepCompletedログは呼び出し元で書き込み済みのため、ここでは書かない。
     ///
     /// `Aborted` 状態の `ExecutionAborted` event は本 issue [04] の典型 typed command
-    /// `AbortRun` に対応する事実列であり、command handler 側で `write_log_required`
+    /// `AbortExecution` に対応する事実列であり、command handler 側で `write_log_required`
     /// を経由して必須 append + snapshot 一括復元の atomic 境界に乗せる。本ヘルパーは
-    /// `AbortRun` の rollback 経路を担保できないため Aborted はここで書かない（重複
+    /// `AbortExecution` の rollback 経路を担保できないため Aborted はここで書かない（重複
     /// append 防止）。
     ///
     /// [05] event 発行点の集約: terminal events（NodeFailed / ExecutionCompleted / ExecutionFailed）は

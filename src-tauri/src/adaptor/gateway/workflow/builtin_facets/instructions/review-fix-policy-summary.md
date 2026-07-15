@@ -26,7 +26,7 @@
 - 完全性: LGTM
 - 相互整合性: LGTM
 
-### 次の Step
+### 次の node
 人間がこのサマリを approve したら、review-fix ワークフローで `[FIX_POLICY_APPROVED]` に従って実装を行う。
 ```
 

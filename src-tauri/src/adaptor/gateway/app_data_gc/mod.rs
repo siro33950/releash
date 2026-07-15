@@ -6,7 +6,6 @@ use crate::adaptor::gateway::agent_session::session_storage::{
     FileSessionStorage, SessionGcMetaRead,
 };
 use crate::adaptor::gateway::repository::repo_paths::SharedRepoPaths;
-use crate::adaptor::gateway::workflow::pending_command::PendingCommandStore;
 use crate::adaptor::gateway::workflow::{
     WorkflowExecutionArchiveFileRepository, WorkflowExecutionFileRepository,
 };
@@ -215,18 +214,13 @@ fn collect_session_blob_stores(app_data_dir: &Path) -> Vec<SessionBlobStore> {
 
 fn collect_workflow_execution_gc_records(app_data_dir: &Path) -> Vec<WorkflowExecutionGcRecord> {
     let archived_at_by_execution = manual_archive_times(app_data_dir);
-    let pending_paths_by_execution =
-        PendingCommandStore::new(app_data_dir).gc_delete_paths_by_execution();
     let executions = WorkflowExecutionFileRepository::new(app_data_dir);
     executions
         .scan_gc_metadata()
         .executions
         .into_iter()
         .map(|execution| WorkflowExecutionGcRecord {
-            delete_paths: executions.gc_delete_paths_with_pending_index(
-                &execution.execution_id,
-                &pending_paths_by_execution,
-            ),
+            delete_paths: executions.gc_delete_paths(&execution.execution_id),
             manual_archived_at: archived_at_by_execution
                 .get(&execution.execution_id)
                 .copied(),
@@ -624,7 +618,6 @@ mod tests {
     use super::*;
     use crate::infrastructure::process::pid_registry::PidFileV1;
     use parking_lot::RwLock;
-    use std::collections::HashSet;
     use std::sync::Arc;
 
     #[test]
@@ -805,97 +798,6 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].key, "repo");
         assert_eq!(records[0].path, dir.join("repo.json"));
-    }
-
-    #[test]
-    fn collect_workflow_execution_gc_records_uses_pending_index_for_all_pending_states() {
-        use crate::adaptor::gateway::workflow::pending_command::{
-            PendingCommand, PendingCommandPayload,
-        };
-
-        let tmp = tempfile::tempdir().unwrap();
-        let worktree = tempfile::tempdir().unwrap();
-        let execution_id = "00000000-0000-4000-8000-000000000101";
-        let other_execution_id = "00000000-0000-4000-8000-000000000102";
-        write_workflow_execution_metadata(tmp.path(), execution_id, worktree.path(), "completed")
-            .unwrap();
-        write_workflow_execution_metadata(
-            tmp.path(),
-            other_execution_id,
-            worktree.path(),
-            "completed",
-        )
-        .unwrap();
-        let store = PendingCommandStore::new(tmp.path());
-        let payload = PendingCommandPayload::Abort { node_name: None };
-        let pending = PendingCommand::new(execution_id.to_string(), payload.clone(), 1.0);
-        let pending_path = store.write_pending(&pending).unwrap();
-        let processing = PendingCommand::new(execution_id.to_string(), payload.clone(), 2.0);
-        store.write_pending(&processing).unwrap();
-        let processing_entry = store
-            .list_pending()
-            .unwrap()
-            .into_iter()
-            .find(|entry| entry.command.id == processing.id)
-            .unwrap();
-        let processing_claim = store.claim_pending(&processing_entry).unwrap().unwrap();
-        let processing_path = processing_claim.entry.path.clone();
-        let processed = PendingCommand::new(other_execution_id.to_string(), payload, 3.0);
-        store.write_pending(&processed).unwrap();
-        let processed_entry = store
-            .list_pending()
-            .unwrap()
-            .into_iter()
-            .find(|entry| entry.command.id == processed.id)
-            .unwrap();
-        let processed_claim = store.claim_pending(&processed_entry).unwrap().unwrap();
-        let processed_file_name = processed_claim
-            .entry
-            .path
-            .file_name()
-            .unwrap()
-            .to_os_string();
-        store.mark_processed(&processed_claim.entry).unwrap();
-        let processed_path = tmp
-            .path()
-            .join("workflow_pending/processed")
-            .join(processed_file_name);
-        let pending_index = store.gc_delete_paths_by_execution();
-        let executions = WorkflowExecutionFileRepository::new(tmp.path());
-        assert_eq!(
-            executions
-                .gc_delete_paths_with_pending_index(execution_id, &pending_index)
-                .into_iter()
-                .collect::<HashSet<_>>(),
-            executions
-                .gc_delete_paths(execution_id)
-                .into_iter()
-                .collect::<HashSet<_>>()
-        );
-        assert_eq!(
-            executions
-                .gc_delete_paths_with_pending_index(other_execution_id, &pending_index)
-                .into_iter()
-                .collect::<HashSet<_>>(),
-            executions
-                .gc_delete_paths(other_execution_id)
-                .into_iter()
-                .collect::<HashSet<_>>()
-        );
-
-        let records = collect_workflow_execution_gc_records(tmp.path());
-
-        let record = records
-            .iter()
-            .find(|record| record.execution_id == execution_id)
-            .unwrap();
-        assert!(record.delete_paths.contains(&pending_path));
-        assert!(record.delete_paths.contains(&processing_path));
-        let other_record = records
-            .iter()
-            .find(|record| record.execution_id == other_execution_id)
-            .unwrap();
-        assert!(other_record.delete_paths.contains(&processed_path));
     }
 
     fn write_workflow_execution_metadata(

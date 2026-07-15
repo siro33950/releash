@@ -91,12 +91,7 @@ pub fn project_workflow_execution(
     let mut authoritative_total_usage = None;
 
     for event in events {
-        if !matches!(
-            event,
-            WorkflowEvent::CliMutationRequested { .. } | WorkflowEvent::CliMutationRejected { .. }
-        ) {
-            execution.updated_at = execution.updated_at.max(event.timestamp());
-        }
+        execution.updated_at = execution.updated_at.max(event.timestamp());
 
         match event {
             WorkflowEvent::ExecutionStarted { .. } => {}
@@ -273,9 +268,7 @@ pub fn project_workflow_execution(
             }
             WorkflowEvent::ContractViolated { .. }
             | WorkflowEvent::StallObserved { .. }
-            | WorkflowEvent::StallCleared { .. }
-            | WorkflowEvent::CliMutationRequested { .. }
-            | WorkflowEvent::CliMutationRejected { .. } => {}
+            | WorkflowEvent::StallCleared { .. } => {}
         }
     }
 
