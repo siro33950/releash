@@ -378,7 +378,7 @@ pub fn run() {
                 .state::<Arc<dyn usecase::agent_session::context::BranchDiffContextPort>>()
                 .inner()
                 .clone();
-            let workflow_step_lifecycle_usecase = Arc::new(
+            let workflow_node_lifecycle_usecase = Arc::new(
                 adaptor::controller::wiring::build_node_execution_lifecycle_usecase(
                     app.handle().clone(),
                     session_store.clone(),
@@ -386,7 +386,7 @@ pub fn run() {
                     open_tabs.clone(),
                 ),
             );
-            app.manage(workflow_step_lifecycle_usecase);
+            app.manage(workflow_node_lifecycle_usecase);
             let workflow_runtime_usecase =
                 Arc::new(adaptor::controller::wiring::build_workflow_runtime_usecase(
                     app.handle().clone(),

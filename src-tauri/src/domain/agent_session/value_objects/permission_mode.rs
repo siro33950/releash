@@ -47,16 +47,27 @@ impl PermissionMode {
         "ask, edit, full"
     }
 
-    pub fn parse(value: &str) -> Result<Self, InvalidPermissionMode> {
+    /// User-authored/current API vocabulary parser.
+    ///
+    /// `parse` keeps the retired `readonly` session value readable for persisted
+    /// agent sessions. New workflow inputs must use this canonical parser so the
+    /// compatibility branch cannot leak back into the workflow API or YAML.
+    pub fn parse_canonical(value: &str) -> Result<Self, InvalidPermissionMode> {
         match value {
             Self::ASK => Ok(Self::Ask),
             Self::EDIT => Ok(Self::Edit),
             Self::FULL => Ok(Self::Full),
-            // Legacy values from sessions/workflows created before issues-1044.
-            Self::LEGACY_READONLY => Ok(Self::Ask),
             _ => Err(InvalidPermissionMode {
                 value: value.to_string(),
             }),
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, InvalidPermissionMode> {
+        match value {
+            // Legacy value from persisted agent sessions created before issues-1044.
+            Self::LEGACY_READONLY => Ok(Self::Ask),
+            _ => Self::parse_canonical(value),
         }
     }
 }
@@ -86,6 +97,23 @@ mod tests {
         );
         assert_eq!(PermissionMode::parse("edit").unwrap(), PermissionMode::Edit);
         assert_eq!(PermissionMode::parse("full").unwrap(), PermissionMode::Full);
+    }
+
+    #[test]
+    fn parse_canonical_accepts_only_current_modes() {
+        for (value, expected) in [
+            ("ask", PermissionMode::Ask),
+            ("edit", PermissionMode::Edit),
+            ("full", PermissionMode::Full),
+        ] {
+            assert_eq!(PermissionMode::parse_canonical(value).unwrap(), expected);
+        }
+
+        for invalid in ["read", "readonly", "acceptEdits"] {
+            let err = PermissionMode::parse_canonical(invalid).unwrap_err();
+            assert_eq!(err.value, invalid);
+            assert!(err.to_string().contains("allowed: ask, edit, full"));
+        }
     }
 
     #[test]

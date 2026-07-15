@@ -27,22 +27,25 @@ pub(crate) fn workflow_execution_record_to_metadata(
 
 pub(crate) fn domain_workflow_to_schema(
     definition: &domain::WorkflowDefinition,
-) -> Result<crate::adaptor::gateway::workflow::schema::Workflow, domain::WorkflowError> {
-    Ok(crate::adaptor::gateway::workflow::schema::Workflow {
-        name: definition.name.clone(),
-        description: definition.description.clone(),
-        builtin: definition.builtin,
-        schemas: definition
-            .schemas
-            .iter()
-            .map(|(name, schema)| (name.clone(), domain_schema_to_schema(schema)))
-            .collect(),
-        nodes: definition.nodes.iter().map(domain_node_to_schema).collect(),
-    })
+) -> Result<crate::adaptor::gateway::workflow::schema::WorkflowDefinitionYaml, domain::WorkflowError>
+{
+    Ok(
+        crate::adaptor::gateway::workflow::schema::WorkflowDefinitionYaml {
+            name: definition.name.clone(),
+            description: definition.description.clone(),
+            builtin: definition.builtin,
+            schemas: definition
+                .schemas
+                .iter()
+                .map(|(name, schema)| (name.clone(), domain_schema_to_schema(schema)))
+                .collect(),
+            nodes: definition.nodes.iter().map(domain_node_to_schema).collect(),
+        },
+    )
 }
 
 pub(crate) fn schema_workflow_to_domain(
-    workflow: crate::adaptor::gateway::workflow::schema::Workflow,
+    workflow: crate::adaptor::gateway::workflow::schema::WorkflowDefinitionYaml,
 ) -> Result<domain::WorkflowDefinition, domain::WorkflowError> {
     Ok(crate::adaptor::gateway::workflow::domain_mapping::workflow_definition_to_domain(&workflow))
 }
@@ -391,7 +394,7 @@ mod tests {
             builtin: false,
             schemas: Default::default(),
             nodes: vec![NodeDefinition {
-                name: "step".to_string(),
+                name: "node".to_string(),
                 kind: NodeKind::Session(SessionSpec {
                     facets: FacetRefs {
                         instruction: Some("inst".to_string()),

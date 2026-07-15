@@ -68,7 +68,7 @@ mod tests {
             execution_id: "00000000-0000-0000-0000-000000000020".to_string(),
             workflow_name: "wf".to_string(),
             node_execution_id: "node-execution-20".to_string(),
-            node_name: "step1".to_string(),
+            node_name: "node1".to_string(),
             result: Some("ok".to_string()),
             session_id: Some("sess-1".to_string()),
             token_usage: None,
@@ -85,7 +85,7 @@ mod tests {
             } => {
                 assert_eq!(execution_id, "00000000-0000-0000-0000-000000000020");
                 assert_eq!(node_execution_id, "node-execution-20");
-                assert_eq!(node_name, "step1");
+                assert_eq!(node_name, "node1");
             }
             _ => panic!("expected CompleteNode"),
         }
@@ -93,7 +93,7 @@ mod tests {
             execution_id: "00000000-0000-0000-0000-000000000021".to_string(),
             workflow_name: "wf".to_string(),
             node_execution_id: "node-execution-21".to_string(),
-            node_name: "step2".to_string(),
+            node_name: "node2".to_string(),
             attempt: 1,
             reason: "boom".to_string(),
             failure_kind: NodeExecutionFailureKind::InfrastructureCrash,
@@ -109,7 +109,7 @@ mod tests {
             } => {
                 assert_eq!(reason, "boom");
                 assert_eq!(node_execution_id, "node-execution-21");
-                assert_eq!(node_name, "step2");
+                assert_eq!(node_name, "node2");
             }
             _ => panic!("expected FailNode"),
         }

@@ -338,7 +338,7 @@ pub fn project_workflow_execution(
 }
 
 fn derive_resume_from_node(
-    definition: &crate::adaptor::gateway::workflow::schema::Workflow,
+    definition: &crate::adaptor::gateway::workflow::schema::WorkflowDefinitionYaml,
     nodes: &[NodeExecution],
 ) -> Result<Option<String>, String> {
     let Some(latest) = nodes.iter().rev().find(|node| node.fanout_parent.is_none()) else {
@@ -693,15 +693,17 @@ fn derive_active_fields(
 mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::event::FanoutParentRef as EventFanoutParentRef;
-    use crate::adaptor::gateway::workflow::schema::{NodeDefinition, NodeKind, Workflow};
+    use crate::adaptor::gateway::workflow::schema::{
+        NodeDefinition, NodeKind, WorkflowDefinitionYaml,
+    };
     use crate::domain::workflow::{
         ExecutionInterruptionReason, ExecutionOrigin, NodeExecutionFailureKind,
     };
 
     const EXECUTION_ID: &str = "00000000-0000-4000-8000-000000000001";
 
-    fn definition() -> Workflow {
-        Workflow {
+    fn definition() -> WorkflowDefinitionYaml {
+        WorkflowDefinitionYaml {
             name: "review".to_string(),
             description: String::new(),
             builtin: false,

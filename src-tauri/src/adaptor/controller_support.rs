@@ -4,7 +4,7 @@ use tauri::Manager;
 
 use crate::usecase::agent_session::runtime::{AgentSessionRuntimeUsecase, SendMessageResponse};
 use crate::usecase::agent_session::session::{ChatSession, ImageAttachment};
-use crate::usecase::workflow::step_lifecycle::ResolvedWorkflowNodeSession;
+use crate::usecase::workflow::node_lifecycle::ResolvedWorkflowNodeSession;
 use crate::usecase::workflow::{NodeExecutionLifecycleUsecase, WorkflowRuntimeUsecase};
 
 pub(crate) type AgentSessionRuntimeState = Arc<AgentSessionRuntimeUsecase>;

@@ -9,8 +9,8 @@ use serde_json::{Map, Value};
 
 use crate::domain::workflow::{
     ExecutionListFilter, FacetKind, FacetRepository, FacetSummary, NodeExecution,
-    WorkflowDefinition, WorkflowDefinitionRepository, WorkflowError, WorkflowExecution,
-    WorkflowExecutionId, WorkflowExecutionRepository, WorkflowExecutionSummary, WorkflowName,
+    WorkflowDefinition, WorkflowDefinitionName, WorkflowDefinitionRepository, WorkflowError,
+    WorkflowExecution, WorkflowExecutionId, WorkflowExecutionRepository, WorkflowExecutionSummary,
     WorkflowPageRequest, WorkflowSummary,
 };
 
@@ -105,12 +105,12 @@ impl WorkflowQueryService {
         &self,
         file_stem: &str,
     ) -> Result<Option<WorkflowDefinition>, WorkflowError> {
-        let name = WorkflowName::new(file_stem.to_string())?;
+        let name = WorkflowDefinitionName::new(file_stem.to_string())?;
         self.definitions.get(name.as_str())
     }
 
     pub fn get_workflow_source(&self, file_stem: &str) -> Result<Option<String>, WorkflowError> {
-        let name = WorkflowName::new(file_stem.to_string())?;
+        let name = WorkflowDefinitionName::new(file_stem.to_string())?;
         self.definition_sources.get_source(name.as_str())
     }
 

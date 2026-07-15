@@ -4,19 +4,17 @@
 //! domain unit tests. Production execution state is owned by the workflow
 //! gateway runtime state; pure validation lives in workflow services.
 
-use std::collections::{HashMap, HashSet};
+#[cfg(test)]
+use std::collections::HashMap;
 
 #[cfg(test)]
-use crate::domain::workflow::services::{history, parallel, projection, validation};
+use crate::domain::workflow::services::{fanout, history, projection, validation};
 #[cfg(test)]
 use crate::domain::workflow::value_objects::{
-    NodeDefinition, RuntimeApprovalOperations, RuntimeArtifact, WorkflowExecutionId,
-    WorkflowRuntimeSnapshot, WorktreePath,
+    NodeDefinition, NodeHistoryEntry, RuntimeArtifact, RuntimeExecutionState, WorkflowDefinition,
+    WorkflowExecutionId, WorkflowRuntimeSnapshot, WorkspaceWorktreePath,
 };
-use crate::domain::workflow::value_objects::{
-    NodeExecutionFailureKind, NodeHistoryEntry, RuntimeExecutionState, TokenUsage,
-    WorkflowDefinition, NODE_STATUS_COMPLETED, NODE_STATUS_PENDING,
-};
+use crate::domain::workflow::value_objects::{NodeExecutionFailureKind, TokenUsage};
 use crate::domain::workflow::FailureDisposition;
 #[cfg(test)]
 use crate::domain::workflow::WorkflowError;
@@ -31,15 +29,15 @@ pub struct WorkflowExecution {
     current_node_index: usize,
     node_execution_counts: HashMap<String, u32>,
     node_history: Vec<NodeHistoryEntry>,
-    worktree_path: WorktreePath,
+    worktree_path: WorkspaceWorktreePath,
     started_at: f64,
     updated_at: f64,
     current_session_id: Option<String>,
-    current_step_token_usage: TokenUsage,
+    current_node_token_usage: TokenUsage,
     terminal_total_token_usage: Option<TokenUsage>,
     artifacts: HashMap<String, RuntimeArtifact>,
-    task: Option<String>,
-    parallel_run: Option<FanoutRuntimeState>,
+    request: String,
+    fanout_runtime: Option<FanoutRuntimeState>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -100,8 +98,8 @@ impl WorkflowExecution {
     pub fn new(
         id: WorkflowExecutionId,
         workflow: WorkflowDefinition,
-        worktree_path: WorktreePath,
-        task: Option<String>,
+        worktree_path: WorkspaceWorktreePath,
+        request: Option<String>,
         started_at: f64,
     ) -> Result<Self, WorkflowError> {
         validation::validate_workflow_shape(&workflow)?;
@@ -121,16 +119,16 @@ impl WorkflowExecution {
             started_at,
             updated_at: started_at,
             current_session_id: None,
-            current_step_token_usage: TokenUsage::default(),
+            current_node_token_usage: TokenUsage::default(),
             terminal_total_token_usage: None,
             artifacts: HashMap::new(),
-            task,
-            parallel_run: None,
+            request: request.unwrap_or_default(),
+            fanout_runtime: None,
         })
     }
 
-    pub fn task(&self) -> Option<&str> {
-        self.task.as_deref()
+    pub fn request(&self) -> &str {
+        &self.request
     }
 
     pub fn to_snapshot(&self) -> WorkflowRuntimeSnapshot {
@@ -139,19 +137,12 @@ impl WorkflowExecution {
             .clone()
             .unwrap_or_else(|| projection::total_token_usage(&self.node_history));
 
-        let node_statuses = compute_node_statuses(
-            &self.workflow,
-            self.current_node_index,
-            &self.state,
-            &self.node_history,
-        );
-
         WorkflowRuntimeSnapshot {
             execution_id: self.id.to_string(),
             workflow_name: self.workflow.name.clone(),
             worktree_path: self.worktree_path.to_string(),
             created_from: crate::domain::workflow::ExecutionOrigin::DesktopUi,
-            request: self.task.clone().unwrap_or_default(),
+            request: self.request.clone(),
             error_reason: match &self.state {
                 RuntimeExecutionState::Failed { reason, .. } => Some(reason.clone()),
                 _ => None,
@@ -160,16 +151,12 @@ impl WorkflowExecution {
             current_node_index: self.current_node_index,
             current_node_name: self.current_node_name().unwrap_or_default().to_string(),
             current_session_id: self.current_session_id.clone(),
-            total_nodes: self.workflow.nodes.len(),
             node_history: self.node_history.clone(),
             node_execution_counts: self.node_execution_counts.clone(),
             workflow_definition: self.workflow.clone(),
             total_token_usage,
-            node_statuses,
             artifacts: self.artifacts.clone(),
             node_executions: Vec::new(),
-            approval_operations: self.build_approval_operations(),
-            stall_observations: Vec::new(),
             started_at: self.started_at,
             updated_at: self.updated_at,
         }
@@ -201,7 +188,7 @@ impl WorkflowExecution {
             self.artifacts.insert(entry.node_name.clone(), output);
         }
         self.node_history.push(entry);
-        self.current_step_token_usage = TokenUsage::default();
+        self.current_node_token_usage = TokenUsage::default();
         self.updated_at = completion.completed_at;
         Ok(())
     }
@@ -219,16 +206,16 @@ impl WorkflowExecution {
 
     pub fn abort_execution(&mut self, timestamp: f64) {
         self.state = RuntimeExecutionState::Aborted;
-        if let Some(entry) = self.aborted_parallel_history_entry(timestamp) {
+        if let Some(entry) = self.aborted_fanout_history_entry(timestamp) {
             self.node_history.push(entry);
         } else if let Some(entry) = self.aborted_current_history_entry(timestamp) {
             self.node_history.push(entry);
         }
-        self.parallel_run = None;
+        self.fanout_runtime = None;
         self.updated_at = timestamp;
     }
 
-    pub fn start_parallel(
+    pub fn start_fanout(
         &mut self,
         parent_node_name: &str,
         child_node_names: Vec<String>,
@@ -253,7 +240,7 @@ impl WorkflowExecution {
                 attempt: 0,
             })
             .collect();
-        self.parallel_run = Some(FanoutRuntimeState {
+        self.fanout_runtime = Some(FanoutRuntimeState {
             parent_node_name: parent_node_name.to_string(),
             children,
         });
@@ -261,7 +248,7 @@ impl WorkflowExecution {
         Ok(())
     }
 
-    pub fn record_parallel_child_started(
+    pub fn record_fanout_child_started(
         &mut self,
         child_node_name: &str,
         session_id: String,
@@ -270,11 +257,11 @@ impl WorkflowExecution {
     ) {
         self.node_execution_counts
             .insert(child_node_name.to_string(), execution_count);
-        let Some(parallel_run) = &mut self.parallel_run else {
+        let Some(fanout_runtime) = &mut self.fanout_runtime else {
             self.updated_at = timestamp;
             return;
         };
-        if let Some(child) = parallel_run
+        if let Some(child) = fanout_runtime
             .children
             .iter_mut()
             .find(|child| child.node_name == child_node_name)
@@ -286,7 +273,7 @@ impl WorkflowExecution {
             child.failure_disposition = None;
             child.attempt = execution_count;
         } else {
-            parallel_run.children.push(FanoutChildRuntime {
+            fanout_runtime.children.push(FanoutChildRuntime {
                 node_name: child_node_name.to_string(),
                 session_id,
                 state: FanoutChildRuntimeState::Running,
@@ -302,16 +289,16 @@ impl WorkflowExecution {
         self.updated_at = timestamp;
     }
 
-    pub fn record_parallel_child_completed(&mut self, completion: FanoutChildCompletion) {
+    pub fn record_fanout_child_completed(&mut self, completion: FanoutChildCompletion) {
         let prior = self.artifacts.get(&completion.child_node_name).cloned();
-        let output_merge = parallel::merge_fanout_child_completion_output(
+        let output_merge = fanout::merge_fanout_child_completion_output(
             completion.artifact.clone(),
             prior.as_ref().and_then(|output| output.artifact.clone()),
             prior.as_ref().and_then(|output| output.contract.clone()),
         );
 
-        if let Some(parallel_run) = &mut self.parallel_run {
-            if let Some(child) = parallel_run
+        if let Some(fanout_runtime) = &mut self.fanout_runtime {
+            if let Some(child) = fanout_runtime
                 .children
                 .iter_mut()
                 .find(|child| child.node_name == completion.child_node_name)
@@ -342,7 +329,7 @@ impl WorkflowExecution {
             },
         );
         if let Some(usage) = &completion.token_usage {
-            self.current_step_token_usage.add(usage);
+            self.current_node_token_usage.add(usage);
         }
         self.updated_at = completion.completed_at;
     }
@@ -383,20 +370,12 @@ impl WorkflowExecution {
             .map(|node| node.name.as_str())
     }
 
-    fn current_step(&self) -> Option<&NodeDefinition> {
-        self.workflow.nodes.get(self.current_node_index)
-    }
-
     fn node_index(&self, node_name: &str) -> Result<usize, WorkflowError> {
         self.workflow
             .nodes
             .iter()
             .position(|node| node.name == node_name)
             .ok_or_else(|| WorkflowError::validation(format!("node not found: {node_name}")))
-    }
-
-    fn build_approval_operations(&self) -> Option<RuntimeApprovalOperations> {
-        projection::approval_operations(&self.state, self.current_step())
     }
 
     fn aborted_current_history_entry(&mut self, timestamp: f64) -> Option<NodeHistoryEntry> {
@@ -409,7 +388,7 @@ impl WorkflowExecution {
         if already_in_history {
             return None;
         }
-        let token_usage = std::mem::take(&mut self.current_step_token_usage);
+        let token_usage = std::mem::take(&mut self.current_node_token_usage);
         Some(history::aborted_node_history_entry(
             node_name,
             attempt,
@@ -419,15 +398,15 @@ impl WorkflowExecution {
         ))
     }
 
-    fn aborted_parallel_history_entry(&self, timestamp: f64) -> Option<NodeHistoryEntry> {
-        let parallel_run = self.parallel_run.as_ref()?;
+    fn aborted_fanout_history_entry(&self, timestamp: f64) -> Option<NodeHistoryEntry> {
+        let fanout_runtime = self.fanout_runtime.as_ref()?;
         let parent_attempt = self
             .node_execution_counts
-            .get(&parallel_run.parent_node_name)
+            .get(&fanout_runtime.parent_node_name)
             .copied()
             .unwrap_or(0);
-        Some(history::aborted_parallel_history_entry(
-            parallel_run,
+        Some(history::aborted_fanout_history_entry(
+            fanout_runtime,
             &self.artifacts,
             parent_attempt,
             timestamp,
@@ -441,38 +420,6 @@ impl FanoutChildRuntimeState {
     }
 }
 
-pub fn compute_node_statuses(
-    workflow: &WorkflowDefinition,
-    current_node_index: usize,
-    state: &RuntimeExecutionState,
-    node_history: &[NodeHistoryEntry],
-) -> HashMap<String, String> {
-    let completed: HashSet<&str> = node_history
-        .iter()
-        .map(|entry| entry.node_name.as_str())
-        .collect();
-    workflow
-        .nodes
-        .iter()
-        .enumerate()
-        .map(|(index, node)| {
-            let in_history = completed.contains(node.name.as_str());
-            let node_state = if index == current_node_index {
-                if matches!(state, RuntimeExecutionState::Failed { .. }) && in_history {
-                    NODE_STATUS_COMPLETED
-                } else {
-                    state.as_str()
-                }
-            } else if in_history {
-                NODE_STATUS_COMPLETED
-            } else {
-                NODE_STATUS_PENDING
-            };
-            (node.name.clone(), node_state.to_string())
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod aggregate_tests {
     use super::*;
@@ -484,8 +431,8 @@ mod aggregate_tests {
         WorkflowExecutionId::new("00000000-0000-4000-8000-000000000001").unwrap()
     }
 
-    fn worktree() -> WorktreePath {
-        WorktreePath::new("/tmp/repo").unwrap()
+    fn worktree() -> WorkspaceWorktreePath {
+        WorkspaceWorktreePath::new("/tmp/repo").unwrap()
     }
 
     enum TestNodeKind {
@@ -576,37 +523,16 @@ mod aggregate_tests {
         exec.request_approval("approve", 3.0).unwrap();
 
         let snapshot = exec.to_snapshot();
-        assert_eq!(snapshot.node_statuses["plan"], "completed");
-        assert_eq!(snapshot.node_statuses["approve"], "waiting_approval");
         assert_eq!(snapshot.total_token_usage.input_tokens, 2);
-        assert!(snapshot.approval_operations.is_some());
-        assert_eq!(exec.task(), Some("task"));
+        assert_eq!(exec.request(), "task");
     }
 
     #[test]
-    fn snapshot_omits_approval_operations_for_non_approval_gate_waiting_state() {
-        let mut exec = WorkflowExecution::new(
-            execution_id(),
-            workflow(vec![node("implement", TestNodeKind::Session)]),
-            worktree(),
-            None,
-            1.0,
-        )
-        .unwrap();
-        exec.state = RuntimeExecutionState::WaitingApproval;
-
-        let snapshot = exec.to_snapshot();
-
-        assert_eq!(snapshot.node_statuses["implement"], "waiting_approval");
-        assert!(snapshot.approval_operations.is_none());
-    }
-
-    #[test]
-    fn abort_parallel_records_parent_with_child_snapshots() {
+    fn abort_fanout_records_parent_with_child_snapshots() {
         let mut exec = WorkflowExecution::new(
             execution_id(),
             workflow(vec![
-                node("parallel-review", TestNodeKind::Fanout),
+                node("fanout-review", TestNodeKind::Fanout),
                 node("a", TestNodeKind::Session),
                 node("b", TestNodeKind::Session),
             ]),
@@ -615,15 +541,11 @@ mod aggregate_tests {
             1.0,
         )
         .unwrap();
-        exec.start_parallel(
-            "parallel-review",
-            vec!["a".to_string(), "b".to_string()],
-            1.1,
-        )
-        .unwrap();
-        exec.record_parallel_child_started("a", "session-a".to_string(), 1, 1.2);
-        exec.record_parallel_child_started("b", "session-b".to_string(), 1, 1.2);
-        exec.record_parallel_child_completed(FanoutChildCompletion {
+        exec.start_fanout("fanout-review", vec!["a".to_string(), "b".to_string()], 1.1)
+            .unwrap();
+        exec.record_fanout_child_started("a", "session-a".to_string(), 1, 1.2);
+        exec.record_fanout_child_started("b", "session-b".to_string(), 1, 1.2);
+        exec.record_fanout_child_completed(FanoutChildCompletion {
             child_node_name: "a".to_string(),
             result: Some("LGTM".to_string()),
             session_id: "session-a".to_string(),
@@ -638,7 +560,7 @@ mod aggregate_tests {
         assert_eq!(snapshot.state, RuntimeExecutionState::Aborted);
         assert!(snapshot.node_executions.is_empty());
         let parent = snapshot.node_history.first().unwrap();
-        assert_eq!(parent.node_name, "parallel-review");
+        assert_eq!(parent.node_name, "fanout-review");
         assert_eq!(parent.state, "aborted");
         let children = parent.fanout_children.as_ref().unwrap();
         assert_eq!(children.len(), 2);
@@ -661,7 +583,7 @@ mod aggregate_tests {
     }
 
     #[test]
-    fn submit_output_updates_step_output_without_workflow_variable_side_effects() {
+    fn submit_output_updates_node_output_without_workflow_variable_side_effects() {
         let mut exec = WorkflowExecution::new(
             execution_id(),
             workflow(vec![node("spec", TestNodeKind::Session)]),

@@ -1,18 +1,17 @@
 use std::collections::HashMap;
 
 use crate::adaptor::gateway::workflow::domain_mapping::{
-    node_history_entries_to_domain, runtime_execution_state_to_domain,
-    workflow_definition_to_domain,
+    runtime_execution_state_to_domain, workflow_definition_to_domain,
 };
 pub use crate::adaptor::gateway::workflow::event::{FanoutParentRef, TokenUsage};
-use crate::adaptor::gateway::workflow::schema::{NodeKindName, Workflow};
+use crate::adaptor::gateway::workflow::schema::{NodeKindName, WorkflowDefinitionYaml};
 use crate::domain::workflow::{
     ExecutionOrigin, FailureDisposition, NodeExecutionFailureKind, NODE_STATUS_ABORTED,
     NODE_STATUS_COMPLETED, NODE_STATUS_FAILED, NODE_STATUS_RUNNING, NODE_STATUS_WAITING_APPROVAL,
 };
 
 #[derive(Debug, Clone)]
-pub struct WorkflowState {
+pub struct RuntimeCommitSnapshot {
     pub execution_id: String,
     pub workflow_name: String,
     pub worktree_path: String,
@@ -23,23 +22,14 @@ pub struct WorkflowState {
     pub current_node_index: usize,
     pub current_node_name: String,
     pub current_session_id: Option<String>,
-    pub total_nodes: usize,
     pub node_history: Vec<NodeHistoryEntry>,
     pub node_execution_counts: HashMap<String, u32>,
-    pub workflow_definition: Workflow,
+    pub workflow_definition: WorkflowDefinitionYaml,
     pub total_token_usage: TokenUsage,
-    pub node_statuses: HashMap<String, String>,
     pub artifacts: HashMap<String, RuntimeArtifact>,
     pub node_executions: Vec<NodeExecution>,
-    pub approval_operations: Option<ApprovalOperations>,
-    pub stall_observations: Vec<NodeStallObservation>,
     pub started_at: f64,
     pub updated_at: f64,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct ApprovalOperations {
-    pub can_approve: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -119,24 +109,6 @@ impl RuntimeExecutionState {
     }
 }
 
-/// 各 node の表示用状態を計算する。
-pub fn compute_node_statuses(
-    workflow: &Workflow,
-    current_node_index: usize,
-    state: &RuntimeExecutionState,
-    node_history: &[NodeHistoryEntry],
-) -> HashMap<String, String> {
-    let domain_workflow = workflow_definition_to_domain(workflow);
-    let domain_state = runtime_execution_state_to_domain(state);
-    let domain_history = node_history_entries_to_domain(node_history);
-    crate::domain::workflow::compute_node_statuses(
-        &domain_workflow,
-        current_node_index,
-        &domain_state,
-        &domain_history,
-    )
-}
-
 #[derive(Debug, Clone)]
 pub struct NodeHistoryEntry {
     pub node_name: String,
@@ -178,8 +150,8 @@ pub struct RuntimeArtifact {
     pub completed_at: f64,
 }
 
-pub(crate) fn workflow_state_to_domain_snapshot(
-    state: WorkflowState,
+pub(crate) fn runtime_commit_snapshot_to_domain_snapshot(
+    state: RuntimeCommitSnapshot,
 ) -> crate::domain::workflow::WorkflowRuntimeSnapshot {
     let workflow_definition = workflow_definition_to_domain(&state.workflow_definition);
 
@@ -194,7 +166,6 @@ pub(crate) fn workflow_state_to_domain_snapshot(
         current_node_index: state.current_node_index,
         current_node_name: state.current_node_name,
         current_session_id: state.current_session_id,
-        total_nodes: state.total_nodes,
         node_history: state
             .node_history
             .into_iter()
@@ -203,7 +174,6 @@ pub(crate) fn workflow_state_to_domain_snapshot(
         node_execution_counts: state.node_execution_counts,
         workflow_definition,
         total_token_usage: token_usage_to_domain(state.total_token_usage),
-        node_statuses: state.node_statuses,
         artifacts: state
             .artifacts
             .into_iter()
@@ -214,33 +184,8 @@ pub(crate) fn workflow_state_to_domain_snapshot(
             .into_iter()
             .map(node_execution_to_domain)
             .collect(),
-        approval_operations: state.approval_operations.map(|operations| {
-            crate::domain::workflow::RuntimeApprovalOperations {
-                can_approve: operations.can_approve,
-            }
-        }),
-        stall_observations: state
-            .stall_observations
-            .into_iter()
-            .map(workflow_stall_observation_to_domain)
-            .collect(),
         started_at: state.started_at,
         updated_at: state.updated_at,
-    }
-}
-
-fn workflow_stall_observation_to_domain(
-    observation: NodeStallObservation,
-) -> crate::domain::workflow::NodeStallObservation {
-    crate::domain::workflow::NodeStallObservation {
-        session_id: observation.session_id,
-        node_name: observation.node_name,
-        attempt: observation.attempt,
-        turn_phase: observation.turn_phase,
-        idle_secs: observation.idle_secs,
-        signal_count: observation.signal_count,
-        cap_reached: observation.cap_reached,
-        observed_at: observation.observed_at,
     }
 }
 

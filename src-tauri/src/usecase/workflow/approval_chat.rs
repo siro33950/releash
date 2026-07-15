@@ -57,7 +57,7 @@ mod tests {
     impl WorkflowApprovalChatGateway for FakeRuntimeGateway {
         async fn resolve_approval_chat_target(
             &self,
-            _run_id: &str,
+            _execution_id: &str,
         ) -> Result<ApprovalChatTarget, WorkflowError> {
             self.calls.lock().unwrap().push("resolve_target");
             Ok(ApprovalChatTarget {

@@ -1,0 +1,18 @@
+name: empty-fanout-child-rules
+description: empty items complete without children and child rules are ignored by fanout execution
+schemas:
+  item-text: string
+nodes:
+  - name: dispatch
+    fanout:
+      child: worker
+      items: []
+    rules:
+      - next: done
+  - name: worker
+    input: item-text
+    command: "printf '%s' '{{ item }}'"
+    rules:
+      - next: done
+  - name: done
+    command: printf done

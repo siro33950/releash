@@ -123,7 +123,7 @@ impl WorkflowStartExecutionGateway for TauriWorkflowRuntimeCommandGateway {
         &self,
         command: ResolvedStartExecutionCommand,
     ) -> Result<String, WorkflowError> {
-        let permission_mode = PermissionMode::parse(&command.permission_mode)
+        let permission_mode = PermissionMode::parse_canonical(&command.permission_mode)
             .map_err(|err| WorkflowError::validation(err.to_string()))?;
         let workflow = super::mapper::domain_workflow_to_schema(&command.workflow)?;
         self.engine
@@ -331,18 +331,18 @@ impl WorkflowRuntimeStateGateway for TauriWorkflowRuntimeCommandGateway {
             .engine
             .get_state_by_execution_id(execution_id)
             .await
-            .map(crate::adaptor::gateway::workflow::state::workflow_state_to_domain_snapshot))
+            .map(
+            crate::adaptor::gateway::workflow::state::runtime_commit_snapshot_to_domain_snapshot,
+        ))
     }
 
     async fn get_state_by_worktree(
         &self,
         worktree_path: &str,
     ) -> Result<Option<WorkflowRuntimeSnapshot>, WorkflowError> {
-        Ok(self
-            .engine
-            .get_state(worktree_path)
-            .await
-            .map(crate::adaptor::gateway::workflow::state::workflow_state_to_domain_snapshot))
+        Ok(self.engine.get_state(worktree_path).await.map(
+            crate::adaptor::gateway::workflow::state::runtime_commit_snapshot_to_domain_snapshot,
+        ))
     }
 }
 

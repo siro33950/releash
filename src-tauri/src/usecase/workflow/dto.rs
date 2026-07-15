@@ -387,7 +387,7 @@ mod tests {
             .into_iter()
             .collect(),
             nodes: vec![NodeDefinitionDto {
-                name: "step".to_string(),
+                name: "node".to_string(),
                 kind: NodeKindDto::Session,
                 session: Some(SessionSpecDto {
                     gate: SessionGateDto::Auto,
@@ -421,7 +421,7 @@ mod tests {
                     }
                 },
                 "nodes": [{
-                    "name": "step",
+                    "name": "node",
                     "kind": "session",
                     "session": {
                         "gate": "auto",

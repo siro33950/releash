@@ -9,11 +9,6 @@ use super::runtime_projection::{
     NODE_STATUS_FAILED, NODE_STATUS_INTERRUPTED, NODE_STATUS_RUNNING, NODE_STATUS_WAITING_APPROVAL,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RuntimeApprovalOperations {
-    pub can_approve: bool,
-}
-
 /// Private runtime transition state. Public lifecycle state is `ExecutionStatus`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RuntimeExecutionState {
@@ -46,18 +41,6 @@ impl RuntimeExecutionState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct NodeStallObservation {
-    pub session_id: String,
-    pub node_name: String,
-    pub attempt: u32,
-    pub turn_phase: String,
-    pub idle_secs: u64,
-    pub signal_count: u32,
-    pub cap_reached: bool,
-    pub observed_at: f64,
-}
-
 /// Internal transition snapshot used by the runtime and restore path.
 ///
 /// This is deliberately separate from the public `WorkflowExecution` read model.
@@ -73,16 +56,12 @@ pub struct WorkflowRuntimeSnapshot {
     pub current_node_index: usize,
     pub current_node_name: String,
     pub current_session_id: Option<String>,
-    pub total_nodes: usize,
     pub node_history: Vec<NodeHistoryEntry>,
     pub node_execution_counts: HashMap<String, u32>,
     pub workflow_definition: WorkflowDefinition,
     pub total_token_usage: TokenUsage,
-    pub node_statuses: HashMap<String, String>,
     pub artifacts: HashMap<String, RuntimeArtifact>,
     pub node_executions: Vec<NodeExecution>,
-    pub approval_operations: Option<RuntimeApprovalOperations>,
-    pub stall_observations: Vec<NodeStallObservation>,
     pub started_at: f64,
     pub updated_at: f64,
 }

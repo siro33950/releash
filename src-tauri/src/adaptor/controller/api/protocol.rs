@@ -92,7 +92,7 @@ impl From<ValidateArtifactResponse> for WorkflowValidateOutputResult {
 pub(crate) enum GetArtifactResponse {
     Submitted {
         contract: Option<String>,
-        structured_output: serde_json::Value,
+        value: serde_json::Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         submitted_at: Option<f64>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -113,7 +113,7 @@ impl From<WorkflowGetOutputResult> for GetArtifactResponse {
                 timestamp,
             } => Self::Submitted {
                 contract,
-                structured_output,
+                value: structured_output,
                 submitted_at,
                 request_id,
                 timestamp,
@@ -128,13 +128,13 @@ impl From<GetArtifactResponse> for WorkflowGetOutputResult {
         match response {
             GetArtifactResponse::Submitted {
                 contract,
-                structured_output,
+                value,
                 submitted_at,
                 request_id,
                 timestamp,
             } => Self::Submitted {
                 contract,
-                structured_output,
+                structured_output: value,
                 submitted_at,
                 request_id,
                 timestamp,
@@ -182,5 +182,8 @@ mod tests {
             WorkflowGetOutputResult::from(GetArtifactResponse::from(output.clone())),
             output
         );
+        let wire = serde_json::to_value(GetArtifactResponse::from(output)).unwrap();
+        assert_eq!(wire["value"], serde_json::json!({"status": "approved"}));
+        assert!(wire.get("structured_output").is_none());
     }
 }

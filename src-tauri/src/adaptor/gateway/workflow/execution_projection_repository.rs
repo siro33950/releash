@@ -34,7 +34,7 @@ impl WorkflowExecutionProjectionRepository for WorkflowExecutionProjectionLogRep
 mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::event::WorkflowEvent;
-    use crate::adaptor::gateway::workflow::schema::Workflow;
+    use crate::adaptor::gateway::workflow::schema::WorkflowDefinitionYaml;
     use crate::domain::workflow::ExecutionOrigin;
 
     #[test]
@@ -50,7 +50,7 @@ mod tests {
                 created_from: ExecutionOrigin::Cli,
                 request: "review this".to_string(),
                 permission_mode: "ask".to_string(),
-                definition: Workflow {
+                definition: WorkflowDefinitionYaml {
                     name: "review".to_string(),
                     description: String::new(),
                     builtin: false,

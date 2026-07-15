@@ -1,0 +1,44 @@
+name: exhaustive-switch-with-next
+description: exhaustive switch rejects a redundant next catch-all
+schemas:
+  route:
+    type: object
+    properties:
+      verdict:
+        type: string
+        enum: [SHIP, HOLD]
+    required: [verdict]
+    additionalProperties: false
+nodes:
+  - name: judge
+    artifact: route
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        instruction: judge
+    rules:
+      - switch:
+          on: verdict
+          cases:
+            SHIP: shipped
+            HOLD: held
+        next: fallback
+  - name: shipped
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        instruction: shipped
+  - name: held
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        instruction: held
+  - name: fallback
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        instruction: fallback

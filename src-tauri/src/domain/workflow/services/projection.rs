@@ -4,9 +4,7 @@
 //! domain layer. Infrastructure can map runtime storage types into these value
 //! objects, but the rules for derived fields live here.
 
-use crate::domain::workflow::value_objects::{
-    NodeDefinition, NodeHistoryEntry, RuntimeApprovalOperations, RuntimeExecutionState, TokenUsage,
-};
+use crate::domain::workflow::value_objects::{NodeHistoryEntry, TokenUsage};
 #[cfg(test)]
 use crate::domain::workflow::NODE_STATUS_COMPLETED;
 
@@ -20,26 +18,9 @@ pub fn total_token_usage(node_history: &[NodeHistoryEntry]) -> TokenUsage {
     usage
 }
 
-pub fn approval_operations(
-    state: &RuntimeExecutionState,
-    current_step: Option<&NodeDefinition>,
-) -> Option<RuntimeApprovalOperations> {
-    if !matches!(state, RuntimeExecutionState::WaitingApproval) {
-        return None;
-    }
-    let current_step = current_step?;
-    if !current_step.is_approval_session() {
-        return None;
-    }
-    Some(RuntimeApprovalOperations { can_approve: true })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::workflow::value_objects::{
-        FacetRefs, NodeDefinition, NodeKind, SessionGate, SessionSpec,
-    };
 
     #[test]
     fn total_token_usage_sums_history_entries_and_skips_missing_usage() {
@@ -86,49 +67,5 @@ mod tests {
         ]);
         assert_eq!(usage.input_tokens, 10);
         assert_eq!(usage.output_tokens, 16);
-    }
-
-    #[test]
-    fn approval_operations_only_exists_when_waiting_for_approval_session() {
-        let approval_step = NodeDefinition {
-            name: "approve".to_string(),
-            kind: NodeKind::Session(SessionSpec {
-                gate: SessionGate::Approval,
-                facets: FacetRefs {
-                    instruction: Some("implement".to_string()),
-                    ..Default::default()
-                },
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        let auto_step = NodeDefinition {
-            name: "auto".to_string(),
-            kind: NodeKind::Session(SessionSpec {
-                gate: SessionGate::Auto,
-                facets: FacetRefs {
-                    instruction: Some("implement".to_string()),
-                    ..Default::default()
-                },
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-
-        assert_eq!(
-            approval_operations(
-                &RuntimeExecutionState::WaitingApproval,
-                Some(&approval_step)
-            ),
-            Some(RuntimeApprovalOperations { can_approve: true })
-        );
-        assert_eq!(
-            approval_operations(&RuntimeExecutionState::WaitingApproval, Some(&auto_step)),
-            None
-        );
-        assert_eq!(
-            approval_operations(&RuntimeExecutionState::Running, Some(&approval_step)),
-            None
-        );
     }
 }

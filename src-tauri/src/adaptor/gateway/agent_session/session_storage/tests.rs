@@ -2875,7 +2875,7 @@ fn session_meta_json_with_permission(session_id: &str, permission_field: Option<
         None => String::new(),
     };
     format!(
-        r#"{{"id":"{session_id}","worktreePath":"/repo","state":"active","createdAt":1000.0,"updatedAt":1000.0{permission_segment},"workflowStepSession":false,"firstMessagePreview":"","messageCount":0,"bodyFormatVersion":1,"backendId":"claude"}}"#
+        r#"{{"id":"{session_id}","worktreePath":"/repo","state":"active","createdAt":1000.0,"updatedAt":1000.0{permission_segment},"workflowNodeSession":false,"firstMessagePreview":"","messageCount":0,"bodyFormatVersion":1,"backendId":"claude"}}"#
     )
 }
 

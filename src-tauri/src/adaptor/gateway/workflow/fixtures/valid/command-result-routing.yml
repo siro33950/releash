@@ -1,0 +1,12 @@
+name: command-result-routing
+description: command reserved ok field drives a typed boolean route
+nodes:
+  - name: check
+    command: test -f Cargo.toml
+    rules:
+      - when: { on: ok, then: passed }
+        next: failed
+  - name: passed
+    command: printf passed
+  - name: failed
+    command: printf failed

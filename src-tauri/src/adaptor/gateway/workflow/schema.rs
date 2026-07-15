@@ -4,7 +4,6 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::domain_mapping;
 use crate::domain::workflow as domain_workflow;
 use crate::domain::workflow::services::{contract_schema, reference};
 
@@ -31,8 +30,7 @@ impl Serialize for SchemaDef {
     where
         S: Serializer,
     {
-        contract_schema::schema_def_to_json_value(&domain_mapping::schema_def_to_domain(self))
-            .serialize(serializer)
+        contract_schema::schema_def_to_json_value(&schema_def_to_domain(self)).serialize(serializer)
     }
 }
 
@@ -70,10 +68,36 @@ fn schema_def_from_domain(schema: domain_workflow::SchemaDef) -> SchemaDef {
     }
 }
 
+fn schema_def_to_domain(schema: &SchemaDef) -> domain_workflow::SchemaDef {
+    match schema {
+        SchemaDef::Object {
+            properties,
+            required,
+            additional_properties,
+        } => domain_workflow::SchemaDef::Object {
+            properties: properties
+                .iter()
+                .map(|(name, schema)| (name.clone(), schema_def_to_domain(schema)))
+                .collect(),
+            required: required.clone(),
+            additional_properties: *additional_properties,
+        },
+        SchemaDef::Array { items } => domain_workflow::SchemaDef::Array {
+            items: items.clone(),
+        },
+        SchemaDef::String { r#enum } => domain_workflow::SchemaDef::String {
+            r#enum: r#enum.clone(),
+        },
+        SchemaDef::Boolean => domain_workflow::SchemaDef::Boolean,
+        SchemaDef::Integer => domain_workflow::SchemaDef::Integer,
+        SchemaDef::Number => domain_workflow::SchemaDef::Number,
+    }
+}
+
 /// ワークフローテンプレート定義。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
-pub struct Workflow {
+pub struct WorkflowDefinitionYaml {
     pub name: String,
     pub description: String,
     #[serde(default)]
@@ -248,7 +272,7 @@ impl NodeKind {
 pub struct NodeDefinition {
     pub name: String,
     pub kind: NodeKind,
-    // #1325/#1326/#1327 で意味を移す新しい共通フィールドの位置だけ先に確保する。
+    // Node kind に依存しない正本の共通 field。意味と検証は Rust workflow layer が所有する。
     pub artifact: Option<String>,
     pub input: Option<String>,
     pub inputs: Vec<String>,
@@ -572,7 +596,7 @@ nodes:
         instruction: implement
         policy: coding
 "#;
-        let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
+        let wf: WorkflowDefinitionYaml = serde_saphyr::from_str(yaml).unwrap();
         let node = &wf.nodes[0];
         assert_eq!(node.kind_name(), NodeKindName::Session);
         let session = node.session().unwrap();
@@ -595,7 +619,7 @@ nodes:
         instruction: approve
         policy: planning
 "#;
-        let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
+        let wf: WorkflowDefinitionYaml = serde_saphyr::from_str(yaml).unwrap();
         let node = &wf.nodes[0];
         assert!(node.is_approval_session());
         assert_eq!(
@@ -615,7 +639,7 @@ nodes:
       permission: edit
 "#;
 
-        let error = serde_saphyr::from_str::<Workflow>(yaml).unwrap_err();
+        let error = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
 
         assert!(error.to_string().contains("missing field `gate`"));
     }
@@ -629,7 +653,7 @@ nodes:
   - name: build
     command: "cargo build"
 "#;
-        let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
+        let wf: WorkflowDefinitionYaml = serde_saphyr::from_str(yaml).unwrap();
         let node = &wf.nodes[0];
         assert_eq!(node.kind_name(), NodeKindName::Command);
         match &node.kind {
@@ -649,7 +673,7 @@ nodes:
       child: [arch-review, security-review]
       items: plan.targets
 "#;
-        let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
+        let wf: WorkflowDefinitionYaml = serde_saphyr::from_str(yaml).unwrap();
         let fanout = wf.nodes[0].fanout().unwrap();
         assert_eq!(
             fanout.child,
@@ -686,7 +710,7 @@ nodes:
       items: [api, cli]
 "#;
 
-        let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
+        let wf: WorkflowDefinitionYaml = serde_saphyr::from_str(yaml).unwrap();
         let fanout = wf.nodes[0].fanout().unwrap();
 
         assert_eq!(fanout.child, vec!["reviewer"]);
@@ -720,7 +744,7 @@ nodes:
 "#
             );
 
-            let error = serde_saphyr::from_str::<Workflow>(&yaml).unwrap_err();
+            let error = serde_saphyr::from_str::<WorkflowDefinitionYaml>(&yaml).unwrap_err();
             assert!(
                 error.to_string().contains("fanout.items"),
                 "{items}: {error}"
@@ -755,7 +779,7 @@ nodes:
         next: give_up
       - next: done
 "#;
-        let wf = serde_saphyr::from_str::<Workflow>(yaml).unwrap();
+        let wf = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap();
 
         assert!(matches!(
             &wf.nodes[0].rules[0],
@@ -797,7 +821,7 @@ nodes:
       - match: NEEDS_FIX
         next: fix
 "#;
-        let err = serde_saphyr::from_str::<Workflow>(yaml).unwrap_err();
+        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
         assert!(err.to_string().contains("match"));
     }
 
@@ -819,7 +843,7 @@ nodes:
 "#
             );
 
-            let error = serde_saphyr::from_str::<Workflow>(&yaml).unwrap_err();
+            let error = serde_saphyr::from_str::<WorkflowDefinitionYaml>(&yaml).unwrap_err();
             assert!(error.to_string().contains("match"));
         }
     }
@@ -842,7 +866,7 @@ nodes:
             LGTM: done
         next: fix
 "#;
-        let err = serde_saphyr::from_str::<Workflow>(yaml).unwrap_err();
+        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
         assert!(err
             .to_string()
             .contains("discriminator keys when, switch, and loop_guard are mutually exclusive"));
@@ -861,7 +885,7 @@ nodes:
     rules:
       - when: { on: ok, then: done }
 "#;
-        let err = serde_saphyr::from_str::<Workflow>(yaml).unwrap_err();
+        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
         assert!(err.to_string().contains("when rule requires sibling next"));
     }
 
@@ -880,7 +904,7 @@ nodes:
     resets_cycle_for:
       - fix
 "#;
-        let err = serde_saphyr::from_str::<Workflow>(yaml).unwrap_err();
+        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
         assert!(
             err.to_string().contains("cycle_guard") || err.to_string().contains("resets_cycle_for")
         );
@@ -894,7 +918,7 @@ description: invalid
 nodes:
   - name: missing
 "#;
-        let err = serde_saphyr::from_str::<Workflow>(yaml).unwrap_err();
+        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
         assert!(err.to_string().contains("exactly one kind block"));
     }
 
@@ -910,7 +934,7 @@ nodes:
       permission: edit
       gate: auto
 "#;
-        let err = serde_saphyr::from_str::<Workflow>(yaml).unwrap_err();
+        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
         assert!(err.to_string().contains("exactly one kind block"));
     }
 
@@ -924,7 +948,7 @@ nodes:
     type: agent
     instruction: implement
 "#;
-        let err = serde_saphyr::from_str::<Workflow>(yaml).unwrap_err();
+        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
         assert!(err.to_string().contains("unknown field"));
         assert!(err.to_string().contains("type"));
     }
@@ -941,7 +965,7 @@ nodes:
       gate: auto
     output_contract: review-verdict
 "#;
-        let err = serde_saphyr::from_str::<Workflow>(yaml).unwrap_err();
+        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
         assert!(err.to_string().contains("unknown field"));
         assert!(err.to_string().contains("output_contract"));
     }
@@ -959,7 +983,7 @@ nodes:
     input_contracts:
       - spec-directory
 "#;
-        let err = serde_saphyr::from_str::<Workflow>(yaml).unwrap_err();
+        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
         assert!(err.to_string().contains("unknown field"));
         assert!(err.to_string().contains("input_contracts"));
     }
@@ -978,7 +1002,7 @@ nodes:
       gate: auto
     input: request_text
 "#;
-        let workflow = serde_saphyr::from_str::<Workflow>(yaml).unwrap();
+        let workflow = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap();
         assert!(matches!(
             workflow.schemas.get("request_text"),
             Some(SchemaDef::String { r#enum: None })
@@ -1003,10 +1027,7 @@ nodes:
         ] {
             let gateway_schema: SchemaDef = serde_json::from_value(value.clone()).unwrap();
             let domain_schema = contract_schema::schema_def_from_json(&value).unwrap();
-            assert_eq!(
-                domain_mapping::schema_def_to_domain(&gateway_schema),
-                domain_schema
-            );
+            assert_eq!(schema_def_to_domain(&gateway_schema), domain_schema);
         }
     }
 
@@ -1037,7 +1058,7 @@ nodes:
       permission: edit
       gate: auto
 "#;
-        assert!(serde_saphyr::from_str::<Workflow>(yaml).is_err());
+        assert!(serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).is_err());
     }
 
     #[test]
@@ -1052,7 +1073,7 @@ nodes:
       gate: auto
     instruction: implement
 "#;
-        let err = serde_saphyr::from_str::<Workflow>(yaml).unwrap_err();
+        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
         assert!(err.to_string().contains("unknown field"));
         assert!(err.to_string().contains("instruction"));
     }
@@ -1069,7 +1090,7 @@ nodes:
       gate: auto
     inline_prompt: "Do a quick analysis"
 "#;
-        let err = serde_saphyr::from_str::<Workflow>(yaml).unwrap_err();
+        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
         assert!(err.to_string().contains("unknown field"));
         assert!(err.to_string().contains("inline_prompt"));
     }
@@ -1085,7 +1106,7 @@ nodes:
       permission: edit
       command: "cargo build"
 "#;
-        let err = serde_saphyr::from_str::<Workflow>(yaml).unwrap_err();
+        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
         assert!(err.to_string().contains("unknown field"));
         assert!(err.to_string().contains("command"));
     }
@@ -1113,7 +1134,7 @@ nodes:
     facets:
       instruction: implement
 "#;
-        let err = serde_saphyr::from_str::<Workflow>(yaml).unwrap_err();
+        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
         assert!(err.to_string().contains("unknown field"));
         assert!(err.to_string().contains("facets"));
     }
@@ -1130,7 +1151,7 @@ nodes:
         instruction: review
       child: []
 "#;
-        let err = serde_saphyr::from_str::<Workflow>(yaml).unwrap_err();
+        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
         assert!(err.to_string().contains("unknown field"));
         assert!(err.to_string().contains("facets"));
     }
@@ -1146,7 +1167,7 @@ nodes:
       parallel_children:
         - name: child
 "#;
-        let err = serde_saphyr::from_str::<Workflow>(yaml).unwrap_err();
+        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
         assert!(err.to_string().contains("unknown field"));
         assert!(err.to_string().contains("parallel_children"));
     }

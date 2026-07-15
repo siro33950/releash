@@ -10,11 +10,11 @@ mod definition;
 pub(crate) mod dto;
 pub(crate) mod event_draft;
 mod facet;
+pub(crate) mod node_lifecycle;
 mod output;
 pub(crate) mod ports;
 pub(crate) mod query_service;
 pub(crate) mod runtime_command;
-pub(crate) mod step_lifecycle;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub(crate) mod turn_complete;
@@ -35,12 +35,12 @@ use crate::usecase::workflow::ports::{
 
 use definition::WorkflowDefinitionUsecase;
 use facet::WorkflowFacetUsecase;
+pub(crate) use node_lifecycle::NodeExecutionLifecycleUsecase;
 pub(crate) use output::WorkflowOutputUsecase;
 pub use output::WorkflowValidateOutputResult;
 use query_service::WorkflowQueryService;
 pub use query_service::{WorkflowEventView, WorkflowGetOutputResult};
 pub use runtime_command::WorkflowRuntimeUsecase;
-pub(crate) use step_lifecycle::NodeExecutionLifecycleUsecase;
 pub(crate) use workspace_tree::{
     WorkspaceSessionGateway, WorkspaceSessionInput, WorkspaceSessionState, WorkspaceTreeNodeDto,
     WorkspaceWorkflowHistoryItemDto, WorkspaceWorkflowNodeDetailDto,

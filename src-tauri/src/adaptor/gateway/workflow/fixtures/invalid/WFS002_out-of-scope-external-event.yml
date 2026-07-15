@@ -1,0 +1,7 @@
+name: out-of-scope-external-event
+description: external event subscriptions do not belong to WorkflowDefinition
+external_event:
+  source: webhook
+nodes:
+  - name: run
+    command: printf done

@@ -1,0 +1,6 @@
+name: legacy-pass-previous-response
+description: pass_previous_response was replaced by explicit Artifact references
+nodes:
+  - name: run
+    pass_previous_response: true
+    command: printf done

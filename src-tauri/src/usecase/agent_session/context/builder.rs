@@ -71,7 +71,7 @@ impl SystemContextInput {
             ContextSourceKind::OpenEditorSelection => self.open_editor_selection.as_deref(),
             ContextSourceKind::Mentions => self.mentions.as_deref(),
             ContextSourceKind::TerminalLogSummary => self.terminal_log_summary.as_deref(),
-            ContextSourceKind::WorkflowState => self.workflow_state.as_deref(),
+            ContextSourceKind::WorkflowContext => self.workflow_state.as_deref(),
             ContextSourceKind::ProjectInstructions => self.project_instructions.as_deref(),
             ContextSourceKind::BackendModelIdentity => self.backend_model_identity.as_deref(),
         }
@@ -594,7 +594,7 @@ mod tests {
         assert_eq!(repo.epoch_id, next.state.current_epoch.id);
         assert_eq!(repo.revision, ContextRevision(2));
         assert_eq!(
-            next.payload_for(ContextSourceKind::WorkflowState),
+            next.payload_for(ContextSourceKind::WorkflowContext),
             Some("workflow-v1")
         );
     }
@@ -1042,7 +1042,7 @@ mod tests {
             .payload_for(ContextSourceKind::ProjectInstructions)
             .is_some_and(|payload| payload.contains("private workflow instruction")));
         assert!(built
-            .payload_for(ContextSourceKind::WorkflowState)
+            .payload_for(ContextSourceKind::WorkflowContext)
             .is_some_and(|payload| !payload.contains("private workflow instruction")
                 && !payload.contains("parentNodeName")
                 && !payload.contains("parentAttempt")));

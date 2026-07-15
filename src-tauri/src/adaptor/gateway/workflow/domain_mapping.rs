@@ -5,7 +5,7 @@ use crate::adaptor::gateway::workflow::state as runtime_state;
 use crate::domain::workflow as domain;
 
 pub(crate) fn workflow_definition_to_domain(
-    workflow: &schema::Workflow,
+    workflow: &schema::WorkflowDefinitionYaml,
 ) -> domain::WorkflowDefinition {
     domain::WorkflowDefinition {
         name: workflow.name.clone(),
@@ -294,7 +294,7 @@ mod tests {
 
     #[test]
     fn workflow_definition_to_domain_preserves_facet_refs_without_runtime_contents() {
-        let workflow = schema::Workflow {
+        let workflow = schema::WorkflowDefinitionYaml {
             name: "wf".to_string(),
             description: "desc".to_string(),
             builtin: false,
@@ -327,7 +327,7 @@ mod tests {
 
     #[test]
     fn workflow_definition_to_domain_preserves_fanout_child_and_items() {
-        let workflow = schema::Workflow {
+        let workflow = schema::WorkflowDefinitionYaml {
             name: "wf".to_string(),
             description: "desc".to_string(),
             builtin: false,

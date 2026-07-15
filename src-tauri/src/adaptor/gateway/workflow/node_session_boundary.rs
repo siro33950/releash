@@ -3,8 +3,8 @@ use std::sync::Arc;
 use super::runtime_events as workflow_runtime_events;
 use super::runtime_session as workflow_runtime_session;
 use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
-use crate::adaptor::gateway::workflow::state::WorkflowState;
-use crate::adaptor::gateway::workflow::step_settings::WorkflowDefaults;
+use crate::adaptor::gateway::workflow::node_settings::WorkflowDefaults;
+use crate::adaptor::gateway::workflow::state::RuntimeCommitSnapshot;
 use crate::domain::agent_session::PermissionMode;
 use crate::domain::workflow::WorkflowNodeContext;
 use crate::usecase::agent_session::context::BranchDiffContextPort;
@@ -54,49 +54,49 @@ impl<'a, R: tauri::Runtime> SessionStartGate for RealSessionStartGate<'a, R> {
     }
 }
 
-/// `start_step_session` 内でファセット合成（純粋関数）後に実行される副作用境界を
+/// `start_node_session` 内でファセット合成（純粋関数）後に実行される副作用境界を
 /// まとめて抽象化するトレイト。
 #[async_trait::async_trait]
-pub(crate) trait StepSessionDeps: Send + Sync {
+pub(crate) trait NodeSessionDeps: Send + Sync {
     /// ステップ用 ChatSession を生成し、IDと permission_mode を返す。
     ///
     /// `workflow_defaults` は workflow 開始時に capture された継承デフォルト。
-    /// 各 step は `step_model` / `step_permission` で上書きできる。
-    async fn create_step_session(
+    /// 各 node は `node_model` / `node_permission` で上書きできる。
+    async fn create_node_session(
         &self,
         worktree_path: &str,
-        step_model: Option<String>,
-        step_permission: Option<String>,
+        node_model: Option<String>,
+        node_permission: Option<String>,
         workflow_defaults: WorkflowDefaults,
         workflow_node_context: WorkflowNodeContext,
-        kind_context: workflow_runtime_session::StepRuntimeKindContext,
-    ) -> Result<StepSessionInfo, WorkflowEngineError>;
+        kind_context: workflow_runtime_session::NodeRuntimeKindContext,
+    ) -> Result<NodeSessionInfo, WorkflowEngineError>;
 
     /// 合成済み `system_prompt` を AgentSession 開始経路へ受け渡す。
     async fn dispatch_session_start(
         &self,
-        step_session_id: &str,
+        node_session_id: &str,
         worktree_path: &str,
         permission_mode: Option<String>,
         system_prompt: Option<String>,
         workflow_instruction: Option<String>,
     ) -> Result<(), WorkflowEngineError>;
 
-    async fn mark_step_tab_open(&self, step_session_id: &str);
+    async fn mark_node_tab_open(&self, node_session_id: &str);
 
     /// ワークフロー状態をブロードキャストする（best-effort）。
-    async fn broadcast_state(&self, worktree_path: &str, snapshot: WorkflowState);
+    async fn broadcast_state(&self, worktree_path: &str, snapshot: RuntimeCommitSnapshot);
 
-    /// step session と node の紐付きを event log に確定する。
+    /// node session と node の紐付きを event log に確定する。
     async fn append_node_session_started(
         &self,
-        snapshot: &WorkflowState,
+        snapshot: &RuntimeCommitSnapshot,
     ) -> Result<(), WorkflowEngineError>;
 
     /// Runtime lock acquired by the caller variant.
     async fn start_agent_turn_locked(
         &self,
-        step_session_id: &str,
+        node_session_id: &str,
         worktree_path: &str,
         permission_mode: &str,
         prompt: &str,
@@ -105,15 +105,15 @@ pub(crate) trait StepSessionDeps: Send + Sync {
     ) -> Result<(), WorkflowEngineError>;
 }
 
-/// `StepSessionDeps::create_step_session` の戻り値。
+/// `NodeSessionDeps::create_node_session` の戻り値。
 #[derive(Clone, Debug)]
-pub(crate) struct StepSessionInfo {
+pub(crate) struct NodeSessionInfo {
     pub(crate) id: String,
     pub(crate) permission_mode: String,
 }
 
-/// production 用の `StepSessionDeps` 実装。
-pub(crate) struct RealStepSessionDeps<'a, R: tauri::Runtime> {
+/// production 用の `NodeSessionDeps` 実装。
+pub(crate) struct RealNodeSessionDeps<'a, R: tauri::Runtime> {
     pub(crate) app: &'a tauri::AppHandle<R>,
     pub(crate) branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     pub(crate) agent_runtime: &'a Arc<AgentSessionRuntimeUsecase>,
@@ -122,38 +122,38 @@ pub(crate) struct RealStepSessionDeps<'a, R: tauri::Runtime> {
 }
 
 #[async_trait::async_trait]
-impl<'a, R: tauri::Runtime> StepSessionDeps for RealStepSessionDeps<'a, R> {
-    async fn create_step_session(
+impl<'a, R: tauri::Runtime> NodeSessionDeps for RealNodeSessionDeps<'a, R> {
+    async fn create_node_session(
         &self,
         worktree_path: &str,
-        step_model: Option<String>,
-        step_permission: Option<String>,
+        node_model: Option<String>,
+        node_permission: Option<String>,
         workflow_defaults: WorkflowDefaults,
         workflow_node_context: WorkflowNodeContext,
-        kind_context: workflow_runtime_session::StepRuntimeKindContext,
-    ) -> Result<StepSessionInfo, WorkflowEngineError> {
+        kind_context: workflow_runtime_session::NodeRuntimeKindContext,
+    ) -> Result<NodeSessionInfo, WorkflowEngineError> {
         let data_dir = crate::infrastructure::platform::app_data_dir::resolve_data_dir(self.app)
             .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
-        let step_session = workflow_runtime_session::create_step_session_with_settings(
+        let node_session = workflow_runtime_session::create_node_session_with_settings(
             self.agent_runtime.backend_registry(),
             self.session_store,
             &data_dir,
             worktree_path,
-            step_model,
-            step_permission,
+            node_model,
+            node_permission,
             &workflow_defaults,
             workflow_node_context,
             kind_context,
         )?;
-        Ok(StepSessionInfo {
-            id: step_session.id,
-            permission_mode: step_session.permission_mode,
+        Ok(NodeSessionInfo {
+            id: node_session.id,
+            permission_mode: node_session.permission_mode,
         })
     }
 
     async fn dispatch_session_start(
         &self,
-        step_session_id: &str,
+        node_session_id: &str,
         worktree_path: &str,
         permission_mode: Option<String>,
         system_prompt: Option<String>,
@@ -162,7 +162,7 @@ impl<'a, R: tauri::Runtime> StepSessionDeps for RealStepSessionDeps<'a, R> {
         let gate = RealSessionStartGate { _app: self.app };
         dispatch_session_start(
             &gate,
-            step_session_id,
+            node_session_id,
             worktree_path,
             permission_mode,
             system_prompt,
@@ -171,20 +171,20 @@ impl<'a, R: tauri::Runtime> StepSessionDeps for RealStepSessionDeps<'a, R> {
         .await
     }
 
-    async fn mark_step_tab_open(&self, step_session_id: &str) {
-        crate::adaptor::gateway::workflow::mark_started_step_tab_open(
+    async fn mark_node_tab_open(&self, node_session_id: &str) {
+        crate::adaptor::gateway::workflow::mark_started_node_tab_open(
             self.open_tabs,
-            step_session_id,
+            node_session_id,
         );
     }
 
-    async fn broadcast_state(&self, worktree_path: &str, snapshot: WorkflowState) {
+    async fn broadcast_state(&self, worktree_path: &str, snapshot: RuntimeCommitSnapshot) {
         workflow_runtime_session::broadcast_state(self.app, worktree_path, snapshot).await;
     }
 
     async fn append_node_session_started(
         &self,
-        snapshot: &WorkflowState,
+        snapshot: &RuntimeCommitSnapshot,
     ) -> Result<(), WorkflowEngineError> {
         let Some(event) =
             workflow_runtime_events::node_session_started_event_for_snapshot(snapshot)?
@@ -202,7 +202,7 @@ impl<'a, R: tauri::Runtime> StepSessionDeps for RealStepSessionDeps<'a, R> {
 
     async fn start_agent_turn_locked(
         &self,
-        step_session_id: &str,
+        node_session_id: &str,
         worktree_path: &str,
         permission_mode: &str,
         prompt: &str,
@@ -215,15 +215,15 @@ impl<'a, R: tauri::Runtime> StepSessionDeps for RealStepSessionDeps<'a, R> {
             self.session_store,
             worktree_path,
         );
-        let permission_mode = PermissionMode::parse(permission_mode)
+        let permission_mode = PermissionMode::parse_canonical(permission_mode)
             .map_err(|e| WorkflowEngineError::InvalidWorkflow(e.to_string()))?;
         let _runtime_guard = self
             .agent_runtime
-            .acquire_session_lock(step_session_id)
+            .acquire_session_lock(node_session_id)
             .await;
         self.agent_runtime
             .start_turn_locked(
-                step_session_id,
+                node_session_id,
                 permission_mode,
                 prompt.to_string(),
                 system_prompt,

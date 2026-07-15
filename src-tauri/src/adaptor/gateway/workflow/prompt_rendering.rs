@@ -148,7 +148,7 @@ fn render_workflow_instruction(
     (!rendered.is_empty()).then_some(rendered)
 }
 
-pub(crate) fn render_step_workflow_instruction(
+pub(crate) fn render_node_workflow_instruction(
     _node: &NodeDefinition,
     facet_contents: Option<&FacetContents>,
     request: Option<&str>,
@@ -191,7 +191,7 @@ pub(crate) fn append_artifact_completion_action(
     prompt.push_str(&action);
 }
 
-pub(crate) fn build_step_prompt(
+pub(crate) fn build_node_prompt(
     node: &NodeDefinition,
     facet_contents: Option<&FacetContents>,
     execution_id: &str,
@@ -264,7 +264,7 @@ pub(crate) fn build_fanout_child_prompt(
     Ok((system_prompt, user_message))
 }
 
-pub(crate) fn request_step_output(request: &str, timestamp: f64) -> RuntimeArtifact {
+pub(crate) fn request_node_artifact(request: &str, timestamp: f64) -> RuntimeArtifact {
     RuntimeArtifact {
         node_name: REQUEST_ARTIFACT.to_string(),
         attempt: 0,
@@ -304,13 +304,13 @@ mod tests {
     }
 
     #[test]
-    fn build_step_prompt_reports_missing_facets_with_node_vocabulary() {
+    fn build_node_prompt_reports_missing_facets_with_node_vocabulary() {
         let node = NodeDefinition {
             name: "review".to_string(),
             ..NodeDefinition::default()
         };
 
-        let error = build_step_prompt(&node, None, "execution-1", None, &HashMap::new())
+        let error = build_node_prompt(&node, None, "execution-1", None, &HashMap::new())
             .expect_err("node without facet refs must be rejected");
 
         assert!(matches!(
@@ -321,7 +321,7 @@ mod tests {
     }
 
     #[test]
-    fn build_step_prompt_injects_inputs_as_json() {
+    fn build_node_prompt_injects_inputs_as_json() {
         let mut node = make_test_node("implement", "Implement {{ request }}");
         node.inputs = vec!["request".to_string(), "plan".to_string()];
         let resolved = instruction_contents("Implement {{ request }}");
@@ -339,7 +339,7 @@ mod tests {
             },
         )]);
 
-        let (_system, prompt) = build_step_prompt(
+        let (_system, prompt) = build_node_prompt(
             &node,
             Some(&resolved),
             "execution-1",
@@ -356,7 +356,7 @@ mod tests {
     }
 
     #[test]
-    fn build_step_prompt_renders_node_field() {
+    fn build_node_prompt_renders_node_field() {
         let node = make_test_node("fix", "Spec dir: {{ authoring.spec_dir }}");
         let resolved = instruction_contents("Spec dir: {{ authoring.spec_dir }}");
         let outputs = HashMap::from([(
@@ -374,7 +374,7 @@ mod tests {
         )]);
 
         let (_system, prompt) =
-            build_step_prompt(&node, Some(&resolved), "execution-1", Some(""), &outputs).unwrap();
+            build_node_prompt(&node, Some(&resolved), "execution-1", Some(""), &outputs).unwrap();
 
         assert!(prompt.contains("Spec dir: docs/specs/foo"));
     }
@@ -444,21 +444,21 @@ mod tests {
     }
 
     #[test]
-    fn build_step_prompt_appends_canonical_output_submit_action() {
+    fn build_node_prompt_appends_canonical_output_submit_action() {
         let mut node = make_test_node("review", "Review the change.");
         node.artifact = Some("review-result".to_string());
         let resolved = instruction_contents("Review the change.");
 
         let (_system, prompt) =
-            build_step_prompt(&node, Some(&resolved), "execution-1", None, &HashMap::new())
+            build_node_prompt(&node, Some(&resolved), "execution-1", None, &HashMap::new())
                 .unwrap();
 
         assert!(prompt.contains("releash workflow output submit execution-1"));
         assert!(prompt.contains("--node review"));
         assert!(prompt.contains("--type review-result"));
         assert!(!prompt.contains("--node-execution"));
-        let deprecated_node_flag = ["--", "step"].concat();
-        assert!(!prompt.contains(&deprecated_node_flag));
+        let deprecated_step_flag = ["--", "step"].concat();
+        assert!(!prompt.contains(&deprecated_step_flag));
     }
 
     #[test]
