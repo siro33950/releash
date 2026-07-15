@@ -11,7 +11,8 @@ use crate::adaptor::controller_support::{
 };
 use crate::usecase::agent_session::runtime::SendAgentMessageRequest;
 use crate::usecase::workflow::command::{
-    AbortExecutionCommand, ApprovalCommand, StartExecutionCommand,
+    AbortExecutionCommand, ApprovalCommand, ResumeExecutionCommand, StartExecutionCommand,
+    StopExecutionCommand,
 };
 use crate::usecase::workflow::WorkflowRuntimeUsecase;
 
@@ -85,6 +86,38 @@ pub async fn abort_workflow(
         .map_err(|e| {
             let msg = e.to_string();
             log::error!("abort_workflow failed: code=ABORT_WORKFLOW_FAILED");
+            msg
+        })
+}
+
+#[tauri::command]
+pub async fn stop_workflow(
+    runtime: tauri::State<'_, Arc<WorkflowRuntimeUsecase>>,
+    execution_id: String,
+) -> Result<(), String> {
+    validate_execution_id(&execution_id)?;
+    runtime
+        .stop_execution(StopExecutionCommand { execution_id })
+        .await
+        .map_err(|e| {
+            let msg = e.to_string();
+            log::error!("stop_workflow failed: code=STOP_WORKFLOW_FAILED");
+            msg
+        })
+}
+
+#[tauri::command]
+pub async fn resume_workflow(
+    runtime: tauri::State<'_, Arc<WorkflowRuntimeUsecase>>,
+    execution_id: String,
+) -> Result<(), String> {
+    validate_execution_id(&execution_id)?;
+    runtime
+        .resume_execution(ResumeExecutionCommand { execution_id })
+        .await
+        .map_err(|e| {
+            let msg = e.to_string();
+            log::error!("resume_workflow failed: code=RESUME_WORKFLOW_FAILED");
             msg
         })
 }

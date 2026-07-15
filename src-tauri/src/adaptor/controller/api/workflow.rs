@@ -10,7 +10,8 @@ use crate::domain::workflow::{
     ExecutionOrigin, ExecutionStatusFilter, WorkflowError, WorkflowPageRequest,
 };
 use crate::usecase::workflow::command::{
-    AbortExecutionCommand, ApprovalCommand, StartExecutionCommand, SubmitOutputCommand,
+    AbortExecutionCommand, ApprovalCommand, ResumeExecutionCommand, StartExecutionCommand,
+    StopExecutionCommand, SubmitOutputCommand,
 };
 use crate::usecase::workflow::dto::{WorkflowExecutionSummaryDto, WorkflowSummaryDto};
 
@@ -66,6 +67,14 @@ pub(super) fn router() -> Router<LocalApiState> {
         .route(
             "/v1/workflow/executions/{execution_id}/abort",
             post(abort_execution),
+        )
+        .route(
+            "/v1/workflow/executions/{execution_id}/stop",
+            post(stop_execution),
+        )
+        .route(
+            "/v1/workflow/executions/{execution_id}/resume",
+            post(resume_execution),
         )
         .route(
             "/v1/workflow/executions/{execution_id}/artifacts",
@@ -177,6 +186,28 @@ async fn abort_execution(
             execution_id,
             expected_node_name: None,
         })
+        .await?;
+    Ok(Json(MutationResponse::ok()))
+}
+
+async fn stop_execution(
+    State(state): State<LocalApiState>,
+    Path(execution_id): Path<String>,
+) -> Result<Json<MutationResponse>, ApiError> {
+    state
+        .runtime
+        .stop_execution(StopExecutionCommand { execution_id })
+        .await?;
+    Ok(Json(MutationResponse::ok()))
+}
+
+async fn resume_execution(
+    State(state): State<LocalApiState>,
+    Path(execution_id): Path<String>,
+) -> Result<Json<MutationResponse>, ApiError> {
+    state
+        .runtime
+        .resume_execution(ResumeExecutionCommand { execution_id })
         .await?;
     Ok(Json(MutationResponse::ok()))
 }

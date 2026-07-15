@@ -2,6 +2,7 @@ import type { AgentState } from "./protocol";
 import type { SessionState, SessionSummary } from "./session";
 import type {
 	Artifact,
+	ExecutionInterruptionReason,
 	NodeExecutionStatus,
 	NodeKind,
 	WorkflowExecutionSummary,
@@ -51,6 +52,7 @@ export type WorkspaceNodeStatus =
 	| "failed"
 	| "error"
 	| "waiting"
+	| "interrupted"
 	| "aborted"
 	| "completed";
 
@@ -80,7 +82,15 @@ export interface WorkspaceWorkflowNodeExecution {
 	sessions: WorkspaceSessionNode[];
 }
 
-export type WorkspaceWorkflowNodeDetail = WorkspaceWorkflowNodeExecution;
+export interface WorkspaceWorkflowNodeDetail
+	extends WorkspaceWorkflowNodeExecution {
+	executionStatus: WorkspaceNodeStatus;
+	canStop: boolean;
+	canResume: boolean;
+	canAbort: boolean;
+	interruptionReason?: ExecutionInterruptionReason;
+	resumeFromNode?: string;
+}
 
 export interface WorkspaceWorkflowExecutionNode {
 	kind: "workflow";
@@ -90,6 +100,10 @@ export interface WorkspaceWorkflowExecutionNode {
 	title: string;
 	status: WorkspaceNodeStatus;
 	canStop: boolean;
+	canResume: boolean;
+	canAbort: boolean;
+	interruptionReason?: ExecutionInterruptionReason;
+	resumeFromNode?: string;
 	updatedAt: number;
 	nodeExecutions: WorkspaceWorkflowNodeExecution[];
 }

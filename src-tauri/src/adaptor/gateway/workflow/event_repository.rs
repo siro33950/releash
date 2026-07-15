@@ -87,6 +87,7 @@ mod tests {
                 "worktree_path": "/repo",
                 "created_from": "cli",
                 "request": "ship it",
+                "permission_mode": "ask",
                 "definition": {
                     "name": "wf",
                     "description": "",
@@ -129,6 +130,7 @@ mod tests {
                 "worktree_path": "/repo",
                 "created_from": "cli",
                 "request": "",
+                "permission_mode": "ask",
                 "definition": {
                     "name": "wf",
                     "description": "",

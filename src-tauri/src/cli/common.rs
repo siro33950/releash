@@ -207,6 +207,8 @@ models = ["opus"]
                 None
             },
             error_reason: None,
+            interruption_reason: None,
+            resume_from_node: None,
             total_token_usage: TokenUsage::default(),
         }
     }
@@ -295,6 +297,7 @@ models = ["opus"]
             worktree_path: worktree.to_string(),
             created_from: ExecutionOrigin::Cli,
             request: String::new(),
+            permission_mode: "ask".to_string(),
             definition: crate::adaptor::gateway::workflow::schema::Workflow {
                 name: workflow_name.to_string(),
                 description: "test".to_string(),

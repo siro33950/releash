@@ -5,7 +5,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::adaptor::gateway::workflow::schema::{NodeKindName, Workflow};
-use crate::domain::workflow::{ExecutionOrigin, NodeExecutionFailureKind};
+use crate::domain::workflow::{
+    ExecutionInterruptionReason, ExecutionOrigin, NodeExecutionFailureKind,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -48,6 +50,7 @@ pub enum WorkflowEvent {
         #[serde(with = "execution_origin_serde")]
         created_from: ExecutionOrigin,
         request: String,
+        permission_mode: String,
         definition: Workflow,
         timestamp: f64,
     },
@@ -163,7 +166,13 @@ pub enum WorkflowEvent {
     },
     ExecutionInterrupted {
         execution_id: String,
-        reason: String,
+        #[serde(with = "execution_interruption_reason_serde")]
+        reason: ExecutionInterruptionReason,
+        timestamp: f64,
+    },
+    ExecutionResumed {
+        execution_id: String,
+        resume_from_node: String,
         timestamp: f64,
     },
 }
@@ -185,7 +194,8 @@ impl WorkflowEvent {
             | Self::ExecutionCompleted { execution_id, .. }
             | Self::ExecutionFailed { execution_id, .. }
             | Self::ExecutionAborted { execution_id, .. }
-            | Self::ExecutionInterrupted { execution_id, .. } => execution_id,
+            | Self::ExecutionInterrupted { execution_id, .. }
+            | Self::ExecutionResumed { execution_id, .. } => execution_id,
         }
     }
 
@@ -205,7 +215,41 @@ impl WorkflowEvent {
             | Self::ExecutionCompleted { timestamp, .. }
             | Self::ExecutionFailed { timestamp, .. }
             | Self::ExecutionAborted { timestamp, .. }
-            | Self::ExecutionInterrupted { timestamp, .. } => *timestamp,
+            | Self::ExecutionInterrupted { timestamp, .. }
+            | Self::ExecutionResumed { timestamp, .. } => *timestamp,
+        }
+    }
+}
+
+mod execution_interruption_reason_serde {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use crate::domain::workflow::ExecutionInterruptionReason;
+
+    pub fn serialize<S>(
+        reason: &ExecutionInterruptionReason,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(reason.as_str())
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<ExecutionInterruptionReason, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        match value.as_str() {
+            "crash" => Ok(ExecutionInterruptionReason::Crash),
+            "stale" => Ok(ExecutionInterruptionReason::Stale),
+            "stop" => Ok(ExecutionInterruptionReason::Stop),
+            "orphan" => Ok(ExecutionInterruptionReason::Orphan),
+            _ => Err(serde::de::Error::unknown_variant(
+                &value,
+                &["crash", "stale", "stop", "orphan"],
+            )),
         }
     }
 }
@@ -280,6 +324,7 @@ mod tests {
             worktree_path: "/repo".to_string(),
             created_from: ExecutionOrigin::Cli,
             request: "review".to_string(),
+            permission_mode: crate::domain::agent_session::PermissionMode::EDIT.to_string(),
             definition: minimal_workflow(),
             timestamp: 1.0,
         };
@@ -288,7 +333,69 @@ mod tests {
         assert_eq!(value["event"], "execution_started");
         assert_eq!(value["execution_id"], event.execution_id());
         assert_eq!(value["created_from"], "cli");
+        assert_eq!(value["permission_mode"], "edit");
         assert!(serde_json::from_value::<WorkflowEvent>(value).is_ok());
+    }
+
+    #[test]
+    fn execution_started_without_permission_mode_is_rejected() {
+        let event = WorkflowEvent::ExecutionStarted {
+            execution_id: "00000000-0000-4000-8000-000000000001".to_string(),
+            workflow_name: "wf".to_string(),
+            worktree_path: "/repo".to_string(),
+            created_from: ExecutionOrigin::Cli,
+            request: "review".to_string(),
+            permission_mode: crate::domain::agent_session::PermissionMode::FULL.to_string(),
+            definition: minimal_workflow(),
+            timestamp: 1.0,
+        };
+        let mut legacy_value = serde_json::to_value(event).unwrap();
+        legacy_value
+            .as_object_mut()
+            .unwrap()
+            .remove("permission_mode");
+
+        assert!(serde_json::from_value::<WorkflowEvent>(legacy_value).is_err());
+    }
+
+    #[test]
+    fn interruption_and_resume_round_trip_canonical_vocabulary() {
+        let interrupted = WorkflowEvent::ExecutionInterrupted {
+            execution_id: "00000000-0000-4000-8000-000000000001".to_string(),
+            reason: ExecutionInterruptionReason::Stale,
+            timestamp: 2.0,
+        };
+        let value = serde_json::to_value(&interrupted).unwrap();
+        assert_eq!(value["event"], "execution_interrupted");
+        assert_eq!(value["reason"], "stale");
+        assert!(matches!(
+            serde_json::from_value::<WorkflowEvent>(value).unwrap(),
+            WorkflowEvent::ExecutionInterrupted {
+                reason: ExecutionInterruptionReason::Stale,
+                ..
+            }
+        ));
+
+        let resumed = WorkflowEvent::ExecutionResumed {
+            execution_id: "00000000-0000-4000-8000-000000000001".to_string(),
+            resume_from_node: "review".to_string(),
+            timestamp: 3.0,
+        };
+        let value = serde_json::to_value(&resumed).unwrap();
+        assert_eq!(value["event"], "execution_resumed");
+        assert_eq!(value["resume_from_node"], "review");
+        assert!(serde_json::from_value::<WorkflowEvent>(value).is_ok());
+    }
+
+    #[test]
+    fn interrupted_event_rejects_noncanonical_reason() {
+        let value = serde_json::json!({
+            "event": "execution_interrupted",
+            "execution_id": "00000000-0000-4000-8000-000000000001",
+            "reason": "app_exit",
+            "timestamp": 2.0
+        });
+        assert!(serde_json::from_value::<WorkflowEvent>(value).is_err());
     }
 
     #[test]

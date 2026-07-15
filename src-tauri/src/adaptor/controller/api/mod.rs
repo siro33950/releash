@@ -51,13 +51,15 @@ pub(crate) mod test_support {
         WorkflowRuntimeSnapshot,
     };
     use crate::usecase::workflow::command::{
-        AbortExecutionCommand, ApprovalCommand, ResolvedStartExecutionCommand, SubmitOutputCommand,
+        AbortExecutionCommand, ApprovalCommand, ResolvedStartExecutionCommand,
+        ResumeExecutionCommand, StopExecutionCommand, SubmitOutputCommand,
     };
     use crate::usecase::workflow::ports::{
         ApprovalChatTarget, WorkflowAbortExecutionGateway, WorkflowApprovalChatGateway,
         WorkflowApprovalGateway, WorkflowEventDraft, WorkflowEventRepository,
-        WorkflowRuntimeShutdownGateway, WorkflowRuntimeStateGateway, WorkflowStallClearedCommand,
-        WorkflowStallObservedCommand, WorkflowStallObservedGateway, WorkflowStartExecutionGateway,
+        WorkflowResumeExecutionGateway, WorkflowRuntimeShutdownGateway,
+        WorkflowRuntimeStateGateway, WorkflowStallClearedCommand, WorkflowStallObservedCommand,
+        WorkflowStallObservedGateway, WorkflowStartExecutionGateway, WorkflowStopExecutionGateway,
         WorkflowSubmitOutputGateway, WorkflowTurnCompleteCommand, WorkflowTurnCompleteGateway,
     };
     use crate::usecase::workflow::WorkflowUsecase;
@@ -69,6 +71,8 @@ pub(crate) mod test_support {
         pub(crate) starts: Vec<ResolvedStartExecutionCommand>,
         pub(crate) approvals: Vec<ApprovalCommand>,
         pub(crate) aborts: Vec<AbortExecutionCommand>,
+        pub(crate) stops: Vec<StopExecutionCommand>,
+        pub(crate) resumes: Vec<ResumeExecutionCommand>,
         pub(crate) outputs: Vec<SubmitOutputCommand>,
     }
 
@@ -76,6 +80,8 @@ pub(crate) mod test_support {
     struct RecordedRuntimeErrors {
         start: Option<WorkflowError>,
         abort: Option<WorkflowError>,
+        stop: Option<WorkflowError>,
+        resume: Option<WorkflowError>,
         approval: Option<WorkflowError>,
         output: Option<WorkflowError>,
     }
@@ -152,6 +158,31 @@ pub(crate) mod test_support {
                 return Err(error);
             }
             self.commands.lock().unwrap().aborts.push(command);
+            Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl WorkflowStopExecutionGateway for RecordingRuntimeGateway {
+        async fn stop_execution(&self, command: StopExecutionCommand) -> Result<(), WorkflowError> {
+            if let Some(error) = self.errors.lock().unwrap().stop.clone() {
+                return Err(error);
+            }
+            self.commands.lock().unwrap().stops.push(command);
+            Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl WorkflowResumeExecutionGateway for RecordingRuntimeGateway {
+        async fn resume_execution(
+            &self,
+            command: ResumeExecutionCommand,
+        ) -> Result<(), WorkflowError> {
+            if let Some(error) = self.errors.lock().unwrap().resume.clone() {
+                return Err(error);
+            }
+            self.commands.lock().unwrap().resumes.push(command);
             Ok(())
         }
     }
@@ -341,6 +372,8 @@ pub(crate) mod test_support {
             updated_at: 101.0,
             completed_at: None,
             error_reason: None,
+            interruption_reason: None,
+            resume_from_node: None,
             total_token_usage: TokenUsage::default(),
         };
         fs::write(
@@ -359,6 +392,7 @@ pub(crate) mod test_support {
                     "worktree_path": "/repo",
                     "created_from": "cli",
                     "request": "review this change",
+                    "permission_mode": "ask",
                     "definition": {
                         "name": "review",
                         "description": "Review a change",
@@ -513,6 +547,14 @@ pub(crate) mod test_support {
             ),
             (
                 Method::POST,
+                format!("/v1/workflow/executions/{execution_id}/stop"),
+            ),
+            (
+                Method::POST,
+                format!("/v1/workflow/executions/{execution_id}/resume"),
+            ),
+            (
+                Method::POST,
                 format!("/v1/workflow/executions/{execution_id}/artifacts"),
             ),
             (
@@ -597,6 +639,34 @@ pub(crate) mod test_support {
             .unwrap();
         assert_eq!(abort.status(), StatusCode::OK);
 
+        let stop = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/v1/workflow/executions/{execution_id}/stop"))
+                    .header("authorization", "Bearer secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stop.status(), StatusCode::OK);
+
+        let resume = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/v1/workflow/executions/{execution_id}/resume"))
+                    .header("authorization", "Bearer secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resume.status(), StatusCode::OK);
+
         let submit = send_json(
             &router,
             &format!("/v1/workflow/executions/{execution_id}/artifacts"),
@@ -636,6 +706,12 @@ pub(crate) mod test_support {
         assert_eq!(commands.aborts.len(), 1);
         assert_eq!(commands.aborts[0].execution_id, execution_id);
         assert_eq!(commands.aborts[0].expected_node_name, None);
+
+        assert_eq!(commands.stops.len(), 1);
+        assert_eq!(commands.stops[0].execution_id, execution_id);
+
+        assert_eq!(commands.resumes.len(), 1);
+        assert_eq!(commands.resumes[0].execution_id, execution_id);
 
         assert_eq!(commands.outputs.len(), 1);
         assert_eq!(commands.outputs[0].execution_id, execution_id);
@@ -682,6 +758,28 @@ pub(crate) mod test_support {
         assert_eq!(abort.0, StatusCode::CONFLICT);
         assert_eq!(abort.1["code"], "invalid_state");
 
+        gateway.errors.lock().unwrap().stop =
+            Some(WorkflowError::invalid_state("execution cannot be stopped"));
+        let stop = send_json(
+            &router,
+            &format!("/v1/workflow/executions/{execution_id}/stop"),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(stop.0, StatusCode::CONFLICT);
+        assert_eq!(stop.1["code"], "invalid_state");
+
+        gateway.errors.lock().unwrap().resume =
+            Some(WorkflowError::NotFound("execution not found".to_string()));
+        let resume = send_json(
+            &router,
+            &format!("/v1/workflow/executions/{execution_id}/resume"),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(resume.0, StatusCode::NOT_FOUND);
+        assert_eq!(resume.1["code"], "not_found");
+
         gateway.errors.lock().unwrap().approval = Some(WorkflowError::UnauthorizedApprovalTarget(
             "wrong approval target".to_string(),
         ));
@@ -708,6 +806,27 @@ pub(crate) mod test_support {
         .await;
         assert_eq!(output.0, StatusCode::NOT_FOUND);
         assert_eq!(output.1["code"], "not_found");
+    }
+
+    #[tokio::test]
+    async fn stop_and_resume_reject_invalid_execution_ids_before_the_runtime_gateway() {
+        let directory = tempfile::tempdir().unwrap();
+        let (router, _, gateway) = test_router(directory.path(), "secret");
+
+        for action in ["stop", "resume"] {
+            let response = send_json(
+                &router,
+                &format!("/v1/workflow/executions/not-a-uuid/{action}"),
+                serde_json::json!({}),
+            )
+            .await;
+            assert_eq!(response.0, StatusCode::BAD_REQUEST);
+            assert_eq!(response.1["code"], "validation_error");
+        }
+
+        let commands = gateway.commands.lock().unwrap();
+        assert!(commands.stops.is_empty());
+        assert!(commands.resumes.is_empty());
     }
 
     #[tokio::test]

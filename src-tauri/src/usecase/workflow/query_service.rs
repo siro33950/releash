@@ -588,6 +588,8 @@ mod tests {
             updated_at: 1.0,
             completed_at: None,
             error_reason: None,
+            interruption_reason: None,
+            resume_from_node: None,
             total_token_usage: TokenUsage::default(),
         }
     }
@@ -604,6 +606,8 @@ mod tests {
             updated_at: 1.0,
             completed_at: None,
             error_reason: None,
+            interruption_reason: None,
+            resume_from_node: None,
             total_token_usage: TokenUsage::default(),
             node_executions: vec![NodeExecution {
                 id: "ne-review-1".to_string(),

@@ -121,6 +121,22 @@ impl LocalApiClient {
         ensure_mutation_ok(response)
     }
 
+    pub(super) fn stop(&self, execution_id: &str) -> Result<(), ApiRequestError> {
+        let response: MutationResponse = self
+            .transport
+            .post_empty(&["v1", "workflow", "executions", execution_id, "stop"])
+            .map_err(ApiRequestError::from)?;
+        ensure_mutation_ok(response)
+    }
+
+    pub(super) fn resume(&self, execution_id: &str) -> Result<(), ApiRequestError> {
+        let response: MutationResponse = self
+            .transport
+            .post_empty(&["v1", "workflow", "executions", execution_id, "resume"])
+            .map_err(ApiRequestError::from)?;
+        ensure_mutation_ok(response)
+    }
+
     pub(super) fn submit_output(
         &self,
         execution_id: &str,
@@ -505,6 +521,14 @@ mod tests {
             Some("approved by boundary".to_string()),
         )
         .unwrap();
+        assert_eq!(
+            workflow::cmd_stop(client_data.path(), execution_id).unwrap(),
+            format!("stopped: execution_id={execution_id}\n")
+        );
+        assert_eq!(
+            workflow::cmd_resume(client_data.path(), execution_id).unwrap(),
+            format!("resumed: execution_id={execution_id}\n")
+        );
         workflow::cmd_abort(client_data.path(), execution_id).unwrap();
 
         output::cmd_output_submit(
@@ -570,6 +594,10 @@ mod tests {
             );
             assert_eq!(commands.aborts.len(), 1);
             assert_eq!(commands.aborts[0].execution_id, execution_id);
+            assert_eq!(commands.stops.len(), 1);
+            assert_eq!(commands.stops[0].execution_id, execution_id);
+            assert_eq!(commands.resumes.len(), 1);
+            assert_eq!(commands.resumes[0].execution_id, execution_id);
             assert_eq!(commands.outputs.len(), 1);
             assert_eq!(commands.outputs[0].execution_id, execution_id);
             assert_eq!(commands.outputs[0].node_name, "review");

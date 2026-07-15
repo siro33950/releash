@@ -50,30 +50,6 @@ pub fn artifact_from_completed_history_entry(
     })
 }
 
-pub fn session_start_failed_result(reason: impl AsRef<str>) -> String {
-    format!("session_start_failed: {}", reason.as_ref())
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RuntimeStartFailureKind {
-    StepSession,
-    ParallelChildren,
-}
-
-pub fn runtime_start_failure_reason(
-    kind: RuntimeStartFailureKind,
-    error: impl AsRef<str>,
-) -> String {
-    match kind {
-        RuntimeStartFailureKind::StepSession => {
-            format!("Failed to start node session: {}", error.as_ref())
-        }
-        RuntimeStartFailureKind::ParallelChildren => {
-            format!("Failed to start parallel children: {}", error.as_ref())
-        }
-    }
-}
-
 pub fn aborted_node_history_entry(
     node_name: String,
     attempt: u32,
@@ -192,26 +168,6 @@ mod tests {
         });
 
         assert!(artifact_from_completed_history_entry(&entry, None).is_none());
-    }
-
-    #[test]
-    fn session_start_failed_result_preserves_persisted_prefix() {
-        assert_eq!(
-            session_start_failed_result("backend unavailable"),
-            "session_start_failed: backend unavailable"
-        );
-    }
-
-    #[test]
-    fn runtime_start_failure_reason_preserves_failed_state_messages() {
-        assert_eq!(
-            runtime_start_failure_reason(RuntimeStartFailureKind::StepSession, "backend down"),
-            "Failed to start node session: backend down"
-        );
-        assert_eq!(
-            runtime_start_failure_reason(RuntimeStartFailureKind::ParallelChildren, "backend down"),
-            "Failed to start parallel children: backend down"
-        );
     }
 
     #[test]

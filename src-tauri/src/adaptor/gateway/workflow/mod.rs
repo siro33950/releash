@@ -36,6 +36,7 @@ pub(crate) mod output_submission;
 pub(crate) mod parallel_runtime;
 pub(crate) mod prompt_rendering;
 pub(crate) mod resolver;
+pub(crate) mod resume_projection;
 mod runtime_command_gateway;
 pub(crate) mod runtime_commit;
 pub(crate) mod runtime_engine;

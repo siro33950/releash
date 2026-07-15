@@ -6,9 +6,10 @@ use super::approval_chat::WorkflowApprovalChatUsecase;
 #[cfg(test)]
 use super::command::ResolvedStartExecutionCommand;
 use super::command::{
-    AbortExecutionCommand, ApprovalCommand, StartExecutionCommand, SubmitOutputCommand,
-    WorkflowAbortExecutionUsecase, WorkflowApprovalUsecase, WorkflowRuntimeCommandPreflight,
-    WorkflowStartExecutionUsecase, WorkflowSubmitOutputUsecase,
+    AbortExecutionCommand, ApprovalCommand, ResumeExecutionCommand, StartExecutionCommand,
+    StopExecutionCommand, SubmitOutputCommand, WorkflowAbortExecutionUsecase,
+    WorkflowApprovalUsecase, WorkflowResumeExecutionUsecase, WorkflowRuntimeCommandPreflight,
+    WorkflowStartExecutionUsecase, WorkflowStopExecutionUsecase, WorkflowSubmitOutputUsecase,
 };
 use super::ports::{
     ApprovalChatTarget, WorkflowRuntimeCommandGateway, WorkflowStallClearedCommand,
@@ -18,9 +19,9 @@ use super::ports::{
 #[cfg(test)]
 use super::ports::{
     WorkflowAbortExecutionGateway, WorkflowApprovalChatGateway, WorkflowApprovalGateway,
-    WorkflowRuntimeShutdownGateway, WorkflowRuntimeStateGateway, WorkflowStartExecutionGateway,
-    WorkflowSubmitOutputGateway, WorkflowTurnCompleteCommand, WorkflowTurnCompleteGateway,
-    WorkflowTurnTokenUsage,
+    WorkflowResumeExecutionGateway, WorkflowRuntimeShutdownGateway, WorkflowRuntimeStateGateway,
+    WorkflowStartExecutionGateway, WorkflowStopExecutionGateway, WorkflowSubmitOutputGateway,
+    WorkflowTurnCompleteCommand, WorkflowTurnCompleteGateway, WorkflowTurnTokenUsage,
 };
 use super::turn_complete::WorkflowTurnCompleteUsecase;
 
@@ -30,6 +31,8 @@ pub struct WorkflowRuntimeUsecase {
     stall_observed: Arc<dyn WorkflowStallObservedGateway>,
     start_execution: WorkflowStartExecutionUsecase,
     abort_execution: WorkflowAbortExecutionUsecase,
+    stop_execution: WorkflowStopExecutionUsecase,
+    resume_execution: WorkflowResumeExecutionUsecase,
     approval: WorkflowApprovalUsecase,
     submit_output: WorkflowSubmitOutputUsecase,
     approval_chat: WorkflowApprovalChatUsecase,
@@ -44,6 +47,8 @@ impl WorkflowRuntimeUsecase {
             stall_observed: runtime.clone(),
             start_execution: WorkflowStartExecutionUsecase::new(runtime.clone()),
             abort_execution: WorkflowAbortExecutionUsecase::new(runtime.clone()),
+            stop_execution: WorkflowStopExecutionUsecase::new(runtime.clone()),
+            resume_execution: WorkflowResumeExecutionUsecase::new(runtime.clone()),
             approval: WorkflowApprovalUsecase::new(runtime.clone()),
             submit_output: WorkflowSubmitOutputUsecase::new(runtime.clone()),
             approval_chat: WorkflowApprovalChatUsecase::new(runtime.clone()),
@@ -64,6 +69,17 @@ impl WorkflowRuntimeUsecase {
         command: AbortExecutionCommand,
     ) -> Result<(), WorkflowError> {
         self.abort_execution.execute(command).await
+    }
+
+    pub async fn stop_execution(&self, command: StopExecutionCommand) -> Result<(), WorkflowError> {
+        self.stop_execution.execute(command).await
+    }
+
+    pub async fn resume_execution(
+        &self,
+        command: ResumeExecutionCommand,
+    ) -> Result<(), WorkflowError> {
+        self.resume_execution.execute(command).await
     }
 
     pub async fn resolve_approval(&self, command: ApprovalCommand) -> Result<(), WorkflowError> {
@@ -197,6 +213,28 @@ mod tests {
     }
 
     #[async_trait::async_trait]
+    impl WorkflowStopExecutionGateway for FakeRuntimeGateway {
+        async fn stop_execution(
+            &self,
+            _command: StopExecutionCommand,
+        ) -> Result<(), WorkflowError> {
+            self.calls.lock().unwrap().push("stop");
+            Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl WorkflowResumeExecutionGateway for FakeRuntimeGateway {
+        async fn resume_execution(
+            &self,
+            _command: ResumeExecutionCommand,
+        ) -> Result<(), WorkflowError> {
+            self.calls.lock().unwrap().push("resume");
+            Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
     impl WorkflowApprovalGateway for FakeRuntimeGateway {
         async fn resolve_approval(&self, _command: ApprovalCommand) -> Result<(), WorkflowError> {
             self.calls.lock().unwrap().push("approval");
@@ -322,6 +360,18 @@ mod tests {
             .await
             .unwrap();
         usecase
+            .stop_execution(StopExecutionCommand {
+                execution_id: "00000000-0000-0000-0000-000000000001".to_string(),
+            })
+            .await
+            .unwrap();
+        usecase
+            .resume_execution(ResumeExecutionCommand {
+                execution_id: "00000000-0000-0000-0000-000000000001".to_string(),
+            })
+            .await
+            .unwrap();
+        usecase
             .resolve_approval(ApprovalCommand {
                 execution_id: "00000000-0000-0000-0000-000000000001".to_string(),
                 node_name: "review".to_string(),
@@ -371,6 +421,8 @@ mod tests {
                 "resolve_workflow",
                 "start",
                 "abort",
+                "stop",
+                "resume",
                 "approval",
                 "submit_output",
                 "is_running",
@@ -519,6 +571,22 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(abort_err, WorkflowError::Validation(_)));
+
+        let stop_err = usecase
+            .stop_execution(StopExecutionCommand {
+                execution_id: "not-a-uuid".to_string(),
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(stop_err, WorkflowError::Validation(_)));
+
+        let resume_err = usecase
+            .resume_execution(ResumeExecutionCommand {
+                execution_id: "not-a-uuid".to_string(),
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(resume_err, WorkflowError::Validation(_)));
 
         let approval_err = usecase
             .resolve_approval(ApprovalCommand {

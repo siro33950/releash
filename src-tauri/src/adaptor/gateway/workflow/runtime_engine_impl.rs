@@ -1,9 +1,17 @@
 use std::collections::{BTreeMap, HashMap};
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use tokio::sync::Mutex;
+
+mod activation;
+mod resume_orchestration;
+
+use activation::{
+    rollback_active_interruption, run_runtime_activation, InterruptionRollback,
+    RuntimeActivationGate,
+};
 
 use super::runtime_session as workflow_runtime_session;
 #[cfg(test)]
@@ -22,7 +30,7 @@ use crate::adaptor::gateway::workflow::engine_start_guard as workflow_engine_sta
 use crate::adaptor::gateway::workflow::event::{ContractViolationRecord, WorkflowEvent};
 use crate::adaptor::gateway::workflow::event_log_writer as workflow_event_log_writer;
 use crate::adaptor::gateway::workflow::execution_registry::{
-    find_any_by_worktree, find_by_worktree, find_by_worktree_mut, ExecutionStateTarget,
+    find_any_by_worktree, find_by_worktree, find_by_worktree_mut,
 };
 use crate::adaptor::gateway::workflow::execution_store::{
     ExecutionOrigin, ExecutionStatus, ExecutionStore, ExecutionStoreError, TerminalExecutionStatus,
@@ -45,6 +53,7 @@ use crate::adaptor::gateway::workflow::resolver::{
 use crate::adaptor::gateway::workflow::resolver::{
     ManagedWorktreeResolverError, WorkflowDefinitionResolverError,
 };
+use crate::adaptor::gateway::workflow::resume_projection as workflow_resume_projection;
 use crate::adaptor::gateway::workflow::runtime_commit::{
     self as workflow_runtime_commit, AbortOutcome, AbortTargetLookup, CommandMutationRollback,
     RequiredEventCommit, StepOutcome,
@@ -84,15 +93,14 @@ use crate::domain::workflow::services::contract_schema as workflow_contract_sche
 use crate::domain::workflow::services::failure_policy::{
     RepairDecision, RetryPolicy, StructuredOutputRepairPolicy,
 };
-use crate::domain::workflow::services::history::RuntimeStartFailureKind;
 use crate::domain::workflow::services::secret_masker as workflow_secret_masker;
 use crate::domain::workflow::services::spec_directory as workflow_spec_directory;
 use crate::domain::workflow::services::transition as workflow_transition;
 use crate::domain::workflow::OutcomeCommitMode;
 use crate::domain::workflow::WorkflowNodeContext;
 use crate::domain::workflow::{
-    ContractValidationResult, FailureClassification, FailureDisposition, NodeExecutionFailureKind,
-    SchemaDef as DomainSchemaDef, NODE_STATUS_FAILED, NODE_STATUS_INTERRUPTED,
+    ContractValidationResult, ExecutionInterruptionReason, FailureClassification,
+    FailureDisposition, NodeExecutionFailureKind, SchemaDef as DomainSchemaDef, NODE_STATUS_FAILED,
 };
 use crate::infrastructure::process::command_runner::{
     self as workflow_command_runner, ActiveCommandHandle, CommandRunOutput, CommandRunnerError,
@@ -171,6 +179,13 @@ pub struct WorkflowRuntimeService {
     session_workflow_refs: Arc<Mutex<HashMap<String, SessionWorkflowRef>>>,
     /// execution_id → 解決済み facet 本文。workflow state / event には含めない runtime-local read model。
     execution_facet_contents: Arc<Mutex<HashMap<String, WorkflowFacetContents>>>,
+    /// Confirmed children of an interrupted fanout, consumed exactly once by its resumed parent.
+    fanout_resume_checkpoints: Arc<Mutex<HashMap<String, FanoutResumeCheckpoint>>>,
+    /// execution_id → runtime activation serialization lock.
+    ///
+    /// Weak references keep session/fanout startup and stop/abort mutually exclusive without
+    /// retaining one lock for every historical execution.
+    runtime_activation_locks: Arc<Mutex<HashMap<String, Weak<RuntimeActivationGate>>>>,
     /// node_execution_id → active command process shutdown handle.
     active_commands: Arc<Mutex<HashMap<String, ActiveCommandHandle>>>,
     /// node_execution_id → owning workflow execution_id.
@@ -218,9 +233,24 @@ struct FanoutChildFailureInput {
     child_failure_reason: String,
     terminal_reason: String,
     failure_kind: NodeExecutionFailureKind,
+    failure_disposition: FailureDisposition,
     retry_count: Option<u32>,
     timestamp: f64,
     record_child_token_usage: bool,
+}
+
+#[derive(Clone)]
+struct FanoutResumeChild {
+    node_name: String,
+    item_index: Option<usize>,
+    child_index: usize,
+    reusable: workflow_parallel_runtime::ReusableFanoutChild,
+}
+
+#[derive(Clone)]
+struct FanoutResumeCheckpoint {
+    parent_node_name: String,
+    children: Vec<FanoutResumeChild>,
 }
 
 struct WorkflowExecutionInsert {
@@ -248,7 +278,16 @@ struct CommandExecutionInput {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ActiveCommandShutdownReason {
-    AppExit,
+    Crash,
+}
+
+fn interruption_reason_label(reason: ExecutionInterruptionReason) -> &'static str {
+    match reason {
+        ExecutionInterruptionReason::Crash => "crash",
+        ExecutionInterruptionReason::Stale => "stale",
+        ExecutionInterruptionReason::Stop => "stop",
+        ExecutionInterruptionReason::Orphan => "orphan",
+    }
 }
 
 struct CommandArtifact {
@@ -353,6 +392,15 @@ fn is_still_current_execution(exec: &WorkflowExecution, node_name: &str, attempt
         .copied()
         .unwrap_or(1)
         == attempt
+}
+
+fn commit_snapshot_is_current(exec: &WorkflowExecution, snapshot: &WorkflowState) -> bool {
+    exec.id == snapshot.execution_id
+        && exec.updated_at == snapshot.updated_at
+        && exec.state == snapshot.state
+        && exec.current_node_index == snapshot.current_node_index
+        && exec.current_session_id == snapshot.current_session_id
+        && exec.node_executions == snapshot.node_executions
 }
 
 fn resolve_active_node_execution_index(
@@ -556,6 +604,7 @@ fn finalize_fanout_child_failure_state(
 ) -> Result<FanoutChildFailureCommit, WorkflowEngineError> {
     let execution_id = exec.id.clone();
     let failure_kind = input.failure_kind;
+    let failure_disposition = input.failure_disposition;
     let retry_count = input.retry_count;
     let timestamp = input.timestamp;
     let (
@@ -596,7 +645,7 @@ fn finalize_fanout_child_failure_state(
                 child.result = Some(failure_kind.as_str().to_string());
                 child.artifact = None;
                 child.failure_kind = Some(failure_kind);
-                child.failure_disposition = None;
+                child.failure_disposition = Some(failure_disposition);
                 child.completed_at = Some(timestamp);
                 child_name = child.node_name.clone();
                 child_attempt = child.attempt;
@@ -654,23 +703,7 @@ fn finalize_fanout_child_failure_state(
             node_execution.completed_at = Some(timestamp);
         }
     }
-    exec.fail_node_execution(
-        &parent_node_execution_id,
-        input.terminal_reason.clone(),
-        failure_kind,
-        timestamp,
-    );
     exec.current_stall_observations.clear();
-    exec.state = RuntimeExecutionState::Failed {
-        reason: input.terminal_reason.clone(),
-        kind: failure_kind,
-        retry_count,
-    };
-    let history_entry =
-        exec.make_node_history_entry(Some(input.terminal_reason.clone()), None, None);
-    exec.node_history.push(history_entry);
-    exec.parallel_run = None;
-    exec.updated_at = timestamp;
     let progress_events = vec![WorkflowEvent::NodeFailed {
         execution_id,
         node_execution_id: input.child_node_execution_id,
@@ -681,6 +714,59 @@ fn finalize_fanout_child_failure_state(
         retry_count,
         timestamp,
     }];
+
+    if failure_disposition == FailureDisposition::Partial {
+        if let Some(parent) = exec
+            .node_executions
+            .iter_mut()
+            .find(|execution| execution.id == parent_node_execution_id)
+        {
+            parent.status = NodeExecutionStatus::Aborted;
+            parent.completed_at = Some(timestamp);
+        }
+        exec.state = RuntimeExecutionState::Interrupted;
+        exec.error_reason = Some(ExecutionInterruptionReason::Crash.as_str().to_string());
+        exec.current_session_id = None;
+        exec.updated_at = timestamp;
+        let mut progress_events = progress_events;
+        progress_events.push(WorkflowEvent::ExecutionInterrupted {
+            execution_id: exec.id.clone(),
+            reason: ExecutionInterruptionReason::Crash,
+            timestamp,
+        });
+        return Ok(FanoutChildFailureCommit {
+            completion: FanoutChildCompletionCommit {
+                all_completed: true,
+                outcome: Some(StepOutcome::Persist(exec.to_workflow_state())),
+                snapshot_before,
+                progress_events,
+                required_progress_events: true,
+                failure_telemetry: Some(FailureClassification::with_disposition(
+                    failure_kind,
+                    FailureDisposition::Partial,
+                )),
+            },
+            interrupted_session_ids,
+            interrupted_command_ids,
+        });
+    }
+
+    exec.fail_node_execution(
+        &parent_node_execution_id,
+        input.terminal_reason.clone(),
+        failure_kind,
+        timestamp,
+    );
+    exec.state = RuntimeExecutionState::Failed {
+        reason: input.terminal_reason.clone(),
+        kind: failure_kind,
+        retry_count,
+    };
+    let history_entry =
+        exec.make_node_history_entry(Some(input.terminal_reason.clone()), None, None);
+    exec.node_history.push(history_entry);
+    exec.parallel_run = None;
+    exec.updated_at = timestamp;
 
     Ok(FanoutChildFailureCommit {
         completion: FanoutChildCompletionCommit {
@@ -787,6 +873,8 @@ impl WorkflowRuntimeService {
             executions: Arc::new(Mutex::new(HashMap::new())),
             session_workflow_refs: Arc::new(Mutex::new(HashMap::new())),
             execution_facet_contents: Arc::new(Mutex::new(HashMap::new())),
+            fanout_resume_checkpoints: Arc::new(Mutex::new(HashMap::new())),
+            runtime_activation_locks: Arc::new(Mutex::new(HashMap::new())),
             active_commands: Arc::new(Mutex::new(HashMap::new())),
             active_command_executions: Arc::new(Mutex::new(HashMap::new())),
             command_completion_observers: Arc::new(Mutex::new(HashMap::new())),
@@ -811,6 +899,17 @@ impl WorkflowRuntimeService {
             None,
             Arc::new(OpenTabRegistry::default()),
         )
+    }
+
+    async fn runtime_activation_gate(&self, execution_id: &str) -> Arc<RuntimeActivationGate> {
+        let mut locks = self.runtime_activation_locks.lock().await;
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = locks.get(execution_id).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(RuntimeActivationGate::new());
+        locks.insert(execution_id.to_string(), Arc::downgrade(&lock));
+        lock
     }
 
     #[cfg(test)]
@@ -855,6 +954,8 @@ impl WorkflowRuntimeService {
                 updated_at: now,
                 completed_at: None,
                 error_reason: None,
+                interruption_reason: None,
+                resume_from_node: None,
                 total_token_usage: crate::domain::workflow::TokenUsage::default(),
             })
             .await
@@ -868,6 +969,7 @@ impl WorkflowRuntimeService {
                     worktree_path: worktree_path.clone(),
                     created_from,
                     request: String::new(),
+                    permission_mode: PermissionMode::EDIT.to_string(),
                     definition: workflow.clone(),
                     timestamp: now,
                 })
@@ -998,6 +1100,8 @@ impl WorkflowRuntimeService {
                 updated_at: now,
                 completed_at: None,
                 error_reason: None,
+                interruption_reason: None,
+                resume_from_node: None,
                 total_token_usage: crate::domain::workflow::TokenUsage::default(),
             })
             .await
@@ -1203,11 +1307,13 @@ impl WorkflowRuntimeService {
         self.execution_store.set_data_dir(dir).await;
     }
 
-    /// 起動時 recovery: 前回プロセスが terminal event を書かないまま終了した execution（metadata の
-    /// status が non-terminal なまま残った execution）を、Aborted へ強制遷移させる。
-    /// 既存 `event_projection` の `ExecutionAborted → Aborted` 判定をそのまま機能させるため、
-    /// `<data_dir>/workflow_execution_logs/<execution_id>.ndjson` 末尾に `ExecutionAborted` event を append し、
-    /// `workflow_executions/<execution_id>.json` の status を Aborted に更新する。
+    /// 起動時 recovery: 前回プロセスが確定 event を書かないまま終了した execution（metadata の
+    /// status が Running / WaitingApproval のまま残った execution）を、再開可能な Interrupted
+    /// checkpoint へ遷移させる。既定で abort しない。
+    ///
+    /// `<data_dir>/workflow_execution_logs/<execution_id>.ndjson` 末尾に
+    /// `ExecutionInterrupted(Orphan)` を append した後、event log 全体を replay して再開点を導出し、
+    /// `workflow_executions/<execution_id>.json` に projection と同じ checkpoint を保存する。
     ///
     /// 本メソッドは `set_execution_store_data_dir` 直後（in-memory `executions` map が空の状態）に
     /// 1 度だけ呼ばれる前提。append / persist が個別に失敗しても起動自体は止めない（warn
@@ -1217,24 +1323,120 @@ impl WorkflowRuntimeService {
         if orphans.is_empty() {
             return;
         }
+        let data_dir = match self.execution_store.configured_data_dir().await {
+            Some(data_dir) => data_dir,
+            None => match crate::infrastructure::platform::app_data_dir::resolve_data_dir(app) {
+                Ok(data_dir) => data_dir,
+                Err(error) => {
+                    log::warn!("recover_orphan_executions: resolve data directory failed: {error}");
+                    return;
+                }
+            },
+        };
         let recovery_items =
             workflow_orphan_recovery::orphan_execution_recovery_items(orphans, current_timestamp());
         for item in recovery_items {
-            if let Err(e) = self.write_log_required(app, item.event) {
-                log::warn!(
-                    "recover_orphan_executions: append ExecutionAborted failed for {}: {e}",
-                    item.execution_id
-                );
-                // metadata 更新は次回起動で再試行するため、ここで skip する。
-                continue;
-            }
+            let log = WorkflowEventLog::new(&data_dir);
+            let mut events = match log.read_log(&item.execution_id) {
+                Ok(events) => events,
+                Err(error) => {
+                    log::warn!(
+                        "recover_orphan_executions: read event log failed for {}: {error}",
+                        item.execution_id
+                    );
+                    continue;
+                }
+            };
+            let projected_before = match crate::adaptor::gateway::workflow::event_projection::project_workflow_execution(
+                &item.execution_id,
+                &events,
+            ) {
+                Ok(Some(projected)) => projected,
+                Ok(None) => {
+                    log::warn!(
+                        "recover_orphan_executions: event projection for {} is empty; removing uncommitted reservation",
+                        item.execution_id
+                    );
+                    if let Err(error) = self
+                        .execution_store
+                        .cancel_reservation(&item.execution_id)
+                        .await
+                    {
+                        log::warn!(
+                            "recover_orphan_executions: uncommitted reservation cleanup failed for {}: {error}",
+                            item.execution_id
+                        );
+                    }
+                    continue;
+                }
+                Err(error) => {
+                    log::warn!(
+                        "recover_orphan_executions: event projection failed for {}: {error}",
+                        item.execution_id
+                    );
+                    continue;
+                }
+            };
+
+            // A terminal/interrupted event may already be durable while the previous process died
+            // before metadata projection. Reconcile it without appending a contradictory orphan
+            // interruption. Only an event-log-active execution is a real orphan.
+            let projected = if projected_before.status.is_active() {
+                if projected_before.worktree_path != item.metadata.worktree_path {
+                    log::warn!(
+                        "recover_orphan_executions: worktree mismatch for {}; leaving metadata unchanged",
+                        item.execution_id
+                    );
+                    continue;
+                }
+                if let Err(error) = log.append_batch(std::slice::from_ref(&item.event)) {
+                    log::warn!(
+                        "recover_orphan_executions: append ExecutionInterrupted failed for {}: {error}",
+                        item.execution_id
+                    );
+                    continue;
+                }
+                events.push(item.event);
+                match crate::adaptor::gateway::workflow::event_projection::project_workflow_execution(
+                    &item.execution_id,
+                    &events,
+                ) {
+                    Ok(Some(projected)) if projected.status == ExecutionStatus::Interrupted => {
+                        projected
+                    }
+                    Ok(Some(projected)) => {
+                        log::warn!(
+                            "recover_orphan_executions: post-interruption projection for {} has unexpected status {}",
+                            item.execution_id,
+                            projected.status.as_str()
+                        );
+                        continue;
+                    }
+                    Ok(None) => {
+                        log::warn!(
+                            "recover_orphan_executions: post-interruption projection for {} is empty",
+                            item.execution_id
+                        );
+                        continue;
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            "recover_orphan_executions: post-interruption projection failed for {}: {error}",
+                            item.execution_id
+                        );
+                        continue;
+                    }
+                }
+            } else {
+                projected_before
+            };
             if let Err(e) = self
                 .execution_store
-                .force_complete_orphan_to_aborted(item.metadata, item.completed_at, None)
+                .reconcile_orphan_from_projection(item.metadata, &projected)
                 .await
             {
                 log::warn!(
-                    "recover_orphan_executions: persist metadata failed for {}: {e}",
+                    "recover_orphan_executions: persist event projection failed for {}: {e}",
                     item.execution_id
                 );
             }
@@ -1391,6 +1593,7 @@ impl WorkflowRuntimeService {
                 worktree_path: worktree_path.clone(),
                 created_from,
                 request: request.clone().unwrap_or_default(),
+                permission_mode: permission_mode.as_str().to_string(),
                 definition: workflow.clone(),
                 timestamp: now,
             },
@@ -1412,8 +1615,6 @@ impl WorkflowRuntimeService {
         // start_fanout_children）で行う。
         workflow_runtime_session::broadcast_state(app, &worktree_path, snapshot.clone()).await;
 
-        let first_step_kind = workflow.nodes[0].kind_name();
-
         // [04] post-commit: ExecutionStarted append 済みのため start primitive は既に受理。
         //    初回 runtime 起動失敗は Failed 状態遷移として観測し、
         //    start primitive は Ok(execution_id) を返す（spec [04]『command 受理境界』Rule）。
@@ -1421,53 +1622,15 @@ impl WorkflowRuntimeService {
             .start_current_node_runtime(app, session_store, agent_runtime, &worktree_path)
             .await
         {
-            match first_step_kind {
-                NodeKindName::Session => {
-                    workflow_runtime_session::record_node_session_start_failed_by_execution_id(
-                        &self.executions,
-                        &execution_id,
-                        &e,
-                    )
-                    .await;
-                    let _ = self
-                        .set_execution_state(
-                            app,
-                            session_store,
-                            agent_runtime,
-                            &worktree_path,
-                            workflow_runtime_session::runtime_start_failed_state(
-                                RuntimeStartFailureKind::StepSession,
-                                &e,
-                            ),
-                        )
-                        .await;
-                }
-                NodeKindName::Fanout => {
-                    let _ = self
-                        .set_execution_state(
-                            app,
-                            session_store,
-                            agent_runtime,
-                            &worktree_path,
-                            workflow_runtime_session::runtime_start_failed_state(
-                                RuntimeStartFailureKind::ParallelChildren,
-                                &e,
-                            ),
-                        )
-                        .await;
-                }
-                NodeKindName::Command => {
-                    let _ = self
-                        .fail_current_command_node(
-                            app,
-                            session_store,
-                            agent_runtime,
-                            &execution_id,
-                            &format!("Failed to start command runtime: {e}"),
-                        )
-                        .await;
-                }
-            }
+            let _ = self
+                .interrupt_active_execution(
+                    app,
+                    session_store,
+                    agent_runtime,
+                    &execution_id,
+                    ExecutionInterruptionReason::Crash,
+                )
+                .await;
             log::warn!("workflow {execution_id}: post-commit node runtime start failed: {e}");
         }
         Ok(execution_id)
@@ -1950,6 +2113,28 @@ impl WorkflowRuntimeService {
         };
 
         if let Some(parent_node_name) = parallel_parent {
+            let failure_kind =
+                (exit_code != 0).then(|| parallel_child_failure_kind(exit_code, failure_signal));
+            let interruption_reason = match failure_kind {
+                Some(NodeExecutionFailureKind::StaleRuntimeTimeout) => {
+                    Some(ExecutionInterruptionReason::Stale)
+                }
+                Some(NodeExecutionFailureKind::InfrastructureCrash) => {
+                    Some(ExecutionInterruptionReason::Crash)
+                }
+                _ => None,
+            };
+            if let Some(reason) = interruption_reason {
+                self.interrupt_active_execution(
+                    app,
+                    session_store,
+                    agent_runtime,
+                    &session_ref.execution_id,
+                    reason,
+                )
+                .await?;
+                return Ok(());
+            }
             return self
                 .handle_parallel_child_complete(
                     app,
@@ -2002,7 +2187,7 @@ impl WorkflowRuntimeService {
                     kind,
                     ..
                 } => {
-                    if exec.is_terminal() {
+                    if !exec.is_active() {
                         return Ok(());
                     }
                     let snapshot_before = exec.clone();
@@ -2014,8 +2199,39 @@ impl WorkflowRuntimeService {
                         .saturating_sub(1);
                     let retry_policy = RetryPolicy::default();
                     let retry_allowed = retry_policy.should_retry(kind, retry_count);
-                    let outcome = if retry_allowed {
-                        exec.retry_current_step()
+                    let interruption_reason = match kind {
+                        NodeExecutionFailureKind::StaleRuntimeTimeout => {
+                            Some(ExecutionInterruptionReason::Stale)
+                        }
+                        NodeExecutionFailureKind::InfrastructureCrash => {
+                            Some(ExecutionInterruptionReason::Crash)
+                        }
+                        _ => None,
+                    };
+                    let (outcome, required_events) = if retry_allowed {
+                        (exec.retry_current_step(), Vec::new())
+                    } else if let Some(reason) = interruption_reason {
+                        let timestamp = current_timestamp();
+                        for node_execution in exec
+                            .node_executions
+                            .iter_mut()
+                            .filter(|node_execution| node_execution.status.is_active())
+                        {
+                            node_execution.status = NodeExecutionStatus::Aborted;
+                            node_execution.completed_at = Some(timestamp);
+                        }
+                        exec.state = RuntimeExecutionState::Interrupted;
+                        exec.error_reason = Some(interruption_reason_label(reason).to_string());
+                        exec.current_stall_observations.clear();
+                        exec.updated_at = timestamp;
+                        (
+                            StepOutcome::Persist(exec.to_workflow_state()),
+                            vec![WorkflowEvent::ExecutionInterrupted {
+                                execution_id: exec.id.clone(),
+                                reason,
+                                timestamp,
+                            }],
+                        )
                     } else {
                         let max_retries = retry_policy.max_retries(kind);
                         failure_reason.push_str(&format!(
@@ -2032,16 +2248,16 @@ impl WorkflowRuntimeService {
                             retry_count: Some(retry_count),
                         };
                         exec.updated_at = current_timestamp();
-                        StepOutcome::Persist(exec.to_workflow_state())
+                        (StepOutcome::Persist(exec.to_workflow_state()), Vec::new())
                     };
                     Ok(TurnCommit {
                         outcome,
-                        required_events: Vec::new(),
+                        required_events,
                         rollback_snapshot: (exec.id.clone(), snapshot_before),
                     })
                 }
                 workflow_transition::TurnCompleteMutationPlan::RequestApproval { node_name } => {
-                    if exec.is_terminal() {
+                    if !exec.is_active() {
                         return Ok(());
                     }
                     let snapshot_before = exec.clone();
@@ -2077,7 +2293,7 @@ impl WorkflowRuntimeService {
                     failure_reason,
                     ..
                 } => {
-                    if exec.is_terminal() {
+                    if !exec.is_active() {
                         return Ok(());
                     }
                     let snapshot_before = exec.clone();
@@ -2410,7 +2626,7 @@ impl WorkflowRuntimeService {
             )?;
             let node_name = exec.workflow.nodes[exec.current_node_index].name.clone();
             let snapshot_before = exec.clone();
-            let outcome = Self::apply_approval_application(
+            let mut outcome = Self::apply_approval_application(
                 exec,
                 workflow_transition::ApprovalApplication {
                     effective_result,
@@ -2423,6 +2639,11 @@ impl WorkflowRuntimeService {
                 node_execution.artifact = artifact.clone();
                 node_execution.completed_at = Some(current_timestamp());
             }
+            // `apply_approval_application` builds the StepOutcome snapshot before the
+            // NodeExecution read model is finalized above. Refresh it while still holding the
+            // execution lock so the durable commit snapshot and the live mutation are identical;
+            // otherwise the commit CAS correctly rejects this command as stale.
+            *outcome.snapshot_mut() = exec.to_workflow_state();
             (outcome, snapshot_before, node_name)
         };
 
@@ -2709,9 +2930,137 @@ impl WorkflowRuntimeService {
         execution_id: &str,
         expected_node_name: Option<&str>,
     ) -> Result<(), WorkflowEngineError> {
+        let metadata = self.validate_execution_command_target(execution_id).await?;
+        if let Some(expected_node_name) = expected_node_name {
+            let target_node = if metadata.status == ExecutionStatus::Interrupted {
+                metadata.resume_from_node.as_deref()
+            } else {
+                metadata.current_node.as_deref()
+            };
+            if target_node != Some(expected_node_name) {
+                return Err(WorkflowEngineError::UnauthorizedApprovalTarget(
+                    "node does not match".to_string(),
+                ));
+            }
+        }
+        if metadata.status == ExecutionStatus::Interrupted {
+            let timestamp = current_timestamp();
+            let data_dir = match self.execution_store.configured_data_dir().await {
+                Some(data_dir) => data_dir,
+                None => crate::infrastructure::platform::app_data_dir::resolve_data_dir(app)
+                    .map_err(|error| {
+                        WorkflowEngineError::SessionStore(format!("resolve_data_dir: {error}"))
+                    })?,
+            };
+            let events = WorkflowEventLog::new(&data_dir)
+                .read_log(execution_id)
+                .map_err(WorkflowEngineError::SessionStore)?;
+            let projected =
+                crate::adaptor::gateway::workflow::event_projection::project_workflow_execution(
+                    execution_id,
+                    &events,
+                )
+                .map_err(WorkflowEngineError::InvalidState)?
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(execution_id.to_string()))?;
+            if projected.status != ExecutionStatus::Interrupted {
+                return Err(WorkflowEngineError::InvalidState(format!(
+                    "execution {execution_id} event log has status {} instead of interrupted",
+                    projected.status.as_str()
+                )));
+            }
+            if projected.worktree_path != metadata.worktree_path
+                || projected.resume_from_node != metadata.resume_from_node
+            {
+                return Err(WorkflowEngineError::UnauthorizedWorktree(format!(
+                    "execution {execution_id} metadata does not match its event-log checkpoint"
+                )));
+            }
+            let reservation = self
+                .execution_store
+                .reserve_interrupted_for_abort(execution_id, timestamp)
+                .await
+                .map_err(|error| match error {
+                    ExecutionStoreError::ExecutionNotFound { .. } => {
+                        WorkflowEngineError::ExecutionNotFound(execution_id.to_string())
+                    }
+                    ExecutionStoreError::InvalidStatusTransition { .. }
+                    | ExecutionStoreError::TransitionInProgress { .. } => {
+                        WorkflowEngineError::InvalidState(error.to_string())
+                    }
+                    other => WorkflowEngineError::SessionStore(format!(
+                        "ExecutionStore interrupted abort reservation failed: {other}"
+                    )),
+                })?;
+            let append_result = self.write_log_required_batch(
+                app,
+                &[WorkflowEvent::ExecutionAborted {
+                    execution_id: execution_id.to_string(),
+                    aborted_node: metadata.resume_from_node.clone(),
+                    timestamp,
+                }],
+            );
+            if let Err(error) = append_result {
+                self.execution_store
+                    .rollback_interrupted_abort(reservation)
+                    .await
+                    .map_err(|rollback_error| {
+                        WorkflowEngineError::SessionStore(format!(
+                            "ExecutionAborted log failed: {error}; interrupted metadata rollback failed: {rollback_error}"
+                        ))
+                    })?;
+                return Err(WorkflowEngineError::SessionStore(format!(
+                    "ExecutionAborted log failed: {error}"
+                )));
+            }
+            if let Err(error) = self
+                .execution_store
+                .commit_interrupted_abort(reservation)
+                .await
+            {
+                // Event log と persisted metadata は既に Aborted で一致している。reservation
+                // cleanup の失敗を accepted command の失敗へ射影しない。
+                log::warn!(
+                    "ExecutionStore interrupted abort reservation cleanup failed for {execution_id}: {error}"
+                );
+            }
+            return Ok(());
+        }
+        if !metadata.status.is_active() {
+            return Err(WorkflowEngineError::InvalidState(format!(
+                "execution {execution_id} cannot be aborted from status {}",
+                metadata.status.as_str()
+            )));
+        }
+        let interruption_reservation = self
+            .execution_store
+            .reserve_active_interruption(execution_id)
+            .await
+            .map_err(|error| match error {
+                ExecutionStoreError::ExecutionNotFound { .. } => {
+                    WorkflowEngineError::ExecutionNotFound(execution_id.to_string())
+                }
+                ExecutionStoreError::InvalidStatusTransition { .. }
+                | ExecutionStoreError::TransitionInProgress { .. } => {
+                    WorkflowEngineError::InvalidState(error.to_string())
+                }
+                other => WorkflowEngineError::SessionStore(format!(
+                    "ExecutionStore abort reservation failed: {other}"
+                )),
+            })?;
+        let activation_gate = self.runtime_activation_gate(execution_id).await;
+        activation_gate.request_cancel();
+        let mut activation_guard = None;
+        tokio::select! {
+            biased;
+            _ = activation_gate.cancellation_acknowledged() => {}
+            guard = activation_gate.lock.lock() => {
+                activation_guard = Some(guard);
+            }
+        }
+        let activation_was_paused = activation_guard.is_none();
         // execution 全体の Abort: NotFound / AlreadyTerminal は非受理として typed error
         // に射影する（Spec [04] Rule「対象不在 / 既に終了した command は受理されない」）。
-        match self
+        let abort_result = self
             .abort_workflow_by_execution_id(
                 app,
                 session_store,
@@ -2719,16 +3068,159 @@ impl WorkflowRuntimeService {
                 execution_id,
                 expected_node_name,
             )
+            .await;
+        match abort_result {
+            Ok(AbortOutcome::Aborted) => {
+                if activation_was_paused {
+                    activation_gate.commit_cancel();
+                    activation_guard = Some(activation_gate.lock.lock().await);
+                }
+                let _activation_guard = activation_guard;
+                self.execution_store
+                    .finish_active_interruption(interruption_reservation)
+                    .await
+                    .map_err(|error| {
+                        WorkflowEngineError::SessionStore(format!(
+                            "ExecutionStore abort reservation cleanup failed: {error}"
+                        ))
+                    })?;
+                Ok(())
+            }
+            Ok(outcome) => {
+                self.execution_store
+                    .finish_active_interruption(interruption_reservation)
+                    .await
+                    .map_err(|error| {
+                        WorkflowEngineError::SessionStore(format!(
+                            "ExecutionStore abort reservation rollback failed: {error}"
+                        ))
+                    })?;
+                if activation_was_paused {
+                    activation_gate.rollback_cancel();
+                } else {
+                    activation_gate.reset_cancel();
+                }
+                match outcome {
+                    AbortOutcome::NotFound => Err(WorkflowEngineError::ExecutionNotFound(
+                        execution_id.to_string(),
+                    )),
+                    AbortOutcome::AlreadyTerminal => Err(WorkflowEngineError::InvalidState(
+                        format!("execution {execution_id} is already terminal"),
+                    )),
+                    AbortOutcome::Aborted => unreachable!(),
+                }
+            }
+            Err(error) => {
+                let reservation_result = self
+                    .execution_store
+                    .finish_active_interruption(interruption_reservation)
+                    .await;
+                if activation_was_paused {
+                    activation_gate.rollback_cancel();
+                } else {
+                    activation_gate.reset_cancel();
+                }
+                reservation_result.map_err(|reservation_error| {
+                    WorkflowEngineError::SessionStore(format!(
+                        "abort failed: {error}; abort reservation rollback failed: {reservation_error}"
+                    ))
+                })?;
+                Err(error)
+            }
+        }
+    }
+
+    /// Explicit stop command. The accepted fact is `ExecutionInterrupted(Stop)`; process and
+    /// session cancellation happen only after that fact and its metadata projection commit.
+    pub(crate) async fn stop_workflow_execution<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
+        execution_id: &str,
+    ) -> Result<(), WorkflowEngineError> {
+        let metadata = self.validate_execution_command_target(execution_id).await?;
+        if !matches!(
+            metadata.status,
+            ExecutionStatus::Running | ExecutionStatus::WaitingApproval
+        ) {
+            return Err(WorkflowEngineError::InvalidState(format!(
+                "execution {execution_id} cannot be stopped from status {}",
+                metadata.status.as_str()
+            )));
+        }
+        if !self
+            .interrupt_active_execution(
+                app,
+                session_store,
+                agent_runtime,
+                execution_id,
+                ExecutionInterruptionReason::Stop,
+            )
             .await?
         {
-            AbortOutcome::Aborted => Ok(()),
-            AbortOutcome::NotFound => Err(WorkflowEngineError::ExecutionNotFound(
-                execution_id.to_string(),
-            )),
-            AbortOutcome::AlreadyTerminal => Err(WorkflowEngineError::InvalidState(format!(
-                "execution {execution_id} is already terminal"
-            ))),
+            return Err(WorkflowEngineError::InvalidState(format!(
+                "execution {execution_id} is not active"
+            )));
         }
+        Ok(())
+    }
+
+    /// Rebuilds an interrupted execution exclusively from its append-only event stream and starts
+    /// a fresh runtime for the first unconfirmed node attempt.
+    pub(crate) async fn resume_workflow_execution<R: tauri::Runtime + 'static>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
+        execution_id: &str,
+    ) -> Result<(), WorkflowEngineError> {
+        resume_orchestration::resume_workflow_execution(
+            self,
+            app,
+            session_store,
+            agent_runtime,
+            execution_id,
+        )
+        .await
+    }
+    async fn validate_execution_command_target(
+        &self,
+        execution_id: &str,
+    ) -> Result<WorkflowExecutionMetadata, WorkflowEngineError> {
+        if self
+            .execution_store
+            .interrupted_transition_pending(execution_id)
+            .await
+        {
+            return Err(WorkflowEngineError::InvalidState(format!(
+                "execution {execution_id} already has a transition in progress"
+            )));
+        }
+        let metadata = self
+            .execution_store
+            .get_execution_record(execution_id)
+            .await
+            .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(execution_id.to_string()))?;
+        let resolved = self
+            .worktree_resolver
+            .resolve(metadata.worktree_path.clone())
+            .await
+            .map_err(|error| WorkflowEngineError::UnauthorizedWorktree(error.to_string()))?;
+        if resolved != metadata.worktree_path {
+            return Err(WorkflowEngineError::UnauthorizedWorktree(format!(
+                "execution {execution_id} targets '{}' but managed worktree resolves to '{resolved}'",
+                metadata.worktree_path
+            )));
+        }
+        if let Some(in_memory) = self.executions.lock().await.get(execution_id) {
+            if in_memory.worktree_path != metadata.worktree_path {
+                return Err(WorkflowEngineError::UnauthorizedWorktree(format!(
+                    "execution {execution_id} worktree does not match persisted metadata"
+                )));
+            }
+        }
+        Ok(metadata)
     }
 
     /// ワークフローを中断する。
@@ -2864,19 +3356,39 @@ impl WorkflowRuntimeService {
             aborted_node: aborted_node_for_event,
             timestamp,
         };
-        self.commit_required_events(
-            app,
-            session_store,
-            RequiredEventCommit {
-                execution_id,
-                snapshot_for_commit: &snapshot_state,
-                snapshot_before,
-                execution_store_snapshot_before,
-                required_events: vec![aborted_event],
-                append_error_context: "ExecutionAborted log failed",
-            },
-        )
-        .await?;
+        let commit_result = self
+            .commit_required_events(
+                app,
+                session_store,
+                RequiredEventCommit {
+                    execution_id,
+                    snapshot_for_commit: &snapshot_state,
+                    snapshot_before,
+                    execution_store_snapshot_before,
+                    required_events: vec![aborted_event],
+                    append_error_context: "ExecutionAborted log failed",
+                },
+            )
+            .await;
+        if let Err(error) = commit_result {
+            // `commit_required_events` restores `snapshot_before` when the append itself fails.
+            // If the exact Aborted snapshot is still current, the append succeeded and only the
+            // post-commit ExecutionStore projection failed. ExecutionAborted is authoritative in
+            // that case: keep cancelling runtime activation and run terminal cleanup instead of
+            // rolling the paused activation back against an already-Aborted execution.
+            let aborted_event_is_committed = self
+                .executions
+                .lock()
+                .await
+                .get(execution_id)
+                .is_some_and(|current| commit_snapshot_is_current(current, &snapshot_state));
+            if !aborted_event_is_committed {
+                return Err(error);
+            }
+            log::warn!(
+                "ExecutionAborted metadata projection failed for {execution_id} after durable append; continuing terminal cleanup: {error}"
+            );
+        }
         crate::other::telemetry::record_workflow_node_failure(
             FailureClassification::new(NodeExecutionFailureKind::UserAbort),
             None,
@@ -3113,7 +3625,7 @@ impl WorkflowRuntimeService {
             let exec = execs
                 .get(execution_id)
                 .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(execution_id.to_string()))?;
-            if exec.is_terminal() {
+            if !exec.is_active() {
                 return Ok(());
             }
             let Some(pr) = exec.parallel_run.as_ref() else {
@@ -3178,7 +3690,7 @@ impl WorkflowRuntimeService {
                 .get_mut(execution_id)
                 .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(execution_id.to_string()))?;
 
-            if exec.is_terminal() {
+            if !exec.is_active() {
                 return Ok(());
             }
             // [05] commit 境界: 子ステップ失敗 → workflow 全体 Failed の terminal event は
@@ -3219,6 +3731,13 @@ impl WorkflowRuntimeService {
                         child_failure_reason: reason.clone(),
                         terminal_reason: reason,
                         failure_kind,
+                        failure_disposition: if failure_kind.default_disposition()
+                            == FailureDisposition::Partial
+                        {
+                            FailureDisposition::Partial
+                        } else {
+                            FailureDisposition::Terminal
+                        },
                         retry_count: None,
                         timestamp: current_timestamp(),
                         record_child_token_usage: true,
@@ -3480,6 +3999,13 @@ impl WorkflowRuntimeService {
             .remove(execution_id);
     }
 
+    async fn release_fanout_resume_checkpoint(&self, execution_id: &str) {
+        self.fanout_resume_checkpoints
+            .lock()
+            .await
+            .remove(execution_id);
+    }
+
     async fn release_terminal_execution(&self, execution_id: &str) {
         let removed = {
             let mut execs = self.executions.lock().await;
@@ -3495,6 +4021,28 @@ impl WorkflowRuntimeService {
         };
         if removed {
             self.release_execution_facet_contents(execution_id).await;
+            self.release_fanout_resume_checkpoint(execution_id).await;
+        }
+    }
+
+    /// Drop a runtime that no longer owns live work. Interrupted executions remain persisted and
+    /// resumable, but must not retain sessions, processes, or an in-memory worktree owner.
+    async fn release_inactive_execution(&self, execution_id: &str) {
+        let removed = {
+            let mut execs = self.executions.lock().await;
+            if execs
+                .get(execution_id)
+                .is_some_and(|exec| !exec.is_active())
+            {
+                execs.remove(execution_id);
+                true
+            } else {
+                false
+            }
+        };
+        if removed {
+            self.release_execution_facet_contents(execution_id).await;
+            self.release_fanout_resume_checkpoint(execution_id).await;
         }
     }
 
@@ -3773,7 +4321,7 @@ impl WorkflowRuntimeService {
             let exec = execs
                 .get_mut(execution_id)
                 .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(execution_id.to_string()))?;
-            if exec.is_terminal() {
+            if !exec.is_active() {
                 return Ok(());
             }
             let snapshot_before = exec.clone();
@@ -3815,7 +4363,7 @@ impl WorkflowRuntimeService {
         execution_id: &str,
         node_execution_id: &str,
         node_name: &str,
-        contract: &str,
+        _contract: &str,
         reason: &str,
         failure_kind: NodeExecutionFailureKind,
         retry_count: Option<u32>,
@@ -3824,134 +4372,54 @@ impl WorkflowRuntimeService {
         let failure_reason = format!(
             "Required structured output for node '{node_name}' was not submitted: {reason}"
         );
-        let (
-            outcome,
-            snapshot_before,
-            progress_events,
-            interrupted_session_ids,
-            interrupted_command_ids,
-        ) = {
+        let failure_disposition = match failure_kind {
+            NodeExecutionFailureKind::ModelRefusal
+            | NodeExecutionFailureKind::StructuredOutputMismatch => FailureDisposition::Partial,
+            _ => FailureDisposition::Terminal,
+        };
+        let failure_commit = {
             let mut execs = self.executions.lock().await;
             let exec = execs
                 .get_mut(execution_id)
                 .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(execution_id.to_string()))?;
-            if exec.is_terminal() {
+            if !exec.is_active() {
                 return Ok(());
             }
             let snapshot_before = exec.clone();
-            let Some(parallel_run) = exec.parallel_run.as_mut() else {
-                return Err(WorkflowEngineError::InvalidState(format!(
-                    "fanout child missing-output failure requires an active fanout runtime for '{node_execution_id}'"
-                )));
-            };
-            let parent_node_execution_id = parallel_run.parent_node_execution_id.clone();
-            let Some(child_index) = parallel_run
-                .children
-                .iter()
-                .position(|child| child.node_execution_id == node_execution_id)
-            else {
-                return Err(WorkflowEngineError::InvalidState(format!(
-                    "fanout child missing-output failure references unknown child '{node_execution_id}'"
-                )));
-            };
-            let child_name = parallel_run.children[child_index].node_name.clone();
-            let child_attempt = parallel_run.children[child_index].attempt;
-            let mut interrupted_session_ids = Vec::new();
-            let mut interrupted_command_ids = Vec::new();
-            let mut interrupted_execution_ids = Vec::new();
-            for (index, child) in parallel_run.children.iter_mut().enumerate() {
-                if index == child_index {
-                    child.state = FanoutChildRuntimeState::Failed;
-                    child.result = Some("contract_missing_output".to_string());
-                    child.artifact = None;
-                    child.failure_kind = Some(failure_kind);
-                    child.failure_disposition = None;
-                    child.completed_at = Some(timestamp);
-                    continue;
-                }
-                if child.state != FanoutChildRuntimeState::Running {
-                    continue;
-                }
-                child.state = FanoutChildRuntimeState::Interrupted;
-                child.completed_at = Some(timestamp);
-                interrupted_execution_ids.push(child.node_execution_id.clone());
-                if child.session_id.is_empty() {
-                    interrupted_command_ids.push(child.node_execution_id.clone());
-                } else {
-                    interrupted_session_ids.push(child.session_id.clone());
-                }
-            }
-            exec.fail_node_execution(
-                node_execution_id,
-                failure_reason.clone(),
-                failure_kind,
-                timestamp,
-            );
-            for execution_id in interrupted_execution_ids {
-                if let Some(node_execution) = exec
-                    .node_executions
-                    .iter_mut()
-                    .find(|execution| execution.id == execution_id)
-                {
-                    node_execution.status = NodeExecutionStatus::Aborted;
-                    node_execution.completed_at = Some(timestamp);
-                }
-            }
-            exec.fail_node_execution(
-                &parent_node_execution_id,
-                failure_reason.clone(),
-                failure_kind,
-                timestamp,
-            );
-            exec.current_stall_observations.clear();
-            exec.state = RuntimeExecutionState::Failed {
-                reason: failure_reason.clone(),
-                kind: failure_kind,
-                retry_count,
-            };
-            let mut entry = exec.make_node_history_entry(
-                Some("contract_missing_output".to_string()),
-                None,
-                Some(contract.to_string()),
-            );
-            entry.state = NODE_STATUS_FAILED.to_string();
-            exec.node_history.push(entry);
-            exec.parallel_run = None;
-            exec.updated_at = timestamp;
-            let progress_events = vec![WorkflowEvent::NodeFailed {
-                execution_id: execution_id.to_string(),
-                node_execution_id: node_execution_id.to_string(),
-                node_name: child_name,
-                attempt: child_attempt,
-                reason: failure_reason,
-                failure_kind,
-                retry_count,
-                timestamp,
-            }];
-            (
-                StepOutcome::Persist(exec.to_workflow_state()),
+            finalize_fanout_child_failure_state(
+                exec,
                 snapshot_before,
-                progress_events,
-                interrupted_session_ids,
-                interrupted_command_ids,
-            )
+                FanoutChildFailureInput {
+                    child_node_execution_id: node_execution_id.to_string(),
+                    child_failure_reason: failure_reason.clone(),
+                    terminal_reason: failure_reason,
+                    failure_kind,
+                    failure_disposition,
+                    retry_count,
+                    timestamp,
+                    record_child_token_usage: false,
+                },
+            )?
         };
-
-        self.commit_required_parallel_progress_events_and_execute_outcome(
-            app,
-            session_store,
-            agent_runtime,
-            worktree_path,
-            outcome,
-            snapshot_before,
-            progress_events,
-            &[],
-            Some(FailureClassification::with_disposition(
-                failure_kind,
-                FailureDisposition::Terminal,
-            )),
-        )
-        .await?;
+        let FanoutChildFailureCommit {
+            completion,
+            interrupted_session_ids,
+            interrupted_command_ids,
+        } = failure_commit;
+        if let Some(outcome) = completion.outcome {
+            self.commit_required_parallel_progress_events_and_execute_outcome(
+                app,
+                session_store,
+                agent_runtime,
+                worktree_path,
+                outcome,
+                completion.snapshot_before,
+                completion.progress_events,
+                &[],
+                completion.failure_telemetry,
+            )
+            .await?;
+        }
         for session_id in interrupted_session_ids {
             workflow_runtime_session::interrupt_agent(agent_runtime, &session_id).await;
         }
@@ -4053,178 +4521,6 @@ impl WorkflowRuntimeService {
     }
 
     // ---- 内部メソッド ----
-
-    // set_execution_state の lookup 戦略指定。WorkflowExecutionId バリアントは worktree_path を補助情報
-    // として保持する（broadcast / cleanup の対象として）。
-    // Note: enum 定義は impl の外側にあり、ここでは参照のみ可能（Rust 制約）。
-    // 実体は WorkflowRuntimeService impl の下に置く。
-
-    /// 実行状態を更新し、永続化・ブロードキャストする。
-    /// 内部実装は `set_execution_state_inner` に集約され、worktree_path 主語の場合は
-    /// `find_by_worktree_mut`、execution_id 主語の場合は `executions.get_mut(execution_id)` で
-    /// lookup する。
-    async fn set_execution_state<R: tauri::Runtime>(
-        &self,
-        app: &tauri::AppHandle<R>,
-        session_store: &Arc<SessionStore>,
-        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
-        worktree_path: &str,
-        new_state: RuntimeExecutionState,
-    ) -> Result<(), WorkflowEngineError> {
-        self.set_execution_state_inner(
-            app,
-            session_store,
-            agent_runtime,
-            ExecutionStateTarget::Worktree(worktree_path.to_string()),
-            new_state,
-        )
-        .await
-    }
-
-    /// 実行状態更新の内部実装。lookup 戦略を `target` で切り替える。
-    /// Spec issues-1011 finding 10: Execution Store sync 失敗時は engine state も巻き戻し、
-    /// engine terminal / Execution Store active のスキューを残さない。
-    async fn set_execution_state_inner<R: tauri::Runtime>(
-        &self,
-        app: &tauri::AppHandle<R>,
-        session_store: &Arc<SessionStore>,
-        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
-        target: ExecutionStateTarget,
-        new_state: RuntimeExecutionState,
-    ) -> Result<(), WorkflowEngineError> {
-        let (snapshot, execution_id, worktree_path, snapshot_before) = {
-            let mut execs = self.executions.lock().await;
-            let exec = match &target {
-                ExecutionStateTarget::Worktree(wt) => find_by_worktree_mut(&mut execs, wt)
-                    .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(wt.clone()))?,
-            };
-            // 終了状態（Completed/Failed/Aborted）からの上書きを防止
-            if exec.is_terminal() {
-                return Ok(());
-            }
-            let snapshot_before = exec.clone();
-            let timestamp = current_timestamp();
-            if let RuntimeExecutionState::Failed { reason, kind, .. } = &new_state {
-                exec.fail_current_node_execution_and_abort_active_children(
-                    reason, *kind, timestamp,
-                );
-            }
-            exec.state = new_state;
-            exec.updated_at = timestamp;
-            (
-                exec.to_workflow_state(),
-                exec.id.clone(),
-                exec.worktree_path.clone(),
-                snapshot_before,
-            )
-        };
-
-        let is_terminal = matches!(
-            snapshot.state,
-            RuntimeExecutionState::Completed
-                | RuntimeExecutionState::Failed { .. }
-                | RuntimeExecutionState::Aborted
-                | RuntimeExecutionState::Interrupted
-        );
-
-        // [05] terminal 経路は commit_required_events 基盤の共通 commit 境界に統合する。
-        // terminal events (NodeCompleted（Completed のみ）+ ExecutionCompleted / NodeFailed+ExecutionFailed)
-        // を required event 列として集約し、ExecutionStore sync → ChatSession persist → event log
-        // append の順序で commit する。いずれかが失敗した場合は engine state と Execution Store snapshot
-        // を snapshot_before で一括復元する（spec [05] atomic mutation 境界 / best-effort warn 廃止）。
-        // Aborted は AbortExecution command handler 側で別途 commit されるため本経路では event 集合に含めない。
-        if is_terminal
-            && !matches!(
-                snapshot.state,
-                RuntimeExecutionState::Aborted | RuntimeExecutionState::Interrupted
-            )
-        {
-            let required_events =
-                match workflow_runtime_events::terminal_required_events_for_snapshot(&snapshot) {
-                    Ok(events) => events,
-                    Err(e) => {
-                        let mut execs = self.executions.lock().await;
-                        if let Some(exec) = execs.get_mut(&execution_id) {
-                            *exec = snapshot_before;
-                        }
-                        return Err(e);
-                    }
-                };
-            let execution_store_snapshot_before = self
-                .execution_store
-                .active_execution_snapshot(&execution_id)
-                .await;
-            self.commit_required_events(
-                app,
-                session_store,
-                RequiredEventCommit {
-                    execution_id: &execution_id,
-                    snapshot_for_commit: &snapshot,
-                    snapshot_before,
-                    execution_store_snapshot_before,
-                    required_events,
-                    append_error_context: "set_execution_state terminal event append failed",
-                },
-            )
-            .await?;
-
-            // terminal 副作用: step session release + refs cleanup + broadcast。
-            let terminal_session_ids =
-                workflow_runtime_commit::terminal_step_session_ids(&snapshot);
-            workflow_runtime_session::release_completed_step_sessions(
-                app,
-                session_store,
-                agent_runtime,
-                &terminal_session_ids,
-            )
-            .await;
-            self.cleanup_session_workflow_refs_by_execution_id(&execution_id)
-                .await;
-            workflow_runtime_session::broadcast_state(app, &worktree_path, snapshot.clone()).await;
-            self.release_terminal_execution(&execution_id).await;
-            return Ok(());
-        }
-
-        // 非 terminal / Aborted 経路: required event が無いため従来の sync→persist 順で commit する。
-        // Aborted は AbortExecution command handler 側で event を別途 append 済み。
-        let rollback_engine_state =
-            |execution_id_for_rollback: String, previous_snapshot: WorkflowExecution| async move {
-                let mut execs = self.executions.lock().await;
-                if let Some(exec) = execs.get_mut(&execution_id_for_rollback) {
-                    *exec = previous_snapshot;
-                }
-            };
-
-        if let Err(e) = workflow_runtime_commit::sync_execution_store_from_snapshot(
-            &self.execution_store,
-            &execution_id,
-            &snapshot,
-        )
-        .await
-        {
-            rollback_engine_state(execution_id.clone(), snapshot_before).await;
-            return Err(e);
-        }
-
-        if is_terminal {
-            let terminal_session_ids =
-                workflow_runtime_commit::terminal_step_session_ids(&snapshot);
-            workflow_runtime_session::release_completed_step_sessions(
-                app,
-                session_store,
-                agent_runtime,
-                &terminal_session_ids,
-            )
-            .await;
-            self.cleanup_session_workflow_refs_by_execution_id(&execution_id)
-                .await;
-        }
-        workflow_runtime_session::broadcast_state(app, &worktree_path, snapshot.clone()).await;
-        if is_terminal {
-            self.release_terminal_execution(&execution_id).await;
-        }
-        Ok(())
-    }
 
     async fn rollback_command_mutation<R: tauri::Runtime>(
         &self,
@@ -4403,34 +4699,67 @@ impl WorkflowRuntimeService {
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         input: CommandExecutionInput,
     ) -> Result<(), WorkflowEngineError> {
-        let running = match workflow_command_runner::spawn_shell_command(
-            &input.worktree_path,
-            &input.command,
-            command_env(&input),
-        ) {
-            Ok(running) => running,
-            Err(CommandRunnerError::Spawn(error)) => {
-                let reason = format!("failed to spawn command: {error}");
-                self.fail_command_execution(app, session_store, agent_runtime, &input, &reason)
-                    .await?;
-                return Err(WorkflowEngineError::SessionStore(reason));
+        // Keep the execution lock from the final current-node check through process registration.
+        // A concurrent stop therefore has only two observable orders: it wins first and no process
+        // is spawned, or the process is registered first and stop can always find and kill it.
+        let spawn_result = {
+            let executions = self.executions.lock().await;
+            let Some(execution) = executions.get(&input.execution_id) else {
+                return Ok(());
+            };
+            let node_execution_is_active = execution.node_executions.iter().any(|node_execution| {
+                node_execution.id == input.node_execution_id && node_execution.status.is_active()
+            });
+            let input_is_current = if input.fanout_parent.is_some() {
+                node_execution_is_active
+                    && execution.parallel_run.as_ref().is_some_and(|run| {
+                        run.children.iter().any(|child| {
+                            child.node_execution_id == input.node_execution_id
+                                && child.state == FanoutChildRuntimeState::Running
+                        })
+                    })
+            } else {
+                node_execution_is_active
+                    && is_still_current_execution(execution, &input.node_name, input.attempt)
+            };
+            if !input_is_current {
+                return Ok(());
             }
-            Err(error) => {
-                let reason = format!("failed to prepare command: {error}");
-                self.fail_command_execution(app, session_store, agent_runtime, &input, &reason)
-                    .await?;
-                return Err(WorkflowEngineError::SessionStore(reason));
+
+            let spawn_result = workflow_command_runner::spawn_shell_command(
+                &input.worktree_path,
+                &input.command,
+                command_env(&input),
+            );
+            if let Ok(running) = &spawn_result {
+                self.active_commands
+                    .lock()
+                    .await
+                    .insert(input.node_execution_id.clone(), running.handle());
+                self.active_command_executions
+                    .lock()
+                    .await
+                    .insert(input.node_execution_id.clone(), input.execution_id.clone());
             }
+            spawn_result
         };
 
-        self.active_commands
-            .lock()
-            .await
-            .insert(input.node_execution_id.clone(), running.handle());
-        self.active_command_executions
-            .lock()
-            .await
-            .insert(input.node_execution_id.clone(), input.execution_id.clone());
+        let running = match spawn_result {
+            Ok(running) => running,
+            Err(CommandRunnerError::Spawn(error)) => {
+                // The caller converts runtime activation failures into a crash checkpoint after
+                // releasing any activation lock. Interrupting here would recurse into that lock
+                // for fanout command children.
+                return Err(WorkflowEngineError::SessionStore(format!(
+                    "failed to spawn command: {error}"
+                )));
+            }
+            Err(error) => {
+                return Err(WorkflowEngineError::SessionStore(format!(
+                    "failed to prepare command: {error}"
+                )));
+            }
+        };
         let engine = self.clone();
         let observer_app = app.clone();
         let observer_session_store = session_store.clone();
@@ -4496,12 +4825,12 @@ impl WorkflowRuntimeService {
                     let reason = format!("command completion failed: {error}");
                     log::warn!("{reason}");
                     let _ = self
-                        .fail_command_execution(
+                        .interrupt_current_command_node(
                             app,
                             session_store,
                             agent_runtime,
                             &failure_input,
-                            &reason,
+                            ExecutionInterruptionReason::Crash,
                         )
                         .await;
                 }
@@ -4512,14 +4841,14 @@ impl WorkflowRuntimeService {
                     .lock()
                     .await
                     .remove(&input.node_execution_id);
-                if matches!(reason, Some(ActiveCommandShutdownReason::AppExit)) {
+                if matches!(reason, Some(ActiveCommandShutdownReason::Crash)) {
                     if let Err(error) = self
                         .interrupt_current_command_node(
                             app,
                             session_store,
                             agent_runtime,
                             &input,
-                            "app_exit",
+                            ExecutionInterruptionReason::Crash,
                         )
                         .await
                     {
@@ -4533,8 +4862,15 @@ impl WorkflowRuntimeService {
             Err(error) => {
                 let reason = format!("command runtime failed: {error}");
                 let _ = self
-                    .fail_command_execution(app, session_store, agent_runtime, &input, &reason)
+                    .interrupt_current_command_node(
+                        app,
+                        session_store,
+                        agent_runtime,
+                        &input,
+                        ExecutionInterruptionReason::Crash,
+                    )
                     .await;
+                log::warn!("{reason}");
             }
         }
     }
@@ -4845,140 +5181,91 @@ impl WorkflowRuntimeService {
             })
     }
 
-    async fn fail_command_execution<R: tauri::Runtime>(
-        &self,
-        app: &tauri::AppHandle<R>,
-        session_store: &Arc<SessionStore>,
-        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
-        input: &CommandExecutionInput,
-        reason: &str,
-    ) -> Result<(), WorkflowEngineError> {
-        if input.fanout_parent.is_none() {
-            return self
-                .fail_current_command_node(
-                    app,
-                    session_store,
-                    agent_runtime,
-                    &input.execution_id,
-                    reason,
-                )
-                .await;
-        }
-
-        let failure_kind = NodeExecutionFailureKind::InfrastructureCrash;
-        let timestamp = current_timestamp();
-        let (completion, interrupted_session_ids, interrupted_command_ids) = {
-            let mut executions = self.executions.lock().await;
-            let Some(execution) = executions.get_mut(&input.execution_id) else {
-                return Ok(());
-            };
-            if !self.command_input_is_active_fanout_child(execution, input) {
-                return Ok(());
-            }
-            let snapshot_before = execution.clone();
-            let terminal_reason = format!("fanout child '{}' failed: {reason}", input.node_name);
-            let failure_commit = finalize_fanout_child_failure_state(
-                execution,
-                snapshot_before,
-                FanoutChildFailureInput {
-                    child_node_execution_id: input.node_execution_id.clone(),
-                    child_failure_reason: reason.to_string(),
-                    terminal_reason,
-                    failure_kind,
-                    retry_count: None,
-                    timestamp,
-                    record_child_token_usage: false,
-                },
-            )?;
-            (
-                failure_commit.completion,
-                failure_commit.interrupted_session_ids,
-                failure_commit.interrupted_command_ids,
-            )
-        };
-
-        if let Some(outcome) = completion.outcome {
-            self.commit_required_parallel_progress_events_and_execute_outcome(
-                app,
-                session_store,
-                agent_runtime,
-                &input.worktree_path,
-                outcome,
-                completion.snapshot_before,
-                completion.progress_events,
-                &[],
-                completion.failure_telemetry,
-            )
-            .await?;
-        }
-        for session_id in interrupted_session_ids {
-            workflow_runtime_session::interrupt_agent(agent_runtime, &session_id).await;
-        }
-        if !interrupted_command_ids.is_empty() {
-            let handles = self.active_commands.lock().await;
-            for execution_id in interrupted_command_ids {
-                if let Some(handle) = handles.get(&execution_id) {
-                    handle.request_shutdown();
-                }
-            }
-        }
-        Ok(())
-    }
-
-    async fn fail_current_command_node<R: tauri::Runtime>(
+    async fn interrupt_active_execution<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         execution_id: &str,
-        reason: &str,
-    ) -> Result<(), WorkflowEngineError> {
-        let worktree_path = {
-            let execs = self.executions.lock().await;
-            let Some(exec) = execs.get(execution_id) else {
-                return Ok(());
-            };
-            exec.worktree_path.clone()
-        };
-        self.set_execution_state(
-            app,
-            session_store,
-            agent_runtime,
-            &worktree_path,
-            RuntimeExecutionState::Failed {
-                reason: reason.to_string(),
-                kind: NodeExecutionFailureKind::InfrastructureCrash,
-                retry_count: None,
-            },
-        )
-        .await
-    }
-
-    async fn interrupt_current_command_node<R: tauri::Runtime>(
-        &self,
-        app: &tauri::AppHandle<R>,
-        session_store: &Arc<SessionStore>,
-        _agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
-        input: &CommandExecutionInput,
-        reason: &str,
-    ) -> Result<(), WorkflowEngineError> {
-        let (snapshot, snapshot_before, worktree_path) = {
+        reason: ExecutionInterruptionReason,
+    ) -> Result<bool, WorkflowEngineError> {
+        let interruption_reservation = self
+            .execution_store
+            .reserve_active_interruption(execution_id)
+            .await
+            .map_err(|error| match error {
+                ExecutionStoreError::ExecutionNotFound { .. } => {
+                    WorkflowEngineError::ExecutionNotFound(execution_id.to_string())
+                }
+                ExecutionStoreError::InvalidStatusTransition { .. }
+                | ExecutionStoreError::TransitionInProgress { .. } => {
+                    WorkflowEngineError::InvalidState(error.to_string())
+                }
+                other => WorkflowEngineError::SessionStore(format!(
+                    "ExecutionStore interruption reservation failed: {other}"
+                )),
+            })?;
+        // Reserve the typed transition before cancelling runtime activation. If the cancelled
+        // starter reports a Crash, the pending transition rejects that competing interruption and
+        // lets this stop/stale fact remain the single winner.
+        let activation_gate = self.runtime_activation_gate(execution_id).await;
+        activation_gate.request_cancel();
+        let mut activation_guard = None;
+        tokio::select! {
+            biased;
+            _ = activation_gate.cancellation_acknowledged() => {}
+            guard = activation_gate.lock.lock() => {
+                activation_guard = Some(guard);
+            }
+        }
+        let activation_was_paused = activation_guard.is_none();
+        let timestamp = current_timestamp();
+        let execution_store_snapshot_before = self
+            .execution_store
+            .active_execution_snapshot(execution_id)
+            .await;
+        let (snapshot, snapshot_before, worktree_path, session_ids) = {
             let mut execs = self.executions.lock().await;
-            let Some(exec) = execs.get_mut(&input.execution_id) else {
-                return Ok(());
+            let Some(exec) = execs.get_mut(execution_id) else {
+                drop(execs);
+                rollback_active_interruption(
+                    &self.execution_store,
+                    interruption_reservation,
+                    &activation_gate,
+                    activation_was_paused,
+                    InterruptionRollback::ProjectionUnchanged,
+                )
+                .await;
+                return Ok(false);
             };
-            let command_is_active = exec.node_executions.iter().any(|node_execution| {
-                node_execution.id == input.node_execution_id
-                    && node_execution.node_name == input.node_name
-                    && node_execution.attempt == input.attempt
-                    && node_execution.status.is_active()
-            });
-            if exec.is_terminal() || !command_is_active {
-                return Ok(());
+            if !exec.is_active() {
+                drop(execs);
+                rollback_active_interruption(
+                    &self.execution_store,
+                    interruption_reservation,
+                    &activation_gate,
+                    activation_was_paused,
+                    InterruptionRollback::ProjectionUnchanged,
+                )
+                .await;
+                return Ok(false);
             }
 
             let snapshot_before = exec.clone();
-            let timestamp = current_timestamp();
+            let mut session_ids = exec.current_session_id.iter().cloned().collect::<Vec<_>>();
+            if let Some(fanout) = exec.parallel_run.as_ref() {
+                session_ids.extend(
+                    fanout
+                        .children
+                        .iter()
+                        .filter(|child| child.state == FanoutChildRuntimeState::Running)
+                        .filter(|child| !child.session_id.is_empty())
+                        .map(|child| child.session_id.clone()),
+                );
+            }
+            session_ids.sort();
+            session_ids.dedup();
+
             for node_execution in exec
                 .node_executions
                 .iter_mut()
@@ -4997,43 +5284,156 @@ impl WorkflowRuntimeService {
                     child.completed_at = Some(timestamp);
                 }
             }
-            let mut entry = exec.make_node_history_entry(None, None, None);
-            entry.state = NODE_STATUS_INTERRUPTED.to_string();
-            exec.node_history.push(entry);
-            exec.parallel_run = None;
             exec.state = RuntimeExecutionState::Interrupted;
-            exec.error_reason = Some(reason.to_string());
+            exec.error_reason = Some(interruption_reason_label(reason).to_string());
+            exec.current_stall_observations.clear();
             exec.updated_at = timestamp;
             (
                 exec.to_workflow_state(),
                 snapshot_before,
                 exec.worktree_path.clone(),
+                session_ids,
             )
         };
 
-        let execution_store_snapshot_before = self
-            .execution_store
-            .active_execution_snapshot(&input.execution_id)
+        let append_result = {
+            let mut executions = self.executions.lock().await;
+            let Some(current) = executions.get_mut(execution_id) else {
+                drop(executions);
+                rollback_active_interruption(
+                    &self.execution_store,
+                    interruption_reservation,
+                    &activation_gate,
+                    activation_was_paused,
+                    InterruptionRollback::ProjectionUnchanged,
+                )
+                .await;
+                return Err(WorkflowEngineError::InvalidState(format!(
+                    "execution {execution_id} disappeared before interruption commit"
+                )));
+            };
+            if !commit_snapshot_is_current(current, &snapshot) {
+                drop(executions);
+                rollback_active_interruption(
+                    &self.execution_store,
+                    interruption_reservation,
+                    &activation_gate,
+                    activation_was_paused,
+                    InterruptionRollback::ProjectionUnchanged,
+                )
+                .await;
+                return Err(WorkflowEngineError::InvalidState(format!(
+                    "execution {execution_id} changed before interruption commit"
+                )));
+            }
+            let result = self.write_log_required_batch(
+                app,
+                &[WorkflowEvent::ExecutionInterrupted {
+                    execution_id: execution_id.to_string(),
+                    reason,
+                    timestamp,
+                }],
+            );
+            if result.is_err() {
+                *current = snapshot_before;
+            }
+            result
+        };
+        if let Err(error) = append_result {
+            // The fact was not accepted. Release the transition guard before restoring the
+            // active store/runtime snapshots.
+            rollback_active_interruption(
+                &self.execution_store,
+                interruption_reservation,
+                &activation_gate,
+                activation_was_paused,
+                InterruptionRollback::RestoreActiveSnapshot(execution_store_snapshot_before),
+            )
             .await;
-        self.commit_required_events(
+            return Err(WorkflowEngineError::SessionStore(format!(
+                "ExecutionInterrupted log failed: {error}"
+            )));
+        }
+
+        // The durable fact decides the cancellation. A paused starter now drops its in-flight
+        // future and releases the activation lock; if there was no starter, we already own it.
+        if activation_was_paused {
+            activation_gate.commit_cancel();
+            activation_guard = Some(activation_gate.lock.lock().await);
+        }
+        let _activation_guard = activation_guard;
+
+        // The interruption fact is now authoritative. A metadata projection failure must never
+        // skip command kill / session interruption. Keep the transition guard on failure so the
+        // stale metadata cannot accept another command until startup replay reconciles it.
+        let projection_result = self.sync_state_after_required_event_commit(&snapshot).await;
+
+        self.shutdown_active_commands_for_execution(execution_id)
+            .await;
+        for session_id in &session_ids {
+            workflow_runtime_session::interrupt_agent(agent_runtime, session_id).await;
+        }
+        workflow_runtime_session::release_completed_step_sessions(
             app,
             session_store,
-            RequiredEventCommit {
-                execution_id: &input.execution_id,
-                snapshot_for_commit: &snapshot,
-                snapshot_before,
-                execution_store_snapshot_before,
-                required_events: vec![WorkflowEvent::ExecutionInterrupted {
-                    execution_id: input.execution_id.clone(),
-                    reason: reason.to_string(),
-                    timestamp: snapshot.updated_at,
-                }],
-                append_error_context: "ExecutionInterrupted log failed",
-            },
+            agent_runtime,
+            &session_ids,
         )
-        .await?;
-        self.finalize_after_commit(app, &snapshot, &worktree_path, false)
+        .await;
+        self.cleanup_session_workflow_refs_by_execution_id(execution_id)
             .await;
+        workflow_runtime_session::broadcast_state(app, &worktree_path, snapshot).await;
+        self.release_inactive_execution(execution_id).await;
+        if let Err(error) = projection_result {
+            log::warn!(
+                "workflow {execution_id}: ExecutionInterrupted metadata projection failed after durable commit: {error}"
+            );
+        } else if let Err(error) = self
+            .execution_store
+            .finish_active_interruption(interruption_reservation)
+            .await
+        {
+            log::warn!(
+                "workflow {execution_id}: interruption cleanup reservation release failed: {error}"
+            );
+        }
+        Ok(true)
+    }
+
+    async fn interrupt_current_command_node<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
+        input: &CommandExecutionInput,
+        reason: ExecutionInterruptionReason,
+    ) -> Result<(), WorkflowEngineError> {
+        let is_current = {
+            let execs = self.executions.lock().await;
+            let Some(exec) = execs.get(&input.execution_id) else {
+                return Ok(());
+            };
+            let command_is_active = exec.node_executions.iter().any(|node_execution| {
+                node_execution.id == input.node_execution_id
+                    && node_execution.node_name == input.node_name
+                    && node_execution.attempt == input.attempt
+                    && node_execution.status.is_active()
+            });
+            if !exec.is_active() || !command_is_active {
+                return Ok(());
+            }
+            true
+        };
+        if is_current {
+            self.interrupt_active_execution(
+                app,
+                session_store,
+                agent_runtime,
+                &input.execution_id,
+                reason,
+            )
+            .await?;
+        }
         Ok(())
     }
 
@@ -5095,7 +5495,7 @@ impl WorkflowRuntimeService {
             for (node_execution_id, _) in &commands {
                 reasons.insert(
                     node_execution_id.clone(),
-                    ActiveCommandShutdownReason::AppExit,
+                    ActiveCommandShutdownReason::Crash,
                 );
             }
         }
@@ -5178,6 +5578,14 @@ impl WorkflowRuntimeService {
         deps: &D,
         worktree_path: &str,
     ) -> Result<(), WorkflowEngineError> {
+        let activation_execution_id = {
+            let executions = self.executions.lock().await;
+            find_by_worktree(&executions, worktree_path)
+                .map(|(execution_id, _)| execution_id.clone())
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?
+        };
+        let activation_gate = self.runtime_activation_gate(&activation_execution_id).await;
+        let _activation_guard = activation_gate.lock.lock().await;
         let (
             execution_id_for_ref,
             step_clone,
@@ -5190,6 +5598,11 @@ impl WorkflowRuntimeService {
             let execs = self.executions.lock().await;
             let (execution_id, exec) = find_by_worktree(&execs, worktree_path)
                 .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
+            if execution_id != &activation_execution_id {
+                return Err(WorkflowEngineError::InvalidState(format!(
+                    "worktree {worktree_path} changed execution before session activation"
+                )));
+            }
             let step = &exec.workflow.nodes[exec.current_node_index];
             let step_attempt = exec
                 .node_execution_counts
@@ -5326,13 +5739,18 @@ impl WorkflowRuntimeService {
         }
 
         // プロンプト送信（ステップ用セッションIDを使用）
-        deps.start_agent_turn_locked(
-            &step_session_id,
-            worktree_path,
-            &permission_mode,
-            &prompt,
-            system_prompt,
-            workflow_instruction,
+        run_runtime_activation(
+            &activation_gate,
+            &execution_id_for_ref,
+            "session",
+            deps.start_agent_turn_locked(
+                &step_session_id,
+                worktree_path,
+                &permission_mode,
+                &prompt,
+                system_prompt,
+                workflow_instruction,
+            ),
         )
         .await
     }
@@ -5424,7 +5842,7 @@ impl WorkflowRuntimeService {
     async fn commit_required_events<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
-        session_store: &Arc<SessionStore>,
+        _session_store: &Arc<SessionStore>,
         commit: RequiredEventCommit<'_>,
     ) -> Result<(), WorkflowEngineError> {
         let RequiredEventCommit {
@@ -5436,19 +5854,35 @@ impl WorkflowRuntimeService {
             append_error_context,
         } = commit;
 
-        if let Err(e) = self.write_log_required_batch(app, &required_events) {
-            let _ = self
-                .rollback_command_mutation(
-                    app,
-                    session_store,
-                    CommandMutationRollback {
-                        execution_id,
-                        snapshot_before,
-                        execution_store_snapshot_before,
-                        context: append_error_context,
-                    },
-                )
-                .await;
+        // Reacquire the execution mutex and keep it through the synchronous append. Every runtime
+        // mutation uses this mutex, so a newer stop/completion cannot overtake this event commit.
+        // If another mutation already won, this stale commit emits no fact and performs no
+        // rollback. On append failure, restore the engine snapshot before releasing the mutex so
+        // no concurrent mutation can observe or overwrite the failed pre-commit state.
+        let append_result = {
+            let mut executions = self.executions.lock().await;
+            let Some(current) = executions.get_mut(execution_id) else {
+                return Err(WorkflowEngineError::InvalidState(format!(
+                    "execution {execution_id} disappeared before required event commit"
+                )));
+            };
+            if !commit_snapshot_is_current(current, snapshot_for_commit) {
+                return Err(WorkflowEngineError::InvalidState(format!(
+                    "execution {execution_id} changed before required event commit"
+                )));
+            }
+            let result = self.write_log_required_batch(app, &required_events);
+            if result.is_err() {
+                *current = snapshot_before;
+            }
+            result
+        };
+        if let Err(e) = append_result {
+            let _ = workflow_runtime_commit::restore_execution_store_active_snapshot(
+                &self.execution_store,
+                execution_store_snapshot_before,
+            )
+            .await;
             return Err(WorkflowEngineError::SessionStore(format!(
                 "{append_error_context}: {e}"
             )));
@@ -5518,30 +5952,35 @@ impl WorkflowRuntimeService {
         write_terminal_events: bool,
     ) {
         let execution_id = snapshot.execution_id.clone();
-        let is_terminal = matches!(
+        let is_finished = matches!(
             snapshot.state,
             RuntimeExecutionState::Completed
                 | RuntimeExecutionState::Failed { .. }
                 | RuntimeExecutionState::Aborted
-                | RuntimeExecutionState::Interrupted
         );
-        if is_terminal {
-            if write_terminal_events {
-                if matches!(snapshot.state, RuntimeExecutionState::Completed) {
-                    if let Err(e) = self.write_last_step_completed_log(app, snapshot) {
-                        log::warn!("Failed to append NodeCompleted workflow event: {e}");
-                    }
-                }
-                if let Err(e) = self.write_terminal_log(app, snapshot) {
-                    log::warn!("Failed to append terminal workflow events: {e}");
+        let should_release =
+            is_finished || matches!(snapshot.state, RuntimeExecutionState::Interrupted);
+        if is_finished && write_terminal_events {
+            if matches!(snapshot.state, RuntimeExecutionState::Completed) {
+                if let Err(e) = self.write_last_step_completed_log(app, snapshot) {
+                    log::warn!("Failed to append NodeCompleted workflow event: {e}");
                 }
             }
+            if let Err(e) = self.write_terminal_log(app, snapshot) {
+                log::warn!("Failed to append terminal workflow events: {e}");
+            }
+        }
+        if should_release {
             self.cleanup_session_workflow_refs_by_execution_id(&execution_id)
                 .await;
         }
         workflow_runtime_session::broadcast_state(app, worktree_path, snapshot.clone()).await;
-        if is_terminal {
-            self.release_terminal_execution(&execution_id).await;
+        if should_release {
+            if matches!(snapshot.state, RuntimeExecutionState::Interrupted) {
+                self.release_inactive_execution(&execution_id).await;
+            } else {
+                self.release_terminal_execution(&execution_id).await;
+            }
         }
     }
 
@@ -5718,21 +6157,13 @@ impl WorkflowRuntimeService {
                 ))
                 .await
                 {
-                    let failed_state =
-                        workflow_runtime_session::record_post_commit_runtime_start_failure(
-                            &self.executions,
-                            worktree_path,
-                            RuntimeStartFailureKind::StepSession,
-                            &e,
-                        )
-                        .await;
                     let _ = self
-                        .set_execution_state(
+                        .interrupt_active_execution(
                             app,
                             session_store,
                             agent_runtime,
-                            worktree_path,
-                            failed_state,
+                            &snapshot.execution_id,
+                            ExecutionInterruptionReason::Crash,
                         )
                         .await;
                     return Err(e);
@@ -5754,21 +6185,13 @@ impl WorkflowRuntimeService {
                 ))
                 .await
                 {
-                    let failed_state =
-                        workflow_runtime_session::record_post_commit_runtime_start_failure(
-                            &self.executions,
-                            worktree_path,
-                            RuntimeStartFailureKind::StepSession,
-                            &e,
-                        )
-                        .await;
                     let _ = self
-                        .set_execution_state(
+                        .interrupt_active_execution(
                             app,
                             session_store,
                             agent_runtime,
-                            worktree_path,
-                            failed_state,
+                            &snapshot.execution_id,
+                            ExecutionInterruptionReason::Crash,
                         )
                         .await;
                     return Err(e);
@@ -5790,21 +6213,13 @@ impl WorkflowRuntimeService {
                 ))
                 .await
                 {
-                    let failed_state =
-                        workflow_runtime_session::record_post_commit_runtime_start_failure(
-                            &self.executions,
-                            worktree_path,
-                            RuntimeStartFailureKind::ParallelChildren,
-                            &e,
-                        )
-                        .await;
                     let _ = self
-                        .set_execution_state(
+                        .interrupt_active_execution(
                             app,
                             session_store,
                             agent_runtime,
-                            worktree_path,
-                            failed_state,
+                            &snapshot.execution_id,
+                            ExecutionInterruptionReason::Crash,
                         )
                         .await;
                     return Err(e);
@@ -5842,14 +6257,67 @@ impl WorkflowRuntimeService {
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         worktree_path: &str,
     ) -> Result<(), WorkflowEngineError> {
+        let activation_execution_id = {
+            let executions = self.executions.lock().await;
+            find_by_worktree(&executions, worktree_path)
+                .map(|(execution_id, _)| execution_id.clone())
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?
+        };
+        let activation_gate = self.runtime_activation_gate(&activation_execution_id).await;
+        let activation_guard = activation_gate.lock.lock().await;
         let workflow_runtime_session::FanoutStartRuntimeInputs {
-            fanout_start,
+            mut fanout_start,
             prompt_inputs,
         } = workflow_runtime_session::load_fanout_start_runtime_inputs(
             &self.executions,
             worktree_path,
         )
         .await?;
+        if fanout_start.execution_id != activation_execution_id {
+            return Err(WorkflowEngineError::InvalidState(format!(
+                "worktree {worktree_path} changed execution before fanout activation"
+            )));
+        }
+        // A resume checkpoint remains available until the copied child facts have been durably
+        // committed. Consuming it here would lose confirmed children if prompt/session setup or
+        // the child-event append failed and this parent had to be resumed again.
+        let fanout_resume_checkpoint = self
+            .fanout_resume_checkpoints
+            .lock()
+            .await
+            .get(&fanout_start.execution_id)
+            .cloned();
+        if let Some(checkpoint) = fanout_resume_checkpoint.as_ref() {
+            if checkpoint.parent_node_name != fanout_start.parent_node_name {
+                return Err(WorkflowEngineError::InvalidState(format!(
+                    "fanout resume checkpoint targets '{}' but current parent is '{}'",
+                    checkpoint.parent_node_name, fanout_start.parent_node_name
+                )));
+            }
+            if checkpoint.children.iter().any(|confirmed| {
+                !fanout_start.children.iter().any(|child| {
+                    confirmed.node_name == child.node.name
+                        && confirmed.item_index == child.item_index
+                        && confirmed.child_index == child.child_index
+                })
+            }) {
+                return Err(WorkflowEngineError::InvalidState(format!(
+                    "fanout resume checkpoint for '{}' does not match the workflow snapshot",
+                    fanout_start.parent_node_name
+                )));
+            }
+            for child in &mut fanout_start.children {
+                child.reused = checkpoint
+                    .children
+                    .iter()
+                    .find(|confirmed| {
+                        confirmed.node_name == child.node.name
+                            && confirmed.item_index == child.item_index
+                            && confirmed.child_index == child.child_index
+                    })
+                    .map(|confirmed| confirmed.reusable.clone());
+            }
+        }
         let workflow_for_facets = {
             let execs = self.executions.lock().await;
             let (_execution_id, exec) = find_by_worktree(&execs, worktree_path)
@@ -5868,6 +6336,9 @@ impl WorkflowRuntimeService {
             .children
             .iter()
             .filter_map(|child| {
+                if child.reused.is_some() {
+                    return None;
+                }
                 let command = child.node.command()?;
                 Some(CommandExecutionInput {
                     execution_id: fanout_start.execution_id.clone(),
@@ -5919,10 +6390,9 @@ impl WorkflowRuntimeService {
         // their NodeStarted facts atomically with the expanded live state before activating any
         // runtime; otherwise replay could miss children that are already running in memory.
         if !fanout_start.children.is_empty() {
-            let started_events = fanout_start
-                .children
-                .iter()
-                .map(|child| WorkflowEvent::NodeStarted {
+            let mut started_events = Vec::new();
+            for child in &fanout_start.children {
+                started_events.push(WorkflowEvent::NodeStarted {
                     execution_id: fanout_start.execution_id.clone(),
                     node_execution_id: child.node_execution_id.clone(),
                     node_name: child.node.name.clone(),
@@ -5937,8 +6407,32 @@ impl WorkflowRuntimeService {
                         },
                     ),
                     timestamp,
-                })
-                .collect::<Vec<_>>();
+                });
+                if let Some(reused) = child.reused.as_ref() {
+                    if let Some(value) = reused.artifact.clone() {
+                        started_events.push(WorkflowEvent::ArtifactProduced {
+                            execution_id: fanout_start.execution_id.clone(),
+                            node_execution_id: child.node_execution_id.clone(),
+                            node_name: child.node.name.clone(),
+                            contract: reused.contract.clone(),
+                            value,
+                            request_id: None,
+                            submitted_at: None,
+                            timestamp,
+                        });
+                    }
+                    started_events.push(WorkflowEvent::NodeCompleted {
+                        execution_id: fanout_start.execution_id.clone(),
+                        node_execution_id: child.node_execution_id.clone(),
+                        node_name: child.node.name.clone(),
+                        attempt: child.attempt,
+                        result_summary: reused.result.clone(),
+                        // Usage was already accounted by the confirmed prior child attempt.
+                        token_usage: None,
+                        timestamp,
+                    });
+                }
+            }
             let execution_store_snapshot_before = self
                 .execution_store
                 .active_execution_snapshot(&fanout_start.execution_id)
@@ -5969,9 +6463,30 @@ impl WorkflowRuntimeService {
                     .await,
                 );
             }
+            if fanout_resume_checkpoint.is_some() {
+                self.fanout_resume_checkpoints
+                    .lock()
+                    .await
+                    .remove(&fanout_start.execution_id);
+            }
         }
 
-        if fanout_start.children.is_empty() {
+        let all_children_completed = {
+            let executions = self.executions.lock().await;
+            executions
+                .get(&fanout_start.execution_id)
+                .and_then(|execution| execution.parallel_run.as_ref())
+                .is_some_and(|run| {
+                    run.children
+                        .iter()
+                        .all(|child| child.state == FanoutChildRuntimeState::Completed)
+                })
+        };
+        if fanout_start.children.is_empty() || all_children_completed {
+            // No child runtime remains to activate. Release the activation lock before completing
+            // the parent because its outcome may synchronously start the next node.
+            drop(activation_guard);
+            drop(activation_gate);
             let completion = {
                 let mut executions = self.executions.lock().await;
                 let execution =
@@ -5982,9 +6497,10 @@ impl WorkflowRuntimeService {
                                 fanout_start.execution_id.clone(),
                             )
                         })?;
+                let snapshot_before_parent_completion = execution.clone();
                 complete_fanout_parent_after_all_children(
                     execution,
-                    snapshot_before,
+                    snapshot_before_parent_completion,
                     Vec::new(),
                     true,
                     None,
@@ -6012,16 +6528,21 @@ impl WorkflowRuntimeService {
             app,
             execution_id: &fanout_start.execution_id,
         };
-        workflow_runtime_session::activate_fanout_child_sessions(
-            app,
-            self.branch_diff_context.clone(),
-            session_store,
-            agent_runtime,
-            &self.open_tabs,
-            worktree_path,
-            &child_setups,
-            snapshot,
-            &observer,
+        run_runtime_activation(
+            &activation_gate,
+            &fanout_start.execution_id,
+            "fanout",
+            workflow_runtime_session::activate_fanout_child_sessions(
+                app,
+                self.branch_diff_context.clone(),
+                session_store,
+                agent_runtime,
+                &self.open_tabs,
+                worktree_path,
+                &child_setups,
+                snapshot,
+                &observer,
+            ),
         )
         .await?;
 

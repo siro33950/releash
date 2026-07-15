@@ -2,18 +2,6 @@ use std::collections::HashMap;
 
 use crate::adaptor::gateway::workflow::runtime_state::WorkflowExecution;
 
-/// `set_execution_state_inner` の lookup 戦略。worktree_path 起点の `find_by_worktree_mut`
-/// で active な execution を解決する。broadcast / cleanup 用の worktree_path は
-/// `set_execution_state_inner` 内で解決した exec から取得するため、target には保持しない
-/// （Spec issues-1011 finding 12: 意図不明な未使用 field を残さない）。
-///
-/// execution_id 主語の遷移経路（execution 全体中断）は
-/// `abort_workflow_by_execution_id` 側で typed AbortOutcome + 必須 ExecutionAborted append として
-/// 完結するため、ここでは worktree variant のみを扱う。
-pub(crate) enum ExecutionStateTarget {
-    Worktree(String),
-}
-
 /// `execs: HashMap<execution_id, WorkflowExecution>` から、worktree_path 属性が一致する
 /// **active な** `(execution_id, exec)` を線形走査で取得する補助関数。
 ///
