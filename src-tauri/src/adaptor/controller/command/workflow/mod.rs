@@ -5,7 +5,9 @@ use crate::adaptor::gateway::workflow::builtin;
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::facet::FacetKind;
 #[cfg(test)]
-use crate::adaptor::gateway::workflow::schema::{FacetSummary as LegacyFacetSummary, Workflow};
+use crate::adaptor::gateway::workflow::schema::{
+    FacetSummary as GatewayFacetSummary, WorkflowDefinitionYaml,
+};
 #[cfg(test)]
 use crate::adaptor::gateway::workflow::storage;
 #[cfg(test)]
@@ -131,7 +133,7 @@ fn parse_workflow_approval_permission_mode(
     permission_mode: Option<String>,
 ) -> Result<PermissionMode, String> {
     let permission_value = permission_mode.unwrap_or_default();
-    PermissionMode::parse(&permission_value).map_err(|e| e.to_string())
+    PermissionMode::parse_canonical(&permission_value).map_err(|e| e.to_string())
 }
 
 // ---- ファセットコマンドの内部実装（テスト可能な純粋関数として切り出し） ----
@@ -192,7 +194,7 @@ fn delete_facet_inner(kind: &str, key: &str, base_dir: &Path) -> Result<(), Stri
 fn list_facet_summaries_inner(
     kind: &str,
     base_dir: &Path,
-) -> Result<Vec<LegacyFacetSummary>, String> {
+) -> Result<Vec<GatewayFacetSummary>, String> {
     let facet_kind = parse_facet_kind(kind)?;
     crate::adaptor::gateway::workflow::facet::list_facet_summaries(facet_kind, base_dir)
         .map_err(|e| e.to_string())
@@ -256,24 +258,18 @@ fn validation_error_string(
 fn parse_execution_origin(
     value: Option<String>,
 ) -> Result<crate::adaptor::gateway::workflow::execution_store::ExecutionOrigin, String> {
-    match value.as_deref() {
-        Some("cli") => Ok(crate::adaptor::gateway::workflow::execution_store::ExecutionOrigin::Cli),
-        Some("api") => Ok(crate::adaptor::gateway::workflow::execution_store::ExecutionOrigin::Api),
-        Some("agent") => {
-            Ok(crate::adaptor::gateway::workflow::execution_store::ExecutionOrigin::Agent)
-        }
-        Some("desktop_ui") | Some("desktop-ui") | None => {
-            Ok(crate::adaptor::gateway::workflow::execution_store::ExecutionOrigin::DesktopUi)
-        }
-        Some(other) => Err(format!("unknown created_from: {other}")),
-    }
+    value
+        .as_deref()
+        .map(crate::domain::workflow::ExecutionOrigin::from_public_value)
+        .unwrap_or(Ok(crate::domain::workflow::ExecutionOrigin::DesktopUi))
+        .map_err(|error| error.to_string())
 }
 
 fn parse_workflow_start_permission_mode(
     permission_mode: Option<String>,
 ) -> Result<PermissionMode, String> {
     let permission_value = permission_mode.unwrap_or_else(|| PermissionMode::Ask.to_string());
-    PermissionMode::parse(&permission_value).map_err(|e| e.to_string())
+    PermissionMode::parse_canonical(&permission_value).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -450,7 +446,7 @@ mod tests {
         async fn resolve(
             &self,
             _file_stem: &str,
-        ) -> Result<Workflow, WorkflowDefinitionResolverError> {
+        ) -> Result<WorkflowDefinitionYaml, WorkflowDefinitionResolverError> {
             Ok(approval_only_workflow())
         }
     }
@@ -643,8 +639,8 @@ mod tests {
         );
     }
 
-    fn approval_only_workflow() -> Workflow {
-        Workflow {
+    fn approval_only_workflow() -> WorkflowDefinitionYaml {
+        WorkflowDefinitionYaml {
             name: "adapter-boundary".to_string(),
             description: "adapter command test".to_string(),
             builtin: false,
@@ -723,7 +719,7 @@ mod tests {
         (session_store, runtime)
     }
 
-    async fn configure_run_store(
+    async fn configure_execution_store(
         app: &AdapterTestApp,
         engine: &Arc<TestRuntimeKernel>,
     ) -> std::path::PathBuf {
@@ -746,7 +742,7 @@ mod tests {
             .expect("adapter events must project an execution")
     }
 
-    async fn start_adapter_run(
+    async fn start_adapter_execution(
         app: &AdapterTestApp,
         engine: &Arc<TestRuntimeKernel>,
         session_store: &Arc<SessionStore>,
@@ -768,7 +764,7 @@ mod tests {
         .expect("adapter start_workflow must succeed")
     }
 
-    async fn start_direct_run(
+    async fn start_direct_execution(
         app: &AdapterTestApp,
         engine: &Arc<TestRuntimeKernel>,
         session_store: &Arc<SessionStore>,
@@ -795,7 +791,7 @@ mod tests {
                 PermissionMode::Edit,
             )
             .await
-            .expect("direct StartRun primitive must succeed")
+            .expect("direct StartExecution primitive must succeed")
     }
 
     fn event_kinds(events: &[WorkflowEvent]) -> Vec<&'static str> {
@@ -826,21 +822,21 @@ mod tests {
         engine: &TestRuntimeKernel,
         execution_id: &str,
     ) -> ExecutionStatus {
-        if let Some(run) = engine
+        if let Some(execution) = engine
             .list_active_executions()
             .await
             .into_iter()
-            .find(|run| run.execution_id == execution_id)
+            .find(|execution| execution.execution_id == execution_id)
         {
-            return run.status;
+            return execution.status;
         }
         engine
             .list_completed_executions()
             .await
             .into_iter()
-            .find(|run| run.execution_id == execution_id)
-            .map(|run| run.status)
-            .expect("run must exist in active or completed store")
+            .find(|execution| execution.execution_id == execution_id)
+            .map(|execution| execution.status)
+            .expect("execution must exist in active or completed store")
     }
 
     #[test]
@@ -856,14 +852,14 @@ mod tests {
 
     /// Spec [04] Rule「同一意図 command は呼び出し経路に依らず等価」:
     /// Tauri adapter の start_workflow は usecase/engine primitive 経由で、
-    /// direct primitive と同じ state / Run Store / event vocabulary に到達する。
+    /// direct primitive と同じ state / Execution Store / event vocabulary に到達する。
     #[tokio::test]
-    async fn start_workflow_adapter_matches_direct_start_run_primitive() {
+    async fn start_workflow_adapter_matches_direct_start_execution_primitive() {
         let adapter_app = make_adapter_app();
         let adapter_engine = make_adapter_engine();
-        let adapter_data_dir = configure_run_store(&adapter_app, &adapter_engine).await;
+        let adapter_data_dir = configure_execution_store(&adapter_app, &adapter_engine).await;
         let (adapter_store, adapter_handles) = make_adapter_deps(&adapter_data_dir);
-        let adapter_execution_id = start_adapter_run(
+        let adapter_execution_id = start_adapter_execution(
             &adapter_app,
             &adapter_engine,
             &adapter_store,
@@ -874,9 +870,9 @@ mod tests {
 
         let direct_app = make_adapter_app();
         let direct_engine = make_adapter_engine();
-        let direct_data_dir = configure_run_store(&direct_app, &direct_engine).await;
+        let direct_data_dir = configure_execution_store(&direct_app, &direct_engine).await;
         let (direct_store, direct_handles) = make_adapter_deps(&direct_data_dir);
-        let direct_execution_id = start_direct_run(
+        let direct_execution_id = start_direct_execution(
             &direct_app,
             &direct_engine,
             &direct_store,
@@ -905,13 +901,13 @@ mod tests {
         );
     }
 
-    /// Tauri adapter の abort_workflow は run 全体の abort primitive に射影され、
-    /// direct primitive と同じ terminal state / Run Store / event log を返す。
+    /// Tauri adapter の abort_workflow は execution 全体の abort primitive に射影され、
+    /// direct primitive と同じ terminal state / Execution Store / event log を返す。
     #[tokio::test]
-    async fn abort_workflow_adapter_matches_direct_abort_run_primitive() {
+    async fn abort_workflow_adapter_matches_direct_abort_execution_primitive() {
         let adapter_app = make_adapter_app();
         let adapter_engine = make_adapter_engine();
-        let adapter_data_dir = configure_run_store(&adapter_app, &adapter_engine).await;
+        let adapter_data_dir = configure_execution_store(&adapter_app, &adapter_engine).await;
         let (adapter_store, adapter_handles) = make_adapter_deps(&adapter_data_dir);
         let adapter_execution_id = uuid::Uuid::new_v4().to_string();
         adapter_engine
@@ -926,7 +922,7 @@ mod tests {
 
         let direct_app = make_adapter_app();
         let direct_engine = make_adapter_engine();
-        let direct_data_dir = configure_run_store(&direct_app, &direct_engine).await;
+        let direct_data_dir = configure_execution_store(&direct_app, &direct_engine).await;
         let (direct_store, direct_handles) = make_adapter_deps(&direct_data_dir);
         let direct_execution_id = uuid::Uuid::new_v4().to_string();
         direct_engine
@@ -985,12 +981,12 @@ mod tests {
     }
 
     /// Tauri adapter の approve_workflow_node は approval DTO を approval primitive に変換し、
-    /// direct primitive と同じ state / Run Store / typed event を返す。
+    /// direct primitive と同じ state / Execution Store / typed event を返す。
     #[tokio::test]
     async fn approve_workflow_node_adapter_matches_direct_approve_primitive() {
         let adapter_app = make_adapter_app();
         let adapter_engine = make_adapter_engine();
-        let adapter_data_dir = configure_run_store(&adapter_app, &adapter_engine).await;
+        let adapter_data_dir = configure_execution_store(&adapter_app, &adapter_engine).await;
         let (adapter_store, adapter_handles) = make_adapter_deps(&adapter_data_dir);
         let adapter_execution_id = uuid::Uuid::new_v4().to_string();
         adapter_engine
@@ -1005,7 +1001,7 @@ mod tests {
 
         let direct_app = make_adapter_app();
         let direct_engine = make_adapter_engine();
-        let direct_data_dir = configure_run_store(&direct_app, &direct_engine).await;
+        let direct_data_dir = configure_execution_store(&direct_app, &direct_engine).await;
         let (direct_store, direct_handles) = make_adapter_deps(&direct_data_dir);
         let direct_execution_id = uuid::Uuid::new_v4().to_string();
         direct_engine
@@ -1070,7 +1066,7 @@ mod tests {
     async fn approve_workflow_node_rejects_legacy_decision_payloads_without_side_effects() {
         let app = make_adapter_app();
         let engine = make_adapter_engine();
-        let data_dir = configure_run_store(&app, &engine).await;
+        let data_dir = configure_execution_store(&app, &engine).await;
         let (session_store, handles) = make_adapter_deps(&data_dir);
         let execution_id = uuid::Uuid::new_v4().to_string();
         engine
@@ -1131,7 +1127,7 @@ mod tests {
     async fn approve_workflow_node_typed_payload_accepts_current_approve_shape() {
         let app = make_adapter_app();
         let engine = make_adapter_engine();
-        let data_dir = configure_run_store(&app, &engine).await;
+        let data_dir = configure_execution_store(&app, &engine).await;
         let (session_store, handles) = make_adapter_deps(&data_dir);
         let execution_id = uuid::Uuid::new_v4().to_string();
         engine
@@ -1179,7 +1175,7 @@ mod tests {
     }
 
     /// Spec issues-1011 finding 12: command 入口の `validate_execution_id` は path traversal や
-    /// 形式不正な execution_id を拒否し、後段の Run Store / engine に到達させない。
+    /// 形式不正な execution_id を拒否し、後段の Execution Store / engine に到達させない。
     /// abort_workflow / get_workflow_state / approve_workflow_node /
     /// get_workflow_execution / get_workflow_execution_log / get_workflow_execution_state /
     /// resolve_worktree_by_execution の全 command で共通に使われるため、入力種別ごとに
@@ -1206,7 +1202,7 @@ mod tests {
             "not-a-uuid",
             "../etc/passwd",
             "../../workflow_executions/secret",
-            "run-1",
+            "execution-1",
             "550e8400-e29b-41d4-a716-44665544000", // 1 文字不足
             "550e8400-e29b-41d4-a716-4466554400000", // 1 文字過剰
             "550e8400-e29b-41d4-a716-44665544000g", // 非 hex
@@ -1229,6 +1225,8 @@ mod tests {
             Some(""),
             Some("acceptEdits"),
             Some("default"),
+            Some("read"),
+            Some("readonly"),
             Some("unknown"),
         ] {
             let err = parse_workflow_approval_permission_mode(invalid.map(str::to_string))
@@ -1241,7 +1239,7 @@ mod tests {
     }
 
     #[test]
-    fn workflow_approval_chat_permission_mode_accepts_abstract_values() {
+    fn workflow_approval_chat_permission_mode_accepts_current_values() {
         for (value, expected) in [
             ("ask", PermissionMode::Ask),
             ("edit", PermissionMode::Edit),
@@ -1266,18 +1264,29 @@ mod tests {
     }
 
     #[test]
-    fn workflow_start_permission_mode_defaults_ask_and_rejects_invalid_values() {
+    fn workflow_start_permission_mode_accepts_only_current_values() {
         assert_eq!(
             parse_workflow_start_permission_mode(None).unwrap(),
             PermissionMode::Ask
         );
-        assert_eq!(
-            parse_workflow_start_permission_mode(Some("edit".to_string())).unwrap(),
-            PermissionMode::Edit
-        );
-        let err = parse_workflow_start_permission_mode(Some("acceptEdits".to_string()))
-            .expect_err("provider-specific permission flags must not be accepted");
-        assert!(err.contains("ask, edit, full"));
+        for (value, expected) in [
+            ("ask", PermissionMode::Ask),
+            ("edit", PermissionMode::Edit),
+            ("full", PermissionMode::Full),
+        ] {
+            assert_eq!(
+                parse_workflow_start_permission_mode(Some(value.to_string())).unwrap(),
+                expected
+            );
+        }
+        for invalid in ["read", "readonly", "acceptEdits"] {
+            let err = parse_workflow_start_permission_mode(Some(invalid.to_string()))
+                .expect_err("retired and provider-specific modes must be rejected");
+            assert!(
+                err.contains("allowed: ask, edit, full"),
+                "error must include allowed list, got: {err}"
+            );
+        }
     }
 
     #[test]
@@ -1631,8 +1640,8 @@ mod tests {
     // These test the core duplicate logic using storage/facet/builtin functions directly,
     // mirroring what the Tauri commands do inside spawn_blocking.
 
-    fn make_test_workflow(name: &str) -> Workflow {
-        Workflow {
+    fn make_test_workflow(name: &str) -> WorkflowDefinitionYaml {
+        WorkflowDefinitionYaml {
             name: name.to_string(),
             description: "test workflow".to_string(),
             builtin: false,
@@ -1956,7 +1965,7 @@ mod tests {
     /// save_workflow のコア判定ロジックを再現するヘルパー
     fn simulate_save_workflow(
         dir: &Path,
-        workflow: &Workflow,
+        workflow: &WorkflowDefinitionYaml,
         original_name: Option<&str>,
     ) -> Result<(), String> {
         let is_new = original_name.is_none();
@@ -2052,13 +2061,13 @@ mod tests {
         assert!(result.unwrap_err().contains("既に存在します"));
     }
 
-    // ---- [05] read-only Run 観測 API: Tauri command 境界の直接テスト ----
+    // ---- [05] read-only Execution 観測 API: Tauri command 境界の直接テスト ----
 
     fn read_only_test_uuid(seed: u8) -> String {
         uuid::Uuid::from_bytes([seed; 16]).to_string()
     }
 
-    fn make_read_only_run(
+    fn make_read_only_execution(
         execution_id: &str,
         workflow_name: &str,
         worktree: &str,
@@ -2086,14 +2095,14 @@ mod tests {
         }
     }
 
-    fn write_read_only_run(
+    fn write_read_only_execution(
         data_dir: &Path,
-        run: &crate::adaptor::gateway::workflow::execution_store::WorkflowExecutionMetadata,
+        execution: &crate::adaptor::gateway::workflow::execution_store::WorkflowExecutionMetadata,
     ) {
-        let runs_dir = data_dir.join("workflow_executions");
-        std::fs::create_dir_all(&runs_dir).unwrap();
-        let path = runs_dir.join(format!("{}.json", run.execution_id));
-        let json = serde_json::to_string_pretty(run).unwrap();
+        let executions_dir = data_dir.join("workflow_executions");
+        std::fs::create_dir_all(&executions_dir).unwrap();
+        let path = executions_dir.join(format!("{}.json", execution.execution_id));
+        let json = serde_json::to_string_pretty(execution).unwrap();
         std::fs::write(path, json).unwrap();
     }
 
@@ -2240,15 +2249,15 @@ mod tests {
         )
     }
 
-    /// Spec [05] Rule: 外部 caller は execution_id を主語として workflow run 一覧を観測できる。
+    /// Spec [05] Rule: 外部 caller は execution_id を主語として workflow execution 一覧を観測できる。
     /// `list_workflow_executions` Tauri command 経路が active を先頭・terminal を後続として
     /// 並び替え、status filter が機能することを直接検証する。
     ///
     /// 観測経路の認可境界（spec [05] L104-108 / L182）として `worktree_path` は必須で、
     /// caller の認可済み managed worktree のみを対象にする。
     ///
-    /// active run は in-memory map + metadata file の両方に存在する境界状態であるため、
-    /// `ExecutionStore::register_active_execution` 経由で投入する。terminal run はメタデータファイル
+    /// active execution は in-memory map + metadata file の両方に存在する境界状態であるため、
+    /// `ExecutionStore::register_active_execution` 経由で投入する。terminal execution はメタデータファイル
     /// のみに投入し、`list_completed` が拾い上げることを検証する。
     #[tokio::test]
     async fn list_workflow_executions_command_returns_active_first_filtered_by_status() {
@@ -2259,7 +2268,7 @@ mod tests {
         let done_id = read_only_test_uuid(2);
         engine
             .execution_store()
-            .register_active_execution(make_read_only_run(
+            .register_active_execution(make_read_only_execution(
                 &active_id,
                 "wf-active",
                 &worktree_path,
@@ -2268,9 +2277,9 @@ mod tests {
             ))
             .await
             .expect("register_active_execution must succeed");
-        write_read_only_run(
+        write_read_only_execution(
             &data_dir,
-            &make_read_only_run(
+            &make_read_only_execution(
                 &done_id,
                 "wf-done",
                 &worktree_path,
@@ -2314,7 +2323,7 @@ mod tests {
     /// Spec [05] Rule: 観測経路は API と CLI で等価な手段を提供する。
     /// `list_workflow_executions` の `worktree_path` 入力は `canonicalize_managed_worktree_path`
     /// で正規化されたうえで filter に渡されるため、末尾 `/` 付きや `.` を含む形で
-    /// 同一 managed worktree を指定しても、canonical 表現で永続化された run と一致する。
+    /// 同一 managed worktree を指定しても、canonical 表現で永続化された execution と一致する。
     /// CLI 経路と同じ `normalize_worktree_filter_path` を経由する境界を直接検証する。
     #[tokio::test]
     async fn list_workflow_executions_canonicalizes_worktree_path_filter() {
@@ -2322,12 +2331,12 @@ mod tests {
             make_read_only_app_with_managed_worktree();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
 
-        // canonical な worktree_path で run を 1 件、別 worktree で run を 1 件登録する。
+        // canonical な worktree_path で execution を 1 件、別 worktree で execution を 1 件登録する。
         let target_id = read_only_test_uuid(40);
         let other_id = read_only_test_uuid(41);
         engine
             .execution_store()
-            .register_active_execution(make_read_only_run(
+            .register_active_execution(make_read_only_execution(
                 &target_id,
                 "wf-target",
                 &canonical_str,
@@ -2336,9 +2345,9 @@ mod tests {
             ))
             .await
             .expect("register_active_execution for target must succeed");
-        write_read_only_run(
+        write_read_only_execution(
             &data_dir,
-            &make_read_only_run(
+            &make_read_only_execution(
                 &other_id,
                 "wf-other",
                 "/wt/other",
@@ -2381,12 +2390,12 @@ mod tests {
         let (app, engine, data_dir) = make_read_only_app();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
 
-        // run は存在する。ただし caller が指定する worktree_path は
+        // execution は存在する。ただし caller が指定する worktree_path は
         // configured repo に紐づかない（= 観測権限を持たない）ので Err として弾かれる。
         let execution_id = read_only_test_uuid(60);
-        write_read_only_run(
+        write_read_only_execution(
             &data_dir,
-            &make_read_only_run(
+            &make_read_only_execution(
                 &execution_id,
                 "wf",
                 "/wt/inside",
@@ -2408,18 +2417,18 @@ mod tests {
         );
     }
 
-    /// Spec [05] Rule: 指定 run の summary metadata を観測する。
-    /// Spec [05] Rule: 存在しない execution_id は明示的に「該当 run なし」として扱われる。
-    /// Spec [05] L104-108 / L182: caller の認可済み worktree に紐づかない run は Ok(None)。
+    /// Spec [05] Rule: 指定 execution の summary metadata を観測する。
+    /// Spec [05] Rule: 存在しない execution_id は明示的に「該当 execution なし」として扱われる。
+    /// Spec [05] L104-108 / L182: caller の認可済み worktree に紐づかない execution は Ok(None)。
     #[tokio::test]
     async fn get_workflow_execution_command_returns_summary_or_none() {
         let (app, engine, data_dir, worktree_path, _r, _w) =
             make_read_only_app_with_managed_worktree();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let execution_id = read_only_test_uuid(3);
-        write_read_only_run(
+        write_read_only_execution(
             &data_dir,
-            &make_read_only_run(
+            &make_read_only_execution(
                 &execution_id,
                 "wf",
                 &worktree_path,
@@ -2431,7 +2440,7 @@ mod tests {
         let found = get_workflow_execution(app.state::<AppState>(), execution_id.clone())
             .await
             .expect("get_workflow_execution must succeed");
-        let found = found.expect("run must be found");
+        let found = found.expect("execution must be found");
         assert_eq!(found.execution_id, execution_id);
         assert_eq!(found.worktree_path, worktree_path);
         assert_eq!(
@@ -2449,22 +2458,22 @@ mod tests {
         assert!(invalid.is_err(), "non-UUID execution_id must be rejected");
     }
 
-    /// Spec [05] L104-108 / L182 negative test: 認可境界として、run metadata の
+    /// Spec [05] L104-108 / L182 negative test: 認可境界として、execution metadata の
     /// worktree_path が caller の認可済み managed worktree に合致しない場合、
     /// `get_workflow_execution` / `get_workflow_execution_log` / `get_workflow_execution_state` は
-    /// いずれも `Ok(None)` を返し、存在する run の summary / log / state を
+    /// いずれも `Ok(None)` を返し、存在する execution の summary / log / state を
     /// 未認可 caller に伝えない。
     #[tokio::test]
-    async fn single_run_read_only_apis_reject_unauthorized_worktree_observation() {
+    async fn single_execution_read_only_apis_reject_unauthorized_worktree_observation() {
         let (app, engine, data_dir, _managed, _r, _w) = make_read_only_app_with_managed_worktree();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
 
-        // run は別 worktree に紐づく metadata で書かれている（未認可）。
+        // execution は別 worktree に紐づく metadata で書かれている（未認可）。
         let execution_id = read_only_test_uuid(70);
         let unauthorized_wt = "/wt/unauthorized";
-        write_read_only_run(
+        write_read_only_execution(
             &data_dir,
-            &make_read_only_run(
+            &make_read_only_execution(
                 &execution_id,
                 "wf",
                 unauthorized_wt,
@@ -2481,7 +2490,7 @@ mod tests {
                 created_from: ExecutionOrigin::DesktopUi,
                 request: String::new(),
                 permission_mode: "ask".to_string(),
-                definition: Workflow {
+                definition: WorkflowDefinitionYaml {
                     name: "wf".to_string(),
                     description: "test".to_string(),
                     builtin: false,
@@ -2497,7 +2506,7 @@ mod tests {
             .expect("get_workflow_execution must succeed");
         assert!(
             summary.is_none(),
-            "unauthorized run summary must not be observable"
+            "unauthorized execution summary must not be observable"
         );
 
         // unauthorized worktree_path は canonicalize 段階で Err として弾かれる。
@@ -2524,7 +2533,7 @@ mod tests {
         );
     }
 
-    /// Spec [05] Rule: 指定 run の event log を観測する。
+    /// Spec [05] Rule: 指定 execution の event log を観測する。
     /// `get_workflow_execution_log` Tauri command が NDJSON から読み込んだ event 列を返す。
     #[tokio::test]
     async fn get_workflow_execution_log_command_reads_persisted_ndjson() {
@@ -2532,9 +2541,9 @@ mod tests {
             make_read_only_app_with_managed_worktree();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let execution_id = read_only_test_uuid(4);
-        write_read_only_run(
+        write_read_only_execution(
             &data_dir,
-            &make_read_only_run(
+            &make_read_only_execution(
                 &execution_id,
                 "wf",
                 &worktree_path,
@@ -2551,7 +2560,7 @@ mod tests {
                 created_from: ExecutionOrigin::DesktopUi,
                 request: String::new(),
                 permission_mode: "ask".to_string(),
-                definition: Workflow {
+                definition: WorkflowDefinitionYaml {
                     name: "wf".to_string(),
                     description: "test".to_string(),
                     builtin: false,
@@ -2569,7 +2578,7 @@ mod tests {
         )
         .await
         .expect("get_workflow_execution_log must succeed")
-        .expect("run must be found");
+        .expect("execution must be found");
         assert_eq!(events.len(), 1);
         assert_eq!(events[0]["event"], "execution_started");
         // spec issues-1023: 永続化された秒単位 timestamp は API 境界で ms 単位の
@@ -2586,7 +2595,7 @@ mod tests {
         assert!(missing.is_none());
     }
 
-    /// Spec [05] Rule: 指定 run の現在 state を観測する（event log からの純粋投影）。
+    /// Spec [05] Rule: 指定 execution の現在 state を観測する（event log からの純粋投影）。
     /// 観測結果の露出範囲境界: live runtime registry / OpenTabRegistry 由来の runtime_active /
     /// tab_open enrichment は含めない（戻り値の runtime_states は空）。
     #[tokio::test]
@@ -2595,9 +2604,9 @@ mod tests {
             make_read_only_app_with_managed_worktree();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let execution_id = read_only_test_uuid(5);
-        write_read_only_run(
+        write_read_only_execution(
             &data_dir,
-            &make_read_only_run(
+            &make_read_only_execution(
                 &execution_id,
                 "wf",
                 &worktree_path,
@@ -2637,12 +2646,12 @@ mod tests {
             read_only_test_uuid(97),
         )
         .await
-        .expect("unknown run must Ok(None)");
+        .expect("unknown execution must Ok(None)");
         assert!(missing.is_none());
     }
 
     /// spec issues-1023 L132/L150: `get_workflow_node_detail_impl` の worktree
-    /// 認可境界。現 worktree と一致する run の detail は Some、別 worktree（managed
+    /// 認可境界。現 worktree と一致する execution の detail は Some、別 worktree（managed
     /// 集合外）からの invoke は canonicalize 段階で Err として弾かれる。
     #[tokio::test]
     async fn get_workflow_node_detail_enforces_current_worktree_authorization() {
@@ -2651,9 +2660,9 @@ mod tests {
         engine.set_execution_store_data_dir(data_dir.clone()).await;
 
         let execution_id = read_only_test_uuid(82);
-        write_read_only_run(
+        write_read_only_execution(
             &data_dir,
-            &make_read_only_run(
+            &make_read_only_execution(
                 &execution_id,
                 "wf",
                 &worktree_path,
@@ -2662,7 +2671,7 @@ mod tests {
             ),
         );
         let event_log = WorkflowEventLog::new(&data_dir);
-        let snapshot = Workflow {
+        let snapshot = WorkflowDefinitionYaml {
             name: "wf".to_string(),
             description: String::new(),
             builtin: false,

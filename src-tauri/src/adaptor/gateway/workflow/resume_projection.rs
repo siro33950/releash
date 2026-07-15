@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use crate::adaptor::gateway::workflow::event::WorkflowEvent;
 use crate::adaptor::gateway::workflow::event_projection::project_workflow_execution;
-use crate::adaptor::gateway::workflow::schema::Workflow;
+use crate::adaptor::gateway::workflow::schema::WorkflowDefinitionYaml;
 use crate::domain::workflow::{
     ExecutionOrigin, ExecutionStatus, NodeExecution, NodeExecutionStatus, TokenUsage,
 };
@@ -28,7 +28,7 @@ pub(crate) struct ConfirmedFanoutChild {
 #[derive(Debug, Clone)]
 pub(crate) struct ResumeProjection {
     pub(crate) execution_id: String,
-    pub(crate) workflow: Workflow,
+    pub(crate) workflow: WorkflowDefinitionYaml,
     pub(crate) worktree_path: String,
     pub(crate) request: String,
     pub(crate) permission_mode: String,
@@ -229,8 +229,8 @@ mod tests {
 
     const EXECUTION_ID: &str = "00000000-0000-4000-8000-000000000133";
 
-    fn workflow() -> Workflow {
-        Workflow {
+    fn workflow() -> WorkflowDefinitionYaml {
+        WorkflowDefinitionYaml {
             name: "resume-test".to_string(),
             nodes: vec![
                 NodeDefinition {
@@ -239,7 +239,7 @@ mod tests {
                     ..Default::default()
                 },
                 NodeDefinition {
-                    name: "parallel".to_string(),
+                    name: "fanout".to_string(),
                     kind: NodeKind::Fanout(FanoutSpec {
                         child: vec!["review".to_string()],
                         items: None,
@@ -329,8 +329,8 @@ mod tests {
             },
             WorkflowEvent::NodeStarted {
                 execution_id: EXECUTION_ID.to_string(),
-                node_execution_id: "parallel-1".to_string(),
-                node_name: "parallel".to_string(),
+                node_execution_id: "fanout-1".to_string(),
+                node_name: "fanout".to_string(),
                 kind: NodeKindName::Fanout,
                 attempt: 1,
                 fanout_parent: None,
@@ -345,10 +345,10 @@ mod tests {
 
         let checkpoint = project_resume_checkpoint(EXECUTION_ID, &events).unwrap();
 
-        assert_eq!(checkpoint.resume_from_node, "parallel");
+        assert_eq!(checkpoint.resume_from_node, "fanout");
         assert_eq!(checkpoint.confirmed_top_level_nodes.len(), 1);
         assert_eq!(checkpoint.confirmed_top_level_nodes[0].node_name, "prepare");
-        assert_eq!(checkpoint.node_execution_counts["parallel"], 1);
+        assert_eq!(checkpoint.node_execution_counts["fanout"], 1);
     }
 
     #[test]
@@ -357,8 +357,8 @@ mod tests {
         events.extend([
             WorkflowEvent::NodeStarted {
                 execution_id: EXECUTION_ID.to_string(),
-                node_execution_id: "parallel-1".to_string(),
-                node_name: "parallel".to_string(),
+                node_execution_id: "fanout-1".to_string(),
+                node_name: "fanout".to_string(),
                 kind: NodeKindName::Fanout,
                 attempt: 1,
                 fanout_parent: None,
@@ -371,7 +371,7 @@ mod tests {
                 kind: NodeKindName::Session,
                 attempt: 1,
                 fanout_parent: Some(FanoutParentRef {
-                    parent_node: "parallel".to_string(),
+                    parent_node: "fanout".to_string(),
                     parent_attempt: 1,
                     item_index: Some(0),
                     child_index: 0,
@@ -423,8 +423,8 @@ mod tests {
         events.extend([
             WorkflowEvent::NodeStarted {
                 execution_id: EXECUTION_ID.to_string(),
-                node_execution_id: "parallel-1".to_string(),
-                node_name: "parallel".to_string(),
+                node_execution_id: "fanout-1".to_string(),
+                node_name: "fanout".to_string(),
                 kind: NodeKindName::Fanout,
                 attempt: 1,
                 fanout_parent: None,
@@ -437,7 +437,7 @@ mod tests {
                 kind: NodeKindName::Session,
                 attempt: 1,
                 fanout_parent: Some(FanoutParentRef {
-                    parent_node: "parallel".to_string(),
+                    parent_node: "fanout".to_string(),
                     parent_attempt: 1,
                     item_index: Some(0),
                     child_index: 0,
@@ -478,8 +478,8 @@ mod tests {
         events.extend([
             WorkflowEvent::NodeStarted {
                 execution_id: EXECUTION_ID.to_string(),
-                node_execution_id: "parallel-1".to_string(),
-                node_name: "parallel".to_string(),
+                node_execution_id: "fanout-1".to_string(),
+                node_name: "fanout".to_string(),
                 kind: NodeKindName::Fanout,
                 attempt: 1,
                 fanout_parent: None,
@@ -492,7 +492,7 @@ mod tests {
                 kind: NodeKindName::Session,
                 attempt: 1,
                 fanout_parent: Some(FanoutParentRef {
-                    parent_node: "parallel".to_string(),
+                    parent_node: "fanout".to_string(),
                     parent_attempt: 1,
                     item_index: Some(0),
                     child_index: 0,
@@ -525,14 +525,14 @@ mod tests {
             },
             WorkflowEvent::ExecutionResumed {
                 execution_id: EXECUTION_ID.to_string(),
-                resume_from_node: "parallel".to_string(),
+                resume_from_node: "fanout".to_string(),
                 timestamp: 6.0,
             },
             // The process crashes before attempt 2 can copy the completed child facts.
             WorkflowEvent::NodeStarted {
                 execution_id: EXECUTION_ID.to_string(),
-                node_execution_id: "parallel-2".to_string(),
-                node_name: "parallel".to_string(),
+                node_execution_id: "fanout-2".to_string(),
+                node_name: "fanout".to_string(),
                 kind: NodeKindName::Fanout,
                 attempt: 2,
                 fanout_parent: None,
@@ -547,8 +547,8 @@ mod tests {
 
         let checkpoint = project_resume_checkpoint(EXECUTION_ID, &events).unwrap();
 
-        assert_eq!(checkpoint.resume_from_node, "parallel");
-        assert_eq!(checkpoint.node_execution_counts["parallel"], 2);
+        assert_eq!(checkpoint.resume_from_node, "fanout");
+        assert_eq!(checkpoint.node_execution_counts["fanout"], 2);
         assert_eq!(checkpoint.confirmed_fanout_children.len(), 1);
         assert_eq!(
             checkpoint.confirmed_fanout_children[0].artifact,

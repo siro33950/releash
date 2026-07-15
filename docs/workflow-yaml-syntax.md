@@ -1,15 +1,52 @@
-# Workflow YAML 構文（設計案）
+# Workflow YAML 構文
 
-この文書は、ワークフローエンジン発展計画（[`workflow-engine-evolution-plan.md`](./workflow-engine-evolution-plan.md)）で目指す完成形の Workflow YAML 構文を定義する。語彙は [`architecture/GLOSSARY.md`](./architecture/GLOSSARY.md) に従う。
+この文書は Releash が受理する `WorkflowDefinition` YAML の正本である。語彙は [`architecture/GLOSSARY.md`](./architecture/GLOSSARY.md)、エンジン全体の方針は [`workflow-engine-evolution-plan.md`](./workflow-engine-evolution-plan.md) を正とする。完成形の例は [`examples/full-pipeline.yml`](./examples/full-pipeline.yml) を参照。
 
-完成形の例は [`examples/full-pipeline.yml`](./examples/full-pipeline.yml) を参照。
+## 文法・検証・実行・起動の境界
 
-> ステータス: 設計案。未実装の構文を含む。末尾の「未確定」を参照。
+この文書では、次の四つを分けて扱う。
+
+| 境界 | 所有するもの | 所有しないもの |
+| --- | --- | --- |
+| YAML grammar | root、Contract、Node、rule の受理形 | 参照先の存在、型、到達性 |
+| load-time validation | Diagnostic、名前解決、型検査、control-flow 検査 | WorkflowExecution の lifecycle state |
+| runtime behavior | command / session / fanout の実行、Artifact 生成、遷移、stop / resume | workflow をいつ起動するか |
+| execution trigger | UI / CLI / API から typed command で WorkflowExecution を起動 | WorkflowDefinition YAML の構文 |
+
+タイマーや外部イベントとの連携は execution trigger 側の責務であり、WorkflowDefinition には書かない。root や node の未知 field は受理されない。
+
+## Root
+
+```yaml
+name: example
+description: workflow の説明
+builtin: false
+
+schemas: {}
+nodes:
+  - name: done
+    command: "true"
+```
+
+- `name`: 必須。一意な workflow 名。先頭は ASCII 英数字、以降は ASCII 英数字・`-`・`_` のみ。
+- `description`: 必須の文字列。
+- `builtin`: 任意。既定値は `false`。
+- `schemas`: 任意。名前付き Contract の map。既定値は空。
+- `nodes`: 必須の非空配列。先頭の Node が entry。Node 名は workflow 内で一意で、`request` と `item` は使えない。
+- 1 workflow は最大 256 Node、1 fanout は最大 64 child 参照。
 
 ## Node
 
-- Node は `name` ＋ **kind ブロックをちょうど1つ**（`command` / `session` / `fanout`）＋ 共通フィールド（`artifact` / `inputs` / `rules`）で構成する。
-- kind ブロックが0個または2個以上は load 時 Diagnostic。
+Node は `name`、**ちょうど一つの kind block**、共通 field で構成する。
+
+```yaml
+- name: example_node
+  command: "true"       # command / session / fanout のちょうど一つ
+  inputs: [request]      # 任意。Artifact 全体への依存
+  rules: []              # 任意。空なら終端
+```
+
+kind block が無い、または複数ある Node は parse / shape Diagnostic になる。kind を選ぶ別の discriminator field は無い。
 
 ### command
 
@@ -18,18 +55,31 @@
   command: "cargo test"
 ```
 
-- 値はシェルコマンド（スカラー）。
-- 標準結果として常に `ok`（exit==0 の boolean）/ `exit_code` / `stdout` / `stderr` / `duration` を持つ。routing は `ok` を使える。
-- `artifact: <Contract>` を付けると、**stdout を JSON として parse し Contract で検証**して追加フィールドを Artifact にする。
+`command` の値は `/bin/sh -c` に渡す非空の scalar 文字列である。worktree を cwd として一度実行し、常に次の予約 field を持つ Artifact を作る。
+
+| field | 型 | 意味 |
+| --- | --- | --- |
+| `ok` | boolean | `exit_code == 0` かつ、`artifact` 指定時は stdout-JSON の Contract 検証にも成功 |
+| `exit_code` | integer | process の exit code |
+| `stdout` | string | 標準出力 |
+| `stderr` | string | 標準エラー |
+| `duration` | integer | 実行時間（ms） |
+
+`artifact: <Contract>` がある場合、stdout 全体を JSON として parse して Contract で検証する。
+
+- 成功時は予約 field と Contract field を**単一の Artifact 名前空間**に合成する。
+- JSON parse または Contract 検証の失敗時は予約 field だけを保存し、`ok` を `false` にする。Node 自体は完了し、rules を評価する。
+- Contract が予約 field と同名の property を宣言することはできない。
+- process の起動自体に失敗した場合だけ Node は infrastructure failure になる。
 
 ### session
 
 ```yaml
-- name: review_opus
+- name: review
   session:
     model: claude-opus-4-8
-    permission: read
-    gate: auto              # auto | approval（session は必須）
+    permission: ask       # ask | edit | full
+    gate: approval        # auto | approval
     facets:
       policy: reviewing
       knowledge: releash-review
@@ -37,161 +87,220 @@
   artifact: review_verdict
 ```
 
-- `session` 直下 = 実行設定（`model` / `permission` / `gate`）。
-- `gate`: `auto`（自動で完了判定）か `approval`。session では必須。
-- `gate: approval` は **session が承認されるまで完了しない**。session は対話式なので、承認しなければ人間がそのまま指示を続けて直させる。承認で完了→次へ。**却下や再実行という別操作は無い**。
-- `facets`: 再利用部品の参照（`policy` / `knowledge` / `instruction`）。本文は別途定義し名前で参照する。
-- session の `artifact` は agent が **CLI（`releash workflow output submit`）で提出**する（command の stdout-JSON と対になる経路）。
+- `model`: 任意。指定時は登録済み model を参照する。
+- `permission`: 必須。許可値は `ask` / `edit` / `full` の三つ。
+- `gate`: 必須。`auto` または `approval`。
+- `facets`: `policy` / `knowledge` / `instruction` の名前参照。session は少なくとも一つの facet 参照を持つ。
+- `artifact` がある session は、同じ Contract に対する検証済み Artifact の提出が完了するまで Node 完了にならない。提出と repair は共通の Contract 機構を使う。
+- `gate: auto` は Artifact 条件を満たした後に自動完了する。
+- `gate: approval` は Artifact 条件を満たした後も人間の承認まで `waiting_approval` に留まる。承認しない場合は同じ session に追加指示できる。別の却下・再実行操作は持たない。
+- `artifact` の無い session は Artifact を産出しないため、他 Node から Artifact として参照できず、判別 rule も持てない。
 
 ### fanout
 
 ```yaml
-- name: review
+- name: review_all
   fanout:
-    child:                  # 1つ、または複数の Node 参照
+    child:
       - review_opus
       - review_gpt
-    # items: <配列>         # 任意。child を配列ぶん展開
+    items: plan.targets
+  rules:
+    - next: summarize
 ```
 
-- `child`: 展開する Node の名前。普通の Node を参照する。ただし **child の `rules` は無視される**（child は leaf＝artifact を返すだけで遷移しない）。
-- `items`: 任意。リテラル配列、または前 Node の配列フィールド参照。各要素が子の `input` に入る。
-- `tasks` は予約 global ではない。task 的な配列を展開したい場合は、`plan.tasks` のように前 Node の Artifact field として参照する。
-- 組合せ:
-  - `child` 複数 / `items` なし … 別 Node を並列実行
-  - `child` 1つ / `items` あり … その Node を配列ぶん展開（件数は実行時に決まる＝動的）
-  - `child` 複数 / `items` あり … マトリクス（item × child）
-- fanout の `artifact` は **子 artifact の配列**。
-- 結果でまとめて分岐したい場合は、配列を畳んで boolean を出す Node（command 等）を挟む。fanout / rules に集約機構（aggregate / all / any）は持たない。
-- **定義と供給の分担**: 型を定義するのは child（`input: <Contract>` ＝ パラメータ）。fanout は `items` で**供給**するだけ（map 呼び出しに相当）。child の `input` が1つなら束ね先は自明。
-- 検証: items の要素型が child の `input` 型と一致するか load 時に検査。
-- **空 items（0件）**: 子0個で fanout は完了。artifact は空配列。特別扱いせず通常 rules で遷移する。
-- **child は単一 input のみ**。複数の入力が要るデータは child（command / session）が CLI から取得する。fanout は複数 input の束ねを扱わない。
-- **子の一部失敗**: fanout 固有の failure policy は持たない。中断は Resume（後述マイルストーン）で再開する。
-- **並列度の上限**: 現状スコープ外。
+- `child`: 必須の非空な Node 名参照。scalar 一つまたは配列で書ける。参照先は通常の top-level `command` / `session` Node。
+- child は leaf 専用。workflow の entry、通常 rule の遷移先、fanout kind の Node にはできない。
+- child に `rules` が宣言されていても Diagnostic にはしない。fanout が child として実行している間はその rules を無視し、child は Artifact を返すだけである。
+- `items`: 任意。literal 配列、または `<node>.<field>` 形式で参照する配列 field。`<node>` 全体、`request`、`item` は `items` に書けない。
+- `inputs` は fanout 親には書けない。fanout 親の `artifact` も宣言できず、子 Artifact の配列が暗黙の Artifact になる。
+- fanout の判別 rule は配列 field を持たないため、`when` / `switch` は使えない。`next` と `loop_guard` を使う。
 
-## 共通フィールド
+展開は次の matrix で決まる。
 
-- `artifact: <Contract 名>` … この Node が産出する Artifact（成果物。Contract で型付け）。
-- `inputs: [<node>, ...]` … 他 Node の Artifact を入力として受ける（呼び出し元の指定不要）。
-- `input: <Contract 名>` … この Node の**パラメータ**（型）。fanout の child のとき、各要素がここに入る（関数の引数に相当）。
-- `rules:` … 遷移（下記）。
+| `child` | `items` | 展開 | child の `input` |
+| --- | --- | --- | --- |
+| 複数 | 無し | child ごとに一回 | 宣言しない |
+| 一つ | 有り | item ごとに同じ child | 必須。items 要素型と同じ Contract |
+| 複数 | 有り | item × child の直積 | 全 child で必須。items 要素型と同じ Contract |
 
-## Artifact（参照規約）
+child の parameter は `input: <Contract>` 一つだけである。複数 field が必要なら一つの Object Contract にまとめる。fanout が `items` を供給し、実行中の値は `item` / `item.<field>` で参照する。
 
-各 Node は `artifact:` で **1つの Artifact** を産出し、**Node 名で参照する**。参照は次の1形に統一する。
+`items` が空配列なら child は一つも起動せず、fanout は空配列 Artifact で完了して通常どおり遷移する。子の一部失敗に固有の failure policy は無い。中断した WorkflowExecution を resume すると、完了済み child Artifact を再利用し、未確定 child だけを再実行する。
 
-- `<node>` … その Node の Artifact 全体（fanout は子 artifact の配列）。
-- `<node>.<field>` … その Artifact のフィールド。
-- `item` / `item.<field>` … fanout で展開された現在の要素。
-- `request` … 起動時入力（**初回 Artifact**・**String**・予約名）。人間が書く自由文字列なので scalar（String）の Artifact を許す（Contract は object に限らない）。node が産むものではないが、他 Artifact と同じく `inputs: [request]` で受け、`{{ request }}` で参照する。
-- rules の `on:` / `switch.on:` … **自分の artifact** のフィールドを bare 名で参照（`<this node>.<field>` の略）。
-- テンプレート補間は **二重波括弧 `{{ ... }}`**。パスは参照と同じ（`{{ request }}` / `{{ <node>.<field> }}` / `{{ item.<field> }}`）。二重にするのは、command 本文の literal な単一 `{}`（jq / shell のブレース）と衝突させないため。
+## 共通 field
 
-参照パスに Contract 名は出さない（Node の artifact は1つなので Node 名がそのまま Artifact）。
-Artifact の field 名はユーザー定義であり、`tasks` のような名前も使用できる。ただし Releash は `Task` Entity や global `tasks[]` を定義しない。
+| field | 意味 | 主な制約 |
+| --- | --- | --- |
+| `artifact: <Contract>` | Node が産出する Artifact の Object Contract | command / session 用。fanout は暗黙の配列 Artifact |
+| `input: <Contract>` | fanout child として受ける単一 parameter の型 | `items` の要素 Contract と一致必須 |
+| `inputs: [request | <node>, ...]` | Artifact 全体への依存宣言 | session は prompt に JSON を追加、command は依存宣言のみ。fanout 親には不可 |
+| `rules` | Node 完了後の遷移 | 無い、または空なら終端 |
 
-## rules（遷移）
+`inputs` には field path を書かない。command で field 値を使う場合は `inputs` で producer を宣言し、command 文字列内で `{{ <node>.<field> }}` を参照する。
 
-`rules` は「この Node の抜け方」の集合。**順序非依存**で、全体を load 時に検証する。
+## Artifact と参照
 
-`rules` の無い node（遷移先を持たない node）に到達したら、WorkflowExecution はそこで**終了**する（終端 node）。
+Artifact 参照は次の五つの形だけを持つ。
 
-要素の形:
+| 形 | 意味 | scope |
+| --- | --- | --- |
+| `request` | 起動時の String scalar Artifact | 全 Node |
+| `<node>` | Node の Artifact 全体 | `inputs` と template |
+| `<node>.<field>` | Node Artifact の field | template、fanout `items` |
+| `item` | 現在の fanout item 全体 | fanout child の template |
+| `item.<field>` | 現在の fanout item の field | fanout child の template |
 
-- `when: { on: <boolフィールド>, then: <node> }` ＋ 同じ要素の `next: <node>`（偽のときの行き先）
-- `switch: { on: <enumフィールド>, cases: { 値: <node>, ... } }`
-- `loop_guard: { max_iterations: <n>, on_exhausted: <node> }`（cycle 上限。超過で `on_exhausted` へ）
-- `next: <node>`（無条件 ＝ どれにも当たらない残り＝ catch-all）
+`request` は Node が産出するものではなく、WorkflowExecution の start command が作る読み取り専用 Artifact である。`request` 用の明示的な `schemas` 宣言は不要で、同名 Contract の宣言もできない。start 時に request が省略された場合は空文字列になる。
+
+command 文字列と facet 本文では二重波括弧で参照を補間する。
 
 ```yaml
-  rules:
-    - when: { on: passed, then: done }
-      next: fix
+command: "printf '%s' '{{ request }}'"
 ```
 
-```yaml
-  rules:
-    - switch:
-        on: verdict
-        cases:
-          SHIP: done
-          HOLD: list_threads
-          ESCALATE: escalate
-```
+String はそのまま、それ以外の値は JSON serialize して置き換える。参照 path は一階層の field までで、Contract 名は path に含めない。fanout child の Artifact は親 fanout の配列にだけ入り、child 名では参照できない。
 
-```yaml
-  rules:
-    - loop_guard: { max_iterations: 3, on_exhausted: give_up }
-    - next: run_tests
-```
+## Contract / `schemas`
 
-検証ルール（load 時 Diagnostic）:
+`schemas` は次の keyword だけを持つ JSON Schema subset である。
 
-- **排他**: どの artifact 値も2つ以上の rule に当たらない。
-- **網羅**: 取り得る全 artifact 値がいずれかに当たる（残りは `next` が覆う。switch は enum を網羅 or `next` 必須）。
-- **ループ健全性**: cycle を作る遷移には、到達可能な `loop_guard` が必須。
-- 式言語は持たない。比較・計算（`count > 0` 等）や配列の集約は Node 側で boolean / enum に導出してから routing する。
+- `type`
+- `properties`
+- `required`
+- `items`
+- `enum`
+- `additionalProperties`
 
-## Contract / schemas
+対応する型は `object` / `array` / `string` / `boolean` / `integer` / `number`。`string` Contract は scalar `string` としても宣言できる。subset 外の keyword は受理しない。
 
 ```yaml
 schemas:
-  review_verdict:
+  work_item:
     type: object
     properties:
-      lgtm:
+      path:
+        type: string
+      approved:
         type: boolean
+      verdict:
+        type: string
+        enum: [SHIP, HOLD]
+    required: [path, approved, verdict]
+    additionalProperties: false
+
+  work_items:
+    type: array
+    items: work_item
 ```
 
-- `schemas:` で名前付き Contract を宣言する。
-- `artifact: <名前>` でその Contract の Artifact を産出。routing が見る `on` フィールドは Contract に宣言された boolean / enum であること。
-- 配列の要素型を他所（fanout child の `input` など）から参照する場合、要素型は inline でなく**名前付き Contract** にして `items: <名前>` で参照する。同じ型は producer の artifact と consumer の input が同じ名前を参照する（定義は1か所）。
+- `artifact:` に指定できるのは Object Contract だけ。fanout の配列 Artifact には Contract 名を宣言しない。
+- `input:` には任意の Contract を指定できる。
+- 配列の `items` は inline schema ではなく、同じ `schemas` 内の名前付き Contract を参照する。
+- `required` の各 field は `properties` に存在しなければならない。
+- `string` の `enum` は一つ以上の文字列を持つ。
+- `additionalProperties` の既定値は `true`。閉じた Object が必要な場合だけ `false` を明示する。
+- routing が参照する Contract field は、`properties` への宣言に加えて **`required` に含まれていなければならない**。`when.on` は required boolean、`switch.on` は required string enum に限る。
+- command の予約 field `ok` は Contract 宣言なしで常に boolean routing field として使える。
 
-## 例
+## `rules`
 
-完成形の全体例は [`examples/full-pipeline.yml`](./examples/full-pipeline.yml) を参照。
+`rules` は順序に依存しない正規形として load 時に検証される。一つの Node が持てるのは、最大一つの判別 rule、最大一つの `loop_guard`、および正規形で許される catch-all だけである。
 
-## 文法健全性の担保
+### `when`
 
-この構文定義（文法）そのものが一意・無矛盾であることを、次で機械的に担保する。個々の workflow が valid かの検証（load 時 Diagnostic）とは別レイヤー。
+```yaml
+rules:
+  - when: { on: passed, then: done }
+    next: fix
+```
 
-- **形式化**: 構文は散文でなく代数的型（sum 型）として定義する。`schema.rs` の Rust 型がその形式定義であり、コンパイルが通ること＝構造的無矛盾の証明になる。
-- **不正構文を表現不能にする**: kind と rule を optional field でなく enum にする。
-  - `NodeKind = Command | Session | Fanout` → 「kind ブロックはちょうど1つ」が型で保証（0個 / 2個は表現できない）。
-  - `Rule = When | Switch | LoopGuard | Next` → 「各 rule はいずれか1つ」が型で保証。
-- **一意性（曖昧でない）**: 各構文が唯一の判別子を持つ。kind = ブロック名（`command` / `session` / `fanout`）、rule = キー名（`when` / `switch` / `loop_guard` / `next`）。判別子キー集合は互いに素にし、tagged enum + `deny_unknown_fields` で parse を一意にする。
-- **充足可能性（非空）**: 文法の制約同士が両立し、valid な program が少なくとも1つ存在することを確認する（例: 「switch は enum 網羅 or `next` 必須」と「網羅済みなら `next` 禁止」が矛盾しない）。
+`on` は自 Node の Artifact にある required boolean field の bare 名。`true` なら `then`、`false` または実行時に field が無ければ sibling `next` に進む。`when` の `next` は必須で、**同じ配列要素内の sibling key**として書く。
 
-この4点で「文法が一意・完全・無矛盾」を保証する。workflow instance の決定性 / 停止性 / 型安全 / 参照整合は、別途 load 時 Diagnostic（rules 節・各種検証）で担保する。
+### `switch`
 
-## 決定済み（旧・未確定）
+```yaml
+rules:
+  - switch:
+      on: verdict
+      cases:
+        SHIP: done
+        HOLD: fix
+    next: escalate
+```
 
-- fanout child の input は**単一のみ**。複数の入力が要るデータは child が CLI から取得する。
-- 空 items（0件）= 子0個で fanout 完了・artifact 空配列・通常 rules で遷移。
-- 子の一部失敗 = 固有 failure policy なし。Resume で再開する。
-- 並列度制御 = 現状スコープ外。
-- `request` は String（scalar Artifact を許す）。
+`on` は自 Node の Artifact にある required string enum field の bare 名。`cases` の key は enum 値だけを使う。
 
-## 懸念
+- 全 enum 値を cases が覆い、field の存在が実行前に保証される経路では `next` を書いてはならない。
+- cases が非網羅なら、同じ配列要素の sibling `next` が必須。
+- command が stdout-JSON の Contract field を参照する場合は、validation 失敗で field が存在しない可能性がある。そのため cases が enum を網羅していても sibling `next` が必須。
+- field が実行時に無い、または case に一致しない場合は no-match として sibling `next` に進む。
 
-この節は、TAKT（[`nrslib/takt`](https://github.com/nrslib/takt)）、Archon（[`ScalingIntelligence/Archon`](https://github.com/ScalingIntelligence/Archon)）、Argo Workflows / Tekton / GitHub Actions / GitLab CI / Kestra などの YAML workflow 系 OSS と比較した設計レビューの懸念を記録する。構文の確定仕様ではなく、実装前に潰すべき論点である。
+### `next`
 
-- **command の標準結果と Artifact の関係が曖昧**: `command` は常に `ok` / `exit_code` / `stdout` / `stderr` / `duration` を持つが、`artifact:` 指定時に stdout JSON から生成される Contract Artifact と標準結果が同じ Artifact なのか、別の実行結果なのかが明文化されていない。`rules.on: ok` と `rules.on: <contract field>` を同じ規則で扱えるかを定義する必要がある。
-- **`schemas:` の dialect が未定義**: 例は JSON Schema 風だが、`required` / `additionalProperties` / scalar schema / nullable / enum / default の扱いが決まっていない。特に `properties` だけだと必須 field が表現されず、routing が参照する boolean / enum が欠落した Artifact をどう扱うかが曖昧になる。
-- **順序非依存 rules の排他検証が難しい**: `switch` は enum で排他性を検証しやすい。一方、複数の `when` が同じ node にある場合、boolean field 同士が同時に true にならないことは Contract だけでは証明しにくい。排他性を厳密に担保するには、routing discriminator を enum 1個へ寄せる設計が必要になる可能性がある。
-- **fanout child の `rules` 無視は読み手に誤解を生む**: `fanout.child` は普通の Node を参照するが、fanout 実行中は child の `rules` が無視される。この二重の意味は事故の元になりやすい。child として参照される node に `rules` がある場合は Diagnostic にするか、leaf/template 用の制約を明示する必要がある。
-- **テンプレート補間を shell command に直接埋める例は安全性が低い**: `echo '{{ review }}' | jq ...` のように JSON Artifact を shell 文字列へ展開すると、引用符、改行、shell metacharacter、巨大出力で壊れやすい。Artifact を stdin / 一時ファイル / 環境変数に安全に渡す規約が必要になる。
-- **fanout の失敗・再開単位が未定義**: 子の一部失敗を Resume に委ねる方針は決まっているが、失敗した child だけ再開するのか、fanout 全体を再展開するのか、完了済み child Artifact を再利用するのかが未定義である。
-- **timeout / retry / cancellation / parallelism が構文上予約されていない**: 現状スコープ外でも、実行系では早期に必要になりやすい。後から追加したときに `session` / `command` / `fanout` で意味が割れないよう、拡張位置を決めておく必要がある。
+```yaml
+rules:
+  - next: done
+```
 
-## 検討事項
+単独の `next` 要素は、`when` / `switch` が同じ Node に無い場合だけ使える無条件遷移である。判別 rule の catch-all は単独要素に分離せず、必ずその `when` / `switch` と同一要素の sibling key にする。
 
-- **routing は enum discriminator を第一候補にする**: bool `when` は単純な gate に限定し、複数分岐や複雑な状態は node 側で enum field に畳む運用を推奨する。TAKT のように自然言語 condition や AI judge を routing に入れると柔軟だが、Releash の「engine が状態遷移の唯一の権威」という方針とは相性が悪い。
-- **Contract は JSON Schema subset として明文化する**: 最初は `type` / `properties` / `required` / `items` / `enum` / `additionalProperties` 程度に絞り、routing 参照 field は `required` かつ `boolean` / `enum` であることを load 時 Diagnostic にする。
-- **command result と typed Artifact を分離して名前付けする**: 例として、標準結果は常に `<node>.$result.ok` のような system field に置き、`artifact:` 由来の field は `<node>.<field>` に置く、または標準結果を Artifact の reserved field として統合する、のどちらかを選ぶ。
-- **fanout child は leaf 制約を明確にする**: child node に `rules` がある場合は Diagnostic にする、または `fanout` から参照できる node は `artifact` / `input` / kind block のみに制限する。普通の top-level node と fanout child の読み替えを減らす。
-- **Artifact injection の安全な実行 ABI を用意する**: shell 文字列補間に頼らず、`inputs:` を JSON ファイル、stdin、または engine 管理の path として command へ渡す。テンプレート補間は短い scalar 値や prompt 用に限定する。
-- **実行制御 field の追加位置を予約する**: `command.timeout`、`session.timeout`、`fanout.parallelism`、`retry`、`fail_fast` などの候補を、未実装でも将来予約語として整理する。Argo / Tekton / CI 系 OSS はこの領域の運用知見が多いため参考にする。
-- **TAKT からは human checkpoint と loop monitor の運用語彙を参考にする**: TAKT は agentic coding workflow の現実的な loop / review / approval 表現が豊富である。一方で routing は Releash 側で typed Artifact に閉じ、TAKT 的な自然言語 condition は session 内の判断材料に留める。
-- **Archon からは fanout + judge の分離を参考にする**: Archon は LLM 推論 pipeline の layer / verifier / fuser 構成が中心であり、Releash の workflow state 管理とは主語が違う。ただし複数候補を並列に出して、別 node で評価・統合する形は `fanout -> command/session judge -> rules` と相性が良い。
+### `loop_guard`
+
+```yaml
+rules:
+  - loop_guard: { max_iterations: 3, on_exhausted: give_up }
+  - next: run_tests
+```
+
+`max_iterations` は 1 以上。遷移先 Node に guard がある場合、既完了実行回数が上限に達していれば、その Node を再実行せず `on_exhausted` へ進む。cycle には、その cycle 上で到達可能な `loop_guard` が少なくとも一つ必要。
+
+### control-flow の制約
+
+- 判別 rule は Node ごとに最大一つ。複数 `when`、複数 `switch`、`when` と `switch` の併用は不可。
+- 任意の Artifact 値について遷移先がちょうど一つになるよう、排他性と網羅性を検証する。
+- rule target と fanout child は存在する Node を参照する。
+- 先頭 Node から通常遷移または fanout child 参照で到達できない Node は不可。
+- fanout child は leaf 制約に従い、通常遷移の target にできない。
+- `rules` が無い、または空の Node に到達すると WorkflowExecution は完了する。
+- 比較、計算、配列集約の式言語は無い。command / session で boolean または enum field に畳んでから routing する。
+
+## Diagnostic pipeline
+
+Diagnostic は WorkflowDefinition の validation result であり、WorkflowExecution の lifecycle state ではない。概念上は次の五段階に分かれる。外部 `Diagnostic.stage` では parse と shape を同じ `parse_shape` stage として返す。
+
+| 概念段階 | `Diagnostic.stage` | 責務 |
+| --- | --- | --- |
+| parse | `parse_shape` | YAML scanner / parser が構文を読めるか |
+| shape | `parse_shape` | root と field、kind 個数、rule 要素形、unknown field |
+| resolve | `resolve` | Node / Contract / Artifact path、`request` / `item` scope の名前解決 |
+| typecheck | `typecheck` | Contract、routing field、fanout items / input、kind 別制約の型検査 |
+| control-flow | `control_flow` | 排他、網羅、到達性、cycle / loop guard、fanout child leaf 制約 |
+
+Rust backend が `code` / `stage` / `span` / `message` を返し、UI は表示だけを担当する。Error Diagnostic が一つでもある WorkflowDefinition は実行できない。
+
+## Runtime と execution trigger
+
+WorkflowDefinition の先頭 Node から実行を開始し、各 Node の確定 Artifact と rules だけで決定論的に遷移する。状態変更は backend の typed command を唯一の入口とし、UI / CLI / local API は同じ usecase を呼ぶ。
+
+- start は workflow 名、Worktree、String request、permission mode を受け取る。
+- `gate: approval` の承認、Artifact 提出、abort、stop、resume は WorkflowExecution / NodeExecution を対象にする。
+- stop または crash / stale / orphan で `interrupted` になった WorkflowExecution だけを resume できる。確定済み NodeExecution の次から再開し、session は再アタッチせず新しく開始する。
+- YAML は起動時刻、周期、外部イベント購読を定義しない。
+
+## 既知の制約
+
+- `{{ ... }}` の shell 補間は quoting や escaping を自動で行わない。String はそのまま、それ以外は JSON 文字列として埋め込まれるため、引用符、改行、shell metacharacter を含む値は command を壊したり意図しない shell 解釈を招きうる。workflow author が利用箇所に合う quoting を行い、信頼できない値を shell syntax に直接連結しないこと。stdin / 一時ファイル等の安全な Artifact ABI は現行文法の対象外。
+- command に YAML で指定する timeout は無い。abort / stop / アプリ終了は process group を停止するが、hang した command は agent session の stall observation 対象外であり、自動 stall 判定では止まらない。
+- fanout の parallelism 上限、fanout 固有 retry / fail-fast、Node ごとの timeout は authoring syntax に持たない。
+
+## 文法健全性
+
+YAML deserialize 先の Rust 型が文法の形式定義である。
+
+- `NodeKind = Command | Session | Fanout` と private raw shape の変換で、kind block がちょうど一つであることを保証する。
+- `Rule = When | Switch | LoopGuard | Next` と許可 key 集合で、各 rule 要素の判別形を一意にする。
+- unknown field を拒否し、互換 alias や正規化 layer を持たない。
+- 文法で表現できることと、resolve / typecheck / control-flow で valid であることを分離する。
+
+これにより grammar の一意性は型で、参照整合・型安全・遷移の決定性と loop 健全性は load-time Diagnostic で担保する。

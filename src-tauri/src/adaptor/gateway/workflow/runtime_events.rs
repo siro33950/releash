@@ -1,8 +1,8 @@
 use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::event::WorkflowEvent;
 use crate::adaptor::gateway::workflow::internal_node_command::InternalNodeCommand;
-use crate::adaptor::gateway::workflow::runtime_commit::StepOutcome;
-use crate::adaptor::gateway::workflow::state::{RuntimeExecutionState, WorkflowState};
+use crate::adaptor::gateway::workflow::runtime_commit::NodeOutcome;
+use crate::adaptor::gateway::workflow::state::{RuntimeCommitSnapshot, RuntimeExecutionState};
 use crate::domain::workflow::NODE_STATUS_ABORTED;
 
 /// [05] internal dispatch path: engine 内部の node 完了 / 失敗 typed command の
@@ -10,7 +10,7 @@ use crate::domain::workflow::NODE_STATUS_ABORTED;
 /// 対応する state mutation を snapshot に適用したうえで
 /// `WorkflowEvent::NodeCompleted` / `NodeFailed` を返す。
 pub(crate) fn dispatch_internal_node_command(
-    snapshot: &mut WorkflowState,
+    snapshot: &mut RuntimeCommitSnapshot,
     command: InternalNodeCommand,
 ) -> Result<WorkflowEvent, WorkflowEngineError> {
     apply_internal_node_command_state_mutation(snapshot, &command)?;
@@ -18,7 +18,7 @@ pub(crate) fn dispatch_internal_node_command(
 }
 
 fn apply_internal_node_command_state_mutation(
-    snapshot: &mut WorkflowState,
+    snapshot: &mut RuntimeCommitSnapshot,
     command: &InternalNodeCommand,
 ) -> Result<(), WorkflowEngineError> {
     match command {
@@ -148,7 +148,7 @@ fn apply_internal_node_command_state_mutation(
 }
 
 fn validate_top_level_node_execution(
-    snapshot: &WorkflowState,
+    snapshot: &RuntimeCommitSnapshot,
     node_execution_id: &str,
     node_name: &str,
     attempt: Option<u32>,
@@ -226,12 +226,12 @@ fn map_internal_node_command_to_event(
 }
 
 pub(crate) fn pre_commit_required_events_for_outcome(
-    outcome: &StepOutcome,
+    outcome: &NodeOutcome,
 ) -> Result<Vec<WorkflowEvent>, WorkflowEngineError> {
     let mut events = Vec::new();
     let mut snapshot = outcome.snapshot().clone();
     match outcome {
-        StepOutcome::Persist(s) => {
+        NodeOutcome::Persist(s) => {
             let is_terminal = matches!(
                 s.state,
                 RuntimeExecutionState::Completed | RuntimeExecutionState::Failed { .. }
@@ -240,17 +240,17 @@ pub(crate) fn pre_commit_required_events_for_outcome(
                 return terminal_required_events_for_snapshot(s);
             }
         }
-        StepOutcome::RetryCurrentStep { snapshot, .. } => {
+        NodeOutcome::RetryCurrentNode { snapshot, .. } => {
             events.push(node_started_event_for_snapshot(snapshot)?);
         }
-        StepOutcome::TransitionAndStart(_) => {
-            if let Some(ev) = last_step_completed_event_for_snapshot(&mut snapshot)? {
+        NodeOutcome::TransitionAndStart(_) => {
+            if let Some(ev) = last_node_completed_event_for_snapshot(&mut snapshot)? {
                 events.push(ev);
             }
             events.push(node_started_event_for_snapshot(&snapshot)?);
         }
-        StepOutcome::StartParallel(_) => {
-            if let Some(ev) = last_step_completed_event_for_snapshot(&mut snapshot)? {
+        NodeOutcome::StartFanout(_) => {
+            if let Some(ev) = last_node_completed_event_for_snapshot(&mut snapshot)? {
                 events.push(ev);
             }
             events.push(fanout_parent_started_event_for_snapshot(&snapshot)?);
@@ -260,12 +260,12 @@ pub(crate) fn pre_commit_required_events_for_outcome(
 }
 
 pub(crate) fn terminal_required_events_for_snapshot(
-    snapshot: &WorkflowState,
+    snapshot: &RuntimeCommitSnapshot,
 ) -> Result<Vec<WorkflowEvent>, WorkflowEngineError> {
     let mut local = snapshot.clone();
     let mut events = Vec::new();
     if matches!(snapshot.state, RuntimeExecutionState::Completed) {
-        if let Some(event) = last_step_completed_event_for_snapshot(&mut local)? {
+        if let Some(event) = last_node_completed_event_for_snapshot(&mut local)? {
             events.push(event);
         }
     }
@@ -273,22 +273,22 @@ pub(crate) fn terminal_required_events_for_snapshot(
     Ok(events)
 }
 
-pub(crate) fn last_step_completed_event_for_append(
-    snapshot: &WorkflowState,
+pub(crate) fn last_node_completed_event_for_append(
+    snapshot: &RuntimeCommitSnapshot,
 ) -> Result<Option<WorkflowEvent>, String> {
     let mut local = snapshot.clone();
-    last_step_completed_event_for_snapshot(&mut local).map_err(|e| format!("{e:?}"))
+    last_node_completed_event_for_snapshot(&mut local).map_err(|e| format!("{e:?}"))
 }
 
 pub(crate) fn terminal_events_for_append(
-    snapshot: &WorkflowState,
+    snapshot: &RuntimeCommitSnapshot,
 ) -> Result<Vec<WorkflowEvent>, String> {
     let mut local = snapshot.clone();
     terminal_events_for_snapshot(&mut local).map_err(|e| format!("{e:?}"))
 }
 
-pub(crate) fn last_step_completed_event_for_snapshot(
-    snapshot: &mut WorkflowState,
+pub(crate) fn last_node_completed_event_for_snapshot(
+    snapshot: &mut RuntimeCommitSnapshot,
 ) -> Result<Option<WorkflowEvent>, WorkflowEngineError> {
     let Some(last_entry) = snapshot.node_history.last().cloned() else {
         return Ok(None);
@@ -312,7 +312,7 @@ pub(crate) fn last_step_completed_event_for_snapshot(
     dispatch_internal_node_command(snapshot, command).map(Some)
 }
 
-fn current_node_attempt(snapshot: &WorkflowState) -> u32 {
+fn current_node_attempt(snapshot: &RuntimeCommitSnapshot) -> u32 {
     snapshot
         .node_execution_counts
         .get(&snapshot.current_node_name)
@@ -321,7 +321,7 @@ fn current_node_attempt(snapshot: &WorkflowState) -> u32 {
 }
 
 fn top_level_node_execution<'a>(
-    snapshot: &'a WorkflowState,
+    snapshot: &'a RuntimeCommitSnapshot,
     node_name: &str,
     attempt: u32,
 ) -> Result<&'a crate::adaptor::gateway::workflow::state::NodeExecution, WorkflowEngineError> {
@@ -342,7 +342,7 @@ fn top_level_node_execution<'a>(
 }
 
 fn top_level_node_execution_id(
-    snapshot: &WorkflowState,
+    snapshot: &RuntimeCommitSnapshot,
     node_name: &str,
     attempt: u32,
 ) -> Result<String, WorkflowEngineError> {
@@ -352,7 +352,7 @@ fn top_level_node_execution_id(
 }
 
 pub(crate) fn node_started_event_for_snapshot(
-    snapshot: &WorkflowState,
+    snapshot: &RuntimeCommitSnapshot,
 ) -> Result<WorkflowEvent, WorkflowEngineError> {
     let attempt = current_node_attempt(snapshot);
     let execution = top_level_node_execution(snapshot, &snapshot.current_node_name, attempt)?;
@@ -368,7 +368,7 @@ pub(crate) fn node_started_event_for_snapshot(
 }
 
 pub(crate) fn node_session_started_event_for_snapshot(
-    snapshot: &WorkflowState,
+    snapshot: &RuntimeCommitSnapshot,
 ) -> Result<Option<WorkflowEvent>, WorkflowEngineError> {
     let Some(session_id) = snapshot.current_session_id.clone() else {
         return Ok(None);
@@ -386,14 +386,14 @@ pub(crate) fn node_session_started_event_for_snapshot(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PostCommitProgressEventPlan {
     TransitionAndStart,
-    StartParallel,
+    StartFanout,
 }
 
 impl PostCommitProgressEventPlan {
     fn outcome_label(self) -> &'static str {
         match self {
             Self::TransitionAndStart => "TransitionAndStart",
-            Self::StartParallel => "StartParallel",
+            Self::StartFanout => "StartFanout",
         }
     }
 
@@ -409,17 +409,17 @@ impl PostCommitProgressEventPlan {
 
     pub(crate) fn followup_event(
         self,
-        snapshot: &WorkflowState,
+        snapshot: &RuntimeCommitSnapshot,
     ) -> Result<Option<WorkflowEvent>, WorkflowEngineError> {
         match self {
             Self::TransitionAndStart => node_started_event_for_snapshot(snapshot).map(Some),
-            Self::StartParallel => fanout_parent_started_event_for_snapshot(snapshot).map(Some),
+            Self::StartFanout => fanout_parent_started_event_for_snapshot(snapshot).map(Some),
         }
     }
 }
 
 pub(crate) fn fanout_parent_started_event_for_snapshot(
-    snapshot: &WorkflowState,
+    snapshot: &RuntimeCommitSnapshot,
 ) -> Result<WorkflowEvent, WorkflowEngineError> {
     let event = node_started_event_for_snapshot(snapshot)?;
     if !matches!(
@@ -438,7 +438,7 @@ pub(crate) fn fanout_parent_started_event_for_snapshot(
 }
 
 pub(crate) fn terminal_events_for_snapshot(
-    snapshot: &mut WorkflowState,
+    snapshot: &mut RuntimeCommitSnapshot,
 ) -> Result<Vec<WorkflowEvent>, WorkflowEngineError> {
     match snapshot.state.clone() {
         RuntimeExecutionState::Completed => Ok(vec![WorkflowEvent::ExecutionCompleted {
@@ -499,11 +499,11 @@ pub(crate) fn terminal_events_for_snapshot(
 
 pub(crate) fn required_events_for_approval_commit(
     approval_event: WorkflowEvent,
-    outcome: &mut StepOutcome,
+    outcome: &mut NodeOutcome,
 ) -> Result<Vec<WorkflowEvent>, WorkflowEngineError> {
     let mut events = vec![approval_event];
     match outcome {
-        StepOutcome::Persist(snapshot) => {
+        NodeOutcome::Persist(snapshot) => {
             let is_terminal = matches!(
                 snapshot.state,
                 RuntimeExecutionState::Completed | RuntimeExecutionState::Failed { .. }
@@ -522,17 +522,17 @@ pub(crate) fn required_events_for_approval_commit(
                 });
             }
         }
-        StepOutcome::RetryCurrentStep { snapshot, .. } => {
+        NodeOutcome::RetryCurrentNode { snapshot, .. } => {
             events.push(node_started_event_for_snapshot(snapshot)?);
         }
-        StepOutcome::TransitionAndStart(snapshot) => {
-            if let Some(event) = last_step_completed_event_for_snapshot(snapshot)? {
+        NodeOutcome::TransitionAndStart(snapshot) => {
+            if let Some(event) = last_node_completed_event_for_snapshot(snapshot)? {
                 events.push(event);
             }
             events.push(node_started_event_for_snapshot(snapshot)?);
         }
-        StepOutcome::StartParallel(snapshot) => {
-            if let Some(event) = last_step_completed_event_for_snapshot(snapshot)? {
+        NodeOutcome::StartFanout(snapshot) => {
+            if let Some(event) = last_node_completed_event_for_snapshot(snapshot)? {
                 events.push(event);
             }
             events.push(fanout_parent_started_event_for_snapshot(snapshot)?);
@@ -595,15 +595,15 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
-    use crate::adaptor::gateway::workflow::schema::{NodeKindName, Workflow};
+    use crate::adaptor::gateway::workflow::schema::{NodeKindName, WorkflowDefinitionYaml};
     use crate::adaptor::gateway::workflow::state::{
         NodeExecution, NodeExecutionStatus, NodeHistoryEntry, TokenUsage,
     };
     use crate::domain::workflow::{ExecutionOrigin, NODE_STATUS_COMPLETED};
 
-    fn workflow_state_fixture() -> WorkflowState {
-        WorkflowState {
-            execution_id: "run-1".to_string(),
+    fn commit_snapshot_fixture() -> RuntimeCommitSnapshot {
+        RuntimeCommitSnapshot {
+            execution_id: "execution-1".to_string(),
             workflow_name: "wf".to_string(),
             worktree_path: "/repo".to_string(),
             created_from: ExecutionOrigin::Cli,
@@ -613,16 +613,14 @@ mod tests {
             current_node_index: 0,
             current_node_name: "implement".to_string(),
             current_session_id: None,
-            total_nodes: 1,
             node_history: Vec::new(),
             node_execution_counts: HashMap::from([("implement".to_string(), 3)]),
-            workflow_definition: Workflow::default(),
+            workflow_definition: WorkflowDefinitionYaml::default(),
             total_token_usage: TokenUsage::default(),
-            node_statuses: HashMap::new(),
             artifacts: HashMap::new(),
             node_executions: vec![NodeExecution {
                 id: "node-execution-implement-3".to_string(),
-                execution_id: "run-1".to_string(),
+                execution_id: "execution-1".to_string(),
                 node_name: "implement".to_string(),
                 kind: NodeKindName::Session,
                 attempt: 3,
@@ -635,15 +633,13 @@ mod tests {
                 started_at: 40.0,
                 completed_at: None,
             }],
-            stall_observations: Vec::new(),
-            approval_operations: None,
             started_at: 1.0,
             updated_at: 42.0,
         }
     }
 
-    fn fanout_workflow_state_fixture() -> WorkflowState {
-        let mut snapshot = workflow_state_fixture();
+    fn fanout_commit_snapshot_fixture() -> RuntimeCommitSnapshot {
+        let mut snapshot = commit_snapshot_fixture();
         snapshot.current_node_name = "reviews".to_string();
         snapshot.current_node_index = 1;
         snapshot
@@ -651,7 +647,7 @@ mod tests {
             .insert("reviews".to_string(), 1);
         snapshot.node_executions = vec![NodeExecution {
             id: "node-execution-reviews-1".to_string(),
-            execution_id: "run-1".to_string(),
+            execution_id: "execution-1".to_string(),
             node_name: "reviews".to_string(),
             kind: NodeKindName::Fanout,
             attempt: 1,
@@ -668,8 +664,9 @@ mod tests {
     }
 
     #[test]
-    fn terminal_required_events_for_completed_snapshot_includes_last_node_then_run_completed() {
-        let mut snapshot = workflow_state_fixture();
+    fn terminal_required_events_for_completed_snapshot_includes_last_node_then_execution_completed()
+    {
+        let mut snapshot = commit_snapshot_fixture();
         snapshot.state = RuntimeExecutionState::Completed;
         snapshot.node_history.push(NodeHistoryEntry {
             node_name: "implement".to_string(),
@@ -695,7 +692,7 @@ mod tests {
                 attempt,
                 timestamp,
                 ..
-            } if execution_id == "run-1"
+            } if execution_id == "execution-1"
                 && node_name == "implement"
                 && result_summary.as_deref() == Some("done")
                 && *attempt == 3
@@ -707,14 +704,14 @@ mod tests {
                 execution_id,
                 timestamp,
                 ..
-            } if execution_id == "run-1"
+            } if execution_id == "execution-1"
                 && (*timestamp - 42.0).abs() < f64::EPSILON
         ));
     }
 
     #[test]
     fn terminal_required_events_for_failed_snapshot_preserves_retry_count() {
-        let mut snapshot = workflow_state_fixture();
+        let mut snapshot = commit_snapshot_fixture();
         snapshot.state = RuntimeExecutionState::Failed {
             reason: "startup exhausted".to_string(),
             kind: crate::domain::workflow::NodeExecutionFailureKind::StartupTimeout,
@@ -743,9 +740,9 @@ mod tests {
     }
 
     #[test]
-    fn pre_commit_required_events_for_retry_current_step_includes_node_started() {
-        let snapshot = workflow_state_fixture();
-        let events = pre_commit_required_events_for_outcome(&StepOutcome::RetryCurrentStep {
+    fn pre_commit_required_events_for_retry_current_node_includes_node_started() {
+        let snapshot = commit_snapshot_fixture();
+        let events = pre_commit_required_events_for_outcome(&NodeOutcome::RetryCurrentNode {
             snapshot,
             completed_session_id: Some("previous-session".to_string()),
         })
@@ -762,7 +759,7 @@ mod tests {
                 attempt,
                 fanout_parent,
                 timestamp,
-            } if execution_id == "run-1"
+            } if execution_id == "execution-1"
                 && node_execution_id == "node-execution-implement-3"
                 && node_name == "implement"
                 && *kind == NodeKindName::Session
@@ -774,10 +771,10 @@ mod tests {
 
     #[test]
     fn pre_commit_required_events_for_fanout_includes_parent_node_started() {
-        let snapshot = fanout_workflow_state_fixture();
+        let snapshot = fanout_commit_snapshot_fixture();
 
         let events =
-            pre_commit_required_events_for_outcome(&StepOutcome::StartParallel(snapshot)).unwrap();
+            pre_commit_required_events_for_outcome(&NodeOutcome::StartFanout(snapshot)).unwrap();
 
         assert!(matches!(
             events.as_slice(),
@@ -793,7 +790,7 @@ mod tests {
 
     #[test]
     fn session_attached_event_uses_current_node_execution_id() {
-        let mut snapshot = workflow_state_fixture();
+        let mut snapshot = commit_snapshot_fixture();
         snapshot.current_session_id = Some("session-3".to_string());
 
         let event = node_session_started_event_for_snapshot(&snapshot)
@@ -813,7 +810,7 @@ mod tests {
 
     #[test]
     fn node_started_event_rejects_missing_node_execution() {
-        let mut snapshot = workflow_state_fixture();
+        let mut snapshot = commit_snapshot_fixture();
         snapshot.node_executions.clear();
 
         let error = node_started_event_for_snapshot(&snapshot).unwrap_err();
@@ -824,8 +821,8 @@ mod tests {
 
     #[test]
     fn post_commit_progress_event_plan_emits_only_next_node_start() {
-        let snapshot = workflow_state_fixture();
-        let fanout_snapshot = fanout_workflow_state_fixture();
+        let snapshot = commit_snapshot_fixture();
+        let fanout_snapshot = fanout_commit_snapshot_fixture();
 
         assert!(matches!(
             PostCommitProgressEventPlan::TransitionAndStart
@@ -839,7 +836,7 @@ mod tests {
                 attempt,
                 fanout_parent,
                 timestamp,
-            }) if execution_id == "run-1"
+            }) if execution_id == "execution-1"
                 && node_execution_id == "node-execution-implement-3"
                 && node_name == "implement"
                 && kind == NodeKindName::Session
@@ -848,7 +845,7 @@ mod tests {
                 && (timestamp - 42.0).abs() < f64::EPSILON
         ));
         assert!(matches!(
-            PostCommitProgressEventPlan::StartParallel
+            PostCommitProgressEventPlan::StartFanout
                 .followup_event(&fanout_snapshot)
                 .unwrap(),
             Some(WorkflowEvent::NodeStarted {
@@ -863,13 +860,13 @@ mod tests {
 
     #[test]
     fn post_commit_progress_event_plan_formats_node_completed_error() {
-        let error = PostCommitProgressEventPlan::StartParallel
+        let error = PostCommitProgressEventPlan::StartFanout
             .node_completed_append_error("append failed")
             .to_string();
 
         assert_eq!(
             error,
-            "StartParallel pre-commit NodeCompleted append failed: append failed"
+            "StartFanout pre-commit NodeCompleted append failed: append failed"
         );
     }
 }

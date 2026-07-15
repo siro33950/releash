@@ -21,7 +21,7 @@ pub enum WorkflowEngineError {
     ValidationError(String),
     /// 承認操作が指定 worktree の実行を対象にしていない
     UnauthorizedWorktree(String),
-    /// 承認操作が現在の execution / step を対象にしていない
+    /// 承認操作が現在の execution / node を対象にしていない
     UnauthorizedApprovalTarget(String),
     /// セッションストアのIO/シリアライズエラー
     SessionStore(String),
@@ -139,18 +139,18 @@ impl From<ManagedWorktreeResolverError> for WorkflowEngineError {
     }
 }
 
-impl From<crate::usecase::workflow::step_lifecycle::NodeExecutionLifecycleError>
+impl From<crate::usecase::workflow::node_lifecycle::NodeExecutionLifecycleError>
     for WorkflowEngineError
 {
-    fn from(e: crate::usecase::workflow::step_lifecycle::NodeExecutionLifecycleError) -> Self {
+    fn from(e: crate::usecase::workflow::node_lifecycle::NodeExecutionLifecycleError) -> Self {
         match e {
-            crate::usecase::workflow::step_lifecycle::NodeExecutionLifecycleError::SessionNotFound(id) => {
+            crate::usecase::workflow::node_lifecycle::NodeExecutionLifecycleError::SessionNotFound(id) => {
                 Self::SessionNotFound(id)
             }
-            crate::usecase::workflow::step_lifecycle::NodeExecutionLifecycleError::SessionStore(message) => {
+            crate::usecase::workflow::node_lifecycle::NodeExecutionLifecycleError::SessionStore(message) => {
                 Self::SessionStore(message)
             }
-            crate::usecase::workflow::step_lifecycle::NodeExecutionLifecycleError::AgentSession(message) => {
+            crate::usecase::workflow::node_lifecycle::NodeExecutionLifecycleError::AgentSession(message) => {
                 Self::AgentSession(message)
             }
         }
@@ -194,7 +194,7 @@ mod tests {
             WorkflowEngineError::InvalidWorkflow("missing facet".to_string()),
             WorkflowEngineError::ValidationError("bad output".to_string()),
             WorkflowEngineError::InvalidState("not accepting output".to_string()),
-            WorkflowEngineError::UnauthorizedApprovalTarget("wrong run".to_string()),
+            WorkflowEngineError::UnauthorizedApprovalTarget("wrong execution".to_string()),
         ];
         for error in validation_errors {
             assert_eq!(

@@ -70,13 +70,13 @@ pub fn aborted_node_history_entry(
     }
 }
 
-pub fn aborted_parallel_history_entry(
-    parallel_run: &FanoutRuntimeState,
+pub fn aborted_fanout_history_entry(
+    fanout_runtime: &FanoutRuntimeState,
     artifacts: &HashMap<String, RuntimeArtifact>,
     parent_attempt: u32,
     timestamp: f64,
 ) -> NodeHistoryEntry {
-    let fanout_children = parallel_run
+    let fanout_children = fanout_runtime
         .children
         .iter()
         .map(|child| {
@@ -104,7 +104,7 @@ pub fn aborted_parallel_history_entry(
         })
         .collect();
     NodeHistoryEntry {
-        node_name: parallel_run.parent_node_name.clone(),
+        node_name: fanout_runtime.parent_node_name.clone(),
         completed_at: timestamp,
         result: None,
         session_id: None,
@@ -191,7 +191,7 @@ mod tests {
     }
 
     #[test]
-    fn aborted_parallel_history_entry_snapshots_children_with_output_fallback() {
+    fn aborted_fanout_history_entry_snapshots_children_with_output_fallback() {
         let mut artifacts = HashMap::new();
         artifacts.insert(
             "child-a".to_string(),
@@ -207,9 +207,9 @@ mod tests {
             },
         );
 
-        let entry = aborted_parallel_history_entry(
+        let entry = aborted_fanout_history_entry(
             &FanoutRuntimeState {
-                parent_node_name: "parallel-review".to_string(),
+                parent_node_name: "fanout-review".to_string(),
                 children: vec![
                     FanoutChildRuntime {
                         node_name: "child-a".to_string(),
@@ -242,7 +242,7 @@ mod tests {
             20.0,
         );
 
-        assert_eq!(entry.node_name, "parallel-review");
+        assert_eq!(entry.node_name, "fanout-review");
         assert_eq!(entry.attempt, 4);
         let children = entry.fanout_children.unwrap();
         assert_eq!(children[0].session_id.as_deref(), Some("output-session-a"));

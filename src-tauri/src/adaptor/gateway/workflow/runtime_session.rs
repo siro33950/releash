@@ -7,16 +7,16 @@ use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::execution_registry::find_by_worktree;
 use crate::adaptor::gateway::workflow::facet::WorkflowFacetContents;
 use crate::adaptor::gateway::workflow::failure_policy_config::workflow_runtime_timeout_policy;
-use crate::adaptor::gateway::workflow::parallel_runtime::{
+use crate::adaptor::gateway::workflow::fanout_runtime::{
     self as workflow_fanout_runtime, FanoutChildSessionSetup, FanoutPromptInputs,
     FanoutStartContext,
 };
+use crate::adaptor::gateway::workflow::node_settings::{
+    resolve_node_settings, ResolvedNodeSettings, WorkflowDefaults,
+};
 use crate::adaptor::gateway::workflow::prompt_rendering as workflow_prompt;
 use crate::adaptor::gateway::workflow::runtime_state::{SessionWorkflowRef, WorkflowExecution};
-use crate::adaptor::gateway::workflow::state::WorkflowState;
-use crate::adaptor::gateway::workflow::step_settings::{
-    resolve_step_settings, ResolvedStepSettings, WorkflowDefaults,
-};
+use crate::adaptor::gateway::workflow::state::RuntimeCommitSnapshot;
 use crate::domain::agent_session::PermissionMode;
 use crate::domain::workflow::{
     NodeExecutionFailureKind, NodeKindName, RetryPolicy, TimeoutContext, WorkflowNodeContext,
@@ -27,12 +27,12 @@ use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
 use crate::usecase::agent_session::session::{ChatSession, OpenTabRegistry, SessionStore};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct StepRuntimeKindContext {
+pub(crate) struct NodeRuntimeKindContext {
     node_kind: NodeKindName,
     approval_gate: bool,
 }
 
-impl StepRuntimeKindContext {
+impl NodeRuntimeKindContext {
     pub(crate) fn new(node_kind: NodeKindName, approval_gate: bool) -> Self {
         Self {
             node_kind,
@@ -67,16 +67,16 @@ pub(crate) async fn load_fanout_start_runtime_inputs(
 /// ステップの model 値から対応するバックエンドIDを解決する。
 /// 形式検証（`ModelId`）と登録判定（`resolve_backend_for_model`）を
 /// 一括で行い、`set_agent_model_internal` と同一の受け入れ基準を適用する。
-pub(crate) fn resolve_backend_for_step_model(
+pub(crate) fn resolve_backend_for_node_model(
     registry: &AgentBackendRegistry,
     model: &str,
 ) -> Result<Option<String>, WorkflowEngineError> {
-    resolve_step_model_with_registry(registry, model).map(Some)
+    resolve_node_model_with_registry(registry, model).map(Some)
 }
 
 /// 形式検証＋登録判定をレジストリ単体で行う、ワークフロー経路用の解決関数。
-/// `resolve_backend_for_step_model` の実体ロジックで、テストではこちらを直接呼ぶ。
-pub(crate) fn resolve_step_model_with_registry(
+/// `resolve_backend_for_node_model` の実体ロジックで、テストではこちらを直接呼ぶ。
+pub(crate) fn resolve_node_model_with_registry(
     registry: &AgentBackendRegistry,
     model: &str,
 ) -> Result<String, WorkflowEngineError> {
@@ -90,21 +90,21 @@ pub(crate) fn resolve_step_model_with_registry(
 }
 
 #[derive(Debug, Clone)]
-struct StepSessionCreationSettings {
+struct NodeSessionCreationSettings {
     backend_id: Option<String>,
     selected_model: Option<String>,
     permission_mode: PermissionMode,
 }
 
-fn resolve_step_session_creation_settings(
+fn resolve_node_session_creation_settings(
     registry: &AgentBackendRegistry,
-    step_model: Option<String>,
-    step_permission: Option<String>,
+    node_model: Option<String>,
+    node_permission: Option<String>,
     workflow_defaults: &WorkflowDefaults,
-) -> Result<StepSessionCreationSettings, WorkflowEngineError> {
-    let (step_model, resolved_backend_id) = match step_model {
+) -> Result<NodeSessionCreationSettings, WorkflowEngineError> {
+    let (node_model, resolved_backend_id) = match node_model {
         Some(model) => {
-            let backend_id = resolve_backend_for_step_model(registry, &model)?;
+            let backend_id = resolve_backend_for_node_model(registry, &model)?;
             (Some(model), backend_id)
         }
         None => {
@@ -127,34 +127,34 @@ fn resolve_step_session_creation_settings(
             (Some(selected_model), Some(backend_id))
         }
     };
-    let settings = resolve_step_settings(
-        step_model,
-        step_permission,
+    let settings = resolve_node_settings(
+        node_model,
+        node_permission,
         resolved_backend_id,
         workflow_defaults,
     );
-    step_session_creation_settings_from_resolved(settings)
+    node_session_creation_settings_from_resolved(settings)
 }
 
-fn step_session_creation_settings_from_resolved(
-    settings: ResolvedStepSettings,
-) -> Result<StepSessionCreationSettings, WorkflowEngineError> {
-    let permission_mode = PermissionMode::parse(&settings.permission_mode)
+fn node_session_creation_settings_from_resolved(
+    settings: ResolvedNodeSettings,
+) -> Result<NodeSessionCreationSettings, WorkflowEngineError> {
+    let permission_mode = PermissionMode::parse_canonical(&settings.permission_mode)
         .map_err(|e| WorkflowEngineError::InvalidWorkflow(e.to_string()))?;
-    Ok(StepSessionCreationSettings {
+    Ok(NodeSessionCreationSettings {
         backend_id: settings.backend_id,
         selected_model: settings.selected_model,
         permission_mode,
     })
 }
 
-fn create_step_session_from_resolved_settings(
+fn create_node_session_from_resolved_settings(
     session_store: &SessionStore,
     data_dir: &Path,
     worktree_path: &str,
-    settings: StepSessionCreationSettings,
+    settings: NodeSessionCreationSettings,
     workflow_node_context: WorkflowNodeContext,
-    kind_context: StepRuntimeKindContext,
+    kind_context: NodeRuntimeKindContext,
 ) -> Result<ChatSession, WorkflowEngineError> {
     let workflow_node_context =
         workflow_node_context_with_runtime_timeouts(&settings, workflow_node_context, kind_context);
@@ -175,9 +175,9 @@ fn create_step_session_from_resolved_settings(
 }
 
 fn workflow_node_context_with_runtime_timeouts(
-    settings: &StepSessionCreationSettings,
+    settings: &NodeSessionCreationSettings,
     mut workflow_node_context: WorkflowNodeContext,
-    kind_context: StepRuntimeKindContext,
+    kind_context: NodeRuntimeKindContext,
 ) -> WorkflowNodeContext {
     let timeout_context = TimeoutContext::new(
         settings.selected_model.clone(),
@@ -197,24 +197,24 @@ fn workflow_node_context_with_runtime_timeouts(
 
 /// ステップ設定の解決 → セッション生成 → 解決済み設定の反映 → 保存を一括で行う。
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn create_step_session_with_settings(
+pub(crate) fn create_node_session_with_settings(
     registry: &AgentBackendRegistry,
     session_store: &SessionStore,
     data_dir: &Path,
     worktree_path: &str,
-    step_model: Option<String>,
-    step_permission: Option<String>,
+    node_model: Option<String>,
+    node_permission: Option<String>,
     workflow_defaults: &WorkflowDefaults,
     workflow_node_context: WorkflowNodeContext,
-    kind_context: StepRuntimeKindContext,
+    kind_context: NodeRuntimeKindContext,
 ) -> Result<ChatSession, WorkflowEngineError> {
-    let settings = resolve_step_session_creation_settings(
+    let settings = resolve_node_session_creation_settings(
         registry,
-        step_model,
-        step_permission,
+        node_model,
+        node_permission,
         workflow_defaults,
     )?;
-    create_step_session_from_resolved_settings(
+    create_node_session_from_resolved_settings(
         session_store,
         data_dir,
         worktree_path,
@@ -229,12 +229,14 @@ pub(crate) fn create_step_session_with_settings(
 pub(crate) async fn broadcast_state<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     worktree_path: &str,
-    workflow_state: WorkflowState,
+    commit_snapshot: RuntimeCommitSnapshot,
 ) {
     crate::adaptor::gateway::workflow::emit_workflow_execution_from_snapshot(
         app,
         worktree_path,
-        crate::adaptor::gateway::workflow::state::workflow_state_to_domain_snapshot(workflow_state),
+        crate::adaptor::gateway::workflow::state::runtime_commit_snapshot_to_domain_snapshot(
+            commit_snapshot,
+        ),
     )
     .await;
 }
@@ -242,12 +244,14 @@ pub(crate) async fn broadcast_state<R: tauri::Runtime>(
 pub(crate) async fn emit_workflow_runtime_projection<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     worktree_path: &str,
-    workflow_state: WorkflowState,
+    commit_snapshot: RuntimeCommitSnapshot,
 ) {
     crate::adaptor::gateway::workflow::emit_workflow_execution_from_snapshot(
         app,
         worktree_path,
-        crate::adaptor::gateway::workflow::state::workflow_state_to_domain_snapshot(workflow_state),
+        crate::adaptor::gateway::workflow::state::runtime_commit_snapshot_to_domain_snapshot(
+            commit_snapshot,
+        ),
     )
     .await;
 }
@@ -259,13 +263,13 @@ pub(crate) async fn interrupt_agent(runtime: &Arc<AgentSessionRuntimeUsecase>, s
     }
 }
 
-pub(crate) async fn release_completed_step_session<R: tauri::Runtime>(
+pub(crate) async fn release_completed_node_session<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     session_store: &Arc<SessionStore>,
     runtime: &Arc<AgentSessionRuntimeUsecase>,
     session_id: &str,
 ) {
-    crate::adaptor::gateway::workflow::release_step_runtime_on_done(
+    crate::adaptor::gateway::workflow::release_node_runtime_on_done(
         app,
         session_store,
         runtime,
@@ -274,14 +278,14 @@ pub(crate) async fn release_completed_step_session<R: tauri::Runtime>(
     .await;
 }
 
-pub(crate) async fn release_completed_step_sessions<R: tauri::Runtime>(
+pub(crate) async fn release_completed_node_sessions<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     session_store: &Arc<SessionStore>,
     runtime: &Arc<AgentSessionRuntimeUsecase>,
     session_ids: &[String],
 ) {
     for session_id in session_ids {
-        release_completed_step_session(app, session_store, runtime, session_id).await;
+        release_completed_node_session(app, session_store, runtime, session_id).await;
     }
 }
 
@@ -306,7 +310,7 @@ pub(crate) async fn prepare_fanout_child_session_setups<R: tauri::Runtime>(
 
     for creation_plan in creation_plans {
         let child = &fanout_start.children[creation_plan.expansion_index];
-        let step_session = match create_step_session_from_resolved_settings(
+        let node_session = match create_node_session_from_resolved_settings(
             session_store,
             &data_dir,
             worktree_path,
@@ -326,24 +330,24 @@ pub(crate) async fn prepare_fanout_child_session_setups<R: tauri::Runtime>(
                 .await);
             }
         };
-        let child_permission_mode = step_session.permission_mode.clone();
-        let step_session_id = step_session.id.clone();
+        let child_permission_mode = node_session.permission_mode.clone();
+        let node_session_id = node_session.id.clone();
 
         {
             let mut map = session_workflow_refs.lock().await;
             map.insert(
-                step_session_id.clone(),
+                node_session_id.clone(),
                 SessionWorkflowRef {
                     execution_id: fanout_start.execution_id.clone(),
                 },
             );
         }
-        created_session_ids.push(step_session_id.clone());
+        created_session_ids.push(node_session_id.clone());
 
         child_setups.push(FanoutChildSessionSetup {
             node_execution_id: child.node_execution_id.clone(),
             node_name: child.node.name.clone(),
-            session_id: step_session_id,
+            session_id: node_session_id,
             system_prompt: creation_plan.system_prompt,
             workflow_instruction: creation_plan.workflow_instruction,
             user_message: creation_plan.user_message,
@@ -367,9 +371,9 @@ struct FanoutChildCreationPlan {
     system_prompt: Option<String>,
     user_message: String,
     workflow_instruction: Option<String>,
-    settings: StepSessionCreationSettings,
+    settings: NodeSessionCreationSettings,
     workflow_node_context: WorkflowNodeContext,
-    kind_context: StepRuntimeKindContext,
+    kind_context: NodeRuntimeKindContext,
 }
 
 fn prepare_fanout_child_prompt_plans(
@@ -423,7 +427,7 @@ fn prepare_fanout_child_creation_plans(
                 child.node.name
             ))
         })?;
-        let settings = resolve_step_session_creation_settings(
+        let settings = resolve_node_session_creation_settings(
             registry,
             session.model.clone(),
             session.permission.clone(),
@@ -447,7 +451,7 @@ fn prepare_fanout_child_creation_plans(
                 startup_max_retries: None,
                 stale_timeout_secs: None,
             },
-            kind_context: StepRuntimeKindContext::new(
+            kind_context: NodeRuntimeKindContext::new(
                 NodeKindName::Session,
                 child.node.is_approval_session(),
             ),
@@ -530,7 +534,7 @@ pub(crate) async fn activate_fanout_child_sessions<R: tauri::Runtime, O>(
     open_tabs: &Arc<OpenTabRegistry>,
     worktree_path: &str,
     child_setups: &[FanoutChildSessionSetup],
-    snapshot: WorkflowState,
+    snapshot: RuntimeCommitSnapshot,
     observer: &O,
 ) -> Result<(), WorkflowEngineError>
 where
@@ -569,7 +573,7 @@ pub(crate) async fn start_fanout_child_sessions<R: tauri::Runtime, O>(
     open_tabs: &Arc<OpenTabRegistry>,
     worktree_path: &str,
     child_setups: &[FanoutChildSessionSetup],
-    workflow_state_for_projection: Option<WorkflowState>,
+    commit_snapshot_for_projection: Option<RuntimeCommitSnapshot>,
     observer: &O,
 ) -> Result<(), WorkflowEngineError>
 where
@@ -582,7 +586,7 @@ where
         let runtime_guard = runtime.acquire_session_lock(&setup.session_id).await;
         runtime_guards.push(runtime_guard);
         open_tabs.add(&setup.session_id);
-        if let Some(state) = workflow_state_for_projection.clone() {
+        if let Some(state) = commit_snapshot_for_projection.clone() {
             emit_workflow_runtime_projection(app, worktree_path, state).await;
         }
         created_session_ids.push(setup.session_id.clone());
@@ -590,7 +594,7 @@ where
 
     for setup in child_setups {
         let runtime_guard = runtime_guards.remove(0);
-        let permission_mode = PermissionMode::parse(&setup.permission_mode)
+        let permission_mode = PermissionMode::parse_canonical(&setup.permission_mode)
             .map_err(|e| WorkflowEngineError::InvalidWorkflow(e.to_string()))?;
         if let Err(e) = runtime
             .start_turn_locked(
@@ -628,7 +632,7 @@ where
 mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::schema::{
-        FanoutSpec, NodeDefinition, NodeKind, Workflow,
+        FanoutSpec, NodeDefinition, NodeKind, WorkflowDefinitionYaml,
     };
     use crate::adaptor::gateway::workflow::state::{
         RuntimeArtifact, RuntimeExecutionState, TokenUsage,
@@ -732,10 +736,10 @@ mod tests {
 
     fn workflow_context_for_test() -> WorkflowNodeContext {
         WorkflowNodeContext {
-            execution_id: "run-1".to_string(),
+            execution_id: "execution-1".to_string(),
             node_execution_id: "node-execution-1".to_string(),
             workflow_name: "workflow".to_string(),
-            node_name: "step".to_string(),
+            node_name: "node".to_string(),
             attempt: 0,
             parent_node_name: None,
             parent_attempt: None,
@@ -750,7 +754,7 @@ mod tests {
         let node_name = "plan".to_string();
         WorkflowExecution {
             id: execution_id.to_string(),
-            workflow: Workflow {
+            workflow: WorkflowDefinitionYaml {
                 name: "test-workflow".to_string(),
                 description: String::new(),
                 builtin: false,
@@ -774,20 +778,20 @@ mod tests {
             started_at: 1.0,
             updated_at: 1.0,
             current_session_id: Some("session-1".to_string()),
-            current_step_token_usage: TokenUsage::default(),
+            current_node_token_usage: TokenUsage::default(),
             artifacts: HashMap::new(),
             node_executions: Vec::new(),
             request: None,
-            parallel_run: None,
+            fanout_runtime: None,
             current_stall_observations: Vec::new(),
         }
     }
 
     #[test]
-    fn resolve_step_session_creation_settings_without_model_uses_default_backend_and_model() {
+    fn resolve_node_session_creation_settings_without_model_uses_default_backend_and_model() {
         let registry = registry_with_default_backend();
 
-        let settings = resolve_step_session_creation_settings(
+        let settings = resolve_node_session_creation_settings(
             &registry,
             None,
             None,
@@ -804,10 +808,10 @@ mod tests {
     }
 
     #[test]
-    fn resolve_step_session_creation_settings_without_default_backend_errors() {
+    fn resolve_node_session_creation_settings_without_default_backend_errors() {
         let registry = AgentBackendRegistry::new();
 
-        let error = resolve_step_session_creation_settings(
+        let error = resolve_node_session_creation_settings(
             &registry,
             None,
             None,
@@ -823,12 +827,12 @@ mod tests {
     }
 
     #[test]
-    fn create_step_session_without_model_persists_non_empty_backend_id() {
+    fn create_node_session_without_model_persists_non_empty_backend_id() {
         let tmp = tempfile::tempdir().unwrap();
         let registry = registry_with_default_backend();
         let session_store = crate::test_support::build_session_store();
 
-        let session = create_step_session_with_settings(
+        let session = create_node_session_with_settings(
             &registry,
             &session_store,
             tmp.path(),
@@ -840,7 +844,7 @@ mod tests {
                 permission_mode: "edit".to_string(),
             },
             workflow_context_for_test(),
-            StepRuntimeKindContext::session(),
+            NodeRuntimeKindContext::session(),
         )
         .unwrap();
 
@@ -856,13 +860,13 @@ mod tests {
 
     #[test]
     fn workflow_node_context_with_runtime_timeouts_injects_gateway_policy_values() {
-        let settings = StepSessionCreationSettings {
+        let settings = NodeSessionCreationSettings {
             backend_id: Some("codex".to_string()),
             selected_model: Some("gpt-5.5".to_string()),
             permission_mode: PermissionMode::Edit,
         };
         let context = WorkflowNodeContext {
-            execution_id: "run-1".to_string(),
+            execution_id: "execution-1".to_string(),
             node_execution_id: "node-execution-1".to_string(),
             workflow_name: "05_review-fix_gpt55".to_string(),
             node_name: "review".to_string(),
@@ -878,7 +882,7 @@ mod tests {
         let context = workflow_node_context_with_runtime_timeouts(
             &settings,
             context,
-            StepRuntimeKindContext::session(),
+            NodeRuntimeKindContext::session(),
         );
 
         assert_eq!(context.startup_timeout_secs, Some(30));
@@ -888,13 +892,13 @@ mod tests {
 
     #[test]
     fn workflow_node_context_with_runtime_timeouts_injects_template_only_policy_values() {
-        let settings = StepSessionCreationSettings {
+        let settings = NodeSessionCreationSettings {
             backend_id: Some("codex".to_string()),
             selected_model: Some("unknown-fast".to_string()),
             permission_mode: PermissionMode::Edit,
         };
         let context = WorkflowNodeContext {
-            execution_id: "run-1".to_string(),
+            execution_id: "execution-1".to_string(),
             node_execution_id: "node-execution-1".to_string(),
             workflow_name: "05_review-fix_gpt55".to_string(),
             node_name: "review".to_string(),
@@ -910,7 +914,7 @@ mod tests {
         let context = workflow_node_context_with_runtime_timeouts(
             &settings,
             context,
-            StepRuntimeKindContext::session(),
+            NodeRuntimeKindContext::session(),
         );
 
         assert_eq!(context.startup_timeout_secs, Some(30));
@@ -920,13 +924,13 @@ mod tests {
 
     #[test]
     fn workflow_node_context_with_runtime_timeouts_injects_approval_gate_policy_values() {
-        let settings = StepSessionCreationSettings {
+        let settings = NodeSessionCreationSettings {
             backend_id: Some("codex".to_string()),
             selected_model: Some("unknown-fast".to_string()),
             permission_mode: PermissionMode::Edit,
         };
         let context = WorkflowNodeContext {
-            execution_id: "run-1".to_string(),
+            execution_id: "execution-1".to_string(),
             node_execution_id: "node-execution-1".to_string(),
             workflow_name: "unknown-template".to_string(),
             node_name: "approval".to_string(),
@@ -942,7 +946,7 @@ mod tests {
         let context = workflow_node_context_with_runtime_timeouts(
             &settings,
             context,
-            StepRuntimeKindContext::new(NodeKindName::Session, true),
+            NodeRuntimeKindContext::new(NodeKindName::Session, true),
         );
 
         assert_eq!(context.startup_timeout_secs, Some(30));
@@ -952,7 +956,7 @@ mod tests {
 
     #[tokio::test]
     async fn load_fanout_start_runtime_inputs_reads_context_and_prompt_inputs() {
-        let mut exec = workflow_execution_fixture("run-1", "/tmp/repo");
+        let mut exec = workflow_execution_fixture("execution-1", "/tmp/repo");
         exec.workflow.nodes[0] = NodeDefinition {
             name: "fanout-review".to_string(),
             kind: NodeKind::Fanout(FanoutSpec {
@@ -978,7 +982,7 @@ mod tests {
                 completed_at: 2.0,
             },
         );
-        let executions = Mutex::new(HashMap::from([("run-1".to_string(), exec)]));
+        let executions = Mutex::new(HashMap::from([("execution-1".to_string(), exec)]));
 
         let inputs = load_fanout_start_runtime_inputs(&executions, "/tmp/repo")
             .await
@@ -997,7 +1001,7 @@ mod tests {
 
     #[test]
     fn fanout_resume_plans_prompts_and_session_creation_only_for_unconfirmed_children() {
-        let mut exec = workflow_execution_fixture("run-1", "/tmp/repo");
+        let mut exec = workflow_execution_fixture("execution-1", "/tmp/repo");
         exec.current_session_id = None;
         exec.workflow.nodes = vec![
             NodeDefinition {

@@ -15,7 +15,7 @@ pub mod status_aggregation;
 pub mod value_objects;
 
 pub use entities::workflow_execution::{
-    compute_node_statuses, FanoutChildRuntime, FanoutChildRuntimeState, FanoutRuntimeState,
+    FanoutChildRuntime, FanoutChildRuntimeState, FanoutRuntimeState,
 };
 pub use error::WorkflowError;
 pub use gateway::{ManagedWorktreeGateway, SecretSourceGateway};
@@ -35,12 +35,12 @@ pub use value_objects::{
     ExecutionInterruptionReason, ExecutionListFilter, ExecutionOrigin, ExecutionStatus,
     ExecutionStatusFilter, FacetKey, FacetKind, FacetRefs, FacetSummary, FailureClassification,
     FailureDisposition, Fanout, FanoutChildSnapshot, FanoutParentRef, FanoutSpec, ItemsSource,
-    NodeDefinition, NodeExecution, NodeExecutionFailure, NodeExecutionFailureKind,
-    NodeExecutionStatus, NodeHistoryEntry, NodeKind, NodeKindName, NodeName, NodeStallObservation,
-    OutcomeCommitMode, Rule, RuntimeApprovalOperations, RuntimeArtifact, RuntimeExecutionState,
-    SchemaDef, SessionGate, SessionSpec, TimeoutKind, TokenUsage, WorkflowDefinition,
-    WorkflowExecution, WorkflowExecutionId, WorkflowExecutionSummary, WorkflowName,
-    WorkflowNodeContext, WorkflowPageRequest, WorkflowRuntimeSnapshot, WorkflowSummary,
-    WorktreePath, NODE_STATUS_ABORTED, NODE_STATUS_COMPLETED, NODE_STATUS_FAILED,
-    NODE_STATUS_INTERRUPTED, NODE_STATUS_RUNNING, NODE_STATUS_WAITING_APPROVAL,
+    NodeDefinition, NodeDefinitionName, NodeExecution, NodeExecutionFailure,
+    NodeExecutionFailureKind, NodeExecutionStatus, NodeHistoryEntry, NodeKind, NodeKindName,
+    OutcomeCommitMode, Rule, RuntimeArtifact, RuntimeExecutionState, SchemaDef, SessionGate,
+    SessionSpec, TimeoutKind, TokenUsage, WorkflowDefinition, WorkflowDefinitionName,
+    WorkflowExecution, WorkflowExecutionId, WorkflowExecutionSummary, WorkflowNodeContext,
+    WorkflowPageRequest, WorkflowRuntimeSnapshot, WorkflowSummary, WorkspaceWorktreePath,
+    NODE_STATUS_ABORTED, NODE_STATUS_COMPLETED, NODE_STATUS_FAILED, NODE_STATUS_INTERRUPTED,
+    NODE_STATUS_RUNNING, NODE_STATUS_WAITING_APPROVAL,
 };

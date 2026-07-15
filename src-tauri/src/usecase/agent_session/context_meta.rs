@@ -110,7 +110,7 @@ pub(crate) fn context_source_kind_key(kind: ContextSourceKind) -> &'static str {
         ContextSourceKind::OpenEditorSelection => "open_editor_selection",
         ContextSourceKind::Mentions => "mentions",
         ContextSourceKind::TerminalLogSummary => "terminal_log_summary",
-        ContextSourceKind::WorkflowState => "workflow_state",
+        ContextSourceKind::WorkflowContext => "workflow_state",
         ContextSourceKind::ProjectInstructions => "project_instructions",
         ContextSourceKind::BackendModelIdentity => "backend_system_prompt",
     }
@@ -123,7 +123,7 @@ fn context_source_kind_from_key(key: &str) -> Option<ContextSourceKind> {
         "open_editor_selection" => Some(ContextSourceKind::OpenEditorSelection),
         "mentions" => Some(ContextSourceKind::Mentions),
         "terminal_log_summary" => Some(ContextSourceKind::TerminalLogSummary),
-        "workflow_state" => Some(ContextSourceKind::WorkflowState),
+        "workflow_state" => Some(ContextSourceKind::WorkflowContext),
         "project_instructions" => Some(ContextSourceKind::ProjectInstructions),
         "backend_system_prompt" => Some(ContextSourceKind::BackendModelIdentity),
         _ => None,

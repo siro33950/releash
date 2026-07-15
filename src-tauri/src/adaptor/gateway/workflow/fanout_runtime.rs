@@ -8,13 +8,15 @@ use crate::adaptor::gateway::workflow::engine_error::{
     workflow_error_to_engine_error, WorkflowEngineError,
 };
 use crate::adaptor::gateway::workflow::event::FanoutParentRef;
+use crate::adaptor::gateway::workflow::node_settings::WorkflowDefaults;
 use crate::adaptor::gateway::workflow::runtime_state::{
     FanoutChildRuntime, FanoutChildRuntimeState, FanoutRuntimeState, WorkflowExecution,
 };
 use crate::adaptor::gateway::workflow::schema::NodeDefinition;
-use crate::adaptor::gateway::workflow::state::{RuntimeArtifact, TokenUsage, WorkflowState};
-use crate::adaptor::gateway::workflow::step_settings::WorkflowDefaults;
-use crate::domain::workflow::services::parallel as workflow_parallel;
+use crate::adaptor::gateway::workflow::state::{
+    RuntimeArtifact, RuntimeCommitSnapshot, TokenUsage,
+};
+use crate::domain::workflow::services::fanout as workflow_fanout;
 
 #[derive(Debug, Clone)]
 pub(crate) struct FanoutChildExpansion {
@@ -77,7 +79,7 @@ pub(crate) struct FanoutChildSessionSetup {
 pub(crate) fn prepare_fanout_start_context(
     exec: &WorkflowExecution,
 ) -> Result<FanoutStartContext, WorkflowEngineError> {
-    let step = exec
+    let node = exec
         .workflow
         .nodes
         .get(exec.current_node_index)
@@ -87,26 +89,26 @@ pub(crate) fn prepare_fanout_start_context(
                 exec.current_node_index, exec.workflow.name
             ))
         })?;
-    let fanout = step.fanout().ok_or_else(|| {
+    let fanout = node.fanout().ok_or_else(|| {
         WorkflowEngineError::InvalidState(format!(
             "StartFanout requires fanout node '{}'",
-            step.name
+            node.name
         ))
     })?;
     if fanout.child.is_empty() {
         return Err(WorkflowEngineError::InvalidState(format!(
             "StartFanout requires child references for node '{}'",
-            step.name
+            node.name
         )));
     }
     let parent_attempt = exec
         .node_execution_counts
-        .get(&step.name)
+        .get(&node.name)
         .copied()
         .unwrap_or(1);
     let domain_workflow = workflow_definition_to_domain(&exec.workflow);
     let domain_artifacts = artifacts_to_domain(&exec.artifacts);
-    let domain_step = domain_workflow
+    let domain_node = domain_workflow
         .nodes
         .get(exec.current_node_index)
         .ok_or_else(|| {
@@ -115,13 +117,13 @@ pub(crate) fn prepare_fanout_start_context(
                 exec.current_node_index, exec.workflow.name
             ))
         })?;
-    let domain_fanout = domain_step.fanout().ok_or_else(|| {
+    let domain_fanout = domain_node.fanout().ok_or_else(|| {
         WorkflowEngineError::InvalidState(format!(
             "StartFanout requires fanout node '{}'",
-            step.name
+            node.name
         ))
     })?;
-    let expansion_plan = workflow_parallel::plan_fanout_expansion(
+    let expansion_plan = workflow_fanout::plan_fanout_expansion(
         &domain_workflow,
         &domain_fanout.child,
         domain_fanout.items.as_ref(),
@@ -157,7 +159,7 @@ pub(crate) fn prepare_fanout_start_context(
         })
         .collect::<Result<Vec<_>, WorkflowEngineError>>()?;
     Ok(FanoutStartContext {
-        parent_node_name: step.name.clone(),
+        parent_node_name: node.name.clone(),
         parent_attempt,
         order: exec.node_history.len() as u32,
         children,
@@ -179,7 +181,7 @@ pub(crate) fn apply_fanout_runtime_state(
     fanout_start: &FanoutStartContext,
     session_setups: &[FanoutChildSessionSetup],
     timestamp: f64,
-) -> Result<WorkflowState, WorkflowEngineError> {
+) -> Result<RuntimeCommitSnapshot, WorkflowEngineError> {
     let parent_node_execution_id = exec
         .active_current_node_execution_id()
         .map(ToOwned::to_owned)
@@ -266,17 +268,17 @@ pub(crate) fn apply_fanout_runtime_state(
             }
         })
         .collect();
-    exec.parallel_run = Some(FanoutRuntimeState {
+    exec.fanout_runtime = Some(FanoutRuntimeState {
         parent_node_name: fanout_start.parent_node_name.clone(),
         parent_node_execution_id,
         children,
     });
     exec.updated_at = timestamp;
-    Ok(exec.to_workflow_state())
+    Ok(exec.to_commit_snapshot())
 }
 
 pub(crate) struct FanoutParentCompletionPlan {
-    pub(crate) parent_step_output: RuntimeArtifact,
+    pub(crate) parent_artifact: RuntimeArtifact,
     pub(crate) history_entry: crate::adaptor::gateway::workflow::state::NodeHistoryEntry,
 }
 
@@ -286,9 +288,9 @@ pub(crate) fn plan_fanout_parent_completion(
     children: &[FanoutChildRuntime],
     timestamp: f64,
 ) -> FanoutParentCompletionPlan {
-    let children: Vec<workflow_parallel::FanoutChildCompletionInput> = children
+    let children: Vec<workflow_fanout::FanoutChildCompletionInput> = children
         .iter()
-        .map(|child| workflow_parallel::FanoutChildCompletionInput {
+        .map(|child| workflow_fanout::FanoutChildCompletionInput {
             node_name: child.node_name.clone(),
             session_id: (!child.session_id.is_empty()).then(|| child.session_id.clone()),
             result: child.result.clone(),
@@ -312,14 +314,14 @@ pub(crate) fn plan_fanout_parent_completion(
             failure_disposition: child.failure_disposition,
         })
         .collect();
-    let plan = workflow_parallel::plan_fanout_parent_completion(
+    let plan = workflow_fanout::plan_fanout_parent_completion(
         parent_node_name,
         parent_attempt,
         &children,
         timestamp,
     );
     FanoutParentCompletionPlan {
-        parent_step_output: runtime_artifact_from_domain(plan.parent_step_output),
+        parent_artifact: runtime_artifact_from_domain(plan.parent_artifact),
         history_entry: node_history_entry_from_domain(plan.history_entry),
     }
 }
@@ -328,7 +330,8 @@ pub(crate) fn plan_fanout_parent_completion(
 mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::schema::{
-        CommandSpec, FanoutSpec, ItemsSource, NodeDefinition, NodeKind, SessionSpec, Workflow,
+        CommandSpec, FanoutSpec, ItemsSource, NodeDefinition, NodeKind, SessionSpec,
+        WorkflowDefinitionYaml,
     };
     use crate::adaptor::gateway::workflow::state::RuntimeExecutionState;
 
@@ -338,8 +341,8 @@ mod tests {
 
     fn workflow_execution_with_nodes(nodes: Vec<NodeDefinition>) -> WorkflowExecution {
         WorkflowExecution {
-            id: "run-1".to_string(),
-            workflow: Workflow {
+            id: "execution-1".to_string(),
+            workflow: WorkflowDefinitionYaml {
                 name: "test-workflow".to_string(),
                 description: String::new(),
                 builtin: false,
@@ -360,11 +363,11 @@ mod tests {
             started_at: 1.0,
             updated_at: 1.0,
             current_session_id: None,
-            current_step_token_usage: TokenUsage::default(),
+            current_node_token_usage: TokenUsage::default(),
             artifacts: HashMap::new(),
             node_executions: Vec::new(),
             request: Some("ship it".to_string()),
-            parallel_run: None,
+            fanout_runtime: None,
             current_stall_observations: Vec::new(),
         }
     }
@@ -396,12 +399,9 @@ mod tests {
 
         apply_fanout_runtime_state(exec, context, &[], 2.0).unwrap();
 
-        let fanout_run = exec.parallel_run.as_ref().unwrap();
-        assert_eq!(
-            fanout_run.parent_node_execution_id,
-            parent_node_execution_id
-        );
-        assert_eq!(fanout_run.children.len(), context.children.len());
+        let fanout = exec.fanout_runtime.as_ref().unwrap();
+        assert_eq!(fanout.parent_node_execution_id, parent_node_execution_id);
+        assert_eq!(fanout.children.len(), context.children.len());
         assert_eq!(exec.node_executions.len(), context.children.len() + 1);
 
         for expansion in &context.children {
@@ -441,7 +441,7 @@ mod tests {
 
         let context = prepare_fanout_start_context(&exec).unwrap();
 
-        assert_eq!(context.execution_id, "run-1");
+        assert_eq!(context.execution_id, "execution-1");
         assert_eq!(context.workflow_name, "test-workflow");
         assert_eq!(context.parent_node_name, "fanout-review");
         assert_eq!(
@@ -518,7 +518,7 @@ mod tests {
 
         apply_fanout_runtime_state(&mut exec, &context, &[], 3.0).unwrap();
 
-        let child = &exec.parallel_run.as_ref().unwrap().children[0];
+        let child = &exec.fanout_runtime.as_ref().unwrap().children[0];
         assert_eq!(child.state, FanoutChildRuntimeState::Completed);
         assert!(child.session_id.is_empty());
         assert_eq!(child.artifact, Some(serde_json::json!({"ok": true})));
@@ -567,8 +567,8 @@ mod tests {
         let snapshot =
             apply_fanout_runtime_state(&mut exec, &context, &[pending_setup], 3.0).unwrap();
 
-        let run = exec.parallel_run.as_ref().unwrap();
-        let reused = run
+        let fanout = exec.fanout_runtime.as_ref().unwrap();
+        let reused = fanout
             .children
             .iter()
             .find(|child| child.node_execution_id == reused_node_execution_id)
@@ -585,7 +585,7 @@ mod tests {
         assert_eq!(reused.token_usage.output_tokens, 4);
         assert_eq!(reused.completed_at, Some(2.0));
 
-        let pending = run
+        let pending = fanout
             .children
             .iter()
             .find(|child| child.node_execution_id == pending_node_execution_id)
@@ -812,7 +812,7 @@ mod tests {
         ]);
         exec.artifacts.insert(
             "plan".to_string(),
-            make_step_output("plan", "draft", Some("DONE")),
+            make_node_output("plan", "draft", Some("DONE")),
         );
         let inputs = fanout_prompt_inputs(&exec);
 
@@ -822,7 +822,7 @@ mod tests {
         );
     }
 
-    fn make_step_output(node_name: &str, text: &str, result: Option<&str>) -> RuntimeArtifact {
+    fn make_node_output(node_name: &str, text: &str, result: Option<&str>) -> RuntimeArtifact {
         RuntimeArtifact {
             node_name: node_name.to_string(),
             attempt: 0,

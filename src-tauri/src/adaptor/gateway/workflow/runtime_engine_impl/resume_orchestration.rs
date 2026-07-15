@@ -78,7 +78,7 @@ fn hydrate_resumed_execution(
     let mut artifacts = HashMap::new();
     artifacts.insert(
         crate::domain::workflow::services::reference::REQUEST_ARTIFACT.to_string(),
-        workflow_prompt::request_step_output(&checkpoint.request, checkpoint.started_at),
+        workflow_prompt::request_node_artifact(&checkpoint.request, checkpoint.started_at),
     );
     for node in &checkpoint.confirmed_top_level_nodes {
         let completed_at = node.completed_at.unwrap_or(node.started_at);
@@ -195,7 +195,7 @@ fn hydrate_resumed_execution(
                     node_name: child.node_name.clone(),
                     item_index: child.item_index,
                     child_index: child.child_index,
-                    reusable: workflow_parallel_runtime::ReusableFanoutChild {
+                    reusable: workflow_fanout_runtime::ReusableFanoutChild {
                         result: child.result_summary.clone(),
                         artifact: child.artifact.clone(),
                         contract: child.contract.clone(),
@@ -224,11 +224,11 @@ fn hydrate_resumed_execution(
             started_at: checkpoint.started_at,
             updated_at: now,
             current_session_id: None,
-            current_step_token_usage: TokenUsage::default(),
+            current_node_token_usage: TokenUsage::default(),
             artifacts,
             node_executions,
             request: Some(checkpoint.request.clone()),
-            parallel_run: None,
+            fanout_runtime: None,
             current_stall_observations: Vec::new(),
         },
         fanout_checkpoint,
@@ -287,7 +287,7 @@ pub(super) async fn resume_workflow_execution<R: tauri::Runtime + 'static>(
 
     let now = current_timestamp();
     let (execution, fanout_checkpoint) = hydrate_resumed_execution(&checkpoint, now)?;
-    let snapshot = execution.to_workflow_state();
+    let snapshot = execution.to_commit_snapshot();
     let node_started = workflow_runtime_events::node_started_event_for_snapshot(&snapshot)?;
     let reservation = engine
         .execution_store

@@ -305,7 +305,7 @@ fn format_execution_log(events: Vec<serde_json::Value>, json: bool) -> Result<St
             .get("event")
             .and_then(serde_json::Value::as_str)
             .map(event_kind_display_name)
-            .unwrap_or_else(|| "WorkflowEvent".to_string());
+            .unwrap_or_else(|| "MalformedEventLogRecord".to_string());
         let json = serde_json::to_string(&event)
             .map_err(|error| CliError::Other(format!("serialize log event: {error}")))?;
         output.push_str(&format!("{kind} {json}\n"));
@@ -415,6 +415,16 @@ mod tests {
     }
 
     #[test]
+    fn malformed_log_record_uses_a_neutral_display_label() {
+        let output =
+            format_execution_log(vec![serde_json::json!({"execution_id": "broken"})], false)
+                .unwrap();
+
+        assert!(output.starts_with("MalformedEventLogRecord "));
+        assert!(!output.contains(&["Workflow", "Event"].concat()));
+    }
+
+    #[test]
     fn start_defaults_request_worktree_and_origin_at_the_cli_boundary() {
         let _lock = TEST_ENV_LOCK.lock().unwrap();
         let _node_execution = EnvVarGuard::set_value("RELEASH_NODE_EXECUTION_ID", "");
@@ -463,6 +473,11 @@ mod tests {
                 "workflow".to_string(),
                 legacy_rejection,
                 execution_id.to_string(),
+            ],
+            vec![
+                "releash".to_string(),
+                "task".to_string(),
+                "list".to_string(),
             ],
         ] {
             assert!(

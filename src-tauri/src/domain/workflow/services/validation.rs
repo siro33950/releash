@@ -1,8 +1,8 @@
 use crate::domain::workflow::services::{contract_schema, reference, routing};
 use crate::domain::workflow::value_objects::{MAX_FANOUT_CHILDREN, MAX_NODES_PER_WORKFLOW};
 use crate::domain::workflow::{
-    ItemsSource, NodeDefinition, NodeKindName, SchemaDef, WorkflowDefinition as Workflow,
-    WorkflowError, WorkflowName,
+    ItemsSource, NodeDefinition, NodeKindName, SchemaDef, WorkflowDefinition,
+    WorkflowDefinitionName, WorkflowError,
 };
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -50,66 +50,66 @@ pub enum ValidationError {
     InvalidChars {
         name: String,
     },
-    EmptySteps,
-    DuplicateStep {
+    EmptyNodes,
+    DuplicateNode {
         name: String,
     },
     MissingFacet {
-        step: String,
+        node: String,
     },
     EmptyFanoutChildren {
-        step: String,
+        node: String,
     },
     /// fanout.child が存在しない top-level node を参照している。
     UnknownFanoutChild {
-        step: String,
+        node: String,
         child: String,
     },
     /// fanout.items の Artifact field 参照が解決できない。
     InvalidFanoutItemsReference {
-        step: String,
+        node: String,
         reference: String,
         reason: String,
     },
     /// fanout.items と child.input の型・有無が一致しない。
     FanoutInputMismatch {
-        step: String,
+        node: String,
         child: String,
         reason: String,
     },
     /// fanout child の entry / 通常遷移 / 入れ子禁止に違反している。
     FanoutChildLeafViolation {
-        step: String,
+        node: String,
         child: String,
         reason: String,
     },
     /// rules の遷移先が存在しない node を参照
     UnknownRuleTarget {
-        step: String,
+        node: String,
         target: String,
     },
     /// rules の順序非依存性・網羅性・型付き参照・loop guard が不正
     InvalidRules {
-        step: String,
+        node: String,
         kind: InvalidRuleKind,
         reason: String,
     },
     /// entry node から到達できない node
     UnreachableNode {
-        step: String,
+        node: String,
     },
     /// 無効な permission mode が指定されている
     InvalidPermissionMode {
-        step: String,
+        node: String,
         value: String,
     },
-    /// step に permission が指定されていない（必須）
+    /// node に permission が指定されていない（必須）
     MissingPermissionMode {
-        step: String,
+        node: String,
     },
     /// command 種別 node の `command` が空文字
     EmptyCommand {
-        step: String,
+        node: String,
     },
     /// `nodes` の総数が DoS 防御の上限を超えた
     TooManyNodes {
@@ -118,38 +118,38 @@ pub enum ValidationError {
     },
     /// fanout.child の数が DoS 防御の上限を超えた
     TooManyFanoutChildren {
-        step: String,
+        node: String,
         count: usize,
         max: usize,
     },
     /// 存在しないモデルが指定されている
     UnknownModel {
-        step: String,
+        node: String,
         value: String,
     },
     /// モデルIDが形式として無効（空文字・空白のみ・制御文字・上限長超過など）。
     /// `reason` には `ModelId` の戻り値（理由文言）を保持し、
     /// 呼び出し側・ログで未登録（UnknownModel）と区別できるようにする。
     InvalidModelFormat {
-        step: String,
+        node: String,
         value: String,
         reason: String,
     },
     /// モデルIDの形式は有効だが、バックエンド所属を一意に解決できない。
     ModelResolutionFailed {
-        step: String,
+        node: String,
         value: String,
         reason: String,
     },
     /// `artifact` / `input` が存在しない `schemas:` Contract を参照している。
     UnknownSchemaRef {
-        step: String,
+        node: String,
         slot: &'static str,
         key: String,
     },
     /// `artifact` / `input` の Contract 参照名が安全な identifier ではない。
     InvalidSchemaRef {
-        step: String,
+        node: String,
         slot: &'static str,
         key: String,
         reason: String,
@@ -162,12 +162,12 @@ pub enum ValidationError {
     },
     /// `artifact:` が Object 以外の Contract を参照している。
     InvalidArtifactSchema {
-        step: String,
+        node: String,
         contract: String,
     },
     /// command node の `artifact:` Contract が予約 field を宣言している。
     ReservedArtifactField {
-        step: String,
+        node: String,
         contract: String,
         field: String,
     },
@@ -187,60 +187,60 @@ impl fmt::Display for ValidationError {
                 f,
                 "ワークフロー名 '{name}' は先頭を英数字にし、2文字目以降は英数字・ハイフン・アンダースコアのみ使用できます"
             ),
-            Self::EmptySteps => write!(f, "ワークフローにnodeが定義されていません"),
-            Self::DuplicateStep { name } => {
+            Self::EmptyNodes => write!(f, "ワークフローにnodeが定義されていません"),
+            Self::DuplicateNode { name } => {
                 write!(f, "node名 '{name}' が重複しています")
             }
-            Self::MissingFacet { step } => {
-                write!(f, "node '{step}' にはファセット参照が必要です")
+            Self::MissingFacet { node } => {
+                write!(f, "node '{node}' にはファセット参照が必要です")
             }
-            Self::EmptyFanoutChildren { step } => {
-                write!(f, "fanout node '{step}' must reference at least one child")
+            Self::EmptyFanoutChildren { node } => {
+                write!(f, "fanout node '{node}' must reference at least one child")
             }
-            Self::UnknownFanoutChild { step, child } => {
-                write!(f, "fanout node '{step}' references unknown child node '{child}'")
+            Self::UnknownFanoutChild { node, child } => {
+                write!(f, "fanout node '{node}' references unknown child node '{child}'")
             }
             Self::InvalidFanoutItemsReference {
-                step,
+                node,
                 reference,
                 reason,
             } => {
                 write!(
                     f,
-                    "fanout node '{step}' has invalid items reference '{reference}': {reason}"
+                    "fanout node '{node}' has invalid items reference '{reference}': {reason}"
                 )
             }
             Self::FanoutInputMismatch {
-                step,
+                node,
                 child,
                 reason,
             } => {
                 write!(
                     f,
-                    "fanout node '{step}' items do not match child '{child}' input: {reason}"
+                    "fanout node '{node}' items do not match child '{child}' input: {reason}"
                 )
             }
             Self::FanoutChildLeafViolation {
-                step,
+                node,
                 child,
                 reason,
             } => {
                 write!(
                     f,
-                    "fanout node '{step}' child '{child}' violates leaf constraints: {reason}"
+                    "fanout node '{node}' child '{child}' violates leaf constraints: {reason}"
                 )
             }
-            Self::UnknownRuleTarget { step, target } => write!(
+            Self::UnknownRuleTarget { node, target } => write!(
                 f,
-                "node '{step}' のrulesが存在しないnode '{target}' を参照しています"
+                "node '{node}' のrulesが存在しないnode '{target}' を参照しています"
             ),
-            Self::InvalidRules { step, reason, .. } => {
-                write!(f, "node '{step}' のrulesが不正です: {reason}")
+            Self::InvalidRules { node, reason, .. } => {
+                write!(f, "node '{node}' のrulesが不正です: {reason}")
             }
-            Self::UnreachableNode { step } => {
-                write!(f, "node '{step}' is unreachable from the workflow entrypoint")
+            Self::UnreachableNode { node } => {
+                write!(f, "node '{node}' is unreachable from the workflow entrypoint")
             }
-            Self::InvalidPermissionMode { step, value } => {
+            Self::InvalidPermissionMode { node, value } => {
                 let display_value = if value.is_empty() {
                     "(empty)"
                 } else {
@@ -248,14 +248,14 @@ impl fmt::Display for ValidationError {
                 };
                 write!(
                     f,
-                    "node '{step}' のpermissionが不正です: invalid permission mode: {display_value} (allowed: {})",
+                    "node '{node}' のpermissionが不正です: invalid permission mode: {display_value} (allowed: {})",
                     ALLOWED_PERMISSION_MODES
                 )
             }
-            Self::MissingPermissionMode { step } => {
+            Self::MissingPermissionMode { node } => {
                 write!(
                     f,
-                    "node '{step}' にはpermissionが必要です (allowed: {})",
+                    "node '{node}' にはpermissionが必要です (allowed: {})",
                     ALLOWED_PERMISSION_MODES
                 )
             }
@@ -263,76 +263,76 @@ impl fmt::Display for ValidationError {
                 f,
                 "node 数 {count} がワークフローあたりの上限 {max} を超えています"
             ),
-            Self::TooManyFanoutChildren { step, count, max } => write!(
+            Self::TooManyFanoutChildren { node, count, max } => write!(
                 f,
-                "fanout node '{step}' の child 数 {count} が上限 {max} を超えています"
+                "fanout node '{node}' の child 数 {count} が上限 {max} を超えています"
             ),
-            Self::EmptyCommand { step } => {
+            Self::EmptyCommand { node } => {
                 write!(
                     f,
-                    "command node '{step}' の command は空にできません"
+                    "command node '{node}' の command は空にできません"
                 )
             }
-            Self::UnknownModel { step, value } => {
+            Self::UnknownModel { node, value } => {
                 write!(
                     f,
-                    "node '{step}' のmodelが不正です: unknown model: {value}"
+                    "node '{node}' のmodelが不正です: unknown model: {value}"
                 )
             }
             Self::InvalidModelFormat {
-                step,
+                node,
                 value,
                 reason,
             } => {
                 write!(
                     f,
-                    "node '{step}' のmodel '{value}' は形式として無効です: {reason}"
+                    "node '{node}' のmodel '{value}' は形式として無効です: {reason}"
                 )
             }
             Self::ModelResolutionFailed {
-                step,
+                node,
                 value,
                 reason,
             } => {
                 write!(
                     f,
-                    "node '{step}' のmodel '{value}' の所属バックエンドを解決できません: {reason}"
+                    "node '{node}' のmodel '{value}' の所属バックエンドを解決できません: {reason}"
                 )
             }
-            Self::UnknownSchemaRef { step, slot, key } => {
+            Self::UnknownSchemaRef { node, slot, key } => {
                 write!(
                     f,
-                    "node '{step}' の {slot} が存在しない schemas Contract '{key}' を参照しています"
+                    "node '{node}' の {slot} が存在しない schemas Contract '{key}' を参照しています"
                 )
             }
             Self::InvalidSchemaRef {
-                step,
+                node,
                 slot,
                 key,
                 reason,
             } => {
                 write!(
                     f,
-                    "node '{step}' の {slot} Contract 参照 '{key}' が不正です: {reason}"
+                    "node '{node}' の {slot} Contract 参照 '{key}' が不正です: {reason}"
                 )
             }
             Self::InvalidSchema { schema, reason, .. } => {
                 write!(f, "schemas.{schema} の宣言が不正です: {reason}")
             }
-            Self::InvalidArtifactSchema { step, contract } => {
+            Self::InvalidArtifactSchema { node, contract } => {
                 write!(
                     f,
-                    "node '{step}' の artifact '{contract}' は Object Contract である必要があります"
+                    "node '{node}' の artifact '{contract}' は Object Contract である必要があります"
                 )
             }
             Self::ReservedArtifactField {
-                step,
+                node,
                 contract,
                 field,
             } => {
                 write!(
                     f,
-                    "command node '{step}' の artifact '{contract}' が予約 field '{field}' を宣言しています"
+                    "command node '{node}' の artifact '{contract}' が予約 field '{field}' を宣言しています"
                 )
             }
             Self::InvalidArtifactReference {
@@ -420,129 +420,129 @@ fn reference_diagnostic_to_validation_error(
 
 fn routing_error_to_validation_error(error: routing::RoutingValidationError) -> ValidationError {
     match error {
-        routing::RoutingValidationError::UnknownRuleTarget { step, target } => {
-            ValidationError::UnknownRuleTarget { step, target }
+        routing::RoutingValidationError::UnknownRuleTarget { node, target } => {
+            ValidationError::UnknownRuleTarget { node, target }
         }
-        routing::RoutingValidationError::MultipleDiscriminators { step } => {
+        routing::RoutingValidationError::MultipleDiscriminators { node } => {
             ValidationError::InvalidRules {
-                step,
+                node,
                 kind: InvalidRuleKind::MultipleDiscriminators,
                 reason: "rules can contain at most one when or switch discriminator".to_string(),
             }
         }
-        routing::RoutingValidationError::MultipleLoopGuards { step } => {
+        routing::RoutingValidationError::MultipleLoopGuards { node } => {
             ValidationError::InvalidRules {
-                step,
+                node,
                 kind: InvalidRuleKind::MultipleLoopGuards,
                 reason: "rules can contain at most one loop_guard".to_string(),
             }
         }
-        routing::RoutingValidationError::MultipleNextCatchAll { step } => {
+        routing::RoutingValidationError::MultipleNextCatchAll { node } => {
             ValidationError::InvalidRules {
-                step,
+                node,
                 kind: InvalidRuleKind::MultipleNextCatchAll,
                 reason: "rules can contain at most one next catch-all".to_string(),
             }
         }
-        routing::RoutingValidationError::StandaloneNextWithDiscriminator { step } => {
+        routing::RoutingValidationError::StandaloneNextWithDiscriminator { node } => {
             ValidationError::InvalidRules {
-                step,
+                node,
                 kind: InvalidRuleKind::StandaloneNextWithDiscriminator,
                 reason: "standalone next cannot be combined with when or switch".to_string(),
             }
         }
         routing::RoutingValidationError::WhenFieldNotBoolean {
-            step,
+            node,
             field,
             reason,
         } => ValidationError::InvalidRules {
-            step,
+            node,
             kind: InvalidRuleKind::WhenFieldNotBoolean,
             reason: reason
                 .unwrap_or_else(|| format!("when.on field '{field}' must be a required boolean")),
         },
         routing::RoutingValidationError::SwitchFieldNotEnum {
-            step,
+            node,
             field,
             reason,
         } => ValidationError::InvalidRules {
-            step,
+            node,
             kind: InvalidRuleKind::SwitchFieldNotEnum,
             reason: reason
                 .unwrap_or_else(|| format!("switch.on field '{field}' must be a required enum")),
         },
-        routing::RoutingValidationError::SwitchUnknownCase { step, field, case } => {
+        routing::RoutingValidationError::SwitchUnknownCase { node, field, case } => {
             ValidationError::InvalidRules {
-                step,
+                node,
                 kind: InvalidRuleKind::SwitchUnknownCase,
                 reason: format!("switch case '{case}' is not declared in enum field '{field}'"),
             }
         }
         routing::RoutingValidationError::SwitchMissingCases {
-            step,
+            node,
             field,
             missing,
         } => ValidationError::InvalidRules {
-            step,
+            node,
             kind: InvalidRuleKind::SwitchMissingCases,
             reason: format!(
                 "switch on '{field}' is missing enum cases [{}] and requires next",
                 missing.join(", ")
             ),
         },
-        routing::RoutingValidationError::SwitchExhaustiveHasNext { step } => {
+        routing::RoutingValidationError::SwitchExhaustiveHasNext { node } => {
             ValidationError::InvalidRules {
-                step,
+                node,
                 kind: InvalidRuleKind::SwitchExhaustiveHasNext,
                 reason: "exhaustive switch cannot also define next catch-all".to_string(),
             }
         }
-        routing::RoutingValidationError::SwitchRequiresNext { step } => {
+        routing::RoutingValidationError::SwitchRequiresNext { node } => {
             ValidationError::InvalidRules {
-                step,
+                node,
                 kind: InvalidRuleKind::SwitchRequiresNext,
                 reason: "command artifact routing on Contract field requires next catch-all"
                     .to_string(),
             }
         }
-        routing::RoutingValidationError::DiscriminatorOnFanout { step } => {
+        routing::RoutingValidationError::DiscriminatorOnFanout { node } => {
             ValidationError::InvalidRules {
-                step,
+                node,
                 kind: InvalidRuleKind::DiscriminatorOnFanout,
                 reason: "fanout nodes cannot use when or switch rules".to_string(),
             }
         }
-        routing::RoutingValidationError::DiscriminatorWithoutArtifact { step } => {
+        routing::RoutingValidationError::DiscriminatorWithoutArtifact { node } => {
             ValidationError::InvalidRules {
-                step,
+                node,
                 kind: InvalidRuleKind::DiscriminatorWithoutArtifact,
                 reason: "nodes without an artifact cannot use when or switch rules".to_string(),
             }
         }
-        routing::RoutingValidationError::LoopGuardMaxIterations { step } => {
+        routing::RoutingValidationError::LoopGuardMaxIterations { node } => {
             ValidationError::InvalidRules {
-                step,
+                node,
                 kind: InvalidRuleKind::LoopGuardMaxIterations,
                 reason: "loop_guard.max_iterations must be greater than 0".to_string(),
             }
         }
-        routing::RoutingValidationError::CycleWithoutLoopGuard { step } => {
+        routing::RoutingValidationError::CycleWithoutLoopGuard { node } => {
             ValidationError::InvalidRules {
-                step,
+                node,
                 kind: InvalidRuleKind::CycleWithoutLoopGuard,
                 reason: "cycle reachable from this node has no loop_guard on cycle nodes"
                     .to_string(),
             }
         }
-        routing::RoutingValidationError::UnreachableNode { step } => {
-            ValidationError::UnreachableNode { step }
+        routing::RoutingValidationError::UnreachableNode { node } => {
+            ValidationError::UnreachableNode { node }
         }
         routing::RoutingValidationError::FanoutChildLeafViolation {
             fanout,
             child,
             reason,
         } => ValidationError::FanoutChildLeafViolation {
-            step: fanout,
+            node: fanout,
             child,
             reason,
         },
@@ -550,7 +550,7 @@ fn routing_error_to_validation_error(error: routing::RoutingValidationError) -> 
 }
 
 pub fn validate_name(name: &str) -> Result<(), ValidationError> {
-    match WorkflowName::new(name) {
+    match WorkflowDefinitionName::new(name) {
         Ok(_) => Ok(()),
         Err(_) if name.is_empty() => Err(ValidationError::EmptyName),
         Err(_) => Err(ValidationError::InvalidChars {
@@ -559,7 +559,7 @@ pub fn validate_name(name: &str) -> Result<(), ValidationError> {
     }
 }
 
-pub fn validate_workflow_shape(workflow: &Workflow) -> Result<(), WorkflowError> {
+pub fn validate_workflow_shape(workflow: &WorkflowDefinition) -> Result<(), WorkflowError> {
     if workflow.nodes.is_empty() {
         return Err(WorkflowError::validation("workflow has no nodes"));
     }
@@ -567,11 +567,11 @@ pub fn validate_workflow_shape(workflow: &Workflow) -> Result<(), WorkflowError>
 }
 
 /// fanout child は top-level NodeDefinition の名前参照なので、定義数には重ねて数えない。
-fn total_node_count(workflow: &Workflow) -> usize {
+fn total_node_count(workflow: &WorkflowDefinition) -> usize {
     workflow.nodes.len()
 }
 
-fn collect_fanout_definition_errors(workflow: &Workflow) -> Vec<ValidationError> {
+fn collect_fanout_definition_errors(workflow: &WorkflowDefinition) -> Vec<ValidationError> {
     let node_by_name: HashMap<_, _> = workflow
         .nodes
         .iter()
@@ -585,7 +585,7 @@ fn collect_fanout_definition_errors(workflow: &Workflow) -> Vec<ValidationError>
         };
         if fanout.child.is_empty() {
             errors.push(ValidationError::EmptyFanoutChildren {
-                step: parent.name.clone(),
+                node: parent.name.clone(),
             });
             continue;
         }
@@ -598,7 +598,7 @@ fn collect_fanout_definition_errors(workflow: &Workflow) -> Vec<ValidationError>
                     Some(child) => Some(child),
                     None => {
                         errors.push(ValidationError::UnknownFanoutChild {
-                            step: parent.name.clone(),
+                            node: parent.name.clone(),
                             child: child_name.clone(),
                         });
                         None
@@ -612,7 +612,7 @@ fn collect_fanout_definition_errors(workflow: &Workflow) -> Vec<ValidationError>
                 for child in resolved_children {
                     if child.input.is_some() {
                         errors.push(ValidationError::FanoutInputMismatch {
-                            step: parent.name.clone(),
+                            node: parent.name.clone(),
                             child: child.name.clone(),
                             reason: "child declares input but fanout has no items".to_string(),
                         });
@@ -623,7 +623,7 @@ fn collect_fanout_definition_errors(workflow: &Workflow) -> Vec<ValidationError>
                 for child in &resolved_children {
                     if child.input.is_none() {
                         errors.push(ValidationError::FanoutInputMismatch {
-                            step: parent.name.clone(),
+                            node: parent.name.clone(),
                             child: child.name.clone(),
                             reason: "fanout supplies items but child does not declare input"
                                 .to_string(),
@@ -647,7 +647,7 @@ fn collect_fanout_definition_errors(workflow: &Workflow) -> Vec<ValidationError>
                                     _ => "unresolvable Artifact field".to_string(),
                                 };
                                 errors.push(ValidationError::InvalidFanoutItemsReference {
-                                    step: parent.name.clone(),
+                                    node: parent.name.clone(),
                                     reference: reference_value,
                                     reason,
                                 });
@@ -659,7 +659,7 @@ fn collect_fanout_definition_errors(workflow: &Workflow) -> Vec<ValidationError>
                                     if let Some(input_contract) = child.input.as_deref() {
                                         if input_contract != element_contract {
                                             errors.push(ValidationError::FanoutInputMismatch {
-                                                step: parent.name.clone(),
+                                                node: parent.name.clone(),
                                                 child: child.name.clone(),
                                                 reason: format!(
                                                     "items element Contract '{element_contract}' does not match child input Contract '{input_contract}'"
@@ -673,7 +673,7 @@ fn collect_fanout_definition_errors(workflow: &Workflow) -> Vec<ValidationError>
                                 for child in &resolved_children {
                                     if child.input.is_some() {
                                         errors.push(ValidationError::FanoutInputMismatch {
-                                            step: parent.name.clone(),
+                                            node: parent.name.clone(),
                                             child: child.name.clone(),
                                             reason: format!(
                                                 "items reference '{reference_value}' must resolve to an array field"
@@ -706,7 +706,7 @@ fn collect_fanout_definition_errors(workflow: &Workflow) -> Vec<ValidationError>
                                     })
                                     .unwrap_or_else(|| "Contract validation failed".to_string());
                                 errors.push(ValidationError::FanoutInputMismatch {
-                                    step: parent.name.clone(),
+                                    node: parent.name.clone(),
                                     child: child.name.clone(),
                                     reason: format!(
                                         "literal item at index {item_index} does not match Contract '{input_contract}': {reason}"
@@ -723,11 +723,11 @@ fn collect_fanout_definition_errors(workflow: &Workflow) -> Vec<ValidationError>
     errors
 }
 
-pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
+pub fn validate(workflow: &WorkflowDefinition) -> Result<(), ValidationError> {
     validate_name(&workflow.name)?;
 
     if workflow.nodes.is_empty() {
-        return Err(ValidationError::EmptySteps);
+        return Err(ValidationError::EmptyNodes);
     }
     if let Some(err) = collect_node_count_errors(workflow).into_iter().next() {
         return Err(err);
@@ -742,10 +742,10 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
 
     // 重複 node 名を検出する。
     let mut seen_names = HashSet::new();
-    for step in &workflow.nodes {
-        if !seen_names.insert(step.name.as_str()) {
-            return Err(ValidationError::DuplicateStep {
-                name: step.name.clone(),
+    for node in &workflow.nodes {
+        if !seen_names.insert(node.name.as_str()) {
+            return Err(ValidationError::DuplicateNode {
+                name: node.name.clone(),
             });
         }
     }
@@ -759,12 +759,12 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
         return Err(routing_error_to_validation_error(err));
     }
 
-    for step in &workflow.nodes {
-        validate_node_kind_fields(step)?;
-        if step.is_session() {
-            validate_required_permission(&step.name, step.permission())?;
+    for node in &workflow.nodes {
+        validate_node_kind_fields(node)?;
+        if node.is_session() {
+            validate_required_permission(&node.name, node.permission())?;
         }
-        if let Some(err) = check_missing_facet(step) {
+        if let Some(err) = check_missing_facet(node) {
             return Err(err);
         }
     }
@@ -776,7 +776,7 @@ pub fn validate(workflow: &Workflow) -> Result<(), ValidationError> {
 ///
 /// validation.rs は facet I/O を持たず、workflow definition に含まれる
 /// backend-owned schema state だけを読む。
-pub fn validate_schema_refs(workflow: &Workflow) -> Result<(), ValidationError> {
+pub fn validate_schema_refs(workflow: &WorkflowDefinition) -> Result<(), ValidationError> {
     for (name, schema) in &workflow.schemas {
         if name == reference::REQUEST_ARTIFACT {
             return Err(ValidationError::InvalidArtifactReference {
@@ -811,7 +811,7 @@ pub fn validate_schema_refs(workflow: &Workflow) -> Result<(), ValidationError> 
 }
 
 pub fn validate_template_references(
-    workflow: &Workflow,
+    workflow: &WorkflowDefinition,
     content: &str,
     allow_item: bool,
 ) -> Vec<ValidationError> {
@@ -826,7 +826,7 @@ pub fn validate_template_references(
 fn validate_schema_def(
     name: &str,
     schema: &SchemaDef,
-    workflow: &Workflow,
+    workflow: &WorkflowDefinition,
 ) -> Result<(), ValidationError> {
     match schema {
         SchemaDef::Object {
@@ -887,7 +887,7 @@ fn validate_node_schema_refs(
     input: Option<&str>,
     is_command: bool,
     is_fanout: bool,
-    workflow: &Workflow,
+    workflow: &WorkflowDefinition,
 ) -> Result<(), ValidationError> {
     if let Some(contract) = artifact {
         validate_schema_reference_identifier(node_name, "artifact", contract)?;
@@ -896,20 +896,20 @@ fn validate_node_schema_refs(
                 .schemas
                 .get(contract)
                 .ok_or_else(|| ValidationError::UnknownSchemaRef {
-                    step: node_name.to_string(),
+                    node: node_name.to_string(),
                     slot: "artifact",
                     key: contract.to_string(),
                 })?;
         if is_fanout || !matches!(schema, SchemaDef::Object { .. }) {
             return Err(ValidationError::InvalidArtifactSchema {
-                step: node_name.to_string(),
+                node: node_name.to_string(),
                 contract: contract.to_string(),
             });
         }
         if is_command {
             if let Some(field) = contract_schema::schema_declares_command_reserved_field(schema) {
                 return Err(ValidationError::ReservedArtifactField {
-                    step: node_name.to_string(),
+                    node: node_name.to_string(),
                     contract: contract.to_string(),
                     field,
                 });
@@ -921,7 +921,7 @@ fn validate_node_schema_refs(
         validate_schema_reference_identifier(node_name, "input", contract)?;
         if !workflow.schemas.contains_key(contract) {
             return Err(ValidationError::UnknownSchemaRef {
-                step: node_name.to_string(),
+                node: node_name.to_string(),
                 slot: "input",
                 key: contract.to_string(),
             });
@@ -932,7 +932,7 @@ fn validate_node_schema_refs(
 }
 
 fn validate_schema_reference_identifier(
-    step: &str,
+    node: &str,
     slot: &'static str,
     key: &str,
 ) -> Result<(), ValidationError> {
@@ -940,7 +940,7 @@ fn validate_schema_reference_identifier(
         return Ok(());
     }
     Err(ValidationError::InvalidSchemaRef {
-        step: step.to_string(),
+        node: node.to_string(),
         slot,
         key: key.to_string(),
         reason: safe_identifier_message().to_string(),
@@ -959,7 +959,7 @@ fn safe_identifier_message() -> &'static str {
 /// `validate` / `validate_all` の両経路から呼ばれ、呼び出し側はそれぞれ
 /// 「最初のエラーで return」「全件 push して以降のチェックを打ち切る」と
 /// 消費方法を切り替える。
-fn collect_node_count_errors(workflow: &Workflow) -> Vec<ValidationError> {
+fn collect_node_count_errors(workflow: &WorkflowDefinition) -> Vec<ValidationError> {
     let mut errors = Vec::new();
     let total_nodes = total_node_count(workflow);
     if total_nodes > MAX_NODES_PER_WORKFLOW {
@@ -969,11 +969,11 @@ fn collect_node_count_errors(workflow: &Workflow) -> Vec<ValidationError> {
         });
         return errors;
     }
-    for step in &workflow.nodes {
-        if let Some(fanout) = step.fanout() {
+    for node in &workflow.nodes {
+        if let Some(fanout) = node.fanout() {
             if fanout.child.len() > MAX_FANOUT_CHILDREN {
                 errors.push(ValidationError::TooManyFanoutChildren {
-                    step: step.name.clone(),
+                    node: node.name.clone(),
                     count: fanout.child.len(),
                     max: MAX_FANOUT_CHILDREN,
                 });
@@ -988,10 +988,10 @@ fn collect_node_count_errors(workflow: &Workflow) -> Vec<ValidationError> {
 /// 不要であり、この検査の対象外（必須フィールドは `validate_node_kind_fields` で検証済み）。
 ///
 /// `validate` / `validate_all` の両経路で同じ判定を行うため共通化する。
-fn check_missing_facet(step: &NodeDefinition) -> Option<ValidationError> {
-    if step.is_session() && !step.has_facet_refs() {
+fn check_missing_facet(node: &NodeDefinition) -> Option<ValidationError> {
+    if node.is_session() && !node.has_facet_refs() {
         Some(ValidationError::MissingFacet {
-            step: step.name.clone(),
+            node: node.name.clone(),
         })
     } else {
         None
@@ -999,15 +999,15 @@ fn check_missing_facet(step: &NodeDefinition) -> Option<ValidationError> {
 }
 
 /// node kind ごとの許可フィールドを検証する。
-fn validate_node_kind_fields(step: &NodeDefinition) -> Result<(), ValidationError> {
-    match step.kind_name() {
+fn validate_node_kind_fields(node: &NodeDefinition) -> Result<(), ValidationError> {
+    match node.kind_name() {
         NodeKindName::Command => {
-            let command = step
+            let command = node
                 .command()
                 .expect("command node must expose command spec");
             if command.trim().is_empty() {
                 return Err(ValidationError::EmptyCommand {
-                    step: step.name.clone(),
+                    node: node.name.clone(),
                 });
             }
         }
@@ -1024,12 +1024,12 @@ fn validate_required_permission(
 ) -> Result<(), ValidationError> {
     match value {
         None => Err(ValidationError::MissingPermissionMode {
-            step: node_name.to_string(),
+            node: node_name.to_string(),
         }),
         Some(v) => {
             if !is_allowed_permission_mode(v) {
                 return Err(ValidationError::InvalidPermissionMode {
-                    step: node_name.to_string(),
+                    node: node_name.to_string(),
                     value: v.to_string(),
                 });
             }
@@ -1049,14 +1049,17 @@ fn is_allowed_permission_mode(value: &str) -> bool {
 ///    上限長超過は登録判定に進まず形式不正として拒否する
 /// 2. 登録判定（呼び出し側の resolver）— 未登録なら `UnknownModel`
 /// 3. 所属解決（呼び出し側の resolver）— 複数 backend に登録された曖昧な model は拒否する
-pub fn validate_models<F>(workflow: &Workflow, mut resolve_model: F) -> Result<(), ValidationError>
+pub fn validate_models<F>(
+    workflow: &WorkflowDefinition,
+    mut resolve_model: F,
+) -> Result<(), ValidationError>
 where
     F: FnMut(&str) -> Result<Option<String>, String>,
 {
-    for step in &workflow.nodes {
-        if let Some(model) = step.model() {
-            validate_model_format(&step.name, model)?;
-            validate_model_registered(&step.name, model, &mut resolve_model)?;
+    for node in &workflow.nodes {
+        if let Some(model) = node.model() {
+            validate_model_format(&node.name, model)?;
+            validate_model_registered(&node.name, model, &mut resolve_model)?;
         }
     }
     Ok(())
@@ -1065,7 +1068,7 @@ where
 fn validate_model_format(node_name: &str, model: &str) -> Result<(), ValidationError> {
     crate::domain::agent_session::ModelId::parse(model).map_err(|reason| {
         ValidationError::InvalidModelFormat {
-            step: node_name.to_string(),
+            node: node_name.to_string(),
             value: model.to_string(),
             reason,
         }
@@ -1084,11 +1087,11 @@ where
     match resolve_model(model) {
         Ok(Some(_)) => Ok(()),
         Ok(None) => Err(ValidationError::UnknownModel {
-            step: node_name.to_string(),
+            node: node_name.to_string(),
             value: model.to_string(),
         }),
         Err(reason) => Err(ValidationError::ModelResolutionFailed {
-            step: node_name.to_string(),
+            node: node_name.to_string(),
             value: model.to_string(),
             reason,
         }),
@@ -1098,9 +1101,9 @@ where
 /// 診断用: 全てのバリデーションエラーを収集して返す。
 /// `validate` は最初のエラーで早期リターンするが、診断エンジンでは全エラーを網羅的に報告したいため、
 /// 構造的に安全な範囲でエラーを蓄積する。
-/// 名前空間構築に失敗するレベルのエラー（EmptyName, EmptySteps, DuplicateStep等）は
+/// 名前空間構築に失敗するレベルのエラー（EmptyName, EmptyNodes, DuplicateNode等）は
 /// 後続チェックが信頼できないため、そこで打ち切って返す。
-pub fn validate_all(workflow: &Workflow) -> Vec<ValidationError> {
+pub fn validate_all(workflow: &WorkflowDefinition) -> Vec<ValidationError> {
     let mut errors = Vec::new();
 
     if let Err(e) = validate_name(&workflow.name) {
@@ -1109,7 +1112,7 @@ pub fn validate_all(workflow: &Workflow) -> Vec<ValidationError> {
     }
 
     if workflow.nodes.is_empty() {
-        errors.push(ValidationError::EmptySteps);
+        errors.push(ValidationError::EmptyNodes);
         return errors;
     }
     let count_errors = collect_node_count_errors(workflow);
@@ -1134,10 +1137,10 @@ pub fn validate_all(workflow: &Workflow) -> Vec<ValidationError> {
     // 重複 node 名を検出し、あれば蓄積するが、以降のチェックは続行
     let mut seen_names = HashSet::new();
     let mut has_dup = false;
-    for step in &workflow.nodes {
-        if !seen_names.insert(step.name.as_str()) {
-            errors.push(ValidationError::DuplicateStep {
-                name: step.name.clone(),
+    for node in &workflow.nodes {
+        if !seen_names.insert(node.name.as_str()) {
+            errors.push(ValidationError::DuplicateNode {
+                name: node.name.clone(),
             });
             has_dup = true;
         }
@@ -1158,16 +1161,16 @@ pub fn validate_all(workflow: &Workflow) -> Vec<ValidationError> {
             .map(routing_error_to_validation_error),
     );
 
-    for step in &workflow.nodes {
-        if let Err(e) = validate_node_kind_fields(step) {
+    for node in &workflow.nodes {
+        if let Err(e) = validate_node_kind_fields(node) {
             errors.push(e);
         }
-        if step.is_session() {
-            if let Err(e) = validate_required_permission(&step.name, step.permission()) {
+        if node.is_session() {
+            if let Err(e) = validate_required_permission(&node.name, node.permission()) {
                 errors.push(e);
             }
         }
-        if let Some(err) = check_missing_facet(step) {
+        if let Some(err) = check_missing_facet(node) {
             errors.push(err);
         }
     }
@@ -1190,8 +1193,8 @@ mod tests {
         ApprovalSession,
     }
 
-    fn make_workflow_exact(nodes: Vec<NodeDefinition>) -> Workflow {
-        Workflow {
+    fn make_workflow_exact(nodes: Vec<NodeDefinition>) -> WorkflowDefinition {
+        WorkflowDefinition {
             schemas: Default::default(),
             name: "test".to_string(),
             description: "test workflow".to_string(),
@@ -1200,7 +1203,7 @@ mod tests {
         }
     }
 
-    fn make_workflow(mut nodes: Vec<NodeDefinition>) -> Workflow {
+    fn make_workflow(mut nodes: Vec<NodeDefinition>) -> WorkflowDefinition {
         // Most tests care about the fanout parent. Materialize referenced children as ordinary
         // top-level nodes unless a test supplied a customized definition explicitly.
         let existing: HashSet<String> = nodes.iter().map(|node| node.name.clone()).collect();
@@ -1215,7 +1218,7 @@ mod tests {
         nodes.extend(
             missing_children
                 .iter()
-                .map(|name| make_step(name, TestKind::Session, vec![])),
+                .map(|name| make_node(name, TestKind::Session, vec![])),
         );
         make_workflow_exact(nodes)
     }
@@ -1224,7 +1227,7 @@ mod tests {
         Ok(valid.contains(model).then(|| "backend".to_string()))
     }
 
-    fn make_step(name: &str, kind: TestKind, rules: Vec<Rule>) -> NodeDefinition {
+    fn make_node(name: &str, kind: TestKind, rules: Vec<Rule>) -> NodeDefinition {
         let node_kind = match kind {
             TestKind::Session => NodeKind::Session(SessionSpec {
                 permission: Some("edit".to_string()),
@@ -1252,11 +1255,11 @@ mod tests {
         }
     }
 
-    fn make_parallel_step(name: &str) -> String {
+    fn make_fanout_node(name: &str) -> String {
         name.to_string()
     }
 
-    fn make_parallel_block(name: &str, children: Vec<String>) -> NodeDefinition {
+    fn make_fanout_node_block(name: &str, children: Vec<String>) -> NodeDefinition {
         NodeDefinition {
             name: name.to_string(),
             kind: NodeKind::Fanout(FanoutSpec {
@@ -1306,7 +1309,7 @@ mod tests {
         node
     }
 
-    fn command_step(name: &str, command: &str) -> NodeDefinition {
+    fn command_node(name: &str, command: &str) -> NodeDefinition {
         NodeDefinition {
             name: name.to_string(),
             kind: NodeKind::Command(CommandSpec {
@@ -1330,8 +1333,8 @@ mod tests {
     fn workflow_with_schemas(
         nodes: Vec<NodeDefinition>,
         schemas: BTreeMap<String, SchemaDef>,
-    ) -> Workflow {
-        Workflow {
+    ) -> WorkflowDefinition {
+        WorkflowDefinition {
             schemas,
             ..make_workflow(nodes)
         }
@@ -1342,15 +1345,15 @@ mod tests {
     #[test]
     fn validation_messages_use_node_vocabulary() {
         let errors = [
-            ValidationError::EmptySteps,
-            ValidationError::DuplicateStep {
+            ValidationError::EmptyNodes,
+            ValidationError::DuplicateNode {
                 name: "review".to_string(),
             },
             ValidationError::MissingFacet {
-                step: "review".to_string(),
+                node: "review".to_string(),
             },
             ValidationError::EmptyCommand {
-                step: "build".to_string(),
+                node: "build".to_string(),
             },
         ];
 
@@ -1364,7 +1367,7 @@ mod tests {
     #[test]
     fn valid_workflow_passes() {
         let wf = make_workflow(vec![
-            make_step("plan", TestKind::ApprovalSession, vec![]),
+            make_node("plan", TestKind::ApprovalSession, vec![]),
             NodeDefinition {
                 rules: vec![
                     Rule::LoopGuard {
@@ -1373,7 +1376,7 @@ mod tests {
                     },
                     Rule::Next("plan".to_string()),
                 ],
-                ..make_step("implement", TestKind::Session, vec![])
+                ..make_node("implement", TestKind::Session, vec![])
             },
         ]);
         assert!(validate(&wf).is_ok());
@@ -1385,8 +1388,8 @@ mod tests {
     #[test]
     fn approval_gated_session_allows_terminal_rules_empty() {
         let wf = make_workflow(vec![
-            make_step("fix", TestKind::Session, vec![]),
-            make_step("approval", TestKind::ApprovalSession, vec![]),
+            make_node("fix", TestKind::Session, vec![]),
+            make_node("approval", TestKind::ApprovalSession, vec![]),
         ]);
         assert!(validate(&wf).is_ok());
     }
@@ -1394,8 +1397,8 @@ mod tests {
     #[test]
     fn rules_reject_multiple_next_catch_alls() {
         let wf = make_workflow(vec![
-            make_step("fix", TestKind::Session, vec![]),
-            make_step(
+            make_node("fix", TestKind::Session, vec![]),
+            make_node(
                 "route",
                 TestKind::ApprovalSession,
                 vec![Rule::Next("fix".to_string()), Rule::Next("fix".to_string())],
@@ -1403,14 +1406,14 @@ mod tests {
         ]);
         assert!(matches!(
             validate(&wf).unwrap_err(),
-            ValidationError::InvalidRules { ref step, .. } if step == "route"
+            ValidationError::InvalidRules { ref node, .. } if node == "route"
         ));
     }
 
     #[test]
     fn rules_reject_standalone_next_with_discriminator() {
         let wf = make_workflow(vec![
-            make_step("fix", TestKind::Session, vec![]),
+            make_node("fix", TestKind::Session, vec![]),
             NodeDefinition {
                 artifact: Some("verdict".to_string()),
                 rules: vec![
@@ -1421,7 +1424,7 @@ mod tests {
                     },
                     Rule::Next("fix".to_string()),
                 ],
-                ..make_step("route", TestKind::Session, vec![])
+                ..make_node("route", TestKind::Session, vec![])
             },
         ]);
         let wf = workflow_with_schemas(
@@ -1437,7 +1440,7 @@ mod tests {
         );
         assert!(matches!(
             validate(&wf).unwrap_err(),
-            ValidationError::InvalidRules { ref step, .. } if step == "route"
+            ValidationError::InvalidRules { ref node, .. } if node == "route"
         ));
     }
 
@@ -1445,7 +1448,7 @@ mod tests {
     fn invalid_transition_target_fails() {
         let wf = make_workflow(vec![NodeDefinition {
             rules: vec![Rule::Next("nonexistent".to_string())],
-            ..make_step("plan", TestKind::Session, vec![])
+            ..make_node("plan", TestKind::Session, vec![])
         }]);
         let result = validate(&wf);
         assert!(result.is_err());
@@ -1460,33 +1463,33 @@ mod tests {
     fn routing_errors_map_by_variant_not_reason_text() {
         let err =
             routing_error_to_validation_error(routing::RoutingValidationError::UnknownRuleTarget {
-                step: "route".to_string(),
+                node: "route".to_string(),
                 target: "missing".to_string(),
             });
         assert!(matches!(
             err,
-            ValidationError::UnknownRuleTarget { ref step, ref target }
-                if step == "route" && target == "missing"
+            ValidationError::UnknownRuleTarget { ref node, ref target }
+                if node == "route" && target == "missing"
         ));
 
         let err = routing_error_to_validation_error(
             routing::RoutingValidationError::MultipleNextCatchAll {
-                step: "route".to_string(),
+                node: "route".to_string(),
             },
         );
         assert!(matches!(
             err,
-            ValidationError::InvalidRules { ref step, kind, .. }
-                if step == "route" && kind == InvalidRuleKind::MultipleNextCatchAll
+            ValidationError::InvalidRules { ref node, kind, .. }
+                if node == "route" && kind == InvalidRuleKind::MultipleNextCatchAll
         ));
     }
 
     #[test]
-    fn empty_steps_fails() {
+    fn empty_nodes_fails() {
         let wf = make_workflow(vec![]);
         assert!(matches!(
             validate(&wf).unwrap_err(),
-            ValidationError::EmptySteps
+            ValidationError::EmptyNodes
         ));
     }
 
@@ -1526,33 +1529,33 @@ mod tests {
     #[test]
     fn duplicate_node_names_fails() {
         let wf = make_workflow(vec![
-            make_step("plan", TestKind::ApprovalSession, vec![]),
-            make_step("plan", TestKind::Session, vec![]),
+            make_node("plan", TestKind::ApprovalSession, vec![]),
+            make_node("plan", TestKind::Session, vec![]),
         ]);
         let result = validate(&wf);
         assert!(matches!(
             result.unwrap_err(),
-            ValidationError::DuplicateStep { ref name } if name == "plan"
+            ValidationError::DuplicateNode { ref name } if name == "plan"
         ));
     }
 
     #[test]
     fn missing_facet_fails() {
-        let wf = make_workflow(vec![without_session_facets(make_step(
-            "step1",
+        let wf = make_workflow(vec![without_session_facets(make_node(
+            "node1",
             TestKind::Session,
             vec![],
         ))]);
         assert!(matches!(
             validate(&wf).unwrap_err(),
-            ValidationError::MissingFacet { ref step } if step == "step1"
+            ValidationError::MissingFacet { ref node } if node == "node1"
         ));
     }
 
     #[test]
-    fn facet_only_step_passes() {
+    fn facet_only_node_passes() {
         let wf = make_workflow(vec![with_session_facets(
-            make_step("step1", TestKind::Session, vec![]),
+            make_node("node1", TestKind::Session, vec![]),
             FacetRefs {
                 policy: Some("coding".to_string()),
                 instruction: Some("implement".to_string()),
@@ -1565,7 +1568,7 @@ mod tests {
     #[test]
     fn reserved_artifact_names_cannot_be_nodes() {
         for name in ["request", "item"] {
-            let wf = make_workflow(vec![make_step(name, TestKind::Session, vec![])]);
+            let wf = make_workflow(vec![make_node(name, TestKind::Session, vec![])]);
             assert!(matches!(
                 validate(&wf).unwrap_err(),
                 ValidationError::InvalidArtifactReference { ref reference, .. } if reference == name
@@ -1577,7 +1580,7 @@ mod tests {
     fn unknown_input_artifact_fails() {
         let wf = make_workflow(vec![NodeDefinition {
             inputs: vec!["nonexistent".to_string()],
-            ..make_step("step1", TestKind::Session, vec![])
+            ..make_node("node1", TestKind::Session, vec![])
         }]);
         assert!(matches!(
             validate(&wf).unwrap_err(),
@@ -1590,14 +1593,14 @@ mod tests {
         let mut schemas = BTreeMap::new();
         schemas.insert("plan-doc".to_string(), artifact_object_schema(&["summary"]));
         for input in ["plan.summary", "item", "request.field"] {
-            let mut plan = make_step("plan", TestKind::Session, vec![]);
+            let mut plan = make_node("plan", TestKind::Session, vec![]);
             plan.artifact = Some("plan-doc".to_string());
             let wf = workflow_with_schemas(
                 vec![
                     plan,
                     NodeDefinition {
                         inputs: vec![input.to_string()],
-                        ..make_step("consume", TestKind::Session, vec![])
+                        ..make_node("consume", TestKind::Session, vec![])
                     },
                 ],
                 schemas.clone(),
@@ -1614,7 +1617,7 @@ mod tests {
     fn invalid_input_reference_keeps_inputs_context_reason() {
         let wf = make_workflow(vec![NodeDefinition {
             inputs: vec!["bad ref".to_string()],
-            ..make_step("consume", TestKind::Session, vec![])
+            ..make_node("consume", TestKind::Session, vec![])
         }]);
 
         assert!(matches!(
@@ -1627,7 +1630,7 @@ mod tests {
 
     #[test]
     fn invalid_template_reference_uses_template_context_reason() {
-        let wf = make_workflow(vec![command_step("step1", "echo {{ bad ref }}")]);
+        let wf = make_workflow(vec![command_node("node1", "echo {{ bad ref }}")]);
 
         assert!(matches!(
             validate(&wf).unwrap_err(),
@@ -1640,7 +1643,7 @@ mod tests {
 
     #[test]
     fn validate_template_references_uses_template_context_reason() {
-        let wf = make_workflow(vec![make_step("review", TestKind::Session, vec![])]);
+        let wf = make_workflow(vec![make_node("review", TestKind::Session, vec![])]);
         let errors = validate_template_references(&wf, "{{ bad ref }}", false);
 
         assert!(matches!(
@@ -1654,7 +1657,7 @@ mod tests {
 
     #[test]
     fn legacy_task_template_reference_fails_when_no_artifact_exists() {
-        let wf = make_workflow(vec![command_step("step1", "echo {{ task }}")]);
+        let wf = make_workflow(vec![command_node("node1", "echo {{ task }}")]);
 
         assert!(matches!(
             validate(&wf).unwrap_err(),
@@ -1664,7 +1667,7 @@ mod tests {
 
     #[test]
     fn item_template_reference_fails_outside_fanout_child_scope() {
-        let wf = make_workflow(vec![command_step("step1", "echo {{ item.path }}")]);
+        let wf = make_workflow(vec![command_node("node1", "echo {{ item.path }}")]);
 
         assert!(matches!(
             validate(&wf).unwrap_err(),
@@ -1675,8 +1678,8 @@ mod tests {
     #[test]
     fn artifact_reference_to_session_without_artifact_fails() {
         let wf = make_workflow(vec![
-            make_step("plan", TestKind::Session, vec![]),
-            command_step("consume", "echo {{ plan }}"),
+            make_node("plan", TestKind::Session, vec![]),
+            command_node("consume", "echo {{ plan }}"),
         ]);
 
         assert!(matches!(
@@ -1689,8 +1692,8 @@ mod tests {
     #[test]
     fn command_without_artifact_rejects_non_reserved_field() {
         let wf = make_workflow(vec![
-            command_step("build", "cargo build"),
-            command_step("consume", "echo {{ build.no_such_field }}"),
+            command_node("build", "cargo build"),
+            command_node("consume", "echo {{ build.no_such_field }}"),
         ]);
 
         assert!(matches!(
@@ -1704,12 +1707,12 @@ mod tests {
     fn artifact_node_rejects_undeclared_field() {
         let mut schemas = BTreeMap::new();
         schemas.insert("plan-doc".to_string(), artifact_object_schema(&["summary"]));
-        let mut plan = make_step("plan", TestKind::Session, vec![]);
+        let mut plan = make_node("plan", TestKind::Session, vec![]);
         plan.artifact = Some("plan-doc".to_string());
         let wf = workflow_with_schemas(
             vec![
                 plan,
-                command_step("consume", "echo {{ plan.unknown_field }}"),
+                command_node("consume", "echo {{ plan.unknown_field }}"),
             ],
             schemas,
         );
@@ -1724,9 +1727,9 @@ mod tests {
     #[test]
     fn valid_input_reference_passes() {
         let wf = make_workflow(vec![
-            make_step("step_a", TestKind::Session, vec![]),
+            make_node("node_a", TestKind::Session, vec![]),
             NodeDefinition {
-                ..make_step("step_b", TestKind::Session, vec![])
+                ..make_node("node_b", TestKind::Session, vec![])
             },
         ]);
         assert!(validate(&wf).is_ok());
@@ -1735,17 +1738,17 @@ mod tests {
     // ---- 並列ブロック固有テスト ----
 
     #[test]
-    fn valid_parallel_block_passes() {
+    fn valid_fanout_block_passes() {
         let wf = make_workflow(vec![
-            make_step("implement", TestKind::Session, vec![]),
-            make_parallel_block(
-                "parallel-review",
+            make_node("implement", TestKind::Session, vec![]),
+            make_fanout_node_block(
+                "fanout-review",
                 vec![
-                    make_parallel_step("arch-review"),
-                    make_parallel_step("security-review"),
+                    make_fanout_node("arch-review"),
+                    make_fanout_node("security-review"),
                 ],
             ),
-            make_step("report", TestKind::Session, vec![]),
+            make_node("report", TestKind::Session, vec![]),
         ]);
         assert!(validate(&wf).is_ok());
     }
@@ -1753,31 +1756,31 @@ mod tests {
     #[test]
     fn fanout_child_is_an_ordinary_top_level_node_reference() {
         let wf = make_workflow(vec![
-            make_parallel_block("par", vec![make_parallel_step("conflict")]),
-            make_step("conflict", TestKind::Session, vec![]),
+            make_fanout_node_block("par", vec![make_fanout_node("conflict")]),
+            make_node("conflict", TestKind::Session, vec![]),
         ]);
         assert!(validate(&wf).is_ok());
     }
 
     #[test]
     fn undefined_fanout_child_fails() {
-        let wf = make_workflow_exact(vec![make_parallel_block(
+        let wf = make_workflow_exact(vec![make_fanout_node_block(
             "par",
             vec!["missing".to_string()],
         )]);
 
         assert!(matches!(
             validate(&wf).unwrap_err(),
-            ValidationError::UnknownFanoutChild { ref step, ref child }
-                if step == "par" && child == "missing"
+            ValidationError::UnknownFanoutChild { ref node, ref child }
+                if node == "par" && child == "missing"
         ));
     }
 
     #[test]
     fn fanout_inputs_are_rejected() {
-        let mut fanout = make_parallel_block(
+        let mut fanout = make_fanout_node_block(
             "par",
-            vec![make_parallel_step("child1"), make_parallel_step("child2")],
+            vec![make_fanout_node("child1"), make_fanout_node("child2")],
         );
         fanout.inputs = vec!["request".to_string()];
         let wf = make_workflow(vec![fanout]);
@@ -1789,37 +1792,37 @@ mod tests {
 
     #[test]
     fn fanout_child_missing_facet_uses_normal_node_validation() {
-        let child = without_session_facets(make_step("child1", TestKind::Session, vec![]));
+        let child = without_session_facets(make_node("child1", TestKind::Session, vec![]));
         let wf = make_workflow(vec![
-            make_parallel_block("par", vec![make_parallel_step("child1")]),
+            make_fanout_node_block("par", vec![make_fanout_node("child1")]),
             child,
         ]);
         assert!(matches!(
             validate(&wf).unwrap_err(),
-            ValidationError::MissingFacet { ref step } if step == "child1"
+            ValidationError::MissingFacet { ref node } if node == "child1"
         ));
     }
 
     // 新 schema では node_type が型レベルで必須となるため、旧テスト
-    // `normal_step_missing_mode_fails` は YAML deserialize 段階で吸収される（[02] 範囲）。
+    // `normal_node_missing_mode_fails` は YAML deserialize 段階で吸収される（[02] 範囲）。
 
     #[test]
-    fn fanout_child_reference_valid_global_step() {
+    fn fanout_child_reference_valid_global_node() {
         let wf = make_workflow(vec![
-            make_step("plan", TestKind::Session, vec![]),
-            make_parallel_block("par", vec![make_parallel_step("child1")]),
+            make_node("plan", TestKind::Session, vec![]),
+            make_fanout_node_block("par", vec![make_fanout_node("child1")]),
         ]);
         assert!(validate(&wf).is_ok());
     }
 
     #[test]
     fn fanout_child_artifact_reference_fails() {
-        let mut child = make_step("arch-review", TestKind::Session, vec![]);
+        let mut child = make_node("arch-review", TestKind::Session, vec![]);
         child.artifact = Some("review-output".to_string());
         let wf = make_workflow(vec![
-            make_parallel_block("par", vec![make_parallel_step("arch-review")]),
+            make_fanout_node_block("par", vec![make_fanout_node("arch-review")]),
             child,
-            command_step("consume", "echo {{ arch-review.verdict }}"),
+            command_node("consume", "echo {{ arch-review.verdict }}"),
         ]);
         let wf = workflow_with_schemas(
             wf.nodes,
@@ -1839,23 +1842,23 @@ mod tests {
     #[test]
     fn empty_fanout_children_fails() {
         let wf = make_workflow(vec![
-            make_step("implement", TestKind::Session, vec![]),
-            make_parallel_block("parallel-review", vec![]),
-            make_step("report", TestKind::Session, vec![]),
+            make_node("implement", TestKind::Session, vec![]),
+            make_fanout_node_block("fanout-review", vec![]),
+            make_node("report", TestKind::Session, vec![]),
         ]);
         let err = validate(&wf).unwrap_err();
         assert!(matches!(
             err,
-            ValidationError::EmptyFanoutChildren { ref step }
-                if step == "parallel-review"
+            ValidationError::EmptyFanoutChildren { ref node }
+                if node == "fanout-review"
         ));
     }
 
     #[test]
     fn fanout_without_items_rejects_child_input() {
         let wf = make_workflow(vec![
-            make_parallel_block("par", vec![make_parallel_step("child")]),
-            with_input(make_step("child", TestKind::Session, vec![]), "target"),
+            make_fanout_node_block("par", vec![make_fanout_node("child")]),
+            with_input(make_node("child", TestKind::Session, vec![]), "target"),
         ]);
         let wf = workflow_with_schemas(
             wf.nodes,
@@ -1864,37 +1867,37 @@ mod tests {
 
         assert!(matches!(
             validate(&wf).unwrap_err(),
-            ValidationError::FanoutInputMismatch { ref step, ref child, .. }
-                if step == "par" && child == "child"
+            ValidationError::FanoutInputMismatch { ref node, ref child, .. }
+                if node == "par" && child == "child"
         ));
     }
 
     #[test]
     fn fanout_with_items_requires_child_input() {
         let parent = with_fanout_items(
-            make_parallel_block("par", vec![make_parallel_step("child")]),
+            make_fanout_node_block("par", vec![make_fanout_node("child")]),
             ItemsSource::Literal(vec![]),
         );
-        let wf = make_workflow(vec![parent, make_step("child", TestKind::Session, vec![])]);
+        let wf = make_workflow(vec![parent, make_node("child", TestKind::Session, vec![])]);
 
         assert!(matches!(
             validate(&wf).unwrap_err(),
-            ValidationError::FanoutInputMismatch { ref step, ref child, .. }
-                if step == "par" && child == "child"
+            ValidationError::FanoutInputMismatch { ref node, ref child, .. }
+                if node == "par" && child == "child"
         ));
     }
 
     #[test]
     fn fanout_literal_items_must_match_child_input_contract() {
         let parent = with_fanout_items(
-            make_parallel_block("par", vec![make_parallel_step("child")]),
+            make_fanout_node_block("par", vec![make_fanout_node("child")]),
             ItemsSource::Literal(vec![serde_json::Value::String(
                 "not-an-integer".to_string(),
             )]),
         );
         let wf = make_workflow(vec![
             parent,
-            with_input(make_step("child", TestKind::Session, vec![]), "target"),
+            with_input(make_node("child", TestKind::Session, vec![]), "target"),
         ]);
         let wf = workflow_with_schemas(
             wf.nodes,
@@ -1903,17 +1906,17 @@ mod tests {
 
         assert!(matches!(
             validate(&wf).unwrap_err(),
-            ValidationError::FanoutInputMismatch { ref step, ref child, ref reason }
-                if step == "par" && child == "child" && reason.contains("index 0")
+            ValidationError::FanoutInputMismatch { ref node, ref child, ref reason }
+                if node == "par" && child == "child" && reason.contains("index 0")
         ));
     }
 
     #[test]
     fn fanout_artifact_items_element_contract_must_match_child_input() {
-        let mut source = make_step("source", TestKind::Session, vec![]);
+        let mut source = make_node("source", TestKind::Session, vec![]);
         source.artifact = Some("source-output".to_string());
         let parent = with_fanout_items(
-            make_parallel_block("par", vec![make_parallel_step("child")]),
+            make_fanout_node_block("par", vec![make_fanout_node("child")]),
             ItemsSource::ArtifactField {
                 node: "source".to_string(),
                 field: "targets".to_string(),
@@ -1923,7 +1926,7 @@ mod tests {
             source,
             parent,
             with_input(
-                make_step("child", TestKind::Session, vec![]),
+                make_node("child", TestKind::Session, vec![]),
                 "other-target",
             ),
         ]);
@@ -1950,17 +1953,17 @@ mod tests {
 
         assert!(matches!(
             validate(&wf).unwrap_err(),
-            ValidationError::FanoutInputMismatch { ref step, ref child, ref reason }
-                if step == "par" && child == "child" && reason.contains("target")
+            ValidationError::FanoutInputMismatch { ref node, ref child, ref reason }
+                if node == "par" && child == "child" && reason.contains("target")
         ));
     }
 
     #[test]
     fn fanout_child_may_be_declared_after_parent() {
         let wf = make_workflow(vec![
-            make_step("plan", TestKind::Session, vec![]),
-            make_parallel_block("par", vec![make_parallel_step("child1")]),
-            make_step("report", TestKind::Session, vec![]),
+            make_node("plan", TestKind::Session, vec![]),
+            make_fanout_node_block("par", vec![make_fanout_node("child1")]),
+            make_node("report", TestKind::Session, vec![]),
         ]);
         assert!(validate(&wf).is_ok());
     }
@@ -1970,13 +1973,13 @@ mod tests {
         let wf = make_workflow(vec![
             NodeDefinition {
                 rules: vec![Rule::Next("done".to_string())],
-                ..make_parallel_block("par", vec![make_parallel_step("child1")])
+                ..make_fanout_node_block("par", vec![make_fanout_node("child1")])
             },
             NodeDefinition {
                 rules: vec![Rule::Next("par".to_string())],
-                ..make_step("child1", TestKind::Session, vec![])
+                ..make_node("child1", TestKind::Session, vec![])
             },
-            make_step("done", TestKind::Session, vec![]),
+            make_node("done", TestKind::Session, vec![]),
         ]);
         assert!(validate(&wf).is_ok());
     }
@@ -1984,37 +1987,37 @@ mod tests {
     #[test]
     fn nested_fanout_child_fails() {
         let wf = make_workflow(vec![
-            make_parallel_block("outer", vec![make_parallel_step("inner")]),
-            make_parallel_block("inner", vec![make_parallel_step("leaf")]),
-            make_step("leaf", TestKind::Session, vec![]),
+            make_fanout_node_block("outer", vec![make_fanout_node("inner")]),
+            make_fanout_node_block("inner", vec![make_fanout_node("leaf")]),
+            make_node("leaf", TestKind::Session, vec![]),
         ]);
         assert!(matches!(
             validate(&wf).unwrap_err(),
-            ValidationError::FanoutChildLeafViolation { ref step, ref child, .. }
-                if step == "outer" && child == "inner"
+            ValidationError::FanoutChildLeafViolation { ref node, ref child, .. }
+                if node == "outer" && child == "inner"
         ));
     }
 
     #[test]
     fn fanout_child_cannot_be_workflow_entry() {
         let wf = make_workflow(vec![
-            make_step("child", TestKind::Session, vec![]),
-            make_parallel_block("par", vec![make_parallel_step("child")]),
+            make_node("child", TestKind::Session, vec![]),
+            make_fanout_node_block("par", vec![make_fanout_node("child")]),
         ]);
 
         assert!(matches!(
             validate(&wf).unwrap_err(),
-            ValidationError::FanoutChildLeafViolation { ref step, ref child, ref reason }
-                if step == "par" && child == "child" && reason.contains("entry")
+            ValidationError::FanoutChildLeafViolation { ref node, ref child, ref reason }
+                if node == "par" && child == "child" && reason.contains("entry")
         ));
     }
 
     #[test]
     fn fanout_child_cannot_be_normal_transition_target() {
         let wf = make_workflow(vec![
-            make_parallel_block("par", vec![make_parallel_step("child")]),
-            make_step("child", TestKind::Session, vec![]),
-            make_step(
+            make_fanout_node_block("par", vec![make_fanout_node("child")]),
+            make_node("child", TestKind::Session, vec![]),
+            make_node(
                 "source",
                 TestKind::Session,
                 vec![Rule::Next("child".to_string())],
@@ -2023,8 +2026,8 @@ mod tests {
 
         assert!(matches!(
             validate(&wf).unwrap_err(),
-            ValidationError::FanoutChildLeafViolation { ref step, ref child, ref reason }
-                if step == "par" && child == "child" && reason.contains("normal transition")
+            ValidationError::FanoutChildLeafViolation { ref node, ref child, ref reason }
+                if node == "par" && child == "child" && reason.contains("normal transition")
         ));
     }
 
@@ -2041,9 +2044,9 @@ mod tests {
                     },
                     Rule::Next("approval".to_string()),
                 ],
-                ..make_step("fix", TestKind::Session, vec![])
+                ..make_node("fix", TestKind::Session, vec![])
             },
-            make_step("approval", TestKind::ApprovalSession, vec![]),
+            make_node("approval", TestKind::ApprovalSession, vec![]),
         ]);
         assert!(validate(&wf).is_ok());
     }
@@ -2055,28 +2058,28 @@ mod tests {
                 max_iterations: 2,
                 on_exhausted: "nonexistent".to_string(),
             }],
-            ..make_step("fix", TestKind::Session, vec![])
+            ..make_node("fix", TestKind::Session, vec![])
         }]);
         let err = validate(&wf).unwrap_err();
         assert!(matches!(
             err,
-            ValidationError::UnknownRuleTarget { ref step, ref target }
-                if step == "fix" && target == "nonexistent"
+            ValidationError::UnknownRuleTarget { ref node, ref target }
+                if node == "fix" && target == "nonexistent"
         ));
     }
 
     #[test]
     fn cycle_without_reachable_loop_guard_fails() {
         let wf = make_workflow(vec![
-            make_step(
-                "step_a",
+            make_node(
+                "node_a",
                 TestKind::Session,
-                vec![Rule::Next("step_b".to_string())],
+                vec![Rule::Next("node_b".to_string())],
             ),
-            make_step(
-                "step_b",
+            make_node(
+                "node_b",
                 TestKind::Session,
-                vec![Rule::Next("step_a".to_string())],
+                vec![Rule::Next("node_a".to_string())],
             ),
         ]);
         let err = validate(&wf).unwrap_err();
@@ -2089,23 +2092,23 @@ mod tests {
     #[test]
     fn cycle_with_reachable_loop_guard_passes() {
         let wf = make_workflow(vec![
-            make_step(
-                "step_a",
+            make_node(
+                "node_a",
                 TestKind::Session,
-                vec![Rule::Next("step_b".to_string())],
+                vec![Rule::Next("node_b".to_string())],
             ),
-            make_step(
-                "step_b",
+            make_node(
+                "node_b",
                 TestKind::Session,
                 vec![
                     Rule::LoopGuard {
                         max_iterations: 2,
                         on_exhausted: "done".to_string(),
                     },
-                    Rule::Next("step_a".to_string()),
+                    Rule::Next("node_a".to_string()),
                 ],
             ),
-            make_step("done", TestKind::Session, vec![]),
+            make_node("done", TestKind::Session, vec![]),
         ]);
         assert!(validate(&wf).is_ok());
     }
@@ -2117,9 +2120,9 @@ mod tests {
         // 定義順で後方の node を input_reference で参照できる
         let wf = make_workflow(vec![
             NodeDefinition {
-                ..make_step("step_a", TestKind::Session, vec![])
+                ..make_node("node_a", TestKind::Session, vec![])
             },
-            make_step("step_b", TestKind::Session, vec![]),
+            make_node("node_b", TestKind::Session, vec![]),
         ]);
         assert!(validate(&wf).is_ok());
     }
@@ -2129,7 +2132,7 @@ mod tests {
     #[test]
     fn valid_permission_ask_passes() {
         let wf = make_workflow(vec![with_session_permission(
-            make_step("step1", TestKind::Session, vec![]),
+            make_node("node1", TestKind::Session, vec![]),
             Some("ask"),
         )]);
         assert!(validate(&wf).is_ok());
@@ -2138,7 +2141,7 @@ mod tests {
     #[test]
     fn valid_permission_edit_passes() {
         let wf = make_workflow(vec![with_session_permission(
-            make_step("step1", TestKind::Session, vec![]),
+            make_node("node1", TestKind::Session, vec![]),
             Some("edit"),
         )]);
         assert!(validate(&wf).is_ok());
@@ -2147,7 +2150,7 @@ mod tests {
     #[test]
     fn valid_permission_full_passes() {
         let wf = make_workflow(vec![with_session_permission(
-            make_step("step1", TestKind::Session, vec![]),
+            make_node("node1", TestKind::Session, vec![]),
             Some("full"),
         )]);
         assert!(validate(&wf).is_ok());
@@ -2155,16 +2158,23 @@ mod tests {
 
     #[test]
     fn legacy_permission_accept_edits_rejected() {
-        for legacy in ["acceptEdits", "bypassPermissions", "plan", "default"] {
+        for legacy in [
+            "read",
+            "readonly",
+            "acceptEdits",
+            "bypassPermissions",
+            "plan",
+            "default",
+        ] {
             let wf = make_workflow(vec![with_session_permission(
-                make_step("step1", TestKind::Session, vec![]),
+                make_node("node1", TestKind::Session, vec![]),
                 Some(legacy),
             )]);
             let err = validate(&wf).unwrap_err();
             assert!(matches!(
                 err,
-                ValidationError::InvalidPermissionMode { ref step, ref value }
-                    if step == "step1" && value == legacy
+                ValidationError::InvalidPermissionMode { ref node, ref value }
+                    if node == "node1" && value == legacy
             ));
             assert!(
                 err.to_string().contains("ask, edit, full"),
@@ -2176,14 +2186,14 @@ mod tests {
     #[test]
     fn invalid_permission_fails() {
         let wf = make_workflow(vec![with_session_permission(
-            make_step("step1", TestKind::Session, vec![]),
+            make_node("node1", TestKind::Session, vec![]),
             Some("invalid-mode"),
         )]);
         let err = validate(&wf).unwrap_err();
         assert!(matches!(
             err,
-            ValidationError::InvalidPermissionMode { ref step, ref value }
-                if step == "step1" && value == "invalid-mode"
+            ValidationError::InvalidPermissionMode { ref node, ref value }
+                if node == "node1" && value == "invalid-mode"
         ));
         assert!(err.to_string().contains("ask, edit, full"));
     }
@@ -2191,80 +2201,80 @@ mod tests {
     #[test]
     fn empty_permission_fails() {
         let wf = make_workflow(vec![with_session_permission(
-            make_step("step1", TestKind::Session, vec![]),
+            make_node("node1", TestKind::Session, vec![]),
             Some(""),
         )]);
         let err = validate(&wf).unwrap_err();
         assert!(matches!(
             err,
-            ValidationError::InvalidPermissionMode { ref step, ref value }
-                if step == "step1" && value.is_empty()
+            ValidationError::InvalidPermissionMode { ref node, ref value }
+                if node == "node1" && value.is_empty()
         ));
         assert!(err.to_string().contains("ask, edit, full"));
     }
 
     #[test]
-    fn invalid_permission_on_parallel_child_fails() {
+    fn invalid_permission_on_fanout_child_fails() {
         let child = with_session_permission(
-            make_step("child1", TestKind::Session, vec![]),
+            make_node("child1", TestKind::Session, vec![]),
             Some("acceptEdits"),
         );
         let wf = make_workflow(vec![
-            make_parallel_block("par", vec![make_parallel_step("child1")]),
+            make_fanout_node_block("par", vec![make_fanout_node("child1")]),
             child,
         ]);
         let err = validate(&wf).unwrap_err();
         assert!(matches!(
             err,
-            ValidationError::InvalidPermissionMode { ref step, ref value }
-                if step == "child1" && value == "acceptEdits"
+            ValidationError::InvalidPermissionMode { ref node, ref value }
+                if node == "child1" && value == "acceptEdits"
         ));
     }
 
     #[test]
-    fn valid_permission_on_parallel_child_passes() {
+    fn valid_permission_on_fanout_child_passes() {
         let child =
-            with_session_permission(make_step("child1", TestKind::Session, vec![]), Some("full"));
+            with_session_permission(make_node("child1", TestKind::Session, vec![]), Some("full"));
         let wf = make_workflow(vec![
-            make_parallel_block("par", vec![make_parallel_step("child1")]),
+            make_fanout_node_block("par", vec![make_fanout_node("child1")]),
             child,
         ]);
         assert!(validate(&wf).is_ok());
     }
 
     #[test]
-    fn step_without_permission_fails() {
+    fn node_without_permission_fails() {
         let wf = make_workflow(vec![with_session_permission(
-            make_step("step1", TestKind::Session, vec![]),
+            make_node("node1", TestKind::Session, vec![]),
             None,
         )]);
         let err = validate(&wf).unwrap_err();
         assert!(matches!(
             err,
-            ValidationError::MissingPermissionMode { ref step } if step == "step1"
+            ValidationError::MissingPermissionMode { ref node } if node == "node1"
         ));
         assert!(err.to_string().contains("ask, edit, full"));
     }
 
     #[test]
-    fn parallel_child_without_permission_fails() {
-        let child = with_session_permission(make_step("child1", TestKind::Session, vec![]), None);
+    fn fanout_child_without_permission_fails() {
+        let child = with_session_permission(make_node("child1", TestKind::Session, vec![]), None);
         let wf = make_workflow(vec![
-            make_parallel_block("par", vec![make_parallel_step("child1")]),
+            make_fanout_node_block("par", vec![make_fanout_node("child1")]),
             child,
         ]);
         let err = validate(&wf).unwrap_err();
         assert!(matches!(
             err,
-            ValidationError::MissingPermissionMode { ref step } if step == "child1"
+            ValidationError::MissingPermissionMode { ref node } if node == "child1"
         ));
     }
 
     #[test]
-    fn parallel_block_without_permission_passes_when_children_have_permission() {
+    fn fanout_block_without_permission_passes_when_children_have_permission() {
         let wf = make_workflow(vec![
-            make_parallel_block("par", vec![make_parallel_step("child1")]),
-            with_session_permission(make_step("child1", TestKind::Session, vec![]), Some("edit")),
+            make_fanout_node_block("par", vec![make_fanout_node("child1")]),
+            with_session_permission(make_node("child1", TestKind::Session, vec![]), Some("edit")),
         ]);
         assert!(validate(&wf).is_ok());
     }
@@ -2274,7 +2284,7 @@ mod tests {
     #[test]
     fn validate_models_valid_model_passes() {
         let wf = make_workflow(vec![with_session_model(
-            make_step("step1", TestKind::Session, vec![]),
+            make_node("node1", TestKind::Session, vec![]),
             Some("haiku"),
         )]);
         let valid = HashSet::from(["haiku".to_string(), "opus-4".to_string()]);
@@ -2284,25 +2294,25 @@ mod tests {
     #[test]
     fn validate_models_unknown_model_fails() {
         let wf = make_workflow(vec![with_session_model(
-            make_step("step1", TestKind::Session, vec![]),
+            make_node("node1", TestKind::Session, vec![]),
             Some("unknown-model"),
         )]);
         let valid = HashSet::from(["haiku".to_string(), "opus-4".to_string()]);
         let err = validate_models(&wf, |model| resolve_from_set(&valid, model)).unwrap_err();
         assert!(matches!(
             err,
-            ValidationError::UnknownModel { ref step, ref value }
-                if step == "step1" && value == "unknown-model"
+            ValidationError::UnknownModel { ref node, ref value }
+                if node == "node1" && value == "unknown-model"
         ));
         assert!(err.to_string().contains("unknown model: unknown-model"));
     }
 
     #[test]
-    fn validate_models_unknown_model_on_parallel_child_fails() {
+    fn validate_models_unknown_model_on_fanout_child_fails() {
         let wf = make_workflow(vec![
-            make_parallel_block("par", vec![make_parallel_step("child1")]),
+            make_fanout_node_block("par", vec![make_fanout_node("child1")]),
             with_session_model(
-                make_step("child1", TestKind::Session, vec![]),
+                make_node("child1", TestKind::Session, vec![]),
                 Some("unknown-model"),
             ),
         ]);
@@ -2310,15 +2320,15 @@ mod tests {
         let err = validate_models(&wf, |model| resolve_from_set(&valid, model)).unwrap_err();
         assert!(matches!(
             err,
-            ValidationError::UnknownModel { ref step, ref value }
-                if step == "child1" && value == "unknown-model"
+            ValidationError::UnknownModel { ref node, ref value }
+                if node == "child1" && value == "unknown-model"
         ));
     }
 
     #[test]
     fn validate_models_rejects_ambiguous_model_from_resolver() {
         let wf = make_workflow(vec![with_session_model(
-            make_step("step1", TestKind::Session, vec![]),
+            make_node("node1", TestKind::Session, vec![]),
             Some("shared"),
         )]);
         let err = validate_models(&wf, |model| {
@@ -2329,24 +2339,24 @@ mod tests {
         .unwrap_err();
         assert!(matches!(
             err,
-            ValidationError::ModelResolutionFailed { ref step, ref value, ref reason }
-                if step == "step1" && value == "shared" && reason.contains("複数")
+            ValidationError::ModelResolutionFailed { ref node, ref value, ref reason }
+                if node == "node1" && value == "shared" && reason.contains("複数")
         ));
     }
 
     #[test]
     fn validate_models_no_model_specified_passes() {
-        let wf = make_workflow(vec![make_step("step1", TestKind::Session, vec![])]);
+        let wf = make_workflow(vec![make_node("node1", TestKind::Session, vec![])]);
         let valid = HashSet::from(["haiku".to_string()]);
         assert!(validate_models(&wf, |model| resolve_from_set(&valid, model)).is_ok());
     }
 
     #[test]
-    fn validate_models_valid_model_on_parallel_child_passes() {
+    fn validate_models_valid_model_on_fanout_child_passes() {
         let wf = make_workflow(vec![
-            make_parallel_block("par", vec![make_parallel_step("child1")]),
+            make_fanout_node_block("par", vec![make_fanout_node("child1")]),
             with_session_model(
-                make_step("child1", TestKind::Session, vec![]),
+                make_node("child1", TestKind::Session, vec![]),
                 Some("haiku"),
             ),
         ]);
@@ -2359,7 +2369,7 @@ mod tests {
         // 形式不正（空文字）は registry に含まれるかにかかわらず拒否される。
         // 未登録（UnknownModel）と区別するため InvalidModelFormat として報告される。
         let wf = make_workflow(vec![with_session_model(
-            make_step("step1", TestKind::Session, vec![]),
+            make_node("node1", TestKind::Session, vec![]),
             Some(""),
         )]);
         // valid_models に空文字を含めても形式検証で先に弾く
@@ -2367,15 +2377,15 @@ mod tests {
         let err = validate_models(&wf, |model| resolve_from_set(&valid, model)).unwrap_err();
         assert!(matches!(
             err,
-            ValidationError::InvalidModelFormat { ref step, ref value, .. }
-                if step == "step1" && value.is_empty()
+            ValidationError::InvalidModelFormat { ref node, ref value, .. }
+                if node == "node1" && value.is_empty()
         ));
     }
 
     #[test]
     fn validate_models_rejects_whitespace_only_model() {
         let wf = make_workflow(vec![with_session_model(
-            make_step("step1", TestKind::Session, vec![]),
+            make_node("node1", TestKind::Session, vec![]),
             Some("   "),
         )]);
         let valid = HashSet::from(["   ".to_string()]);
@@ -2385,7 +2395,7 @@ mod tests {
     #[test]
     fn validate_models_rejects_control_character_model() {
         let wf = make_workflow(vec![with_session_model(
-            make_step("step1", TestKind::Session, vec![]),
+            make_node("node1", TestKind::Session, vec![]),
             Some("a\u{0001}b"),
         )]);
         let valid = HashSet::from(["a\u{0001}b".to_string()]);
@@ -2396,16 +2406,16 @@ mod tests {
 
     #[test]
     fn command_node_with_command_passes_when_facets_absent() {
-        let wf = make_workflow(vec![command_step("build", "cargo build")]);
+        let wf = make_workflow(vec![command_node("build", "cargo build")]);
         assert!(validate(&wf).is_ok());
     }
 
     #[test]
     fn command_node_with_empty_command_fails() {
-        let wf = make_workflow(vec![command_step("build", "   ")]);
+        let wf = make_workflow(vec![command_node("build", "   ")]);
         assert!(matches!(
             validate(&wf).unwrap_err(),
-            ValidationError::EmptyCommand { ref step } if step == "build"
+            ValidationError::EmptyCommand { ref node } if node == "build"
         ));
     }
 
@@ -2422,7 +2432,7 @@ mod tests {
 
     #[test]
     fn schema_refs_allow_session_artifact_and_input() {
-        let mut session = make_step("review", TestKind::Session, vec![]);
+        let mut session = make_node("review", TestKind::Session, vec![]);
         session.artifact = Some("review-output".to_string());
         session.input = Some("review-input".to_string());
         let mut wf = make_workflow(vec![session]);
@@ -2438,7 +2448,7 @@ mod tests {
 
     #[test]
     fn schema_refs_reject_request_schema_but_allow_item_schema() {
-        let mut request_wf = make_workflow(vec![make_step("review", TestKind::Session, vec![])]);
+        let mut request_wf = make_workflow(vec![make_node("review", TestKind::Session, vec![])]);
         request_wf
             .schemas
             .insert("request".to_string(), SchemaDef::String { r#enum: None });
@@ -2448,7 +2458,7 @@ mod tests {
                 if reference == "request" && reason.contains("reserved Artifact name")
         ));
 
-        let mut item_wf = make_workflow(vec![make_step("review", TestKind::Session, vec![])]);
+        let mut item_wf = make_workflow(vec![make_node("review", TestKind::Session, vec![])]);
         item_wf
             .schemas
             .insert("item".to_string(), SchemaDef::String { r#enum: None });
@@ -2457,20 +2467,20 @@ mod tests {
 
     #[test]
     fn schema_refs_reject_unknown_artifact_schema() {
-        let mut session = make_step("review", TestKind::Session, vec![]);
+        let mut session = make_node("review", TestKind::Session, vec![]);
         session.artifact = Some("missing".to_string());
         let wf = make_workflow(vec![session]);
 
         assert!(matches!(
             validate(&wf).unwrap_err(),
-            ValidationError::UnknownSchemaRef { ref step, slot, ref key }
-                if step == "review" && slot == "artifact" && key == "missing"
+            ValidationError::UnknownSchemaRef { ref node, slot, ref key }
+                if node == "review" && slot == "artifact" && key == "missing"
         ));
     }
 
     #[test]
     fn schema_refs_reject_invalid_schema_identifier() {
-        let mut session = make_step("review", TestKind::Session, vec![]);
+        let mut session = make_node("review", TestKind::Session, vec![]);
         session.artifact = Some("review; curl https://example.invalid #".to_string());
         let mut wf = make_workflow(vec![session]);
         wf.schemas.insert(
@@ -2488,14 +2498,14 @@ mod tests {
 
     #[test]
     fn schema_refs_reject_invalid_artifact_reference_identifier() {
-        let mut session = make_step("review", TestKind::Session, vec![]);
+        let mut session = make_node("review", TestKind::Session, vec![]);
         session.artifact = Some("review; curl https://example.invalid #".to_string());
         let wf = make_workflow(vec![session]);
 
         assert!(matches!(
             validate_schema_refs(&wf).unwrap_err(),
-            ValidationError::InvalidSchemaRef { ref step, slot, ref key, ref reason }
-                if step == "review"
+            ValidationError::InvalidSchemaRef { ref node, slot, ref key, ref reason }
+                if node == "review"
                     && slot == "artifact"
                     && key == "review; curl https://example.invalid #"
                     && reason.contains("must start with an ASCII alphanumeric")
@@ -2504,20 +2514,20 @@ mod tests {
 
     #[test]
     fn schema_refs_reject_invalid_input_reference_identifier() {
-        let mut session = make_step("review", TestKind::Session, vec![]);
+        let mut session = make_node("review", TestKind::Session, vec![]);
         session.input = Some("../outside".to_string());
         let wf = make_workflow(vec![session]);
 
         assert!(matches!(
             validate_schema_refs(&wf).unwrap_err(),
-            ValidationError::InvalidSchemaRef { ref step, slot, ref key, .. }
-                if step == "review" && slot == "input" && key == "../outside"
+            ValidationError::InvalidSchemaRef { ref node, slot, ref key, .. }
+                if node == "review" && slot == "input" && key == "../outside"
         ));
     }
 
     #[test]
     fn schema_refs_reject_invalid_array_items_identifier() {
-        let mut wf = make_workflow(vec![make_step("review", TestKind::Session, vec![])]);
+        let mut wf = make_workflow(vec![make_node("review", TestKind::Session, vec![])]);
         wf.schemas.insert(
             "review-list".to_string(),
             SchemaDef::Array {
@@ -2535,7 +2545,7 @@ mod tests {
 
     #[test]
     fn schema_refs_reject_required_field_missing_from_properties() {
-        let mut wf = make_workflow(vec![make_step("review", TestKind::Session, vec![])]);
+        let mut wf = make_workflow(vec![make_node("review", TestKind::Session, vec![])]);
         wf.schemas.insert(
             "review-output".to_string(),
             SchemaDef::Object {
@@ -2555,7 +2565,7 @@ mod tests {
 
     #[test]
     fn schema_refs_reject_empty_string_enum() {
-        let mut wf = make_workflow(vec![make_step("review", TestKind::Session, vec![])]);
+        let mut wf = make_workflow(vec![make_node("review", TestKind::Session, vec![])]);
         wf.schemas.insert(
             "review-output".to_string(),
             SchemaDef::String {
@@ -2572,7 +2582,7 @@ mod tests {
 
     #[test]
     fn schema_refs_reject_array_items_unknown_schema() {
-        let mut wf = make_workflow(vec![make_step("review", TestKind::Session, vec![])]);
+        let mut wf = make_workflow(vec![make_node("review", TestKind::Session, vec![])]);
         wf.schemas.insert(
             "review-list".to_string(),
             SchemaDef::Array {
@@ -2590,7 +2600,7 @@ mod tests {
 
     #[test]
     fn schema_refs_reject_session_artifact_non_object_schema() {
-        let mut session = make_step("review", TestKind::Session, vec![]);
+        let mut session = make_node("review", TestKind::Session, vec![]);
         session.artifact = Some("review-output".to_string());
         let mut wf = make_workflow(vec![session]);
         wf.schemas.insert(
@@ -2600,14 +2610,14 @@ mod tests {
 
         assert!(matches!(
             validate_schema_refs(&wf).unwrap_err(),
-            ValidationError::InvalidArtifactSchema { ref step, ref contract }
-                if step == "review" && contract == "review-output"
+            ValidationError::InvalidArtifactSchema { ref node, ref contract }
+                if node == "review" && contract == "review-output"
         ));
     }
 
     #[test]
     fn fanout_node_rejects_artifact_declaration() {
-        let mut fanout = make_parallel_block("review", vec![make_parallel_step("review-a")]);
+        let mut fanout = make_fanout_node_block("review", vec![make_fanout_node("review-a")]);
         fanout.artifact = Some("review-output".to_string());
         let mut wf = make_workflow(vec![fanout]);
         wf.schemas
@@ -2615,14 +2625,14 @@ mod tests {
 
         assert!(matches!(
             validate(&wf).unwrap_err(),
-            ValidationError::InvalidArtifactSchema { ref step, ref contract }
-                if step == "review" && contract == "review-output"
+            ValidationError::InvalidArtifactSchema { ref node, ref contract }
+                if node == "review" && contract == "review-output"
         ));
     }
 
     #[test]
     fn command_node_rejects_artifact_reserved_field_collision() {
-        let mut command = command_step("build", "cargo build");
+        let mut command = command_node("build", "cargo build");
         command.artifact = Some("build-output".to_string());
         let mut wf = make_workflow(vec![command]);
         wf.schemas.insert(
@@ -2636,8 +2646,8 @@ mod tests {
 
         assert!(matches!(
             validate(&wf).unwrap_err(),
-            ValidationError::ReservedArtifactField { ref step, ref contract, ref field }
-                if step == "build" && contract == "build-output" && field == "ok"
+            ValidationError::ReservedArtifactField { ref node, ref contract, ref field }
+                if node == "build" && contract == "build-output" && field == "ok"
         ));
     }
 
@@ -2646,7 +2656,7 @@ mod tests {
     #[test]
     fn too_many_nodes_fails() {
         let nodes: Vec<NodeDefinition> = (0..MAX_NODES_PER_WORKFLOW + 1)
-            .map(|i| make_step(&format!("step{i}"), TestKind::Session, vec![]))
+            .map(|i| make_node(&format!("node{i}"), TestKind::Session, vec![]))
             .collect();
         let wf = make_workflow(nodes);
         assert!(matches!(
@@ -2657,9 +2667,9 @@ mod tests {
 
     #[test]
     fn fanout_references_are_not_counted_as_embedded_nodes() {
-        let wf = make_workflow(vec![make_parallel_block(
+        let wf = make_workflow(vec![make_fanout_node_block(
             "par",
-            vec![make_parallel_step("child")],
+            vec![make_fanout_node("child")],
         )]);
 
         assert_eq!(total_node_count(&wf), 2);
@@ -2668,12 +2678,12 @@ mod tests {
     #[test]
     fn too_many_fanout_children_fails() {
         let children: Vec<String> = (0..MAX_FANOUT_CHILDREN + 1)
-            .map(|i| make_parallel_step(&format!("c{i}")))
+            .map(|i| make_fanout_node(&format!("c{i}")))
             .collect();
-        let wf = make_workflow(vec![make_parallel_block("par", children)]);
+        let wf = make_workflow(vec![make_fanout_node_block("par", children)]);
         assert!(matches!(
             validate(&wf).unwrap_err(),
-            ValidationError::TooManyFanoutChildren { ref step, .. } if step == "par"
+            ValidationError::TooManyFanoutChildren { ref node, .. } if node == "par"
         ));
     }
 
@@ -2681,15 +2691,15 @@ mod tests {
     fn validate_schema_refs_inspects_top_level_fanout_children() {
         let child = NodeDefinition {
             input: Some("nope".to_string()),
-            ..make_step("child1", TestKind::Session, vec![])
+            ..make_node("child1", TestKind::Session, vec![])
         };
-        let par = make_parallel_block("par", vec![make_parallel_step("child1")]);
+        let par = make_fanout_node_block("par", vec![make_fanout_node("child1")]);
         let wf = make_workflow(vec![par, child]);
         let err = validate_schema_refs(&wf).unwrap_err();
         assert!(matches!(
             err,
-            ValidationError::UnknownSchemaRef { ref step, slot, ref key }
-                if step == "child1" && slot == "input" && key == "nope"
+            ValidationError::UnknownSchemaRef { ref node, slot, ref key }
+                if node == "child1" && slot == "input" && key == "nope"
         ));
     }
 }

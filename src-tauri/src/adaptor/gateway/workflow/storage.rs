@@ -2,7 +2,7 @@ use super::builtin;
 use super::diagnostics;
 use super::domain_mapping::workflow_definition_to_domain;
 use super::facet;
-use super::schema::{Summary, Workflow};
+use super::schema::{Summary, WorkflowDefinitionYaml};
 use crate::domain::workflow::validation::{self, ValidationError};
 use serde::Serialize;
 use std::fmt;
@@ -115,7 +115,7 @@ pub fn ensure_dir(dir: &Path) -> Result<(), StorageError> {
     Ok(())
 }
 
-pub fn save_workflow(dir: &Path, workflow: &Workflow) -> Result<(), StorageError> {
+pub fn save_workflow(dir: &Path, workflow: &WorkflowDefinitionYaml) -> Result<(), StorageError> {
     validate_workflow_definition(workflow)?;
 
     ensure_dir(dir)?;
@@ -145,7 +145,7 @@ pub fn save_workflow(dir: &Path, workflow: &Workflow) -> Result<(), StorageError
 pub fn parse_workflow_source(
     content: &str,
     facets_base_dir: &Path,
-) -> Result<Workflow, StorageError> {
+) -> Result<WorkflowDefinitionYaml, StorageError> {
     let diagnosis = diagnostics::diagnose_workflow_source(content, None);
     if diagnosis.has_errors() {
         return Err(StorageError::Diagnostics(diagnosis.diagnostics));
@@ -174,7 +174,7 @@ pub fn save_workflow_source(
     dir: &Path,
     facets_base_dir: &Path,
     content: &str,
-) -> Result<Workflow, StorageError> {
+) -> Result<WorkflowDefinitionYaml, StorageError> {
     let mut workflow = parse_workflow_source(content, facets_base_dir)?;
     ensure_dir(dir)?;
 
@@ -195,13 +195,16 @@ pub fn save_workflow_source(
     Ok(workflow)
 }
 
-/// YAML ファイルから `Workflow` を読み込み、facet 参照を解決した上で validation する。
+/// YAML ファイルから `WorkflowDefinitionYaml` を読み込み、facet 参照を解決した上で validation する。
 ///
 /// [02] schema 境界: load 経路で `facet.rs` を呼び、session / fanout child の
 /// gateway read model に解決済み内容を格納し、facet 本文の Artifact 参照も検証する。
 /// 実行用 Workflow には未解決 ref を残さない（schema 層は ref キーを保持しつつ、
 /// 実行系は resolved cache から直接合成する）。
-pub fn load_workflow(path: &Path, facets_base_dir: &Path) -> Result<Workflow, StorageError> {
+pub fn load_workflow(
+    path: &Path,
+    facets_base_dir: &Path,
+) -> Result<WorkflowDefinitionYaml, StorageError> {
     let content = fs::read_to_string(path)?;
     let diagnosis = diagnostics::diagnose_workflow_source(
         &content,
@@ -270,12 +273,12 @@ fn list_yml_summaries<T, E: fmt::Display>(
 pub fn list_workflows(dir: &Path) -> Result<Vec<Summary>, StorageError> {
     // list 用途では facet 未解決でも一覧表示に支障がないため、deserialize+validate のみを行う。
     // facet 解決が必要な実行系経路は明示的に `load_workflow` を呼ぶ。
-    let load_for_listing = |path: &Path| -> Result<Workflow, StorageError> {
+    let load_for_listing = |path: &Path| -> Result<WorkflowDefinitionYaml, StorageError> {
         let content = fs::read_to_string(path)?;
         let stem = path.file_stem().and_then(|stem| stem.to_str());
         let diagnosis = diagnostics::diagnose_workflow_source(&content, stem);
         if diagnosis.has_errors() {
-            return Ok(Workflow {
+            return Ok(WorkflowDefinitionYaml {
                 name: stem.unwrap_or("invalid").to_string(),
                 description: "Invalid workflow definition".to_string(),
                 builtin: false,
@@ -319,7 +322,7 @@ pub fn list_workflows(dir: &Path) -> Result<Vec<Summary>, StorageError> {
     Ok(summaries)
 }
 
-fn validate_workflow_definition(workflow: &Workflow) -> Result<(), StorageError> {
+fn validate_workflow_definition(workflow: &WorkflowDefinitionYaml) -> Result<(), StorageError> {
     let diagnostics = diagnostics::diagnose_workflow_definition(workflow, None);
     if diagnostics
         .iter()
@@ -331,7 +334,7 @@ fn validate_workflow_definition(workflow: &Workflow) -> Result<(), StorageError>
 }
 
 pub(crate) fn resolve_and_validate_workflow_facets(
-    workflow: &Workflow,
+    workflow: &WorkflowDefinitionYaml,
     facets_base_dir: &Path,
 ) -> Result<facet::WorkflowFacetContents, StorageError> {
     let facet_contents = facet::resolve_workflow_facets(workflow, facets_base_dir)?;
@@ -340,7 +343,7 @@ pub(crate) fn resolve_and_validate_workflow_facets(
 }
 
 fn validate_resolved_facet_references(
-    workflow: &Workflow,
+    workflow: &WorkflowDefinitionYaml,
     facet_contents: &facet::WorkflowFacetContents,
 ) -> Result<(), ValidationError> {
     let domain_workflow = workflow_definition_to_domain(workflow);
@@ -411,14 +414,14 @@ mod tests {
     };
     use tempfile::TempDir;
 
-    fn sample_workflow(name: &str, builtin: bool) -> Workflow {
-        Workflow {
+    fn sample_workflow(name: &str, builtin: bool) -> WorkflowDefinitionYaml {
+        WorkflowDefinitionYaml {
             name: name.to_string(),
             description: format!("{name} workflow"),
             builtin,
             schemas: Default::default(),
             nodes: vec![NodeDefinition {
-                name: "step1".to_string(),
+                name: "node1".to_string(),
                 kind: NodeKind::Session(SessionSpec {
                     permission: Some("edit".to_string()),
                     facets: FacetRefs {
@@ -523,7 +526,7 @@ mod tests {
 name: broken
 description: invalid workflow
 nodes:
-  - name: step
+  - name: node
     type: agent
     instruction: implement
 "#,

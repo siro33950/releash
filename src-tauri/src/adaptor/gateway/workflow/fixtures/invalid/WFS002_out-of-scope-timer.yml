@@ -1,0 +1,7 @@
+name: out-of-scope-timer
+description: timers do not belong to WorkflowDefinition
+timer:
+  every: 5m
+nodes:
+  - name: run
+    command: printf done

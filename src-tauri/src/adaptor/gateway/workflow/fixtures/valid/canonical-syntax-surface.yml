@@ -1,0 +1,86 @@
+name: canonical-syntax-surface
+description: canonical Contract, reference, permission, facet, gate, fanout, and routing surface
+schemas:
+  text: string
+  target:
+    type: object
+    properties:
+      path: string
+      enabled:
+        type: boolean
+      count:
+        type: integer
+      ratio:
+        type: number
+      labels:
+        type: array
+        items: text
+    required: [path, enabled, count, ratio, labels]
+    additionalProperties: false
+  target-list:
+    type: object
+    properties:
+      targets:
+        type: array
+        items: target
+    required: [targets]
+    additionalProperties: false
+  route:
+    type: object
+    properties:
+      verdict:
+        type: string
+        enum: [SHIP, HOLD]
+    required: [verdict]
+    additionalProperties: false
+nodes:
+  - name: prepare
+    command: "printf '%s' '{{ request }}'"
+    artifact: target-list
+    inputs: [request]
+    rules:
+      - next: dispatch
+  - name: dispatch
+    fanout:
+      child: worker
+      items: prepare.targets
+    rules:
+      - next: judge
+  - name: worker
+    command: "printf '%s' '{{ item }} {{ item.path }}'"
+    input: target
+  - name: judge
+    session:
+      model: claude-opus-4-8
+      permission: full
+      gate: auto
+      facets:
+        policy: reviewing
+        knowledge: releash-thread
+        instruction: choose-route
+    artifact: route
+    inputs: [dispatch]
+    rules:
+      - switch:
+          on: verdict
+          cases:
+            SHIP: approved
+        next: review
+  - name: approved
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        instruction: approved
+  - name: review
+    session:
+      permission: ask
+      gate: approval
+      facets:
+        instruction: review
+    inputs: [judge]
+    rules:
+      - next: done
+  - name: done
+    command: "printf '%s' '{{ judge.verdict }}'"
+    inputs: [judge]

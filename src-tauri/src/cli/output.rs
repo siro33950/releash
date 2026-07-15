@@ -240,7 +240,7 @@ mod tests {
     use crate::adaptor::gateway::workflow::event::WorkflowEvent;
     use crate::adaptor::gateway::workflow::log::WorkflowEventLog;
     use crate::adaptor::gateway::workflow::schema::{
-        NodeDefinition, NodeKind, SchemaDef, SessionSpec, Workflow,
+        NodeDefinition, NodeKind, SchemaDef, SessionSpec, WorkflowDefinitionYaml,
     };
     use crate::domain::workflow::{ExecutionOrigin, ExecutionStatus};
     use clap::Parser;
@@ -251,7 +251,7 @@ mod tests {
             data_dir,
             &make_execution(execution_id, "/repo", ExecutionStatus::Running, 1.0),
         );
-        let definition = Workflow {
+        let definition = WorkflowDefinitionYaml {
             name: "wf".to_string(),
             description: String::new(),
             builtin: false,

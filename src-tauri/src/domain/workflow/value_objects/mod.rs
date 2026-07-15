@@ -30,7 +30,9 @@ pub use facet::{FacetKey, FacetKind, FacetSummary};
 pub use failure::{
     FailureClassification, FailureDisposition, NodeExecutionFailureKind, TimeoutKind,
 };
-pub use ids::{NodeName, WorkflowExecutionId, WorkflowName, WorktreePath};
+pub use ids::{
+    NodeDefinitionName, WorkflowDefinitionName, WorkflowExecutionId, WorkspaceWorktreePath,
+};
 pub use node_execution::{
     FanoutParentRef, NodeExecution, NodeExecutionFailure, NodeExecutionStatus,
 };
@@ -38,10 +40,7 @@ pub use outcome_commit_mode::OutcomeCommitMode;
 pub use runtime_projection::{
     default_node_history_status, FanoutChildSnapshot, NodeHistoryEntry, RuntimeArtifact,
     TokenUsage, NODE_STATUS_ABORTED, NODE_STATUS_COMPLETED, NODE_STATUS_FAILED,
-    NODE_STATUS_INTERRUPTED, NODE_STATUS_PENDING, NODE_STATUS_RUNNING,
-    NODE_STATUS_WAITING_APPROVAL,
+    NODE_STATUS_INTERRUPTED, NODE_STATUS_RUNNING, NODE_STATUS_WAITING_APPROVAL,
 };
-pub use state::{
-    NodeStallObservation, RuntimeApprovalOperations, RuntimeExecutionState, WorkflowRuntimeSnapshot,
-};
+pub use state::{RuntimeExecutionState, WorkflowRuntimeSnapshot};
 pub use workflow_node_context::WorkflowNodeContext;

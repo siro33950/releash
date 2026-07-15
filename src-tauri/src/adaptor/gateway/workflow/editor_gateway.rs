@@ -112,20 +112,20 @@ fn parse_editor_facet_kind(kind: &str) -> Result<facet::FacetKind, WorkflowError
 mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::schema::{
-        FacetRefs, NodeDefinition, NodeKind, SessionSpec, Workflow,
+        FacetRefs, NodeDefinition, NodeKind, SessionSpec, WorkflowDefinitionYaml,
     };
     use tempfile::TempDir;
 
     #[test]
     fn workflow_editor_path_rejects_builtin_and_resolves_custom_file() {
         let tmp = TempDir::new().unwrap();
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "custom".to_string(),
             description: String::new(),
             builtin: false,
             schemas: Default::default(),
             nodes: vec![NodeDefinition {
-                name: "step".to_string(),
+                name: "node".to_string(),
                 kind: NodeKind::Session(SessionSpec {
                     permission: Some("edit".to_string()),
                     facets: FacetRefs {

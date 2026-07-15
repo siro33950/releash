@@ -92,7 +92,7 @@ mod tests {
                     "name": "wf",
                     "description": "",
                     "nodes": [{
-                        "name": "step",
+                        "name": "node",
                         "session": { "gate": "auto" }
                     }]
                 }
@@ -135,7 +135,7 @@ mod tests {
                     "name": "wf",
                     "description": "",
                     "nodes": [{
-                        "name": "step",
+                        "name": "node",
                         "session": { "gate": "auto" }
                     }]
                 }

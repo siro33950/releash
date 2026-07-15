@@ -125,7 +125,7 @@ impl WorkflowRuntimeUsecase {
             .await
     }
 
-    #[allow(dead_code)] // issues-1301 B-3/G-1: retained for workflow step guards around agent turn completion.
+    #[allow(dead_code)] // issues-1301 B-3/G-1: retained for workflow node guards around agent turn completion.
     pub async fn is_session_running(&self, chat_session_id: &str) -> bool {
         self.turn_complete.is_session_running(chat_session_id).await
     }
@@ -289,9 +289,9 @@ mod tests {
     impl WorkflowRuntimeStateGateway for FakeRuntimeGateway {
         async fn get_state_by_execution_id(
             &self,
-            _run_id: &str,
+            _execution_id: &str,
         ) -> Result<Option<WorkflowRuntimeSnapshot>, WorkflowError> {
-            self.calls.lock().unwrap().push("state_by_run");
+            self.calls.lock().unwrap().push("state_by_execution");
             Ok(None)
         }
 
@@ -315,7 +315,7 @@ mod tests {
     impl WorkflowApprovalChatGateway for FakeRuntimeGateway {
         async fn resolve_approval_chat_target(
             &self,
-            _run_id: &str,
+            _execution_id: &str,
         ) -> Result<ApprovalChatTarget, WorkflowError> {
             self.calls.lock().unwrap().push("resolve_approval_chat");
             Ok(ApprovalChatTarget {
@@ -427,7 +427,7 @@ mod tests {
                 "submit_output",
                 "is_running",
                 "complete_turn",
-                "state_by_run",
+                "state_by_execution",
                 "state_by_worktree",
                 "resolve_approval_chat",
                 "validate_approval_chat"
@@ -539,7 +539,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn start_run_rejects_invalid_workflow_name_before_gateway() {
+    async fn start_execution_rejects_invalid_workflow_name_before_gateway() {
         let gateway = Arc::new(FakeRuntimeGateway::default());
         let usecase = WorkflowRuntimeUsecase::new(gateway.clone());
 

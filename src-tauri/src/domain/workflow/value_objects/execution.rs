@@ -1,4 +1,5 @@
 use super::{NodeExecution, TokenUsage};
+use crate::domain::workflow::error::WorkflowError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionStatus {
@@ -92,6 +93,29 @@ pub enum ExecutionOrigin {
     Api,
 }
 
+impl ExecutionOrigin {
+    pub fn as_public_value(self) -> &'static str {
+        match self {
+            Self::DesktopUi => "desktop_ui",
+            Self::Cli => "cli",
+            Self::Agent => "agent",
+            Self::Api => "api",
+        }
+    }
+
+    pub fn from_public_value(value: &str) -> Result<Self, WorkflowError> {
+        match value {
+            "desktop_ui" | "desktop-ui" => Ok(Self::DesktopUi),
+            "cli" => Ok(Self::Cli),
+            "agent" => Ok(Self::Agent),
+            "api" => Ok(Self::Api),
+            other => Err(WorkflowError::validation(format!(
+                "unknown created_from value: {other}"
+            ))),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Artifact {
     pub node_name: String,
@@ -149,6 +173,24 @@ mod tests {
         assert!(ExecutionStatus::Interrupted.is_resumable());
         assert!(ExecutionStatus::Completed.is_finished());
         assert_eq!(ExecutionStatus::Interrupted.as_str(), "interrupted");
+    }
+
+    #[test]
+    fn execution_origin_owns_the_public_vocabulary_and_rejects_unknown_values() {
+        for (value, expected) in [
+            ("desktop_ui", ExecutionOrigin::DesktopUi),
+            ("desktop-ui", ExecutionOrigin::DesktopUi),
+            ("cli", ExecutionOrigin::Cli),
+            ("agent", ExecutionOrigin::Agent),
+            ("api", ExecutionOrigin::Api),
+        ] {
+            assert_eq!(ExecutionOrigin::from_public_value(value).unwrap(), expected);
+            assert_eq!(
+                ExecutionOrigin::from_public_value(expected.as_public_value()).unwrap(),
+                expected
+            );
+        }
+        assert!(ExecutionOrigin::from_public_value("remote").is_err());
     }
 
     #[test]

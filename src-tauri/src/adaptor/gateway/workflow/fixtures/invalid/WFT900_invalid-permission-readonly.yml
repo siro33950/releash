@@ -1,0 +1,9 @@
+name: invalid-permission-readonly
+description: readonly is retained only for persisted agent sessions
+nodes:
+  - name: inspect
+    session:
+      permission: readonly
+      gate: auto
+      facets:
+        instruction: unused-because-permission-is-invalid

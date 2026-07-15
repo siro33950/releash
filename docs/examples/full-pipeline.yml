@@ -7,11 +7,15 @@ schemas:
     properties:
       lgtm:
         type: boolean
+    required:
+      - lgtm
   judge_result:
     type: object
     properties:
       all_lgtm:
         type: boolean
+    required:
+      - all_lgtm
   thread:
     type: object
     properties:
@@ -25,6 +29,15 @@ schemas:
         items: thread
       has_open:
         type: boolean
+    required:
+      - has_open
+  fix_result:
+    type: object
+    properties:
+      fixed:
+        type: boolean
+    required:
+      - fixed
   ship_decision:
     type: object
     properties:
@@ -34,6 +47,8 @@ schemas:
           - SHIP
           - HOLD
           - ESCALATE
+    required:
+      - verdict
 
 nodes:
   - name: run_tests
@@ -67,7 +82,7 @@ nodes:
   - name: review_opus
     session:
       model: claude-opus-4-8
-      permission: read
+      permission: ask
       gate: auto
       facets:
         policy: reviewing
@@ -77,7 +92,7 @@ nodes:
   - name: review_gpt
     session:
       model: gpt-5.5
-      permission: read
+      permission: ask
       gate: auto
       facets:
         policy: reviewing
@@ -86,7 +101,7 @@ nodes:
     artifact: review_verdict
 
   - name: judge
-    command: "echo '{{ review }}' | jq '{all_lgtm: all(.[].lgtm)}'"   # review = 子 artifact の配列
+    command: "echo '{{ review }}' | jq '{all_lgtm: all(.[]; .lgtm)}'"   # review = 子 artifact の配列
     inputs:
       - review
     artifact: judge_result
@@ -107,7 +122,9 @@ nodes:
       - next: review
 
   - name: list_threads
-    command: "releash thread list --open --format json"
+    command: >-
+      releash review list --session-id "$RELEASH_SESSION_ID" --state open --json |
+      jq '{threads: map({thread_id: .id}), has_open: (length > 0)}'
     artifact: thread_scan
     rules:
       - when: { on: has_open, then: fix_each }
@@ -135,7 +152,7 @@ nodes:
   - name: triage
     session:
       model: claude-opus-4-8
-      permission: read
+      permission: ask
       gate: auto
       facets:
         policy: reviewing
@@ -153,21 +170,21 @@ nodes:
   - name: done
     session:
       model: claude-opus-4-8
-      permission: read
+      permission: ask
       gate: approval
       facets:
         instruction: summarize-ship
   - name: give_up
     session:
       model: claude-opus-4-8
-      permission: read
+      permission: ask
       gate: approval
       facets:
         instruction: summarize-failure
   - name: escalate
     session:
       model: claude-opus-4-8
-      permission: read
+      permission: ask
       gate: approval
       facets:
         instruction: summarize-escalation

@@ -70,8 +70,8 @@ impl WorkflowExecutionFileRepository {
         fs::create_dir_all(self.executions_dir()).map_err(|e| {
             WorkflowError::external(format!("failed to create workflow_executions dir: {e}"))
         })?;
-        let legacy = mapper::workflow_execution_record_to_metadata(execution);
-        let json = serde_json::to_string_pretty(&legacy).map_err(|e| {
+        let metadata = mapper::workflow_execution_record_to_metadata(execution);
+        let json = serde_json::to_string_pretty(&metadata).map_err(|e| {
             WorkflowError::external(format!(
                 "failed to serialize workflow execution metadata: {e}"
             ))
@@ -154,26 +154,21 @@ impl WorkflowExecutionRepository for WorkflowExecutionFileRepository {
         filter: ExecutionListFilter,
         page: WorkflowPageRequest,
     ) -> Result<Vec<WorkflowExecutionSummary>, WorkflowError> {
-        self.list_executions(filter).map(|executions| {
-            executions
-                .into_iter()
-                .skip(page.offset)
-                .take(page.limit)
-                .collect()
-        })
+        Ok(execution_store::project_valid_execution_metadata_page(
+            &self.data_dir,
+            &filter,
+            page.offset,
+            page.limit,
+        ))
     }
 
     fn get_execution(
         &self,
         execution_id: &WorkflowExecutionId,
     ) -> Result<Option<WorkflowExecutionSummary>, WorkflowError> {
-        Ok(self
-            .list_executions(ExecutionListFilter {
-                status: None,
-                worktree_path: None,
-            })?
-            .into_iter()
-            .find(|execution| execution.execution_id == execution_id.as_str()))
+        execution_store::read_valid_execution_metadata(&self.data_dir, execution_id.as_str())
+            .map(|execution| execution.map(|metadata| WorkflowExecutionSummary::from(&metadata)))
+            .map_err(WorkflowError::external)
     }
 
     #[cfg(test)]
@@ -331,6 +326,29 @@ mod tests {
                 .as_deref(),
             Some("/repo/b")
         );
+    }
+
+    #[test]
+    fn execution_page_projects_only_the_requested_sorted_window() {
+        let tmp = TempDir::new().unwrap();
+        let repo = WorkflowExecutionFileRepository::new(tmp.path());
+        for (seed, completed_at) in [(10, 10.0), (11, 30.0), (12, 20.0)] {
+            let id = format!("00000000-0000-4000-8000-{seed:012}");
+            let mut record = execution(&id, "/repo", ExecutionStatus::Completed);
+            record.updated_at = completed_at;
+            record.completed_at = Some(completed_at);
+            repo.persist(&record).unwrap();
+        }
+
+        let page = repo
+            .list_executions_page(
+                ExecutionListFilter::default(),
+                WorkflowPageRequest::new(1, 1),
+            )
+            .unwrap();
+
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].execution_id, "00000000-0000-4000-8000-000000000012");
     }
 
     #[test]

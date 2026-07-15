@@ -168,11 +168,11 @@ fn update_session_agent_info_in_store(
 pub async fn close_session(
     state: State<'_, Arc<SessionStore>>,
     runtime: State<'_, Arc<AgentSessionRuntimeUsecase>>,
-    step_lifecycle: State<'_, NodeExecutionLifecycleUsecaseState>,
+    node_lifecycle: State<'_, NodeExecutionLifecycleUsecaseState>,
     app: tauri::AppHandle,
     session_id: String,
 ) -> Result<(), String> {
-    if let Some(target) = step_lifecycle
+    if let Some(target) = node_lifecycle
         .close_tab_target(&session_id)
         .await
         .map_err(|_| {
@@ -223,11 +223,11 @@ where
 pub async fn restore_session(
     lifecycle: State<'_, Arc<StoredSessionLifecycleUsecase>>,
     registry: State<'_, Arc<AgentBackendRegistry>>,
-    step_lifecycle: State<'_, NodeExecutionLifecycleUsecaseState>,
+    node_lifecycle: State<'_, NodeExecutionLifecycleUsecaseState>,
     app: tauri::AppHandle,
     session_id: String,
 ) -> Result<RestoreSessionResponse, String> {
-    if let Some(target) = step_lifecycle
+    if let Some(target) = node_lifecycle
         .try_open_tab(&session_id)
         .await
         .map_err(|_| {
@@ -257,7 +257,7 @@ fn restore_workflow_node_session_tab_state(
     open_tabs: &OpenTabRegistry,
     session_id: &str,
 ) -> Result<Option<(RestoreSessionResponse, String)>, String> {
-    let Some(target) = crate::adaptor::gateway::workflow::resolve_step_session_with_data_dir(
+    let Some(target) = crate::adaptor::gateway::workflow::resolve_node_session_with_data_dir(
         session_store,
         data_dir,
         session_id,
@@ -268,7 +268,7 @@ fn restore_workflow_node_session_tab_state(
     else {
         return Ok(None);
     };
-    crate::adaptor::gateway::workflow::open_step_session_tab_state(
+    crate::adaptor::gateway::workflow::open_node_session_tab_state(
         session_store,
         data_dir,
         open_tabs,
