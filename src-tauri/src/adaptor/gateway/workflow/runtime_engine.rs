@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use super::pending_runtime::PendingCommandRuntime;
 use super::runtime_engine_impl::WorkflowRuntimeService;
 use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::resolver::{
@@ -20,7 +19,7 @@ use crate::usecase::agent_session::session::{MessagePart, OpenTabRegistry, Sessi
 
 #[allow(clippy::too_many_arguments)]
 #[async_trait]
-pub(crate) trait WorkflowRuntimeEngine: PendingCommandRuntime<tauri::Wry> {
+pub(crate) trait WorkflowRuntimeEngine: Send + Sync {
     async fn set_execution_store_data_dir(&self, dir: PathBuf);
 
     async fn recover_orphan_executions(
@@ -35,7 +34,7 @@ pub(crate) trait WorkflowRuntimeEngine: PendingCommandRuntime<tauri::Wry> {
 
     async fn resolve_start_execution_workflow(
         &self,
-        workflow_file_stem: &str,
+        workflow_name: &str,
     ) -> Result<Workflow, WorkflowEngineError>;
 
     async fn start_resolved_workflow(
@@ -68,6 +67,18 @@ pub(crate) trait WorkflowRuntimeEngine: PendingCommandRuntime<tauri::Wry> {
         comment: Option<String>,
         node_name: &str,
         node_execution_id: Option<&str>,
+    ) -> Result<(), WorkflowEngineError>;
+
+    async fn submit_workflow_output(
+        &self,
+        app: &tauri::AppHandle,
+        session_store: &Arc<SessionStore>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
+        execution_id: &str,
+        node_name: String,
+        node_execution_id: Option<String>,
+        contract: String,
+        artifact: serde_json::Value,
     ) -> Result<(), WorkflowEngineError>;
 
     async fn is_running(&self, session_id: &str) -> bool;
@@ -156,9 +167,9 @@ impl WorkflowRuntimeEngine for WorkflowRuntimeService {
 
     async fn resolve_start_execution_workflow(
         &self,
-        workflow_file_stem: &str,
+        workflow_name: &str,
     ) -> Result<Workflow, WorkflowEngineError> {
-        WorkflowRuntimeService::resolve_start_execution_workflow(self, workflow_file_stem).await
+        WorkflowRuntimeService::resolve_start_execution_workflow(self, workflow_name).await
     }
 
     async fn start_resolved_workflow(
@@ -224,6 +235,31 @@ impl WorkflowRuntimeEngine for WorkflowRuntimeService {
             comment,
             node_name,
             node_execution_id,
+        )
+        .await
+    }
+
+    async fn submit_workflow_output(
+        &self,
+        app: &tauri::AppHandle,
+        session_store: &Arc<SessionStore>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
+        execution_id: &str,
+        node_name: String,
+        node_execution_id: Option<String>,
+        contract: String,
+        artifact: serde_json::Value,
+    ) -> Result<(), WorkflowEngineError> {
+        WorkflowRuntimeService::submit_workflow_output(
+            self,
+            app,
+            session_store,
+            agent_runtime,
+            execution_id,
+            node_name,
+            node_execution_id,
+            contract,
+            artifact,
         )
         .await
     }

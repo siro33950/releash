@@ -1,7 +1,5 @@
 use crate::adaptor::controller::state::AppState;
-use crate::usecase::workflow::dto::{
-    workflow_summary_to_dto, workflow_to_dto, WorkflowDto, WorkflowSummaryDto,
-};
+use crate::usecase::workflow::dto::{workflow_to_dto, WorkflowDto, WorkflowSummaryDto};
 use crate::usecase::workflow::ports::WorkflowSourceSaveError;
 use serde::Serialize;
 
@@ -20,24 +18,10 @@ pub struct SaveWorkflowSourceResultDto {
 pub async fn list_workflows(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<WorkflowSummaryDto>, String> {
-    let query = state.workflow_usecase.clone();
-    tokio::task::spawn_blocking(move || {
-        let running_names: Vec<String> = query
-            .list_executions(crate::domain::workflow::ExecutionListFilter {
-                status: Some(crate::domain::workflow::ExecutionStatusFilter::Active),
-                worktree_path: None,
-            })
-            .map_err(|e| e.to_string())?
-            .into_iter()
-            .map(|execution| execution.workflow_name)
-            .collect();
-        query
-            .list_workflows(&running_names)
-            .map(|summaries| summaries.into_iter().map(workflow_summary_to_dto).collect())
-            .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("task join error: {e}"))?
+    let read = state.workflow_usecase.read_usecase();
+    tokio::task::spawn_blocking(move || read.list_workflow_summaries().map_err(|e| e.to_string()))
+        .await
+        .map_err(|e| format!("task join error: {e}"))?
 }
 
 #[tauri::command]

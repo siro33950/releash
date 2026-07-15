@@ -1,34 +1,25 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::adaptor::gateway::workflow::pending_command::{
-    PendingCommand, PendingCommandPayload, PendingCommandStore, DEFAULT_PENDING_TTL_SECS,
-};
 use crate::domain::agent_session::PermissionMode;
 use crate::domain::app_config::ConfigRepository;
 use crate::domain::workflow::{WorkflowDefinition, WorkflowError, WorkflowRuntimeSnapshot};
-use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
 use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
 use crate::usecase::agent_session::session::{MessagePart, OpenTabRegistry, SessionStore};
-use crate::usecase::agent_session::status::current_timestamp;
 use crate::usecase::repository_usecase::RepositoryUsecase;
 use crate::usecase::workflow::command::{
     AbortExecutionCommand, ApprovalCommand, ResolvedStartExecutionCommand, SubmitOutputCommand,
 };
 use crate::usecase::workflow::ports::{
-    ApprovalChatTarget, PendingRuntimeCommand, PendingRuntimeCommandOutcome,
-    PendingRuntimeCommandPayload, WorkflowAbortExecutionGateway, WorkflowApprovalChatGateway,
-    WorkflowApprovalGateway, WorkflowPendingRuntimeCommandGateway, WorkflowRuntimeShutdownGateway,
-    WorkflowRuntimeStateGateway, WorkflowStallObservedCommand, WorkflowStallObservedGateway,
-    WorkflowStartExecutionGateway, WorkflowSubmitOutputGateway, WorkflowTurnCompleteCommand,
-    WorkflowTurnCompleteGateway, WorkflowTurnFailureSignal,
+    ApprovalChatTarget, WorkflowAbortExecutionGateway, WorkflowApprovalChatGateway,
+    WorkflowApprovalGateway, WorkflowRuntimeShutdownGateway, WorkflowRuntimeStateGateway,
+    WorkflowStallObservedCommand, WorkflowStallObservedGateway, WorkflowStartExecutionGateway,
+    WorkflowSubmitOutputGateway, WorkflowTurnCompleteCommand, WorkflowTurnCompleteGateway,
+    WorkflowTurnFailureSignal,
 };
 
-use super::pending_command_dispatcher::{
-    dispatch_pending_command as dispatch_legacy_pending_command, process_pending_command_entry,
-    PendingCommandDispatchOutcome,
-};
+use super::engine_error::WorkflowEngineError;
 use super::runtime_engine::{new_workflow_runtime_engine, WorkflowRuntimeEngine};
 use super::runtime_resolver::{
     AppConfigManagedWorktreeResolver, DefaultWorkflowDefinitionResolver,
@@ -101,45 +92,6 @@ impl TauriWorkflowRuntimeCommandGateway {
         }
         Self::new(app, engine, session_store, agent_runtime)
     }
-
-    async fn process_pending_submit_output_pickup(&self, store: &PendingCommandStore) {
-        if let Err(e) = store.cleanup_expired(current_timestamp(), DEFAULT_PENDING_TTL_SECS) {
-            log::warn!("pending command cleanup_expired failed: {e}");
-        }
-        if let Err(e) =
-            store.requeue_unexpired_processing(current_timestamp(), DEFAULT_PENDING_TTL_SECS)
-        {
-            log::warn!("pending command processing orphan requeue failed: {e}");
-        }
-
-        let entries = match store.list_pending() {
-            Ok(v) => v,
-            Err(e) => {
-                log::warn!("pending command list_pending failed: {e}");
-                return;
-            }
-        };
-        if entries.is_empty() {
-            return;
-        }
-
-        for entry in entries {
-            if matches!(
-                entry.command.payload,
-                PendingCommandPayload::SubmitOutput { .. }
-            ) {
-                process_pending_command_entry(
-                    &self.app,
-                    self.engine.as_ref(),
-                    &self.session_store,
-                    &self.agent_runtime,
-                    store,
-                    entry,
-                )
-                .await;
-            }
-        }
-    }
 }
 
 #[async_trait::async_trait]
@@ -151,18 +103,18 @@ impl WorkflowStartExecutionGateway for TauriWorkflowRuntimeCommandGateway {
         self.engine
             .resolve_start_execution_worktree(worktree_path)
             .await
-            .map_err(|err| WorkflowError::external(err.to_string()))
+            .map_err(workflow_engine_error_to_workflow_error)
     }
 
     async fn resolve_start_execution_workflow(
         &self,
-        workflow_file_stem: &str,
+        workflow_name: &str,
     ) -> Result<WorkflowDefinition, WorkflowError> {
         let workflow = self
             .engine
-            .resolve_start_execution_workflow(workflow_file_stem)
+            .resolve_start_execution_workflow(workflow_name)
             .await
-            .map_err(|err| WorkflowError::external(err.to_string()))?;
+            .map_err(workflow_engine_error_to_workflow_error)?;
         super::mapper::schema_workflow_to_domain(workflow)
     }
 
@@ -185,7 +137,30 @@ impl WorkflowStartExecutionGateway for TauriWorkflowRuntimeCommandGateway {
                 permission_mode,
             )
             .await
-            .map_err(|err| WorkflowError::external(err.to_string()))
+            .map_err(workflow_engine_error_to_workflow_error)
+    }
+}
+
+fn workflow_engine_error_to_workflow_error(error: WorkflowEngineError) -> WorkflowError {
+    match error {
+        WorkflowEngineError::InvalidWorkflow(message)
+        | WorkflowEngineError::ValidationError(message) => WorkflowError::validation(message),
+        error @ WorkflowEngineError::ExecutionNotFound(_)
+        | error @ WorkflowEngineError::SessionNotFound(_) => {
+            WorkflowError::NotFound(error.to_string())
+        }
+        error @ WorkflowEngineError::AlreadyActive(_) => {
+            WorkflowError::InvalidState(error.to_string())
+        }
+        WorkflowEngineError::InvalidState(message) => WorkflowError::InvalidState(message),
+        WorkflowEngineError::UnauthorizedWorktree(message) => WorkflowError::validation(message),
+        WorkflowEngineError::UnauthorizedApprovalTarget(message) => {
+            WorkflowError::UnauthorizedApprovalTarget(message)
+        }
+        WorkflowEngineError::SessionStore(message) | WorkflowEngineError::AgentSession(message) => {
+            WorkflowError::external(message)
+        }
+        WorkflowEngineError::AgentRuntime { message, .. } => WorkflowError::external(message),
     }
 }
 
@@ -201,7 +176,7 @@ impl WorkflowAbortExecutionGateway for TauriWorkflowRuntimeCommandGateway {
                 command.expected_node_name.as_deref(),
             )
             .await
-            .map_err(|err| WorkflowError::external(err.to_string()))
+            .map_err(workflow_engine_error_to_workflow_error)
     }
 }
 
@@ -219,7 +194,7 @@ impl WorkflowApprovalGateway for TauriWorkflowRuntimeCommandGateway {
                 command.node_execution_id.as_deref(),
             )
             .await
-            .map_err(|err| WorkflowError::external(err.to_string()))
+            .map_err(workflow_engine_error_to_workflow_error)
     }
 }
 
@@ -236,35 +211,9 @@ impl WorkflowSubmitOutputGateway for TauriWorkflowRuntimeCommandGateway {
                 command.node_execution_id,
                 command.contract,
                 command.artifact,
-                None,
-                None,
             )
             .await
-            .map_err(|err| WorkflowError::external(err.to_string()))
-    }
-}
-
-#[async_trait::async_trait]
-impl WorkflowPendingRuntimeCommandGateway for TauriWorkflowRuntimeCommandGateway {
-    async fn dispatch_pending_command(
-        &self,
-        command: PendingRuntimeCommand,
-    ) -> PendingRuntimeCommandOutcome {
-        let pending = PendingCommand {
-            id: command.request_id,
-            execution_id: command.execution_id,
-            requested_at: command.requested_at,
-            payload: pending_runtime_payload_to_gateway(command.payload),
-        };
-        dispatch_legacy_pending_command(
-            &self.app,
-            self.engine.as_ref(),
-            &self.session_store,
-            &self.agent_runtime,
-            pending,
-        )
-        .await
-        .into()
+            .map_err(workflow_engine_error_to_workflow_error)
     }
 }
 
@@ -272,18 +221,6 @@ impl WorkflowPendingRuntimeCommandGateway for TauriWorkflowRuntimeCommandGateway
 impl WorkflowTurnCompleteGateway for TauriWorkflowRuntimeCommandGateway {
     async fn is_session_running(&self, chat_session_id: &str) -> bool {
         self.engine.is_running(chat_session_id).await
-    }
-
-    async fn pickup_pending_submit_outputs(&self) {
-        match resolve_data_dir(&self.app) {
-            Ok(data_dir) => {
-                let store = PendingCommandStore::new(&data_dir);
-                self.process_pending_submit_output_pickup(&store).await;
-            }
-            Err(err) => {
-                log::warn!("pending SubmitOutput pickup skipped: resolve_data_dir failed: {err}");
-            }
-        }
     }
 
     async fn complete_turn(
@@ -414,79 +351,55 @@ impl WorkflowApprovalChatGateway for TauriWorkflowRuntimeCommandGateway {
     }
 }
 
-fn pending_runtime_payload_to_gateway(
-    payload: PendingRuntimeCommandPayload,
-) -> PendingCommandPayload {
-    match payload {
-        PendingRuntimeCommandPayload::Approve {
-            node_name,
-            node_execution_id,
-            comment,
-        } => PendingCommandPayload::Approve {
-            node_name,
-            node_execution_id,
-            comment,
-        },
-        PendingRuntimeCommandPayload::Abort { node_name } => {
-            PendingCommandPayload::Abort { node_name }
-        }
-        PendingRuntimeCommandPayload::SubmitOutput {
-            node_name,
-            node_execution_id,
-            contract,
-            artifact,
-        } => PendingCommandPayload::SubmitOutput {
-            node_name,
-            node_execution_id,
-            contract,
-            artifact,
-        },
-    }
-}
-
-impl From<PendingCommandDispatchOutcome> for PendingRuntimeCommandOutcome {
-    fn from(outcome: PendingCommandDispatchOutcome) -> Self {
-        match outcome {
-            PendingCommandDispatchOutcome::Accepted => Self::Accepted,
-            PendingCommandDispatchOutcome::RejectedFinal(reason) => Self::RejectedFinal(reason),
-            PendingCommandDispatchOutcome::RetryableFailure(reason) => {
-                Self::RetryableFailure(reason)
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn pending_payload_mapping_preserves_node_execution_address() {
-        assert_eq!(
-            pending_runtime_payload_to_gateway(PendingRuntimeCommandPayload::Approve {
-                node_name: "review".to_string(),
-                node_execution_id: Some("node-execution-review".to_string()),
-                comment: None,
-            }),
-            PendingCommandPayload::Approve {
-                node_name: "review".to_string(),
-                node_execution_id: Some("node-execution-review".to_string()),
-                comment: None,
-            }
-        );
-        assert_eq!(
-            pending_runtime_payload_to_gateway(PendingRuntimeCommandPayload::SubmitOutput {
-                node_name: "review".to_string(),
-                node_execution_id: Some("node-execution-review".to_string()),
-                contract: "review-verdict".to_string(),
-                artifact: serde_json::json!({"verdict": "LGTM"}),
-            }),
-            PendingCommandPayload::SubmitOutput {
-                node_name: "review".to_string(),
-                node_execution_id: Some("node-execution-review".to_string()),
-                contract: "review-verdict".to_string(),
-                artifact: serde_json::json!({"verdict": "LGTM"}),
-            }
-        );
+    fn workflow_name_resolution_diagnostics_remain_validation_errors() {
+        let error = workflow_engine_error_to_workflow_error(WorkflowEngineError::InvalidWorkflow(
+            "workflow_diagnostics: WFS006: duplicate workflow name".to_string(),
+        ));
+
+        assert!(matches!(
+            error,
+            WorkflowError::Validation(message)
+                if message.contains("WFS006") && message.contains("duplicate workflow name")
+        ));
+    }
+
+    #[test]
+    fn runtime_command_error_mapping_preserves_domain_variants() {
+        assert!(matches!(
+            workflow_engine_error_to_workflow_error(WorkflowEngineError::ExecutionNotFound(
+                "missing".to_string()
+            )),
+            WorkflowError::NotFound(message)
+                if message == "No workflow execution found for session 'missing'"
+        ));
+        assert!(matches!(
+            workflow_engine_error_to_workflow_error(WorkflowEngineError::InvalidState(
+                "terminal".to_string()
+            )),
+            WorkflowError::InvalidState(message) if message == "terminal"
+        ));
+        assert!(matches!(
+            workflow_engine_error_to_workflow_error(
+                WorkflowEngineError::UnauthorizedApprovalTarget("wrong target".to_string())
+            ),
+            WorkflowError::UnauthorizedApprovalTarget(message) if message == "wrong target"
+        ));
+        assert!(matches!(
+            workflow_engine_error_to_workflow_error(WorkflowEngineError::ValidationError(
+                "bad output".to_string()
+            )),
+            WorkflowError::Validation(message) if message == "bad output"
+        ));
+        assert!(matches!(
+            workflow_engine_error_to_workflow_error(WorkflowEngineError::SessionStore(
+                "io".to_string()
+            )),
+            WorkflowError::External(message) if message == "io"
+        ));
     }
 }

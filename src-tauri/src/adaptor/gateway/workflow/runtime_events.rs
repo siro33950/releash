@@ -1,9 +1,6 @@
-use crate::adaptor::gateway::workflow::engine_error::{
-    classify_cli_mutation_rejection_reason, WorkflowEngineError,
-};
-use crate::adaptor::gateway::workflow::event::{CliMutationRequestRecord, WorkflowEvent};
+use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
+use crate::adaptor::gateway::workflow::event::WorkflowEvent;
 use crate::adaptor::gateway::workflow::internal_node_command::InternalNodeCommand;
-use crate::adaptor::gateway::workflow::route_context::CommandCommitContext;
 use crate::adaptor::gateway::workflow::runtime_commit::StepOutcome;
 use crate::adaptor::gateway::workflow::state::{RuntimeExecutionState, WorkflowState};
 use crate::domain::workflow::NODE_STATUS_ABORTED;
@@ -226,73 +223,6 @@ fn map_internal_node_command_to_event(
             timestamp,
         }),
     }
-}
-
-pub(crate) fn cli_mutation_requested_event(
-    _workflow_name: &str,
-    context: CommandCommitContext,
-    timestamp: f64,
-) -> Option<WorkflowEvent> {
-    let mutation = context.into_cli_pending_mutation()?;
-    let (execution_id, request, requested_at, request_id) = mutation.into_event_parts();
-    Some(WorkflowEvent::CliMutationRequested {
-        execution_id,
-        request_id,
-        request,
-        requested_at,
-        timestamp,
-    })
-}
-
-pub(crate) fn cli_mutation_rejected_event(
-    _workflow_name: String,
-    context: &CommandCommitContext,
-    error: &WorkflowEngineError,
-    timestamp: f64,
-) -> Result<WorkflowEvent, WorkflowEngineError> {
-    let CommandCommitContext::CliPending { mutation } = context else {
-        return Err(WorkflowEngineError::InvalidState(
-            "append_cli_mutation_rejected requires CliPending context".to_string(),
-        ));
-    };
-    let (execution_id, request, requested_at, request_id) = mutation.clone().into_event_parts();
-    Ok(WorkflowEvent::CliMutationRejected {
-        execution_id,
-        request_id,
-        request,
-        reason: classify_cli_mutation_rejection_reason(error),
-        message: error.to_string(),
-        requested_at,
-        timestamp,
-    })
-}
-
-pub(crate) fn submit_output_cli_mutation_rejected_event(
-    _workflow_name: String,
-    execution_id: &str,
-    context: &CommandCommitContext,
-    error: &WorkflowEngineError,
-    timestamp: f64,
-) -> Result<WorkflowEvent, WorkflowEngineError> {
-    let (request_id, requested_at, node_name, contract) =
-        context.submit_output_rejection_parts().ok_or_else(|| {
-            WorkflowEngineError::InvalidState(
-                "append_cli_mutation_rejected_for_submit_output requires SubmitOutput context"
-                    .to_string(),
-            )
-        })?;
-    Ok(WorkflowEvent::CliMutationRejected {
-        execution_id: execution_id.to_string(),
-        request_id,
-        request: CliMutationRequestRecord::SubmitOutput {
-            node_name,
-            contract,
-        },
-        reason: classify_cli_mutation_rejection_reason(error),
-        message: error.to_string(),
-        requested_at,
-        timestamp,
-    })
 }
 
 pub(crate) fn pre_commit_required_events_for_outcome(
@@ -636,9 +566,7 @@ pub(crate) fn workflow_event_timestamp(event: &WorkflowEvent) -> f64 {
         | WorkflowEvent::ExecutionAborted { timestamp, .. }
         | WorkflowEvent::ExecutionInterrupted { timestamp, .. }
         | WorkflowEvent::ContractViolated { timestamp, .. }
-        | WorkflowEvent::CliMutationRequested { timestamp, .. }
-        | WorkflowEvent::ArtifactProduced { timestamp, .. }
-        | WorkflowEvent::CliMutationRejected { timestamp, .. } => *timestamp,
+        | WorkflowEvent::ArtifactProduced { timestamp, .. } => *timestamp,
     }
 }
 
@@ -658,9 +586,7 @@ pub(crate) fn set_workflow_event_timestamp(event: &mut WorkflowEvent, commit_tim
         | WorkflowEvent::ExecutionAborted { timestamp, .. }
         | WorkflowEvent::ExecutionInterrupted { timestamp, .. }
         | WorkflowEvent::ContractViolated { timestamp, .. }
-        | WorkflowEvent::CliMutationRequested { timestamp, .. }
-        | WorkflowEvent::ArtifactProduced { timestamp, .. }
-        | WorkflowEvent::CliMutationRejected { timestamp, .. } => *timestamp = commit_timestamp,
+        | WorkflowEvent::ArtifactProduced { timestamp, .. } => *timestamp = commit_timestamp,
     }
 }
 
@@ -674,12 +600,6 @@ mod tests {
         NodeExecution, NodeExecutionStatus, NodeHistoryEntry, TokenUsage,
     };
     use crate::domain::workflow::{ExecutionOrigin, NODE_STATUS_COMPLETED};
-    use crate::{
-        adaptor::gateway::workflow::event::CliMutationRejectionReason,
-        adaptor::gateway::workflow::route_context::{
-            WorkflowMutationContext, WorkflowMutationSource,
-        },
-    };
 
     fn workflow_state_fixture() -> WorkflowState {
         WorkflowState {
@@ -951,124 +871,5 @@ mod tests {
             error,
             "StartParallel pre-commit NodeCompleted append failed: append failed"
         );
-    }
-
-    #[test]
-    fn cli_mutation_requested_event_builds_cli_pending_event_only() {
-        let context = CommandCommitContext::cli_pending(WorkflowMutationContext::new(
-            "run-1".to_string(),
-            WorkflowMutationSource::CliPendingCommand {
-                request_id: "request-1".to_string(),
-            },
-            CliMutationRequestRecord::Abort { node_name: None },
-            10.0,
-        ));
-
-        let event = cli_mutation_requested_event("wf", context, 20.0);
-
-        assert!(matches!(
-            event,
-            Some(WorkflowEvent::CliMutationRequested {
-                execution_id,
-                request_id,
-                request: CliMutationRequestRecord::Abort { node_name: None },
-                requested_at,
-                timestamp,
-            }) if execution_id == "run-1"
-                && request_id == "request-1"
-                && (requested_at - 10.0).abs() < f64::EPSILON
-                && (timestamp - 20.0).abs() < f64::EPSILON
-        ));
-
-        assert!(cli_mutation_requested_event(
-            "wf",
-            CommandCommitContext::submit_output(
-                "request-2".to_string(),
-                30.0,
-                "review".to_string(),
-                "review-verdict".to_string(),
-            ),
-            40.0,
-        )
-        .is_none());
-    }
-
-    #[test]
-    fn cli_mutation_rejected_event_classifies_cli_pending_error() {
-        let context = CommandCommitContext::cli_pending(WorkflowMutationContext::new(
-            "run-2".to_string(),
-            WorkflowMutationSource::CliPendingCommand {
-                request_id: "request-2".to_string(),
-            },
-            CliMutationRequestRecord::Approve {
-                node_name: "approval".to_string(),
-                comment: None,
-            },
-            50.0,
-        ));
-
-        let event = cli_mutation_rejected_event(
-            "wf".to_string(),
-            &context,
-            &WorkflowEngineError::InvalidState("execution is already terminal".to_string()),
-            60.0,
-        )
-        .unwrap();
-
-        assert!(matches!(
-            event,
-            WorkflowEvent::CliMutationRejected {
-                execution_id,
-                request_id,
-                request: CliMutationRequestRecord::Approve { .. },
-                reason: CliMutationRejectionReason::ExecutionNotActive,
-                requested_at,
-                timestamp,
-                ..
-            } if execution_id == "run-2"
-                && request_id == "request-2"
-                && (requested_at - 50.0).abs() < f64::EPSILON
-                && (timestamp - 60.0).abs() < f64::EPSILON
-        ));
-    }
-
-    #[test]
-    fn submit_output_cli_mutation_rejected_event_uses_compact_request_record() {
-        let context = CommandCommitContext::submit_output(
-            "request-3".to_string(),
-            70.0,
-            "review".to_string(),
-            "review-verdict".to_string(),
-        );
-
-        let event = submit_output_cli_mutation_rejected_event(
-            "wf".to_string(),
-            "run-3",
-            &context,
-            &WorkflowEngineError::ValidationError("contract mismatch".to_string()),
-            80.0,
-        )
-        .unwrap();
-
-        assert!(matches!(
-            event,
-            WorkflowEvent::CliMutationRejected {
-                execution_id,
-                request_id,
-                request: CliMutationRequestRecord::SubmitOutput {
-                    node_name,
-                    contract,
-                },
-                reason: CliMutationRejectionReason::ContractMismatch,
-                requested_at,
-                timestamp,
-                ..
-            } if execution_id == "run-3"
-                && request_id == "request-3"
-                && node_name == "review"
-                && contract == "review-verdict"
-                && (requested_at - 70.0).abs() < f64::EPSILON
-                && (timestamp - 80.0).abs() < f64::EPSILON
-        ));
     }
 }

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::adaptor::gateway::workflow::log::WorkflowEventLog;
-use crate::domain::workflow::{WorkflowError, WorkflowExecutionId};
+use crate::domain::workflow::{WorkflowError, WorkflowExecutionId, WorkflowPageRequest};
 use crate::usecase::workflow::ports::{WorkflowEventDraft, WorkflowEventRepository};
 
 use super::mapper;
@@ -46,6 +46,19 @@ impl WorkflowEventRepository for WorkflowEventLogRepository {
     ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
         self.log()
             .read_log(execution_id.as_str())
+            .map_err(WorkflowError::external)?
+            .iter()
+            .map(mapper::workflow_event_to_domain_draft)
+            .collect()
+    }
+
+    fn read_page(
+        &self,
+        execution_id: &WorkflowExecutionId,
+        page: WorkflowPageRequest,
+    ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
+        self.log()
+            .read_log_page(execution_id.as_str(), page.offset, page.limit)
             .map_err(WorkflowError::external)?
             .iter()
             .map(mapper::workflow_event_to_domain_draft)

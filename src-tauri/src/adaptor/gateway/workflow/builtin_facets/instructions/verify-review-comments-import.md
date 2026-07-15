@@ -2,7 +2,7 @@
 
 現在のブランチに紐づく GitHub PR の unresolved review comment を取得し、各 comment を Releash Thread として投稿する。
 
-この Step は取得と Thread 投稿だけを行う。対応方針の決定、実装、GitHub への返信は行わない。
+この node は取得と Thread 投稿だけを行う。対応方針の決定、実装、GitHub への返信は行わない。
 
 # 入力
 

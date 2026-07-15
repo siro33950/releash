@@ -3,6 +3,7 @@ use crate::adaptor::gateway::app_config::config_models::{
     NotionPropertyMappingModel, NotionRepoConfigModel, ReleashConfig,
 };
 use crate::adaptor::gateway::workflow::approval_runtime::MAX_APPROVAL_COMMENT_CHARS;
+use crate::adaptor::gateway::workflow::event_projection::project_workflow_execution;
 use crate::adaptor::gateway::workflow::failure_wire::{
     submission_violation_reason, SubmissionViolation,
 };
@@ -7350,6 +7351,8 @@ mod dispatch_boundary_tests {
             WorkflowEngineError::InvalidState(message)
                 if message.contains("2 active fanout executions")
                     && message.contains("node_execution_id is required")
+                    && message.contains("ne-review-child-0")
+                    && message.contains("ne-review-child-1")
         ));
     }
 
@@ -7599,7 +7602,6 @@ mod dispatch_boundary_tests {
                 &session_store,
                 &handles,
                 &execution_id,
-                None,
                 None,
             )
             .await
@@ -8869,7 +8871,6 @@ mod dispatch_boundary_tests {
                 &handles,
                 &execution_id,
                 None,
-                None,
             )
             .await
             .unwrap();
@@ -9200,7 +9201,6 @@ mod dispatch_boundary_tests {
                 &session_store,
                 &handles,
                 &execution_id,
-                None,
                 None,
             )
             .await
@@ -13223,9 +13223,7 @@ mod dispatch_boundary_tests {
 
     // ---- [08] handle_submit_output: 単一トランザクション境界 ----
 
-    /// テスト用 helper: production 経路と同じ submit-output primitive 経由で
-    /// 構造化出力を提出する。CLI pending 経路は `request_id` / `submitted_at` を渡し、
-    /// UI / in-process 経路はどちらも None で渡す。
+    /// Production と同じ submit-output primitive 経由で構造化出力を提出する。
     #[allow(clippy::too_many_arguments)]
     async fn submit_output_for_test(
         engine: &Arc<WorkflowRuntimeService>,
@@ -13234,8 +13232,8 @@ mod dispatch_boundary_tests {
         node_name: &str,
         contract: &str,
         artifact: serde_json::Value,
-        request_id: Option<&str>,
-        submitted_at: Option<f64>,
+        _request_id: Option<&str>,
+        _submitted_at: Option<f64>,
     ) -> Result<(), WorkflowEngineError> {
         let (session_store, agent_runtime) = make_dispatch_deps(dispatch_data_dir(app));
         submit_output_for_test_with_deps(
@@ -13247,8 +13245,8 @@ mod dispatch_boundary_tests {
             node_name,
             contract,
             artifact,
-            request_id,
-            submitted_at,
+            None,
+            None,
         )
         .await
     }
@@ -13263,14 +13261,9 @@ mod dispatch_boundary_tests {
         node_name: &str,
         contract: &str,
         artifact: serde_json::Value,
-        request_id: Option<&str>,
-        submitted_at: Option<f64>,
+        _request_id: Option<&str>,
+        _submitted_at: Option<f64>,
     ) -> Result<(), WorkflowEngineError> {
-        let (request_id, submitted_at) = match (request_id, submitted_at) {
-            (Some(rid), Some(ts)) => (Some(rid.to_string()), Some(ts)),
-            (None, None) => (None, None),
-            _ => panic!("request_id と submitted_at は両方 Some か両方 None で渡すこと"),
-        };
         engine
             .submit_workflow_output(
                 app,
@@ -13281,8 +13274,6 @@ mod dispatch_boundary_tests {
                 None,
                 contract.to_string(),
                 artifact,
-                request_id,
-                submitted_at,
             )
             .await
     }
@@ -13386,11 +13377,8 @@ mod dispatch_boundary_tests {
             .expect("ArtifactProduced event must be appended");
         assert_eq!(submitted.0.as_deref(), Some("review-verdict"));
         assert_eq!(submitted.1["verdict"], "LGTM");
-        assert_eq!(
-            submitted.2.as_deref(),
-            Some("00000000-0000-0000-0000-000000000aa1")
-        );
-        assert_eq!(submitted.3, Some(800.0));
+        assert_eq!(submitted.2, None);
+        assert_eq!(submitted.3, None);
     }
 
     /// #1250: contract 不適合の SubmitOutput は即 reject せず repair policy に渡す。
@@ -13472,12 +13460,11 @@ mod dispatch_boundary_tests {
             event,
             WorkflowEvent::ContractViolated {
                 node_name,
-                request_id: Some(request_id),
+                request_id: None,
                 repair_attempt: 1,
                 violations,
                 ..
             } if node_name == "review"
-                && request_id == "00000000-0000-0000-0000-000000000ab1"
                 && !violations.is_empty()
                 && violations.iter().all(|violation|
                     !violation.path.is_empty() && !violation.reason.is_empty())
@@ -13485,17 +13472,30 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
-    async fn pending_invalid_submit_output_repair_is_idempotent_by_request_id() {
+    async fn fanout_child_invalid_submit_repairs_the_selected_node_execution() {
         let app = make_dispatch_app();
         let engine = Arc::new(WorkflowRuntimeService::new_for_test());
         let data_dir =
             crate::infrastructure::platform::app_data_dir::resolve_data_dir(app.handle()).unwrap();
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         let execution_id = uuid::Uuid::new_v4().to_string();
-        let worktree_path = "/wt/submit-invalid-idempotent";
-        let session_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
-        let mut workflow = make_submit_output_workflow();
-        workflow.nodes[0].artifact = Some("spec-directory".to_string());
+        let selected_node_execution_id = uuid::Uuid::new_v4().to_string();
+        let sibling_node_execution_id = uuid::Uuid::new_v4().to_string();
+        let selected_session_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+        let sibling_session_id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+        let worktree_path = "/wt/fanout-submit-invalid";
+        let mut child = make_fanout_child("review-child");
+        child.artifact = Some("spec-directory".to_string());
+        let workflow = Workflow {
+            name: "fanout-submit-wf".to_string(),
+            description: String::new(),
+            builtin: false,
+            schemas: submit_test_schemas(),
+            nodes: vec![
+                make_fanout_step("parallel-review", vec!["review-child"]),
+                child,
+            ],
+        };
         engine
             .seed_active_execution_for_test(
                 execution_id.clone(),
@@ -13506,91 +13506,90 @@ mod dispatch_boundary_tests {
             )
             .await;
         {
-            let mut execs = engine.executions.lock().await;
-            let exec = execs.get_mut(&execution_id).expect("seeded execution");
-            exec.current_session_id = Some(session_id.to_string());
-            exec.node_executions
-                .iter_mut()
-                .find(|node_execution| {
-                    node_execution.node_name == "review"
-                        && node_execution.status == NodeExecutionStatus::Running
-                })
-                .expect("seeded review NodeExecution")
-                .session_id = Some(session_id.to_string());
+            let mut executions = engine.executions.lock().await;
+            let execution = executions.get_mut(&execution_id).expect("seeded execution");
+            execution.current_session_id = None;
+            install_test_fanout_run(
+                execution,
+                vec![
+                    FanoutChildRuntime {
+                        node_execution_id: selected_node_execution_id.clone(),
+                        node_name: "review-child".to_string(),
+                        session_id: selected_session_id.to_string(),
+                        state: FanoutChildRuntimeState::Running,
+                        result: None,
+                        artifact: None,
+                        contract: None,
+                        failure_kind: None,
+                        failure_disposition: None,
+                        token_usage: TokenUsage::default(),
+                        attempt: 1,
+                        completed_at: None,
+                    },
+                    FanoutChildRuntime {
+                        node_execution_id: sibling_node_execution_id.clone(),
+                        node_name: "review-child".to_string(),
+                        session_id: sibling_session_id.to_string(),
+                        state: FanoutChildRuntimeState::Running,
+                        result: None,
+                        artifact: None,
+                        contract: None,
+                        failure_kind: None,
+                        failure_disposition: None,
+                        token_usage: TokenUsage::default(),
+                        attempt: 1,
+                        completed_at: None,
+                    },
+                ],
+            );
         }
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         session_store
             .save_full_session_for_migration_or_restore(
                 &data_dir,
-                &chat_session_for_test(session_id, worktree_path, None, true),
+                &chat_session_for_test(selected_session_id, worktree_path, None, true),
             )
             .unwrap();
         insert_ready_agent_process_for_internal_turn_test(
             &handles,
             &session_store,
             &data_dir,
-            session_id,
+            selected_session_id,
         )
         .await;
-        let pending = crate::adaptor::gateway::workflow::pending_command::PendingCommand::new(
-            execution_id.clone(),
-            crate::adaptor::gateway::workflow::pending_command::CliRequestPayload::SubmitOutput {
-                node_name: "review".to_string(),
-                node_execution_id: None,
-                contract: "spec-directory".to_string(),
-                artifact: serde_json::json!({}),
-            },
-            901.0,
-        );
-        let request_id = pending.id.clone();
 
-        let first =
-            crate::adaptor::gateway::workflow::pending_command_dispatcher::dispatch_pending_command(
+        engine
+            .submit_workflow_output(
                 app.handle(),
-                &engine,
                 &session_store,
                 &handles,
-                pending.clone(),
+                &execution_id,
+                "review-child".to_string(),
+                Some(selected_node_execution_id.clone()),
+                "spec-directory".to_string(),
+                serde_json::json!({}),
             )
-            .await;
-        assert_eq!(
-            first,
-            crate::adaptor::gateway::workflow::pending_command_dispatcher::PendingCommandDispatchOutcome::Accepted
-        );
-        let second =
-            crate::adaptor::gateway::workflow::pending_command_dispatcher::dispatch_pending_command(
-                app.handle(),
-                &engine,
-                &session_store,
-                &handles,
-                pending,
-            )
-            .await;
-        assert_eq!(
-            second,
-            crate::adaptor::gateway::workflow::pending_command_dispatcher::PendingCommandDispatchOutcome::Accepted
-        );
-
-        let events = WorkflowEventLog::new(&data_dir)
-            .read_log(&execution_id)
+            .await
             .unwrap();
-        let repair_events = events
-            .iter()
-            .filter(|event| {
-                matches!(
-                    event,
-                    WorkflowEvent::ContractViolated {
-                        request_id: Some(id),
-                        ..
-                    } if id == &request_id
-                )
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            repair_events.len(),
-            1,
-            "same pending SubmitOutput request_id must not consume a second repair attempt; got {events:?}"
-        );
+
+        let events = read_submit_output_events(&app, &execution_id);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::ContractViolated {
+                node_execution_id,
+                node_name,
+                repair_attempt: 1,
+                violations,
+                ..
+            } if node_execution_id == &selected_node_execution_id
+                && node_name == "review-child"
+                && !violations.is_empty()
+        )));
+        assert!(events.iter().all(|event| !matches!(
+            event,
+            WorkflowEvent::ContractViolated { node_execution_id, .. }
+                if node_execution_id == &sibling_node_execution_id
+        )));
     }
 
     /// [08] 振る舞い定義 Rule 1: 不在 step に対する提出は副作用なしで拒否される。

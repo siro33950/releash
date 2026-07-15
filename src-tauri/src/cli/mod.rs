@@ -1,22 +1,20 @@
-//! [05] / [06] `releash workflow ...` CLI 入口。
+//! `releash workflow ...` CLI 入口。
 //!
-//! read-only 観測経路は engine と IPC せず、`workflow_executions/` 配下と `workflows/`
-//! YAML / builtin を file-direct で読む（spec [05] design）。
-//! mutating CLI (`approve` / `abort`) も engine と直接 IPC せず、pending
-//! command file を enqueue するところまでを CLI の責務に閉じる（spec [06] CLI 完了
-//! 基準境界）。
+//! workflow command/query は localhost local API を正とする。アプリ未起動時は
+//! read-only query だけ backend-owned read model の file-direct fallback を許可する。
 
+mod api_client;
 mod common;
+mod file_direct;
 mod output;
 mod review;
 mod workflow;
-mod workflow_io;
 
 use std::sync::OnceLock;
 
 use clap::{CommandFactory, Parser, Subcommand};
 
-use common::{cli_result_exit_code, resolve_existing_data_dir};
+use common::{cli_result_exit_code, resolve_data_dir, resolve_existing_data_dir, CliError};
 use output::OutputSubcommand;
 use review::ReviewSubcommand;
 use workflow::WorkflowSubcommand;
@@ -24,9 +22,6 @@ use workflow::WorkflowSubcommand;
 use crate::adaptor::gateway::workflow::WorkflowDefinitionFileRepository;
 
 /// `releash` CLI のトップ args。
-///
-/// clap AST は外部公開せず、エントリーポイントは CLI dispatcher に限定する
-/// （spec [05] scope の境界 + 内部 AST の非公開境界）。
 #[derive(Parser, Debug)]
 #[command(name = "releash", disable_help_subcommand = true)]
 struct Cli {
@@ -36,7 +31,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum TopCommand {
-    /// workflow 観測サブコマンド。
+    /// workflow command / query サブコマンド。
     Workflow {
         #[command(subcommand)]
         command: WorkflowSubcommand,
@@ -48,61 +43,90 @@ enum TopCommand {
     },
 }
 
-/// Releash CLI の long help 文字列を返す（OnceLock キャッシュ）。
-///
-/// Agent backend 起動時に system_prompt へ append される単一ソース。
-/// clap derive 由来の help を使うため、CLI 定義の追加・変更に自動追従する。
-/// （Issue #1022 / spec [09]: Agent process environment contract / Agent backend orchestration 責務）
+/// Agent system prompt に追加する、nested command を含む canonical CLI help。
 pub fn render_long_help() -> &'static str {
     static CACHE: OnceLock<String> = OnceLock::new();
-    CACHE.get_or_init(|| Cli::command().render_long_help().to_string())
+    CACHE.get_or_init(|| {
+        let command = Cli::command();
+        let mut output = String::new();
+        render_command_help_tree(&command, &mut Vec::new(), &mut output);
+        output
+    })
+}
+
+fn render_command_help_tree(
+    command: &clap::Command,
+    parents: &mut Vec<String>,
+    output: &mut String,
+) {
+    parents.push(command.get_name().to_string());
+    if !output.is_empty() {
+        output.push('\n');
+    }
+    output.push_str("$ ");
+    output.push_str(&parents.join(" "));
+    output.push_str(" --help\n");
+    let mut rendered = command.clone();
+    output.push_str(&rendered.render_long_help().to_string());
+    for child in command.get_subcommands() {
+        render_command_help_tree(child, parents, output);
+    }
+    parents.pop();
 }
 
 /// CLI のエントリーポイント。`std::process::exit` 用の終了コードを返す。
 pub fn run() -> i32 {
     let cli = match Cli::try_parse() {
-        Ok(c) => c,
-        Err(e) => {
-            // clap の help / version は exit_code() でハンドリング。
-            e.print().ok();
-            return e.exit_code();
+        Ok(cli) => cli,
+        Err(error) => {
+            error.print().ok();
+            return error.exit_code();
         }
     };
     let workflows_dir = WorkflowDefinitionFileRepository::default_workflows_dir();
-    // data_dir は List / Executions / Status / Logs それぞれの branch 内で解決する。
-    // List も workflow_executions/ 由来の `is_running` 反映のため data_dir を必要とするが、
-    // 各 branch 内で解決することで未到達の branch では I/O を走らせない。
-    // [05] 観測経路境界: data_dir 自体が存在しない場合は `NotFound` として扱い、
-    // 「execution が 0 件」と「向き先がそもそも無い」を区別する（5-1 修正）。
-    let resolve = || resolve_existing_data_dir();
     let result =
         match cli.command {
-            TopCommand::Workflow { command } => match command {
-                WorkflowSubcommand::List { json } => resolve()
-                    .and_then(|data_dir| workflow::cmd_list(&workflows_dir, &data_dir, json)),
-                WorkflowSubcommand::Executions {
-                    status,
-                    worktree,
-                    json,
-                } => resolve().and_then(|data_dir| {
-                    workflow::cmd_executions(&data_dir, status, worktree, json)
-                }),
-                WorkflowSubcommand::Status { execution_id, json } => resolve()
-                    .and_then(|data_dir| workflow::cmd_status(&data_dir, &execution_id, json)),
-                WorkflowSubcommand::Logs { execution_id, json } => resolve()
-                    .and_then(|data_dir| workflow::cmd_logs(&data_dir, &execution_id, json)),
-                WorkflowSubcommand::Approve {
-                    execution_id,
-                    node,
-                    node_execution,
-                    comment,
-                } => resolve().and_then(|data_dir| {
-                    workflow::cmd_approve(&data_dir, &execution_id, node, node_execution, comment)
-                }),
-                WorkflowSubcommand::Abort { execution_id, node } => resolve()
-                    .and_then(|data_dir| workflow::cmd_abort(&data_dir, &execution_id, node)),
-                WorkflowSubcommand::Output { command } => {
-                    resolve().and_then(|data_dir| match command {
+            TopCommand::Workflow { command } => resolve_data_dir()
+                .map_err(CliError::Other)
+                .and_then(|data_dir| match command {
+                    WorkflowSubcommand::List { json } => {
+                        workflow::cmd_list(&workflows_dir, &data_dir, json)
+                    }
+                    WorkflowSubcommand::Start {
+                        workflow_name,
+                        request,
+                        worktree,
+                        permission,
+                    } => {
+                        workflow::cmd_start(&data_dir, workflow_name, request, worktree, permission)
+                    }
+                    WorkflowSubcommand::Executions {
+                        status,
+                        worktree,
+                        json,
+                    } => workflow::cmd_executions(&data_dir, status, worktree, json),
+                    WorkflowSubcommand::Status { execution_id, json } => {
+                        workflow::cmd_status(&data_dir, &execution_id, json)
+                    }
+                    WorkflowSubcommand::Logs { execution_id, json } => {
+                        workflow::cmd_logs(&data_dir, &execution_id, json)
+                    }
+                    WorkflowSubcommand::Approve {
+                        execution_id,
+                        node,
+                        node_execution,
+                        comment,
+                    } => workflow::cmd_approve(
+                        &data_dir,
+                        &execution_id,
+                        node,
+                        node_execution,
+                        comment,
+                    ),
+                    WorkflowSubcommand::Abort { execution_id } => {
+                        workflow::cmd_abort(&data_dir, &execution_id)
+                    }
+                    WorkflowSubcommand::Output { command } => match command {
                         OutputSubcommand::Submit {
                             execution_id,
                             node,
@@ -122,112 +146,94 @@ pub fn run() -> i32 {
                         OutputSubcommand::Validate {
                             execution_id,
                             node,
+                            contract,
                             file,
-                        } => output::cmd_output_validate(&data_dir, &execution_id, &node, &file),
+                        } => output::cmd_output_validate(
+                            &data_dir,
+                            &execution_id,
+                            &node,
+                            &contract,
+                            &file,
+                        ),
                         OutputSubcommand::Get {
                             execution_id,
                             node,
                             json,
                         } => output::cmd_output_get(&data_dir, &execution_id, &node, json),
-                    })
-                }
-            },
-            TopCommand::Review { command } => {
-                resolve().and_then(|data_dir| review::cmd_review(&data_dir, command))
-            }
+                    },
+                }),
+            TopCommand::Review { command } => resolve_existing_data_dir()
+                .and_then(|data_dir| review::cmd_review(&data_dir, command)),
         };
     cli_result_exit_code(result)
 }
 
 #[cfg(test)]
 mod tests {
-    /// Issue #1022: Agent process environment contract により、Releash CLI の
-    /// long help が system_prompt 注入用の単一ソースとして取得可能でなければならない。
-    /// 分割前 main の実出力と 1 文字単位で一致することで、clap 由来の
-    /// subcommand 説明 / value_name / 順序 / doc comment 文言の観測不変性を担保する。
-    #[test]
-    fn render_long_help_matches_split_before_golden() {
-        let expected = "`releash` CLI のトップ args。\n\nclap AST は外部公開せず、エントリーポイントは CLI dispatcher に限定する （spec [05] scope の境界 + 内部 AST の非公開境界）。\n\nUsage: releash <COMMAND>\n\nCommands:\n  workflow  workflow 観測サブコマンド。\n  review    Agent review comment サブコマンド。\n\nOptions:\n  -h, --help\n          Print help (see a summary with '-h')\n";
+    use super::*;
 
-        assert_eq!(super::render_long_help(), expected);
+    #[test]
+    fn render_long_help_contains_nested_canonical_workflow_commands() {
+        let help = render_long_help();
+        for command in [
+            "$ releash workflow --help",
+            "$ releash workflow start --help",
+            "$ releash workflow executions --help",
+            "$ releash workflow output submit --help",
+            "$ releash workflow output validate --help",
+            "$ releash workflow output get --help",
+            "--node",
+            "--node-execution",
+            "--type",
+            "EXECUTION_ID",
+        ] {
+            assert!(help.contains(command), "missing nested help: {command}");
+        }
+        for legacy in [
+            ["ru", "ns"].concat(),
+            ["run", "_id"].concat(),
+            ["--st", "ep"].concat(),
+            ["Re", "ject"].concat(),
+        ] {
+            assert!(!help.contains(&legacy), "legacy CLI vocabulary: {legacy}");
+        }
     }
 
-    /// OnceLock キャッシュにより、再呼び出しでも同じ参照を返すこと。
     #[test]
     fn render_long_help_is_cached_across_calls() {
-        let first = super::render_long_help();
-        let second = super::render_long_help();
-        assert!(
-            std::ptr::eq(first.as_ptr(), second.as_ptr()),
-            "render_long_help must return the same cached string instance across calls"
-        );
+        let first = render_long_help();
+        let second = render_long_help();
+        assert!(std::ptr::eq(first.as_ptr(), second.as_ptr()));
     }
 
     #[test]
-    fn output_module_does_not_depend_on_workflow_module() {
-        let output_src = include_str!("output.rs");
-        let forbidden_lines = workflow_module_dependency_lines(output_src);
-        assert!(
-            forbidden_lines.is_empty(),
-            "output.rs must use workflow_io for shared workflow CLI helpers instead of importing workflow.rs; forbidden references: {forbidden_lines:?}"
-        );
+    fn workflow_cli_has_no_legacy_file_queue_dependency() {
+        for source in [
+            include_str!("mod.rs"),
+            include_str!("workflow.rs"),
+            include_str!("output.rs"),
+            include_str!("api_client.rs"),
+            include_str!("file_direct.rs"),
+        ] {
+            let forbidden = ["workflow_", "pending"].concat();
+            assert!(!source.contains(&forbidden));
+            let mutation_event = ["CliMutation", "Requested"].concat();
+            assert!(!source.contains(&mutation_event));
+        }
     }
 
     #[test]
-    fn workflow_module_dependency_detector_preserves_workflow_io_boundary() {
-        for src in [
-            "use crate::cli::workflow::WorkflowSubcommand;",
-            "use super::workflow;",
-            "let _ = super::super::workflow::cmd_logs;",
+    fn file_direct_reads_do_not_depend_on_local_api_wire_responses() {
+        let source = include_str!("file_direct.rs");
+        for forbidden in [
+            "adaptor::controller::api::protocol",
+            "GetArtifactResponse",
+            "ValidateArtifactResponse",
         ] {
             assert!(
-                line_has_workflow_module_dependency(src),
-                "detector must reject workflow.rs dependency in: {src}"
+                !source.contains(forbidden),
+                "file-direct read fallback depends on API wire type: {forbidden}"
             );
         }
-        for src in [
-            "use super::workflow_io;",
-            "let _ = super::workflow_io::read_execution_events;",
-            "use crate::cli::workflow_io::PendingEnqueueOutput;",
-        ] {
-            assert!(
-                !line_has_workflow_module_dependency(src),
-                "detector must allow workflow_io helper dependency in: {src}"
-            );
-        }
-    }
-
-    fn workflow_module_dependency_lines(source: &str) -> Vec<(usize, String)> {
-        source
-            .lines()
-            .enumerate()
-            .filter(|(_, line)| line_has_workflow_module_dependency(line))
-            .map(|(index, line)| (index + 1, line.trim().to_string()))
-            .collect()
-    }
-
-    fn line_has_workflow_module_dependency(line: &str) -> bool {
-        contains_path_with_module_boundary(line, "crate::cli::workflow")
-            || contains_path_with_module_boundary(line, "super::workflow")
-    }
-
-    fn contains_path_with_module_boundary(line: &str, needle: &str) -> bool {
-        let mut offset = 0;
-        while let Some(index) = line[offset..].find(needle) {
-            let end = offset + index + needle.len();
-            if line[end..]
-                .chars()
-                .next()
-                .is_none_or(|ch| !is_rust_ident_continue(ch))
-            {
-                return true;
-            }
-            offset = end;
-        }
-        false
-    }
-
-    fn is_rust_ident_continue(ch: char) -> bool {
-        ch == '_' || ch.is_ascii_alphanumeric()
     }
 }

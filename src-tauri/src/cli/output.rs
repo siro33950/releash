@@ -2,14 +2,11 @@ use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
 
-use super::common::{validate_execution_id, CliError};
-use super::workflow_io;
-use crate::domain::workflow::services::spec_directory as workflow_spec_directory;
-use crate::domain::workflow::value_objects::ContractViolation;
-use crate::domain::workflow::{contract, secret_masker, ContractValidationResult};
-use crate::usecase::workflow::event_draft;
-use crate::usecase::workflow::ports::WorkflowEventDraft;
-use crate::usecase::workflow::WorkflowGetOutputResult;
+use super::api_client;
+use super::common::{validate_execution_id, validate_node, CliError};
+use super::file_direct;
+use crate::adaptor::controller::api::protocol::{SubmitArtifactRequest, ValidateArtifactRequest};
+use crate::usecase::workflow::{WorkflowGetOutputResult, WorkflowValidateOutputResult};
 
 #[derive(Subcommand, Debug)]
 pub(super) enum OutputSubcommand {
@@ -32,6 +29,8 @@ pub(super) enum OutputSubcommand {
         execution_id: String,
         #[arg(long, value_name = "NODE_NAME")]
         node: String,
+        #[arg(long = "type", value_name = "CONTRACT")]
+        contract: String,
         #[arg(long, value_name = "PATH")]
         file: PathBuf,
     },
@@ -55,64 +54,51 @@ pub(super) fn cmd_output_submit(
     file_arg: Option<PathBuf>,
 ) -> Result<String, CliError> {
     validate_execution_id(execution_id)?;
-    validate_node_argument(node)?;
+    validate_node(node)?;
     validate_contract_argument(contract)?;
-    let raw_json = read_submit_input_json(json_arg, file_arg)?;
-    let artifact: serde_json::Value = serde_json::from_str(&raw_json)
-        .map_err(|error| CliError::InvalidInput(format!("Failed to parse JSON: {error}")))?;
-
-    let context = resolve_node_artifact_schema_via_log(data_dir, execution_id, node)?;
-    if context.contract != contract {
-        return Err(CliError::InvalidInput(format!(
-            "contract mismatch: node '{node}' expects '{}', got '{contract}'",
-            context.contract
-        )));
-    }
-    if let ContractValidationResult::Invalid(violation) =
-        validate_cli_artifact_output(&context, artifact.clone())
-    {
-        return Err(CliError::InvalidInput(format!(
-            "artifact schema violation ({}): {}",
-            violation.reason, violation.details
-        )));
-    }
-
-    let output = workflow_io::enqueue_pending_command(
-        data_dir,
-        execution_id,
-        workflow_io::CliRequestPayload::SubmitOutput {
-            node_name: node.to_string(),
-            node_execution_id: workflow_io::resolve_node_execution_id(node_execution),
-            contract: contract.to_string(),
-            artifact,
-        },
-    )?;
-    Ok(format!("{}\n", output.format_stdout_line()))
+    let value = parse_json_input(read_submit_input_json(json_arg, file_arg)?)?;
+    let request = SubmitArtifactRequest {
+        node: node.to_string(),
+        node_execution_id: api_client::resolve_node_execution_id(node_execution),
+        contract: contract.to_string(),
+        value,
+    };
+    api_client::mutation(data_dir, |client| {
+        client.submit_output(execution_id, &request)
+    })?;
+    Ok(format!(
+        "submitted: execution_id={execution_id} node={node} type={contract}\n"
+    ))
 }
 
 pub(super) fn cmd_output_validate(
     data_dir: &Path,
     execution_id: &str,
     node: &str,
+    contract: &str,
     file: &Path,
 ) -> Result<String, CliError> {
     validate_execution_id(execution_id)?;
-    validate_node_argument(node)?;
-    let context = resolve_node_artifact_schema_via_log(data_dir, execution_id, node)?;
-    let raw_json = std::fs::read_to_string(file).map_err(|error| {
-        CliError::InvalidInput(format!("Failed to read file {file:?}: {error}"))
-    })?;
-    let artifact: serde_json::Value = serde_json::from_str(&raw_json)
-        .map_err(|error| CliError::InvalidInput(format!("Failed to parse JSON: {error}")))?;
-    match validate_cli_artifact_output(&context, artifact) {
-        ContractValidationResult::Valid { .. } => Ok(format!(
-            "ok: artifact schema '{}' is satisfied\n",
-            context.contract
+    validate_node(node)?;
+    validate_contract_argument(contract)?;
+    let value = parse_json_input(read_file(file)?)?;
+    let request = ValidateArtifactRequest {
+        node: node.to_string(),
+        contract: contract.to_string(),
+        value: value.clone(),
+    };
+    let response = api_client::read_with_fallback(
+        data_dir,
+        |client| client.validate_output(execution_id, &request),
+        || file_direct::validate_output(data_dir, execution_id, node, contract, value),
+    )?;
+    match response {
+        WorkflowValidateOutputResult::Valid => {
+            Ok(format!("ok: artifact schema '{contract}' is satisfied\n"))
+        }
+        WorkflowValidateOutputResult::Invalid { reason, details } => Err(CliError::InvalidInput(
+            format!("artifact schema violation ({reason}): {details}"),
         )),
-        ContractValidationResult::Invalid(violation) => Err(CliError::InvalidInput(format!(
-            "artifact schema violation ({}): {}",
-            violation.reason, violation.details
-        ))),
     }
 }
 
@@ -123,14 +109,21 @@ pub(super) fn cmd_output_get(
     json: bool,
 ) -> Result<String, CliError> {
     validate_execution_id(execution_id)?;
-    validate_node_argument(node)?;
-    workflow_io::ensure_execution_exists(data_dir, execution_id)?;
-    let events = workflow_io::read_execution_events(data_dir, execution_id)?;
-    ensure_node_exists_via_log(&events, execution_id, node)?;
-    let result = workflow_io::file_direct_query_service(data_dir)
-        .get_output(execution_id, node)
-        .map_err(|error| CliError::Other(error.to_string()))?;
-    let view = OutputGetView::from(result);
+    validate_node(node)?;
+    let response = api_client::read_with_fallback(
+        data_dir,
+        |client| client.get_output(execution_id, node),
+        || file_direct::get_output(data_dir, execution_id, node),
+    )?;
+    format_output(response, node, json)
+}
+
+fn format_output(
+    response: WorkflowGetOutputResult,
+    node: &str,
+    json: bool,
+) -> Result<String, CliError> {
+    let view = OutputGetView::from(response);
     if json {
         let text = serde_json::to_string_pretty(&view)
             .map_err(|error| CliError::Other(format!("serialize output: {error}")))?;
@@ -166,15 +159,6 @@ pub(super) fn cmd_output_get(
     }
 }
 
-fn validate_node_argument(node: &str) -> Result<(), CliError> {
-    if node.trim().is_empty() {
-        return Err(CliError::InvalidInput(
-            "--node must not be empty".to_string(),
-        ));
-    }
-    Ok(())
-}
-
 fn validate_contract_argument(contract: &str) -> Result<(), CliError> {
     if contract.trim().is_empty() {
         return Err(CliError::InvalidInput(
@@ -193,83 +177,21 @@ fn read_submit_input_json(
             "--json and --file are mutually exclusive".to_string(),
         )),
         (Some(raw), None) => Ok(raw),
-        (None, Some(path)) => std::fs::read_to_string(&path).map_err(|error| {
-            CliError::InvalidInput(format!("Failed to read file {path:?}: {error}"))
-        }),
+        (None, Some(path)) => read_file(&path),
         (None, None) => Err(CliError::InvalidInput(
             "either --json or --file is required".to_string(),
         )),
     }
 }
 
-fn ensure_node_exists_via_log(
-    events: &[WorkflowEventDraft],
-    execution_id: &str,
-    node: &str,
-) -> Result<(), CliError> {
-    match event_draft::node_exists_in_drafts(events, node, execution_id) {
-        Ok(true) => Ok(()),
-        Ok(false) => Err(CliError::InvalidInput(format!(
-            "node '{node}' is not defined in workflow execution '{execution_id}'"
-        ))),
-        Err(contract::ContractLookupError::ExecutionNotFound { execution_id }) => Err(
-            CliError::NotFound(format!("Workflow execution not found: {execution_id}")),
-        ),
-        Err(contract::ContractLookupError::InvalidExecutionStartedPayload { details }) => {
-            Err(CliError::InvalidInput(details))
-        }
-        Err(contract::ContractLookupError::NoArtifactContract { .. }) => {
-            Err(CliError::InvalidInput(format!(
-                "node '{node}' is not defined in workflow execution '{execution_id}'"
-            )))
-        }
-    }
+fn read_file(path: &Path) -> Result<String, CliError> {
+    std::fs::read_to_string(path)
+        .map_err(|error| CliError::InvalidInput(format!("Failed to read file {path:?}: {error}")))
 }
 
-fn resolve_node_artifact_schema_via_log(
-    data_dir: &Path,
-    execution_id: &str,
-    node: &str,
-) -> Result<event_draft::ArtifactSchemaContext, CliError> {
-    let events = workflow_io::read_execution_events(data_dir, execution_id)?;
-    event_draft::resolve_node_artifact_schema_from_drafts(&events, node, execution_id).map_err(
-        |error| match error {
-            contract::ContractLookupError::ExecutionNotFound { .. } => {
-                CliError::NotFound(format!("Workflow execution not found: {execution_id}"))
-            }
-            contract::ContractLookupError::InvalidExecutionStartedPayload { details } => {
-                CliError::InvalidInput(details)
-            }
-            contract::ContractLookupError::NoArtifactContract {
-                workflow_name,
-                node,
-            } => CliError::InvalidInput(format!(
-                "node '{node}' has no artifact in workflow '{workflow_name}'"
-            )),
-        },
-    )
-}
-
-fn validate_cli_artifact_output(
-    context: &event_draft::ArtifactSchemaContext,
-    artifact: serde_json::Value,
-) -> ContractValidationResult {
-    let redacted = secret_masker::mask_sensitive_artifact(&context.contract, artifact, &[]);
-    match contract::validate_artifact_value(&context.schemas, &context.contract, redacted) {
-        ContractValidationResult::Valid { artifact, result } => {
-            let violations =
-                workflow_spec_directory::validate_contract_value(&context.contract, &artifact);
-            if violations.is_empty() {
-                ContractValidationResult::Valid { artifact, result }
-            } else {
-                ContractValidationResult::Invalid(ContractViolation {
-                    reason: "schema_violation".to_string(),
-                    details: contract::format_schema_violations(&violations),
-                })
-            }
-        }
-        invalid => invalid,
-    }
+fn parse_json_input(raw_json: String) -> Result<serde_json::Value, CliError> {
+    serde_json::from_str(&raw_json)
+        .map_err(|error| CliError::InvalidInput(format!("Failed to parse JSON: {error}")))
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -317,9 +239,6 @@ mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::event::WorkflowEvent;
     use crate::adaptor::gateway::workflow::log::WorkflowEventLog;
-    use crate::adaptor::gateway::workflow::pending_command::{
-        PendingCommandPayload, PendingCommandStore,
-    };
     use crate::adaptor::gateway::workflow::schema::{
         NodeDefinition, NodeKind, SchemaDef, SessionSpec, Workflow,
     };
@@ -368,7 +287,7 @@ mod tests {
     }
 
     #[test]
-    fn output_commands_parse_with_node_flag_only() {
+    fn output_commands_parse_with_node_and_type_vocabulary() {
         let execution_id = "550e8400-e29b-41d4-a716-446655440000";
         for argv in [
             vec![
@@ -392,6 +311,8 @@ mod tests {
                 execution_id,
                 "--node",
                 "review",
+                "--type",
+                "review-verdict",
                 "--file",
                 "out.json",
             ],
@@ -408,26 +329,38 @@ mod tests {
             assert!(Cli::try_parse_from(argv).is_ok());
         }
 
-        let legacy_flag = ["--st", "ep"].concat();
-        let argv = vec![
+        assert!(Cli::try_parse_from([
+            "releash",
+            "workflow",
+            "output",
+            "validate",
+            execution_id,
+            "--node",
+            "review",
+            "--file",
+            "out.json",
+        ])
+        .is_err());
+        let legacy_node_flag = ["--st", "ep"].concat();
+        assert!(Cli::try_parse_from(vec![
             "releash".to_string(),
             "workflow".to_string(),
             "output".to_string(),
             "get".to_string(),
             execution_id.to_string(),
-            legacy_flag,
+            legacy_node_flag,
             "review".to_string(),
-        ];
-        assert!(Cli::try_parse_from(argv).is_err());
+        ])
+        .is_err());
     }
 
     #[test]
-    fn submit_validates_and_enqueues_node_artifact() {
+    fn submit_requires_running_app() {
         let temp = TempDir::new().unwrap();
         let execution_id = test_uuid(10);
         seed_artifact_node(temp.path(), &execution_id);
 
-        let output = cmd_output_submit(
+        let error = cmd_output_submit(
             temp.path(),
             &execution_id,
             "review",
@@ -436,43 +369,47 @@ mod tests {
             Some(r#"{"verdict":"LGTM"}"#.to_string()),
             None,
         )
-        .unwrap();
-        assert!(output.starts_with(&format!("queued: execution_id={execution_id}")));
-
-        let entries = PendingCommandStore::new(temp.path())
-            .list_pending()
-            .unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].command.execution_id, execution_id);
-        assert_eq!(
-            entries[0].command.payload,
-            PendingCommandPayload::SubmitOutput {
-                node_name: "review".to_string(),
-                node_execution_id: Some("node-execution-review".to_string()),
-                contract: "review-verdict".to_string(),
-                artifact: serde_json::json!({"verdict": "LGTM"}),
-            }
+        .unwrap_err();
+        assert!(
+            matches!(error, CliError::Other(message) if message.contains("アプリの起動が必要"))
         );
     }
 
     #[test]
-    fn validate_rejects_invalid_artifact_without_writing_pending_command() {
+    fn validate_uses_file_fallback_when_app_is_not_running() {
         let temp = TempDir::new().unwrap();
         let execution_id = test_uuid(11);
         seed_artifact_node(temp.path(), &execution_id);
-        let file = temp.path().join("artifact.json");
-        std::fs::write(&file, r#"{"missing":"verdict"}"#).unwrap();
+        let valid_file = temp.path().join("valid.json");
+        std::fs::write(&valid_file, r#"{"verdict":"LGTM"}"#).unwrap();
+        assert_eq!(
+            cmd_output_validate(
+                temp.path(),
+                &execution_id,
+                "review",
+                "review-verdict",
+                &valid_file,
+            )
+            .unwrap(),
+            "ok: artifact schema 'review-verdict' is satisfied\n"
+        );
 
-        let error = cmd_output_validate(temp.path(), &execution_id, "review", &file).unwrap_err();
-        assert!(matches!(error, CliError::InvalidInput(_)));
-        assert!(PendingCommandStore::new(temp.path())
-            .list_pending()
-            .unwrap()
-            .is_empty());
+        let invalid_file = temp.path().join("invalid.json");
+        std::fs::write(&invalid_file, r#"{"missing":"verdict"}"#).unwrap();
+        assert!(matches!(
+            cmd_output_validate(
+                temp.path(),
+                &execution_id,
+                "review",
+                "review-verdict",
+                &invalid_file,
+            ),
+            Err(CliError::InvalidInput(_))
+        ));
     }
 
     #[test]
-    fn get_reads_latest_artifact_through_query_service() {
+    fn get_reads_latest_artifact_through_file_fallback() {
         let temp = TempDir::new().unwrap();
         let execution_id = test_uuid(12);
         seed_artifact_node(temp.path(), &execution_id);
@@ -497,10 +434,6 @@ mod tests {
         assert_eq!(output["artifact"]["verdict"], "LGTM");
         assert_eq!(output["request_id"], "request-1");
         assert!(output.get("structured_output").is_none());
-
-        let human = cmd_output_get(temp.path(), &execution_id, "review", false).unwrap();
-        assert!(human.starts_with("submitted: node=review"));
-        assert!(human.contains("artifact:"));
     }
 
     #[test]
@@ -516,7 +449,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_node_is_rejected() {
+    fn unknown_node_is_rejected_by_file_fallback() {
         let temp = TempDir::new().unwrap();
         let execution_id = test_uuid(14);
         seed_artifact_node(temp.path(), &execution_id);

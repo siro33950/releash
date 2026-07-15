@@ -19,7 +19,7 @@ docs/specs/<spec-id>/
   design.md
 ```
 
-本ステップでは `requirements.md` だけを作成・更新する。`behavior.md` と `design.md` は作成しない。
+この node では `requirements.md` だけを作成・更新する。`behavior.md` と `design.md` は作成しない。
 
 ## 進め方
 
@@ -44,7 +44,7 @@ Goal → Background → Users / Actors → Requirements → Constraints → Scop
 
 ### 完了条件
 
-全セクションが埋まったら、ユーザーに最終確認を促す。承認をもって本ステップを完了とする。
+全セクションが埋まったら、ユーザーに最終確認を促す。承認をもってこの node を完了とする。
 
 ## Spec ディレクトリ決定
 

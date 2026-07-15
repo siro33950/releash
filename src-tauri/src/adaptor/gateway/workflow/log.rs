@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -149,6 +149,61 @@ impl WorkflowEventLog {
             })
             .collect()
     }
+
+    /// Reads only the requested event window without retaining the complete log.
+    pub fn read_log_page(
+        &self,
+        execution_id: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<WorkflowEvent>, String> {
+        validate_execution_id(execution_id)?;
+        let path = self.log_path(execution_id);
+        let file = match fs::File::open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => {
+                return Err(format!("failed to read workflow execution log: {error}"));
+            }
+        };
+
+        let mut events = Vec::new();
+        let mut event_index = 0;
+        for (line_index, line) in BufReader::new(file).lines().enumerate() {
+            let line = line.map_err(|error| {
+                format!(
+                    "failed to read workflow execution log line {}: {error}",
+                    line_index + 1
+                )
+            })?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            if event_index < offset {
+                event_index += 1;
+                continue;
+            }
+            if events.len() == limit {
+                break;
+            }
+            let event: WorkflowEvent = serde_json::from_str(&line).map_err(|error| {
+                format!(
+                    "failed to parse workflow execution log line {}: {error}",
+                    line_index + 1
+                )
+            })?;
+            if event.execution_id() != execution_id {
+                return Err(format!(
+                    "workflow execution log line {} contains execution_id {} instead of {execution_id}",
+                    line_index + 1,
+                    event.execution_id()
+                ));
+            }
+            events.push(event);
+            event_index += 1;
+        }
+        Ok(events)
+    }
 }
 
 fn validate_execution_id(execution_id: &str) -> Result<(), String> {
@@ -201,6 +256,23 @@ mod tests {
             .join("workflow_execution_logs")
             .join(format!("{EXECUTION_ID}.ndjson"))
             .is_file());
+    }
+
+    #[test]
+    fn read_log_page_returns_only_the_requested_event_window() {
+        let temp = tempfile::tempdir().unwrap();
+        let log = WorkflowEventLog::new(temp.path());
+        log.append_batch(&[
+            event(EXECUTION_ID, 1.0),
+            event(EXECUTION_ID, 2.0),
+            event(EXECUTION_ID, 3.0),
+        ])
+        .unwrap();
+
+        let events = log.read_log_page(EXECUTION_ID, 1, 1).unwrap();
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].timestamp(), 2.0);
     }
 
     #[test]

@@ -35,6 +35,32 @@ impl WorkflowOutputUsecase {
     ) -> Result<WorkflowValidateOutputResult, WorkflowError> {
         let events = self.query.read_events(execution_id)?;
         let context = resolve_node_artifact_schema_from_drafts(&events, node_name, execution_id)?;
+        self.validate_with_context(context, structured_output)
+    }
+
+    pub fn validate_output_for_contract(
+        &self,
+        execution_id: &str,
+        node_name: &str,
+        contract: &str,
+        structured_output: Value,
+    ) -> Result<WorkflowValidateOutputResult, WorkflowError> {
+        let events = self.query.read_events(execution_id)?;
+        let context = resolve_node_artifact_schema_from_drafts(&events, node_name, execution_id)?;
+        if context.contract != contract {
+            return Err(WorkflowError::validation(format!(
+                "node '{node_name}' expects contract '{}', but '{contract}' was provided",
+                context.contract
+            )));
+        }
+        self.validate_with_context(context, structured_output)
+    }
+
+    fn validate_with_context(
+        &self,
+        context: event_draft::ArtifactSchemaContext,
+        structured_output: Value,
+    ) -> Result<WorkflowValidateOutputResult, WorkflowError> {
         let secrets = self.secrets.configured_secret_values()?;
         let redacted =
             secret_masker::mask_sensitive_artifact(&context.contract, structured_output, &secrets);
@@ -56,7 +82,20 @@ impl WorkflowOutputUsecase {
         execution_id: &str,
         node_name: &str,
     ) -> Result<WorkflowGetOutputResult, WorkflowError> {
-        self.query.get_output(execution_id, node_name)
+        let events = self.query.read_events(execution_id)?;
+        match event_draft::node_exists_in_drafts(&events, node_name, execution_id)
+            .map_err(contract_lookup_error_to_workflow_error)?
+        {
+            true => {}
+            false => {
+                return Err(WorkflowError::validation(format!(
+                    "node '{node_name}' is not defined in workflow execution '{execution_id}'"
+                )))
+            }
+        }
+        Ok(WorkflowQueryService::get_output_from_events(
+            &events, node_name,
+        ))
     }
 }
 
@@ -65,22 +104,25 @@ fn resolve_node_artifact_schema_from_drafts(
     node_name: &str,
     execution_id: &str,
 ) -> Result<event_draft::ArtifactSchemaContext, WorkflowError> {
-    event_draft::resolve_node_artifact_schema_from_drafts(events, node_name, execution_id).map_err(
-        |err| match err {
-            contract::ContractLookupError::ExecutionNotFound { execution_id } => {
-                WorkflowError::external(format!("Workflow execution not found: {execution_id}"))
-            }
-            contract::ContractLookupError::InvalidExecutionStartedPayload { details } => {
-                WorkflowError::validation(details)
-            }
-            contract::ContractLookupError::NoArtifactContract {
-                workflow_name,
-                node,
-            } => WorkflowError::external(format!(
-                "node '{node}' has no artifact in workflow '{workflow_name}'"
-            )),
-        },
-    )
+    event_draft::resolve_node_artifact_schema_from_drafts(events, node_name, execution_id)
+        .map_err(contract_lookup_error_to_workflow_error)
+}
+
+fn contract_lookup_error_to_workflow_error(error: contract::ContractLookupError) -> WorkflowError {
+    match error {
+        contract::ContractLookupError::ExecutionNotFound { execution_id } => {
+            WorkflowError::NotFound(format!("Workflow execution not found: {execution_id}"))
+        }
+        contract::ContractLookupError::InvalidExecutionStartedPayload { details } => {
+            WorkflowError::validation(details)
+        }
+        contract::ContractLookupError::NoArtifactContract {
+            workflow_name,
+            node,
+        } => WorkflowError::validation(format!(
+            "node '{node}' has no artifact in workflow '{workflow_name}'"
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -383,8 +425,37 @@ mod tests {
     }
 
     #[test]
+    fn validate_output_for_contract_rejects_a_mismatched_contract() {
+        let fixture = Fixture::new();
+        fixture.events.seed(execution_started(
+            test_execution_id(),
+            definition_with_artifact_contract("review-result"),
+        ));
+
+        let error = fixture
+            .usecase
+            .validate_output_for_contract(
+                test_execution_id(),
+                "review",
+                "different-result",
+                serde_json::json!({"status":"ok"}),
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            WorkflowError::Validation(message)
+                if message.contains("expects contract 'review-result'")
+        ));
+    }
+
+    #[test]
     fn get_output_delegates_to_query_projection() {
         let fixture = Fixture::new();
+        fixture.events.seed(execution_started(
+            test_execution_id(),
+            definition_with_artifact_contract("review-result"),
+        ));
         fixture.events.seed(artifact_produced(
             test_execution_id(),
             "review",
@@ -403,6 +474,25 @@ mod tests {
             output,
             WorkflowGetOutputResult::Submitted { request_id, .. }
                 if request_id.as_deref() == Some("req-1")
+        ));
+    }
+
+    #[test]
+    fn get_output_rejects_an_unknown_node_through_the_shared_usecase() {
+        let fixture = Fixture::new();
+        fixture.events.seed(execution_started(
+            test_execution_id(),
+            definition_with_artifact_contract("review-result"),
+        ));
+
+        let error = fixture
+            .usecase
+            .get_output(test_execution_id(), "missing")
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            WorkflowError::Validation(message) if message.contains("is not defined")
         ));
     }
 }

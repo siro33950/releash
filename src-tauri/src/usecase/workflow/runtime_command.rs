@@ -7,21 +7,20 @@ use super::approval_chat::WorkflowApprovalChatUsecase;
 use super::command::ResolvedStartExecutionCommand;
 use super::command::{
     AbortExecutionCommand, ApprovalCommand, StartExecutionCommand, SubmitOutputCommand,
-    WorkflowAbortExecutionUsecase, WorkflowApprovalUsecase, WorkflowPendingRuntimeCommandUsecase,
-    WorkflowRuntimeCommandPreflight, WorkflowStartExecutionUsecase, WorkflowSubmitOutputUsecase,
+    WorkflowAbortExecutionUsecase, WorkflowApprovalUsecase, WorkflowRuntimeCommandPreflight,
+    WorkflowStartExecutionUsecase, WorkflowSubmitOutputUsecase,
 };
 use super::ports::{
-    ApprovalChatTarget, PendingRuntimeCommand, PendingRuntimeCommandOutcome,
-    WorkflowRuntimeCommandGateway, WorkflowStallClearedCommand, WorkflowStallClearedNotification,
-    WorkflowStallObservedCommand, WorkflowStallObservedGateway, WorkflowStallObservedNotification,
-    WorkflowTurnCompleteNotification,
+    ApprovalChatTarget, WorkflowRuntimeCommandGateway, WorkflowStallClearedCommand,
+    WorkflowStallClearedNotification, WorkflowStallObservedCommand, WorkflowStallObservedGateway,
+    WorkflowStallObservedNotification, WorkflowTurnCompleteNotification,
 };
 #[cfg(test)]
 use super::ports::{
-    PendingRuntimeCommandPayload, WorkflowAbortExecutionGateway, WorkflowApprovalChatGateway,
-    WorkflowApprovalGateway, WorkflowPendingRuntimeCommandGateway, WorkflowRuntimeShutdownGateway,
-    WorkflowRuntimeStateGateway, WorkflowStartExecutionGateway, WorkflowSubmitOutputGateway,
-    WorkflowTurnCompleteCommand, WorkflowTurnCompleteGateway, WorkflowTurnTokenUsage,
+    WorkflowAbortExecutionGateway, WorkflowApprovalChatGateway, WorkflowApprovalGateway,
+    WorkflowRuntimeShutdownGateway, WorkflowRuntimeStateGateway, WorkflowStartExecutionGateway,
+    WorkflowSubmitOutputGateway, WorkflowTurnCompleteCommand, WorkflowTurnCompleteGateway,
+    WorkflowTurnTokenUsage,
 };
 use super::turn_complete::WorkflowTurnCompleteUsecase;
 
@@ -33,7 +32,6 @@ pub struct WorkflowRuntimeUsecase {
     abort_execution: WorkflowAbortExecutionUsecase,
     approval: WorkflowApprovalUsecase,
     submit_output: WorkflowSubmitOutputUsecase,
-    pending_command: WorkflowPendingRuntimeCommandUsecase,
     approval_chat: WorkflowApprovalChatUsecase,
     turn_complete: WorkflowTurnCompleteUsecase,
     preflight: WorkflowRuntimeCommandPreflight,
@@ -48,7 +46,6 @@ impl WorkflowRuntimeUsecase {
             abort_execution: WorkflowAbortExecutionUsecase::new(runtime.clone()),
             approval: WorkflowApprovalUsecase::new(runtime.clone()),
             submit_output: WorkflowSubmitOutputUsecase::new(runtime.clone()),
-            pending_command: WorkflowPendingRuntimeCommandUsecase::new(runtime.clone()),
             approval_chat: WorkflowApprovalChatUsecase::new(runtime.clone()),
             turn_complete: WorkflowTurnCompleteUsecase::new(runtime),
             preflight: WorkflowRuntimeCommandPreflight,
@@ -75,13 +72,6 @@ impl WorkflowRuntimeUsecase {
 
     pub async fn submit_output(&self, command: SubmitOutputCommand) -> Result<(), WorkflowError> {
         self.submit_output.execute(command).await
-    }
-
-    pub async fn dispatch_pending_command(
-        &self,
-        command: PendingRuntimeCommand,
-    ) -> PendingRuntimeCommandOutcome {
-        self.pending_command.dispatch(command).await
     }
 
     pub async fn complete_turn(
@@ -180,7 +170,7 @@ mod tests {
 
         async fn resolve_start_execution_workflow(
             &self,
-            _workflow_file_stem: &str,
+            _workflow_name: &str,
         ) -> Result<WorkflowDefinition, WorkflowError> {
             self.calls.lock().unwrap().push("resolve_workflow");
             Ok(WorkflowDefinition::default())
@@ -223,25 +213,10 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl WorkflowPendingRuntimeCommandGateway for FakeRuntimeGateway {
-        async fn dispatch_pending_command(
-            &self,
-            _command: PendingRuntimeCommand,
-        ) -> PendingRuntimeCommandOutcome {
-            self.calls.lock().unwrap().push("pending");
-            PendingRuntimeCommandOutcome::Accepted
-        }
-    }
-
-    #[async_trait::async_trait]
     impl WorkflowTurnCompleteGateway for FakeRuntimeGateway {
         async fn is_session_running(&self, _chat_session_id: &str) -> bool {
             self.calls.lock().unwrap().push("is_running");
             self.session_running
-        }
-
-        async fn pickup_pending_submit_outputs(&self) {
-            self.calls.lock().unwrap().push("pickup_pending");
         }
 
         async fn complete_turn(
@@ -331,7 +306,7 @@ mod tests {
 
         let _ = usecase
             .start_execution(StartExecutionCommand {
-                workflow_file_stem: "wf".to_string(),
+                workflow_name: "wf".to_string(),
                 worktree_path: "/tmp/wt".to_string(),
                 request: None,
                 created_from: ExecutionOrigin::DesktopUi,
@@ -365,15 +340,6 @@ mod tests {
             })
             .await
             .unwrap();
-        let pending = usecase
-            .dispatch_pending_command(PendingRuntimeCommand {
-                execution_id: "00000000-0000-0000-0000-000000000001".to_string(),
-                request_id: "00000000-0000-0000-0000-000000000002".to_string(),
-                requested_at: 1.0,
-                payload: PendingRuntimeCommandPayload::Abort { node_name: None },
-            })
-            .await;
-        assert_eq!(pending, PendingRuntimeCommandOutcome::Accepted);
         usecase
             .complete_turn(WorkflowTurnCompleteNotification {
                 chat_session_id: "chat".to_string(),
@@ -407,9 +373,7 @@ mod tests {
                 "abort",
                 "approval",
                 "submit_output",
-                "pending",
                 "is_running",
-                "pickup_pending",
                 "complete_turn",
                 "state_by_run",
                 "state_by_worktree",
@@ -433,7 +397,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn complete_turn_returns_without_pickup_when_session_is_not_running() {
+    async fn complete_turn_returns_when_session_is_not_running() {
         let gateway = Arc::new(FakeRuntimeGateway::default());
         let usecase = WorkflowRuntimeUsecase::new(gateway.clone());
 
@@ -529,7 +493,7 @@ mod tests {
 
         let err = usecase
             .start_execution(StartExecutionCommand {
-                workflow_file_stem: "bad name!".to_string(),
+                workflow_name: "bad name!".to_string(),
                 worktree_path: "/tmp/wt".to_string(),
                 request: None,
                 created_from: ExecutionOrigin::DesktopUi,
@@ -583,37 +547,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_preflight_rejects_invalid_pending_command_without_gateway_dispatch() {
-        let gateway = Arc::new(FakeRuntimeGateway::default());
-        let usecase = WorkflowRuntimeUsecase::new(gateway.clone());
-
-        let outcome = usecase
-            .dispatch_pending_command(PendingRuntimeCommand {
-                execution_id: "not-a-uuid".to_string(),
-                request_id: "00000000-0000-0000-0000-000000000002".to_string(),
-                requested_at: 1.0,
-                payload: PendingRuntimeCommandPayload::Abort { node_name: None },
-            })
-            .await;
-
-        assert!(matches!(
-            outcome,
-            PendingRuntimeCommandOutcome::RejectedFinal(reason)
-                if reason.contains("invalid execution_id")
-        ));
-        assert!(gateway.calls.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
     async fn runtime_preflight_rejects_invalid_queries_before_gateway() {
         let gateway = Arc::new(FakeRuntimeGateway::default());
         let usecase = WorkflowRuntimeUsecase::new(gateway.clone());
 
-        let run_err = usecase
+        let execution_err = usecase
             .get_state_by_execution_id("not-a-uuid")
             .await
             .unwrap_err();
-        assert!(matches!(run_err, WorkflowError::Validation(_)));
+        assert!(matches!(execution_err, WorkflowError::Validation(_)));
 
         let worktree_err = usecase.get_state_by_worktree(" ").await.unwrap_err();
         assert!(matches!(worktree_err, WorkflowError::Validation(_)));

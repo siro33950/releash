@@ -83,7 +83,7 @@ Workflow は、アプリ本体に埋め込まれた固定機能ではなく、�
 |---|---|
 | Workflow | workflow 定義、実行、履歴、状態表示、承認、分岐、出力チェック |
 | Workflow Panel | 実行中 workflow、timeline、作業詳細、agent conversation、承認状態 |
-| Workflow CLI | `list` / `runs` / `status` / `logs` / `approve` / `reject` / `abort` |
+| Workflow CLI | `list` / `start` / `executions` / `status` / `logs` / `approve` / `abort` / `output` |
 | Agent Session | Claude / Codex との session、実行状態、許可要求、streaming 表示 |
 | Diff / Review | diff viewer、inline comment、comment 送信、画像 / Markdown の差分確認 |
 | Terminal | portable-pty による shell session、bash / zsh / fish の command 完了検出 |

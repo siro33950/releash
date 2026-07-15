@@ -149,7 +149,7 @@ fn render_workflow_instruction(
 }
 
 pub(crate) fn render_step_workflow_instruction(
-    _step: &NodeDefinition,
+    _node: &NodeDefinition,
     facet_contents: Option<&FacetContents>,
     request: Option<&str>,
     artifacts: &HashMap<String, RuntimeArtifact>,
@@ -159,7 +159,7 @@ pub(crate) fn render_step_workflow_instruction(
 }
 
 pub(crate) fn render_fanout_child_workflow_instruction(
-    _step: &NodeDefinition,
+    _node: &NodeDefinition,
     facet_contents: Option<&FacetContents>,
     request: Option<&str>,
     artifacts: &HashMap<String, RuntimeArtifact>,
@@ -192,23 +192,23 @@ pub(crate) fn append_artifact_completion_action(
 }
 
 pub(crate) fn build_step_prompt(
-    step: &NodeDefinition,
+    node: &NodeDefinition,
     facet_contents: Option<&FacetContents>,
     execution_id: &str,
     request: Option<&str>,
     artifacts: &HashMap<String, RuntimeArtifact>,
 ) -> Result<(Option<String>, String), WorkflowEngineError> {
-    if !step.has_facet_refs() {
+    if !node.has_facet_refs() {
         return Err(WorkflowEngineError::InvalidWorkflow(format!(
             "Node '{}' has no facet refs.",
-            step.name
+            node.name
         )));
     }
 
-    if step.has_facet_refs() && facet_contents.is_none_or(FacetContents::is_empty) {
+    if node.has_facet_refs() && facet_contents.is_none_or(FacetContents::is_empty) {
         return Err(WorkflowEngineError::InvalidWorkflow(format!(
             "Node '{}' has unresolved facet refs (workflow must go through load pipeline)",
-            step.name
+            node.name
         )));
     }
 
@@ -218,19 +218,19 @@ pub(crate) fn build_step_prompt(
         .system_prompt
         .map(|content| render_prompt_content(&content, &artifacts, None));
     let rendered_user = render_prompt_content(&composed.user_message, &artifacts, None);
-    let mut prompt = inject_input_artifacts(&rendered_user, &step.inputs, &artifacts);
+    let mut prompt = inject_input_artifacts(&rendered_user, &node.inputs, &artifacts);
     append_artifact_completion_action(
         &mut prompt,
-        step.artifact.as_deref(),
+        node.artifact.as_deref(),
         execution_id,
-        &step.name,
+        &node.name,
         None,
     );
     Ok((system_prompt, prompt))
 }
 
 pub(crate) fn build_fanout_child_prompt(
-    step: &NodeDefinition,
+    node: &NodeDefinition,
     facet_contents: Option<&FacetContents>,
     execution_id: &str,
     request: Option<&str>,
@@ -238,10 +238,10 @@ pub(crate) fn build_fanout_child_prompt(
     item: Option<&Value>,
     node_execution_id: &str,
 ) -> Result<(Option<String>, String), WorkflowEngineError> {
-    if step.has_facet_refs() && facet_contents.is_none_or(FacetContents::is_empty) {
+    if node.has_facet_refs() && facet_contents.is_none_or(FacetContents::is_empty) {
         return Err(WorkflowEngineError::InvalidWorkflow(format!(
             "Fanout child '{}' has unresolved facet refs (workflow must go through load pipeline)",
-            step.name
+            node.name
         )));
     }
 
@@ -251,13 +251,13 @@ pub(crate) fn build_fanout_child_prompt(
         .system_prompt
         .map(|content| render_prompt_content(&content, &artifacts, item));
     let rendered_user = render_prompt_content(&composed.user_message, &artifacts, item);
-    let rendered_user = inject_input_artifacts(&rendered_user, &step.inputs, &artifacts);
-    let mut user_message = inject_fanout_item(&rendered_user, step.input.as_deref(), item);
+    let rendered_user = inject_input_artifacts(&rendered_user, &node.inputs, &artifacts);
+    let mut user_message = inject_fanout_item(&rendered_user, node.input.as_deref(), item);
     append_artifact_completion_action(
         &mut user_message,
-        step.artifact.as_deref(),
+        node.artifact.as_deref(),
         execution_id,
-        &step.name,
+        &node.name,
         Some(node_execution_id),
     );
 
@@ -282,7 +282,7 @@ mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::schema::{FacetRefs, NodeKind, SessionSpec};
 
-    fn make_test_step(name: &str, instruction: &str) -> NodeDefinition {
+    fn make_test_node(name: &str, instruction: &str) -> NodeDefinition {
         NodeDefinition {
             name: name.to_string(),
             kind: NodeKind::Session(SessionSpec {
@@ -322,8 +322,8 @@ mod tests {
 
     #[test]
     fn build_step_prompt_injects_inputs_as_json() {
-        let mut step = make_test_step("implement", "Implement {{ request }}");
-        step.inputs = vec!["request".to_string(), "plan".to_string()];
+        let mut node = make_test_node("implement", "Implement {{ request }}");
+        node.inputs = vec!["request".to_string(), "plan".to_string()];
         let resolved = instruction_contents("Implement {{ request }}");
         let outputs = HashMap::from([(
             "plan".to_string(),
@@ -339,8 +339,14 @@ mod tests {
             },
         )]);
 
-        let (_system, prompt) =
-            build_step_prompt(&step, Some(&resolved), "run-1", Some("ship"), &outputs).unwrap();
+        let (_system, prompt) = build_step_prompt(
+            &node,
+            Some(&resolved),
+            "execution-1",
+            Some("ship"),
+            &outputs,
+        )
+        .unwrap();
 
         assert!(prompt.contains("Implement ship"));
         assert!(prompt.contains("## input: request"));
@@ -351,7 +357,7 @@ mod tests {
 
     #[test]
     fn build_step_prompt_renders_node_field() {
-        let step = make_test_step("fix", "Spec dir: {{ authoring.spec_dir }}");
+        let node = make_test_node("fix", "Spec dir: {{ authoring.spec_dir }}");
         let resolved = instruction_contents("Spec dir: {{ authoring.spec_dir }}");
         let outputs = HashMap::from([(
             "authoring".to_string(),
@@ -368,22 +374,22 @@ mod tests {
         )]);
 
         let (_system, prompt) =
-            build_step_prompt(&step, Some(&resolved), "run-1", Some(""), &outputs).unwrap();
+            build_step_prompt(&node, Some(&resolved), "execution-1", Some(""), &outputs).unwrap();
 
         assert!(prompt.contains("Spec dir: docs/specs/foo"));
     }
 
     #[test]
     fn build_fanout_child_prompt_binds_item_as_declared_input() {
-        let mut step = make_test_step("worker", "Review {{ item.path }}");
-        step.input = Some("work-item".to_string());
+        let mut node = make_test_node("worker", "Review {{ item.path }}");
+        node.input = Some("work-item".to_string());
         let resolved = instruction_contents("Review {{ item.path }}");
         let item = serde_json::json!({"path": "src/lib.rs", "priority": 2});
 
         let (_system, prompt) = build_fanout_child_prompt(
-            &step,
+            &node,
             Some(&resolved),
-            "run-1",
+            "execution-1",
             None,
             &HashMap::new(),
             Some(&item),
@@ -398,9 +404,9 @@ mod tests {
 
     #[test]
     fn build_fanout_child_prompt_injects_ordinary_inputs_and_binds_item() {
-        let mut step = make_test_step("worker", "Review {{ item.path }} for {{ request }}");
-        step.inputs = vec!["request".to_string(), "plan".to_string()];
-        step.input = Some("work-item".to_string());
+        let mut node = make_test_node("worker", "Review {{ item.path }} for {{ request }}");
+        node.inputs = vec!["request".to_string(), "plan".to_string()];
+        node.input = Some("work-item".to_string());
         let resolved = instruction_contents("Review {{ item.path }} for {{ request }}");
         let outputs = HashMap::from([(
             "plan".to_string(),
@@ -418,9 +424,9 @@ mod tests {
         let item = serde_json::json!({"path": "src/lib.rs", "priority": 2});
 
         let (_system, prompt) = build_fanout_child_prompt(
-            &step,
+            &node,
             Some(&resolved),
-            "run-1",
+            "execution-1",
             Some("ship"),
             &outputs,
             Some(&item),
@@ -435,5 +441,48 @@ mod tests {
         assert!(prompt.contains("\"summary\": \"ready\""));
         assert!(prompt.contains("## input: item (work-item)"));
         assert!(prompt.contains("\"priority\": 2"));
+    }
+
+    #[test]
+    fn build_step_prompt_appends_canonical_output_submit_action() {
+        let mut node = make_test_node("review", "Review the change.");
+        node.artifact = Some("review-result".to_string());
+        let resolved = instruction_contents("Review the change.");
+
+        let (_system, prompt) =
+            build_step_prompt(&node, Some(&resolved), "execution-1", None, &HashMap::new())
+                .unwrap();
+
+        assert!(prompt.contains("releash workflow output submit execution-1"));
+        assert!(prompt.contains("--node review"));
+        assert!(prompt.contains("--type review-result"));
+        assert!(!prompt.contains("--node-execution"));
+        let deprecated_node_flag = ["--", "step"].concat();
+        assert!(!prompt.contains(&deprecated_node_flag));
+    }
+
+    #[test]
+    fn build_fanout_child_prompt_addresses_the_node_execution() {
+        let mut node = make_test_node("review", "Review {{ item.path }}.");
+        node.input = Some("work-item".to_string());
+        node.artifact = Some("review-result".to_string());
+        let resolved = instruction_contents("Review {{ item.path }}.");
+        let item = serde_json::json!({"path": "src/lib.rs"});
+
+        let (_system, prompt) = build_fanout_child_prompt(
+            &node,
+            Some(&resolved),
+            "execution-1",
+            None,
+            &HashMap::new(),
+            Some(&item),
+            "node-execution-1",
+        )
+        .unwrap();
+
+        assert!(prompt.contains("releash workflow output submit execution-1"));
+        assert!(prompt.contains("--node review"));
+        assert!(prompt.contains("--node-execution node-execution-1"));
+        assert!(prompt.contains("--type review-result"));
     }
 }

@@ -204,21 +204,22 @@ mod contract_service_tests {
     #[test]
     fn test_missing_artifact_repair_prompt_uses_schema_vocabulary_and_node_flag() {
         let prompt =
-            build_missing_artifact_repair_prompt("releash-dev", "run-1", "review", "review");
+            build_missing_artifact_repair_prompt("releash-dev", "execution-1", "review", "review");
         assert!(prompt.contains("Artifact"));
         assert!(prompt.contains("schema"));
         assert!(prompt.contains(
-            "```sh\nreleash-dev workflow output submit run-1 \\\n  --node review \\\n  --type review \\\n  --json '{...}'\n```"
+            "```sh\nreleash-dev workflow output submit execution-1 \\\n  --node review \\\n  --type review \\\n  --json '{...}'\n```"
         ));
         assert!(!prompt.contains("\n+  --"));
-        assert!(!prompt.contains("--step"));
+        let deprecated_node_flag = ["--", "step"].concat();
+        assert!(!prompt.contains(&deprecated_node_flag));
     }
 
     #[test]
     fn test_schema_violation_repair_prompt_contains_copyable_command() {
         let prompt = build_schema_violation_repair_prompt(
             "releash-dev",
-            "run-1",
+            "execution-1",
             "review",
             "review",
             &[SchemaViolation {
@@ -229,9 +230,11 @@ mod contract_service_tests {
 
         assert!(prompt.contains("- $.verdict: expected one of [LGTM, FIX]"));
         assert!(prompt.contains(
-            "```sh\nreleash-dev workflow output submit run-1 \\\n  --node review \\\n  --type review \\\n  --json '{...}'\n```"
+            "```sh\nreleash-dev workflow output submit execution-1 \\\n  --node review \\\n  --type review \\\n  --json '{...}'\n```"
         ));
         assert!(!prompt.contains("\n+  --"));
+        let deprecated_node_flag = ["--", "step"].concat();
+        assert!(!prompt.contains(&deprecated_node_flag));
     }
 
     #[test]
