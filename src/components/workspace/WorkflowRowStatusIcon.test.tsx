@@ -10,6 +10,7 @@ const statuses: WorkspaceNodeStatus[] = [
 	"failed",
 	"error",
 	"waiting",
+	"interrupted",
 	"aborted",
 	"completed",
 ];

@@ -1,12 +1,12 @@
 use crate::adaptor::gateway::workflow::event::WorkflowEvent;
 use crate::adaptor::gateway::workflow::execution_store::WorkflowExecutionMetadata;
+use crate::domain::workflow::ExecutionInterruptionReason;
 
 #[derive(Debug, Clone)]
 pub(crate) struct OrphanExecutionRecoveryItem {
     pub(crate) execution_id: String,
     pub(crate) metadata: WorkflowExecutionMetadata,
     pub(crate) event: WorkflowEvent,
-    pub(crate) completed_at: f64,
 }
 
 pub(crate) fn orphan_execution_recovery_items(
@@ -17,16 +17,15 @@ pub(crate) fn orphan_execution_recovery_items(
         .into_iter()
         .map(|metadata| {
             let execution_id = metadata.execution_id.clone();
-            let event = WorkflowEvent::ExecutionAborted {
+            let event = WorkflowEvent::ExecutionInterrupted {
                 execution_id: execution_id.clone(),
-                aborted_node: None,
+                reason: ExecutionInterruptionReason::Orphan,
                 timestamp,
             };
             OrphanExecutionRecoveryItem {
                 execution_id,
                 metadata,
                 event,
-                completed_at: timestamp,
             }
         })
         .collect()
@@ -49,12 +48,14 @@ mod tests {
             updated_at: 2.0,
             completed_at: None,
             error_reason: None,
+            interruption_reason: None,
+            resume_from_node: None,
             total_token_usage: Default::default(),
         }
     }
 
     #[test]
-    fn orphan_recovery_items_build_execution_aborted_event_for_each_orphan() {
+    fn orphan_recovery_items_build_execution_interrupted_event_for_each_orphan() {
         let items = orphan_execution_recovery_items(
             vec![
                 execution_metadata("execution-1", "wf-1"),
@@ -65,23 +66,22 @@ mod tests {
 
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].execution_id, "execution-1");
-        assert_eq!(items[0].completed_at, 42.0);
         assert_eq!(items[0].metadata.workflow_name, "wf-1");
         assert!(matches!(
             &items[0].event,
-            WorkflowEvent::ExecutionAborted {
+            WorkflowEvent::ExecutionInterrupted {
                 execution_id,
+                reason: ExecutionInterruptionReason::Orphan,
                 timestamp,
-                ..
             } if execution_id == "execution-1"
                 && (*timestamp - 42.0).abs() < f64::EPSILON
         ));
         assert!(matches!(
             &items[1].event,
-            WorkflowEvent::ExecutionAborted {
+            WorkflowEvent::ExecutionInterrupted {
                 execution_id,
+                reason: ExecutionInterruptionReason::Orphan,
                 timestamp,
-                ..
             } if execution_id == "execution-2"
                 && (*timestamp - 42.0).abs() < f64::EPSILON
         ));

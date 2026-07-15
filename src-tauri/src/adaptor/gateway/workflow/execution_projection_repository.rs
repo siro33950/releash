@@ -49,6 +49,7 @@ mod tests {
                 worktree_path: "/repo".to_string(),
                 created_from: ExecutionOrigin::Cli,
                 request: "review this".to_string(),
+                permission_mode: "ask".to_string(),
                 definition: Workflow {
                     name: "review".to_string(),
                     description: String::new(),

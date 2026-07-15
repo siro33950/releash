@@ -12,6 +12,12 @@ import type {
 	WorkspaceWorkflowNodeDetail,
 } from "@/types/workspace-tree";
 
+const invokeMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@tauri-apps/api/core", () => ({
+	invoke: (...args: unknown[]) => invokeMock(...args),
+}));
+
 const useWorkspaceWorkflowNodeDetailMock = vi.fn();
 const submitWorkspaceWorkflowNodeActionMock = vi.fn();
 
@@ -109,6 +115,10 @@ function nodeDetail(
 		title: "review",
 		nodeName: "review",
 		status: "running",
+		executionStatus: "running",
+		canStop: true,
+		canResume: false,
+		canAbort: true,
 		nodeKind: "fanout",
 		updatedAt: 1000,
 		attempt: 1,
@@ -186,6 +196,8 @@ function gridSessions(count: number) {
 
 describe("WorkflowView", () => {
 	beforeEach(() => {
+		invokeMock.mockReset();
+		invokeMock.mockResolvedValue(undefined);
 		useWorkspaceWorkflowNodeDetailMock.mockReset();
 		useWorkspaceWorkflowNodeDetailMock.mockReturnValue(nodeDetailState());
 		submitWorkspaceWorkflowNodeActionMock.mockReset();
@@ -335,6 +347,88 @@ describe("WorkflowView", () => {
 				nodeName: "review",
 			});
 		});
+	});
+
+	it("shows the interrupted checkpoint and enables actions only from Rust DTO flags", () => {
+		useWorkspaceWorkflowNodeDetailMock.mockReturnValue(
+			nodeDetailState({
+				status: "aborted",
+				nodeExecutionStatus: "aborted",
+				executionStatus: "interrupted",
+				canStop: false,
+				canResume: true,
+				canAbort: true,
+				interruptionReason: "stop",
+				resumeFromNode: "review",
+			}),
+		);
+
+		render(<WorkflowView worktreePath="/repo" selectionRequest={selection} />);
+
+		expect(
+			screen.getByTitle("Execution status: interrupted"),
+		).toHaveTextContent("execution: interrupted");
+		expect(screen.getByTitle("Interrupted: stop")).toHaveTextContent("stop");
+		expect(screen.getByTitle("Resume from review")).toHaveTextContent(
+			"resume: review",
+		);
+		expect(screen.getByRole("button", { name: "Stop" })).toBeDisabled();
+		expect(screen.getByRole("button", { name: "Resume" })).toBeEnabled();
+		expect(screen.getByRole("button", { name: "Abort" })).toBeEnabled();
+	});
+
+	it.each([
+		[
+			"Stop",
+			"stop_workflow",
+			{ canStop: true, canResume: false, canAbort: true },
+		],
+		[
+			"Resume",
+			"resume_workflow",
+			{
+				executionStatus: "interrupted",
+				canStop: false,
+				canResume: true,
+				canAbort: true,
+			},
+		],
+		[
+			"Abort",
+			"abort_workflow",
+			{
+				executionStatus: "interrupted",
+				canStop: false,
+				canResume: true,
+				canAbort: true,
+			},
+		],
+	] as const)("dispatches %s through the typed Tauri command boundary", async (label, command, overrides) => {
+		useWorkspaceWorkflowNodeDetailMock.mockReturnValue(
+			nodeDetailState(overrides),
+		);
+		const refreshEvents: Array<CustomEvent<{ worktreePath?: string }>> = [];
+		const onRefresh = (event: Event) => {
+			refreshEvents.push(event as CustomEvent<{ worktreePath?: string }>);
+		};
+		window.addEventListener("workspace-tree-refresh", onRefresh);
+
+		try {
+			render(
+				<WorkflowView worktreePath="/repo" selectionRequest={selection} />,
+			);
+			fireEvent.click(screen.getByRole("button", { name: label }));
+
+			await waitFor(() => {
+				expect(invokeMock).toHaveBeenCalledWith(command, {
+					executionId: "execution-1",
+				});
+			});
+			expect(refreshEvents).toHaveLength(1);
+			expect(refreshEvents[0].detail).toEqual({ worktreePath: "/repo" });
+		} finally {
+			window.removeEventListener("workspace-tree-refresh", onRefresh);
+		}
 	});
 
 	it("shows NodeExecution identity, fanout coordinates, session, and artifact", () => {

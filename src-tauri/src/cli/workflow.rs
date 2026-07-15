@@ -68,6 +68,10 @@ pub(super) enum WorkflowSubcommand {
     },
     /// 進行中の workflow execution を中止する。
     Abort { execution_id: String },
+    /// 進行中の workflow execution を再開可能な checkpoint で停止する。
+    Stop { execution_id: String },
+    /// interrupted 状態の workflow execution を再開する。
+    Resume { execution_id: String },
     /// node の Artifact に対する typed CLI 入口。
     Output {
         #[command(subcommand)]
@@ -197,6 +201,18 @@ pub(super) fn cmd_abort(data_dir: &Path, execution_id: &str) -> Result<String, C
     validate_execution_id(execution_id)?;
     api_client::mutation(data_dir, |client| client.abort(execution_id))?;
     Ok(format!("aborted: execution_id={execution_id}\n"))
+}
+
+pub(super) fn cmd_stop(data_dir: &Path, execution_id: &str) -> Result<String, CliError> {
+    validate_execution_id(execution_id)?;
+    api_client::mutation(data_dir, |client| client.stop(execution_id))?;
+    Ok(format!("stopped: execution_id={execution_id}\n"))
+}
+
+pub(super) fn cmd_resume(data_dir: &Path, execution_id: &str) -> Result<String, CliError> {
+    validate_execution_id(execution_id)?;
+    api_client::mutation(data_dir, |client| client.resume(execution_id))?;
+    Ok(format!("resumed: execution_id={execution_id}\n"))
 }
 
 fn format_workflow_list(
@@ -391,6 +407,8 @@ mod tests {
                 "review",
             ],
             vec!["releash", "workflow", "abort", execution_id],
+            vec!["releash", "workflow", "stop", execution_id],
+            vec!["releash", "workflow", "resume", execution_id],
         ] {
             assert!(Cli::try_parse_from(argv).is_ok());
         }
@@ -457,7 +475,14 @@ mod tests {
     #[test]
     fn workflow_help_contains_only_canonical_external_vocabulary() {
         let help = super::super::render_long_help();
-        for required in ["start", "executions", "EXECUTION_ID", "--node"] {
+        for required in [
+            "start",
+            "executions",
+            "stop",
+            "resume",
+            "EXECUTION_ID",
+            "--node",
+        ] {
             assert!(help.contains(required), "missing help term: {required}");
         }
         for forbidden in [
@@ -564,5 +589,32 @@ mod tests {
             cmd_executions(temp.path(), Some("paused".to_string()), None, false),
             Err(CliError::InvalidInput(_))
         ));
+    }
+
+    #[test]
+    fn stop_and_resume_reject_invalid_execution_ids_before_api_discovery() {
+        let temp = TempDir::new().unwrap();
+        assert!(matches!(
+            cmd_stop(temp.path(), "not-a-uuid"),
+            Err(CliError::InvalidInput(_))
+        ));
+        assert!(matches!(
+            cmd_resume(temp.path(), "not-a-uuid"),
+            Err(CliError::InvalidInput(_))
+        ));
+    }
+
+    #[test]
+    fn stop_and_resume_require_the_local_api() {
+        let temp = TempDir::new().unwrap();
+        let execution_id = test_uuid(6);
+        for result in [
+            cmd_stop(temp.path(), &execution_id),
+            cmd_resume(temp.path(), &execution_id),
+        ] {
+            assert!(
+                matches!(result, Err(CliError::Other(message)) if message.contains("アプリの起動が必要"))
+            );
+        }
     }
 }

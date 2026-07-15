@@ -91,7 +91,7 @@ pub(crate) struct FanoutChildRuntime {
 }
 
 /// 並列子ステップの状態。
-#[derive(Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum FanoutChildRuntimeState {
     Running,
     Completed,
@@ -127,7 +127,6 @@ impl WorkflowExecution {
             RuntimeExecutionState::Completed
                 | RuntimeExecutionState::Failed { .. }
                 | RuntimeExecutionState::Aborted
-                | RuntimeExecutionState::Interrupted
         )
     }
 
@@ -225,61 +224,6 @@ impl WorkflowExecution {
             execution.failure = Some(NodeExecutionFailure { reason, kind });
             execution.completed_at = Some(timestamp);
         }
-    }
-
-    /// A terminal runtime failure belongs to the active top-level node. Any other active
-    /// executions are concurrent work that can no longer complete and must be closed as aborted.
-    pub(crate) fn fail_current_node_execution_and_abort_active_children(
-        &mut self,
-        reason: &str,
-        kind: NodeExecutionFailureKind,
-        timestamp: f64,
-    ) {
-        let current_node = self
-            .workflow
-            .nodes
-            .get(self.current_node_index)
-            .map(|node| node.name.as_str());
-        let current_attempt = current_node
-            .and_then(|name| self.node_execution_counts.get(name))
-            .copied()
-            .unwrap_or(1);
-        let current_node_execution_id = current_node.and_then(|name| {
-            self.node_executions
-                .iter()
-                .rev()
-                .find(|execution| {
-                    execution.node_name == name
-                        && execution.attempt == current_attempt
-                        && execution.fanout_parent.is_none()
-                })
-                .map(|execution| execution.id.clone())
-        });
-
-        for execution in &mut self.node_executions {
-            if current_node_execution_id.as_deref() == Some(execution.id.as_str()) {
-                execution.status = NodeExecutionStatus::Failed;
-                execution.failure = Some(NodeExecutionFailure {
-                    reason: reason.to_string(),
-                    kind,
-                });
-                execution.completed_at = Some(timestamp);
-            } else if execution.status.is_active() {
-                execution.status = NodeExecutionStatus::Aborted;
-                execution.completed_at = Some(timestamp);
-            }
-        }
-
-        if let Some(run) = self.parallel_run.as_mut() {
-            for child in &mut run.children {
-                if child.state == FanoutChildRuntimeState::Running {
-                    child.state = FanoutChildRuntimeState::Interrupted;
-                    child.completed_at = Some(timestamp);
-                }
-            }
-        }
-        self.current_session_id = None;
-        self.current_stall_observations.clear();
     }
 
     /// ワークフロー開始の事前条件を検証する（純粋関数）。
@@ -485,15 +429,6 @@ impl WorkflowExecution {
         self.current_session_id = None;
         self.current_stall_observations.clear();
         node_history_entry_from_domain(entry)
-    }
-
-    pub(crate) fn record_node_session_start_failed(&mut self, reason: impl Into<String>) {
-        let entry = self.make_node_history_entry(
-            Some(workflow_history::session_start_failed_result(reason.into())),
-            None,
-            None,
-        );
-        self.node_history.push(entry);
     }
 
     /// 指定インデックスの step が新しい実行を開始する瞬間に、当該 step の

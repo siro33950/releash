@@ -24,6 +24,17 @@ pub(crate) struct FanoutChildExpansion {
     pub(crate) item: Option<serde_json::Value>,
     pub(crate) item_index: Option<usize>,
     pub(crate) child_index: usize,
+    pub(crate) reused: Option<ReusableFanoutChild>,
+}
+
+/// A child output confirmed by `NodeCompleted` before the parent fanout was interrupted.
+#[derive(Debug, Clone)]
+pub(crate) struct ReusableFanoutChild {
+    pub(crate) result: Option<String>,
+    pub(crate) artifact: Option<serde_json::Value>,
+    pub(crate) contract: Option<String>,
+    pub(crate) token_usage: Option<TokenUsage>,
+    pub(crate) completed_at: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -141,6 +152,7 @@ pub(crate) fn prepare_fanout_start_context(
                 item: child.item,
                 item_index: child.item_index,
                 child_index: child.child_index,
+                reused: None,
             })
         })
         .collect::<Result<Vec<_>, WorkflowEngineError>>()?;
@@ -212,19 +224,45 @@ pub(crate) fn apply_fanout_runtime_state(
                     execution.session_id = Some(session_id.clone());
                 }
             }
+            if let Some(reused) = child.reused.as_ref() {
+                exec.complete_node_execution(
+                    &child.node_execution_id,
+                    reused.artifact.clone(),
+                    reused.token_usage.clone(),
+                    timestamp,
+                );
+            }
             FanoutChildRuntime {
                 node_execution_id: child.node_execution_id.clone(),
                 node_name: child.node.name.clone(),
                 session_id,
-                state: FanoutChildRuntimeState::Running,
-                result: None,
-                artifact: None,
-                contract: child.node.artifact.clone(),
+                state: if child.reused.is_some() {
+                    FanoutChildRuntimeState::Completed
+                } else {
+                    FanoutChildRuntimeState::Running
+                },
+                result: child
+                    .reused
+                    .as_ref()
+                    .and_then(|reused| reused.result.clone()),
+                artifact: child
+                    .reused
+                    .as_ref()
+                    .and_then(|reused| reused.artifact.clone()),
+                contract: child
+                    .reused
+                    .as_ref()
+                    .and_then(|reused| reused.contract.clone())
+                    .or_else(|| child.node.artifact.clone()),
                 failure_kind: None,
                 failure_disposition: None,
-                token_usage: TokenUsage::default(),
+                token_usage: child
+                    .reused
+                    .as_ref()
+                    .and_then(|reused| reused.token_usage.clone())
+                    .unwrap_or_default(),
                 attempt: child.attempt,
-                completed_at: None,
+                completed_at: child.reused.as_ref().map(|reused| reused.completed_at),
             }
         })
         .collect();
@@ -455,6 +493,145 @@ mod tests {
             vec![1, 2]
         );
         apply_fanout_and_assert_child_node_executions(&mut exec, &context);
+    }
+
+    #[test]
+    fn apply_fanout_runtime_state_seeds_reused_child_without_a_session() {
+        let mut exec = workflow_execution_with_nodes(vec![
+            fanout_node(&["review"], None),
+            session_node("review"),
+        ]);
+        exec.node_execution_counts
+            .insert("fanout-review".to_string(), 2);
+        let mut context = prepare_fanout_start_context(&exec).unwrap();
+        context.children[0].reused = Some(ReusableFanoutChild {
+            result: Some("confirmed".to_string()),
+            artifact: Some(serde_json::json!({"ok": true})),
+            contract: Some("review".to_string()),
+            token_usage: Some(TokenUsage {
+                input_tokens: 3,
+                output_tokens: 4,
+            }),
+            completed_at: 2.0,
+        });
+        exec.start_current_node_execution(1.5);
+
+        apply_fanout_runtime_state(&mut exec, &context, &[], 3.0).unwrap();
+
+        let child = &exec.parallel_run.as_ref().unwrap().children[0];
+        assert_eq!(child.state, FanoutChildRuntimeState::Completed);
+        assert!(child.session_id.is_empty());
+        assert_eq!(child.artifact, Some(serde_json::json!({"ok": true})));
+        let projected = exec
+            .node_executions
+            .iter()
+            .find(|node| node.id == child.node_execution_id)
+            .unwrap();
+        assert_eq!(
+            projected.status,
+            crate::adaptor::gateway::workflow::state::NodeExecutionStatus::Succeeded
+        );
+    }
+
+    #[test]
+    fn apply_fanout_runtime_state_preserves_reused_child_and_starts_only_pending_child() {
+        let mut exec = workflow_execution_with_nodes(vec![
+            fanout_node(&["review-reused", "review-pending"], None),
+            session_node("review-reused"),
+            session_node("review-pending"),
+        ]);
+        let mut context = prepare_fanout_start_context(&exec).unwrap();
+        let reused_node_execution_id = context.children[0].node_execution_id.clone();
+        let pending_node_execution_id = context.children[1].node_execution_id.clone();
+        context.children[0].reused = Some(ReusableFanoutChild {
+            result: Some("already confirmed".to_string()),
+            artifact: Some(serde_json::json!({"verdict": "pass"})),
+            contract: Some("review".to_string()),
+            token_usage: Some(TokenUsage {
+                input_tokens: 3,
+                output_tokens: 4,
+            }),
+            completed_at: 2.0,
+        });
+        let pending_setup = FanoutChildSessionSetup {
+            node_execution_id: pending_node_execution_id.clone(),
+            node_name: "review-pending".to_string(),
+            session_id: "new-pending-session".to_string(),
+            system_prompt: Some("pending system prompt".to_string()),
+            workflow_instruction: Some("pending workflow instruction".to_string()),
+            user_message: "pending user message".to_string(),
+            permission_mode: "ask".to_string(),
+        };
+        exec.start_current_node_execution(1.5);
+
+        let snapshot =
+            apply_fanout_runtime_state(&mut exec, &context, &[pending_setup], 3.0).unwrap();
+
+        let run = exec.parallel_run.as_ref().unwrap();
+        let reused = run
+            .children
+            .iter()
+            .find(|child| child.node_execution_id == reused_node_execution_id)
+            .unwrap();
+        assert_eq!(reused.state, FanoutChildRuntimeState::Completed);
+        assert!(reused.session_id.is_empty());
+        assert_eq!(reused.result.as_deref(), Some("already confirmed"));
+        assert_eq!(
+            reused.artifact,
+            Some(serde_json::json!({"verdict": "pass"}))
+        );
+        assert_eq!(reused.contract.as_deref(), Some("review"));
+        assert_eq!(reused.token_usage.input_tokens, 3);
+        assert_eq!(reused.token_usage.output_tokens, 4);
+        assert_eq!(reused.completed_at, Some(2.0));
+
+        let pending = run
+            .children
+            .iter()
+            .find(|child| child.node_execution_id == pending_node_execution_id)
+            .unwrap();
+        assert_eq!(pending.state, FanoutChildRuntimeState::Running);
+        assert_eq!(pending.session_id, "new-pending-session");
+        assert!(pending.result.is_none());
+        assert!(pending.artifact.is_none());
+        assert!(pending.completed_at.is_none());
+
+        let reused_projection = snapshot
+            .node_executions
+            .iter()
+            .find(|node| node.id == reused_node_execution_id)
+            .unwrap();
+        assert_eq!(
+            reused_projection.status,
+            crate::adaptor::gateway::workflow::state::NodeExecutionStatus::Succeeded
+        );
+        assert!(reused_projection.session_id.is_none());
+        assert_eq!(
+            reused_projection.artifact,
+            Some(serde_json::json!({"verdict": "pass"}))
+        );
+        assert_eq!(
+            reused_projection.token_usage,
+            Some(TokenUsage {
+                input_tokens: 3,
+                output_tokens: 4,
+            })
+        );
+
+        let pending_projection = snapshot
+            .node_executions
+            .iter()
+            .find(|node| node.id == pending_node_execution_id)
+            .unwrap();
+        assert_eq!(
+            pending_projection.status,
+            crate::adaptor::gateway::workflow::state::NodeExecutionStatus::Running
+        );
+        assert_eq!(
+            pending_projection.session_id.as_deref(),
+            Some("new-pending-session")
+        );
+        assert!(pending_projection.artifact.is_none());
     }
 
     #[test]

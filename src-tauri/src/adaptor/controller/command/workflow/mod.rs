@@ -39,6 +39,8 @@ pub(super) const COMMAND_NAMES: &[&str] = &[
     "open_workflow_in_editor",
     "start_workflow",
     "abort_workflow",
+    "stop_workflow",
+    "resume_workflow",
     "approve_workflow_node",
     "send_workflow_approval_chat_message",
     "list_workflow_executions",
@@ -84,6 +86,8 @@ pub(crate) fn invoke_handler(
         definition::open_workflow_in_editor,
         runtime::start_workflow,
         runtime::abort_workflow,
+        runtime::stop_workflow,
+        runtime::resume_workflow,
         runtime::approve_workflow_node,
         runtime::send_workflow_approval_chat_message,
         execution::list_workflow_executions,
@@ -578,6 +582,8 @@ mod tests {
         }
 
         assert!(handles_command("start_workflow"));
+        assert!(handles_command("stop_workflow"));
+        assert!(handles_command("resume_workflow"));
         assert!(handles_command("workflow_submit_output"));
         assert!(handles_command("workflow_get_output"));
         assert!(!handles_command("get_git_status"));
@@ -809,6 +815,7 @@ mod tests {
                 WorkflowEvent::ExecutionFailed { .. } => "ExecutionFailed",
                 WorkflowEvent::ExecutionAborted { .. } => "ExecutionAborted",
                 WorkflowEvent::ExecutionInterrupted { .. } => "ExecutionInterrupted",
+                WorkflowEvent::ExecutionResumed { .. } => "ExecutionResumed",
                 WorkflowEvent::ContractViolated { .. } => "ContractViolated",
                 WorkflowEvent::ArtifactProduced { .. } => "ArtifactProduced",
             })
@@ -2073,6 +2080,8 @@ mod tests {
                 None
             },
             error_reason: None,
+            interruption_reason: None,
+            resume_from_node: None,
             total_token_usage: Default::default(),
         }
     }
@@ -2471,6 +2480,7 @@ mod tests {
                 worktree_path: unauthorized_wt.to_string(),
                 created_from: ExecutionOrigin::DesktopUi,
                 request: String::new(),
+                permission_mode: "ask".to_string(),
                 definition: Workflow {
                     name: "wf".to_string(),
                     description: "test".to_string(),
@@ -2540,6 +2550,7 @@ mod tests {
                 worktree_path: worktree_path.clone(),
                 created_from: ExecutionOrigin::DesktopUi,
                 request: String::new(),
+                permission_mode: "ask".to_string(),
                 definition: Workflow {
                     name: "wf".to_string(),
                     description: "test".to_string(),
@@ -2602,6 +2613,7 @@ mod tests {
                 worktree_path: worktree_path.clone(),
                 created_from: ExecutionOrigin::DesktopUi,
                 request: String::new(),
+                permission_mode: "ask".to_string(),
                 definition: approval_only_workflow(),
                 timestamp: 500.0,
             })
@@ -2676,6 +2688,7 @@ mod tests {
                 worktree_path: worktree_path.clone(),
                 created_from: ExecutionOrigin::DesktopUi,
                 request: String::new(),
+                permission_mode: "ask".to_string(),
                 definition: snapshot,
                 timestamp: 100.0,
             })

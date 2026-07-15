@@ -7,8 +7,8 @@ use crate::adaptor::protocol::workflow::{
     WorkflowExecutionChangedPayloadView, WorkflowExecutionView,
 };
 use crate::domain::workflow::{
-    Artifact, ExecutionStatus, NodeExecution, RuntimeExecutionState, WorkflowExecution,
-    WorkflowRuntimeSnapshot,
+    Artifact, ExecutionInterruptionReason, ExecutionStatus, NodeExecution, RuntimeExecutionState,
+    WorkflowExecution, WorkflowRuntimeSnapshot,
 };
 
 fn optional_arc_state<R, T>(app: &tauri::AppHandle<R>) -> Option<Arc<T>>
@@ -49,6 +49,24 @@ pub(crate) fn workflow_execution_from_runtime_snapshot(
         status,
         &node_executions,
     );
+    let interruption_reason = if status == ExecutionStatus::Interrupted {
+        Some(
+            state
+                .error_reason
+                .as_deref()
+                .and_then(ExecutionInterruptionReason::from_reason)
+                .unwrap_or(ExecutionInterruptionReason::Crash),
+        )
+    } else {
+        None
+    };
+    let resume_from_node =
+        (status == ExecutionStatus::Interrupted).then(|| state.current_node_name.clone());
+    let error_reason = if status == ExecutionStatus::Interrupted {
+        None
+    } else {
+        state.error_reason.clone()
+    };
 
     WorkflowExecution {
         id: state.execution_id,
@@ -60,7 +78,9 @@ pub(crate) fn workflow_execution_from_runtime_snapshot(
         started_at: state.started_at,
         updated_at: state.updated_at,
         completed_at: derived.status.is_terminal().then_some(state.updated_at),
-        error_reason: state.error_reason,
+        error_reason,
+        interruption_reason,
+        resume_from_node,
         total_token_usage: state.total_token_usage,
         node_executions,
         artifacts: derived.artifacts,
@@ -247,6 +267,7 @@ mod tests {
                 worktree_path: "/repo".to_string(),
                 created_from: crate::domain::workflow::ExecutionOrigin::Cli,
                 request: "ship it".to_string(),
+                permission_mode: "ask".to_string(),
                 definition: EventWorkflow {
                     name: "review".to_string(),
                     nodes: vec![EventNodeDefinition {
@@ -409,6 +430,7 @@ mod tests {
                 worktree_path: "/repo".to_string(),
                 created_from: crate::domain::workflow::ExecutionOrigin::Cli,
                 request: "ship it".to_string(),
+                permission_mode: "ask".to_string(),
                 definition: EventWorkflow {
                     name: "review".to_string(),
                     ..Default::default()
@@ -563,5 +585,62 @@ mod tests {
             });
 
         assert_eq!(runtime_projection, event_projection);
+    }
+
+    #[test]
+    fn interrupted_runtime_snapshot_exposes_checkpoint_without_error_or_current_node() {
+        let execution_id = "00000000-0000-4000-8000-000000000099";
+        let projection = workflow_execution_from_runtime_snapshot(WorkflowRuntimeSnapshot {
+            execution_id: execution_id.to_string(),
+            workflow_name: "review".to_string(),
+            worktree_path: "/repo".to_string(),
+            created_from: crate::domain::workflow::ExecutionOrigin::Cli,
+            request: "ship it".to_string(),
+            error_reason: Some("stop".to_string()),
+            state: RuntimeExecutionState::Interrupted,
+            current_node_index: 0,
+            current_node_name: "review".to_string(),
+            current_session_id: None,
+            total_nodes: 1,
+            node_history: Vec::new(),
+            node_execution_counts: HashMap::from([("review".to_string(), 1)]),
+            workflow_definition: WorkflowDefinition {
+                name: "review".to_string(),
+                ..Default::default()
+            },
+            total_token_usage: TokenUsage::default(),
+            node_statuses: HashMap::new(),
+            artifacts: HashMap::new(),
+            node_executions: vec![NodeExecution {
+                id: "review-1".to_string(),
+                execution_id: execution_id.to_string(),
+                node_name: "review".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                status: NodeExecutionStatus::Aborted,
+                session_id: Some("old-session".to_string()),
+                result_summary: None,
+                artifact: None,
+                token_usage: None,
+                failure: None,
+                fanout_parent: None,
+                started_at: 2.0,
+                completed_at: Some(3.0),
+            }],
+            approval_operations: None,
+            stall_observations: Vec::new(),
+            started_at: 1.0,
+            updated_at: 3.0,
+        });
+
+        assert_eq!(projection.status, ExecutionStatus::Interrupted);
+        assert_eq!(projection.current_node, None);
+        assert_eq!(projection.completed_at, None);
+        assert_eq!(projection.error_reason, None);
+        assert_eq!(
+            projection.interruption_reason,
+            Some(ExecutionInterruptionReason::Stop)
+        );
+        assert_eq!(projection.resume_from_node.as_deref(), Some("review"));
     }
 }

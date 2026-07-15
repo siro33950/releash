@@ -7,16 +7,20 @@
 //!   ファイルシステムから列挙できるようにする。
 //! - 状態遷移ロジックは持たず、engine からの「開始通知」「終了通知」を受けて反映するのみ。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-use crate::domain::workflow::TokenUsage;
+use crate::domain::workflow::{
+    ExecutionInterruptionReason, TokenUsage, WorkflowExecution as DomainWorkflowExecution,
+};
 pub(crate) use crate::domain::workflow::{
     ExecutionListFilter, ExecutionOrigin, ExecutionStatus, ExecutionStatusFilter,
     WorkflowExecutionSummary,
@@ -31,7 +35,6 @@ pub enum TerminalExecutionStatus {
     Completed,
     Failed,
     Aborted,
-    Interrupted,
 }
 
 impl From<TerminalExecutionStatus> for ExecutionStatus {
@@ -40,7 +43,6 @@ impl From<TerminalExecutionStatus> for ExecutionStatus {
             TerminalExecutionStatus::Completed => ExecutionStatus::Completed,
             TerminalExecutionStatus::Failed => ExecutionStatus::Failed,
             TerminalExecutionStatus::Aborted => ExecutionStatus::Aborted,
-            TerminalExecutionStatus::Interrupted => ExecutionStatus::Interrupted,
         }
     }
 }
@@ -64,8 +66,37 @@ pub struct WorkflowExecutionMetadata {
     pub completed_at: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_reason: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "optional_interruption_reason_serde"
+    )]
+    pub interruption_reason: Option<ExecutionInterruptionReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_from_node: Option<String>,
     #[serde(default, with = "token_usage_serde")]
     pub total_token_usage: TokenUsage,
+}
+
+/// `Interrupted` metadata を Running reservation に戻した際の rollback token。
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ResumeExecutionReservation {
+    pub(crate) interrupted: WorkflowExecutionMetadata,
+    pub(crate) running: WorkflowExecutionMetadata,
+}
+
+/// Interrupted → Aborted transition の event append 前 in-memory reservation。
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct AbortInterruptedReservation {
+    pub(crate) interrupted: WorkflowExecutionMetadata,
+    pub(crate) aborted: WorkflowExecutionMetadata,
+}
+
+/// Running / WaitingApproval → Interrupted の event commit と runtime cleanup を直列化する token。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ActiveInterruptionReservation {
+    pub(crate) execution_id: String,
+    pub(crate) worktree_path: String,
 }
 
 impl From<&WorkflowExecutionMetadata> for WorkflowExecutionSummary {
@@ -81,8 +112,50 @@ impl From<&WorkflowExecutionMetadata> for WorkflowExecutionSummary {
             updated_at: execution.updated_at,
             completed_at: execution.completed_at,
             error_reason: execution.error_reason.clone(),
+            interruption_reason: execution.interruption_reason,
+            resume_from_node: execution.resume_from_node.clone(),
             total_token_usage: execution.total_token_usage.clone(),
         }
+    }
+}
+
+mod optional_interruption_reason_serde {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use crate::domain::workflow::ExecutionInterruptionReason;
+
+    pub(super) fn serialize<S>(
+        value: &Option<ExecutionInterruptionReason>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some(reason) => serializer.serialize_some(reason.as_str()),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub(super) fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<Option<ExecutionInterruptionReason>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Option::<String>::deserialize(deserializer)?;
+        value
+            .map(|value| match value.as_str() {
+                "crash" => Ok(ExecutionInterruptionReason::Crash),
+                "stale" => Ok(ExecutionInterruptionReason::Stale),
+                "stop" => Ok(ExecutionInterruptionReason::Stop),
+                "orphan" => Ok(ExecutionInterruptionReason::Orphan),
+                _ => Err(serde::de::Error::unknown_variant(
+                    &value,
+                    &["crash", "stale", "stop", "orphan"],
+                )),
+            })
+            .transpose()
     }
 }
 
@@ -294,8 +367,11 @@ pub fn project_executions_to_summaries(
     let mut summaries: Vec<WorkflowExecutionSummary> = executions
         .into_iter()
         .filter(|execution| match filter.status {
-            Some(ExecutionStatusFilter::Active) => !execution.status.is_terminal(),
-            Some(ExecutionStatusFilter::Terminal) => execution.status.is_terminal(),
+            // Public `active` filter means unfinished, and therefore includes a
+            // resumable Interrupted checkpoint. This is distinct from the
+            // in-memory active reservation set (Running / WaitingApproval only).
+            Some(ExecutionStatusFilter::Active) => !execution.status.is_finished(),
+            Some(ExecutionStatusFilter::Terminal) => execution.status.is_finished(),
             None => true,
         })
         .filter(|execution| match filter.worktree_path.as_deref() {
@@ -312,8 +388,8 @@ pub fn project_executions_to_summaries(
 /// の降順」で並び替える。projection helper と ExecutionStore::list_executions から共通で使う。
 pub(crate) fn sort_summaries_active_first(summaries: &mut [WorkflowExecutionSummary]) {
     summaries.sort_by(|a, b| {
-        let a_active = !a.status.is_terminal();
-        let b_active = !b.status.is_terminal();
+        let a_active = !a.status.is_finished();
+        let b_active = !b.status.is_finished();
         match (a_active, b_active) {
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,
@@ -415,6 +491,8 @@ pub(crate) fn iter_valid_execution_metadata(data_dir: &Path) -> Vec<WorkflowExec
 struct ExecutionStoreInner {
     active: HashMap<String, WorkflowExecutionMetadata>,
     by_worktree: HashMap<String, String>,
+    pending_interrupted_transitions: HashSet<String>,
+    pending_resume_worktrees: HashMap<String, String>,
 }
 
 impl ExecutionStoreInner {
@@ -422,6 +500,8 @@ impl ExecutionStoreInner {
         Self {
             active: HashMap::new(),
             by_worktree: HashMap::new(),
+            pending_interrupted_transitions: HashSet::new(),
+            pending_resume_worktrees: HashMap::new(),
         }
     }
 
@@ -458,8 +538,15 @@ impl ExecutionStoreInner {
         let worktree_conflict = self
             .by_worktree
             .get(&previous.worktree_path)
-            .is_some_and(|id| id != &previous.execution_id);
-        let execution_id_conflict = self.active.contains_key(&previous.execution_id);
+            .is_some_and(|id| id != &previous.execution_id)
+            || self
+                .pending_resume_worktrees
+                .get(&previous.worktree_path)
+                .is_some_and(|id| id != &previous.execution_id);
+        let execution_id_conflict = self.active.contains_key(&previous.execution_id)
+            || self
+                .pending_interrupted_transitions
+                .contains(&previous.execution_id);
         if worktree_conflict || execution_id_conflict {
             return false;
         }
@@ -481,6 +568,8 @@ pub struct ExecutionStore {
     inner: Mutex<ExecutionStoreInner>,
     data_dir: Mutex<Option<PathBuf>>,
     allow_in_memory_without_data_dir: bool,
+    #[cfg(test)]
+    fail_next_resume_commit: AtomicBool,
 }
 
 #[derive(Clone)]
@@ -525,6 +614,8 @@ impl ExecutionStore {
             inner: Mutex::new(ExecutionStoreInner::new()),
             data_dir: Mutex::new(None),
             allow_in_memory_without_data_dir: false,
+            #[cfg(test)]
+            fail_next_resume_commit: AtomicBool::new(false),
         }
     }
 
@@ -534,6 +625,7 @@ impl ExecutionStore {
             inner: Mutex::new(ExecutionStoreInner::new()),
             data_dir: Mutex::new(None),
             allow_in_memory_without_data_dir: true,
+            fail_next_resume_commit: AtomicBool::new(false),
         }
     }
 
@@ -545,6 +637,10 @@ impl ExecutionStore {
 
     async fn data_dir(&self) -> Option<PathBuf> {
         self.data_dir.lock().await.clone()
+    }
+
+    pub(crate) async fn configured_data_dir(&self) -> Option<PathBuf> {
+        self.data_dir().await
     }
 
     #[cfg(test)]
@@ -587,8 +683,8 @@ impl ExecutionStore {
         // runtime guard で禁止する。active 集合の不変条件（is_active な execution のみが
         // active に存在する）を API 境界で強制し、`update_active` の typed invariant と
         // 整合させる。
-        if execution.status.is_terminal() {
-            return Err(ExecutionStoreError::TerminalStatusInActiveSet {
+        if !execution.status.is_active() {
+            return Err(ExecutionStoreError::NonActiveStatusInActiveSet {
                 execution_id: execution.execution_id.clone(),
                 status: execution.status,
             });
@@ -596,6 +692,14 @@ impl ExecutionStore {
         let metadata_store = self.metadata_store().await?;
         {
             let mut inner = self.inner.lock().await;
+            if inner
+                .pending_interrupted_transitions
+                .contains(&execution.execution_id)
+            {
+                return Err(ExecutionStoreError::TransitionInProgress {
+                    execution_id: execution.execution_id.clone(),
+                });
+            }
             // 同一 execution_id が別 worktree で既に登録されている場合は不整合（古い by_worktree が
             // 孤立する原因）なので拒否する。
             if let Some(existing) = inner.active.get(&execution.execution_id) {
@@ -609,6 +713,16 @@ impl ExecutionStore {
             }
             // 同一 worktree に別 execution_id の active execution があれば拒否する。
             if let Some(existing_execution_id) = inner.by_worktree.get(&execution.worktree_path) {
+                if existing_execution_id != &execution.execution_id {
+                    return Err(ExecutionStoreError::WorktreeAlreadyActive {
+                        worktree_path: execution.worktree_path.clone(),
+                        existing_execution_id: existing_execution_id.clone(),
+                    });
+                }
+            }
+            if let Some(existing_execution_id) =
+                inner.pending_resume_worktrees.get(&execution.worktree_path)
+            {
                 if existing_execution_id != &execution.execution_id {
                     return Err(ExecutionStoreError::WorktreeAlreadyActive {
                         worktree_path: execution.worktree_path.clone(),
@@ -659,8 +773,8 @@ impl ExecutionStore {
                 execution_id: execution.execution_id.clone(),
             });
         }
-        if execution.status.is_terminal() {
-            return Err(ExecutionStoreError::TerminalStatusInActiveSet {
+        if !execution.status.is_active() {
+            return Err(ExecutionStoreError::NonActiveStatusInActiveSet {
                 execution_id: execution.execution_id.clone(),
                 status: execution.status,
             });
@@ -668,6 +782,14 @@ impl ExecutionStore {
         let metadata_store = self.metadata_store().await?;
         {
             let mut inner = self.inner.lock().await;
+            if inner
+                .pending_interrupted_transitions
+                .contains(&execution.execution_id)
+            {
+                return Err(ExecutionStoreError::TransitionInProgress {
+                    execution_id: execution.execution_id.clone(),
+                });
+            }
             if let Some(existing) = inner.active.get(&execution.execution_id) {
                 if existing.worktree_path != execution.worktree_path {
                     return Err(ExecutionStoreError::ExecutionIdWorktreeMismatch {
@@ -678,6 +800,16 @@ impl ExecutionStore {
                 }
             }
             if let Some(existing_execution_id) = inner.by_worktree.get(&execution.worktree_path) {
+                if existing_execution_id != &execution.execution_id {
+                    return Err(ExecutionStoreError::WorktreeAlreadyActive {
+                        worktree_path: execution.worktree_path.clone(),
+                        existing_execution_id: existing_execution_id.clone(),
+                    });
+                }
+            }
+            if let Some(existing_execution_id) =
+                inner.pending_resume_worktrees.get(&execution.worktree_path)
+            {
                 if existing_execution_id != &execution.execution_id {
                     return Err(ExecutionStoreError::WorktreeAlreadyActive {
                         worktree_path: execution.worktree_path.clone(),
@@ -749,9 +881,9 @@ impl ExecutionStore {
                     field: "worktree_path".to_string(),
                 });
             }
-            if execution.status.is_terminal() {
+            if !execution.status.is_active() {
                 *execution = previous.clone();
-                return Err(ExecutionStoreError::TerminalNotAllowedInUpdate {
+                return Err(ExecutionStoreError::NonActiveNotAllowedInUpdate {
                     execution_id: previous.execution_id,
                 });
             }
@@ -775,6 +907,7 @@ impl ExecutionStore {
     }
 
     /// engine の active snapshot から Execution Store の active projection を同期する。
+    #[cfg(test)]
     pub async fn sync_active_projection(
         &self,
         execution_id: &str,
@@ -782,10 +915,31 @@ impl ExecutionStore {
         current_node: Option<String>,
         updated_at: f64,
     ) -> Result<(), ExecutionStoreError> {
+        self.sync_active_projection_with_usage(execution_id, status, current_node, updated_at, None)
+            .await
+    }
+
+    /// engine の active snapshot から token usage を含む read projection を同期する。
+    ///
+    /// `sync_active_projection` は既存の状態-only 呼出し向けに残し、runtime の durable
+    /// commit 境界ではこちらを使う。これにより stop 後の Interrupted metadata と、
+    /// terminal metadata の直前に観測される active read model が event-log snapshot と
+    /// 同じ累計 usage を持つ。
+    pub async fn sync_active_projection_with_usage(
+        &self,
+        execution_id: &str,
+        status: ExecutionStatus,
+        current_node: Option<String>,
+        updated_at: f64,
+        total_token_usage: Option<TokenUsage>,
+    ) -> Result<(), ExecutionStoreError> {
         self.update_active(execution_id, |execution| {
             execution.status = status;
             execution.current_node = current_node;
             execution.updated_at = updated_at;
+            if let Some(total_token_usage) = total_token_usage {
+                execution.total_token_usage = total_token_usage;
+            }
         })
         .await
     }
@@ -812,6 +966,20 @@ impl ExecutionStore {
         completed_at: f64,
         error_reason: Option<String>,
     ) -> Result<(), ExecutionStoreError> {
+        self.complete_execution_with_usage(execution_id, status, completed_at, error_reason, None)
+            .await
+    }
+
+    /// active execution を terminal 状態へ遷移し、同じ projection commit で累計 usage も
+    /// 確定する。通常 runtime は event append 後の authoritative snapshot を渡す。
+    pub async fn complete_execution_with_usage(
+        &self,
+        execution_id: &str,
+        status: TerminalExecutionStatus,
+        completed_at: f64,
+        error_reason: Option<String>,
+        total_token_usage: Option<TokenUsage>,
+    ) -> Result<(), ExecutionStoreError> {
         if !is_valid_execution_id(execution_id) {
             return Err(ExecutionStoreError::InvalidExecutionId {
                 execution_id: execution_id.to_string(),
@@ -829,6 +997,9 @@ impl ExecutionStore {
             completed.completed_at = Some(completed_at);
             completed.updated_at = completed_at;
             completed.error_reason = error_reason;
+            if let Some(total_token_usage) = total_token_usage {
+                completed.total_token_usage = total_token_usage;
+            }
             (previous, completed)
         };
         if let Some(store) = metadata_store {
@@ -851,6 +1022,602 @@ impl ExecutionStore {
             }
         }
         Ok(())
+    }
+
+    /// Running / WaitingApproval execution を再開可能な checkpoint として永続化し、
+    /// in-memory active reservation を解放する。
+    #[cfg(test)]
+    pub async fn interrupt_execution(
+        &self,
+        execution_id: &str,
+        reason: ExecutionInterruptionReason,
+        resume_from_node: Option<String>,
+        updated_at: f64,
+    ) -> Result<WorkflowExecutionMetadata, ExecutionStoreError> {
+        self.interrupt_execution_with_usage(
+            execution_id,
+            reason,
+            resume_from_node,
+            updated_at,
+            None,
+        )
+        .await
+    }
+
+    /// active execution を Interrupted checkpoint へ遷移し、最後に確定した node までの
+    /// 累計 usage を同じ metadata write で保持する。
+    pub async fn interrupt_execution_with_usage(
+        &self,
+        execution_id: &str,
+        reason: ExecutionInterruptionReason,
+        resume_from_node: Option<String>,
+        updated_at: f64,
+        total_token_usage: Option<TokenUsage>,
+    ) -> Result<WorkflowExecutionMetadata, ExecutionStoreError> {
+        if !is_valid_execution_id(execution_id) {
+            return Err(ExecutionStoreError::InvalidExecutionId {
+                execution_id: execution_id.to_string(),
+            });
+        }
+        let metadata_store = self.metadata_store().await?;
+        let (previous, interrupted) = {
+            let mut inner = self.inner.lock().await;
+            let Some(previous) = inner.active.get(execution_id).cloned() else {
+                return Err(ExecutionStoreError::ExecutionNotFound {
+                    execution_id: execution_id.to_string(),
+                });
+            };
+            if !previous.status.can_stop() {
+                return Err(ExecutionStoreError::InvalidStatusTransition {
+                    execution_id: execution_id.to_string(),
+                    actual: previous.status,
+                    expected: "running|waiting_approval",
+                });
+            }
+            inner.remove_execution(execution_id);
+            let mut interrupted = previous.clone();
+            interrupted.status = ExecutionStatus::Interrupted;
+            interrupted.updated_at = updated_at;
+            interrupted.completed_at = None;
+            interrupted.error_reason = None;
+            interrupted.interruption_reason = Some(reason);
+            interrupted.resume_from_node =
+                resume_from_node.or_else(|| previous.current_node.clone());
+            interrupted.current_node = None;
+            if let Some(total_token_usage) = total_token_usage {
+                interrupted.total_token_usage = total_token_usage;
+            }
+            (previous, interrupted)
+        };
+        if let Some(store) = metadata_store {
+            if let Err(reason) = store.persist(interrupted.clone()).await {
+                let mut inner = self.inner.lock().await;
+                if !inner.try_reinsert_after_persist_failure(previous) {
+                    log::warn!(
+                        "ExecutionStore: skip interrupt rollback reinsertion for {execution_id} due to concurrent active conflict"
+                    );
+                }
+                return Err(ExecutionStoreError::PersistFailed {
+                    execution_id: execution_id.to_string(),
+                    reason,
+                });
+            }
+        }
+        Ok(interrupted)
+    }
+
+    /// Active interruption の event append から process/session cleanup 完了まで、同じ
+    /// execution command と worktree reservation を直列化する。
+    pub async fn reserve_active_interruption(
+        &self,
+        execution_id: &str,
+    ) -> Result<ActiveInterruptionReservation, ExecutionStoreError> {
+        if !is_valid_execution_id(execution_id) {
+            return Err(ExecutionStoreError::InvalidExecutionId {
+                execution_id: execution_id.to_string(),
+            });
+        }
+        self.metadata_store().await?;
+        let mut inner = self.inner.lock().await;
+        let active = inner.active.get(execution_id).cloned().ok_or_else(|| {
+            ExecutionStoreError::ExecutionNotFound {
+                execution_id: execution_id.to_string(),
+            }
+        })?;
+        if !active.status.can_stop() {
+            return Err(ExecutionStoreError::InvalidStatusTransition {
+                execution_id: execution_id.to_string(),
+                actual: active.status,
+                expected: "running|waiting_approval",
+            });
+        }
+        if !inner
+            .pending_interrupted_transitions
+            .insert(execution_id.to_string())
+        {
+            return Err(ExecutionStoreError::TransitionInProgress {
+                execution_id: execution_id.to_string(),
+            });
+        }
+        if let Some(owner) = inner
+            .pending_resume_worktrees
+            .get(&active.worktree_path)
+            .cloned()
+        {
+            if owner != execution_id {
+                inner.pending_interrupted_transitions.remove(execution_id);
+                return Err(ExecutionStoreError::WorktreeAlreadyActive {
+                    worktree_path: active.worktree_path,
+                    existing_execution_id: owner,
+                });
+            }
+        }
+        inner
+            .pending_resume_worktrees
+            .insert(active.worktree_path.clone(), execution_id.to_string());
+        Ok(ActiveInterruptionReservation {
+            execution_id: execution_id.to_string(),
+            worktree_path: active.worktree_path,
+        })
+    }
+
+    pub async fn finish_active_interruption(
+        &self,
+        reservation: ActiveInterruptionReservation,
+    ) -> Result<(), ExecutionStoreError> {
+        let mut inner = self.inner.lock().await;
+        let execution_reserved = inner
+            .pending_interrupted_transitions
+            .remove(&reservation.execution_id);
+        let worktree_reserved = inner
+            .pending_resume_worktrees
+            .get(&reservation.worktree_path)
+            .is_some_and(|owner| owner == &reservation.execution_id);
+        if worktree_reserved {
+            inner
+                .pending_resume_worktrees
+                .remove(&reservation.worktree_path);
+        }
+        if !execution_reserved || !worktree_reserved {
+            return Err(ExecutionStoreError::InterruptionReservationChanged {
+                execution_id: reservation.execution_id,
+            });
+        }
+        Ok(())
+    }
+
+    pub async fn interrupted_transition_pending(&self, execution_id: &str) -> bool {
+        self.inner
+            .lock()
+            .await
+            .pending_interrupted_transitions
+            .contains(execution_id)
+    }
+
+    /// persisted Interrupted execution の resume transition を予約する。
+    ///
+    /// ExecutionResumed event が durable になるまでは metadata / active projection を
+    /// Interrupted のまま保つ。pending guard と worktree reservation だけを先に取り、同じ
+    /// execution への abort/resume と同じ worktree への新規 start を直列化する。
+    pub async fn reserve_interrupted_for_resume(
+        &self,
+        execution_id: &str,
+        updated_at: f64,
+    ) -> Result<ResumeExecutionReservation, ExecutionStoreError> {
+        if !is_valid_execution_id(execution_id) {
+            return Err(ExecutionStoreError::InvalidExecutionId {
+                execution_id: execution_id.to_string(),
+            });
+        }
+        self.metadata_store().await?;
+        let interrupted = self
+            .get_execution_record(execution_id)
+            .await
+            .ok_or_else(|| ExecutionStoreError::ExecutionNotFound {
+                execution_id: execution_id.to_string(),
+            })?;
+        if !interrupted.status.can_resume() {
+            return Err(ExecutionStoreError::InvalidStatusTransition {
+                execution_id: execution_id.to_string(),
+                actual: interrupted.status,
+                expected: "interrupted",
+            });
+        }
+        let resume_from_node = interrupted.resume_from_node.clone().ok_or_else(|| {
+            ExecutionStoreError::MissingResumePoint {
+                execution_id: execution_id.to_string(),
+            }
+        })?;
+        let mut running = interrupted.clone();
+        running.status = ExecutionStatus::Running;
+        running.current_node = Some(resume_from_node);
+        running.updated_at = updated_at;
+        running.completed_at = None;
+        running.error_reason = None;
+        running.interruption_reason = None;
+        running.resume_from_node = None;
+
+        {
+            let mut inner = self.inner.lock().await;
+            if inner.pending_interrupted_transitions.contains(execution_id) {
+                return Err(ExecutionStoreError::TransitionInProgress {
+                    execution_id: execution_id.to_string(),
+                });
+            }
+            if let Some(existing) = inner.active.get(execution_id) {
+                return Err(ExecutionStoreError::InvalidStatusTransition {
+                    execution_id: execution_id.to_string(),
+                    actual: existing.status,
+                    expected: "interrupted",
+                });
+            }
+            if let Some(existing_execution_id) = inner.by_worktree.get(&running.worktree_path) {
+                if existing_execution_id != execution_id {
+                    return Err(ExecutionStoreError::WorktreeAlreadyActive {
+                        worktree_path: running.worktree_path.clone(),
+                        existing_execution_id: existing_execution_id.clone(),
+                    });
+                }
+            }
+            if let Some(existing_execution_id) =
+                inner.pending_resume_worktrees.get(&running.worktree_path)
+            {
+                if existing_execution_id != execution_id {
+                    return Err(ExecutionStoreError::WorktreeAlreadyActive {
+                        worktree_path: running.worktree_path.clone(),
+                        existing_execution_id: existing_execution_id.clone(),
+                    });
+                }
+            }
+            inner
+                .pending_interrupted_transitions
+                .insert(execution_id.to_string());
+            inner
+                .pending_resume_worktrees
+                .insert(running.worktree_path.clone(), execution_id.to_string());
+        }
+        Ok(ResumeExecutionReservation {
+            interrupted,
+            running,
+        })
+    }
+
+    /// ExecutionResumed event append 成功後に Running metadata / active projection を commit
+    /// し、resume transition guard を解放する。
+    pub async fn commit_resume_reservation(
+        &self,
+        reservation: &ResumeExecutionReservation,
+    ) -> Result<WorkflowExecutionMetadata, ExecutionStoreError> {
+        let execution_id = reservation.running.execution_id.clone();
+        {
+            let inner = self.inner.lock().await;
+            let reserved = inner
+                .pending_interrupted_transitions
+                .contains(&execution_id)
+                && inner
+                    .pending_resume_worktrees
+                    .get(&reservation.running.worktree_path)
+                    .is_some_and(|owner| owner == &execution_id);
+            if !reserved || inner.active.contains_key(&execution_id) {
+                return Err(ExecutionStoreError::ResumeReservationChanged { execution_id });
+            }
+        }
+        #[cfg(test)]
+        if self.fail_next_resume_commit.swap(false, Ordering::AcqRel) {
+            return Err(ExecutionStoreError::PersistFailed {
+                execution_id,
+                reason: "injected Resume metadata commit failure".to_string(),
+            });
+        }
+        if let Some(store) = self.metadata_store().await? {
+            store
+                .persist(reservation.running.clone())
+                .await
+                .map_err(|reason| ExecutionStoreError::PersistFailed {
+                    execution_id: execution_id.clone(),
+                    reason,
+                })?;
+        }
+        let mut inner = self.inner.lock().await;
+        let reserved = inner
+            .pending_interrupted_transitions
+            .contains(&execution_id)
+            && inner
+                .pending_resume_worktrees
+                .get(&reservation.running.worktree_path)
+                .is_some_and(|owner| owner == &execution_id);
+        if !reserved || inner.active.contains_key(&execution_id) {
+            return Err(ExecutionStoreError::ResumeReservationChanged { execution_id });
+        }
+        if let Some(existing_execution_id) =
+            inner.by_worktree.get(&reservation.running.worktree_path)
+        {
+            if existing_execution_id != &execution_id {
+                return Err(ExecutionStoreError::WorktreeAlreadyActive {
+                    worktree_path: reservation.running.worktree_path.clone(),
+                    existing_execution_id: existing_execution_id.clone(),
+                });
+            }
+        }
+        inner.by_worktree.insert(
+            reservation.running.worktree_path.clone(),
+            execution_id.clone(),
+        );
+        inner
+            .active
+            .insert(execution_id.clone(), reservation.running.clone());
+        inner.pending_interrupted_transitions.remove(&execution_id);
+        inner
+            .pending_resume_worktrees
+            .remove(&reservation.running.worktree_path);
+        Ok(reservation.running.clone())
+    }
+
+    /// A durable `ExecutionResumed` followed by a failed Running projection is closed by a
+    /// durable Crash checkpoint. Persist that checkpoint from the reservation's original
+    /// Interrupted metadata and release the transition only after the projection succeeds.
+    pub async fn checkpoint_failed_resume(
+        &self,
+        reservation: ResumeExecutionReservation,
+        reason: ExecutionInterruptionReason,
+        updated_at: f64,
+    ) -> Result<WorkflowExecutionMetadata, ExecutionStoreError> {
+        let execution_id = reservation.interrupted.execution_id.clone();
+        {
+            let inner = self.inner.lock().await;
+            let reserved = inner
+                .pending_interrupted_transitions
+                .contains(&execution_id)
+                && inner
+                    .pending_resume_worktrees
+                    .get(&reservation.running.worktree_path)
+                    .is_some_and(|owner| owner == &execution_id);
+            if !reserved || inner.active.contains_key(&execution_id) {
+                return Err(ExecutionStoreError::ResumeReservationChanged { execution_id });
+            }
+        }
+        let mut interrupted = reservation.interrupted;
+        interrupted.status = ExecutionStatus::Interrupted;
+        interrupted.current_node = None;
+        interrupted.updated_at = updated_at;
+        interrupted.completed_at = None;
+        interrupted.error_reason = None;
+        interrupted.interruption_reason = Some(reason);
+        if let Some(store) = self.metadata_store().await? {
+            store.persist(interrupted.clone()).await.map_err(|reason| {
+                ExecutionStoreError::PersistFailed {
+                    execution_id: execution_id.clone(),
+                    reason,
+                }
+            })?;
+        }
+        let mut inner = self.inner.lock().await;
+        let reserved = inner.pending_interrupted_transitions.remove(&execution_id);
+        let worktree_reserved = inner
+            .pending_resume_worktrees
+            .get(&reservation.running.worktree_path)
+            .is_some_and(|owner| owner == &execution_id);
+        if worktree_reserved {
+            inner
+                .pending_resume_worktrees
+                .remove(&reservation.running.worktree_path);
+        }
+        if !reserved || !worktree_reserved {
+            return Err(ExecutionStoreError::ResumeReservationChanged { execution_id });
+        }
+        Ok(interrupted)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_resume_commit_for_test(&self) {
+        self.fail_next_resume_commit.store(true, Ordering::Release);
+    }
+
+    /// Resume の required event append が失敗した場合に pending guard / worktree reservation
+    /// を解放する。metadata は commit 前なので Interrupted のまま変わらない。
+    pub async fn rollback_resume_reservation(
+        &self,
+        reservation: ResumeExecutionReservation,
+    ) -> Result<(), ExecutionStoreError> {
+        let execution_id = reservation.interrupted.execution_id.clone();
+        self.metadata_store().await?;
+        let mut inner = self.inner.lock().await;
+        let reserved = inner.pending_interrupted_transitions.remove(&execution_id);
+        let worktree_reserved = inner
+            .pending_resume_worktrees
+            .get(&reservation.running.worktree_path)
+            .is_some_and(|owner| owner == &execution_id);
+        if worktree_reserved {
+            inner
+                .pending_resume_worktrees
+                .remove(&reservation.running.worktree_path);
+        }
+        if !reserved || !worktree_reserved {
+            return Err(ExecutionStoreError::ResumeReservationChanged { execution_id });
+        }
+        Ok(())
+    }
+
+    /// Interrupted metadata を検証し、event append が失敗した場合に rollback できる token を返す。
+    /// append-only event log を最初の永続 commit point に保つため、この段階では metadata を
+    /// 書き換えない。同じ execution に対する resume / abort の同時受理を防ぐ in-memory
+    /// reservation だけを commit または rollback まで保持する。
+    pub async fn reserve_interrupted_for_abort(
+        &self,
+        execution_id: &str,
+        completed_at: f64,
+    ) -> Result<AbortInterruptedReservation, ExecutionStoreError> {
+        if !is_valid_execution_id(execution_id) {
+            return Err(ExecutionStoreError::InvalidExecutionId {
+                execution_id: execution_id.to_string(),
+            });
+        }
+        // Production store では event append 前に永続化先が構成済みであることだけ検証する。
+        // metadata 自体は required event の append 成功後に commit する。
+        self.metadata_store().await?;
+        let interrupted = self
+            .get_execution_record(execution_id)
+            .await
+            .ok_or_else(|| ExecutionStoreError::ExecutionNotFound {
+                execution_id: execution_id.to_string(),
+            })?;
+        if !interrupted.status.can_resume() {
+            return Err(ExecutionStoreError::InvalidStatusTransition {
+                execution_id: execution_id.to_string(),
+                actual: interrupted.status,
+                expected: "interrupted",
+            });
+        }
+        {
+            let mut inner = self.inner.lock().await;
+            if inner.active.contains_key(execution_id) {
+                return Err(ExecutionStoreError::InvalidStatusTransition {
+                    execution_id: execution_id.to_string(),
+                    actual: inner.active[execution_id].status,
+                    expected: "interrupted",
+                });
+            }
+            if !inner
+                .pending_interrupted_transitions
+                .insert(execution_id.to_string())
+            {
+                return Err(ExecutionStoreError::TransitionInProgress {
+                    execution_id: execution_id.to_string(),
+                });
+            }
+        }
+
+        let mut aborted = interrupted.clone();
+        aborted.status = ExecutionStatus::Aborted;
+        aborted.updated_at = completed_at;
+        aborted.completed_at = Some(completed_at);
+        aborted.error_reason = None;
+        aborted.interruption_reason = None;
+        aborted.resume_from_node = None;
+        Ok(AbortInterruptedReservation {
+            interrupted,
+            aborted,
+        })
+    }
+
+    /// ExecutionAborted event append 成功後に Aborted metadata projection を永続化し、
+    /// reservation を解放する。永続化失敗時は event log が正典として残り、同一 process 内で
+    /// stale Interrupted metadata を再操作できないよう reservation を保持する。
+    pub async fn commit_interrupted_abort(
+        &self,
+        reservation: AbortInterruptedReservation,
+    ) -> Result<WorkflowExecutionMetadata, ExecutionStoreError> {
+        let execution_id = reservation.aborted.execution_id.clone();
+        {
+            let inner = self.inner.lock().await;
+            if !inner
+                .pending_interrupted_transitions
+                .contains(&execution_id)
+            {
+                return Err(ExecutionStoreError::AbortReservationChanged { execution_id });
+            }
+        }
+        if let Some(store) = self.metadata_store().await? {
+            store
+                .persist(reservation.aborted.clone())
+                .await
+                .map_err(|reason| ExecutionStoreError::PersistFailed {
+                    execution_id: execution_id.clone(),
+                    reason,
+                })?;
+        }
+        let removed = self
+            .inner
+            .lock()
+            .await
+            .pending_interrupted_transitions
+            .remove(&execution_id);
+        if !removed {
+            return Err(ExecutionStoreError::AbortReservationChanged { execution_id });
+        }
+        Ok(reservation.aborted)
+    }
+
+    /// ExecutionAborted event append 失敗時に in-memory reservation を解放する。
+    /// metadata は commit 前には変更していないため、Interrupted checkpoint のまま残る。
+    pub async fn rollback_interrupted_abort(
+        &self,
+        reservation: AbortInterruptedReservation,
+    ) -> Result<(), ExecutionStoreError> {
+        let execution_id = reservation.interrupted.execution_id.clone();
+        let removed = self
+            .inner
+            .lock()
+            .await
+            .pending_interrupted_transitions
+            .remove(&execution_id);
+        if !removed {
+            return Err(ExecutionStoreError::AbortReservationChanged { execution_id });
+        }
+        Ok(())
+    }
+
+    /// 起動時に stale な Running / WaitingApproval / Interrupted metadata を
+    /// event-log projection に揃える。
+    /// projection が active のままなら、呼出側が先に ExecutionInterrupted を append する必要がある。
+    pub async fn reconcile_orphan_from_projection(
+        &self,
+        mut metadata: WorkflowExecutionMetadata,
+        projection: &DomainWorkflowExecution,
+    ) -> Result<WorkflowExecutionMetadata, ExecutionStoreError> {
+        if !is_valid_execution_id(&metadata.execution_id) {
+            return Err(ExecutionStoreError::InvalidExecutionId {
+                execution_id: metadata.execution_id,
+            });
+        }
+        if metadata.status.is_finished() {
+            return Err(ExecutionStoreError::InvalidStatusTransition {
+                execution_id: metadata.execution_id.clone(),
+                actual: metadata.status,
+                expected: "running|waiting_approval|interrupted",
+            });
+        }
+        if projection.id != metadata.execution_id {
+            return Err(ExecutionStoreError::ImmutableFieldChanged {
+                execution_id: metadata.execution_id,
+                field: "execution_id".to_string(),
+            });
+        }
+        if projection.worktree_path != metadata.worktree_path {
+            return Err(ExecutionStoreError::ExecutionIdWorktreeMismatch {
+                execution_id: metadata.execution_id,
+                existing_worktree_path: metadata.worktree_path,
+                new_worktree_path: projection.worktree_path.clone(),
+            });
+        }
+        if projection.status.is_active() {
+            return Err(ExecutionStoreError::InvalidStatusTransition {
+                execution_id: metadata.execution_id,
+                actual: projection.status,
+                expected: "interrupted|completed|failed|aborted",
+            });
+        }
+
+        metadata.workflow_name = projection.workflow_name.clone();
+        metadata.status = projection.status;
+        metadata.current_node = projection.current_node.clone();
+        metadata.created_from = projection.created_from;
+        metadata.started_at = projection.started_at;
+        metadata.updated_at = projection.updated_at;
+        metadata.completed_at = projection.completed_at;
+        metadata.error_reason = projection.error_reason.clone();
+        metadata.interruption_reason = projection.interruption_reason;
+        metadata.resume_from_node = projection.resume_from_node.clone();
+        metadata.total_token_usage = projection.total_token_usage.clone();
+        if let Some(store) = self.metadata_store().await? {
+            store.persist(metadata.clone()).await.map_err(|reason| {
+                ExecutionStoreError::PersistFailed {
+                    execution_id: metadata.execution_id.clone(),
+                    reason,
+                }
+            })?;
+        }
+        Ok(metadata)
     }
 
     /// active set から該当 execution を取り除き、永続化された metadata ファイルも削除する。
@@ -1055,52 +1822,23 @@ impl ExecutionStore {
         self.inner.lock().await.active.len()
     }
 
-    /// 起動時 recovery 用: disk 上 `workflow_executions/` 配下の non-terminal な metadata を列挙する。
-    /// 前回起動中に terminal event が記録されないまま終了した execution を引き当てるための一次 source。
-    /// in-memory active map には依存しない（起動直後に呼ばれる前提）。
+    /// Startup replay 対象。active orphan に加え、event commit 後の metadata persist failure
+    /// で stale になり得る Interrupted checkpoint も再照合する。
     pub async fn list_non_terminal_metadata(&self) -> Vec<WorkflowExecutionMetadata> {
         let Some(dir) = self.data_dir().await else {
             return Vec::new();
         };
-        let executions = tokio::task::spawn_blocking(move || iter_valid_execution_metadata(&dir))
+        tokio::task::spawn_blocking(move || iter_valid_execution_metadata(&dir))
             .await
-            .unwrap_or_else(|e| {
+            .unwrap_or_else(|error| {
                 log::warn!(
-                    "ExecutionStore: failed to join non-terminal metadata listing request: {e}"
+                    "ExecutionStore: failed to join recovery metadata listing request: {error}"
                 );
                 Vec::new()
-            });
-        executions
-            .into_iter()
-            .filter(|execution| !execution.status.is_terminal())
-            .collect()
-    }
-
-    /// 起動時 recovery 用: 指定 execution の metadata を Aborted に書き換えて永続化する。
-    /// `complete_execution` と異なり in-memory active map には触れない（前回起動時の orphan は
-    /// 当該プロセスの active map に存在しないため）。idempotent: 既に terminal な metadata に
-    /// 対しても呼べるが、呼び出し側で `list_non_terminal_metadata` の結果のみを渡す想定。
-    pub async fn force_complete_orphan_to_aborted(
-        &self,
-        mut execution: WorkflowExecutionMetadata,
-        completed_at: f64,
-        error_reason: Option<String>,
-    ) -> Result<(), ExecutionStoreError> {
-        let execution_id_for_err = execution.execution_id.clone();
-        let Some(store) = self.metadata_store().await? else {
-            return Ok(());
-        };
-        execution.status = ExecutionStatus::Aborted;
-        execution.completed_at = Some(completed_at);
-        execution.updated_at = completed_at;
-        execution.error_reason = error_reason;
-        store
-            .persist(execution)
-            .await
-            .map_err(|reason| ExecutionStoreError::PersistFailed {
-                execution_id: execution_id_for_err,
-                reason,
             })
+            .into_iter()
+            .filter(|execution| !execution.status.is_finished())
+            .collect()
     }
 }
 
@@ -1198,16 +1936,36 @@ pub enum ExecutionStoreError {
     #[error("invalid execution_id format (must be UUID): {execution_id}")]
     InvalidExecutionId { execution_id: String },
     #[error(
-        "cannot register execution {execution_id} into active set with terminal status: {status:?}"
+        "cannot register execution {execution_id} into active set with non-active status: {status:?}"
     )]
-    TerminalStatusInActiveSet {
+    NonActiveStatusInActiveSet {
         execution_id: String,
         status: ExecutionStatus,
     },
     #[error("update_active for {execution_id} attempted to change immutable field {field}")]
     ImmutableFieldChanged { execution_id: String, field: String },
-    #[error("update_active for {execution_id} cannot transition to terminal status; use complete_execution")]
-    TerminalNotAllowedInUpdate { execution_id: String },
+    #[error("update_active for {execution_id} cannot transition to a non-active status")]
+    NonActiveNotAllowedInUpdate { execution_id: String },
+    #[error("workflow execution was not found: {execution_id}")]
+    ExecutionNotFound { execution_id: String },
+    #[error(
+        "execution {execution_id} cannot transition from {actual:?}; expected one of {expected}"
+    )]
+    InvalidStatusTransition {
+        execution_id: String,
+        actual: ExecutionStatus,
+        expected: &'static str,
+    },
+    #[error("interrupted execution {execution_id} has no resume point")]
+    MissingResumePoint { execution_id: String },
+    #[error("resume reservation for execution {execution_id} changed before rollback")]
+    ResumeReservationChanged { execution_id: String },
+    #[error("execution {execution_id} already has an interrupted transition in progress")]
+    TransitionInProgress { execution_id: String },
+    #[error("abort reservation for interrupted execution {execution_id} changed")]
+    AbortReservationChanged { execution_id: String },
+    #[error("active interruption reservation for execution {execution_id} changed")]
+    InterruptionReservationChanged { execution_id: String },
 }
 
 #[cfg(test)]
@@ -1239,6 +1997,8 @@ mod tests {
             updated_at: started_at,
             completed_at: None,
             error_reason: None,
+            interruption_reason: None,
+            resume_from_node: None,
             total_token_usage: TokenUsage::default(),
         }
     }
@@ -2209,15 +2969,15 @@ mod tests {
         assert!(store.list_completed().await.is_empty());
     }
 
-    /// Spec issues-1011 finding 11: `register_active_execution` は terminal status の active 登録を
-    /// 拒否する。`update_active` が terminal を許容しないこと（finding 10）と整合する。
+    /// active reservation は Running / WaitingApproval だけを受け付ける。
     #[tokio::test]
-    async fn register_active_rejects_terminal_status() {
+    async fn register_active_rejects_non_active_status() {
         let store = ExecutionStore::new_in_memory_for_tests();
         for terminal in [
             ExecutionStatus::Completed,
             ExecutionStatus::Failed,
             ExecutionStatus::Aborted,
+            ExecutionStatus::Interrupted,
         ] {
             let execution = make_execution(&test_uuid(1), "/wt/a", terminal, 100.0);
             let err = store
@@ -2225,8 +2985,8 @@ mod tests {
                 .await
                 .unwrap_err();
             assert!(
-                matches!(err, ExecutionStoreError::TerminalStatusInActiveSet { status, .. } if status == terminal),
-                "terminal status must be rejected, got: {err:?}"
+                matches!(err, ExecutionStoreError::NonActiveStatusInActiveSet { status, .. } if status == terminal),
+                "non-active status must be rejected, got: {err:?}"
             );
         }
         assert_eq!(store.active_len().await, 0);
@@ -2297,8 +3057,7 @@ mod tests {
         assert_eq!(store.resolve_execution_by_worktree("/wt/b").await, None);
     }
 
-    /// Spec issues-1011 finding 10: `update_active` は terminal 遷移を拒否する
-    /// （complete_execution 専用経路を経由させる）。
+    /// `update_active` は finished / interrupted 遷移を拒否し、専用 transition API を要求する。
     #[tokio::test]
     async fn update_active_rejects_terminal_transition_and_rolls_back() {
         let tmp = TempDir::new().unwrap();
@@ -2318,6 +3077,7 @@ mod tests {
             ExecutionStatus::Completed,
             ExecutionStatus::Failed,
             ExecutionStatus::Aborted,
+            ExecutionStatus::Interrupted,
         ] {
             let result = store
                 .update_active(&execution_id, |r| {
@@ -2325,8 +3085,8 @@ mod tests {
                 })
                 .await;
             assert!(
-                matches!(result, Err(ExecutionStoreError::TerminalNotAllowedInUpdate { .. })),
-                "terminal transition via update_active must be rejected for {terminal:?}, got: {result:?}"
+                matches!(result, Err(ExecutionStoreError::NonActiveNotAllowedInUpdate { .. })),
+                "non-active transition via update_active must be rejected for {terminal:?}, got: {result:?}"
             );
             // active のまま
             let active = store.list_active().await;
@@ -2588,8 +3348,8 @@ mod tests {
         );
     }
 
-    /// 起動時 recovery: 前回プロセスが書き残した non-terminal metadata のみを列挙する。
-    /// terminal な metadata は混じらない。
+    /// 起動時 recovery: active orphan と stale projection 修復対象の Interrupted を列挙する。
+    /// terminal な metadata は混じらず、orphan candidate は active 状態だけに絞れる。
     #[tokio::test]
     async fn list_non_terminal_metadata_returns_only_non_terminal_executions_from_disk() {
         let tmp = TempDir::new().unwrap();
@@ -2629,6 +3389,22 @@ mod tests {
             )
             .await
             .unwrap();
+            prev.register_active_execution(make_execution(
+                &test_uuid(4),
+                "/wt/d",
+                ExecutionStatus::Running,
+                104.0,
+            ))
+            .await
+            .unwrap();
+            prev.interrupt_execution(
+                &test_uuid(4),
+                ExecutionInterruptionReason::Stop,
+                Some("node-1".to_string()),
+                105.0,
+            )
+            .await
+            .unwrap();
         }
 
         // 起動直後を模擬: 別 ExecutionStore で同じ data_dir を見る（in-memory active は空）。
@@ -2637,56 +3413,330 @@ mod tests {
         let mut orphans = store.list_non_terminal_metadata().await;
         orphans.sort_by(|a, b| a.execution_id.cmp(&b.execution_id));
         let ids: Vec<&str> = orphans.iter().map(|r| r.execution_id.as_str()).collect();
-        assert_eq!(ids, vec![test_uuid(1).as_str(), test_uuid(2).as_str()]);
-        assert!(orphans.iter().all(|r| !r.status.is_terminal()));
+        assert_eq!(
+            ids,
+            vec![
+                test_uuid(1).as_str(),
+                test_uuid(2).as_str(),
+                test_uuid(4).as_str()
+            ]
+        );
+        assert_eq!(orphans[2].status, ExecutionStatus::Interrupted);
+        assert_eq!(
+            orphans
+                .iter()
+                .filter(|execution| execution.status.is_active())
+                .map(|execution| execution.execution_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![test_uuid(1).as_str(), test_uuid(2).as_str()]
+        );
     }
 
-    /// 起動時 recovery: `force_complete_orphan_to_aborted` が disk metadata を Aborted に
-    /// 書き換え、completed_at と error_reason を反映する。
     #[tokio::test]
-    async fn force_complete_orphan_to_aborted_persists_aborted_status() {
+    async fn interrupt_execution_releases_active_reservation_and_persists_checkpoint() {
         let tmp = TempDir::new().unwrap();
-        let execution_id = test_uuid(7);
-        {
-            let prev = ExecutionStore::new_in_memory_for_tests();
-            prev.set_data_dir(tmp.path().to_path_buf()).await;
-            prev.register_active_execution(make_execution(
+        let store = ExecutionStore::new_in_memory_for_tests();
+        store.set_data_dir(tmp.path().to_path_buf()).await;
+        let execution_id = test_uuid(41);
+        store
+            .register_active_execution(make_execution(
                 &execution_id,
-                "/wt/x",
-                ExecutionStatus::Running,
-                100.0,
+                "/wt/interrupted",
+                ExecutionStatus::WaitingApproval,
+                10.0,
             ))
             .await
             .unwrap();
-        }
 
-        let store = ExecutionStore::new_in_memory_for_tests();
-        store.set_data_dir(tmp.path().to_path_buf()).await;
-        let orphan = store
-            .list_non_terminal_metadata()
-            .await
-            .into_iter()
-            .next()
-            .expect("orphan metadata must be present");
-        store
-            .force_complete_orphan_to_aborted(orphan, 200.0, None)
+        let checkpoint = store
+            .interrupt_execution(
+                &execution_id,
+                ExecutionInterruptionReason::Stop,
+                Some("node-1".to_string()),
+                20.0,
+            )
             .await
             .unwrap();
 
-        let persisted: WorkflowExecutionMetadata = serde_json::from_str(
-            &fs::read_to_string(execution_file_path(tmp.path(), &execution_id)).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(persisted.status, ExecutionStatus::Aborted);
-        assert_eq!(persisted.completed_at, Some(200.0));
-        assert_eq!(persisted.updated_at, 200.0);
-        assert!(persisted.error_reason.is_none());
-
-        // recovery 完了後は list_non_terminal_metadata で再列挙されない（idempotent）。
-        let remaining = store.list_non_terminal_metadata().await;
-        assert!(
-            remaining.is_empty(),
-            "aborted execution must not be re-listed"
+        assert_eq!(store.active_len().await, 0);
+        assert_eq!(checkpoint.status, ExecutionStatus::Interrupted);
+        assert_eq!(checkpoint.completed_at, None);
+        assert_eq!(
+            checkpoint.interruption_reason,
+            Some(ExecutionInterruptionReason::Stop)
         );
+        assert_eq!(checkpoint.resume_from_node.as_deref(), Some("node-1"));
+        assert_eq!(checkpoint.current_node, None);
+        let persisted = store.get_execution_record(&execution_id).await.unwrap();
+        assert_eq!(persisted, checkpoint);
+    }
+
+    #[tokio::test]
+    async fn resume_reservation_can_be_rolled_back_to_interrupted_metadata() {
+        let tmp = TempDir::new().unwrap();
+        let store = ExecutionStore::new_in_memory_for_tests();
+        store.set_data_dir(tmp.path().to_path_buf()).await;
+        let execution_id = test_uuid(42);
+        store
+            .register_active_execution(make_execution(
+                &execution_id,
+                "/wt/resume",
+                ExecutionStatus::Running,
+                10.0,
+            ))
+            .await
+            .unwrap();
+        store
+            .interrupt_execution(
+                &execution_id,
+                ExecutionInterruptionReason::Crash,
+                Some("node-1".to_string()),
+                20.0,
+            )
+            .await
+            .unwrap();
+
+        let reservation = store
+            .reserve_interrupted_for_resume(&execution_id, 30.0)
+            .await
+            .unwrap();
+        assert_eq!(store.active_len().await, 0);
+        assert_eq!(reservation.running.status, ExecutionStatus::Running);
+        assert_eq!(reservation.running.current_node.as_deref(), Some("node-1"));
+        assert_eq!(reservation.running.interruption_reason, None);
+        assert_eq!(
+            store
+                .get_execution_record(&execution_id)
+                .await
+                .unwrap()
+                .status,
+            ExecutionStatus::Interrupted,
+            "metadata remains Interrupted until ExecutionResumed is committed"
+        );
+        assert!(matches!(
+            store
+                .reserve_interrupted_for_abort(&execution_id, 31.0)
+                .await,
+            Err(ExecutionStoreError::TransitionInProgress { .. })
+        ));
+
+        store
+            .rollback_resume_reservation(reservation)
+            .await
+            .unwrap();
+        assert_eq!(store.active_len().await, 0);
+        let restored = store.get_execution_record(&execution_id).await.unwrap();
+        assert_eq!(restored.status, ExecutionStatus::Interrupted);
+        assert_eq!(
+            restored.interruption_reason,
+            Some(ExecutionInterruptionReason::Crash)
+        );
+        assert_eq!(restored.resume_from_node.as_deref(), Some("node-1"));
+    }
+
+    #[tokio::test]
+    async fn resume_reservation_commits_running_only_after_the_event_boundary() {
+        let tmp = TempDir::new().unwrap();
+        let store = ExecutionStore::new_in_memory_for_tests();
+        store.set_data_dir(tmp.path().to_path_buf()).await;
+        let execution_id = test_uuid(47);
+        store
+            .register_active_execution(make_execution(
+                &execution_id,
+                "/wt/resume-commit",
+                ExecutionStatus::Running,
+                10.0,
+            ))
+            .await
+            .unwrap();
+        store
+            .interrupt_execution(
+                &execution_id,
+                ExecutionInterruptionReason::Crash,
+                Some("node-1".to_string()),
+                20.0,
+            )
+            .await
+            .unwrap();
+
+        let reservation = store
+            .reserve_interrupted_for_resume(&execution_id, 30.0)
+            .await
+            .unwrap();
+        let running = store.commit_resume_reservation(&reservation).await.unwrap();
+
+        assert_eq!(running.status, ExecutionStatus::Running);
+        assert_eq!(store.active_len().await, 1);
+        assert_eq!(
+            store
+                .get_execution_record(&execution_id)
+                .await
+                .unwrap()
+                .status,
+            ExecutionStatus::Running
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_reservation_rejects_an_active_worktree_conflict() {
+        let tmp = TempDir::new().unwrap();
+        let store = ExecutionStore::new_in_memory_for_tests();
+        store.set_data_dir(tmp.path().to_path_buf()).await;
+        let interrupted_id = test_uuid(43);
+        let active_id = test_uuid(44);
+        store
+            .register_active_execution(make_execution(
+                &interrupted_id,
+                "/wt/shared",
+                ExecutionStatus::Running,
+                10.0,
+            ))
+            .await
+            .unwrap();
+        store
+            .interrupt_execution(
+                &interrupted_id,
+                ExecutionInterruptionReason::Stale,
+                Some("node-1".to_string()),
+                20.0,
+            )
+            .await
+            .unwrap();
+        store
+            .register_active_execution(make_execution(
+                &active_id,
+                "/wt/shared",
+                ExecutionStatus::Running,
+                25.0,
+            ))
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            store
+                .reserve_interrupted_for_resume(&interrupted_id, 30.0)
+                .await,
+            Err(ExecutionStoreError::WorktreeAlreadyActive {
+                existing_execution_id,
+                ..
+            }) if existing_execution_id == active_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn interrupted_abort_reservation_commits_finished_status() {
+        let tmp = TempDir::new().unwrap();
+        let store = ExecutionStore::new_in_memory_for_tests();
+        store.set_data_dir(tmp.path().to_path_buf()).await;
+        let execution_id = test_uuid(45);
+        store
+            .register_active_execution(make_execution(
+                &execution_id,
+                "/wt/abort-interrupted",
+                ExecutionStatus::Running,
+                10.0,
+            ))
+            .await
+            .unwrap();
+        store
+            .interrupt_execution(
+                &execution_id,
+                ExecutionInterruptionReason::Stop,
+                Some("node-1".to_string()),
+                20.0,
+            )
+            .await
+            .unwrap();
+
+        let reservation = store
+            .reserve_interrupted_for_abort(&execution_id, 30.0)
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .get_execution_record(&execution_id)
+                .await
+                .unwrap()
+                .status,
+            ExecutionStatus::Interrupted,
+            "event append 前の reservation は persisted metadata を変更しない"
+        );
+        assert!(matches!(
+            store
+                .reserve_interrupted_for_resume(&execution_id, 31.0)
+                .await,
+            Err(ExecutionStoreError::TransitionInProgress { .. })
+        ));
+        let aborted = store.commit_interrupted_abort(reservation).await.unwrap();
+
+        assert_eq!(aborted.status, ExecutionStatus::Aborted);
+        assert_eq!(aborted.completed_at, Some(30.0));
+        assert_eq!(aborted.interruption_reason, None);
+        assert_eq!(aborted.resume_from_node, None);
+        assert_eq!(
+            store
+                .get_execution_record(&execution_id)
+                .await
+                .unwrap()
+                .status,
+            ExecutionStatus::Aborted
+        );
+    }
+
+    #[tokio::test]
+    async fn interrupted_abort_reservation_rolls_back_when_event_append_fails() {
+        let tmp = TempDir::new().unwrap();
+        let store = ExecutionStore::new_in_memory_for_tests();
+        store.set_data_dir(tmp.path().to_path_buf()).await;
+        let execution_id = test_uuid(46);
+        store
+            .register_active_execution(make_execution(
+                &execution_id,
+                "/wt/abort-rollback",
+                ExecutionStatus::Running,
+                10.0,
+            ))
+            .await
+            .unwrap();
+        store
+            .interrupt_execution(
+                &execution_id,
+                ExecutionInterruptionReason::Orphan,
+                Some("node-1".to_string()),
+                20.0,
+            )
+            .await
+            .unwrap();
+
+        let reservation = store
+            .reserve_interrupted_for_abort(&execution_id, 30.0)
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .get_execution_record(&execution_id)
+                .await
+                .unwrap()
+                .status,
+            ExecutionStatus::Interrupted,
+            "event append 失敗前の metadata は rollback 不要な Interrupted のまま"
+        );
+        store.rollback_interrupted_abort(reservation).await.unwrap();
+
+        let restored = store.get_execution_record(&execution_id).await.unwrap();
+        assert_eq!(restored.status, ExecutionStatus::Interrupted);
+        assert_eq!(restored.completed_at, None);
+        assert_eq!(
+            restored.interruption_reason,
+            Some(ExecutionInterruptionReason::Orphan)
+        );
+        assert_eq!(restored.resume_from_node.as_deref(), Some("node-1"));
+
+        // rollback releases the compare-and-transition guard.
+        let reservation = store
+            .reserve_interrupted_for_abort(&execution_id, 40.0)
+            .await
+            .unwrap();
+        store.commit_interrupted_abort(reservation).await.unwrap();
     }
 }

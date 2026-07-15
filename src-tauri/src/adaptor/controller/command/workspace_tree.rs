@@ -2,7 +2,7 @@ use tauri::State;
 
 use crate::adaptor::controller::state::AppState;
 use crate::usecase::workflow::{
-    WorkspaceTreeNodeDto, WorkspaceWorkflowHistoryItemDto, WorkspaceWorkflowNodeExecutionDto,
+    WorkspaceTreeNodeDto, WorkspaceWorkflowHistoryItemDto, WorkspaceWorkflowNodeDetailDto,
 };
 
 pub(super) const COMMAND_NAMES: &[&str] = &[
@@ -69,7 +69,7 @@ pub async fn get_workspace_workflow_node_detail(
     worktree_path: String,
     execution_id: String,
     node_execution_id: String,
-) -> Result<Option<WorkspaceWorkflowNodeExecutionDto>, String> {
+) -> Result<Option<WorkspaceWorkflowNodeDetailDto>, String> {
     let workflow_usecase = app_state.workflow_usecase.clone();
     tokio::task::spawn_blocking(move || {
         let sessions = workflow_usecase

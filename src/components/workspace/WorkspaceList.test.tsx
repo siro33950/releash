@@ -127,6 +127,8 @@ vi.mock("@/hooks/useWorkspaceTreeNodes", () => ({
 					title: "Deploy workflow",
 					status: "running",
 					canStop: true,
+					canResume: false,
+					canAbort: true,
 					updatedAt: 1100,
 					nodeExecutions: [
 						{
@@ -166,7 +168,24 @@ vi.mock("@/hooks/useWorkspaceTreeNodes", () => ({
 					title: "Waiting workflow",
 					status: "waiting",
 					canStop: true,
+					canResume: false,
+					canAbort: true,
 					updatedAt: 1101,
+					nodeExecutions: [],
+				},
+				{
+					kind: "workflow",
+					executionId: "execution-interrupted",
+					worktreePath: "/repo/wt",
+					workflowName: "interrupted-flow",
+					title: "Interrupted workflow",
+					status: "interrupted",
+					canStop: false,
+					canResume: true,
+					canAbort: true,
+					interruptionReason: "stop",
+					resumeFromNode: "review",
+					updatedAt: 1102,
 					nodeExecutions: [],
 				},
 				{
@@ -177,7 +196,9 @@ vi.mock("@/hooks/useWorkspaceTreeNodes", () => ({
 					title: "Completed workflow",
 					status: "completed",
 					canStop: false,
-					updatedAt: 1102,
+					canResume: false,
+					canAbort: false,
+					updatedAt: 1103,
 					nodeExecutions: [],
 				},
 				{
@@ -188,7 +209,9 @@ vi.mock("@/hooks/useWorkspaceTreeNodes", () => ({
 					title: "Failed workflow",
 					status: "failed",
 					canStop: false,
-					updatedAt: 1103,
+					canResume: false,
+					canAbort: false,
+					updatedAt: 1104,
 					nodeExecutions: [],
 				},
 				{
@@ -199,7 +222,9 @@ vi.mock("@/hooks/useWorkspaceTreeNodes", () => ({
 					title: "Aborted workflow",
 					status: "aborted",
 					canStop: false,
-					updatedAt: 1104,
+					canResume: false,
+					canAbort: false,
+					updatedAt: 1105,
 					nodeExecutions: [],
 				},
 			],
@@ -527,6 +552,8 @@ describe("WorkspaceList", () => {
 					title: "Matrix fanout",
 					status: "running",
 					canStop: true,
+					canResume: false,
+					canAbort: true,
 					updatedAt: 2_000,
 					nodeExecutions: [
 						{
@@ -620,7 +647,7 @@ describe("WorkspaceList", () => {
 		await user.click(stop);
 
 		await waitFor(() => {
-			expect(mocks.invoke).toHaveBeenCalledWith("abort_workflow", {
+			expect(mocks.invoke).toHaveBeenCalledWith("stop_workflow", {
 				executionId: "execution-1",
 			});
 		});
@@ -632,14 +659,14 @@ describe("WorkspaceList", () => {
 	it("shows an error when stopping a Workflow fails", async () => {
 		const user = userEvent.setup();
 		renderWorkspaceList();
-		mocks.invoke.mockRejectedValueOnce("abort denied");
+		mocks.invoke.mockRejectedValueOnce("stop denied");
 
 		await user.click(screen.getByLabelText("Open menu for release"));
 		const stop = await screen.findByText("Stop");
 		await user.click(stop);
 
 		expect(await screen.findByRole("alert")).toHaveTextContent(
-			"Stop workflow failed: abort denied",
+			"Stop workflow failed: stop denied",
 		);
 		expect(mocks.refreshTree).not.toHaveBeenCalled();
 	});
@@ -654,8 +681,71 @@ describe("WorkspaceList", () => {
 		await user.click(stop);
 
 		await waitFor(() => {
-			expect(mocks.invoke).toHaveBeenCalledWith("abort_workflow", {
+			expect(mocks.invoke).toHaveBeenCalledWith("stop_workflow", {
 				executionId: "execution-waiting",
+			});
+		});
+	});
+
+	it("shows an interrupted Workflow checkpoint from the Rust DTO", () => {
+		renderWorkspaceList();
+
+		expect(screen.getByTitle("interrupted")).toBeInTheDocument();
+		expect(screen.getByTitle("Interrupted: stop")).toBeInTheDocument();
+		expect(screen.getByTitle("Resume from review")).toHaveTextContent(
+			"resume: review",
+		);
+	});
+
+	it("resumes an interrupted Workflow through the typed command boundary", async () => {
+		const user = userEvent.setup();
+		renderWorkspaceList();
+
+		await user.click(screen.getByLabelText("Open menu for interrupted-flow"));
+		const stop = await screen.findByRole("menuitem", { name: /Stop/ });
+		const resume = await screen.findByRole("menuitem", { name: /Resume/ });
+		const abort = await screen.findByRole("menuitem", { name: /Abort/ });
+		expect(stop).toHaveAttribute("aria-disabled", "true");
+		expect(resume).not.toHaveAttribute("aria-disabled", "true");
+		expect(abort).not.toHaveAttribute("aria-disabled", "true");
+
+		await user.click(resume);
+		await waitFor(() => {
+			expect(mocks.invoke).toHaveBeenCalledWith("resume_workflow", {
+				executionId: "execution-interrupted",
+			});
+		});
+		expect(mocks.refreshTree).toHaveBeenCalled();
+	});
+
+	it("aborts an interrupted Workflow through the typed command boundary", async () => {
+		const user = userEvent.setup();
+		renderWorkspaceList();
+
+		await user.click(screen.getByLabelText("Open menu for interrupted-flow"));
+		const abort = await screen.findByRole("menuitem", { name: /Abort/ });
+		await user.click(abort);
+
+		await waitFor(() => {
+			expect(mocks.invoke).toHaveBeenCalledWith("abort_workflow", {
+				executionId: "execution-interrupted",
+			});
+		});
+		expect(mocks.refreshTree).toHaveBeenCalled();
+	});
+
+	it("keeps Abort available for a running Workflow from the Rust flag", async () => {
+		const user = userEvent.setup();
+		renderWorkspaceList();
+
+		await user.click(screen.getByLabelText("Open menu for release"));
+		const abort = await screen.findByRole("menuitem", { name: /Abort/ });
+		expect(abort).not.toHaveAttribute("aria-disabled", "true");
+		await user.click(abort);
+
+		await waitFor(() => {
+			expect(mocks.invoke).toHaveBeenCalledWith("abort_workflow", {
+				executionId: "execution-1",
 			});
 		});
 	});
@@ -693,7 +783,7 @@ describe("WorkspaceList", () => {
 		fireEvent.click(stop);
 
 		expect(mocks.invoke).not.toHaveBeenCalledWith(
-			"abort_workflow",
+			"stop_workflow",
 			expect.anything(),
 		);
 	});
@@ -708,9 +798,21 @@ describe("WorkspaceList", () => {
 
 		await user.click(screen.getByLabelText(`Open menu for ${workflowLabel}`));
 		const stop = await screen.findByRole("menuitem", { name: /Stop/ });
+		const resume = await screen.findByRole("menuitem", { name: /Resume/ });
+		const abort = await screen.findByRole("menuitem", { name: /Abort/ });
 		expect(stop).toHaveAttribute("aria-disabled", "true");
+		expect(resume).toHaveAttribute("aria-disabled", "true");
+		expect(abort).toHaveAttribute("aria-disabled", "true");
 		fireEvent.click(stop);
 
+		expect(mocks.invoke).not.toHaveBeenCalledWith(
+			"stop_workflow",
+			expect.anything(),
+		);
+		expect(mocks.invoke).not.toHaveBeenCalledWith(
+			"resume_workflow",
+			expect.anything(),
+		);
 		expect(mocks.invoke).not.toHaveBeenCalledWith(
 			"abort_workflow",
 			expect.anything(),

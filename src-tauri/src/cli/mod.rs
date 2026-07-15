@@ -126,6 +126,12 @@ pub fn run() -> i32 {
                     WorkflowSubcommand::Abort { execution_id } => {
                         workflow::cmd_abort(&data_dir, &execution_id)
                     }
+                    WorkflowSubcommand::Stop { execution_id } => {
+                        workflow::cmd_stop(&data_dir, &execution_id)
+                    }
+                    WorkflowSubcommand::Resume { execution_id } => {
+                        workflow::cmd_resume(&data_dir, &execution_id)
+                    }
                     WorkflowSubcommand::Output { command } => match command {
                         OutputSubcommand::Submit {
                             execution_id,
@@ -179,6 +185,8 @@ mod tests {
             "$ releash workflow --help",
             "$ releash workflow start --help",
             "$ releash workflow executions --help",
+            "$ releash workflow stop --help",
+            "$ releash workflow resume --help",
             "$ releash workflow output submit --help",
             "$ releash workflow output validate --help",
             "$ releash workflow output get --help",

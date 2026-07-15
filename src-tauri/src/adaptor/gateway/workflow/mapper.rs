@@ -19,6 +19,8 @@ pub(crate) fn workflow_execution_record_to_metadata(
         updated_at: execution.updated_at,
         completed_at: execution.completed_at,
         error_reason: execution.error_reason.clone(),
+        interruption_reason: execution.interruption_reason,
+        resume_from_node: execution.resume_from_node.clone(),
         total_token_usage: execution.total_token_usage.clone(),
     }
 }
@@ -310,6 +312,8 @@ mod tests {
             updated_at: 2.0,
             completed_at: None,
             error_reason: None,
+            interruption_reason: None,
+            resume_from_node: None,
             total_token_usage: TokenUsage {
                 input_tokens: 3,
                 output_tokens: 5,
@@ -527,6 +531,7 @@ mod tests {
                 "worktree_path": "/repo",
                 "created_from": "cli",
                 "request": "ship feature",
+                "permission_mode": "ask",
                 "definition": {
                     "name": "wf",
                     "description": "",

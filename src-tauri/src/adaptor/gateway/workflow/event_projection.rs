@@ -1,9 +1,12 @@
 //! On-demand projection from the append-only workflow execution event log.
 
+use std::collections::HashMap;
+
 use crate::adaptor::gateway::workflow::event::{
     FanoutParentRef as EventFanoutParentRef, TokenUsage as EventTokenUsage, WorkflowEvent,
 };
 use crate::adaptor::gateway::workflow::schema::NodeKindName as EventNodeKindName;
+use crate::domain::workflow::services::routing::{self, RouteDecision};
 use crate::domain::workflow::{
     ApprovalTarget, Artifact, ExecutionStatus, Fanout, FanoutParentRef, NodeExecution,
     NodeExecutionFailure, NodeExecutionStatus, NodeKindName, TokenUsage, WorkflowExecution,
@@ -43,6 +46,7 @@ pub fn project_workflow_execution(
                 worktree_path,
                 created_from,
                 request,
+                definition,
                 timestamp,
                 ..
             } => Some((
@@ -50,12 +54,13 @@ pub fn project_workflow_execution(
                 worktree_path,
                 *created_from,
                 request,
+                definition,
                 *timestamp,
             )),
             _ => None,
         })
         .collect::<Vec<_>>();
-    let Some((workflow_name, worktree_path, created_from, request, started_at)) =
+    let Some((workflow_name, worktree_path, created_from, request, definition, started_at)) =
         starts.first().copied()
     else {
         return Ok(None);
@@ -77,6 +82,8 @@ pub fn project_workflow_execution(
         updated_at: started_at,
         completed_at: None,
         error_reason: None,
+        interruption_reason: None,
+        resume_from_node: None,
         total_token_usage: TokenUsage::default(),
         node_executions: Vec::new(),
         artifacts: vec![Artifact {
@@ -217,6 +224,8 @@ pub fn project_workflow_execution(
                 execution.status = ExecutionStatus::Completed;
                 execution.completed_at = Some(*timestamp);
                 execution.error_reason = None;
+                execution.interruption_reason = None;
+                execution.resume_from_node = None;
                 authoritative_total_usage = Some(token_usage_to_domain(total_token_usage));
                 close_active_nodes(
                     &mut execution.node_executions,
@@ -234,6 +243,8 @@ pub fn project_workflow_execution(
                 execution.status = ExecutionStatus::Failed;
                 execution.completed_at = Some(*timestamp);
                 execution.error_reason = Some(reason.clone());
+                execution.interruption_reason = None;
+                execution.resume_from_node = None;
                 close_failed_execution_nodes(
                     &mut execution.node_executions,
                     *timestamp,
@@ -246,6 +257,9 @@ pub fn project_workflow_execution(
             WorkflowEvent::ExecutionAborted { timestamp, .. } => {
                 execution.status = ExecutionStatus::Aborted;
                 execution.completed_at = Some(*timestamp);
+                execution.error_reason = None;
+                execution.interruption_reason = None;
+                execution.resume_from_node = None;
                 close_active_nodes(
                     &mut execution.node_executions,
                     NodeExecutionStatus::Aborted,
@@ -256,15 +270,50 @@ pub fn project_workflow_execution(
             WorkflowEvent::ExecutionInterrupted {
                 reason, timestamp, ..
             } => {
+                if execution.status.is_finished() {
+                    return Err(format!(
+                        "execution {execution_id} cannot be interrupted from status {}",
+                        execution.status.as_str()
+                    ));
+                }
+                let resume_from_node =
+                    derive_resume_from_node(definition, &execution.node_executions)?;
                 execution.status = ExecutionStatus::Interrupted;
-                execution.completed_at = Some(*timestamp);
-                execution.error_reason = Some(reason.clone());
+                execution.completed_at = None;
+                execution.error_reason = None;
+                execution.interruption_reason = Some(*reason);
+                execution.resume_from_node = resume_from_node;
                 close_active_nodes(
                     &mut execution.node_executions,
                     NodeExecutionStatus::Aborted,
                     *timestamp,
                     None,
                 );
+            }
+            WorkflowEvent::ExecutionResumed {
+                resume_from_node, ..
+            } => {
+                if execution.status != ExecutionStatus::Interrupted {
+                    return Err(format!(
+                        "execution {execution_id} cannot resume from status {}",
+                        execution.status.as_str()
+                    ));
+                }
+                if execution
+                    .resume_from_node
+                    .as_deref()
+                    .is_some_and(|expected| expected != resume_from_node)
+                {
+                    return Err(format!(
+                        "execution_resumed resume_from_node {resume_from_node} does not match projected checkpoint {}",
+                        execution.resume_from_node.as_deref().unwrap_or_default()
+                    ));
+                }
+                execution.status = ExecutionStatus::Running;
+                execution.completed_at = None;
+                execution.error_reason = None;
+                execution.interruption_reason = None;
+                execution.resume_from_node = None;
             }
             WorkflowEvent::ContractViolated { .. }
             | WorkflowEvent::StallObserved { .. }
@@ -286,6 +335,46 @@ pub fn project_workflow_execution(
     execution.artifacts = derived.artifacts;
     execution.fanouts = derived.fanouts;
     Ok(Some(execution))
+}
+
+fn derive_resume_from_node(
+    definition: &crate::adaptor::gateway::workflow::schema::Workflow,
+    nodes: &[NodeExecution],
+) -> Result<Option<String>, String> {
+    let Some(latest) = nodes.iter().rev().find(|node| node.fanout_parent.is_none()) else {
+        return Ok(definition.nodes.first().map(|node| node.name.clone()));
+    };
+    if latest.status != NodeExecutionStatus::Succeeded {
+        return Ok(Some(latest.node_name.clone()));
+    }
+
+    let workflow = crate::adaptor::gateway::workflow::domain_mapping::workflow_definition_to_domain(
+        definition,
+    );
+    let current_index = workflow
+        .nodes
+        .iter()
+        .position(|node| node.name == latest.node_name)
+        .ok_or_else(|| {
+            format!(
+                "completed node '{}' is absent from execution workflow snapshot",
+                latest.node_name
+            )
+        })?;
+    let mut attempts = HashMap::new();
+    for node in nodes {
+        attempts
+            .entry(node.node_name.clone())
+            .and_modify(|attempt: &mut u32| *attempt = (*attempt).max(node.attempt))
+            .or_insert(node.attempt);
+    }
+    let artifact = latest.artifact.as_ref().map(|artifact| &artifact.value);
+    routing::route(&workflow, current_index, artifact, &attempts)
+        .map_err(|error| error.to_string())
+        .map(|decision| match decision {
+            RouteDecision::TransitionTo(node) => Some(node),
+            RouteDecision::Completed => None,
+        })
 }
 
 fn node_mut<'a>(
@@ -444,11 +533,32 @@ fn derive_total_token_usage(nodes: &[NodeExecution]) -> TokenUsage {
     for node in nodes {
         let include = match &node.fanout_parent {
             None => true,
-            Some(parent) => !nodes.iter().any(|candidate| {
-                candidate.node_name == parent.parent_node
-                    && candidate.attempt == parent.parent_attempt
-                    && candidate.token_usage.is_some()
-            }),
+            Some(parent) => {
+                let own_parent_has_usage = nodes.iter().any(|candidate| {
+                    candidate.node_name == parent.parent_node
+                        && candidate.attempt == parent.parent_attempt
+                        && candidate.token_usage.is_some()
+                });
+                let usage_was_carried_into_later_parent = nodes.iter().any(|candidate| {
+                    let Some(candidate_parent) = candidate.fanout_parent.as_ref() else {
+                        return false;
+                    };
+                    candidate.node_name == node.node_name
+                        && candidate_parent.parent_node == parent.parent_node
+                        && candidate_parent.item_index == parent.item_index
+                        && candidate_parent.child_index == parent.child_index
+                        && candidate_parent.parent_attempt > parent.parent_attempt
+                        && candidate.status == NodeExecutionStatus::Succeeded
+                        && candidate.session_id.is_none()
+                        && candidate.token_usage.is_none()
+                        && nodes.iter().any(|later_parent| {
+                            later_parent.node_name == candidate_parent.parent_node
+                                && later_parent.attempt == candidate_parent.parent_attempt
+                                && later_parent.token_usage.is_some()
+                        })
+                });
+                !own_parent_has_usage && !usage_was_carried_into_later_parent
+            }
         };
         if include {
             if let Some(node_usage) = &node.token_usage {
@@ -545,7 +655,7 @@ fn derive_active_fields(
     status: ExecutionStatus,
     nodes: &[NodeExecution],
 ) -> (ExecutionStatus, Option<String>, Option<ApprovalTarget>) {
-    if status.is_terminal() {
+    if status.is_finished() || status == ExecutionStatus::Interrupted {
         return (status, None, None);
     }
 
@@ -584,7 +694,9 @@ mod tests {
     use super::*;
     use crate::adaptor::gateway::workflow::event::FanoutParentRef as EventFanoutParentRef;
     use crate::adaptor::gateway::workflow::schema::{NodeDefinition, NodeKind, Workflow};
-    use crate::domain::workflow::{ExecutionOrigin, NodeExecutionFailureKind};
+    use crate::domain::workflow::{
+        ExecutionInterruptionReason, ExecutionOrigin, NodeExecutionFailureKind,
+    };
 
     const EXECUTION_ID: &str = "00000000-0000-4000-8000-000000000001";
 
@@ -609,6 +721,7 @@ mod tests {
             worktree_path: "/repo".to_string(),
             created_from: ExecutionOrigin::Cli,
             request: "please review".to_string(),
+            permission_mode: "ask".to_string(),
             definition: definition(),
             timestamp: 1.0,
         }
@@ -865,7 +978,7 @@ mod tests {
             node_started("node-1", "review", EventNodeKindName::Session),
             WorkflowEvent::ExecutionInterrupted {
                 execution_id: EXECUTION_ID.to_string(),
-                reason: "runtime interrupted".to_string(),
+                reason: ExecutionInterruptionReason::Stop,
                 timestamp: 3.0,
             },
         ];
@@ -874,16 +987,128 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(execution.status, ExecutionStatus::Interrupted);
-        assert_eq!(execution.completed_at, Some(3.0));
+        assert_eq!(execution.completed_at, None);
+        assert_eq!(execution.error_reason, None);
         assert_eq!(
-            execution.error_reason.as_deref(),
-            Some("runtime interrupted")
+            execution.interruption_reason,
+            Some(ExecutionInterruptionReason::Stop)
         );
+        assert_eq!(execution.resume_from_node.as_deref(), Some("review"));
         assert_eq!(
             execution.node_executions[0].status,
             NodeExecutionStatus::Aborted
         );
         assert_eq!(execution.node_executions[0].completed_at, Some(3.0));
+    }
+
+    #[test]
+    fn interrupted_projection_routes_from_last_confirmed_node_when_no_node_is_active() {
+        let mut workflow = definition();
+        workflow.nodes[0].name = "prepare".to_string();
+        workflow.nodes[0].rules = vec![crate::adaptor::gateway::workflow::schema::Rule::Next(
+            "review".to_string(),
+        )];
+        workflow
+            .nodes
+            .push(crate::adaptor::gateway::workflow::schema::NodeDefinition {
+                name: "review".to_string(),
+                kind: crate::adaptor::gateway::workflow::schema::NodeKind::default(),
+                ..Default::default()
+            });
+        let events = vec![
+            WorkflowEvent::ExecutionStarted {
+                execution_id: EXECUTION_ID.to_string(),
+                workflow_name: "review".to_string(),
+                worktree_path: "/repo".to_string(),
+                created_from: ExecutionOrigin::Cli,
+                request: "please review".to_string(),
+                permission_mode: "ask".to_string(),
+                definition: workflow,
+                timestamp: 1.0,
+            },
+            node_started("node-1", "prepare", EventNodeKindName::Session),
+            WorkflowEvent::NodeCompleted {
+                execution_id: EXECUTION_ID.to_string(),
+                node_execution_id: "node-1".to_string(),
+                node_name: "prepare".to_string(),
+                attempt: 1,
+                result_summary: None,
+                token_usage: None,
+                timestamp: 3.0,
+            },
+            WorkflowEvent::ExecutionInterrupted {
+                execution_id: EXECUTION_ID.to_string(),
+                reason: ExecutionInterruptionReason::Crash,
+                timestamp: 4.0,
+            },
+        ];
+
+        let execution = project_workflow_execution(EXECUTION_ID, &events)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(execution.status, ExecutionStatus::Interrupted);
+        assert_eq!(execution.resume_from_node.as_deref(), Some("review"));
+        assert_eq!(
+            execution.node_executions[0].status,
+            NodeExecutionStatus::Succeeded
+        );
+    }
+
+    #[test]
+    fn execution_resumed_opens_a_new_attempt_without_reopening_old_session() {
+        let mut second_attempt = node_started("node-2", "review", EventNodeKindName::Session);
+        if let WorkflowEvent::NodeStarted {
+            attempt, timestamp, ..
+        } = &mut second_attempt
+        {
+            *attempt = 2;
+            *timestamp = 4.0;
+        }
+        let events = vec![
+            started(),
+            node_started("node-1", "review", EventNodeKindName::Session),
+            WorkflowEvent::SessionAttached {
+                execution_id: EXECUTION_ID.to_string(),
+                node_execution_id: "node-1".to_string(),
+                session_id: "old-session".to_string(),
+                timestamp: 2.5,
+            },
+            WorkflowEvent::ExecutionInterrupted {
+                execution_id: EXECUTION_ID.to_string(),
+                reason: ExecutionInterruptionReason::Stop,
+                timestamp: 3.0,
+            },
+            WorkflowEvent::ExecutionResumed {
+                execution_id: EXECUTION_ID.to_string(),
+                resume_from_node: "review".to_string(),
+                timestamp: 3.5,
+            },
+            second_attempt,
+        ];
+
+        let execution = project_workflow_execution(EXECUTION_ID, &events)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(execution.status, ExecutionStatus::Running);
+        assert_eq!(execution.current_node.as_deref(), Some("review"));
+        assert_eq!(execution.interruption_reason, None);
+        assert_eq!(execution.resume_from_node, None);
+        assert_eq!(
+            execution.node_executions[0].status,
+            NodeExecutionStatus::Aborted
+        );
+        assert_eq!(
+            execution.node_executions[0].session_id.as_deref(),
+            Some("old-session")
+        );
+        assert_eq!(
+            execution.node_executions[1].status,
+            NodeExecutionStatus::Running
+        );
+        assert_eq!(execution.node_executions[1].session_id, None);
+        assert_eq!(execution.node_executions[1].attempt, 2);
     }
 
     #[test]
@@ -962,6 +1187,96 @@ mod tests {
             .unwrap();
         assert_eq!(execution.total_token_usage.input_tokens, 8);
         assert_eq!(execution.total_token_usage.output_tokens, 10);
+    }
+
+    #[test]
+    fn fallback_usage_does_not_double_count_a_child_reused_by_a_later_parent_attempt() {
+        let node = |id: &str,
+                    name: &str,
+                    kind: NodeKindName,
+                    attempt: u32,
+                    status: NodeExecutionStatus,
+                    session_id: Option<&str>,
+                    token_usage: Option<TokenUsage>,
+                    fanout_parent: Option<FanoutParentRef>| NodeExecution {
+            id: id.to_string(),
+            execution_id: EXECUTION_ID.to_string(),
+            node_name: name.to_string(),
+            kind,
+            attempt,
+            status,
+            session_id: session_id.map(str::to_string),
+            result_summary: None,
+            artifact: None,
+            token_usage,
+            failure: None,
+            fanout_parent,
+            started_at: f64::from(attempt),
+            completed_at: Some(f64::from(attempt) + 0.5),
+        };
+        let coordinate = |parent_attempt| FanoutParentRef {
+            parent_node: "fanout".to_string(),
+            parent_attempt,
+            item_index: Some(0),
+            child_index: 0,
+        };
+        let nodes = vec![
+            node(
+                "parent-1",
+                "fanout",
+                NodeKindName::Fanout,
+                1,
+                NodeExecutionStatus::Aborted,
+                None,
+                None,
+                None,
+            ),
+            node(
+                "child-1",
+                "review",
+                NodeKindName::Session,
+                1,
+                NodeExecutionStatus::Succeeded,
+                Some("old-session"),
+                Some(TokenUsage {
+                    input_tokens: 3,
+                    output_tokens: 4,
+                }),
+                Some(coordinate(1)),
+            ),
+            node(
+                "parent-2",
+                "fanout",
+                NodeKindName::Fanout,
+                2,
+                NodeExecutionStatus::Succeeded,
+                None,
+                Some(TokenUsage {
+                    input_tokens: 8,
+                    output_tokens: 10,
+                }),
+                None,
+            ),
+            // Synthetic confirmation copied from child-1 during resume.
+            node(
+                "child-2-copy",
+                "review",
+                NodeKindName::Session,
+                2,
+                NodeExecutionStatus::Succeeded,
+                None,
+                None,
+                Some(coordinate(2)),
+            ),
+        ];
+
+        assert_eq!(
+            derive_total_token_usage(&nodes),
+            TokenUsage {
+                input_tokens: 8,
+                output_tokens: 10,
+            }
+        );
     }
 
     #[test]

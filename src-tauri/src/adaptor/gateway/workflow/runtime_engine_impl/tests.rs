@@ -788,6 +788,7 @@ async fn agent_stall_observed_updates_workflow_state_without_completing_step() {
                 worktree_path: exec.worktree_path.clone(),
                 created_from: ExecutionOrigin::Agent,
                 request: String::new(),
+                permission_mode: exec.workflow_defaults.permission_mode.clone(),
                 definition: workflow,
                 timestamp: exec.started_at,
             },
@@ -821,6 +822,8 @@ async fn agent_stall_observed_updates_workflow_state_without_completing_step() {
             updated_at: exec.updated_at,
             completed_at: None,
             error_reason: None,
+            interruption_reason: None,
+            resume_from_node: None,
             total_token_usage: crate::domain::workflow::TokenUsage::default(),
         })
         .await
@@ -1000,6 +1003,8 @@ async fn agent_stall_observed_append_failure_rolls_back_state_and_execution_stor
             updated_at: exec.updated_at,
             completed_at: None,
             error_reason: None,
+            interruption_reason: None,
+            resume_from_node: None,
             total_token_usage: crate::domain::workflow::TokenUsage::default(),
         })
         .await
@@ -1108,6 +1113,8 @@ async fn agent_stall_cleared_append_failure_rolls_back_state_and_execution_store
             updated_at: exec.updated_at,
             completed_at: None,
             error_reason: None,
+            interruption_reason: None,
+            resume_from_node: None,
             total_token_usage: crate::domain::workflow::TokenUsage::default(),
         })
         .await
@@ -2939,6 +2946,7 @@ fn approved_policy_workflow_event_log_readback_redacts_sensitive_values() {
         worktree_path: "/repo".to_string(),
         created_from: ExecutionOrigin::Agent,
         request: String::new(),
+        permission_mode: exec.workflow_defaults.permission_mode.clone(),
         definition: exec.workflow.clone(),
         timestamp: 1000.0,
     })
@@ -5682,6 +5690,8 @@ async fn engine_run_id_consistency_across_execution_and_execution_store_metadata
                 updated_at: 100.0,
                 completed_at: None,
                 error_reason: None,
+                interruption_reason: None,
+                resume_from_node: None,
                 total_token_usage: crate::domain::workflow::TokenUsage::default(),
             },
         )
@@ -5806,6 +5816,8 @@ async fn engine_state_transitions_sync_to_execution_store_active_and_completed()
                 updated_at: 100.0,
                 completed_at: None,
                 error_reason: None,
+                interruption_reason: None,
+                resume_from_node: None,
                 total_token_usage: crate::domain::workflow::TokenUsage::default(),
             },
         )
@@ -5964,6 +5976,8 @@ async fn execution_store_active_index_resolves_worktree_to_run_id_for_duplicate_
                 updated_at: 100.0,
                 completed_at: None,
                 error_reason: None,
+                interruption_reason: None,
+                resume_from_node: None,
                 total_token_usage: crate::domain::workflow::TokenUsage::default(),
             },
         )
@@ -6173,6 +6187,8 @@ async fn start_workflow_reservation_is_first_side_effect_so_no_orphan_session_on
                 updated_at: 100.0,
                 completed_at: None,
                 error_reason: None,
+                interruption_reason: None,
+                resume_from_node: None,
                 total_token_usage: crate::domain::workflow::TokenUsage::default(),
             },
         )
@@ -6195,6 +6211,8 @@ async fn start_workflow_reservation_is_first_side_effect_so_no_orphan_session_on
                 updated_at: 200.0,
                 completed_at: None,
                 error_reason: None,
+                interruption_reason: None,
+                resume_from_node: None,
                 total_token_usage: crate::domain::workflow::TokenUsage::default(),
             },
         )
@@ -6252,12 +6270,10 @@ async fn reserve_workflow_execution_maps_execution_store_worktree_conflict_to_al
     assert!(matches!(err, WorkflowEngineError::AlreadyActive(_)));
 }
 
-/// Spec issues-1011 finding 10: `set_execution_state` 経路を通すと、active な
-/// execution が terminal に遷移したとき Run Store の active から外れて completed に
+/// Spec issues-1011 finding 10: authoritative sync により、active な execution が
+/// terminal に遷移したとき Run Store の active から外れて completed に
 /// 追加され、failed/aborted も同じく completed 一覧に現れる。
-/// （set_execution_state 自体は AppHandle を要するため、ここではその内部ヘルパー
-/// である `sync_execution_store_from_snapshot` を terminal snapshot 3 種で走査して
-/// 同等の効果を検証する。）
+/// `sync_execution_store_from_snapshot` を terminal snapshot 3 種で走査して検証する。
 #[tokio::test]
 async fn execution_store_completed_listing_includes_completed_failed_aborted_via_authoritative_sync(
 ) {
@@ -6296,6 +6312,8 @@ async fn execution_store_completed_listing_includes_completed_failed_aborted_via
                     updated_at: 100.0,
                     completed_at: None,
                     error_reason: None,
+                    interruption_reason: None,
+                    resume_from_node: None,
                     total_token_usage: crate::domain::workflow::TokenUsage::default(),
                 },
             )
@@ -6373,6 +6391,8 @@ async fn execution_store_sync_failure_rolls_engine_projection_back_to_active_sta
                 updated_at: 100.0,
                 completed_at: None,
                 error_reason: None,
+                interruption_reason: None,
+                resume_from_node: None,
                 total_token_usage: crate::domain::workflow::TokenUsage::default(),
             },
         )
@@ -6664,6 +6684,8 @@ async fn start_workflow_duplicate_reservation_does_not_leak_metadata_or_refs() {
                 updated_at: 100.0,
                 completed_at: None,
                 error_reason: None,
+                interruption_reason: None,
+                resume_from_node: None,
                 total_token_usage: crate::domain::workflow::TokenUsage::default(),
             },
         )
@@ -6686,6 +6708,8 @@ async fn start_workflow_duplicate_reservation_does_not_leak_metadata_or_refs() {
                 updated_at: 200.0,
                 completed_at: None,
                 error_reason: None,
+                interruption_reason: None,
+                resume_from_node: None,
                 total_token_usage: crate::domain::workflow::TokenUsage::default(),
             },
         )
@@ -6769,6 +6793,8 @@ async fn execution_store_terminal_statuses_propagate_status_field_in_completed_l
                     updated_at: 100.0,
                     completed_at: None,
                     error_reason: None,
+                    interruption_reason: None,
+                    resume_from_node: None,
                     total_token_usage: crate::domain::workflow::TokenUsage::default(),
                 },
             )
@@ -6983,8 +7009,16 @@ mod dispatch_boundary_tests {
     use crate::adaptor::gateway::workflow::log::WorkflowEventLog;
     use crate::adaptor::gateway::workflow::schema::{ItemsSource, Rule, Workflow};
     use crate::adaptor::gateway::workflow::state::RuntimeExecutionState;
+    use crate::domain::workflow::WorkflowError;
     use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
     use crate::usecase::agent_session::session::MessagePart;
+    use crate::usecase::workflow::command::{
+        AbortExecutionCommand, ResumeExecutionCommand, WorkflowAbortExecutionUsecase,
+        WorkflowResumeExecutionUsecase,
+    };
+    use crate::usecase::workflow::ports::{
+        WorkflowAbortExecutionGateway, WorkflowResumeExecutionGateway,
+    };
     use async_trait::async_trait;
     use tauri::Manager;
     use tempfile::TempDir;
@@ -7109,6 +7143,18 @@ mod dispatch_boundary_tests {
         }
 
         async fn close(&self) {}
+    }
+
+    struct RewritingManagedWorktreeResolver;
+
+    #[async_trait]
+    impl ManagedWorktreeResolver for RewritingManagedWorktreeResolver {
+        async fn resolve(
+            &self,
+            _worktree_path: String,
+        ) -> Result<String, ManagedWorktreeResolverError> {
+            Ok("/different-managed-worktree".to_string())
+        }
     }
 
     fn dispatch_data_dir(app: &tauri::AppHandle<tauri::test::MockRuntime>) -> std::path::PathBuf {
@@ -7283,6 +7329,7 @@ mod dispatch_boundary_tests {
             worktree_path: exec.worktree_path.clone(),
             created_from: ExecutionOrigin::Agent,
             request: String::new(),
+            permission_mode: exec.workflow_defaults.permission_mode.clone(),
             definition: exec.workflow.clone(),
             timestamp: exec.started_at,
         }];
@@ -7525,6 +7572,124 @@ mod dispatch_boundary_tests {
         (session_store, agent_runtime)
     }
 
+    #[derive(Clone)]
+    struct RecoveredOrphanCommandGateway {
+        app: tauri::AppHandle<tauri::test::MockRuntime>,
+        engine: Arc<WorkflowRuntimeService>,
+        session_store: Arc<crate::usecase::agent_session::session::SessionStore>,
+        agent_runtime: Arc<AgentSessionRuntimeUsecase>,
+    }
+
+    #[async_trait]
+    impl WorkflowResumeExecutionGateway for RecoveredOrphanCommandGateway {
+        async fn resume_execution(
+            &self,
+            command: ResumeExecutionCommand,
+        ) -> Result<(), WorkflowError> {
+            self.engine
+                .resume_workflow_execution(
+                    &self.app,
+                    &self.session_store,
+                    &self.agent_runtime,
+                    &command.execution_id,
+                )
+                .await
+                .map_err(|error| WorkflowError::external(error.to_string()))
+        }
+    }
+
+    #[async_trait]
+    impl WorkflowAbortExecutionGateway for RecoveredOrphanCommandGateway {
+        async fn abort_execution(
+            &self,
+            command: AbortExecutionCommand,
+        ) -> Result<(), WorkflowError> {
+            self.engine
+                .abort_workflow_execution(
+                    &self.app,
+                    &self.session_store,
+                    &self.agent_runtime,
+                    &command.execution_id,
+                    command.expected_node_name.as_deref(),
+                )
+                .await
+                .map_err(|error| WorkflowError::external(error.to_string()))
+        }
+    }
+
+    async fn seed_resumable_orphan_execution(
+        store: &crate::adaptor::gateway::workflow::execution_store::ExecutionStore,
+        data_dir: &std::path::Path,
+        execution_id: &str,
+        worktree_path: &str,
+    ) {
+        store
+            .register_active_execution(WorkflowExecutionMetadata {
+                execution_id: execution_id.to_string(),
+                workflow_name: "wf".to_string(),
+                status: ExecutionStatus::Running,
+                worktree_path: worktree_path.to_string(),
+                current_node: Some("plan".to_string()),
+                created_from: ExecutionOrigin::DesktopUi,
+                started_at: 100.0,
+                updated_at: 100.0,
+                completed_at: None,
+                error_reason: None,
+                interruption_reason: None,
+                resume_from_node: None,
+                total_token_usage: crate::domain::workflow::TokenUsage::default(),
+            })
+            .await
+            .unwrap();
+        WorkflowEventLog::new(data_dir)
+            .append_batch(&[
+                WorkflowEvent::ExecutionStarted {
+                    execution_id: execution_id.to_string(),
+                    workflow_name: "wf".to_string(),
+                    worktree_path: worktree_path.to_string(),
+                    created_from: ExecutionOrigin::Agent,
+                    request: String::new(),
+                    permission_mode: "ask".to_string(),
+                    definition: Workflow {
+                        name: "wf".to_string(),
+                        description: String::new(),
+                        builtin: false,
+                        schemas: Default::default(),
+                        nodes: vec![
+                            make_test_step(
+                                "plan",
+                                TestKind::Session,
+                                "implement",
+                                vec![Rule::Next("review".to_string())],
+                                None,
+                            ),
+                            make_test_step("review", TestKind::Session, "implement", vec![], None),
+                        ],
+                    },
+                    timestamp: 100.0,
+                },
+                WorkflowEvent::NodeStarted {
+                    execution_id: execution_id.to_string(),
+                    node_execution_id: format!("{execution_id}-plan-1"),
+                    node_name: "plan".to_string(),
+                    kind: NodeKindName::Session,
+                    attempt: 1,
+                    fanout_parent: None,
+                    timestamp: 101.0,
+                },
+                WorkflowEvent::NodeCompleted {
+                    execution_id: execution_id.to_string(),
+                    node_execution_id: format!("{execution_id}-plan-1"),
+                    node_name: "plan".to_string(),
+                    attempt: 1,
+                    result_summary: Some("planned".to_string()),
+                    token_usage: None,
+                    timestamp: 102.0,
+                },
+            ])
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn abort_workflow_by_execution_id_clears_stall_observations_in_live_and_projection() {
         let app = make_dispatch_app();
@@ -7562,6 +7727,7 @@ mod dispatch_boundary_tests {
                     worktree_path: exec.worktree_path.clone(),
                     created_from: ExecutionOrigin::Agent,
                     request: String::new(),
+                    permission_mode: exec.workflow_defaults.permission_mode.clone(),
                     definition: exec.workflow.clone(),
                     timestamp: exec.started_at,
                 },
@@ -7710,11 +7876,1599 @@ mod dispatch_boundary_tests {
                 updated_at: exec.updated_at,
                 completed_at: None,
                 error_reason: None,
+                interruption_reason: None,
+                resume_from_node: None,
                 total_token_usage: crate::domain::workflow::TokenUsage::default(),
             })
             .await
             .unwrap();
         engine.executions.lock().await.insert(execution_id, exec);
+    }
+
+    fn resumable_two_node_execution(execution_id: &str, worktree_path: &str) -> WorkflowExecution {
+        let workflow = Workflow {
+            name: "resume-checkpoint-wf".to_string(),
+            description: "resume from the last confirmed node".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![
+                make_test_step(
+                    "prepare",
+                    TestKind::Session,
+                    "implement",
+                    vec![Rule::Next("execute".to_string())],
+                    None,
+                ),
+                make_test_step("execute", TestKind::Session, "implement", vec![], None),
+            ],
+        };
+        WorkflowExecution {
+            id: execution_id.to_string(),
+            workflow,
+            state: RuntimeExecutionState::Running,
+            current_node_index: 1,
+            node_execution_counts: HashMap::from([
+                ("prepare".to_string(), 1),
+                ("execute".to_string(), 1),
+            ]),
+            node_history: Vec::new(),
+            worktree_path: worktree_path.to_string(),
+            created_from: ExecutionOrigin::DesktopUi,
+            error_reason: None,
+            started_at: 1000.0,
+            updated_at: 1003.0,
+            current_session_id: Some("old-unconfirmed-session".to_string()),
+            current_step_token_usage: TokenUsage::default(),
+            artifacts: HashMap::new(),
+            node_executions: vec![
+                NodeExecution {
+                    id: format!("{execution_id}-prepare-1"),
+                    execution_id: execution_id.to_string(),
+                    node_name: "prepare".to_string(),
+                    kind: NodeKindName::Session,
+                    attempt: 1,
+                    status: NodeExecutionStatus::Succeeded,
+                    session_id: Some("confirmed-session".to_string()),
+                    artifact: Some(serde_json::json!({"prepared": true})),
+                    token_usage: None,
+                    failure: None,
+                    fanout_parent: None,
+                    started_at: 1000.0,
+                    completed_at: Some(1002.0),
+                },
+                NodeExecution {
+                    id: format!("{execution_id}-execute-1"),
+                    execution_id: execution_id.to_string(),
+                    node_name: "execute".to_string(),
+                    kind: NodeKindName::Session,
+                    attempt: 1,
+                    status: NodeExecutionStatus::Running,
+                    session_id: Some("old-unconfirmed-session".to_string()),
+                    artifact: None,
+                    token_usage: None,
+                    failure: None,
+                    fanout_parent: None,
+                    started_at: 1003.0,
+                    completed_at: None,
+                },
+            ],
+            request: Some("continue safely".to_string()),
+            parallel_run: None,
+            current_stall_observations: Vec::new(),
+            workflow_defaults: WorkflowDefaults {
+                backend_id: None,
+                permission_mode: PermissionMode::ASK.to_string(),
+            },
+        }
+    }
+
+    fn append_resumable_two_node_events(data_dir: &std::path::Path, exec: &WorkflowExecution) {
+        let prepare_id = format!("{}-prepare-1", exec.id);
+        let execute_id = format!("{}-execute-1", exec.id);
+        WorkflowEventLog::new(data_dir)
+            .append_batch(&[
+                WorkflowEvent::ExecutionStarted {
+                    execution_id: exec.id.clone(),
+                    workflow_name: exec.workflow.name.clone(),
+                    worktree_path: exec.worktree_path.clone(),
+                    created_from: exec.created_from,
+                    request: exec.request.clone().unwrap_or_default(),
+                    permission_mode: exec.workflow_defaults.permission_mode.clone(),
+                    definition: exec.workflow.clone(),
+                    timestamp: 1000.0,
+                },
+                WorkflowEvent::NodeStarted {
+                    execution_id: exec.id.clone(),
+                    node_execution_id: prepare_id.clone(),
+                    node_name: "prepare".to_string(),
+                    kind: NodeKindName::Session,
+                    attempt: 1,
+                    fanout_parent: None,
+                    timestamp: 1000.0,
+                },
+                WorkflowEvent::SessionAttached {
+                    execution_id: exec.id.clone(),
+                    node_execution_id: prepare_id.clone(),
+                    session_id: "confirmed-session".to_string(),
+                    timestamp: 1000.5,
+                },
+                WorkflowEvent::ArtifactProduced {
+                    execution_id: exec.id.clone(),
+                    node_execution_id: prepare_id.clone(),
+                    node_name: "prepare".to_string(),
+                    contract: None,
+                    value: serde_json::json!({"prepared": true}),
+                    request_id: None,
+                    submitted_at: None,
+                    timestamp: 1001.0,
+                },
+                WorkflowEvent::NodeCompleted {
+                    execution_id: exec.id.clone(),
+                    node_execution_id: prepare_id,
+                    node_name: "prepare".to_string(),
+                    attempt: 1,
+                    result_summary: Some("prepared".to_string()),
+                    token_usage: None,
+                    timestamp: 1002.0,
+                },
+                WorkflowEvent::NodeStarted {
+                    execution_id: exec.id.clone(),
+                    node_execution_id: execute_id.clone(),
+                    node_name: "execute".to_string(),
+                    kind: NodeKindName::Session,
+                    attempt: 1,
+                    fanout_parent: None,
+                    timestamp: 1003.0,
+                },
+                WorkflowEvent::SessionAttached {
+                    execution_id: exec.id.clone(),
+                    node_execution_id: execute_id,
+                    session_id: "old-unconfirmed-session".to_string(),
+                    timestamp: 1003.0,
+                },
+            ])
+            .unwrap();
+    }
+
+    async fn assert_event_log_resume_after_interruption(
+        reason: ExecutionInterruptionReason,
+        permission_mode: &str,
+    ) {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_execution_store_data_dir(data_dir.clone()).await;
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
+        let worktree = TempDir::new().unwrap();
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let mut exec =
+            resumable_two_node_execution(&execution_id, worktree.path().to_string_lossy().as_ref());
+        exec.workflow_defaults.permission_mode = permission_mode.to_string();
+        append_resumable_two_node_events(&data_dir, &exec);
+        insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+
+        if reason == ExecutionInterruptionReason::Stop {
+            engine
+                .stop_workflow_execution(
+                    app.handle(),
+                    &session_store,
+                    &agent_runtime,
+                    &execution_id,
+                )
+                .await
+                .unwrap();
+        } else {
+            assert!(engine
+                .interrupt_active_execution(
+                    app.handle(),
+                    &session_store,
+                    &agent_runtime,
+                    &execution_id,
+                    reason,
+                )
+                .await
+                .unwrap());
+        }
+
+        let interrupted = engine
+            .execution_store()
+            .get_execution(&execution_id)
+            .await
+            .unwrap();
+        assert_eq!(interrupted.status, ExecutionStatus::Interrupted);
+        assert_eq!(interrupted.interruption_reason, Some(reason));
+        assert_eq!(interrupted.resume_from_node.as_deref(), Some("execute"));
+        assert!(!engine.contains_execution_for_test(&execution_id).await);
+
+        engine
+            .resume_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
+            .await
+            .unwrap();
+
+        let executions = engine.executions.lock().await;
+        let resumed = executions.get(&execution_id).expect("resumed runtime");
+        assert_eq!(resumed.state, RuntimeExecutionState::Running);
+        assert_eq!(resumed.current_node_index, 1);
+        assert_eq!(resumed.node_execution_counts["prepare"], 1);
+        assert_eq!(resumed.node_execution_counts["execute"], 2);
+        assert_eq!(resumed.workflow_defaults.permission_mode, permission_mode);
+        assert_eq!(resumed.node_history.len(), 1);
+        assert_eq!(resumed.node_history[0].node_name, "prepare");
+        assert_eq!(
+            resumed.artifacts["prepare"].artifact,
+            Some(serde_json::json!({"prepared": true}))
+        );
+        assert_ne!(
+            resumed.current_session_id.as_deref(),
+            Some("old-unconfirmed-session")
+        );
+        assert!(resumed.current_session_id.is_some());
+        drop(executions);
+
+        let resumed_metadata = engine
+            .execution_store()
+            .get_execution(&execution_id)
+            .await
+            .unwrap();
+        assert_eq!(resumed_metadata.status, ExecutionStatus::Running);
+        assert_eq!(resumed_metadata.current_node.as_deref(), Some("execute"));
+        assert_eq!(resumed_metadata.interruption_reason, None);
+        assert_eq!(resumed_metadata.resume_from_node, None);
+
+        let events = WorkflowEventLog::new(&data_dir)
+            .read_log(&execution_id)
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    WorkflowEvent::NodeStarted { node_name, .. } if node_name == "prepare"
+                ))
+                .count(),
+            1,
+            "confirmed node must not execute again"
+        );
+        let execute_attempts = events
+            .iter()
+            .filter_map(|event| match event {
+                WorkflowEvent::NodeStarted {
+                    node_name, attempt, ..
+                } if node_name == "execute" => Some(*attempt),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(execute_attempts, vec![1, 2]);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::ExecutionResumed {
+                resume_from_node,
+                ..
+            } if resume_from_node == "execute"
+        )));
+    }
+
+    #[tokio::test]
+    async fn crash_stale_and_explicit_stop_resume_from_the_first_unconfirmed_node() {
+        for reason in [
+            ExecutionInterruptionReason::Crash,
+            ExecutionInterruptionReason::Stale,
+            ExecutionInterruptionReason::Stop,
+        ] {
+            assert_event_log_resume_after_interruption(reason, PermissionMode::ASK).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_stop_resume_preserves_non_default_permission_modes() {
+        for permission_mode in [PermissionMode::EDIT, PermissionMode::FULL] {
+            assert_event_log_resume_after_interruption(
+                ExecutionInterruptionReason::Stop,
+                permission_mode,
+            )
+            .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn resume_required_event_append_failure_rolls_back_every_precommit_state() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_execution_store_data_dir(data_dir.clone()).await;
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
+        let worktree = TempDir::new().unwrap();
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let exec =
+            resumable_two_node_execution(&execution_id, worktree.path().to_string_lossy().as_ref());
+        append_resumable_two_node_events(&data_dir, &exec);
+        insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+        engine
+            .stop_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
+            .await
+            .unwrap();
+        let checkpoint_before = engine
+            .execution_store()
+            .get_execution(&execution_id)
+            .await
+            .unwrap();
+
+        engine.fail_next_required_event_append_for_test();
+        let error = engine
+            .resume_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("ExecutionResumed log failed"));
+
+        let checkpoint_after = engine
+            .execution_store()
+            .get_execution(&execution_id)
+            .await
+            .unwrap();
+        assert_eq!(checkpoint_after.status, ExecutionStatus::Interrupted);
+        assert_eq!(
+            checkpoint_after.interruption_reason,
+            checkpoint_before.interruption_reason
+        );
+        assert_eq!(
+            checkpoint_after.resume_from_node,
+            checkpoint_before.resume_from_node
+        );
+        let events = WorkflowEventLog::new(&data_dir)
+            .read_log(&execution_id)
+            .unwrap();
+        assert!(!events
+            .iter()
+            .any(|event| matches!(event, WorkflowEvent::ExecutionResumed { .. })));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::NodeStarted {
+                node_name,
+                attempt: 2,
+                ..
+            } if node_name == "execute"
+        )));
+        assert!(!engine.contains_execution_for_test(&execution_id).await);
+        assert!(!engine
+            .execution_facet_contents
+            .lock()
+            .await
+            .contains_key(&execution_id));
+        assert!(!engine
+            .fanout_resume_checkpoints
+            .lock()
+            .await
+            .contains_key(&execution_id));
+        assert!(
+            !engine
+                .execution_store
+                .interrupted_transition_pending(&execution_id)
+                .await
+        );
+
+        engine
+            .abort_workflow_execution(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                &execution_id,
+                None,
+            )
+            .await
+            .expect("the rolled-back checkpoint must accept a later command");
+        assert_eq!(
+            engine
+                .execution_store()
+                .get_execution(&execution_id)
+                .await
+                .unwrap()
+                .status,
+            ExecutionStatus::Aborted
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_metadata_commit_failure_is_accepted_with_a_crash_checkpoint() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_execution_store_data_dir(data_dir.clone()).await;
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
+        let worktree = TempDir::new().unwrap();
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let exec =
+            resumable_two_node_execution(&execution_id, worktree.path().to_string_lossy().as_ref());
+        append_resumable_two_node_events(&data_dir, &exec);
+        insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+        engine
+            .stop_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
+            .await
+            .unwrap();
+
+        engine.execution_store.fail_next_resume_commit_for_test();
+        engine
+            .resume_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
+            .await
+            .expect("durable Resume remains accepted after metadata projection failure");
+
+        let metadata = engine
+            .execution_store()
+            .get_execution(&execution_id)
+            .await
+            .unwrap();
+        assert_eq!(metadata.status, ExecutionStatus::Interrupted);
+        assert_eq!(
+            metadata.interruption_reason,
+            Some(ExecutionInterruptionReason::Crash)
+        );
+        assert!(!engine.contains_execution_for_test(&execution_id).await);
+        let events = WorkflowEventLog::new(&data_dir)
+            .read_log(&execution_id)
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, WorkflowEvent::ExecutionResumed { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    WorkflowEvent::NodeStarted {
+                        node_name,
+                        attempt: 2,
+                        ..
+                    } if node_name == "execute"
+                ))
+                .count(),
+            1
+        );
+        assert!(matches!(
+            events.last(),
+            Some(WorkflowEvent::ExecutionInterrupted {
+                reason: ExecutionInterruptionReason::Crash,
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn resume_runtime_start_failure_is_accepted_with_a_crash_checkpoint() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_execution_store_data_dir(data_dir.clone()).await;
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let (agent_runtime, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                data_dir.clone(),
+            );
+        let worktree = TempDir::new().unwrap();
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let exec =
+            resumable_two_node_execution(&execution_id, worktree.path().to_string_lossy().as_ref());
+        append_resumable_two_node_events(&data_dir, &exec);
+        insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+        engine
+            .stop_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
+            .await
+            .unwrap();
+
+        controller.fail_next_start_turn();
+        engine
+            .resume_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
+            .await
+            .expect("durable Resume remains accepted after runtime activation failure");
+
+        let metadata = engine
+            .execution_store()
+            .get_execution(&execution_id)
+            .await
+            .unwrap();
+        assert_eq!(metadata.status, ExecutionStatus::Interrupted);
+        assert_eq!(
+            metadata.interruption_reason,
+            Some(ExecutionInterruptionReason::Crash)
+        );
+        assert!(!engine.contains_execution_for_test(&execution_id).await);
+        let events = WorkflowEventLog::new(&data_dir)
+            .read_log(&execution_id)
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, WorkflowEvent::ExecutionResumed { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    WorkflowEvent::NodeStarted {
+                        node_name,
+                        attempt: 2,
+                        ..
+                    } if node_name == "execute"
+                ))
+                .count(),
+            1
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::ExecutionInterrupted {
+                reason: ExecutionInterruptionReason::Crash,
+                ..
+            }
+        )));
+    }
+
+    #[tokio::test]
+    async fn partial_fanout_resume_reuses_confirmed_child_and_restarts_only_pending_child() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_execution_store_data_dir(data_dir.clone()).await;
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
+        let worktree = TempDir::new().unwrap();
+        let worktree_path = worktree.path().to_string_lossy().to_string();
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let workflow = Workflow {
+            name: "partial-fanout-resume".to_string(),
+            description: "reuse confirmed fanout artifacts".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![
+                make_fanout_step("parallel-review", vec!["review-a", "review-b"]),
+                make_test_step("review-a", TestKind::Session, "implement", vec![], None),
+                make_test_step("review-b", TestKind::Session, "implement", vec![], None),
+            ],
+        };
+        let parent_v1 = format!("{execution_id}-parent-1");
+        let child_a_v1 = format!("{execution_id}-review-a-1");
+        let child_b_v1 = format!("{execution_id}-review-b-1");
+        WorkflowEventLog::new(&data_dir)
+            .append_batch(&[
+                WorkflowEvent::ExecutionStarted {
+                    execution_id: execution_id.clone(),
+                    workflow_name: workflow.name.clone(),
+                    worktree_path: worktree_path.clone(),
+                    created_from: ExecutionOrigin::DesktopUi,
+                    request: "review in parallel".to_string(),
+                    permission_mode: "ask".to_string(),
+                    definition: workflow.clone(),
+                    timestamp: 1.0,
+                },
+                WorkflowEvent::NodeStarted {
+                    execution_id: execution_id.clone(),
+                    node_execution_id: parent_v1,
+                    node_name: "parallel-review".to_string(),
+                    kind: NodeKindName::Fanout,
+                    attempt: 1,
+                    fanout_parent: None,
+                    timestamp: 2.0,
+                },
+                WorkflowEvent::NodeStarted {
+                    execution_id: execution_id.clone(),
+                    node_execution_id: child_a_v1.clone(),
+                    node_name: "review-a".to_string(),
+                    kind: NodeKindName::Session,
+                    attempt: 1,
+                    fanout_parent: Some(FanoutParentRef {
+                        parent_node: "parallel-review".to_string(),
+                        parent_attempt: 1,
+                        item_index: None,
+                        child_index: 0,
+                    }),
+                    timestamp: 3.0,
+                },
+                WorkflowEvent::SessionAttached {
+                    execution_id: execution_id.clone(),
+                    node_execution_id: child_a_v1.clone(),
+                    session_id: "old-review-a-session".to_string(),
+                    timestamp: 3.1,
+                },
+                WorkflowEvent::ArtifactProduced {
+                    execution_id: execution_id.clone(),
+                    node_execution_id: child_a_v1.clone(),
+                    node_name: "review-a".to_string(),
+                    contract: None,
+                    value: serde_json::json!({"verdict": "confirmed"}),
+                    request_id: None,
+                    submitted_at: None,
+                    timestamp: 4.0,
+                },
+                WorkflowEvent::NodeCompleted {
+                    execution_id: execution_id.clone(),
+                    node_execution_id: child_a_v1,
+                    node_name: "review-a".to_string(),
+                    attempt: 1,
+                    result_summary: Some("confirmed review".to_string()),
+                    token_usage: Some(crate::adaptor::gateway::workflow::event::TokenUsage {
+                        input_tokens: 11,
+                        output_tokens: 7,
+                    }),
+                    timestamp: 5.0,
+                },
+                WorkflowEvent::NodeStarted {
+                    execution_id: execution_id.clone(),
+                    node_execution_id: child_b_v1.clone(),
+                    node_name: "review-b".to_string(),
+                    kind: NodeKindName::Session,
+                    attempt: 1,
+                    fanout_parent: Some(FanoutParentRef {
+                        parent_node: "parallel-review".to_string(),
+                        parent_attempt: 1,
+                        item_index: None,
+                        child_index: 1,
+                    }),
+                    timestamp: 3.0,
+                },
+                WorkflowEvent::SessionAttached {
+                    execution_id: execution_id.clone(),
+                    node_execution_id: child_b_v1,
+                    session_id: "old-review-b-session".to_string(),
+                    timestamp: 3.1,
+                },
+                WorkflowEvent::ExecutionInterrupted {
+                    execution_id: execution_id.clone(),
+                    reason: ExecutionInterruptionReason::Crash,
+                    timestamp: 6.0,
+                },
+            ])
+            .unwrap();
+        engine
+            .execution_store
+            .register_active_execution(WorkflowExecutionMetadata {
+                execution_id: execution_id.clone(),
+                workflow_name: workflow.name.clone(),
+                status: ExecutionStatus::Running,
+                worktree_path: worktree_path.clone(),
+                current_node: Some("parallel-review".to_string()),
+                created_from: ExecutionOrigin::DesktopUi,
+                started_at: 1.0,
+                updated_at: 5.0,
+                completed_at: None,
+                error_reason: None,
+                interruption_reason: None,
+                resume_from_node: None,
+                total_token_usage: crate::domain::workflow::TokenUsage::default(),
+            })
+            .await
+            .unwrap();
+        engine
+            .execution_store
+            .interrupt_execution(
+                &execution_id,
+                ExecutionInterruptionReason::Crash,
+                Some("parallel-review".to_string()),
+                6.0,
+            )
+            .await
+            .unwrap();
+
+        engine
+            .resume_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
+            .await
+            .unwrap();
+
+        let executions = engine.executions.lock().await;
+        let resumed = executions
+            .get(&execution_id)
+            .expect("resumed fanout runtime");
+        assert_eq!(resumed.node_execution_counts["parallel-review"], 2);
+        assert_eq!(resumed.node_execution_counts["review-a"], 2);
+        assert_eq!(resumed.node_execution_counts["review-b"], 2);
+        let fanout = resumed.parallel_run.as_ref().expect("active fanout");
+        let reused = fanout
+            .children
+            .iter()
+            .find(|child| child.node_name == "review-a")
+            .unwrap();
+        let pending = fanout
+            .children
+            .iter()
+            .find(|child| child.node_name == "review-b")
+            .unwrap();
+        assert_eq!(reused.state, FanoutChildRuntimeState::Completed);
+        assert!(reused.session_id.is_empty());
+        assert_eq!(
+            reused.artifact,
+            Some(serde_json::json!({"verdict": "confirmed"}))
+        );
+        assert_eq!(reused.result.as_deref(), Some("confirmed review"));
+        assert_eq!(reused.token_usage.input_tokens, 11);
+        assert_eq!(reused.token_usage.output_tokens, 7);
+        assert_eq!(pending.state, FanoutChildRuntimeState::Running);
+        assert!(!pending.session_id.is_empty());
+        assert_ne!(pending.session_id, "old-review-b-session");
+        let reused_node_execution_id = reused.node_execution_id.clone();
+        let pending_node_execution_id = pending.node_execution_id.clone();
+        let pending_session_id = pending.session_id.clone();
+        drop(executions);
+
+        let events = WorkflowEventLog::new(&data_dir)
+            .read_log(&execution_id)
+            .unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::ArtifactProduced {
+                node_execution_id,
+                value,
+                ..
+            } if node_execution_id == &reused_node_execution_id
+                && value == &serde_json::json!({"verdict": "confirmed"})
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::NodeCompleted {
+                node_execution_id,
+                ..
+            } if node_execution_id == &reused_node_execution_id
+        )));
+        assert!(events.iter().all(|event| !matches!(
+            event,
+            WorkflowEvent::SessionAttached {
+                node_execution_id,
+                ..
+            } if node_execution_id == &reused_node_execution_id
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::SessionAttached {
+                node_execution_id,
+                session_id,
+                ..
+            } if node_execution_id == &pending_node_execution_id
+                && session_id != "old-review-b-session"
+        )));
+
+        engine
+            .on_turn_complete(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                &pending_session_id,
+                0,
+                None,
+                &[MessagePart::Text {
+                    content: "pending review complete".to_string(),
+                    parent_tool_use_id: None,
+                }],
+                None,
+            )
+            .await
+            .unwrap();
+        wait_for_run_terminal(&app, &engine, &execution_id).await;
+
+        let completed = engine
+            .execution_store()
+            .get_execution(&execution_id)
+            .await
+            .expect("completed resumed fanout metadata");
+        assert_eq!(completed.status, ExecutionStatus::Completed);
+        assert_eq!(completed.total_token_usage.input_tokens, 11);
+        assert_eq!(completed.total_token_usage.output_tokens, 7);
+        let completed_events = WorkflowEventLog::new(&data_dir)
+            .read_log(&execution_id)
+            .unwrap();
+        assert!(completed_events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::NodeCompleted {
+                node_execution_id,
+                ..
+            } if node_execution_id == &pending_node_execution_id
+        )));
+        let parent_artifact = completed_events
+            .iter()
+            .find_map(|event| match event {
+                WorkflowEvent::ArtifactProduced {
+                    node_name, value, ..
+                } if node_name == "parallel-review" => Some(value),
+                _ => None,
+            })
+            .expect("resumed fanout parent artifact");
+        assert_eq!(
+            parent_artifact,
+            &serde_json::json!([{"verdict": "confirmed"}, null])
+        );
+        assert!(completed_events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::NodeCompleted {
+                node_name,
+                attempt: 2,
+                ..
+            } if node_name == "parallel-review"
+        )));
+        assert!(completed_events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::ExecutionCompleted { total_token_usage, .. }
+                if total_token_usage.input_tokens == 11
+                    && total_token_usage.output_tokens == 7
+        )));
+    }
+
+    #[tokio::test]
+    async fn explicit_stop_accepts_waiting_approval() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_execution_store_data_dir(data_dir.clone()).await;
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let worktree = TempDir::new().unwrap();
+        let exec = make_waiting_approval_execution(
+            &execution_id,
+            worktree.path().to_string_lossy().as_ref(),
+        );
+        append_started_events_for_execution(&data_dir, &exec);
+        insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
+
+        engine
+            .stop_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
+            .await
+            .unwrap();
+
+        let metadata = engine
+            .execution_store()
+            .get_execution(&execution_id)
+            .await
+            .unwrap();
+        assert_eq!(metadata.status, ExecutionStatus::Interrupted);
+        assert_eq!(
+            metadata.interruption_reason,
+            Some(ExecutionInterruptionReason::Stop)
+        );
+        assert_eq!(metadata.resume_from_node.as_deref(), Some("review"));
+    }
+
+    #[tokio::test]
+    async fn explicit_stop_waits_for_session_turn_activation_and_interrupts_the_started_turn() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_execution_store_data_dir(data_dir.clone()).await;
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let (agent_runtime, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                data_dir,
+            );
+        controller.pause_start_turn();
+        let worktree = TempDir::new().unwrap();
+        let worktree_path = worktree.path().to_string_lossy().to_string();
+        let mut review_step =
+            make_test_step("review", TestKind::Session, "implement", vec![], None);
+        if let NodeKind::Session(session) = &mut review_step.kind {
+            session.model = Some("claude-4-sonnet".to_string());
+        }
+        let workflow = Workflow {
+            name: "stop-during-session-activation".to_string(),
+            description: String::new(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![review_step],
+        };
+
+        let start_engine = engine.clone();
+        let start_app = app.handle().clone();
+        let start_session_store = session_store.clone();
+        let start_agent_runtime = agent_runtime.clone();
+        let start_worktree_path = worktree_path.clone();
+        let mut start_task = tokio::spawn(async move {
+            start_engine
+                .start_resolved_workflow(
+                    &start_app,
+                    &start_session_store,
+                    &start_agent_runtime,
+                    workflow,
+                    start_worktree_path,
+                    Some("review safely".to_string()),
+                    ExecutionOrigin::DesktopUi,
+                    PermissionMode::Edit,
+                )
+                .await
+        });
+
+        let session_id_result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Some(call) = controller.calls().into_iter().find(|call| {
+                    matches!(
+                        call.kind,
+                        crate::test_support::TestRuntimeCallKind::StartTurn
+                    )
+                }) {
+                    break call.session_id;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        let session_id = match session_id_result {
+            Ok(session_id) => session_id,
+            Err(_) => {
+                controller.release_start_turn();
+                let start_result =
+                    tokio::time::timeout(std::time::Duration::from_secs(2), &mut start_task).await;
+                let metadata = match &start_result {
+                    Ok(Ok(Ok(execution_id))) => {
+                        engine.execution_store().get_execution(execution_id).await
+                    }
+                    _ => None,
+                };
+                panic!(
+                    "session turn activation did not reach the paused backend; start result: {start_result:?}; runtime calls: {:?}; metadata: {metadata:?}",
+                    controller.calls(),
+                );
+            }
+        };
+        let execution_id = {
+            let executions = engine.executions.lock().await;
+            find_by_worktree(&executions, &worktree_path)
+                .map(|(execution_id, _)| execution_id.clone())
+                .expect("execution must be visible before its turn starts")
+        };
+
+        let stop_engine = engine.clone();
+        let stop_app = app.handle().clone();
+        let stop_session_store = session_store.clone();
+        let stop_agent_runtime = agent_runtime.clone();
+        let stop_execution_id = execution_id.clone();
+        let mut stop_task = tokio::spawn(async move {
+            stop_engine
+                .stop_workflow_execution(
+                    &stop_app,
+                    &stop_session_store,
+                    &stop_agent_runtime,
+                    &stop_execution_id,
+                )
+                .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(2), &mut stop_task)
+            .await
+            .expect("stop must cancel a stuck in-flight turn activation")
+            .expect("stop task should join")
+            .expect("stop should succeed");
+        controller.release_start_turn();
+        let started_execution_id =
+            tokio::time::timeout(std::time::Duration::from_secs(2), &mut start_task)
+                .await
+                .expect("workflow start should finish after releasing the turn")
+                .expect("workflow start task should join")
+                .expect("workflow start should be accepted");
+        assert_eq!(started_execution_id, execution_id);
+
+        let metadata = engine
+            .execution_store()
+            .get_execution(&execution_id)
+            .await
+            .unwrap();
+        assert_eq!(metadata.status, ExecutionStatus::Interrupted);
+        assert_eq!(
+            metadata.interruption_reason,
+            Some(ExecutionInterruptionReason::Stop)
+        );
+        assert_eq!(metadata.resume_from_node.as_deref(), Some("review"));
+        assert!(controller
+            .call_kinds_for(&session_id)
+            .contains(&crate::test_support::TestRuntimeCallKind::Interrupt));
+        assert!(!engine.contains_execution_for_test(&execution_id).await);
+    }
+
+    #[tokio::test]
+    async fn stop_append_failure_resumes_the_paused_session_activation_and_restores_running() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_execution_store_data_dir(data_dir.clone()).await;
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let (agent_runtime, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                data_dir,
+            );
+        controller.pause_start_turn();
+        let worktree = TempDir::new().unwrap();
+        let worktree_path = worktree.path().to_string_lossy().to_string();
+        let mut review_step =
+            make_test_step("review", TestKind::Session, "implement", vec![], None);
+        if let NodeKind::Session(session) = &mut review_step.kind {
+            session.model = Some("claude-4-sonnet".to_string());
+        }
+        let workflow = Workflow {
+            name: "stop-append-failure-during-activation".to_string(),
+            description: String::new(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![review_step],
+        };
+        let start_engine = engine.clone();
+        let start_app = app.handle().clone();
+        let start_session_store = session_store.clone();
+        let start_agent_runtime = agent_runtime.clone();
+        let start_worktree_path = worktree_path.clone();
+        let mut start_task = tokio::spawn(async move {
+            start_engine
+                .start_resolved_workflow(
+                    &start_app,
+                    &start_session_store,
+                    &start_agent_runtime,
+                    workflow,
+                    start_worktree_path,
+                    Some("review safely".to_string()),
+                    ExecutionOrigin::DesktopUi,
+                    PermissionMode::Edit,
+                )
+                .await
+        });
+        let session_id = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Some(call) = controller.calls().into_iter().find(|call| {
+                    matches!(
+                        call.kind,
+                        crate::test_support::TestRuntimeCallKind::StartTurn
+                    )
+                }) {
+                    break call.session_id;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("session turn activation should reach the paused backend");
+        let execution_id = {
+            let executions = engine.executions.lock().await;
+            find_by_worktree(&executions, &worktree_path)
+                .map(|(execution_id, _)| execution_id.clone())
+                .expect("execution must be visible before its turn starts")
+        };
+
+        engine.fail_next_required_event_append_for_test();
+        let stop_error = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            engine.stop_workflow_execution(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                &execution_id,
+            ),
+        )
+        .await
+        .expect("failed stop append must roll back without waiting for the paused backend")
+        .expect_err("injected stop append failure must be returned");
+        assert!(matches!(stop_error, WorkflowEngineError::SessionStore(_)));
+
+        let restored = engine
+            .execution_store()
+            .get_execution(&execution_id)
+            .await
+            .unwrap();
+        assert_eq!(restored.status, ExecutionStatus::Running);
+        assert_eq!(restored.current_node.as_deref(), Some("review"));
+        assert!(engine.contains_execution_for_test(&execution_id).await);
+        assert!(!read_dispatch_events(&app, &execution_id)
+            .iter()
+            .any(|event| matches!(event, WorkflowEvent::ExecutionInterrupted { .. })));
+        assert!(!controller
+            .call_kinds_for(&session_id)
+            .contains(&crate::test_support::TestRuntimeCallKind::Interrupt));
+
+        controller.release_start_turn();
+        let started_execution_id =
+            tokio::time::timeout(std::time::Duration::from_secs(2), &mut start_task)
+                .await
+                .expect("rolled-back activation should resume")
+                .expect("workflow start task should join")
+                .expect("workflow start should remain accepted");
+        assert_eq!(started_execution_id, execution_id);
+
+        engine
+            .stop_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
+            .await
+            .unwrap();
+        assert!(controller
+            .call_kinds_for(&session_id)
+            .contains(&crate::test_support::TestRuntimeCallKind::Interrupt));
+    }
+
+    #[tokio::test]
+    async fn active_abort_cancels_a_stuck_session_activation_and_interrupts_the_turn() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_execution_store_data_dir(data_dir.clone()).await;
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let (agent_runtime, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                data_dir,
+            );
+        controller.pause_start_turn();
+        let worktree = TempDir::new().unwrap();
+        let worktree_path = worktree.path().to_string_lossy().to_string();
+        let mut review_step =
+            make_test_step("review", TestKind::Session, "implement", vec![], None);
+        if let NodeKind::Session(session) = &mut review_step.kind {
+            session.model = Some("claude-4-sonnet".to_string());
+        }
+        let workflow = Workflow {
+            name: "abort-during-session-activation".to_string(),
+            description: String::new(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![review_step],
+        };
+        let start_engine = engine.clone();
+        let start_app = app.handle().clone();
+        let start_session_store = session_store.clone();
+        let start_agent_runtime = agent_runtime.clone();
+        let start_worktree_path = worktree_path.clone();
+        let mut start_task = tokio::spawn(async move {
+            start_engine
+                .start_resolved_workflow(
+                    &start_app,
+                    &start_session_store,
+                    &start_agent_runtime,
+                    workflow,
+                    start_worktree_path,
+                    Some("review safely".to_string()),
+                    ExecutionOrigin::DesktopUi,
+                    PermissionMode::Edit,
+                )
+                .await
+        });
+        let session_id = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Some(call) = controller.calls().into_iter().find(|call| {
+                    matches!(
+                        call.kind,
+                        crate::test_support::TestRuntimeCallKind::StartTurn
+                    )
+                }) {
+                    break call.session_id;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("session turn activation should reach the paused backend");
+        let execution_id = {
+            let executions = engine.executions.lock().await;
+            find_by_worktree(&executions, &worktree_path)
+                .map(|(execution_id, _)| execution_id.clone())
+                .expect("execution must be visible before its turn starts")
+        };
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            engine.abort_workflow_execution(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                &execution_id,
+                None,
+            ),
+        )
+        .await
+        .expect("abort must cancel a stuck in-flight turn activation")
+        .expect("abort should succeed");
+        controller.release_start_turn();
+        let started_execution_id =
+            tokio::time::timeout(std::time::Duration::from_secs(2), &mut start_task)
+                .await
+                .expect("workflow start should finish after abort cancellation")
+                .expect("workflow start task should join")
+                .expect("workflow start should remain accepted");
+        assert_eq!(started_execution_id, execution_id);
+
+        let metadata = engine
+            .execution_store()
+            .get_execution(&execution_id)
+            .await
+            .unwrap();
+        assert_eq!(metadata.status, ExecutionStatus::Aborted);
+        assert!(controller
+            .call_kinds_for(&session_id)
+            .contains(&crate::test_support::TestRuntimeCallKind::Interrupt));
+        assert!(!engine.contains_execution_for_test(&execution_id).await);
+        assert!(read_dispatch_events(&app, &execution_id)
+            .iter()
+            .any(|event| matches!(event, WorkflowEvent::ExecutionAborted { .. })));
+    }
+
+    #[tokio::test]
+    async fn active_abort_keeps_activation_cancelled_after_metadata_projection_failure() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_execution_store_data_dir(data_dir.clone()).await;
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let (agent_runtime, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                data_dir,
+            );
+        controller.pause_start_turn();
+        let worktree = TempDir::new().unwrap();
+        let worktree_path = worktree.path().to_string_lossy().to_string();
+        let workflow = Workflow {
+            name: "abort-projection-failure-during-activation".to_string(),
+            description: String::new(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![make_test_step(
+                "review",
+                TestKind::Session,
+                "implement",
+                vec![],
+                None,
+            )],
+        };
+        let start_engine = engine.clone();
+        let start_app = app.handle().clone();
+        let start_session_store = session_store.clone();
+        let start_agent_runtime = agent_runtime.clone();
+        let start_worktree_path = worktree_path.clone();
+        let mut start_task = tokio::spawn(async move {
+            start_engine
+                .start_resolved_workflow(
+                    &start_app,
+                    &start_session_store,
+                    &start_agent_runtime,
+                    workflow,
+                    start_worktree_path,
+                    Some("review safely".to_string()),
+                    ExecutionOrigin::DesktopUi,
+                    PermissionMode::Edit,
+                )
+                .await
+        });
+        let session_id = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Some(call) = controller.calls().into_iter().find(|call| {
+                    matches!(
+                        call.kind,
+                        crate::test_support::TestRuntimeCallKind::StartTurn
+                    )
+                }) {
+                    break call.session_id;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("session turn activation should reach the paused backend");
+        let execution_id = {
+            let executions = engine.executions.lock().await;
+            find_by_worktree(&executions, &worktree_path)
+                .map(|(execution_id, _)| execution_id.clone())
+                .expect("execution must be visible before its turn starts")
+        };
+
+        // Event log writes still use the app data directory. Redirect only ExecutionStore
+        // metadata to a regular file so the durable ExecutionAborted append succeeds and its
+        // post-commit metadata projection fails.
+        let invalid_metadata_dir = worktree.path().join("metadata-is-a-file");
+        std::fs::write(&invalid_metadata_dir, "not a directory").unwrap();
+        engine
+            .set_execution_store_data_dir(invalid_metadata_dir)
+            .await;
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            engine.abort_workflow_execution(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                &execution_id,
+                None,
+            ),
+        )
+        .await
+        .expect("durably committed abort must cancel the paused activation")
+        .expect("metadata projection is post-commit and must not reject the abort");
+
+        // A committed cancellation drops the pinned start future, so workflow start completes
+        // without releasing the test backend's pause gate. Rolling cancellation back here would
+        // leave this task blocked and later resume it against an Aborted execution.
+        let started_execution_id =
+            tokio::time::timeout(std::time::Duration::from_secs(2), &mut start_task)
+                .await
+                .expect("workflow start must finish without resuming the paused activation")
+                .expect("workflow start task should join")
+                .expect("workflow start should remain accepted");
+        controller.release_start_turn();
+        assert_eq!(started_execution_id, execution_id);
+        assert!(controller
+            .call_kinds_for(&session_id)
+            .contains(&crate::test_support::TestRuntimeCallKind::Interrupt));
+        assert!(!engine.contains_execution_for_test(&execution_id).await);
+
+        let events = read_dispatch_events(&app, &execution_id);
+        let aborted_index = events
+            .iter()
+            .position(|event| matches!(event, WorkflowEvent::ExecutionAborted { .. }))
+            .expect("ExecutionAborted must remain durable");
+        assert!(
+            !events[aborted_index + 1..]
+                .iter()
+                .any(|event| matches!(event, WorkflowEvent::ExecutionInterrupted { .. })),
+            "cancelled activation must not resume and append a crash interruption after abort"
+        );
+    }
+
+    #[tokio::test]
+    async fn typed_execution_commands_reject_missing_invalid_state_and_worktree_mismatch_targets() {
+        let app = make_dispatch_app();
+        let data_dir = dispatch_data_dir(app.handle());
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
+        let engine = WorkflowRuntimeService::new_for_test();
+        engine.set_execution_store_data_dir(data_dir.clone()).await;
+        let missing_id = uuid::Uuid::new_v4().to_string();
+
+        assert!(matches!(
+            engine
+                .stop_workflow_execution(app.handle(), &session_store, &agent_runtime, &missing_id,)
+                .await,
+            Err(WorkflowEngineError::ExecutionNotFound(_))
+        ));
+        assert!(matches!(
+            engine
+                .resume_workflow_execution(
+                    app.handle(),
+                    &session_store,
+                    &agent_runtime,
+                    &missing_id,
+                )
+                .await,
+            Err(WorkflowEngineError::ExecutionNotFound(_))
+        ));
+        assert!(matches!(
+            engine
+                .abort_workflow_execution(
+                    app.handle(),
+                    &session_store,
+                    &agent_runtime,
+                    &missing_id,
+                    None,
+                )
+                .await,
+            Err(WorkflowEngineError::ExecutionNotFound(_))
+        ));
+
+        let running_id = uuid::Uuid::new_v4().to_string();
+        engine
+            .execution_store
+            .register_active_execution(WorkflowExecutionMetadata {
+                execution_id: running_id.clone(),
+                workflow_name: "state-validation".to_string(),
+                status: ExecutionStatus::Running,
+                worktree_path: "/wt/resume-running".to_string(),
+                current_node: Some("review".to_string()),
+                created_from: ExecutionOrigin::Api,
+                started_at: 1.0,
+                updated_at: 1.0,
+                completed_at: None,
+                error_reason: None,
+                interruption_reason: None,
+                resume_from_node: None,
+                total_token_usage: crate::domain::workflow::TokenUsage::default(),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            engine
+                .resume_workflow_execution(
+                    app.handle(),
+                    &session_store,
+                    &agent_runtime,
+                    &running_id,
+                )
+                .await,
+            Err(WorkflowEngineError::InvalidState(_))
+        ));
+        engine
+            .execution_store
+            .interrupt_execution(
+                &running_id,
+                ExecutionInterruptionReason::Stale,
+                Some("review".to_string()),
+                2.0,
+            )
+            .await
+            .unwrap();
+        WorkflowEventLog::new(&data_dir)
+            .append_batch(&[
+                WorkflowEvent::ExecutionStarted {
+                    execution_id: running_id.clone(),
+                    workflow_name: "state-validation".to_string(),
+                    worktree_path: "/wt/resume-running".to_string(),
+                    created_from: ExecutionOrigin::Api,
+                    request: String::new(),
+                    permission_mode: "ask".to_string(),
+                    definition: Workflow {
+                        name: "state-validation".to_string(),
+                        description: String::new(),
+                        builtin: false,
+                        schemas: Default::default(),
+                        nodes: vec![make_test_step(
+                            "review",
+                            TestKind::Session,
+                            "review",
+                            vec![],
+                            None,
+                        )],
+                    },
+                    timestamp: 1.0,
+                },
+                WorkflowEvent::NodeStarted {
+                    execution_id: running_id.clone(),
+                    node_execution_id: format!("{running_id}-review-1"),
+                    node_name: "review".to_string(),
+                    kind: NodeKindName::Session,
+                    attempt: 1,
+                    fanout_parent: None,
+                    timestamp: 1.5,
+                },
+                WorkflowEvent::ExecutionInterrupted {
+                    execution_id: running_id.clone(),
+                    reason: ExecutionInterruptionReason::Stale,
+                    timestamp: 2.0,
+                },
+            ])
+            .unwrap();
+        assert!(matches!(
+            engine
+                .stop_workflow_execution(app.handle(), &session_store, &agent_runtime, &running_id,)
+                .await,
+            Err(WorkflowEngineError::InvalidState(_))
+        ));
+        engine
+            .abort_workflow_execution(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                &running_id,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            engine
+                .execution_store()
+                .get_execution(&running_id)
+                .await
+                .unwrap()
+                .status,
+            ExecutionStatus::Aborted
+        );
+
+        let completed_id = uuid::Uuid::new_v4().to_string();
+        engine
+            .execution_store
+            .register_active_execution(WorkflowExecutionMetadata {
+                execution_id: completed_id.clone(),
+                workflow_name: "state-validation".to_string(),
+                status: ExecutionStatus::Running,
+                worktree_path: "/wt/resume-completed".to_string(),
+                current_node: Some("review".to_string()),
+                created_from: ExecutionOrigin::Api,
+                started_at: 1.0,
+                updated_at: 1.0,
+                completed_at: None,
+                error_reason: None,
+                interruption_reason: None,
+                resume_from_node: None,
+                total_token_usage: crate::domain::workflow::TokenUsage::default(),
+            })
+            .await
+            .unwrap();
+        engine
+            .execution_store
+            .complete_execution(&completed_id, TerminalExecutionStatus::Completed, 2.0, None)
+            .await
+            .unwrap();
+        assert!(matches!(
+            engine
+                .resume_workflow_execution(
+                    app.handle(),
+                    &session_store,
+                    &agent_runtime,
+                    &completed_id,
+                )
+                .await,
+            Err(WorkflowEngineError::InvalidState(_))
+        ));
+        assert!(matches!(
+            engine
+                .stop_workflow_execution(
+                    app.handle(),
+                    &session_store,
+                    &agent_runtime,
+                    &completed_id,
+                )
+                .await,
+            Err(WorkflowEngineError::InvalidState(_))
+        ));
+        assert!(matches!(
+            engine
+                .abort_workflow_execution(
+                    app.handle(),
+                    &session_store,
+                    &agent_runtime,
+                    &completed_id,
+                    None,
+                )
+                .await,
+            Err(WorkflowEngineError::InvalidState(_))
+        ));
+
+        let mismatch_engine = WorkflowRuntimeService::new(
+            Arc::new(TestWorkflowDefinitionResolver),
+            Arc::new(RewritingManagedWorktreeResolver),
+            None,
+            Arc::new(OpenTabRegistry::default()),
+        );
+        mismatch_engine.set_execution_store_data_dir(data_dir).await;
+        let mismatch_id = uuid::Uuid::new_v4().to_string();
+        mismatch_engine
+            .execution_store
+            .register_active_execution(WorkflowExecutionMetadata {
+                execution_id: mismatch_id.clone(),
+                workflow_name: "target-validation".to_string(),
+                status: ExecutionStatus::Running,
+                worktree_path: "/claimed-worktree".to_string(),
+                current_node: Some("review".to_string()),
+                created_from: ExecutionOrigin::Api,
+                started_at: 1.0,
+                updated_at: 1.0,
+                completed_at: None,
+                error_reason: None,
+                interruption_reason: None,
+                resume_from_node: None,
+                total_token_usage: crate::domain::workflow::TokenUsage::default(),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            mismatch_engine
+                .stop_workflow_execution(
+                    app.handle(),
+                    &session_store,
+                    &agent_runtime,
+                    &mismatch_id,
+                )
+                .await,
+            Err(WorkflowEngineError::UnauthorizedWorktree(_))
+        ));
+        assert!(matches!(
+            mismatch_engine
+                .resume_workflow_execution(
+                    app.handle(),
+                    &session_store,
+                    &agent_runtime,
+                    &mismatch_id,
+                )
+                .await,
+            Err(WorkflowEngineError::UnauthorizedWorktree(_))
+        ));
+        assert!(matches!(
+            mismatch_engine
+                .abort_workflow_execution(
+                    app.handle(),
+                    &session_store,
+                    &agent_runtime,
+                    &mismatch_id,
+                    None,
+                )
+                .await,
+            Err(WorkflowEngineError::UnauthorizedWorktree(_))
+        ));
     }
 
     fn read_dispatch_events(app: &DispatchTestApp, execution_id: &str) -> Vec<WorkflowEvent> {
@@ -7960,6 +9714,26 @@ mod dispatch_boundary_tests {
         panic!(
             "run '{execution_id}' did not become terminal; status={status:?}; events={events:?}"
         );
+    }
+
+    async fn wait_for_run_status(
+        engine: &WorkflowRuntimeService,
+        execution_id: &str,
+        expected: ExecutionStatus,
+    ) {
+        for _ in 0..500 {
+            if engine
+                .execution_store()
+                .get_execution(execution_id)
+                .await
+                .is_some_and(|execution| execution.status == expected)
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let status = engine.execution_store().get_execution(execution_id).await;
+        panic!("run '{execution_id}' did not become {expected:?}; status={status:?}");
     }
 
     #[tokio::test]
@@ -8416,8 +10190,7 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
-    async fn fanout_command_failure_clears_stall_observations_and_aborts_sibling_in_live_and_replay(
-    ) {
+    async fn fanout_command_crash_clears_stall_observations_and_preserves_a_resumable_checkpoint() {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
@@ -8507,55 +10280,55 @@ mod dispatch_boundary_tests {
             },
         );
 
-        let input = CommandExecutionInput {
-            execution_id: execution_id.clone(),
-            node_execution_id: command_node_execution_id.clone(),
-            node_name: "shell-command".to_string(),
-            attempt: 1,
-            worktree_path: worktree_path.to_string(),
-            command: "false".to_string(),
-            contract: None,
-            schemas: BTreeMap::new(),
-            fanout_parent: Some("parallel-review".to_string()),
-        };
-        engine
-            .fail_command_execution(
+        assert!(engine
+            .interrupt_active_execution(
                 app.handle(),
                 &session_store,
                 &handles,
-                &input,
-                "command exited with status 1",
+                &execution_id,
+                ExecutionInterruptionReason::Crash,
             )
             .await
-            .unwrap();
+            .unwrap());
 
         assert!(
             !engine.contains_execution_for_test(&execution_id).await,
-            "terminal fanout command failure must release the run"
+            "interrupted fanout command must release the live runtime"
         );
         let run = engine
             .execution_store()
             .get_execution(&execution_id)
             .await
-            .expect("terminal run metadata must be stored");
-        assert_eq!(run.status, ExecutionStatus::Failed);
+            .expect("interrupted run metadata must be stored");
+        assert_eq!(run.status, ExecutionStatus::Interrupted);
         assert_eq!(
-            run.error_reason.as_deref(),
-            Some("fanout child 'shell-command' failed: command exited with status 1")
+            run.interruption_reason,
+            Some(ExecutionInterruptionReason::Crash)
         );
+        assert_eq!(run.resume_from_node.as_deref(), Some("parallel-review"));
+        assert!(run.completed_at.is_none());
 
         let live_payload = received_payloads
             .lock()
             .unwrap()
             .last()
             .cloned()
-            .expect("terminal failure must broadcast live snapshot");
+            .expect("interruption must broadcast live snapshot");
         let live_json: serde_json::Value = serde_json::from_str(&live_payload).unwrap();
+        assert_eq!(live_json["workflowExecution"]["status"], "interrupted");
+        assert_eq!(
+            live_json["workflowExecution"]["interruptionReason"],
+            "crash"
+        );
+        assert_eq!(
+            live_json["workflowExecution"]["resumeFromNode"],
+            "parallel-review"
+        );
         let live_stall_observations =
             live_json["workflowExecution"]["stallObservations"].as_array();
         assert!(
             live_stall_observations.map_or(true, |observations| observations.is_empty()),
-            "terminal fanout command failure must clear live stall observations: {live_json}"
+            "fanout command interruption must clear live stall observations: {live_json}"
         );
         let live_node_executions = live_json["workflowExecution"]["nodeExecutions"]
             .as_array()
@@ -8567,27 +10340,30 @@ mod dispatch_boundary_tests {
                 .and_then(|execution| execution["status"].as_str())
                 .expect("node execution status must be present")
         };
-        assert_eq!(live_status_by_id(&parent_node_execution_id), "failed");
-        assert_eq!(live_status_by_id(&command_node_execution_id), "failed");
+        assert_eq!(live_status_by_id(&parent_node_execution_id), "aborted");
+        assert_eq!(live_status_by_id(&command_node_execution_id), "aborted");
         assert_eq!(live_status_by_id(&sibling_node_execution_id), "aborted");
 
         let events = read_dispatch_events(&app, &execution_id);
         assert!(events.iter().any(|event| matches!(
             event,
-            WorkflowEvent::NodeFailed {
-                node_execution_id,
-                node_name,
-                reason,
-                failure_kind: NodeExecutionFailureKind::InfrastructureCrash,
+            WorkflowEvent::ExecutionInterrupted {
+                reason: ExecutionInterruptionReason::Crash,
                 ..
-            } if node_execution_id == &command_node_execution_id
-                && node_name == "shell-command"
-                && reason == "command exited with status 1"
+            }
         )));
         let projected = project_workflow_execution(&execution_id, &events)
             .unwrap()
             .unwrap();
-        assert_eq!(projected.status, ExecutionStatus::Failed);
+        assert_eq!(projected.status, ExecutionStatus::Interrupted);
+        assert_eq!(
+            projected.interruption_reason,
+            Some(ExecutionInterruptionReason::Crash)
+        );
+        assert_eq!(
+            projected.resume_from_node.as_deref(),
+            Some("parallel-review")
+        );
         let projected_status_by_id = |node_execution_id: &str| {
             projected
                 .node_executions
@@ -8598,11 +10374,11 @@ mod dispatch_boundary_tests {
         };
         assert_eq!(
             projected_status_by_id(&parent_node_execution_id),
-            crate::domain::workflow::NodeExecutionStatus::Failed
+            crate::domain::workflow::NodeExecutionStatus::Aborted
         );
         assert_eq!(
             projected_status_by_id(&command_node_execution_id),
-            crate::domain::workflow::NodeExecutionStatus::Failed
+            crate::domain::workflow::NodeExecutionStatus::Aborted
         );
         assert_eq!(
             projected_status_by_id(&sibling_node_execution_id),
@@ -8893,6 +10669,196 @@ mod dispatch_boundary_tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn explicit_stop_kills_the_active_command_process_group_and_records_stop_checkpoint() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let worktree = TempDir::new().unwrap();
+        let workflow = Workflow {
+            name: "command-explicit-stop".to_string(),
+            description: "stop kills command process group".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![command_step(
+                "long",
+                "sleep 30 & echo $! > child.pid; wait",
+                vec![],
+            )],
+        };
+
+        let execution_id =
+            start_command_workflow_nowait_for_test(&app, &engine, workflow, worktree.path()).await;
+        wait_for_active_command(&engine, &execution_id).await;
+        let child_pid = wait_for_pid_file(&worktree.path().join("child.pid")).await;
+        let data_dir = dispatch_data_dir(app.handle());
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir);
+
+        engine
+            .stop_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
+            .await
+            .unwrap();
+
+        wait_for_inactive_command(&engine, &execution_id).await;
+        wait_for_process_exit(child_pid).await;
+        assert!(!engine.contains_execution_for_test(&execution_id).await);
+        let metadata = engine
+            .execution_store()
+            .get_execution(&execution_id)
+            .await
+            .unwrap();
+        assert_eq!(metadata.status, ExecutionStatus::Interrupted);
+        assert_eq!(
+            metadata.interruption_reason,
+            Some(ExecutionInterruptionReason::Stop)
+        );
+        assert_eq!(metadata.resume_from_node.as_deref(), Some("long"));
+        assert!(read_dispatch_events(&app, &execution_id)
+            .iter()
+            .any(|event| matches!(
+                event,
+                WorkflowEvent::ExecutionInterrupted {
+                    reason: ExecutionInterruptionReason::Stop,
+                    ..
+                }
+            )));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn explicit_stop_then_resume_restarts_command_attempt_and_completes() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let worktree = TempDir::new().unwrap();
+        let workflow = Workflow {
+            name: "command-stop-resume".to_string(),
+            description: "resume starts a fresh command attempt".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![command_step(
+                "long",
+                "if [ -f resumed ]; then printf resumed; else touch resumed; sleep 30 & echo $! > child.pid; wait; fi",
+                vec![],
+            )],
+        };
+
+        let execution_id =
+            start_command_workflow_nowait_for_test(&app, &engine, workflow, worktree.path()).await;
+        wait_for_active_command(&engine, &execution_id).await;
+        let child_pid = wait_for_pid_file(&worktree.path().join("child.pid")).await;
+        let data_dir = dispatch_data_dir(app.handle());
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir);
+
+        engine
+            .stop_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
+            .await
+            .unwrap();
+        wait_for_inactive_command(&engine, &execution_id).await;
+        wait_for_process_exit(child_pid).await;
+
+        let attempt_one_events = read_dispatch_events(&app, &execution_id);
+        assert!(attempt_one_events.iter().all(|event| {
+            !matches!(
+                event,
+                WorkflowEvent::NodeCompleted {
+                    node_name,
+                    attempt: 1,
+                    ..
+                } | WorkflowEvent::ArtifactProduced { node_name, .. }
+                    if node_name == "long"
+            )
+        }));
+
+        engine
+            .resume_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
+            .await
+            .unwrap();
+        wait_for_run_terminal(&app, &engine, &execution_id).await;
+
+        let metadata = engine
+            .execution_store()
+            .get_execution(&execution_id)
+            .await
+            .unwrap();
+        assert_eq!(metadata.status, ExecutionStatus::Completed);
+        let events = read_dispatch_events(&app, &execution_id);
+        let attempts = events
+            .iter()
+            .filter_map(|event| match event {
+                WorkflowEvent::NodeStarted {
+                    node_name, attempt, ..
+                } if node_name == "long" => Some(*attempt),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(attempts, vec![1, 2]);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::NodeCompleted {
+                node_name,
+                attempt: 2,
+                ..
+            } if node_name == "long"
+        )));
+        assert!(matches!(
+            events.last(),
+            Some(WorkflowEvent::ExecutionCompleted { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn explicit_stop_still_kills_the_command_after_metadata_projection_failure() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let worktree = TempDir::new().unwrap();
+        let workflow = Workflow {
+            name: "command-stop-projection-failure".to_string(),
+            description: "durable stop must still kill".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![command_step(
+                "long",
+                "sleep 30 & echo $! > child.pid; wait",
+                vec![],
+            )],
+        };
+
+        let execution_id =
+            start_command_workflow_nowait_for_test(&app, &engine, workflow, worktree.path()).await;
+        wait_for_active_command(&engine, &execution_id).await;
+        let child_pid = wait_for_pid_file(&worktree.path().join("child.pid")).await;
+        let data_dir = dispatch_data_dir(app.handle());
+        let metadata_dir = data_dir.join("workflow_executions");
+        std::fs::remove_dir_all(&metadata_dir).unwrap();
+        std::fs::write(&metadata_dir, b"block metadata persistence").unwrap();
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir);
+
+        engine
+            .stop_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
+            .await
+            .expect("the durable stop fact remains accepted");
+
+        wait_for_inactive_command(&engine, &execution_id).await;
+        wait_for_process_exit(child_pid).await;
+        assert!(!engine.contains_execution_for_test(&execution_id).await);
+        assert!(
+            engine
+                .execution_store
+                .interrupted_transition_pending(&execution_id)
+                .await
+        );
+        assert!(read_dispatch_events(&app, &execution_id)
+            .iter()
+            .any(|event| matches!(
+                event,
+                WorkflowEvent::ExecutionInterrupted {
+                    reason: ExecutionInterruptionReason::Stop,
+                    ..
+                }
+            )));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn app_exit_shutdown_interrupts_active_command_and_kills_process_group() {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
@@ -8928,7 +10894,8 @@ mod dispatch_boundary_tests {
         assert!(events.iter().any(|event| {
             matches!(
                 event,
-                WorkflowEvent::ExecutionInterrupted { reason, .. } if reason == "app_exit"
+                WorkflowEvent::ExecutionInterrupted { reason, .. }
+                    if reason == &ExecutionInterruptionReason::Crash
             )
         }));
         assert!(events.iter().all(|event| {
@@ -8982,7 +10949,8 @@ mod dispatch_boundary_tests {
         let events = read_dispatch_events(&app, &execution_id);
         assert!(events.iter().any(|event| matches!(
             event,
-            WorkflowEvent::ExecutionInterrupted { reason, .. } if reason == "app_exit"
+            WorkflowEvent::ExecutionInterrupted { reason, .. }
+                if reason == &ExecutionInterruptionReason::Crash
         )));
         let projected = project_workflow_execution(&execution_id, &events)
             .unwrap()
@@ -9009,7 +10977,7 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
-    async fn command_runtime_completion_append_failure_marks_run_failed() {
+    async fn command_runtime_completion_append_failure_records_crash_checkpoint() {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let worktree = TempDir::new().unwrap();
@@ -9030,22 +10998,31 @@ mod dispatch_boundary_tests {
         wait_for_active_command(&engine, &execution_id).await;
         engine.fail_next_required_event_append_for_test();
         std::fs::write(worktree.path().join(".command-go"), "go").unwrap();
-        wait_for_run_terminal(&app, &engine, &execution_id).await;
+        wait_for_run_status(&engine, &execution_id, ExecutionStatus::Interrupted).await;
 
         let run = engine
             .execution_store()
             .get_execution(&execution_id)
             .await
             .unwrap();
-        assert_eq!(run.status, ExecutionStatus::Failed);
-        assert!(run
-            .error_reason
-            .as_deref()
-            .is_some_and(|reason| reason.contains("command completion event append failed")));
+        assert_eq!(run.status, ExecutionStatus::Interrupted);
+        assert_eq!(
+            run.interruption_reason,
+            Some(ExecutionInterruptionReason::Crash)
+        );
+        assert_eq!(run.resume_from_node.as_deref(), Some("gate"));
+        assert!(run.error_reason.is_none());
         let events = read_dispatch_events(&app, &execution_id);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::ExecutionInterrupted {
+                reason: ExecutionInterruptionReason::Crash,
+                ..
+            }
+        )));
         assert!(events
             .iter()
-            .any(|event| matches!(event, WorkflowEvent::ExecutionFailed { .. })));
+            .all(|event| !matches!(event, WorkflowEvent::ExecutionFailed { .. })));
         assert!(events
             .iter()
             .all(|event| !matches!(event, WorkflowEvent::ArtifactProduced { .. })));
@@ -9999,191 +11976,8 @@ mod dispatch_boundary_tests {
         ));
     }
 
-    /// Spec [05] Rule: node が失敗したときの状態遷移が run に反映され、node 失敗の事実が
-    /// event log に記録される。engine の実 production 経路 (`set_execution_state` →
-    /// `sync_execution_store_from_snapshot` + `write_terminal_log` 一連) を通過して、
-    /// (1) ExecutionStore の status が Failed terminal に同期される、
-    /// (2) NDJSON event log に NodeFailed + RunFailed が追記される、
-    /// の双方が成立することを直接検証する（spec L122-130）。
     #[tokio::test]
-    async fn engine_set_execution_state_failed_drives_run_state_and_node_failed_event_log() {
-        let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
-        let data_dir = dispatch_data_dir(app.handle());
-        engine.set_execution_store_data_dir(data_dir.clone()).await;
-        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
-
-        let worktree_path = "/wt/engine-node-failure";
-        let execution_id = uuid::Uuid::new_v4().to_string();
-        engine
-            .seed_active_execution_for_test(
-                execution_id.clone(),
-                make_running_session_workflow(),
-                RuntimeExecutionState::Running,
-                worktree_path.to_string(),
-                ExecutionOrigin::DesktopUi,
-            )
-            .await;
-
-        // 実 production 経路: set_execution_state → Failed への遷移を engine 経由で実施。
-        // write_terminal_log + sync_execution_store_from_snapshot がこの経路の中で連続して
-        // 実行されることを境界仕様として担保する。
-        engine
-            .set_execution_state(
-                app.handle(),
-                &session_store,
-                &handles,
-                worktree_path,
-                RuntimeExecutionState::Failed {
-                    reason: "node failure".to_string(),
-                    kind: crate::domain::workflow::NodeExecutionFailureKind::InfrastructureCrash,
-                    retry_count: None,
-                },
-            )
-            .await
-            .unwrap();
-
-        // (1) terminal 化した execution は runtime map から即時解放される。
-        assert!(
-            !engine.contains_execution_for_test(&execution_id).await,
-            "terminal execution must be released after Failed"
-        );
-
-        // (2) ExecutionStore の status も Failed terminal に同期される。
-        let run = engine
-            .execution_store
-            .get_execution(&execution_id)
-            .await
-            .expect("ExecutionStore must reflect the run");
-        assert!(
-            run.status.is_terminal(),
-            "ExecutionStore status must be terminal, got {:?}",
-            run.status
-        );
-        assert_eq!(run.error_reason.as_deref(), Some("node failure"));
-
-        // (3) NDJSON event log に NodeFailed + RunFailed が連続 append される。
-        let events = WorkflowEventLog::new(&data_dir)
-            .read_log(&execution_id)
-            .unwrap();
-        let node_failed = events
-            .iter()
-            .find(|e| matches!(e, WorkflowEvent::NodeFailed { .. }));
-        let run_failed = events
-            .iter()
-            .find(|e| matches!(e, WorkflowEvent::ExecutionFailed { .. }));
-        assert!(
-            node_failed.is_some(),
-            "NodeFailed event must be appended via engine dispatch path; got: {events:?}"
-        );
-        assert!(
-            run_failed.is_some(),
-            "RunFailed event must follow NodeFailed; got: {events:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn engine_set_execution_state_failed_records_failure_telemetry_attributes() {
-        let _telemetry_guard = crate::other::telemetry::lock_test_telemetry();
-        crate::other::telemetry::reset_test_metrics();
-        crate::other::telemetry::set_performance_configured(true);
-        crate::other::telemetry::set_performance_enabled(true);
-
-        let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
-        let data_dir = dispatch_data_dir(app.handle());
-        engine.set_execution_store_data_dir(data_dir.clone()).await;
-        let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
-
-        let startup_run_id = uuid::Uuid::new_v4().to_string();
-        let startup_worktree_path = "/wt/engine-startup-timeout-telemetry";
-        engine
-            .seed_active_execution_for_test(
-                startup_run_id.clone(),
-                make_running_session_workflow(),
-                RuntimeExecutionState::Running,
-                startup_worktree_path.to_string(),
-                ExecutionOrigin::DesktopUi,
-            )
-            .await;
-        engine
-            .set_execution_state(
-                app.handle(),
-                &session_store,
-                &handles,
-                startup_worktree_path,
-                RuntimeExecutionState::Failed {
-                    reason: "startup timeout".to_string(),
-                    kind: NodeExecutionFailureKind::StartupTimeout,
-                    retry_count: Some(2),
-                },
-            )
-            .await
-            .unwrap();
-
-        let validation_run_id = uuid::Uuid::new_v4().to_string();
-        let validation_worktree_path = "/wt/engine-validation-failure-telemetry";
-        engine
-            .seed_active_execution_for_test(
-                validation_run_id.clone(),
-                make_running_session_workflow(),
-                RuntimeExecutionState::Running,
-                validation_worktree_path.to_string(),
-                ExecutionOrigin::DesktopUi,
-            )
-            .await;
-        engine
-            .set_execution_state(
-                app.handle(),
-                &session_store,
-                &handles,
-                validation_worktree_path,
-                RuntimeExecutionState::Failed {
-                    reason: "validation failed".to_string(),
-                    kind: NodeExecutionFailureKind::ValidationFailure,
-                    retry_count: None,
-                },
-            )
-            .await
-            .unwrap();
-
-        let records = crate::other::telemetry::test_metric_records();
-        let has_attr =
-            |record: &crate::other::telemetry::TestMetricRecord, key: &str, value: &str| {
-                record
-                    .attributes
-                    .iter()
-                    .any(|(attr_key, attr_value)| attr_key == key && attr_value == value)
-            };
-        let startup_record = records
-            .iter()
-            .find(|record| {
-                record.name == "releash.operation.status"
-                    && has_attr(record, "releash.operation", "workflow.node.failure")
-                    && has_attr(record, "failure.kind", "startup_timeout")
-            })
-            .expect("startup timeout failure telemetry must be recorded");
-        assert!(has_attr(startup_record, "failure.retry_count", "2"));
-        assert!(has_attr(startup_record, "failure.timeout_kind", "startup"));
-
-        let validation_record = records
-            .iter()
-            .find(|record| {
-                record.name == "releash.operation.status"
-                    && has_attr(record, "releash.operation", "workflow.node.failure")
-                    && has_attr(record, "failure.kind", "validation_failure")
-            })
-            .expect("validation failure telemetry must be recorded");
-        assert!(validation_record
-            .attributes
-            .iter()
-            .all(|(key, _)| key != "failure.timeout_kind"));
-
-        crate::other::telemetry::reset_test_metrics();
-    }
-
-    #[tokio::test]
-    async fn stale_turn_complete_failure_is_terminalized_by_retry_policy_default() {
+    async fn stale_turn_complete_failure_records_resumable_checkpoint() {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
@@ -10234,42 +12028,38 @@ mod dispatch_boundary_tests {
 
         assert!(
             !engine.contains_execution_for_test(&execution_id).await,
-            "stale timeout with default max_retries=0 must be terminal"
+            "stale timeout releases live runtime after checkpointing"
         );
         let run = engine
             .execution_store
             .get_execution(&execution_id)
             .await
-            .expect("ExecutionStore must keep terminal run metadata");
-        assert_eq!(run.status, ExecutionStatus::Failed);
-        assert!(run
-            .error_reason
-            .as_deref()
-            .is_some_and(|reason| reason.contains("retry policy did not retry")));
+            .expect("ExecutionStore must keep interrupted checkpoint metadata");
+        assert_eq!(run.status, ExecutionStatus::Interrupted);
+        assert_eq!(
+            run.interruption_reason,
+            Some(ExecutionInterruptionReason::Stale)
+        );
+        assert_eq!(run.resume_from_node.as_deref(), Some("review"));
+        assert!(run.error_reason.is_none());
 
         let events = WorkflowEventLog::new(&data_dir)
             .read_log(&execution_id)
             .unwrap();
         assert!(events.iter().any(|event| matches!(
             event,
-            WorkflowEvent::NodeFailed {
-                failure_kind: NodeExecutionFailureKind::StaleRuntimeTimeout,
-                retry_count: Some(0),
-                reason,
-                ..
-            } if reason.contains("max_retries=0")
-        )));
-        assert!(events.iter().any(|event| matches!(
-            event,
-            WorkflowEvent::ExecutionFailed {
-                failure_kind: NodeExecutionFailureKind::StaleRuntimeTimeout,
+            WorkflowEvent::ExecutionInterrupted {
+                reason: ExecutionInterruptionReason::Stale,
                 ..
             }
         )));
+        assert!(events
+            .iter()
+            .all(|event| !matches!(event, WorkflowEvent::ExecutionFailed { .. })));
     }
 
     #[tokio::test]
-    async fn parallel_child_failure_releases_terminal_execution_after_broadcast() {
+    async fn parallel_child_crash_releases_interrupted_execution_after_broadcast() {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
@@ -10318,9 +12108,6 @@ mod dispatch_boundary_tests {
                 ),
             ],
         );
-        let fanout_run = exec.parallel_run.as_ref().expect("fanout run");
-        let parent_node_execution_id = fanout_run.parent_node_execution_id.clone();
-        let failed_child_node_execution_id = fanout_run.children[0].node_execution_id.clone();
         insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
         {
             let mut refs = engine.session_workflow_refs.lock().await;
@@ -10354,48 +12141,38 @@ mod dispatch_boundary_tests {
 
         assert!(
             !engine.contains_execution_for_test(&execution_id).await,
-            "parallel child failure must release the Failed terminal execution"
+            "parallel child crash must release live runtime after checkpointing"
         );
         let stored = engine
             .execution_store
             .get_execution(&execution_id)
             .await
-            .expect("ExecutionStore must keep the terminal run metadata");
-        assert_eq!(stored.status, ExecutionStatus::Failed);
+            .expect("ExecutionStore must keep interrupted checkpoint metadata");
+        assert_eq!(stored.status, ExecutionStatus::Interrupted);
         assert_eq!(
-            stored.error_reason.as_deref(),
-            Some("fanout child 'review-a' failed (exit_code: 1)")
+            stored.interruption_reason,
+            Some(ExecutionInterruptionReason::Crash)
         );
+        assert_eq!(stored.resume_from_node.as_deref(), Some("parallel-review"));
+        assert!(stored.error_reason.is_none());
         let events = WorkflowEventLog::new(&data_dir)
             .read_log(&execution_id)
             .unwrap();
-        assert!(events.iter().any(|event| matches!(
-            event,
-            WorkflowEvent::NodeFailed {
-                node_execution_id,
-                node_name,
-                ..
-            } if node_execution_id == &failed_child_node_execution_id && node_name == "review-a"
-        )));
-        assert!(events.iter().any(|event| matches!(
-            event,
-            WorkflowEvent::NodeFailed {
-                node_execution_id,
-                node_name,
-                ..
-            } if node_execution_id == &parent_node_execution_id && node_name == "parallel-review"
-        )));
         assert!(
-            events
-                .iter()
-                .any(|event| matches!(event, WorkflowEvent::ExecutionFailed { .. })),
-            "parallel child failure must append RunFailed; got {events:?}"
+            events.iter().any(|event| matches!(
+                event,
+                WorkflowEvent::ExecutionInterrupted {
+                    reason: ExecutionInterruptionReason::Crash,
+                    ..
+                }
+            )),
+            "parallel child crash must append ExecutionInterrupted(Crash); got {events:?}"
         );
         let refs = engine.session_workflow_refs.lock().await;
         assert!(
             refs.values()
                 .all(|session_ref| session_ref.execution_id != execution_id),
-            "terminal cleanup must remove all session refs for the failed parallel run"
+            "interruption cleanup must remove all session refs for the parallel run"
         );
     }
 
@@ -10501,7 +12278,8 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
-    async fn parallel_zero_exit_model_refusal_fails_parent_before_contract_repair() {
+    async fn parallel_model_refusal_checkpoints_confirmed_child_and_resume_completes_pending_child()
+    {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
@@ -10512,17 +12290,17 @@ mod dispatch_boundary_tests {
         let worktree_path = "/wt/parallel-zero-exit-refusal";
         let refused_child_session_id = "parallel-child-zero-refusal-session";
         let waiting_child_session_id = "parallel-child-waiting-session";
-        let mut review_a = make_fanout_child("review-a");
-        review_a.artifact = Some("review-verdict".to_string());
+        let mut review_b = make_fanout_child("review-b");
+        review_b.artifact = Some("review-verdict".to_string());
         let workflow = Workflow {
             name: "parallel-zero-refusal-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
-            schemas: Default::default(),
+            schemas: submit_test_schemas(),
             nodes: vec![
                 make_fanout_step("parallel-review", vec!["review-a", "review-b"]),
-                review_a,
-                make_fanout_child("review-b"),
+                make_fanout_child("review-a"),
+                review_b,
             ],
         };
         let mut exec =
@@ -10539,32 +12317,63 @@ mod dispatch_boundary_tests {
             workflow_stall_observation_fixture(refused_child_session_id, "review-a"),
             workflow_stall_observation_fixture(waiting_child_session_id, "review-b"),
         ];
-        let mut refused_child = test_fanout_child_run(
+        let refused_child = test_fanout_child_run(
             "review-a",
             refused_child_session_id,
             FanoutChildRuntimeState::Running,
             0,
         );
-        refused_child.contract = Some("review-verdict".to_string());
-        install_test_fanout_run(
-            &mut exec,
-            vec![
-                refused_child,
-                test_fanout_child_run(
-                    "review-b",
-                    waiting_child_session_id,
-                    FanoutChildRuntimeState::Running,
-                    1,
-                ),
-            ],
+        let mut confirmed_child = test_fanout_child_run(
+            "review-b",
+            waiting_child_session_id,
+            FanoutChildRuntimeState::Running,
+            1,
         );
+        confirmed_child.contract = Some("review-verdict".to_string());
+        install_test_fanout_run(&mut exec, vec![refused_child, confirmed_child]);
+        append_started_events_for_execution(&data_dir, &exec);
         insert_execution_and_active_run(&engine, exec, ExecutionOrigin::DesktopUi).await;
-        engine.session_workflow_refs.lock().await.insert(
-            refused_child_session_id.to_string(),
-            SessionWorkflowRef {
-                execution_id: execution_id.clone(),
-            },
-        );
+        {
+            let mut refs = engine.session_workflow_refs.lock().await;
+            for session_id in [refused_child_session_id, waiting_child_session_id] {
+                refs.insert(
+                    session_id.to_string(),
+                    SessionWorkflowRef {
+                        execution_id: execution_id.clone(),
+                    },
+                );
+            }
+        }
+
+        engine
+            .submit_workflow_output(
+                app.handle(),
+                &session_store,
+                &handles,
+                &execution_id,
+                "review-b".to_string(),
+                None,
+                "review-verdict".to_string(),
+                serde_json::json!({"verdict": "LGTM"}),
+            )
+            .await
+            .unwrap();
+        engine
+            .on_turn_complete(
+                app.handle(),
+                &session_store,
+                &handles,
+                waiting_child_session_id,
+                0,
+                None,
+                &[MessagePart::Text {
+                    content: "confirmed review".to_string(),
+                    parent_tool_use_id: None,
+                }],
+                None,
+            )
+            .await
+            .unwrap();
 
         let turn_complete =
             workflow_turn_complete_notification_from_typed_refusal(refused_child_session_id);
@@ -10602,18 +12411,19 @@ mod dispatch_boundary_tests {
 
         assert!(
             !engine.contains_execution_for_test(&execution_id).await,
-            "model refusal must fail and release the fanout execution"
+            "partial failure must release the interrupted fanout runtime"
         );
         let stored = engine
             .execution_store
             .get_execution(&execution_id)
             .await
-            .expect("ExecutionStore must keep terminal run metadata");
-        assert_eq!(stored.status, ExecutionStatus::Failed);
+            .expect("ExecutionStore must keep the resumable checkpoint metadata");
+        assert_eq!(stored.status, ExecutionStatus::Interrupted);
         assert_eq!(
-            stored.error_reason.as_deref(),
-            Some("fanout child 'review-a' failed (exit_code: 0)")
+            stored.interruption_reason,
+            Some(ExecutionInterruptionReason::Crash)
         );
+        assert_eq!(stored.resume_from_node.as_deref(), Some("parallel-review"));
 
         let events = WorkflowEventLog::new(&data_dir)
             .read_log(&execution_id)
@@ -10631,11 +12441,24 @@ mod dispatch_boundary_tests {
         );
         assert!(events.iter().any(|event| matches!(
             event,
-            WorkflowEvent::ExecutionFailed {
-                failure_kind: NodeExecutionFailureKind::ModelRefusal,
+            WorkflowEvent::ArtifactProduced { node_name, value, .. }
+                if node_name == "review-b"
+                    && value == &serde_json::json!({"verdict": "LGTM"})
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::NodeCompleted { node_name, .. } if node_name == "review-b"
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::ExecutionInterrupted {
+                reason: ExecutionInterruptionReason::Crash,
                 ..
             }
         )));
+        assert!(events
+            .iter()
+            .all(|event| !matches!(event, WorkflowEvent::ExecutionFailed { .. })));
         assert!(events.iter().all(|event| !matches!(
             event,
             WorkflowEvent::ArtifactProduced { node_name, .. } if node_name == "parallel-review"
@@ -10646,6 +12469,83 @@ mod dispatch_boundary_tests {
                 .all(|event| !matches!(event, WorkflowEvent::ContractViolated { .. })),
             "model refusal signal must not be rerouted into contract repair; got {events:?}"
         );
+
+        engine
+            .resume_workflow_execution(app.handle(), &session_store, &handles, &execution_id)
+            .await
+            .unwrap();
+        let resumed_child_session = {
+            let execs = engine.executions.lock().await;
+            let resumed = execs.get(&execution_id).expect("resumed fanout runtime");
+            let fanout = resumed
+                .parallel_run
+                .as_ref()
+                .expect("active resumed fanout");
+            let reused = fanout
+                .children
+                .iter()
+                .find(|child| child.node_name == "review-b")
+                .expect("confirmed child");
+            assert_eq!(reused.state, FanoutChildRuntimeState::Completed);
+            assert!(
+                reused.session_id.is_empty(),
+                "confirmed child is not restarted"
+            );
+            assert_eq!(
+                reused.artifact,
+                Some(serde_json::json!({"verdict": "LGTM"}))
+            );
+            let pending = fanout
+                .children
+                .iter()
+                .find(|child| child.node_name == "review-a")
+                .expect("failed child restarted as pending");
+            assert_eq!(pending.state, FanoutChildRuntimeState::Running);
+            assert!(!pending.session_id.is_empty());
+            pending.session_id.clone()
+        };
+        engine
+            .on_turn_complete(
+                app.handle(),
+                &session_store,
+                &handles,
+                &resumed_child_session,
+                0,
+                None,
+                &[MessagePart::Text {
+                    content: "recovered review".to_string(),
+                    parent_tool_use_id: None,
+                }],
+                None,
+            )
+            .await
+            .unwrap();
+
+        let completed = engine
+            .execution_store
+            .get_execution(&execution_id)
+            .await
+            .expect("resumed fanout reaches a final metadata state");
+        assert_eq!(completed.status, ExecutionStatus::Completed);
+        let completed_events = WorkflowEventLog::new(&data_dir)
+            .read_log(&execution_id)
+            .unwrap();
+        assert_eq!(
+            completed_events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    WorkflowEvent::SessionAttached { node_execution_id, .. }
+                        if node_execution_id.starts_with("ne-review-b")
+                ))
+                .count(),
+            1,
+            "the confirmed child keeps its original session and is not re-executed"
+        );
+        assert!(matches!(
+            completed_events.last(),
+            Some(WorkflowEvent::ExecutionCompleted { .. })
+        ));
     }
 
     #[tokio::test]
@@ -10780,8 +12680,7 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
-    async fn fanout_child_missing_output_after_repair_limit_fails_child_siblings_and_parent_in_live_and_replay(
-    ) {
+    async fn fanout_child_missing_output_after_repair_limit_creates_resumable_partial_checkpoint() {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
@@ -10898,14 +12797,14 @@ mod dispatch_boundary_tests {
 
         assert!(
             !engine.contains_execution_for_test(&execution_id).await,
-            "repair limit fanout missing-output failure must release the terminal run"
+            "repair limit fanout missing-output failure must release the interrupted run"
         );
         let live_payload = received_payloads
             .lock()
             .unwrap()
             .last()
             .cloned()
-            .expect("terminal failure must broadcast live snapshot");
+            .expect("partial failure must broadcast live snapshot");
         let live_json: serde_json::Value = serde_json::from_str(&live_payload).unwrap();
         let live_node_executions = live_json["workflowExecution"]["nodeExecutions"]
             .as_array()
@@ -10917,7 +12816,7 @@ mod dispatch_boundary_tests {
                 .and_then(|execution| execution["status"].as_str())
                 .expect("node execution status must be present")
         };
-        assert_eq!(live_status("parallel-review"), "failed");
+        assert_eq!(live_status("parallel-review"), "aborted");
         assert_eq!(live_status("review-a"), "failed");
         assert_eq!(live_status("review-b"), "aborted");
 
@@ -10935,7 +12834,7 @@ mod dispatch_boundary_tests {
         };
         assert_eq!(
             projected_status("parallel-review"),
-            crate::domain::workflow::NodeExecutionStatus::Failed
+            crate::domain::workflow::NodeExecutionStatus::Aborted
         );
         assert_eq!(
             projected_status("review-a"),
@@ -10949,17 +12848,25 @@ mod dispatch_boundary_tests {
             .node_executions
             .iter()
             .all(|execution| !execution.status.is_active()));
+        assert_eq!(projected.status, ExecutionStatus::Interrupted);
         assert!(events.iter().any(|event| matches!(
             event,
-            WorkflowEvent::ExecutionFailed {
-                failure_kind: NodeExecutionFailureKind::StructuredOutputMismatch,
+            WorkflowEvent::ExecutionInterrupted {
+                reason: ExecutionInterruptionReason::Crash,
                 ..
             }
         )));
+        let stored = engine
+            .execution_store
+            .get_execution(&execution_id)
+            .await
+            .expect("repair exhaustion remains resumable");
+        assert_eq!(stored.status, ExecutionStatus::Interrupted);
+        assert_eq!(stored.resume_from_node.as_deref(), Some("parallel-review"));
     }
 
     #[tokio::test]
-    async fn approval_fanout_child_missing_output_after_repair_limit_fails_child_siblings_and_parent_with_child_node_failed(
+    async fn approval_fanout_child_missing_output_after_repair_limit_is_resumable_with_child_node_failed(
     ) {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
@@ -11089,14 +12996,14 @@ mod dispatch_boundary_tests {
         ));
         assert!(
             !engine.contains_execution_for_test(&execution_id).await,
-            "repair limit approval fanout missing-output failure must release the terminal run"
+            "repair limit approval fanout missing-output failure must release the interrupted run"
         );
         let live_payload = received_payloads
             .lock()
             .unwrap()
             .last()
             .cloned()
-            .expect("terminal failure must broadcast live snapshot");
+            .expect("partial failure must broadcast live snapshot");
         let live_json: serde_json::Value = serde_json::from_str(&live_payload).unwrap();
         let live_node_executions = live_json["workflowExecution"]["nodeExecutions"]
             .as_array()
@@ -11108,7 +13015,7 @@ mod dispatch_boundary_tests {
                 .and_then(|execution| execution["status"].as_str())
                 .expect("node execution status must be present")
         };
-        assert_eq!(live_status_by_id(&parent_node_execution_id), "failed");
+        assert_eq!(live_status_by_id(&parent_node_execution_id), "aborted");
         assert_eq!(
             live_status_by_id(&approval_child_node_execution_id),
             "failed"
@@ -11139,7 +13046,7 @@ mod dispatch_boundary_tests {
         };
         assert_eq!(
             projected_status_by_id(&parent_node_execution_id),
-            crate::domain::workflow::NodeExecutionStatus::Failed
+            crate::domain::workflow::NodeExecutionStatus::Aborted
         );
         assert_eq!(
             projected_status_by_id(&approval_child_node_execution_id),
@@ -11149,6 +13056,14 @@ mod dispatch_boundary_tests {
             projected_status_by_id(&sibling_node_execution_id),
             crate::domain::workflow::NodeExecutionStatus::Aborted
         );
+        assert_eq!(projected.status, ExecutionStatus::Interrupted);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::ExecutionInterrupted {
+                reason: ExecutionInterruptionReason::Crash,
+                ..
+            }
+        )));
     }
 
     #[tokio::test]
@@ -11735,6 +13650,7 @@ mod dispatch_boundary_tests {
             worktree_path: worktree_path.to_string(),
             created_from: ExecutionOrigin::DesktopUi,
             request: String::new(),
+            permission_mode: "ask".to_string(),
             definition: workflow.clone(),
             timestamp: 1000.0,
         })
@@ -11968,6 +13884,115 @@ mod dispatch_boundary_tests {
         assert_eq!(active[0].status, ExecutionStatus::Running);
         // ChatSession.workflow_state は撤去済みのため parent session 経由の rollback 観測は省略。
         assert!(read_dispatch_events(&app, &execution_id).is_empty());
+    }
+
+    /// Interrupted abort も append-only event log を最初の永続 commit point とする。
+    /// ExecutionAborted append が失敗した場合、metadata は再開可能な checkpoint のままで、
+    /// append 前に Aborted が外部可視にならない。
+    #[tokio::test]
+    async fn dispatch_abort_interrupted_append_failure_keeps_checkpoint() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_execution_store_data_dir(data_dir.clone()).await;
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
+        let worktree = TempDir::new().unwrap();
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        engine
+            .execution_store
+            .register_active_execution(WorkflowExecutionMetadata {
+                execution_id: execution_id.clone(),
+                workflow_name: "wf".to_string(),
+                status: ExecutionStatus::Running,
+                worktree_path: worktree.path().to_string_lossy().into_owned(),
+                current_node: Some("plan".to_string()),
+                created_from: ExecutionOrigin::DesktopUi,
+                started_at: 100.0,
+                updated_at: 100.0,
+                completed_at: None,
+                error_reason: None,
+                interruption_reason: None,
+                resume_from_node: None,
+                total_token_usage: crate::domain::workflow::TokenUsage::default(),
+            })
+            .await
+            .unwrap();
+        engine
+            .execution_store
+            .interrupt_execution(
+                &execution_id,
+                ExecutionInterruptionReason::Stop,
+                Some("plan".to_string()),
+                110.0,
+            )
+            .await
+            .unwrap();
+        let worktree_path = worktree.path().to_string_lossy().into_owned();
+        WorkflowEventLog::new(&data_dir)
+            .append_batch(&[
+                WorkflowEvent::ExecutionStarted {
+                    execution_id: execution_id.clone(),
+                    workflow_name: "wf".to_string(),
+                    worktree_path,
+                    created_from: ExecutionOrigin::DesktopUi,
+                    request: String::new(),
+                    permission_mode: "ask".to_string(),
+                    definition: Workflow {
+                        name: "wf".to_string(),
+                        description: String::new(),
+                        builtin: false,
+                        schemas: Default::default(),
+                        nodes: vec![make_test_step(
+                            "plan",
+                            TestKind::Session,
+                            "implement",
+                            vec![],
+                            None,
+                        )],
+                    },
+                    timestamp: 100.0,
+                },
+                WorkflowEvent::NodeStarted {
+                    execution_id: execution_id.clone(),
+                    node_execution_id: format!("{execution_id}-plan-1"),
+                    node_name: "plan".to_string(),
+                    kind: NodeKindName::Session,
+                    attempt: 1,
+                    fanout_parent: None,
+                    timestamp: 101.0,
+                },
+                WorkflowEvent::ExecutionInterrupted {
+                    execution_id: execution_id.clone(),
+                    reason: ExecutionInterruptionReason::Stop,
+                    timestamp: 110.0,
+                },
+            ])
+            .unwrap();
+        engine.fail_next_required_event_append_for_test();
+
+        let result = engine
+            .abort_workflow_execution(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                &execution_id,
+                None,
+            )
+            .await;
+
+        assert!(matches!(result, Err(WorkflowEngineError::SessionStore(_))));
+        let checkpoint = engine
+            .execution_store
+            .get_execution_record(&execution_id)
+            .await
+            .expect("interrupted checkpoint must remain after append failure");
+        assert_eq!(checkpoint.status, ExecutionStatus::Interrupted);
+        assert_eq!(
+            checkpoint.interruption_reason,
+            Some(ExecutionInterruptionReason::Stop)
+        );
+        assert_eq!(checkpoint.resume_from_node.as_deref(), Some("plan"));
+        assert!(checkpoint.completed_at.is_none());
     }
 
     /// Spec [04] テスト境界: StartRun は production start primitive 入口で
@@ -12205,6 +14230,7 @@ mod dispatch_boundary_tests {
                     worktree_path: worktree_path.to_string(),
                     created_from: ExecutionOrigin::DesktopUi,
                     request: String::new(),
+                    permission_mode: "ask".to_string(),
                     definition: workflow,
                     timestamp: 1000.0,
                 },
@@ -12315,6 +14341,7 @@ mod dispatch_boundary_tests {
                     worktree_path: worktree_path.to_string(),
                     created_from: ExecutionOrigin::DesktopUi,
                     request: String::new(),
+                    permission_mode: "ask".to_string(),
                     definition: workflow,
                     timestamp: 1000.0,
                 },
@@ -12541,14 +14568,26 @@ mod dispatch_boundary_tests {
         assert!(read_dispatch_events(&app, &missing_run_id).is_empty());
 
         let terminal_run_id = uuid::Uuid::new_v4().to_string();
-        let mut terminal = make_waiting_approval_execution(&terminal_run_id, "/wt/terminal-abort");
-        terminal.state = RuntimeExecutionState::Completed;
-        let snapshot_before = terminal.clone();
+        let terminal = make_waiting_approval_execution(&terminal_run_id, "/wt/terminal-abort");
+        insert_execution_and_active_run(&engine, terminal, ExecutionOrigin::DesktopUi).await;
+        let snapshot_before = {
+            let mut executions = engine.executions.lock().await;
+            let terminal = executions
+                .get_mut(&terminal_run_id)
+                .expect("live terminal fixture");
+            terminal.state = RuntimeExecutionState::Completed;
+            terminal.clone()
+        };
         engine
-            .executions
-            .lock()
+            .execution_store
+            .complete_execution(
+                &terminal_run_id,
+                TerminalExecutionStatus::Completed,
+                2000.0,
+                None,
+            )
             .await
-            .insert(terminal_run_id.clone(), terminal);
+            .unwrap();
 
         let terminal_result = engine
             .abort_workflow_execution(
@@ -12778,6 +14817,8 @@ mod dispatch_boundary_tests {
                 updated_at: 1000.0,
                 completed_at: None,
                 error_reason: None,
+                interruption_reason: None,
+                resume_from_node: None,
                 total_token_usage: crate::domain::workflow::TokenUsage::default(),
             })
             .await
@@ -13085,80 +15126,58 @@ mod dispatch_boundary_tests {
         );
     }
 
-    /// 起動時 recovery: 前回起動中に terminal event が書かれないまま終了した run について、
-    /// `recover_orphan_executions` が NDJSON 末尾に `RunAborted` を append し、metadata 上の
-    /// status を Aborted に書き換える。reconstruction 経路が Aborted を返すようになる。
+    /// 起動時 recovery: 前回起動中に確定 event が書かれないまま終了した run について、
+    /// `recover_orphan_executions` が NDJSON 末尾に `ExecutionInterrupted(Orphan)` を append し、
+    /// metadata 上に再開 checkpoint を残す。既定で abort せず、abort / resume のどちらも
+    /// typed command の許可状態になる。
     #[tokio::test]
-    async fn recover_orphan_executions_marks_non_terminal_metadata_as_aborted() {
+    async fn recover_orphan_executions_leaves_resumable_interrupted_checkpoint() {
         let app = make_dispatch_app();
         let data_dir = dispatch_data_dir(app.handle());
 
-        // 前回プロセスの状態を模擬: workflow_executions/<id>.json に Running、event log に RunStarted のみ。
+        // 前回プロセスの状態を模擬: metadata.current_node は plan のままだが、event log では
+        // plan の NodeCompleted まで確定し、次の review の NodeStarted 前に crash している。
         let prev_store = std::sync::Arc::new(
             crate::adaptor::gateway::workflow::execution_store::ExecutionStore::new(),
         );
         prev_store.set_data_dir(data_dir.clone()).await;
         let orphan_id = uuid::Uuid::new_v4().to_string();
-        prev_store
-            .register_active_execution(WorkflowExecutionMetadata {
-                execution_id: orphan_id.clone(),
-                workflow_name: "wf".to_string(),
-                status: ExecutionStatus::Running,
-                worktree_path: "/wt/a".to_string(),
-                current_node: Some("plan".to_string()),
-                created_from: ExecutionOrigin::DesktopUi,
-                started_at: 100.0,
-                updated_at: 100.0,
-                completed_at: None,
-                error_reason: None,
-                total_token_usage: crate::domain::workflow::TokenUsage::default(),
-            })
-            .await
-            .unwrap();
-        let log = WorkflowEventLog::new(&data_dir);
-        log.append(&WorkflowEvent::ExecutionStarted {
-            execution_id: orphan_id.clone(),
-            workflow_name: "wf".to_string(),
-            worktree_path: "/wt/a".to_string(),
-            created_from: ExecutionOrigin::Agent,
-            request: String::new(),
-            definition: Workflow {
-                name: "wf".to_string(),
-                description: String::new(),
-                builtin: false,
-                schemas: Default::default(),
-                nodes: vec![make_test_step(
-                    "plan",
-                    TestKind::Session,
-                    "plan",
-                    vec![],
-                    None,
-                )],
-            },
-            timestamp: 100.0,
-        })
-        .unwrap();
+        seed_resumable_orphan_execution(&prev_store, &data_dir, &orphan_id, "/wt/a").await;
 
         // 起動直後を模擬した engine (空の in-memory state + 同じ data_dir)。
         let engine = std::sync::Arc::new(WorkflowRuntimeService::new_for_test());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
         engine.recover_orphan_executions(app.handle()).await;
 
-        // metadata が Aborted に書き換わっている（status / completed_at が更新される）。
+        // metadata は terminal にせず、Orphan 理由と再開点を持つ Interrupted checkpoint になる。
         let summary = engine
             .execution_store
             .get_execution(&orphan_id)
             .await
             .expect("metadata must remain after recovery");
-        assert_eq!(summary.status, ExecutionStatus::Aborted);
-        assert!(summary.completed_at.is_some());
+        assert_eq!(summary.status, ExecutionStatus::Interrupted);
+        assert_eq!(
+            summary.interruption_reason,
+            Some(ExecutionInterruptionReason::Orphan)
+        );
+        assert_eq!(summary.resume_from_node.as_deref(), Some("review"));
+        assert_eq!(summary.current_node, None);
+        assert!(summary.completed_at.is_none());
         assert!(summary.error_reason.is_none());
+        assert!(summary.status.can_resume());
+        assert!(summary.status.can_abort());
 
-        // 末尾 event が RunAborted。projection も Aborted を返すようになる。
+        // 末尾 event と event-log projection も同じ Interrupted checkpoint を返す。
         let events = read_dispatch_events(&app, &orphan_id);
         assert!(
-            matches!(events.last(), Some(WorkflowEvent::ExecutionAborted { .. })),
-            "log の末尾は RunAborted: {:?}",
+            matches!(
+                events.last(),
+                Some(WorkflowEvent::ExecutionInterrupted {
+                    reason: ExecutionInterruptionReason::Orphan,
+                    ..
+                })
+            ),
+            "log の末尾は ExecutionInterrupted(Orphan): {:?}",
             events.last()
         );
         let projected =
@@ -13167,7 +15186,125 @@ mod dispatch_boundary_tests {
             )
             .unwrap()
             .unwrap();
-        assert_eq!(projected.status, ExecutionStatus::Aborted);
+        assert_eq!(projected.status, ExecutionStatus::Interrupted);
+        assert_eq!(
+            projected.interruption_reason,
+            Some(ExecutionInterruptionReason::Orphan)
+        );
+        assert_eq!(projected.resume_from_node.as_deref(), Some("review"));
+        assert_eq!(
+            projected
+                .node_executions
+                .iter()
+                .find(|node| node.node_name == "plan")
+                .expect("confirmed plan NodeExecution must remain in projection")
+                .status,
+            crate::domain::workflow::NodeExecutionStatus::Succeeded
+        );
+        assert!(projected.completed_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn recovered_orphans_accept_typed_resume_and_abort_commands() {
+        let app = make_dispatch_app();
+        let data_dir = dispatch_data_dir(app.handle());
+        let previous_store =
+            Arc::new(crate::adaptor::gateway::workflow::execution_store::ExecutionStore::new());
+        previous_store.set_data_dir(data_dir.clone()).await;
+        let resume_id = uuid::Uuid::new_v4().to_string();
+        let abort_id = uuid::Uuid::new_v4().to_string();
+        seed_resumable_orphan_execution(
+            &previous_store,
+            &data_dir,
+            &resume_id,
+            "/wt/orphan-resume",
+        )
+        .await;
+        seed_resumable_orphan_execution(&previous_store, &data_dir, &abort_id, "/wt/orphan-abort")
+            .await;
+
+        let engine = Arc::new(WorkflowRuntimeService::new_for_test());
+        engine.set_execution_store_data_dir(data_dir.clone()).await;
+        engine.recover_orphan_executions(app.handle()).await;
+
+        for execution_id in [&resume_id, &abort_id] {
+            let checkpoint = engine
+                .execution_store
+                .get_execution(execution_id)
+                .await
+                .expect("orphan recovery must retain the checkpoint");
+            assert_eq!(checkpoint.status, ExecutionStatus::Interrupted);
+            assert_eq!(
+                checkpoint.interruption_reason,
+                Some(ExecutionInterruptionReason::Orphan)
+            );
+            assert_eq!(checkpoint.resume_from_node.as_deref(), Some("review"));
+        }
+
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir);
+        let gateway = Arc::new(RecoveredOrphanCommandGateway {
+            app: app.handle().clone(),
+            engine: engine.clone(),
+            session_store,
+            agent_runtime,
+        });
+        WorkflowResumeExecutionUsecase::new(gateway.clone())
+            .execute(ResumeExecutionCommand {
+                execution_id: resume_id.clone(),
+            })
+            .await
+            .expect("typed ResumeExecution must accept a recovered orphan checkpoint");
+        WorkflowAbortExecutionUsecase::new(gateway)
+            .execute(AbortExecutionCommand {
+                execution_id: abort_id.clone(),
+                expected_node_name: None,
+            })
+            .await
+            .expect("typed AbortExecution must accept a recovered orphan checkpoint");
+
+        let resumed = engine
+            .execution_store
+            .get_execution(&resume_id)
+            .await
+            .expect("resumed metadata");
+        assert_eq!(resumed.status, ExecutionStatus::Running);
+        assert_eq!(resumed.current_node.as_deref(), Some("review"));
+        assert_eq!(resumed.interruption_reason, None);
+        assert_eq!(resumed.resume_from_node, None);
+        let resumed_events = read_dispatch_events(&app, &resume_id);
+        assert!(resumed_events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::ExecutionResumed {
+                resume_from_node,
+                ..
+            } if resume_from_node == "review"
+        )));
+        assert_eq!(
+            resumed_events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    WorkflowEvent::NodeStarted { node_name, .. } if node_name == "plan"
+                ))
+                .count(),
+            1,
+            "confirmed plan must not run again after orphan resume"
+        );
+
+        let aborted = engine
+            .execution_store
+            .get_execution(&abort_id)
+            .await
+            .expect("aborted metadata");
+        assert_eq!(aborted.status, ExecutionStatus::Aborted);
+        assert!(aborted.completed_at.is_some());
+        assert!(matches!(
+            read_dispatch_events(&app, &abort_id).last(),
+            Some(WorkflowEvent::ExecutionAborted {
+                aborted_node: Some(node),
+                ..
+            }) if node == "review"
+        ));
     }
 
     /// 起動時 recovery: 既に terminal な metadata は変更されない（idempotent）。
@@ -13194,6 +15331,8 @@ mod dispatch_boundary_tests {
                 updated_at: 100.0,
                 completed_at: None,
                 error_reason: None,
+                interruption_reason: None,
+                resume_from_node: None,
                 total_token_usage: crate::domain::workflow::TokenUsage::default(),
             })
             .await
@@ -13219,6 +15358,231 @@ mod dispatch_boundary_tests {
             .await
             .expect("metadata must remain");
         assert_eq!(summary.status, ExecutionStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn recover_orphan_executions_reconciles_a_durable_terminal_event_without_interrupting() {
+        let app = make_dispatch_app();
+        let data_dir = dispatch_data_dir(app.handle());
+        let prev_store = std::sync::Arc::new(
+            crate::adaptor::gateway::workflow::execution_store::ExecutionStore::new(),
+        );
+        prev_store.set_data_dir(data_dir.clone()).await;
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        prev_store
+            .register_active_execution(WorkflowExecutionMetadata {
+                execution_id: execution_id.clone(),
+                workflow_name: "wf".to_string(),
+                status: ExecutionStatus::Running,
+                worktree_path: "/wt/terminal-crash-window".to_string(),
+                current_node: Some("plan".to_string()),
+                created_from: ExecutionOrigin::DesktopUi,
+                started_at: 100.0,
+                updated_at: 100.0,
+                completed_at: None,
+                error_reason: None,
+                interruption_reason: None,
+                resume_from_node: None,
+                total_token_usage: Default::default(),
+            })
+            .await
+            .unwrap();
+        let definition = Workflow {
+            name: "wf".to_string(),
+            nodes: vec![make_test_step(
+                "plan",
+                TestKind::Session,
+                "plan",
+                vec![],
+                None,
+            )],
+            ..Default::default()
+        };
+        WorkflowEventLog::new(&data_dir)
+            .append_batch(&[
+                WorkflowEvent::ExecutionStarted {
+                    execution_id: execution_id.clone(),
+                    workflow_name: "wf".to_string(),
+                    worktree_path: "/wt/terminal-crash-window".to_string(),
+                    created_from: ExecutionOrigin::DesktopUi,
+                    request: String::new(),
+                    permission_mode: "ask".to_string(),
+                    definition,
+                    timestamp: 100.0,
+                },
+                WorkflowEvent::NodeStarted {
+                    execution_id: execution_id.clone(),
+                    node_execution_id: "plan-1".to_string(),
+                    node_name: "plan".to_string(),
+                    kind: NodeKindName::Session,
+                    attempt: 1,
+                    fanout_parent: None,
+                    timestamp: 101.0,
+                },
+                WorkflowEvent::NodeCompleted {
+                    execution_id: execution_id.clone(),
+                    node_execution_id: "plan-1".to_string(),
+                    node_name: "plan".to_string(),
+                    attempt: 1,
+                    result_summary: Some("done".to_string()),
+                    token_usage: None,
+                    timestamp: 102.0,
+                },
+                WorkflowEvent::ExecutionCompleted {
+                    execution_id: execution_id.clone(),
+                    total_token_usage: Default::default(),
+                    timestamp: 103.0,
+                },
+            ])
+            .unwrap();
+
+        let engine = WorkflowRuntimeService::new_for_test();
+        engine.set_execution_store_data_dir(data_dir.clone()).await;
+        engine.recover_orphan_executions(app.handle()).await;
+
+        let summary = engine
+            .execution_store
+            .get_execution(&execution_id)
+            .await
+            .unwrap();
+        assert_eq!(summary.status, ExecutionStatus::Completed);
+        assert_eq!(summary.completed_at, Some(103.0));
+        let events = WorkflowEventLog::new(&data_dir)
+            .read_log(&execution_id)
+            .unwrap();
+        assert!(events
+            .iter()
+            .all(|event| !matches!(event, WorkflowEvent::ExecutionInterrupted { .. })));
+    }
+
+    #[tokio::test]
+    async fn recover_orphan_executions_repairs_interrupted_metadata_after_durable_abort() {
+        let app = make_dispatch_app();
+        let data_dir = dispatch_data_dir(app.handle());
+        let prev_store = crate::adaptor::gateway::workflow::execution_store::ExecutionStore::new();
+        prev_store.set_data_dir(data_dir.clone()).await;
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        prev_store
+            .register_active_execution(WorkflowExecutionMetadata {
+                execution_id: execution_id.clone(),
+                workflow_name: "wf".to_string(),
+                status: ExecutionStatus::Running,
+                worktree_path: "/wt/interrupted-abort-repair".to_string(),
+                current_node: Some("plan".to_string()),
+                created_from: ExecutionOrigin::DesktopUi,
+                started_at: 100.0,
+                updated_at: 100.0,
+                completed_at: None,
+                error_reason: None,
+                interruption_reason: None,
+                resume_from_node: None,
+                total_token_usage: Default::default(),
+            })
+            .await
+            .unwrap();
+        prev_store
+            .interrupt_execution(
+                &execution_id,
+                ExecutionInterruptionReason::Stop,
+                Some("plan".to_string()),
+                102.0,
+            )
+            .await
+            .unwrap();
+        WorkflowEventLog::new(&data_dir)
+            .append_batch(&[
+                WorkflowEvent::ExecutionStarted {
+                    execution_id: execution_id.clone(),
+                    workflow_name: "wf".to_string(),
+                    worktree_path: "/wt/interrupted-abort-repair".to_string(),
+                    created_from: ExecutionOrigin::DesktopUi,
+                    request: String::new(),
+                    permission_mode: "ask".to_string(),
+                    definition: Workflow {
+                        name: "wf".to_string(),
+                        nodes: vec![make_test_step(
+                            "plan",
+                            TestKind::Session,
+                            "plan",
+                            vec![],
+                            None,
+                        )],
+                        ..Default::default()
+                    },
+                    timestamp: 100.0,
+                },
+                WorkflowEvent::NodeStarted {
+                    execution_id: execution_id.clone(),
+                    node_execution_id: "plan-1".to_string(),
+                    node_name: "plan".to_string(),
+                    kind: NodeKindName::Session,
+                    attempt: 1,
+                    fanout_parent: None,
+                    timestamp: 101.0,
+                },
+                WorkflowEvent::ExecutionInterrupted {
+                    execution_id: execution_id.clone(),
+                    reason: ExecutionInterruptionReason::Stop,
+                    timestamp: 102.0,
+                },
+                WorkflowEvent::ExecutionAborted {
+                    execution_id: execution_id.clone(),
+                    aborted_node: Some("plan".to_string()),
+                    timestamp: 103.0,
+                },
+            ])
+            .unwrap();
+
+        let engine = WorkflowRuntimeService::new_for_test();
+        engine.set_execution_store_data_dir(data_dir).await;
+        engine.recover_orphan_executions(app.handle()).await;
+
+        let summary = engine
+            .execution_store
+            .get_execution(&execution_id)
+            .await
+            .unwrap();
+        assert_eq!(summary.status, ExecutionStatus::Aborted);
+        assert_eq!(summary.completed_at, Some(103.0));
+        assert_eq!(summary.interruption_reason, None);
+        assert_eq!(summary.resume_from_node, None);
+    }
+
+    #[tokio::test]
+    async fn recover_orphan_executions_removes_an_uncommitted_start_reservation() {
+        let app = make_dispatch_app();
+        let data_dir = dispatch_data_dir(app.handle());
+        let prev_store = crate::adaptor::gateway::workflow::execution_store::ExecutionStore::new();
+        prev_store.set_data_dir(data_dir.clone()).await;
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        prev_store
+            .register_active_execution(WorkflowExecutionMetadata {
+                execution_id: execution_id.clone(),
+                workflow_name: "wf".to_string(),
+                status: ExecutionStatus::Running,
+                worktree_path: "/wt/uncommitted-start".to_string(),
+                current_node: Some("plan".to_string()),
+                created_from: ExecutionOrigin::DesktopUi,
+                started_at: 100.0,
+                updated_at: 100.0,
+                completed_at: None,
+                error_reason: None,
+                interruption_reason: None,
+                resume_from_node: None,
+                total_token_usage: Default::default(),
+            })
+            .await
+            .unwrap();
+
+        let engine = WorkflowRuntimeService::new_for_test();
+        engine.set_execution_store_data_dir(data_dir).await;
+        engine.recover_orphan_executions(app.handle()).await;
+
+        assert!(engine
+            .execution_store
+            .get_execution(&execution_id)
+            .await
+            .is_none());
     }
 
     // ---- [08] handle_submit_output: 単一トランザクション境界 ----
@@ -14744,7 +17108,7 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
-    async fn fanout_activation_failure_aborts_children_in_live_snapshot_and_replay() {
+    async fn fanout_activation_crash_checkpoints_aborted_children_in_live_snapshot_and_replay() {
         let app = make_dispatch_app();
         let engine = WorkflowRuntimeService::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
@@ -14796,19 +17160,24 @@ mod dispatch_boundary_tests {
 
         assert!(
             !engine.contains_execution_for_test(&execution_id).await,
-            "terminal activation failure must release the live execution"
+            "activation crash must release the live execution after checkpointing"
         );
         let run = engine
             .execution_store()
             .get_execution(&execution_id)
             .await
             .unwrap();
-        assert_eq!(run.status, ExecutionStatus::Failed);
+        assert_eq!(run.status, ExecutionStatus::Interrupted);
+        assert_eq!(
+            run.interruption_reason,
+            Some(ExecutionInterruptionReason::Crash)
+        );
+        assert_eq!(run.resume_from_node.as_deref(), Some("fanout-review"));
 
         let payloads = received_payloads.lock().unwrap().clone();
         let live_payload = payloads
             .last()
-            .expect("terminal failure must broadcast its final snapshot");
+            .expect("activation crash must broadcast its checkpoint snapshot");
         let live_json: serde_json::Value = serde_json::from_str(live_payload).unwrap();
         let live_node_executions = live_json["workflowExecution"]["nodeExecutions"]
             .as_array()
@@ -14820,7 +17189,7 @@ mod dispatch_boundary_tests {
                 .and_then(|execution| execution["status"].as_str())
                 .expect("node execution status must be present")
         };
-        assert_eq!(live_status("fanout-review"), "failed");
+        assert_eq!(live_status("fanout-review"), "aborted");
         assert_eq!(live_status("review-a"), "aborted");
         assert_eq!(live_status("review-b"), "aborted");
 
@@ -14828,6 +17197,7 @@ mod dispatch_boundary_tests {
         let projected = project_workflow_execution(&execution_id, &events)
             .unwrap()
             .unwrap();
+        assert_eq!(projected.status, ExecutionStatus::Interrupted);
         let projected_status = |node_name: &str| {
             projected
                 .node_executions
@@ -14838,7 +17208,7 @@ mod dispatch_boundary_tests {
         };
         assert_eq!(
             projected_status("fanout-review"),
-            crate::domain::workflow::NodeExecutionStatus::Failed
+            crate::domain::workflow::NodeExecutionStatus::Aborted
         );
         assert_eq!(
             projected_status("review-a"),

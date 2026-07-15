@@ -10,7 +10,7 @@ use crate::adaptor::gateway::workflow::execution_store::{
 };
 use crate::adaptor::gateway::workflow::runtime_state::WorkflowExecution;
 use crate::adaptor::gateway::workflow::state::{RuntimeExecutionState, WorkflowState};
-use crate::domain::workflow::ExecutionStatus;
+use crate::domain::workflow::{ExecutionInterruptionReason, ExecutionStatus};
 use crate::usecase::agent_session::status::current_timestamp;
 
 /// `abort_workflow_by_execution_id` 内部 lookup の typed 結果。
@@ -84,6 +84,15 @@ impl StepOutcome {
         }
     }
 
+    pub(crate) fn snapshot_mut(&mut self) -> &mut WorkflowState {
+        match self {
+            Self::Persist(snapshot)
+            | Self::RetryCurrentStep { snapshot, .. }
+            | Self::TransitionAndStart(snapshot)
+            | Self::StartParallel(snapshot) => snapshot,
+        }
+    }
+
     pub(crate) fn completed_step_session_ids(&self) -> Vec<String> {
         match self {
             Self::Persist(snapshot) if matches!(snapshot.state, RuntimeExecutionState::Aborted) => {
@@ -134,36 +143,60 @@ pub(crate) async fn sync_execution_store_from_snapshot(
     snapshot: &WorkflowState,
 ) -> Result<(), WorkflowEngineError> {
     let now = current_timestamp();
+    let total_token_usage = crate::domain::workflow::TokenUsage {
+        input_tokens: snapshot.total_token_usage.input_tokens,
+        output_tokens: snapshot.total_token_usage.output_tokens,
+    };
     let result = match &snapshot.state {
         RuntimeExecutionState::Completed => {
             execution_store
-                .complete_execution(execution_id, TerminalExecutionStatus::Completed, now, None)
+                .complete_execution_with_usage(
+                    execution_id,
+                    TerminalExecutionStatus::Completed,
+                    now,
+                    None,
+                    Some(total_token_usage),
+                )
                 .await
         }
         RuntimeExecutionState::Failed { reason, .. } => {
             execution_store
-                .complete_execution(
+                .complete_execution_with_usage(
                     execution_id,
                     TerminalExecutionStatus::Failed,
                     now,
                     Some(reason.clone()),
+                    Some(total_token_usage),
                 )
                 .await
         }
         RuntimeExecutionState::Aborted => {
             execution_store
-                .complete_execution(execution_id, TerminalExecutionStatus::Aborted, now, None)
+                .complete_execution_with_usage(
+                    execution_id,
+                    TerminalExecutionStatus::Aborted,
+                    now,
+                    None,
+                    Some(total_token_usage),
+                )
                 .await
         }
         RuntimeExecutionState::Interrupted => {
+            let reason = snapshot
+                .error_reason
+                .as_deref()
+                .and_then(ExecutionInterruptionReason::from_reason)
+                .unwrap_or(ExecutionInterruptionReason::Crash);
             execution_store
-                .complete_execution(
+                .interrupt_execution_with_usage(
                     execution_id,
-                    TerminalExecutionStatus::Interrupted,
+                    reason,
+                    Some(snapshot.current_node_name.clone()),
                     now,
-                    None,
+                    Some(total_token_usage),
                 )
                 .await
+                .map(|_| ())
         }
         RuntimeExecutionState::Running | RuntimeExecutionState::WaitingApproval => {
             let status = if matches!(snapshot.state, RuntimeExecutionState::Running) {
@@ -173,7 +206,13 @@ pub(crate) async fn sync_execution_store_from_snapshot(
             };
             let current_node = snapshot.current_node_name.clone();
             execution_store
-                .sync_active_projection(execution_id, status, Some(current_node), now)
+                .sync_active_projection_with_usage(
+                    execution_id,
+                    status,
+                    Some(current_node),
+                    now,
+                    Some(total_token_usage),
+                )
                 .await
         }
     };

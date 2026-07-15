@@ -4,9 +4,7 @@ use std::{collections::HashMap, path::Path};
 use tokio::sync::Mutex;
 
 use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
-use crate::adaptor::gateway::workflow::execution_registry::{
-    find_by_worktree, find_by_worktree_mut,
-};
+use crate::adaptor::gateway::workflow::execution_registry::find_by_worktree;
 use crate::adaptor::gateway::workflow::facet::WorkflowFacetContents;
 use crate::adaptor::gateway::workflow::failure_policy_config::workflow_runtime_timeout_policy;
 use crate::adaptor::gateway::workflow::parallel_runtime::{
@@ -15,14 +13,11 @@ use crate::adaptor::gateway::workflow::parallel_runtime::{
 };
 use crate::adaptor::gateway::workflow::prompt_rendering as workflow_prompt;
 use crate::adaptor::gateway::workflow::runtime_state::{SessionWorkflowRef, WorkflowExecution};
-use crate::adaptor::gateway::workflow::state::{RuntimeExecutionState, WorkflowState};
+use crate::adaptor::gateway::workflow::state::WorkflowState;
 use crate::adaptor::gateway::workflow::step_settings::{
     resolve_step_settings, ResolvedStepSettings, WorkflowDefaults,
 };
 use crate::domain::agent_session::PermissionMode;
-use crate::domain::workflow::services::history::{
-    self as workflow_history, RuntimeStartFailureKind,
-};
 use crate::domain::workflow::{
     NodeExecutionFailureKind, NodeKindName, RetryPolicy, TimeoutContext, WorkflowNodeContext,
 };
@@ -49,58 +44,6 @@ impl StepRuntimeKindContext {
     pub(crate) fn session() -> Self {
         Self::new(NodeKindName::Session, false)
     }
-}
-
-fn runtime_start_failure_reason(
-    failure: RuntimeStartFailureKind,
-    error: &WorkflowEngineError,
-) -> String {
-    workflow_history::runtime_start_failure_reason(failure, error.to_string())
-}
-
-pub(crate) fn runtime_start_failed_state(
-    failure: RuntimeStartFailureKind,
-    error: &WorkflowEngineError,
-) -> RuntimeExecutionState {
-    RuntimeExecutionState::Failed {
-        reason: runtime_start_failure_reason(failure, error),
-        kind: error.workflow_failure_kind(),
-        retry_count: error.retry_count(),
-    }
-}
-
-pub(crate) async fn record_node_session_start_failed_by_execution_id(
-    executions: &Mutex<HashMap<String, WorkflowExecution>>,
-    execution_id: &str,
-    error: &WorkflowEngineError,
-) {
-    let mut execs = executions.lock().await;
-    if let Some(exec) = execs.get_mut(execution_id) {
-        exec.record_node_session_start_failed(error.to_string());
-    }
-}
-
-pub(crate) async fn record_node_session_start_failed_by_worktree(
-    executions: &Mutex<HashMap<String, WorkflowExecution>>,
-    worktree_path: &str,
-    error: &WorkflowEngineError,
-) {
-    let mut execs = executions.lock().await;
-    if let Some(exec) = find_by_worktree_mut(&mut execs, worktree_path) {
-        exec.record_node_session_start_failed(error.to_string());
-    }
-}
-
-pub(crate) async fn record_post_commit_runtime_start_failure(
-    executions: &Mutex<HashMap<String, WorkflowExecution>>,
-    worktree_path: &str,
-    failure: RuntimeStartFailureKind,
-    error: &WorkflowEngineError,
-) -> RuntimeExecutionState {
-    if matches!(failure, RuntimeStartFailureKind::StepSession) {
-        record_node_session_start_failed_by_worktree(executions, worktree_path, error).await;
-    }
-    runtime_start_failed_state(failure, error)
 }
 
 pub(crate) struct FanoutStartRuntimeInputs {
@@ -438,7 +381,7 @@ fn prepare_fanout_child_prompt_plans(
         .children
         .iter()
         .enumerate()
-        .filter(|(_, child)| child.node.session().is_some())
+        .filter(|(_, child)| child.reused.is_none() && child.node.session().is_some())
         .map(|(expansion_index, child)| {
             let (system_prompt, user_message) = workflow_prompt::build_fanout_child_prompt(
                 &child.node,
@@ -687,15 +630,16 @@ mod tests {
     use crate::adaptor::gateway::workflow::schema::{
         FanoutSpec, NodeDefinition, NodeKind, Workflow,
     };
-    use crate::adaptor::gateway::workflow::state::{RuntimeArtifact, TokenUsage};
+    use crate::adaptor::gateway::workflow::state::{
+        RuntimeArtifact, RuntimeExecutionState, TokenUsage,
+    };
     use crate::domain::agent_session::gateway::{
         AgentBackend, AgentBackendError, AgentSessionRuntime, ForkSessionRequest, SessionSpec,
     };
     use crate::domain::agent_session::value_objects::{
         BackendCapabilities, ModelDescriptor, ModelId, SkillEntry,
     };
-    use crate::domain::workflow::{NodeExecutionFailureKind, NodeKindName};
-    use crate::usecase::agent_session::runtime::usecase::AgentRuntimeError;
+    use crate::domain::workflow::NodeKindName;
     use async_trait::async_trait;
 
     struct RuntimeSessionMockBackend {
@@ -911,60 +855,6 @@ mod tests {
     }
 
     #[test]
-    fn post_commit_runtime_start_failure_reasons_match_state_contract() {
-        let error = WorkflowEngineError::AgentSession("backend unavailable".to_string());
-
-        assert_eq!(
-            runtime_start_failure_reason(RuntimeStartFailureKind::StepSession, &error),
-            "Failed to start node session: backend unavailable"
-        );
-        assert_eq!(
-            runtime_start_failure_reason(RuntimeStartFailureKind::ParallelChildren, &error),
-            "Failed to start parallel children: backend unavailable"
-        );
-        assert!(matches!(
-            runtime_start_failed_state(RuntimeStartFailureKind::StepSession, &error),
-            RuntimeExecutionState::Failed { reason, .. }
-                if reason == "Failed to start node session: backend unavailable"
-        ));
-    }
-
-    #[test]
-    fn runtime_start_failed_state_preserves_startup_timeout_metadata() {
-        let error = WorkflowEngineError::from(AgentRuntimeError::StartupTimeout {
-            retry_count: 2,
-            max_retries: 2,
-        });
-
-        let state = runtime_start_failed_state(RuntimeStartFailureKind::StepSession, &error);
-
-        assert!(matches!(
-            state,
-            RuntimeExecutionState::Failed {
-                reason,
-                kind: NodeExecutionFailureKind::StartupTimeout,
-                retry_count: Some(2),
-            } if reason.contains("Timed out waiting for agent session startup")
-        ));
-    }
-
-    #[test]
-    fn runtime_start_failed_state_maps_validation_errors_to_validation_failure() {
-        let error = WorkflowEngineError::InvalidWorkflow("missing facet: review".to_string());
-
-        let state = runtime_start_failed_state(RuntimeStartFailureKind::StepSession, &error);
-
-        assert!(matches!(
-            state,
-            RuntimeExecutionState::Failed {
-                reason,
-                kind: NodeExecutionFailureKind::ValidationFailure,
-                retry_count: None,
-            } if reason == "Failed to start node session: missing facet: review"
-        ));
-    }
-
-    #[test]
     fn workflow_node_context_with_runtime_timeouts_injects_gateway_policy_values() {
         let settings = StepSessionCreationSettings {
             backend_id: Some("codex".to_string()),
@@ -1061,100 +951,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn record_node_session_start_failed_by_execution_id_appends_history_entry() {
-        let executions = Mutex::new(HashMap::from([(
-            "run-1".to_string(),
-            workflow_execution_fixture("run-1", "/tmp/repo"),
-        )]));
-        let error = WorkflowEngineError::AgentSession("turn failed".to_string());
-
-        record_node_session_start_failed_by_execution_id(&executions, "run-1", &error).await;
-
-        let execs = executions.lock().await;
-        let exec = execs.get("run-1").unwrap();
-        let entry = exec.node_history.last().unwrap();
-        assert_eq!(
-            entry.result.as_deref(),
-            Some("session_start_failed: turn failed")
-        );
-        assert_eq!(entry.session_id.as_deref(), Some("session-1"));
-        assert!(exec.current_session_id.is_none());
-    }
-
-    #[tokio::test]
-    async fn record_node_session_start_failed_by_worktree_uses_active_execution() {
-        let executions = Mutex::new(HashMap::from([(
-            "run-1".to_string(),
-            workflow_execution_fixture("run-1", "/tmp/repo"),
-        )]));
-        let error = WorkflowEngineError::AgentSession("session failed".to_string());
-
-        record_node_session_start_failed_by_worktree(&executions, "/tmp/repo", &error).await;
-
-        let execs = executions.lock().await;
-        let exec = execs.get("run-1").unwrap();
-        assert_eq!(exec.node_history.len(), 1);
-        assert_eq!(
-            exec.node_history[0].result.as_deref(),
-            Some("session_start_failed: session failed")
-        );
-    }
-
-    #[tokio::test]
-    async fn record_post_commit_runtime_start_failure_records_step_session_history() {
-        let executions = Mutex::new(HashMap::from([(
-            "run-1".to_string(),
-            workflow_execution_fixture("run-1", "/tmp/repo"),
-        )]));
-        let error = WorkflowEngineError::AgentSession("start failed".to_string());
-
-        let state = record_post_commit_runtime_start_failure(
-            &executions,
-            "/tmp/repo",
-            RuntimeStartFailureKind::StepSession,
-            &error,
-        )
-        .await;
-
-        assert!(matches!(
-            state,
-            RuntimeExecutionState::Failed { reason, .. }
-                if reason == "Failed to start node session: start failed"
-        ));
-        let execs = executions.lock().await;
-        assert_eq!(execs["run-1"].node_history.len(), 1);
-        assert_eq!(
-            execs["run-1"].node_history[0].result.as_deref(),
-            Some("session_start_failed: start failed")
-        );
-    }
-
-    #[tokio::test]
-    async fn record_post_commit_runtime_start_failure_leaves_fanout_history_unchanged() {
-        let executions = Mutex::new(HashMap::from([(
-            "run-1".to_string(),
-            workflow_execution_fixture("run-1", "/tmp/repo"),
-        )]));
-        let error = WorkflowEngineError::AgentSession("parallel failed".to_string());
-
-        let state = record_post_commit_runtime_start_failure(
-            &executions,
-            "/tmp/repo",
-            RuntimeStartFailureKind::ParallelChildren,
-            &error,
-        )
-        .await;
-
-        assert!(matches!(
-            state,
-            RuntimeExecutionState::Failed { reason, .. }
-                if reason == "Failed to start parallel children: parallel failed"
-        ));
-        let execs = executions.lock().await;
-        assert!(execs["run-1"].node_history.is_empty());
-    }
-
-    #[tokio::test]
     async fn load_fanout_start_runtime_inputs_reads_context_and_prompt_inputs() {
         let mut exec = workflow_execution_fixture("run-1", "/tmp/repo");
         exec.workflow.nodes[0] = NodeDefinition {
@@ -1196,6 +992,88 @@ mod tests {
         assert_eq!(
             inputs.prompt_inputs.artifacts["plan"].artifact,
             Some(serde_json::json!({ "status": "ok" }))
+        );
+    }
+
+    #[test]
+    fn fanout_resume_plans_prompts_and_session_creation_only_for_unconfirmed_children() {
+        let mut exec = workflow_execution_fixture("run-1", "/tmp/repo");
+        exec.current_session_id = None;
+        exec.workflow.nodes = vec![
+            NodeDefinition {
+                name: "fanout-review".to_string(),
+                kind: NodeKind::Fanout(FanoutSpec {
+                    child: vec!["review-reused".to_string(), "review-pending".to_string()],
+                    items: None,
+                }),
+                ..Default::default()
+            },
+            NodeDefinition {
+                name: "review-reused".to_string(),
+                kind: NodeKind::Session(
+                    crate::adaptor::gateway::workflow::schema::SessionSpec::default(),
+                ),
+                artifact: Some("review".to_string()),
+                ..Default::default()
+            },
+            NodeDefinition {
+                name: "review-pending".to_string(),
+                kind: NodeKind::Session(
+                    crate::adaptor::gateway::workflow::schema::SessionSpec::default(),
+                ),
+                artifact: Some("review".to_string()),
+                ..Default::default()
+            },
+        ];
+
+        let prompt_inputs = workflow_fanout_runtime::fanout_prompt_inputs(&exec);
+        let mut fanout_start =
+            workflow_fanout_runtime::prepare_fanout_start_context(&exec).unwrap();
+        let reused_node_execution_id = fanout_start.children[0].node_execution_id.clone();
+        let pending_node_execution_id = fanout_start.children[1].node_execution_id.clone();
+        fanout_start.children[0].reused = Some(workflow_fanout_runtime::ReusableFanoutChild {
+            result: Some("already confirmed".to_string()),
+            artifact: Some(serde_json::json!({ "verdict": "pass" })),
+            contract: Some("review".to_string()),
+            token_usage: Some(TokenUsage {
+                input_tokens: 3,
+                output_tokens: 4,
+            }),
+            completed_at: 2.0,
+        });
+
+        let prompt_plans = prepare_fanout_child_prompt_plans(
+            &fanout_start,
+            &prompt_inputs,
+            &WorkflowFacetContents::default(),
+        )
+        .unwrap();
+
+        assert_eq!(prompt_plans.len(), 1);
+        assert_eq!(prompt_plans[0].expansion_index, 1);
+        assert!(prompt_plans[0]
+            .user_message
+            .contains(&pending_node_execution_id));
+        assert!(!prompt_plans[0]
+            .user_message
+            .contains(&reused_node_execution_id));
+
+        let creation_plans = prepare_fanout_child_creation_plans(
+            &registry_with_default_backend(),
+            &fanout_start,
+            prompt_plans,
+        )
+        .unwrap();
+
+        assert_eq!(creation_plans.len(), 1);
+        assert_eq!(creation_plans[0].expansion_index, 1);
+        assert_eq!(
+            creation_plans[0].workflow_node_context.node_execution_id,
+            pending_node_execution_id
+        );
+        assert_eq!(
+            creation_plans[0].workflow_node_context.node_name,
+            "review-pending"
         );
     }
 }
