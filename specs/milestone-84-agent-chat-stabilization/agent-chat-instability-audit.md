@@ -1,12 +1,19 @@
 # Agent チャット不安定性の問題点インベントリ（全数監査）
 
-調査日: 2026-07-07
-対象: main `b3f9f54c` 時点の working tree
+- 調査日: 2026-07-07
+- 設計追補日: 2026-07-15
+- 対象: main `b3f9f54c` 時点の working tree
 
 手法: 7 視点の並列監査（72 subagent）で候補を洗い出し、全指摘を独立の検証者が実コードで反証確認した。
 57 件を確定、8 件を却下（付録 B）。これに加え、監査に先立つ構造調査で特定した構造・基盤上の問題 9 件を ST 節に記載する（計 66 件）。以下の「詳細」は検証者による修正済み記述であり、file:line は調査時点の実コードで確認済み。
 
 位置づけ: [milestone 84「Agentチャット安定化」](https://github.com/siro33950/releash/milestone/84) は、本ドキュメントに記載された問題点を逐一解消するマイルストーンとする。
+
+2026-07-15 追補: milestone 84 に Agent 実行設定（Goal / 工数としての model reasoning effort / `Ask・Edit・Plan・Auto・Bypass` の 5 mode）を追加した。この追補は監査済み 66 問題の件数を変更するものではなく、追加 feature scope は [#1445](https://github.com/siro33950/releash/issues/1445)、[#1446](https://github.com/siro33950/releash/issues/1446)、[#1447](https://github.com/siro33950/releash/issues/1447)、[#1448](https://github.com/siro33950/releash/issues/1448)、[#1449](https://github.com/siro33950/releash/issues/1449)、[#1450](https://github.com/siro33950/releash/issues/1450)、[#1451](https://github.com/siro33950/releash/issues/1451) で追跡する。ここで「工数」は model が提供する応答・推論強度の behavioral signal を指し、TokenUsage、cost、時間、turn 数、token / cost / time budget、厳密な上限は含まない。規範仕様は vocabulary V-D10、lifecycle I14〜I16、presentation S9a〜S9c を参照する。
+
+本監査には、wire.rs が想定した contract version と調査時に実際に spawn / 参照した CLI schema version が異なる箇所がある。これは同一 contract の表記揺れではなく runtime schema drift の実例であり、各問題の事実確認時 version はそのまま残す。実装時の解消規約は vocabulary V-D12 の `BackendProtocolIdentity` 照合と `ProtocolIncompatible` fail-closed を正本とする。
+
+2026-07-15 の再確認では、Codex wire contract は `codex-cli 0.139.0` を明記する一方で PATH 上の executable は `0.144.2`、Claude wire contract は Agent SDK `0.3.x` を参照する一方で PATH 上の Claude Code は `2.1.195` だった。この一致を起動時に検証していないことを、D1 / V-D12 で閉じるべき具体的な drift として記録する。
 
 milestone 84 のドキュメント群（本書が要求リスト、以下 3 書が理想形の正本）:
 
