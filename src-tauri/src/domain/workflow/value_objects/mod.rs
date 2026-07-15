@@ -18,7 +18,8 @@ pub use definition::{
     MAX_NODES_PER_WORKFLOW,
 };
 pub use execution::{
-    ApprovalTarget, Artifact, ExecutionOrigin, ExecutionStatus, Fanout, WorkflowExecution,
+    ApprovalTarget, Artifact, ExecutionInterruptionReason, ExecutionOrigin, ExecutionStatus,
+    Fanout, WorkflowExecution,
 };
 #[cfg(test)]
 pub use execution_metadata::WorkflowExecutionRecord;

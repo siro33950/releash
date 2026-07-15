@@ -446,11 +446,9 @@ pub(crate) fn terminal_events_for_snapshot(
             total_token_usage: snapshot.total_token_usage.clone(),
             timestamp: snapshot.updated_at,
         }]),
-        RuntimeExecutionState::Interrupted => Ok(vec![WorkflowEvent::ExecutionInterrupted {
-            execution_id: snapshot.execution_id.clone(),
-            reason: "interrupted".to_string(),
-            timestamp: snapshot.updated_at,
-        }]),
+        RuntimeExecutionState::Interrupted => Err(WorkflowEngineError::InvalidState(
+            "Interrupted transitions require an explicit typed interruption reason".to_string(),
+        )),
         RuntimeExecutionState::Failed {
             reason,
             kind,
@@ -565,6 +563,7 @@ pub(crate) fn workflow_event_timestamp(event: &WorkflowEvent) -> f64 {
         | WorkflowEvent::ExecutionFailed { timestamp, .. }
         | WorkflowEvent::ExecutionAborted { timestamp, .. }
         | WorkflowEvent::ExecutionInterrupted { timestamp, .. }
+        | WorkflowEvent::ExecutionResumed { timestamp, .. }
         | WorkflowEvent::ContractViolated { timestamp, .. }
         | WorkflowEvent::ArtifactProduced { timestamp, .. } => *timestamp,
     }
@@ -585,6 +584,7 @@ pub(crate) fn set_workflow_event_timestamp(event: &mut WorkflowEvent, commit_tim
         | WorkflowEvent::ExecutionFailed { timestamp, .. }
         | WorkflowEvent::ExecutionAborted { timestamp, .. }
         | WorkflowEvent::ExecutionInterrupted { timestamp, .. }
+        | WorkflowEvent::ExecutionResumed { timestamp, .. }
         | WorkflowEvent::ContractViolated { timestamp, .. }
         | WorkflowEvent::ArtifactProduced { timestamp, .. } => *timestamp = commit_timestamp,
     }

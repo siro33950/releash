@@ -15,6 +15,7 @@ export const workflowNodeIconClasses: Record<WorkspaceNodeStatus, string> = {
 	failed: "text-red-600 dark:text-red-300",
 	error: "text-destructive",
 	waiting: "text-yellow-600 dark:text-yellow-300",
+	interrupted: "text-orange-600 dark:text-orange-300",
 	aborted: "text-muted-foreground",
 	completed: "text-green-600 dark:text-green-300",
 };

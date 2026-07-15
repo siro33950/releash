@@ -30,6 +30,8 @@ export type WorkflowExecutionStatus =
 	| "aborted"
 	| "interrupted";
 
+export type ExecutionInterruptionReason = "crash" | "stale" | "stop" | "orphan";
+
 type Rule =
 	| {
 			type: "when";
@@ -165,6 +167,8 @@ export interface WorkflowExecution {
 	updatedAt: number;
 	completedAt?: number | null;
 	errorReason?: string | null;
+	interruptionReason?: ExecutionInterruptionReason | null;
+	resumeFromNode?: string | null;
 	totalTokenUsage: TokenUsage;
 	nodeExecutions: NodeExecution[];
 	artifacts: Artifact[];
@@ -183,6 +187,8 @@ export interface WorkflowExecutionSummary {
 	updatedAt: number;
 	completedAt?: number | null;
 	errorReason?: string | null;
+	interruptionReason?: ExecutionInterruptionReason | null;
+	resumeFromNode?: string | null;
 	totalTokenUsage: TokenUsage;
 }
 

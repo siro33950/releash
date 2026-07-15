@@ -3,6 +3,7 @@ import { emit } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
 	Archive,
+	Ban,
 	ChevronDown,
 	ChevronRight,
 	ExternalLink,
@@ -14,6 +15,7 @@ import {
 	MoreHorizontal,
 	Plus,
 	RefreshCw,
+	RotateCcw,
 	Settings,
 	Square,
 	Trash2,
@@ -56,6 +58,10 @@ import {
 } from "@/hooks/useWorktreeNodeStatuses";
 import { useWorktreeSessionStatuses } from "@/hooks/useWorktreeSessionStatuses";
 import { trackEvent } from "@/lib/telemetry";
+import {
+	executeWorkflowAction,
+	type WorkflowExecutionAction,
+} from "@/lib/workflowExecutionActions";
 import type { WorktreeBranch } from "@/types/git";
 import type {
 	CenterSelection,
@@ -241,6 +247,8 @@ function WorktreeWorkflowRow({
 	centerSelection,
 	onSelectNode,
 	onStop,
+	onResume,
+	onAbort,
 	onArchive,
 }: {
 	node: WorkspaceWorkflowExecutionNode;
@@ -251,12 +259,16 @@ function WorktreeWorkflowRow({
 		node: WorkspaceWorkflowNodeExecution,
 	) => void;
 	onStop: (node: WorkspaceWorkflowExecutionNode) => void | Promise<void>;
+	onResume: (node: WorkspaceWorkflowExecutionNode) => void | Promise<void>;
+	onAbort: (node: WorkspaceWorkflowExecutionNode) => void | Promise<void>;
 	onArchive: (node: WorkspaceWorkflowExecutionNode) => void | Promise<void>;
 }) {
 	const [expanded, setExpanded] = useState(true);
 	const [workflowMenuOpen, setWorkflowMenuOpen] = useState(false);
 	const nodeExecutions = node.nodeExecutions;
 	const canStop = node.canStop;
+	const canResume = node.canResume;
+	const canAbort = node.canAbort;
 	const actionControlsVisible = workflowMenuOpen;
 	const workflowLabel = node.workflowName.trim() || node.title;
 	return (
@@ -272,6 +284,22 @@ function WorktreeWorkflowRow({
 				>
 					<WorkflowRowStatusIcon status={node.status} />
 					<span className="min-w-0 truncate">{workflowLabel}</span>
+					{node.interruptionReason && (
+						<span
+							className="shrink-0 rounded bg-orange-500/10 px-1.5 py-0.5 text-[10px] text-orange-700 dark:text-orange-300"
+							title={`Interrupted: ${node.interruptionReason}`}
+						>
+							{node.interruptionReason}
+						</span>
+					)}
+					{node.resumeFromNode && (
+						<span
+							className="max-w-28 shrink truncate text-[10px] text-muted-foreground"
+							title={`Resume from ${node.resumeFromNode}`}
+						>
+							resume: {node.resumeFromNode}
+						</span>
+					)}
 					{expanded ? (
 						<ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
 					) : (
@@ -310,6 +338,25 @@ function WorktreeWorkflowRow({
 							>
 								<Square className="size-3.5" />
 								Stop
+							</DropdownMenuItem>
+							<DropdownMenuItem
+								disabled={!canResume}
+								onSelect={() => {
+									if (canResume) onResume(node);
+								}}
+							>
+								<RotateCcw className="size-3.5" />
+								Resume
+							</DropdownMenuItem>
+							<DropdownMenuItem
+								variant="destructive"
+								disabled={!canAbort}
+								onSelect={() => {
+									if (canAbort) onAbort(node);
+								}}
+							>
+								<Ban className="size-3.5" />
+								Abort
 							</DropdownMenuItem>
 						</DropdownMenuContent>
 					</DropdownMenu>
@@ -539,14 +586,19 @@ function WorktreeTreeItem({
 		[branch.worktree_path, refreshTree],
 	);
 
-	const handleStopWorkflow = useCallback(
-		async (workflow: WorkspaceWorkflowExecutionNode) => {
+	const handleWorkflowExecutionAction = useCallback(
+		async (
+			action: WorkflowExecutionAction,
+			workflow: WorkspaceWorkflowExecutionNode,
+		) => {
 			setWorkflowActionError(null);
 			try {
-				await invoke("abort_workflow", { executionId: workflow.executionId });
+				await executeWorkflowAction(action, workflow.executionId);
 				await refreshTree();
-			} catch (e) {
-				setWorkflowActionError(`Stop workflow failed: ${String(e)}`);
+			} catch (error) {
+				setWorkflowActionError(
+					error instanceof Error ? error.message : String(error),
+				);
 			}
 		},
 		[refreshTree],
@@ -895,7 +947,15 @@ function WorktreeTreeItem({
 									indentPx={WORKTREE_NAME_INDENT_PX}
 									centerSelection={scopedCenterSelection}
 									onSelectNode={handleSelectWorkflowNode}
-									onStop={handleStopWorkflow}
+									onStop={(workflow) =>
+										void handleWorkflowExecutionAction("stop", workflow)
+									}
+									onResume={(workflow) =>
+										void handleWorkflowExecutionAction("resume", workflow)
+									}
+									onAbort={(workflow) =>
+										void handleWorkflowExecutionAction("abort", workflow)
+									}
 									onArchive={handleArchiveWorkflow}
 								/>
 							) : (

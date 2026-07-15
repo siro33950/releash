@@ -1,4 +1,4 @@
-use super::{ExecutionOrigin, ExecutionStatus, TokenUsage};
+use super::{ExecutionInterruptionReason, ExecutionOrigin, ExecutionStatus, TokenUsage};
 use crate::domain::workflow::error::WorkflowError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +51,8 @@ pub struct WorkflowExecutionRecord {
     pub updated_at: f64,
     pub completed_at: Option<f64>,
     pub error_reason: Option<String>,
+    pub interruption_reason: Option<ExecutionInterruptionReason>,
+    pub resume_from_node: Option<String>,
     pub total_token_usage: TokenUsage,
 }
 
@@ -66,6 +68,8 @@ pub struct WorkflowExecutionSummary {
     pub updated_at: f64,
     pub completed_at: Option<f64>,
     pub error_reason: Option<String>,
+    pub interruption_reason: Option<ExecutionInterruptionReason>,
+    pub resume_from_node: Option<String>,
     pub total_token_usage: TokenUsage,
 }
 

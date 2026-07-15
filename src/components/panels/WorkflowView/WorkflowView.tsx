@@ -1,4 +1,4 @@
-import { AlertTriangle, X } from "lucide-react";
+import { AlertTriangle, Ban, RotateCcw, Square, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type TogglePanel, ViewToolbar } from "@/components/layout/ViewToolbar";
 import { BoundSessionChat } from "@/components/panels/AgentChatPanel";
@@ -15,6 +15,10 @@ import {
 	useWorkspaceWorkflowNodeDetail,
 } from "@/hooks/useWorkspaceWorkflowNodeDetail";
 import { useWorktreeSessionStatuses } from "@/hooks/useWorktreeSessionStatuses";
+import {
+	executeWorkflowAction,
+	type WorkflowExecutionAction,
+} from "@/lib/workflowExecutionActions";
 import type { AgentState } from "@/types/protocol";
 import type { Artifact } from "@/types/workflow";
 import type {
@@ -162,11 +166,13 @@ function WorkspaceWorkflowNodeGrid({
 
 function WorkflowNodeHeader({ node }: { node: WorkspaceWorkflowNodeDetail }) {
 	const [approving, setApproving] = useState(false);
+	const [executionAction, setExecutionAction] =
+		useState<WorkflowExecutionAction | null>(null);
 	const [actionError, setActionError] = useState<string | null>(null);
 	const [actionErrorOpen, setActionErrorOpen] = useState(false);
 
 	const handleApprove = useCallback(async () => {
-		if (approving) return false;
+		if (approving || executionAction !== null) return false;
 		setApproving(true);
 		try {
 			const result = await submitWorkspaceWorkflowNodeAction({
@@ -188,16 +194,45 @@ function WorkflowNodeHeader({ node }: { node: WorkspaceWorkflowNodeDetail }) {
 		} finally {
 			setApproving(false);
 		}
-	}, [approving, node]);
+	}, [approving, executionAction, node]);
+
+	const handleExecutionAction = useCallback(
+		async (action: WorkflowExecutionAction, allowed: boolean) => {
+			if (!allowed || approving || executionAction !== null) return false;
+			setExecutionAction(action);
+			try {
+				await executeWorkflowAction(action, node.executionId);
+				setActionError(null);
+				setActionErrorOpen(false);
+				window.dispatchEvent(
+					new CustomEvent("workspace-tree-refresh", {
+						detail: { worktreePath: node.worktreePath },
+					}),
+				);
+				return true;
+			} catch (error) {
+				setActionError(error instanceof Error ? error.message : String(error));
+				setActionErrorOpen(true);
+				return false;
+			} finally {
+				setExecutionAction(null);
+			}
+		},
+		[approving, executionAction, node.executionId, node.worktreePath],
+	);
 
 	return (
 		<WorkflowNodeHeaderContent
 			node={node}
 			approving={approving}
+			executionAction={executionAction}
 			actionError={actionError}
 			actionErrorOpen={actionErrorOpen}
 			onActionErrorOpenChange={setActionErrorOpen}
 			onApprove={handleApprove}
+			onStop={() => handleExecutionAction("stop", node.canStop)}
+			onResume={() => handleExecutionAction("resume", node.canResume)}
+			onAbort={() => handleExecutionAction("abort", node.canAbort)}
 		/>
 	);
 }
@@ -205,17 +240,25 @@ function WorkflowNodeHeader({ node }: { node: WorkspaceWorkflowNodeDetail }) {
 function WorkflowNodeHeaderContent({
 	node,
 	approving,
+	executionAction,
 	actionError,
 	actionErrorOpen,
 	onActionErrorOpenChange,
 	onApprove,
+	onStop,
+	onResume,
+	onAbort,
 }: {
 	node: WorkspaceWorkflowNodeDetail;
 	approving: boolean;
+	executionAction: WorkflowExecutionAction | null;
 	actionError: string | null;
 	actionErrorOpen: boolean;
 	onActionErrorOpenChange: (open: boolean) => void;
 	onApprove: () => Promise<boolean>;
+	onStop: () => Promise<boolean>;
+	onResume: () => Promise<boolean>;
+	onAbort: () => Promise<boolean>;
 }) {
 	const approve = useCallback(() => {
 		void onApprove();
@@ -236,6 +279,28 @@ function WorkflowNodeHeaderContent({
 				<span className="text-xs text-muted-foreground">
 					attempt {node.attempt}
 				</span>
+				<span
+					className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
+					title={`Execution status: ${node.executionStatus}`}
+				>
+					execution: {node.executionStatus}
+				</span>
+				{node.interruptionReason && (
+					<span
+						className="rounded bg-orange-500/10 px-1.5 py-0.5 text-[10px] text-orange-700 dark:text-orange-300"
+						title={`Interrupted: ${node.interruptionReason}`}
+					>
+						{node.interruptionReason}
+					</span>
+				)}
+				{node.resumeFromNode && (
+					<span
+						className="max-w-28 truncate text-[10px] text-muted-foreground"
+						title={`Resume from ${node.resumeFromNode}`}
+					>
+						resume: {node.resumeFromNode}
+					</span>
+				)}
 				<span
 					className="max-w-36 truncate font-mono text-[10px] text-muted-foreground"
 					title={`NodeExecution ${node.nodeExecutionId}`}
@@ -322,12 +387,42 @@ function WorkflowNodeHeaderContent({
 					<Button
 						type="button"
 						size="xs"
-						disabled={approving}
+						disabled={approving || executionAction !== null}
 						onClick={approve}
 					>
 						{approving ? "Approving..." : "Approve"}
 					</Button>
 				)}
+				<Button
+					type="button"
+					variant="outline"
+					size="xs"
+					disabled={!node.canStop || approving || executionAction !== null}
+					onClick={() => void onStop()}
+				>
+					<Square className="size-3.5" />
+					{executionAction === "stop" ? "Stopping..." : "Stop"}
+				</Button>
+				<Button
+					type="button"
+					variant="outline"
+					size="xs"
+					disabled={!node.canResume || approving || executionAction !== null}
+					onClick={() => void onResume()}
+				>
+					<RotateCcw className="size-3.5" />
+					{executionAction === "resume" ? "Resuming..." : "Resume"}
+				</Button>
+				<Button
+					type="button"
+					variant="destructive"
+					size="xs"
+					disabled={!node.canAbort || approving || executionAction !== null}
+					onClick={() => void onAbort()}
+				>
+					<Ban className="size-3.5" />
+					{executionAction === "abort" ? "Aborting..." : "Abort"}
+				</Button>
 			</div>
 		</div>
 	);

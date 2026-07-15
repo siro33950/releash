@@ -58,6 +58,22 @@ pub(crate) trait WorkflowRuntimeEngine: Send + Sync {
         expected_node_name: Option<&str>,
     ) -> Result<(), WorkflowEngineError>;
 
+    async fn stop_workflow_execution(
+        &self,
+        app: &tauri::AppHandle,
+        session_store: &Arc<SessionStore>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
+        execution_id: &str,
+    ) -> Result<(), WorkflowEngineError>;
+
+    async fn resume_workflow_execution(
+        &self,
+        app: &tauri::AppHandle,
+        session_store: &Arc<SessionStore>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
+        execution_id: &str,
+    ) -> Result<(), WorkflowEngineError>;
+
     async fn resolve_workflow_approval(
         &self,
         app: &tauri::AppHandle,
@@ -212,6 +228,40 @@ impl WorkflowRuntimeEngine for WorkflowRuntimeService {
             agent_runtime,
             execution_id,
             expected_node_name,
+        )
+        .await
+    }
+
+    async fn stop_workflow_execution(
+        &self,
+        app: &tauri::AppHandle,
+        session_store: &Arc<SessionStore>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
+        execution_id: &str,
+    ) -> Result<(), WorkflowEngineError> {
+        WorkflowRuntimeService::stop_workflow_execution(
+            self,
+            app,
+            session_store,
+            agent_runtime,
+            execution_id,
+        )
+        .await
+    }
+
+    async fn resume_workflow_execution(
+        &self,
+        app: &tauri::AppHandle,
+        session_store: &Arc<SessionStore>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
+        execution_id: &str,
+    ) -> Result<(), WorkflowEngineError> {
+        WorkflowRuntimeService::resume_workflow_execution(
+            self,
+            app,
+            session_store,
+            agent_runtime,
+            execution_id,
         )
         .await
     }

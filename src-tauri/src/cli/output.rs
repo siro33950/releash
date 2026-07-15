@@ -280,6 +280,7 @@ mod tests {
                 worktree_path: "/repo".to_string(),
                 created_from: ExecutionOrigin::Cli,
                 request: String::new(),
+                permission_mode: "ask".to_string(),
                 definition,
                 timestamp: 1.0,
             })

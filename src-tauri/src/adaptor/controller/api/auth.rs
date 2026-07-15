@@ -4,6 +4,7 @@ use axum::extract::{Request, State};
 use axum::http::header::AUTHORIZATION;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
+use subtle::ConstantTimeEq;
 
 use super::error::ApiError;
 
@@ -17,7 +18,9 @@ pub(super) async fn require_bearer(
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
-        .is_some_and(|token| token == expected_token.as_ref());
+        .is_some_and(|token| {
+            bool::from(token.as_bytes().ct_eq(expected_token.as_ref().as_bytes()))
+        });
     if !authorized {
         return ApiError::unauthorized().into_response();
     }

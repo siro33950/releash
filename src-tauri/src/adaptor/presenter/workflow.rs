@@ -15,6 +15,10 @@ pub fn workflow_execution_to_view(
         updated_at: execution.updated_at,
         completed_at: execution.completed_at,
         error_reason: execution.error_reason,
+        interruption_reason: execution
+            .interruption_reason
+            .map(execution_interruption_reason_to_view),
+        resume_from_node: execution.resume_from_node,
         total_token_usage: token_usage_to_view(execution.total_token_usage),
         node_executions: execution
             .node_executions
@@ -54,6 +58,25 @@ fn execution_origin_to_view(
         workflow::ExecutionOrigin::Cli => workflow_wire::ExecutionOriginView::Cli,
         workflow::ExecutionOrigin::Agent => workflow_wire::ExecutionOriginView::Agent,
         workflow::ExecutionOrigin::Api => workflow_wire::ExecutionOriginView::Api,
+    }
+}
+
+fn execution_interruption_reason_to_view(
+    reason: workflow::ExecutionInterruptionReason,
+) -> workflow_wire::ExecutionInterruptionReasonView {
+    match reason {
+        workflow::ExecutionInterruptionReason::Crash => {
+            workflow_wire::ExecutionInterruptionReasonView::Crash
+        }
+        workflow::ExecutionInterruptionReason::Stale => {
+            workflow_wire::ExecutionInterruptionReasonView::Stale
+        }
+        workflow::ExecutionInterruptionReason::Stop => {
+            workflow_wire::ExecutionInterruptionReasonView::Stop
+        }
+        workflow::ExecutionInterruptionReason::Orphan => {
+            workflow_wire::ExecutionInterruptionReasonView::Orphan
+        }
     }
 }
 
@@ -217,7 +240,7 @@ mod tests {
         let execution = workflow::WorkflowExecution {
             id: "execution-1".to_string(),
             workflow_name: "review".to_string(),
-            status: workflow::ExecutionStatus::WaitingApproval,
+            status: workflow::ExecutionStatus::Interrupted,
             current_node: Some("review".to_string()),
             created_from: workflow::ExecutionOrigin::Cli,
             worktree_path: "/repo".to_string(),
@@ -225,6 +248,8 @@ mod tests {
             updated_at: 2.0,
             completed_at: None,
             error_reason: None,
+            interruption_reason: Some(workflow::ExecutionInterruptionReason::Stop),
+            resume_from_node: Some("review".to_string()),
             total_token_usage: workflow::TokenUsage {
                 input_tokens: 3,
                 output_tokens: 2,
@@ -249,5 +274,7 @@ mod tests {
         assert_eq!(value["nodeExecutions"][0]["artifact"]["nodeName"], "review");
         assert_eq!(value["fanouts"][0]["parent"]["id"], "node-1");
         assert_eq!(value["approvalTarget"]["sessionId"], "session-1");
+        assert_eq!(value["interruptionReason"], "stop");
+        assert_eq!(value["resumeFromNode"], "review");
     }
 }

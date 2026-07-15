@@ -4,7 +4,8 @@ use crate::domain::workflow::{
 };
 
 use super::command::{
-    AbortExecutionCommand, ApprovalCommand, ResolvedStartExecutionCommand, SubmitOutputCommand,
+    AbortExecutionCommand, ApprovalCommand, ResolvedStartExecutionCommand, ResumeExecutionCommand,
+    StopExecutionCommand, SubmitOutputCommand,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -104,6 +105,16 @@ pub trait WorkflowAbortExecutionGateway: Send + Sync {
 }
 
 #[async_trait::async_trait]
+pub trait WorkflowStopExecutionGateway: Send + Sync {
+    async fn stop_execution(&self, command: StopExecutionCommand) -> Result<(), WorkflowError>;
+}
+
+#[async_trait::async_trait]
+pub trait WorkflowResumeExecutionGateway: Send + Sync {
+    async fn resume_execution(&self, command: ResumeExecutionCommand) -> Result<(), WorkflowError>;
+}
+
+#[async_trait::async_trait]
 pub trait WorkflowApprovalGateway: Send + Sync {
     async fn resolve_approval(&self, command: ApprovalCommand) -> Result<(), WorkflowError>;
 }
@@ -166,6 +177,8 @@ pub trait WorkflowApprovalChatGateway: Send + Sync {
 pub trait WorkflowRuntimeCommandGateway:
     WorkflowStartExecutionGateway
     + WorkflowAbortExecutionGateway
+    + WorkflowStopExecutionGateway
+    + WorkflowResumeExecutionGateway
     + WorkflowApprovalGateway
     + WorkflowSubmitOutputGateway
     + WorkflowTurnCompleteGateway
@@ -179,6 +192,8 @@ pub trait WorkflowRuntimeCommandGateway:
 impl<T> WorkflowRuntimeCommandGateway for T where
     T: WorkflowStartExecutionGateway
         + WorkflowAbortExecutionGateway
+        + WorkflowStopExecutionGateway
+        + WorkflowResumeExecutionGateway
         + WorkflowApprovalGateway
         + WorkflowSubmitOutputGateway
         + WorkflowTurnCompleteGateway

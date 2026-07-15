@@ -247,6 +247,8 @@ mod tests {
             updated_at: 1.0,
             completed_at: status.is_terminal().then_some(2.0),
             error_reason: None,
+            interruption_reason: None,
+            resume_from_node: None,
             total_token_usage: TokenUsage::default(),
         }
     }

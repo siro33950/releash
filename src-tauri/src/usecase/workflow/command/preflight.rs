@@ -3,7 +3,10 @@ use crate::domain::workflow::{
     ContractType, NodeName, WorkflowError, WorkflowExecutionId, WorkflowName, WorktreePath,
 };
 
-use super::{AbortExecutionCommand, ApprovalCommand, StartExecutionCommand, SubmitOutputCommand};
+use super::{
+    AbortExecutionCommand, ApprovalCommand, ResumeExecutionCommand, StartExecutionCommand,
+    StopExecutionCommand, SubmitOutputCommand,
+};
 use crate::usecase::workflow::ports::{
     WorkflowStallClearedNotification, WorkflowStallObservedNotification,
     WorkflowTurnCompleteNotification,
@@ -34,6 +37,20 @@ impl WorkflowRuntimeCommandPreflight {
         WorkflowExecutionId::new(command.execution_id.clone())?;
         validate_optional_node_name(command.expected_node_name.as_deref())?;
         Ok(())
+    }
+
+    pub(crate) fn validate_stop_execution(
+        &self,
+        command: &StopExecutionCommand,
+    ) -> Result<(), WorkflowError> {
+        WorkflowExecutionId::new(command.execution_id.clone()).map(|_| ())
+    }
+
+    pub(crate) fn validate_resume_execution(
+        &self,
+        command: &ResumeExecutionCommand,
+    ) -> Result<(), WorkflowError> {
+        WorkflowExecutionId::new(command.execution_id.clone()).map(|_| ())
     }
 
     pub(crate) fn validate_approval(&self, command: &ApprovalCommand) -> Result<(), WorkflowError> {

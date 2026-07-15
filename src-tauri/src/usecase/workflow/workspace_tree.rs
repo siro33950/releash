@@ -87,6 +87,12 @@ pub(crate) struct WorkspaceWorkflowExecutionDto {
     pub title: String,
     pub status: String,
     pub can_stop: bool,
+    pub can_resume: bool,
+    pub can_abort: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interruption_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_from_node: Option<String>,
     pub updated_at: f64,
     pub node_executions: Vec<WorkspaceWorkflowNodeExecutionDto>,
 }
@@ -113,6 +119,25 @@ pub(crate) struct WorkspaceWorkflowNodeExecutionDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fanout_parent: Option<WorkspaceFanoutParentDto>,
     pub sessions: Vec<WorkspaceSessionNodeDto>,
+}
+
+/// WorkflowView 向けの選択 NodeExecution read model。
+///
+/// execution-level action permission と interrupted checkpoint は同じ node が tree に
+/// 複数並ぶ場合もあるため、一覧 DTO には複製せず detail response にだけ載せる。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WorkspaceWorkflowNodeDetailDto {
+    #[serde(flatten)]
+    pub node_execution: WorkspaceWorkflowNodeExecutionDto,
+    pub execution_status: String,
+    pub can_stop: bool,
+    pub can_resume: bool,
+    pub can_abort: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interruption_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_from_node: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -189,7 +214,7 @@ impl WorkflowUsecase {
         execution_id: &str,
         node_execution_id: &str,
         sessions: Vec<WorkspaceSessionInput>,
-    ) -> Result<Option<WorkspaceWorkflowNodeExecutionDto>, WorkflowError> {
+    ) -> Result<Option<WorkspaceWorkflowNodeDetailDto>, WorkflowError> {
         let worktree_path = self.resolve_worktree_path(worktree_path)?;
         self.query.get_workspace_workflow_node_detail(
             &worktree_path,
@@ -271,7 +296,7 @@ impl WorkflowQueryService {
         execution_id: &str,
         node_execution_id: &str,
         sessions: Vec<WorkspaceSessionInput>,
-    ) -> Result<Option<WorkspaceWorkflowNodeExecutionDto>, WorkflowError> {
+    ) -> Result<Option<WorkspaceWorkflowNodeDetailDto>, WorkflowError> {
         let Some(summary) = self.get_execution(execution_id)? else {
             return Ok(None);
         };
@@ -289,7 +314,7 @@ impl WorkflowQueryService {
             return Ok(None);
         };
         let sessions = session_index(sessions);
-        Ok(Some(workspace_node_execution(
+        Ok(Some(workspace_node_detail(
             &summary,
             &execution,
             node_execution,
@@ -365,6 +390,13 @@ fn workspace_workflow_execution(
     let updated_at = execution
         .map(|execution| execution.updated_at)
         .unwrap_or(summary.updated_at);
+    let interruption_reason = execution
+        .and_then(|execution| execution.interruption_reason.as_ref())
+        .or(summary.interruption_reason.as_ref())
+        .map(|reason| reason.as_str().to_string());
+    let resume_from_node = execution
+        .and_then(|execution| execution.resume_from_node.clone())
+        .or_else(|| summary.resume_from_node.clone());
     let node_executions = execution
         .map(|execution| {
             execution
@@ -383,7 +415,11 @@ fn workspace_workflow_execution(
         workflow_name: summary.workflow_name.clone(),
         title: workflow_title(&summary),
         status: representative_status(status.as_str()),
-        can_stop: status.is_active(),
+        can_stop: status.can_stop(),
+        can_resume: status.can_resume(),
+        can_abort: status.can_abort(),
+        interruption_reason,
+        resume_from_node,
         updated_at,
         node_executions,
     }
@@ -432,6 +468,27 @@ fn workspace_node_execution(
             .as_ref()
             .map(workspace_fanout_parent),
         sessions: nested_sessions,
+    }
+}
+
+fn workspace_node_detail(
+    summary: &WorkflowExecutionSummary,
+    execution: &WorkflowExecution,
+    node_execution: &NodeExecution,
+    sessions: &HashMap<String, WorkspaceSessionInput>,
+) -> WorkspaceWorkflowNodeDetailDto {
+    let status = execution.status;
+    WorkspaceWorkflowNodeDetailDto {
+        node_execution: workspace_node_execution(summary, execution, node_execution, sessions),
+        execution_status: representative_status(status.as_str()),
+        can_stop: status.can_stop(),
+        can_resume: status.can_resume(),
+        can_abort: status.can_abort(),
+        interruption_reason: execution
+            .interruption_reason
+            .as_ref()
+            .map(|reason| reason.as_str().to_string()),
+        resume_from_node: execution.resume_from_node.clone(),
     }
 }
 
@@ -563,7 +620,8 @@ fn compare_titles(left: &str, right: &str) -> std::cmp::Ordering {
 mod tests {
     use super::*;
     use crate::domain::workflow::{
-        ExecutionOrigin, ExecutionStatus, NodeExecutionStatus, NodeKindName, TokenUsage,
+        ExecutionInterruptionReason, ExecutionOrigin, ExecutionStatus, NodeExecutionStatus,
+        NodeKindName, TokenUsage,
     };
 
     fn summary() -> WorkflowExecutionSummary {
@@ -578,6 +636,8 @@ mod tests {
             updated_at: 2.0,
             completed_at: None,
             error_reason: None,
+            interruption_reason: None,
+            resume_from_node: None,
             total_token_usage: TokenUsage::default(),
         }
     }
@@ -594,6 +654,8 @@ mod tests {
             updated_at: 3.0,
             completed_at: None,
             error_reason: None,
+            interruption_reason: None,
+            resume_from_node: None,
             total_token_usage: TokenUsage::default(),
             node_executions: vec![NodeExecution {
                 id: "node-execution-plan".to_string(),
@@ -680,6 +742,92 @@ mod tests {
             panic!("expected workflow execution")
         };
         assert!(workflow.node_executions.is_empty());
+    }
+
+    #[test]
+    fn interrupted_execution_projects_checkpoint_and_backend_owned_actions() {
+        let summary = WorkflowExecutionSummary {
+            status: ExecutionStatus::Interrupted,
+            current_node: None,
+            interruption_reason: Some(ExecutionInterruptionReason::Stop),
+            resume_from_node: Some("review".to_string()),
+            ..summary()
+        };
+        let nodes =
+            project_workspace_tree_nodes(Vec::new(), vec![summary.clone()], HashMap::new(), &[]);
+
+        let WorkspaceTreeNodeDto::Workflow(workflow) = &nodes[0] else {
+            panic!("expected workflow execution")
+        };
+        assert_eq!(workflow.status, "interrupted");
+        assert!(!workflow.can_stop);
+        assert!(workflow.can_resume);
+        assert!(workflow.can_abort);
+        assert_eq!(workflow.interruption_reason.as_deref(), Some("stop"));
+        assert_eq!(workflow.resume_from_node.as_deref(), Some("review"));
+
+        let value = serde_json::to_value(workflow).unwrap();
+        assert_eq!(value["interruptionReason"], "stop");
+        assert_eq!(value["resumeFromNode"], "review");
+        assert_eq!(value["canStop"], false);
+        assert_eq!(value["canResume"], true);
+        assert_eq!(value["canAbort"], true);
+
+        let execution = WorkflowExecution {
+            status: ExecutionStatus::Interrupted,
+            current_node: None,
+            interruption_reason: Some(ExecutionInterruptionReason::Stop),
+            resume_from_node: Some("review".to_string()),
+            node_executions: vec![node_execution(
+                "node-execution-review",
+                "review",
+                NodeExecutionStatus::Aborted,
+                None,
+            )],
+            ..execution()
+        };
+        let detail = workspace_node_detail(
+            &summary,
+            &execution,
+            &execution.node_executions[0],
+            &HashMap::new(),
+        );
+        assert_eq!(detail.execution_status, "interrupted");
+        assert!(!detail.can_stop);
+        assert!(detail.can_resume);
+        assert!(detail.can_abort);
+        assert_eq!(detail.interruption_reason.as_deref(), Some("stop"));
+        assert_eq!(detail.resume_from_node.as_deref(), Some("review"));
+
+        let value = serde_json::to_value(detail).unwrap();
+        assert_eq!(value["executionStatus"], "interrupted");
+        assert_eq!(value["interruptionReason"], "stop");
+        assert_eq!(value["resumeFromNode"], "review");
+        assert_eq!(value["nodeExecutionId"], "node-execution-review");
+        assert!(value.get("nodeExecution").is_none());
+    }
+
+    #[test]
+    fn node_detail_does_not_fall_back_to_stale_summary_checkpoint() {
+        let stale_summary = WorkflowExecutionSummary {
+            status: ExecutionStatus::Interrupted,
+            current_node: None,
+            interruption_reason: Some(ExecutionInterruptionReason::Stop),
+            resume_from_node: Some("review".to_string()),
+            ..summary()
+        };
+        let execution = execution();
+
+        let detail = workspace_node_detail(
+            &stale_summary,
+            &execution,
+            &execution.node_executions[0],
+            &HashMap::new(),
+        );
+
+        assert_eq!(detail.execution_status, "running");
+        assert_eq!(detail.interruption_reason, None);
+        assert_eq!(detail.resume_from_node, None);
     }
 
     #[test]

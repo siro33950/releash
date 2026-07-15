@@ -1,7 +1,9 @@
 mod abort_execution;
 mod approval;
 mod preflight;
+mod resume_execution;
 mod start_execution;
+mod stop_execution;
 mod submit_output;
 
 pub use abort_execution::AbortExecutionCommand;
@@ -9,8 +11,12 @@ pub(crate) use abort_execution::WorkflowAbortExecutionUsecase;
 pub use approval::ApprovalCommand;
 pub(crate) use approval::WorkflowApprovalUsecase;
 pub(crate) use preflight::WorkflowRuntimeCommandPreflight;
+pub use resume_execution::ResumeExecutionCommand;
+pub(crate) use resume_execution::WorkflowResumeExecutionUsecase;
 pub(crate) use start_execution::WorkflowStartExecutionUsecase;
 pub use start_execution::{ResolvedStartExecutionCommand, StartExecutionCommand};
+pub use stop_execution::StopExecutionCommand;
+pub(crate) use stop_execution::WorkflowStopExecutionUsecase;
 pub use submit_output::SubmitOutputCommand;
 pub(crate) use submit_output::WorkflowSubmitOutputUsecase;
 
@@ -19,8 +25,8 @@ mod tests {
     use super::*;
     use crate::domain::workflow::{ExecutionOrigin, WorkflowDefinition, WorkflowError};
     use crate::usecase::workflow::ports::{
-        WorkflowAbortExecutionGateway, WorkflowApprovalGateway, WorkflowStartExecutionGateway,
-        WorkflowSubmitOutputGateway,
+        WorkflowAbortExecutionGateway, WorkflowApprovalGateway, WorkflowResumeExecutionGateway,
+        WorkflowStartExecutionGateway, WorkflowStopExecutionGateway, WorkflowSubmitOutputGateway,
     };
     use std::sync::{Arc, Mutex};
 
@@ -68,6 +74,28 @@ mod tests {
     }
 
     #[async_trait::async_trait]
+    impl WorkflowStopExecutionGateway for FakeRuntimeGateway {
+        async fn stop_execution(
+            &self,
+            _command: StopExecutionCommand,
+        ) -> Result<(), WorkflowError> {
+            self.calls.lock().unwrap().push("stop");
+            Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl WorkflowResumeExecutionGateway for FakeRuntimeGateway {
+        async fn resume_execution(
+            &self,
+            _command: ResumeExecutionCommand,
+        ) -> Result<(), WorkflowError> {
+            self.calls.lock().unwrap().push("resume");
+            Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
     impl WorkflowApprovalGateway for FakeRuntimeGateway {
         async fn resolve_approval(&self, _command: ApprovalCommand) -> Result<(), WorkflowError> {
             self.calls.lock().unwrap().push("approval");
@@ -108,6 +136,18 @@ mod tests {
             })
             .await
             .unwrap();
+        WorkflowStopExecutionUsecase::new(gateway.clone())
+            .execute(StopExecutionCommand {
+                execution_id: valid_execution_id(),
+            })
+            .await
+            .unwrap();
+        WorkflowResumeExecutionUsecase::new(gateway.clone())
+            .execute(ResumeExecutionCommand {
+                execution_id: valid_execution_id(),
+            })
+            .await
+            .unwrap();
         WorkflowApprovalUsecase::new(gateway.clone())
             .execute(ApprovalCommand {
                 execution_id: valid_execution_id(),
@@ -134,6 +174,8 @@ mod tests {
                 "resolve_workflow",
                 "start",
                 "abort",
+                "stop",
+                "resume",
                 "approval",
                 "submit"
             ]
@@ -158,6 +200,18 @@ mod tests {
             .execute(AbortExecutionCommand {
                 execution_id: "not-a-uuid".to_string(),
                 expected_node_name: None,
+            })
+            .await
+            .is_err());
+        assert!(WorkflowStopExecutionUsecase::new(gateway.clone())
+            .execute(StopExecutionCommand {
+                execution_id: "not-a-uuid".to_string(),
+            })
+            .await
+            .is_err());
+        assert!(WorkflowResumeExecutionUsecase::new(gateway.clone())
+            .execute(ResumeExecutionCommand {
+                execution_id: "not-a-uuid".to_string(),
             })
             .await
             .is_err());

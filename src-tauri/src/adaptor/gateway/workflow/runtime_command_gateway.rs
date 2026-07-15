@@ -9,14 +9,15 @@ use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
 use crate::usecase::agent_session::session::{MessagePart, OpenTabRegistry, SessionStore};
 use crate::usecase::repository_usecase::RepositoryUsecase;
 use crate::usecase::workflow::command::{
-    AbortExecutionCommand, ApprovalCommand, ResolvedStartExecutionCommand, SubmitOutputCommand,
+    AbortExecutionCommand, ApprovalCommand, ResolvedStartExecutionCommand, ResumeExecutionCommand,
+    StopExecutionCommand, SubmitOutputCommand,
 };
 use crate::usecase::workflow::ports::{
     ApprovalChatTarget, WorkflowAbortExecutionGateway, WorkflowApprovalChatGateway,
-    WorkflowApprovalGateway, WorkflowRuntimeShutdownGateway, WorkflowRuntimeStateGateway,
-    WorkflowStallObservedCommand, WorkflowStallObservedGateway, WorkflowStartExecutionGateway,
-    WorkflowSubmitOutputGateway, WorkflowTurnCompleteCommand, WorkflowTurnCompleteGateway,
-    WorkflowTurnFailureSignal,
+    WorkflowApprovalGateway, WorkflowResumeExecutionGateway, WorkflowRuntimeShutdownGateway,
+    WorkflowRuntimeStateGateway, WorkflowStallObservedCommand, WorkflowStallObservedGateway,
+    WorkflowStartExecutionGateway, WorkflowStopExecutionGateway, WorkflowSubmitOutputGateway,
+    WorkflowTurnCompleteCommand, WorkflowTurnCompleteGateway, WorkflowTurnFailureSignal,
 };
 
 use super::engine_error::WorkflowEngineError;
@@ -174,6 +175,36 @@ impl WorkflowAbortExecutionGateway for TauriWorkflowRuntimeCommandGateway {
                 &self.agent_runtime,
                 &command.execution_id,
                 command.expected_node_name.as_deref(),
+            )
+            .await
+            .map_err(workflow_engine_error_to_workflow_error)
+    }
+}
+
+#[async_trait::async_trait]
+impl WorkflowStopExecutionGateway for TauriWorkflowRuntimeCommandGateway {
+    async fn stop_execution(&self, command: StopExecutionCommand) -> Result<(), WorkflowError> {
+        self.engine
+            .stop_workflow_execution(
+                &self.app,
+                &self.session_store,
+                &self.agent_runtime,
+                &command.execution_id,
+            )
+            .await
+            .map_err(workflow_engine_error_to_workflow_error)
+    }
+}
+
+#[async_trait::async_trait]
+impl WorkflowResumeExecutionGateway for TauriWorkflowRuntimeCommandGateway {
+    async fn resume_execution(&self, command: ResumeExecutionCommand) -> Result<(), WorkflowError> {
+        self.engine
+            .resume_workflow_execution(
+                &self.app,
+                &self.session_store,
+                &self.agent_runtime,
+                &command.execution_id,
             )
             .await
             .map_err(workflow_engine_error_to_workflow_error)

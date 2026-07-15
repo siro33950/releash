@@ -4,6 +4,7 @@ pub enum RepresentativeStatus {
     Failed,
     Error,
     Waiting,
+    Interrupted,
     Aborted,
     Completed,
     Queued,
@@ -16,9 +17,10 @@ impl RepresentativeStatus {
             Self::Failed => 2,
             Self::Error => 3,
             Self::Waiting => 4,
-            Self::Aborted => 5,
-            Self::Completed => 6,
-            Self::Queued => 7,
+            Self::Interrupted => 5,
+            Self::Aborted => 6,
+            Self::Completed => 7,
+            Self::Queued => 8,
         }
     }
 
@@ -28,6 +30,7 @@ impl RepresentativeStatus {
             Self::Failed => "failed",
             Self::Error => "error",
             Self::Waiting => "waiting",
+            Self::Interrupted => "interrupted",
             Self::Aborted => "aborted",
             Self::Completed => "completed",
             Self::Queued => "queued",
@@ -40,7 +43,8 @@ impl RepresentativeStatus {
             "failed" => Self::Failed,
             "error" => Self::Error,
             "waiting" | "waiting_approval" => Self::Waiting,
-            "aborted" | "interrupted" => Self::Aborted,
+            "interrupted" => Self::Interrupted,
+            "aborted" => Self::Aborted,
             "completed" | "succeeded" => Self::Completed,
             "queued" | "pending" => Self::Queued,
             _ => Self::Queued,
@@ -131,12 +135,13 @@ mod tests {
                 RepresentativeStatus::Failed,
                 RepresentativeStatus::Error,
                 RepresentativeStatus::Waiting,
+                RepresentativeStatus::Interrupted,
                 RepresentativeStatus::Aborted,
                 RepresentativeStatus::Completed,
                 RepresentativeStatus::Queued,
             ]
             .map(RepresentativeStatus::priority),
-            [1, 2, 3, 4, 5, 6, 7]
+            [1, 2, 3, 4, 5, 6, 7, 8]
         );
     }
 
@@ -186,6 +191,10 @@ mod tests {
             (vec![R::Failed, R::Waiting, R::Completed], R::Failed),
             (vec![R::Error, R::Waiting, R::Queued], R::Error),
             (vec![R::Waiting, R::Completed, R::Queued], R::Waiting),
+            (
+                vec![R::Interrupted, R::Aborted, R::Completed],
+                R::Interrupted,
+            ),
             (vec![R::Aborted, R::Completed, R::Queued], R::Aborted),
             (vec![R::Completed, R::Queued], R::Completed),
             (vec![R::Queued, R::Queued], R::Queued),
