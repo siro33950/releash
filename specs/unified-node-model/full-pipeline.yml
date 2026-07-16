@@ -1,0 +1,217 @@
+# full-pipeline（新構文版）
+# docs/examples/full-pipeline.yml と同じ workflow を統一 Node モデルの構文で
+# 書いたもの。元と意味論の差はない。
+# 構文の正本は syntax.md、モデルの決定は decisions.md。
+# 新規・変更構文の網羅例は feature-batch.yml。
+
+name: full-pipeline
+description: テスト→複数モデルレビュー→Open Thread修正→出荷判断
+entry: main
+
+schemas:
+  review_verdict:
+    type: object
+    properties:
+      lgtm:
+        type: boolean
+  review_verdicts:
+    type: array
+    items: review_verdict
+  judge_result:
+    type: object
+    properties:
+      all_lgtm:
+        type: boolean
+  thread:
+    type: object
+    properties:
+      thread_id:
+        type: string
+  thread_scan:
+    type: object
+    properties:
+      threads:
+        type: array
+        items: thread
+      has_open:
+        type: boolean
+  ship_decision:
+    type: object
+    properties:
+      verdict:
+        type: string
+        enum:
+          - SHIP
+          - HOLD
+          - ESCALATE
+
+nodes:
+
+  # ---- root の Sequence ----
+
+  main:
+    sequence:
+      entry: run_tests
+      children:
+        - run_tests:
+            rules:
+              - when:
+                  on: ok
+                  then: review
+                next: fix_tests
+        - fix_tests:
+            inputs:
+              test_result: run_tests
+            rules:
+              - loop_guard:
+                  max_iterations: 3
+                  on_exhausted: give_up
+              - next: run_tests
+        - review:
+            rules:
+              - next: judge
+        - judge:
+            inputs:
+              reviews: review
+            rules:
+              - when:
+                  on: all_lgtm
+                  then: list_threads
+                next: apply_fixes
+        - apply_fixes:
+            rules:
+              - loop_guard:
+                  max_iterations: 3
+                  on_exhausted: give_up
+              - next: review
+        - list_threads:
+            rules:
+              - when:
+                  on: has_open
+                  then: fix_each
+                next: done
+        - fix_each:
+            rules:
+              - next: triage
+        - triage:
+            rules:
+              - loop_guard:
+                  max_iterations: 2
+                  on_exhausted: escalate
+              - switch:
+                  on: verdict
+                  cases:
+                    SHIP: done
+                    HOLD: list_threads
+                    ESCALATE: escalate
+
+  # ---- 葉と Fanout ----
+
+  run_tests:
+    command: "cargo test"
+
+  fix_tests:
+    session:
+      model: claude-opus-4-8
+      permission: edit
+      facets:
+        policy: implementing
+        instruction: fix-failing-tests
+    input:
+      - test_result             # Contract なし = 検証なしで注入
+
+  review:
+    fanout:
+      children:
+        - review_opus
+        - review_gpt
+
+  review_opus:
+    session:
+      model: claude-opus-4-8
+      permission: read
+      facets:
+        policy: reviewing
+        knowledge: releash-review
+        instruction: review-diff
+    artifact: review_verdict
+
+  review_gpt:
+    session:
+      model: gpt-5.5
+      permission: read
+      facets:
+        policy: reviewing
+        knowledge: releash-review
+        instruction: review-diff
+    artifact: review_verdict
+
+  judge:
+    command: "echo '{{ reviews }}' | jq '{all_lgtm: all(.[].lgtm)}'"
+    input:
+      - reviews: review_verdicts
+    artifact: judge_result
+
+  apply_fixes:
+    session:
+      model: claude-opus-4-8
+      permission: edit
+      facets:
+        policy: implementing
+        instruction: apply-review-fixes
+
+  list_threads:
+    command: "releash thread list --open --format json"
+    artifact: thread_scan
+
+  fix_each:
+    fanout:
+      children:
+        - fix_one
+      items: list_threads.threads   # 各要素を fix_one の thread パラメータへ供給
+
+  fix_one:
+    session:
+      model: claude-opus-4-8
+      permission: edit
+      facets:
+        policy: triage
+        knowledge: releash-thread
+        instruction: decide-thread-fix   # 本文は {{ thread.thread_id }} で参照
+    completion: approval
+    input:
+      - thread: thread
+    artifact: fix_result
+
+  triage:
+    session:
+      model: claude-opus-4-8
+      permission: read
+      facets:
+        policy: reviewing
+        instruction: triage-ship-decision
+    artifact: ship_decision
+
+  done:
+    session:
+      model: claude-opus-4-8
+      permission: read
+      facets:
+        instruction: summarize-ship
+    completion: approval
+
+  give_up:
+    session:
+      model: claude-opus-4-8
+      permission: read
+      facets:
+        instruction: summarize-failure
+    completion: approval
+
+  escalate:
+    session:
+      model: claude-opus-4-8
+      permission: read
+      facets:
+        instruction: summarize-escalation
+    completion: approval
