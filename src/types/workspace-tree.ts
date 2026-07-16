@@ -1,112 +1,123 @@
-import type { AgentState } from "./protocol";
-import type { SessionState, SessionSummary } from "./session";
-import type { WorkflowRunSummary } from "./workflow";
+import type { SessionSummary } from "./session";
+import type { WorkflowExecutionSummary } from "./workflow";
 
-export type CenterSelection =
-	| {
-			kind: "agentSession";
-			worktreePath: string;
-			sessionId: string;
-	  }
-	| {
-			kind: "newAgentSession";
-			worktreePath: string;
-	  }
-	| {
-			kind: "workflowStep";
-			worktreePath: string;
-			runId: string;
-			stepId: string;
-			stepName: string;
-	  };
-
-export type CenterSelectionRequest = CenterSelection & {
-	requestId: number;
-	branchName?: string;
-	repoName?: string;
-};
-
-export interface WorkspaceSessionNode {
-	kind: "session";
-	id: string;
+export interface CenterSelection {
+	kind: "node";
 	worktreePath: string;
-	title: string;
-	state: SessionState;
-	updatedAt: number;
-	workflowStepSession: boolean;
-	stepName?: string | null;
-	runIndex?: number | null;
-	agentState?: AgentState | null;
+	nodeId: string;
 }
 
-export type WorkspaceStepStatus =
+export interface NewSessionCreationRequest {
+	requestId: string;
+	worktreePath: string;
+	attempt: number;
+}
+
+export interface NewSessionCreationStatus {
+	pending: boolean;
+	error: string | null;
+}
+
+export type WorkspaceNodeStatus =
 	| "queued"
 	| "running"
 	| "failed"
 	| "error"
 	| "waiting"
+	| "interrupted"
 	| "aborted"
 	| "completed";
 
-type WorkspaceStepType = "agent" | "bash" | "approval" | "parallel";
-
-export interface WorkspaceWorkflowStepNode {
-	kind: "step";
-	id: string;
-	runId: string;
-	worktreePath: string;
-	title: string;
-	status: WorkspaceStepStatus;
-	stepType: WorkspaceStepType;
-	canReject?: boolean;
-	updatedAt: number;
-	runIndex?: number | null;
-	sessions: WorkspaceSessionNode[];
+export interface WorkspaceNodeCapabilities {
+	canApprove: boolean;
+	canClose: boolean;
 }
 
-export type WorkspaceWorkflowStepDetail = WorkspaceWorkflowStepNode;
-
-export interface WorkspaceWorkflowNode {
-	kind: "workflow";
-	runId: string;
-	worktreePath: string;
-	workflowName: string;
-	title: string;
-	status: WorkspaceStepStatus;
+export interface WorkspaceWorkflowCapabilities {
 	canStop: boolean;
+	canResume: boolean;
+	canAbort: boolean;
+	canArchive: boolean;
+}
+
+export interface WorkspaceNode {
+	kind: "node";
+	id: string;
+	title: string;
+	status: WorkspaceNodeStatus;
+	contentKind: "session" | "command";
+	capabilities: WorkspaceNodeCapabilities;
 	updatedAt: number;
-	steps: WorkspaceWorkflowStepNode[];
+}
+
+export interface WorkspaceWorkflow {
+	kind: "workflow";
+	id: string;
+	title: string;
+	status: WorkspaceNodeStatus;
+	capabilities: WorkspaceWorkflowCapabilities;
+	children: WorkspaceTreeItem[];
+	updatedAt: number;
+}
+
+export interface WorkspaceFanout {
+	kind: "fanout";
+	id: string;
+	title: string;
+	status: WorkspaceNodeStatus;
+	children: WorkspaceTreeItem[];
+	updatedAt: number;
+}
+
+export type WorkspaceTreeItem =
+	| WorkspaceNode
+	| WorkspaceWorkflow
+	| WorkspaceFanout;
+
+export interface WorkspaceTreeSnapshot {
+	nodes: WorkspaceTreeItem[];
+	preferredNodeId?: string | null;
+}
+
+export interface WorkspaceSessionNodeContent {
+	kind: "session";
+	sessionId?: string | null;
+}
+
+export interface WorkspaceCommandResult {
+	exitCode: number;
+	duration: number;
+	stdout: string;
+	stderr: string;
+}
+
+export interface WorkspaceCommandNodeContent {
+	kind: "command";
+	displayCommand?: string | null;
+	result?: WorkspaceCommandResult | null;
+}
+
+export type WorkspaceNodeContent =
+	| WorkspaceSessionNodeContent
+	| WorkspaceCommandNodeContent;
+
+export interface WorkspaceNodeDetail {
+	id: string;
+	title: string;
+	status: WorkspaceNodeStatus;
+	capabilities: WorkspaceNodeCapabilities;
+	updatedAt: number;
+	content: WorkspaceNodeContent;
 }
 
 export interface WorkspaceWorkflowHistoryItem {
-	runId: string;
+	executionId: string;
 	worktreePath: string;
 	title: string;
-	status: WorkspaceStepStatus | WorkflowRunSummary["status"];
+	status: WorkspaceNodeStatus | WorkflowExecutionSummary["status"];
 	updatedAt: number;
 	archivedAt: number;
 	archiveReason: "auto_no_sessions" | "manual" | string;
 }
 
-export type WorkspaceTreeNode = WorkspaceSessionNode | WorkspaceWorkflowNode;
-
 export type WorkspaceSessionHistoryItem = SessionSummary;
-
-interface WorkflowStepRepresentative {
-	executionId: string;
-	stepName: string;
-	runIndex?: number | null;
-	representative: WorkspaceStepStatus;
-}
-
-interface WorkflowRepresentative {
-	executionId: string;
-	representative: WorkspaceStepStatus;
-}
-
-export interface WorktreeStepStatusView {
-	worktreePath: string;
-	version: number;
-	steps: WorkflowStepRepresentative[];
-	workflows: WorkflowRepresentative[];
-}

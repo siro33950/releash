@@ -14,14 +14,7 @@ import {
 	Trash2,
 	Workflow,
 } from "lucide-react";
-import {
-	Fragment,
-	useCallback,
-	useEffect,
-	useReducer,
-	useRef,
-	useState,
-} from "react";
+import { Fragment, useCallback, useEffect, useReducer, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -92,14 +85,6 @@ interface WorkflowConfig {
 	approval_auto_approve: boolean;
 }
 
-interface AgentShortcutSetting {
-	id: string;
-	label: string;
-	shortcut: string;
-	alternateShortcut?: string | null;
-	defaultShortcut: string;
-}
-
 const DEFAULT_WORKFLOW_CONFIG: WorkflowConfig = {
 	approval_auto_approve: false,
 };
@@ -151,103 +136,6 @@ function useWorkflowSettings(open: boolean) {
 	}, [draft]);
 
 	return { draft, setDraft, isDirty, loading, saving, error, save };
-}
-
-function useAgentShortcutSettings(open: boolean) {
-	const [config, setConfig] = useState<AgentShortcutSetting[]>([]);
-	const [draft, setDraft] = useState<AgentShortcutSetting[]>([]);
-	const [loading, setLoading] = useState(false);
-	const [saving, setSaving] = useState(false);
-	const [error, setError] = useState<string | null>(null);
-	const loadRequestIdRef = useRef(0);
-
-	const load = useCallback(() => {
-		const requestId = loadRequestIdRef.current + 1;
-		loadRequestIdRef.current = requestId;
-		setLoading(true);
-		setError(null);
-		invoke<AgentShortcutSetting[]>("get_agent_shortcut_settings")
-			.then((settings) => {
-				if (loadRequestIdRef.current !== requestId) return;
-				const normalized = Array.isArray(settings) ? settings : [];
-				setConfig(normalized);
-				setDraft(normalized);
-			})
-			.catch((e) => {
-				if (loadRequestIdRef.current === requestId) setError(String(e));
-			})
-			.finally(() => {
-				if (loadRequestIdRef.current === requestId) setLoading(false);
-			});
-	}, []);
-
-	useEffect(() => {
-		if (!open) return;
-		load();
-	}, [open, load]);
-
-	const updateShortcut = useCallback((id: string, shortcut: string) => {
-		setDraft((current) =>
-			current.map((setting) =>
-				setting.id === id ? { ...setting, shortcut } : setting,
-			),
-		);
-	}, []);
-
-	const isDirty = JSON.stringify(draft) !== JSON.stringify(config);
-
-	const save = useCallback(async () => {
-		setSaving(true);
-		setError(null);
-		try {
-			const settings = await invoke<AgentShortcutSetting[]>(
-				"update_agent_shortcut_settings",
-				{
-					shortcuts: draft.map((setting) => ({
-						id: setting.id,
-						shortcut: setting.shortcut,
-					})),
-				},
-			);
-			const normalized = Array.isArray(settings) ? settings : draft;
-			setConfig(normalized);
-			setDraft(normalized);
-		} catch (e) {
-			setError(String(e));
-			throw e;
-		} finally {
-			setSaving(false);
-		}
-	}, [draft]);
-
-	const reset = useCallback(async () => {
-		setSaving(true);
-		setError(null);
-		try {
-			const settings = await invoke<AgentShortcutSetting[]>(
-				"reset_agent_shortcut_settings",
-			);
-			const normalized = Array.isArray(settings) ? settings : [];
-			setConfig(normalized);
-			setDraft(normalized);
-		} catch (e) {
-			setError(String(e));
-			throw e;
-		} finally {
-			setSaving(false);
-		}
-	}, []);
-
-	return {
-		draft,
-		loading,
-		saving,
-		error,
-		isDirty,
-		updateShortcut,
-		save,
-		reset,
-	};
 }
 
 type HooksAction =
@@ -775,7 +663,6 @@ function AgentSection({
 	draft,
 	updateDraft,
 	workflow,
-	shortcuts,
 	hooksConfig,
 	hooksLoading,
 	hooksApplying,
@@ -789,7 +676,6 @@ function AgentSection({
 	draft: AppSettings;
 	updateDraft: (updater: (d: AppSettings) => AppSettings) => void;
 	workflow: ReturnType<typeof useWorkflowSettings>;
-	shortcuts: ReturnType<typeof useAgentShortcutSettings>;
 	hooksConfig: string;
 	hooksLoading: boolean;
 	hooksApplying: boolean;
@@ -871,11 +757,11 @@ function AgentSection({
 						htmlFor="workflow-approval-auto-approve"
 						className={`${labelClass} cursor-pointer`}
 					>
-						Workflow approval auto-approve
+						Approval gate auto-approve
 					</label>
 				</div>
 				<p className="text-[10px] text-muted-foreground">
-					Automatically accepts completed workflow approval steps. This is
+					Automatically approves completed sessions with gate: approval. This is
 					independent from agent auto-approve.
 				</p>
 				{workflow.error && (
@@ -907,61 +793,6 @@ function AgentSection({
 					</p>
 				</div>
 			)}
-
-			<div className="flex flex-col gap-2 rounded border p-3">
-				<div className="flex items-center justify-between gap-2">
-					<h4 className="text-xs font-semibold text-muted-foreground">
-						Agent shortcuts
-					</h4>
-					<Button
-						type="button"
-						size="sm"
-						variant="ghost"
-						onClick={() => void shortcuts.reset()}
-						disabled={shortcuts.loading || shortcuts.saving}
-					>
-						Reset
-					</Button>
-				</div>
-				{shortcuts.loading ? (
-					<div className="flex items-center justify-center py-3">
-						<Loader2 className="size-4 animate-spin text-muted-foreground" />
-					</div>
-				) : (
-					<div className="grid grid-cols-[minmax(0,1fr)_9rem] gap-x-3 gap-y-2">
-						{shortcuts.draft.map((shortcut) => (
-							<Fragment key={shortcut.id}>
-								<label
-									htmlFor={`agent-shortcut-${shortcut.id}`}
-									className="min-w-0 self-center text-xs text-muted-foreground"
-								>
-									<span className="block truncate">{shortcut.label}</span>
-									<span className="block truncate text-[10px]">
-										Default {shortcut.defaultShortcut}
-										{shortcut.alternateShortcut
-											? ` / ${shortcut.alternateShortcut}`
-											: ""}
-									</span>
-								</label>
-								<Input
-									id={`agent-shortcut-${shortcut.id}`}
-									value={shortcut.shortcut}
-									onChange={(event) =>
-										shortcuts.updateShortcut(
-											shortcut.id,
-											event.currentTarget.value,
-										)
-									}
-									className="h-8 font-mono text-xs"
-								/>
-							</Fragment>
-						))}
-					</div>
-				)}
-				{shortcuts.error && (
-					<p className="text-[10px] text-destructive">{shortcuts.error}</p>
-				)}
-			</div>
 
 			{draft.agent === "custom" && (
 				<div className="flex flex-col gap-1.5">
@@ -1153,21 +984,40 @@ function BackgroundSection({
 	);
 }
 
+// URL の hostname を厳密一致で判定する（substring 判定は
+// `https://evil.com/discord.com/api/webhooks/` 等で回避可能なため使わない）。
+function detectWebhookType(
+	raw: string,
+): "Discord" | "Slack" | "Generic (Slack format)" | null {
+	if (!raw) return null;
+	let host: string;
+	let pathname: string;
+	try {
+		const url = new URL(raw);
+		host = url.hostname.toLowerCase();
+		pathname = url.pathname;
+	} catch {
+		return "Generic (Slack format)";
+	}
+	if (
+		(host === "discord.com" || host === "discordapp.com") &&
+		pathname.startsWith("/api/webhooks/")
+	) {
+		return "Discord";
+	}
+	if (host === "hooks.slack.com") {
+		return "Slack";
+	}
+	return "Generic (Slack format)";
+}
+
 function NotificationsSection({
 	webhook,
 }: {
 	webhook: ReturnType<typeof useWebhookConfig>;
 }) {
 	const webhookUrlValue = webhook.draft.webhook_url;
-	const detectedWebhookType =
-		webhookUrlValue.includes("discord.com/api/webhooks/") ||
-		webhookUrlValue.includes("discordapp.com/api/webhooks/")
-			? "Discord"
-			: webhookUrlValue.includes("hooks.slack.com/")
-				? "Slack"
-				: webhookUrlValue
-					? "Generic (Slack format)"
-					: null;
+	const detectedWebhookType = detectWebhookType(webhookUrlValue);
 
 	return (
 		<div className="flex flex-col gap-2">
@@ -1446,7 +1296,6 @@ export function SettingsModal({
 	const externalEditor = useExternalEditorConfig(open);
 	const automation = useAutomation(open);
 	const workflow = useWorkflowSettings(open);
-	const shortcuts = useAgentShortcutSettings(open);
 
 	// Hooks state
 	const [hooks, dispatchHooks] = useReducer(hooksReducer, initialHooksState);
@@ -1525,7 +1374,6 @@ export function SettingsModal({
 	const { isDirty: notionIsDirty, save: notionSave } = notion;
 	const { isDirty: editorIsDirty, save: editorSave } = externalEditor;
 	const { isDirty: workflowIsDirty, save: workflowSave } = workflow;
-	const { isDirty: shortcutsIsDirty, save: shortcutsSave } = shortcuts;
 
 	const handleSave = useCallback(async () => {
 		dispatchSettings({ type: "SAVE_START" });
@@ -1550,9 +1398,6 @@ export function SettingsModal({
 			}
 			if (workflowIsDirty) {
 				await workflowSave();
-			}
-			if (shortcutsIsDirty) {
-				await shortcutsSave();
 			}
 			if (performanceTelemetryChanged) {
 				await setPerformanceTelemetryEnabled(draft.performanceTelemetry);
@@ -1580,8 +1425,6 @@ export function SettingsModal({
 		editorSave,
 		workflowIsDirty,
 		workflowSave,
-		shortcutsIsDirty,
-		shortcutsSave,
 	]);
 
 	const isDirty =
@@ -1591,8 +1434,7 @@ export function SettingsModal({
 		reposIsDirty ||
 		notionIsDirty ||
 		editorIsDirty ||
-		workflowIsDirty ||
-		shortcutsIsDirty;
+		workflowIsDirty;
 
 	const sectionContent = (() => {
 		switch (activeSection) {
@@ -1632,7 +1474,6 @@ export function SettingsModal({
 						draft={draft}
 						updateDraft={updateDraft}
 						workflow={workflow}
-						shortcuts={shortcuts}
 						hooksConfig={hooks.config}
 						hooksLoading={hooks.loading}
 						hooksApplying={hooks.applying}

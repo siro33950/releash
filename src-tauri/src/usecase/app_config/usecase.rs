@@ -33,7 +33,6 @@ impl AppConfigUsecase {
             config.app.close_to_tray = app.close_to_tray;
             config.app.auto_launch = app.auto_launch;
             config.app.start_minimized = app.start_minimized;
-            config.app.agent_shortcuts = app.agent_shortcuts;
             Ok(())
         }))?;
         Ok(())

@@ -2,7 +2,7 @@
 
 現在のブランチに紐づく GitHub PR の unresolved review comment を取得し、各 comment を Releash Thread として投稿する。
 
-この Step は取得と Thread 投稿だけを行う。対応方針の決定、実装、GitHub への返信は行わない。
+この node は取得と Thread 投稿だけを行う。対応方針の決定、実装、GitHub への返信は行わない。
 
 # 入力
 
@@ -46,11 +46,11 @@ GraphQL API で `reviewThreads` を取得する。REST API では `isResolved` �
 
 ## 3. 既存 Releash Thread との重複確認
 
-`{{path_alias.releash}} review list --session-id "$RELEASH_SESSION_ID" --json` で既存 Thread を取得し、本文・履歴に同じ `database_id` または `github_review_thread_id` を持つ `[PR_REVIEW_COMMENT_IMPORTED]` がある場合は新規投稿しない。
+`releash review list --session-id "$RELEASH_SESSION_ID" --json` で既存 Thread を取得し、本文・履歴に同じ `database_id` または `github_review_thread_id` を持つ `[PR_REVIEW_COMMENT_IMPORTED]` がある場合は新規投稿しない。
 
 ## 4. Releash Thread 投稿
 
-未取り込みの GitHub review comment ごとに、`{{path_alias.releash}} review create` で Thread を作成する。
+未取り込みの GitHub review comment ごとに、`releash review create` で Thread を作成する。
 
 Thread 本文は次の形式にする。
 

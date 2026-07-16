@@ -1,8 +1,8 @@
-{{project_name}} プロジェクトの `behavior.md` を一括で作成または更新する。
+`{{ write_requirements.spec_dir }}` の `behavior.md` を一括で作成または更新する。
 
 ## 入力
 
-`spec-directory` Contract で渡される `spec_dir` を読み、`${spec_dir}/requirements.md` を参照する。
+`spec-directory` schema で渡される `spec_dir` を読み、`${spec_dir}/requirements.md` を参照する。
 
 ## 基本方針
 
@@ -16,7 +16,7 @@
 
 ## 出力
 
-本ステップでは `behavior.md` だけを作成・更新する。`requirements.md` と `design.md` は変更しない。
+この node では `behavior.md` だけを作成・更新する。`requirements.md` と `design.md` は変更しない。
 
 `behavior.md` には少なくとも以下を含める:
 

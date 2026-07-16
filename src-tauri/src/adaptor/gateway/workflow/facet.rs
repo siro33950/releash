@@ -1,9 +1,8 @@
 use super::builtin;
-use super::schema::{ChildNodeDefinition, NodeDefinition, ResolvedFacets, Workflow};
+use super::schema::{FacetRefs, WorkflowDefinitionYaml};
 use super::storage;
-use crate::domain::workflow::services::contract::strip_contract_validation_metadata;
 use serde::Serialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -68,75 +67,56 @@ pub enum FacetKind {
     Policy,
     Knowledge,
     Instruction,
-    /// step 境界で受け渡されるデータ仕様。input / output いずれの位置でも
-    /// 同一定義を参照可能（[02] Contract 双方向対称性）。
-    Contract,
 }
 
 impl FacetKind {
+    /// ストレージ上のディレクトリ名（複数形）。ファイルシステム経路にのみ使う。
     pub fn dir_name(&self) -> &str {
         match self {
             Self::Policy => "policies",
             Self::Knowledge => "knowledge",
             Self::Instruction => "instructions",
-            Self::Contract => "contracts",
+        }
+    }
+
+    /// UI / CLI / DiagnosticReport が共有する正規識別子（単数形）。
+    /// backend command の `parse_domain_facet_kind` が受理する語彙と一致する。
+    pub fn canonical_name(&self) -> &str {
+        match self {
+            Self::Policy => "policy",
+            Self::Knowledge => "knowledge",
+            Self::Instruction => "instruction",
         }
     }
 }
 
-/// 出力 Contract の前置定型文を組み立てる。
-///
-/// Contract facet 本文は純粋な JSON shape 仕様（フォーマット + フィールドルール）のみを
-/// 保持し、提出経路の指示は本 preamble に閉じる。Contract 本文は input/output 双方で
-/// 再利用される（[02] Contract 双方向対称性）。
-///
-/// structured output の確定経路は `releash workflow output submit` CLI（および同等の
-/// typed API）のみ。step agent の自由文に書かれた `<workflow_output>` 相当の表現は
-/// engine から観測されないため、必ず CLI 経由で提出する必要がある。
-pub fn output_contract_preamble(key: &str) -> String {
-    // CLI 名は起動環境別に展開する。`{{path_alias.releash}}` は engine の
-    // `render_namespaced_variables` 段で `releash` / `releash-dev` に置換される
-    // （spec issues-1054 facet テンプレートにおける CLI alias の展開）。
-    format!(
-        "step 完了時に下記データ仕様 (型: {key}) に従う JSON を `{{{{path_alias.releash}}}} workflow output submit` で提出すること。\nチャット本文や最終応答に JSON をそのまま書いても提出とは扱われない。必ず CLI コマンドを実行すること。\n\n```sh\n{{{{path_alias.releash}}}} workflow output submit {{{{run_id}}}} \\\n  --step {{{{step_name}}}} \\\n  --type {key} \\\n  --json '{{...}}'\n```\n\n提出が成功するまで step は完了として扱われない。失敗時は `{{{{path_alias.releash}}}} workflow output validate` でフォーマットを確認してから再提出する。\n\nデータ仕様 (型: {key}):"
-    )
-}
-
-/// 出力 Contract がある step の user message 末尾に置く完了時アクション。
-///
-/// system_prompt 側の Contract preamble だけだと、作業本文の最後にある instruction /
-/// step output 注入 / task 注入が直近文脈になり、agent が最終応答で説明してしまう
-/// 余地が残る。Contract 由来の提出手順を user message の末尾にも置き、提出値が
-/// 確定した時点の次アクションを CLI 実行に固定する。
-pub fn output_contract_completion_action(key: &str) -> String {
-    // CLI 名は起動環境別に展開する（dev → `releash-dev` / 本番 → `releash`）。
-    // engine 側で `{{path_alias.releash}}` を解決する（spec issues-1054）。
+/// `artifact:` がある node の user message 末尾に置く完了時アクション。
+pub fn artifact_completion_action(
+    key: &str,
+    execution_id: &str,
+    node_name: &str,
+    node_execution_id: Option<&str>,
+) -> String {
+    let quoted_key = crate::domain::shell::quote_path_for_shell(key);
+    let quoted_execution_id = crate::domain::shell::quote_path_for_shell(execution_id);
+    let quoted_node_name = crate::domain::shell::quote_path_for_shell(node_name);
+    let node_execution_arg = node_execution_id
+        .map(crate::domain::shell::quote_path_for_shell)
+        .map(|id| format!("  --node-execution {id} \\\n"))
+        .unwrap_or_default();
     format!(
         "## 完了時の必須アクション\n\n\
 提出値が確定した時点で、次の assistant action は最終応答ではなく CLI 実行でなければならない。\n\
-チャット本文に JSON や要約を書いても提出とは扱われない。必ず次のコマンドで出力を提出すること。\n\
-このコマンドが成功するまで step は完了していない。\n\n\
+チャット本文に JSON や要約を書いても提出とは扱われない。必ず次のコマンドで Artifact を提出すること。\n\
+このコマンドが成功するまで node は完了していない。\n\n\
 ```sh\n\
-{{{{path_alias.releash}}}} workflow output submit {{{{run_id}}}} \\\n  --step {{{{step_name}}}} \\\n  --type {key} \\\n  --json '{{...}}'\n\
+releash workflow output submit {execution_id} \\\n  --node {node_name} \\\n{node_execution_arg}  --type {key} \\\n  --json '{{...}}'\n\
 ```"
-    )
-}
-
-/// 入力 Contract の前置定型文を組み立てる。
-///
-/// engine はメッセージ末尾に以下のいずれかの形式で入力データを注入する:
-/// - `<task>...</task>` ブロック（workflow 実行時の task 引数）
-/// - `<step_output name="...">{JSON | (not yet completed) | (no structured output)}</step_output>` ブロック
-///   （前段 step の output。`pass_output_from` / `pass_previous_response` 経由。
-///   前段が未実行のときは `(not yet completed)` リテラル）
-/// - `<workflow_variables>{JSON}</workflow_variables>` ブロック（workflow 変数）
-///
-/// 入力 Contract 本文はデータ仕様（フォーマット + フィールドルール）のみを示し、
-/// どのブロックから読み取るかは含めない。受け手 agent は以下のいずれかから
-/// データ仕様に一致する入力を取り出して扱う。
-pub fn input_contract_preamble(key: &str) -> String {
-    format!(
-        "入力データは以下のいずれかのブロックで届く: `<task>...</task>` / `<step_output name=\"...\">...</step_output>` / `<workflow_variables>...</workflow_variables>`。\n`<step_output>` の内容が `(not yet completed)` または `(no structured output)` のときは、構造化された入力は来ていないものとして扱う（前者は前段 step が未実行、後者は前段 step が構造化出力を持たない）。\n入力が JSON 以外の形式（自然言語の文中等）で渡されたときは、本文に含まれるキー値を抽出して下記データ仕様にマップして扱う。\n下記データ仕様 (型: {key}) に合致する入力を読み取って処理すること。\n\nデータ仕様 (型: {key}):"
+,
+        execution_id = quoted_execution_id,
+        node_name = quoted_node_name,
+        node_execution_arg = node_execution_arg,
+        key = quoted_key
     )
 }
 
@@ -144,6 +124,55 @@ pub fn input_contract_preamble(key: &str) -> String {
 pub struct ComposedPrompt {
     pub system_prompt: Option<String>,
     pub user_message: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FacetContents {
+    pub policy: Option<String>,
+    pub knowledge: Option<String>,
+    pub instruction: Option<String>,
+}
+
+impl FacetContents {
+    pub fn is_empty(&self) -> bool {
+        self.policy.is_none() && self.knowledge.is_none() && self.instruction.is_none()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkflowFacetContents {
+    nodes: BTreeMap<String, FacetContents>,
+}
+
+impl WorkflowFacetContents {
+    pub fn for_node(&self, node_name: &str) -> Option<&FacetContents> {
+        self.nodes.get(node_name)
+    }
+
+    fn insert_node(&mut self, node_name: String, contents: FacetContents) {
+        self.nodes.insert(node_name, contents);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_node_for_test(
+        node_name: impl Into<String>,
+        contents: FacetContents,
+    ) -> Self {
+        let mut resolved = Self::default();
+        resolved.insert_node(node_name.into(), contents);
+        resolved
+    }
+
+    pub fn iter_node_contents(&self) -> impl Iterator<Item = (&str, &FacetContents)> {
+        self.nodes
+            .iter()
+            .map(|(node_name, contents)| (node_name.as_str(), contents))
+    }
+}
+
+pub fn empty_facet_contents() -> &'static FacetContents {
+    static EMPTY: std::sync::OnceLock<FacetContents> = std::sync::OnceLock::new();
+    EMPTY.get_or_init(FacetContents::default)
 }
 
 pub fn validate_facet_key(key: &str) -> Result<(), FacetError> {
@@ -257,7 +286,7 @@ pub fn list_facet_summaries(
     kind: FacetKind,
     base_dir: &Path,
 ) -> Result<Vec<super::schema::FacetSummary>, FacetError> {
-    let kind_name = kind.dir_name().to_string();
+    let kind_name = kind.canonical_name().to_string();
     let mut summaries = Vec::new();
     let dir = base_dir.join(kind.dir_name());
 
@@ -321,45 +350,21 @@ pub fn resolve_facet_path(
 
 /// node の prompt 関連 facet 参照から組み立てた `ComposedPrompt` を返す。
 ///
-/// [02] schema 境界: 実行時に未解決 ref を残さないため、`NodeDefinition.resolved_facets`
-/// を唯一の参照源とする。ファイル I/O fallback は持たない（呼び出し前に
-/// `storage::load_workflow` / `builtin::load_builtin_workflow_resolved` 経由で
-/// `resolved_facets` を populate しておくこと）。
+/// 実行時に未解決 ref を残さないため、gateway 側 read model の解決済み本文を
+/// 唯一の参照源とする。ファイル I/O fallback は持たない。
 ///
-/// agent / approval 種別の node が対象。bash / parallel node には facet 参照は存在しない。
-pub fn compose_facets(node: &NodeDefinition) -> ComposedPrompt {
-    compose_from_parts(
-        &node.resolved_facets,
-        node.output_contract.as_deref(),
-        node.input_contracts.as_deref(),
-    )
+/// session node が対象。command / fanout node には facet 参照は存在しない。
+pub fn compose_facets(resolved: Option<&FacetContents>) -> ComposedPrompt {
+    match resolved {
+        Some(resolved) => compose_from_parts(resolved),
+        None => compose_from_parts(empty_facet_contents()),
+    }
 }
 
-/// 並列子 node の prompt 関連 facet 参照から組み立てた `ComposedPrompt` を返す。
-/// `compose_facets` と同じく `ChildNodeDefinition.resolved_facets` のみを参照する。
-pub fn compose_child_facets(child: &ChildNodeDefinition) -> ComposedPrompt {
-    compose_from_parts(
-        &child.resolved_facets,
-        child.output_contract.as_deref(),
-        child.input_contracts.as_deref(),
-    )
-}
-
-fn compose_from_parts(
-    resolved: &ResolvedFacets,
-    output_contract_key: Option<&str>,
-    input_contract_keys: Option<&[String]>,
-) -> ComposedPrompt {
+fn compose_from_parts(resolved: &FacetContents) -> ComposedPrompt {
     let mut system_parts: Vec<String> = Vec::new();
     if let Some(ref content) = resolved.policy {
         system_parts.push(content.clone());
-    }
-    if let (Some(ref content), Some(key)) = (&resolved.output_contract, output_contract_key) {
-        system_parts.push(format!(
-            "{}\n\n{}",
-            output_contract_preamble(key),
-            strip_contract_validation_metadata(content)
-        ));
     }
     let system_prompt = if system_parts.is_empty() {
         None
@@ -371,16 +376,8 @@ fn compose_from_parts(
     if let Some(ref content) = resolved.knowledge {
         user_parts.push(content.clone());
     }
-    if let Some(keys) = input_contract_keys {
-        // resolved.input_contracts と input_contract_keys は同じ順序・同じ長さで対応する
-        // ([02] Contract 双方向対称性: load 経路で keys を順に解決して body 配列に格納する)。
-        for (key, body) in keys.iter().zip(resolved.input_contracts.iter()) {
-            user_parts.push(format!(
-                "{}\n\n{}",
-                input_contract_preamble(key),
-                strip_contract_validation_metadata(body)
-            ));
-        }
+    if let Some(ref content) = resolved.instruction {
+        user_parts.push(content.clone());
     }
     ComposedPrompt {
         system_prompt,
@@ -388,139 +385,101 @@ fn compose_from_parts(
     }
 }
 
-/// `Workflow` に含まれる全 node / 子 node の facet 参照を解決し、
-/// それぞれの `resolved_facets` フィールドに本文を格納する。
+/// `WorkflowDefinitionYaml` に含まれる全 session node の facet 参照を解決し、gateway 側 read model として返す。
 ///
-/// `storage::load_workflow` から呼ばれ、未解決 ref を schema 層に残さないようにする
-/// （[02] schema 境界）。欠損 facet があれば `FacetError::NotFound` を伝搬し、
-/// load 経路で実行可能とは判定しない。
-pub fn resolve_workflow_facets(workflow: &mut Workflow, base_dir: &Path) -> Result<(), FacetError> {
-    for node in &mut workflow.nodes {
-        node.resolved_facets = resolve_refs(
-            node.policy.as_deref(),
-            node.knowledge.as_deref(),
-            node.instruction.as_deref(),
-            node.output_contract.as_deref(),
-            node.input_contracts.as_deref(),
-            base_dir,
-        )?;
-        if let Some(ref mut children) = node.parallel_children {
-            for child in children {
-                child.resolved_facets = resolve_refs(
-                    child.policy.as_deref(),
-                    child.knowledge.as_deref(),
-                    child.instruction.as_deref(),
-                    child.output_contract.as_deref(),
-                    child.input_contracts.as_deref(),
-                    base_dir,
-                )?;
-            }
+/// 欠損 facet があれば `FacetError::NotFound` を伝搬し、load 経路で実行可能とは判定しない。
+pub fn resolve_workflow_facets(
+    workflow: &WorkflowDefinitionYaml,
+    base_dir: &Path,
+) -> Result<WorkflowFacetContents, FacetError> {
+    let mut resolved = WorkflowFacetContents::default();
+    for node in &workflow.nodes {
+        if let Some(session) = node.session() {
+            resolved.insert_node(node.name.clone(), resolve_refs(&session.facets, base_dir)?);
         }
     }
-    Ok(())
+    Ok(resolved)
 }
 
-/// テスト用ヘルパー: 単一 node の facet 参照を `base_dir` から解決し
-/// `resolved_facets` に格納する。production の `resolve_workflow_facets` が
-/// workflow 全体に対して行う処理を、engine / facet 各モジュールの単体テストで
-/// 個別 node 単位に分解して使うためのもの。
+/// テスト用ヘルパー: 単一 node の facet 参照を `base_dir` から解決する。
 ///
 /// `unwrap()` 等で潰さず `FacetError` をそのまま返すため、欠損 facet のテスト
 /// シナリオもこのヘルパーを経由して書ける。
 #[cfg(test)]
 pub(crate) fn resolve_node_facets(
-    node: &mut crate::adaptor::gateway::workflow::schema::NodeDefinition,
+    node: &crate::adaptor::gateway::workflow::schema::NodeDefinition,
     base_dir: &Path,
-) -> Result<(), FacetError> {
-    node.resolved_facets = resolve_refs(
-        node.policy.as_deref(),
-        node.knowledge.as_deref(),
-        node.instruction.as_deref(),
-        node.output_contract.as_deref(),
-        node.input_contracts.as_deref(),
-        base_dir,
-    )?;
-    Ok(())
+) -> Result<FacetContents, FacetError> {
+    node.session()
+        .map(|session| resolve_refs(&session.facets, base_dir))
+        .unwrap_or_else(|| Ok(FacetContents::default()))
 }
 
-/// テスト用ヘルパー: 並列子 node の facet 参照を解決する。
-/// `resolve_node_facets` の `ChildNodeDefinition` 版。
-#[cfg(test)]
-pub(crate) fn resolve_child_facets(
-    child: &mut crate::adaptor::gateway::workflow::schema::ChildNodeDefinition,
-    base_dir: &Path,
-) -> Result<(), FacetError> {
-    child.resolved_facets = resolve_refs(
-        child.policy.as_deref(),
-        child.knowledge.as_deref(),
-        child.instruction.as_deref(),
-        child.output_contract.as_deref(),
-        child.input_contracts.as_deref(),
-        base_dir,
-    )?;
-    Ok(())
-}
-
-fn resolve_refs(
-    policy: Option<&str>,
-    knowledge: Option<&str>,
-    instruction: Option<&str>,
-    output_contract: Option<&str>,
-    input_contracts: Option<&[String]>,
-    base_dir: &Path,
-) -> Result<ResolvedFacets, FacetError> {
-    let resolved_policy = match policy {
+fn resolve_refs(facets: &FacetRefs, base_dir: &Path) -> Result<FacetContents, FacetError> {
+    let resolved_policy = match facets.policy.as_deref() {
         Some(k) => Some(load_facet(FacetKind::Policy, k, base_dir)?),
         None => None,
     };
-    let resolved_knowledge = match knowledge {
+    let resolved_knowledge = match facets.knowledge.as_deref() {
         Some(k) => Some(load_facet(FacetKind::Knowledge, k, base_dir)?),
         None => None,
     };
-    let resolved_instruction = match instruction {
+    let resolved_instruction = match facets.instruction.as_deref() {
         Some(k) => Some(load_facet(FacetKind::Instruction, k, base_dir)?),
         None => None,
     };
-    let resolved_oc = match output_contract {
-        Some(k) => Some(load_facet(FacetKind::Contract, k, base_dir)?),
-        None => None,
-    };
-    let resolved_inputs = match input_contracts {
-        Some(keys) => keys
-            .iter()
-            .map(|k| load_facet(FacetKind::Contract, k, base_dir))
-            .collect::<Result<Vec<_>, _>>()?,
-        None => Vec::new(),
-    };
-    Ok(ResolvedFacets {
+    Ok(FacetContents {
         policy: resolved_policy,
         knowledge: resolved_knowledge,
         instruction: resolved_instruction,
-        output_contract: resolved_oc,
-        input_contracts: resolved_inputs,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adaptor::gateway::workflow::schema::NodeType;
-    use crate::domain::workflow::services::variable_renderer;
+    use crate::adaptor::gateway::workflow::prompt_rendering;
+    use crate::adaptor::gateway::workflow::schema::{
+        FacetRefs, NodeDefinition, NodeKind, SessionSpec,
+    };
     use tempfile::TempDir;
+
+    fn assert_no_deprecated_workflow_vocabulary(label: &str, content: &str) {
+        let content = content.to_ascii_lowercase();
+        let deprecated_terms = [
+            ["workflow ", "runs"].concat(),
+            ["workflow ", "reject"].concat(),
+            ["--", "step"].concat(),
+            ["run", "_id"].concat(),
+            ["run", "-id"].concat(),
+            ["workflow_", "pending"].concat(),
+            ["pending_", "command"].concat(),
+            ["cli_", "mutation_", "requested"].concat(),
+            ["cli_", "mutation_", "rejected"].concat(),
+        ];
+        for term in deprecated_terms {
+            assert!(
+                !content.contains(&term),
+                "{label} contains deprecated workflow vocabulary '{term}'"
+            );
+        }
+    }
 
     fn make_facet_node(
         policy: Option<&str>,
         knowledge: Option<&str>,
         instruction: Option<&str>,
-        output_contract: Option<&str>,
     ) -> NodeDefinition {
         NodeDefinition {
             name: "test".to_string(),
-            node_type: NodeType::Agent,
-            policy: policy.map(String::from),
-            knowledge: knowledge.map(String::from),
-            instruction: instruction.map(String::from),
-            output_contract: output_contract.map(String::from),
+            kind: NodeKind::Session(SessionSpec {
+                facets: FacetRefs {
+                    policy: policy.map(String::from),
+                    knowledge: knowledge.map(String::from),
+                    instruction: instruction.map(String::from),
+                },
+                ..Default::default()
+            }),
             ..NodeDefinition::default()
         }
     }
@@ -529,15 +488,29 @@ mod tests {
         let policies = dir.join("policies");
         let knowledge = dir.join("knowledge");
         let instructions = dir.join("instructions");
-        let contracts = dir.join("contracts");
-        for d in [&policies, &knowledge, &instructions, &contracts] {
+        for d in [&policies, &knowledge, &instructions] {
             fs::create_dir_all(d).unwrap();
         }
         fs::write(policies.join("coding.md"), "Follow best practices.").unwrap();
         fs::write(policies.join("review.md"), "Review carefully.").unwrap();
         fs::write(knowledge.join("architecture.md"), "The system uses Tauri.").unwrap();
         fs::write(instructions.join("implement.md"), "Implement the feature.").unwrap();
-        fs::write(contracts.join("plan-doc.md"), "Output as markdown.").unwrap();
+    }
+
+    #[test]
+    fn deprecated_vocabulary_guard_rejects_retired_cli_mutation_event_names() {
+        for retired_name in [
+            ["cli_", "mutation_", "requested"].concat(),
+            ["cli_", "mutation_", "rejected"].concat(),
+        ] {
+            let result = std::panic::catch_unwind(|| {
+                assert_no_deprecated_workflow_vocabulary("fixture", &retired_name)
+            });
+            assert!(
+                result.is_err(),
+                "guard accepted retired name {retired_name}"
+            );
+        }
     }
 
     // --- validate_facet_key ---
@@ -661,33 +634,33 @@ mod tests {
     // `super::resolve_node_facets` 経由で利用する（engine.rs のテストヘルパーと共有）。
 
     // --- compose_facets ---
-    // Gherkin: ワークフローエンジンはステップ宣言から system_prompt と user_message を合成する
+    // Gherkin: ワークフローエンジンは node 宣言から system_prompt と user_message を合成する
 
     #[test]
-    fn compose_system_prompt_from_policy_and_output_contract() {
-        // Scenario: policyとoutput_contractの両方を指定したステップから system_prompt が合成される
+    fn compose_prompt_from_policy_knowledge_and_instruction() {
+        // Scenario: policy / knowledge / instruction を指定した node から prompt が合成される
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
 
-        let mut node = make_facet_node(Some("coding"), None, None, Some("plan-doc"));
-        resolve_node_facets(&mut node, tmp.path()).unwrap();
-        let result = compose_facets(&node);
+        let node = make_facet_node(Some("coding"), Some("architecture"), Some("implement"));
+        let resolved = resolve_node_facets(&node, tmp.path()).unwrap();
+        let result = compose_facets(Some(&resolved));
 
         let sys = result.system_prompt.expect("system_prompt should be set");
         assert!(sys.contains("Follow best practices."));
-        assert!(sys.contains("Output as markdown."));
-        assert_eq!(result.user_message, "");
+        assert!(result.user_message.contains("The system uses Tauri."));
+        assert!(result.user_message.contains("Implement the feature."));
     }
 
     #[test]
     fn compose_system_prompt_from_policy_only() {
-        // Scenario: policyのみを指定したステップでも system_prompt が合成される
+        // Scenario: policyのみを指定した node でも system_prompt が合成される
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
 
-        let mut node = make_facet_node(Some("coding"), None, None, None);
-        resolve_node_facets(&mut node, tmp.path()).unwrap();
-        let result = compose_facets(&node);
+        let node = make_facet_node(Some("coding"), None, None);
+        let resolved = resolve_node_facets(&node, tmp.path()).unwrap();
+        let result = compose_facets(Some(&resolved));
 
         assert_eq!(
             result.system_prompt.as_deref(),
@@ -697,85 +670,87 @@ mod tests {
     }
 
     #[test]
-    fn compose_system_prompt_from_output_contract_only() {
-        // Scenario: output_contractのみを指定したステップでも system_prompt が合成される
-        // （engine が前置定型文を自動付与する）
-        let tmp = TempDir::new().unwrap();
-        setup_facet_files(tmp.path());
-
-        let mut node = make_facet_node(None, None, None, Some("plan-doc"));
-        resolve_node_facets(&mut node, tmp.path()).unwrap();
-        let result = compose_facets(&node);
-
-        let sys = result.system_prompt.expect("system_prompt should be set");
-        // 出力 Contract preamble は CLI 提出経路（[08]）を agent に指示し、
-        // 型ラベルと Contract 本文を含む。CLI 名は engine 側で
-        // `{{path_alias.releash}}` を起動環境別 alias に置換する（spec issues-1054）。
-        assert!(sys.contains("{{path_alias.releash}} workflow output submit"));
-        assert!(sys.contains("--type plan-doc"));
-        assert!(sys.contains("--json"));
-        assert!(sys.contains("チャット本文や最終応答に JSON をそのまま書いても提出とは扱われない"));
-        assert!(!sys.contains("--file"));
-        assert!(sys.contains("Output as markdown."));
-        assert_eq!(result.user_message, "");
-    }
-
-    #[test]
-    fn output_contract_completion_action_requires_cli_as_next_action() {
-        let action = output_contract_completion_action("plan-doc");
+    fn contract_completion_action_requires_cli_as_next_action() {
+        let action = artifact_completion_action("plan-doc", "execution-1", "plan", None);
 
         assert!(action.contains("完了時の必須アクション"));
         assert!(action.contains("次の assistant action は最終応答ではなく CLI 実行"));
-        // CLI 名は engine 側の `render_namespaced_variables` で展開される。
-        assert!(action.contains("{{path_alias.releash}} workflow output submit"));
+        assert!(action.contains("releash workflow output submit execution-1"));
+        assert!(action.contains("--node plan"));
         assert!(action.contains("--type plan-doc"));
         assert!(action.contains("--json"));
         assert!(!action.contains("--file"));
-        assert!(!action.contains("+  --step"));
+        assert!(!action.contains("--node-execution"));
+        assert_no_deprecated_workflow_vocabulary("Artifact completion action", &action);
     }
 
     #[test]
-    fn compose_input_contracts_into_user_message() {
-        // Scenario: input_contractsを指定したステップでは user_message に
-        // 入力前置 + Contract 本文が含まれる（Contract 双方向対称性）
-        let tmp = TempDir::new().unwrap();
-        setup_facet_files(tmp.path());
-
-        let mut node = NodeDefinition {
-            name: "test".to_string(),
-            node_type: NodeType::Agent,
-            input_contracts: Some(vec!["plan-doc".to_string()]),
-            ..NodeDefinition::default()
-        };
-        resolve_node_facets(&mut node, tmp.path()).unwrap();
-        let result = compose_facets(&node);
-
-        // 入力 Contract preamble は入力チャネル候補（<task> / <step_output> / <workflow_variables>）と
-        // 型ラベル (型: plan-doc) を含み、Contract 本文も連結される
-        assert!(result.user_message.contains("<task>...</task>"));
-        assert!(result
-            .user_message
-            .contains("<step_output name=\"...\">...</step_output>"));
-        assert!(result
-            .user_message
-            .contains("<workflow_variables>...</workflow_variables>"));
-        assert!(result.user_message.contains("型: plan-doc"));
-        // 全 input Contract 共通の一般ルール: JSON 以外の形式で渡された場合のキー値抽出
-        assert!(result.user_message.contains("JSON 以外の形式"));
-        assert!(result.user_message.contains("キー値を抽出"));
-        assert!(result.user_message.contains("Output as markdown."));
-        assert!(result.system_prompt.is_none());
+    fn builtin_agent_facets_use_current_workflow_vocabulary() {
+        for kind in [
+            FacetKind::Policy,
+            FacetKind::Knowledge,
+            FacetKind::Instruction,
+        ] {
+            for key in builtin::list_builtin_facet_keys(kind) {
+                let content = builtin::get_builtin_facet(kind, key)
+                    .expect("a listed builtin facet must be readable");
+                assert_no_deprecated_workflow_vocabulary(key, content);
+            }
+        }
     }
 
     #[test]
-    fn compose_no_system_prompt_when_neither_policy_nor_output_contract() {
-        // Scenario: policy も output_contract も指定がないと system_prompt は設定されない
+    fn workflow_agent_sources_use_current_workflow_vocabulary() {
+        let sources = [
+            (
+                "contract repair prompts",
+                include_str!("../../../domain/workflow/services/contract.rs"),
+            ),
+            ("prompt rendering", include_str!("prompt_rendering.rs")),
+            ("facet rendering", include_str!("facet.rs")),
+        ];
+        for (label, content) in sources {
+            assert_no_deprecated_workflow_vocabulary(label, content);
+        }
+    }
+
+    #[test]
+    fn contract_completion_action_addresses_node_execution_when_present() {
+        let action = artifact_completion_action(
+            "plan-doc",
+            "execution-1",
+            "plan",
+            Some("node-execution; bad"),
+        );
+
+        assert!(action.contains("--node-execution 'node-execution; bad'"));
+        assert!(!action.contains("--node-execution node-execution; bad"));
+    }
+
+    #[test]
+    fn contract_completion_action_quotes_shell_metacharacters() {
+        let action = artifact_completion_action(
+            "review; curl https://example.invalid #",
+            "execution; bad",
+            "node; bad",
+            None,
+        );
+
+        assert!(action.contains("--type 'review; curl https://example.invalid #'"));
+        assert!(!action.contains("--type review; curl"));
+        assert!(action.contains("submit 'execution; bad'"));
+        assert!(action.contains("--node 'node; bad'"));
+    }
+
+    #[test]
+    fn compose_no_system_prompt_when_policy_missing() {
+        // Scenario: policy を指定しないと system_prompt は設定されない
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
 
-        let mut node = make_facet_node(None, Some("architecture"), Some("implement"), None);
-        resolve_node_facets(&mut node, tmp.path()).unwrap();
-        let result = compose_facets(&node);
+        let node = make_facet_node(None, Some("architecture"), Some("implement"));
+        let resolved = resolve_node_facets(&node, tmp.path()).unwrap();
+        let result = compose_facets(Some(&resolved));
 
         assert!(result.system_prompt.is_none());
     }
@@ -786,14 +761,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
 
-        let mut node = make_facet_node(None, Some("architecture"), Some("implement"), None);
-        resolve_node_facets(&mut node, tmp.path()).unwrap();
-        let result = compose_facets(&node);
+        let node = make_facet_node(None, Some("architecture"), Some("implement"));
+        let resolved = resolve_node_facets(&node, tmp.path()).unwrap();
+        let result = compose_facets(Some(&resolved));
 
         assert!(result.user_message.contains("The system uses Tauri."));
-        assert!(!result.user_message.contains("Implement the feature."));
+        assert!(result.user_message.contains("Implement the feature."));
         assert_eq!(
-            node.resolved_facets.instruction.as_deref(),
+            resolved.instruction.as_deref(),
             Some("Implement the feature.")
         );
     }
@@ -804,32 +779,26 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
 
-        let mut node = make_facet_node(Some("coding"), None, None, None);
-        resolve_node_facets(&mut node, tmp.path()).unwrap();
-        let result = compose_facets(&node);
+        let node = make_facet_node(Some("coding"), None, None);
+        let resolved = resolve_node_facets(&node, tmp.path()).unwrap();
+        let result = compose_facets(Some(&resolved));
 
         assert_eq!(result.user_message, "");
     }
 
     #[test]
-    fn compose_all_four_facets() {
+    fn compose_all_three_facets() {
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
 
-        let mut node = make_facet_node(
-            Some("coding"),
-            Some("architecture"),
-            Some("implement"),
-            Some("plan-doc"),
-        );
-        resolve_node_facets(&mut node, tmp.path()).unwrap();
-        let result = compose_facets(&node);
+        let node = make_facet_node(Some("coding"), Some("architecture"), Some("implement"));
+        let resolved = resolve_node_facets(&node, tmp.path()).unwrap();
+        let result = compose_facets(Some(&resolved));
 
         let sys = result.system_prompt.expect("system_prompt should be set");
         assert!(sys.contains("Follow best practices."));
-        assert!(sys.contains("Output as markdown."));
         assert!(result.user_message.contains("The system uses Tauri."));
-        assert!(!result.user_message.contains("Implement the feature."));
+        assert!(result.user_message.contains("Implement the feature."));
     }
 
     /// 解決経路における欠損 facet は load 時 (`resolve_refs`) で NotFound として
@@ -838,36 +807,28 @@ mod tests {
     #[test]
     fn resolve_with_missing_facet_returns_error() {
         let tmp = TempDir::new().unwrap();
-        let mut node = make_facet_node(Some("nonexistent"), None, None, None);
-        let result = resolve_node_facets(&mut node, tmp.path());
+        let node = make_facet_node(Some("nonexistent"), None, None);
+        let result = resolve_node_facets(&node, tmp.path());
         assert!(matches!(result.unwrap_err(), FacetError::NotFound { .. }));
     }
 
     #[test]
     fn resolve_with_missing_knowledge_returns_error() {
         let tmp = TempDir::new().unwrap();
-        let mut node = make_facet_node(None, Some("nonexistent"), None, None);
-        let result = resolve_node_facets(&mut node, tmp.path());
+        let node = make_facet_node(None, Some("nonexistent"), None);
+        let result = resolve_node_facets(&node, tmp.path());
         assert!(matches!(result.unwrap_err(), FacetError::NotFound { .. }));
     }
 
     #[test]
     fn resolve_with_missing_instruction_returns_error() {
         let tmp = TempDir::new().unwrap();
-        let mut node = make_facet_node(None, None, Some("nonexistent"), None);
-        let result = resolve_node_facets(&mut node, tmp.path());
+        let node = make_facet_node(None, None, Some("nonexistent"));
+        let result = resolve_node_facets(&node, tmp.path());
         assert!(matches!(result.unwrap_err(), FacetError::NotFound { .. }));
     }
 
-    #[test]
-    fn resolve_with_missing_output_contract_returns_error() {
-        let tmp = TempDir::new().unwrap();
-        let mut node = make_facet_node(None, None, None, Some("nonexistent"));
-        let result = resolve_node_facets(&mut node, tmp.path());
-        assert!(matches!(result.unwrap_err(), FacetError::NotFound { .. }));
-    }
-
-    // --- compose → render_facet_variables パイプライン結合テスト ---
+    // --- compose → Artifact reference rendering パイプライン結合テスト ---
 
     #[test]
     fn compose_and_render_pipeline() {
@@ -880,42 +841,39 @@ mod tests {
         std::fs::create_dir_all(&instructions).unwrap();
         std::fs::write(
             policies.join("coding.md"),
-            "Coding rules for {{project_name}}.",
+            "Coding rules for {{ request }}.",
         )
         .unwrap();
-        std::fs::write(
-            instructions.join("impl.md"),
-            "Task: {{task}}\nProject: {{project_name}}",
-        )
-        .unwrap();
+        std::fs::write(instructions.join("impl.md"), "Task: {{ request }}").unwrap();
 
-        let mut node = make_facet_node(Some("coding"), None, Some("impl"), None);
-        resolve_node_facets(&mut node, tmp.path()).unwrap();
-        let composed = compose_facets(&node);
+        let node = make_facet_node(Some("coding"), None, Some("impl"));
+        let resolved = resolve_node_facets(&node, tmp.path()).unwrap();
+        let composed = compose_facets(Some(&resolved));
 
-        let worktree_path = "/home/user/my-project";
         let task = Some("Fix the bug");
 
-        let rendered_system = composed
-            .system_prompt
-            .map(|s| prompt_rendering::render_facet_variables(&s, worktree_path, task));
-        let rendered_user =
-            prompt_rendering::render_facet_variables(&composed.user_message, worktree_path, task);
-        let rendered_instruction = prompt_rendering::render_step_workflow_instruction(
+        let (_system_prompt, rendered_user) = prompt_rendering::build_node_prompt(
             &node,
-            "run-1",
-            worktree_path,
+            Some(&resolved),
+            "execution-1",
+            task,
+            &std::collections::HashMap::new(),
+        )
+        .expect("prompt rendering");
+        let rendered_instruction = prompt_rendering::render_node_workflow_instruction(
+            &node,
+            Some(&resolved),
             task,
             &std::collections::HashMap::new(),
         )
         .expect("workflow instruction");
 
-        assert_eq!(rendered_system.unwrap(), "Coding rules for my-project.");
-        assert_eq!(rendered_user, "");
         assert_eq!(
-            rendered_instruction,
-            "Task: Fix the bug\nProject: my-project"
+            composed.system_prompt.as_deref(),
+            Some("Coding rules for {{ request }}.")
         );
+        assert_eq!(rendered_user, "Task: Fix the bug");
+        assert_eq!(rendered_instruction, "Task: Fix the bug");
     }
 
     // --- extract_description ---
@@ -1017,129 +975,23 @@ mod tests {
         }
     }
 
-    // --- namespace 展開 (spec issues-1054) ---
+    // --- Artifact template rendering ---
 
     #[test]
-    fn render_path_alias_substitutes_releash_with_runtime_alias() {
-        // Rule: 起動環境別 `{{path_alias.releash}}` が `releash` / `releash-dev` に展開される
-        let alias_name = crate::infrastructure::platform::path_aliases::alias_name_for_profile(
-            crate::infrastructure::platform::path_aliases::BuildProfile::current(),
+    fn find_undefined_template_variables_returns_only_invalid_reference_syntax() {
+        let content = "{{ request }} {{ plan.summary }} {{ request.more }} {{ bad ref }}";
+        let undefined = prompt_rendering::find_undefined_template_variables(content);
+        assert_eq!(
+            undefined,
+            vec!["request.more".to_string(), "bad ref".to_string()]
         );
-        let content = "Run `{{path_alias.releash}} workflow output submit`";
-        let rendered =
-            variable_renderer::render_path_alias_variables_with_name(content, alias_name);
-        let expected_alias = if cfg!(debug_assertions) {
-            "releash-dev"
-        } else {
-            "releash"
-        };
-        assert!(
-            rendered.contains(&format!("Run `{expected_alias} workflow output submit`")),
-            "rendered={rendered}"
-        );
-    }
-
-    #[test]
-    fn render_workflow_variables_substitutes_declared_vars() {
-        // Rule: workflow が宣言した変数は `{{vars.<name>}}` で facet から参照できる
-        let mut vars = std::collections::HashMap::new();
-        vars.insert("project_label".to_string(), "Releash".to_string());
-        vars.insert("env".to_string(), "production".to_string());
-        let content = "Project: {{vars.project_label}}, env={{vars.env}}";
-        let rendered = variable_renderer::render_workflow_variables(content, &vars);
-        assert_eq!(rendered, "Project: Releash, env=production");
-    }
-
-    #[test]
-    fn find_undefined_workflow_variable_refs_returns_only_undefined_vars() {
-        let mut vars = std::collections::HashMap::new();
-        vars.insert("known".to_string(), "value".to_string());
-        let content = "{{vars.known}} {{vars.unknown}} {{vars.another_missing}}";
-        let mut undefined =
-            variable_renderer::find_undefined_workflow_variable_refs(content, &vars);
-        undefined.sort();
-        assert_eq!(undefined, vec!["another_missing", "unknown"]);
-    }
-
-    #[test]
-    fn find_undefined_template_variables_does_not_flag_namespaced_refs() {
-        // 既存 SYSTEM_TEMPLATE_VARIABLES 以外のトップレベル参照は未定義扱いだが、
-        // 既知 namespace + 既知 key（`path_alias.releash` / `vars.*`）は facet 単体検証では対象外。
-        let content = "{{project_name}} {{vars.x}} {{path_alias.releash}} {{unknown_top}}";
-        let undefined = variable_renderer::find_undefined_template_variables(content);
-        assert_eq!(undefined, vec!["unknown_top".to_string()]);
-    }
-
-    #[test]
-    fn find_undefined_template_variables_flags_unknown_namespace() {
-        // 既知 namespace に含まれない `<ns>.<key>` は未定義扱いになる。
-        let content = "{{not_a_namespace.key}}";
-        let undefined = variable_renderer::find_undefined_template_variables(content);
-        assert_eq!(undefined, vec!["not_a_namespace.key".to_string()]);
-    }
-
-    #[test]
-    fn find_undefined_template_variables_flags_unknown_path_alias_key() {
-        // path_alias namespace は known_keys に含まれる key のみ既知扱い。
-        // typo（例: `relase`）は未定義として検出される（spec design.md「未定義参照はエラー」）。
-        let content = "{{path_alias.relase}} {{path_alias.releash}}";
-        let undefined = variable_renderer::find_undefined_template_variables(content);
-        assert_eq!(undefined, vec!["path_alias.relase".to_string()]);
-    }
-
-    #[test]
-    fn render_path_alias_variables_leaves_unknown_keys_intact() {
-        // typo した key は置換せず未展開のまま残す（未定義検出側でエラーになる）。
-        let alias_name = crate::infrastructure::platform::path_aliases::alias_name_for_profile(
-            crate::infrastructure::platform::path_aliases::BuildProfile::current(),
-        );
-        let content = "{{path_alias.relase}} / {{path_alias.releash}}";
-        let rendered =
-            variable_renderer::render_path_alias_variables_with_name(content, alias_name);
-        assert!(
-            rendered.contains("{{path_alias.relase}}"),
-            "unknown key should remain unexpanded: {rendered}"
-        );
-        let expected_alias = if cfg!(debug_assertions) {
-            "releash-dev"
-        } else {
-            "releash"
-        };
-        assert!(
-            rendered.contains(expected_alias),
-            "known key should be expanded: {rendered}"
-        );
-    }
-
-    #[test]
-    fn render_workflow_variables_does_not_secondary_expand() {
-        // Rule: 値内に `{{vars.other}}` の文字列があっても二次展開せず、HashMap
-        // 反復順序に依存しない（spec Contracts: 値は静的文字列のみ）。
-        let mut vars = std::collections::HashMap::new();
-        vars.insert("a".to_string(), "{{vars.b}}".to_string());
-        vars.insert("b".to_string(), "RESOLVED_B".to_string());
-        let content = "A={{vars.a}} B={{vars.b}}";
-        let rendered = variable_renderer::render_workflow_variables(content, &vars);
-        // 反復順序によらず: `{{vars.a}}` は値そのもの (`{{vars.b}}` 文字列) になる。
-        assert_eq!(rendered, "A={{vars.b}} B=RESOLVED_B");
-    }
-
-    #[test]
-    fn render_workflow_variables_leaves_undefined_refs_unchanged() {
-        let vars = std::collections::HashMap::new();
-        let rendered =
-            variable_renderer::render_workflow_variables("hello {{vars.missing}} world", &vars);
-        assert_eq!(rendered, "hello {{vars.missing}} world");
     }
 
     #[test]
     fn render_template_variables_treats_surrounding_whitespace_inside_refs_as_equivalent() {
-        // `{{ task }}` と `{{task}}` を同一参照として扱う（trim 後にマッチ）。
-        // 既存テンプレートに空白付き参照は存在しないため互換性影響はなく、
-        // 本挙動は `replace_template_refs` の意図的な仕様（doc 参照）。
         let mut vars = std::collections::HashMap::new();
-        vars.insert("task".to_string(), "do".to_string());
-        let out = variable_renderer::render_template_variables("a {{ task }} b", &vars);
+        vars.insert("request".to_string(), "do".to_string());
+        let out = prompt_rendering::render_template_variables("a {{ request }} b", &vars);
         assert_eq!(out, "a do b");
     }
 
@@ -1147,7 +999,7 @@ mod tests {
     fn render_template_variables_keeps_unresolved_ref_verbatim_including_whitespace() {
         // 解決できない参照は元の `{{ ... }}` をそのまま残し、内側のスペースを変更しない。
         let vars = std::collections::HashMap::new();
-        let out = variable_renderer::render_template_variables("x {{ unknown }} y", &vars);
+        let out = prompt_rendering::render_template_variables("x {{ unknown }} y", &vars);
         assert_eq!(out, "x {{ unknown }} y");
     }
 }

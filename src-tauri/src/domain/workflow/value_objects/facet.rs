@@ -5,16 +5,15 @@ pub enum FacetKind {
     Policy,
     Knowledge,
     Instruction,
-    Contract,
 }
 
 impl FacetKind {
+    /// ストレージ上のディレクトリ名（複数形）。ファイルシステム経路にのみ使う。
     pub fn dir_name(self) -> &'static str {
         match self {
             Self::Policy => "policies",
             Self::Knowledge => "knowledge",
             Self::Instruction => "instructions",
-            Self::Contract => "contracts",
         }
     }
 }
@@ -54,7 +53,7 @@ mod facet_tests {
     #[test]
     fn test_facet_kind_dir_nameは既存ディレクトリ名を返す() {
         assert_eq!(FacetKind::Policy.dir_name(), "policies");
-        assert_eq!(FacetKind::Contract.dir_name(), "contracts");
+        assert_eq!(FacetKind::Instruction.dir_name(), "instructions");
     }
 
     #[test]

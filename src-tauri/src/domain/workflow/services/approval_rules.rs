@@ -2,15 +2,10 @@
 
 use std::collections::HashSet;
 
-use serde_json::json;
-
-use crate::domain::workflow::services::secret_masker;
-use crate::domain::workflow::value_objects::{
-    ApprovalDecision, NodeType, StepHistoryEntry, TransitionRule, WorkflowExecutionState,
-};
+use crate::domain::workflow::value_objects::{NodeHistoryEntry, RuntimeExecutionState};
 use crate::domain::workflow::WorkflowError;
 #[cfg(test)]
-use crate::domain::workflow::STEP_STATE_COMPLETED;
+use crate::domain::workflow::NODE_STATUS_COMPLETED;
 
 pub const MAX_APPROVAL_COMMENT_CHARS: usize = 8192;
 
@@ -18,12 +13,6 @@ pub const MAX_APPROVAL_COMMENT_CHARS: usize = 8192;
 pub enum ApprovalInputError {
     Empty { label: &'static str },
     TooLong { label: &'static str, limit: usize },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ApprovalRuleError {
-    UnsupportedMatch { reason: &'static str },
-    TooManyRejectRules { reason: &'static str },
 }
 
 impl std::fmt::Display for ApprovalInputError {
@@ -37,18 +26,6 @@ impl std::fmt::Display for ApprovalInputError {
 
 impl std::error::Error for ApprovalInputError {}
 
-impl std::fmt::Display for ApprovalRuleError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::UnsupportedMatch { reason } | Self::TooManyRejectRules { reason } => {
-                f.write_str(reason)
-            }
-        }
-    }
-}
-
-impl std::error::Error for ApprovalRuleError {}
-
 pub fn validate_optional_comment_text(
     value: Option<&str>,
     label: &'static str,
@@ -57,13 +34,6 @@ pub fn validate_optional_comment_text(
         validate_text_length(text, label)?;
     }
     Ok(())
-}
-
-pub fn validate_reject_reason_text(
-    value: &str,
-    label: &'static str,
-) -> Result<(), ApprovalInputError> {
-    validate_required_comment_text(value, label)
 }
 
 pub fn validate_required_comment_text(
@@ -77,56 +47,17 @@ pub fn validate_required_comment_text(
     Ok(())
 }
 
-pub fn can_reject(rules: &[TransitionRule]) -> bool {
-    rules.iter().any(|rule| rule.r#match == "reject")
-}
-
-pub fn validate_approval_rules(rules: &[TransitionRule]) -> Result<(), ApprovalRuleError> {
-    let reject_count = rules.iter().filter(|rule| rule.r#match == "reject").count();
-    if rules.iter().any(|rule| rule.r#match != "reject") {
-        return Err(ApprovalRuleError::UnsupportedMatch {
-            reason: "match: reject 以外のruleは定義できません",
-        });
-    }
-    if reject_count > 1 {
-        return Err(ApprovalRuleError::TooManyRejectRules {
-            reason: "match: reject ruleは最大1件です",
-        });
-    }
-    Ok(())
-}
-
-pub fn validate_approval_decision(decision: &ApprovalDecision) -> Result<(), ApprovalInputError> {
-    match decision {
-        ApprovalDecision::Approve { comment } => {
-            validate_optional_comment_text(comment.as_deref(), "Approve comment")
-        }
-        ApprovalDecision::Reject { reason } => {
-            validate_reject_reason_text(reason, "Reject comment")
-        }
-        ApprovalDecision::Abort => Ok(()),
-    }
-}
-
 pub fn should_auto_approve_workflow_approval(
-    state: &WorkflowExecutionState,
+    state: &RuntimeExecutionState,
     approval_auto_approve_enabled: bool,
 ) -> bool {
-    approval_auto_approve_enabled && matches!(state, WorkflowExecutionState::WaitingApproval)
-}
-
-pub fn reject_structured_output(comment: &str, configured_secrets: &[String]) -> serde_json::Value {
-    let comment = secret_masker::mask_sensitive_text(comment, configured_secrets);
-    json!({
-        "decision": "reject",
-        "comment": comment,
-    })
+    approval_auto_approve_enabled && matches!(state, RuntimeExecutionState::WaitingApproval)
 }
 
 pub struct ApprovalChatInstructionContext<'a> {
     pub is_current_approval_session: bool,
-    pub is_prior_approval_step_session: bool,
-    pub state: &'a WorkflowExecutionState,
+    pub is_prior_approval_gate_session: bool,
+    pub state: &'a RuntimeExecutionState,
 }
 
 pub fn validate_approval_chat_instruction(
@@ -134,14 +65,14 @@ pub fn validate_approval_chat_instruction(
     content: &str,
 ) -> Result<(), WorkflowError> {
     if !context.is_current_approval_session {
-        if context.is_prior_approval_step_session {
+        if context.is_prior_approval_gate_session {
             return Err(WorkflowError::invalid_state(
                 "Workflow is not waiting for approval",
             ));
         }
         return Ok(());
     }
-    if !matches!(context.state, WorkflowExecutionState::WaitingApproval) {
+    if !matches!(context.state, RuntimeExecutionState::WaitingApproval) {
         return Err(WorkflowError::invalid_state(
             "Workflow is not waiting for approval",
         ));
@@ -152,8 +83,8 @@ pub fn validate_approval_chat_instruction(
 
 pub struct ApprovalChatSessionSnapshot<'a> {
     pub is_active: bool,
-    pub state: &'a WorkflowExecutionState,
-    pub current_node_type: NodeType,
+    pub state: &'a RuntimeExecutionState,
+    pub is_current_approval_session: bool,
     pub current_session_id: Option<&'a str>,
 }
 
@@ -161,37 +92,45 @@ pub fn resolve_chat_session_for_approval<'a>(
     snapshot: ApprovalChatSessionSnapshot<'a>,
 ) -> Result<&'a str, WorkflowError> {
     if !snapshot.is_active {
-        return Err(WorkflowError::invalid_state("workflow run is not active"));
+        return Err(WorkflowError::invalid_state(
+            "workflow execution is not active",
+        ));
     }
-    if !matches!(snapshot.state, WorkflowExecutionState::WaitingApproval) {
+    if !matches!(snapshot.state, RuntimeExecutionState::WaitingApproval) {
         return Err(WorkflowError::invalid_state(
             "Workflow is not waiting for approval",
         ));
     }
-    if snapshot.current_node_type != NodeType::Approval {
+    if !snapshot.is_current_approval_session {
         return Err(WorkflowError::invalid_state(
-            "current node is not an approval step",
+            "current node is not an approval session",
         ));
     }
     snapshot.current_session_id.ok_or_else(|| {
-        WorkflowError::invalid_state("workflow has no current step session for approval chat")
+        WorkflowError::invalid_state("workflow has no current node session for approval chat")
     })
 }
 
 pub struct ApprovalTargetSnapshot<'a> {
     pub execution_id: &'a str,
-    pub state: &'a WorkflowExecutionState,
-    pub current_step_name: &'a str,
+    pub state: &'a RuntimeExecutionState,
+    pub current_node_name: &'a str,
+    pub is_approval_gate_session: bool,
 }
 
 pub fn resolve_approval_target<'a>(
     snapshot: ApprovalTargetSnapshot<'a>,
     expected_execution_id: Option<&str>,
-    expected_step_name: Option<&str>,
+    expected_node_name: Option<&str>,
 ) -> Result<&'a str, WorkflowError> {
-    if !matches!(snapshot.state, WorkflowExecutionState::WaitingApproval) {
+    if !matches!(snapshot.state, RuntimeExecutionState::WaitingApproval) {
         return Err(WorkflowError::invalid_state(
             "Workflow is not waiting for approval",
+        ));
+    }
+    if !snapshot.is_approval_gate_session {
+        return Err(WorkflowError::UnauthorizedApprovalTarget(
+            "current node is not an approval-gated session".to_string(),
         ));
     }
     let expected_execution_id = expected_execution_id.ok_or_else(|| {
@@ -202,43 +141,45 @@ pub fn resolve_approval_target<'a>(
             "execution_id does not match".to_string(),
         ));
     }
-    if expected_step_name.is_some_and(|expected| expected != snapshot.current_step_name) {
+    if expected_node_name.is_some_and(|expected| expected != snapshot.current_node_name) {
         return Err(WorkflowError::UnauthorizedApprovalTarget(
-            "step does not match".to_string(),
+            "node does not match".to_string(),
         ));
     }
-    Ok(snapshot.current_step_name)
+    Ok(snapshot.current_node_name)
 }
 
 #[cfg(test)]
 pub fn validate_approval_target(
     snapshot: ApprovalTargetSnapshot<'_>,
     expected_execution_id: Option<&str>,
-    expected_step_name: Option<&str>,
+    expected_node_name: Option<&str>,
 ) -> Result<(), WorkflowError> {
-    resolve_approval_target(snapshot, expected_execution_id, expected_step_name)?;
-    if expected_step_name.is_none() {
+    resolve_approval_target(snapshot, expected_execution_id, expected_node_name)?;
+    if expected_node_name.is_none() {
         return Err(WorkflowError::UnauthorizedApprovalTarget(
-            "step_name is required".to_string(),
+            "node_name is required".to_string(),
         ));
     }
     Ok(())
 }
 
-pub fn is_approval_step_session(
+pub fn is_approval_gate_session(
     session_id: &str,
     current_session_id: Option<&str>,
-    current_step_name: &str,
-    approval_step_names: &HashSet<String>,
-    step_history: &[StepHistoryEntry],
+    current_node_name: &str,
+    approval_gate_session_names: &HashSet<String>,
+    node_history: &[NodeHistoryEntry],
 ) -> bool {
-    if current_session_id == Some(session_id) && approval_step_names.contains(current_step_name) {
+    if current_session_id == Some(session_id)
+        && approval_gate_session_names.contains(current_node_name)
+    {
         return true;
     }
 
-    step_history.iter().any(|entry| {
+    node_history.iter().any(|entry| {
         entry.session_id.as_deref() == Some(session_id)
-            && approval_step_names.contains(&entry.step_name)
+            && approval_gate_session_names.contains(&entry.node_name)
     })
 }
 
@@ -257,29 +198,17 @@ mod approval_rules_tests {
     use super::*;
 
     #[test]
-    fn test_reject_reason_空白のみを拒否する() {
-        let err = validate_reject_reason_text("  \n", "Reject comment").unwrap_err();
-        assert_eq!(
-            err,
-            ApprovalInputError::Empty {
-                label: "Reject comment"
-            }
-        );
-        assert_eq!(err.to_string(), "Reject comment must not be empty");
-    }
-
-    #[test]
     fn auto_approve_requires_waiting_approval_and_enabled_flag() {
         assert!(should_auto_approve_workflow_approval(
-            &WorkflowExecutionState::WaitingApproval,
+            &RuntimeExecutionState::WaitingApproval,
             true,
         ));
         assert!(!should_auto_approve_workflow_approval(
-            &WorkflowExecutionState::WaitingApproval,
+            &RuntimeExecutionState::WaitingApproval,
             false,
         ));
         assert!(!should_auto_approve_workflow_approval(
-            &WorkflowExecutionState::Running,
+            &RuntimeExecutionState::Running,
             true,
         ));
     }
@@ -298,19 +227,19 @@ mod approval_rules_tests {
     fn approval_chat_instruction_allows_unrelated_sessions_without_validating_content() {
         let context = ApprovalChatInstructionContext {
             is_current_approval_session: false,
-            is_prior_approval_step_session: false,
-            state: &WorkflowExecutionState::Running,
+            is_prior_approval_gate_session: false,
+            state: &RuntimeExecutionState::Running,
         };
 
         assert!(validate_approval_chat_instruction(context, "").is_ok());
     }
 
     #[test]
-    fn approval_chat_instruction_rejects_prior_approval_step_sessions() {
+    fn approval_chat_instruction_rejects_prior_approval_gate_sessions() {
         let context = ApprovalChatInstructionContext {
             is_current_approval_session: false,
-            is_prior_approval_step_session: true,
-            state: &WorkflowExecutionState::Completed,
+            is_prior_approval_gate_session: true,
+            state: &RuntimeExecutionState::Completed,
         };
 
         assert!(matches!(
@@ -323,8 +252,8 @@ mod approval_rules_tests {
     fn approval_chat_instruction_requires_waiting_current_approval_session_and_content() {
         let not_waiting = ApprovalChatInstructionContext {
             is_current_approval_session: true,
-            is_prior_approval_step_session: false,
-            state: &WorkflowExecutionState::Running,
+            is_prior_approval_gate_session: false,
+            state: &RuntimeExecutionState::Running,
         };
         assert!(matches!(
             validate_approval_chat_instruction(not_waiting, "ok").unwrap_err(),
@@ -333,8 +262,8 @@ mod approval_rules_tests {
 
         let waiting = ApprovalChatInstructionContext {
             is_current_approval_session: true,
-            is_prior_approval_step_session: false,
-            state: &WorkflowExecutionState::WaitingApproval,
+            is_prior_approval_gate_session: false,
+            state: &RuntimeExecutionState::WaitingApproval,
         };
         assert!(matches!(
             validate_approval_chat_instruction(waiting, "   ").unwrap_err(),
@@ -343,76 +272,18 @@ mod approval_rules_tests {
 
         let valid = ApprovalChatInstructionContext {
             is_current_approval_session: true,
-            is_prior_approval_step_session: false,
-            state: &WorkflowExecutionState::WaitingApproval,
+            is_prior_approval_gate_session: false,
+            state: &RuntimeExecutionState::WaitingApproval,
         };
         assert!(validate_approval_chat_instruction(valid, "please revise").is_ok());
     }
 
     #[test]
-    fn test_can_reject_reject_ruleの有無を判定する() {
-        assert!(!can_reject(&[]));
-        assert!(can_reject(&[TransitionRule {
-            r#match: "reject".to_string(),
-            next: "fix".to_string(),
-        }]));
-    }
-
-    #[test]
-    fn validate_approval_rules_allows_only_one_reject_rule() {
-        assert!(validate_approval_rules(&[]).is_ok());
-        assert!(validate_approval_rules(&[TransitionRule {
-            r#match: "reject".to_string(),
-            next: "fix".to_string(),
-        }])
-        .is_ok());
-
-        assert_eq!(
-            validate_approval_rules(&[TransitionRule {
-                r#match: "approve".to_string(),
-                next: "done".to_string(),
-            }])
-            .unwrap_err()
-            .to_string(),
-            "match: reject 以外のruleは定義できません"
-        );
-
-        assert_eq!(
-            validate_approval_rules(&[
-                TransitionRule {
-                    r#match: "reject".to_string(),
-                    next: "fix".to_string(),
-                },
-                TransitionRule {
-                    r#match: "reject".to_string(),
-                    next: "retry".to_string(),
-                },
-            ])
-            .unwrap_err()
-            .to_string(),
-            "match: reject ruleは最大1件です"
-        );
-    }
-
-    #[test]
-    fn reject_structured_output_redacts_sensitive_comment() {
-        let structured = reject_structured_output(
-            "Reject because password=secret123 and ghp_abcdefghijklmnopqrstuvwxyz1234567890",
-            &[],
-        );
-        let comment = structured["comment"].as_str().unwrap();
-        assert_eq!(structured["decision"].as_str(), Some("reject"));
-        assert!(!comment.contains("secret123"));
-        assert!(!comment.contains("ghp_abcdefghijklmnopqrstuvwxyz1234567890"));
-        assert!(comment.contains("[REDACTED]"));
-    }
-
-    #[test]
-    fn resolve_chat_session_requires_active_waiting_approval_node_with_session() {
+    fn resolve_chat_session_requires_active_waiting_approval_gate_session() {
         let snapshot = ApprovalChatSessionSnapshot {
             is_active: true,
-            state: &WorkflowExecutionState::WaitingApproval,
-            current_node_type: NodeType::Approval,
+            state: &RuntimeExecutionState::WaitingApproval,
+            is_current_approval_session: true,
             current_session_id: Some("session-1"),
         };
 
@@ -423,104 +294,120 @@ mod approval_rules_tests {
 
         let inactive = ApprovalChatSessionSnapshot {
             is_active: false,
-            state: &WorkflowExecutionState::WaitingApproval,
-            current_node_type: NodeType::Approval,
+            state: &RuntimeExecutionState::WaitingApproval,
+            is_current_approval_session: true,
             current_session_id: Some("session-1"),
         };
         assert_eq!(
             resolve_chat_session_for_approval(inactive)
                 .unwrap_err()
                 .to_string(),
-            "invalid_state: workflow run is not active"
+            "invalid_state: workflow execution is not active"
         );
 
         let no_session = ApprovalChatSessionSnapshot {
             is_active: true,
-            state: &WorkflowExecutionState::WaitingApproval,
-            current_node_type: NodeType::Approval,
+            state: &RuntimeExecutionState::WaitingApproval,
+            is_current_approval_session: true,
             current_session_id: None,
         };
         assert_eq!(
             resolve_chat_session_for_approval(no_session)
                 .unwrap_err()
                 .to_string(),
-            "invalid_state: workflow has no current step session for approval chat"
+            "invalid_state: workflow has no current node session for approval chat"
         );
     }
 
     #[test]
-    fn resolve_approval_target_validates_run_and_step_identity() {
-        let waiting = WorkflowExecutionState::WaitingApproval;
+    fn resolve_approval_target_validates_execution_and_node_identity() {
+        let waiting = RuntimeExecutionState::WaitingApproval;
         let snapshot = ApprovalTargetSnapshot {
-            execution_id: "run-1",
+            execution_id: "execution-1",
             state: &waiting,
-            current_step_name: "review",
+            current_node_name: "review",
+            is_approval_gate_session: true,
         };
 
         assert_eq!(
-            resolve_approval_target(snapshot, Some("run-1"), Some("review")).unwrap(),
+            resolve_approval_target(snapshot, Some("execution-1"), Some("review")).unwrap(),
             "review"
         );
 
         let snapshot = ApprovalTargetSnapshot {
-            execution_id: "run-1",
+            execution_id: "execution-1",
             state: &waiting,
-            current_step_name: "review",
+            current_node_name: "review",
+            is_approval_gate_session: true,
         };
         assert_eq!(
-            resolve_approval_target(snapshot, Some("run-2"), Some("review"))
+            resolve_approval_target(snapshot, Some("execution-2"), Some("review"))
                 .unwrap_err()
                 .to_string(),
             "unauthorized_approval_target: execution_id does not match"
         );
 
         let snapshot = ApprovalTargetSnapshot {
-            execution_id: "run-1",
+            execution_id: "execution-1",
             state: &waiting,
-            current_step_name: "review",
+            current_node_name: "review",
+            is_approval_gate_session: true,
         };
         assert_eq!(
-            validate_approval_target(snapshot, Some("run-1"), None)
+            validate_approval_target(snapshot, Some("execution-1"), None)
                 .unwrap_err()
                 .to_string(),
-            "unauthorized_approval_target: step_name is required"
+            "unauthorized_approval_target: node_name is required"
+        );
+
+        let snapshot = ApprovalTargetSnapshot {
+            execution_id: "execution-1",
+            state: &waiting,
+            current_node_name: "review",
+            is_approval_gate_session: false,
+        };
+        assert_eq!(
+            resolve_approval_target(snapshot, Some("execution-1"), Some("review"))
+                .unwrap_err()
+                .to_string(),
+            "unauthorized_approval_target: current node is not an approval-gated session"
         );
     }
 
     #[test]
-    fn is_approval_step_session_matches_current_or_history_approval_steps() {
-        let approval_steps = HashSet::from(["review".to_string()]);
-        let history = vec![StepHistoryEntry {
-            step_name: "review".to_string(),
+    fn is_approval_gate_session_matches_current_or_history_gated_sessions() {
+        let approval_gate_sessions = HashSet::from(["review".to_string()]);
+        let history = vec![NodeHistoryEntry {
+            node_name: "review".to_string(),
             completed_at: 1.0,
             result: None,
             session_id: Some("old-review".to_string()),
             token_usage: None,
-            structured_output: None,
-            run_index: 1,
-            child_outputs: None,
-            state: STEP_STATE_COMPLETED.to_string(),
+            artifact: None,
+            attempt: 1,
+            fanout_children: None,
+            state: NODE_STATUS_COMPLETED.to_string(),
         }];
 
-        assert!(is_approval_step_session(
+        assert!(is_approval_gate_session(
             "current-review",
             Some("current-review"),
             "review",
-            &approval_steps,
+            &approval_gate_sessions,
             &history,
         ));
-        assert!(is_approval_step_session(
+        assert!(is_approval_gate_session(
             "old-review",
             None,
             "plan",
-            &approval_steps,
+            &approval_gate_sessions,
             &history,
         ));
-        assert!(!is_approval_step_session(
+        assert!(!is_approval_gate_session(
             "agent-session",
             Some("agent-session"),
             "plan",
-            &approval_steps,
+            &approval_gate_sessions,
             &history,
         ));
     }

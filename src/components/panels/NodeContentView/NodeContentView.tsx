@@ -1,0 +1,248 @@
+import { AlertTriangle } from "lucide-react";
+import type React from "react";
+import { useCallback, useEffect, useState } from "react";
+import { type TogglePanel, ViewToolbar } from "@/components/layout/ViewToolbar";
+import { BoundSessionChat } from "@/components/panels/AgentChatPanel";
+import { Button } from "@/components/ui/button";
+import { WorkflowNodeStatusIcon } from "@/components/workspace/WorkflowNodeStatusIcon";
+import type { DropZoneType } from "@/hooks/useNativeFileDrop";
+import {
+	approveWorkspaceNode,
+	useWorkspaceNodeDetail,
+} from "@/hooks/useWorkspaceNodeDetail";
+import type { AgentEditorSelection, MentionReference } from "@/types/session";
+import type {
+	WorkspaceCommandNodeContent,
+	WorkspaceNodeDetail,
+} from "@/types/workspace-tree";
+
+interface NodeContentViewProps {
+	worktreePath: string;
+	nodeId: string | null;
+	leftPanels?: TogglePanel[];
+	rightSlot?: React.ReactNode;
+	activeEditorPath?: string | null;
+	openEditorPaths?: string[];
+	activeEditorSelection?: AgentEditorSelection | null;
+	registerDropZone: (
+		zone: DropZoneType,
+		element: HTMLElement | null,
+		onDrop?: (paths: string[]) => void,
+	) => void;
+	sendMessageRef?: React.MutableRefObject<
+		((content: string, mentions?: MentionReference[]) => Promise<void>) | null
+	>;
+	onOpenDiffFile?: (filePath: string) => void;
+	onNodeMissing?: (worktreePath: string, nodeId: string) => void;
+}
+
+export function NodeContentView({
+	worktreePath,
+	nodeId,
+	leftPanels,
+	rightSlot,
+	activeEditorPath,
+	openEditorPaths,
+	activeEditorSelection,
+	registerDropZone,
+	sendMessageRef,
+	onOpenDiffFile,
+	onNodeMissing,
+}: NodeContentViewProps) {
+	const state = useWorkspaceNodeDetail({ worktreePath, nodeId });
+	const detail = state.detail;
+
+	useEffect(() => {
+		if (!nodeId || state.missingNodeId !== nodeId) return;
+		onNodeMissing?.(worktreePath, nodeId);
+	}, [nodeId, onNodeMissing, state.missingNodeId, worktreePath]);
+
+	return (
+		<div className="flex h-full min-h-0 flex-col overflow-hidden">
+			<ViewToolbar
+				leftPanels={leftPanels}
+				centerSlot={
+					detail ? (
+						<NodeHeader detail={detail} worktreePath={worktreePath} />
+					) : null
+				}
+				rightSlot={rightSlot}
+			/>
+			<div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+				{detail ? (
+					detail.content.kind === "session" ? (
+						detail.content.sessionId ? (
+							<BoundSessionChat
+								sessionId={detail.content.sessionId}
+								worktreePath={worktreePath}
+								activeEditorPath={activeEditorPath}
+								openEditorPaths={openEditorPaths}
+								activeEditorSelection={activeEditorSelection}
+								registerDropZone={registerDropZone}
+								dropZoneName="agent"
+								sendMessageRef={sendMessageRef}
+								onOpenDiffFile={onOpenDiffFile}
+							/>
+						) : (
+							<NodeEmptyState
+								message={
+									detail.status === "queued"
+										? "This session has not started yet."
+										: "Session unavailable."
+								}
+							/>
+						)
+					) : (
+						<CommandNodeContent detail={detail} content={detail.content} />
+					)
+				) : (
+					<NodeEmptyState
+						message={
+							nodeId == null
+								? "Select a Node from the Workspace tree."
+								: state.loading
+									? "Loading Node..."
+									: "Node unavailable"
+						}
+						error={state.error}
+					/>
+				)}
+			</div>
+		</div>
+	);
+}
+
+function NodeHeader({
+	detail,
+	worktreePath,
+}: {
+	detail: WorkspaceNodeDetail;
+	worktreePath: string;
+}) {
+	const [approving, setApproving] = useState(false);
+	const [actionError, setActionError] = useState<string | null>(null);
+
+	const approve = useCallback(async () => {
+		if (approving || !detail.capabilities.canApprove) return;
+		setApproving(true);
+		try {
+			await approveWorkspaceNode({ worktreePath, nodeId: detail.id });
+			setActionError(null);
+		} catch (error) {
+			setActionError(error instanceof Error ? error.message : String(error));
+		} finally {
+			setApproving(false);
+		}
+	}, [approving, detail.capabilities.canApprove, detail.id, worktreePath]);
+
+	return (
+		<div className="flex min-w-0 items-center gap-2 pl-2">
+			<WorkflowNodeStatusIcon status={detail.status} />
+			<span className="min-w-0 flex-1 truncate text-sm font-medium">
+				{detail.title}
+			</span>
+			{actionError && (
+				<span
+					role="alert"
+					className="flex min-w-0 items-center gap-1 truncate text-xs text-destructive"
+					title={actionError}
+				>
+					<AlertTriangle className="size-3.5 shrink-0" />
+					<span className="truncate">{actionError}</span>
+				</span>
+			)}
+			{detail.capabilities.canApprove && (
+				<Button type="button" size="xs" disabled={approving} onClick={approve}>
+					{approving ? "Approving..." : "Approve"}
+				</Button>
+			)}
+		</div>
+	);
+}
+
+function CommandNodeContent({
+	detail,
+	content,
+}: {
+	detail: WorkspaceNodeDetail;
+	content: WorkspaceCommandNodeContent;
+}) {
+	return (
+		<div className="h-full overflow-auto bg-background p-4">
+			<div className="mx-auto flex w-full max-w-5xl flex-col gap-4">
+				<section className="space-y-2">
+					<h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+						Command
+					</h2>
+					<pre
+						data-testid="workspace-command"
+						className="overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-border bg-muted/30 p-3 text-sm"
+					>
+						{content.displayCommand ?? "Command has not been prepared yet."}
+					</pre>
+				</section>
+
+				<section className="grid gap-3 text-sm sm:grid-cols-3">
+					<CommandFact label="Status" value={detail.status} />
+					<CommandFact
+						label="Exit code"
+						value={content.result ? String(content.result.exitCode) : "—"}
+					/>
+					<CommandFact
+						label="Duration"
+						value={content.result ? `${content.result.duration} ms` : "—"}
+					/>
+				</section>
+
+				<CommandOutput label="stdout" value={content.result?.stdout ?? null} />
+				<CommandOutput label="stderr" value={content.result?.stderr ?? null} />
+			</div>
+		</div>
+	);
+}
+
+function CommandFact({ label, value }: { label: string; value: string }) {
+	return (
+		<div className="rounded-md border border-border p-3">
+			<div className="text-xs text-muted-foreground">{label}</div>
+			<div className="mt-1 font-mono">{value}</div>
+		</div>
+	);
+}
+
+function CommandOutput({
+	label,
+	value,
+}: {
+	label: "stdout" | "stderr";
+	value: string | null;
+}) {
+	return (
+		<section className="space-y-2">
+			<h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+				{label}
+			</h2>
+			<pre
+				data-testid={`workspace-command-${label}`}
+				className="min-h-20 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-muted/30 p-3 font-mono text-xs"
+			>
+				{value ?? "No output."}
+			</pre>
+		</section>
+	);
+}
+
+function NodeEmptyState({
+	message,
+	error,
+}: {
+	message: string;
+	error?: string | null;
+}) {
+	return (
+		<div className="flex h-full flex-col items-center justify-center gap-1 bg-background px-4 text-center text-sm text-muted-foreground">
+			<div>{message}</div>
+			{error && <div className="max-w-md break-words text-xs">{error}</div>}
+		</div>
+	);
+}

@@ -1,16 +1,18 @@
 use crate::adaptor::gateway::workflow::domain_mapping::workflow_definition_to_domain;
 use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
-use crate::adaptor::gateway::workflow::schema::Workflow;
+use crate::adaptor::gateway::workflow::schema::WorkflowDefinitionYaml;
 use crate::domain::workflow as domain;
 
-pub(crate) fn validate_workflow_shape(workflow: &Workflow) -> Result<(), WorkflowEngineError> {
+pub(crate) fn validate_workflow_shape(
+    workflow: &WorkflowDefinitionYaml,
+) -> Result<(), WorkflowEngineError> {
     let definition = workflow_definition_to_domain(workflow);
     domain::validation::validate_workflow_shape(&definition)
         .map_err(|err| domain_validation_to_engine_error(err, &definition))
 }
 
 pub(crate) fn validate_start(
-    workflow: &Workflow,
+    workflow: &WorkflowDefinitionYaml,
     existing_active_workflow_name: Option<&str>,
 ) -> Result<(), WorkflowEngineError> {
     validate_workflow_shape(workflow)?;
@@ -24,24 +26,11 @@ pub(crate) fn validate_start(
 
 fn domain_validation_to_engine_error(
     err: domain::WorkflowError,
-    workflow: &domain::WorkflowDefinition,
+    _workflow: &domain::WorkflowDefinition,
 ) -> WorkflowEngineError {
     match err {
         domain::WorkflowError::Validation(message) if message == "workflow has no nodes" => {
-            WorkflowEngineError::InvalidWorkflow("Workflow has no steps".to_string())
-        }
-        domain::WorkflowError::Validation(message)
-            if message.starts_with("bash node ") && message.contains("not executable") =>
-        {
-            let node_name = workflow
-                .nodes
-                .iter()
-                .find(|node| matches!(node.node_type, domain::NodeType::Bash))
-                .map(|node| node.name.as_str())
-                .unwrap_or("unknown");
-            WorkflowEngineError::InvalidWorkflow(format!(
-                "Bash node '{node_name}' is not executable in this milestone (planned for [13])"
-            ))
+            WorkflowEngineError::InvalidWorkflow("Workflow has no nodes".to_string())
         }
         domain::WorkflowError::Validation(message) => WorkflowEngineError::InvalidWorkflow(message),
         domain::WorkflowError::InvalidState(message) => WorkflowEngineError::InvalidState(message),
@@ -57,14 +46,14 @@ fn domain_validation_to_engine_error(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adaptor::gateway::workflow::schema::{NodeDefinition, NodeType};
+    use crate::adaptor::gateway::workflow::schema::NodeDefinition;
 
-    fn workflow(nodes: Vec<NodeDefinition>) -> Workflow {
-        Workflow {
+    fn workflow(nodes: Vec<NodeDefinition>) -> WorkflowDefinitionYaml {
+        WorkflowDefinitionYaml {
             name: "wf".to_string(),
             description: String::new(),
             builtin: false,
-            variables: Default::default(),
+            schemas: Default::default(),
             nodes,
         }
     }
@@ -73,22 +62,7 @@ mod tests {
     fn validate_workflow_shape_delegates_to_domain_and_preserves_empty_message() {
         let err = validate_workflow_shape(&workflow(Vec::new())).unwrap_err();
 
-        assert_eq!(err.to_string(), "Workflow has no steps");
-    }
-
-    #[test]
-    fn validate_workflow_shape_delegates_to_domain_and_preserves_bash_message() {
-        let err = validate_workflow_shape(&workflow(vec![NodeDefinition {
-            name: "build".to_string(),
-            node_type: NodeType::Bash,
-            ..Default::default()
-        }]))
-        .unwrap_err();
-
-        assert_eq!(
-            err.to_string(),
-            "Bash node 'build' is not executable in this milestone (planned for [13])"
-        );
+        assert_eq!(err.to_string(), "Workflow has no nodes");
     }
 
     #[test]
@@ -96,7 +70,6 @@ mod tests {
         let err = validate_start(
             &workflow(vec![NodeDefinition {
                 name: "plan".to_string(),
-                node_type: NodeType::Agent,
                 ..Default::default()
             }]),
             Some("wf"),

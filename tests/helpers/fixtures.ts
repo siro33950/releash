@@ -204,7 +204,16 @@ const baseIpcHandler: Record<string, unknown> = {
 
 	// Agent chat sessions
 	list_sessions: [],
+	init_agent_sessions: {
+		sessions: [],
+		activeSession: null,
+		permissionMode: "edit",
+		planMode: false,
+	},
+	list_agent_backends: { backends: [], defaultId: null },
 	get_session: null,
+	get_session_page: null,
+	plan_agent_chat_eviction: { evictSessionIds: [] },
 	create_session: {
 		id: "mock-session-1",
 		worktreePath: "/test/repo",
@@ -213,6 +222,7 @@ const baseIpcHandler: Record<string, unknown> = {
 		createdAt: 1000,
 		updatedAt: 1000,
 	},
+	create_workspace_session: "mock-session-1",
 	close_session: null,
 	restore_session: null,
 	list_closed_sessions: [],
@@ -233,24 +243,29 @@ const baseIpcHandler: Record<string, unknown> = {
 	save_workspace_state: null,
 
 	// Workflow
-	get_workflow_state: null,
 	list_workflows: [],
-	list_workflow_runs: [],
 	start_workflow: null,
 	abort_workflow: null,
-	approve_workflow_step: null,
-	complete_interactive_step: null,
+	approve_workflow_node: null,
 	delete_workflow: null,
 	open_workflow_in_editor: null,
 	list_workflow_executions: [],
+	get_workflow_execution: null,
 	get_workflow_execution_log: [],
 	get_workflow_execution_state: null,
+	get_workflow_node_detail: null,
+	resolve_active_execution_by_worktree: null,
+	resolve_worktree_by_execution: null,
 
 	// Workspace tree
-	list_workspace_worktree_nodes: [],
+	list_workspace_worktree_nodes: { nodes: [], preferredNodeId: null },
 	list_workspace_workflow_history: [],
-	archive_workspace_workflow_run: null,
-	restore_workspace_workflow_run: null,
+	get_workspace_node_detail: null,
+	close_workspace_node: null,
+	approve_workspace_node: null,
+	get_workspace_session_node_id: null,
+	archive_workspace_workflow_execution: null,
+	restore_workspace_workflow_execution: null,
 };
 
 // -------------------------------------------------------

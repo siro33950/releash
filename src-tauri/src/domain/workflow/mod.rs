@@ -1,7 +1,7 @@
 //! workflow domain.
 //!
 //! This module owns workflow meaning: definitions, execution state, approvals,
-//! contracts, facets, and run lifecycle vocabulary. External resources such as
+//! contracts, facets, and execution lifecycle vocabulary. External resources such as
 //! Tauri events, git2, file I/O, and agent runtime handles
 //! are represented only by traits in `repository` / `gateway`.
 
@@ -15,29 +15,32 @@ pub mod status_aggregation;
 pub mod value_objects;
 
 pub use entities::workflow_execution::{
-    compute_step_states, ParallelChildRun, ParallelChildState, ParallelRunState,
+    FanoutChildRuntime, FanoutChildRuntimeState, FanoutRuntimeState,
 };
 pub use error::WorkflowError;
 pub use gateway::{ManagedWorktreeGateway, SecretSourceGateway};
 pub use repository::{
-    FacetRepository, WorkflowDefinitionRepository, WorkflowRunArchiveRepository,
-    WorkflowRunManualArchiveRecord, WorkflowRunRepository, WORKFLOW_ARCHIVE_REASON_MANUAL,
+    FacetRepository, WorkflowDefinitionRepository, WorkflowExecutionArchiveRepository,
+    WorkflowExecutionManualArchiveRecord, WorkflowExecutionRepository,
+    WORKFLOW_ARCHIVE_REASON_MANUAL,
 };
 pub use services::{
-    approval_rules, contract, secret_masker, validation, variable_renderer, ApprovalInputError,
-    RetryPolicy, TimeoutContext, TimeoutPolicy,
+    approval_rules, contract, secret_masker, validation, ApprovalInputError, RetryPolicy,
+    TimeoutContext, TimeoutPolicy,
 };
 #[cfg(test)]
-pub use value_objects::WorkflowRunRecord;
+pub use value_objects::WorkflowExecutionRecord;
 pub use value_objects::{
-    ApprovalDecision, ApprovalOperations, ChildNodeDefinition, ChildOutputSnapshot, CollectConfig,
-    ContractType, ContractValidationResult, CycleGuard, FacetKey, FacetKind, FacetSummary,
-    FailureClassification, FailureDisposition, NodeDefinition, NodeName, NodeType,
-    OutcomeCommitMode, ParallelAggregate, ParallelStepState, ReduceStrategy, RunId, RunListFilter,
-    RunStatus, RunStatusFilter, StepHistoryEntry, StepOutput, TimeoutKind, TokenUsage,
-    TransitionRule, TriggerSource, WorkflowDefinition, WorkflowExecutionState, WorkflowName,
-    WorkflowRunSummary, WorkflowStallObservation, WorkflowStateSnapshot, WorkflowStepContext,
-    WorkflowStepFailureKind, WorkflowSummary, WorktreePath, STEP_STATE_ABORTED,
-    STEP_STATE_COMPLETED, STEP_STATE_FAILED, STEP_STATE_INTERRUPTED, STEP_STATE_PENDING,
-    STEP_STATE_RUNNING, STEP_STATE_WAITING_APPROVAL,
+    ApprovalTarget, Artifact, CommandSpec, ContractType, ContractValidationResult,
+    ExecutionInterruptionReason, ExecutionListFilter, ExecutionOrigin, ExecutionStatus,
+    ExecutionStatusFilter, FacetKey, FacetKind, FacetRefs, FacetSummary, FailureClassification,
+    FailureDisposition, Fanout, FanoutChildSnapshot, FanoutParentRef, FanoutSpec, ItemsSource,
+    NodeDefinition, NodeDefinitionName, NodeExecution, NodeExecutionFailure,
+    NodeExecutionFailureKind, NodeExecutionStatus, NodeHistoryEntry, NodeKind, NodeKindName,
+    OutcomeCommitMode, Rule, RuntimeArtifact, RuntimeExecutionState, SchemaDef, SessionGate,
+    SessionSpec, TimeoutKind, TokenUsage, WorkflowDefinition, WorkflowDefinitionName,
+    WorkflowExecution, WorkflowExecutionId, WorkflowExecutionSummary, WorkflowNodeContext,
+    WorkflowPageRequest, WorkflowRuntimeSnapshot, WorkflowSummary, WorkspaceWorktreePath,
+    NODE_STATUS_ABORTED, NODE_STATUS_COMPLETED, NODE_STATUS_FAILED, NODE_STATUS_INTERRUPTED,
+    NODE_STATUS_RUNNING, NODE_STATUS_WAITING_APPROVAL,
 };

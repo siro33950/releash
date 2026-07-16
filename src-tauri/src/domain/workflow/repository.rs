@@ -1,47 +1,79 @@
 //! Persistence ports for workflow.
 //!
 //! Implementations live in `adaptor/gateway/workflow/` and preserve the current
-//! `workflow_runs/` JSON and event log shapes through mapper types.
+//! `workflow_executions/` JSON and event log shapes through mapper types.
 
 #[cfg(test)]
-use crate::domain::workflow::value_objects::WorkflowRunRecord;
+use crate::domain::workflow::value_objects::WorkflowExecutionRecord;
 use crate::domain::workflow::value_objects::{
-    FacetKind, FacetSummary, RunId, RunListFilter, WorkflowDefinition, WorkflowRunSummary,
-    WorkflowSummary,
+    ExecutionListFilter, FacetKind, FacetSummary, WorkflowDefinition, WorkflowExecutionId,
+    WorkflowExecutionSummary, WorkflowPageRequest, WorkflowSummary,
 };
 use crate::domain::workflow::WorkflowError;
 
 pub const WORKFLOW_ARCHIVE_REASON_MANUAL: &str = "manual";
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct WorkflowRunManualArchiveRecord {
-    pub run_id: String,
+pub struct WorkflowExecutionManualArchiveRecord {
+    pub execution_id: String,
     pub archived_at: f64,
 }
 
-pub trait WorkflowRunRepository: Send + Sync {
+pub trait WorkflowExecutionRepository: Send + Sync {
     #[cfg(test)]
-    fn register_active(&self, run: WorkflowRunRecord) -> Result<(), WorkflowError>;
+    fn register_active(&self, execution: WorkflowExecutionRecord) -> Result<(), WorkflowError>;
     #[cfg(test)]
-    fn complete_run(
+    fn complete_execution(
         &self,
-        run_id: &RunId,
-        completed: WorkflowRunRecord,
+        execution_id: &WorkflowExecutionId,
+        completed: WorkflowExecutionRecord,
     ) -> Result<(), WorkflowError>;
-    fn list_runs(&self, filter: RunListFilter) -> Result<Vec<WorkflowRunSummary>, WorkflowError>;
-    fn get_run(&self, run_id: &RunId) -> Result<Option<WorkflowRunSummary>, WorkflowError>;
+    fn list_executions(
+        &self,
+        filter: ExecutionListFilter,
+    ) -> Result<Vec<WorkflowExecutionSummary>, WorkflowError>;
+    fn list_executions_page(
+        &self,
+        filter: ExecutionListFilter,
+        page: WorkflowPageRequest,
+    ) -> Result<Vec<WorkflowExecutionSummary>, WorkflowError> {
+        self.list_executions(filter).map(|executions| {
+            executions
+                .into_iter()
+                .skip(page.offset)
+                .take(page.limit)
+                .collect()
+        })
+    }
+    fn get_execution(
+        &self,
+        execution_id: &WorkflowExecutionId,
+    ) -> Result<Option<WorkflowExecutionSummary>, WorkflowError>;
     #[cfg(test)]
-    fn resolve_active_run_by_worktree(
+    fn resolve_active_execution_by_worktree(
         &self,
         worktree_path: &str,
-    ) -> Result<Option<RunId>, WorkflowError>;
-    fn resolve_worktree_by_run(&self, run_id: &RunId) -> Result<Option<String>, WorkflowError>;
+    ) -> Result<Option<WorkflowExecutionId>, WorkflowError>;
+    fn resolve_worktree_by_execution(
+        &self,
+        execution_id: &WorkflowExecutionId,
+    ) -> Result<Option<String>, WorkflowError>;
 }
 
-pub trait WorkflowRunArchiveRepository: Send + Sync {
-    fn archive_manual(&self, run_id: &RunId, archived_at: f64) -> Result<(), WorkflowError>;
-    fn restore_manual(&self, run_id: &RunId, restored_at: f64) -> Result<(), WorkflowError>;
-    fn manual_archive_records(&self) -> Result<Vec<WorkflowRunManualArchiveRecord>, WorkflowError>;
+pub trait WorkflowExecutionArchiveRepository: Send + Sync {
+    fn archive_manual(
+        &self,
+        execution_id: &WorkflowExecutionId,
+        archived_at: f64,
+    ) -> Result<(), WorkflowError>;
+    fn restore_manual(
+        &self,
+        execution_id: &WorkflowExecutionId,
+        restored_at: f64,
+    ) -> Result<(), WorkflowError>;
+    fn manual_archive_records(
+        &self,
+    ) -> Result<Vec<WorkflowExecutionManualArchiveRecord>, WorkflowError>;
 }
 
 pub trait WorkflowDefinitionRepository: Send + Sync {

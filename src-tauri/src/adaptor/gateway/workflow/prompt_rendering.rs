@@ -1,564 +1,488 @@
 use std::collections::HashMap;
 
-use crate::adaptor::gateway::workflow::domain_mapping::{
-    node_definition_to_domain, step_history_entries_to_domain, step_output_to_domain,
-    step_outputs_to_domain,
-};
+use serde_json::Value;
+
 use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
-use crate::adaptor::gateway::workflow::schema::{ChildNodeDefinition, NodeDefinition};
-use crate::adaptor::gateway::workflow::state::{StepHistoryEntry, StepOutput};
-use crate::domain::workflow::services::variable_renderer;
+use crate::adaptor::gateway::workflow::facet::FacetContents;
+use crate::adaptor::gateway::workflow::schema::NodeDefinition;
+use crate::adaptor::gateway::workflow::state::RuntimeArtifact;
+use crate::domain::workflow::services::reference::{
+    self, resolve_runtime_reference, REQUEST_ARTIFACT,
+};
+#[cfg(test)]
+use crate::domain::workflow::services::template_preview;
 
-/// ファセット内容中のテンプレート変数を展開する。
-pub(crate) fn render_facet_variables(
-    content: &str,
-    worktree_path: &str,
-    task: Option<&str>,
-) -> String {
-    variable_renderer::render_facet_variables(content, worktree_path, task)
-}
-
-/// `releash workflow output submit` の CLI 例を実 run_id / step_name に展開する。
-pub(crate) fn render_submit_command_variables(
-    content: &str,
-    run_id: &str,
-    step_name: &str,
-) -> String {
-    variable_renderer::render_submit_command_variables(content, run_id, step_name)
-}
-
-/// facet 本文に対し、起動環境別 alias と workflow 定義変数を namespace 展開する。
-pub(crate) fn render_namespaced_variables(
-    content: &str,
-    workflow_declared_variables: &HashMap<String, String>,
-) -> String {
-    let releash_alias = crate::infrastructure::platform::path_aliases::alias_name_for_profile(
-        crate::infrastructure::platform::path_aliases::BuildProfile::current(),
+pub(crate) fn artifact_values(
+    runtime_artifacts: &HashMap<String, RuntimeArtifact>,
+    request: Option<&str>,
+) -> HashMap<String, Value> {
+    let mut artifacts = HashMap::new();
+    artifacts.insert(
+        REQUEST_ARTIFACT.to_string(),
+        Value::String(request.unwrap_or_default().to_string()),
     );
-    let rendered_alias =
-        variable_renderer::render_path_alias_variables_with_name(content, releash_alias);
-    variable_renderer::render_workflow_variables(&rendered_alias, workflow_declared_variables)
+    for (name, output) in runtime_artifacts {
+        if let Some(value) = &output.artifact {
+            artifacts.insert(name.clone(), value.clone());
+        }
+    }
+    artifacts
+}
+
+fn render_prompt_content(
+    content: &str,
+    artifacts: &HashMap<String, Value>,
+    item: Option<&Value>,
+) -> String {
+    render_artifact_references(content, artifacts, item)
+}
+
+pub(crate) fn find_undefined_template_variables(content: &str) -> Vec<String> {
+    reference::extract_template_references(content)
+        .into_iter()
+        .filter(|value| reference::parse_reference(value).is_err())
+        .collect()
+}
+
+#[cfg(test)]
+pub(crate) fn render_template_variables(content: &str, values: &HashMap<String, String>) -> String {
+    template_preview::render_template_variables(content, values)
+}
+
+pub(crate) fn render_artifact_references(
+    content: &str,
+    artifacts: &HashMap<String, Value>,
+    item: Option<&Value>,
+) -> String {
+    replace_template_refs(content, |inner| {
+        let parsed = reference::parse_reference(inner).ok()?;
+        resolve_runtime_reference(&parsed, artifacts, item).map(value_to_template_string)
+    })
+}
+
+pub(crate) fn inject_input_artifacts(
+    prompt: &str,
+    inputs: &[String],
+    artifacts: &HashMap<String, Value>,
+) -> String {
+    let mut result = prompt.to_string();
+    if let Some(block) = input_artifacts_block(inputs, artifacts) {
+        result.push_str(&block);
+    }
+    result
+}
+
+fn input_artifacts_block(inputs: &[String], artifacts: &HashMap<String, Value>) -> Option<String> {
+    let mut blocks = Vec::new();
+    for input in inputs {
+        let Ok(parsed) = reference::parse_reference(input) else {
+            continue;
+        };
+        let name = input.trim();
+        let Some(value) = resolve_runtime_reference(&parsed, artifacts, None) else {
+            continue;
+        };
+        let json = serde_json::to_string_pretty(&value).unwrap_or_else(|_| "null".to_string());
+        blocks.push(format!("## input: {name}\n```json\n{json}\n```"));
+    }
+    (!blocks.is_empty()).then(|| format!("\n\n{}", blocks.join("\n\n")))
+}
+
+fn inject_fanout_item(prompt: &str, input_contract: Option<&str>, item: Option<&Value>) -> String {
+    let (Some(input_contract), Some(item)) = (input_contract, item) else {
+        return prompt.to_string();
+    };
+    let json = serde_json::to_string_pretty(item).unwrap_or_else(|_| "null".to_string());
+    let block = format!("## input: item ({input_contract})\n```json\n{json}\n```");
+    if prompt.is_empty() {
+        block
+    } else {
+        format!("{prompt}\n\n{block}")
+    }
+}
+
+fn value_to_template_string(value: Value) -> String {
+    match value {
+        Value::String(value) => value,
+        other => serde_json::to_string(&other).unwrap_or_else(|_| "null".to_string()),
+    }
+}
+
+fn replace_template_refs(content: &str, mut resolve: impl FnMut(&str) -> Option<String>) -> String {
+    let mut result = String::with_capacity(content.len());
+    let mut rest = content;
+    while !rest.is_empty() {
+        let Some(open_idx) = rest.find("{{") else {
+            result.push_str(rest);
+            break;
+        };
+        result.push_str(&rest[..open_idx]);
+        let after_open = &rest[open_idx + 2..];
+        let Some(close_idx) = after_open.find("}}") else {
+            result.push_str("{{");
+            result.push_str(after_open);
+            break;
+        };
+        let raw_inner = &after_open[..close_idx];
+        match resolve(raw_inner.trim()) {
+            Some(value) => result.push_str(&value),
+            None => {
+                result.push_str("{{");
+                result.push_str(raw_inner);
+                result.push_str("}}");
+            }
+        }
+        rest = &after_open[close_idx + 2..];
+    }
+    result
 }
 
 fn render_workflow_instruction(
     instruction: &str,
-    run_id: &str,
-    step_name: &str,
-    worktree_path: &str,
-    task: Option<&str>,
-    workflow_declared_variables: &HashMap<String, String>,
+    artifacts: &HashMap<String, Value>,
+    item: Option<&Value>,
 ) -> Option<String> {
-    let rendered = render_facet_variables(instruction, worktree_path, task);
-    let rendered = render_submit_command_variables(&rendered, run_id, step_name);
-    let rendered = render_namespaced_variables(&rendered, workflow_declared_variables);
-    let rendered = rendered.trim().to_string();
+    let rendered = render_prompt_content(instruction, artifacts, item)
+        .trim()
+        .to_string();
     (!rendered.is_empty()).then_some(rendered)
 }
 
-pub(crate) fn render_step_workflow_instruction(
-    step: &NodeDefinition,
-    run_id: &str,
-    worktree_path: &str,
-    task: Option<&str>,
-    workflow_declared_variables: &HashMap<String, String>,
+pub(crate) fn render_node_workflow_instruction(
+    _node: &NodeDefinition,
+    facet_contents: Option<&FacetContents>,
+    request: Option<&str>,
+    artifacts: &HashMap<String, RuntimeArtifact>,
 ) -> Option<String> {
-    render_workflow_instruction(
-        step.resolved_facets.instruction.as_ref()?,
-        run_id,
-        &step.name,
-        worktree_path,
-        task,
-        workflow_declared_variables,
-    )
+    let artifacts = artifact_values(artifacts, request);
+    render_workflow_instruction(facet_contents?.instruction.as_ref()?, &artifacts, None)
 }
 
-pub(crate) fn render_child_workflow_instruction(
-    step: &ChildNodeDefinition,
-    run_id: &str,
-    worktree_path: &str,
-    task: Option<&str>,
-    workflow_declared_variables: &HashMap<String, String>,
+pub(crate) fn render_fanout_child_workflow_instruction(
+    _node: &NodeDefinition,
+    facet_contents: Option<&FacetContents>,
+    request: Option<&str>,
+    artifacts: &HashMap<String, RuntimeArtifact>,
+    item: Option<&Value>,
 ) -> Option<String> {
-    render_workflow_instruction(
-        step.resolved_facets.instruction.as_ref()?,
-        run_id,
-        &step.name,
-        worktree_path,
-        task,
-        workflow_declared_variables,
-    )
+    let artifacts = artifact_values(artifacts, request);
+    render_workflow_instruction(facet_contents?.instruction.as_ref()?, &artifacts, item)
 }
 
-/// ステップの出力をプロンプトにコンテキストブロックとして注入する。
-pub(crate) fn inject_step_outputs(
-    prompt: &str,
-    step: &NodeDefinition,
-    step_outputs: &HashMap<String, StepOutput>,
-    step_history: &[StepHistoryEntry],
-    workflow_variables: &HashMap<String, String>,
-) -> String {
-    let step = node_definition_to_domain(step);
-    let step_outputs = step_outputs_to_domain(step_outputs);
-    let step_history = step_history_entries_to_domain(step_history);
-    variable_renderer::inject_step_outputs(
-        prompt,
-        &step,
-        &step_outputs,
-        &step_history,
-        workflow_variables,
-    )
-}
-
-pub(crate) fn append_task_block(
+pub(crate) fn append_artifact_completion_action(
     prompt: &mut String,
-    task: Option<&str>,
-    allow_task_injection: bool,
+    artifact: Option<&str>,
+    execution_id: &str,
+    node_name: &str,
+    node_execution_id: Option<&str>,
 ) {
-    if let Some(block) = variable_renderer::task_block(task, allow_task_injection) {
-        prompt.push_str(&block);
-    }
-}
-
-pub(crate) fn append_output_contract_completion_action(
-    prompt: &mut String,
-    output_contract: Option<&str>,
-    run_id: &str,
-    step_name: &str,
-    workflow_declared_variables: &HashMap<String, String>,
-) {
-    let Some(contract) = output_contract else {
+    let Some(contract) = artifact else {
         return;
     };
-    let action =
-        crate::adaptor::gateway::workflow::facet::output_contract_completion_action(contract);
-    let action = render_submit_command_variables(&action, run_id, step_name);
-    let action = render_namespaced_variables(&action, workflow_declared_variables);
+    let action = crate::adaptor::gateway::workflow::facet::artifact_completion_action(
+        contract,
+        execution_id,
+        node_name,
+        node_execution_id,
+    );
     if !prompt.is_empty() {
         prompt.push_str("\n\n");
     }
     prompt.push_str(&action);
 }
 
-pub(crate) fn format_step_output_block(output: &StepOutput) -> String {
-    let output = step_output_to_domain(output);
-    variable_renderer::format_step_output_block(&output)
-}
-
-pub(crate) fn append_workflow_variables_block(
-    result: &mut String,
-    workflow_variables: &HashMap<String, String>,
-) {
-    if let Some(block) = variable_renderer::workflow_variables_block(workflow_variables) {
-        result.push_str(&block);
-    }
-}
-
-/// ファセット合成パイプライン: compose → 変数展開 → step output 注入。
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn build_step_prompt(
-    step: &NodeDefinition,
-    run_id: &str,
-    worktree_path: &str,
-    task: Option<&str>,
-    step_outputs: &HashMap<String, StepOutput>,
-    step_history: &[StepHistoryEntry],
-    workflow_variables: &HashMap<String, String>,
-    workflow_declared_variables: &HashMap<String, String>,
+pub(crate) fn build_node_prompt(
+    node: &NodeDefinition,
+    facet_contents: Option<&FacetContents>,
+    execution_id: &str,
+    request: Option<&str>,
+    artifacts: &HashMap<String, RuntimeArtifact>,
 ) -> Result<(Option<String>, String), WorkflowEngineError> {
-    if !step.has_facet_refs() {
-        if let Some(ref inline) = step.inline_prompt {
-            let rendered = render_facet_variables(inline, worktree_path, task);
-            let rendered = render_submit_command_variables(&rendered, run_id, &step.name);
-            let rendered = render_namespaced_variables(&rendered, workflow_declared_variables);
-            let prompt = inject_step_outputs(
-                &rendered,
-                step,
-                step_outputs,
-                step_history,
-                workflow_variables,
-            );
-            return Ok((None, prompt));
-        }
+    if !node.has_facet_refs() {
         return Err(WorkflowEngineError::InvalidWorkflow(format!(
-            "Step '{}' has no facet refs and no inline_prompt.",
-            step.name
+            "Node '{}' has no facet refs.",
+            node.name
         )));
     }
 
-    if step.resolved_facets.is_empty() {
+    if node.has_facet_refs() && facet_contents.is_none_or(FacetContents::is_empty) {
         return Err(WorkflowEngineError::InvalidWorkflow(format!(
-            "Step '{}' has unresolved facet refs (workflow must go through load pipeline)",
-            step.name
+            "Node '{}' has unresolved facet refs (workflow must go through load pipeline)",
+            node.name
         )));
     }
-    let composed = crate::adaptor::gateway::workflow::facet::compose_facets(step);
-    let system_prompt = composed.system_prompt.map(|s| {
-        let s = render_facet_variables(&s, worktree_path, task);
-        let s = render_submit_command_variables(&s, run_id, &step.name);
-        render_namespaced_variables(&s, workflow_declared_variables)
-    });
-    let rendered_user = {
-        let s = render_facet_variables(&composed.user_message, worktree_path, task);
-        let s = render_submit_command_variables(&s, run_id, &step.name);
-        render_namespaced_variables(&s, workflow_declared_variables)
-    };
-    let mut prompt = inject_step_outputs(
-        &rendered_user,
-        step,
-        step_outputs,
-        step_history,
-        workflow_variables,
-    );
-    let allow_task = step.input_contracts.as_ref().is_some_and(|v| !v.is_empty());
-    append_task_block(&mut prompt, task, allow_task);
-    append_output_contract_completion_action(
+
+    let artifacts = artifact_values(artifacts, request);
+    let composed = crate::adaptor::gateway::workflow::facet::compose_facets(facet_contents);
+    let system_prompt = composed
+        .system_prompt
+        .map(|content| render_prompt_content(&content, &artifacts, None));
+    let rendered_user = render_prompt_content(&composed.user_message, &artifacts, None);
+    let mut prompt = inject_input_artifacts(&rendered_user, &node.inputs, &artifacts);
+    append_artifact_completion_action(
         &mut prompt,
-        step.output_contract.as_deref(),
-        run_id,
-        &step.name,
-        workflow_declared_variables,
+        node.artifact.as_deref(),
+        execution_id,
+        &node.name,
+        None,
     );
     Ok((system_prompt, prompt))
 }
 
-/// 並列子ステップ用のプロンプトを構築する。
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn build_parallel_step_prompt(
-    step: &ChildNodeDefinition,
-    run_id: &str,
-    worktree_path: &str,
-    task: Option<&str>,
-    step_outputs: &HashMap<String, StepOutput>,
-    pass_previous_response: bool,
-    pass_output_from: Option<&[String]>,
-    workflow_variables: &HashMap<String, String>,
-    workflow_declared_variables: &HashMap<String, String>,
+pub(crate) fn build_fanout_child_prompt(
+    node: &NodeDefinition,
+    facet_contents: Option<&FacetContents>,
+    execution_id: &str,
+    request: Option<&str>,
+    artifacts: &HashMap<String, RuntimeArtifact>,
+    item: Option<&Value>,
+    node_execution_id: &str,
 ) -> Result<(Option<String>, String), WorkflowEngineError> {
-    if step.has_facet_refs() && step.resolved_facets.is_empty() {
+    if node.has_facet_refs() && facet_contents.is_none_or(FacetContents::is_empty) {
         return Err(WorkflowEngineError::InvalidWorkflow(format!(
-            "Parallel child '{}' has unresolved facet refs (workflow must go through load pipeline)",
-            step.name
+            "Fanout child '{}' has unresolved facet refs (workflow must go through load pipeline)",
+            node.name
         )));
     }
-    let composed = crate::adaptor::gateway::workflow::facet::compose_child_facets(step);
 
-    let system_prompt = composed.system_prompt.map(|s| {
-        let s = render_facet_variables(&s, worktree_path, task);
-        let s = render_submit_command_variables(&s, run_id, &step.name);
-        render_namespaced_variables(&s, workflow_declared_variables)
-    });
-    let mut user_message = render_facet_variables(&composed.user_message, worktree_path, task);
-    user_message = render_submit_command_variables(&user_message, run_id, &step.name);
-    user_message = render_namespaced_variables(&user_message, workflow_declared_variables);
-
-    if let Some(from_steps) = pass_output_from {
-        let mut injections = Vec::new();
-        for step_name in from_steps {
-            if let Some(output) = step_outputs.get(step_name) {
-                let text = format_step_output_block(output);
-                injections.push(format!(
-                    "<step_output name=\"{step_name}\">\n{text}\n</step_output>",
-                ));
-            }
-        }
-        if !injections.is_empty() {
-            user_message = format!("{}\n\n{}", injections.join("\n\n"), user_message);
-        }
-    } else if pass_previous_response {
-        if let Some(last_output) = step_outputs.values().max_by(|a, b| {
-            a.completed_at
-                .partial_cmp(&b.completed_at)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        }) {
-            let text = format_step_output_block(last_output);
-            user_message = format!(
-                "<step_output name=\"{}\">\n{}\n</step_output>\n\n{}",
-                last_output.step_name, text, user_message
-            );
-        }
-    }
-
-    append_workflow_variables_block(&mut user_message, workflow_variables);
-    let allow_task = step.input_contracts.as_ref().is_some_and(|v| !v.is_empty());
-    append_task_block(&mut user_message, task, allow_task);
-    append_output_contract_completion_action(
+    let artifacts = artifact_values(artifacts, request);
+    let composed = crate::adaptor::gateway::workflow::facet::compose_facets(facet_contents);
+    let system_prompt = composed
+        .system_prompt
+        .map(|content| render_prompt_content(&content, &artifacts, item));
+    let rendered_user = render_prompt_content(&composed.user_message, &artifacts, item);
+    let rendered_user = inject_input_artifacts(&rendered_user, &node.inputs, &artifacts);
+    let mut user_message = inject_fanout_item(&rendered_user, node.input.as_deref(), item);
+    append_artifact_completion_action(
         &mut user_message,
-        step.output_contract.as_deref(),
-        run_id,
-        &step.name,
-        workflow_declared_variables,
+        node.artifact.as_deref(),
+        execution_id,
+        &node.name,
+        Some(node_execution_id),
     );
 
     Ok((system_prompt, user_message))
 }
 
+pub(crate) fn request_node_artifact(request: &str, timestamp: f64) -> RuntimeArtifact {
+    RuntimeArtifact {
+        node_name: REQUEST_ARTIFACT.to_string(),
+        attempt: 0,
+        session_id: None,
+        result: None,
+        artifact: Some(Value::String(request.to_string())),
+        contract: Some("string".to_string()),
+        token_usage: None,
+        completed_at: timestamp,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adaptor::gateway::workflow::schema::NodeType;
+    use crate::adaptor::gateway::workflow::schema::{FacetRefs, NodeKind, SessionSpec};
 
-    fn make_test_step(name: &str, node_type: NodeType, instruction: &str) -> NodeDefinition {
+    fn make_test_node(name: &str, instruction: &str) -> NodeDefinition {
         NodeDefinition {
             name: name.to_string(),
-            node_type,
-            instruction: Some(instruction.to_string()),
+            kind: NodeKind::Session(SessionSpec {
+                facets: FacetRefs {
+                    instruction: Some(instruction.to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
             ..NodeDefinition::default()
         }
     }
 
-    fn make_step_output(step_name: &str, output_text: &str, result: Option<&str>) -> StepOutput {
-        StepOutput {
-            step_name: step_name.to_string(),
-            run_index: 0,
-            session_id: None,
-            result: result.map(str::to_string),
-            structured_output: Some(serde_json::json!({ "text": output_text })),
-            output_contract: None,
-            token_usage: None,
-            completed_at: 1000.0,
-        }
-    }
-
-    fn history_entry(step_name: &str) -> StepHistoryEntry {
-        StepHistoryEntry {
-            step_name: step_name.to_string(),
-            completed_at: 1000.0,
-            result: None,
-            session_id: None,
-            token_usage: None,
-            structured_output: None,
-            run_index: 0,
-            child_outputs: None,
-            state: crate::adaptor::gateway::workflow::state::default_step_entry_state(),
+    fn instruction_contents(instruction: &str) -> FacetContents {
+        FacetContents {
+            instruction: Some(instruction.to_string()),
+            ..Default::default()
         }
     }
 
     #[test]
-    fn render_facet_variables_replaces_task_and_project_name() {
-        let content = "Task: {{task}}\nProject: {{project_name}}";
+    fn build_node_prompt_reports_missing_facets_with_node_vocabulary() {
+        let node = NodeDefinition {
+            name: "review".to_string(),
+            ..NodeDefinition::default()
+        };
 
-        let result = render_facet_variables(content, "/home/user/my-project", Some("Fix bug"));
+        let error = build_node_prompt(&node, None, "execution-1", None, &HashMap::new())
+            .expect_err("node without facet refs must be rejected");
 
-        assert_eq!(result, "Task: Fix bug\nProject: my-project");
+        assert!(matches!(
+            error,
+            WorkflowEngineError::InvalidWorkflow(message)
+                if message == "Node 'review' has no facet refs."
+        ));
     }
 
     #[test]
-    fn render_facet_variables_task_none_replaces_with_empty() {
-        let content = "Do: {{task}}";
-
-        let result = render_facet_variables(content, "/home/user/proj", None);
-
-        assert_eq!(result, "Do: ");
-    }
-
-    #[test]
-    fn render_facet_variables_no_variables_unchanged() {
-        let content = "No variables here";
-
-        let result = render_facet_variables(content, "/home/user/proj", Some("task"));
-
-        assert_eq!(result, "No variables here");
-    }
-
-    #[test]
-    fn inject_step_outputs_pass_previous_response() {
-        let mut step = make_test_step("step_b", NodeType::Agent, "Do B");
-        step.pass_previous_response = Some(true);
+    fn build_node_prompt_injects_inputs_as_json() {
+        let mut node = make_test_node("implement", "Implement {{ request }}");
+        node.inputs = vec!["request".to_string(), "plan".to_string()];
+        let resolved = instruction_contents("Implement {{ request }}");
         let outputs = HashMap::from([(
-            "step_a".to_string(),
-            make_step_output("step_a", "output from A", None),
-        )]);
-        let history = vec![history_entry("step_a")];
-
-        let result = inject_step_outputs("Do B", &step, &outputs, &history, &HashMap::new());
-
-        assert!(result.contains("<step_output name=\"step_a\">"));
-        assert!(result.contains("output from A"));
-    }
-
-    #[test]
-    fn inject_step_outputs_no_pass_previous_response() {
-        let step = make_test_step("step_b", NodeType::Agent, "Do B");
-
-        let result = inject_step_outputs("Do B", &step, &HashMap::new(), &[], &HashMap::new());
-
-        assert_eq!(result, "Do B");
-    }
-
-    #[test]
-    fn inject_step_outputs_pass_output_from_single() {
-        let mut step = make_test_step("step_c", NodeType::Agent, "Do C");
-        step.pass_output_from = Some(vec!["step_a".to_string()]);
-        let outputs = HashMap::from([(
-            "step_a".to_string(),
-            make_step_output("step_a", "output A", None),
-        )]);
-
-        let result = inject_step_outputs("Do C", &step, &outputs, &[], &HashMap::new());
-
-        assert!(result.contains("<step_output name=\"step_a\">"));
-        assert!(result.contains("output A"));
-    }
-
-    #[test]
-    fn reject_comment_accessible_via_pass_output_from() {
-        let mut step = make_test_step("fix", NodeType::Agent, "Fix issues");
-        step.pass_output_from = Some(vec!["review".to_string()]);
-        let outputs = HashMap::from([(
-            "review".to_string(),
-            make_step_output("review", "Fix the naming convention", Some("reject")),
-        )]);
-
-        let result = inject_step_outputs("Fix issues", &step, &outputs, &[], &HashMap::new());
-
-        assert!(result.contains("<step_output name=\"review\">"));
-        assert!(result.contains("Fix the naming convention"));
-    }
-
-    #[test]
-    fn inject_step_outputs_pass_output_from_multiple() {
-        let mut step = make_test_step("step_c", NodeType::Agent, "Do C");
-        step.pass_output_from = Some(vec!["step_a".to_string(), "step_b".to_string()]);
-        let outputs = HashMap::from([
-            (
-                "step_a".to_string(),
-                make_step_output("step_a", "output A", None),
-            ),
-            (
-                "step_b".to_string(),
-                make_step_output("step_b", "output B", None),
-            ),
-        ]);
-
-        let result = inject_step_outputs("Do C", &step, &outputs, &[], &HashMap::new());
-
-        assert!(result.contains("<step_output name=\"step_a\">"));
-        assert!(result.contains("output A"));
-        assert!(result.contains("<step_output name=\"step_b\">"));
-        assert!(result.contains("output B"));
-    }
-
-    #[test]
-    fn inject_step_outputs_pass_previous_response_no_output_injects_nothing() {
-        let mut step = make_test_step("step_b", NodeType::Agent, "Do B");
-        step.pass_previous_response = Some(true);
-        let history = vec![history_entry("step_a")];
-
-        let result = inject_step_outputs("Do B", &step, &HashMap::new(), &history, &HashMap::new());
-
-        assert_eq!(result, "Do B");
-    }
-
-    #[test]
-    fn inject_step_outputs_missing_step_shows_not_completed() {
-        let mut step = make_test_step("step_b", NodeType::Agent, "Do B");
-        step.pass_output_from = Some(vec!["step_a".to_string()]);
-
-        let result = inject_step_outputs("Do B", &step, &HashMap::new(), &[], &HashMap::new());
-
-        assert!(result.contains("<step_output name=\"step_a\">"));
-        assert!(result.contains("(not yet completed)"));
-    }
-
-    #[test]
-    fn inject_step_outputs_workflow_variables_injected() {
-        let step = make_test_step("step_b", NodeType::Agent, "Do B");
-        let workflow_variables = HashMap::from([(
-            "spec_dir".to_string(),
-            "docs/spec/issues-909.md".to_string(),
-        )]);
-
-        let result = inject_step_outputs("Do B", &step, &HashMap::new(), &[], &workflow_variables);
-
-        assert!(result.contains("<workflow_variables>"));
-        assert!(result.contains("spec_dir"));
-        assert!(result.contains("docs/spec/issues-909.md"));
-    }
-
-    #[test]
-    fn inject_step_outputs_empty_workflow_variables_not_injected() {
-        let step = make_test_step("step_b", NodeType::Agent, "Do B");
-
-        let result = inject_step_outputs("Do B", &step, &HashMap::new(), &[], &HashMap::new());
-
-        assert!(!result.contains("<workflow_variables>"));
-    }
-
-    #[test]
-    fn inject_step_outputs_parallel_parent_aggregated_children() {
-        let mut step = make_test_step("spec_fix", NodeType::Agent, "Fix plan");
-        step.pass_output_from = Some(vec![
-            "spec_review_parallel".to_string(),
-            "plan_draft".to_string(),
-        ]);
-        let mut outputs = HashMap::new();
-        outputs.insert(
-            "spec_review_parallel".to_string(),
-            StepOutput {
-                step_name: "spec_review_parallel".to_string(),
-                run_index: 1,
+            "plan".to_string(),
+            RuntimeArtifact {
+                node_name: "plan".to_string(),
+                attempt: 1,
                 session_id: None,
                 result: None,
-                structured_output: Some(serde_json::json!({
-                    "review_completeness": {
-                        "verdict": "NEEDS_FIX",
-                        "findings": [{ "severity": "must_fix", "message": "Missing error handling" }]
-                    },
-                    "review_clarity": {
-                        "verdict": "LGTM",
-                        "findings": []
-                    }
-                })),
-                output_contract: None,
+                artifact: Some(serde_json::json!({"summary": "ready"})),
+                contract: Some("plan".to_string()),
                 token_usage: None,
-                completed_at: 1000.0,
+                completed_at: 1.0,
             },
-        );
-        outputs.insert(
-            "plan_draft".to_string(),
-            make_step_output("plan_draft", "Draft spec content", None),
-        );
+        )]);
 
-        let result = inject_step_outputs("Fix plan", &step, &outputs, &[], &HashMap::new());
+        let (_system, prompt) = build_node_prompt(
+            &node,
+            Some(&resolved),
+            "execution-1",
+            Some("ship"),
+            &outputs,
+        )
+        .unwrap();
 
-        assert!(result.contains("<step_output name=\"spec_review_parallel\">"));
-        assert!(result.contains("NEEDS_FIX"));
-        assert!(result.contains("Missing error handling"));
-        assert!(result.contains("<step_output name=\"plan_draft\">"));
-        assert!(result.contains("Draft spec content"));
+        assert!(prompt.contains("Implement ship"));
+        assert!(prompt.contains("## input: request"));
+        assert!(prompt.contains("\"ship\""));
+        assert!(prompt.contains("## input: plan"));
+        assert!(prompt.contains("\"summary\": \"ready\""));
     }
 
     #[test]
-    fn inject_step_outputs_parallel_parent_via_pass_previous_response() {
-        let mut step = make_test_step("spec_fix", NodeType::Agent, "Fix plan");
-        step.pass_previous_response = Some(true);
+    fn build_node_prompt_renders_node_field() {
+        let node = make_test_node("fix", "Spec dir: {{ authoring.spec_dir }}");
+        let resolved = instruction_contents("Spec dir: {{ authoring.spec_dir }}");
         let outputs = HashMap::from([(
-            "spec_review_parallel".to_string(),
-            StepOutput {
-                step_name: "spec_review_parallel".to_string(),
-                run_index: 1,
+            "authoring".to_string(),
+            RuntimeArtifact {
+                node_name: "authoring".to_string(),
+                attempt: 1,
                 session_id: None,
                 result: None,
-                structured_output: Some(serde_json::json!({
-                    "review_completeness": { "verdict": "LGTM", "findings": [] },
-                    "review_security": {
-                        "verdict": "NEEDS_FIX",
-                        "findings": [{ "severity": "must_fix", "message": "SQL injection risk" }]
-                    }
-                })),
-                output_contract: None,
+                artifact: Some(serde_json::json!({"spec_dir": "docs/specs/foo"})),
+                contract: Some("spec-directory".to_string()),
                 token_usage: None,
-                completed_at: 1000.0,
+                completed_at: 1.0,
             },
         )]);
-        let mut history = history_entry("spec_review_parallel");
-        history.result = Some("else".to_string());
-        history.run_index = 1;
 
-        let result = inject_step_outputs("Fix plan", &step, &outputs, &[history], &HashMap::new());
+        let (_system, prompt) =
+            build_node_prompt(&node, Some(&resolved), "execution-1", Some(""), &outputs).unwrap();
 
-        assert!(result.contains("<step_output name=\"spec_review_parallel\">"));
-        assert!(result.contains("NEEDS_FIX"));
-        assert!(result.contains("SQL injection risk"));
+        assert!(prompt.contains("Spec dir: docs/specs/foo"));
+    }
+
+    #[test]
+    fn build_fanout_child_prompt_binds_item_as_declared_input() {
+        let mut node = make_test_node("worker", "Review {{ item.path }}");
+        node.input = Some("work-item".to_string());
+        let resolved = instruction_contents("Review {{ item.path }}");
+        let item = serde_json::json!({"path": "src/lib.rs", "priority": 2});
+
+        let (_system, prompt) = build_fanout_child_prompt(
+            &node,
+            Some(&resolved),
+            "execution-1",
+            None,
+            &HashMap::new(),
+            Some(&item),
+            "node-execution-1",
+        )
+        .unwrap();
+
+        assert!(prompt.contains("Review src/lib.rs"));
+        assert!(prompt.contains("## input: item (work-item)"));
+        assert!(prompt.contains("\"priority\": 2"));
+    }
+
+    #[test]
+    fn build_fanout_child_prompt_injects_ordinary_inputs_and_binds_item() {
+        let mut node = make_test_node("worker", "Review {{ item.path }} for {{ request }}");
+        node.inputs = vec!["request".to_string(), "plan".to_string()];
+        node.input = Some("work-item".to_string());
+        let resolved = instruction_contents("Review {{ item.path }} for {{ request }}");
+        let outputs = HashMap::from([(
+            "plan".to_string(),
+            RuntimeArtifact {
+                node_name: "plan".to_string(),
+                attempt: 1,
+                session_id: None,
+                result: None,
+                artifact: Some(serde_json::json!({"summary": "ready"})),
+                contract: Some("plan".to_string()),
+                token_usage: None,
+                completed_at: 1.0,
+            },
+        )]);
+        let item = serde_json::json!({"path": "src/lib.rs", "priority": 2});
+
+        let (_system, prompt) = build_fanout_child_prompt(
+            &node,
+            Some(&resolved),
+            "execution-1",
+            Some("ship"),
+            &outputs,
+            Some(&item),
+            "node-execution-1",
+        )
+        .unwrap();
+
+        assert!(prompt.contains("Review src/lib.rs for ship"));
+        assert!(prompt.contains("## input: request"));
+        assert!(prompt.contains("\"ship\""));
+        assert!(prompt.contains("## input: plan"));
+        assert!(prompt.contains("\"summary\": \"ready\""));
+        assert!(prompt.contains("## input: item (work-item)"));
+        assert!(prompt.contains("\"priority\": 2"));
+    }
+
+    #[test]
+    fn build_node_prompt_appends_canonical_output_submit_action() {
+        let mut node = make_test_node("review", "Review the change.");
+        node.artifact = Some("review-result".to_string());
+        let resolved = instruction_contents("Review the change.");
+
+        let (_system, prompt) =
+            build_node_prompt(&node, Some(&resolved), "execution-1", None, &HashMap::new())
+                .unwrap();
+
+        assert!(prompt.contains("releash workflow output submit execution-1"));
+        assert!(prompt.contains("--node review"));
+        assert!(prompt.contains("--type review-result"));
+        assert!(!prompt.contains("--node-execution"));
+        let deprecated_step_flag = ["--", "step"].concat();
+        assert!(!prompt.contains(&deprecated_step_flag));
+    }
+
+    #[test]
+    fn build_fanout_child_prompt_addresses_the_node_execution() {
+        let mut node = make_test_node("review", "Review {{ item.path }}.");
+        node.input = Some("work-item".to_string());
+        node.artifact = Some("review-result".to_string());
+        let resolved = instruction_contents("Review {{ item.path }}.");
+        let item = serde_json::json!({"path": "src/lib.rs"});
+
+        let (_system, prompt) = build_fanout_child_prompt(
+            &node,
+            Some(&resolved),
+            "execution-1",
+            None,
+            &HashMap::new(),
+            Some(&item),
+            "node-execution-1",
+        )
+        .unwrap();
+
+        assert!(prompt.contains("releash workflow output submit execution-1"));
+        assert!(prompt.contains("--node review"));
+        assert!(prompt.contains("--node-execution node-execution-1"));
+        assert!(prompt.contains("--type review-result"));
     }
 }

@@ -1,251 +1,540 @@
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use serde::de;
+use serde::ser::SerializeMap;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet};
 
-/// ワークフローテンプレート定義（[02] Normalized Workflow）。
-///
-/// 旧 `steps:` 記法は廃止され、`nodes:` 配下の `NodeDefinition` 列が
-/// YAML deserialize 先となる。実行インスタンス（`WorkflowRun` / `NodeExecution`）
-/// とは語彙が分離される（後者は [03][04] で導入予定）。
+use crate::domain::workflow as domain_workflow;
+use crate::domain::workflow::services::{contract_schema, reference};
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SchemaDef {
+    Object {
+        properties: BTreeMap<String, SchemaDef>,
+        required: BTreeSet<String>,
+        additional_properties: bool,
+    },
+    Array {
+        items: String,
+    },
+    String {
+        r#enum: Option<Vec<String>>,
+    },
+    Boolean,
+    Integer,
+    Number,
+}
+
+impl Serialize for SchemaDef {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        contract_schema::schema_def_to_json_value(&super::domain_mapping::schema_def_to_domain(
+            self,
+        ))
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SchemaDef {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        contract_schema::schema_def_from_json(&value)
+            .map(schema_def_from_domain)
+            .map_err(de::Error::custom)
+    }
+}
+
+fn schema_def_from_domain(schema: domain_workflow::SchemaDef) -> SchemaDef {
+    match schema {
+        domain_workflow::SchemaDef::Object {
+            properties,
+            required,
+            additional_properties,
+        } => SchemaDef::Object {
+            properties: properties
+                .into_iter()
+                .map(|(name, schema)| (name, schema_def_from_domain(schema)))
+                .collect(),
+            required,
+            additional_properties,
+        },
+        domain_workflow::SchemaDef::Array { items } => SchemaDef::Array { items },
+        domain_workflow::SchemaDef::String { r#enum } => SchemaDef::String { r#enum },
+        domain_workflow::SchemaDef::Boolean => SchemaDef::Boolean,
+        domain_workflow::SchemaDef::Integer => SchemaDef::Integer,
+        domain_workflow::SchemaDef::Number => SchemaDef::Number,
+    }
+}
+
+/// ワークフローテンプレート定義。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
-pub struct Workflow {
+pub struct WorkflowDefinitionYaml {
     pub name: String,
     pub description: String,
     #[serde(default)]
     pub builtin: bool,
-    /// facet 展開用の静的変数宣言（spec issues-1054）。
-    ///
-    /// workflow 全体共通スコープで宣言され、facet 本文から `{{vars.<name>}}` で参照できる。
-    /// 値は静的文字列のみで、環境変数や実行時情報などの動的解決値は含まない。
-    /// 実行時に積み上がる workflow 実行変数 (`WorkflowExecution.workflow_variables`) とは
-    /// 別領域として並存する。
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub variables: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub schemas: BTreeMap<String, SchemaDef>,
     pub nodes: Vec<NodeDefinition>,
 }
 
-/// load 時に解決した facet コンテンツのキャッシュ。
-///
-/// `policy` / `knowledge` / `instruction` / `output_contract` / `input_contracts` の
-/// キー文字列ではなく、既にファイルから読み込んだ markdown 本文を保持する。実行時には
-/// `engine.rs` がこのキャッシュから直接 system_prompt / user_message を組み立てる。
-///
-/// `#[serde(skip)]` により YAML / JSON のシリアライズ対象外。
-/// 永続化形式には未解決の facet 参照キーのみが残り、解決結果は load 経路でのみ生成される。
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct ResolvedFacets {
-    pub policy: Option<String>,
-    pub knowledge: Option<String>,
-    pub instruction: Option<String>,
-    /// 出力側 Contract（step が生成する `<workflow_output>` のデータ仕様）。
-    /// 旧 `output_contract` ファセットの本文に相当する。
-    pub output_contract: Option<String>,
-    /// 入力側 Contract の解決済み本文一覧（[02] Contract 双方向対称性）。
-    /// 同一 Contract facet を input / output 双方向で参照できる。
-    pub input_contracts: Vec<String>,
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum NodeKindName {
+    Command,
+    #[default]
+    Session,
+    Fanout,
 }
 
-impl ResolvedFacets {
-    /// 主要 facet が未解決（None / 空）なら true を返す。
-    ///
-    /// 実行系では「facet 参照が宣言されている (`has_facet_refs()` が true) のに
-    /// resolved_facets が空」のとき、load 経路の facet 解決が漏れたとみなして
-    /// `InvalidWorkflow` を返すガードに使う。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CommandSpec {
+    pub command: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionGate {
+    #[default]
+    Auto,
+    Approval,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct FacetRefs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub knowledge: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instruction: Option<String>,
+}
+
+impl FacetRefs {
     pub fn is_empty(&self) -> bool {
-        self.policy.is_none()
-            && self.knowledge.is_none()
-            && self.instruction.is_none()
-            && self.output_contract.is_none()
-            && self.input_contracts.is_empty()
+        self.policy.is_none() && self.knowledge.is_none() && self.instruction.is_none()
     }
 }
 
-/// node 種別。
-///
-/// 旧 `mode` (auto/approval/interactive) と `parallel` ブロックの有無を統一し、
-/// 一つの enum で表現する。`aggregate` は parallel 種別の振る舞いに集約される。
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum NodeType {
-    #[default]
-    Agent,
-    Bash,
-    Approval,
-    Parallel,
-}
-
-/// 1 つの実行単位を表す正規化済みの node 定義。
-///
-/// YAML 上は `type: agent | bash | approval | parallel` で種別を表現し、
-/// 同階層に種別ごとの振る舞い設定（prompt 用 facet 参照や parallel_children など）と
-/// 共通 metadata（transition rules / cycle guard / overrides）を保持する。
-///
-/// 概念的なフィールド分類（boundary doc 93-114 行）:
-/// - `agent_config` 系（agent / approval 種別で使用）: `policy` / `knowledge` /
-///   `instruction` / `output_contract` / `pass_previous_response` /
-///   `pass_output_from` / `inline_prompt` / `collect`
-/// - `command_config` 系（bash 種別で使用）: `command`
-/// - `approval_config` 系（approval 種別で使用）: prompt 系フィールドを agent と共有
-/// - `parallel_children` 系（parallel 種別で使用）: `parallel_children` / `aggregate`
-/// - 共通: `transition_rules` / `cycle_guard` / `resets_cycle_for` / `model` / `permission`
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
-pub struct NodeDefinition {
-    pub name: String,
-    #[serde(rename = "type")]
-    pub node_type: NodeType,
-    // --- agent / approval 系 prompt 設定 ---
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub policy: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub knowledge: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instruction: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_contract: Option<String>,
-    /// 入力側 Contract 参照キー一覧。
-    /// 前段ステップ出力 / task / workflow_variables 等から受け取る入力の
-    /// データ仕様を宣言する（[02] Contract 双方向対称性）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input_contracts: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pass_previous_response: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pass_output_from: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub inline_prompt: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub collect: Option<CollectConfig>,
-    // --- bash 系 ---
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub command: Option<String>,
-    // --- parallel 系 ---
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parallel_children: Option<Vec<ChildNodeDefinition>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub aggregate: Option<ParallelAggregate>,
-    // --- 共通 ---
-    #[serde(default, rename = "rules", skip_serializing_if = "Vec::is_empty")]
-    pub transition_rules: Vec<TransitionRule>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cycle_guard: Option<CycleGuard>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resets_cycle_for: Option<Vec<String>>,
+pub struct SessionSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission: Option<String>,
-    /// load 経路で `facet.rs` が解決した facet コンテンツのキャッシュ。
-    /// YAML serialize 対象外（[02] 境界: 未解決 ref は schema 層に残さない）。
-    #[serde(skip)]
-    pub resolved_facets: ResolvedFacets,
+    pub gate: SessionGate,
+    #[serde(default, skip_serializing_if = "FacetRefs::is_empty")]
+    pub facets: FacetRefs,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct FanoutSpec {
+    #[serde(
+        deserialize_with = "deserialize_fanout_children",
+        serialize_with = "serialize_fanout_children"
+    )]
+    pub child: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub items: Option<ItemsSource>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ItemsSource {
+    Literal(Vec<Value>),
+    ArtifactField { node: String, field: String },
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawFanoutChildren {
+    One(String),
+    Many(Vec<String>),
+}
+
+fn deserialize_fanout_children<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match RawFanoutChildren::deserialize(deserializer)? {
+        RawFanoutChildren::One(child) => Ok(vec![child]),
+        RawFanoutChildren::Many(children) => Ok(children),
+    }
+}
+
+fn serialize_fanout_children<S>(children: &[String], serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match children {
+        [child] => serializer.serialize_str(child),
+        children => children.serialize(serializer),
+    }
+}
+
+impl<'de> Deserialize<'de> for ItemsSource {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum RawItemsSource {
+            Literal(Vec<Value>),
+            ArtifactField(String),
+        }
+
+        match RawItemsSource::deserialize(deserializer)? {
+            RawItemsSource::Literal(items) => Ok(Self::Literal(items)),
+            RawItemsSource::ArtifactField(value) => match reference::parse_reference(&value) {
+                Ok(reference::ArtifactReference::Node {
+                    node,
+                    field: Some(field),
+                }) => Ok(Self::ArtifactField { node, field }),
+                _ => Err(de::Error::custom(
+                    "fanout.items must be a literal array or a <node>.<field> Artifact reference",
+                )),
+            },
+        }
+    }
+}
+
+impl Serialize for ItemsSource {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Literal(items) => items.serialize(serializer),
+            Self::ArtifactField { node, field } => {
+                serializer.serialize_str(&format!("{node}.{field}"))
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum NodeKind {
+    Command(CommandSpec),
+    Session(SessionSpec),
+    Fanout(FanoutSpec),
+}
+
+impl Default for NodeKind {
+    fn default() -> Self {
+        Self::Session(SessionSpec::default())
+    }
+}
+
+impl NodeKind {
+    pub fn name(&self) -> NodeKindName {
+        match self {
+            Self::Command(_) => NodeKindName::Command,
+            Self::Session(_) => NodeKindName::Session,
+            Self::Fanout(_) => NodeKindName::Fanout,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct NodeDefinition {
+    pub name: String,
+    pub kind: NodeKind,
+    // Node kind に依存しない正本の共通 field。意味と検証は Rust workflow layer が所有する。
+    pub artifact: Option<String>,
+    pub input: Option<String>,
+    pub inputs: Vec<String>,
+    pub rules: Vec<Rule>,
 }
 
 impl NodeDefinition {
-    /// node の prompt 関連 facet 参照
-    /// （policy / knowledge / instruction / output_contract / input_contracts）が
-    /// いずれか 1 つでも指定されているか。
     pub fn has_facet_refs(&self) -> bool {
-        self.policy.is_some()
-            || self.knowledge.is_some()
-            || self.instruction.is_some()
-            || self.output_contract.is_some()
-            || self.input_contracts.as_ref().is_some_and(|v| !v.is_empty())
+        self.session()
+            .is_some_and(|session| !session.facets.is_empty())
     }
 
-    pub fn is_parallel(&self) -> bool {
-        matches!(self.node_type, NodeType::Parallel)
+    pub fn kind_name(&self) -> NodeKindName {
+        self.kind.name()
+    }
+
+    pub fn is_approval_session(&self) -> bool {
+        self.session()
+            .is_some_and(|session| session.gate == SessionGate::Approval)
+    }
+
+    pub fn is_fanout(&self) -> bool {
+        matches!(self.kind, NodeKind::Fanout(_))
+    }
+
+    pub fn command(&self) -> Option<&str> {
+        match &self.kind {
+            NodeKind::Command(spec) => Some(spec.command.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn session(&self) -> Option<&SessionSpec> {
+        match &self.kind {
+            NodeKind::Session(spec) => Some(spec),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn session_mut(&mut self) -> Option<&mut SessionSpec> {
+        match &mut self.kind {
+            NodeKind::Session(spec) => Some(spec),
+            _ => None,
+        }
+    }
+
+    pub fn fanout(&self) -> Option<&FanoutSpec> {
+        match &self.kind {
+            NodeKind::Fanout(spec) => Some(spec),
+            _ => None,
+        }
     }
 }
 
-/// 並列 node 配下の子 node 定義。
-///
-/// `parallel_children` を `NodeDefinition` の再帰構造から切り離すために導入された
-/// 子専用型（[02] schema 境界）。top-level 専用フィールド
-/// （`transition_rules` / `cycle_guard` / `resets_cycle_for` / `collect` /
-///  `parallel_children` / `aggregate` / `command`）は型レベルで持たない。
-///
-/// `node_type` は実装上 `Agent` のみが意味を持ち、validation で他の種別は拒否される。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ChildNodeDefinition {
-    pub name: String,
-    #[serde(rename = "type")]
-    pub node_type: NodeType,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub policy: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub knowledge: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instruction: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_contract: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input_contracts: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pass_previous_response: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pass_output_from: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub permission: Option<String>,
-    #[serde(skip)]
-    pub resolved_facets: ResolvedFacets,
+struct RawNodeDefinition {
+    name: String,
+    #[serde(default)]
+    command: Option<String>,
+    #[serde(default)]
+    session: Option<SessionSpec>,
+    #[serde(default)]
+    fanout: Option<FanoutSpec>,
+    #[serde(default)]
+    artifact: Option<String>,
+    #[serde(default)]
+    input: Option<String>,
+    #[serde(default)]
+    inputs: Vec<String>,
+    #[serde(default, rename = "rules")]
+    rules: Vec<Rule>,
 }
 
-impl ChildNodeDefinition {
-    pub fn has_facet_refs(&self) -> bool {
-        self.policy.is_some()
-            || self.knowledge.is_some()
-            || self.instruction.is_some()
-            || self.output_contract.is_some()
-            || self.input_contracts.as_ref().is_some_and(|v| !v.is_empty())
+impl<'de> Deserialize<'de> for NodeDefinition {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawNodeDefinition::deserialize(deserializer)?;
+        let kind_count = raw.command.is_some() as usize
+            + raw.session.is_some() as usize
+            + raw.fanout.is_some() as usize;
+        if kind_count != 1 {
+            return Err(de::Error::custom(format!(
+                "NodeDefinition '{}' must contain exactly one kind block: command, session, or fanout",
+                raw.name
+            )));
+        }
+        let kind = if let Some(command) = raw.command {
+            NodeKind::Command(CommandSpec { command })
+        } else if let Some(session) = raw.session {
+            NodeKind::Session(session)
+        } else if let Some(fanout) = raw.fanout {
+            NodeKind::Fanout(fanout)
+        } else {
+            unreachable!("kind_count checked above")
+        };
+        Ok(Self {
+            name: raw.name,
+            kind,
+            artifact: raw.artifact,
+            input: raw.input,
+            inputs: raw.inputs,
+            rules: raw.rules,
+        })
     }
 }
 
-/// parallel node 完了後の集約条件。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+impl Serialize for NodeDefinition {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("name", &self.name)?;
+        match &self.kind {
+            NodeKind::Command(spec) => map.serialize_entry("command", &spec.command)?,
+            NodeKind::Session(spec) => map.serialize_entry("session", spec)?,
+            NodeKind::Fanout(spec) => map.serialize_entry("fanout", spec)?,
+        }
+        serialize_option(&mut map, "artifact", &self.artifact)?;
+        serialize_option(&mut map, "input", &self.input)?;
+        if !self.inputs.is_empty() {
+            map.serialize_entry("inputs", &self.inputs)?;
+        }
+        if !self.rules.is_empty() {
+            map.serialize_entry("rules", &self.rules)?;
+        }
+        map.end()
+    }
+}
+
+fn serialize_option<M, T>(map: &mut M, key: &'static str, value: &Option<T>) -> Result<(), M::Error>
+where
+    M: SerializeMap,
+    T: Serialize,
+{
+    if let Some(value) = value {
+        map.serialize_entry(key, value)?;
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct ParallelAggregate {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub all_match: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub any_match: Option<String>,
+pub struct WhenRule {
+    pub on: String,
     pub then: String,
-    pub r#else: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct TransitionRule {
-    pub r#match: String,
-    pub next: String,
+pub struct SwitchRule {
+    pub on: String,
+    pub cases: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct CycleGuard {
+pub struct LoopGuardRule {
     pub max_iterations: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_exhausted: Option<String>,
+    pub on_exhausted: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Rule {
+    When {
+        on: String,
+        then: String,
+        next: String,
+    },
+    Switch {
+        on: String,
+        cases: BTreeMap<String, String>,
+        next: Option<String>,
+    },
+    LoopGuard {
+        max_iterations: u32,
+        on_exhausted: String,
+    },
+    Next(String),
+}
+
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct CollectConfig {
-    pub from: Vec<String>,
-    pub reduce: ReduceStrategy,
+struct RawRule {
+    #[serde(default)]
+    when: Option<WhenRule>,
+    #[serde(default)]
+    switch: Option<SwitchRule>,
+    #[serde(default)]
+    loop_guard: Option<LoopGuardRule>,
+    #[serde(default)]
+    next: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum ReduceStrategy {
-    Last,
-    Concat,
-    Grouped,
-    AnyNeedsFix,
-    AllPassed,
+impl<'de> Deserialize<'de> for Rule {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawRule::deserialize(deserializer)?;
+        let discriminator_count = raw.when.is_some() as usize
+            + raw.switch.is_some() as usize
+            + raw.loop_guard.is_some() as usize;
+        match (raw.when, raw.switch, raw.loop_guard, raw.next) {
+            (Some(when), None, None, Some(next)) => Ok(Self::When {
+                on: when.on,
+                then: when.then,
+                next,
+            }),
+            (Some(_), None, None, None) => {
+                Err(de::Error::custom("when rule requires sibling next"))
+            }
+            (None, Some(switch), None, next) => Ok(Self::Switch {
+                on: switch.on,
+                cases: switch.cases,
+                next,
+            }),
+            (None, None, Some(loop_guard), None) => Ok(Self::LoopGuard {
+                max_iterations: loop_guard.max_iterations,
+                on_exhausted: loop_guard.on_exhausted,
+            }),
+            (None, None, None, Some(next)) => Ok(Self::Next(next)),
+            (None, None, Some(_), Some(_)) => {
+                Err(de::Error::custom("loop_guard rule cannot include next"))
+            }
+            (None, None, None, None) => Err(de::Error::custom(
+                "rule must contain one of when, switch, loop_guard, or next",
+            )),
+            _ if discriminator_count > 1 => Err(de::Error::custom(
+                "rule discriminator keys when, switch, and loop_guard are mutually exclusive",
+            )),
+            _ => Err(de::Error::custom("invalid rule shape")),
+        }
+    }
+}
+
+impl Serialize for Rule {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(None)?;
+        match self {
+            Self::When { on, then, next } => {
+                map.serialize_entry(
+                    "when",
+                    &WhenRule {
+                        on: on.clone(),
+                        then: then.clone(),
+                    },
+                )?;
+                map.serialize_entry("next", next)?;
+            }
+            Self::Switch { on, cases, next } => {
+                map.serialize_entry(
+                    "switch",
+                    &SwitchRule {
+                        on: on.clone(),
+                        cases: cases.clone(),
+                    },
+                )?;
+                serialize_option(&mut map, "next", next)?;
+            }
+            Self::LoopGuard {
+                max_iterations,
+                on_exhausted,
+            } => {
+                map.serialize_entry(
+                    "loop_guard",
+                    &LoopGuardRule {
+                        max_iterations: *max_iterations,
+                        on_exhausted: on_exhausted.clone(),
+                    },
+                )?;
+            }
+            Self::Next(next) => {
+                map.serialize_entry("next", next)?;
+            }
+        }
+        map.end()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -270,347 +559,598 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_agent_node() {
+    fn parse_session_node() {
         let yaml = r#"
-name: agent-only
-description: 単一エージェント
+name: session-only
+description: 単一セッション
 nodes:
   - name: implement
-    type: agent
-    instruction: implement
-    policy: coding
+    session:
+      model: test-model
+      permission: edit
+      gate: auto
+      facets:
+        instruction: implement
+        policy: coding
 "#;
-        let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
-        assert_eq!(wf.name, "agent-only");
-        assert_eq!(wf.nodes.len(), 1);
+        let wf: WorkflowDefinitionYaml = serde_saphyr::from_str(yaml).unwrap();
         let node = &wf.nodes[0];
-        assert_eq!(node.name, "implement");
-        assert_eq!(node.node_type, NodeType::Agent);
-        assert_eq!(node.instruction.as_deref(), Some("implement"));
-        assert_eq!(node.policy.as_deref(), Some("coding"));
+        assert_eq!(node.kind_name(), NodeKindName::Session);
+        let session = node.session().unwrap();
+        assert_eq!(session.facets.instruction.as_deref(), Some("implement"));
+        assert_eq!(session.facets.policy.as_deref(), Some("coding"));
+        assert_eq!(session.gate, SessionGate::Auto);
     }
 
     #[test]
-    fn parse_approval_node() {
+    fn parse_approval_gate_session_node() {
         let yaml = r#"
 name: approval-only
-description: 承認ノード
+description: 承認セッション
 nodes:
   - name: approve
-    type: approval
-    instruction: approve
-    policy: planning
+    session:
+      permission: ask
+      gate: approval
+      facets:
+        instruction: approve
+        policy: planning
 "#;
-        let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
+        let wf: WorkflowDefinitionYaml = serde_saphyr::from_str(yaml).unwrap();
         let node = &wf.nodes[0];
-        assert_eq!(node.node_type, NodeType::Approval);
-        assert_eq!(node.instruction.as_deref(), Some("approve"));
-        assert_eq!(node.policy.as_deref(), Some("planning"));
+        assert!(node.is_approval_session());
+        assert_eq!(
+            node.session().unwrap().facets.instruction.as_deref(),
+            Some("approve")
+        );
     }
 
     #[test]
-    fn parse_bash_node() {
+    fn parse_session_node_requires_gate() {
         let yaml = r#"
-name: bash-only
-description: bash node
-nodes:
-  - name: build
-    type: bash
-    command: "cargo build"
-"#;
-        let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
-        let node = &wf.nodes[0];
-        assert_eq!(node.node_type, NodeType::Bash);
-        assert_eq!(node.command.as_deref(), Some("cargo build"));
-    }
-
-    #[test]
-    fn parse_parallel_node_with_aggregate() {
-        let yaml = r#"
-name: parallel
-description: parallel test
+name: missing-gate
+description: gate is required
 nodes:
   - name: implement
-    type: agent
-    instruction: implement
-  - name: parallel-review
-    type: parallel
-    parallel_children:
-      - name: arch-review
-        type: agent
-        policy: review
-        instruction: architecture-review
-      - name: security-review
-        type: agent
-        policy: review
-        instruction: security-review
-    aggregate:
-      all_match: LGTM
-      then: report
-      else: implement
-  - name: report
-    type: agent
-    instruction: report
+    session:
+      permission: edit
 "#;
-        let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
-        assert_eq!(wf.nodes.len(), 3);
-        let parallel = &wf.nodes[1];
-        assert_eq!(parallel.node_type, NodeType::Parallel);
-        let children = parallel.parallel_children.as_ref().unwrap();
-        assert_eq!(children.len(), 2);
-        assert_eq!(children[0].name, "arch-review");
-        assert_eq!(children[0].node_type, NodeType::Agent);
-        assert_eq!(children[0].policy.as_deref(), Some("review"));
-        let agg = parallel.aggregate.as_ref().unwrap();
-        assert_eq!(agg.all_match.as_deref(), Some("LGTM"));
-        assert!(agg.any_match.is_none());
-        assert_eq!(agg.then, "report");
-        assert_eq!(agg.r#else, "implement");
+
+        let error = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
+
+        assert!(error.to_string().contains("missing field `gate`"));
     }
 
     #[test]
-    fn parse_transition_rules_and_cycle_guard() {
+    fn parse_command_node() {
         let yaml = r#"
-name: cycle-test
-description: cycle guard test
+name: command-only
+description: command node
 nodes:
-  - name: fix
-    type: agent
-    instruction: fix
+  - name: build
+    command: "cargo build"
+"#;
+        let wf: WorkflowDefinitionYaml = serde_saphyr::from_str(yaml).unwrap();
+        let node = &wf.nodes[0];
+        assert_eq!(node.kind_name(), NodeKindName::Command);
+        match &node.kind {
+            NodeKind::Command(spec) => assert_eq!(spec.command, "cargo build"),
+            other => panic!("expected command node, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_fanout_node_with_artifact_items() {
+        let yaml = r#"
+name: fanout
+description: fanout test
+nodes:
+  - name: review
+    fanout:
+      child: [arch-review, security-review]
+      items: plan.targets
+"#;
+        let wf: WorkflowDefinitionYaml = serde_saphyr::from_str(yaml).unwrap();
+        let fanout = wf.nodes[0].fanout().unwrap();
+        assert_eq!(
+            fanout.child,
+            vec!["arch-review".to_string(), "security-review".to_string()]
+        );
+        assert_eq!(
+            fanout.items,
+            Some(ItemsSource::ArtifactField {
+                node: "plan".to_string(),
+                field: "targets".to_string(),
+            })
+        );
+        let serialized = serde_saphyr::to_string(&wf).unwrap();
+        let serialized_value: Value = serde_saphyr::from_str(&serialized).unwrap();
+        assert_eq!(
+            serialized_value["nodes"][0]["fanout"]["child"],
+            serde_json::json!(["arch-review", "security-review"])
+        );
+        assert_eq!(
+            serialized_value["nodes"][0]["fanout"]["items"],
+            Value::String("plan.targets".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_fanout_single_child_and_literal_items() {
+        let yaml = r#"
+name: fanout
+description: fanout test
+nodes:
+  - name: review
+    fanout:
+      child: reviewer
+      items: [api, cli]
+"#;
+
+        let wf: WorkflowDefinitionYaml = serde_saphyr::from_str(yaml).unwrap();
+        let fanout = wf.nodes[0].fanout().unwrap();
+
+        assert_eq!(fanout.child, vec!["reviewer"]);
+        assert_eq!(
+            fanout.items,
+            Some(ItemsSource::Literal(vec![
+                Value::String("api".to_string()),
+                Value::String("cli".to_string()),
+            ]))
+        );
+        let serialized = serde_saphyr::to_string(&wf).unwrap();
+        let serialized_value: Value = serde_saphyr::from_str(&serialized).unwrap();
+        assert_eq!(
+            serialized_value["nodes"][0]["fanout"]["child"],
+            Value::String("reviewer".to_string())
+        );
+    }
+
+    #[test]
+    fn rejects_fanout_items_outside_literal_array_or_node_field_reference() {
+        for items in ["source", "source.field.nested", "item.field", "request"] {
+            let yaml = format!(
+                r#"
+name: invalid-items
+description: invalid
+nodes:
+  - name: review
+    fanout:
+      child: reviewer
+      items: {items}
+"#
+            );
+
+            let error = serde_saphyr::from_str::<WorkflowDefinitionYaml>(&yaml).unwrap_err();
+            assert!(
+                error.to_string().contains("fanout.items"),
+                "{items}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_rules_tagged_enum_shapes() {
+        let yaml = r#"
+name: rules
+description: rules test
+nodes:
+  - name: judge
+    session:
+      permission: edit
+      gate: auto
+    rules:
+      - when: { on: ok, then: done }
+        next: fix
+      - loop_guard: { max_iterations: 3, on_exhausted: give_up }
+  - name: triage
+    session:
+      permission: edit
+      gate: auto
+    rules:
+      - switch:
+          on: verdict
+          cases:
+            LGTM: done
+            NEEDS_FIX: fix
+        next: give_up
+      - next: done
+"#;
+        let wf = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap();
+
+        assert!(matches!(
+            &wf.nodes[0].rules[0],
+            Rule::When { on, then, next }
+                if on == "ok" && then == "done" && next == "fix"
+        ));
+        assert!(matches!(
+            &wf.nodes[0].rules[1],
+            Rule::LoopGuard {
+                max_iterations: 3,
+                on_exhausted
+            } if on_exhausted == "give_up"
+        ));
+        assert!(matches!(
+            &wf.nodes[1].rules[0],
+            Rule::Switch { on, cases, next }
+                if on == "verdict"
+                    && cases.get("LGTM").map(String::as_str) == Some("done")
+                    && cases.get("NEEDS_FIX").map(String::as_str) == Some("fix")
+                    && next.as_deref() == Some("give_up")
+        ));
+        assert!(matches!(
+            &wf.nodes[1].rules[1],
+            Rule::Next(next) if next == "done"
+        ));
+    }
+
+    #[test]
+    fn rejects_legacy_rule_match_key() {
+        let yaml = r#"
+name: legacy-rule
+description: invalid
+nodes:
+  - name: review
+    session:
+      permission: edit
+      gate: auto
     rules:
       - match: NEEDS_FIX
-        next: review
-      - match: LGTM
-        next: report
-    cycle_guard:
-      max_iterations: 3
-      on_exhausted: report
+        next: fix
+"#;
+        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
+        assert!(err.to_string().contains("match"));
+    }
+
+    #[test]
+    fn rejects_removed_reject_and_rerun_rules() {
+        for removed_action in ["reject", "rerun"] {
+            let yaml = format!(
+                r#"
+name: removed-rule
+description: invalid
+nodes:
   - name: review
-    type: agent
-    instruction: review
-  - name: report
-    type: approval
-    instruction: report
+    session:
+      permission: edit
+      gate: approval
+    rules:
+      - match: {removed_action}
+        next: fix
+"#
+            );
+
+            let error = serde_saphyr::from_str::<WorkflowDefinitionYaml>(&yaml).unwrap_err();
+            assert!(error.to_string().contains("match"));
+        }
+    }
+
+    #[test]
+    fn rejects_rule_with_multiple_discriminators() {
+        let yaml = r#"
+name: invalid-rule
+description: invalid
+nodes:
+  - name: review
+    session:
+      permission: edit
+      gate: auto
+    rules:
+      - when: { on: ok, then: done }
+        switch:
+          on: verdict
+          cases:
+            LGTM: done
+        next: fix
+"#;
+        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("discriminator keys when, switch, and loop_guard are mutually exclusive"));
+    }
+
+    #[test]
+    fn rejects_when_without_sibling_next() {
+        let yaml = r#"
+name: invalid-when
+description: invalid
+nodes:
+  - name: review
+    session:
+      permission: edit
+      gate: auto
+    rules:
+      - when: { on: ok, then: done }
+"#;
+        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
+        assert!(err.to_string().contains("when rule requires sibling next"));
+    }
+
+    #[test]
+    fn rejects_node_direct_cycle_guard_and_resets_cycle_for() {
+        let yaml = r#"
+name: legacy-guards
+description: invalid
+nodes:
+  - name: fix
+    session:
+      permission: edit
+      gate: auto
+    cycle_guard:
+      max_iterations: 2
     resets_cycle_for:
       - fix
 "#;
-        let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
-        let fix = &wf.nodes[0];
-        assert_eq!(fix.transition_rules.len(), 2);
-        assert_eq!(fix.transition_rules[0].r#match, "NEEDS_FIX");
-        assert_eq!(fix.transition_rules[0].next, "review");
-        let guard = fix.cycle_guard.as_ref().unwrap();
-        assert_eq!(guard.max_iterations, 3);
-        assert_eq!(guard.on_exhausted.as_deref(), Some("report"));
-        let report = &wf.nodes[2];
-        assert_eq!(report.resets_cycle_for, Some(vec!["fix".to_string()]));
+        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("cycle_guard") || err.to_string().contains("resets_cycle_for")
+        );
     }
 
     #[test]
-    fn parse_model_and_permission_overrides() {
+    fn rejects_missing_kind_block() {
         let yaml = r#"
-name: overrides
-description: model/permission test
+name: invalid
+description: invalid
 nodes:
-  - name: plan
-    type: agent
-    instruction: plan
-    model: test-model
-    permission: edit
+  - name: missing
+"#;
+        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
+        assert!(err.to_string().contains("exactly one kind block"));
+    }
+
+    #[test]
+    fn rejects_multiple_kind_blocks() {
+        let yaml = r#"
+name: invalid
+description: invalid
+nodes:
+  - name: duplicate
+    command: "echo hi"
+    session:
+      permission: edit
+      gate: auto
+"#;
+        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
+        assert!(err.to_string().contains("exactly one kind block"));
+    }
+
+    #[test]
+    fn rejects_legacy_type_field() {
+        let yaml = r#"
+name: old-type
+description: invalid
+nodes:
   - name: implement
     type: agent
     instruction: implement
-    model: gpt-5.5
-    permission: ask
 "#;
-        let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
-        assert_eq!(wf.nodes[0].model.as_deref(), Some("test-model"));
-        assert_eq!(wf.nodes[0].permission.as_deref(), Some("edit"));
-        assert_eq!(wf.nodes[1].model.as_deref(), Some("gpt-5.5"));
+        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
+        assert!(err.to_string().contains("unknown field"));
+        assert!(err.to_string().contains("type"));
     }
 
     #[test]
-    fn parse_facet_refs() {
+    fn rejects_legacy_output_contract_field() {
         let yaml = r#"
-name: facet-test
-description: facet ref保持
+name: old-output-contract
+description: invalid
+nodes:
+  - name: review
+    session:
+      permission: edit
+      gate: auto
+    output_contract: review-verdict
+"#;
+        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
+        assert!(err.to_string().contains("unknown field"));
+        assert!(err.to_string().contains("output_contract"));
+    }
+
+    #[test]
+    fn rejects_legacy_input_contracts_field() {
+        let yaml = r#"
+name: old-input-contracts
+description: invalid
 nodes:
   - name: implement
-    type: agent
-    policy: coding
-    knowledge: architecture
+    session:
+      permission: edit
+      gate: auto
+    input_contracts:
+      - spec-directory
+"#;
+        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
+        assert!(err.to_string().contains("unknown field"));
+        assert!(err.to_string().contains("input_contracts"));
+    }
+
+    #[test]
+    fn schemas_accept_scalar_string_contract() {
+        let yaml = r#"
+name: scalar-schema
+description: valid
+schemas:
+  request_text: string
+nodes:
+  - name: review
+    session:
+      permission: edit
+      gate: auto
+    input: request_text
+"#;
+        let workflow = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap();
+        assert!(matches!(
+            workflow.schemas.get("request_text"),
+            Some(SchemaDef::String { r#enum: None })
+        ));
+    }
+
+    #[test]
+    fn schemas_serde_matches_domain_schema_helper_for_supported_shapes() {
+        for value in [
+            serde_json::json!("string"),
+            serde_json::json!({"type": "string", "enum": ["LGTM", "NEEDS_FIX"]}),
+            serde_json::json!({"type": "array", "items": "review-item"}),
+            serde_json::json!({"type": "boolean"}),
+            serde_json::json!({"type": "integer"}),
+            serde_json::json!({"type": "number"}),
+            serde_json::json!({
+                "type": "object",
+                "properties": {"verdict": {"type": "string", "enum": ["LGTM"]}},
+                "required": ["verdict"],
+                "additionalProperties": false
+            }),
+        ] {
+            let gateway_schema: SchemaDef = serde_json::from_value(value.clone()).unwrap();
+            let domain_schema = contract_schema::schema_def_from_json(&value).unwrap();
+            assert_eq!(
+                crate::adaptor::gateway::workflow::domain_mapping::schema_def_to_domain(
+                    &gateway_schema
+                ),
+                domain_schema
+            );
+        }
+    }
+
+    #[test]
+    fn schemas_reject_array_extra_keywords_with_allowed_field_message() {
+        let err = serde_json::from_value::<SchemaDef>(serde_json::json!({
+            "type": "array",
+            "items": "review-item",
+            "required": []
+        }))
+        .unwrap_err();
+
+        assert!(err.to_string().contains("array schema supports only items"));
+    }
+
+    #[test]
+    fn schemas_reject_subset_outside_keywords() {
+        let yaml = r#"
+name: invalid-schema-keyword
+description: invalid
+schemas:
+  review:
+    type: object
+    oneOf: []
+nodes:
+  - name: review
+    session:
+      permission: edit
+      gate: auto
+"#;
+        assert!(serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).is_err());
+    }
+
+    #[test]
+    fn rejects_flat_session_facets() {
+        let yaml = r#"
+name: flat-facet
+description: invalid
+nodes:
+  - name: implement
+    session:
+      permission: edit
+      gate: auto
     instruction: implement
-    output_contract: plan-doc
 "#;
-        let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
-        let node = &wf.nodes[0];
-        assert!(node.has_facet_refs());
-        assert_eq!(node.policy.as_deref(), Some("coding"));
-        assert_eq!(node.knowledge.as_deref(), Some("architecture"));
-        assert_eq!(node.output_contract.as_deref(), Some("plan-doc"));
+        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
+        assert!(err.to_string().contains("unknown field"));
+        assert!(err.to_string().contains("instruction"));
     }
 
     #[test]
-    fn parse_collect_config() {
-        let yaml = r#"
-name: collect-test
-description: collect設定
-nodes:
-  - name: review_a
-    type: agent
-    instruction: review
-    rules:
-      - match: LGTM
-        next: collect_reviews
-      - match: NEEDS_FIX
-        next: collect_reviews
-  - name: collect_reviews
-    type: agent
-    collect:
-      from:
-        - review_a
-      reduce: any_needs_fix
-    rules:
-      - match: NEEDS_FIX
-        next: review_a
-"#;
-        let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
-        let collect_node = &wf.nodes[1];
-        let collect = collect_node.collect.as_ref().unwrap();
-        assert_eq!(collect.from, vec!["review_a".to_string()]);
-        assert_eq!(collect.reduce, ReduceStrategy::AnyNeedsFix);
-        assert!(!collect_node.has_facet_refs());
-    }
-
-    #[test]
-    fn parse_pass_previous_response_and_pass_output_from() {
-        let yaml = r#"
-name: pass-test
-description: pass test
-nodes:
-  - name: a
-    type: agent
-    instruction: a
-  - name: b
-    type: agent
-    instruction: b
-    pass_previous_response: true
-    pass_output_from:
-      - a
-"#;
-        let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
-        assert_eq!(wf.nodes[1].pass_previous_response, Some(true));
-        assert_eq!(wf.nodes[1].pass_output_from, Some(vec!["a".to_string()]));
-    }
-
-    #[test]
-    fn parse_inline_prompt() {
+    fn rejects_inline_prompt() {
         let yaml = r#"
 name: inline-test
-description: inline prompt
+description: invalid
 nodes:
   - name: quick
-    type: agent
+    session:
+      permission: edit
+      gate: auto
     inline_prompt: "Do a quick analysis"
 "#;
-        let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
-        assert_eq!(
-            wf.nodes[0].inline_prompt.as_deref(),
-            Some("Do a quick analysis")
-        );
+        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
+        assert!(err.to_string().contains("unknown field"));
+        assert!(err.to_string().contains("inline_prompt"));
     }
 
     #[test]
-    fn parse_unknown_type_fails() {
+    fn rejects_session_block_command_field() {
         let yaml = r#"
-name: bad
-description: bad
+name: invalid-session
+description: invalid
 nodes:
-  - name: x
-    type: unknown
+  - name: implement
+    session:
+      permission: edit
+      command: "cargo build"
 "#;
-        let result: Result<Workflow, _> = serde_saphyr::from_str(yaml);
-        assert!(result.is_err());
+        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
+        assert!(err.to_string().contains("unknown field"));
+        assert!(err.to_string().contains("command"));
     }
 
-    /// [02] schema 境界: 旧 schema の `steps:` トップレベルキーは
-    /// `nodes:` 必須の新 schema 上では未知フィールドとして拒否される。
     #[test]
-    fn parse_old_steps_yaml_fails() {
+    fn rejects_command_spec_session_fields() {
         let yaml = r#"
-name: legacy
-description: legacy steps shape
-steps:
-  - name: x
-    mode: auto
-    instruction: x
+command: "cargo build"
+facets:
+  instruction: implement
 "#;
-        let result: Result<Workflow, _> = serde_saphyr::from_str(yaml);
-        assert!(
-            result.is_err(),
-            "旧 steps: 表現は新 schema として deserialize できない"
-        );
+        let err = serde_saphyr::from_str::<CommandSpec>(yaml).unwrap_err();
+        assert!(err.to_string().contains("unknown field"));
+        assert!(err.to_string().contains("facets"));
     }
 
-    /// [02] schema 境界: 旧 schema の `mode:` フィールドは未知フィールドとして拒否される。
     #[test]
-    fn parse_old_mode_field_fails() {
+    fn rejects_command_node_session_fields() {
         let yaml = r#"
-name: legacy
-description: legacy mode field
+name: invalid-command
+description: invalid
 nodes:
-  - name: x
-    mode: auto
-    instruction: x
+  - name: build
+    command: "cargo build"
+    facets:
+      instruction: implement
 "#;
-        let result: Result<Workflow, _> = serde_saphyr::from_str(yaml);
-        assert!(
-            result.is_err(),
-            "旧 mode: フィールドは新 schema として deserialize できない"
-        );
-    }
-
-    /// [02] schema 境界: parallel 子 node に top-level 専用フィールド (rules) を書くと
-    /// `ChildNodeDefinition` の deny_unknown_fields により拒否される。
-    #[test]
-    fn parse_child_with_disallowed_top_level_field_fails() {
-        let yaml = r#"
-name: bad-child
-description: child with rules
-nodes:
-  - name: parent
-    type: parallel
-    parallel_children:
-      - name: c
-        type: agent
-        instruction: do
-        rules:
-          - match: LGTM
-            next: parent
-    aggregate:
-      all_match: LGTM
-      then: parent
-      else: parent
-"#;
-        let result: Result<Workflow, _> = serde_saphyr::from_str(yaml);
-        assert!(
-            result.is_err(),
-            "ChildNodeDefinition には top-level 専用フィールドを書けない"
-        );
+        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
+        assert!(err.to_string().contains("unknown field"));
+        assert!(err.to_string().contains("facets"));
     }
 
     #[test]
-    fn parse_builtin_flag() {
+    fn rejects_fanout_block_session_fields() {
         let yaml = r#"
-name: built
-description: built workflow
-builtin: true
+name: invalid-fanout
+description: invalid
 nodes:
-  - name: x
-    type: agent
-    instruction: x
+  - name: review
+    fanout:
+      facets:
+        instruction: review
+      child: []
 "#;
-        let wf: Workflow = serde_saphyr::from_str(yaml).unwrap();
-        assert!(wf.builtin);
+        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
+        assert!(err.to_string().contains("unknown field"));
+        assert!(err.to_string().contains("facets"));
+    }
+
+    #[test]
+    fn rejects_legacy_parallel_children() {
+        let yaml = r#"
+name: invalid-parallel-children
+description: invalid
+nodes:
+  - name: review
+    fanout:
+      parallel_children:
+        - name: child
+"#;
+        let err = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap_err();
+        assert!(err.to_string().contains("unknown field"));
+        assert!(err.to_string().contains("parallel_children"));
     }
 }

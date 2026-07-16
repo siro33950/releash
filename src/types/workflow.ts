@@ -1,6 +1,6 @@
 import type { PermissionMode } from "./session";
 
-type JsonValue =
+export type JsonValue =
 	| string
 	| number
 	| boolean
@@ -8,52 +8,12 @@ type JsonValue =
 	| JsonValue[]
 	| { [key: string]: JsonValue };
 
-interface TokenUsage {
+export interface TokenUsage {
 	inputTokens: number;
 	outputTokens: number;
 }
 
-/**
- * spec issues-1023: step / child の終端状態。
- * `"completed"` が既定（旧 ndjson 互換）。`"failed"` は partial child failure、
- * `"aborted"` は `RunAborted` で中断された step / parallel child を表現する。
- */
-type StepEntryState = "completed" | "failed" | "aborted";
-
-type FailureDisposition =
-	| "retryable"
-	| "partial"
-	| "terminal"
-	| "user-action-required";
-
-interface ChildOutputSnapshot {
-	stepName: string;
-	sessionId?: string;
-	result?: string;
-	runIndex: number;
-	completedAt: number;
-	structuredOutput?: JsonValue;
-	outputContract?: string;
-	/** 受信側 optional。未指定時は `"completed"` 扱い（旧バックエンド互換）。 */
-	state?: StepEntryState;
-	failureKind?: WorkflowStepFailureKind;
-	failureDisposition?: FailureDisposition;
-}
-
-interface StepHistoryEntry {
-	stepName: string;
-	completedAt: number;
-	result: string | null;
-	sessionId?: string;
-	tokenUsage?: TokenUsage;
-	structuredOutput?: JsonValue;
-	runIndex?: number;
-	childOutputs?: ChildOutputSnapshot[];
-	/** 受信側 optional。未指定時は `"completed"` 扱い（旧バックエンド互換）。 */
-	state?: StepEntryState;
-}
-
-type WorkflowStepFailureKind =
+export type NodeExecutionFailureKind =
 	| "startup_timeout"
 	| "stale_runtime_timeout"
 	| "model_refusal"
@@ -62,201 +22,189 @@ type WorkflowStepFailureKind =
 	| "user_abort"
 	| "infrastructure_crash";
 
-type WorkflowExecutionState =
-	| { type: "running" }
-	| { type: "waiting_approval" }
-	| { type: "completed" }
+export type WorkflowExecutionStatus =
+	| "running"
+	| "waiting_approval"
+	| "completed"
+	| "failed"
+	| "aborted"
+	| "interrupted";
+
+export type ExecutionInterruptionReason = "crash" | "stale" | "stop" | "orphan";
+
+type Rule =
 	| {
-			type: "failed";
-			reason: string;
-			failureKind: WorkflowStepFailureKind;
-			retryCount?: number;
+			type: "when";
+			on: string;
+			then: string;
+			next: string;
 	  }
-	| { type: "aborted" };
+	| {
+			type: "switch";
+			on: string;
+			cases: Record<string, string>;
+			next?: string;
+	  }
+	| {
+			type: "loop_guard";
+			max_iterations: number;
+			on_exhausted: string;
+	  }
+	| {
+			type: "next";
+			next: string;
+	  };
 
-interface TransitionRule {
-	match: string;
-	next: string;
-}
+export type NodeKind = "command" | "session" | "fanout";
+export type SessionGate = "auto" | "approval";
 
-interface CycleGuard {
-	max_iterations: number;
-}
-
-// [02] Normalized Workflow: 旧 StepMode は廃止され、NodeType に統合された。
-export type NodeType = "agent" | "bash" | "approval" | "parallel";
-
-interface AggregateConfig {
-	all_match?: string;
-	any_match?: string;
-	then: string;
-	else: string;
-}
-
-/// 並列 node 配下の子 node の API 表現。
-///
-/// [02] schema 境界: Rust 側 `ChildNodeDefinition` と語彙を一致させるため、子 node には
-/// top-level 専用フィールド（`rules` / `cycle_guard` / `resets_cycle_for` / `collect` /
-/// `parallel_children` / `aggregate` / `command`）を持たせない。
-interface ChildNodeDefinition {
-	name: string;
-	type: NodeType;
+export interface FacetRefs {
 	policy?: string;
 	knowledge?: string;
 	instruction?: string;
-	output_contract?: string;
-	input_contracts?: string[];
-	pass_previous_response?: boolean;
-	pass_output_from?: string[];
-	model?: string;
-	permission?: PermissionMode;
 }
 
-/// node 種別ごとの設定は、boundary doc では agent_config / approval_config /
-/// command_config / parallel_children として概念分類されるが、frontend では
-/// 表示・編集の都合上フラットなフィールドで保持する。Rust schema 側もフラット。
+export interface SessionSpec {
+	model?: string;
+	permission?: PermissionMode;
+	gate: SessionGate;
+	facets: FacetRefs;
+}
+
+export type SchemaDefView = JsonValue;
+
+export type FanoutItemsSource = JsonValue[] | string;
+
+interface FanoutSpec {
+	child: string[];
+	items?: FanoutItemsSource;
+}
+
 export interface NodeDefinition {
 	name: string;
-	type: NodeType;
-	// agent / approval 種別で使用される prompt 関連 facet 参照
-	policy?: string;
-	knowledge?: string;
-	instruction?: string;
-	output_contract?: string;
-	input_contracts?: string[];
-	pass_previous_response?: boolean;
-	pass_output_from?: string[];
-	inline_prompt?: string;
-	collect?: CollectConfig;
-	// bash 種別で使用される command
+	kind: NodeKind;
 	command?: string;
-	// parallel 種別で使用される子 node 群と集約条件
-	parallel_children?: ChildNodeDefinition[];
-	aggregate?: AggregateConfig;
+	session?: SessionSpec;
+	fanout?: FanoutSpec;
+	artifact?: string;
+	input?: string;
+	inputs?: string[];
 	// 共通: rules は省略時 undefined（Rust 側で serde default 経路を持つが、frontend
 	// fixture では空配列を毎回書かなくて済むよう optional とする）
-	rules?: TransitionRule[];
-	cycle_guard?: CycleGuard;
-	resets_cycle_for?: string[];
-	model?: string;
-	permission?: PermissionMode;
+	rules?: Rule[];
 }
 
-interface CollectConfig {
-	from: string[];
-	reduce: ReduceStrategy;
-}
-
-export type ReduceStrategy =
-	| "last"
-	| "concat"
-	| "grouped"
-	| "any_needs_fix"
-	| "all_passed";
-
-export interface Workflow {
+export interface WorkflowDefinition {
 	name: string;
 	description: string;
 	builtin: boolean;
+	schemas?: Record<string, SchemaDefView>;
 	nodes: NodeDefinition[];
 }
 
-interface StepOutput {
-	stepName: string;
-	runIndex: number;
-	sessionId?: string;
-	result?: string;
-	structuredOutput?: JsonValue;
-	outputContract?: string;
-	tokenUsage?: TokenUsage;
-	completedAt: number;
+export type NodeExecutionStatus =
+	| "running"
+	| "waiting_approval"
+	| "succeeded"
+	| "failed"
+	| "aborted";
+
+export interface FanoutParentRef {
+	parentNode: string;
+	parentAttempt: number;
+	itemIndex?: number;
+	childIndex: number;
 }
 
-interface ParallelStepState {
-	stepName: string;
-	state: string;
-	sessionId?: string;
-	result?: string;
-	runIndex: number;
-	completedAt?: number;
-	structuredOutput?: JsonValue;
-	outputContract?: string;
-	failureKind?: WorkflowStepFailureKind;
-	failureDisposition?: FailureDisposition;
+export interface NodeExecutionFailure {
+	reason: string;
+	kind: NodeExecutionFailureKind;
 }
 
-interface WorkflowStepRuntimeState {
-	runtimeActive: boolean;
-	tabOpen: boolean;
-}
-
-export interface WorkflowStallObservation {
-	chatSessionId: string;
-	stepName: string;
-	runIndex: number;
-	turnPhase: string;
-	idleSecs: number;
-	signalCount: number;
-	capReached: boolean;
-	observedAt: number;
-}
-
-export interface WorkflowState {
+export interface NodeExecution {
+	id: string;
 	executionId: string;
-	workflowName: string;
-	state: WorkflowExecutionState;
-	currentStepIndex: number;
-	currentStepName: string;
-	currentSessionId?: string;
-	totalSteps: number;
-	stepHistory: StepHistoryEntry[];
-	stepExecutionCounts: Record<string, number>;
-	stepOutputs: Record<string, StepOutput>;
-	workflowVariables?: Record<string, string>;
-	workflowDefinition: Workflow;
-	totalTokenUsage: TokenUsage;
-	stepStates: Record<string, string>;
-	runtimeStates?: Record<string, WorkflowStepRuntimeState>;
-	activeParallelSteps?: ParallelStepState[];
+	nodeName: string;
+	kind: NodeKind;
+	attempt: number;
+	status: NodeExecutionStatus;
+	sessionId?: string;
+	artifact?: Artifact;
+	tokenUsage?: TokenUsage;
+	failure?: NodeExecutionFailure;
+	fanoutParent?: FanoutParentRef;
 	startedAt: number;
-	updatedAt: number;
-	approvalOperations?: ApprovalOperations;
-	stallObservations?: WorkflowStallObservation[];
+	completedAt?: number;
 }
 
-interface ApprovalOperations {
-	canReject: boolean;
+export interface Artifact {
+	nodeName: string;
+	contract?: string;
+	value: JsonValue;
+	producedAt: number;
 }
 
-/// Workflow run 一覧コマンドから返る
-/// WorkflowRun のサマリ表現。Rust 側 `WorkflowRunSummary` のフィールドに対応する（camelCase）。
-export interface WorkflowRunSummary {
-	runId: string;
+export interface Fanout {
+	parent: NodeExecution;
+	children: NodeExecution[];
+	artifact?: Artifact;
+}
+
+export interface ApprovalTarget {
+	nodeExecutionId: string;
+	nodeName: string;
+	sessionId?: string;
+}
+
+export interface WorkflowExecution {
+	id: string;
 	workflowName: string;
-	task?: string | null;
-	status: "running" | "waiting_approval" | "completed" | "failed" | "aborted";
+	status: WorkflowExecutionStatus;
+	currentNode?: string | null;
 	worktreePath: string;
-	currentNodeName?: string | null;
-	triggerSource: "desktop_ui" | "remote" | "cli" | "agent";
+	createdFrom: "desktop_ui" | "cli" | "agent" | "api";
 	startedAt: number;
 	updatedAt: number;
 	completedAt?: number | null;
 	errorReason?: string | null;
+	interruptionReason?: ExecutionInterruptionReason | null;
+	resumeFromNode?: string | null;
+	totalTokenUsage: TokenUsage;
+	nodeExecutions: NodeExecution[];
+	artifacts: Artifact[];
+	fanouts: Fanout[];
+	approvalTarget?: ApprovalTarget | null;
 }
 
-export interface WorkflowStatePayload {
+export interface WorkflowExecutionSummary {
+	executionId: string;
+	workflowName: string;
+	status: WorkflowExecutionStatus;
 	worktreePath: string;
-	workflowState: WorkflowState;
+	currentNode?: string | null;
+	createdFrom: "desktop_ui" | "cli" | "agent" | "api";
+	startedAt: number;
+	updatedAt: number;
+	completedAt?: number | null;
+	errorReason?: string | null;
+	interruptionReason?: ExecutionInterruptionReason | null;
+	resumeFromNode?: string | null;
+	totalTokenUsage: TokenUsage;
 }
 
-export type WorkflowSummary = {
+export interface WorkflowExecutionChangedPayload {
+	worktreePath: string;
+	workflowExecution: WorkflowExecution;
+}
+
+export type WorkflowDefinitionSummary = {
 	name: string;
 	description: string;
 	builtin: boolean;
 	is_running: boolean;
 };
 
-export type FacetKind = "policy" | "knowledge" | "instruction" | "contract";
+export type FacetKind = "policy" | "knowledge" | "instruction";
 
 export interface FacetSummary {
 	key: string;
@@ -265,13 +213,24 @@ export interface FacetSummary {
 	builtin: boolean;
 }
 
-type DiagnosticSeverity = "error" | "warning" | "info";
+type DiagnosticSeverity = "error" | "info";
+type DiagnosticStage = "parse_shape" | "resolve" | "typecheck" | "control_flow";
 
-export interface DiagnosticItem {
+interface DiagnosticSpan {
+	start_line: number;
+	start_col: number;
+	end_line: number;
+	end_col: number;
+}
+
+export interface DiagnosticView {
+	code: string;
 	severity: DiagnosticSeverity;
+	stage: DiagnosticStage;
+	span?: DiagnosticSpan;
 	message: string;
 	workflow_name?: string;
-	step_name?: string;
+	node_name?: string;
 	facet_key?: string;
 	facet_kind?: string;
 	field?: string;
@@ -279,19 +238,32 @@ export interface DiagnosticItem {
 
 export interface DiagnosticSummary {
 	error_count: number;
-	warning_count: number;
 	info_count: number;
 }
 
 interface FacetUsageEntry {
 	workflow_name: string;
-	step_name: string;
+	node_name: string;
 	slot: string;
 }
 
 export interface DiagnosticReport {
-	items: DiagnosticItem[];
+	items: DiagnosticView[];
 	workflow_summaries: Record<string, DiagnosticSummary>;
 	facet_summaries: Record<string, DiagnosticSummary>;
 	facet_usage: Record<string, FacetUsageEntry[]>;
 }
+
+export type SaveWorkflowSourceResponse =
+	| {
+			ok: true;
+			workflow: WorkflowDefinition;
+			diagnostics?: DiagnosticView[];
+			error?: string;
+	  }
+	| {
+			ok: false;
+			workflow?: null;
+			diagnostics: DiagnosticView[];
+			error?: string;
+	  };

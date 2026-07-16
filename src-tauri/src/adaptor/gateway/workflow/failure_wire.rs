@@ -1,7 +1,7 @@
 use serde::de::{Error as DeError, Unexpected};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::domain::workflow::{FailureDisposition, TimeoutKind, WorkflowStepFailureKind};
+use crate::domain::workflow::{FailureDisposition, NodeExecutionFailureKind, TimeoutKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SubmissionViolation {
@@ -16,11 +16,7 @@ pub(crate) fn submission_violation_reason(violation: SubmissionViolation) -> &'s
     }
 }
 
-pub(crate) fn default_failure_kind() -> WorkflowStepFailureKind {
-    WorkflowStepFailureKind::InfrastructureCrash
-}
-
-impl Serialize for WorkflowStepFailureKind {
+impl Serialize for NodeExecutionFailureKind {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -29,14 +25,14 @@ impl Serialize for WorkflowStepFailureKind {
     }
 }
 
-impl<'de> Deserialize<'de> for WorkflowStepFailureKind {
+impl<'de> Deserialize<'de> for NodeExecutionFailureKind {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         let value = String::deserialize(deserializer)?;
-        workflow_step_failure_kind_from_str(&value).ok_or_else(|| {
-            D::Error::invalid_value(Unexpected::Str(&value), &"a workflow step failure kind")
+        node_execution_failure_kind_from_str(&value).ok_or_else(|| {
+            D::Error::invalid_value(Unexpected::Str(&value), &"a node execution failure kind")
         })
     }
 }
@@ -82,15 +78,15 @@ impl<'de> Deserialize<'de> for TimeoutKind {
     }
 }
 
-fn workflow_step_failure_kind_from_str(value: &str) -> Option<WorkflowStepFailureKind> {
+fn node_execution_failure_kind_from_str(value: &str) -> Option<NodeExecutionFailureKind> {
     match value {
-        "startup_timeout" => Some(WorkflowStepFailureKind::StartupTimeout),
-        "stale_runtime_timeout" => Some(WorkflowStepFailureKind::StaleRuntimeTimeout),
-        "model_refusal" => Some(WorkflowStepFailureKind::ModelRefusal),
-        "structured_output_mismatch" => Some(WorkflowStepFailureKind::StructuredOutputMismatch),
-        "validation_failure" => Some(WorkflowStepFailureKind::ValidationFailure),
-        "user_abort" => Some(WorkflowStepFailureKind::UserAbort),
-        "infrastructure_crash" => Some(WorkflowStepFailureKind::InfrastructureCrash),
+        "startup_timeout" => Some(NodeExecutionFailureKind::StartupTimeout),
+        "stale_runtime_timeout" => Some(NodeExecutionFailureKind::StaleRuntimeTimeout),
+        "model_refusal" => Some(NodeExecutionFailureKind::ModelRefusal),
+        "structured_output_mismatch" => Some(NodeExecutionFailureKind::StructuredOutputMismatch),
+        "validation_failure" => Some(NodeExecutionFailureKind::ValidationFailure),
+        "user_abort" => Some(NodeExecutionFailureKind::UserAbort),
+        "infrastructure_crash" => Some(NodeExecutionFailureKind::InfrastructureCrash),
         _ => None,
     }
 }
@@ -119,10 +115,10 @@ mod tests {
 
     #[test]
     fn failure_kind_wire_serde_uses_stable_strings() {
-        let json = serde_json::to_string(&WorkflowStepFailureKind::ModelRefusal).unwrap();
+        let json = serde_json::to_string(&NodeExecutionFailureKind::ModelRefusal).unwrap();
         assert_eq!(json, "\"model_refusal\"");
-        let back: WorkflowStepFailureKind = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, WorkflowStepFailureKind::ModelRefusal);
+        let back: NodeExecutionFailureKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, NodeExecutionFailureKind::ModelRefusal);
     }
 
     #[test]

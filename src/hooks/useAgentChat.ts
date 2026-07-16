@@ -41,6 +41,7 @@ import {
 	cancelAgentQueuedTurn,
 	closeSession as closeSessionApi,
 	createSession,
+	createWorkspaceSession,
 	forkSession as forkSessionApi,
 	getSession,
 	getSessionPage,
@@ -136,6 +137,7 @@ export interface UseAgentChatResult {
 	forkSession: (sessionId: string) => Promise<void>;
 	setSessionTitle: (sessionId: string, title: string | null) => Promise<string>;
 	createNewSession: () => Promise<string | null>;
+	createNewWorkspaceSession: (requestId: string) => Promise<string>;
 	reorderSessions: (sessionOrder: string[]) => void;
 	setPermissionMode: (sessionId: string | null, mode: PermissionMode) => void;
 	setPlanMode: (sessionId: string | null, enabled: PlanMode) => void;
@@ -154,7 +156,7 @@ export interface UseAgentChatResult {
 	setBackend: (sessionId: string | null, backendId: string | null) => void;
 	/**
 	 * 任意 sessionId から最新の ChatSession を取得して sessionsById に upsert する。
-	 * 各 panel が「自分が見たい step session を読み込む」用途で利用する。
+	 * 各 panel が「自分が見たい node session を読み込む」用途で利用する。
 	 * 内部状態の単一の正典は `sessionsById` であり、本関数の戻り値は upsert 後の
 	 * snapshot（成功時）。
 	 */
@@ -334,7 +336,7 @@ function dispatchSessionMeta(
 export function useAgentChat(
 	worktreePath: string,
 	workflowApprovalChatSessionId: string | null = null,
-	workflowApprovalRunId: string | null = null,
+	workflowApprovalExecutionId: string | null = null,
 ): UseAgentChatResult {
 	const [state, dispatch] = useReducer(reducer, INITIAL_STATE);
 	const worktreePathRef = useRef(worktreePath);
@@ -343,8 +345,8 @@ export function useAgentChat(
 		workflowApprovalChatSessionId,
 	);
 	workflowApprovalChatSessionIdRef.current = workflowApprovalChatSessionId;
-	const workflowApprovalRunIdRef = useRef(workflowApprovalRunId);
-	workflowApprovalRunIdRef.current = workflowApprovalRunId;
+	const workflowApprovalExecutionIdRef = useRef(workflowApprovalExecutionId);
+	workflowApprovalExecutionIdRef.current = workflowApprovalExecutionId;
 
 	const activeSession = selectActiveSession(state);
 
@@ -585,19 +587,10 @@ export function useAgentChat(
 					const previousIndex = previousSessions.findIndex(
 						(session) => session.id === previousActiveSessionId,
 					);
-					// spec issues-1023: free chat tab bar に並ばない workflow step session は
-					// 自由対話の active 候補としても選ばない（chat panel の本文を
-					// workflow step transcript で乗っ取らない）。
-					const freeChatSessions = sessions.filter(
-						(session) => !session.workflowStepSession,
-					);
 					const nextSession =
-						freeChatSessions.length > 0
-							? freeChatSessions[
-									Math.min(
-										Math.max(previousIndex, 0),
-										freeChatSessions.length - 1,
-									)
+						sessions.length > 0
+							? sessions[
+									Math.min(Math.max(previousIndex, 0), sessions.length - 1)
 								]
 							: null;
 					if (nextSession) {
@@ -684,7 +677,7 @@ export function useAgentChat(
 					type: "SET_ERROR",
 					error: `session の読み込みに失敗: ${e}`,
 				});
-				return null;
+				throw e;
 			}
 		},
 		[rememberInitialPage],
@@ -818,13 +811,14 @@ export function useAgentChat(
 						: (sessionModelsRef.current[activeSessionIdRef.current] ?? null);
 				const workflowApprovalChatSessionId =
 					workflowApprovalChatSessionIdRef.current;
-				const workflowApprovalRunId = workflowApprovalRunIdRef.current;
+				const workflowApprovalExecutionId =
+					workflowApprovalExecutionIdRef.current;
 				const response =
 					sessionId &&
 					workflowApprovalChatSessionId === sessionId &&
-					workflowApprovalRunId
+					workflowApprovalExecutionId
 						? await sendWorkflowApprovalChatMessage(
-								workflowApprovalRunId,
+								workflowApprovalExecutionId,
 								trimmed,
 								pm,
 								plan,
@@ -907,7 +901,7 @@ export function useAgentChat(
 					value: response.canChangeBackend,
 				});
 				// 新規作成 session の場合、active を切り替える（既存 sessionId 指定で送った場合は
-				// active を変更しない — Workflow panel から step session に送ったときに Main の
+				// active を変更しない — Workflow panel から node session に送ったときに Main の
 				// active を上書きしないため）。
 				if (sessionId === null && options?.activateNewSession !== false) {
 					dispatch({
@@ -962,10 +956,7 @@ export function useAgentChat(
 
 				const isActive = activeSessionIdRef.current === sessionId;
 				if (isActive) {
-					// spec issues-1023: 閉じた後の active 候補も free chat に閉じる。
-					const remaining = sessions.filter(
-						(s) => s.id !== sessionId && !s.workflowStepSession,
-					);
+					const remaining = sessions.filter((s) => s.id !== sessionId);
 					const nextSession =
 						remaining.length > 0
 							? remaining[Math.min(idx, remaining.length - 1)]
@@ -1003,9 +994,9 @@ export function useAgentChat(
 	const restoreSessionFn = useCallback(
 		async (sessionId: string) => {
 			try {
-				let restoredWorkflowStep = false;
+				let restoredWorkflowNode = false;
 				const restoreResult = await restoreSessionApi(sessionId);
-				restoredWorkflowStep = restoreResult.restoredWorkflowStep === true;
+				restoredWorkflowNode = restoreResult.restoredWorkflowNode === true;
 				const response = await getSession(sessionId);
 				if (response) {
 					rememberInitialPage(response);
@@ -1016,7 +1007,7 @@ export function useAgentChat(
 					});
 					dispatchSessionMeta(dispatch, sessionId, response);
 					if (
-						!restoredWorkflowStep &&
+						!restoredWorkflowNode &&
 						(response.session.messages.length > 0 ||
 							response.session.agentSessionId)
 					) {
@@ -1067,9 +1058,7 @@ export function useAgentChat(
 
 				const isActive = activeSessionIdRef.current === sessionId;
 				if (isActive) {
-					const remaining = sessions.filter(
-						(s) => s.id !== sessionId && !s.workflowStepSession,
-					);
+					const remaining = sessions.filter((s) => s.id !== sessionId);
 					const nextSession =
 						remaining.length > 0
 							? remaining[Math.min(idx, remaining.length - 1)]
@@ -1205,6 +1194,55 @@ export function useAgentChat(
 			return null;
 		}
 	}, [refreshSessions, rememberInitialPage]);
+
+	const createNewWorkspaceSession = useCallback(
+		async (requestId: string): Promise<string> => {
+			try {
+				const activeSessionSnapshot = activeSessionIdRef.current
+					? sessionsByIdRef.current[activeSessionIdRef.current]
+					: undefined;
+				const backendId =
+					activeSessionSnapshot?.backendId ?? selectedBackendIdRef.current;
+				const modelId = activeSessionSnapshot
+					? (sessionModelsRef.current[activeSessionSnapshot.id] ?? null)
+					: null;
+				const sessionId = await createWorkspaceSession(
+					requestId,
+					worktreePathRef.current,
+					permissionModeRef.current,
+					backendId,
+					modelId,
+				);
+				const response = await getSession(sessionId);
+				if (!response) {
+					throw new Error(`Created Session is unavailable: ${sessionId}`);
+				}
+				const activeSession = response.session;
+				rememberInitialPage(response);
+				dispatch({ type: "UPSERT_SESSION", session: activeSession });
+				dispatch({
+					type: "SET_ACTIVE_SESSION_ID",
+					sessionId: activeSession.id,
+				});
+				dispatch({
+					type: "SET_PERMISSION_MODE",
+					sessionId: activeSession.id,
+					mode: activeSession.permissionMode,
+				});
+				dispatchSessionMeta(dispatch, activeSession.id, response);
+				await refreshSessions();
+				return activeSession.id;
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				dispatch({
+					type: "SET_ERROR",
+					error: `セッション作成に失敗: ${message}`,
+				});
+				throw error;
+			}
+		},
+		[refreshSessions, rememberInitialPage],
+	);
 
 	const reorderSessions = useCallback((sessionOrder: string[]) => {
 		dispatch({ type: "REORDER_SESSIONS", sessionOrder });
@@ -1597,6 +1635,7 @@ export function useAgentChat(
 		forkSession: forkSessionFn,
 		setSessionTitle: setSessionTitleFn,
 		createNewSession,
+		createNewWorkspaceSession,
 		reorderSessions,
 		setPermissionMode,
 		setPlanMode,

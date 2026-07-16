@@ -1,0 +1,15 @@
+name: unreachable-node
+description: second node is not reachable without a rule
+nodes:
+  - name: entry
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        instruction: entry
+  - name: orphan
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        instruction: orphan

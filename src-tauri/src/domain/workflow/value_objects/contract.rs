@@ -16,7 +16,7 @@ impl ContractType {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContractValidationResult {
     Valid {
-        structured_output: serde_json::Value,
+        artifact: serde_json::Value,
         result: Option<String>,
     },
     Invalid(ContractViolation),

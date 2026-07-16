@@ -26,11 +26,15 @@ impl WorkflowApprovalChatUsecase {
 
     pub async fn prepare_approval_chat(
         &self,
-        run_id: &str,
+        execution_id: &str,
         content: &str,
     ) -> Result<ApprovalChatTarget, WorkflowError> {
-        self.preflight.validate_approval_chat(run_id, content)?;
-        let target = self.runtime.resolve_approval_chat_target(run_id).await?;
+        self.preflight
+            .validate_approval_chat(execution_id, content)?;
+        let target = self
+            .runtime
+            .resolve_approval_chat_target(execution_id)
+            .await?;
         self.runtime
             .validate_approval_chat_instruction(&target.chat_session_id, content)
             .await?;
@@ -53,7 +57,7 @@ mod tests {
     impl WorkflowApprovalChatGateway for FakeRuntimeGateway {
         async fn resolve_approval_chat_target(
             &self,
-            _run_id: &str,
+            _execution_id: &str,
         ) -> Result<ApprovalChatTarget, WorkflowError> {
             self.calls.lock().unwrap().push("resolve_target");
             Ok(ApprovalChatTarget {

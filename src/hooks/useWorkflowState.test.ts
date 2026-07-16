@@ -1,6 +1,9 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { WorkflowState, WorkflowStatePayload } from "@/types/workflow";
+import type {
+	WorkflowExecution,
+	WorkflowExecutionChangedPayload,
+} from "@/types/workflow";
 import { useWorkflowState } from "./useWorkflowState";
 
 const mockInvoke = vi.fn();
@@ -14,46 +17,37 @@ vi.mock("@tauri-apps/api/event", () => ({
 	listen: (...args: unknown[]) => mockListen(...args),
 }));
 
-const makeState = (overrides: Partial<WorkflowState> = {}): WorkflowState => ({
-	executionId: "exec-1",
-	workflowName: "test-wf",
-	state: { type: "running" },
-	currentStepIndex: 0,
-	currentStepName: "plan",
-	totalSteps: 2,
-	stepHistory: [],
-	stepExecutionCounts: {},
-	stepOutputs: {},
-	workflowDefinition: {
-		name: "test-wf",
-		description: "",
-		builtin: false,
-		nodes: [],
-	},
+const makeExecution = (
+	overrides: Partial<WorkflowExecution> = {},
+): WorkflowExecution => ({
+	id: "execution-1",
+	workflowName: "test-workflow",
+	status: "running",
+	currentNode: "plan",
+	worktreePath: "/repo",
+	createdFrom: "desktop_ui",
+	startedAt: 1_000,
+	updatedAt: 1_000,
+	completedAt: null,
+	errorReason: null,
 	totalTokenUsage: { inputTokens: 0, outputTokens: 0 },
-	stepStates: {},
-	startedAt: 1000,
-	updatedAt: 1000,
+	nodeExecutions: [],
+	artifacts: [],
+	fanouts: [],
+	approvalTarget: null,
 	...overrides,
 });
 
-/**
- * Spec issues-1011 finding 13: 二段階 invoke の契約を厳密に検証するため、
- * `resolve_active_run_by_worktree` と `get_workflow_state` の戻り値を
- * command ごとに分離して mock するヘルパー。
- * 1 つの `mockResolvedValue` で全 command を同じ戻り値にする旧 mock は、
- * 両 command が同じ shape を返してしまい契約逸脱を検知できない。
- */
-const mockResolveAndState = (
-	runId: string | null,
-	state: WorkflowState | null,
+const mockResolveAndExecution = (
+	executionId: string | null,
+	execution: WorkflowExecution | null,
 ) => {
-	mockInvoke.mockImplementation((cmd: string) => {
-		if (cmd === "resolve_active_run_by_worktree") {
-			return Promise.resolve(runId);
+	mockInvoke.mockImplementation((command: string) => {
+		if (command === "resolve_active_execution_by_worktree") {
+			return Promise.resolve(executionId);
 		}
-		if (cmd === "get_workflow_state") {
-			return Promise.resolve(state);
+		if (command === "get_workflow_execution_state") {
+			return Promise.resolve(execution);
 		}
 		return Promise.resolve(null);
 	});
@@ -67,119 +61,129 @@ describe("useWorkflowState", () => {
 
 	it("returns null when worktreePath is undefined", () => {
 		const { result } = renderHook(() => useWorkflowState(undefined));
-		expect(result.current.workflowState).toBeNull();
+		expect(result.current.workflowExecution).toBeNull();
 		expect(mockInvoke).not.toHaveBeenCalled();
 	});
 
-	it("fetches initial state via get_workflow_state", async () => {
-		const state = makeState();
-		mockResolveAndState("exec-1", state);
+	it("fetches the active WorkflowExecution", async () => {
+		const execution = makeExecution();
+		mockResolveAndExecution("execution-1", execution);
 
 		const { result } = renderHook(() => useWorkflowState("/repo"));
 
 		await waitFor(() => {
-			expect(result.current.workflowState).toEqual(state);
+			expect(result.current.workflowExecution).toEqual(execution);
 		});
-		expect(mockInvoke).toHaveBeenCalledWith("resolve_active_run_by_worktree", {
+		expect(mockInvoke).toHaveBeenCalledWith(
+			"resolve_active_execution_by_worktree",
+			{ worktreePath: "/repo" },
+		);
+		expect(mockInvoke).toHaveBeenCalledWith("get_workflow_execution_state", {
 			worktreePath: "/repo",
-		});
-		expect(mockInvoke).toHaveBeenCalledWith("get_workflow_state", {
-			runId: "exec-1",
+			executionId: "execution-1",
 		});
 	});
 
-	it("updates state when matching workflow-state-changed fires", async () => {
-		mockResolveAndState("exec-1", makeState());
+	it("updates when a matching WorkflowExecution event arrives", async () => {
+		mockResolveAndExecution("execution-1", makeExecution());
 
-		type Cb = (event: { payload: WorkflowStatePayload }) => void;
-		let cb: Cb | null = null;
-		mockListen.mockImplementation((event: string, fn: Cb) => {
-			if (event === "workflow-state-changed") cb = fn;
+		type Callback = (event: {
+			payload: WorkflowExecutionChangedPayload;
+		}) => void;
+		let callback: Callback | null = null;
+		mockListen.mockImplementation((event: string, listener: Callback) => {
+			if (event === "workflow-execution-changed") callback = listener;
 			return Promise.resolve(vi.fn());
 		});
 
 		const { result } = renderHook(() => useWorkflowState("/repo"));
 		await waitFor(() => {
-			expect(result.current.workflowState).not.toBeNull();
+			expect(result.current.workflowExecution).not.toBeNull();
 		});
 
-		const updatedState = makeState({
-			currentStepIndex: 1,
-			currentStepName: "implement",
-		});
+		const updatedExecution = makeExecution({ currentNode: "implement" });
 		await act(async () => {
-			cb?.({
-				payload: { worktreePath: "/repo", workflowState: updatedState },
+			callback?.({
+				payload: {
+					worktreePath: "/repo",
+					workflowExecution: updatedExecution,
+				},
 			});
 		});
 
-		expect(result.current.workflowState?.currentStepIndex).toBe(1);
+		expect(result.current.workflowExecution?.currentNode).toBe("implement");
 	});
 
 	it("ignores events for other worktrees", async () => {
-		mockResolveAndState("exec-1", makeState());
+		mockResolveAndExecution("execution-1", makeExecution());
 
-		type Cb = (event: { payload: WorkflowStatePayload }) => void;
-		let cb: Cb | null = null;
-		mockListen.mockImplementation((event: string, fn: Cb) => {
-			if (event === "workflow-state-changed") cb = fn;
+		type Callback = (event: {
+			payload: WorkflowExecutionChangedPayload;
+		}) => void;
+		let callback: Callback | null = null;
+		mockListen.mockImplementation((event: string, listener: Callback) => {
+			if (event === "workflow-execution-changed") callback = listener;
 			return Promise.resolve(vi.fn());
 		});
 
 		const { result } = renderHook(() => useWorkflowState("/repo"));
 		await waitFor(() => {
-			expect(result.current.workflowState).not.toBeNull();
+			expect(result.current.workflowExecution).not.toBeNull();
 		});
 
-		const otherState = makeState({ currentStepIndex: 99 });
 		await act(async () => {
-			cb?.({
-				payload: { worktreePath: "/other-repo", workflowState: otherState },
+			callback?.({
+				payload: {
+					worktreePath: "/other-repo",
+					workflowExecution: makeExecution({ currentNode: "other" }),
+				},
 			});
 		});
 
-		expect(result.current.workflowState?.currentStepIndex).toBe(0);
+		expect(result.current.workflowExecution?.currentNode).toBe("plan");
 	});
 
-	it("resets to null when worktreePath changes to undefined", async () => {
-		mockResolveAndState("exec-1", makeState());
+	it("resets to null when worktreePath becomes undefined", async () => {
+		mockResolveAndExecution("execution-1", makeExecution());
 
 		const { result, rerender } = renderHook(
-			({ wt }: { wt: string | undefined }) => useWorkflowState(wt),
-			{ initialProps: { wt: "/repo" as string | undefined } },
+			({ worktreePath }: { worktreePath: string | undefined }) =>
+				useWorkflowState(worktreePath),
+			{ initialProps: { worktreePath: "/repo" as string | undefined } },
 		);
 
 		await waitFor(() => {
-			expect(result.current.workflowState).not.toBeNull();
+			expect(result.current.workflowExecution).not.toBeNull();
 		});
 
-		rerender({ wt: undefined });
-		expect(result.current.workflowState).toBeNull();
+		rerender({ worktreePath: undefined });
+		expect(result.current.workflowExecution).toBeNull();
 	});
 
-	it("ignores stale response when worktreePath changes", async () => {
-		// 1 つ目の worktree への resolve_active_run_by_worktree が pending な状態を作る。
-		let resolveFirst: ((v: string | null) => void) | null = null;
-		const firstPromise = new Promise<string | null>((r) => {
-			resolveFirst = r;
+	it("ignores stale responses after switching worktrees", async () => {
+		let resolveFirst: ((value: string | null) => void) | null = null;
+		const firstResolution = new Promise<string | null>((resolve) => {
+			resolveFirst = resolve;
 		});
 
-		// 後続の二段階 invoke を command ごとに振り分け、stale な /repo-a 応答が
-		// 入った後でも /repo-b の state が保持されることを直接検証する。
 		mockInvoke.mockImplementation(
-			(cmd: string, args?: { runId?: string; worktreePath?: string }) => {
-				if (cmd === "resolve_active_run_by_worktree") {
-					if (args?.worktreePath === "/repo-a") return firstPromise;
-					if (args?.worktreePath === "/repo-b")
-						return Promise.resolve("exec-b");
+			(
+				command: string,
+				args?: { executionId?: string; worktreePath?: string },
+			) => {
+				if (command === "resolve_active_execution_by_worktree") {
+					if (args?.worktreePath === "/repo-a") return firstResolution;
+					if (args?.worktreePath === "/repo-b") {
+						return Promise.resolve("execution-b");
+					}
 					return Promise.resolve(null);
 				}
-				if (cmd === "get_workflow_state") {
-					if (args?.runId === "exec-b") {
-						return Promise.resolve(makeState({ currentStepIndex: 2 }));
+				if (command === "get_workflow_execution_state") {
+					if (args?.executionId === "execution-b") {
+						return Promise.resolve(makeExecution({ currentNode: "build" }));
 					}
-					if (args?.runId === "exec-a-stale") {
-						return Promise.resolve(makeState({ currentStepIndex: 99 }));
+					if (args?.executionId === "execution-a-stale") {
+						return Promise.resolve(makeExecution({ currentNode: "stale" }));
 					}
 				}
 				return Promise.resolve(null);
@@ -187,29 +191,26 @@ describe("useWorkflowState", () => {
 		);
 
 		const { result, rerender } = renderHook(
-			({ wt }: { wt: string | undefined }) => useWorkflowState(wt),
-			{ initialProps: { wt: "/repo-a" as string | undefined } },
+			({ worktreePath }: { worktreePath: string | undefined }) =>
+				useWorkflowState(worktreePath),
+			{ initialProps: { worktreePath: "/repo-a" as string | undefined } },
 		);
 
-		// Change worktreePath before the first invoke resolves
-		rerender({ wt: "/repo-b" });
-
+		rerender({ worktreePath: "/repo-b" });
 		await waitFor(() => {
-			expect(result.current.workflowState?.currentStepIndex).toBe(2);
+			expect(result.current.workflowExecution?.currentNode).toBe("build");
 		});
 
-		// Now resolve the stale first request — should be ignored
 		await act(async () => {
-			resolveFirst?.("exec-a-stale");
+			resolveFirst?.("execution-a-stale");
 		});
 
-		// State should still be from /repo-b, not the stale /repo-a response
-		expect(result.current.workflowState?.currentStepIndex).toBe(2);
+		expect(result.current.workflowExecution?.currentNode).toBe("build");
 	});
 
 	it("handles invoke failure gracefully", async () => {
-		mockInvoke.mockImplementation((cmd: string) => {
-			if (cmd === "resolve_active_run_by_worktree") {
+		mockInvoke.mockImplementation((command: string) => {
+			if (command === "resolve_active_execution_by_worktree") {
 				return Promise.reject(new Error("fail"));
 			}
 			return Promise.resolve(null);
@@ -220,11 +221,11 @@ describe("useWorkflowState", () => {
 
 		await waitFor(() => {
 			expect(consoleSpy).toHaveBeenCalledWith(
-				"[useWorkflowState] get_workflow_state failed",
+				"[useWorkflowState] get_workflow_execution_state failed",
 				expect.any(Error),
 			);
 		});
-		expect(result.current.workflowState).toBeNull();
+		expect(result.current.workflowExecution).toBeNull();
 		consoleSpy.mockRestore();
 	});
 });

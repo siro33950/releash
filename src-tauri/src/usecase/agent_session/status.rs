@@ -1,8 +1,8 @@
-use crate::domain::path::to_canonical_forward_slash;
-use crate::domain::workflow::services::session_projection::StepSessionProjection;
+use crate::domain::repository::normalize_repo_path;
+use crate::domain::workflow::services::node_session_projection::NodeSessionProjection;
 use crate::domain::workflow::status_aggregation::{
-    aggregate_representative_statuses, session_result, RepresentativeStatus, SessionActivity,
-    StepProgress,
+    aggregate_representative_statuses, session_result, NodeProgress, RepresentativeStatus,
+    SessionActivity,
 };
 use crate::usecase::agent_session::session::{PermissionRequestMsg, SessionState};
 use parking_lot::RwLock;
@@ -52,14 +52,13 @@ pub struct SessionStatus {
     pub pending_permission: bool,
     pub pending_permission_request: Option<PermissionRequestMsg>,
     pub last_activity_at: f64,
-    pub workflow_step: Option<String>,
-    pub workflow_execution_state: Option<String>,
-    #[serde(skip_serializing)]
+    pub workflow_node: Option<String>,
+    pub workflow_execution_status: Option<String>,
     pub workflow_execution_id: Option<String>,
+    pub node_execution_id: Option<String>,
+    pub workflow_attempt: Option<u32>,
     #[serde(skip_serializing)]
-    pub workflow_run_index: Option<u32>,
-    #[serde(skip_serializing)]
-    pub workflow_step_progress: Option<StepProgress>,
+    pub workflow_node_progress: Option<NodeProgress>,
 }
 
 /// `TurnPhase` は `agent_sdk` 側で `Copy + Serialize` だが `Eq` を持たないため、
@@ -106,19 +105,21 @@ pub struct WorkspaceStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct WorkflowStepKey {
+struct WorkflowNodeExecutionKey {
     worktree_path: String,
     execution_id: String,
-    step_name: String,
-    run_index: Option<u32>,
+    node_execution_id: String,
+    node_name: String,
+    attempt: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct WorkflowStepRepresentative {
+pub struct WorkflowNodeRepresentative {
     pub execution_id: String,
-    pub step_name: String,
-    pub run_index: Option<u32>,
+    pub node_execution_id: String,
+    pub node_name: String,
+    pub attempt: Option<u32>,
     pub representative: String,
 }
 
@@ -131,11 +132,11 @@ pub struct WorkflowRepresentative {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct WorktreeStepStatusView {
+pub struct WorktreeNodeStatusView {
     pub worktree_path: String,
     pub version: u64,
-    pub steps: Vec<WorkflowStepRepresentative>,
-    pub workflows: Vec<WorkflowRepresentative>,
+    pub node_executions: Vec<WorkflowNodeRepresentative>,
+    pub workflow_executions: Vec<WorkflowRepresentative>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,36 +145,37 @@ struct WorkflowStatusEntry {
 }
 
 #[derive(Debug, Default)]
-struct WorkflowStepStatusState {
-    steps: HashMap<WorkflowStepKey, WorkflowStatusEntry>,
-    baselines: HashMap<WorkflowStepKey, RepresentativeStatus>,
-    views: HashMap<String, WorktreeStepStatusView>,
+struct WorkflowNodeStatusState {
+    node_executions: HashMap<WorkflowNodeExecutionKey, WorkflowStatusEntry>,
+    baselines: HashMap<WorkflowNodeExecutionKey, RepresentativeStatus>,
+    views: HashMap<String, WorktreeNodeStatusView>,
 }
 
 #[derive(Debug, Default)]
-struct WorkflowStepStatusUpdate {
-    views: Vec<WorktreeStepStatusView>,
+struct WorkflowNodeStatusUpdate {
+    views: Vec<WorktreeNodeStatusView>,
 }
 
-impl WorkflowStepStatusUpdate {
+impl WorkflowNodeStatusUpdate {
     fn is_empty(&self) -> bool {
         self.views.is_empty()
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct WorkflowStepSessionStatusInput {
-    step_name: String,
-    run_index: Option<u32>,
-    progress: StepProgress,
+struct WorkflowNodeSessionStatusInput {
+    node_execution_id: String,
+    node_name: String,
+    attempt: Option<u32>,
+    progress: NodeProgress,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct PendingWorkflowStepSessionStatus {
+struct PendingWorkflowNodeSessionStatus {
     worktree_path: String,
     execution_id: String,
-    workflow_execution_state: String,
-    input: WorkflowStepSessionStatusInput,
+    workflow_execution_status: String,
+    input: WorkflowNodeSessionStatusInput,
 }
 
 /// 各 worktree の「アクティブな Workflow 実行」の集約用スナップショット。
@@ -191,7 +193,7 @@ pub struct AgentStatusChanges {
     pub session: Option<SessionStatus>,
     pub workspace: Option<WorkspaceStatus>,
     pub agent_state: Option<AgentStateChange>,
-    pub workflow_step_views: Vec<WorktreeStepStatusView>,
+    pub workflow_node_views: Vec<WorktreeNodeStatusView>,
 }
 
 impl AgentStatusChanges {
@@ -199,7 +201,7 @@ impl AgentStatusChanges {
         self.session.is_none()
             && self.workspace.is_none()
             && self.agent_state.is_none()
-            && self.workflow_step_views.is_empty()
+            && self.workflow_node_views.is_empty()
     }
 }
 
@@ -220,9 +222,9 @@ pub struct AgentStateChange {
 pub struct AgentStatusCenter {
     sessions: RwLock<HashMap<String, SessionStatus>>,
     workspaces: RwLock<HashMap<String, WorkspaceStatus>>,
-    workflow_step_status: RwLock<WorkflowStepStatusState>,
-    pending_workflow_step_sessions: RwLock<HashMap<String, PendingWorkflowStepSessionStatus>>,
-    workflow_status_version: AtomicU64,
+    workflow_node_status: RwLock<WorkflowNodeStatusState>,
+    pending_workflow_node_sessions: RwLock<HashMap<String, PendingWorkflowNodeSessionStatus>>,
+    workflow_node_status_version: AtomicU64,
     /// key: worktree_path（= worktree_id と同値で運用）
     workflows: RwLock<HashMap<String, WorkflowAggSnapshot>>,
 }
@@ -232,15 +234,15 @@ impl AgentStatusCenter {
         Self {
             sessions: RwLock::new(HashMap::new()),
             workspaces: RwLock::new(HashMap::new()),
-            workflow_step_status: RwLock::new(WorkflowStepStatusState::default()),
-            pending_workflow_step_sessions: RwLock::new(HashMap::new()),
-            workflow_status_version: AtomicU64::new(0),
+            workflow_node_status: RwLock::new(WorkflowNodeStatusState::default()),
+            pending_workflow_node_sessions: RwLock::new(HashMap::new()),
+            workflow_node_status_version: AtomicU64::new(0),
             workflows: RwLock::new(HashMap::new()),
         }
     }
 
     fn canonical_worktree_path(path: &str) -> String {
-        to_canonical_forward_slash(path)
+        normalize_repo_path(path)
     }
 
     fn normalize_session_paths(status: &mut SessionStatus) {
@@ -248,18 +250,18 @@ impl AgentStatusCenter {
         status.worktree_path = Self::canonical_worktree_path(&status.worktree_path);
     }
 
-    /// `WorkflowExecutionState` を Workspace 集約に寄与する `AgentState` にマップする。
+    /// `RuntimeExecutionState` を Workspace 集約に寄与する `AgentState` にマップする。
     /// `Aborted` はユーザー意図で停止したものとして「集約対象外（None）」扱いにする。
-    pub fn workflow_execution_state_to_agent_state(
-        state: &crate::domain::workflow::WorkflowExecutionState,
+    pub fn workflow_execution_status_to_agent_state(
+        state: &crate::domain::workflow::RuntimeExecutionState,
     ) -> Option<AgentState> {
-        use crate::domain::workflow::WorkflowExecutionState;
+        use crate::domain::workflow::RuntimeExecutionState;
         match state {
-            WorkflowExecutionState::Running => Some(AgentState::Running),
-            WorkflowExecutionState::WaitingApproval => Some(AgentState::Waiting),
-            WorkflowExecutionState::Failed { .. } => Some(AgentState::Error),
-            WorkflowExecutionState::Completed => Some(AgentState::Done),
-            WorkflowExecutionState::Aborted => None,
+            RuntimeExecutionState::Running => Some(AgentState::Running),
+            RuntimeExecutionState::WaitingApproval => Some(AgentState::Waiting),
+            RuntimeExecutionState::Failed { .. } => Some(AgentState::Error),
+            RuntimeExecutionState::Completed => Some(AgentState::Done),
+            RuntimeExecutionState::Aborted | RuntimeExecutionState::Interrupted => None,
         }
     }
 
@@ -290,11 +292,12 @@ impl AgentStatusCenter {
             && a.session_state == b.session_state
             && a.pending_permission == b.pending_permission
             && a.pending_permission_request == b.pending_permission_request
-            && a.workflow_step == b.workflow_step
-            && a.workflow_execution_state == b.workflow_execution_state
+            && a.workflow_node == b.workflow_node
+            && a.workflow_execution_status == b.workflow_execution_status
             && a.workflow_execution_id == b.workflow_execution_id
-            && a.workflow_run_index == b.workflow_run_index
-            && a.workflow_step_progress == b.workflow_step_progress
+            && a.node_execution_id == b.node_execution_id
+            && a.workflow_attempt == b.workflow_attempt
+            && a.workflow_node_progress == b.workflow_node_progress
     }
 
     fn is_workspace_state_equivalent(a: &WorkspaceStatus, b: &WorkspaceStatus) -> bool {
@@ -313,7 +316,7 @@ impl AgentStatusCenter {
     /// （= 集約対象なし）。
     ///
     /// `workflow_state` は、当該 worktree でアクティブな Workflow の状態
-    /// （`WorkflowExecutionState` を `AgentState` にマップしたもの）。
+    /// （`RuntimeExecutionState` を `AgentState` にマップしたもの）。
     /// 集約優先度ロジックには寄与するが、`session_count` には含めない。
     fn aggregate(
         worktree_id: &str,
@@ -415,38 +418,41 @@ impl AgentStatusCenter {
         self.workflows.read().get(worktree_path).cloned()
     }
 
-    fn session_workflow_step_key(status: &SessionStatus) -> Option<WorkflowStepKey> {
-        Some(WorkflowStepKey {
+    fn session_workflow_node_key(status: &SessionStatus) -> Option<WorkflowNodeExecutionKey> {
+        Some(WorkflowNodeExecutionKey {
             worktree_path: status.worktree_path.clone(),
             execution_id: status.workflow_execution_id.clone()?,
-            step_name: status.workflow_step.clone()?,
-            run_index: status.workflow_run_index,
+            node_execution_id: status.node_execution_id.clone()?,
+            node_name: status.workflow_node.clone()?,
+            attempt: status.workflow_attempt,
         })
     }
 
-    fn next_workflow_status_version(&self) -> u64 {
-        self.workflow_status_version.fetch_add(1, Ordering::Relaxed) + 1
+    fn next_workflow_node_status_version(&self) -> u64 {
+        self.workflow_node_status_version
+            .fetch_add(1, Ordering::Relaxed)
+            + 1
     }
 
-    fn is_same_workflow(left: &WorkflowStepKey, right: &WorkflowStepKey) -> bool {
+    fn is_same_workflow(left: &WorkflowNodeExecutionKey, right: &WorkflowNodeExecutionKey) -> bool {
         left.worktree_path == right.worktree_path && left.execution_id == right.execution_id
     }
 
     fn workflow_has_live_status(
-        workflow_key: &WorkflowStepKey,
-        live_steps: &HashMap<WorkflowStepKey, WorkflowStatusEntry>,
+        workflow_key: &WorkflowNodeExecutionKey,
+        live_nodes: &HashMap<WorkflowNodeExecutionKey, WorkflowStatusEntry>,
     ) -> bool {
-        live_steps
+        live_nodes
             .keys()
             .any(|key| Self::is_same_workflow(key, workflow_key))
     }
 
     fn workflow_representative_for_key(
-        workflow_key: &WorkflowStepKey,
-        live_steps: &HashMap<WorkflowStepKey, WorkflowStatusEntry>,
-        baselines: &HashMap<WorkflowStepKey, RepresentativeStatus>,
+        workflow_key: &WorkflowNodeExecutionKey,
+        live_nodes: &HashMap<WorkflowNodeExecutionKey, WorkflowStatusEntry>,
+        baselines: &HashMap<WorkflowNodeExecutionKey, RepresentativeStatus>,
     ) -> Option<RepresentativeStatus> {
-        if !Self::workflow_has_live_status(workflow_key, live_steps) {
+        if !Self::workflow_has_live_status(workflow_key, live_nodes) {
             return None;
         }
 
@@ -454,12 +460,12 @@ impl AgentStatusCenter {
             .iter()
             .filter(|(key, _)| Self::is_same_workflow(key, workflow_key))
             .map(|(key, baseline)| {
-                live_steps
+                live_nodes
                     .get(key)
                     .map(|entry| entry.representative)
                     .unwrap_or(*baseline)
             });
-        let live_only_statuses = live_steps
+        let live_only_statuses = live_nodes
             .iter()
             .filter(|(key, _)| {
                 Self::is_same_workflow(key, workflow_key) && !baselines.contains_key(*key)
@@ -469,24 +475,25 @@ impl AgentStatusCenter {
         aggregate_representative_statuses(baseline_statuses.chain(live_only_statuses))
     }
 
-    fn worktree_step_status_view_from_maps(
+    fn worktree_node_status_view_from_maps(
         worktree_path: &str,
         version: u64,
-        step_statuses: &HashMap<WorkflowStepKey, WorkflowStatusEntry>,
-        baselines: &HashMap<WorkflowStepKey, RepresentativeStatus>,
-    ) -> WorktreeStepStatusView {
+        node_statuses: &HashMap<WorkflowNodeExecutionKey, WorkflowStatusEntry>,
+        baselines: &HashMap<WorkflowNodeExecutionKey, RepresentativeStatus>,
+    ) -> WorktreeNodeStatusView {
         let worktree_path = Self::canonical_worktree_path(worktree_path);
-        let mut steps = Vec::new();
-        let mut workflow_keys: HashMap<String, WorkflowStepKey> = HashMap::new();
+        let mut node_executions = Vec::new();
+        let mut workflow_keys: HashMap<String, WorkflowNodeExecutionKey> = HashMap::new();
 
-        for (key, entry) in step_statuses {
+        for (key, entry) in node_statuses {
             if key.worktree_path != worktree_path {
                 continue;
             }
-            steps.push(WorkflowStepRepresentative {
+            node_executions.push(WorkflowNodeRepresentative {
                 execution_id: key.execution_id.clone(),
-                step_name: key.step_name.clone(),
-                run_index: key.run_index,
+                node_execution_id: key.node_execution_id.clone(),
+                node_name: key.node_name.clone(),
+                attempt: key.attempt,
                 representative: entry.representative.as_str().to_string(),
             });
             workflow_keys
@@ -494,18 +501,25 @@ impl AgentStatusCenter {
                 .or_insert_with(|| key.clone());
         }
 
-        steps.sort_by(|left, right| {
-            (&left.execution_id, &left.step_name, left.run_index).cmp(&(
-                &right.execution_id,
-                &right.step_name,
-                right.run_index,
-            ))
+        node_executions.sort_by(|left, right| {
+            (
+                &left.execution_id,
+                &left.node_name,
+                left.attempt,
+                &left.node_execution_id,
+            )
+                .cmp(&(
+                    &right.execution_id,
+                    &right.node_name,
+                    right.attempt,
+                    &right.node_execution_id,
+                ))
         });
 
-        let mut workflows = workflow_keys
+        let mut workflow_executions = workflow_keys
             .into_values()
             .filter_map(|key| {
-                Self::workflow_representative_for_key(&key, step_statuses, baselines).map(
+                Self::workflow_representative_for_key(&key, node_statuses, baselines).map(
                     |representative| WorkflowRepresentative {
                         execution_id: key.execution_id,
                         representative: representative.as_str().to_string(),
@@ -513,76 +527,81 @@ impl AgentStatusCenter {
                 )
             })
             .collect::<Vec<_>>();
-        workflows.sort_by(|left, right| left.execution_id.cmp(&right.execution_id));
+        workflow_executions.sort_by(|left, right| left.execution_id.cmp(&right.execution_id));
 
-        WorktreeStepStatusView {
+        WorktreeNodeStatusView {
             worktree_path,
             version,
-            steps,
-            workflows,
+            node_executions,
+            workflow_executions,
         }
     }
 
-    fn update_worktree_step_status_view(
-        state: &mut WorkflowStepStatusState,
+    fn update_worktree_node_status_view(
+        state: &mut WorkflowNodeStatusState,
         worktree_path: &str,
         version: u64,
-    ) -> WorktreeStepStatusView {
+    ) -> WorktreeNodeStatusView {
         let worktree_path = Self::canonical_worktree_path(worktree_path);
         if let Some(view) = state.views.get(&worktree_path) {
             if version < view.version {
                 return view.clone();
             }
         }
-        let view = Self::worktree_step_status_view_from_maps(
+        let view = Self::worktree_node_status_view_from_maps(
             &worktree_path,
             version,
-            &state.steps,
+            &state.node_executions,
             &state.baselines,
         );
         state.views.insert(worktree_path, view.clone());
         view
     }
 
-    fn worktree_step_status_view(&self, worktree_path: &str) -> WorktreeStepStatusView {
+    fn worktree_node_status_view(&self, worktree_path: &str) -> WorktreeNodeStatusView {
         let worktree_path = Self::canonical_worktree_path(worktree_path);
-        let state = self.workflow_step_status.read();
+        let state = self.workflow_node_status.read();
         state.views.get(&worktree_path).cloned().unwrap_or_else(|| {
-            Self::worktree_step_status_view_from_maps(
+            Self::worktree_node_status_view_from_maps(
                 &worktree_path,
                 0,
-                &state.steps,
+                &state.node_executions,
                 &state.baselines,
             )
         })
     }
 
-    fn strip_worktree_step_views(changes: &mut [AgentStatusChanges], worktree_path: &str) -> bool {
+    fn strip_worktree_node_views(changes: &mut [AgentStatusChanges], worktree_path: &str) -> bool {
         let worktree_path = Self::canonical_worktree_path(worktree_path);
         let mut removed = false;
         for change in changes {
-            let before = change.workflow_step_views.len();
+            let before = change.workflow_node_views.len();
             change
-                .workflow_step_views
+                .workflow_node_views
                 .retain(|view| view.worktree_path != worktree_path.as_str());
-            removed |= change.workflow_step_views.len() != before;
+            removed |= change.workflow_node_views.len() != before;
         }
         removed
     }
 
-    fn update_workflow_step_baselines(
+    fn update_workflow_node_baselines(
         &self,
         worktree_path: &str,
         execution_id: &str,
-        projections: &[StepSessionProjection],
-    ) -> WorkflowStepStatusUpdate {
-        let mut grouped: HashMap<WorkflowStepKey, Vec<RepresentativeStatus>> = HashMap::new();
+        projections: &[NodeSessionProjection],
+    ) -> WorkflowNodeStatusUpdate {
+        let mut grouped: HashMap<WorkflowNodeExecutionKey, Vec<RepresentativeStatus>> =
+            HashMap::new();
         for projection in projections {
-            let key = WorkflowStepKey {
+            let Some(node_execution_id) = projection.node_execution_id.clone() else {
+                continue;
+            };
+            let key = WorkflowNodeExecutionKey {
                 worktree_path: worktree_path.to_string(),
                 execution_id: execution_id.to_string(),
-                step_name: projection.group_step_name.clone(),
-                run_index: projection.group_run_index,
+                node_execution_id,
+                node_name: projection.node_name.clone(),
+                attempt: projection.attempt,
             };
             grouped
                 .entry(key)
@@ -597,7 +616,7 @@ impl AgentStatusCenter {
             })
             .collect::<HashMap<_, _>>();
 
-        let mut state = self.workflow_step_status.write();
+        let mut state = self.workflow_node_status.write();
         let previous_keys = state
             .baselines
             .keys()
@@ -619,27 +638,28 @@ impl AgentStatusCenter {
         }
 
         if !changed {
-            return WorkflowStepStatusUpdate::default();
+            return WorkflowNodeStatusUpdate::default();
         }
 
         let has_visible_workflow = state
-            .steps
+            .node_executions
             .keys()
             .any(|key| key.worktree_path == worktree_path && key.execution_id == execution_id);
         if !has_visible_workflow {
-            return WorkflowStepStatusUpdate::default();
+            return WorkflowNodeStatusUpdate::default();
         }
 
-        let version = self.next_workflow_status_version();
-        let view = Self::update_worktree_step_status_view(&mut state, worktree_path, version);
-        WorkflowStepStatusUpdate { views: vec![view] }
+        let version = self.next_workflow_node_status_version();
+        let view = Self::update_worktree_node_status_view(&mut state, worktree_path, version);
+        WorkflowNodeStatusUpdate { views: vec![view] }
     }
 
-    fn reaggregate_workflow_steps_for_worktree(
+    fn reaggregate_workflow_nodes_for_worktree(
         &self,
         worktree_path: &str,
-    ) -> WorkflowStepStatusUpdate {
-        let mut grouped: HashMap<WorkflowStepKey, Vec<RepresentativeStatus>> = HashMap::new();
+    ) -> WorkflowNodeStatusUpdate {
+        let mut grouped: HashMap<WorkflowNodeExecutionKey, Vec<RepresentativeStatus>> =
+            HashMap::new();
         let sessions = self.sessions.read();
         for status in sessions.values() {
             if status.worktree_path != worktree_path {
@@ -648,19 +668,19 @@ impl AgentStatusCenter {
             if !Self::is_live_session_state(&status.session_state) {
                 continue;
             }
-            let Some(key) = Self::session_workflow_step_key(status) else {
+            let Some(key) = Self::session_workflow_node_key(status) else {
                 continue;
             };
-            let Some(step_progress) = status.workflow_step_progress else {
+            let Some(node_progress) = status.workflow_node_progress else {
                 continue;
             };
             grouped.entry(key).or_default().push(session_result(
-                step_progress,
+                node_progress,
                 SessionActivity::from(status.agent_state.clone()),
             ));
         }
 
-        let next_steps = grouped
+        let next_nodes = grouped
             .into_iter()
             .filter_map(|(key, statuses)| {
                 aggregate_representative_statuses(statuses)
@@ -668,70 +688,75 @@ impl AgentStatusCenter {
             })
             .collect::<HashMap<_, _>>();
 
-        let mut state = self.workflow_step_status.write();
+        let mut state = self.workflow_node_status.write();
         let mut changed = false;
-        let previous_step_keys = state
-            .steps
+        let previous_node_keys = state
+            .node_executions
             .keys()
             .filter(|key| key.worktree_path == worktree_path)
             .cloned()
             .collect::<Vec<_>>();
-        for key in &previous_step_keys {
-            if next_steps.contains_key(key) {
+        for key in &previous_node_keys {
+            if next_nodes.contains_key(key) {
                 continue;
             }
             changed = true;
         }
-        for (key, representative) in &next_steps {
-            let previous = state.steps.get(key).map(|entry| entry.representative);
+        for (key, representative) in &next_nodes {
+            let previous = state
+                .node_executions
+                .get(key)
+                .map(|entry| entry.representative);
             if previous != Some(*representative) {
                 changed = true;
             }
         }
         if !changed {
-            return WorkflowStepStatusUpdate::default();
+            return WorkflowNodeStatusUpdate::default();
         }
 
-        let version = self.next_workflow_status_version();
-        for key in previous_step_keys {
-            if !next_steps.contains_key(&key) {
-                state.steps.remove(&key);
+        let version = self.next_workflow_node_status_version();
+        for key in previous_node_keys {
+            if !next_nodes.contains_key(&key) {
+                state.node_executions.remove(&key);
             }
         }
-        for (key, representative) in next_steps {
+        for (key, representative) in next_nodes {
             state
-                .steps
+                .node_executions
                 .insert(key, WorkflowStatusEntry { representative });
         }
 
-        let view = Self::update_worktree_step_status_view(&mut state, worktree_path, version);
-        WorkflowStepStatusUpdate { views: vec![view] }
+        let view = Self::update_worktree_node_status_view(&mut state, worktree_path, version);
+        WorkflowNodeStatusUpdate { views: vec![view] }
     }
 
-    fn apply_workflow_step_session_status(
+    fn apply_workflow_node_session_status(
         status: &mut SessionStatus,
         execution_id: &str,
-        workflow_execution_state: &str,
-        input: &WorkflowStepSessionStatusInput,
+        workflow_execution_status: &str,
+        input: &WorkflowNodeSessionStatusInput,
     ) {
-        status.workflow_step = Some(input.step_name.clone());
-        status.workflow_execution_state = Some(workflow_execution_state.to_string());
+        status.workflow_node = Some(input.node_name.clone());
+        status.workflow_execution_status = Some(workflow_execution_status.to_string());
         status.workflow_execution_id = Some(execution_id.to_string());
-        status.workflow_run_index = input.run_index;
-        status.workflow_step_progress = Some(input.progress);
+        status.node_execution_id = Some(input.node_execution_id.clone());
+        status.workflow_attempt = input.attempt;
+        status.workflow_node_progress = Some(input.progress);
     }
 
-    fn clear_workflow_step_session_status(status: &mut SessionStatus) {
-        status.workflow_step = None;
-        status.workflow_execution_state = None;
+    fn clear_workflow_node_session_status(status: &mut SessionStatus) {
+        status.workflow_node = None;
+        status.workflow_execution_status = None;
         status.workflow_execution_id = None;
-        status.workflow_run_index = None;
-        status.workflow_step_progress = None;
+        status.node_execution_id = None;
+        status.workflow_attempt = None;
+        status.workflow_node_progress = None;
     }
 
-    fn apply_pending_workflow_step_session_status(&self, status: &mut SessionStatus) {
+    fn apply_pending_workflow_node_session_status(&self, status: &mut SessionStatus) {
         let pending = {
-            let mut pending = self.pending_workflow_step_sessions.write();
+            let mut pending = self.pending_workflow_node_sessions.write();
             pending.remove(&status.chat_session_id)
         };
         let Some(pending) = pending else {
@@ -740,23 +765,23 @@ impl AgentStatusCenter {
         if pending.worktree_path != status.worktree_path || status.workflow_execution_id.is_some() {
             return;
         }
-        Self::apply_workflow_step_session_status(
+        Self::apply_workflow_node_session_status(
             status,
             &pending.execution_id,
-            &pending.workflow_execution_state,
+            &pending.workflow_execution_status,
             &pending.input,
         );
     }
 
-    fn update_pending_workflow_step_session_statuses(
+    fn update_pending_workflow_node_session_statuses(
         &self,
         worktree_path: &str,
         execution_id: &str,
-        workflow_execution_state: &str,
-        inputs: &HashMap<String, WorkflowStepSessionStatusInput>,
+        workflow_execution_status: &str,
+        inputs: &HashMap<String, WorkflowNodeSessionStatusInput>,
         existing_session_ids: &HashSet<String>,
     ) {
-        let mut pending = self.pending_workflow_step_sessions.write();
+        let mut pending = self.pending_workflow_node_sessions.write();
         pending.retain(|session_id, pending| {
             !(pending.worktree_path == worktree_path
                 && pending.execution_id == execution_id
@@ -773,10 +798,10 @@ impl AgentStatusCenter {
             }
             pending.insert(
                 session_id.clone(),
-                PendingWorkflowStepSessionStatus {
+                PendingWorkflowNodeSessionStatus {
                     worktree_path: worktree_path.to_string(),
                     execution_id: execution_id.to_string(),
-                    workflow_execution_state: workflow_execution_state.to_string(),
+                    workflow_execution_status: workflow_execution_status.to_string(),
                     input: input.clone(),
                 },
             );
@@ -792,7 +817,7 @@ impl AgentStatusCenter {
         Self::normalize_session_paths(&mut status);
         let prev = self.sessions.read().get(&status.chat_session_id).cloned();
         if prev.is_none() {
-            self.apply_pending_workflow_step_session_status(&mut status);
+            self.apply_pending_workflow_node_session_status(&mut status);
         }
 
         // 1. dedup
@@ -842,7 +867,7 @@ impl AgentStatusCenter {
             workspaces.insert(worktree_id.clone(), new_workspace.clone());
             changed
         };
-        let workflow_step_update = self.reaggregate_workflow_steps_for_worktree(&worktree_path);
+        let workflow_node_update = self.reaggregate_workflow_nodes_for_worktree(&worktree_path);
 
         AgentStatusChanges {
             session: Some(status),
@@ -854,7 +879,7 @@ impl AgentStatusCenter {
                 session_id: Some(chat_session_id),
                 pty_id,
             }),
-            workflow_step_views: workflow_step_update.views,
+            workflow_node_views: workflow_node_update.views,
         }
     }
 
@@ -901,25 +926,27 @@ impl AgentStatusCenter {
         }
     }
 
-    pub fn sync_workflow_step_session_statuses(
+    pub fn sync_workflow_node_session_statuses(
         &self,
         worktree_path: &str,
         execution_id: &str,
-        workflow_execution_state: &str,
-        projections: Vec<StepSessionProjection>,
+        workflow_execution_status: &str,
+        projections: Vec<NodeSessionProjection>,
     ) -> Vec<AgentStatusChanges> {
         let worktree_path = Self::canonical_worktree_path(worktree_path);
         let baseline_update =
-            self.update_workflow_step_baselines(&worktree_path, execution_id, &projections);
+            self.update_workflow_node_baselines(&worktree_path, execution_id, &projections);
         let inputs = projections
             .into_iter()
             .filter_map(|projection| {
                 let session_id = projection.session_id?;
+                let node_execution_id = projection.node_execution_id?;
                 Some((
                     session_id,
-                    WorkflowStepSessionStatusInput {
-                        step_name: projection.group_step_name,
-                        run_index: projection.group_run_index,
+                    WorkflowNodeSessionStatusInput {
+                        node_execution_id,
+                        node_name: projection.node_name,
+                        attempt: projection.attempt,
                         progress: projection.progress,
                     },
                 ))
@@ -933,10 +960,10 @@ impl AgentStatusCenter {
             .filter(|status| status.worktree_path == worktree_path)
             .map(|status| status.chat_session_id.clone())
             .collect::<HashSet<_>>();
-        self.update_pending_workflow_step_session_statuses(
+        self.update_pending_workflow_node_session_statuses(
             &worktree_path,
             execution_id,
-            workflow_execution_state,
+            workflow_execution_status,
             &inputs,
             &existing_session_ids,
         );
@@ -947,14 +974,14 @@ impl AgentStatusCenter {
             }
             let mut updated = status;
             if let Some(input) = inputs.get(&updated.chat_session_id) {
-                Self::apply_workflow_step_session_status(
+                Self::apply_workflow_node_session_status(
                     &mut updated,
                     execution_id,
-                    workflow_execution_state,
+                    workflow_execution_status,
                     input,
                 );
             } else if updated.workflow_execution_id.as_deref() == Some(execution_id) {
-                Self::clear_workflow_step_session_status(&mut updated);
+                Self::clear_workflow_node_session_status(&mut updated);
             } else {
                 continue;
             }
@@ -965,11 +992,11 @@ impl AgentStatusCenter {
             }
         }
 
-        let had_live_step_view = Self::strip_worktree_step_views(&mut changes, &worktree_path);
-        if had_live_step_view || !baseline_update.is_empty() {
-            let latest_view = self.worktree_step_status_view(&worktree_path);
+        let had_live_node_view = Self::strip_worktree_node_views(&mut changes, &worktree_path);
+        if had_live_node_view || !baseline_update.is_empty() {
+            let latest_view = self.worktree_node_status_view(&worktree_path);
             changes.push(AgentStatusChanges {
-                workflow_step_views: vec![latest_view],
+                workflow_node_views: vec![latest_view],
                 ..Default::default()
             });
         }
@@ -1137,8 +1164,8 @@ impl AgentStatusCenter {
         self.sessions.read().values().cloned().collect()
     }
 
-    pub fn query_worktree_step_statuses(&self, worktree_path: &str) -> WorktreeStepStatusView {
-        self.worktree_step_status_view(worktree_path)
+    pub fn query_worktree_node_statuses(&self, worktree_path: &str) -> WorktreeNodeStatusView {
+        self.worktree_node_status_view(worktree_path)
     }
 }
 
@@ -1168,28 +1195,30 @@ mod tests {
             pending_permission: matches!(turn_phase, TurnPhase::WaitingPermission),
             pending_permission_request: None,
             last_activity_at: 0.0,
-            workflow_step: None,
-            workflow_execution_state: None,
+            workflow_node: None,
+            workflow_execution_status: None,
             workflow_execution_id: None,
-            workflow_run_index: None,
-            workflow_step_progress: None,
+            node_execution_id: None,
+            workflow_attempt: None,
+            workflow_node_progress: None,
         }
     }
 
     fn workflow_session(
         id: &str,
-        step: &str,
-        run_index: Option<u32>,
-        progress: StepProgress,
+        node_name: &str,
+        attempt: Option<u32>,
+        progress: NodeProgress,
         agent_state: AgentState,
     ) -> SessionStatus {
         let mut session = mk_session("unused", "/repo", TurnPhase::Idle, SessionState::Done);
         session.chat_session_id = id.to_string();
         session.agent_state = agent_state;
         session.workflow_execution_id = Some("exec-1".to_string());
-        session.workflow_step = Some(step.to_string());
-        session.workflow_run_index = run_index;
-        session.workflow_step_progress = Some(progress);
+        session.node_execution_id = Some(id.to_string());
+        session.workflow_node = Some(node_name.to_string());
+        session.workflow_attempt = attempt;
+        session.workflow_node_progress = Some(progress);
         session
     }
 
@@ -1212,17 +1241,18 @@ mod tests {
 
     fn projection(
         session_id: Option<&str>,
-        step_name: &str,
-        run_index: Option<u32>,
+        node_name: &str,
+        attempt: Option<u32>,
         representative: RepresentativeStatus,
-        progress: StepProgress,
-    ) -> StepSessionProjection {
-        StepSessionProjection {
+        progress: NodeProgress,
+    ) -> NodeSessionProjection {
+        NodeSessionProjection {
+            node_execution_id: Some(format!("{node_name}-{}", attempt.unwrap_or(1))),
             session_id: session_id.map(str::to_string),
-            step_name: step_name.to_string(),
-            run_index,
-            group_step_name: step_name.to_string(),
-            group_run_index: run_index,
+            node_name: node_name.to_string(),
+            attempt,
+            group_node_name: node_name.to_string(),
+            group_attempt: attempt,
             progress,
             representative,
             order: 0,
@@ -1247,6 +1277,23 @@ mod tests {
         assert_eq!(workspace.worktree_path, "C:/repo/wt");
         assert!(center.get_workspace("C:/repo/wt").is_some());
         assert!(center.get_workspace(r"C:\repo\wt").is_some());
+    }
+
+    #[test]
+    fn update_session_trims_trailing_worktree_slash_before_storing() {
+        let center = AgentStatusCenter::new();
+        let changes = center.update_session(mk_session(
+            "s1",
+            "/repo/wt/",
+            TurnPhase::Streaming,
+            SessionState::Active,
+        ));
+
+        let session = changes.session.unwrap();
+        assert_eq!(session.worktree_id, "/repo/wt");
+        assert_eq!(session.worktree_path, "/repo/wt");
+        assert!(center.get_workspace("/repo/wt").is_some());
+        assert!(center.get_workspace("/repo/wt/").is_some());
     }
 
     #[test]
@@ -1507,22 +1554,45 @@ mod tests {
     }
 
     #[test]
-    fn session_status_serialization_omits_internal_workflow_aggregation_inputs() {
+    fn session_status_serialization_exposes_canonical_execution_and_node_ids_only() {
         let status = workflow_session(
             "step-a",
             "build",
             Some(3),
-            StepProgress::Running,
+            NodeProgress::Running,
             AgentState::Running,
         );
 
         let value = serde_json::to_value(status).expect("session status serializes");
 
-        assert!(value.get("workflow_step").is_some());
-        assert!(value.get("workflow_execution_state").is_some());
-        assert!(value.get("workflow_execution_id").is_none());
-        assert!(value.get("workflow_run_index").is_none());
-        assert!(value.get("workflow_step_progress").is_none());
+        assert!(value.get("workflow_node").is_some());
+        assert!(value.get("workflow_execution_status").is_some());
+        assert_eq!(value["workflow_execution_id"], "exec-1");
+        assert_eq!(value["node_execution_id"], "step-a");
+        assert_eq!(value["workflow_attempt"], 3);
+        assert!(value.get("workflow_node_execution_id").is_none());
+        assert!(value.get("workflow_node_progress").is_none());
+    }
+
+    #[test]
+    fn worktree_node_status_view_serializes_canonical_execution_collections() {
+        let center = mk_center();
+        center.update_session(workflow_session(
+            "node-execution-build-1",
+            "build",
+            Some(1),
+            NodeProgress::Running,
+            AgentState::Running,
+        ));
+
+        let value = serde_json::to_value(center.query_worktree_node_statuses("/repo"))
+            .expect("worktree node status view serializes");
+
+        assert!(value["nodeExecutions"].is_array());
+        assert!(value["workflowExecutions"].is_array());
+        assert!(value.get("nodes").is_none());
+        assert!(value.get("executions").is_none());
+        assert!(value.get("workflows").is_none());
     }
 
     // ---- on_session_state_changed core (build_state_transition) ----
@@ -1682,39 +1752,45 @@ mod tests {
     // ---- Workflow 状態の Workspace 集約への寄与 ----
 
     #[test]
-    fn workflow_execution_state_to_agent_state_maps_each_variant() {
-        use crate::domain::workflow::WorkflowExecutionState;
+    fn workflow_execution_status_to_agent_state_maps_each_variant() {
+        use crate::domain::workflow::RuntimeExecutionState;
         assert_eq!(
-            AgentStatusCenter::workflow_execution_state_to_agent_state(
-                &WorkflowExecutionState::Running
+            AgentStatusCenter::workflow_execution_status_to_agent_state(
+                &RuntimeExecutionState::Running
             ),
             Some(AgentState::Running)
         );
         assert_eq!(
-            AgentStatusCenter::workflow_execution_state_to_agent_state(
-                &WorkflowExecutionState::WaitingApproval
+            AgentStatusCenter::workflow_execution_status_to_agent_state(
+                &RuntimeExecutionState::WaitingApproval
             ),
             Some(AgentState::Waiting)
         );
         assert_eq!(
-            AgentStatusCenter::workflow_execution_state_to_agent_state(
-                &WorkflowExecutionState::Failed {
+            AgentStatusCenter::workflow_execution_status_to_agent_state(
+                &RuntimeExecutionState::Failed {
                     reason: "boom".into(),
-                    kind: crate::domain::workflow::WorkflowStepFailureKind::InfrastructureCrash,
+                    kind: crate::domain::workflow::NodeExecutionFailureKind::InfrastructureCrash,
                     retry_count: None,
                 }
             ),
             Some(AgentState::Error)
         );
         assert_eq!(
-            AgentStatusCenter::workflow_execution_state_to_agent_state(
-                &WorkflowExecutionState::Completed
+            AgentStatusCenter::workflow_execution_status_to_agent_state(
+                &RuntimeExecutionState::Completed
             ),
             Some(AgentState::Done)
         );
         assert_eq!(
-            AgentStatusCenter::workflow_execution_state_to_agent_state(
-                &WorkflowExecutionState::Aborted
+            AgentStatusCenter::workflow_execution_status_to_agent_state(
+                &RuntimeExecutionState::Aborted
+            ),
+            None
+        );
+        assert_eq!(
+            AgentStatusCenter::workflow_execution_status_to_agent_state(
+                &RuntimeExecutionState::Interrupted
             ),
             None
         );
@@ -1933,71 +2009,73 @@ mod tests {
     }
 
     #[test]
-    fn workflow_step_representative_updates_when_session_starts_streaming() {
+    fn workflow_node_representative_updates_when_session_starts_streaming() {
         let center = mk_center();
         let queued = workflow_session(
             "step-a",
             "build",
             Some(1),
-            StepProgress::Queued,
+            NodeProgress::Queued,
             AgentState::Done,
         );
         let initial = center.update_session(queued);
         assert_eq!(
-            initial.workflow_step_views[0].steps[0].representative,
+            initial.workflow_node_views[0].node_executions[0].representative,
             RepresentativeStatus::Queued.as_str()
         );
-        let initial_version = initial.workflow_step_views[0].version;
+        let initial_version = initial.workflow_node_views[0].version;
 
         let running = workflow_session(
             "step-a",
             "build",
             Some(1),
-            StepProgress::Queued,
+            NodeProgress::Queued,
             AgentState::Running,
         );
         let changes = center.update_session(running);
 
         assert_eq!(
-            changes.workflow_step_views[0].steps[0].representative,
+            changes.workflow_node_views[0].node_executions[0].representative,
             RepresentativeStatus::Running.as_str()
         );
-        assert!(changes.workflow_step_views[0].version > initial_version);
-        assert_eq!(changes.workflow_step_views.len(), 1);
-        assert_eq!(changes.workflow_step_views[0].worktree_path, "/repo");
-        assert_eq!(changes.workflow_step_views[0].steps.len(), 1);
+        assert!(changes.workflow_node_views[0].version > initial_version);
+        assert_eq!(changes.workflow_node_views.len(), 1);
+        assert_eq!(changes.workflow_node_views[0].worktree_path, "/repo");
+        assert_eq!(changes.workflow_node_views[0].node_executions.len(), 1);
         assert_eq!(
-            changes.workflow_step_views[0].steps[0].representative,
+            changes.workflow_node_views[0].node_executions[0].representative,
             RepresentativeStatus::Running.as_str()
         );
     }
 
     #[test]
-    fn workflow_step_representative_is_removed_when_session_is_archived() {
+    fn workflow_node_representative_is_removed_when_session_is_archived() {
         let center = mk_center();
         center.update_session(workflow_session(
             "step-a",
             "build",
             Some(1),
-            StepProgress::Queued,
+            NodeProgress::Queued,
             AgentState::Done,
         ));
 
         let changes = center.on_session_state_changed("step-a", SessionState::Archived);
 
-        assert_eq!(changes.workflow_step_views.len(), 1);
-        assert!(changes.workflow_step_views[0].steps.is_empty());
-        assert!(changes.workflow_step_views[0].workflows.is_empty());
-        assert!(changes.workflow_step_views[0].version > 0);
-        let queried = center.query_worktree_step_statuses("/repo");
-        assert!(queried.steps.is_empty());
-        assert!(queried.workflows.is_empty());
+        assert_eq!(changes.workflow_node_views.len(), 1);
+        assert!(changes.workflow_node_views[0].node_executions.is_empty());
+        assert!(changes.workflow_node_views[0]
+            .workflow_executions
+            .is_empty());
+        assert!(changes.workflow_node_views[0].version > 0);
+        let queried = center.query_worktree_node_statuses("/repo");
+        assert!(queried.node_executions.is_empty());
+        assert!(queried.workflow_executions.is_empty());
     }
 
     #[test]
     fn pending_workflow_projection_applies_to_first_session_status() {
         let center = mk_center();
-        let sync_changes = center.sync_workflow_step_session_statuses(
+        let sync_changes = center.sync_workflow_node_session_statuses(
             "/repo",
             "exec-1",
             "running",
@@ -2006,7 +2084,7 @@ mod tests {
                 "build",
                 Some(2),
                 RepresentativeStatus::Running,
-                StepProgress::Running,
+                NodeProgress::Running,
             )],
         );
         assert!(sync_changes.is_empty());
@@ -2021,21 +2099,24 @@ mod tests {
         let changes = center.update_session(initial);
 
         let session = changes.session.expect("session change emitted");
-        assert_eq!(session.workflow_step.as_deref(), Some("build"));
-        assert_eq!(session.workflow_execution_state.as_deref(), Some("running"));
-        assert_eq!(session.workflow_execution_id.as_deref(), Some("exec-1"));
-        assert_eq!(session.workflow_run_index, Some(2));
-        assert_eq!(session.workflow_step_progress, Some(StepProgress::Running));
-        assert_eq!(changes.workflow_step_views.len(), 1);
-        let view = &changes.workflow_step_views[0];
-        assert_eq!(view.steps.len(), 1);
+        assert_eq!(session.workflow_node.as_deref(), Some("build"));
         assert_eq!(
-            view.steps[0].representative,
+            session.workflow_execution_status.as_deref(),
+            Some("running")
+        );
+        assert_eq!(session.workflow_execution_id.as_deref(), Some("exec-1"));
+        assert_eq!(session.workflow_attempt, Some(2));
+        assert_eq!(session.workflow_node_progress, Some(NodeProgress::Running));
+        assert_eq!(changes.workflow_node_views.len(), 1);
+        let view = &changes.workflow_node_views[0];
+        assert_eq!(view.node_executions.len(), 1);
+        assert_eq!(
+            view.node_executions[0].representative,
             RepresentativeStatus::Running.as_str()
         );
-        assert_eq!(view.workflows.len(), 1);
+        assert_eq!(view.workflow_executions.len(), 1);
         assert_eq!(
-            view.workflows[0].representative,
+            view.workflow_executions[0].representative,
             RepresentativeStatus::Running.as_str()
         );
         assert_eq!(
@@ -2051,7 +2132,7 @@ mod tests {
     #[test]
     fn pending_workflow_projection_is_removed_when_snapshot_no_longer_references_session() {
         let center = mk_center();
-        center.sync_workflow_step_session_statuses(
+        center.sync_workflow_node_session_statuses(
             "/repo",
             "exec-1",
             "running",
@@ -2060,10 +2141,10 @@ mod tests {
                 "build",
                 Some(2),
                 RepresentativeStatus::Queued,
-                StepProgress::Queued,
+                NodeProgress::Queued,
             )],
         );
-        center.sync_workflow_step_session_statuses("/repo", "exec-1", "running", Vec::new());
+        center.sync_workflow_node_session_statuses("/repo", "exec-1", "running", Vec::new());
 
         let changes = center.update_session(mk_session(
             "step-late",
@@ -2073,51 +2154,82 @@ mod tests {
         ));
 
         let session = changes.session.expect("session change emitted");
-        assert_eq!(session.workflow_step, None);
-        assert_eq!(session.workflow_execution_state, None);
+        assert_eq!(session.workflow_node, None);
+        assert_eq!(session.workflow_execution_status, None);
         assert_eq!(session.workflow_execution_id, None);
-        assert!(changes.workflow_step_views.is_empty());
+        assert!(changes.workflow_node_views.is_empty());
     }
 
     #[test]
-    fn parallel_step_running_session_dominates_stopped_sessions() {
+    fn fanout_running_node_execution_dominates_workflow_representative() {
         let center = mk_center();
-        center.update_session(workflow_session(
-            "step-a",
-            "parallel-review",
-            Some(1),
-            StepProgress::Completed,
-            AgentState::Done,
+        center.update_session(mk_session(
+            "completed-session",
+            "/repo",
+            TurnPhase::Idle,
+            SessionState::Done,
         ));
-        let changes = center.update_session(workflow_session(
-            "step-b",
-            "parallel-review",
-            Some(1),
-            StepProgress::Completed,
-            AgentState::Running,
+        center.update_session(mk_session(
+            "running-session",
+            "/repo",
+            TurnPhase::Streaming,
+            SessionState::Active,
         ));
+        center.sync_workflow_node_session_statuses(
+            "/repo",
+            "execution-1",
+            "running",
+            vec![
+                NodeSessionProjection {
+                    node_execution_id: Some("node-execution-review-a".to_string()),
+                    session_id: Some("completed-session".to_string()),
+                    node_name: "review-a".to_string(),
+                    attempt: Some(1),
+                    group_node_name: "review-fanout".to_string(),
+                    group_attempt: Some(1),
+                    progress: NodeProgress::Completed,
+                    representative: RepresentativeStatus::Completed,
+                    order: 0,
+                },
+                NodeSessionProjection {
+                    node_execution_id: Some("node-execution-review-b".to_string()),
+                    session_id: Some("running-session".to_string()),
+                    node_name: "review-b".to_string(),
+                    attempt: Some(1),
+                    group_node_name: "review-fanout".to_string(),
+                    group_attempt: Some(1),
+                    progress: NodeProgress::Running,
+                    representative: RepresentativeStatus::Running,
+                    order: 1,
+                },
+            ],
+        );
 
+        let view = center.query_worktree_node_statuses("/repo");
+        assert_eq!(view.node_executions.len(), 2);
+        assert_eq!(view.workflow_executions.len(), 1);
+        assert_eq!(view.workflow_executions[0].execution_id, "execution-1");
         assert_eq!(
-            changes.workflow_step_views[0].steps[0].representative,
+            view.workflow_executions[0].representative,
             RepresentativeStatus::Running.as_str()
         );
     }
 
     #[test]
-    fn query_worktree_step_statuses_returns_backend_aggregated_view() {
+    fn query_worktree_node_statuses_returns_backend_aggregated_view() {
         let center = mk_center();
         center.update_session(workflow_session(
             "step-a",
             "plan",
             Some(1),
-            StepProgress::Completed,
+            NodeProgress::Completed,
             AgentState::Done,
         ));
         center.update_session(workflow_session(
             "step-b",
             "test",
             Some(1),
-            StepProgress::WaitingApproval,
+            NodeProgress::WaitingApproval,
             AgentState::Error,
         ));
         center.update_session(SessionStatus {
@@ -2131,145 +2243,149 @@ mod tests {
             pending_permission: false,
             pending_permission_request: None,
             last_activity_at: 0.0,
-            workflow_step: Some("deploy".to_string()),
-            workflow_execution_state: Some("running".to_string()),
+            workflow_node: Some("deploy".to_string()),
+            workflow_execution_status: Some("running".to_string()),
             workflow_execution_id: Some("exec-other".to_string()),
-            workflow_run_index: Some(1),
-            workflow_step_progress: Some(StepProgress::Running),
+            node_execution_id: Some("deploy-1".to_string()),
+            workflow_attempt: Some(1),
+            workflow_node_progress: Some(NodeProgress::Running),
         });
 
-        let view = center.query_worktree_step_statuses("/repo");
+        let view = center.query_worktree_node_statuses("/repo");
 
         assert_eq!(view.worktree_path, "/repo");
         assert!(view.version > 0);
-        assert_eq!(view.steps.len(), 2);
-        assert!(view.steps.iter().any(|step| {
+        assert_eq!(view.node_executions.len(), 2);
+        assert!(view.node_executions.iter().any(|step| {
             step.execution_id == "exec-1"
-                && step.step_name == "plan"
+                && step.node_name == "plan"
                 && step.representative == RepresentativeStatus::Completed.as_str()
         }));
-        assert!(view.steps.iter().any(|step| {
+        assert!(view.node_executions.iter().any(|step| {
             step.execution_id == "exec-1"
-                && step.step_name == "test"
+                && step.node_name == "test"
                 && step.representative == RepresentativeStatus::Error.as_str()
         }));
-        assert_eq!(view.workflows.len(), 1);
-        assert_eq!(view.workflows[0].execution_id, "exec-1");
+        assert_eq!(view.workflow_executions.len(), 1);
+        assert_eq!(view.workflow_executions[0].execution_id, "exec-1");
         assert_eq!(
-            view.workflows[0].representative,
+            view.workflow_executions[0].representative,
             RepresentativeStatus::Error.as_str()
         );
 
-        let other = center.query_worktree_step_statuses("/other");
+        let other = center.query_worktree_node_statuses("/other");
         assert!(other.version > 0);
-        assert_eq!(other.steps.len(), 1);
-        assert_eq!(other.steps[0].execution_id, "exec-other");
+        assert_eq!(other.node_executions.len(), 1);
+        assert_eq!(other.node_executions[0].execution_id, "exec-other");
     }
 
     #[test]
-    fn query_worktree_step_statuses_keeps_monotonic_version_after_empty_snapshot() {
+    fn query_worktree_node_statuses_keeps_monotonic_version_after_empty_snapshot() {
         let center = mk_center();
         let initial = center.update_session(workflow_session(
             "step-a",
             "build",
             Some(1),
-            StepProgress::Queued,
+            NodeProgress::Queued,
             AgentState::Done,
         ));
-        let initial_version = initial.workflow_step_views[0].version;
+        let initial_version = initial.workflow_node_views[0].version;
 
         let removed = center.on_session_state_changed("step-a", SessionState::Archived);
 
-        assert_eq!(removed.workflow_step_views.len(), 1);
-        assert!(removed.workflow_step_views[0].steps.is_empty());
-        assert!(removed.workflow_step_views[0].workflows.is_empty());
-        assert!(removed.workflow_step_views[0].version > initial_version);
+        assert_eq!(removed.workflow_node_views.len(), 1);
+        assert!(removed.workflow_node_views[0].node_executions.is_empty());
+        assert!(removed.workflow_node_views[0]
+            .workflow_executions
+            .is_empty());
+        assert!(removed.workflow_node_views[0].version > initial_version);
 
-        let queried = center.query_worktree_step_statuses("/repo");
-        assert!(queried.steps.is_empty());
-        assert!(queried.workflows.is_empty());
-        assert_eq!(queried.version, removed.workflow_step_views[0].version);
+        let queried = center.query_worktree_node_statuses("/repo");
+        assert!(queried.node_executions.is_empty());
+        assert!(queried.workflow_executions.is_empty());
+        assert_eq!(queried.version, removed.workflow_node_views[0].version);
     }
 
     #[test]
-    fn workflow_step_status_event_view_matches_query_snapshot() {
+    fn workflow_node_status_event_view_matches_query_snapshot() {
         let center = mk_center();
         let changes = center.update_session(workflow_session(
             "step-a",
             "build",
             Some(1),
-            StepProgress::Running,
+            NodeProgress::Running,
             AgentState::Running,
         ));
 
-        assert_eq!(changes.workflow_step_views.len(), 1);
-        let emitted = &changes.workflow_step_views[0];
-        let queried = center.query_worktree_step_statuses("/repo");
+        assert_eq!(changes.workflow_node_views.len(), 1);
+        let emitted = &changes.workflow_node_views[0];
+        let queried = center.query_worktree_node_statuses("/repo");
 
         assert_eq!(emitted, &queried);
     }
 
     #[test]
-    fn workflow_step_status_view_sorts_none_run_index_before_some() {
+    fn workflow_node_status_view_sorts_none_attempt_before_some() {
         let center = mk_center();
         center.update_session(workflow_session(
             "step-some",
             "build",
             Some(1),
-            StepProgress::Running,
+            NodeProgress::Running,
             AgentState::Running,
         ));
         center.update_session(workflow_session(
             "step-none",
             "build",
             None,
-            StepProgress::Running,
+            NodeProgress::Running,
             AgentState::Running,
         ));
 
-        let queried = center.query_worktree_step_statuses("/repo");
-        let run_indexes = queried
-            .steps
+        let queried = center.query_worktree_node_statuses("/repo");
+        let attempts = queried
+            .node_executions
             .iter()
-            .map(|step| step.run_index)
+            .map(|step| step.attempt)
             .collect::<Vec<_>>();
 
-        assert_eq!(run_indexes, vec![None, Some(1)]);
+        assert_eq!(attempts, vec![None, Some(1)]);
     }
 
     #[test]
-    fn workflow_step_status_view_refresh_does_not_rewind_stored_snapshot() {
-        let key = WorkflowStepKey {
+    fn workflow_node_status_view_refresh_does_not_rewind_stored_snapshot() {
+        let key = WorkflowNodeExecutionKey {
             worktree_path: "/repo".to_string(),
             execution_id: "exec-1".to_string(),
-            step_name: "build".to_string(),
-            run_index: Some(1),
+            node_execution_id: "build-1".to_string(),
+            node_name: "build".to_string(),
+            attempt: Some(1),
         };
-        let mut state = WorkflowStepStatusState::default();
-        state.steps.insert(
+        let mut state = WorkflowNodeStatusState::default();
+        state.node_executions.insert(
             key.clone(),
             WorkflowStatusEntry {
                 representative: RepresentativeStatus::Running,
             },
         );
-        let initial = AgentStatusCenter::update_worktree_step_status_view(&mut state, "/repo", 10);
+        let initial = AgentStatusCenter::update_worktree_node_status_view(&mut state, "/repo", 10);
 
-        state.steps.insert(
+        state.node_executions.insert(
             key,
             WorkflowStatusEntry {
                 representative: RepresentativeStatus::Error,
             },
         );
-        let stale = AgentStatusCenter::update_worktree_step_status_view(&mut state, "/repo", 5);
+        let stale = AgentStatusCenter::update_worktree_node_status_view(&mut state, "/repo", 5);
 
         assert_eq!(stale, initial);
         assert_eq!(state.views.get("/repo"), Some(&initial));
     }
 
     #[test]
-    fn workflow_representative_aggregates_live_steps_with_snapshot_baselines() {
+    fn workflow_representative_aggregates_live_nodes_with_snapshot_baselines() {
         let center = mk_center();
-        center.sync_workflow_step_session_statuses(
+        center.sync_workflow_node_session_statuses(
             "/repo",
             "exec-1",
             "running",
@@ -2279,14 +2395,14 @@ mod tests {
                     "live",
                     Some(1),
                     RepresentativeStatus::Queued,
-                    StepProgress::Queued,
+                    NodeProgress::Queued,
                 ),
                 projection(
                     None,
                     "failed-history",
                     Some(1),
                     RepresentativeStatus::Failed,
-                    StepProgress::Failed,
+                    NodeProgress::Failed,
                 ),
             ],
         );
@@ -2295,33 +2411,33 @@ mod tests {
             "step-live",
             "live",
             Some(1),
-            StepProgress::Queued,
+            NodeProgress::Queued,
             AgentState::Waiting,
         );
         let changes = center.update_session(live_waiting);
 
         assert_eq!(
-            changes.workflow_step_views[0].steps[0].representative,
+            changes.workflow_node_views[0].node_executions[0].representative,
             RepresentativeStatus::Waiting.as_str()
         );
         assert_eq!(
-            changes.workflow_step_views[0].workflows[0].representative,
+            changes.workflow_node_views[0].workflow_executions[0].representative,
             RepresentativeStatus::Failed.as_str()
         );
     }
 
     #[test]
-    fn sync_workflow_step_statuses_returns_current_view_after_live_reaggregation() {
+    fn sync_workflow_node_statuses_returns_current_view_after_live_reaggregation() {
         let center = mk_center();
         center.update_session(workflow_session(
             "step-live",
             "live",
             Some(1),
-            StepProgress::Queued,
+            NodeProgress::Queued,
             AgentState::Done,
         ));
 
-        let changes = center.sync_workflow_step_session_statuses(
+        let changes = center.sync_workflow_node_session_statuses(
             "/repo",
             "exec-1",
             "running",
@@ -2330,20 +2446,20 @@ mod tests {
                 "live",
                 Some(1),
                 RepresentativeStatus::Queued,
-                StepProgress::Running,
+                NodeProgress::Running,
             )],
         );
 
         let emitted_views = changes
             .iter()
-            .flat_map(|change| change.workflow_step_views.iter())
+            .flat_map(|change| change.workflow_node_views.iter())
             .collect::<Vec<_>>();
         assert_eq!(emitted_views.len(), 1);
         let emitted = emitted_views[0];
-        let queried = center.query_worktree_step_statuses("/repo");
+        let queried = center.query_worktree_node_statuses("/repo");
         assert_eq!(emitted, &queried);
         assert_eq!(
-            emitted.steps[0].representative,
+            emitted.node_executions[0].representative,
             RepresentativeStatus::Running.as_str()
         );
     }
@@ -2351,7 +2467,7 @@ mod tests {
     #[test]
     fn workflow_representative_clears_when_last_live_step_is_removed() {
         let center = mk_center();
-        center.sync_workflow_step_session_statuses(
+        center.sync_workflow_node_session_statuses(
             "/repo",
             "exec-1",
             "running",
@@ -2360,21 +2476,23 @@ mod tests {
                 "live",
                 Some(1),
                 RepresentativeStatus::Queued,
-                StepProgress::Queued,
+                NodeProgress::Queued,
             )],
         );
         center.update_session(workflow_session(
             "step-live",
             "live",
             Some(1),
-            StepProgress::Queued,
+            NodeProgress::Queued,
             AgentState::Running,
         ));
 
         let changes = center.on_session_state_changed("step-live", SessionState::Archived);
 
-        assert_eq!(changes.workflow_step_views.len(), 1);
-        assert!(changes.workflow_step_views[0].steps.is_empty());
-        assert!(changes.workflow_step_views[0].workflows.is_empty());
+        assert_eq!(changes.workflow_node_views.len(), 1);
+        assert!(changes.workflow_node_views[0].node_executions.is_empty());
+        assert!(changes.workflow_node_views[0]
+            .workflow_executions
+            .is_empty());
     }
 }

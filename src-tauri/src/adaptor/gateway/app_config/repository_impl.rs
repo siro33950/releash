@@ -618,34 +618,23 @@ token = "existing_token_value_here_with_enough_length_!!"
     }
 
     #[test]
-    fn app_agent_shortcuts_defaults_when_missing() {
+    fn legacy_app_agent_shortcuts_are_ignored() {
         let config: ReleashConfig = toml::from_str(
             r#"
 [app]
 close_to_tray = false
+
+[app.agent_shortcuts.overrides]
+new_thread = "Ctrl Shift N"
 "#,
         )
         .unwrap();
 
-        assert!(config.app.agent_shortcuts.overrides.is_empty());
-    }
-
-    #[test]
-    fn app_agent_shortcut_overrides_roundtrip() {
-        let mut config = ReleashConfig::default();
-        config
-            .app
-            .agent_shortcuts
-            .overrides
-            .insert("send".to_string(), "Ctrl+Enter".to_string());
-
         let encoded = toml::to_string(&config).unwrap();
-        let decoded: ReleashConfig = toml::from_str(&encoded).unwrap();
 
-        assert_eq!(
-            decoded.app.agent_shortcuts.overrides.get("send"),
-            Some(&"Ctrl+Enter".to_string())
-        );
+        assert!(!config.app.close_to_tray);
+        assert!(!encoded.contains("agent_shortcuts"));
+        assert!(!encoded.contains("new_thread"));
     }
 
     #[test]

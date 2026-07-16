@@ -2,13 +2,18 @@ use std::sync::Arc;
 
 use tauri::State;
 
-use crate::adaptor::controller_support::WorkflowStepLifecycleUsecaseState;
+use crate::adaptor::controller_support::NodeExecutionLifecycleUsecaseState;
 use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
 use crate::usecase::agent_session::backend_registry::AgentBackendRegistry;
 use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
+#[cfg(test)]
+use crate::usecase::agent_session::session::OpenTabRegistry;
 use crate::usecase::agent_session::session::{
-    add_message_internal, ChatMessage, ChatSession, MessageRole, OpenTabRegistry,
-    RestoreSessionResponse, SessionStore, SessionSummary, StoredSessionLifecycleUsecase,
+    add_message_internal, ChatMessage, ChatSession, MessageRole, RestoreSessionResponse,
+    SessionStore, SessionSummary, StoredSessionLifecycleUsecase,
+};
+use crate::usecase::agent_session::workspace_session_creation::{
+    SessionCreationRequest, WorkspaceSessionCreationRequest, WorkspaceSessionCreationUsecase,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -24,7 +29,7 @@ pub async fn list_sessions(
 
 #[tauri::command]
 pub fn create_session(
-    state: State<'_, Arc<SessionStore>>,
+    creation: State<'_, Arc<WorkspaceSessionCreationUsecase>>,
     registry: State<'_, Arc<AgentBackendRegistry>>,
     app: tauri::AppHandle,
     worktree_path: String,
@@ -33,27 +38,43 @@ pub fn create_session(
     model_id: Option<String>,
 ) -> Result<ChatSession, String> {
     let data_dir = resolve_data_dir(&app)?;
-    let permission_mode = crate::domain::agent_session::PermissionMode::parse(&permission_mode)
-        .map_err(|e| e.to_string())?;
-    let resolved_model = match model_id.as_deref() {
-        Some(model_id) => Some(registry.resolve_model_entry(model_id)?),
-        None => None,
-    };
-    let resolved_backend_id = registry.resolve_backend_id(
-        resolved_model
-            .as_ref()
-            .map(|entry| entry.backend.clone())
-            .or(backend_id),
-    )?;
-    crate::usecase::agent_session::session::create_session_with_model_and_plan_mode(
-        state.inner().as_ref(),
+    creation.create_session(
         registry.inner().as_ref(),
         &data_dir,
-        &worktree_path,
-        resolved_backend_id,
-        permission_mode,
-        resolved_model.map(|entry| entry.model_id),
-        false,
+        SessionCreationRequest {
+            worktree_path,
+            permission_mode,
+            backend_id,
+            model_id,
+        },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub fn create_workspace_session(
+    creation: State<'_, Arc<WorkspaceSessionCreationUsecase>>,
+    registry: State<'_, Arc<AgentBackendRegistry>>,
+    app: tauri::AppHandle,
+    request_id: String,
+    worktree_path: String,
+    permission_mode: String,
+    backend_id: Option<String>,
+    model_id: Option<String>,
+) -> Result<String, String> {
+    let data_dir = resolve_data_dir(&app)?;
+    creation.create_workspace_session(
+        registry.inner().as_ref(),
+        &data_dir,
+        WorkspaceSessionCreationRequest {
+            request_id,
+            session: SessionCreationRequest {
+                worktree_path,
+                permission_mode,
+                backend_id,
+                model_id,
+            },
+        },
     )
 }
 
@@ -166,23 +187,20 @@ fn update_session_agent_info_in_store(
 pub async fn close_session(
     state: State<'_, Arc<SessionStore>>,
     runtime: State<'_, Arc<AgentSessionRuntimeUsecase>>,
-    open_tabs: State<'_, Arc<OpenTabRegistry>>,
-    step_lifecycle: State<'_, WorkflowStepLifecycleUsecaseState>,
+    node_lifecycle: State<'_, NodeExecutionLifecycleUsecaseState>,
     app: tauri::AppHandle,
     session_id: String,
 ) -> Result<(), String> {
-    if let Some(target) = step_lifecycle
+    if let Some(target) = node_lifecycle
         .close_tab_target(&session_id)
         .await
         .map_err(|_| {
-            crate::adaptor::controller::command::workflow::session_errors::workflow_step_tab_operation_failed()
+            crate::adaptor::controller::command::workflow::session_errors::workflow_node_tab_operation_failed()
         })?
     {
-        crate::adaptor::controller_support::emit_workflow_step_target_state(
+        crate::adaptor::controller_support::emit_workflow_node_target_state(
             &app,
             &target,
-            runtime.inner(),
-            open_tabs.inner(),
         )
         .await;
         return Ok(());
@@ -224,28 +242,24 @@ where
 pub async fn restore_session(
     lifecycle: State<'_, Arc<StoredSessionLifecycleUsecase>>,
     registry: State<'_, Arc<AgentBackendRegistry>>,
-    runtime: State<'_, Arc<AgentSessionRuntimeUsecase>>,
-    open_tabs: State<'_, Arc<OpenTabRegistry>>,
-    step_lifecycle: State<'_, WorkflowStepLifecycleUsecaseState>,
+    node_lifecycle: State<'_, NodeExecutionLifecycleUsecaseState>,
     app: tauri::AppHandle,
     session_id: String,
 ) -> Result<RestoreSessionResponse, String> {
-    if let Some(target) = step_lifecycle
+    if let Some(target) = node_lifecycle
         .try_open_tab(&session_id)
         .await
         .map_err(|_| {
-            crate::adaptor::controller::command::workflow::session_errors::workflow_step_tab_operation_failed()
+            crate::adaptor::controller::command::workflow::session_errors::workflow_node_tab_operation_failed()
         })?
     {
-        crate::adaptor::controller_support::emit_workflow_step_target_state(
+        crate::adaptor::controller_support::emit_workflow_node_target_state(
             &app,
             &target,
-            runtime.inner(),
-            open_tabs.inner(),
         )
         .await;
         return Ok(RestoreSessionResponse {
-            restored_workflow_step: true,
+            restored_workflow_node: true,
         });
     }
 
@@ -256,35 +270,35 @@ pub async fn restore_session(
 }
 
 #[cfg(test)]
-fn restore_workflow_step_session_tab_state(
+fn restore_workflow_node_session_tab_state(
     session_store: &SessionStore,
     data_dir: &std::path::Path,
     open_tabs: &OpenTabRegistry,
     session_id: &str,
 ) -> Result<Option<(RestoreSessionResponse, String)>, String> {
-    let Some(target) = crate::adaptor::gateway::workflow::resolve_step_session_with_data_dir(
+    let Some(target) = crate::adaptor::gateway::workflow::resolve_node_session_with_data_dir(
         session_store,
         data_dir,
         session_id,
     )
     .map_err(|_| {
-        crate::adaptor::controller::command::workflow::session_errors::workflow_step_tab_operation_failed()
+        crate::adaptor::controller::command::workflow::session_errors::workflow_node_tab_operation_failed()
     })?
     else {
         return Ok(None);
     };
-    crate::adaptor::gateway::workflow::open_step_session_tab_state(
+    crate::adaptor::gateway::workflow::open_node_session_tab_state(
         session_store,
         data_dir,
         open_tabs,
         &target.session_id,
     )
     .map_err(|_| {
-        crate::adaptor::controller::command::workflow::session_errors::workflow_step_tab_operation_failed()
+        crate::adaptor::controller::command::workflow::session_errors::workflow_node_tab_operation_failed()
     })?;
     Ok(Some((
         RestoreSessionResponse {
-            restored_workflow_step: true,
+            restored_workflow_node: true,
         },
         target.worktree_path,
     )))
@@ -295,7 +309,7 @@ mod tests {
     use super::*;
     use crate::usecase::agent_session::session::SessionState;
 
-    fn workflow_step_session_for_test(
+    fn workflow_node_session_for_test(
         session_id: &str,
     ) -> crate::usecase::agent_session::session::ChatSession {
         crate::usecase::agent_session::session::ChatSession {
@@ -314,14 +328,14 @@ mod tests {
             backend_id: Some(
                 crate::infrastructure::agent_session::claude::CLAUDE_BACKEND_ID.to_string(),
             ),
-            workflow_step_session: true,
-            workflow_step_context: None,
+            workflow_node_session: true,
+            workflow_node_context: None,
             context_epoch: None,
         }
     }
 
     #[tokio::test]
-    async fn restore_workflow_step_session_tab_reopens_history_without_starting_runtime() {
+    async fn restore_workflow_node_session_tab_reopens_history_without_starting_runtime() {
         let tmp = tempfile::TempDir::new().unwrap();
         let session_store = crate::test_support::build_session_store();
         let open_tabs = OpenTabRegistry::default();
@@ -330,20 +344,20 @@ mod tests {
         session_store
             .save_full_session_for_migration_or_restore(
                 tmp.path(),
-                &workflow_step_session_for_test(&session_id),
+                &workflow_node_session_for_test(&session_id),
             )
             .unwrap();
 
-        let (response, worktree_path) = restore_workflow_step_session_tab_state(
+        let (response, worktree_path) = restore_workflow_node_session_tab_state(
             &session_store,
             tmp.path(),
             &open_tabs,
             &session_id,
         )
         .unwrap()
-        .expect("workflow step restore outcome");
+        .expect("workflow node restore outcome");
 
-        assert!(response.restored_workflow_step);
+        assert!(response.restored_workflow_node);
         assert_eq!(worktree_path, "/repo");
         assert!(open_tabs.contains(&session_id));
         let session = session_store

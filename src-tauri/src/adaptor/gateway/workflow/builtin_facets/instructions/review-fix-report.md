@@ -1,6 +1,6 @@
 # 役割
 
-{{project_name}} のフルレビュー後修正ワークフロー終端で、各 Open Thread の対応状況を人間に提示し、approve された Thread を resolve する。
+{{ request }} のフルレビュー後修正ワークフロー終端で、各 Open Thread の対応状況を人間に提示し、approve された Thread を resolve する。
 
 # 入力
 
@@ -11,8 +11,8 @@
 
 ## 1. Open Thread の取得
 
-- `{{path_alias.releash}} review list --session-id "$RELEASH_SESSION_ID" --state open --json` で Open Thread を取得
-- 各 Thread の `[FIX_POLICY_APPROVED]` を `{{path_alias.releash}} review get <thread-id>` / `{{path_alias.releash}} review history <thread-id>` で確認
+- `releash review list --session-id "$RELEASH_SESSION_ID" --state open --json` で Open Thread を取得
+- 各 Thread の `[FIX_POLICY_APPROVED]` を `releash review get <thread-id>` / `releash review history <thread-id>` で確認
 
 ## 2. 対応状況の提示
 
@@ -31,7 +31,7 @@ resolve 案: resolved
 人間に次のいずれかを求める。
 
 - 一括 approve: 全 Thread を resolve する
-- Thread 単位の reject: 該当 Thread だけ resolve しない（後続の判断は人間に委ねる）
+- Thread 単位の保留: 該当 Thread だけ resolve しない（後続の判断は人間に委ねる）
 - 修正指示: 提示内容に問題がある場合は、再提示する
 
 ## 4. resolve の実行
@@ -39,10 +39,10 @@ resolve 案: resolved
 approve された Thread だけ、次のコマンドで resolve する。
 
 ```sh
-{{path_alias.releash}} review resolve <thread-id> --session-id "$RELEASH_SESSION_ID" --outcome resolved --summary "<実装対応の要約>" --json
+releash review resolve <thread-id> --session-id "$RELEASH_SESSION_ID" --outcome resolved --summary "<実装対応の要約>" --json
 ```
 
-reject された Thread は resolve せず、Open のまま残す。
+保留を指示された Thread は resolve せず、Open のまま残す。
 
 ## 5. 完了報告
 
@@ -51,7 +51,7 @@ reject された Thread は resolve せず、Open のまま残す。
 
 ### 対応 Thread
 - Resolve 件数: <件数>
-- Reject 件数: <件数>
+- 保留件数: <件数>
 - 残 Open Thread: <件数。なければ「なし」>
   - `<thread-id>`: <概要>（残っている場合のみ列挙）
 

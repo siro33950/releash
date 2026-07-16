@@ -1,0 +1,9 @@
+name: legacy-type-parallel
+description: type parallel was removed in favor of the fanout kind block
+nodes:
+  - name: dispatch
+    type: parallel
+    fanout:
+      child: worker
+  - name: worker
+    command: printf done

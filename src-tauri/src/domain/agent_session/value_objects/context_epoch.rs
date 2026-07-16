@@ -40,7 +40,7 @@ pub enum ContextSourceKind {
     OpenEditorSelection,
     Mentions,
     TerminalLogSummary,
-    WorkflowState,
+    WorkflowContext,
     ProjectInstructions,
     /// Backend/model identity only. The runtime system prompt body is managed
     /// outside context epochs by the system_prompt_fingerprint path.
@@ -54,7 +54,7 @@ impl ContextSourceKind {
         Self::OpenEditorSelection,
         Self::Mentions,
         Self::TerminalLogSummary,
-        Self::WorkflowState,
+        Self::WorkflowContext,
         Self::ProjectInstructions,
     ];
 
@@ -64,7 +64,7 @@ impl ContextSourceKind {
         Self::OpenEditorSelection,
         Self::Mentions,
         Self::TerminalLogSummary,
-        Self::WorkflowState,
+        Self::WorkflowContext,
         Self::ProjectInstructions,
         Self::BackendModelIdentity,
     ];
@@ -96,9 +96,9 @@ impl ContextSourceKind {
                 source: "existing terminal summary input",
                 refresh_trigger: "terminal summary input change",
             },
-            Self::WorkflowState => ContextSourceDefinition {
-                meaning: "workflow run and step state",
-                source: "workflow step context input",
+            Self::WorkflowContext => ContextSourceDefinition {
+                meaning: "workflow execution and node state",
+                source: "workflow node context input",
                 refresh_trigger: "workflow state input change",
             },
             Self::ProjectInstructions => ContextSourceDefinition {
@@ -242,5 +242,13 @@ mod tests {
             .all(|definition| !definition.meaning.is_empty()
                 && !definition.source.is_empty()
                 && !definition.refresh_trigger.is_empty()));
+    }
+
+    #[test]
+    fn workflow_context_source_uses_execution_and_node_vocabulary() {
+        let definition = ContextSourceKind::WorkflowContext.definition();
+
+        assert_eq!(definition.meaning, "workflow execution and node state");
+        assert_eq!(definition.source, "workflow node context input");
     }
 }

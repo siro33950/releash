@@ -12,6 +12,17 @@ vi.mock("@tauri-apps/api/event", () => ({
 	listen: (...args: unknown[]) => mockListen(...args),
 }));
 
+const sessionNode = {
+	name: "step-1",
+	kind: "session" as const,
+	session: {
+		gate: "auto" as const,
+		permission: "edit" as const,
+		facets: { instruction: "implement" },
+	},
+	rules: [],
+};
+
 describe("useAutomation", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
@@ -29,6 +40,8 @@ describe("useAutomation", () => {
 					});
 				case "list_facet_summaries":
 					return Promise.resolve([]);
+				case "get_workflow_source":
+					return Promise.resolve("name: test\nnodes: []\n");
 				case "get_automation_config_dir":
 					return Promise.resolve("/mock/config/dir");
 				case "start_watching":
@@ -55,62 +68,16 @@ describe("useAutomation", () => {
 		expect(mockInvoke).not.toHaveBeenCalledWith("list_workflows");
 	});
 
-	it("saveWorkflow invokes save_workflow command", async () => {
-		mockInvoke.mockResolvedValue(undefined);
-		const { result } = renderHook(() => useAutomation(true));
-
-		await waitFor(() => {
-			expect(mockInvoke).toHaveBeenCalledWith("list_workflows");
-		});
-
-		const wf = {
-			name: "test-wf",
+	it("saveWorkflowSource invokes save_workflow_source command", async () => {
+		const savedWorkflow = {
+			name: "source-wf",
 			description: "desc",
 			builtin: false,
-			nodes: [{ name: "step-1", type: "agent" as const, rules: [] }],
+			nodes: [sessionNode],
 		};
-
-		let saveResult!: { ok: boolean };
-		await act(async () => {
-			saveResult = await result.current.saveWorkflow(wf);
-		});
-		expect(saveResult.ok).toBe(true);
-		expect(mockInvoke).toHaveBeenCalledWith("save_workflow", {
-			workflow: wf,
-			originalName: null,
-		});
-	});
-
-	it("saveWorkflow with originalName passes it through", async () => {
-		mockInvoke.mockResolvedValue(undefined);
-		const { result } = renderHook(() => useAutomation(true));
-
-		await waitFor(() => {
-			expect(mockInvoke).toHaveBeenCalledWith("list_workflows");
-		});
-
-		const wf = {
-			name: "new-name",
-			description: "desc",
-			builtin: false,
-			nodes: [{ name: "step-1", type: "agent" as const, rules: [] }],
-		};
-
-		await act(async () => {
-			await result.current.saveWorkflow(wf, "old-name");
-		});
-
-		expect(mockInvoke).toHaveBeenCalledWith("save_workflow", {
-			workflow: wf,
-			originalName: "old-name",
-		});
-	});
-
-	it("saveWorkflow returns error on failure", async () => {
 		mockInvoke.mockImplementation((cmd: string) => {
-			if (cmd === "save_workflow") {
-				return Promise.reject("Save failed");
-			}
+			if (cmd === "save_workflow_source")
+				return Promise.resolve({ ok: true, workflow: savedWorkflow });
 			if (cmd === "list_workflows") return Promise.resolve([]);
 			if (cmd === "diagnose_all_cmd")
 				return Promise.resolve({
@@ -121,26 +88,76 @@ describe("useAutomation", () => {
 				});
 			return Promise.resolve(undefined);
 		});
-
 		const { result } = renderHook(() => useAutomation(true));
 
 		await waitFor(() => {
 			expect(mockInvoke).toHaveBeenCalledWith("list_workflows");
 		});
 
-		const wf = {
-			name: "test",
-			description: "",
-			builtin: false,
-			nodes: [{ name: "s1", type: "agent" as const, rules: [] }],
-		};
-
-		let saveResult!: { ok: boolean; error?: string };
+		let saveResult!: { ok: boolean };
 		await act(async () => {
-			saveResult = await result.current.saveWorkflow(wf);
+			saveResult = await result.current.saveWorkflowSource(
+				"name: source-wf\nnodes: []\n",
+				"old-name",
+			);
 		});
-		expect(saveResult.ok).toBe(false);
-		expect(saveResult.error).toBe("Save failed");
+
+		expect(saveResult.ok).toBe(true);
+		expect(mockInvoke).toHaveBeenCalledWith("save_workflow_source", {
+			source: "name: source-wf\nnodes: []\n",
+			originalName: "old-name",
+		});
+		expect(result.current.selectedWorkflow).toEqual(savedWorkflow);
+		expect(result.current.selectedWorkflowName).toBe("source-wf");
+	});
+
+	it("saveWorkflowSource returns structured diagnostics without stringifying them", async () => {
+		const diagnostics = [
+			{
+				code: "WFT001",
+				severity: "error",
+				stage: "typecheck",
+				span: { start_line: 3, start_col: 5, end_line: 3, end_col: 9 },
+				message: "when.on field must be boolean",
+				workflow_name: "source-wf",
+				field: "rules.when.on",
+			},
+		];
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "save_workflow_source")
+				return Promise.resolve({
+					ok: false,
+					error: "workflow_diagnostics",
+					diagnostics,
+				});
+			if (cmd === "list_workflows") return Promise.resolve([]);
+			if (cmd === "diagnose_all_cmd")
+				return Promise.resolve({
+					items: [],
+					workflow_summaries: {},
+					facet_summaries: {},
+					facet_usage: {},
+				});
+			return Promise.resolve(undefined);
+		});
+		const { result } = renderHook(() => useAutomation(true));
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith("list_workflows");
+		});
+
+		let saveResult!: Awaited<
+			ReturnType<typeof result.current.saveWorkflowSource>
+		>;
+		await act(async () => {
+			saveResult = await result.current.saveWorkflowSource("bad", "source-wf");
+		});
+
+		expect(saveResult).toEqual({
+			ok: false,
+			error: "workflow_diagnostics",
+			diagnostics,
+		});
 	});
 
 	it("deleteWorkflow invokes delete_workflow and refetches", async () => {
@@ -267,6 +284,8 @@ describe("useAutomation", () => {
 		};
 		mockInvoke.mockImplementation((cmd: string) => {
 			if (cmd === "get_workflow") return Promise.resolve(mockWorkflow);
+			if (cmd === "get_workflow_source")
+				return Promise.resolve("name: test\nnodes: []\n");
 			if (cmd === "list_workflows") return Promise.resolve([]);
 			if (cmd === "diagnose_all_cmd")
 				return Promise.resolve({
@@ -289,7 +308,71 @@ describe("useAutomation", () => {
 		});
 
 		expect(mockInvoke).toHaveBeenCalledWith("get_workflow", { name: "test" });
+		expect(mockInvoke).toHaveBeenCalledWith("get_workflow_source", {
+			name: "test",
+		});
 		expect(result.current.selectedWorkflow).toEqual(mockWorkflow);
+		expect(result.current.selectedWorkflowName).toBe("test");
+		expect(result.current.selectedWorkflowSource).toBe(
+			"name: test\nnodes: []\n",
+		);
+	});
+
+	it("selectWorkflow keeps source when typed workflow load returns diagnostics", async () => {
+		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_workflow") {
+				return Promise.reject("workflow_diagnostics: WFS005: legacy field");
+			}
+			if (cmd === "get_workflow_source") {
+				return Promise.resolve("name: broken\nnodes:\n  - type: agent\n");
+			}
+			if (cmd === "list_workflows") return Promise.resolve([]);
+			if (cmd === "diagnose_all_cmd") {
+				return Promise.resolve({
+					items: [
+						{
+							code: "WFS005",
+							severity: "error",
+							stage: "parse_shape",
+							span: {
+								start_line: 3,
+								start_col: 5,
+								end_line: 3,
+								end_col: 15,
+							},
+							message: "legacy field",
+							workflow_name: "broken",
+						},
+					],
+					workflow_summaries: {
+						broken: { error_count: 1, info_count: 0 },
+					},
+					facet_summaries: {},
+					facet_usage: {},
+				});
+			}
+			return Promise.resolve(undefined);
+		});
+
+		const { result } = renderHook(() => useAutomation(true));
+
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith("list_workflows");
+		});
+
+		await act(async () => {
+			await result.current.selectWorkflow("broken");
+		});
+
+		expect(result.current.selectedWorkflow).toBeNull();
+		expect(result.current.selectedWorkflowName).toBe("broken");
+		expect(result.current.selectedWorkflowSource).toBe(
+			"name: broken\nnodes:\n  - type: agent\n",
+		);
+		expect(result.current.report.workflow_summaries.broken).toEqual({
+			error_count: 1,
+			info_count: 0,
+		});
 	});
 
 	it("deleteFacet invokes delete_facet and refreshes", async () => {

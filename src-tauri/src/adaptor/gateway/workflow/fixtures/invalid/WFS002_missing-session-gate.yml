@@ -1,0 +1,8 @@
+name: missing-session-gate
+description: session gate is required
+nodes:
+  - name: implement
+    session:
+      permission: edit
+      facets:
+        instruction: implement

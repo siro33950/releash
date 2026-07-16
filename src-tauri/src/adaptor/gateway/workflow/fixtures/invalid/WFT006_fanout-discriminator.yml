@@ -1,0 +1,33 @@
+name: fanout-discriminator
+description: fanout nodes cannot use discriminator rules
+schemas:
+  verdict:
+    type: object
+    properties:
+      passed:
+        type: boolean
+    required:
+      - passed
+    additionalProperties: false
+nodes:
+  - name: fanout
+    artifact: verdict
+    fanout:
+      child: child
+    rules:
+      - when:
+          on: passed
+          then: done
+        next: done
+  - name: child
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        instruction: child
+  - name: done
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        instruction: done

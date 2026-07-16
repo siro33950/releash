@@ -1,0 +1,47 @@
+name: multiple-discriminators
+description: only one discriminator rule is allowed
+schemas:
+  verdict:
+    type: object
+    properties:
+      passed:
+        type: boolean
+      decision:
+        type: string
+        enum:
+          - done
+          - fix
+    required:
+      - passed
+      - decision
+    additionalProperties: false
+nodes:
+  - name: judge
+    artifact: verdict
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        instruction: judge
+    rules:
+      - when:
+          on: passed
+          then: done
+        next: fix
+      - switch:
+          on: decision
+          cases:
+            done: done
+            fix: fix
+  - name: done
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        instruction: done
+  - name: fix
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        instruction: fix

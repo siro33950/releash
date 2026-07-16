@@ -6,3 +6,4 @@ pub(crate) mod runtime;
 pub(crate) mod session;
 pub(crate) mod status;
 pub(crate) mod system_prompt;
+pub(crate) mod workspace_session_creation;

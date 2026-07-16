@@ -7,6 +7,7 @@ use parking_lot::RwLock;
 use crate::domain::agent_session::{
     AgentSessionReader, AgentSessionStorage, AgentSessionStorageTypes,
 };
+use crate::domain::path::same_worktree_path;
 use crate::usecase::agent_session::context_meta::ContextEpochMeta;
 use crate::usecase::agent_session::event_log::{AgentSessionEvent, TurnEventLog};
 
@@ -77,7 +78,7 @@ pub type SessionReaderPort = dyn AgentSessionReader<
     + Sync;
 
 /// テストで session 保存パスへ失敗を注入するためのフック。
-/// workflow step session の作成ロールバック経路（並列子ステップの save 失敗等）を
+/// workflow node session の作成ロールバック経路（fanout child node の save 失敗等）を
 /// 検証するために用いる。
 #[cfg(test)]
 pub(crate) type SessionSaveHook = Arc<dyn Fn(&ChatSession) -> Result<(), String> + Send + Sync>;
@@ -277,7 +278,7 @@ impl SessionStore {
             .storage
             .list_metas(app_data_dir)?
             .into_iter()
-            .filter(|s| s.worktree_path == worktree_path && predicate(s))
+            .filter(|s| same_worktree_path(&s.worktree_path, worktree_path) && predicate(s))
             .map(|meta| meta.to_summary())
             .collect::<Vec<_>>();
         summaries.sort_by(|a, b| {
@@ -307,8 +308,8 @@ impl SessionStore {
         session_id: &str,
     ) -> Result<(), String> {
         let meta = self.require_meta(app_data_dir, session_id)?;
-        if meta.workflow_step_session {
-            return Err("Workflow step sessions cannot be archived".to_string());
+        if meta.workflow_node_session {
+            return Err("Workflow node sessions cannot be archived".to_string());
         }
         self.set_session_state(app_data_dir, session_id, SessionState::Archived)
     }
@@ -333,8 +334,8 @@ impl SessionStore {
         title: Option<&str>,
     ) -> Result<SessionSummary, String> {
         let meta = self.require_meta(app_data_dir, session_id)?;
-        if meta.workflow_step_session {
-            return Err("Workflow step sessions cannot be renamed".to_string());
+        if meta.workflow_node_session {
+            return Err("Workflow node sessions cannot be renamed".to_string());
         }
 
         let title_for_summary = title
@@ -356,8 +357,8 @@ impl SessionStore {
         session_id: &str,
     ) -> Result<ChatSession, String> {
         let parent_meta = self.require_meta(app_data_dir, session_id)?;
-        if parent_meta.workflow_step_session {
-            return Err("Workflow step sessions cannot be forked".to_string());
+        if parent_meta.workflow_node_session {
+            return Err("Workflow node sessions cannot be forked".to_string());
         }
 
         let now = now_timestamp();
@@ -368,7 +369,7 @@ impl SessionStore {
         forked_meta.updated_at = now;
         forked_meta.agent_session_id = None;
         forked_meta.context_carry = None;
-        forked_meta.workflow_step_session = false;
+        forked_meta.workflow_node_session = false;
 
         self.storage
             .fork_session_layout(app_data_dir, session_id, &forked_meta)?;
@@ -532,7 +533,7 @@ impl SessionStore {
             .storage
             .list_metas(app_data_dir)?
             .into_iter()
-            .filter(|session| session.worktree_path == worktree_path)
+            .filter(|session| same_worktree_path(&session.worktree_path, worktree_path))
             .map(|meta| meta.to_session(Vec::new()))
             .collect())
     }
@@ -546,7 +547,7 @@ impl SessionStore {
             .storage
             .list_metas(app_data_dir)?
             .into_iter()
-            .filter(|session| session.worktree_path == worktree_path)
+            .filter(|session| same_worktree_path(&session.worktree_path, worktree_path))
             .map(|session| session.id)
             .collect::<Vec<_>>();
         ids.into_iter()
@@ -917,5 +918,100 @@ impl SessionStore {
             streaming_final_seq,
             completed_at,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::*;
+
+    fn ids(values: impl IntoIterator<Item = String>) -> HashSet<String> {
+        values.into_iter().collect()
+    }
+
+    fn rewrite_persisted_worktree_path(app_data_dir: &Path, session_id: &str, worktree_path: &str) {
+        let meta_path = app_data_dir
+            .join("sessions")
+            .join(session_id)
+            .join("meta.json");
+        let mut meta: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&meta_path).unwrap()).unwrap();
+        meta["worktreePath"] = serde_json::Value::String(worktree_path.to_string());
+        std::fs::write(meta_path, serde_json::to_vec_pretty(&meta).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn worktree_session_queries_match_legacy_trailing_slash_without_prefix_collision() {
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let writer = crate::test_support::build_session_store();
+        let legacy = super::super::create_session_internal(
+            &writer,
+            app_data_dir.path(),
+            "/repo/",
+            Some("claude".to_string()),
+        )
+        .unwrap();
+        let canonical = super::super::create_session_internal(
+            &writer,
+            app_data_dir.path(),
+            "/repo",
+            Some("claude".to_string()),
+        )
+        .unwrap();
+        let other = super::super::create_session_internal(
+            &writer,
+            app_data_dir.path(),
+            "/repository",
+            Some("claude".to_string()),
+        )
+        .unwrap();
+
+        // Simulate metadata written before worktree paths were normalized on save.
+        rewrite_persisted_worktree_path(app_data_dir.path(), &legacy.id, "/repo/");
+        drop(writer);
+
+        let reader = crate::test_support::build_session_store();
+        let expected = HashSet::from([legacy.id.clone(), canonical.id.clone()]);
+        for query in ["/repo", "/repo/"] {
+            let summaries = reader.list_sessions(app_data_dir.path(), query).unwrap();
+            assert_eq!(
+                ids(summaries.iter().map(|session| session.id.clone())),
+                expected
+            );
+            assert!(
+                summaries
+                    .iter()
+                    .all(|session| session.worktree_path == "/repo"),
+                "read models must expose the normalized identity"
+            );
+
+            assert_eq!(
+                ids(reader
+                    .list_worktree_sessions(app_data_dir.path(), query)
+                    .unwrap()
+                    .into_iter()
+                    .map(|session| session.id),),
+                expected
+            );
+            assert_eq!(
+                ids(reader
+                    .list_worktree_sessions_full(app_data_dir.path(), query)
+                    .unwrap()
+                    .into_iter()
+                    .map(|session| session.id),),
+                expected
+            );
+        }
+
+        assert_eq!(
+            ids(reader
+                .list_sessions(app_data_dir.path(), "/repository")
+                .unwrap()
+                .into_iter()
+                .map(|session| session.id),),
+            HashSet::from([other.id])
+        );
     }
 }

@@ -1,12 +1,12 @@
 # 役割
 
-{{project_name}} のフルレビュー後修正 Task を実装する。
+{{ request }} のフルレビュー後修正 Task を実装する。
 
-この Step は、直前 Step から渡された Task だけを実装対象にする。Open Thread や `[FIX_POLICY_APPROVED]` Comment を直接読んではならない。
+この node は、直前の node から渡された Task だけを実装対象にする。Open Thread や `[FIX_POLICY_APPROVED]` Comment を直接読んではならない。
 
 # 入力
 
-直前の `check_and_make_tasks` Step の出力Contract `review-fix-tasks` に含まれる Task 一覧。
+直前の `check_and_make_tasks` node が提出した `review-fix-tasks` Artifact に含まれる Task 一覧。
 
 # Task の扱い
 

@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -20,7 +21,7 @@ pub(crate) trait WorkflowArchivePruner {
     fn prune_workflow_archive_records(
         &self,
         app_data_dir: &Path,
-        run_ids: &std::collections::HashSet<String>,
+        execution_ids: &std::collections::HashSet<String>,
     ) -> Result<WorkflowArchivePruneResult, GcFileSystemError>;
 }
 
@@ -32,7 +33,7 @@ pub(crate) struct CurrentSessionState {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct CurrentWorkflowRunState {
+pub(crate) struct CurrentWorkflowExecutionState {
     pub(crate) worktree_path: GcWorktreePath,
     pub(crate) is_terminal: bool,
     pub(crate) manual_archived_at: Option<f64>,
@@ -58,11 +59,27 @@ pub(crate) trait GcRevalidationReader {
         session_id: &str,
     ) -> RevalidationRead<CurrentSessionState>;
 
-    fn workflow_run_state(
+    fn workflow_execution_state(
         &self,
         app_data_dir: &Path,
-        run_id: &str,
-    ) -> RevalidationRead<CurrentWorkflowRunState>;
+        execution_id: &str,
+    ) -> RevalidationRead<CurrentWorkflowExecutionState>;
+
+    fn workflow_execution_states(
+        &self,
+        app_data_dir: &Path,
+        execution_ids: &HashSet<String>,
+    ) -> HashMap<String, RevalidationRead<CurrentWorkflowExecutionState>> {
+        execution_ids
+            .iter()
+            .map(|execution_id| {
+                (
+                    execution_id.clone(),
+                    self.workflow_execution_state(app_data_dir, execution_id),
+                )
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

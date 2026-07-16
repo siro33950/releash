@@ -1,0 +1,18 @@
+name: multiple-next-catch-all
+description: only one next catch-all is allowed
+nodes:
+  - name: route
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        instruction: route
+    rules:
+      - next: done
+      - next: done
+  - name: done
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        instruction: done

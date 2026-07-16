@@ -71,7 +71,7 @@ impl SystemContextInput {
             ContextSourceKind::OpenEditorSelection => self.open_editor_selection.as_deref(),
             ContextSourceKind::Mentions => self.mentions.as_deref(),
             ContextSourceKind::TerminalLogSummary => self.terminal_log_summary.as_deref(),
-            ContextSourceKind::WorkflowState => self.workflow_state.as_deref(),
+            ContextSourceKind::WorkflowContext => self.workflow_state.as_deref(),
             ContextSourceKind::ProjectInstructions => self.project_instructions.as_deref(),
             ContextSourceKind::BackendModelIdentity => self.backend_model_identity.as_deref(),
         }
@@ -429,7 +429,7 @@ mod tests {
     use crate::usecase::agent_session::context::{
         BranchDiffContextChangedFile, BranchDiffContextStats,
     };
-    use crate::usecase::agent_session::session::WorkflowStepContextDto;
+    use crate::usecase::agent_session::session::WorkflowNodeContextDto;
 
     struct EmptyInstructionSource;
 
@@ -594,7 +594,7 @@ mod tests {
         assert_eq!(repo.epoch_id, next.state.current_epoch.id);
         assert_eq!(repo.revision, ContextRevision(2));
         assert_eq!(
-            next.payload_for(ContextSourceKind::WorkflowState),
+            next.payload_for(ContextSourceKind::WorkflowContext),
             Some("workflow-v1")
         );
     }
@@ -1007,13 +1007,14 @@ mod tests {
 
     #[test]
     fn build_system_context_routes_workflow_instruction_outside_workflow_state() {
-        let workflow_state = serde_json::to_string(&WorkflowStepContextDto {
-            run_id: "run-1".to_string(),
+        let workflow_state = serde_json::to_string(&WorkflowNodeContextDto {
+            execution_id: "run-1".to_string(),
+            node_execution_id: "node-execution-1".to_string(),
             workflow_name: "wf".to_string(),
-            step_name: "step-a".to_string(),
-            run_index: 0,
-            parent_step_name: None,
-            parent_run_index: None,
+            node_name: "step-a".to_string(),
+            attempt: 0,
+            parent_node_name: None,
+            parent_attempt: None,
             order: 0,
             startup_timeout_secs: None,
             startup_max_retries: None,
@@ -1041,10 +1042,10 @@ mod tests {
             .payload_for(ContextSourceKind::ProjectInstructions)
             .is_some_and(|payload| payload.contains("private workflow instruction")));
         assert!(built
-            .payload_for(ContextSourceKind::WorkflowState)
+            .payload_for(ContextSourceKind::WorkflowContext)
             .is_some_and(|payload| !payload.contains("private workflow instruction")
-                && !payload.contains("parentStepName")
-                && !payload.contains("parentRunIndex")));
+                && !payload.contains("parentNodeName")
+                && !payload.contains("parentAttempt")));
     }
 
     #[test]

@@ -1,0 +1,21 @@
+name: fanout-child-artifact-ref
+description: child artifacts are available only through the parent array
+schemas:
+  result:
+    type: object
+    properties:
+      verdict:
+        type: string
+    required: [verdict]
+    additionalProperties: false
+nodes:
+  - name: fanout
+    fanout:
+      child: worker
+    rules:
+      - next: consume
+  - name: worker
+    artifact: result
+    command: echo work
+  - name: consume
+    command: echo {{ worker.verdict }}

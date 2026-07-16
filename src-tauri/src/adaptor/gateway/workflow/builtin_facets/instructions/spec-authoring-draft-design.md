@@ -1,8 +1,8 @@
-{{project_name}} プロジェクトの `design.md` を一括で作成または更新する。
+`{{ write_requirements.spec_dir }}` の `design.md` を一括で作成または更新する。
 
 ## 入力
 
-`spec-directory` Contract で渡される `spec_dir` を読み、以下を参照する。
+`spec-directory` schema で渡される `spec_dir` を読み、以下を参照する。
 
 - `${spec_dir}/requirements.md`
 - `${spec_dir}/behavior.md`
@@ -19,7 +19,7 @@
 
 ## 出力
 
-本ステップでは `design.md` だけを作成・更新する。`requirements.md` と `behavior.md` は変更しない。
+この node では `design.md` だけを作成・更新する。`requirements.md` と `behavior.md` は変更しない。
 
 `design.md` には少なくとも以下を含める:
 

@@ -1,35 +1,47 @@
 name: 01_authoring_draft
 description: requirements / behavior / design を文書ごとに Claude 系モデルで draft 方式（finalize なし）で一括作成し、Open Questions 解消後に人間のレビューを待つ。
 builtin: true
-
+schemas:
+  spec-directory:
+    type: object
+    properties:
+      spec_dir: string
+    required:
+    - spec_dir
+    additionalProperties: false
 nodes:
-  - name: write_requirements
-    type: approval
+- name: write_requirements
+  session:
     model: claude-opus-4-8
     permission: edit
-    instruction: spec-authoring-draft-requirements
-    policy: planning
-    output_contract: spec-directory
-
-  - name: write_behavior
-    type: approval
+    gate: approval
+    facets:
+      policy: planning
+      instruction: spec-authoring-draft-requirements
+  artifact: spec-directory
+  inputs:
+  - request
+  rules:
+  - next: write_behavior
+- name: write_behavior
+  session:
     model: claude-opus-4-8
     permission: edit
-    instruction: spec-authoring-draft-behavior
-    policy: planning
-    input_contracts:
-      - spec-directory
-    pass_output_from:
-      - write_requirements
-
-  - name: write_design
-    type: approval
+    gate: approval
+    facets:
+      policy: planning
+      instruction: spec-authoring-draft-behavior
+  inputs:
+  - write_requirements
+  rules:
+  - next: write_design
+- name: write_design
+  session:
     model: claude-opus-4-8
     permission: edit
-    instruction: spec-authoring-draft-design
-    policy: planning
-    input_contracts:
-      - spec-directory
-    pass_output_from:
-      - write_requirements
-      - write_behavior
+    gate: approval
+    facets:
+      policy: planning
+      instruction: spec-authoring-draft-design
+  inputs:
+  - write_requirements

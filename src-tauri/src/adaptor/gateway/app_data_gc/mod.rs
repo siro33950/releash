@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -6,20 +6,19 @@ use crate::adaptor::gateway::agent_session::session_storage::{
     FileSessionStorage, SessionGcMetaRead,
 };
 use crate::adaptor::gateway::repository::repo_paths::SharedRepoPaths;
-use crate::adaptor::gateway::workflow::pending_command::PendingCommandStore;
 use crate::adaptor::gateway::workflow::{
-    WorkflowRunArchiveFileRepository, WorkflowRunFileRepository,
+    WorkflowExecutionArchiveFileRepository, WorkflowExecutionFileRepository,
 };
-use crate::domain::workflow::WorkflowRunArchiveRepository;
+use crate::domain::workflow::WorkflowExecutionArchiveRepository;
 use crate::infrastructure::process::pid_registry::{
     process_group_status, read_pid_file, recorded_pid_status, ProcessStatus,
 };
 use crate::usecase::agent_session::session::SessionState;
 use crate::usecase::app_data_gc::{
-    CacheGcRecord, CurrentSessionState, CurrentWorkflowRunState, GcRevalidationReader,
+    CacheGcRecord, CurrentSessionState, CurrentWorkflowExecutionState, GcRevalidationReader,
     GcWorktreePath, LiveWorktree, LiveWorktreeResolution, LiveWorktreeSet, ProcessRecord,
     ProcessRecordStatus, RevalidationRead, ReviewCommentGcRecord, RuntimeProtection,
-    SessionBlobStore, SessionGcRecord, StartupGcRequest, WorkflowRunGcRecord,
+    SessionBlobStore, SessionGcRecord, StartupGcRequest, WorkflowExecutionGcRecord,
     WorkspaceStateGcRecord,
 };
 
@@ -34,12 +33,12 @@ pub(crate) fn build_startup_gc_request(
     let process_records = collect_process_records(&app_data_dir);
     let runtime_protection = collect_runtime_protection(&app_data_dir, &process_records);
     let session_records = collect_session_gc_records(&app_data_dir);
-    let workflow_runs = collect_workflow_run_gc_records(&app_data_dir);
+    let workflow_executions = collect_workflow_execution_gc_records(&app_data_dir);
     StartupGcRequest {
         app_data_dir: app_data_dir.clone(),
         live_worktrees: resolve_live_worktrees(shared_repo_paths),
         session_records,
-        workflow_runs,
+        workflow_executions,
         workspace_state_records: collect_workspace_state_records(&app_data_dir),
         review_comment_records: collect_review_comment_records(&app_data_dir),
         checkpoint_paths: collect_checkpoint_paths(&app_data_dir),
@@ -213,29 +212,30 @@ fn collect_session_blob_stores(app_data_dir: &Path) -> Vec<SessionBlobStore> {
         .collect()
 }
 
-fn collect_workflow_run_gc_records(app_data_dir: &Path) -> Vec<WorkflowRunGcRecord> {
-    let archived_at_by_run = manual_archive_times(app_data_dir);
-    let pending_paths_by_run = PendingCommandStore::new(app_data_dir).gc_delete_paths_by_run();
-    let runs = WorkflowRunFileRepository::new(app_data_dir);
-    runs.scan_gc_metadata()
-        .runs
+fn collect_workflow_execution_gc_records(app_data_dir: &Path) -> Vec<WorkflowExecutionGcRecord> {
+    let archived_at_by_execution = manual_archive_times(app_data_dir);
+    let executions = WorkflowExecutionFileRepository::new(app_data_dir);
+    executions
+        .scan_gc_metadata()
+        .executions
         .into_iter()
-        .map(|run| WorkflowRunGcRecord {
-            delete_paths: runs
-                .gc_delete_paths_with_pending_index(&run.run_id, &pending_paths_by_run),
-            manual_archived_at: archived_at_by_run.get(&run.run_id).copied(),
-            is_terminal: run.status.is_terminal(),
-            worktree_path: normalize_worktree_path_for_gc(&run.worktree_path),
-            run_id: run.run_id,
+        .map(|execution| WorkflowExecutionGcRecord {
+            delete_paths: executions.gc_delete_paths(&execution.execution_id),
+            manual_archived_at: archived_at_by_execution
+                .get(&execution.execution_id)
+                .copied(),
+            is_terminal: execution.status.is_terminal(),
+            worktree_path: normalize_worktree_path_for_gc(&execution.worktree_path),
+            execution_id: execution.execution_id,
         })
         .collect()
 }
 
 fn manual_archive_times(app_data_dir: &Path) -> std::collections::HashMap<String, f64> {
-    match WorkflowRunArchiveFileRepository::new(app_data_dir).manual_archive_records() {
+    match WorkflowExecutionArchiveFileRepository::new(app_data_dir).manual_archive_records() {
         Ok(records) => records
             .into_iter()
-            .map(|record| (record.run_id, record.archived_at))
+            .map(|record| (record.execution_id, record.archived_at))
             .collect(),
         Err(error) => {
             log::warn!("app data gc skipped workflow archive index: {error}");
@@ -414,12 +414,12 @@ fn collect_runtime_protection(
 }
 
 fn collect_running_workflow_paths(app_data_dir: &Path) -> RunningWorkflowPathCollection {
-    let scan = WorkflowRunFileRepository::new(app_data_dir).scan_gc_metadata();
+    let scan = WorkflowExecutionFileRepository::new(app_data_dir).scan_gc_metadata();
     let mut result = Vec::new();
-    for run in scan.runs {
-        if !run.status.is_terminal() {
-            let normalized = normalize_path(&run.worktree_path);
-            let raw = run.worktree_path;
+    for execution in scan.executions {
+        if !execution.status.is_terminal() {
+            let normalized = normalize_path(&execution.worktree_path);
+            let raw = execution.worktree_path;
             if raw != normalized {
                 result.push(raw);
                 result.push(normalized);
@@ -532,12 +532,33 @@ impl GcRevalidationReader for StdGcRevalidationReader {
         current_session_state(app_data_dir, session_id)
     }
 
-    fn workflow_run_state(
+    fn workflow_execution_state(
         &self,
         app_data_dir: &Path,
-        run_id: &str,
-    ) -> RevalidationRead<CurrentWorkflowRunState> {
-        current_workflow_run_state(app_data_dir, run_id)
+        execution_id: &str,
+    ) -> RevalidationRead<CurrentWorkflowExecutionState> {
+        current_workflow_execution_state(app_data_dir, execution_id)
+    }
+
+    fn workflow_execution_states(
+        &self,
+        app_data_dir: &Path,
+        execution_ids: &HashSet<String>,
+    ) -> HashMap<String, RevalidationRead<CurrentWorkflowExecutionState>> {
+        let manual_archive_times = manual_archive_times(app_data_dir);
+        execution_ids
+            .iter()
+            .map(|execution_id| {
+                (
+                    execution_id.clone(),
+                    current_workflow_execution_state_with_archives(
+                        app_data_dir,
+                        execution_id,
+                        &manual_archive_times,
+                    ),
+                )
+            })
+            .collect()
     }
 }
 
@@ -561,19 +582,33 @@ fn current_session_state(
     }
 }
 
-fn current_workflow_run_state(
+fn current_workflow_execution_state(
     app_data_dir: &Path,
-    run_id: &str,
-) -> RevalidationRead<CurrentWorkflowRunState> {
-    let run = match WorkflowRunFileRepository::new(app_data_dir).read_gc_metadata(run_id) {
-        Ok(Some(run)) => run,
-        Ok(None) => return RevalidationRead::Missing,
-        Err(error) => return RevalidationRead::Unavailable(error),
-    };
-    let manual_archived_at = manual_archive_times(app_data_dir).get(&run.run_id).copied();
-    RevalidationRead::Present(CurrentWorkflowRunState {
-        worktree_path: normalize_worktree_path_for_gc(&run.worktree_path),
-        is_terminal: run.status.is_terminal(),
+    execution_id: &str,
+) -> RevalidationRead<CurrentWorkflowExecutionState> {
+    let manual_archive_times = manual_archive_times(app_data_dir);
+    current_workflow_execution_state_with_archives(
+        app_data_dir,
+        execution_id,
+        &manual_archive_times,
+    )
+}
+
+fn current_workflow_execution_state_with_archives(
+    app_data_dir: &Path,
+    execution_id: &str,
+    manual_archive_times: &HashMap<String, f64>,
+) -> RevalidationRead<CurrentWorkflowExecutionState> {
+    let execution =
+        match WorkflowExecutionFileRepository::new(app_data_dir).read_gc_metadata(execution_id) {
+            Ok(Some(execution)) => execution,
+            Ok(None) => return RevalidationRead::Missing,
+            Err(error) => return RevalidationRead::Unavailable(error),
+        };
+    let manual_archived_at = manual_archive_times.get(&execution.execution_id).copied();
+    RevalidationRead::Present(CurrentWorkflowExecutionState {
+        worktree_path: normalize_worktree_path_for_gc(&execution.worktree_path),
+        is_terminal: execution.status.is_terminal(),
         manual_archived_at,
     })
 }
@@ -583,7 +618,6 @@ mod tests {
     use super::*;
     use crate::infrastructure::process::pid_registry::PidFileV1;
     use parking_lot::RwLock;
-    use std::collections::HashSet;
     use std::sync::Arc;
 
     #[test]
@@ -636,7 +670,7 @@ mod tests {
             .to_string(),
         )
         .unwrap();
-        write_workflow_run_metadata(
+        write_workflow_execution_metadata(
             tmp.path(),
             "00000000-0000-4000-8000-000000000001",
             running_worktree.path(),
@@ -687,7 +721,7 @@ mod tests {
     #[test]
     fn runtime_protection_marks_incomplete_when_workflow_metadata_is_unreadable() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join("workflow_runs/running.json")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("workflow_executions/running.json")).unwrap();
 
         let protection = collect_runtime_protection(tmp.path(), &[]);
 
@@ -766,103 +800,22 @@ mod tests {
         assert_eq!(records[0].path, dir.join("repo.json"));
     }
 
-    #[test]
-    fn collect_workflow_run_gc_records_uses_pending_index_for_all_pending_states() {
-        use crate::adaptor::gateway::workflow::pending_command::{
-            PendingCommand, PendingCommandPayload,
-        };
-
-        let tmp = tempfile::tempdir().unwrap();
-        let worktree = tempfile::tempdir().unwrap();
-        let run_id = "00000000-0000-4000-8000-000000000101";
-        let other_run_id = "00000000-0000-4000-8000-000000000102";
-        write_workflow_run_metadata(tmp.path(), run_id, worktree.path(), "completed").unwrap();
-        write_workflow_run_metadata(tmp.path(), other_run_id, worktree.path(), "completed")
-            .unwrap();
-        let store = PendingCommandStore::new(tmp.path());
-        let payload = PendingCommandPayload::Abort { node_name: None };
-        let pending = PendingCommand::new(run_id.to_string(), payload.clone(), 1.0);
-        let pending_path = store.write_pending(&pending).unwrap();
-        let processing = PendingCommand::new(run_id.to_string(), payload.clone(), 2.0);
-        store.write_pending(&processing).unwrap();
-        let processing_entry = store
-            .list_pending()
-            .unwrap()
-            .into_iter()
-            .find(|entry| entry.command.id == processing.id)
-            .unwrap();
-        let processing_claim = store.claim_pending(&processing_entry).unwrap().unwrap();
-        let processing_path = processing_claim.entry.path.clone();
-        let processed = PendingCommand::new(other_run_id.to_string(), payload, 3.0);
-        store.write_pending(&processed).unwrap();
-        let processed_entry = store
-            .list_pending()
-            .unwrap()
-            .into_iter()
-            .find(|entry| entry.command.id == processed.id)
-            .unwrap();
-        let processed_claim = store.claim_pending(&processed_entry).unwrap().unwrap();
-        let processed_file_name = processed_claim
-            .entry
-            .path
-            .file_name()
-            .unwrap()
-            .to_os_string();
-        store.mark_processed(&processed_claim.entry).unwrap();
-        let processed_path = tmp
-            .path()
-            .join("workflow_pending/processed")
-            .join(processed_file_name);
-        let pending_index = store.gc_delete_paths_by_run();
-        let runs = WorkflowRunFileRepository::new(tmp.path());
-        assert_eq!(
-            runs.gc_delete_paths_with_pending_index(run_id, &pending_index)
-                .into_iter()
-                .collect::<HashSet<_>>(),
-            runs.gc_delete_paths(run_id)
-                .into_iter()
-                .collect::<HashSet<_>>()
-        );
-        assert_eq!(
-            runs.gc_delete_paths_with_pending_index(other_run_id, &pending_index)
-                .into_iter()
-                .collect::<HashSet<_>>(),
-            runs.gc_delete_paths(other_run_id)
-                .into_iter()
-                .collect::<HashSet<_>>()
-        );
-
-        let records = collect_workflow_run_gc_records(tmp.path());
-
-        let record = records
-            .iter()
-            .find(|record| record.run_id == run_id)
-            .unwrap();
-        assert!(record.delete_paths.contains(&pending_path));
-        assert!(record.delete_paths.contains(&processing_path));
-        let other_record = records
-            .iter()
-            .find(|record| record.run_id == other_run_id)
-            .unwrap();
-        assert!(other_record.delete_paths.contains(&processed_path));
-    }
-
-    fn write_workflow_run_metadata(
+    fn write_workflow_execution_metadata(
         app_data_dir: &std::path::Path,
-        run_id: &str,
+        execution_id: &str,
         worktree_path: &std::path::Path,
         status: &str,
     ) -> std::io::Result<()> {
-        let runs_dir = app_data_dir.join("workflow_runs");
-        std::fs::create_dir_all(&runs_dir)?;
+        let executions_dir = app_data_dir.join("workflow_executions");
+        std::fs::create_dir_all(&executions_dir)?;
         std::fs::write(
-            runs_dir.join(format!("{run_id}.json")),
+            executions_dir.join(format!("{execution_id}.json")),
             serde_json::json!({
-                "runId": run_id,
+                "executionId": execution_id,
                 "workflowName": "wf",
                 "status": status,
                 "worktreePath": worktree_path.to_string_lossy(),
-                "triggerSource": "desktop_ui",
+                "createdFrom": "desktop_ui",
                 "startedAt": 1.0,
                 "updatedAt": 1.0
             })

@@ -1,130 +1,81 @@
-use std::collections::{HashMap, HashSet};
-
 use crate::adaptor::protocol::workflow as workflow_wire;
 use crate::domain::workflow;
-use crate::domain::workflow::WorkflowStateSnapshot;
 
-#[derive(Debug, Clone, Default)]
-pub struct WorkflowStepRuntimeProjection {
-    pub runtime_active: bool,
-    pub tab_open: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct WorkflowStateProjection {
-    pub state: WorkflowStateSnapshot,
-    pub runtime_states: HashMap<String, WorkflowStepRuntimeProjection>,
-}
-
-pub fn build_workflow_state_projection_from_sets(
-    state: WorkflowStateSnapshot,
-    active_sessions: &HashSet<String>,
-    open_sessions: &HashSet<String>,
-) -> WorkflowStateProjection {
-    let runtime_states: HashMap<String, WorkflowStepRuntimeProjection> =
-        workflow::services::session_projection::collect_step_session_ids(&state)
+pub fn workflow_execution_to_view(
+    execution: workflow::WorkflowExecution,
+) -> workflow_wire::WorkflowExecutionView {
+    workflow_wire::WorkflowExecutionView {
+        id: execution.id,
+        workflow_name: execution.workflow_name,
+        status: execution_status_to_view(execution.status),
+        current_node: execution.current_node,
+        worktree_path: execution.worktree_path,
+        created_from: execution_origin_to_view(execution.created_from),
+        started_at: execution.started_at,
+        updated_at: execution.updated_at,
+        completed_at: execution.completed_at,
+        error_reason: execution.error_reason,
+        interruption_reason: execution
+            .interruption_reason
+            .map(execution_interruption_reason_to_view),
+        resume_from_node: execution.resume_from_node,
+        total_token_usage: token_usage_to_view(execution.total_token_usage),
+        node_executions: execution
+            .node_executions
             .into_iter()
-            .map(|session_id| {
-                (
-                    session_id.clone(),
-                    WorkflowStepRuntimeProjection {
-                        runtime_active: active_sessions.contains(&session_id),
-                        tab_open: open_sessions.contains(&session_id),
-                    },
-                )
-            })
-            .collect();
-    WorkflowStateProjection {
-        state,
-        runtime_states,
+            .map(node_execution_to_view)
+            .collect(),
+        artifacts: execution
+            .artifacts
+            .into_iter()
+            .map(artifact_to_view)
+            .collect(),
+        fanouts: execution.fanouts.into_iter().map(fanout_to_view).collect(),
+        approval_target: execution.approval_target.map(approval_target_to_view),
     }
 }
 
-pub fn workflow_state_to_view(
-    state: WorkflowStateSnapshot,
-) -> workflow_wire::WorkflowStateFieldsView {
-    workflow_wire::WorkflowStateFieldsView {
-        execution_id: state.execution_id,
-        workflow_name: state.workflow_name,
-        state: workflow_execution_state_to_view(state.state),
-        current_step_index: state.current_step_index,
-        current_step_name: state.current_step_name,
-        current_session_id: state.current_session_id,
-        total_steps: state.total_steps,
-        step_history: state
-            .step_history
-            .into_iter()
-            .map(step_history_entry_to_view)
-            .collect(),
-        step_execution_counts: state.step_execution_counts,
-        workflow_definition: workflow_definition_to_view(state.workflow_definition),
-        total_token_usage: token_usage_to_view(state.total_token_usage),
-        step_states: state.step_states,
-        step_outputs: state
-            .step_outputs
-            .into_iter()
-            .map(|(key, output)| (key, step_output_to_view(output)))
-            .collect(),
-        active_parallel_steps: state
-            .active_parallel_steps
-            .into_iter()
-            .map(parallel_step_state_to_view)
-            .collect(),
-        workflow_variables: state.workflow_variables,
-        approval_operations: state.approval_operations.map(|operations| {
-            workflow_wire::ApprovalOperationsView {
-                can_reject: operations.can_reject,
-            }
-        }),
-        stall_observations: state
-            .stall_observations
-            .into_iter()
-            .map(stall_observation_to_view)
-            .collect(),
-        started_at: state.started_at,
-        updated_at: state.updated_at,
+fn execution_status_to_view(
+    status: workflow::ExecutionStatus,
+) -> workflow_wire::ExecutionStatusView {
+    match status {
+        workflow::ExecutionStatus::Running => workflow_wire::ExecutionStatusView::Running,
+        workflow::ExecutionStatus::WaitingApproval => {
+            workflow_wire::ExecutionStatusView::WaitingApproval
+        }
+        workflow::ExecutionStatus::Completed => workflow_wire::ExecutionStatusView::Completed,
+        workflow::ExecutionStatus::Failed => workflow_wire::ExecutionStatusView::Failed,
+        workflow::ExecutionStatus::Aborted => workflow_wire::ExecutionStatusView::Aborted,
+        workflow::ExecutionStatus::Interrupted => workflow_wire::ExecutionStatusView::Interrupted,
     }
 }
 
-fn stall_observation_to_view(
-    observation: workflow::WorkflowStallObservation,
-) -> workflow_wire::WorkflowStallObservationView {
-    workflow_wire::WorkflowStallObservationView {
-        chat_session_id: observation.session_id,
-        step_name: observation.step_name,
-        run_index: observation.run_index,
-        turn_phase: observation.turn_phase,
-        idle_secs: observation.idle_secs,
-        signal_count: observation.signal_count,
-        cap_reached: observation.cap_reached,
-        observed_at: observation.observed_at,
+fn execution_origin_to_view(
+    origin: workflow::ExecutionOrigin,
+) -> workflow_wire::ExecutionOriginView {
+    match origin {
+        workflow::ExecutionOrigin::DesktopUi => workflow_wire::ExecutionOriginView::DesktopUi,
+        workflow::ExecutionOrigin::Cli => workflow_wire::ExecutionOriginView::Cli,
+        workflow::ExecutionOrigin::Agent => workflow_wire::ExecutionOriginView::Agent,
+        workflow::ExecutionOrigin::Api => workflow_wire::ExecutionOriginView::Api,
     }
 }
 
-fn workflow_execution_state_to_view(
-    state: workflow::WorkflowExecutionState,
-) -> workflow_wire::WorkflowExecutionStateView {
-    match state {
-        workflow::WorkflowExecutionState::Running => {
-            workflow_wire::WorkflowExecutionStateView::Running
+fn execution_interruption_reason_to_view(
+    reason: workflow::ExecutionInterruptionReason,
+) -> workflow_wire::ExecutionInterruptionReasonView {
+    match reason {
+        workflow::ExecutionInterruptionReason::Crash => {
+            workflow_wire::ExecutionInterruptionReasonView::Crash
         }
-        workflow::WorkflowExecutionState::WaitingApproval => {
-            workflow_wire::WorkflowExecutionStateView::WaitingApproval
+        workflow::ExecutionInterruptionReason::Stale => {
+            workflow_wire::ExecutionInterruptionReasonView::Stale
         }
-        workflow::WorkflowExecutionState::Completed => {
-            workflow_wire::WorkflowExecutionStateView::Completed
+        workflow::ExecutionInterruptionReason::Stop => {
+            workflow_wire::ExecutionInterruptionReasonView::Stop
         }
-        workflow::WorkflowExecutionState::Failed {
-            reason,
-            kind,
-            retry_count,
-        } => workflow_wire::WorkflowExecutionStateView::Failed {
-            reason,
-            failure_kind: kind,
-            retry_count,
-        },
-        workflow::WorkflowExecutionState::Aborted => {
-            workflow_wire::WorkflowExecutionStateView::Aborted
+        workflow::ExecutionInterruptionReason::Orphan => {
+            workflow_wire::ExecutionInterruptionReasonView::Orphan
         }
     }
 }
@@ -136,465 +87,209 @@ fn token_usage_to_view(usage: workflow::TokenUsage) -> workflow_wire::TokenUsage
     }
 }
 
-fn workflow_definition_to_view(
-    workflow: workflow::WorkflowDefinition,
-) -> workflow_wire::WorkflowDefinitionView {
-    workflow_wire::WorkflowDefinitionView {
-        name: workflow.name,
-        description: workflow.description,
-        builtin: workflow.builtin,
-        nodes: workflow
-            .nodes
+fn artifact_to_view(artifact: workflow::Artifact) -> workflow_wire::ArtifactView {
+    workflow_wire::ArtifactView {
+        node_name: artifact.node_name,
+        contract: artifact.contract,
+        value: artifact.value,
+        produced_at: artifact.produced_at,
+    }
+}
+
+pub fn node_execution_to_view(node: workflow::NodeExecution) -> workflow_wire::NodeExecutionView {
+    workflow_wire::NodeExecutionView {
+        id: node.id,
+        execution_id: node.execution_id,
+        node_name: node.node_name,
+        kind: node_kind_to_view(node.kind),
+        attempt: node.attempt,
+        status: node_status_to_view(node.status),
+        session_id: node.session_id,
+        display_command: node.display_command,
+        result_summary: node.result_summary,
+        artifact: node.artifact.map(artifact_to_view),
+        token_usage: node.token_usage.map(token_usage_to_view),
+        failure: node
+            .failure
+            .map(|failure| workflow_wire::NodeExecutionFailureView {
+                reason: failure.reason,
+                kind: failure_kind_to_view(failure.kind),
+            }),
+        fanout_parent: node
+            .fanout_parent
+            .map(|parent| workflow_wire::FanoutParentRefView {
+                parent_node: parent.parent_node,
+                parent_attempt: parent.parent_attempt,
+                item_index: parent.item_index,
+                child_index: parent.child_index,
+            }),
+        started_at: node.started_at,
+        completed_at: node.completed_at,
+    }
+}
+
+fn fanout_to_view(fanout: workflow::Fanout) -> workflow_wire::FanoutView {
+    workflow_wire::FanoutView {
+        parent: node_execution_to_view(fanout.parent),
+        children: fanout
+            .children
             .into_iter()
-            .map(workflow_node_to_view)
+            .map(node_execution_to_view)
             .collect(),
+        artifact: fanout.artifact.map(artifact_to_view),
     }
 }
 
-fn workflow_node_to_view(
-    node: workflow::NodeDefinition,
-) -> workflow_wire::WorkflowNodeDefinitionView {
-    workflow_wire::WorkflowNodeDefinitionView {
-        name: node.name,
-        node_type: node_type_to_view(node.node_type),
-        policy: node.policy,
-        knowledge: node.knowledge,
-        instruction: node.instruction,
-        output_contract: node.output_contract,
-        pass_previous_response: node.pass_previous_response,
-        pass_output_from: node.pass_output_from,
-        inline_prompt: node.inline_prompt,
-        collect: node.collect.map(collect_config_to_view),
-        command: node.command,
-        parallel_children: node
-            .parallel_children
-            .map(|children| children.into_iter().map(child_node_to_view).collect()),
-        aggregate: node.aggregate.map(aggregate_config_to_view),
-        rules: node
-            .transition_rules
-            .into_iter()
-            .map(transition_rule_to_view)
-            .collect(),
-        cycle_guard: node.cycle_guard.map(cycle_guard_to_view),
-        resets_cycle_for: node.resets_cycle_for,
-        model: node.model,
-        permission: node.permission,
+fn approval_target_to_view(target: workflow::ApprovalTarget) -> workflow_wire::ApprovalTargetView {
+    workflow_wire::ApprovalTargetView {
+        node_execution_id: target.node_execution_id,
+        node_name: target.node_name,
+        session_id: target.session_id,
     }
 }
 
-fn child_node_to_view(
-    child: workflow::ChildNodeDefinition,
-) -> workflow_wire::WorkflowChildNodeDefinitionView {
-    workflow_wire::WorkflowChildNodeDefinitionView {
-        name: child.name,
-        node_type: node_type_to_view(child.node_type),
-        policy: child.policy,
-        knowledge: child.knowledge,
-        instruction: child.instruction,
-        output_contract: child.output_contract,
-        pass_previous_response: child.pass_previous_response,
-        pass_output_from: child.pass_output_from,
-        model: child.model,
-        permission: child.permission,
+fn node_kind_to_view(kind: workflow::NodeKindName) -> workflow_wire::NodeKindView {
+    match kind {
+        workflow::NodeKindName::Command => workflow_wire::NodeKindView::Command,
+        workflow::NodeKindName::Session => workflow_wire::NodeKindView::Session,
+        workflow::NodeKindName::Fanout => workflow_wire::NodeKindView::Fanout,
     }
 }
 
-fn node_type_to_view(node_type: workflow::NodeType) -> workflow_wire::WorkflowNodeTypeView {
-    match node_type {
-        workflow::NodeType::Agent => workflow_wire::WorkflowNodeTypeView::Agent,
-        workflow::NodeType::Bash => workflow_wire::WorkflowNodeTypeView::Bash,
-        workflow::NodeType::Approval => workflow_wire::WorkflowNodeTypeView::Approval,
-        workflow::NodeType::Parallel => workflow_wire::WorkflowNodeTypeView::Parallel,
-    }
-}
-
-fn transition_rule_to_view(
-    rule: workflow::TransitionRule,
-) -> workflow_wire::WorkflowTransitionRuleView {
-    workflow_wire::WorkflowTransitionRuleView {
-        r#match: rule.r#match,
-        next: rule.next,
-    }
-}
-
-fn cycle_guard_to_view(guard: workflow::CycleGuard) -> workflow_wire::WorkflowCycleGuardView {
-    workflow_wire::WorkflowCycleGuardView {
-        max_iterations: guard.max_iterations,
-        on_exhausted: guard.on_exhausted,
-    }
-}
-
-fn collect_config_to_view(
-    collect: workflow::CollectConfig,
-) -> workflow_wire::WorkflowCollectConfigView {
-    workflow_wire::WorkflowCollectConfigView {
-        from: collect.from,
-        reduce: reduce_strategy_to_view(collect.reduce),
-    }
-}
-
-fn reduce_strategy_to_view(
-    reduce: workflow::ReduceStrategy,
-) -> workflow_wire::WorkflowReduceStrategyView {
-    match reduce {
-        workflow::ReduceStrategy::Last => workflow_wire::WorkflowReduceStrategyView::Last,
-        workflow::ReduceStrategy::Concat => workflow_wire::WorkflowReduceStrategyView::Concat,
-        workflow::ReduceStrategy::Grouped => workflow_wire::WorkflowReduceStrategyView::Grouped,
-        workflow::ReduceStrategy::AnyNeedsFix => {
-            workflow_wire::WorkflowReduceStrategyView::AnyNeedsFix
+fn node_status_to_view(
+    status: workflow::NodeExecutionStatus,
+) -> workflow_wire::NodeExecutionStatusView {
+    match status {
+        workflow::NodeExecutionStatus::Running => workflow_wire::NodeExecutionStatusView::Running,
+        workflow::NodeExecutionStatus::WaitingApproval => {
+            workflow_wire::NodeExecutionStatusView::WaitingApproval
         }
-        workflow::ReduceStrategy::AllPassed => workflow_wire::WorkflowReduceStrategyView::AllPassed,
+        workflow::NodeExecutionStatus::Succeeded => {
+            workflow_wire::NodeExecutionStatusView::Succeeded
+        }
+        workflow::NodeExecutionStatus::Failed => workflow_wire::NodeExecutionStatusView::Failed,
+        workflow::NodeExecutionStatus::Aborted => workflow_wire::NodeExecutionStatusView::Aborted,
     }
 }
 
-fn aggregate_config_to_view(
-    aggregate: workflow::ParallelAggregate,
-) -> workflow_wire::WorkflowAggregateConfigView {
-    workflow_wire::WorkflowAggregateConfigView {
-        all_match: aggregate.all_match,
-        any_match: aggregate.any_match,
-        then: aggregate.then,
-        r#else: aggregate.r#else,
-    }
-}
-
-fn step_history_entry_to_view(
-    entry: workflow::StepHistoryEntry,
-) -> workflow_wire::StepHistoryEntryView {
-    workflow_wire::StepHistoryEntryView {
-        step_name: entry.step_name,
-        completed_at: entry.completed_at,
-        result: entry.result,
-        session_id: entry.session_id,
-        token_usage: entry.token_usage.map(token_usage_to_view),
-        structured_output: entry.structured_output,
-        run_index: entry.run_index,
-        child_outputs: entry
-            .child_outputs
-            .map(|children| children.into_iter().map(child_output_to_view).collect()),
-        state: entry.state,
-    }
-}
-
-fn child_output_to_view(
-    output: workflow::ChildOutputSnapshot,
-) -> workflow_wire::ChildOutputSnapshotView {
-    workflow_wire::ChildOutputSnapshotView {
-        step_name: output.step_name,
-        session_id: output.session_id,
-        result: output.result,
-        run_index: output.run_index,
-        completed_at: output.completed_at,
-        structured_output: output.structured_output,
-        output_contract: output.output_contract,
-        state: output.state,
-        failure_kind: output.failure_kind,
-        failure_disposition: output.failure_disposition,
-    }
-}
-
-fn parallel_step_state_to_view(
-    state: workflow::ParallelStepState,
-) -> workflow_wire::ParallelStepStateView {
-    workflow_wire::ParallelStepStateView {
-        step_name: state.step_name,
-        state: state.state,
-        session_id: state.session_id,
-        result: state.result,
-        run_index: state.run_index,
-        completed_at: state.completed_at,
-        structured_output: state.structured_output,
-        output_contract: state.output_contract,
-        failure_kind: state.failure_kind,
-        failure_disposition: state.failure_disposition,
-    }
-}
-
-fn step_output_to_view(output: workflow::StepOutput) -> workflow_wire::StepOutputView {
-    workflow_wire::StepOutputView {
-        step_name: output.step_name,
-        run_index: output.run_index,
-        session_id: output.session_id,
-        result: output.result,
-        structured_output: output.structured_output,
-        output_contract: output.output_contract,
-        token_usage: output.token_usage.map(token_usage_to_view),
-        completed_at: output.completed_at,
+fn failure_kind_to_view(
+    kind: workflow::NodeExecutionFailureKind,
+) -> workflow_wire::NodeExecutionFailureKindView {
+    match kind {
+        workflow::NodeExecutionFailureKind::StartupTimeout => {
+            workflow_wire::NodeExecutionFailureKindView::StartupTimeout
+        }
+        workflow::NodeExecutionFailureKind::StaleRuntimeTimeout => {
+            workflow_wire::NodeExecutionFailureKindView::StaleRuntimeTimeout
+        }
+        workflow::NodeExecutionFailureKind::ModelRefusal => {
+            workflow_wire::NodeExecutionFailureKindView::ModelRefusal
+        }
+        workflow::NodeExecutionFailureKind::StructuredOutputMismatch => {
+            workflow_wire::NodeExecutionFailureKindView::StructuredOutputMismatch
+        }
+        workflow::NodeExecutionFailureKind::ValidationFailure => {
+            workflow_wire::NodeExecutionFailureKindView::ValidationFailure
+        }
+        workflow::NodeExecutionFailureKind::UserAbort => {
+            workflow_wire::NodeExecutionFailureKindView::UserAbort
+        }
+        workflow::NodeExecutionFailureKind::InfrastructureCrash => {
+            workflow_wire::NodeExecutionFailureKindView::InfrastructureCrash
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::workflow::{
-        ChildOutputSnapshot, NodeDefinition, NodeType, ParallelStepState, StepHistoryEntry,
-        TokenUsage, WorkflowDefinition, WorkflowExecutionState,
-    };
 
-    fn state() -> WorkflowStateSnapshot {
-        WorkflowStateSnapshot {
-            execution_id: "exec-1".to_string(),
-            workflow_name: "wf".to_string(),
-            state: WorkflowExecutionState::Running,
-            current_step_index: 1,
-            current_step_name: "current".to_string(),
-            current_session_id: Some("current-session".to_string()),
-            total_steps: 2,
-            step_history: vec![StepHistoryEntry {
-                step_name: "done".to_string(),
-                completed_at: 1.0,
-                result: Some("ok".to_string()),
-                session_id: Some("done-session".to_string()),
-                token_usage: None,
-                structured_output: None,
-                run_index: 1,
-                child_outputs: Some(vec![ChildOutputSnapshot {
-                    step_name: "child".to_string(),
-                    session_id: Some("child-session".to_string()),
-                    result: Some("ok".to_string()),
-                    run_index: 1,
-                    completed_at: 2.0,
-                    structured_output: None,
-                    output_contract: None,
-                    state: "completed".to_string(),
-                    failure_kind: None,
-                    failure_disposition: None,
-                }]),
-                state: "completed".to_string(),
-            }],
-            step_execution_counts: HashMap::new(),
-            workflow_definition: WorkflowDefinition {
-                variables: Default::default(),
-                name: "wf".to_string(),
-                description: String::new(),
-                builtin: false,
-                nodes: vec![],
-            },
-            total_token_usage: TokenUsage::default(),
-            step_states: HashMap::new(),
-            step_outputs: HashMap::new(),
-            active_parallel_steps: vec![ParallelStepState {
-                step_name: "running-child".to_string(),
-                state: "running".to_string(),
-                session_id: Some("parallel-session".to_string()),
-                result: None,
-                run_index: 1,
-                completed_at: None,
-                structured_output: None,
-                output_contract: None,
-                failure_kind: None,
-                failure_disposition: None,
-            }],
-            workflow_variables: HashMap::new(),
-            approval_operations: None,
-            stall_observations: Vec::new(),
-            started_at: 0.0,
+    fn artifact(node_name: &str) -> workflow::Artifact {
+        workflow::Artifact {
+            node_name: node_name.to_string(),
+            contract: Some("result".to_string()),
+            value: serde_json::json!({"ok": true}),
+            produced_at: 2.0,
+        }
+    }
+
+    fn node() -> workflow::NodeExecution {
+        workflow::NodeExecution {
+            id: "node-1".to_string(),
+            execution_id: "execution-1".to_string(),
+            node_name: "review".to_string(),
+            kind: workflow::NodeKindName::Session,
+            attempt: 1,
+            status: workflow::NodeExecutionStatus::WaitingApproval,
+            session_id: Some("session-1".to_string()),
+            display_command: None,
+            result_summary: None,
+            artifact: Some(artifact("review")),
+            token_usage: Some(workflow::TokenUsage {
+                input_tokens: 3,
+                output_tokens: 2,
+            }),
+            failure: None,
+            fanout_parent: None,
+            started_at: 1.5,
+            completed_at: None,
+        }
+    }
+
+    #[test]
+    fn maps_complete_public_read_model_without_legacy_wrapper() {
+        let node = node();
+        let execution = workflow::WorkflowExecution {
+            id: "execution-1".to_string(),
+            workflow_name: "review".to_string(),
+            status: workflow::ExecutionStatus::Interrupted,
+            current_node: Some("review".to_string()),
+            created_from: workflow::ExecutionOrigin::Cli,
+            worktree_path: "/repo".to_string(),
+            started_at: 1.0,
             updated_at: 2.0,
-        }
-    }
-
-    #[test]
-    fn presenter_adds_runtime_state_for_current_history_child_and_parallel_sessions() {
-        let open_sessions =
-            HashSet::from(["done-session".to_string(), "parallel-session".to_string()]);
-        let active_sessions = HashSet::from([
-            "current-session".to_string(),
-            "child-session".to_string(),
-            "parallel-session".to_string(),
-        ]);
-
-        let view =
-            build_workflow_state_projection_from_sets(state(), &active_sessions, &open_sessions);
-
-        assert!(view.runtime_states["current-session"].runtime_active);
-        assert!(!view.runtime_states["current-session"].tab_open);
-        assert!(view.runtime_states["child-session"].runtime_active);
-        assert!(!view.runtime_states["child-session"].tab_open);
-        assert!(view.runtime_states["done-session"].tab_open);
-        assert!(!view.runtime_states["done-session"].runtime_active);
-        assert!(view.runtime_states["parallel-session"].runtime_active);
-        assert!(view.runtime_states["parallel-session"].tab_open);
-    }
-
-    #[test]
-    fn workflow_state_to_view_preserves_failed_classification() {
-        let mut state = state();
-        state.state = WorkflowExecutionState::Failed {
-            reason: "startup timed out".to_string(),
-            kind: crate::domain::workflow::WorkflowStepFailureKind::StartupTimeout,
-            retry_count: Some(2),
-        };
-
-        let view = workflow_state_to_view(state);
-
-        assert_eq!(
-            view.state,
-            workflow_wire::WorkflowExecutionStateView::Failed {
-                reason: "startup timed out".to_string(),
-                failure_kind: crate::domain::workflow::WorkflowStepFailureKind::StartupTimeout,
-                retry_count: Some(2),
-            }
-        );
-        let json = serde_json::to_value(&view.state).unwrap();
-        assert_eq!(json["failureKind"], "startup_timeout");
-        assert_eq!(json["retryCount"], 2);
-    }
-
-    #[test]
-    fn workflow_state_to_view_maps_failure_metadata_to_wire_enums() {
-        let mut state = state();
-        state.active_parallel_steps[0].state =
-            crate::domain::workflow::STEP_STATE_FAILED.to_string();
-        state.active_parallel_steps[0].failure_kind =
-            Some(crate::domain::workflow::WorkflowStepFailureKind::ModelRefusal);
-        state.active_parallel_steps[0].failure_disposition =
-            Some(crate::domain::workflow::FailureDisposition::Partial);
-        state.step_history[0].child_outputs = Some(vec![ChildOutputSnapshot {
-            step_name: "review-child".to_string(),
-            session_id: Some("child-session".to_string()),
-            result: Some("model_refusal".to_string()),
-            run_index: 1,
-            completed_at: 3.0,
-            structured_output: None,
-            output_contract: None,
-            state: crate::domain::workflow::STEP_STATE_FAILED.to_string(),
-            failure_kind: Some(crate::domain::workflow::WorkflowStepFailureKind::ModelRefusal),
-            failure_disposition: Some(crate::domain::workflow::FailureDisposition::Partial),
-        }]);
-
-        let view = workflow_state_to_view(state);
-        let child = view.step_history[0].child_outputs.as_ref().unwrap()[0].clone();
-        let parallel = view.active_parallel_steps[0].clone();
-
-        assert_eq!(
-            child.failure_kind,
-            Some(crate::domain::workflow::WorkflowStepFailureKind::ModelRefusal)
-        );
-        assert_eq!(
-            child.failure_disposition,
-            Some(crate::domain::workflow::FailureDisposition::Partial)
-        );
-        assert_eq!(
-            parallel.failure_kind,
-            Some(crate::domain::workflow::WorkflowStepFailureKind::ModelRefusal)
-        );
-        assert_eq!(
-            parallel.failure_disposition,
-            Some(crate::domain::workflow::FailureDisposition::Partial)
-        );
-
-        let value = serde_json::to_value(view).unwrap();
-        assert_eq!(
-            value["stepHistory"][0]["childOutputs"][0]["failureKind"],
-            "model_refusal"
-        );
-        assert_eq!(
-            value["activeParallelSteps"][0]["failureDisposition"],
-            "partial"
-        );
-    }
-
-    // ---- WorkflowState wire view serde ----
-
-    fn make_session_test_node(
-        name: &str,
-        node_type: NodeType,
-        instruction: &str,
-    ) -> NodeDefinition {
-        NodeDefinition {
-            name: name.to_string(),
-            node_type,
-            instruction: Some(instruction.to_string()),
-            ..NodeDefinition::default()
-        }
-    }
-
-    fn make_test_workflow_for_session() -> WorkflowDefinition {
-        WorkflowDefinition {
-            variables: Default::default(),
-            name: "review-cycle".to_string(),
-            description: "Test".to_string(),
-            builtin: false,
-            nodes: vec![
-                make_session_test_node("plan", NodeType::Agent, "plan"),
-                make_session_test_node("implement", NodeType::Agent, "implement"),
-                make_session_test_node("review", NodeType::Agent, "review"),
-                NodeDefinition {
-                    name: "report".to_string(),
-                    node_type: NodeType::Approval,
-                    instruction: Some("report".to_string()),
-                    ..NodeDefinition::default()
-                },
-            ],
-        }
-    }
-
-    #[test]
-    fn workflow_state_view_serde_roundtrip() {
-        let state = WorkflowStateSnapshot {
-            execution_id: "exec-1".to_string(),
-            workflow_name: "review-cycle".to_string(),
-            state: WorkflowExecutionState::Running,
-            current_step_index: 2,
-            current_step_name: "review".to_string(),
-            current_session_id: Some("sess-current".to_string()),
-            total_steps: 4,
-            step_history: vec![
-                StepHistoryEntry {
-                    step_name: "plan".to_string(),
-                    completed_at: 1000.0,
-                    result: None,
-                    session_id: None,
-                    token_usage: None,
-                    structured_output: None,
-                    run_index: 0,
-                    child_outputs: None,
-                    state: crate::domain::workflow::value_objects::default_step_entry_state(),
-                },
-                StepHistoryEntry {
-                    step_name: "implement".to_string(),
-                    completed_at: 1001.0,
-                    result: Some("done".to_string()),
-                    session_id: Some("sess-1".to_string()),
-                    token_usage: Some(TokenUsage {
-                        input_tokens: 100,
-                        output_tokens: 50,
-                    }),
-                    structured_output: None,
-                    run_index: 0,
-                    child_outputs: None,
-                    state: crate::domain::workflow::value_objects::default_step_entry_state(),
-                },
-            ],
-            step_execution_counts: HashMap::new(),
-            step_outputs: HashMap::new(),
-            workflow_definition: make_test_workflow_for_session(),
-            total_token_usage: TokenUsage {
-                input_tokens: 100,
-                output_tokens: 50,
+            completed_at: None,
+            error_reason: None,
+            interruption_reason: Some(workflow::ExecutionInterruptionReason::Stop),
+            resume_from_node: Some("review".to_string()),
+            total_token_usage: workflow::TokenUsage {
+                input_tokens: 3,
+                output_tokens: 2,
             },
-            step_states: HashMap::new(),
-            active_parallel_steps: vec![],
-            workflow_variables: HashMap::new(),
-            approval_operations: None,
-            stall_observations: Vec::new(),
-            started_at: 999.0,
-            updated_at: 1001.0,
+            node_executions: vec![node.clone()],
+            artifacts: vec![artifact("request")],
+            fanouts: vec![workflow::Fanout {
+                parent: node,
+                children: Vec::new(),
+                artifact: Some(artifact("review")),
+            }],
+            approval_target: Some(workflow::ApprovalTarget {
+                node_execution_id: "node-1".to_string(),
+                node_name: "review".to_string(),
+                session_id: Some("session-1".to_string()),
+            }),
         };
-        let view = workflow_state_to_view(state);
-        let json = serde_json::to_string(&view).unwrap();
-        let back: workflow_wire::WorkflowStateFieldsView = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.execution_id, "exec-1");
-        assert_eq!(back.workflow_name, "review-cycle");
-        assert_eq!(
-            back.state,
-            workflow_wire::WorkflowExecutionStateView::Running
-        );
-        assert_eq!(back.current_step_index, 2);
-        assert_eq!(back.current_step_name, "review");
-        assert_eq!(back.total_steps, 4);
-        assert_eq!(back.step_history.len(), 2);
-        assert_eq!(back.step_history[0].step_name, "plan");
-        assert_eq!(back.step_history[1].result, Some("done".to_string()));
+
+        let value = serde_json::to_value(workflow_execution_to_view(execution)).unwrap();
+        assert_eq!(value["id"], "execution-1");
+        assert_eq!(value["currentNode"], "review");
+        assert_eq!(value["nodeExecutions"][0]["artifact"]["nodeName"], "review");
+        assert_eq!(value["fanouts"][0]["parent"]["id"], "node-1");
+        assert_eq!(value["approvalTarget"]["sessionId"], "session-1");
+        assert_eq!(value["interruptionReason"], "stop");
+        assert_eq!(value["resumeFromNode"], "review");
+    }
+
+    #[test]
+    fn maps_masked_command_display_to_camel_case_wire_field() {
+        let mut command = node();
+        command.kind = workflow::NodeKindName::Command;
+        command.session_id = None;
+        command.display_command = Some("printf '[REDACTED]'".to_string());
+
+        let value = serde_json::to_value(node_execution_to_view(command)).unwrap();
+
+        assert_eq!(value["displayCommand"], "printf '[REDACTED]'");
+        assert!(value.get("display_command").is_none());
     }
 }

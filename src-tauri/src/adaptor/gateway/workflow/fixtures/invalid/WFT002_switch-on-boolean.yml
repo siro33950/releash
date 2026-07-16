@@ -1,0 +1,31 @@
+name: switch-on-boolean
+description: switch.on must be enum
+schemas:
+  verdict:
+    type: object
+    properties:
+      passed:
+        type: boolean
+    required:
+      - passed
+    additionalProperties: false
+nodes:
+  - name: judge
+    artifact: verdict
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        instruction: judge
+    rules:
+      - switch:
+          on: passed
+          cases:
+            "true": done
+        next: done
+  - name: done
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        instruction: done

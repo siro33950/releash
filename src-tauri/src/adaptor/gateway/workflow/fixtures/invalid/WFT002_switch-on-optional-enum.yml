@@ -1,0 +1,28 @@
+name: switch-on-optional-enum
+description: switch routing fields must be required by their Contract
+schemas:
+  verdict:
+    type: object
+    properties:
+      decision:
+        type: string
+        enum: [done, fix]
+    additionalProperties: false
+nodes:
+  - name: judge
+    artifact: verdict
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        instruction: judge
+    rules:
+      - switch:
+          on: decision
+          cases:
+            done: done
+            fix: fix
+  - name: done
+    command: printf done
+  - name: fix
+    command: printf fix

@@ -102,7 +102,6 @@ fn parse_editor_facet_kind(kind: &str) -> Result<facet::FacetKind, WorkflowError
         "policy" | "policies" => Ok(facet::FacetKind::Policy),
         "knowledge" => Ok(facet::FacetKind::Knowledge),
         "instruction" | "instructions" => Ok(facet::FacetKind::Instruction),
-        "contract" | "contracts" => Ok(facet::FacetKind::Contract),
         _ => Err(WorkflowError::validation(format!(
             "Unknown facet kind: {kind}"
         ))),
@@ -112,26 +111,33 @@ fn parse_editor_facet_kind(kind: &str) -> Result<facet::FacetKind, WorkflowError
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adaptor::gateway::workflow::schema::{NodeDefinition, NodeType, Workflow};
+    use crate::adaptor::gateway::workflow::schema::{
+        FacetRefs, NodeDefinition, NodeKind, SessionSpec, WorkflowDefinitionYaml,
+    };
     use tempfile::TempDir;
 
     #[test]
     fn workflow_editor_path_rejects_builtin_and_resolves_custom_file() {
         let tmp = TempDir::new().unwrap();
-        let workflow = Workflow {
+        let workflow = WorkflowDefinitionYaml {
             name: "custom".to_string(),
             description: String::new(),
             builtin: false,
-            variables: Default::default(),
+            schemas: Default::default(),
             nodes: vec![NodeDefinition {
-                name: "step".to_string(),
-                node_type: NodeType::Agent,
-                inline_prompt: Some("run".to_string()),
-                permission: Some("edit".to_string()),
+                name: "node".to_string(),
+                kind: NodeKind::Session(SessionSpec {
+                    permission: Some("edit".to_string()),
+                    facets: FacetRefs {
+                        instruction: Some("implement".to_string()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
                 ..NodeDefinition::default()
             }],
         };
-        storage::save_workflow(tmp.path(), tmp.path(), &workflow).unwrap();
+        storage::save_workflow(tmp.path(), &workflow).unwrap();
 
         let path = resolve_workflow_editor_path(tmp.path(), "custom").unwrap();
 

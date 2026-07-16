@@ -103,7 +103,7 @@ pub(crate) fn build_agent_runtime_usecase_with_controller_and_notifiers(
         name: "Codex",
         models: vec![
             "gpt-5",
-            "gpt-5.5",
+            "gpt-5.6-sol",
             "gpt-5.6-sol",
             "gpt-5.6-terra",
             "gpt-5.6-luna",

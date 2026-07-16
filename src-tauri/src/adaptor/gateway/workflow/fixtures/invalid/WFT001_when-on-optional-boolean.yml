@@ -1,0 +1,24 @@
+name: when-on-optional-boolean
+description: when routing fields must be required by their Contract
+schemas:
+  verdict:
+    type: object
+    properties:
+      passed:
+        type: boolean
+    additionalProperties: false
+nodes:
+  - name: judge
+    artifact: verdict
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        instruction: judge
+    rules:
+      - when: { on: passed, then: done }
+        next: fix
+  - name: done
+    command: printf done
+  - name: fix
+    command: printf fix

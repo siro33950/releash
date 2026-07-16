@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 pub use crate::domain::notification::NotifyConfig;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,12 +39,6 @@ pub struct AppSettings {
     pub last_root_path: String,
     pub last_repo_paths: Vec<String>,
     pub external_editor: String,
-    pub agent_shortcuts: AgentShortcutConfig,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct AgentShortcutConfig {
-    pub overrides: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

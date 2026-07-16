@@ -1,0 +1,11 @@
+name: unknown-rule-target
+description: next points to a missing node
+nodes:
+  - name: implement
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        instruction: implement
+    rules:
+      - next: missing

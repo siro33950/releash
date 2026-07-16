@@ -1,6 +1,6 @@
 # 役割
 
-{{project_name}} のコード変更を、6 観点すべてから包括的にレビューする。
+{{ request }} のコード変更を、6 観点すべてから包括的にレビューする。
 
 問題と判断したものだけを Releash review Thread として投稿する。修正、方針確定、Thread resolve、既存 Thread への議論コメントは行わない。
 
@@ -11,8 +11,7 @@
 1. `git diff $(git merge-base "$RELEASH_BASE_BRANCH" HEAD)` で差分全体を確認する。
 2. `git diff $(git merge-base "$RELEASH_BASE_BRANCH" HEAD) --name-only` で変更ファイルを把握する。
 3. 必要に応じて変更ファイルの周辺コード、呼び出し元、関連型、関連テストを読む。
-4. `spec_dir` が渡されていれば、`requirements.md` / `behavior.md` / `design.md` を読む。
-5. `spec_dir` がない、または該当文書がない場合は、Spec 依存の判定を厳密な FAIL 扱いにしない。ただし差分と周辺コードから見て明確な不整合が分かる場合は Thread 化する。
+4. 差分と周辺コードから見て明確な不整合が分かる場合は Thread 化する。
 
 # scope の扱い
 

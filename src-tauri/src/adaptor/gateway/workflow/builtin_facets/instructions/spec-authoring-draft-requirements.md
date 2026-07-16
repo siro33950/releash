@@ -1,4 +1,4 @@
-{{project_name}} プロジェクトの Spec ディレクトリを作成し、`requirements.md` を一括で作成または更新する。
+`{{ request }}` を起点に Spec ディレクトリを作成し、`requirements.md` を一括で作成または更新する。
 
 ## 基本方針
 
@@ -20,7 +20,7 @@ docs/specs/<spec-id>/
   design.md
 ```
 
-本ステップでは `requirements.md` だけを作成・更新する。`behavior.md` と `design.md` は変更しない。
+この node では `requirements.md` だけを作成・更新する。`behavior.md` と `design.md` は変更しない。
 
 `requirements.md` には少なくとも以下を含める:
 

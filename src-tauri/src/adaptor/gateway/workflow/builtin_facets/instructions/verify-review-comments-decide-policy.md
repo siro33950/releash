@@ -2,7 +2,7 @@
 
 `[PR_REVIEW_COMMENT_IMPORTED]` が付いた Releash Thread を人間と確認し、各 PR review comment の対応方針を確定する。
 
-この Step は方針決定だけを行う。Task 作成、実装、GitHub への返信、commit、push は行わない。
+この node は方針決定だけを行う。Task 作成、実装、GitHub への返信、commit、push は行わない。
 
 # 入力
 
@@ -16,16 +16,16 @@
 - 修正する: `[FIX_POLICY_APPROVED]` Comment があり、Thread は Open のまま
 - 修正しない: `[PR_REVIEW_REPLY_APPROVED]` Comment があり、Thread は Open のまま
 
-GitHub への reply は最後の `commit_push_and_reply` Step でまとめて行うため、この Step では投稿しない。
+GitHub への reply は最後の `commit_push_and_reply` node でまとめて行うため、この node では投稿しない。
 
 # 手順
 
 ## 1. 対象 Thread を取得する
 
 ```sh
-{{path_alias.releash}} review list --session-id "$RELEASH_SESSION_ID" --state open --json
-{{path_alias.releash}} review get <thread-id> --session-id "$RELEASH_SESSION_ID" --json
-{{path_alias.releash}} review history <thread-id> --session-id "$RELEASH_SESSION_ID" --json
+releash review list --session-id "$RELEASH_SESSION_ID" --state open --json
+releash review get <thread-id> --session-id "$RELEASH_SESSION_ID" --json
+releash review history <thread-id> --session-id "$RELEASH_SESSION_ID" --json
 ```
 
 対象は `[PR_REVIEW_COMMENT_IMPORTED]` があり、まだ `[FIX_POLICY_APPROVED]` も `[PR_REVIEW_REPLY_APPROVED]` もない Thread。

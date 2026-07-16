@@ -1,9 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::domain::workflow::{
-    variable_renderer, FacetKey, FacetKind, FacetRepository, WorkflowError,
-};
+use crate::domain::workflow::services::template_preview;
+use crate::domain::workflow::{FacetKey, FacetKind, FacetRepository, WorkflowError};
 
 #[derive(Clone)]
 pub struct WorkflowFacetUsecase {
@@ -51,7 +50,7 @@ impl WorkflowFacetUsecase {
         content: &str,
         sample_values: &HashMap<String, String>,
     ) -> String {
-        variable_renderer::render_template_variables(content, sample_values)
+        template_preview::render_template_variables(content, sample_values)
     }
 }
 
@@ -143,13 +142,13 @@ mod tests {
     }
 
     #[test]
-    fn render_facet_preview_delegates_to_domain_variable_renderer() {
+    fn render_facet_preview_delegates_to_template_preview() {
         let facets = Arc::new(FakeFacetRepository::default());
         let usecase = WorkflowFacetUsecase::new(facets);
-        let values = HashMap::from([("task".to_string(), "write tests".to_string())]);
+        let values = HashMap::from([("request".to_string(), "write tests".to_string())]);
 
         assert_eq!(
-            usecase.render_facet_preview("Task: {{ task }}", &values),
+            usecase.render_facet_preview("Task: {{ request }}", &values),
             "Task: write tests"
         );
     }

@@ -1,8 +1,8 @@
 # 役割
 
-{{project_name}} のフルレビュー後修正について、Open Thread の `[FIX_POLICY_APPROVED]` と現在の実装差分を確認し、未実装・不足・方針不一致を Task にする。
+{{ request }} のフルレビュー後修正について、Open Thread の `[FIX_POLICY_APPROVED]` と現在の実装差分を確認し、未実装・不足・方針不一致を Task にする。
 
-この Step は確認と Task 化だけを行う。コード変更、Thread への Comment 投稿、resolve は行わない。
+この node は確認と Task 化だけを行う。コード変更、Thread への Comment 投稿、resolve は行わない。
 
 # 入力
 
@@ -18,14 +18,14 @@
 次のコマンドで Open Thread を取得する。
 
 ```sh
-{{path_alias.releash}} review list --session-id "$RELEASH_SESSION_ID" --state open --json
+releash review list --session-id "$RELEASH_SESSION_ID" --state open --json
 ```
 
 必要に応じて各 Thread の詳細と履歴を確認する。
 
 ```sh
-{{path_alias.releash}} review get <thread-id> --session-id "$RELEASH_SESSION_ID" --json
-{{path_alias.releash}} review history <thread-id> --session-id "$RELEASH_SESSION_ID" --json
+releash review get <thread-id> --session-id "$RELEASH_SESSION_ID" --json
+releash review history <thread-id> --session-id "$RELEASH_SESSION_ID" --json
 ```
 
 対象は `[FIX_POLICY_APPROVED]` Comment が存在する Open Thread のみ。
@@ -56,9 +56,9 @@ git diff "$(git merge-base "$RELEASH_BASE_BRANCH" HEAD)" HEAD
 
 未実装・不足・方針不一致がある場合だけ Task を作る。
 
-Task は、次の実装 Step が Thread を読まずに修正できる粒度で書く。
+Task は、次の実装 node が Thread を読まずに修正できる粒度で書く。
 
-Task は `review-fix-tasks` Contract の exact key で作る。別名で代替しない。
+Task は `review-fix-tasks` schema の exact key で作る。別名で代替しない。
 
 各 Task 直下に必ず入れる key:
 
@@ -83,7 +83,7 @@ Task は `review-fix-tasks` Contract の exact key で作る。別名で代替�
 - 複数の受入条件がある場合は、同じ Task の `acceptance_criteria` に列挙する。
 - `source_thread_id`、`title`、`locations`、`details` などの補助 key を使ってもよいが、必須 key の代替にはならない。
 
-## 5. Contract 提出前チェック
+## 5. Artifact 提出前チェック
 
 提出前に、作成した JSON が次の形になっていることを確認する。
 
@@ -126,7 +126,7 @@ Task は `review-fix-tasks` Contract の exact key で作る。別名で代替�
 
 # 出力
 
-出力Contract `review-fix-tasks` に従って提出する。
+`review-fix-tasks` schema に従う Artifact として提出する。
 
 不足がない場合:
 
@@ -140,7 +140,7 @@ Task は `review-fix-tasks` Contract の exact key で作る。別名で代替�
 - `tasks` に次回実装すべき Task を 1 件以上入れる
 - `summary` に不足内容の概要を書く
 
-提出直前に、上記の必須 key がすべて exact key で入っていることを確認し、同じ JSON を `{{path_alias.releash}} workflow output submit` で提出する。
+提出直前に、上記の必須 key がすべて exact key で入っていることを確認する。Artifact の提出コマンドは prompt 末尾の必須アクションに従う。
 
 # 禁止事項
 

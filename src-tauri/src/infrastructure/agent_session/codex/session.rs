@@ -84,6 +84,7 @@ impl CodexSessionRuntime {
             &spec.session_id,
             Some(&spec.cwd),
             spec.base_branch.as_deref(),
+            &spec.extra_env,
         )
         .await
         .map_err(AgentBackendError::Other)?;
@@ -652,13 +653,14 @@ exec sleep 30
             permission_mode: PermissionMode::Edit,
             plan_mode,
             permission_profile_id: None,
-            model: ModelId::parse("gpt-5.5").unwrap(),
+            model: ModelId::parse("gpt-5.6-sol").unwrap(),
             system_prompt: Some("system".to_string()),
             resume: None,
             base_branch: Some("main".to_string()),
             startup_timeout: None,
             startup_max_retries: None,
             stale_timeout: None,
+            extra_env: Vec::new(),
         }
     }
 
@@ -680,7 +682,7 @@ exec sleep 30
             turn_id: None,
             startup_error: None,
             cwd: "/repo".to_string(),
-            model: ModelId::parse("gpt-5.5").unwrap(),
+            model: ModelId::parse("gpt-5.6-sol").unwrap(),
             permission_mode: PermissionMode::Ask,
             plan_mode: false,
             permission_profile_id: None,
@@ -739,7 +741,7 @@ exec sleep 30
             turn_id: None,
             startup_error: None,
             cwd: "/repo".to_string(),
-            model: ModelId::parse("gpt-5.5").unwrap(),
+            model: ModelId::parse("gpt-5.6-sol").unwrap(),
             permission_mode: PermissionMode::Ask,
             plan_mode: false,
             permission_profile_id: None,
@@ -762,6 +764,8 @@ exec sleep 30
 
     #[cfg(unix)]
     #[tokio::test(flavor = "current_thread")]
+    // env 変数の直列化のため await 越しにロックを保持する必要がある（テスト用グローバルロック）
+    #[allow(clippy::await_holding_lock)]
     async fn test_open_once_initialize_write失敗時にpid登録を削除する() {
         let _env_lock = crate::test_support::TEST_ENV_LOCK.lock().unwrap();
         let data_dir = tempfile::tempdir().unwrap();

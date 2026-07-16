@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	createWorkspaceSession,
 	getSession,
 	getSessionPage,
 	planAgentChatEviction,
@@ -108,6 +109,27 @@ describe("session paging", () => {
 		});
 	});
 
+	it("createWorkspaceSession forwards the stable idempotency key", async () => {
+		vi.mocked(invoke).mockResolvedValueOnce("request-uuid");
+
+		const sessionId = await createWorkspaceSession(
+			"request-uuid",
+			"/repo",
+			"ask",
+			"claude",
+			"sonnet",
+		);
+
+		expect(invoke).toHaveBeenCalledWith("create_workspace_session", {
+			requestId: "request-uuid",
+			worktreePath: "/repo",
+			permissionMode: "ask",
+			backendId: "claude",
+			modelId: "sonnet",
+		});
+		expect(sessionId).toBe("request-uuid");
+	});
+
 	it("getSessionPage forwards cursor and limit", async () => {
 		vi.mocked(invoke).mockResolvedValueOnce({
 			messages: [
@@ -199,7 +221,7 @@ describe("session paging", () => {
 		await sendWorkflowApprovalChatMessage("run-1", "approve", "edit", false);
 
 		expect(invoke).toHaveBeenCalledWith("send_workflow_approval_chat_message", {
-			runId: "run-1",
+			executionId: "run-1",
 			content: "approve",
 			permissionMode: "edit",
 			planMode: false,

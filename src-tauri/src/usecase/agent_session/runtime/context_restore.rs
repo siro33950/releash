@@ -330,8 +330,8 @@ mod tests {
             permission_profile_id: None,
             selected_model: None,
             backend_id: Some("claude".to_string()),
-            workflow_step_session: false,
-            workflow_step_context: None,
+            workflow_node_session: false,
+            workflow_node_context: None,
             context_epoch: None,
         }
     }

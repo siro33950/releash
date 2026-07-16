@@ -6,15 +6,15 @@
 //! 外部 adapter（Tauri command / CLI / agent path）から組み立てる経路を提供しない。
 //!
 //! ハンドラ実体は engine 側（`engine.rs`）に置く。本ファイルは型の所有のみを担い、
-//! `ApprovalDecision` 等の engine domain 型には依存しない。
+//! 外部向け workflow command 型には依存しない。
 
 use crate::adaptor::gateway::workflow::event::TokenUsage;
-use crate::domain::workflow::WorkflowStepFailureKind;
+use crate::domain::workflow::NodeExecutionFailureKind;
 
 /// workflow engine 内部の node 完了 / 失敗遷移を表す typed command。
 ///
 /// UI / Tauri command / CLI はこの enum を組み立てない。外部 mutation は
-/// `WorkflowRuntimeService::{abort_workflow_run, resolve_workflow_approval, submit_workflow_output}`
+/// `WorkflowRuntimeService::{abort_workflow_execution, resolve_workflow_approval, submit_workflow_output}`
 /// などの runtime primitive wrapper を呼び、この enum は internal node event の commit
 /// 境界だけに閉じ込める。
 #[derive(Debug, Clone)]
@@ -24,14 +24,15 @@ pub(crate) enum InternalNodeCommand {
     ///
     /// 外部 adapter からこの variant を組み立てる経路は提供しない。
     CompleteNode {
-        run_id: String,
+        execution_id: String,
         workflow_name: String,
+        node_execution_id: String,
         node_name: String,
         result: Option<String>,
         session_id: Option<String>,
         token_usage: Option<TokenUsage>,
-        structured_output: Option<serde_json::Value>,
-        run_index: Option<u32>,
+        artifact: Option<serde_json::Value>,
+        attempt: Option<u32>,
         timestamp: f64,
     },
     /// [05] internal-only: engine 内部の node 失敗遷移。発行 event は
@@ -39,11 +40,13 @@ pub(crate) enum InternalNodeCommand {
     ///
     /// 外部 adapter からこの variant を組み立てる経路は提供しない。
     FailNode {
-        run_id: String,
+        execution_id: String,
         workflow_name: String,
+        node_execution_id: String,
         node_name: String,
+        attempt: u32,
         reason: String,
-        failure_kind: WorkflowStepFailureKind,
+        failure_kind: NodeExecutionFailureKind,
         retry_count: Option<u32>,
         timestamp: f64,
     },
@@ -62,44 +65,51 @@ mod tests {
     #[test]
     fn internal_node_command_variants_carry_event_shape_fields() {
         let complete = InternalNodeCommand::CompleteNode {
-            run_id: "00000000-0000-0000-0000-000000000020".to_string(),
+            execution_id: "00000000-0000-0000-0000-000000000020".to_string(),
             workflow_name: "wf".to_string(),
-            node_name: "step1".to_string(),
+            node_execution_id: "node-execution-20".to_string(),
+            node_name: "node1".to_string(),
             result: Some("ok".to_string()),
             session_id: Some("sess-1".to_string()),
             token_usage: None,
-            structured_output: None,
-            run_index: Some(1),
+            artifact: None,
+            attempt: Some(1),
             timestamp: 100.0,
         };
         match complete {
             InternalNodeCommand::CompleteNode {
-                ref run_id,
+                ref execution_id,
+                ref node_execution_id,
                 ref node_name,
                 ..
             } => {
-                assert_eq!(run_id, "00000000-0000-0000-0000-000000000020");
-                assert_eq!(node_name, "step1");
+                assert_eq!(execution_id, "00000000-0000-0000-0000-000000000020");
+                assert_eq!(node_execution_id, "node-execution-20");
+                assert_eq!(node_name, "node1");
             }
             _ => panic!("expected CompleteNode"),
         }
         let fail = InternalNodeCommand::FailNode {
-            run_id: "00000000-0000-0000-0000-000000000021".to_string(),
+            execution_id: "00000000-0000-0000-0000-000000000021".to_string(),
             workflow_name: "wf".to_string(),
-            node_name: "step2".to_string(),
+            node_execution_id: "node-execution-21".to_string(),
+            node_name: "node2".to_string(),
+            attempt: 1,
             reason: "boom".to_string(),
-            failure_kind: WorkflowStepFailureKind::InfrastructureCrash,
+            failure_kind: NodeExecutionFailureKind::InfrastructureCrash,
             retry_count: None,
             timestamp: 200.0,
         };
         match fail {
             InternalNodeCommand::FailNode {
                 ref reason,
+                ref node_execution_id,
                 ref node_name,
                 ..
             } => {
                 assert_eq!(reason, "boom");
-                assert_eq!(node_name, "step2");
+                assert_eq!(node_execution_id, "node-execution-21");
+                assert_eq!(node_name, "node2");
             }
             _ => panic!("expected FailNode"),
         }

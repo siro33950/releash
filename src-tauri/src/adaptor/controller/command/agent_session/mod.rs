@@ -1,6 +1,5 @@
 pub(crate) mod action;
 pub(crate) mod backend;
-pub(crate) mod command_palette;
 pub(crate) mod edit_preview;
 pub(crate) mod image;
 pub(crate) mod model;
@@ -17,8 +16,8 @@ pub(super) const COMMAND_NAMES: &[&str] = &[
     "get_workspace_status",
     "list_workspace_statuses",
     "list_session_statuses",
-    "query_worktree_step_statuses",
-    "sync_worktree_step_statuses",
+    "query_worktree_node_statuses",
+    "sync_worktree_node_statuses",
     "list_agent_backends",
     "start_agent_session",
     "interrupt_agent_query",
@@ -29,11 +28,6 @@ pub(super) const COMMAND_NAMES: &[&str] = &[
     "set_agent_plan_mode",
     "set_agent_model",
     "set_session_backend",
-    "present_agent_command_palette",
-    "is_agent_command_enabled",
-    "get_agent_shortcut_settings",
-    "update_agent_shortcut_settings",
-    "reset_agent_shortcut_settings",
     "present_agent_permission_request",
     "report_agent_permission_request_observed",
     "respond_agent_permission",
@@ -59,6 +53,7 @@ pub(super) const COMMAND_NAMES: &[&str] = &[
     "get_session_attachment",
     "get_session_tool_output",
     "create_session",
+    "create_workspace_session",
     "close_session",
     "restore_session",
     "list_closed_sessions",
@@ -81,8 +76,8 @@ pub(crate) fn invoke_handler(
         status::get_workspace_status,
         status::list_workspace_statuses,
         status::list_session_statuses,
-        status::query_worktree_step_statuses,
-        status::sync_worktree_step_statuses,
+        status::query_worktree_node_statuses,
+        status::sync_worktree_node_statuses,
         backend::list_agent_backends,
         session::start_agent_session,
         session::interrupt_agent_query,
@@ -93,11 +88,6 @@ pub(crate) fn invoke_handler(
         model::set_agent_plan_mode,
         model::set_agent_model,
         session::set_session_backend,
-        command_palette::present_agent_command_palette,
-        command_palette::is_agent_command_enabled,
-        command_palette::get_agent_shortcut_settings,
-        command_palette::update_agent_shortcut_settings,
-        command_palette::reset_agent_shortcut_settings,
         permission::present_agent_permission_request,
         permission::report_agent_permission_request_observed,
         permission::respond_agent_permission,
@@ -123,6 +113,7 @@ pub(crate) fn invoke_handler(
         session::get_session_attachment,
         session::get_session_tool_output,
         stored_session::create_session,
+        stored_session::create_workspace_session,
         stored_session::close_session,
         stored_session::restore_session,
         stored_session::list_closed_sessions,

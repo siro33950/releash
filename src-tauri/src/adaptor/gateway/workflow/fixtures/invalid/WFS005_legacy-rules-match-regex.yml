@@ -1,0 +1,10 @@
+name: legacy-rules-match-regex
+description: regex match routing was replaced by typed when and switch rules
+nodes:
+  - name: route
+    command: printf done
+    rules:
+      - match: NEEDS_FIX.*
+        next: done
+  - name: done
+    command: printf done

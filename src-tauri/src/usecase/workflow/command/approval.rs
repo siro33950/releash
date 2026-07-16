@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use crate::domain::workflow::ApprovalDecision;
 use crate::domain::workflow::WorkflowError;
 use crate::usecase::workflow::ports::WorkflowApprovalGateway;
 
@@ -8,9 +7,10 @@ use super::preflight::WorkflowRuntimeCommandPreflight;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalCommand {
-    pub run_id: String,
-    pub node_name: Option<String>,
-    pub decision: ApprovalDecision,
+    pub execution_id: String,
+    pub node_name: String,
+    pub node_execution_id: Option<String>,
+    pub comment: Option<String>,
 }
 
 #[derive(Clone)]

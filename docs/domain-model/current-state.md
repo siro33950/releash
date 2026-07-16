@@ -1,217 +1,114 @@
-# Releash ドメインモデル Current State Snapshot
+# Releash ドメインモデル Current State
 
-## 目的
+最終更新: 2026-07-15
 
-現行コードに存在する語彙と、正規語との差分を記録する。
-正規語・構造・状態所有・境界の定義は [../architecture/GLOSSARY.md](../architecture/GLOSSARY.md) を参照する。
+## 位置付け
 
-このドキュメントは定義ではなく、現行実装スナップショットである。
+この文書は現行実装のモデル配置と状態所有を俯瞰する index である。正規語の定義や旧実装名の対応表ではない。
 
-## 対象
+- 正規語彙、使用禁止語、状態所有: [`../architecture/GLOSSARY.md`](../architecture/GLOSSARY.md)
+- workflow model / layer の境界: [`../workflow-engine-model-boundary.md`](../workflow-engine-model-boundary.md)
+- workflow engine の戦略と実行モデル: [`../workflow-engine-evolution-plan.md`](../workflow-engine-evolution-plan.md)
+- WorkflowDefinition YAML grammar: [`../workflow-yaml-syntax.md`](../workflow-yaml-syntax.md)
+- Rust layer の責務: [`../architecture/README.md`](../architecture/README.md) 以下
 
-Issue [#1176](https://github.com/siro33950/releash/issues/1176) のスコープに合わせ、主に以下を対象にする。
+語彙や責務が本文書と上記正本で食い違う場合は、正本を優先する。
 
-- `src-tauri/src/domain/workflow`
-- `src-tauri/src/domain/code`
-- `src-tauri/src/domain/repository`
-- `src-tauri/src/domain/agent_session`
+## 現在の構造
 
-ただし、語彙の揺れが強く関係するため、必要に応じて `workspace_state`、`pty_session`、review/comment DTO、config/integration 由来の語彙も含める。
+```text
+Global / App
+  └─ WorkflowDefinition
+       └─ NodeDefinition[]
 
-## 分類
+Workspace
+  ├─ references Worktree
+  ├─ WorkflowExecution
+  │    ├─ Artifact[]
+  │    └─ NodeExecution[]
+  │         └─ Fanout（親と子 NodeExecution の束ね）
+  ├─ Session
+  │    ├─ Turn
+  │    │    └─ PermissionRequest
+  │    └─ Message
+  │         └─ MessagePart / Attachment
+  ├─ Terminal
+  ├─ Thread
+  │    └─ Comment
+  └─ WorkspaceState
 
-| 分類 | 意味 |
-|---|---|
-| canonical | 正規語として採用する |
-| legacy_name | 現行実装名または旧語彙。正規語へ読み替える |
-| internal | engine / service / validation などの内部語彙 |
-| read_model | UI/API/一覧/同期/projection 用の表現 |
-| external | 外部 repository / integration / hosting service 側の情報 |
-| attribute | Entity ではなく属性として扱う |
-| not_adopted | 正規語として採用しない |
+Repository
+  └─ Worktree
+       ├─ Code
+       │    └─ CodeAnchor
+       └─ Diff
 
-## 現行コード上の主要語彙
+Operation Surface
+  ├─ UI
+  ├─ CLI
+  └─ API
+```
 
-### workflow
+## 状態所有
 
-| 現行語彙 | 正規語 | 分類 | 理由 |
-|---|---|---|---|
-| `WorkflowDefinition` | WorkflowDefinition | canonical | workflow の定義。 |
-| `NodeDefinition` | NodeDefinition | canonical | WorkflowDefinition 内の作業単位の定義。 |
-| `WorkflowExecution` | WorkflowExecution | canonical | WorkflowDefinition の一回の実行。 |
-| `WorkflowRun` | WorkflowExecution | legacy_name | `Run` は旧実装語彙。 |
-| `WorkflowRunRecord` | WorkflowExecution | legacy_name | 永続化表現。正規語は WorkflowExecution。 |
-| `WorkflowRunSummary` | WorkflowExecution | read_model | 一覧用 summary。Entity ではない。 |
-| `RunId` | `WorkflowExecution.id` | attribute | id 属性として扱う。 |
-| `RunStatus` | `WorkflowExecution.status` | attribute | status 属性として扱う。 |
-| `TerminalRunStatus` | `WorkflowExecution.status` | internal | 終了状態だけを切り出した実装型。 |
-| `TriggerSource` | `WorkflowExecution.created_from` | attribute | 起動元属性として扱う。 |
-| `WorkflowName` | `WorkflowDefinition.name` | attribute | name 属性として扱う。 |
-| `NodeName` | `NodeDefinition.name` | attribute | name 属性として扱う。 |
-| `WorktreePath` | `Workspace.worktree_ref.path` | attribute | Worktree 参照の path。 |
-| `WorkflowExecution.task` | Artifact (`request`) | legacy_name | 起動時自由文。Task Entity ではなく、初回 Artifact `request` へ移行する。 |
-| `NodeType` | なし | not_adopted | NodeDefinition の構成・参照先・実行内容から判断する。 |
-| `ChildNodeDefinition` | NodeDefinition | legacy_name | fanout 先も通常の NodeDefinition として扱う。 |
-| `WorkflowExecutionState` | `WorkflowExecution.status` | attribute | lifecycle status として扱う。 |
-| `WorkflowSummary` | WorkflowDefinition | read_model | WorkflowDefinition の summary。 |
-| `WorkflowStateSnapshot` | なし | read_model | snapshot 実装。 |
-| `WorkflowEvent` | なし | not_adopted | 現時点では domain entity として採用しない。 |
-| `WorkflowStepContext` | なし | internal | NodeExecution が Session / Command に渡す実行 context。 |
-| `workflow_variables` | なし | internal | 実行時の変数展開用 data。 |
+| モデル | 現在の扱い |
+| --- | --- |
+| WorkflowDefinition | Global / App に属する管理対象。NodeDefinition と Contract 宣言を持つが、実行状態は持たない。 |
+| WorkflowExecution | Workspace に属する workflow runtime state の主語。backend の event replay / projection が read model を所有する。 |
+| NodeExecution | WorkflowExecution に属する一回の Node 実行。`node_execution_id` で loop / fanout の実行個体を識別する。 |
+| Fanout | 親 NodeExecution と `fanout_parent` を持つ子 NodeExecution 群から構築する derived view。 |
+| Artifact | WorkflowExecution / NodeExecution 間の Contract 検証済みデータ。独立 lifecycle state は持たない。 |
+| Diagnostic | WorkflowDefinition の validation result。WorkflowExecution / NodeExecution の status ではない。 |
+| Workspace | Releash の作業 context。Worktree を参照するが所有しない。 |
+| Session / Turn / Message | Agent との対話・実行 context。WorkflowExecution とは別に Workspace に属する。 |
+| PermissionRequest | Turn に属する個別の許可要求。workflow approval gate とは別のモデル。 |
+| Terminal | 人間が操作する interactive shell session。workflow command Node とは別のモデル。 |
+| Thread / Comment | Workspace の会話・判断記録。WorkflowExecution / NodeExecution の子ではない。 |
+| WorkspaceState | Workspace の editor tabs / layout 等の UI state。domain behavior を持たない。 |
+| Repository / Worktree / Code / Diff | 外部 repository 側の実体または派生 view。Releash-owned state にしない。 |
+| UI / CLI / API | operation surface。domain state を所有せず、backend usecase を呼ぶ。 |
 
-### workflow fanout / parallel
+Releash core に Task Entity や global task input は置かない。task 的な値が必要な workflow はユーザー定義 Artifact field として表現する。
 
-| 現行語彙 | 正規語 | 分類 | 理由 |
-|---|---|---|---|
-| `ParallelRunState` | Fanout | legacy_name | parallel 系語彙は Fanout に吸収する。 |
-| `ParallelChildRun` | NodeExecution / Fanout | legacy_name | fanout child も NodeExecution。 |
-| `ParallelChildState` | NodeExecution / Fanout | legacy_name | fanout child の状態。 |
-| `ParallelAggregate` | Fanout | legacy_name | fanout 集約設定/処理として扱う。 |
-| `ParallelStepState` | Fanout | read_model | UI/API 用 state。 |
-| `NodeCompletion` | NodeExecution | internal | NodeExecution 完了時の処理入力。 |
-| `ParallelChildCompletion` | NodeExecution | internal | child NodeExecution 完了時の処理入力。 |
-| `ParallelReduceResult` | Fanout | internal | fanout 集約処理結果。 |
-| `ParallelChildOutputMerge` | Fanout | internal | fanout child output merge 処理。 |
-| `ParallelChildCompletionInput` | Fanout | internal | fanout child completion 入力。 |
-| `ParallelParentTransitionPlan` | Fanout | internal | fanout parent 遷移処理計画。 |
-| `ParallelParentCompletionPlan` | Fanout | internal | fanout parent completion 処理計画。 |
-| `SubmissionParallelRun` | Fanout | internal | output submission 判定用表現。 |
-| `SubmissionParallelChild` | Fanout | internal | output submission 判定用表現。 |
-| `SubmissionParallelChildState` | Fanout | internal | output submission 判定用表現。 |
+## Workflow domain の実装状態
 
-### workflow engine internal
+milestone 82 の新モデル移行は完了している。
 
-| 現行語彙 | 正規語 | 分類 | 理由 |
-|---|---|---|---|
-| `NextNodeDecision` | なし | internal | engine の内部判断結果。 |
-| `CycleGuardDecision` | なし | internal | engine の内部安全判定結果。 |
-| `TurnCompleteDecision` | なし | internal | Turn 完了時の内部判断結果。 |
-| `TurnCompleteMutationPlan` | なし | internal | engine の内部 mutation plan。 |
-| `ApprovalTransitionDecision` | なし | internal | approval 遷移判断。 |
-| `ApprovalApplication` | なし | internal | approval 適用処理表現。 |
-| `ApprovalCompletion` | なし | internal | approval completion 表現。 |
-| `ApprovalApplicationTransition` | なし | internal | approval 遷移表現。 |
-| `ApprovalApplicationPlan` | なし | internal | approval 適用計画。 |
-| `ApprovalInputError` | Diagnostic | internal | validation error。 |
-| `ApprovalRuleError` | Diagnostic | internal | validation error。 |
-| `ApprovalChatInstructionContext` | なし | internal | approval chat 処理用 context。 |
-| `ApprovalChatSessionSnapshot` | なし | internal | approval chat 処理用 snapshot。 |
-| `ApprovalTargetSnapshot` | なし | internal | approval 対象検証用 snapshot。 |
-| `TransitionRule` | なし | internal | engine の transition 設定。 |
-| `CycleGuard` | なし | internal | engine の安全設定。 |
-| `CollectConfig` | なし | internal | engine の collect 設定。 |
-| `ReduceStrategy` | なし | internal | engine の reduce 設定。 |
+- NodeDefinition は `command` / `session` / `fanout` の kind block をちょうど一つ持つ。
+- Contract / Artifact は WorkflowDefinition の `schemas` と Node の `artifact` / `input` / `inputs` に統一されている。
+- Artifact 参照は `request` / Node / Node field / `item` / item field に閉じている。
+- routing は `when` / `switch` / `next` / `loop_guard` の正規形を Rust が検証する。
+- command は標準結果と stdout-JSON Contract field を一つの Artifact 名前空間に持つ。
+- session の完了 gate は `auto` / `approval`。Artifact を宣言した session は検証済み提出まで完了しない。
+- fanout child も通常の NodeExecution で、空 items と partial resume を扱う。
+- WorkflowExecution / NodeExecution / Artifact / Fanout は append-only event log の replay から backend read model として構築される。
+- start / approve / Artifact submit / abort / stop / resume は typed command usecase に集約される。
+- Tauri / local API / CLI / UI は同じ usecase と backend-owned state を使う。
+- YAML、event log、workflow state の廃止形式を読む compatibility layer は持たない。
 
-### workflow contract / output
+## 現行 module map
 
-| 現行語彙 | 正規語 | 分類 | 理由 |
-|---|---|---|---|
-| `FacetKind` / `FacetKey` / `FacetSummary` | Facet | canonical | NodeDefinition から参照される補助部品。 |
-| `ResolvedFacets` | Facet | internal | Facet の解決状態。 |
-| `ContractType` | Contract | canonical | output contract の型表現。 |
-| `ContractValidationResult` | Contract | internal | validation result。 |
-| `ContractViolation` | Contract / Diagnostic | internal | contract validation のエラー詳細。 |
-| `ContractLookupError` | Diagnostic | internal | contract lookup error。 |
-| `OutputSubmittedSnapshot` | Artifact | internal | output submit 処理用 snapshot。 |
-| `ContractValidationMetadata` | Contract | internal | validation metadata。 |
-| `ConditionalArrayRule` | Contract | internal | validation rule。 |
-| `WorkflowValidateOutputResult` | Contract / Diagnostic | internal | output validation result。 |
-| `SubmitOutputCommand` | Command | internal | usecase command input。 |
-| `CollectedOutputEntry` | Artifact | internal | collect 処理の内部 entry。 |
-| `StepOutput` | Artifact | legacy_name | NodeExecution output の現行表現。 |
-| `StepHistoryEntry` | NodeExecution / Artifact | legacy_name | history/output の現行表現。 |
-| `ChildOutputSnapshot` | Fanout / Artifact | legacy_name | fanout child output snapshot。 |
-| `TokenUsage` | なし | internal | measurement。 |
+| bounded context / 責務 | 主な場所 |
+| --- | --- |
+| workflow domain model | `src-tauri/src/domain/workflow/` |
+| workflow typed command / query | `src-tauri/src/usecase/workflow/` |
+| workflow YAML / persistence / runtime / projection | `src-tauri/src/adaptor/gateway/workflow/` |
+| workflow Tauri / local API entry | `src-tauri/src/adaptor/controller/command/workflow/`、`src-tauri/src/adaptor/controller/api/workflow.rs` |
+| workflow protocol / presenter | `src-tauri/src/adaptor/protocol/workflow.rs`、`src-tauri/src/adaptor/presenter/workflow.rs` |
+| agent session | `src-tauri/src/domain/agent_session/`、`src-tauri/src/usecase/agent_session/`、対応 adaptor |
+| workspace UI state | `src-tauri/src/domain/workspace_state/`、対応 usecase / adaptor |
+| repository / code | `src-tauri/src/domain/repository/`、`src-tauri/src/domain/code/`、対応 usecase / adaptor |
+| comment | `src-tauri/src/domain/comment/`、対応 usecase / adaptor |
+| terminal backend | `src-tauri/src/domain/pty_session/`、対応 usecase / adaptor |
 
-### code
+実装 package 名が integration や infrastructure の都合を表す場合でも、product / domain の説明と外部 API では GLOSSARY 正規語を使う。
 
-| 現行語彙 | 正規語 | 分類 | 理由 |
-|---|---|---|---|
-| `Hunk` | CodeAnchor / Diff | read_model | Diff 表示・参照用の範囲表現。 |
-| `ChangeGroup` | Diff | read_model | Diff 表示用 grouping。 |
-| `HiddenRange` | Diff | read_model | 表示用 range。 |
-| `VisibleBlock` | Diff | read_model | 表示用 block。 |
-| `DiffFileEntry` | Diff | read_model | diff tree 表示用 entry。 |
-| `DiffTreeNode` | Diff | read_model | diff tree 表示用 node。 |
-| `MentionReference` | CodeAnchor | legacy_name | code 位置参照。 |
-| `ReviewBase` | Diff | read_model | review view の表示条件。 |
-| `ReviewSection` | Diff | read_model | review view の表示条件。 |
-| `ReviewLimitReason` | Diff | read_model | review view の表示制限理由。 |
-| `ReviewBlobContentType` | Code | read_model | review view の表示判定。 |
-| `ReviewThresholds` | Diff | read_model | review view の表示閾値。 |
+## 境界上の不変条件
 
-### repository
-
-| 現行語彙 | 正規語 | 分類 | 理由 |
-|---|---|---|---|
-| `Worktree` | Worktree | canonical | Repository の特定 checkout / working tree。 |
-| `Branch` | Repository | external | repository 側の情報。 |
-| `Commit` | Repository | external | repository 側の情報。 |
-| `FileStatus` | Diff / Repository | read_model | repository status の表示用情報。 |
-| `FileDiffStat` | Diff / Repository | read_model | diff stat。 |
-| `RepositoryStatusScan` | Repository | read_model | status scan result。 |
-| `WorktreePrEntry` | なし | external | external repository/hosting service 側の情報。 |
-| `WorktreePrStatusSync` | なし | external | external repository/hosting service 側の sync message。 |
-| `PrInfo` / `PrStatus` / `PrDetail` | なし | external | external repository/hosting service 側の情報。 |
-| `PrReview` / `PrComment` / `PrAuthor` | なし | external | external repository/hosting service 側の情報。 |
-| `IssueInfo` / `IssueLabel` / `Milestone` | なし | external | external issue tracker 側の情報。 |
-| `AheadBehind` / `ProviderStatus` | なし | external | external repository/hosting service 側の情報。 |
-
-### agent_session
-
-| 現行語彙 | 正規語 | 分類 | 理由 |
-|---|---|---|---|
-| `ChatSession` | Session | legacy_name | 正規語は Session。 |
-| `ChatMessage` | Message | legacy_name | 正規語は Message。 |
-| `MessageRole` | MessageRole | canonical | Message の role。 |
-| `MessagePart` | MessagePart | canonical | Message の部分表現。 |
-| `PermissionRequest` | PermissionRequest | canonical | Turn に属する許可要求。 |
-| `AttachmentRef` | Attachment | legacy_name | Attachment の参照表現。 |
-| `SessionAttachment` | Attachment | legacy_name | Attachment に吸収。 |
-| `ImageAttachment` | Attachment | legacy_name | Attachment に吸収。 |
-| `ActivityEntry` | MessagePart | legacy_name | MessagePart の内部表現。 |
-| `QueuedAgentTurn` | Turn | read_model | queued turn の表示/管理表現。 |
-| `TurnPhase` | Turn | read_model | Turn の表示用 phase。 |
-| `TurnEventLog` | Turn | read_model | Turn の event log 実装。 |
-| `SessionState` | Session | read_model | 実装上の状態分類。 |
-| `PlanMode` | Session | attribute | Session UI/agent 実行設定。 |
-| `PermissionMode` | `Session.permission_mode` | attribute | Session の許可モード。 |
-| `LegacyPermissionMode` | `Session.permission_mode` | legacy_name | legacy compatibility。 |
-| `ContextCarryState` | Session | internal | Session 復元/再注入の内部状態。 |
-| `AgentEditorContext` / `AgentEditorSelection` | Session | internal | agent input 用 editor context。 |
-| `ModelInfo` / `ModelId` / `ModelEntry` | なし | external | agent backend/model metadata。 |
-| `SkillEntry` / `SlashCommand` | なし | external | agent runtime/UI command metadata。 |
-
-### workspace_state / terminal / review / integration
-
-| 現行語彙 | 正規語 | 分類 | 理由 |
-|---|---|---|---|
-| `WorkspaceState` | WorkspaceState | canonical | Workspace の UI state。 |
-| `WorkspaceTabsState` | WorkspaceState | read_model | WorkspaceState の内部表現。 |
-| `WorkspaceLayoutState` | WorkspaceState | read_model | WorkspaceState の内部表現。 |
-| `WorkspaceTabEntry` | WorkspaceState | read_model | WorkspaceState の内部表現。 |
-| `PtySession` | Terminal | legacy_name | product/domain 語彙は Terminal。 |
-| `PtySessionRegistry` | Terminal | internal | Terminal backend 管理実装。 |
-| `PtyKind` / `PtyEvictReason` / `PtyLifecycleConfig` | Terminal | internal | Terminal backend 実装語彙。 |
-| `ReviewThread` | Thread | legacy_name | Thread に吸収。 |
-| `ReviewComment` | Comment | legacy_name | Comment に吸収。 |
-| `NotificationEvent` / `NotifyConfig` / `DesktopNotifyMode` | なし | external | notification integration の event/config。 |
-| `RemoteAccess` / `DetectedInterface` / `VpnInterface` / `QrCodeResult` | なし | external | remote access integration。 |
-| `HooksStatus` | なし | external | hooks integration。 |
-| `ExternalEditor` / `EditorInfo` | なし | external | external editor integration。 |
-| `NotionRepoConfig` / `NotionPropertyMapping` | なし | external | Notion integration config。 |
-
-## 正規語に未対応の主要概念
-
-| 正規語 | 現行状態 |
-|---|---|
-| NodeExecution | 未実装。現行は WorkflowExecution 内の step state / history として表現されている。 |
-| Fanout | 未実装。現行は parallel 系語彙で表現されている。 |
-| Artifact | 未実装。現行は StepOutput / StepHistoryEntry / ChildOutputSnapshot などで部分的に表現されている。 |
-| Workspace | 独立 entity としては未実装。現行は `workspace_id ≒ worktree_path`。 |
-| Command | 未実装。 |
-| Thread / Comment | 正規語としては未実装。現行は review DTO 名で表現されている。 |
-
-## 未合意語彙
-
-現時点ではなし。
+- 定義と実行を分ける。WorkflowDefinition / NodeDefinition は runtime state を持たない。
+- workflow state transition は engine だけが決める。
+- frontend は backend read model の UI mirror に留まり、validation、routing、resume 判断を持たない。
+- Session、Terminal、Thread を WorkflowExecution の所有物にしない。必要な参照だけを保持する。
+- Worktree / Repository / Code / Diff を Releash-owned state にしない。固定した判断材料は Artifact にする。
+- Diagnostic を lifecycle state として永続化しない。
+- external integration のモデルを core Entity に昇格させない。

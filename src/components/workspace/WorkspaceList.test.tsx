@@ -1,22 +1,17 @@
-import {
-	fireEvent,
-	render,
-	screen,
-	waitFor,
-	within,
-} from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorktreeBranch } from "@/types/git";
 import type {
 	WorkspaceSessionHistoryItem,
-	WorkspaceTreeNode,
+	WorkspaceTreeItem,
 	WorkspaceWorkflowHistoryItem,
 } from "@/types/workspace-tree";
 import { WorkspaceList } from "./WorkspaceList";
 
 type MockWorkspaceTreeState = {
-	nodes: WorkspaceTreeNode[];
+	nodes: WorkspaceTreeItem[];
+	preferredNodeId?: string | null;
 	closedSessions?: WorkspaceSessionHistoryItem[];
 	workflowHistory?: WorkspaceWorkflowHistoryItem[];
 	loading?: boolean;
@@ -24,11 +19,10 @@ type MockWorkspaceTreeState = {
 };
 
 const mocks = vi.hoisted(() => ({
-	invoke: vi.fn().mockResolvedValue([]),
+	invoke: vi.fn().mockResolvedValue(null),
 	emit: vi.fn().mockResolvedValue(undefined),
 	openUrl: vi.fn().mockResolvedValue(undefined),
 	archiveSession: vi.fn().mockResolvedValue(undefined),
-	closeSession: vi.fn().mockResolvedValue(undefined),
 	restoreSession: vi.fn().mockResolvedValue(undefined),
 	refreshTree: vi.fn().mockResolvedValue(undefined),
 	refreshWorktrees: vi.fn().mockResolvedValue(undefined),
@@ -36,201 +30,41 @@ const mocks = vi.hoisted(() => ({
 	worktreeBranches: [] as WorktreeBranch[],
 }));
 
-vi.mock("react-resizable-panels", () => {
-	const Panel = ({ children }: { children?: React.ReactNode }) => (
+vi.mock("react-resizable-panels", () => ({
+	Panel: ({ children }: { children?: React.ReactNode }) => (
 		<div>{children}</div>
-	);
-	const Group = ({ children }: { children?: React.ReactNode }) => (
+	),
+	Group: ({ children }: { children?: React.ReactNode }) => (
 		<div>{children}</div>
-	);
-	const Separator = () => <div />;
-	return { Panel, Group, Separator };
-});
-vi.mock("@tauri-apps/api/core", () => ({
-	invoke: mocks.invoke,
+	),
+	Separator: () => <div />,
 }));
-vi.mock("@tauri-apps/api/event", () => ({
-	emit: mocks.emit,
-}));
-vi.mock("@tauri-apps/plugin-opener", () => ({
-	openUrl: mocks.openUrl,
-}));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
+vi.mock("@tauri-apps/api/event", () => ({ emit: mocks.emit }));
+vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: mocks.openUrl }));
 vi.mock("@/hooks/useSessionStore", () => ({
 	archiveSession: mocks.archiveSession,
-	closeSession: mocks.closeSession,
 	restoreSession: mocks.restoreSession,
 }));
 vi.mock("@/hooks/useWorkflowConfig", () => ({
 	useWorkflowConfig: () => ({
-		workflows: [
-			{
-				name: "release",
-				description: "Release workflow",
-				builtin: false,
-				is_running: false,
-			},
-		],
+		workflows: [{ name: "release", description: "Release workflow" }],
 		loading: false,
 		error: null,
 	}),
 }));
 vi.mock("@/hooks/useWorkspaceTreeNodes", () => ({
 	useWorkspaceTreeNodes: (worktreePath: string) => {
-		const override = mocks.treeStateOverrides.get(worktreePath);
-		if (override) {
-			return {
-				nodes: override.nodes,
-				closedSessions: override.closedSessions ?? [],
-				workflowHistory: override.workflowHistory ?? [],
-				loading: override.loading ?? false,
-				error: override.error ?? null,
-				refresh: mocks.refreshTree,
-			};
-		}
-		if (worktreePath !== "/repo/wt") {
-			return {
-				nodes: [],
-				closedSessions: [],
-				workflowHistory: [],
-				loading: false,
-				error: null,
-				refresh: mocks.refreshTree,
-			};
-		}
+		const state = mocks.treeStateOverrides.get(worktreePath) ?? {
+			nodes: [],
+		};
 		return {
-			nodes: [
-				{
-					kind: "session",
-					id: "new-s",
-					worktreePath: "/repo/wt",
-					title: "NewSession",
-					state: "idle",
-					updatedAt: 1000,
-					workflowStepSession: false,
-					agentState: null,
-				},
-				{
-					kind: "session",
-					id: "direct-1",
-					worktreePath: "/repo/wt",
-					title: "Direct session",
-					state: "active",
-					updatedAt: 1000,
-					workflowStepSession: false,
-					agentState: "done",
-				},
-				{
-					kind: "workflow",
-					runId: "run-1",
-					worktreePath: "/repo/wt",
-					workflowName: "release",
-					title: "Deploy workflow",
-					status: "running",
-					canStop: true,
-					updatedAt: 1100,
-					steps: [
-						{
-							kind: "step",
-							id: "run-1:step-build",
-							runId: "run-1",
-							worktreePath: "/repo/wt",
-							title: "Build step",
-							status: "running",
-							stepType: "agent",
-							updatedAt: 1100,
-							sessions: [
-								{
-									kind: "session",
-									id: "step-build",
-									worktreePath: "/repo/wt",
-									title: "Build step",
-									state: "active",
-									updatedAt: 1100,
-									workflowStepSession: true,
-									stepName: "build",
-									runIndex: 1,
-									agentState: "running",
-								},
-							],
-						},
-					],
-				},
-				{
-					kind: "workflow",
-					runId: "run-waiting",
-					worktreePath: "/repo/wt",
-					workflowName: "waiting-flow",
-					title: "Waiting workflow",
-					status: "waiting",
-					canStop: true,
-					updatedAt: 1101,
-					steps: [],
-				},
-				{
-					kind: "workflow",
-					runId: "run-completed",
-					worktreePath: "/repo/wt",
-					workflowName: "completed-flow",
-					title: "Completed workflow",
-					status: "completed",
-					canStop: false,
-					updatedAt: 1102,
-					steps: [],
-				},
-				{
-					kind: "workflow",
-					runId: "run-failed",
-					worktreePath: "/repo/wt",
-					workflowName: "failed-flow",
-					title: "Failed workflow",
-					status: "failed",
-					canStop: false,
-					updatedAt: 1103,
-					steps: [],
-				},
-				{
-					kind: "workflow",
-					runId: "run-aborted",
-					worktreePath: "/repo/wt",
-					workflowName: "aborted-flow",
-					title: "Aborted workflow",
-					status: "aborted",
-					canStop: false,
-					updatedAt: 1104,
-					steps: [],
-				},
-			],
-			closedSessions: [
-				{
-					id: "closed-1",
-					worktreePath: "/repo/wt",
-					state: "closed",
-					createdAt: 1,
-					updatedAt: 2,
-					firstMessage: "Closed history session",
-					messageCount: 1,
-					agentSessionId: null,
-					contextCarry: null,
-					permissionMode: "edit",
-					planMode: false,
-					permissionProfileId: null,
-					backendId: null,
-					workflowStepSession: false,
-				},
-			],
-			workflowHistory: [
-				{
-					runId: "archived-run",
-					worktreePath: "/repo/wt",
-					title: "Archived workflow",
-					status: "completed",
-					updatedAt: 3,
-					archivedAt: 4,
-					archiveReason: "manual",
-				},
-			],
-			loading: false,
-			error: null,
+			nodes: state.nodes,
+			preferredNodeId: state.preferredNodeId ?? null,
+			closedSessions: state.closedSessions ?? [],
+			workflowHistory: state.workflowHistory ?? [],
+			loading: state.loading ?? false,
+			error: state.error ?? null,
 			refresh: mocks.refreshTree,
 		};
 	},
@@ -242,22 +76,64 @@ vi.mock("@/hooks/useWorktreeList", () => ({
 		refresh: mocks.refreshWorktrees,
 	}),
 }));
-vi.mock("@/hooks/useWorktreeSessionStatuses", () => ({
-	useWorktreeSessionStatuses: () => new Map(),
-}));
-vi.mock("@/hooks/useWorktreeStepStatuses", () => ({
-	workflowStepStatusKey: (
-		executionId: string,
-		stepName: string,
-		runIndex?: number | null,
-	) => `${executionId}:${stepName}:${runIndex ?? 1}`,
-	useWorktreeStepStatuses: () => ({
-		steps: new Map([["run-1:Build step:1", "waiting"]]),
-		workflows: new Map([["run-1", "failed"]]),
-	}),
-}));
 
-function makeBranch(overrides: Partial<WorktreeBranch>): WorktreeBranch {
+const directNode: WorkspaceTreeItem = {
+	kind: "node",
+	id: "4f168b74-f9cf-4d51-9970-81ea281bc983",
+	title: "Direct session",
+	status: "running",
+	contentKind: "session",
+	capabilities: { canApprove: false, canClose: true },
+	updatedAt: 1,
+};
+
+const recursiveTree: WorkspaceTreeItem[] = [
+	directNode,
+	{
+		kind: "workflow",
+		id: "workflow-internal-uuid",
+		title: "Release workflow",
+		status: "running",
+		capabilities: {
+			canStop: true,
+			canResume: false,
+			canAbort: true,
+			canArchive: false,
+		},
+		updatedAt: 2,
+		children: [
+			{
+				kind: "node",
+				id: "workflow-session-internal-uuid",
+				title: "Prepare",
+				status: "completed",
+				contentKind: "session",
+				capabilities: { canApprove: false, canClose: false },
+				updatedAt: 3,
+			},
+			{
+				kind: "fanout",
+				id: "fanout-internal-uuid",
+				title: "Review all",
+				status: "running",
+				updatedAt: 4,
+				children: [
+					{
+						kind: "node",
+						id: "fanout-child-internal-uuid",
+						title: "Architecture review",
+						status: "running",
+						contentKind: "command",
+						capabilities: { canApprove: false, canClose: false },
+						updatedAt: 5,
+					},
+				],
+			},
+		],
+	},
+];
+
+function makeBranch(): WorktreeBranch {
 	return {
 		name: "feature",
 		is_main_worktree: false,
@@ -268,489 +144,482 @@ function makeBranch(overrides: Partial<WorktreeBranch>): WorktreeBranch {
 		behind: 0,
 		has_upstream: false,
 		base_ahead: 0,
-		...overrides,
 	};
 }
 
-const defaultWorktreeBranches = [
-	makeBranch({
-		name: "main",
-		is_main_worktree: true,
-		worktree_path: "/repo/main",
-	}),
-	makeBranch({
-		name: "feature",
-		is_main_worktree: false,
-		worktree_path: "/repo/wt",
-		has_pr: true,
-		pr_number: 12,
-		pr_url: "https://example.test/pr/12",
-	}),
-];
-
-function setSingleWorktree(
-	worktreePath: string,
-	state: MockWorkspaceTreeState,
-	name = "empty",
-) {
-	mocks.worktreeBranches = [
-		makeBranch({
-			name,
-			worktree_path: worktreePath,
-		}),
-	];
-	mocks.treeStateOverrides.set(worktreePath, state);
-}
-
 function renderWorkspaceList(
-	props: Partial<React.ComponentProps<typeof WorkspaceList>> = {},
+	overrides: Partial<React.ComponentProps<typeof WorkspaceList>> = {},
 ) {
 	const onSelectWorktree = vi.fn();
-	const renderResult = render(
+	const onCreateSession = vi.fn();
+	const result = render(
 		<WorkspaceList
 			repoPaths={["/repo"]}
 			selectedRootPath="/repo/wt"
 			centerSelection={null}
 			onSelectWorktree={onSelectWorktree}
+			onCreateSession={onCreateSession}
 			onAddRepo={vi.fn()}
 			onShowSettings={vi.fn()}
-			{...props}
+			{...overrides}
 		/>,
 	);
-	return { onSelectWorktree, ...renderResult };
+	return { ...result, onSelectWorktree, onCreateSession };
 }
 
 beforeEach(() => {
-	for (const mock of [
-		mocks.invoke,
-		mocks.emit,
-		mocks.openUrl,
-		mocks.archiveSession,
-		mocks.closeSession,
-		mocks.restoreSession,
-		mocks.refreshTree,
-		mocks.refreshWorktrees,
-	]) {
-		mock.mockClear();
+	for (const mock of Object.values(mocks)) {
+		if (typeof mock === "function" && "mockClear" in mock) {
+			mock.mockClear();
+		}
 	}
+	mocks.worktreeBranches = [makeBranch()];
 	mocks.treeStateOverrides.clear();
-	mocks.worktreeBranches = defaultWorktreeBranches.map((branch) => ({
-		...branch,
-	}));
-	mocks.invoke.mockResolvedValue([]);
+	mocks.treeStateOverrides.set("/repo/wt", { nodes: recursiveTree });
+	mocks.invoke.mockResolvedValue(null);
 });
 
 describe("WorkspaceList", () => {
-	it("highlights the created NewSession row when selected", () => {
-		renderWorkspaceList({
-			centerSelection: {
-				kind: "agentSession",
-				worktreePath: "/repo/wt",
-				sessionId: "new-s",
-			},
-		});
+	it("renders the backend-owned recursive Workflow and Fanout hierarchy", () => {
+		const { container } = renderWorkspaceList();
 
-		expect(screen.getByText("NewSession").closest("button")).toHaveAttribute(
-			"aria-current",
-			"page",
+		expect(screen.getByText("Release workflow")).toBeInTheDocument();
+		expect(screen.getByText("Review all")).toBeInTheDocument();
+		expect(screen.getByText("Architecture review")).toBeInTheDocument();
+		expect(
+			screen
+				.getByRole("button", { name: "Release workflow" })
+				.querySelector("svg.lucide-workflow"),
+		).toBeInTheDocument();
+		expect(
+			screen
+				.getByRole("button", { name: "Review all" })
+				.querySelector("svg.lucide-git-fork"),
+		).toBeInTheDocument();
+		expect(container.querySelectorAll("svg.lucide-git-fork")).toHaveLength(1);
+	});
+
+	it("keeps one familiar content icon per Node and styles it from backend status", () => {
+		renderWorkspaceList();
+
+		const sessionRow = screen.getByRole("button", {
+			name: "Direct session, running",
+		});
+		const sessionIcons = sessionRow.querySelectorAll("svg");
+		expect(sessionIcons).toHaveLength(1);
+		expect(sessionIcons[0]).toHaveClass(
+			"lucide-bot",
+			"text-blue-600",
+			"animate-pulse",
+		);
+
+		const commandRow = screen.getByRole("button", {
+			name: "Architecture review, running",
+		});
+		const commandIcons = commandRow.querySelectorAll("svg");
+		expect(commandIcons).toHaveLength(1);
+		expect(commandIcons[0]).toHaveClass(
+			"lucide-terminal",
+			"text-blue-600",
+			"animate-pulse",
 		);
 	});
 
-	it("renders Home and worktree icon variants", () => {
-		renderWorkspaceList();
-
-		expect(screen.getByLabelText("Main repository")).toBeInTheDocument();
-		expect(screen.getByLabelText("Worktree")).toBeInTheDocument();
-	});
-
-	it("toggles a Worktree row without changing CenterSelection", async () => {
+	it("toggles Workflow and Fanout branches without changing selection", async () => {
 		const user = userEvent.setup();
 		const { onSelectWorktree } = renderWorkspaceList();
 
-		expect(screen.getByText("Direct session")).toBeInTheDocument();
-		await user.click(screen.getByTestId("worktree-item-feature"));
+		await user.click(screen.getByRole("button", { name: "Release workflow" }));
+		expect(screen.queryByText("Prepare")).not.toBeInTheDocument();
+		expect(onSelectWorktree).not.toHaveBeenCalled();
 
-		expect(screen.queryByText("Direct session")).not.toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "Release workflow" }));
+		await user.click(screen.getByRole("button", { name: "Review all" }));
+		expect(screen.queryByText("Architecture review")).not.toBeInTheDocument();
 		expect(onSelectWorktree).not.toHaveBeenCalled();
 	});
 
-	it("shows an empty placeholder for an expanded Worktree with no sessions or workflows", () => {
-		setSingleWorktree("/repo/empty", {
-			nodes: [],
-			loading: false,
-			error: null,
-		});
-		renderWorkspaceList({ selectedRootPath: "/repo/empty" });
+	it("emits only an opaque Node selection from a leaf", async () => {
+		const user = userEvent.setup();
+		const { onSelectWorktree } = renderWorkspaceList();
 
-		const placeholder = screen.getByText("No sessions or workflows");
-		expect(placeholder).toBeInTheDocument();
-		expect(placeholder).toHaveClass("text-muted-foreground");
-		expect(placeholder).toHaveStyle({ paddingLeft: "26px" });
-		expect(screen.queryByText("Direct session")).not.toBeInTheDocument();
-		expect(screen.queryByText("release")).not.toBeInTheDocument();
+		await user.click(
+			screen.getByRole("button", { name: /Architecture review/ }),
+		);
+
+		expect(onSelectWorktree).toHaveBeenCalledWith(
+			"/repo/wt",
+			"feature",
+			"repo",
+			{
+				kind: "node",
+				worktreePath: "/repo/wt",
+				nodeId: "fanout-child-internal-uuid",
+			},
+		);
 	});
 
-	it("does not show the empty placeholder when the Worktree has nodes", () => {
+	it("does not render attempts, fanout coordinates, raw kinds, or internal ids", () => {
+		renderWorkspaceList();
+
+		expect(screen.queryByText(/attempt/i)).not.toBeInTheDocument();
+		expect(screen.queryByText(/item \d/i)).not.toBeInTheDocument();
+		expect(screen.queryByText(/child \d/i)).not.toBeInTheDocument();
+		expect(
+			screen.queryByText("workflow-internal-uuid"),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByText("fanout-child-internal-uuid"),
+		).not.toBeInTheDocument();
+		expect(screen.queryByText("command")).not.toBeInTheDocument();
+	});
+
+	it("uses preferredNodeId once for the initial selected Worktree", async () => {
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: recursiveTree,
+			preferredNodeId: directNode.id,
+		});
+		const { onSelectWorktree, rerender } = renderWorkspaceList({
+			autoSelectPreferredNode: true,
+		});
+
+		await waitFor(() => expect(onSelectWorktree).toHaveBeenCalledTimes(1));
+		expect(onSelectWorktree).toHaveBeenCalledWith(
+			"/repo/wt",
+			"feature",
+			"repo",
+			{
+				kind: "node",
+				worktreePath: "/repo/wt",
+				nodeId: directNode.id,
+			},
+		);
+
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: recursiveTree,
+			preferredNodeId: "fanout-child-internal-uuid",
+		});
+		rerender(
+			<WorkspaceList
+				repoPaths={["/repo"]}
+				selectedRootPath="/repo/wt"
+				centerSelection={null}
+				autoSelectPreferredNode={true}
+				onSelectWorktree={onSelectWorktree}
+				onCreateSession={vi.fn()}
+				onAddRepo={vi.fn()}
+				onShowSettings={vi.fn()}
+			/>,
+		);
+		expect(onSelectWorktree).toHaveBeenCalledTimes(1);
+	});
+
+	it("keeps initial selection eligible while an empty snapshot has no preferred Node", async () => {
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: [],
+			preferredNodeId: null,
+		});
+		const { onSelectWorktree, rerender } = renderWorkspaceList({
+			autoSelectPreferredNode: true,
+		});
+		expect(onSelectWorktree).not.toHaveBeenCalled();
+
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: recursiveTree,
+			preferredNodeId: directNode.id,
+		});
+		rerender(
+			<WorkspaceList
+				repoPaths={["/repo"]}
+				selectedRootPath="/repo/wt"
+				centerSelection={null}
+				autoSelectPreferredNode={true}
+				onSelectWorktree={onSelectWorktree}
+				onCreateSession={vi.fn()}
+				onAddRepo={vi.fn()}
+				onShowSettings={vi.fn()}
+			/>,
+		);
+
+		await waitFor(() => expect(onSelectWorktree).toHaveBeenCalledTimes(1));
+		expect(onSelectWorktree).toHaveBeenCalledWith(
+			"/repo/wt",
+			"feature",
+			"repo",
+			{
+				kind: "node",
+				worktreePath: "/repo/wt",
+				nodeId: directNode.id,
+			},
+		);
+	});
+
+	it("resets the preferred selection guard when the same branch gets a new Worktree path", async () => {
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: recursiveTree,
+			preferredNodeId: directNode.id,
+		});
+		const { onSelectWorktree, onCreateSession, rerender } = renderWorkspaceList(
+			{ autoSelectPreferredNode: true },
+		);
+		await waitFor(() => expect(onSelectWorktree).toHaveBeenCalledTimes(1));
+
+		mocks.worktreeBranches = [{ ...makeBranch(), worktree_path: null }];
+		rerender(
+			<WorkspaceList
+				repoPaths={["/repo"]}
+				selectedRootPath={null}
+				centerSelection={null}
+				autoSelectPreferredNode={true}
+				onSelectWorktree={onSelectWorktree}
+				onCreateSession={onCreateSession}
+				onAddRepo={vi.fn()}
+				onShowSettings={vi.fn()}
+			/>,
+		);
+
+		const recreatedNode = { ...directNode, id: "recreated-node" };
 		mocks.worktreeBranches = [
-			makeBranch({
-				name: "feature",
-				worktree_path: "/repo/wt",
-				has_pr: true,
-				pr_number: 12,
-				pr_url: "https://example.test/pr/12",
-			}),
+			{ ...makeBranch(), worktree_path: "/repo/wt-recreated" },
 		];
-		renderWorkspaceList();
+		mocks.treeStateOverrides.set("/repo/wt-recreated", {
+			nodes: [recreatedNode],
+			preferredNodeId: recreatedNode.id,
+		});
+		rerender(
+			<WorkspaceList
+				repoPaths={["/repo"]}
+				selectedRootPath="/repo/wt-recreated"
+				centerSelection={null}
+				autoSelectPreferredNode={true}
+				onSelectWorktree={onSelectWorktree}
+				onCreateSession={onCreateSession}
+				onAddRepo={vi.fn()}
+				onShowSettings={vi.fn()}
+			/>,
+		);
 
-		expect(screen.getByText("Direct session")).toBeInTheDocument();
-		expect(screen.getByText("release")).toBeInTheDocument();
-		expect(
-			screen.queryByText("No sessions or workflows"),
-		).not.toBeInTheDocument();
+		await waitFor(() => expect(onSelectWorktree).toHaveBeenCalledTimes(2));
+		expect(onSelectWorktree).toHaveBeenLastCalledWith(
+			"/repo/wt-recreated",
+			"feature",
+			"repo",
+			{
+				kind: "node",
+				worktreePath: "/repo/wt-recreated",
+				nodeId: recreatedNode.id,
+			},
+		);
 	});
 
-	it("keeps the empty placeholder hidden while Worktree nodes are loading", () => {
-		setSingleWorktree(
-			"/repo/loading",
-			{
-				nodes: [],
-				loading: true,
-				error: null,
-			},
-			"loading",
-		);
-		const { container } = renderWorkspaceList({
-			selectedRootPath: "/repo/loading",
+	it("does not apply a later preferred Node after selection was resolved empty", async () => {
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: recursiveTree,
+			preferredNodeId: directNode.id,
+		});
+		const { onSelectWorktree } = renderWorkspaceList({
+			autoSelectPreferredNode: false,
 		});
 
-		expect(container.querySelector(".animate-spin")).toBeInTheDocument();
-		expect(
-			screen.queryByText("No sessions or workflows"),
-		).not.toBeInTheDocument();
+		await Promise.resolve();
+		expect(onSelectWorktree).not.toHaveBeenCalled();
 	});
 
-	it("keeps the empty placeholder hidden when Worktree node loading fails with no nodes", () => {
-		setSingleWorktree(
-			"/repo/error",
-			{
-				nodes: [],
-				loading: false,
-				error: "Failed to load workspace tree",
-			},
-			"error",
-		);
-		renderWorkspaceList({ selectedRootPath: "/repo/error" });
+	it("keeps a stable Node selected when the tree snapshot is replaced", () => {
+		const selection = {
+			kind: "node" as const,
+			worktreePath: "/repo/wt",
+			nodeId: "fanout-child-internal-uuid",
+		};
+		const { rerender } = renderWorkspaceList({ centerSelection: selection });
 
 		expect(
-			screen.getByText("Failed to load workspace tree"),
-		).toBeInTheDocument();
-		expect(
-			screen.queryByText("No sessions or workflows"),
-		).not.toBeInTheDocument();
-	});
+			screen.getByRole("button", { name: /Architecture review/ }),
+		).toHaveAttribute("aria-current", "page");
 
-	it("does not render the empty placeholder for a collapsed Worktree", async () => {
-		const user = userEvent.setup();
-		setSingleWorktree("/repo/empty", {
-			nodes: [],
-			loading: false,
-			error: null,
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: recursiveTree.map((item) => ({ ...item, updatedAt: 99 })),
 		});
-		renderWorkspaceList({ selectedRootPath: "/repo/empty" });
-
-		expect(screen.getByText("No sessions or workflows")).toBeInTheDocument();
-		await user.click(screen.getByTestId("worktree-item-empty"));
-
+		rerender(
+			<WorkspaceList
+				repoPaths={["/repo"]}
+				selectedRootPath="/repo/wt"
+				centerSelection={selection}
+				onSelectWorktree={vi.fn()}
+				onCreateSession={vi.fn()}
+				onAddRepo={vi.fn()}
+				onShowSettings={vi.fn()}
+			/>,
+		);
 		expect(
-			screen.queryByText("No sessions or workflows"),
-		).not.toBeInTheDocument();
+			screen.getByRole("button", { name: /Architecture review/ }),
+		).toHaveAttribute("aria-current", "page");
 	});
 
-	it("emits an agentSession selection when a Session row is clicked", async () => {
+	it("keeps occurrence order and the selected past occurrence when later executions append", async () => {
 		const user = userEvent.setup();
-		const { onSelectWorktree } = renderWorkspaceList();
+		const occurrenceA1: WorkspaceTreeItem = {
+			kind: "node",
+			id: "occurrence-a-1",
+			title: "A",
+			status: "completed",
+			contentKind: "session",
+			capabilities: { canApprove: false, canClose: false },
+			updatedAt: 1,
+		};
+		const occurrenceB: WorkspaceTreeItem = {
+			...occurrenceA1,
+			id: "occurrence-b-1",
+			title: "B",
+			updatedAt: 2,
+		};
+		const occurrenceA2: WorkspaceTreeItem = {
+			...occurrenceA1,
+			id: "occurrence-a-2",
+			updatedAt: 3,
+		};
+		const occurrenceC: WorkspaceTreeItem = {
+			...occurrenceA1,
+			id: "occurrence-c-1",
+			title: "C",
+			status: "running",
+			updatedAt: 4,
+		};
+		const workflow = (children: WorkspaceTreeItem[]): WorkspaceTreeItem => ({
+			kind: "workflow",
+			id: "loop-workflow",
+			title: "Loop workflow",
+			status: "running",
+			capabilities: {
+				canStop: true,
+				canResume: false,
+				canAbort: true,
+				canArchive: false,
+			},
+			updatedAt: 4,
+			children,
+		});
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: [workflow([occurrenceA1, occurrenceB])],
+		});
+		const selection = {
+			kind: "node" as const,
+			worktreePath: "/repo/wt",
+			nodeId: occurrenceA1.id,
+		};
+		const { onSelectWorktree, rerender } = renderWorkspaceList({
+			centerSelection: selection,
+		});
 
-		await user.click(screen.getByText("Direct session"));
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: [workflow([occurrenceA1, occurrenceB, occurrenceA2, occurrenceC])],
+		});
+		rerender(
+			<WorkspaceList
+				repoPaths={["/repo"]}
+				selectedRootPath="/repo/wt"
+				centerSelection={selection}
+				onSelectWorktree={onSelectWorktree}
+				onCreateSession={vi.fn()}
+				onAddRepo={vi.fn()}
+				onShowSettings={vi.fn()}
+			/>,
+		);
 
-		expect(onSelectWorktree).toHaveBeenCalledWith(
+		const executionLabels = screen
+			.getAllByRole("button")
+			.map((button) => button.getAttribute("aria-label"))
+			.filter((label) => label?.match(/^[ABC],/));
+		expect(executionLabels).toEqual([
+			"A, completed",
+			"B, completed",
+			"A, completed",
+			"C, running",
+		]);
+		const [firstA, secondA] = screen.getAllByRole("button", {
+			name: /^A, completed$/,
+		});
+		expect(firstA).toHaveAttribute("aria-current", "page");
+		expect(secondA).not.toHaveAttribute("aria-current");
+
+		await user.click(secondA);
+		expect(onSelectWorktree).toHaveBeenLastCalledWith(
 			"/repo/wt",
 			"feature",
 			"repo",
 			{
-				kind: "agentSession",
+				kind: "node",
 				worktreePath: "/repo/wt",
-				sessionId: "direct-1",
+				nodeId: "occurrence-a-2",
 			},
 		);
 	});
 
-	it("toggles a Workflow parent without changing CenterSelection", async () => {
+	it("sends NewSession through the separate creation operation", async () => {
 		const user = userEvent.setup();
-		const { onSelectWorktree } = renderWorkspaceList();
+		const { onCreateSession, onSelectWorktree } = renderWorkspaceList();
 
-		expect(screen.getByText("release")).toBeInTheDocument();
-		expect(screen.queryByText("Deploy workflow")).not.toBeInTheDocument();
-		expect(screen.getByText("Build step")).toBeInTheDocument();
-		await user.click(screen.getByText("release"));
+		await user.click(screen.getByRole("button", { name: "Create in feature" }));
+		await user.click(screen.getByRole("menuitem", { name: "NewSession" }));
 
-		expect(screen.queryByText("Build step")).not.toBeInTheDocument();
-		expect(screen.queryByText("Running")).not.toBeInTheDocument();
+		expect(onCreateSession).toHaveBeenCalledWith("/repo/wt", "feature", "repo");
 		expect(onSelectWorktree).not.toHaveBeenCalled();
 	});
 
-	it("emits a workflowStep selection when a Workflow Step row is clicked", async () => {
+	it("closes only a Node allowed by backend capability", async () => {
 		const user = userEvent.setup();
-		const { onSelectWorktree } = renderWorkspaceList();
+		mocks.invoke.mockResolvedValue(null);
+		const detailRefresh = vi.fn();
+		window.addEventListener("workspace-tree-refresh", detailRefresh);
+		renderWorkspaceList();
 
-		await user.click(screen.getByText("Build step"));
-
-		expect(onSelectWorktree).toHaveBeenCalledWith(
-			"/repo/wt",
-			"feature",
-			"repo",
-			{
-				kind: "workflowStep",
-				worktreePath: "/repo/wt",
-				runId: "run-1",
-				stepId: "run-1:step-build",
-				stepName: "Build step",
-			},
+		await user.click(
+			screen.getByRole("button", { name: "Close Direct session" }),
 		);
-	});
 
-	it("opens the Workflow row menu and stops a stoppable Workflow", async () => {
-		const user = userEvent.setup();
-		const { onSelectWorktree } = renderWorkspaceList();
-
-		await user.click(screen.getByLabelText("Open menu for release"));
-		const stop = await screen.findByText("Stop");
-		await user.click(stop);
-
-		await waitFor(() => {
-			expect(mocks.invoke).toHaveBeenCalledWith("abort_workflow", {
-				runId: "run-1",
-			});
+		expect(mocks.invoke).toHaveBeenCalledWith("close_workspace_node", {
+			worktreePath: "/repo/wt",
+			nodeId: directNode.id,
 		});
-		expect(mocks.refreshTree).toHaveBeenCalled();
-		expect(screen.queryByRole("alert")).toBeNull();
-		expect(onSelectWorktree).not.toHaveBeenCalled();
+		expect(mocks.refreshTree).toHaveBeenCalledOnce();
+		expect(detailRefresh).toHaveBeenCalledOnce();
+		window.removeEventListener("workspace-tree-refresh", detailRefresh);
 	});
 
-	it("shows an error when stopping a Workflow fails", async () => {
+	it("invalidates Node detail when Close commits but tree refresh fails", async () => {
 		const user = userEvent.setup();
+		mocks.invoke.mockResolvedValue(null);
+		mocks.refreshTree.mockRejectedValueOnce(new Error("tree offline"));
+		const detailRefresh = vi.fn();
+		window.addEventListener("workspace-tree-refresh", detailRefresh);
 		renderWorkspaceList();
-		mocks.invoke.mockRejectedValueOnce("abort denied");
 
-		await user.click(screen.getByLabelText("Open menu for release"));
-		const stop = await screen.findByText("Stop");
-		await user.click(stop);
-
-		expect(await screen.findByRole("alert")).toHaveTextContent(
-			"Stop workflow failed: abort denied",
+		await user.click(
+			screen.getByRole("button", { name: "Close Direct session" }),
 		);
-		expect(mocks.refreshTree).not.toHaveBeenCalled();
-	});
 
-	it("keeps Stop enabled for a waiting approval Workflow", async () => {
-		const user = userEvent.setup();
-		renderWorkspaceList();
-
-		await user.click(screen.getByLabelText("Open menu for waiting-flow"));
-		const stop = await screen.findByRole("menuitem", { name: /Stop/ });
-		expect(stop).not.toHaveAttribute("aria-disabled", "true");
-		await user.click(stop);
-
-		await waitFor(() => {
-			expect(mocks.invoke).toHaveBeenCalledWith("abort_workflow", {
-				runId: "run-waiting",
-			});
+		await waitFor(() => expect(detailRefresh).toHaveBeenCalledOnce());
+		expect(mocks.invoke).toHaveBeenCalledWith("close_workspace_node", {
+			worktreePath: "/repo/wt",
+			nodeId: directNode.id,
 		});
+		expect(mocks.refreshTree).toHaveBeenCalledOnce();
+		expect(screen.getByRole("alert")).toHaveTextContent("tree offline");
+		window.removeEventListener("workspace-tree-refresh", detailRefresh);
 	});
 
-	it("uses live representative statuses for Step and Workflow rows", () => {
-		renderWorkspaceList();
-
-		expect(screen.getAllByTitle("waiting").length).toBeGreaterThanOrEqual(2);
-		expect(screen.getAllByTitle("failed").length).toBeGreaterThanOrEqual(2);
-		expect(screen.getAllByTitle("completed").length).toBeGreaterThanOrEqual(1);
-	});
-
-	it("uses a fixed Workflow icon for Workflow rows and keeps Step row status icons", () => {
-		renderWorkspaceList();
-
-		const workflowButton = screen.getByText("release").closest("button");
-		const stepButton = screen.getByText("Build step").closest("button");
-
-		expect(
-			workflowButton?.querySelector('[title="failed"] svg.lucide-workflow'),
-		).toBeInTheDocument();
-		expect(
-			stepButton?.querySelector('[title="waiting"] svg.lucide-clock'),
-		).toBeInTheDocument();
-		expect(stepButton?.querySelector("svg.lucide-workflow")).toBeNull();
-	});
-
-	it("does not enable Stop from a live representative status on a terminal Workflow", async () => {
+	it("enables Workflow actions only from backend capabilities", async () => {
 		const user = userEvent.setup();
 		renderWorkspaceList();
 
-		await user.click(screen.getByLabelText("Open menu for completed-flow"));
-		const stop = await screen.findByRole("menuitem", { name: /Stop/ });
-		expect(stop).toHaveAttribute("aria-disabled", "true");
-		fireEvent.click(stop);
-
-		expect(mocks.invoke).not.toHaveBeenCalledWith(
-			"abort_workflow",
-			expect.anything(),
+		await user.click(
+			screen.getByRole("button", { name: "Open menu for Release workflow" }),
 		);
-	});
-
-	it.each([
-		["completed", "completed-flow"],
-		["failed", "failed-flow"],
-		["aborted", "aborted-flow"],
-	])("disables Stop for a %s Workflow and ignores clicks", async (_status, workflowLabel) => {
-		const user = userEvent.setup();
-		renderWorkspaceList();
-
-		await user.click(screen.getByLabelText(`Open menu for ${workflowLabel}`));
-		const stop = await screen.findByRole("menuitem", { name: /Stop/ });
-		expect(stop).toHaveAttribute("aria-disabled", "true");
-		fireEvent.click(stop);
-
-		expect(mocks.invoke).not.toHaveBeenCalledWith(
-			"abort_workflow",
-			expect.anything(),
+		expect(screen.getByRole("menuitem", { name: "Stop" })).toBeEnabled();
+		expect(screen.getByRole("menuitem", { name: "Resume" })).toHaveAttribute(
+			"aria-disabled",
+			"true",
 		);
-	});
-
-	it("archives a Workflow row without changing CenterSelection", async () => {
-		const user = userEvent.setup();
-		const { onSelectWorktree } = renderWorkspaceList();
-
-		await user.click(screen.getByLabelText("Archive release"));
-
-		await waitFor(() => {
-			expect(mocks.invoke).toHaveBeenCalledWith(
-				"archive_workspace_workflow_run",
-				{
-					worktreePath: "/repo/wt",
-					runId: "run-1",
-				},
-			);
-		});
-		expect(mocks.refreshTree).toHaveBeenCalled();
-		expect(screen.queryByRole("alert")).toBeNull();
-		expect(onSelectWorktree).not.toHaveBeenCalled();
-	});
-
-	it("shows an error when archiving a Workflow fails", async () => {
-		const user = userEvent.setup();
-		renderWorkspaceList();
-		mocks.invoke.mockRejectedValueOnce("archive denied");
-
-		await user.click(screen.getByLabelText("Archive release"));
-
-		expect(await screen.findByRole("alert")).toHaveTextContent(
-			"Archive workflow failed: archive denied",
-		);
-		expect(mocks.refreshTree).not.toHaveBeenCalled();
-	});
-
-	it("opens the Worktree menu with history, PR link, and delete actions", async () => {
-		const user = userEvent.setup();
-		renderWorkspaceList();
-
-		await user.click(screen.getByLabelText("Open menu for feature"));
-
-		expect(await screen.findByText("SessionHistory")).toBeInTheDocument();
-		expect(screen.getByText("WorkflowHistory")).toBeInTheDocument();
-		expect(screen.getByText("PR Link")).toBeInTheDocument();
-		expect(screen.getByText("Delete")).toBeInTheDocument();
-	});
-
-	it("deletes a Worktree through the parent confirm callback without killing LSP", async () => {
-		const user = userEvent.setup();
-		renderWorkspaceList();
-
-		await user.click(screen.getByLabelText("Open menu for feature"));
-		await user.click(await screen.findByText("Delete"));
-		const dialog = await screen.findByRole("alertdialog");
-		await user.click(within(dialog).getByRole("button", { name: "Delete" }));
-
-		await waitFor(() => {
-			expect(mocks.invoke).toHaveBeenCalledWith("remove_worktree", {
-				repoPath: "/repo",
-				worktreePath: "/repo/wt",
-				force: false,
-			});
-		});
-
-		const calls = mocks.invoke.mock.calls;
-		expect(calls).toEqual(
-			expect.arrayContaining([
-				[
-					"kill_ptys_by_worktree",
-					{
-						worktreePath: "/repo/wt",
-					},
-				],
-				[
-					"remove_worktree",
-					{
-						repoPath: "/repo",
-						worktreePath: "/repo/wt",
-						force: false,
-					},
-				],
-			]),
-		);
-		const commands = calls.map(([command]) => command);
-		expect(commands.indexOf("kill_ptys_by_worktree")).toBeLessThan(
-			commands.indexOf("remove_worktree"),
-		);
-		expect(commands).not.toContain("kill_lsp_by_worktree");
-		expect(mocks.refreshWorktrees).toHaveBeenCalled();
-	});
-
-	it("closes a Session from the hover action without selecting the row", async () => {
-		const user = userEvent.setup();
-		const { onSelectWorktree } = renderWorkspaceList();
-
-		await user.click(screen.getByLabelText("Close Direct session"));
-
-		await waitFor(() => {
-			expect(mocks.closeSession).toHaveBeenCalledWith("direct-1");
-		});
-		expect(onSelectWorktree).not.toHaveBeenCalled();
-	});
-
-	it("does not render status text, relative time, or more controls", () => {
-		renderWorkspaceList();
-
-		expect(screen.queryByText("Open")).not.toBeInTheDocument();
-		expect(screen.queryByText("Running")).not.toBeInTheDocument();
-		expect(screen.queryByText("Closed")).not.toBeInTheDocument();
-		expect(screen.queryByText("1日")).not.toBeInTheDocument();
-		expect(screen.queryByText("もっと表示する")).not.toBeInTheDocument();
-	});
-
-	it("renders the header Add Worktree action", () => {
-		renderWorkspaceList();
-
-		expect(
-			screen.getByRole("button", { name: "Add Worktree" }),
-		).toBeInTheDocument();
-	});
-
-	it("shows the NewWorkflow submenu from the Worktree create menu", async () => {
-		const user = userEvent.setup();
-		renderWorkspaceList();
-
-		await user.click(screen.getByLabelText("Create in feature"));
-
-		await user.hover(await screen.findByText("NewWorkflow"));
-
-		expect(await screen.findByText("release")).toBeInTheDocument();
+		expect(screen.getByRole("menuitem", { name: "Abort" })).toBeEnabled();
 	});
 });

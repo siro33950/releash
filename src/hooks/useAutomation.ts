@@ -5,8 +5,9 @@ import type {
 	DiagnosticReport,
 	FacetKind,
 	FacetSummary,
-	Workflow,
-	WorkflowSummary,
+	SaveWorkflowSourceResponse,
+	WorkflowDefinition,
+	WorkflowDefinitionSummary,
 } from "@/types/workflow";
 
 const EMPTY_REPORT: DiagnosticReport = {
@@ -16,18 +17,23 @@ const EMPTY_REPORT: DiagnosticReport = {
 	facet_usage: {},
 };
 
-export type FacetSubTab = "policy" | "knowledge" | "instruction" | "contract";
+export type FacetSubTab = "policy" | "knowledge" | "instruction";
 
 export function useAutomation(open: boolean) {
-	const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
+	const [workflows, setWorkflows] = useState<WorkflowDefinitionSummary[]>([]);
 	const [facets, setFacets] = useState<FacetSummary[]>([]);
 	const [report, setReport] = useState<DiagnosticReport>(EMPTY_REPORT);
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
-	const [selectedWorkflow, setSelectedWorkflow] = useState<Workflow | null>(
-		null,
-	);
+	const [selectedWorkflow, setSelectedWorkflow] =
+		useState<WorkflowDefinition | null>(null);
+	const [selectedWorkflowName, setSelectedWorkflowName] = useState<
+		string | null
+	>(null);
+	const [selectedWorkflowSource, setSelectedWorkflowSource] = useState<
+		string | null
+	>(null);
 	const [selectedFacetContent, setSelectedFacetContent] = useState<
 		string | null
 	>(null);
@@ -47,7 +53,7 @@ export function useAutomation(open: boolean) {
 		setError(null);
 		try {
 			const [wfList, diagReport] = await Promise.all([
-				invoke<WorkflowSummary[]>("list_workflows"),
+				invoke<WorkflowDefinitionSummary[]>("list_workflows"),
 				invoke<DiagnosticReport>("diagnose_all_cmd"),
 			]);
 			setWorkflows(wfList);
@@ -85,6 +91,8 @@ export function useAutomation(open: boolean) {
 		}
 		return () => {
 			setSelectedWorkflow(null);
+			setSelectedWorkflowName(null);
+			setSelectedWorkflowSource(null);
 			setSelectedFacetContent(null);
 			setSelectedFacetKey(null);
 			setSelectedFacetKind(null);
@@ -144,44 +152,76 @@ export function useAutomation(open: boolean) {
 
 	// --- Workflow operations ---
 
-	const selectWorkflow = useCallback(async (name: string) => {
-		try {
-			const wf = await invoke<Workflow>("get_workflow", { name });
-			setSelectedWorkflow(wf);
-		} catch (e) {
-			setError(String(e));
-		}
-	}, []);
-
-	const saveWorkflow = useCallback(
-		async (workflow: Workflow, originalName?: string) => {
+	const selectWorkflow = useCallback(
+		async (name: string) => {
+			setSelectedWorkflowName(name);
+			setError(null);
 			try {
-				await invoke("save_workflow", {
-					workflow,
-					originalName: originalName ?? null,
-				});
-				await fetchAll();
-				return { ok: true as const };
+				const source = await invoke<string>("get_workflow_source", { name });
+				setSelectedWorkflowSource(source);
+				try {
+					const wf = await invoke<WorkflowDefinition>("get_workflow", { name });
+					setSelectedWorkflow(wf);
+				} catch (e) {
+					setSelectedWorkflow(null);
+					setError(String(e));
+					await refreshDiagnostics();
+				}
 			} catch (e) {
+				setSelectedWorkflow(null);
+				setSelectedWorkflowSource(null);
+				setError(String(e));
+			}
+		},
+		[refreshDiagnostics],
+	);
+
+	const saveWorkflowSource = useCallback(
+		async (source: string, originalName?: string) => {
+			try {
+				const response = await invoke<SaveWorkflowSourceResponse>(
+					"save_workflow_source",
+					{
+						source,
+						originalName: originalName ?? null,
+					},
+				);
+				if (!response.ok) {
+					return {
+						ok: false as const,
+						error: response.error ?? "workflow_diagnostics",
+						diagnostics: response.diagnostics,
+					};
+				}
+				const { workflow } = response;
+				setSelectedWorkflow(workflow);
+				setSelectedWorkflowName(workflow.name);
+				setSelectedWorkflowSource(source);
+				await fetchAll();
+				return { ok: true as const, workflow };
+			} catch (e) {
+				await refreshDiagnostics();
 				return { ok: false as const, error: String(e) };
 			}
 		},
-		[fetchAll],
+		[fetchAll, refreshDiagnostics],
 	);
 
 	const deleteWorkflow = useCallback(
 		async (name: string) => {
 			try {
 				await invoke("delete_workflow", { name });
-				if (selectedWorkflow?.name === name) {
+				if ((selectedWorkflow?.name ?? selectedWorkflowName) === name) {
 					setSelectedWorkflow(null);
+					setSelectedWorkflowName(null);
+					setSelectedWorkflowSource(null);
 				}
 				await fetchAll();
 			} catch (e) {
 				setError(String(e));
 			}
 		},
-		[fetchAll, selectedWorkflow],
+		[fetchAll, selectedWorkflow, selectedWorkflowName],
 	);
 
 	const duplicateWorkflow = useCallback(
@@ -284,37 +324,6 @@ export function useAutomation(open: boolean) {
 		[],
 	);
 
-	const loadAllFacetKeys = useCallback(async () => {
-		try {
-			const [policies, knowledge, instructions, contracts] = await Promise.all([
-				invoke<FacetSummary[]>("list_facet_summaries", {
-					kind: "policy",
-				}),
-				invoke<FacetSummary[]>("list_facet_summaries", {
-					kind: "knowledge",
-				}),
-				invoke<FacetSummary[]>("list_facet_summaries", {
-					kind: "instruction",
-				}),
-				invoke<FacetSummary[]>("list_facet_summaries", {
-					kind: "contract",
-				}),
-			]);
-			return {
-				policy: policies.map((f) => f.key),
-				knowledge: knowledge.map((f) => f.key),
-				instruction: instructions.map((f) => f.key),
-				// facet kind は "contract" だが、StepEditor の FacetSlot 名
-				// （schema フィールド名 output_contract）に合わせてキー名を保持する。
-				// input_contracts 編集 UI 導入時に統一する想定（別タスク）。
-				output_contract: contracts.map((f) => f.key),
-			};
-		} catch (e) {
-			setError(String(e));
-			return null;
-		}
-	}, []);
-
 	const renderFacetPreview = useCallback(
 		async (content: string, sampleValues: Record<string, string>) => {
 			try {
@@ -343,6 +352,8 @@ export function useAutomation(open: boolean) {
 		clearExternalChange,
 
 		selectedWorkflow,
+		selectedWorkflowName,
+		selectedWorkflowSource,
 		selectedFacetContent,
 		selectedFacetKey,
 		selectedFacetKind,
@@ -352,7 +363,7 @@ export function useAutomation(open: boolean) {
 		refreshDiagnostics,
 
 		selectWorkflow,
-		saveWorkflow,
+		saveWorkflowSource,
 		deleteWorkflow,
 		duplicateWorkflow,
 		openWorkflowInEditor,
@@ -362,10 +373,10 @@ export function useAutomation(open: boolean) {
 		deleteFacet,
 		duplicateFacet,
 		openFacetInEditor,
-		loadAllFacetKeys,
 		renderFacetPreview,
 
 		setSelectedWorkflow,
+		setSelectedWorkflowSource,
 		setSelectedFacetContent,
 		setSelectedFacetKey,
 		setSelectedFacetKind,

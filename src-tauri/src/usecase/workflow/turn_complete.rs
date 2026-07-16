@@ -25,7 +25,7 @@ impl WorkflowTurnCompleteUsecase {
         }
     }
 
-    #[allow(dead_code)] // issues-1301 B-3/G-1: retained for workflow step guards around agent turn completion.
+    #[allow(dead_code)] // issues-1301 B-3/G-1: retained for workflow node guards around agent turn completion.
     pub async fn is_session_running(&self, chat_session_id: &str) -> bool {
         self.runtime.is_session_running(chat_session_id).await
     }
@@ -45,7 +45,6 @@ impl WorkflowTurnCompleteUsecase {
         if command.interrupted && command.exit_code == 0 && command.failure_signal.is_none() {
             return Ok(());
         }
-        self.runtime.pickup_pending_submit_outputs().await;
         self.runtime
             .complete_turn(WorkflowTurnCompleteCommand {
                 chat_session_id: command.chat_session_id,
@@ -75,10 +74,6 @@ mod tests {
         async fn is_session_running(&self, _chat_session_id: &str) -> bool {
             self.calls.lock().unwrap().push("is_running");
             self.session_running
-        }
-
-        async fn pickup_pending_submit_outputs(&self) {
-            self.calls.lock().unwrap().push("pickup_pending");
         }
 
         async fn complete_turn(
@@ -113,7 +108,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn returns_without_pickup_when_session_is_not_running() {
+    async fn returns_when_session_is_not_running() {
         let gateway = Arc::new(FakeRuntimeGateway::default());
         let usecase = WorkflowTurnCompleteUsecase::new(gateway.clone());
 
@@ -133,7 +128,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pickups_pending_submit_outputs_before_completing_turn() {
+    async fn completes_running_turn() {
         let gateway = Arc::new(FakeRuntimeGateway {
             session_running: true,
             ..Default::default()
@@ -154,7 +149,7 @@ mod tests {
 
         assert_eq!(
             gateway.calls.lock().unwrap().as_slice(),
-            ["is_running", "pickup_pending", "complete_turn"]
+            ["is_running", "complete_turn"]
         );
     }
 
@@ -203,7 +198,7 @@ mod tests {
 
         assert_eq!(
             gateway.calls.lock().unwrap().as_slice(),
-            ["is_running", "pickup_pending", "complete_turn"]
+            ["is_running", "complete_turn"]
         );
     }
 
@@ -231,7 +226,7 @@ mod tests {
 
         assert_eq!(
             gateway.calls.lock().unwrap().as_slice(),
-            ["is_running", "pickup_pending", "complete_turn"]
+            ["is_running", "complete_turn"]
         );
         assert_eq!(
             gateway.completed_commands.lock().unwrap()[0].failure_signal,

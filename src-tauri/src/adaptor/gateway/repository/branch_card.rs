@@ -6,8 +6,7 @@
 
 use super::util::resolve_branch_base;
 use super::worktree::each_worktree;
-use crate::domain::path::to_canonical_forward_slash;
-use crate::domain::repository::RepositoryError;
+use crate::domain::repository::{normalize_repo_path, RepositoryError};
 use crate::infrastructure::git::client;
 use crate::infrastructure::git::helpers::{detect_default_branch, get_branch_name_for_repo};
 use crate::usecase::repository_dto::BranchCardDto;
@@ -22,7 +21,7 @@ thread_local! {
 }
 
 fn normalize_worktree_path(path: &str) -> String {
-    to_canonical_forward_slash(path)
+    normalize_repo_path(path)
 }
 
 struct DirtyCountSnapshot {
@@ -392,11 +391,16 @@ mod branch_card_gateway_tests {
     }
 
     #[test]
-    fn normalize_worktree_path_replaces_backslashes_only() {
+    fn normalize_worktree_path_normalizes_separators_and_trailing_slash() {
         assert_eq!(
             normalize_worktree_path(r"C:\\repo\\worktree/"),
-            "C://repo//worktree/"
+            "C:/repo/worktree"
         );
+    }
+
+    #[test]
+    fn normalize_worktree_path_trims_trailing_slash() {
+        assert_eq!(normalize_worktree_path("/repo/worktree/"), "/repo/worktree");
     }
 
     #[test]

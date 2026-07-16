@@ -3,22 +3,22 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { FacetSubTab, useAutomation } from "@/hooks/useAutomation";
-import type { FacetKind, NodeType, Workflow } from "@/types/workflow";
+import type { DiagnosticView, FacetKind } from "@/types/workflow";
 import { FacetDetail } from "./automation/FacetDetail";
 import { FacetEditor } from "./automation/FacetEditor";
 import { FacetList } from "./automation/FacetList";
 import { NameInputDialog } from "./automation/NameInputDialog";
-import type { FacetSlot } from "./automation/StepEditor";
-import { facetKindToDirName } from "./automation/utils";
-import { WorkflowDetail } from "./automation/WorkflowDetail";
-import { WorkflowEditor } from "./automation/WorkflowEditor";
+import {
+	WorkflowDetail,
+	WorkflowSourceDiagnosticDetail,
+	WorkflowSourceEditor,
+} from "./automation/WorkflowDetail";
 import { WorkflowList } from "./automation/WorkflowList";
 
 const FACET_SUB_TABS: { id: FacetSubTab; label: string }[] = [
 	{ id: "policy", label: "Policy" },
 	{ id: "knowledge", label: "Knowledge" },
 	{ id: "instruction", label: "Instruction" },
-	{ id: "contract", label: "Contract" },
 ];
 
 export function AutomationSection({
@@ -35,21 +35,21 @@ export function AutomationSection({
 		externalChangeDetected,
 		clearExternalChange,
 		selectedWorkflow,
+		selectedWorkflowName,
+		selectedWorkflowSource,
 		selectedFacetContent,
 		selectedFacetKey,
 		selectedFacetKind,
 		fetchFacets,
 		selectWorkflow,
-		saveWorkflow,
+		saveWorkflowSource,
 		deleteWorkflow,
 		duplicateWorkflow,
-		openWorkflowInEditor,
 		selectFacet,
 		saveFacet,
 		deleteFacet,
 		duplicateFacet,
 		openFacetInEditor,
-		loadAllFacetKeys,
 		renderFacetPreview,
 		setSelectedFacetContent,
 		setSelectedFacetKey,
@@ -58,8 +58,11 @@ export function AutomationSection({
 
 	const [tab, setTab] = useState<string>("workflows");
 	const [facetSubTab, setFacetSubTab] = useState<FacetSubTab>("policy");
-	const [editingWorkflow, setEditingWorkflow] = useState(false);
 	const [editingFacet, setEditingFacet] = useState(false);
+	const [editingWorkflow, setEditingWorkflow] = useState(false);
+	const [workflowSaveDiagnostics, setWorkflowSaveDiagnostics] = useState<
+		DiagnosticView[]
+	>([]);
 
 	// Dialogs
 	const [createWorkflowOpen, setCreateWorkflowOpen] = useState(false);
@@ -70,16 +73,7 @@ export function AutomationSection({
 		name: string;
 		kind?: FacetKind;
 	} | null>(null);
-
-	// Facet keys for workflow editor
-	const [allFacetKeys, setAllFacetKeys] = useState<Record<FacetSlot, string[]>>(
-		{
-			policy: [],
-			knowledge: [],
-			instruction: [],
-			output_contract: [],
-		},
-	);
+	const activeWorkflowName = selectedWorkflow?.name ?? selectedWorkflowName;
 
 	// Load facets when switching to facets tab or changing sub-tab
 	useEffect(() => {
@@ -88,37 +82,35 @@ export function AutomationSection({
 		}
 	}, [tab, facetSubTab, fetchFacets]);
 
-	const handleEditWorkflow = useCallback(async () => {
-		const keys = await loadAllFacetKeys();
-		if (keys) {
-			setAllFacetKeys(keys);
-		}
+	const handleEditWorkflow = useCallback(() => {
+		if (!activeWorkflowName) return;
+		setWorkflowSaveDiagnostics(
+			report.items.filter((item) => item.workflow_name === activeWorkflowName),
+		);
 		setEditingWorkflow(true);
-	}, [loadAllFacetKeys]);
+	}, [activeWorkflowName, report.items]);
 
 	const handleSaveWorkflow = useCallback(
-		async (wf: Workflow, originalName?: string) => {
-			// 実行中の workflow を編集する場合は警告を表示
-			const targetName = originalName ?? wf.name;
-			const isRunning = workflows.some(
-				(w) => w.name === targetName && w.is_running,
-			);
-			if (isRunning) {
-				const confirmed = window.confirm(
-					`ワークフロー '${targetName}' は現在実行中です。保存すると次回以降の実行に影響しますが、実行中のインスタンスには影響しません。保存しますか？`,
-				);
-				if (!confirmed) {
-					return { ok: false as const, error: "cancelled" };
-				}
+		async (content: string) => {
+			if (!activeWorkflowName) {
+				return { ok: false as const, error: "No workflow selected" };
 			}
-			const result = await saveWorkflow(wf, originalName);
+			const result = await saveWorkflowSource(content, activeWorkflowName);
 			if (result.ok) {
 				setEditingWorkflow(false);
-				selectWorkflow(wf.name);
+				setWorkflowSaveDiagnostics([]);
+				selectWorkflow(result.workflow.name);
+				return { ok: true as const, workflow: result.workflow };
 			}
-			return result;
+			const diagnostics = result.diagnostics ?? [];
+			setWorkflowSaveDiagnostics(diagnostics);
+			return {
+				ok: false as const,
+				error: result.error,
+				diagnostics,
+			};
 		},
-		[saveWorkflow, selectWorkflow, workflows],
+		[activeWorkflowName, saveWorkflowSource, selectWorkflow],
 	);
 
 	const handleEditFacet = useCallback(() => {
@@ -146,26 +138,24 @@ export function AutomationSection({
 
 	const handleCreateWorkflow = useCallback(
 		async (name: string) => {
-			const newWorkflow: Workflow = {
-				name,
-				description: "",
-				builtin: false,
-				nodes: [
-					{
-						name: "step-1",
-						type: "agent" as NodeType,
-						inline_prompt: "TODO: describe what this step should do",
-						rules: [],
-					},
-				],
-			};
-			const result = await saveWorkflow(newWorkflow);
+			const source = [
+				`name: ${name}`,
+				'description: ""',
+				"nodes:",
+				"  - name: start",
+				"    session:",
+				"      gate: auto",
+				"      permission: edit",
+				"      facets: {}",
+				"",
+			].join("\n");
+			const result = await saveWorkflowSource(source);
 			if (result.ok) {
 				selectWorkflow(name);
 			}
 			return result;
 		},
-		[saveWorkflow, selectWorkflow],
+		[saveWorkflowSource, selectWorkflow],
 	);
 
 	const handleCreateFacet = useCallback(
@@ -201,8 +191,7 @@ export function AutomationSection({
 
 	const handleDeleteFacet = useCallback(
 		(key: string) => {
-			const dirName = facetKindToDirName(facetSubTab);
-			const facetId = `${dirName}/${key}`;
+			const facetId = `${facetSubTab}/${key}`;
 			const usage = report.facet_usage[facetId] ?? [];
 			const message =
 				usage.length > 0
@@ -219,27 +208,28 @@ export function AutomationSection({
 		return facets.find((f) => f.key === selectedFacetKey)?.builtin ?? false;
 	}, [selectedFacetKey, facets]);
 
-	const isEditing = editingWorkflow || editingFacet;
+	const isEditing = editingFacet || editingWorkflow;
 
 	const handleReloadExternal = useCallback(() => {
 		clearExternalChange();
-		if (editingWorkflow && selectedWorkflow) {
-			setEditingWorkflow(false);
-			selectWorkflow(selectedWorkflow.name);
-		}
 		if (editingFacet && selectedFacetKind && selectedFacetKey) {
 			setEditingFacet(false);
 			selectFacet(selectedFacetKind, selectedFacetKey);
 		}
+		if (editingWorkflow && activeWorkflowName) {
+			setEditingWorkflow(false);
+			setWorkflowSaveDiagnostics([]);
+			selectWorkflow(activeWorkflowName);
+		}
 	}, [
 		clearExternalChange,
-		editingWorkflow,
 		editingFacet,
-		selectedWorkflow,
+		editingWorkflow,
+		activeWorkflowName,
 		selectedFacetKind,
 		selectedFacetKey,
-		selectWorkflow,
 		selectFacet,
+		selectWorkflow,
 	]);
 
 	if (loading) {
@@ -293,9 +283,10 @@ export function AutomationSection({
 							<WorkflowList
 								workflows={workflows}
 								report={report}
-								selectedName={selectedWorkflow?.name ?? null}
+								selectedName={activeWorkflowName}
 								onSelect={(name) => {
 									setEditingWorkflow(false);
+									setWorkflowSaveDiagnostics([]);
 									selectWorkflow(name);
 								}}
 								onDelete={(name) => {
@@ -306,6 +297,10 @@ export function AutomationSection({
 										? `ワークフロー '${name}' は現在実行中です。削除しますか？`
 										: `ワークフロー '${name}' を削除しますか？`;
 									if (!window.confirm(message)) return;
+									if (activeWorkflowName === name) {
+										setEditingWorkflow(false);
+										setWorkflowSaveDiagnostics([]);
+									}
 									deleteWorkflow(name);
 								}}
 								onDuplicate={(name) => {
@@ -315,29 +310,55 @@ export function AutomationSection({
 									});
 									setDuplicateDialogOpen(true);
 								}}
-								onOpenInEditor={openWorkflowInEditor}
+								onEdit={(name) => {
+									setEditingWorkflow(true);
+									setWorkflowSaveDiagnostics(
+										report.items.filter((item) => item.workflow_name === name),
+									);
+									if (activeWorkflowName !== name) {
+										selectWorkflow(name);
+									}
+								}}
 								onCreate={() => setCreateWorkflowOpen(true)}
 							/>
 						</div>
 
 						{/* Right: detail / editor */}
 						<div className="flex-1 min-w-0">
-							{selectedWorkflow ? (
-								editingWorkflow ? (
-									<WorkflowEditor
-										key={selectedWorkflow.name}
-										workflow={selectedWorkflow}
-										allFacetKeys={allFacetKeys}
-										onSave={handleSaveWorkflow}
-										onCancel={() => setEditingWorkflow(false)}
-									/>
-								) : (
-									<WorkflowDetail
-										workflow={selectedWorkflow}
-										report={report}
-										onEdit={handleEditWorkflow}
-									/>
-								)
+							{editingWorkflow &&
+							activeWorkflowName &&
+							selectedWorkflowSource ? (
+								<WorkflowSourceEditor
+									key={activeWorkflowName}
+									name={activeWorkflowName}
+									initialSource={selectedWorkflowSource}
+									diagnostics={
+										workflowSaveDiagnostics.length > 0
+											? workflowSaveDiagnostics
+											: report.items.filter(
+													(item) => item.workflow_name === activeWorkflowName,
+												)
+									}
+									onSave={handleSaveWorkflow}
+									onCancel={() => {
+										setEditingWorkflow(false);
+										setWorkflowSaveDiagnostics([]);
+									}}
+								/>
+							) : selectedWorkflow ? (
+								<WorkflowDetail
+									workflow={selectedWorkflow}
+									report={report}
+									source={selectedWorkflowSource}
+									onEdit={handleEditWorkflow}
+								/>
+							) : activeWorkflowName && selectedWorkflowSource ? (
+								<WorkflowSourceDiagnosticDetail
+									name={activeWorkflowName}
+									report={report}
+									source={selectedWorkflowSource}
+									onEdit={handleEditWorkflow}
+								/>
 							) : (
 								<p className="text-sm text-muted-foreground py-8 text-center">
 									Select a workflow to view details

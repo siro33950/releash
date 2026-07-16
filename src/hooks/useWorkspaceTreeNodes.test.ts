@@ -1,8 +1,11 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { SessionStatus } from "@/types/session";
-import type { WorkflowState, WorkflowStatePayload } from "@/types/workflow";
-import type { WorkspaceTreeNode } from "@/types/workspace-tree";
+import type { SessionStatus, SessionSummary } from "@/types/session";
+import type { WorkflowExecutionChangedPayload } from "@/types/workflow";
+import type {
+	WorkspaceTreeItem,
+	WorkspaceTreeSnapshot,
+} from "@/types/workspace-tree";
 import { useWorkspaceTreeNodes } from "./useWorkspaceTreeNodes";
 
 const mockInvoke = vi.fn();
@@ -12,28 +15,32 @@ const mockListClosedSessions = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
 	invoke: (...args: unknown[]) => mockInvoke(...args),
 }));
-
 vi.mock("@tauri-apps/api/event", () => ({
 	listen: (...args: unknown[]) => mockListen(...args),
 }));
-
 vi.mock("@/hooks/useSessionStore", () => ({
 	listClosedSessions: (...args: unknown[]) => mockListClosedSessions(...args),
 }));
 
-type ListenerMap = Record<string, Array<(event: { payload: unknown }) => void>>;
+type ListenerMap = Record<string, Array<(event: { payload: never }) => void>>;
 
-function makeSessionNode(id: string): WorkspaceTreeNode {
+function makeNode(id: string): WorkspaceTreeItem {
 	return {
-		kind: "session",
+		kind: "node",
 		id,
-		worktreePath: "/repo",
 		title: id,
-		state: "active",
-		updatedAt: 1_000,
-		workflowStepSession: false,
-		agentState: "running",
+		status: "running",
+		contentKind: "session",
+		capabilities: { canApprove: false, canClose: true },
+		updatedAt: 1,
 	};
+}
+
+function makeSnapshot(
+	nodes: WorkspaceTreeItem[],
+	preferredNodeId: string | null = null,
+): WorkspaceTreeSnapshot {
+	return { nodes, preferredNodeId };
 }
 
 function makeStatus(overrides: Partial<SessionStatus> = {}): SessionStatus {
@@ -46,34 +53,7 @@ function makeStatus(overrides: Partial<SessionStatus> = {}): SessionStatus {
 		turn_phase: "streaming",
 		session_state: "active",
 		pending_permission: false,
-		last_activity_at: 1_000,
-		...overrides,
-	};
-}
-
-function makeWorkflowState(
-	overrides: Partial<WorkflowState> = {},
-): WorkflowState {
-	return {
-		executionId: "run-1",
-		workflowName: "workflow",
-		state: { type: "running" },
-		currentStepIndex: 0,
-		currentStepName: "step",
-		totalSteps: 1,
-		stepHistory: [],
-		stepExecutionCounts: {},
-		stepOutputs: {},
-		workflowDefinition: {
-			name: "workflow",
-			description: "",
-			builtin: false,
-			nodes: [],
-		},
-		totalTokenUsage: { inputTokens: 0, outputTokens: 0 },
-		stepStates: {},
-		startedAt: 1_000,
-		updatedAt: 1_000,
+		last_activity_at: 1,
 		...overrides,
 	};
 }
@@ -100,7 +80,9 @@ async function waitForScheduledRefresh() {
 
 describe("useWorkspaceTreeNodes", () => {
 	let listeners: ListenerMap;
-	let treeResponses: Array<WorkspaceTreeNode[] | Promise<WorkspaceTreeNode[]>>;
+	let treeResponses: Array<
+		WorkspaceTreeSnapshot | Promise<WorkspaceTreeSnapshot>
+	>;
 
 	beforeEach(() => {
 		vi.clearAllMocks();
@@ -108,15 +90,14 @@ describe("useWorkspaceTreeNodes", () => {
 		treeResponses = [];
 		mockListClosedSessions.mockResolvedValue([]);
 		mockListen.mockImplementation(
-			(event: string, fn: (event: { payload: unknown }) => void) => {
-				listeners[event] = [...(listeners[event] ?? []), fn];
+			(event: string, listener: (event: { payload: never }) => void) => {
+				listeners[event] = [...(listeners[event] ?? []), listener];
 				return Promise.resolve(vi.fn());
 			},
 		);
 		mockInvoke.mockImplementation((command: string) => {
 			if (command === "list_workspace_worktree_nodes") {
-				const response = treeResponses.shift() ?? [];
-				return Promise.resolve(response);
+				return Promise.resolve(treeResponses.shift() ?? makeSnapshot([], null));
 			}
 			if (command === "list_workspace_workflow_history") {
 				return Promise.resolve([]);
@@ -125,394 +106,121 @@ describe("useWorkspaceTreeNodes", () => {
 		});
 	});
 
-	it("marks a valid Worktree as loading before the first fetch completes", async () => {
-		const pending = deferred<WorkspaceTreeNode[]>();
-		treeResponses.push(pending.promise);
-
+	it("loads a recursive snapshot and exposes preferredNodeId", async () => {
+		treeResponses.push(makeSnapshot([makeNode("node-1")], "node-1"));
 		const { result } = renderHook(() => useWorkspaceTreeNodes("/repo"));
 
 		expect(result.current.loading).toBe(true);
-
-		await act(async () => {
-			pending.resolve([]);
-			await pending.promise;
-		});
-
-		await waitFor(() => {
-			expect(result.current.loading).toBe(false);
-		});
+		await waitFor(() => expect(result.current.loading).toBe(false));
+		expect(result.current.nodes).toEqual([makeNode("node-1")]);
+		expect(result.current.preferredNodeId).toBe("node-1");
 	});
 
-	it("marks a changed Worktree path as loading until that path has loaded", async () => {
-		const initial = [makeSessionNode("session-1")];
-		treeResponses.push(initial);
-
-		const { result, rerender } = renderHook(
-			({ worktreePath }: { worktreePath: string }) =>
-				useWorkspaceTreeNodes(worktreePath),
-			{ initialProps: { worktreePath: "/repo" } },
-		);
-
-		await waitFor(() => {
-			expect(result.current.nodes).toEqual(initial);
-		});
-		expect(result.current.loading).toBe(false);
-
-		const pending = deferred<WorkspaceTreeNode[]>();
-		treeResponses.push(pending.promise);
-
-		rerender({ worktreePath: "/repo/next" });
-
-		expect(result.current.loading).toBe(true);
-
-		await act(async () => {
-			pending.resolve([]);
-			await pending.promise;
-		});
-
-		await waitFor(() => {
-			expect(result.current.loading).toBe(false);
-		});
-		expect(result.current.nodes).toEqual([]);
-	});
-
-	it("unsubscribes listeners when cleanup runs after setup completes", async () => {
-		const unlistenStatus = vi.fn();
-		const unlistenWorkflow = vi.fn();
-		mockListen.mockImplementation(
-			(event: string, fn: (event: { payload: unknown }) => void) => {
-				listeners[event] = [...(listeners[event] ?? []), fn];
-				if (event === "session-status-changed") {
-					return Promise.resolve(unlistenStatus);
-				}
-				if (event === "workflow-state-changed") {
-					return Promise.resolve(unlistenWorkflow);
-				}
-				return Promise.resolve(vi.fn());
-			},
-		);
-
-		const { unmount } = renderHook(() => useWorkspaceTreeNodes("/repo"));
-
-		await waitFor(() => {
-			expect(mockListen).toHaveBeenCalledTimes(2);
-		});
-
-		unmount();
-
-		expect(unlistenStatus).toHaveBeenCalledTimes(1);
-		expect(unlistenWorkflow).toHaveBeenCalledTimes(1);
-	});
-
-	it("unsubscribes the status listener if cleanup runs before setup completes", async () => {
-		const pendingStatus = deferred<() => void>();
-		const unlistenStatus = vi.fn();
-		mockListen.mockImplementationOnce(() => pendingStatus.promise);
-
-		const { unmount } = renderHook(() => useWorkspaceTreeNodes("/repo"));
-
-		await waitFor(() => {
-			expect(mockListen).toHaveBeenCalledTimes(1);
-		});
-
-		unmount();
-
-		await act(async () => {
-			pendingStatus.resolve(unlistenStatus);
-			await pendingStatus.promise;
-		});
-
-		expect(unlistenStatus).toHaveBeenCalledTimes(1);
-		expect(mockListen).toHaveBeenCalledTimes(1);
-	});
-
-	it("unsubscribes the workflow listener if cleanup runs before it resolves", async () => {
-		const pendingWorkflow = deferred<() => void>();
-		const unlistenStatus = vi.fn();
-		const unlistenWorkflow = vi.fn();
-		mockListen.mockImplementation(
-			(event: string, fn: (event: { payload: unknown }) => void) => {
-				listeners[event] = [...(listeners[event] ?? []), fn];
-				if (event === "session-status-changed") {
-					return Promise.resolve(unlistenStatus);
-				}
-				if (event === "workflow-state-changed") {
-					return pendingWorkflow.promise;
-				}
-				return Promise.resolve(vi.fn());
-			},
-		);
-
-		const { unmount } = renderHook(() => useWorkspaceTreeNodes("/repo"));
-
-		await waitFor(() => {
-			expect(mockListen).toHaveBeenCalledTimes(2);
-		});
-
-		unmount();
-
-		expect(unlistenStatus).toHaveBeenCalledTimes(1);
-		expect(unlistenWorkflow).not.toHaveBeenCalled();
-
-		await act(async () => {
-			pendingWorkflow.resolve(unlistenWorkflow);
-			await pendingWorkflow.promise;
-		});
-
-		expect(unlistenWorkflow).toHaveBeenCalledTimes(1);
-	});
-
-	it("keeps existing nodes visible during background refresh", async () => {
-		const initial = [makeSessionNode("session-1")];
-		const next = [makeSessionNode("session-1"), makeSessionNode("session-2")];
-		treeResponses.push(initial);
-
+	it("keeps the previous snapshot visible during a background refresh", async () => {
+		const pending = deferred<WorkspaceTreeSnapshot>();
+		treeResponses.push(makeSnapshot([makeNode("node-1")], "node-1"));
 		const { result } = renderHook(() => useWorkspaceTreeNodes("/repo"));
+		await waitFor(() => expect(result.current.loading).toBe(false));
 
-		await waitFor(() => {
-			expect(result.current.nodes).toEqual(initial);
-		});
-
-		const pending = deferred<WorkspaceTreeNode[]>();
 		treeResponses.push(pending.promise);
-
-		let refreshPromise!: Promise<void>;
 		act(() => {
-			refreshPromise = result.current.refresh();
+			window.dispatchEvent(
+				new CustomEvent("workspace-tree-refresh", {
+					detail: { worktreePath: "/repo" },
+				}),
+			);
 		});
-
-		expect(result.current.loading).toBe(false);
-		expect(result.current.nodes).toEqual(initial);
+		await waitForScheduledRefresh();
+		expect(result.current.nodes).toEqual([makeNode("node-1")]);
 
 		await act(async () => {
-			pending.resolve(next);
-			await refreshPromise;
+			pending.resolve(makeSnapshot([makeNode("node-2")], "node-2"));
+			await pending.promise;
 		});
-
-		expect(result.current.nodes).toEqual(next);
+		await waitFor(() =>
+			expect(result.current.nodes).toEqual([makeNode("node-2")]),
+		);
 	});
 
-	it("keeps existing nodes when a background refresh fails", async () => {
-		const initial = [makeSessionNode("session-1")];
-		treeResponses.push(initial);
+	it("refreshes for every matching Worktree session status without inspecting opaque ids", async () => {
+		treeResponses.push(
+			makeSnapshot([makeNode("opaque-node")]),
+			makeSnapshot([]),
+		);
+		renderHook(() => useWorkspaceTreeNodes("/repo"));
+		await waitFor(() => expect(countTreeFetches()).toBe(1));
+		await waitFor(() =>
+			expect(listeners["session-status-changed"]?.length).toBe(1),
+		);
+
+		act(() => {
+			listeners["session-status-changed"][0]({
+				payload: makeStatus({
+					chat_session_id: "unrelated-to-node-id",
+				}) as never,
+			});
+		});
+		await waitForScheduledRefresh();
+		expect(countTreeFetches()).toBe(2);
+	});
+
+	it("ignores session and workflow events for another Worktree", async () => {
+		treeResponses.push(makeSnapshot([]));
+		renderHook(() => useWorkspaceTreeNodes("/repo"));
+		await waitFor(() => expect(countTreeFetches()).toBe(1));
+		await waitFor(() =>
+			expect(listeners["workflow-execution-changed"]?.length).toBe(1),
+		);
+
+		act(() => {
+			listeners["session-status-changed"][0]({
+				payload: makeStatus({ worktree_path: "/other" }) as never,
+			});
+			listeners["workflow-execution-changed"][0]({
+				payload: {
+					worktreePath: "/other",
+				} as WorkflowExecutionChangedPayload as never,
+			});
+		});
+		await waitForScheduledRefresh();
+		expect(countTreeFetches()).toBe(1);
+	});
+
+	it("does not filter closed sessions by workflow metadata in frontend", async () => {
+		const closed = {
+			id: "closed-workflow-session",
+			worktreePath: "/repo",
+			state: "closed",
+			createdAt: 1,
+			updatedAt: 2,
+			firstMessage: "closed",
+			messageCount: 1,
+			workflowNodeSession: true,
+		} as SessionSummary;
+		mockListClosedSessions.mockResolvedValue([closed]);
+		treeResponses.push(makeSnapshot([]));
 
 		const { result } = renderHook(() => useWorkspaceTreeNodes("/repo"));
-
-		await waitFor(() => {
-			expect(result.current.nodes).toEqual(initial);
-		});
-
-		treeResponses.push(Promise.reject(new Error("boom")));
-
-		await act(async () => {
-			await result.current.refresh();
-		});
-
-		expect(result.current.loading).toBe(false);
-		expect(result.current.nodes).toEqual(initial);
-		expect(result.current.error).toBe("Error: boom");
+		await waitFor(() => expect(result.current.loading).toBe(false));
+		expect(result.current.closedSessions).toEqual([closed]);
 	});
 
-	it("does not refresh the tree for known session status updates", async () => {
-		treeResponses.push([makeSessionNode("session-1")]);
+	it("ignores an older Worktree response after the path changes", async () => {
+		const oldResponse = deferred<WorkspaceTreeSnapshot>();
+		treeResponses.push(oldResponse.promise, makeSnapshot([makeNode("new")]));
+		const { result, rerender } = renderHook(
+			({ path }) => useWorkspaceTreeNodes(path),
+			{ initialProps: { path: "/old" as string | null } },
+		);
 
-		renderHook(() => useWorkspaceTreeNodes("/repo"));
-
-		await waitFor(() => {
-			expect(countTreeFetches()).toBe(1);
-		});
-		await waitFor(() => {
-			expect(listeners["session-status-changed"]?.length).toBe(1);
-		});
-
+		rerender({ path: "/new" });
+		await waitFor(() =>
+			expect(result.current.nodes).toEqual([makeNode("new")]),
+		);
 		await act(async () => {
-			listeners["session-status-changed"]?.[0]?.({
-				payload: makeStatus({ chat_session_id: "session-1" }),
-			});
-			await waitForScheduledRefresh();
+			oldResponse.resolve(makeSnapshot([makeNode("old")]));
+			await oldResponse.promise;
 		});
-
-		expect(countTreeFetches()).toBe(1);
-	});
-
-	it("does not refresh the tree for known workflow step session status updates", async () => {
-		treeResponses.push([
-			{
-				kind: "workflow",
-				runId: "run-1",
-				worktreePath: "/repo",
-				workflowName: "workflow",
-				title: "workflow",
-				status: "running",
-				canStop: true,
-				updatedAt: 1_000,
-				steps: [
-					{
-						kind: "step",
-						id: "run-1:review:1",
-						runId: "run-1",
-						worktreePath: "/repo",
-						title: "review",
-						status: "running",
-						stepType: "agent",
-						updatedAt: 1_000,
-						runIndex: 1,
-						sessions: [
-							{
-								kind: "session",
-								id: "step-session-1",
-								worktreePath: "/repo",
-								title: "review",
-								state: "active",
-								updatedAt: 1_000,
-								workflowStepSession: true,
-								stepName: "review",
-								runIndex: 1,
-							},
-						],
-					},
-				],
-			},
-		]);
-
-		renderHook(() => useWorkspaceTreeNodes("/repo"));
-
-		await waitFor(() => {
-			expect(countTreeFetches()).toBe(1);
-		});
-		await waitFor(() => {
-			expect(listeners["session-status-changed"]?.length).toBe(1);
-		});
-
-		await act(async () => {
-			listeners["session-status-changed"]?.[0]?.({
-				payload: makeStatus({ chat_session_id: "step-session-1" }),
-			});
-			await waitForScheduledRefresh();
-		});
-
-		expect(countTreeFetches()).toBe(1);
-	});
-
-	it("refreshes the tree when a new session appears", async () => {
-		treeResponses.push([makeSessionNode("session-1")]);
-
-		renderHook(() => useWorkspaceTreeNodes("/repo"));
-
-		await waitFor(() => {
-			expect(countTreeFetches()).toBe(1);
-		});
-		await waitFor(() => {
-			expect(listeners["session-status-changed"]?.length).toBe(1);
-		});
-
-		treeResponses.push([
-			makeSessionNode("session-1"),
-			makeSessionNode("session-2"),
-		]);
-		await act(async () => {
-			listeners["session-status-changed"]?.[0]?.({
-				payload: makeStatus({ chat_session_id: "session-2" }),
-			});
-			await waitForScheduledRefresh();
-		});
-
-		await waitFor(() => {
-			expect(countTreeFetches()).toBe(2);
-		});
-	});
-
-	it("refreshes the tree when a known workflow reaches a terminal state", async () => {
-		treeResponses.push([
-			{
-				kind: "workflow",
-				runId: "run-1",
-				worktreePath: "/repo",
-				workflowName: "workflow",
-				title: "workflow",
-				status: "running",
-				canStop: true,
-				updatedAt: 1_000,
-				steps: [],
-			},
-		]);
-
-		renderHook(() => useWorkspaceTreeNodes("/repo"));
-
-		await waitFor(() => {
-			expect(countTreeFetches()).toBe(1);
-		});
-		await waitFor(() => {
-			expect(listeners["workflow-state-changed"]?.length).toBe(1);
-		});
-
-		treeResponses.push([]);
-		const payload: WorkflowStatePayload = {
-			worktreePath: "/repo",
-			workflowState: makeWorkflowState({
-				state: { type: "completed" },
-			}),
-		};
-		await act(async () => {
-			listeners["workflow-state-changed"]?.[0]?.({ payload });
-			await waitForScheduledRefresh();
-		});
-
-		await waitFor(() => {
-			expect(countTreeFetches()).toBe(2);
-		});
-	});
-
-	it("refreshes the tree when a known workflow changes non-terminal state", async () => {
-		treeResponses.push([
-			{
-				kind: "workflow",
-				runId: "run-1",
-				worktreePath: "/repo",
-				workflowName: "workflow",
-				title: "workflow",
-				status: "running",
-				canStop: true,
-				updatedAt: 1_000,
-				steps: [],
-			},
-		]);
-
-		renderHook(() => useWorkspaceTreeNodes("/repo"));
-
-		await waitFor(() => {
-			expect(countTreeFetches()).toBe(1);
-		});
-		await waitFor(() => {
-			expect(listeners["workflow-state-changed"]?.length).toBe(1);
-		});
-
-		treeResponses.push([
-			{
-				kind: "workflow",
-				runId: "run-1",
-				worktreePath: "/repo",
-				workflowName: "workflow",
-				title: "workflow",
-				status: "waiting",
-				canStop: true,
-				updatedAt: 2_000,
-				steps: [],
-			},
-		]);
-		const payload: WorkflowStatePayload = {
-			worktreePath: "/repo",
-			workflowState: makeWorkflowState({
-				state: { type: "waiting_approval" },
-			}),
-		};
-		await act(async () => {
-			listeners["workflow-state-changed"]?.[0]?.({ payload });
-			await waitForScheduledRefresh();
-		});
-
-		await waitFor(() => {
-			expect(countTreeFetches()).toBe(2);
-		});
+		expect(result.current.nodes).toEqual([makeNode("new")]);
 	});
 });

@@ -1,115 +1,67 @@
-use std::collections::HashMap;
-
-use crate::domain::workflow::{FailureDisposition, WorkflowStepFailureKind};
+//! Public workflow execution wire model.
 
 use serde::{Deserialize, Serialize};
 
-const STEP_STATE_COMPLETED_VIEW: &str = "completed";
-#[cfg(test)]
-const STEP_STATE_FAILED_VIEW: &str = "failed";
-
-fn default_step_entry_state_view() -> String {
-    STEP_STATE_COMPLETED_VIEW.to_string()
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkflowStepRuntimeState {
-    pub runtime_active: bool,
-    pub tab_open: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkflowStateView {
-    #[serde(flatten)]
-    pub state: WorkflowStateFieldsView,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub runtime_states: HashMap<String, WorkflowStepRuntimeState>,
-}
-
-impl WorkflowStateView {
-    pub fn from_parts(
-        state: WorkflowStateFieldsView,
-        runtime_states: HashMap<String, WorkflowStepRuntimeState>,
-    ) -> Self {
-        Self {
-            state,
-            runtime_states,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkflowStateFieldsView {
-    pub execution_id: String,
-    pub workflow_name: String,
-    pub state: WorkflowExecutionStateView,
-    pub current_step_index: usize,
-    pub current_step_name: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub current_session_id: Option<String>,
-    pub total_steps: usize,
-    pub step_history: Vec<StepHistoryEntryView>,
-    pub step_execution_counts: HashMap<String, u32>,
-    pub workflow_definition: WorkflowDefinitionView,
-    pub total_token_usage: TokenUsageView,
-    pub step_states: HashMap<String, String>,
-    #[serde(default)]
-    pub step_outputs: HashMap<String, StepOutputView>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub active_parallel_steps: Vec<ParallelStepStateView>,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub workflow_variables: HashMap<String, String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub approval_operations: Option<ApprovalOperationsView>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub stall_observations: Vec<WorkflowStallObservationView>,
-    pub started_at: f64,
-    pub updated_at: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkflowStallObservationView {
-    pub chat_session_id: String,
-    pub step_name: String,
-    pub run_index: u32,
-    pub turn_phase: String,
-    pub idle_secs: u64,
-    pub signal_count: u32,
-    pub cap_reached: bool,
-    pub observed_at: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case", tag = "type")]
-pub enum WorkflowExecutionStateView {
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionStatusView {
     Running,
     WaitingApproval,
     Completed,
-    Failed {
-        reason: String,
-        #[serde(rename = "failureKind")]
-        failure_kind: WorkflowStepFailureKind,
-        #[serde(
-            rename = "retryCount",
-            skip_serializing_if = "Option::is_none",
-            default
-        )]
-        retry_count: Option<u32>,
-    },
+    Failed,
+    Aborted,
+    Interrupted,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionOriginView {
+    DesktopUi,
+    Cli,
+    Agent,
+    Api,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionInterruptionReasonView {
+    Crash,
+    Stale,
+    Stop,
+    Orphan,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum NodeKindView {
+    Command,
+    Session,
+    Fanout,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeExecutionStatusView {
+    Running,
+    WaitingApproval,
+    Succeeded,
+    Failed,
     Aborted,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct ApprovalOperationsView {
-    pub can_reject: bool,
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeExecutionFailureKindView {
+    StartupTimeout,
+    StaleRuntimeTimeout,
+    ModelRefusal,
+    StructuredOutputMismatch,
+    ValidationFailure,
+    UserAbort,
+    InfrastructureCrash,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenUsageView {
     pub input_tokens: u64,
@@ -117,388 +69,192 @@ pub struct TokenUsageView {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct WorkflowDefinitionView {
-    pub name: String,
-    pub description: String,
-    #[serde(default)]
-    pub builtin: bool,
-    pub nodes: Vec<WorkflowNodeDefinitionView>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum WorkflowNodeTypeView {
-    Agent,
-    Bash,
-    Approval,
-    Parallel,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct WorkflowNodeDefinitionView {
-    pub name: String,
-    #[serde(rename = "type")]
-    pub node_type: WorkflowNodeTypeView,
-    // agent / approval 系 prompt 設定
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub policy: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub knowledge: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instruction: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_contract: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pass_previous_response: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pass_output_from: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub inline_prompt: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub collect: Option<WorkflowCollectConfigView>,
-    // bash 系
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub command: Option<String>,
-    // parallel 系: 子 node は ChildNodeDefinition と同じく top-level 専用フィールドを
-    // 構造的に持たない `WorkflowChildNodeDefinitionView` を使用する（[02] schema 境界）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parallel_children: Option<Vec<WorkflowChildNodeDefinitionView>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub aggregate: Option<WorkflowAggregateConfigView>,
-    // 共通: rules は空配列でも送る（frontend では非 optional として扱う）
-    #[serde(default)]
-    pub rules: Vec<WorkflowTransitionRuleView>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cycle_guard: Option<WorkflowCycleGuardView>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resets_cycle_for: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub permission: Option<String>,
-}
-
-/// 並列 node 配下の子 node の API 表現。
-///
-/// [02] schema 境界: Rust 側 `ChildNodeDefinition` と同じく、top-level 専用フィールド
-/// （`rules` / `cycle_guard` / `resets_cycle_for` / `collect` / `parallel_children` /
-///  `aggregate` / `command`）は型レベルで持たない。これにより、protocol 境界の
-/// API 表現が backend ドメインモデルと語彙的に一致する。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct WorkflowChildNodeDefinitionView {
-    pub name: String,
-    #[serde(rename = "type")]
-    pub node_type: WorkflowNodeTypeView,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub policy: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub knowledge: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instruction: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_contract: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pass_previous_response: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pass_output_from: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub permission: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct WorkflowAggregateConfigView {
-    #[serde(default)]
-    pub all_match: Option<String>,
-    #[serde(default)]
-    pub any_match: Option<String>,
-    pub then: String,
-    pub r#else: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct WorkflowTransitionRuleView {
-    pub r#match: String,
-    pub next: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct WorkflowCycleGuardView {
-    pub max_iterations: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_exhausted: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct WorkflowCollectConfigView {
-    pub from: Vec<String>,
-    pub reduce: WorkflowReduceStrategyView,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkflowReduceStrategyView {
-    Last,
-    Concat,
-    Grouped,
-    AnyNeedsFix,
-    AllPassed,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StepHistoryEntryView {
-    pub step_name: String,
-    pub completed_at: f64,
-    pub result: Option<String>,
+pub struct ArtifactView {
+    pub node_name: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub contract: Option<String>,
+    pub value: serde_json::Value,
+    pub produced_at: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FanoutParentRefView {
+    pub parent_node: String,
+    pub parent_attempt: u32,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub item_index: Option<usize>,
+    pub child_index: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeExecutionFailureView {
+    pub reason: String,
+    pub kind: NodeExecutionFailureKindView,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeExecutionView {
+    pub id: String,
+    pub execution_id: String,
+    pub node_name: String,
+    pub kind: NodeKindView,
+    pub attempt: u32,
+    pub status: NodeExecutionStatusView,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub display_command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub result_summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub artifact: Option<ArtifactView>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub token_usage: Option<TokenUsageView>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub structured_output: Option<serde_json::Value>,
-    #[serde(default)]
-    pub run_index: u32,
+    pub failure: Option<NodeExecutionFailureView>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub child_outputs: Option<Vec<ChildOutputSnapshotView>>,
-    /// step entry の終端状態。`"completed"`（既定）/ `"failed"` / `"aborted"`。
-    #[serde(default = "default_step_entry_state_view")]
-    pub state: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChildOutputSnapshotView {
-    pub step_name: String,
-    pub session_id: Option<String>,
-    pub result: Option<String>,
-    pub run_index: u32,
-    pub completed_at: f64,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub structured_output: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub output_contract: Option<String>,
-    /// child snapshot の終端状態。`"completed"`（既定）/ `"failed"` / `"aborted"`。
-    #[serde(default = "default_step_entry_state_view")]
-    pub state: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub failure_kind: Option<WorkflowStepFailureKind>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub failure_disposition: Option<FailureDisposition>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ParallelStepStateView {
-    pub step_name: String,
-    pub state: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub session_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub result: Option<String>,
-    pub run_index: u32,
+    pub fanout_parent: Option<FanoutParentRefView>,
+    pub started_at: f64,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub completed_at: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub structured_output: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub output_contract: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub failure_kind: Option<WorkflowStepFailureKind>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub failure_disposition: Option<FailureDisposition>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct StepOutputView {
-    pub step_name: String,
-    pub run_index: u32,
+pub struct FanoutView {
+    pub parent: NodeExecutionView,
+    pub children: Vec<NodeExecutionView>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub artifact: Option<ArtifactView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalTargetView {
+    pub node_execution_id: String,
+    pub node_name: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub session_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub result: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub structured_output: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub output_contract: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub token_usage: Option<TokenUsageView>,
-    pub completed_at: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowExecutionView {
+    pub id: String,
+    pub workflow_name: String,
+    pub status: ExecutionStatusView,
+    pub current_node: Option<String>,
+    pub worktree_path: String,
+    pub created_from: ExecutionOriginView,
+    pub started_at: f64,
+    pub updated_at: f64,
+    pub completed_at: Option<f64>,
+    pub error_reason: Option<String>,
+    pub interruption_reason: Option<ExecutionInterruptionReasonView>,
+    pub resume_from_node: Option<String>,
+    pub total_token_usage: TokenUsageView,
+    pub node_executions: Vec<NodeExecutionView>,
+    pub artifacts: Vec<ArtifactView>,
+    pub fanouts: Vec<FanoutView>,
+    pub approval_target: Option<ApprovalTargetView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowExecutionChangedPayloadView {
+    pub worktree_path: String,
+    pub workflow_execution: WorkflowExecutionView,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
-    fn workflow_state(session_id: &str) -> WorkflowStateFieldsView {
-        WorkflowStateFieldsView {
-            execution_id: "exec-1".to_string(),
-            workflow_name: "wf".to_string(),
-            state: WorkflowExecutionStateView::Running,
-            current_step_index: 0,
-            current_step_name: "step".to_string(),
-            current_session_id: Some(session_id.to_string()),
-            total_steps: 1,
-            step_history: Vec::new(),
-            step_execution_counts: HashMap::new(),
-            workflow_definition: WorkflowDefinitionView {
-                name: "wf".to_string(),
-                description: String::new(),
-                builtin: false,
-                nodes: Vec::new(),
-            },
-            total_token_usage: TokenUsageView::default(),
-            step_states: HashMap::new(),
-            step_outputs: HashMap::new(),
-            active_parallel_steps: Vec::new(),
-            workflow_variables: HashMap::new(),
-            approval_operations: None,
-            stall_observations: Vec::new(),
+    fn execution() -> WorkflowExecutionView {
+        WorkflowExecutionView {
+            id: "execution-1".to_string(),
+            workflow_name: "review".to_string(),
+            status: ExecutionStatusView::Interrupted,
+            current_node: Some("review".to_string()),
+            worktree_path: "/repo".to_string(),
+            created_from: ExecutionOriginView::Cli,
             started_at: 1.0,
             updated_at: 2.0,
-        }
-    }
-
-    #[test]
-    fn workflow_state_view_serializes_runtime_state_wire_contract_as_camel_case() {
-        let session_id = "step-session";
-        let mut runtime_states = HashMap::new();
-        runtime_states.insert(
-            session_id.to_string(),
-            WorkflowStepRuntimeState {
-                runtime_active: true,
-                tab_open: true,
-            },
-        );
-
-        let view = WorkflowStateView::from_parts(workflow_state(session_id), runtime_states);
-        let value = serde_json::to_value(view).expect("workflow state view serializes");
-
-        assert_eq!(
-            value["runtimeStates"][session_id]["runtimeActive"],
-            serde_json::Value::Bool(true)
-        );
-        assert_eq!(
-            value["runtimeStates"][session_id]["tabOpen"],
-            serde_json::Value::Bool(true)
-        );
-        assert!(value["runtimeStates"][session_id]["runtime_active"].is_null());
-        assert!(value["runtimeStates"][session_id]["tab_open"].is_null());
-    }
-
-    #[test]
-    fn workflow_execution_state_view_failed_tagged_enum_format() {
-        let state = WorkflowExecutionStateView::Failed {
-            reason: "exit code 1".to_string(),
-            failure_kind: WorkflowStepFailureKind::InfrastructureCrash,
-            retry_count: Some(2),
-        };
-        let json = serde_json::to_string(&state).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(v["type"], "failed");
-        assert_eq!(v["reason"], "exit code 1");
-        assert_eq!(v["failureKind"], "infrastructure_crash");
-        assert_eq!(v["retryCount"], 2);
-        let back: WorkflowExecutionStateView = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, state);
-    }
-
-    #[test]
-    fn workflow_execution_state_view_all_variants_serde() {
-        let variants = vec![
-            WorkflowExecutionStateView::Running,
-            WorkflowExecutionStateView::WaitingApproval,
-            WorkflowExecutionStateView::Completed,
-            WorkflowExecutionStateView::Failed {
-                reason: "err".to_string(),
-                failure_kind: WorkflowStepFailureKind::ValidationFailure,
-                retry_count: None,
-            },
-            WorkflowExecutionStateView::Aborted,
-        ];
-        for state in variants {
-            let json = serde_json::to_string(&state).unwrap();
-            let back: WorkflowExecutionStateView = serde_json::from_str(&json).unwrap();
-            assert_eq!(back, state);
-        }
-    }
-
-    #[test]
-    fn child_output_snapshot_view_exposes_failed_child_contract() {
-        let view = ChildOutputSnapshotView {
-            step_name: "review-a".to_string(),
-            session_id: Some("session-a".to_string()),
-            result: Some("model_refusal".to_string()),
-            run_index: 1,
-            completed_at: 1.0,
-            structured_output: None,
-            output_contract: None,
-            state: STEP_STATE_FAILED_VIEW.to_string(),
-            failure_kind: Some(WorkflowStepFailureKind::ModelRefusal),
-            failure_disposition: Some(FailureDisposition::Partial),
-        };
-
-        let value = serde_json::to_value(view).expect("child snapshot serializes");
-
-        assert_eq!(value["state"], "failed");
-        assert_eq!(value["failureKind"], "model_refusal");
-        assert_eq!(value["failureDisposition"], "partial");
-    }
-
-    #[test]
-    fn parallel_step_state_view_exposes_live_partial_failure_contract() {
-        let view = ParallelStepStateView {
-            step_name: "review-a".to_string(),
-            state: STEP_STATE_FAILED_VIEW.to_string(),
-            session_id: Some("session-a".to_string()),
-            result: Some("model_refusal".to_string()),
-            run_index: 1,
             completed_at: None,
-            structured_output: None,
-            output_contract: None,
-            failure_kind: Some(WorkflowStepFailureKind::ModelRefusal),
-            failure_disposition: Some(FailureDisposition::Partial),
-        };
-
-        let value = serde_json::to_value(view).expect("parallel step serializes");
-
-        assert_eq!(value["state"], "failed");
-        assert_eq!(value["failureKind"], "model_refusal");
-        assert_eq!(value["failureDisposition"], "partial");
+            error_reason: None,
+            interruption_reason: Some(ExecutionInterruptionReasonView::Stop),
+            resume_from_node: Some("review".to_string()),
+            total_token_usage: TokenUsageView::default(),
+            node_executions: Vec::new(),
+            artifacts: vec![ArtifactView {
+                node_name: "request".to_string(),
+                contract: None,
+                value: serde_json::Value::String("review".to_string()),
+                produced_at: 1.0,
+            }],
+            fanouts: Vec::new(),
+            approval_target: None,
+        }
     }
 
-    /// [02] schema 境界: 旧表現（`workflowDefinition.steps`）を含む WorkflowState JSON は
-    /// 新 `Workflow` schema（`nodes` 必須 + `deny_unknown_fields`）として deserialize に失敗する。
-    /// これにより旧表現の進行中状態は新バージョンに引き継がれない。
     #[test]
-    fn legacy_workflow_state_with_steps_fails_to_deserialize() {
-        let json = r#"{
-            "executionId": "exec-1",
-            "workflowName": "legacy",
-            "state": { "type": "running" },
-            "currentStepIndex": 0,
-            "currentStepName": "x",
-            "totalSteps": 1,
-            "stepHistory": [],
-            "stepExecutionCounts": {},
-            "workflowDefinition": {
-                "name": "legacy",
-                "description": "",
-                "builtin": false,
-                "steps": [{"name":"x","mode":"auto","instruction":"x"}]
-            },
-            "totalTokenUsage": { "inputTokens": 0, "outputTokens": 0 },
-            "stepStates": {},
-            "startedAt": 1.0,
-            "updatedAt": 1.0
-        }"#;
-        let result: Result<WorkflowStateFieldsView, _> = serde_json::from_str(json);
-        assert!(
-            result.is_err(),
-            "旧 workflowDefinition.steps を含む WorkflowState は新 schema で deserialize 失敗する"
+    fn workflow_execution_uses_canonical_camel_case_boundary() {
+        let value = serde_json::to_value(execution()).unwrap();
+        assert_eq!(value["id"], "execution-1");
+        assert_eq!(value["status"], "interrupted");
+        assert_eq!(value["createdFrom"], "cli");
+        assert_eq!(value["interruptionReason"], "stop");
+        assert_eq!(value["resumeFromNode"], "review");
+        assert_eq!(value["artifacts"][0]["nodeName"], "request");
+        let keys = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            keys,
+            vec![
+                "approvalTarget",
+                "artifacts",
+                "completedAt",
+                "createdFrom",
+                "currentNode",
+                "errorReason",
+                "fanouts",
+                "id",
+                "interruptionReason",
+                "nodeExecutions",
+                "resumeFromNode",
+                "startedAt",
+                "status",
+                "totalTokenUsage",
+                "updatedAt",
+                "workflowName",
+                "worktreePath",
+            ]
         );
+    }
+
+    #[test]
+    fn execution_changed_payload_names_the_execution() {
+        let value = serde_json::to_value(WorkflowExecutionChangedPayloadView {
+            worktree_path: "/repo".to_string(),
+            workflow_execution: execution(),
+        })
+        .unwrap();
+        assert_eq!(value["worktreePath"], "/repo");
+        assert_eq!(value["workflowExecution"]["id"], "execution-1");
+        let keys = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(keys, vec!["workflowExecution", "worktreePath"]);
     }
 }

@@ -1,96 +1,75 @@
+use crate::domain::agent_session::PermissionMode;
 use crate::domain::workflow::services::approval_rules;
 use crate::domain::workflow::{
-    ContractType, NodeName, RunId, WorkflowError, WorkflowName, WorktreePath,
+    ContractType, NodeDefinitionName, WorkflowDefinitionName, WorkflowError, WorkflowExecutionId,
+    WorkspaceWorktreePath,
 };
 
-use super::{AbortRunCommand, ApprovalCommand, StartRunCommand, SubmitOutputCommand};
+use super::{
+    AbortExecutionCommand, ApprovalCommand, ResumeExecutionCommand, StartExecutionCommand,
+    StopExecutionCommand, SubmitOutputCommand,
+};
 use crate::usecase::workflow::ports::{
-    PendingRuntimeCommand, PendingRuntimeCommandPayload, WorkflowStallClearedNotification,
-    WorkflowStallObservedNotification, WorkflowTurnCompleteNotification,
+    WorkflowStallClearedNotification, WorkflowStallObservedNotification,
+    WorkflowTurnCompleteNotification,
 };
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct WorkflowRuntimeCommandPreflight;
 
 impl WorkflowRuntimeCommandPreflight {
-    pub(crate) fn validate_start_run(
+    pub(crate) fn validate_start_execution(
         &self,
-        command: &StartRunCommand,
+        command: &StartExecutionCommand,
     ) -> Result<(), WorkflowError> {
-        WorkflowName::new(command.workflow_file_stem.clone())?;
-        WorktreePath::new(command.worktree_path.clone())?;
-        if command.permission_mode.trim().is_empty() {
-            return Err(WorkflowError::validation(
-                "permission_mode must not be empty",
-            ));
-        }
+        WorkflowDefinitionName::new(command.workflow_name.clone())?;
+        WorkspaceWorktreePath::new(command.worktree_path.clone())?;
+        PermissionMode::parse_canonical(&command.permission_mode)
+            .map_err(|error| WorkflowError::validation(error.to_string()))?;
         Ok(())
     }
 
-    pub(crate) fn validate_abort_run(
+    pub(crate) fn validate_abort_execution(
         &self,
-        command: &AbortRunCommand,
+        command: &AbortExecutionCommand,
     ) -> Result<(), WorkflowError> {
-        RunId::new(command.run_id.clone())?;
+        WorkflowExecutionId::new(command.execution_id.clone())?;
         validate_optional_node_name(command.expected_node_name.as_deref())?;
         Ok(())
     }
 
+    pub(crate) fn validate_stop_execution(
+        &self,
+        command: &StopExecutionCommand,
+    ) -> Result<(), WorkflowError> {
+        WorkflowExecutionId::new(command.execution_id.clone()).map(|_| ())
+    }
+
+    pub(crate) fn validate_resume_execution(
+        &self,
+        command: &ResumeExecutionCommand,
+    ) -> Result<(), WorkflowError> {
+        WorkflowExecutionId::new(command.execution_id.clone()).map(|_| ())
+    }
+
     pub(crate) fn validate_approval(&self, command: &ApprovalCommand) -> Result<(), WorkflowError> {
-        RunId::new(command.run_id.clone())?;
-        validate_optional_node_name(command.node_name.as_deref())?;
-        approval_rules::validate_approval_decision(&command.decision)
-            .map_err(|err| WorkflowError::validation(err.to_string()))
+        WorkflowExecutionId::new(command.execution_id.clone())?;
+        NodeDefinitionName::new(command.node_name.clone())?;
+        approval_rules::validate_optional_comment_text(
+            command.comment.as_deref(),
+            "Approve comment",
+        )
+        .map_err(|err| WorkflowError::validation(err.to_string()))
     }
 
     pub(crate) fn validate_submit_output(
         &self,
         command: &SubmitOutputCommand,
     ) -> Result<(), WorkflowError> {
-        RunId::new(command.run_id.clone())?;
-        NodeName::new(command.step_name.clone())?;
+        WorkflowExecutionId::new(command.execution_id.clone())?;
+        NodeDefinitionName::new(command.node_name.clone())?;
         ContractType::new(command.contract.clone())?;
         Ok(())
-    }
-
-    pub(crate) fn validate_pending_runtime_command(
-        &self,
-        command: &PendingRuntimeCommand,
-    ) -> Result<(), WorkflowError> {
-        RunId::new(command.run_id.clone())?;
-        RunId::new(command.request_id.clone())?;
-        match &command.payload {
-            PendingRuntimeCommandPayload::Approve { node_name, comment } => {
-                validate_optional_node_name(node_name.as_deref())?;
-                approval_rules::validate_approval_decision(
-                    &crate::domain::workflow::ApprovalDecision::Approve {
-                        comment: comment.clone(),
-                    },
-                )
-                .map_err(|err| WorkflowError::validation(err.to_string()))
-            }
-            PendingRuntimeCommandPayload::Reject { node_name, reason } => {
-                validate_optional_node_name(node_name.as_deref())?;
-                approval_rules::validate_approval_decision(
-                    &crate::domain::workflow::ApprovalDecision::Reject {
-                        reason: reason.clone(),
-                    },
-                )
-                .map_err(|err| WorkflowError::validation(err.to_string()))
-            }
-            PendingRuntimeCommandPayload::Abort { node_name } => {
-                validate_optional_node_name(node_name.as_deref())
-            }
-            PendingRuntimeCommandPayload::SubmitOutput {
-                step_name,
-                contract,
-                structured_output: _,
-            } => {
-                NodeName::new(step_name.clone())?;
-                ContractType::new(contract.clone())?;
-                Ok(())
-            }
-        }
     }
 
     pub(crate) fn validate_turn_complete(
@@ -129,23 +108,27 @@ impl WorkflowRuntimeCommandPreflight {
         Ok(())
     }
 
-    pub(crate) fn validate_run_lookup(&self, run_id: &str) -> Result<(), WorkflowError> {
-        RunId::new(run_id.to_string()).map(|_| ())
+    #[cfg(test)]
+    pub(crate) fn validate_execution_lookup(
+        &self,
+        execution_id: &str,
+    ) -> Result<(), WorkflowError> {
+        WorkflowExecutionId::new(execution_id.to_string()).map(|_| ())
     }
 
     pub(crate) fn validate_worktree_lookup(
         &self,
         worktree_path: &str,
     ) -> Result<(), WorkflowError> {
-        WorktreePath::new(worktree_path.to_string()).map(|_| ())
+        WorkspaceWorktreePath::new(worktree_path.to_string()).map(|_| ())
     }
 
     pub(crate) fn validate_approval_chat(
         &self,
-        run_id: &str,
+        execution_id: &str,
         content: &str,
     ) -> Result<(), WorkflowError> {
-        RunId::new(run_id.to_string())?;
+        WorkflowExecutionId::new(execution_id.to_string())?;
         if content.trim().is_empty() {
             return Err(WorkflowError::validation(
                 "approval chat content must not be empty",
@@ -157,7 +140,7 @@ impl WorkflowRuntimeCommandPreflight {
 
 fn validate_optional_node_name(value: Option<&str>) -> Result<(), WorkflowError> {
     if let Some(value) = value {
-        NodeName::new(value.to_string())?;
+        NodeDefinitionName::new(value.to_string())?;
     }
     Ok(())
 }

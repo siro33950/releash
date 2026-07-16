@@ -1,0 +1,7 @@
+name: legacy-node-cycle-guard
+description: cycle_guard moved from the node to rules loop_guard
+nodes:
+  - name: run
+    cycle_guard:
+      max_iterations: 3
+    command: printf done

@@ -1,0 +1,23 @@
+name: unreachable-subgraph
+description: unreachable subgraph edges do not make targets reachable
+nodes:
+  - name: entry
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        instruction: entry
+  - name: orphan
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        instruction: orphan
+    rules:
+      - next: target
+  - name: target
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        instruction: target

@@ -42,6 +42,11 @@ pub fn run() {
     let session_store = Arc::new(usecase::agent_session::session::SessionStore::new(
         session_storage.clone(),
     ));
+    let workspace_session_creation_usecase = Arc::new(
+        usecase::agent_session::workspace_session_creation::WorkspaceSessionCreationUsecase::new(
+            session_store.clone(),
+        ),
+    );
     let review_comment_usecase =
         Arc::new(adaptor::controller::wiring::build_review_comment_usecase());
     let prompt_suggestion_usecase = Arc::new(
@@ -59,6 +64,7 @@ pub fn run() {
         ))
         .manage(review_comment_usecase)
         .manage(session_store)
+        .manage(workspace_session_creation_usecase)
         .manage(prompt_suggestion_usecase)
         .manage(Arc::clone(&pty_gateway))
         .manage(infrastructure::file_watcher::FileWatcherManager::default())
@@ -354,15 +360,28 @@ pub fn run() {
                     .state::<Arc<usecase::agent_session::runtime::AgentSessionRuntimeUsecase>>()
                     .inner()
                     .clone();
-                app.manage(Arc::new(
+                let stored_session_lifecycle = Arc::new(
                     adaptor::controller::wiring::build_stored_session_lifecycle_usecase(
                         runtime_session_store,
                         stored_lifecycle_registry,
                         stored_lifecycle_runtime,
                     ),
+                );
+                app.manage(stored_session_lifecycle.clone());
+                let workspace_node_resolver: Arc<
+                    dyn usecase::workflow::WorkspaceNodeActionResolver,
+                > = app
+                    .state::<adaptor::controller::state::AppState>()
+                    .workflow_usecase
+                    .clone();
+                app.manage(Arc::new(
+                    adaptor::controller::wiring::build_workspace_node_command_usecase(
+                        workspace_node_resolver,
+                        stored_session_lifecycle,
+                        data_dir.clone(),
+                    ),
                 ));
             }
-            let pending_data_dir = app.path().app_data_dir().ok();
             let agent_runtime = app
                 .state::<Arc<usecase::agent_session::runtime::AgentSessionRuntimeUsecase>>()
                 .inner()
@@ -379,15 +398,15 @@ pub fn run() {
                 .state::<Arc<dyn usecase::agent_session::context::BranchDiffContextPort>>()
                 .inner()
                 .clone();
-            let workflow_step_lifecycle_usecase = Arc::new(
-                adaptor::controller::wiring::build_workflow_step_lifecycle_usecase(
+            let workflow_node_lifecycle_usecase = Arc::new(
+                adaptor::controller::wiring::build_node_execution_lifecycle_usecase(
                     app.handle().clone(),
                     session_store.clone(),
                     agent_runtime.clone(),
                     open_tabs.clone(),
                 ),
             );
-            app.manage(workflow_step_lifecycle_usecase);
+            app.manage(workflow_node_lifecycle_usecase);
             let workflow_runtime_usecase =
                 Arc::new(adaptor::controller::wiring::build_workflow_runtime_usecase(
                     app.handle().clone(),
@@ -398,7 +417,7 @@ pub fn run() {
                         agent_runtime: agent_runtime.clone(),
                         open_tabs,
                         branch_diff_context: branch_diff_context.clone(),
-                        data_dir: pending_data_dir.clone(),
+                        data_dir: Some(data_dir.clone()),
                     },
                 ));
             let workflow_runtime_agent_notifier = Arc::new(
@@ -409,38 +428,43 @@ pub fn run() {
             agent_runtime
                 .set_workflow_turn_complete_notifier(workflow_runtime_agent_notifier.clone());
             agent_runtime.set_workflow_stall_notifier(workflow_runtime_agent_notifier);
-            app.manage(workflow_runtime_usecase);
+            app.manage(workflow_runtime_usecase.clone());
 
-            // [06] CLI mutating CLI 経路の file watcher を起動する。初回 pickup は
-            // setup 済みの WorkflowRuntimeUsecase / AgentBackendRegistry を前提に dispatch
-            // するため、workflow 依存 state の登録完了後にだけ spawn する。
-            //
-            // data_dir が解決できなければ watcher は spawn せず、稼働中アプリでも CLI
-            // pending command は pickup されない（spec [06] CLI 起動独立性境界:
-            // それでも CLI 側の書き込み完了境界は保たれる）。
-            if let Some(data_dir) = pending_data_dir {
-                adaptor::controller::wiring::spawn_workflow_pending_command_watcher(
-                    app.handle().clone(),
-                    data_dir.clone(),
-                );
+            let workflow_query_usecase = app
+                .state::<adaptor::controller::state::AppState>()
+                .workflow_usecase
+                .clone();
+            let local_api_binding =
+                infrastructure::local_api::LocalApiServerBinding::bind(data_dir.clone())
+                    .map_err(|error| format!("local API の起動に失敗しました: {error}"))?;
+            let local_api_router = adaptor::controller::api::build_router(
+                Arc::new(workflow_query_usecase.read_usecase()),
+                workflow_runtime_usecase.clone(),
+                local_api_binding.bearer_token(),
+            );
+            let local_api =
+                local_api_binding.start(local_api_router, &tokio::runtime::Handle::current());
+            app.manage(local_api.clone());
 
-                // [issues-1022] CLI からの Thread / Comment 書き込みを UI へ
-                // 反映するため、`<data_dir>/review-comments/` を file watch して
-                // `review-comments-changed` を発火する。Tauri コマンド経由の
-                // `emit_changed` とは別系統の通知経路で、CLI / Agent / 外部編集
-                // 由来の書き込みも拾う。
-                infrastructure::comment::watcher::spawn_review_comments_watcher(
-                    app.handle().clone(),
-                    data_dir,
-                );
-            }
+            // CLI / Agent / 外部編集由来の review comment 変更を UI へ通知する。
+            infrastructure::comment::watcher::spawn_review_comments_watcher(
+                app.handle().clone(),
+                data_dir.clone(),
+            );
 
             infrastructure::platform::menu::setup_menu(app)?;
             let tray_agent_runtime = agent_runtime.clone();
+            let tray_workflow_runtime = workflow_runtime_usecase.clone();
+            let tray_local_api = local_api.clone();
             infrastructure::platform::tray::setup_tray(app, move |app| {
                 adaptor::controller::application_lifecycle::request_application_quit_with_runtime(
                     app,
                     tray_agent_runtime.clone(),
+                    tray_workflow_runtime.clone(),
+                    {
+                        let local_api = tray_local_api.clone();
+                        move || local_api.shutdown()
+                    },
                 );
             })?;
             if let Some(window) = app.get_webview_window("main") {

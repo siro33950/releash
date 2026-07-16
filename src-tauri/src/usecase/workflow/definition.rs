@@ -1,23 +1,41 @@
 use std::sync::Arc;
 
 use crate::domain::workflow::{WorkflowDefinition, WorkflowDefinitionRepository, WorkflowError};
+use crate::usecase::workflow::ports::{WorkflowDefinitionSourceGateway, WorkflowSourceSaveError};
 
 #[derive(Clone)]
 pub struct WorkflowDefinitionUsecase {
     definitions: Arc<dyn WorkflowDefinitionRepository>,
+    definition_sources: Arc<dyn WorkflowDefinitionSourceGateway>,
 }
 
 impl WorkflowDefinitionUsecase {
-    pub fn new(definitions: Arc<dyn WorkflowDefinitionRepository>) -> Self {
-        Self { definitions }
+    pub fn new(
+        definitions: Arc<dyn WorkflowDefinitionRepository>,
+        definition_sources: Arc<dyn WorkflowDefinitionSourceGateway>,
+    ) -> Self {
+        Self {
+            definitions,
+            definition_sources,
+        }
     }
 
-    pub fn save_workflow(
+    #[cfg(test)]
+    pub fn save_workflow_source(
         &self,
-        definition: WorkflowDefinition,
+        source: &str,
         original_name: Option<&str>,
-    ) -> Result<(), WorkflowError> {
-        self.definitions.save(definition, original_name)
+    ) -> Result<WorkflowDefinition, WorkflowError> {
+        self.definition_sources.save_source(source, original_name)
+    }
+
+    pub fn save_workflow_source_with_diagnostics(
+        &self,
+        source: &str,
+        original_name: Option<&str>,
+    ) -> Result<WorkflowDefinition, WorkflowSourceSaveError> {
+        self.definition_sources
+            .save_source_with_diagnostics(source, original_name)
     }
 
     pub fn delete_workflow(&self, name: &str) -> Result<(), WorkflowError> {
@@ -44,6 +62,7 @@ impl WorkflowDefinitionUsecase {
 mod tests {
     use super::*;
     use crate::domain::workflow::WorkflowSummary;
+    use crate::usecase::workflow::test_support::NoopDefinitionSourceGateway;
     use std::collections::HashMap;
     use std::sync::Mutex;
 
@@ -99,7 +118,7 @@ mod tests {
             name: name.to_string(),
             description: "desc".to_string(),
             builtin,
-            variables: Default::default(),
+            schemas: Default::default(),
             nodes: Vec::new(),
         }
     }
@@ -108,7 +127,10 @@ mod tests {
     fn duplicate_workflow_loads_source_and_saves_copy_as_custom_definition() {
         let definitions = Arc::new(FakeDefinitionRepository::default());
         definitions.seed(definition("source", true));
-        let usecase = WorkflowDefinitionUsecase::new(definitions.clone());
+        let usecase = WorkflowDefinitionUsecase::new(
+            definitions.clone(),
+            Arc::new(NoopDefinitionSourceGateway),
+        );
 
         usecase.duplicate_workflow("source", "copy").unwrap();
 
@@ -121,7 +143,10 @@ mod tests {
     fn delete_workflow_delegates_to_definition_repository() {
         let definitions = Arc::new(FakeDefinitionRepository::default());
         definitions.seed(definition("target", false));
-        let usecase = WorkflowDefinitionUsecase::new(definitions.clone());
+        let usecase = WorkflowDefinitionUsecase::new(
+            definitions.clone(),
+            Arc::new(NoopDefinitionSourceGateway),
+        );
 
         usecase.delete_workflow("target").unwrap();
 

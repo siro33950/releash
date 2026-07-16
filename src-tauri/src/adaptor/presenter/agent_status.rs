@@ -1,11 +1,11 @@
 use std::sync::Mutex;
 
 use crate::usecase::agent_session::status::{
-    AgentStatusCenter, AgentStatusChanges, AgentStatusNotifier, WorktreeStepStatusView,
+    AgentStatusCenter, AgentStatusChanges, AgentStatusNotifier, WorktreeNodeStatusView,
 };
 use tauri::Emitter;
 
-static WORKFLOW_STEP_STATUS_EMIT_LOCK: Mutex<()> = Mutex::new(());
+static WORKFLOW_NODE_STATUS_EMIT_LOCK: Mutex<()> = Mutex::new(());
 
 pub(crate) struct TauriAgentStatusNotifier<R: tauri::Runtime> {
     app: tauri::AppHandle<R>,
@@ -48,7 +48,7 @@ pub(crate) fn emit_agent_status_changes<R: tauri::Runtime>(
     if let Some(workspace) = changes.workspace {
         let _ = app.emit("workspace-status-changed", workspace);
     }
-    emit_worktree_step_status_views(app, changes.workflow_step_views);
+    emit_worktree_node_status_views(app, changes.workflow_node_views);
     if let Some(agent_state) = changes.agent_state {
         let payload = AgentStateChangedPayload {
             worktree_path: agent_state.worktree_path,
@@ -62,63 +62,63 @@ pub(crate) fn emit_agent_status_changes<R: tauri::Runtime>(
     }
 }
 
-pub(crate) fn emit_worktree_step_status_snapshot<R: tauri::Runtime>(
+pub(crate) fn emit_worktree_node_status_snapshot<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     center: &AgentStatusCenter,
     worktree_path: &str,
 ) {
-    emit_worktree_step_status_snapshot_with(center, worktree_path, |workflow_step_view| {
-        emit_worktree_step_status_view(app, workflow_step_view);
+    emit_worktree_node_status_snapshot_with(center, worktree_path, |workflow_node_view| {
+        emit_worktree_node_status_view(app, workflow_node_view);
     });
 }
 
-fn emit_worktree_step_status_views<R: tauri::Runtime>(
+fn emit_worktree_node_status_views<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-    workflow_step_views: Vec<WorktreeStepStatusView>,
+    workflow_node_views: Vec<WorktreeNodeStatusView>,
 ) {
-    emit_worktree_step_status_views_with(workflow_step_views, |workflow_step_view| {
-        emit_worktree_step_status_view(app, workflow_step_view);
+    emit_worktree_node_status_views_with(workflow_node_views, |workflow_node_view| {
+        emit_worktree_node_status_view(app, workflow_node_view);
     });
 }
 
-fn emit_worktree_step_status_snapshot_with(
+fn emit_worktree_node_status_snapshot_with(
     center: &AgentStatusCenter,
     worktree_path: &str,
-    emit: impl FnOnce(WorktreeStepStatusView),
+    emit: impl FnOnce(WorktreeNodeStatusView),
 ) {
-    with_workflow_step_status_emit_order(|| {
-        let workflow_step_view = center.query_worktree_step_statuses(worktree_path);
-        emit(workflow_step_view);
+    with_workflow_node_status_emit_order(|| {
+        let workflow_node_view = center.query_worktree_node_statuses(worktree_path);
+        emit(workflow_node_view);
     });
 }
 
-fn emit_worktree_step_status_views_with(
-    workflow_step_views: Vec<WorktreeStepStatusView>,
-    mut emit: impl FnMut(WorktreeStepStatusView),
+fn emit_worktree_node_status_views_with(
+    workflow_node_views: Vec<WorktreeNodeStatusView>,
+    mut emit: impl FnMut(WorktreeNodeStatusView),
 ) {
-    if workflow_step_views.is_empty() {
+    if workflow_node_views.is_empty() {
         return;
     }
 
-    with_workflow_step_status_emit_order(|| {
-        for workflow_step_view in workflow_step_views {
-            emit(workflow_step_view);
+    with_workflow_node_status_emit_order(|| {
+        for workflow_node_view in workflow_node_views {
+            emit(workflow_node_view);
         }
     });
 }
 
-fn with_workflow_step_status_emit_order<T>(f: impl FnOnce() -> T) -> T {
-    let _guard = WORKFLOW_STEP_STATUS_EMIT_LOCK
+fn with_workflow_node_status_emit_order<T>(f: impl FnOnce() -> T) -> T {
+    let _guard = WORKFLOW_NODE_STATUS_EMIT_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     f()
 }
 
-fn emit_worktree_step_status_view<R: tauri::Runtime>(
+fn emit_worktree_node_status_view<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-    workflow_step_view: WorktreeStepStatusView,
+    workflow_node_view: WorktreeNodeStatusView,
 ) {
-    let _ = app.emit("workflow-step-status-changed", workflow_step_view);
+    let _ = app.emit("workflow-node-status-changed", workflow_node_view);
 }
 
 #[cfg(test)]
@@ -126,17 +126,17 @@ mod tests {
     use std::sync::{mpsc, Arc, Mutex};
     use std::thread;
 
-    use crate::domain::workflow::status_aggregation::StepProgress;
+    use crate::domain::workflow::status_aggregation::NodeProgress;
     use crate::usecase::agent_session::session::SessionState;
     use crate::usecase::agent_session::status::{
         AgentState, AgentStatusCenter, SessionStatus, TurnPhaseRepr,
     };
 
-    use super::{emit_worktree_step_status_snapshot_with, emit_worktree_step_status_views_with};
+    use super::{emit_worktree_node_status_snapshot_with, emit_worktree_node_status_views_with};
 
     fn workflow_session(
         session_id: &str,
-        progress: StepProgress,
+        progress: NodeProgress,
         agent_state: AgentState,
     ) -> SessionStatus {
         SessionStatus {
@@ -150,23 +150,24 @@ mod tests {
             pending_permission: false,
             pending_permission_request: None,
             last_activity_at: 0.0,
-            workflow_step: Some("build".to_string()),
-            workflow_execution_state: Some("running".to_string()),
+            workflow_node: Some("build".to_string()),
+            workflow_execution_status: Some("running".to_string()),
             workflow_execution_id: Some("exec-1".to_string()),
-            workflow_run_index: Some(1),
-            workflow_step_progress: Some(progress),
+            node_execution_id: Some(session_id.to_string()),
+            workflow_attempt: Some(1),
+            workflow_node_progress: Some(progress),
         }
     }
 
     #[test]
-    fn workflow_step_sync_snapshot_is_serialized_with_live_emits() {
+    fn workflow_node_sync_snapshot_is_serialized_with_live_emits() {
         let center = Arc::new(AgentStatusCenter::new());
         let initial = center.update_session(workflow_session(
             "step-a",
-            StepProgress::Queued,
+            NodeProgress::Queued,
             AgentState::Done,
         ));
-        let initial_version = initial.workflow_step_views[0].version;
+        let initial_version = initial.workflow_node_views[0].version;
 
         let emitted_versions = Arc::new(Mutex::new(Vec::new()));
         let (snapshot_read_tx, snapshot_read_rx) = mpsc::channel();
@@ -175,7 +176,7 @@ mod tests {
         let sync_center = center.clone();
         let sync_emitted_versions = emitted_versions.clone();
         let sync_handle = thread::spawn(move || {
-            emit_worktree_step_status_snapshot_with(&sync_center, "/repo", |view| {
+            emit_worktree_node_status_snapshot_with(&sync_center, "/repo", |view| {
                 snapshot_read_tx.send(view.version).unwrap();
                 allow_sync_emit_rx.recv().unwrap();
                 sync_emitted_versions.lock().unwrap().push(view.version);
@@ -187,14 +188,14 @@ mod tests {
 
         let live = center.update_session(workflow_session(
             "step-a",
-            StepProgress::Queued,
+            NodeProgress::Queued,
             AgentState::Running,
         ));
         let live_view = live
-            .workflow_step_views
+            .workflow_node_views
             .into_iter()
             .next()
-            .expect("live update emits step status view");
+            .expect("live update emits node status view");
         let live_version = live_view.version;
         assert!(live_version > snapshot_version);
 
@@ -202,7 +203,7 @@ mod tests {
         let live_emitted_versions = emitted_versions.clone();
         let live_handle = thread::spawn(move || {
             live_started_tx.send(()).unwrap();
-            emit_worktree_step_status_views_with(vec![live_view], |view| {
+            emit_worktree_node_status_views_with(vec![live_view], |view| {
                 live_emitted_versions.lock().unwrap().push(view.version);
             });
         });

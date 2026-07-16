@@ -3,8 +3,7 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use crate::domain::workflow::{
-    contract, secret_masker, ContractValidationResult, FacetKind, FacetRepository,
-    SecretSourceGateway, WorkflowError,
+    contract, secret_masker, ContractValidationResult, SecretSourceGateway, WorkflowError,
 };
 
 use super::event_draft;
@@ -20,43 +19,53 @@ pub enum WorkflowValidateOutputResult {
 #[derive(Clone)]
 pub struct WorkflowOutputUsecase {
     query: WorkflowQueryService,
-    facets: Arc<dyn FacetRepository>,
     secrets: Arc<dyn SecretSourceGateway>,
 }
 
 impl WorkflowOutputUsecase {
-    pub fn new(
-        query: WorkflowQueryService,
-        facets: Arc<dyn FacetRepository>,
-        secrets: Arc<dyn SecretSourceGateway>,
-    ) -> Self {
-        Self {
-            query,
-            facets,
-            secrets,
-        }
+    pub fn new(query: WorkflowQueryService, secrets: Arc<dyn SecretSourceGateway>) -> Self {
+        Self { query, secrets }
     }
 
     pub fn validate_output(
         &self,
-        run_id: &str,
-        step_name: &str,
+        execution_id: &str,
+        node_name: &str,
         structured_output: Value,
     ) -> Result<WorkflowValidateOutputResult, WorkflowError> {
-        let events = self.query.read_events(run_id)?;
-        let contract_type = resolve_step_output_contract_from_drafts(&events, step_name, run_id)?;
-        let contract_definition = self.facets.get(FacetKind::Contract, &contract_type).ok();
+        let events = self.query.read_events(execution_id)?;
+        let context = resolve_node_artifact_schema_from_drafts(&events, node_name, execution_id)?;
+        self.validate_with_context(context, structured_output)
+    }
+
+    pub fn validate_output_for_contract(
+        &self,
+        execution_id: &str,
+        node_name: &str,
+        contract: &str,
+        structured_output: Value,
+    ) -> Result<WorkflowValidateOutputResult, WorkflowError> {
+        let events = self.query.read_events(execution_id)?;
+        let context = resolve_node_artifact_schema_from_drafts(&events, node_name, execution_id)?;
+        if context.contract != contract {
+            return Err(WorkflowError::validation(format!(
+                "node '{node_name}' expects contract '{}', but '{contract}' was provided",
+                context.contract
+            )));
+        }
+        self.validate_with_context(context, structured_output)
+    }
+
+    fn validate_with_context(
+        &self,
+        context: event_draft::ArtifactSchemaContext,
+        structured_output: Value,
+    ) -> Result<WorkflowValidateOutputResult, WorkflowError> {
         let secrets = self.secrets.configured_secret_values()?;
-        let redacted = secret_masker::mask_sensitive_structured_output(
-            &contract_type,
-            structured_output,
-            &secrets,
-        );
+        let redacted =
+            secret_masker::mask_sensitive_artifact(&context.contract, structured_output, &secrets);
         Ok(
-            match contract::validate_contract_value_with_definition(
-                redacted,
-                contract_definition.as_deref(),
-            ) {
+            match contract::validate_artifact_value(&context.schemas, &context.contract, redacted) {
                 ContractValidationResult::Valid { .. } => WorkflowValidateOutputResult::Valid,
                 ContractValidationResult::Invalid(violation) => {
                     WorkflowValidateOutputResult::Invalid {
@@ -70,88 +79,111 @@ impl WorkflowOutputUsecase {
 
     pub fn get_output(
         &self,
-        run_id: &str,
-        step_name: &str,
+        execution_id: &str,
+        node_name: &str,
     ) -> Result<WorkflowGetOutputResult, WorkflowError> {
-        self.query.get_output(run_id, step_name)
+        let events = self.query.read_events(execution_id)?;
+        match event_draft::node_exists_in_drafts(&events, node_name, execution_id)
+            .map_err(contract_lookup_error_to_workflow_error)?
+        {
+            true => {}
+            false => {
+                return Err(WorkflowError::validation(format!(
+                    "node '{node_name}' is not defined in workflow execution '{execution_id}'"
+                )))
+            }
+        }
+        Ok(WorkflowQueryService::get_output_from_events(
+            &events, node_name,
+        ))
     }
 }
 
-fn resolve_step_output_contract_from_drafts(
+fn resolve_node_artifact_schema_from_drafts(
     events: &[WorkflowEventDraft],
-    step_name: &str,
-    run_id: &str,
-) -> Result<String, WorkflowError> {
-    event_draft::resolve_step_output_contract_from_drafts(events, step_name, run_id).map_err(
-        |err| match err {
-            contract::ContractLookupError::RunNotFound { run_id } => {
-                WorkflowError::external(format!("Workflow run not found: {run_id}"))
-            }
-            contract::ContractLookupError::InvalidRunStartedPayload { details } => {
-                WorkflowError::validation(details)
-            }
-            contract::ContractLookupError::NoOutputContract {
-                workflow_name,
-                step,
-            } => WorkflowError::external(format!(
-                "step '{step}' has no output_contract in workflow '{workflow_name}'"
-            )),
-        },
-    )
+    node_name: &str,
+    execution_id: &str,
+) -> Result<event_draft::ArtifactSchemaContext, WorkflowError> {
+    event_draft::resolve_node_artifact_schema_from_drafts(events, node_name, execution_id)
+        .map_err(contract_lookup_error_to_workflow_error)
+}
+
+fn contract_lookup_error_to_workflow_error(error: contract::ContractLookupError) -> WorkflowError {
+    match error {
+        contract::ContractLookupError::ExecutionNotFound { execution_id } => {
+            WorkflowError::NotFound(format!("Workflow execution not found: {execution_id}"))
+        }
+        contract::ContractLookupError::InvalidExecutionStartedPayload { details } => {
+            WorkflowError::validation(details)
+        }
+        contract::ContractLookupError::NoArtifactContract {
+            workflow_name,
+            node,
+        } => WorkflowError::validation(format!(
+            "node '{node}' has no artifact in workflow '{workflow_name}'"
+        )),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::workflow::{
-        FacetSummary, NodeDefinition, NodeType, RunId, RunListFilter, WorkflowDefinition,
-        WorkflowDefinitionRepository, WorkflowRunRecord, WorkflowRunRepository, WorkflowRunSummary,
-        WorkflowStateSnapshot, WorkflowSummary,
+        ExecutionListFilter, FacetKind, FacetRefs, FacetRepository, FacetSummary, NodeDefinition,
+        NodeKind, SchemaDef, SessionSpec, WorkflowDefinition, WorkflowDefinitionRepository,
+        WorkflowExecution, WorkflowExecutionId, WorkflowExecutionRecord,
+        WorkflowExecutionRepository, WorkflowExecutionSummary, WorkflowSummary,
     };
     use crate::usecase::workflow::ports::{
-        WorkflowEventRepository, WorkflowStateProjectionRepository,
-        WorkflowStepDetailProjectionRepository,
+        WorkflowEventRepository, WorkflowExecutionProjectionRepository,
     };
-    use std::collections::HashMap;
+    use crate::usecase::workflow::test_support::NoopDefinitionSourceGateway;
+    use std::collections::{BTreeMap, BTreeSet, HashMap};
     use std::sync::Mutex;
 
     #[derive(Default)]
-    struct NoopRunRepository;
+    struct NoopExecutionRepository;
 
-    impl WorkflowRunRepository for NoopRunRepository {
-        fn register_active(&self, _run: WorkflowRunRecord) -> Result<(), WorkflowError> {
-            Ok(())
-        }
-
-        fn complete_run(
+    impl WorkflowExecutionRepository for NoopExecutionRepository {
+        fn register_active(
             &self,
-            _run_id: &RunId,
-            _completed: WorkflowRunRecord,
+            _execution: WorkflowExecutionRecord,
         ) -> Result<(), WorkflowError> {
             Ok(())
         }
 
-        fn list_runs(
+        fn complete_execution(
             &self,
-            _filter: RunListFilter,
-        ) -> Result<Vec<WorkflowRunSummary>, WorkflowError> {
+            _execution_id: &WorkflowExecutionId,
+            _completed: WorkflowExecutionRecord,
+        ) -> Result<(), WorkflowError> {
+            Ok(())
+        }
+
+        fn list_executions(
+            &self,
+            _filter: ExecutionListFilter,
+        ) -> Result<Vec<WorkflowExecutionSummary>, WorkflowError> {
             Ok(Vec::new())
         }
 
-        fn get_run(&self, _run_id: &RunId) -> Result<Option<WorkflowRunSummary>, WorkflowError> {
+        fn get_execution(
+            &self,
+            _execution_id: &WorkflowExecutionId,
+        ) -> Result<Option<WorkflowExecutionSummary>, WorkflowError> {
             Ok(None)
         }
 
-        fn resolve_active_run_by_worktree(
+        fn resolve_active_execution_by_worktree(
             &self,
             _worktree_path: &str,
-        ) -> Result<Option<RunId>, WorkflowError> {
+        ) -> Result<Option<WorkflowExecutionId>, WorkflowError> {
             Ok(None)
         }
 
-        fn resolve_worktree_by_run(
+        fn resolve_worktree_by_execution(
             &self,
-            _run_id: &RunId,
+            _execution_id: &WorkflowExecutionId,
         ) -> Result<Option<String>, WorkflowError> {
             Ok(None)
         }
@@ -203,7 +235,10 @@ mod tests {
             Ok(())
         }
 
-        fn read(&self, _run_id: &RunId) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
+        fn read(
+            &self,
+            _execution_id: &WorkflowExecutionId,
+        ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
             Ok(self.events.lock().unwrap().clone())
         }
     }
@@ -251,26 +286,13 @@ mod tests {
         }
     }
 
-    struct NoopStateProjectionRepository;
+    struct NoopExecutionProjectionRepository;
 
-    impl WorkflowStateProjectionRepository for NoopStateProjectionRepository {
-        fn get_state(
+    impl WorkflowExecutionProjectionRepository for NoopExecutionProjectionRepository {
+        fn get_execution(
             &self,
-            _run_id: &RunId,
-        ) -> Result<Option<WorkflowStateSnapshot>, WorkflowError> {
-            Ok(None)
-        }
-    }
-
-    struct NoopStepDetailProjectionRepository;
-
-    impl WorkflowStepDetailProjectionRepository for NoopStepDetailProjectionRepository {
-        fn get_step_detail(
-            &self,
-            _run_id: &RunId,
-            _node_name: &str,
-            _run_index: Option<u32>,
-        ) -> Result<Option<serde_json::Value>, WorkflowError> {
+            _execution_id: &WorkflowExecutionId,
+        ) -> Result<Option<WorkflowExecution>, WorkflowError> {
             Ok(None)
         }
     }
@@ -285,7 +307,6 @@ mod tests {
 
     struct Fixture {
         usecase: WorkflowOutputUsecase,
-        facets: Arc<FakeFacetRepository>,
         events: Arc<FakeEventRepository>,
     }
 
@@ -294,59 +315,63 @@ mod tests {
             let facets = Arc::new(FakeFacetRepository::default());
             let events = Arc::new(FakeEventRepository::default());
             let query = WorkflowQueryService::new(
-                Arc::new(NoopRunRepository),
+                Arc::new(NoopExecutionRepository),
                 Arc::new(NoopDefinitionRepository),
+                Arc::new(NoopDefinitionSourceGateway),
                 facets.clone(),
                 events.clone(),
-                Arc::new(NoopStateProjectionRepository),
-                Arc::new(NoopStepDetailProjectionRepository),
+                Arc::new(NoopExecutionProjectionRepository),
             );
-            let usecase = WorkflowOutputUsecase::new(
-                query,
-                facets.clone(),
-                Arc::new(FakeSecretSourceGateway),
-            );
-            Self {
-                usecase,
-                facets,
-                events,
-            }
+            let usecase = WorkflowOutputUsecase::new(query, Arc::new(FakeSecretSourceGateway));
+            Self { usecase, events }
         }
     }
 
-    fn definition_with_output_contract(contract: &str) -> WorkflowDefinition {
+    fn definition_with_artifact_contract(contract: &str) -> WorkflowDefinition {
         WorkflowDefinition {
             name: "wf".to_string(),
             description: "desc".to_string(),
             builtin: false,
-            variables: Default::default(),
+            schemas: BTreeMap::from([(
+                contract.to_string(),
+                SchemaDef::Object {
+                    properties: BTreeMap::from([(
+                        "status".to_string(),
+                        SchemaDef::String { r#enum: None },
+                    )]),
+                    required: BTreeSet::from(["status".to_string()]),
+                    additional_properties: true,
+                },
+            )]),
             nodes: vec![NodeDefinition {
                 name: "review".to_string(),
-                node_type: NodeType::Agent,
-                output_contract: Some(contract.to_string()),
+                kind: NodeKind::Session(SessionSpec {
+                    facets: FacetRefs {
+                        instruction: Some("implement".to_string()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
+                artifact: Some(contract.to_string()),
                 ..Default::default()
             }],
         }
     }
 
-    fn run_started(run_id: &str, definition: WorkflowDefinition) -> WorkflowEventDraft {
-        let workflow_name = definition.name.clone();
+    fn execution_started(execution_id: &str, definition: WorkflowDefinition) -> WorkflowEventDraft {
         let definition = crate::usecase::workflow::dto::workflow_to_dto(&definition);
         WorkflowEventDraft {
-            run_id: run_id.to_string(),
-            event_kind: "run_started".to_string(),
+            execution_id: execution_id.to_string(),
+            event_kind: "execution_started".to_string(),
             timestamp: 1.0,
             payload: serde_json::json!({
-                "workflow_name": workflow_name,
-                "workflow_file_stem": "wf",
-                "worktree_path": "/wt",
-                "workflow_definition": definition,
+                "definition": definition,
             }),
         }
     }
 
-    fn output_submitted(
-        run_id: &str,
+    fn artifact_produced(
+        execution_id: &str,
         node_name: &str,
         contract: &str,
         structured_output: serde_json::Value,
@@ -354,47 +379,35 @@ mod tests {
         request_id: &str,
     ) -> WorkflowEventDraft {
         WorkflowEventDraft {
-            run_id: run_id.to_string(),
-            event_kind: "output_submitted".to_string(),
+            execution_id: execution_id.to_string(),
+            event_kind: "artifact_produced".to_string(),
             timestamp,
             payload: serde_json::json!({
-                "workflow_name": "wf",
+                "node_execution_id": format!("{execution_id}:{node_name}:1"),
                 "node_name": node_name,
                 "contract": contract,
-                "structured_output": structured_output,
+                "value": structured_output,
                 "submitted_at": timestamp,
                 "request_id": request_id,
             }),
         }
     }
 
-    fn test_run_id() -> &'static str {
+    fn test_execution_id() -> &'static str {
         "00000000-0000-4000-8000-000000000301"
     }
 
     #[test]
-    fn validate_output_resolves_contract_from_run_started_and_masks_before_validation() {
+    fn validate_output_resolves_contract_from_execution_started_and_masks_before_validation() {
         let fixture = Fixture::new();
-        fixture.events.seed(run_started(
-            test_run_id(),
-            definition_with_output_contract("review-result"),
+        fixture.events.seed(execution_started(
+            test_execution_id(),
+            definition_with_artifact_contract("review-result"),
         ));
-        fixture
-            .facets
-            .save(
-                FacetKind::Contract,
-                "review-result",
-                r#"```contract-validation
-{"required":["status"]}
-```"#,
-                true,
-            )
-            .unwrap();
-
         let result = fixture
             .usecase
             .validate_output(
-                test_run_id(),
+                test_execution_id(),
                 "review",
                 serde_json::json!({"status":"ok","secret":"token-123"}),
             )
@@ -403,19 +416,48 @@ mod tests {
         assert_eq!(result, WorkflowValidateOutputResult::Valid);
         let invalid = fixture
             .usecase
-            .validate_output(test_run_id(), "review", serde_json::json!({}))
+            .validate_output(test_execution_id(), "review", serde_json::json!({}))
             .unwrap();
         assert!(matches!(
             invalid,
-            WorkflowValidateOutputResult::Invalid { reason, .. } if reason == "missing_field"
+            WorkflowValidateOutputResult::Invalid { reason, .. } if reason == "schema_violation"
+        ));
+    }
+
+    #[test]
+    fn validate_output_for_contract_rejects_a_mismatched_contract() {
+        let fixture = Fixture::new();
+        fixture.events.seed(execution_started(
+            test_execution_id(),
+            definition_with_artifact_contract("review-result"),
+        ));
+
+        let error = fixture
+            .usecase
+            .validate_output_for_contract(
+                test_execution_id(),
+                "review",
+                "different-result",
+                serde_json::json!({"status":"ok"}),
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            WorkflowError::Validation(message)
+                if message.contains("expects contract 'review-result'")
         ));
     }
 
     #[test]
     fn get_output_delegates_to_query_projection() {
         let fixture = Fixture::new();
-        fixture.events.seed(output_submitted(
-            test_run_id(),
+        fixture.events.seed(execution_started(
+            test_execution_id(),
+            definition_with_artifact_contract("review-result"),
+        ));
+        fixture.events.seed(artifact_produced(
+            test_execution_id(),
             "review",
             "review-result",
             serde_json::json!({"status":"ok"}),
@@ -423,12 +465,34 @@ mod tests {
             "req-1",
         ));
 
-        let output = fixture.usecase.get_output(test_run_id(), "review").unwrap();
+        let output = fixture
+            .usecase
+            .get_output(test_execution_id(), "review")
+            .unwrap();
 
         assert!(matches!(
             output,
             WorkflowGetOutputResult::Submitted { request_id, .. }
                 if request_id.as_deref() == Some("req-1")
+        ));
+    }
+
+    #[test]
+    fn get_output_rejects_an_unknown_node_through_the_shared_usecase() {
+        let fixture = Fixture::new();
+        fixture.events.seed(execution_started(
+            test_execution_id(),
+            definition_with_artifact_contract("review-result"),
+        ));
+
+        let error = fixture
+            .usecase
+            .get_output(test_execution_id(), "missing")
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            WorkflowError::Validation(message) if message.contains("is not defined")
         ));
     }
 }

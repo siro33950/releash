@@ -1,8 +1,8 @@
 import { useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import type { DiagnosticReport, FacetKind } from "@/types/workflow";
-import { DiagnosticItemRow } from "./DiagnosticBadge";
-import { extractTemplateVariables, facetKindToDirName } from "./utils";
+import { DiagnosticsPanel } from "./DiagnosticBadge";
+import { extractTemplateVariables } from "./utils";
 
 export function FacetDetail({
 	content,
@@ -19,11 +19,10 @@ export function FacetDetail({
 	report: DiagnosticReport;
 	onEdit: () => void;
 }) {
-	const dirName = facetKindToDirName(kind);
-	const facetId = `${dirName}/${facetKey}`;
+	const facetId = `${kind}/${facetKey}`;
 	const usage = report.facet_usage[facetId] ?? [];
 	const diagnosticItems = report.items.filter(
-		(i) => i.facet_key === facetKey && i.facet_kind === dirName,
+		(i) => i.facet_key === facetKey && i.facet_kind === kind,
 	);
 
 	const variables = useMemo(() => extractTemplateVariables(content), [content]);
@@ -44,17 +43,7 @@ export function FacetDetail({
 				)}
 			</div>
 
-			{diagnosticItems.length > 0 && (
-				<div className="flex flex-col gap-1.5 rounded-md border border-border p-3">
-					<span className="text-xs font-medium">Diagnostics</span>
-					{diagnosticItems.map((item) => (
-						<DiagnosticItemRow
-							key={`${item.severity}-${item.message}-${item.field ?? ""}`}
-							item={item}
-						/>
-					))}
-				</div>
-			)}
+			<DiagnosticsPanel items={diagnosticItems} />
 
 			{variables.length > 0 && (
 				<div className="flex flex-col gap-1">
@@ -81,10 +70,10 @@ export function FacetDetail({
 					</span>
 					{usage.map((u) => (
 						<div
-							key={`${u.workflow_name}-${u.step_name}-${u.slot}`}
+							key={`${u.workflow_name}-${u.node_name}-${u.slot}`}
 							className="text-xs text-muted-foreground"
 						>
-							{u.workflow_name} → {u.step_name} ({u.slot})
+							{u.workflow_name} → {u.node_name} ({u.slot})
 						</div>
 					))}
 				</div>

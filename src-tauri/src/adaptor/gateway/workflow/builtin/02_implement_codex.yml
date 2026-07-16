@@ -1,53 +1,78 @@
 name: 02_implement_codex
 description: Spec を元にGPT系モデルで実装し、軽量レビューループ（最大 5 周、Human-in-the-Loop なし）で Spec 充足と規約適合を保証する。
 builtin: true
-
+schemas:
+  spec-implement-fix-verdict:
+    type: object
+    properties:
+      verdict:
+        type: string
+        enum:
+        - completed
+        - fixed
+      summary: string
+    required:
+    - verdict
+    - summary
+    additionalProperties: false
 nodes:
-  - name: implement
-    type: agent
+- name: implement
+  session:
     model: gpt-5.6-sol
     permission: edit
-    instruction: implement
-    policy: coding
-
-  - name: review_parallel
-    type: parallel
-    parallel_children:
-      - name: review_spec
-        type: agent
-        model: gpt-5.6-sol
-        permission: full
-        instruction: spec-implement-review-spec
-        policy: reviewing
-        knowledge: releash-thread-cli
-      - name: review_design
-        type: agent
-        model: gpt-5.6-sol
-        permission: full
-        instruction: spec-implement-review-design
-        policy: reviewing
-        knowledge: releash-thread-cli
-
-  - name: fix
-    type: agent
+    gate: auto
+    facets:
+      policy: coding
+      instruction: implement
+  rules:
+  - next: review_fanout
+- name: review_fanout
+  fanout:
+    child:
+    - review_spec
+    - review_design
+  rules:
+  - next: fix
+- name: review_spec
+  session:
     model: gpt-5.6-sol
     permission: full
-    instruction: spec-implement-fix
-    policy: coding
-    output_contract: spec-implement-fix-verdict
-    knowledge: releash-thread-cli
-    rules:
-      - match: fixed
-        next: review_parallel
-      - match: completed
-        next: report
-    cycle_guard:
-      max_iterations: 5
-      on_exhausted: report
-
-  - name: report
-    type: approval
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: spec-implement-review-spec
+- name: review_design
+  session:
     model: gpt-5.6-sol
     permission: full
-    instruction: spec-implement-report
-    knowledge: releash-thread-cli
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: spec-implement-review-design
+- name: fix
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: coding
+      knowledge: releash-thread-cli
+      instruction: spec-implement-fix
+  artifact: spec-implement-fix-verdict
+  rules:
+  - loop_guard: { max_iterations: 5, on_exhausted: report }
+  - switch:
+      on: verdict
+      cases:
+        fixed: review_fanout
+        completed: report
+- name: report
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: approval
+    facets:
+      knowledge: releash-thread-cli
+      instruction: spec-implement-report

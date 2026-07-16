@@ -1,4 +1,4 @@
-use crate::adaptor::gateway::workflow::schema::Workflow;
+use crate::adaptor::gateway::workflow::schema::WorkflowDefinitionYaml;
 
 #[derive(Debug)]
 pub(crate) enum WorkflowDefinitionResolverError {
@@ -33,7 +33,10 @@ impl std::fmt::Display for ManagedWorktreeResolverError {
 /// YAML / builtin / facet 解決を担う境界。
 #[async_trait::async_trait]
 pub(crate) trait WorkflowDefinitionResolver: Send + Sync {
-    async fn resolve(&self, file_stem: &str) -> Result<Workflow, WorkflowDefinitionResolverError>;
+    async fn resolve(
+        &self,
+        workflow_name: &str,
+    ) -> Result<WorkflowDefinitionYaml, WorkflowDefinitionResolverError>;
 }
 
 /// WorkflowRuntimeService core が AppConfig / filesystem canonicalize / Git worktree 列挙を

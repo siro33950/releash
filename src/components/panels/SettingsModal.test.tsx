@@ -10,6 +10,29 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { type AppSettings, DEFAULT_SETTINGS } from "@/types/settings";
 import { SettingsModal } from "./SettingsModal";
 
+const monacoMock = vi.hoisted(() => {
+	const model = {
+		getValue: vi.fn(() => "name: my-workflow\nnodes: []\n"),
+		dispose: vi.fn(),
+	};
+	const editor = {
+		dispose: vi.fn(),
+		onDidChangeModelContent: vi.fn(() => ({ dispose: vi.fn() })),
+	};
+	return {
+		module: {
+			MarkerSeverity: { Error: 8, Warning: 4, Info: 2 },
+			editor: {
+				createModel: vi.fn(() => model),
+				create: vi.fn(() => editor),
+				setModelMarkers: vi.fn(),
+			},
+		},
+	};
+});
+
+vi.mock("monaco-editor", () => monacoMock.module);
+
 // Radix UI uses pointer events; jsdom doesn't implement them
 beforeAll(() => {
 	HTMLElement.prototype.hasPointerCapture = vi.fn() as never;
@@ -41,20 +64,8 @@ describe("SettingsModal", () => {
 					return Promise.resolve('{"hooks":{}}');
 				case "get_hooks_status":
 					return Promise.resolve("not_configured");
-				case "get_agent_shortcut_settings":
-					return Promise.resolve([
-						{
-							id: "command_menu",
-							label: "Command menu",
-							shortcut: "Cmd K",
-							alternateShortcut: "Cmd Shift P",
-							defaultShortcut: "Cmd K",
-						},
-					]);
 				case "update_workflow_config":
 				case "update_notify_config":
-				case "update_agent_shortcut_settings":
-				case "reset_agent_shortcut_settings":
 					return Promise.resolve(null);
 				case "get_external_editor":
 					return Promise.resolve("");
@@ -106,27 +117,20 @@ describe("SettingsModal", () => {
 		expect(screen.getByText("Font Size: 18px")).toBeInTheDocument();
 	});
 
-	it("saves agent shortcut customization through Rust settings", async () => {
-		const user = userEvent.setup();
+	it("does not expose the retired agent command palette settings", async () => {
 		const { invoke } = await import("@tauri-apps/api/core");
 		render(<SettingsModal {...defaultProps} />);
 		fireEvent.click(screen.getByText("Agent"));
 
-		const commandMenuInput = await screen.findByLabelText(/Command menu/);
-		await user.clear(commandMenuInput);
-		await user.type(commandMenuInput, "Ctrl Shift K");
-		await user.click(screen.getByRole("button", { name: "Save" }));
-
-		await waitFor(() =>
-			expect(invoke).toHaveBeenCalledWith("update_agent_shortcut_settings", {
-				shortcuts: expect.arrayContaining([
-					expect.objectContaining({
-						id: "command_menu",
-						shortcut: "Ctrl Shift K",
-					}),
-				]),
-			}),
-		);
+		expect(screen.queryByText("Agent shortcuts")).not.toBeInTheDocument();
+		expect(screen.queryByLabelText(/Command menu/)).not.toBeInTheDocument();
+		expect(
+			vi
+				.mocked(invoke)
+				.mock.calls.some(([command]) =>
+					String(command).includes("agent_shortcut"),
+				),
+		).toBe(false);
 	});
 
 	it("Save button is disabled when no changes", () => {
@@ -425,7 +429,7 @@ describe("SettingsModal", () => {
 		});
 	});
 
-	it("should load and save workflow approval auto-approve independently from agent auto-approve", async () => {
+	it("should load and save approval gate auto-approve independently from agent auto-approve", async () => {
 		const user = userEvent.setup();
 		const { invoke } = await import("@tauri-apps/api/core");
 		vi.mocked(invoke).mockImplementation((cmd: string) => {
@@ -469,7 +473,7 @@ describe("SettingsModal", () => {
 		const nav = screen.getByRole("navigation");
 		fireEvent.click(within(nav).getByText("Agent"));
 		const workflowCheckbox = await screen.findByRole("checkbox", {
-			name: "Workflow approval auto-approve",
+			name: "Approval gate auto-approve",
 		});
 		const agentCheckbox = screen.getByRole("checkbox", {
 			name: "Auto-approve",
@@ -683,7 +687,7 @@ describe("SettingsModal", () => {
 		});
 	});
 
-	it("should call open_workflow_in_editor for custom workflow", async () => {
+	it("should open custom workflow in the panel editor", async () => {
 		const user = userEvent.setup();
 		const { invoke } = await import("@tauri-apps/api/core");
 		const emptyReport = {
@@ -700,10 +704,18 @@ describe("SettingsModal", () => {
 							name: "my-workflow",
 							description: "カスタムワークフロー",
 							builtin: false,
+							is_running: false,
 						},
 					]);
-				case "open_workflow_in_editor":
-					return Promise.resolve(null);
+				case "get_workflow_source":
+					return Promise.resolve("name: my-workflow\nnodes: []\n");
+				case "get_workflow":
+					return Promise.resolve({
+						name: "my-workflow",
+						description: "カスタムワークフロー",
+						builtin: false,
+						nodes: [],
+					});
 				case "diagnose_all_cmd":
 					return Promise.resolve(emptyReport);
 				default:
@@ -718,11 +730,18 @@ describe("SettingsModal", () => {
 			expect(screen.getByText("my-workflow")).toBeInTheDocument();
 		});
 
-		await user.click(screen.getByTitle("Open in editor"));
+		await user.click(screen.getByTitle("Edit"));
 
-		expect(vi.mocked(invoke)).toHaveBeenCalledWith("open_workflow_in_editor", {
+		await waitFor(() => {
+			expect(screen.getByText("Workflow YAML")).toBeInTheDocument();
+		});
+		expect(vi.mocked(invoke)).toHaveBeenCalledWith("get_workflow_source", {
 			name: "my-workflow",
 		});
+		expect(vi.mocked(invoke)).not.toHaveBeenCalledWith(
+			"open_workflow_in_editor",
+			expect.anything(),
+		);
 	});
 
 	it("should call delete_workflow when Delete button is clicked", async () => {

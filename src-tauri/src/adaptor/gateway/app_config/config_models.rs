@@ -153,8 +153,6 @@ pub struct AppSection {
     pub last_repo_paths: Vec<String>,
     #[serde(default)]
     pub external_editor: String,
-    #[serde(default)]
-    pub agent_shortcuts: AgentShortcutSection,
 }
 
 impl Default for AppSection {
@@ -166,15 +164,8 @@ impl Default for AppSection {
             last_root_path: String::new(),
             last_repo_paths: Vec::new(),
             external_editor: String::new(),
-            agent_shortcuts: AgentShortcutSection::default(),
         }
     }
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AgentShortcutSection {
-    #[serde(default)]
-    pub overrides: HashMap<String, String>,
 }
 
 fn default_crash_reporting() -> bool {
@@ -395,9 +386,6 @@ pub fn app_to_domain(app: &AppSection) -> domain_vo::AppSettings {
         last_root_path: app.last_root_path.clone(),
         last_repo_paths: app.last_repo_paths.clone(),
         external_editor: app.external_editor.clone(),
-        agent_shortcuts: domain_vo::AgentShortcutConfig {
-            overrides: app.agent_shortcuts.overrides.clone(),
-        },
     }
 }
 
@@ -409,9 +397,6 @@ pub fn app_to_model(app: domain_vo::AppSettings) -> AppSection {
         last_root_path: app.last_root_path,
         last_repo_paths: app.last_repo_paths,
         external_editor: app.external_editor,
-        agent_shortcuts: AgentShortcutSection {
-            overrides: app.agent_shortcuts.overrides,
-        },
     }
 }
 
@@ -501,12 +486,6 @@ mod config_models_tests {
                 last_root_path: "/repo".to_string(),
                 last_repo_paths: vec!["/repo".to_string(), "/repo2".to_string()],
                 external_editor: "cursor".to_string(),
-                agent_shortcuts: AgentShortcutSection {
-                    overrides: std::collections::HashMap::from([(
-                        "send".to_string(),
-                        "Ctrl+Enter".to_string(),
-                    )]),
-                },
             },
             agents: AgentsSection {
                 default: Some("codex".to_string()),

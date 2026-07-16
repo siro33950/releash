@@ -1,35 +1,38 @@
 name: 03_review
 description: Claude 系モデルと GPT-5.6 Sol がそれぞれ 6 観点すべてを確認し、Summary 段では各 Open Thread の reviewer 指摘を Thread 単位でまとめて人間に報告する（議論・Thread 投稿は行わない）。
 builtin: true
-
 nodes:
-  - name: review-parallel
-    type: parallel
-    parallel_children:
-      - name: review-opus
-        type: agent
-        model: claude-opus-4-8
-        permission: edit
-        instruction: review-all
-        policy: reviewing
-        knowledge: releash-thread-cli
-
-      - name: review-gpt55
-        type: agent
-        model: gpt-5.6-sol
-        permission: full
-        instruction: review-all
-        policy: reviewing
-        knowledge: releash-thread-cli
-    aggregate:
-      all_match: ".*"
-      then: reporting
-      else: reporting
-
-  - name: reporting
-    type: approval
+- name: review-fanout
+  fanout:
+    child:
+    - review-opus
+    - review-gpt55
+  rules:
+  - next: reporting
+- name: review-opus
+  session:
+    model: claude-opus-4-8
+    permission: edit
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-all
+- name: review-gpt55
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-all
+- name: reporting
+  session:
     model: gpt-5.6-sol
     permission: edit
-    policy: reporting
-    knowledge: releash-thread-cli
-    instruction: review-summary
+    gate: approval
+    facets:
+      policy: reporting
+      knowledge: releash-thread-cli
+      instruction: review-summary

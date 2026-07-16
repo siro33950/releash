@@ -1,7 +1,10 @@
-import { Copy, ExternalLink, Plus, Trash2 } from "lucide-react";
+import { Copy, Pencil, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { DiagnosticReport, WorkflowSummary } from "@/types/workflow";
+import type {
+	DiagnosticReport,
+	WorkflowDefinitionSummary,
+} from "@/types/workflow";
 import { DiagnosticBadge } from "./DiagnosticBadge";
 
 export function WorkflowList({
@@ -11,16 +14,16 @@ export function WorkflowList({
 	onSelect,
 	onDelete,
 	onDuplicate,
-	onOpenInEditor,
+	onEdit,
 	onCreate,
 }: {
-	workflows: WorkflowSummary[];
+	workflows: WorkflowDefinitionSummary[];
 	report: DiagnosticReport;
 	selectedName: string | null;
 	onSelect: (name: string) => void;
 	onDelete: (name: string) => void;
 	onDuplicate: (name: string) => void;
-	onOpenInEditor: (name: string) => void;
+	onEdit: (name: string) => void;
 	onCreate: () => void;
 }) {
 	return (
@@ -97,10 +100,10 @@ export function WorkflowList({
 										variant="ghost"
 										size="icon"
 										className="size-6"
-										onClick={() => onOpenInEditor(wf.name)}
-										title="Open in editor"
+										onClick={() => onEdit(wf.name)}
+										title="Edit"
 									>
-										<ExternalLink className="size-3" />
+										<Pencil className="size-3" />
 									</Button>
 									<Button
 										variant="ghost"

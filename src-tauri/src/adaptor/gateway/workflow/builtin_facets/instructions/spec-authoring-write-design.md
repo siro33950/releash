@@ -1,8 +1,8 @@
-{{project_name}} プロジェクトの `design.md` をユーザーとの対話で作成または更新する。
+`{{ write_requirements.spec_dir }}` の `design.md` をユーザーとの対話で作成または更新する。
 
 ## 入力
 
-`spec-directory` Contract で渡される `spec_dir` を読み、以下を参照する。
+`spec-directory` schema で渡される `spec_dir` を読み、以下を参照する。
 
 - `${spec_dir}/requirements.md`
 - `${spec_dir}/behavior.md`
@@ -11,7 +11,7 @@
 
 実装が要求・振る舞いの意図を外さないために、判断が分かれた所だけを最小限の合意として記録する。網羅的な設計仕様書ではない。
 
-本ステップでは `design.md` を作成・更新する。設計を詰める途中で前段（`requirements.md` / `behavior.md`）との不整合に気づいたら、ユーザーに報告し、前段に戻って修正するかは判断を仰ぐ。
+この node では `design.md` を作成・更新する。設計を詰める途中で前段（`requirements.md` / `behavior.md`）との不整合に気づいたら、ユーザーに報告し、前段に戻って修正するかは判断を仰ぐ。
 
 ## 進め方
 
@@ -42,7 +42,7 @@
 
 ### 完了条件
 
-全見出しを消化したら、ユーザーに最終確認を促す。承認をもって本ステップを完了とする。
+全見出しを消化したら、ユーザーに最終確認を促す。承認をもってこの node を完了とする。
 
 ## design.md フォーマット
 

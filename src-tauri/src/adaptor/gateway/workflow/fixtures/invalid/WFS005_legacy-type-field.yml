@@ -1,0 +1,10 @@
+name: legacy-type-field
+description: old node type field
+nodes:
+  - name: implement
+    type: agent
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        instruction: implement

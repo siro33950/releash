@@ -1,0 +1,13 @@
+name: invalid-artifact-schema
+description: artifact must reference an object schema
+schemas:
+  verdict:
+    type: string
+nodes:
+  - name: judge
+    artifact: verdict
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        instruction: judge

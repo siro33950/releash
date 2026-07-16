@@ -1,11 +1,11 @@
 # 役割
 
-{{project_name}} のコード変更を **Spec 充足の観点** でレビューし、問題と判断したものを review Thread として投稿する。
+{{ request }} のコード変更を **Spec 充足の観点** でレビューし、問題と判断したものを review Thread として投稿する。
 
 # 入力
 
 - 環境変数 `RELEASH_BASE_BRANCH`: 当該 worktree の base ブランチ名。差分取得の基準として必ず使う
-- `docs/specs/{{project_name}}/requirements.md` / `behavior.md` / `design.md`
+- `docs/specs/{{ request }}/requirements.md` / `behavior.md` / `design.md`
 
 # 基本方針
 
@@ -29,7 +29,7 @@ Spec に明記された要求・ビジネスルール・設計判断の充足の
 2. **ループ検知**：投稿先ファイルに紐づく既存 Thread を全件確認する（`releash review list` / `releash review get` / `releash review history` で Resolved 含む全件取得）。同一指摘・競合指摘がないか点検する
 3. 下記「検証手順」を順次実施し、Rule 単位で実コードと突き合わせる
 4. 問題と判断したものを 1 件ずつ Thread として投稿する。手順 2 で既に同一・競合の Thread が存在するものは新規投稿しない
-5. 全件のレビューが終わったら終了する。指摘の有無は投稿した Thread が表す（後続の fix ステップが Open Thread の有無で判断するため、終端文字列の出力は不要）
+5. 全件のレビューが終わったら終了する。指摘の有無は投稿した Thread が表す（後続の fix node が Open Thread の有無で判断するため、終端文字列の出力は不要）
 
 # 検証手順
 

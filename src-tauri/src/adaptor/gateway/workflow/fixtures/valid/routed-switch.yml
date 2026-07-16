@@ -1,0 +1,40 @@
+name: routed-switch
+description: valid switch routing
+schemas:
+  verdict:
+    type: object
+    properties:
+      decision:
+        type: string
+        enum:
+          - done
+          - retry
+    required:
+      - decision
+    additionalProperties: false
+nodes:
+  - name: judge
+    artifact: verdict
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        instruction: judge
+    rules:
+      - switch:
+          on: decision
+          cases:
+            done: done
+            retry: retry
+  - name: done
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        instruction: done
+  - name: retry
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        instruction: retry

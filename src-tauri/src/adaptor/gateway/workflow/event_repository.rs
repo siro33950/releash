@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::adaptor::gateway::workflow::log::WorkflowEventLog;
-use crate::domain::workflow::{RunId, WorkflowError};
+use crate::domain::workflow::{WorkflowError, WorkflowExecutionId, WorkflowPageRequest};
 use crate::usecase::workflow::ports::{WorkflowEventDraft, WorkflowEventRepository};
 
 use super::mapper;
@@ -31,21 +31,37 @@ impl WorkflowEventRepository for WorkflowEventLogRepository {
 
     #[cfg(test)]
     fn append_batch(&self, events: &[WorkflowEventDraft]) -> Result<(), WorkflowError> {
-        let legacy_events: Vec<_> = events
+        let workflow_events: Vec<_> = events
             .iter()
-            .map(mapper::domain_event_draft_to_legacy)
+            .map(mapper::event_draft_to_event)
             .collect::<Result<_, _>>()?;
         self.log()
-            .append_batch(&legacy_events)
+            .append_batch(&workflow_events)
             .map_err(WorkflowError::external)
     }
 
-    fn read(&self, run_id: &RunId) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
+    fn read(
+        &self,
+        execution_id: &WorkflowExecutionId,
+    ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
         self.log()
-            .read_log(run_id.as_str())
+            .read_log(execution_id.as_str())
             .map_err(WorkflowError::external)?
             .iter()
-            .map(mapper::legacy_event_to_domain_draft)
+            .map(mapper::workflow_event_to_domain_draft)
+            .collect()
+    }
+
+    fn read_page(
+        &self,
+        execution_id: &WorkflowExecutionId,
+        page: WorkflowPageRequest,
+    ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
+        self.log()
+            .read_log_page(execution_id.as_str(), page.offset, page.limit)
+            .map_err(WorkflowError::external)?
+            .iter()
+            .map(mapper::workflow_event_to_domain_draft)
             .collect()
     }
 }
@@ -56,92 +72,95 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn append_preserves_existing_ndjson_event_tag() {
+    fn append_preserves_canonical_execution_event_tag() {
         let tmp = TempDir::new().unwrap();
         let repo = WorkflowEventLogRepository::new(tmp.path());
-        let run_id = RunId::new("00000000-0000-4000-8000-000000000001").unwrap();
+        let execution_id =
+            WorkflowExecutionId::new("00000000-0000-4000-8000-000000000001").unwrap();
 
         repo.append(&WorkflowEventDraft {
-            run_id: run_id.to_string(),
-            event_kind: "run_started".to_string(),
+            execution_id: execution_id.to_string(),
+            event_kind: "execution_started".to_string(),
             timestamp: 1.0,
             payload: serde_json::json!({
-                "workflowName": "wf",
-                "workflowFileStem": "wf",
-                "worktreePath": "/repo",
-                "workflowDefinition": {
+                "workflow_name": "wf",
+                "worktree_path": "/repo",
+                "created_from": "cli",
+                "request": "ship it",
+                "permission_mode": "ask",
+                "definition": {
                     "name": "wf",
                     "description": "",
                     "nodes": [{
-                        "name": "step",
-                        "type": "agent"
+                        "name": "node",
+                        "session": { "gate": "auto" }
                     }]
-                },
-                "permissionMode": "edit"
+                }
             }),
         })
         .unwrap();
 
         let content = std::fs::read_to_string(
             tmp.path()
-                .join("workflow_logs")
-                .join(format!("{run_id}.ndjson")),
+                .join("workflow_execution_logs")
+                .join(format!("{execution_id}.ndjson")),
         )
         .unwrap();
-        assert!(content.contains("\"event\":\"run_started\""));
+        assert!(content.contains("\"event\":\"execution_started\""));
 
-        let events = repo.read(&run_id).unwrap();
-        assert_eq!(events[0].event_kind, "run_started");
+        let events = repo.read(&execution_id).unwrap();
+        assert_eq!(events[0].event_kind, "execution_started");
         assert_eq!(events[0].payload["workflow_name"], "wf");
+        assert_eq!(events[0].payload["request"], "ship it");
     }
 
     #[test]
     fn read_after_cached_read_observes_incremental_append() {
         let tmp = TempDir::new().unwrap();
         let repo = WorkflowEventLogRepository::new(tmp.path());
-        let run_id = RunId::new("00000000-0000-4000-8000-000000000002").unwrap();
+        let execution_id =
+            WorkflowExecutionId::new("00000000-0000-4000-8000-000000000002").unwrap();
 
         repo.append(&WorkflowEventDraft {
-            run_id: run_id.to_string(),
-            event_kind: "run_started".to_string(),
+            execution_id: execution_id.to_string(),
+            event_kind: "execution_started".to_string(),
             timestamp: 1.0,
             payload: serde_json::json!({
-                "workflowName": "wf",
-                "workflowFileStem": "wf",
-                "worktreePath": "/repo",
-                "workflowDefinition": {
+                "workflow_name": "wf",
+                "worktree_path": "/repo",
+                "created_from": "cli",
+                "request": "",
+                "permission_mode": "ask",
+                "definition": {
                     "name": "wf",
                     "description": "",
                     "nodes": [{
-                        "name": "step",
-                        "type": "agent"
+                        "name": "node",
+                        "session": { "gate": "auto" }
                     }]
-                },
-                "permissionMode": "edit"
+                }
             }),
         })
         .unwrap();
 
-        let first = repo.read(&run_id).unwrap();
+        let first = repo.read(&execution_id).unwrap();
         assert_eq!(first.len(), 1);
-        assert_eq!(first[0].event_kind, "run_started");
+        assert_eq!(first[0].event_kind, "execution_started");
         assert_eq!(first[0].payload["workflow_name"], "wf");
 
         repo.append(&WorkflowEventDraft {
-            run_id: run_id.to_string(),
-            event_kind: "run_aborted".to_string(),
+            execution_id: execution_id.to_string(),
+            event_kind: "execution_aborted".to_string(),
             timestamp: 2.0,
-            payload: serde_json::json!({
-                "workflowName": "wf",
-            }),
+            payload: serde_json::json!({"aborted_node": null}),
         })
         .unwrap();
 
-        let second = repo.read(&run_id).unwrap();
+        let second = repo.read(&execution_id).unwrap();
         assert_eq!(second.len(), 2);
         assert_eq!(second[0], first[0]);
-        assert_eq!(second[1].event_kind, "run_aborted");
+        assert_eq!(second[1].event_kind, "execution_aborted");
         assert_eq!(second[1].timestamp, 2.0);
-        assert_eq!(second[1].payload["workflow_name"], "wf");
+        assert_eq!(second[1].payload["aborted_node"], serde_json::Value::Null);
     }
 }

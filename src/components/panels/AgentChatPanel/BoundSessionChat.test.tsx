@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
 	AgentStallObservation,
@@ -34,6 +34,7 @@ vi.mock("./ChatSessionView", () => ({
 		planMode,
 		pendingPermission,
 		onRespondPermission,
+		onSend,
 		stallObservation,
 	}: {
 		session: ChatSession;
@@ -45,6 +46,7 @@ vi.mock("./ChatSessionView", () => ({
 			allow: boolean,
 			updatedInput?: Record<string, unknown>,
 		) => void;
+		onSend: (content: string) => Promise<void>;
 		stallObservation?: AgentStallObservation | null;
 	}) => (
 		<div data-testid={`chat-${session.id}`}>
@@ -66,6 +68,9 @@ vi.mock("./ChatSessionView", () => ({
 					Respond
 				</button>
 			)}
+			<button type="button" onClick={() => void onSend("hello")}>
+				Send message
+			</button>
 			<span data-testid={`stall-${session.id}`}>
 				{stallObservation
 					? `${stallObservation.turnPhase}:${stallObservation.idleSecs}`
@@ -179,7 +184,7 @@ describe("BoundSessionChat", () => {
 		expect(screen.getByTestId("plan-session-b")).toHaveTextContent("true");
 	});
 
-	it("passes each workflow pane its own pending permission and response handler", () => {
+	it("passes each selected Node session its own pending permission and response handler", () => {
 		const permissionA = makePendingPermission("perm-a");
 		const permissionB = makePendingPermission("perm-b");
 		setContext(
@@ -253,6 +258,70 @@ describe("BoundSessionChat", () => {
 
 		expect(screen.getByTestId("stall-session-a")).toHaveTextContent(
 			"streaming:181",
+		);
+	});
+
+	it("loads and registers a selected Workflow Session for live updates and input", async () => {
+		const cleanup = vi.fn();
+		mocks.registerViewableSession.mockReturnValue(cleanup);
+		setContext({
+			"workflow-session": makeSession("workflow-session", "ask", false),
+		});
+
+		const { unmount } = render(
+			<BoundSessionChat sessionId="workflow-session" worktreePath="/repo" />,
+		);
+
+		expect(mocks.loadSession).toHaveBeenCalledWith("workflow-session");
+		expect(mocks.registerViewableSession).toHaveBeenCalledWith(
+			"workflow-session",
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+		expect(mocks.sendMessage).toHaveBeenCalledWith(
+			"workflow-session",
+			"hello",
+			undefined,
+			undefined,
+		);
+
+		unmount();
+		expect(cleanup).toHaveBeenCalled();
+	});
+
+	it("shows loading and then renders the Workflow Session returned by the initial load", async () => {
+		const sessions: Record<string, ChatSession> = {};
+		let resolveLoad: (session: ChatSession) => void = () => {};
+		mocks.loadSession.mockImplementationOnce((sessionId: string) => {
+			return new Promise<ChatSession>((resolve) => {
+				resolveLoad = (loaded) => {
+					sessions[sessionId] = loaded;
+					resolve(loaded);
+				};
+			});
+		});
+		setContext(sessions);
+
+		render(
+			<BoundSessionChat sessionId="workflow-session" worktreePath="/repo" />,
+		);
+
+		expect(screen.getByRole("status")).toHaveTextContent("Loading session...");
+		await act(async () => {
+			resolveLoad(makeSession("workflow-session", "ask", false));
+		});
+		expect(await screen.findByTestId("chat-workflow-session")).toBeVisible();
+	});
+
+	it("reports an unavailable Workflow Session instead of leaving the center blank", async () => {
+		mocks.loadSession.mockResolvedValueOnce(null);
+		setContext({});
+
+		render(
+			<BoundSessionChat sessionId="missing-session" worktreePath="/repo" />,
+		);
+
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"Session unavailable.",
 		);
 	});
 });

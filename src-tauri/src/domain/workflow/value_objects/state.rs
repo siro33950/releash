@@ -1,33 +1,38 @@
 use std::collections::HashMap;
 
 use super::definition::WorkflowDefinition;
-use super::failure::WorkflowStepFailureKind;
-use super::step_output::{
-    ParallelStepState, StepHistoryEntry, StepOutput, TokenUsage, STEP_STATE_ABORTED,
-    STEP_STATE_COMPLETED, STEP_STATE_FAILED, STEP_STATE_RUNNING, STEP_STATE_WAITING_APPROVAL,
+use super::execution::ExecutionOrigin;
+use super::failure::NodeExecutionFailureKind;
+use super::node_execution::NodeExecution;
+use super::runtime_projection::{
+    NodeHistoryEntry, RuntimeArtifact, TokenUsage, NODE_STATUS_ABORTED, NODE_STATUS_COMPLETED,
+    NODE_STATUS_FAILED, NODE_STATUS_INTERRUPTED, NODE_STATUS_RUNNING, NODE_STATUS_WAITING_APPROVAL,
 };
 
+/// Private runtime transition state. Public lifecycle state is `ExecutionStatus`.
 #[derive(Debug, Clone, PartialEq)]
-pub enum WorkflowExecutionState {
+pub enum RuntimeExecutionState {
     Running,
     WaitingApproval,
     Completed,
     Failed {
         reason: String,
-        kind: WorkflowStepFailureKind,
+        kind: NodeExecutionFailureKind,
         retry_count: Option<u32>,
     },
     Aborted,
+    Interrupted,
 }
 
-impl WorkflowExecutionState {
+impl RuntimeExecutionState {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Running => STEP_STATE_RUNNING,
-            Self::WaitingApproval => STEP_STATE_WAITING_APPROVAL,
-            Self::Completed => STEP_STATE_COMPLETED,
-            Self::Failed { .. } => STEP_STATE_FAILED,
-            Self::Aborted => STEP_STATE_ABORTED,
+            Self::Running => NODE_STATUS_RUNNING,
+            Self::WaitingApproval => NODE_STATUS_WAITING_APPROVAL,
+            Self::Completed => NODE_STATUS_COMPLETED,
+            Self::Failed { .. } => NODE_STATUS_FAILED,
+            Self::Aborted => NODE_STATUS_ABORTED,
+            Self::Interrupted => NODE_STATUS_INTERRUPTED,
         }
     }
 
@@ -36,54 +41,39 @@ impl WorkflowExecutionState {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ApprovalOperations {
-    pub can_reject: bool,
-}
-
+/// Internal transition snapshot used by the runtime and restore path.
+///
+/// This is deliberately separate from the public `WorkflowExecution` read model.
 #[derive(Debug, Clone, PartialEq)]
-pub struct WorkflowStallObservation {
-    pub session_id: String,
-    pub step_name: String,
-    pub run_index: u32,
-    pub turn_phase: String,
-    pub idle_secs: u64,
-    pub signal_count: u32,
-    pub cap_reached: bool,
-    pub observed_at: f64,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct WorkflowStateSnapshot {
+pub struct WorkflowRuntimeSnapshot {
     pub execution_id: String,
     pub workflow_name: String,
-    pub state: WorkflowExecutionState,
-    pub current_step_index: usize,
-    pub current_step_name: String,
+    pub worktree_path: String,
+    pub created_from: ExecutionOrigin,
+    pub request: String,
+    pub error_reason: Option<String>,
+    pub state: RuntimeExecutionState,
+    pub current_node_index: usize,
+    pub current_node_name: String,
     pub current_session_id: Option<String>,
-    pub total_steps: usize,
-    pub step_history: Vec<StepHistoryEntry>,
-    pub step_execution_counts: HashMap<String, u32>,
+    pub node_history: Vec<NodeHistoryEntry>,
+    pub node_execution_counts: HashMap<String, u32>,
     pub workflow_definition: WorkflowDefinition,
     pub total_token_usage: TokenUsage,
-    pub step_states: HashMap<String, String>,
-    pub step_outputs: HashMap<String, StepOutput>,
-    pub active_parallel_steps: Vec<ParallelStepState>,
-    pub workflow_variables: HashMap<String, String>,
-    pub approval_operations: Option<ApprovalOperations>,
-    pub stall_observations: Vec<WorkflowStallObservation>,
+    pub artifacts: HashMap<String, RuntimeArtifact>,
+    pub node_executions: Vec<NodeExecution>,
     pub started_at: f64,
     pub updated_at: f64,
 }
 
 #[cfg(test)]
-mod state_tests {
+mod tests {
     use super::*;
 
     #[test]
-    fn test_execution_state_activeを判定する() {
-        assert!(WorkflowExecutionState::Running.is_active());
-        assert!(WorkflowExecutionState::WaitingApproval.is_active());
-        assert!(!WorkflowExecutionState::Aborted.is_active());
+    fn runtime_execution_state_active_is_derived() {
+        assert!(RuntimeExecutionState::Running.is_active());
+        assert!(RuntimeExecutionState::WaitingApproval.is_active());
+        assert!(!RuntimeExecutionState::Aborted.is_active());
     }
 }

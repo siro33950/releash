@@ -21,7 +21,8 @@ use crate::domain::agent_session::services::{
 use crate::domain::agent_session::value_objects::{
     ToolOutputRef as DomainToolOutputRef, ToolOutputSummary as DomainToolOutputSummary,
 };
-use crate::domain::workflow::WorkflowStepContext;
+use crate::domain::repository::normalize_repo_path;
+use crate::domain::workflow::WorkflowNodeContext;
 use crate::usecase::agent_session::context_meta::ContextEpochMeta;
 
 pub use crate::usecase::agent_session::status::TurnPhase;
@@ -330,15 +331,16 @@ impl MessageMention {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct WorkflowStepContextDto {
-    pub run_id: String,
+pub struct WorkflowNodeContextDto {
+    pub execution_id: String,
+    pub node_execution_id: String,
     pub workflow_name: String,
-    pub step_name: String,
-    pub run_index: u32,
+    pub node_name: String,
+    pub attempt: u32,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub parent_step_name: Option<String>,
+    pub parent_node_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub parent_run_index: Option<u32>,
+    pub parent_attempt: Option<u32>,
     pub order: u32,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub startup_timeout_secs: Option<u64>,
@@ -348,18 +350,19 @@ pub struct WorkflowStepContextDto {
     pub stale_timeout_secs: Option<u64>,
 }
 
-pub(crate) mod workflow_step_context_mapper {
-    use super::WorkflowStepContextDto;
-    use crate::domain::workflow::WorkflowStepContext;
+pub(crate) mod workflow_node_context_mapper {
+    use super::WorkflowNodeContextDto;
+    use crate::domain::workflow::WorkflowNodeContext;
 
-    pub(crate) fn to_dto(context: WorkflowStepContext) -> WorkflowStepContextDto {
-        WorkflowStepContextDto {
-            run_id: context.run_id,
+    pub(crate) fn to_dto(context: WorkflowNodeContext) -> WorkflowNodeContextDto {
+        WorkflowNodeContextDto {
+            execution_id: context.execution_id,
+            node_execution_id: context.node_execution_id,
             workflow_name: context.workflow_name,
-            step_name: context.step_name,
-            run_index: context.run_index,
-            parent_step_name: context.parent_step_name,
-            parent_run_index: context.parent_run_index,
+            node_name: context.node_name,
+            attempt: context.attempt,
+            parent_node_name: context.parent_node_name,
+            parent_attempt: context.parent_attempt,
             order: context.order,
             startup_timeout_secs: context.startup_timeout_secs,
             startup_max_retries: context.startup_max_retries,
@@ -367,14 +370,16 @@ pub(crate) mod workflow_step_context_mapper {
         }
     }
 
-    pub(crate) fn to_domain(context: WorkflowStepContextDto) -> WorkflowStepContext {
-        WorkflowStepContext {
-            run_id: context.run_id,
+    #[cfg(test)]
+    pub(crate) fn to_domain(context: WorkflowNodeContextDto) -> WorkflowNodeContext {
+        WorkflowNodeContext {
+            execution_id: context.execution_id,
+            node_execution_id: context.node_execution_id,
             workflow_name: context.workflow_name,
-            step_name: context.step_name,
-            run_index: context.run_index,
-            parent_step_name: context.parent_step_name,
-            parent_run_index: context.parent_run_index,
+            node_name: context.node_name,
+            attempt: context.attempt,
+            parent_node_name: context.parent_node_name,
+            parent_attempt: context.parent_attempt,
             order: context.order,
             startup_timeout_secs: context.startup_timeout_secs,
             startup_max_retries: context.startup_max_retries,
@@ -470,7 +475,7 @@ pub struct ChatMessage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ChatSession {
     pub id: String,
     pub worktree_path: String,
@@ -495,9 +500,9 @@ pub struct ChatSession {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub backend_id: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub workflow_step_session: bool,
+    pub workflow_node_session: bool,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub workflow_step_context: Option<WorkflowStepContextDto>,
+    pub workflow_node_context: Option<WorkflowNodeContextDto>,
     /// Backend-internal freshness meta. Persist it through [`SessionMeta`], but
     /// never expose it through flattened ChatSession command responses.
     #[serde(default, skip_serializing)]
@@ -594,11 +599,11 @@ pub struct SessionMeta {
     pub permission_profile_id: Option<String>,
     pub backend_id: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub workflow_step_session: bool,
+    pub workflow_node_session: bool,
     /// workflow step session の context（step 名等）。message body と異なり軽量な
     /// メタ情報なので、Workflow View のヘッダー表示のため meta に保持する。
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub workflow_step_context: Option<WorkflowStepContextDto>,
+    pub workflow_node_context: Option<WorkflowNodeContextDto>,
     #[serde(default, skip_serializing, skip_deserializing)]
     pub workflow_instructions: Vec<String>,
     #[serde(default, skip_serializing, skip_deserializing)]
@@ -626,7 +631,7 @@ impl From<SessionMeta> for SessionReviewContext {
     fn from(meta: SessionMeta) -> Self {
         Self {
             id: meta.id,
-            worktree_path: meta.worktree_path,
+            worktree_path: normalize_repo_path(&meta.worktree_path),
             state: meta.state,
             selected_model: meta.selected_model,
             backend_id: Some(meta.backend_id),
@@ -995,9 +1000,9 @@ pub struct SessionSummary {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub backend_id: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub workflow_step_session: bool,
+    pub workflow_node_session: bool,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub workflow_step_context: Option<WorkflowStepContextDto>,
+    pub workflow_node_context: Option<WorkflowNodeContextDto>,
 }
 
 pub(crate) fn first_message_preview(messages: &[ChatMessage]) -> String {
@@ -1035,16 +1040,16 @@ pub(crate) fn first_message_preview(messages: &[ChatMessage]) -> String {
 
 impl SessionMeta {
     /// 軽量 meta 経路での workflow step session 判定。
-    /// `workflow_step_session` フラグは context を持つ場合も必ず立つ正典だが、
+    /// `workflow_node_session` フラグは context を持つ場合も必ず立つ正典だが、
     /// context の有無も合わせて見て ChatSession 側の判定と一致させる。
-    pub fn is_workflow_step_session(&self) -> bool {
-        self.workflow_step_session || self.workflow_step_context.is_some()
+    pub fn is_workflow_node_session(&self) -> bool {
+        self.workflow_node_session || self.workflow_node_context.is_some()
     }
 
     pub fn from_session(session: &ChatSession) -> Self {
         Self {
             id: session.id.clone(),
-            worktree_path: session.worktree_path.clone(),
+            worktree_path: normalize_repo_path(&session.worktree_path),
             state: session.state.clone(),
             created_at: session.created_at,
             updated_at: session.updated_at,
@@ -1055,8 +1060,8 @@ impl SessionMeta {
             selected_model: session.selected_model.clone(),
             permission_profile_id: session.permission_profile_id.clone(),
             backend_id: session.backend_id.clone().unwrap_or_default(),
-            workflow_step_session: session.is_workflow_step_session(),
-            workflow_step_context: session.workflow_step_context.clone(),
+            workflow_node_session: session.is_workflow_node_session(),
+            workflow_node_context: session.workflow_node_context.clone(),
             workflow_instructions: Vec::new(),
             agent_read_paths: Some(agent_read_paths_from_messages(&session.messages)),
             context_epoch: session.context_epoch.clone(),
@@ -1069,7 +1074,7 @@ impl SessionMeta {
     pub fn to_session(&self, messages: Vec<ChatMessage>) -> ChatSession {
         ChatSession {
             id: self.id.clone(),
-            worktree_path: self.worktree_path.clone(),
+            worktree_path: normalize_repo_path(&self.worktree_path),
             messages,
             state: self.state.clone(),
             created_at: self.created_at,
@@ -1081,8 +1086,8 @@ impl SessionMeta {
             selected_model: self.selected_model.clone(),
             permission_profile_id: self.permission_profile_id.clone(),
             backend_id: Some(self.backend_id.clone()),
-            workflow_step_session: self.is_workflow_step_session(),
-            workflow_step_context: self.workflow_step_context.clone(),
+            workflow_node_session: self.is_workflow_node_session(),
+            workflow_node_context: self.workflow_node_context.clone(),
             context_epoch: self.context_epoch.clone(),
         }
     }
@@ -1090,7 +1095,7 @@ impl SessionMeta {
     pub fn to_summary(&self) -> SessionSummary {
         SessionSummary {
             id: self.id.clone(),
-            worktree_path: self.worktree_path.clone(),
+            worktree_path: normalize_repo_path(&self.worktree_path),
             state: self.state.clone(),
             created_at: self.created_at,
             updated_at: self.updated_at,
@@ -1102,21 +1107,21 @@ impl SessionMeta {
             plan_mode: self.plan_mode,
             permission_profile_id: self.permission_profile_id.clone(),
             backend_id: Some(self.backend_id.clone()),
-            workflow_step_session: self.is_workflow_step_session(),
-            workflow_step_context: self.workflow_step_context.clone(),
+            workflow_node_session: self.is_workflow_node_session(),
+            workflow_node_context: self.workflow_node_context.clone(),
         }
     }
 }
 
 impl ChatSession {
-    pub fn is_workflow_step_session(&self) -> bool {
-        self.workflow_step_session || self.workflow_step_context.is_some()
+    pub fn is_workflow_node_session(&self) -> bool {
+        self.workflow_node_session || self.workflow_node_context.is_some()
     }
 
     pub fn to_summary(&self) -> SessionSummary {
         SessionSummary {
             id: self.id.clone(),
-            worktree_path: self.worktree_path.clone(),
+            worktree_path: normalize_repo_path(&self.worktree_path),
             state: self.state.clone(),
             created_at: self.created_at,
             updated_at: self.updated_at,
@@ -1128,15 +1133,15 @@ impl ChatSession {
             plan_mode: self.plan_mode,
             permission_profile_id: self.permission_profile_id.clone(),
             backend_id: self.backend_id.clone(),
-            workflow_step_session: self.is_workflow_step_session(),
-            workflow_step_context: self.workflow_step_context.clone(),
+            workflow_node_session: self.is_workflow_node_session(),
+            workflow_node_context: self.workflow_node_context.clone(),
         }
     }
 }
 
 impl SessionSummary {
-    pub fn is_workflow_step_session(&self) -> bool {
-        self.workflow_step_session || self.workflow_step_context.is_some()
+    pub fn is_workflow_node_session(&self) -> bool {
+        self.workflow_node_session || self.workflow_node_context.is_some()
     }
 }
 
@@ -1268,11 +1273,11 @@ pub fn create_session_internal_with_permission(
 pub struct SessionCreationAttributes {
     pub selected_model: Option<String>,
     pub plan_mode: bool,
-    pub workflow_step_session: bool,
-    pub workflow_step_context: Option<WorkflowStepContext>,
+    pub workflow_node_session: bool,
+    pub workflow_node_context: Option<WorkflowNodeContext>,
 }
 
-/// 検証済み抽象モード・selected_model・workflow_step_session フラグを初回保存で確定する内部 API。
+/// 検証済み抽象モード・selected_model・workflow_node_session フラグを初回保存で確定する内部 API。
 /// ワークフロー engine の step session 生成経路から呼び、edit デフォルトで保存→属性上書きの
 /// 二段階保存を回避する（Spec issues-947: 途中失敗時の不正中間状態の排除）。
 pub fn create_session_internal_with_attributes(
@@ -1283,19 +1288,19 @@ pub fn create_session_internal_with_attributes(
     permission_mode: crate::domain::agent_session::PermissionMode,
     attributes: SessionCreationAttributes,
 ) -> Result<ChatSession, String> {
-    let workflow_step_session =
-        attributes.workflow_step_session || attributes.workflow_step_context.is_some();
-    let workflow_step_context = attributes
-        .workflow_step_context
-        .map(workflow_step_context_mapper::to_dto);
+    let workflow_node_session =
+        attributes.workflow_node_session || attributes.workflow_node_context.is_some();
+    let workflow_node_context = attributes
+        .workflow_node_context
+        .map(workflow_node_context_mapper::to_dto);
     let session = build_new_session(
         worktree_path,
         backend_id,
         permission_mode,
         attributes.selected_model,
         attributes.plan_mode,
-        workflow_step_session,
-        workflow_step_context,
+        workflow_node_session,
+        workflow_node_context,
     );
     session_store.save_full_session_for_migration_or_restore(data_dir, &session)?;
     Ok(session)
@@ -1307,13 +1312,36 @@ fn build_new_session(
     permission_mode: crate::domain::agent_session::PermissionMode,
     selected_model: Option<String>,
     plan_mode: bool,
-    workflow_step_session: bool,
-    workflow_step_context: Option<WorkflowStepContextDto>,
+    workflow_node_session: bool,
+    workflow_node_context: Option<WorkflowNodeContextDto>,
+) -> ChatSession {
+    build_new_session_with_id(
+        uuid::Uuid::new_v4().to_string(),
+        worktree_path,
+        backend_id,
+        permission_mode,
+        selected_model,
+        plan_mode,
+        workflow_node_session,
+        workflow_node_context,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_new_session_with_id(
+    session_id: String,
+    worktree_path: &str,
+    backend_id: Option<String>,
+    permission_mode: crate::domain::agent_session::PermissionMode,
+    selected_model: Option<String>,
+    plan_mode: bool,
+    workflow_node_session: bool,
+    workflow_node_context: Option<WorkflowNodeContextDto>,
 ) -> ChatSession {
     let now = now_timestamp();
     ChatSession {
-        id: uuid::Uuid::new_v4().to_string(),
-        worktree_path: worktree_path.to_string(),
+        id: session_id,
+        worktree_path: normalize_repo_path(worktree_path),
         messages: Vec::new(),
         state: SessionState::Active,
         created_at: now,
@@ -1325,8 +1353,8 @@ fn build_new_session(
         selected_model,
         permission_profile_id: None,
         backend_id,
-        workflow_step_session,
-        workflow_step_context,
+        workflow_node_session,
+        workflow_node_context,
         context_epoch: None,
     }
 }
@@ -1411,6 +1439,35 @@ pub fn create_session_with_model_and_plan_mode(
     Ok(session)
 }
 
+/// Create a non-workflow session from fully resolved creation options and a stable ID.
+///
+/// Workspace session creation uses the client request UUID as the session ID so a retry can
+/// recover the already committed session after the process-local request state has been lost.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn create_session_with_resolved_options_and_id(
+    session_store: &SessionStore,
+    data_dir: &std::path::Path,
+    session_id: String,
+    worktree_path: &str,
+    backend_id: String,
+    permission_mode: crate::domain::agent_session::PermissionMode,
+    selected_model: String,
+    plan_mode: bool,
+) -> Result<ChatSession, String> {
+    let session = build_new_session_with_id(
+        session_id,
+        worktree_path,
+        Some(backend_id),
+        permission_mode,
+        Some(selected_model),
+        plan_mode,
+        false,
+        None,
+    );
+    session_store.save_full_session_for_migration_or_restore(data_dir, &session)?;
+    Ok(session)
+}
+
 /// Internal (non-command) version of add_message, callable from agent_sdk.
 pub fn add_message_internal(
     session_store: &SessionStore,
@@ -1473,7 +1530,7 @@ pub(crate) fn update_session_state_in_data_dir(
     let meta = state
         .get_session_meta(data_dir, session_id)?
         .ok_or_else(|| format!("Session not found: {session_id}"))?;
-    if meta.workflow_step_session && meta.state == SessionState::Closed {
+    if meta.workflow_node_session && meta.state == SessionState::Closed {
         return Ok(());
     }
     state.set_session_state(data_dir, session_id, new_state)?;
@@ -1513,7 +1570,7 @@ pub fn validate_session_permission_mode(session: &ChatSession) -> Result<(), Str
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RestoreSessionResponse {
-    pub restored_workflow_step: bool,
+    pub restored_workflow_node: bool,
 }
 
 #[cfg(test)]
@@ -1646,14 +1703,15 @@ mod tests {
         }
     }
 
-    fn workflow_step_context_for_test() -> WorkflowStepContext {
-        WorkflowStepContext {
-            run_id: "run-1".to_string(),
+    fn workflow_node_context_for_test() -> WorkflowNodeContext {
+        WorkflowNodeContext {
+            execution_id: "execution-1".to_string(),
+            node_execution_id: "node-execution-1".to_string(),
             workflow_name: "workflow".to_string(),
-            step_name: "review".to_string(),
-            run_index: 1,
-            parent_step_name: None,
-            parent_run_index: None,
+            node_name: "review".to_string(),
+            attempt: 1,
+            parent_node_name: None,
+            parent_attempt: None,
             order: 0,
             startup_timeout_secs: None,
             startup_max_retries: None,
@@ -1679,7 +1737,7 @@ mod tests {
     }
 
     #[test]
-    fn workflow_step_session_predicate_uses_flag_or_context() {
+    fn workflow_node_session_predicate_uses_flag_or_context() {
         let mut session = build_new_session(
             "/repo",
             None,
@@ -1689,24 +1747,54 @@ mod tests {
             false,
             None,
         );
-        assert!(!session.is_workflow_step_session());
-        assert!(!session.to_summary().is_workflow_step_session());
+        assert!(!session.is_workflow_node_session());
+        assert!(!session.to_summary().is_workflow_node_session());
 
-        session.workflow_step_context = Some(workflow_step_context_mapper::to_dto(
-            workflow_step_context_for_test(),
+        session.workflow_node_context = Some(workflow_node_context_mapper::to_dto(
+            workflow_node_context_for_test(),
         ));
-        assert!(session.is_workflow_step_session());
-        assert!(session.to_summary().is_workflow_step_session());
-        assert!(session.to_summary().workflow_step_session);
+        assert!(session.is_workflow_node_session());
+        assert!(session.to_summary().is_workflow_node_session());
+        assert!(session.to_summary().workflow_node_session);
 
-        session.workflow_step_context = None;
-        session.workflow_step_session = true;
-        assert!(session.is_workflow_step_session());
-        assert!(session.to_summary().is_workflow_step_session());
+        session.workflow_node_context = None;
+        session.workflow_node_session = true;
+        assert!(session.is_workflow_node_session());
+        assert!(session.to_summary().is_workflow_node_session());
     }
 
     #[test]
-    fn workflow_step_context_persist_serializeは移行前のcamelcase等価() {
+    fn session_worktree_path_is_normalized_across_creation_and_read_models() {
+        let created = build_new_session(
+            r"C:\repo\worktree/",
+            Some("claude".to_string()),
+            crate::domain::agent_session::PermissionMode::Edit,
+            None,
+            false,
+            false,
+            None,
+        );
+        assert_eq!(created.worktree_path, "C:/repo/worktree");
+
+        let mut legacy_session = created.clone();
+        legacy_session.worktree_path = "/repo/".to_string();
+        assert_eq!(legacy_session.to_summary().worktree_path, "/repo");
+
+        let from_session = SessionMeta::from_session(&legacy_session);
+        assert_eq!(from_session.worktree_path, "/repo");
+
+        let mut legacy_meta = from_session;
+        legacy_meta.worktree_path = "/repo/".to_string();
+        assert_eq!(legacy_meta.to_session(Vec::new()).worktree_path, "/repo");
+        assert_eq!(legacy_meta.to_summary().worktree_path, "/repo");
+        assert_eq!(
+            SessionReviewContext::from(legacy_meta).worktree_path,
+            "/repo"
+        );
+    }
+
+    #[test]
+    fn workflow_node_context_serializes_with_canonical_execution_and_node_fields() {
         let mut session = build_new_session(
             "/repo",
             None,
@@ -1714,30 +1802,36 @@ mod tests {
             None,
             false,
             true,
-            Some(workflow_step_context_mapper::to_dto(
-                workflow_step_context_for_test(),
+            Some(workflow_node_context_mapper::to_dto(
+                workflow_node_context_for_test(),
             )),
         );
         let value = serde_json::to_value(&session).unwrap();
-        let context = &value["workflowStepContext"];
-        assert_eq!(context["runId"], serde_json::json!("run-1"));
+        let context = &value["workflowNodeContext"];
+        assert_eq!(context["executionId"], serde_json::json!("execution-1"));
+        assert_eq!(
+            context["nodeExecutionId"],
+            serde_json::json!("node-execution-1")
+        );
         assert_eq!(context["workflowName"], serde_json::json!("workflow"));
-        assert_eq!(context["stepName"], serde_json::json!("review"));
-        assert_eq!(context["runIndex"], serde_json::json!(1));
-        assert!(context.get("parentStepName").is_none());
-        assert!(context.get("parentRunIndex").is_none());
+        assert_eq!(context["nodeName"], serde_json::json!("review"));
+        assert_eq!(context["attempt"], serde_json::json!(1));
+        assert!(context.get("parentNodeName").is_none());
+        assert!(context.get("parentAttempt").is_none());
         assert_eq!(context["order"], serde_json::json!(0));
+        assert!(context.get("runId").is_none());
+        assert!(context.get("stepName").is_none());
 
         let summary = session.to_summary();
         let summary_value = serde_json::to_value(&summary).unwrap();
         assert_eq!(
-            summary_value["workflowStepContext"],
-            value["workflowStepContext"]
+            summary_value["workflowNodeContext"],
+            value["workflowNodeContext"]
         );
 
-        session.workflow_step_context = None;
+        session.workflow_node_context = None;
         let value = serde_json::to_value(&session).unwrap();
-        assert!(value.get("workflowStepContext").is_none());
+        assert!(value.get("workflowNodeContext").is_none());
     }
 
     #[test]
@@ -1854,8 +1948,8 @@ mod tests {
                 permission_profile_id: None,
                 selected_model: None,
                 backend_id: Some("claude".to_string()),
-                workflow_step_session: false,
-                workflow_step_context: None,
+                workflow_node_session: false,
+                workflow_node_context: None,
                 context_epoch: None,
             };
             let err = validate_session_permission_mode(&session).unwrap_err();
@@ -1892,8 +1986,8 @@ mod tests {
             permission_profile_id: None,
             selected_model: None,
             backend_id: Some("claude".to_string()),
-            workflow_step_session: false,
-            workflow_step_context: None,
+            workflow_node_session: false,
+            workflow_node_context: None,
             context_epoch: None,
         };
         let summary = session.to_summary();
@@ -1931,8 +2025,8 @@ mod tests {
             permission_profile_id: None,
             selected_model: None,
             backend_id: Some("claude".to_string()),
-            workflow_step_session: false,
-            workflow_step_context: None,
+            workflow_node_session: false,
+            workflow_node_context: None,
             context_epoch: None,
         };
         let summary = session.to_summary();
@@ -1968,8 +2062,8 @@ mod tests {
             permission_profile_id: None,
             selected_model: None,
             backend_id: Some("claude".to_string()),
-            workflow_step_session: false,
-            workflow_step_context: None,
+            workflow_node_session: false,
+            workflow_node_context: None,
             context_epoch: None,
         };
         let summary = session.to_summary();
@@ -1995,8 +2089,8 @@ mod tests {
             permission_profile_id: None,
             selected_model: None,
             backend_id: Some("claude".to_string()),
-            workflow_step_session: false,
-            workflow_step_context: None,
+            workflow_node_session: false,
+            workflow_node_context: None,
             context_epoch: None,
         };
         let summary = session.to_summary();
@@ -2005,14 +2099,14 @@ mod tests {
     }
 
     #[test]
-    fn generic_state_update_ignores_closed_workflow_step_session_but_updates_regular_session() {
+    fn generic_state_update_ignores_closed_workflow_node_session_but_updates_regular_session() {
         let tmp = tempfile::TempDir::new().unwrap();
         let store = crate::test_support::build_session_store();
 
-        let workflow_step_id = uuid::Uuid::new_v4().to_string();
+        let workflow_node_id = uuid::Uuid::new_v4().to_string();
         let regular_id = uuid::Uuid::new_v4().to_string();
-        let mut workflow_step = ChatSession {
-            id: workflow_step_id.clone(),
+        let mut workflow_node = ChatSession {
+            id: workflow_node_id.clone(),
             worktree_path: "/repo".to_string(),
             messages: Vec::new(),
             state: SessionState::Closed,
@@ -2025,35 +2119,35 @@ mod tests {
             permission_profile_id: None,
             selected_model: None,
             backend_id: Some("claude".to_string()),
-            workflow_step_session: true,
-            workflow_step_context: None,
+            workflow_node_session: true,
+            workflow_node_context: None,
             context_epoch: None,
         };
-        let mut regular = workflow_step.clone();
+        let mut regular = workflow_node.clone();
         regular.id = regular_id.clone();
-        regular.workflow_step_session = false;
+        regular.workflow_node_session = false;
 
         store
-            .save_full_session_for_migration_or_restore(tmp.path(), &workflow_step)
+            .save_full_session_for_migration_or_restore(tmp.path(), &workflow_node)
             .unwrap();
         store
             .save_full_session_for_migration_or_restore(tmp.path(), &regular)
             .unwrap();
 
-        update_session_state_in_data_dir(&store, tmp.path(), &workflow_step.id, SessionState::Idle)
+        update_session_state_in_data_dir(&store, tmp.path(), &workflow_node.id, SessionState::Idle)
             .unwrap();
         update_session_state_in_data_dir(&store, tmp.path(), &regular.id, SessionState::Idle)
             .unwrap();
 
-        workflow_step = store
-            .load_full_session_for_restore(tmp.path(), &workflow_step_id)
+        workflow_node = store
+            .load_full_session_for_restore(tmp.path(), &workflow_node_id)
             .unwrap()
             .unwrap();
         let regular = store
             .load_full_session_for_restore(tmp.path(), &regular_id)
             .unwrap()
             .unwrap();
-        assert_eq!(workflow_step.state, SessionState::Closed);
+        assert_eq!(workflow_node.state, SessionState::Closed);
         assert_eq!(regular.state, SessionState::Idle);
     }
 
@@ -2085,8 +2179,8 @@ mod tests {
             permission_profile_id: None,
             selected_model: None,
             backend_id: Some("claude".to_string()),
-            workflow_step_session: false,
-            workflow_step_context: None,
+            workflow_node_session: false,
+            workflow_node_context: None,
             context_epoch: None,
         };
         store
@@ -2153,8 +2247,8 @@ mod tests {
             permission_profile_id: None,
             selected_model: None,
             backend_id: Some("claude".to_string()),
-            workflow_step_session: false,
-            workflow_step_context: None,
+            workflow_node_session: false,
+            workflow_node_context: None,
             context_epoch: None,
         };
         store
@@ -2308,8 +2402,8 @@ mod tests {
             permission_profile_id: None,
             selected_model: None,
             backend_id: Some("claude".to_string()),
-            workflow_step_session: false,
-            workflow_step_context: None,
+            workflow_node_session: false,
+            workflow_node_context: None,
             context_epoch: None,
         };
         let json = serde_json::to_string(&session).unwrap();
@@ -2344,8 +2438,8 @@ mod tests {
             permission_profile_id: None,
             selected_model: Some("claude-opus-4-6".to_string()),
             backend_id: Some("claude".to_string()),
-            workflow_step_session: false,
-            workflow_step_context: None,
+            workflow_node_session: false,
+            workflow_node_context: None,
             context_epoch: None,
         };
         let json = serde_json::to_string(&session).unwrap();
@@ -2803,11 +2897,8 @@ mod tests {
         assert_eq!(activities, None);
     }
 
-    /// parent ChatSession 廃止後の在庫 JSON 互換性: 旧 `ChatSession.workflowState` フィールドを
-    /// 含む JSON は serde の unknown_fields 既定挙動で silently 読み捨てられ、deserialize は
-    /// 成功する（破棄前提でロスレスではないが、起動の阻害にならない）。
     #[test]
-    fn legacy_chat_session_with_old_workflow_state_is_silently_ignored() {
+    fn retired_workflow_state_field_is_rejected() {
         let json = r#"{
             "id": "s1",
             "worktreePath": "/repo",
@@ -2822,11 +2913,7 @@ mod tests {
                 "workflowName": "legacy"
             }
         }"#;
-        let result: Result<ChatSession, _> = serde_json::from_str(json);
-        assert!(
-            result.is_ok(),
-            "ChatSession.workflowState は撤去フィールド扱いで silently 読み捨てられる"
-        );
+        assert!(serde_json::from_str::<ChatSession>(json).is_err());
     }
 
     #[test]
@@ -2949,7 +3036,7 @@ mod tests {
     fn fixed_model_registry() -> TestBackendResolver {
         TestBackendResolver::default()
             .with_backend("claude", "claude-opus-4-8")
-            .with_backend("codex", "gpt-5.5")
+            .with_backend("codex", "gpt-5.6-sol")
             .with_default("claude")
     }
 
@@ -2991,7 +3078,7 @@ mod tests {
         let registry = fixed_model_registry();
 
         // 永続化される selected_model は bare model_id（entry id ではない）。
-        let default_model = "gpt-5.5".to_string();
+        let default_model = "gpt-5.6-sol".to_string();
 
         let session = create_session_with_initial_model(
             &store,
@@ -3052,8 +3139,8 @@ mod tests {
             permission_profile_id: None,
             selected_model: None,
             backend_id: Some("claude".to_string()),
-            workflow_step_session: false,
-            workflow_step_context: None,
+            workflow_node_session: false,
+            workflow_node_context: None,
             context_epoch: None,
         };
         let json = serde_json::to_string(&session).unwrap();
@@ -3088,8 +3175,8 @@ mod tests {
             permission_profile_id: None,
             selected_model: None,
             backend_id: Some("claude".to_string()),
-            workflow_step_session: false,
-            workflow_step_context: None,
+            workflow_node_session: false,
+            workflow_node_context: None,
             context_epoch: None,
         };
         let summary = session.to_summary();
@@ -3117,8 +3204,8 @@ mod tests {
                 permission_profile_id: None,
                 selected_model: None,
                 backend_id: backend_id.map(str::to_string),
-                workflow_step_session: false,
-                workflow_step_context: None,
+                workflow_node_session: false,
+                workflow_node_context: None,
                 context_epoch: None,
             }
         }
@@ -3167,17 +3254,18 @@ mod tests {
 /// context が meta で None に落ちると Workflow View の step ヘッダー（`step.title` =
 /// step 名）が消えるため、その退行を防ぐ。
 #[cfg(test)]
-mod workflow_step_context_meta_tests {
+mod workflow_node_context_meta_tests {
     use super::*;
 
-    fn step_context_dto() -> WorkflowStepContextDto {
-        WorkflowStepContextDto {
-            run_id: "run-1".to_string(),
+    fn step_context_dto() -> WorkflowNodeContextDto {
+        WorkflowNodeContextDto {
+            execution_id: "execution-1".to_string(),
+            node_execution_id: "node-execution-1".to_string(),
             workflow_name: "wf".to_string(),
-            step_name: "step-a".to_string(),
-            run_index: 0,
-            parent_step_name: None,
-            parent_run_index: None,
+            node_name: "step-a".to_string(),
+            attempt: 0,
+            parent_node_name: None,
+            parent_attempt: None,
             order: 0,
             startup_timeout_secs: None,
             startup_max_retries: Some(2),
@@ -3185,7 +3273,7 @@ mod workflow_step_context_meta_tests {
         }
     }
 
-    fn session_with_context(context: Option<WorkflowStepContextDto>) -> ChatSession {
+    fn session_with_context(context: Option<WorkflowNodeContextDto>) -> ChatSession {
         ChatSession {
             id: "s1".to_string(),
             worktree_path: "/repo".to_string(),
@@ -3200,21 +3288,22 @@ mod workflow_step_context_meta_tests {
             selected_model: None,
             permission_profile_id: None,
             backend_id: Some("claude".to_string()),
-            workflow_step_session: false,
-            workflow_step_context: context,
+            workflow_node_session: false,
+            workflow_node_context: context,
             context_epoch: None,
         }
     }
 
     #[test]
-    fn workflow_step_context_is_workflow_state_only() {
-        let dto = workflow_step_context_mapper::to_dto(WorkflowStepContext {
-            run_id: "run-1".to_string(),
+    fn workflow_node_context_is_workflow_state_only() {
+        let dto = workflow_node_context_mapper::to_dto(WorkflowNodeContext {
+            execution_id: "execution-1".to_string(),
+            node_execution_id: "node-execution-1".to_string(),
             workflow_name: "wf".to_string(),
-            step_name: "step-a".to_string(),
-            run_index: 0,
-            parent_step_name: None,
-            parent_run_index: None,
+            node_name: "step-a".to_string(),
+            attempt: 0,
+            parent_node_name: None,
+            parent_attempt: None,
             order: 0,
             startup_timeout_secs: None,
             startup_max_retries: None,
@@ -3222,7 +3311,7 @@ mod workflow_step_context_meta_tests {
         });
 
         let dto_json = serde_json::to_string(&dto).expect("serialize dto");
-        let restored = workflow_step_context_mapper::to_domain(dto.clone());
+        let restored = workflow_node_context_mapper::to_domain(dto.clone());
         let session = session_with_context(Some(dto));
         let session_json = serde_json::to_string(&session).expect("serialize session");
         let meta = SessionMeta::from_session(&session);
@@ -3232,44 +3321,44 @@ mod workflow_step_context_meta_tests {
 
         assert!(!dto_json.contains("workflowInstruction"));
         assert!(!session_json.contains("workflowInstruction"));
-        assert_eq!(restored.step_name, "step-a");
+        assert_eq!(restored.node_name, "step-a");
         assert_eq!(
-            meta.workflow_step_context
+            meta.workflow_node_context
                 .as_ref()
-                .map(|context| context.step_name.as_str()),
+                .map(|context| context.node_name.as_str()),
             Some("step-a")
         );
         assert!(!meta_json.contains("workflowInstruction"));
         assert!(!summary_json.contains("workflowInstruction"));
         assert_eq!(
             restored_from_meta
-                .workflow_step_context
-                .map(|context| context.step_name),
+                .workflow_node_context
+                .map(|context| context.node_name),
             Some("step-a".to_string())
         );
     }
 
     #[test]
-    fn meta_round_trip_preserves_workflow_step_context() {
+    fn meta_round_trip_preserves_workflow_node_context() {
         let meta = SessionMeta::from_session(&session_with_context(Some(step_context_dto())));
 
         // from_session で context が meta に乗る。
-        assert!(meta.workflow_step_session);
+        assert!(meta.workflow_node_session);
         assert_eq!(
-            meta.workflow_step_context
+            meta.workflow_node_context
                 .as_ref()
-                .map(|c| c.step_name.as_str()),
+                .map(|c| c.node_name.as_str()),
             Some("step-a")
         );
 
         // to_summary / to_session の両経路で context が届く（ヘッダー表示の正典経路）。
         let summary = meta.to_summary();
-        assert!(summary.workflow_step_session);
-        assert_eq!(summary.workflow_step_context, Some(step_context_dto()));
+        assert!(summary.workflow_node_session);
+        assert_eq!(summary.workflow_node_context, Some(step_context_dto()));
         let restored_session = meta.to_session(Vec::new());
-        assert!(restored_session.workflow_step_session);
+        assert!(restored_session.workflow_node_session);
         assert_eq!(
-            restored_session.workflow_step_context,
+            restored_session.workflow_node_context,
             Some(step_context_dto())
         );
 
@@ -3277,14 +3366,14 @@ mod workflow_step_context_meta_tests {
         let json = serde_json::to_string(&meta).unwrap();
         assert!(json.contains("\"startupMaxRetries\":2"));
         let restored: SessionMeta = serde_json::from_str(&json).unwrap();
-        assert_eq!(restored.workflow_step_context, Some(step_context_dto()));
-        assert!(restored.is_workflow_step_session());
+        assert_eq!(restored.workflow_node_context, Some(step_context_dto()));
+        assert!(restored.is_workflow_node_session());
     }
 
     #[test]
     fn meta_without_context_stays_none() {
         let meta = SessionMeta::from_session(&session_with_context(None));
-        assert!(meta.workflow_step_context.is_none());
-        assert_eq!(meta.to_summary().workflow_step_context, None);
+        assert!(meta.workflow_node_context.is_none());
+        assert_eq!(meta.to_summary().workflow_node_context, None);
     }
 }

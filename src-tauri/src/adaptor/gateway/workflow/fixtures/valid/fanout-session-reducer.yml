@@ -1,0 +1,50 @@
+name: fanout-session-reducer
+description: session reducer folds a fanout Artifact array into an enum Artifact
+schemas:
+  review-verdict:
+    type: object
+    properties:
+      lgtm:
+        type: boolean
+    required: [lgtm]
+    additionalProperties: false
+  review-decision:
+    type: object
+    properties:
+      verdict:
+        type: string
+        enum: [READY, NEEDS_FIX]
+    required: [verdict]
+    additionalProperties: false
+nodes:
+  - name: review
+    fanout:
+      child: [review-a, review-b]
+    rules:
+      - next: judge
+  - name: review-a
+    command: >-
+      printf '{"lgtm":true}'
+    artifact: review-verdict
+  - name: review-b
+    command: >-
+      printf '{"lgtm":false}'
+    artifact: review-verdict
+  - name: judge
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        instruction: reduce-review-verdicts
+    inputs: [review]
+    artifact: review-decision
+    rules:
+      - switch:
+          on: verdict
+          cases:
+            READY: ready
+            NEEDS_FIX: fix
+  - name: ready
+    command: printf ready
+  - name: fix
+    command: printf fix

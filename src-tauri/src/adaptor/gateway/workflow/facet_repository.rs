@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
-use crate::adaptor::gateway::workflow::{builtin, facet as legacy_facet};
-use crate::domain::workflow::services::variable_renderer;
+use crate::adaptor::gateway::workflow::{builtin, facet as gateway_facet, prompt_rendering};
 use crate::domain::workflow::{FacetKind, FacetRepository, FacetSummary, WorkflowError};
 
 use super::mapper;
@@ -17,21 +16,17 @@ impl WorkflowFacetFileRepository {
             base_dir: base_dir.into(),
         }
     }
-
-    pub(crate) fn new_default() -> Self {
-        Self::new(legacy_facet::facets_base_dir())
-    }
 }
 
 impl FacetRepository for WorkflowFacetFileRepository {
     fn list(&self, kind: FacetKind) -> Result<Vec<String>, WorkflowError> {
-        legacy_facet::list_facets(mapper::domain_facet_kind_to_legacy(kind), &self.base_dir)
+        gateway_facet::list_facets(mapper::domain_facet_kind_to_gateway(kind), &self.base_dir)
             .map_err(|e| WorkflowError::external(e.to_string()))
     }
 
     fn get(&self, kind: FacetKind, key: &str) -> Result<String, WorkflowError> {
-        legacy_facet::load_facet(
-            mapper::domain_facet_kind_to_legacy(kind),
+        gateway_facet::load_facet(
+            mapper::domain_facet_kind_to_gateway(kind),
             key,
             &self.base_dir,
         )
@@ -45,13 +40,13 @@ impl FacetRepository for WorkflowFacetFileRepository {
         content: &str,
         is_new: bool,
     ) -> Result<(), WorkflowError> {
-        let legacy_kind = mapper::domain_facet_kind_to_legacy(kind);
-        if builtin::is_builtin_facet(legacy_kind, key) {
+        let gateway_kind = mapper::domain_facet_kind_to_gateway(kind);
+        if builtin::is_builtin_facet(gateway_kind, key) {
             return Err(WorkflowError::validation(
                 "ビルトインファセットは編集できません",
             ));
         }
-        let undefined = variable_renderer::find_undefined_template_variables(content);
+        let undefined = prompt_rendering::find_undefined_template_variables(content);
         if !undefined.is_empty() {
             return Err(WorkflowError::validation(format!(
                 "未定義のテンプレート変数が含まれています: {}",
@@ -63,13 +58,13 @@ impl FacetRepository for WorkflowFacetFileRepository {
                 "ファセット '{key}' は既に存在します"
             )));
         }
-        legacy_facet::save_facet(legacy_kind, key, content, &self.base_dir)
+        gateway_facet::save_facet(gateway_kind, key, content, &self.base_dir)
             .map_err(|e| WorkflowError::external(e.to_string()))
     }
 
     fn delete(&self, kind: FacetKind, key: &str) -> Result<(), WorkflowError> {
-        legacy_facet::delete_facet(
-            mapper::domain_facet_kind_to_legacy(kind),
+        gateway_facet::delete_facet(
+            mapper::domain_facet_kind_to_gateway(kind),
             key,
             &self.base_dir,
         )
@@ -77,15 +72,15 @@ impl FacetRepository for WorkflowFacetFileRepository {
     }
 
     fn list_summaries(&self, kind: FacetKind) -> Result<Vec<FacetSummary>, WorkflowError> {
-        legacy_facet::list_facet_summaries(
-            mapper::domain_facet_kind_to_legacy(kind),
+        gateway_facet::list_facet_summaries(
+            mapper::domain_facet_kind_to_gateway(kind),
             &self.base_dir,
         )
         .map_err(|e| WorkflowError::external(e.to_string()))
         .map(|summaries| {
             summaries
                 .into_iter()
-                .map(mapper::legacy_facet_summary_to_domain)
+                .map(mapper::gateway_facet_summary_to_domain)
                 .collect()
         })
     }
@@ -121,6 +116,6 @@ mod tests {
 
         assert!(summaries
             .iter()
-            .any(|summary| summary.key == "impl" && summary.kind == "instructions"));
+            .any(|summary| summary.key == "impl" && summary.kind == "instruction"));
     }
 }

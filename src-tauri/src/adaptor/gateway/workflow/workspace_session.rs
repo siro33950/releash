@@ -3,8 +3,9 @@ use std::sync::Arc;
 
 use crate::domain::workflow::WorkflowError;
 use crate::usecase::agent_session::session::{
-    workflow_step_context_mapper, SessionState, SessionStore, SessionSummary,
+    SessionState, SessionStore, SessionSummary, StoredSessionLifecycleUsecase,
 };
+use crate::usecase::workflow::ports::WorkspaceNodeSessionCloseGateway;
 use crate::usecase::workflow::{
     WorkspaceSessionGateway, WorkspaceSessionInput, WorkspaceSessionState,
 };
@@ -23,16 +24,18 @@ impl StoredWorkspaceSessionGateway {
     }
 
     fn session_input(session: SessionSummary) -> WorkspaceSessionInput {
+        let workflow_execution_id = session
+            .workflow_node_context
+            .as_ref()
+            .map(|context| context.execution_id.clone());
         WorkspaceSessionInput {
             id: session.id,
             worktree_path: session.worktree_path,
             state: workspace_session_state(session.state),
             updated_at: session.updated_at,
             first_message: session.first_message,
-            workflow_step_session: session.workflow_step_session,
-            workflow_step_context: session
-                .workflow_step_context
-                .map(workflow_step_context_mapper::to_domain),
+            workflow_node_session: session.workflow_node_session,
+            workflow_execution_id,
         }
     }
 }
@@ -55,6 +58,30 @@ impl WorkspaceSessionGateway for StoredWorkspaceSessionGateway {
         self.session_store
             .list_closed_sessions(&self.data_dir, worktree_path)
             .map(|sessions| sessions.into_iter().map(Self::session_input).collect())
+            .map_err(WorkflowError::external)
+    }
+}
+
+pub(crate) struct StoredWorkspaceNodeSessionCloseGateway {
+    lifecycle: Arc<StoredSessionLifecycleUsecase>,
+    data_dir: PathBuf,
+}
+
+impl StoredWorkspaceNodeSessionCloseGateway {
+    pub(crate) fn new(lifecycle: Arc<StoredSessionLifecycleUsecase>, data_dir: PathBuf) -> Self {
+        Self {
+            lifecycle,
+            data_dir,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl WorkspaceNodeSessionCloseGateway for StoredWorkspaceNodeSessionCloseGateway {
+    async fn close_session(&self, session_id: &str) -> Result<(), WorkflowError> {
+        self.lifecycle
+            .close_session(&self.data_dir, session_id)
+            .await
             .map_err(WorkflowError::external)
     }
 }

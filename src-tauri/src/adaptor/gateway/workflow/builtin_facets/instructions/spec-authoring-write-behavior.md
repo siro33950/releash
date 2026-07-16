@@ -1,18 +1,18 @@
-{{project_name}} プロジェクトの `behavior.md` をユーザーとの対話で作成または更新する。
+`{{ write_requirements.spec_dir }}` の `behavior.md` をユーザーとの対話で作成または更新する。
 
 ## 入力
 
-`spec-directory` Contract で渡される `spec_dir` を読み、`${spec_dir}/requirements.md` を参照する。
+`spec-directory` schema で渡される `spec_dir` を読み、`${spec_dir}/requirements.md` を参照する。
 
 ## 目的
 
 requirements.md の要求を、実装詳細を含まない観測可能な振る舞いとして Gherkin で定義する。
 
-本ステップでは `behavior.md` だけを作成・更新する。`requirements.md` と `design.md` は変更しない。
+この node では `behavior.md` だけを作成・更新する。`requirements.md` と `design.md` は変更しない。
 
 ## 基本方針
 
-振る舞い定義は、ビジネスルールやユーザー/Agent から観測できる状態変化をアクター視点で表現する。受け入れテストの手順や実装ステップではない。
+振る舞い定義は、ビジネスルールやユーザー/Agent から観測できる状態変化をアクター視点で表現する。受け入れテストの手順や実装手順ではない。
 
 ## 進め方
 
@@ -35,7 +35,7 @@ Rule は `requirements.md` の要求の出現順に消化する。重要度や�
 
 ### 完了条件
 
-requirements.md の全要求が振る舞いとしてカバーできたら、ユーザーに最終確認を促す。承認をもって本ステップを完了とする。
+requirements.md の全要求が振る舞いとしてカバーできたら、ユーザーに最終確認を促す。承認をもってこの node を完了とする。
 
 ## behavior.md フォーマット
 
@@ -70,4 +70,3 @@ Feature: [機能名]
 - 具体的なレスポンスコード、画面文言、テスト assertion
 - 実装手順、ファイル名、関数名
 - 境界値やタイムアウト等のコードレベル edge case
-

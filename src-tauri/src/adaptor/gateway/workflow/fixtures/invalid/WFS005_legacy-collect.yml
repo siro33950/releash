@@ -1,0 +1,14 @@
+name: legacy-collect
+description: collect and reduce strategies were removed
+nodes:
+  - name: source
+    command: printf source
+    rules:
+      - next: reducer
+  - name: reducer
+    session:
+      permission: edit
+      gate: auto
+    collect:
+      from: [source]
+      reduce: grouped

@@ -8,7 +8,6 @@
 
 - 環境変数 `RELEASH_BASE_BRANCH`: 当該 worktree の base ブランチ名
 - 環境変数 `RELEASH_SESSION_ID`: review CLI のセッション識別子
-- ワークフロー変数 `spec_dir` が渡されていれば、その下の `requirements.md` / `behavior.md`
 
 # 判定状態の定義
 
