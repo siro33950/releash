@@ -585,19 +585,10 @@ export function useAgentChat(
 					const previousIndex = previousSessions.findIndex(
 						(session) => session.id === previousActiveSessionId,
 					);
-					// spec issues-1023: free chat tab bar に並ばない workflow node session は
-					// 自由対話の active 候補としても選ばない（chat panel の本文を
-					// workflow node transcript で乗っ取らない）。
-					const freeChatSessions = sessions.filter(
-						(session) => !session.workflowNodeSession,
-					);
 					const nextSession =
-						freeChatSessions.length > 0
-							? freeChatSessions[
-									Math.min(
-										Math.max(previousIndex, 0),
-										freeChatSessions.length - 1,
-									)
+						sessions.length > 0
+							? sessions[
+									Math.min(Math.max(previousIndex, 0), sessions.length - 1)
 								]
 							: null;
 					if (nextSession) {
@@ -684,7 +675,7 @@ export function useAgentChat(
 					type: "SET_ERROR",
 					error: `session の読み込みに失敗: ${e}`,
 				});
-				return null;
+				throw e;
 			}
 		},
 		[rememberInitialPage],
@@ -963,10 +954,7 @@ export function useAgentChat(
 
 				const isActive = activeSessionIdRef.current === sessionId;
 				if (isActive) {
-					// spec issues-1023: 閉じた後の active 候補も free chat に閉じる。
-					const remaining = sessions.filter(
-						(s) => s.id !== sessionId && !s.workflowNodeSession,
-					);
+					const remaining = sessions.filter((s) => s.id !== sessionId);
 					const nextSession =
 						remaining.length > 0
 							? remaining[Math.min(idx, remaining.length - 1)]
@@ -1068,9 +1056,7 @@ export function useAgentChat(
 
 				const isActive = activeSessionIdRef.current === sessionId;
 				if (isActive) {
-					const remaining = sessions.filter(
-						(s) => s.id !== sessionId && !s.workflowNodeSession,
-					);
+					const remaining = sessions.filter((s) => s.id !== sessionId);
 					const nextSession =
 						remaining.length > 0
 							? remaining[Math.min(idx, remaining.length - 1)]

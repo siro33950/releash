@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SettingsModal } from "@/components/panels/SettingsModal";
 import { UpdateDialog } from "@/components/UpdateDialog";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -14,7 +14,7 @@ import { MainLayout } from "@/screens/MainLayout";
 import type { ProviderStatus, WorktreeEntry } from "@/types/git";
 import type {
 	CenterSelection,
-	CenterSelectionRequest,
+	NewSessionCreationRequest,
 } from "@/types/workspace-tree";
 
 function App() {
@@ -29,8 +29,11 @@ function App() {
 		Record<string, ProviderStatus | null>
 	>({});
 	const [showAppSettings, setShowAppSettings] = useState(false);
-	const [centerSelectionRequest, setCenterSelectionRequest] =
-		useState<CenterSelectionRequest | null>(null);
+	const [centerSelection, setCenterSelection] =
+		useState<CenterSelection | null>(null);
+	const [newSessionCreationRequest, setNewSessionCreationRequest] =
+		useState<NewSessionCreationRequest | null>(null);
+	const newSessionRequestIdRef = useRef(0);
 
 	useEffect(() => {
 		const suppress = (e: MouseEvent) => e.preventDefault();
@@ -114,31 +117,27 @@ function App() {
 		) => {
 			openWorktreeTab(rootPath, branchName, repoName);
 			if (centerSelection) {
-				setCenterSelectionRequest((prev) => ({
-					...centerSelection,
-					requestId: (prev?.requestId ?? 0) + 1,
-					branchName,
-					repoName,
-				}));
+				setCenterSelection(centerSelection);
 			}
+		},
+		[openWorktreeTab],
+	);
+	const handleCreateSession = useCallback(
+		(rootPath: string, branchName?: string, repoName?: string) => {
+			openWorktreeTab(rootPath, branchName, repoName);
+			newSessionRequestIdRef.current += 1;
+			setNewSessionCreationRequest({
+				requestId: newSessionRequestIdRef.current,
+				worktreePath: rootPath,
+			});
 		},
 		[openWorktreeTab],
 	);
 
 	const handleCenterSelectionResolved = useCallback(
 		(centerSelection: CenterSelection) => {
-			setCenterSelectionRequest((prev) => ({
-				...centerSelection,
-				requestId: (prev?.requestId ?? 0) + 1,
-				branchName:
-					prev?.worktreePath === centerSelection.worktreePath
-						? prev.branchName
-						: undefined,
-				repoName:
-					prev?.worktreePath === centerSelection.worktreePath
-						? prev.repoName
-						: undefined,
-			}));
+			setCenterSelection(centerSelection);
+			setNewSessionCreationRequest(null);
 		},
 		[],
 	);
@@ -174,8 +173,9 @@ function App() {
 			<WorkspaceList
 				repoPaths={repoPaths}
 				selectedRootPath={selectedRootPath}
-				centerSelection={centerSelectionRequest}
+				centerSelection={centerSelection}
 				onSelectWorktree={handleSelectWorktree}
+				onCreateSession={handleCreateSession}
 				onAddRepo={handleAddRepo}
 				onShowSettings={() => setShowAppSettings(true)}
 			/>
@@ -183,8 +183,9 @@ function App() {
 		[
 			repoPaths,
 			selectedRootPath,
-			centerSelectionRequest,
+			centerSelection,
 			handleSelectWorktree,
+			handleCreateSession,
 			handleAddRepo,
 		],
 	);
@@ -197,7 +198,8 @@ function App() {
 				settings={settings}
 				onSettingsSave={updateSettings}
 				leftNav={leftNav}
-				centerSelectionRequest={centerSelectionRequest}
+				centerSelection={centerSelection}
+				newSessionCreationRequest={newSessionCreationRequest}
 				onCenterSelectionResolved={handleCenterSelectionResolved}
 			/>
 

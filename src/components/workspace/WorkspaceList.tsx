@@ -4,6 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import {
 	Archive,
 	Ban,
+	Bot,
 	ChevronDown,
 	ChevronRight,
 	ExternalLink,
@@ -18,12 +19,12 @@ import {
 	RotateCcw,
 	Settings,
 	Square,
+	Terminal,
 	Trash2,
 	Workflow,
 	X,
 } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
-import { AgentStateIcon } from "@/components/ui/agent-state-icon";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
 	Dialog,
@@ -52,11 +53,6 @@ import {
 import { useWorkflowConfig } from "@/hooks/useWorkflowConfig";
 import { useWorkspaceTreeNodes } from "@/hooks/useWorkspaceTreeNodes";
 import { useWorktreeList } from "@/hooks/useWorktreeList";
-import {
-	useWorktreeNodeStatuses,
-	type WorktreeNodeStatuses,
-} from "@/hooks/useWorktreeNodeStatuses";
-import { useWorktreeSessionStatuses } from "@/hooks/useWorktreeSessionStatuses";
 import { trackEvent } from "@/lib/telemetry";
 import {
 	executeWorkflowAction,
@@ -65,15 +61,17 @@ import {
 import type { WorktreeBranch } from "@/types/git";
 import type {
 	CenterSelection,
+	WorkspaceNode,
+	WorkspaceNodeDetail,
 	WorkspaceSessionHistoryItem,
-	WorkspaceSessionNode,
-	WorkspaceWorkflowExecutionNode,
+	WorkspaceTreeItem,
+	WorkspaceWorkflow,
 	WorkspaceWorkflowHistoryItem,
-	WorkspaceWorkflowNodeExecution,
 } from "@/types/workspace-tree";
 import { CreateWorktreeModal } from "./CreateWorktreeModal";
 import { DeleteWorktreeDialog } from "./DeleteWorktreeDialog";
-import { WorkflowNodeStatusIcon } from "./WorkflowNodeStatusIcon";
+import { FanoutRowStatusIcon } from "./FanoutRowStatusIcon";
+import { workflowNodeIconClasses } from "./WorkflowNodeStatusIcon";
 import { WorkflowRowStatusIcon } from "./WorkflowRowStatusIcon";
 
 interface WorkspaceListProps {
@@ -86,37 +84,18 @@ interface WorkspaceListProps {
 		repoName?: string,
 		centerSelection?: CenterSelection,
 	) => void;
+	onCreateSession: (
+		rootPath: string,
+		branchName?: string,
+		repoName?: string,
+	) => void;
 	onAddRepo: () => void;
 	onShowSettings: () => void;
 }
 
 const WORKTREE_NAME_INDENT_PX = 26;
-const WORKFLOW_NAME_OFFSET_PX = 22;
+const TREE_LEVEL_INDENT_PX = 22;
 const DEFAULT_SESSION_TITLE = "NewSession";
-
-function applyLiveWorkflowStatuses(
-	execution: WorkspaceWorkflowExecutionNode,
-	nodeStatuses: WorktreeNodeStatuses,
-): WorkspaceWorkflowExecutionNode {
-	return {
-		...execution,
-		status:
-			nodeStatuses.executions.get(execution.executionId) ?? execution.status,
-		nodeExecutions: execution.nodeExecutions.map((node) => ({
-			...node,
-			status: nodeStatuses.nodes.get(node.nodeExecutionId) ?? node.status,
-		})),
-	};
-}
-
-function fanoutCoordinateLabel(
-	node: WorkspaceWorkflowNodeExecution,
-): string | null {
-	const parent = node.fanoutParent;
-	if (!parent) return null;
-	const item = parent.itemIndex == null ? "–" : String(parent.itemIndex);
-	return `item ${item} · child ${parent.childIndex}`;
-}
 
 function repoNameFromPath(path: string): string {
 	return path.split("/").filter(Boolean).pop() ?? path;
@@ -126,26 +105,11 @@ function sessionLabel(session: WorkspaceSessionHistoryItem): string {
 	return session.firstMessage.trim() || DEFAULT_SESSION_TITLE;
 }
 
-function isDirectSessionSelected(
+function isNodeSelected(
 	centerSelection: CenterSelection | null,
-	node: WorkspaceSessionNode,
+	node: WorkspaceNode,
 ): boolean {
-	return (
-		centerSelection?.kind === "agentSession" &&
-		centerSelection.sessionId === node.id
-	);
-}
-
-function isWorkflowNodeSelected(
-	centerSelection: CenterSelection | null,
-	execution: WorkspaceWorkflowExecutionNode,
-	node: WorkspaceWorkflowNodeExecution,
-): boolean {
-	return (
-		centerSelection?.kind === "workflowNode" &&
-		centerSelection.executionId === execution.executionId &&
-		centerSelection.nodeExecutionId === node.nodeExecutionId
-	);
+	return centerSelection?.kind === "node" && centerSelection.nodeId === node.id;
 }
 
 function WorktreeIndicators({ branch }: { branch: WorktreeBranch }) {
@@ -187,23 +151,24 @@ function WorktreeIndicators({ branch }: { branch: WorktreeBranch }) {
 	);
 }
 
-function WorktreeSessionRow({
+function WorkspaceNodeRow({
 	node,
 	indentPx,
-	agentState,
 	selected,
-	showClose,
 	onSelect,
 	onClose,
 }: {
-	node: WorkspaceSessionNode;
+	node: WorkspaceNode;
 	indentPx: number;
-	agentState?: WorkspaceSessionNode["agentState"];
 	selected?: boolean;
-	showClose: boolean;
 	onSelect: () => void;
 	onClose?: () => void;
 }) {
+	const ContentIcon = node.contentKind === "session" ? Bot : Terminal;
+	const pulseClassName =
+		node.status === "running" || node.status === "waiting"
+			? "animate-pulse"
+			: "";
 	return (
 		<div
 			className={`group flex h-8 w-full items-center gap-2 rounded-md pr-2 text-left text-sm transition-colors ${
@@ -218,11 +183,20 @@ function WorktreeSessionRow({
 				className="flex min-w-0 flex-1 items-center gap-2 text-left"
 				onClick={onSelect}
 				aria-current={selected ? "page" : undefined}
+				aria-label={`${node.title}, ${node.status}`}
 			>
-				<AgentStateIcon state={agentState} />
+				<span
+					className="flex size-5 shrink-0 items-center justify-center"
+					title={`${node.contentKind}, ${node.status}`}
+				>
+					<ContentIcon
+						className={`size-3.5 shrink-0 ${workflowNodeIconClasses[node.status]} ${pulseClassName}`}
+						aria-hidden="true"
+					/>
+				</span>
 				<span className="min-w-0 flex-1 truncate">{node.title}</span>
 			</button>
-			{showClose && (
+			{node.capabilities.canClose && (
 				<Button
 					size="icon-xs"
 					variant="ghost"
@@ -241,36 +215,30 @@ function WorktreeSessionRow({
 	);
 }
 
-function WorktreeWorkflowRow({
-	node,
+function WorkspaceBranchRow({
+	item,
 	indentPx,
 	centerSelection,
 	onSelectNode,
-	onStop,
-	onResume,
-	onAbort,
-	onArchive,
+	onCloseNode,
+	onWorkflowAction,
+	onArchiveWorkflow,
 }: {
-	node: WorkspaceWorkflowExecutionNode;
+	item: Exclude<WorkspaceTreeItem, WorkspaceNode>;
 	indentPx: number;
 	centerSelection: CenterSelection | null;
-	onSelectNode: (
-		execution: WorkspaceWorkflowExecutionNode,
-		node: WorkspaceWorkflowNodeExecution,
-	) => void;
-	onStop: (node: WorkspaceWorkflowExecutionNode) => void | Promise<void>;
-	onResume: (node: WorkspaceWorkflowExecutionNode) => void | Promise<void>;
-	onAbort: (node: WorkspaceWorkflowExecutionNode) => void | Promise<void>;
-	onArchive: (node: WorkspaceWorkflowExecutionNode) => void | Promise<void>;
+	onSelectNode: (node: WorkspaceNode) => void;
+	onCloseNode: (node: WorkspaceNode) => void | Promise<void>;
+	onWorkflowAction: (
+		action: WorkflowExecutionAction,
+		workflow: WorkspaceWorkflow,
+	) => void | Promise<void>;
+	onArchiveWorkflow: (workflow: WorkspaceWorkflow) => void | Promise<void>;
 }) {
 	const [expanded, setExpanded] = useState(true);
 	const [workflowMenuOpen, setWorkflowMenuOpen] = useState(false);
-	const nodeExecutions = node.nodeExecutions;
-	const canStop = node.canStop;
-	const canResume = node.canResume;
-	const canAbort = node.canAbort;
+	const workflow = item.kind === "workflow" ? item : null;
 	const actionControlsVisible = workflowMenuOpen;
-	const workflowLabel = node.workflowName.trim() || node.title;
 	return (
 		<div>
 			<div
@@ -282,166 +250,156 @@ function WorktreeWorkflowRow({
 					className="flex min-w-0 flex-1 items-center gap-2 text-left"
 					onClick={() => setExpanded((prev) => !prev)}
 				>
-					<WorkflowRowStatusIcon status={node.status} />
-					<span className="min-w-0 truncate">{workflowLabel}</span>
-					{node.interruptionReason && (
-						<span
-							className="shrink-0 rounded bg-orange-500/10 px-1.5 py-0.5 text-[10px] text-orange-700 dark:text-orange-300"
-							title={`Interrupted: ${node.interruptionReason}`}
-						>
-							{node.interruptionReason}
-						</span>
+					{item.kind === "fanout" ? (
+						<FanoutRowStatusIcon status={item.status} />
+					) : (
+						<WorkflowRowStatusIcon status={item.status} />
 					)}
-					{node.resumeFromNode && (
-						<span
-							className="max-w-28 shrink truncate text-[10px] text-muted-foreground"
-							title={`Resume from ${node.resumeFromNode}`}
-						>
-							resume: {node.resumeFromNode}
-						</span>
-					)}
+					<span className="min-w-0 truncate">{item.title}</span>
 					{expanded ? (
 						<ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
 					) : (
 						<ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
 					)}
 				</button>
-				<div
-					className={`relative h-5 w-11 shrink-0 transition-opacity ${
-						actionControlsVisible
-							? "visible opacity-100"
-							: "invisible opacity-0 group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100"
-					}`}
-				>
-					<DropdownMenu
-						open={workflowMenuOpen}
-						onOpenChange={setWorkflowMenuOpen}
+				{workflow && (
+					<div
+						className={`relative h-5 w-11 shrink-0 transition-opacity ${
+							actionControlsVisible
+								? "visible opacity-100"
+								: "invisible opacity-0 group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100"
+						}`}
 					>
-						<DropdownMenuTrigger asChild>
-							<Button
-								size="icon-xs"
-								variant="ghost"
-								className="absolute top-0 right-6 size-5 shrink-0 text-muted-foreground"
-								onClick={(event) => event.stopPropagation()}
-								aria-label={`Open menu for ${workflowLabel}`}
-								title="Menu"
-							>
-								<MoreHorizontal className="size-3" />
-							</Button>
-						</DropdownMenuTrigger>
-						<DropdownMenuContent align="end">
-							<DropdownMenuItem
-								disabled={!canStop}
-								onSelect={() => {
-									if (canStop) onStop(node);
-								}}
-							>
-								<Square className="size-3.5" />
-								Stop
-							</DropdownMenuItem>
-							<DropdownMenuItem
-								disabled={!canResume}
-								onSelect={() => {
-									if (canResume) onResume(node);
-								}}
-							>
-								<RotateCcw className="size-3.5" />
-								Resume
-							</DropdownMenuItem>
-							<DropdownMenuItem
-								variant="destructive"
-								disabled={!canAbort}
-								onSelect={() => {
-									if (canAbort) onAbort(node);
-								}}
-							>
-								<Ban className="size-3.5" />
-								Abort
-							</DropdownMenuItem>
-						</DropdownMenuContent>
-					</DropdownMenu>
-					<Button
-						size="icon-xs"
-						variant="ghost"
-						className="absolute top-0 right-0 size-5 shrink-0 text-muted-foreground"
-						onClick={(event) => {
-							event.stopPropagation();
-							onArchive(node);
-						}}
-						aria-label={`Archive ${workflowLabel}`}
-						title="Archive"
-					>
-						<X className="size-3" />
-					</Button>
-				</div>
+						<DropdownMenu
+							open={workflowMenuOpen}
+							onOpenChange={setWorkflowMenuOpen}
+						>
+							<DropdownMenuTrigger asChild>
+								<Button
+									size="icon-xs"
+									variant="ghost"
+									className="absolute top-0 right-6 size-5 shrink-0 text-muted-foreground"
+									onClick={(event) => event.stopPropagation()}
+									aria-label={`Open menu for ${workflow.title}`}
+									title="Menu"
+								>
+									<MoreHorizontal className="size-3" />
+								</Button>
+							</DropdownMenuTrigger>
+							<DropdownMenuContent align="end">
+								<DropdownMenuItem
+									disabled={!workflow.capabilities.canStop}
+									onSelect={() => {
+										if (workflow.capabilities.canStop) {
+											onWorkflowAction("stop", workflow);
+										}
+									}}
+								>
+									<Square className="size-3.5" />
+									Stop
+								</DropdownMenuItem>
+								<DropdownMenuItem
+									disabled={!workflow.capabilities.canResume}
+									onSelect={() => {
+										if (workflow.capabilities.canResume) {
+											onWorkflowAction("resume", workflow);
+										}
+									}}
+								>
+									<RotateCcw className="size-3.5" />
+									Resume
+								</DropdownMenuItem>
+								<DropdownMenuItem
+									variant="destructive"
+									disabled={!workflow.capabilities.canAbort}
+									onSelect={() => {
+										if (workflow.capabilities.canAbort) {
+											onWorkflowAction("abort", workflow);
+										}
+									}}
+								>
+									<Ban className="size-3.5" />
+									Abort
+								</DropdownMenuItem>
+							</DropdownMenuContent>
+						</DropdownMenu>
+						<Button
+							size="icon-xs"
+							variant="ghost"
+							className="absolute top-0 right-0 size-5 shrink-0 text-muted-foreground"
+							disabled={!workflow.capabilities.canArchive}
+							onClick={(event) => {
+								event.stopPropagation();
+								if (workflow.capabilities.canArchive) {
+									onArchiveWorkflow(workflow);
+								}
+							}}
+							aria-label={`Archive ${workflow.title}`}
+							title="Archive"
+						>
+							<X className="size-3" />
+						</Button>
+					</div>
+				)}
 			</div>
 			{expanded &&
-				nodeExecutions.map((nodeExecution) => (
-					<WorktreeWorkflowNodeRow
-						key={nodeExecution.nodeExecutionId}
-						node={nodeExecution}
-						indentPx={indentPx + WORKFLOW_NAME_OFFSET_PX}
-						selected={isWorkflowNodeSelected(
-							centerSelection,
-							node,
-							nodeExecution,
-						)}
-						onSelect={() => onSelectNode(node, nodeExecution)}
+				item.children.map((child) => (
+					<WorkspaceTreeItemRow
+						key={child.id}
+						item={child}
+						indentPx={indentPx + TREE_LEVEL_INDENT_PX}
+						centerSelection={centerSelection}
+						onSelectNode={onSelectNode}
+						onCloseNode={onCloseNode}
+						onWorkflowAction={onWorkflowAction}
+						onArchiveWorkflow={onArchiveWorkflow}
 					/>
 				))}
 		</div>
 	);
 }
 
-function WorktreeWorkflowNodeRow({
-	node,
+function WorkspaceTreeItemRow({
+	item,
 	indentPx,
-	selected,
-	onSelect,
+	centerSelection,
+	onSelectNode,
+	onCloseNode,
+	onWorkflowAction,
+	onArchiveWorkflow,
 }: {
-	node: WorkspaceWorkflowNodeExecution;
+	item: WorkspaceTreeItem;
 	indentPx: number;
-	selected?: boolean;
-	onSelect: () => void;
+	centerSelection: CenterSelection | null;
+	onSelectNode: (node: WorkspaceNode) => void;
+	onCloseNode: (node: WorkspaceNode) => void | Promise<void>;
+	onWorkflowAction: (
+		action: WorkflowExecutionAction,
+		workflow: WorkspaceWorkflow,
+	) => void | Promise<void>;
+	onArchiveWorkflow: (workflow: WorkspaceWorkflow) => void | Promise<void>;
 }) {
-	const coordinateLabel = fanoutCoordinateLabel(node);
-	const executionStatus = node.nodeExecutionStatus ?? node.status;
-	return (
-		<button
-			type="button"
-			className={`flex h-8 w-full min-w-0 items-center gap-2 rounded-md pr-2 text-left text-sm transition-colors ${
-				selected
-					? "bg-foreground/10 text-foreground"
-					: "text-foreground/90 hover:bg-foreground/5"
-			}`}
-			style={{ paddingLeft: indentPx }}
-			onClick={onSelect}
-			aria-current={selected ? "page" : undefined}
-			aria-label={`${node.nodeName}, ${node.nodeKind}, attempt ${node.attempt}, ${executionStatus}, ${node.nodeExecutionId}`}
-			data-node-execution-id={node.nodeExecutionId}
-		>
-			<WorkflowNodeStatusIcon
-				status={node.status}
-				containerClassName="flex size-5 shrink-0 items-center justify-center"
-				iconClassName="size-3"
-				circleClassName="size-2"
+	if (item.kind === "node") {
+		return (
+			<WorkspaceNodeRow
+				node={item}
+				indentPx={indentPx}
+				selected={isNodeSelected(centerSelection, item)}
+				onSelect={() => onSelectNode(item)}
+				onClose={() => onCloseNode(item)}
 			/>
-			<span className="min-w-0 flex-1 truncate">{node.title}</span>
-			<span
-				className="shrink-0 text-[10px] text-muted-foreground"
-				title={`NodeExecution ${node.nodeExecutionId}, attempt ${node.attempt}`}
-			>
-				#{node.attempt}
-			</span>
-			{coordinateLabel && (
-				<span
-					className="shrink-0 rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground"
-					title={`fanout parent ${node.fanoutParent?.parentNode} attempt ${node.fanoutParent?.parentAttempt}`}
-				>
-					{coordinateLabel}
-				</span>
-			)}
-		</button>
+		);
+	}
+	return (
+		<WorkspaceBranchRow
+			item={item}
+			indentPx={indentPx}
+			centerSelection={centerSelection}
+			onSelectNode={onSelectNode}
+			onCloseNode={onCloseNode}
+			onWorkflowAction={onWorkflowAction}
+			onArchiveWorkflow={onArchiveWorkflow}
+		/>
 	);
 }
 
@@ -451,6 +409,7 @@ function WorktreeTreeItem({
 	selectedRootPath,
 	centerSelection,
 	onSelectWorktree,
+	onCreateSession,
 	onDelete,
 }: {
 	branch: WorktreeBranch;
@@ -458,6 +417,7 @@ function WorktreeTreeItem({
 	selectedRootPath: string | null;
 	centerSelection: CenterSelection | null;
 	onSelectWorktree: WorkspaceListProps["onSelectWorktree"];
+	onCreateSession: WorkspaceListProps["onCreateSession"];
 	onDelete: (branch: WorktreeBranch) => void;
 }) {
 	const [expanded, setExpanded] = useState(true);
@@ -474,6 +434,7 @@ function WorktreeTreeItem({
 		null,
 	);
 	const [workflowStarting, setWorkflowStarting] = useState(false);
+	const preferredSelectionHandledRef = useRef(false);
 	const scopedCenterSelection =
 		centerSelection?.worktreePath === branch.worktree_path
 			? centerSelection
@@ -485,6 +446,7 @@ function WorktreeTreeItem({
 	const canDelete = !branch.is_main_worktree;
 	const {
 		nodes,
+		preferredNodeId,
 		closedSessions,
 		workflowHistory,
 		loading: treeLoading,
@@ -496,25 +458,6 @@ function WorktreeTreeItem({
 		loading: workflowsLoading,
 		error: workflowsError,
 	} = useWorkflowConfig(createMenuOpen);
-	const sessionStatuses = useWorktreeSessionStatuses(branch.worktree_path);
-	const liveWorkflowStatuses = useWorktreeNodeStatuses(branch.worktree_path);
-	const sessionAgentStates = useMemo(() => {
-		const map = new Map<string, WorkspaceSessionNode["agentState"]>();
-		for (const [sessionId, status] of sessionStatuses) {
-			map.set(sessionId, status.agent_state);
-		}
-		return map;
-	}, [sessionStatuses]);
-	const displayNodes = useMemo(
-		() =>
-			nodes.map((node) =>
-				node.kind === "workflow"
-					? applyLiveWorkflowStatuses(node, liveWorkflowStatuses)
-					: node,
-			),
-		[nodes, liveWorkflowStatuses],
-	);
-
 	const selectCenter = useCallback(
 		(centerSelection: CenterSelection) => {
 			if (!branch.worktree_path) return;
@@ -528,30 +471,35 @@ function WorktreeTreeItem({
 		[branch.name, branch.worktree_path, onSelectWorktree, repoName],
 	);
 
-	const handleSelectSession = useCallback(
-		(node: WorkspaceSessionNode) => {
-			if (!branch.worktree_path) return;
-			selectCenter({
-				kind: "agentSession",
-				worktreePath: branch.worktree_path,
-				sessionId: node.id,
-			});
-		},
-		[branch.worktree_path, selectCenter],
-	);
+	useEffect(() => {
+		if (preferredSelectionHandledRef.current) return;
+		if (!branch.worktree_path) return;
+		if (branch.worktree_path !== selectedRootPath) return;
+		if (scopedCenterSelection != null || treeLoading || treeError) return;
+		preferredSelectionHandledRef.current = true;
+		if (!preferredNodeId) return;
+		selectCenter({
+			kind: "node",
+			worktreePath: branch.worktree_path,
+			nodeId: preferredNodeId,
+		});
+	}, [
+		branch.worktree_path,
+		preferredNodeId,
+		scopedCenterSelection,
+		selectCenter,
+		selectedRootPath,
+		treeError,
+		treeLoading,
+	]);
 
-	const handleSelectWorkflowNode = useCallback(
-		(
-			execution: WorkspaceWorkflowExecutionNode,
-			node: WorkspaceWorkflowNodeExecution,
-		) => {
+	const handleSelectNode = useCallback(
+		(node: WorkspaceNode) => {
 			if (!branch.worktree_path) return;
 			selectCenter({
-				kind: "workflowNode",
+				kind: "node",
 				worktreePath: branch.worktree_path,
-				executionId: execution.executionId,
-				nodeExecutionId: node.nodeExecutionId,
-				nodeName: node.nodeName,
+				nodeId: node.id,
 			});
 		},
 		[branch.worktree_path, selectCenter],
@@ -570,13 +518,13 @@ function WorktreeTreeItem({
 	);
 
 	const handleArchiveWorkflow = useCallback(
-		async (workflow: WorkspaceWorkflowExecutionNode) => {
+		async (workflow: WorkspaceWorkflow) => {
 			if (!branch.worktree_path) return;
 			setWorkflowActionError(null);
 			try {
 				await invoke("archive_workspace_workflow_execution", {
 					worktreePath: branch.worktree_path,
-					executionId: workflow.executionId,
+					executionId: workflow.id,
 				});
 				await refreshTree();
 			} catch (e) {
@@ -587,13 +535,10 @@ function WorktreeTreeItem({
 	);
 
 	const handleWorkflowExecutionAction = useCallback(
-		async (
-			action: WorkflowExecutionAction,
-			workflow: WorkspaceWorkflowExecutionNode,
-		) => {
+		async (action: WorkflowExecutionAction, workflow: WorkspaceWorkflow) => {
 			setWorkflowActionError(null);
 			try {
-				await executeWorkflowAction(action, workflow.executionId);
+				await executeWorkflowAction(action, workflow.id);
 				await refreshTree();
 			} catch (error) {
 				setWorkflowActionError(
@@ -606,11 +551,8 @@ function WorktreeTreeItem({
 
 	const handleNewSession = useCallback(() => {
 		if (!branch.worktree_path) return;
-		selectCenter({
-			kind: "newAgentSession",
-			worktreePath: branch.worktree_path,
-		});
-	}, [branch.worktree_path, selectCenter]);
+		onCreateSession(branch.worktree_path, branch.name, repoName);
+	}, [branch.name, branch.worktree_path, onCreateSession, repoName]);
 
 	const handleSelectWorkflowForStart = useCallback((workflowName: string) => {
 		setCreateMenuOpen(false);
@@ -655,12 +597,27 @@ function WorktreeTreeItem({
 		setWorkflowStartError(null);
 	}, []);
 
-	const handleCloseSession = useCallback(
-		async (sessionId: string) => {
-			await closeSessionApi(sessionId);
-			await refreshTree();
+	const handleCloseNode = useCallback(
+		async (node: WorkspaceNode) => {
+			if (!branch.worktree_path || !node.capabilities.canClose) return;
+			setWorkflowActionError(null);
+			try {
+				const detail = await invoke<WorkspaceNodeDetail | null>(
+					"get_workspace_node_detail",
+					{ worktreePath: branch.worktree_path, nodeId: node.id },
+				);
+				if (detail?.content.kind !== "session" || !detail.content.sessionId) {
+					throw new Error("Session is unavailable.");
+				}
+				await closeSessionApi(detail.content.sessionId);
+				await refreshTree();
+			} catch (error) {
+				setWorkflowActionError(
+					error instanceof Error ? error.message : String(error),
+				);
+			}
 		},
-		[refreshTree],
+		[branch.worktree_path, refreshTree],
 	);
 
 	const handleRestoreSession = useCallback(
@@ -668,10 +625,18 @@ function WorktreeTreeItem({
 			if (!branch.worktree_path) return;
 			await restoreSession(session.id);
 			await refreshTree();
+			const nodeId = await invoke<string | null>(
+				"get_workspace_session_node_id",
+				{
+					worktreePath: branch.worktree_path,
+					sessionId: session.id,
+				},
+			);
+			if (!nodeId) return;
 			selectCenter({
-				kind: "agentSession",
+				kind: "node",
 				worktreePath: branch.worktree_path,
-				sessionId: session.id,
+				nodeId,
 			});
 		},
 		[branch.worktree_path, refreshTree, selectCenter],
@@ -931,7 +896,7 @@ function WorktreeTreeItem({
 						>
 							{treeError}
 						</div>
-					) : displayNodes.length === 0 ? (
+					) : nodes.length === 0 ? (
 						<div
 							className="truncate py-1 text-xs text-muted-foreground"
 							style={{ paddingLeft: WORKTREE_NAME_INDENT_PX }}
@@ -939,43 +904,18 @@ function WorktreeTreeItem({
 							No sessions or workflows
 						</div>
 					) : (
-						displayNodes.map((node) =>
-							node.kind === "workflow" ? (
-								<WorktreeWorkflowRow
-									key={node.executionId}
-									node={node}
-									indentPx={WORKTREE_NAME_INDENT_PX}
-									centerSelection={scopedCenterSelection}
-									onSelectNode={handleSelectWorkflowNode}
-									onStop={(workflow) =>
-										void handleWorkflowExecutionAction("stop", workflow)
-									}
-									onResume={(workflow) =>
-										void handleWorkflowExecutionAction("resume", workflow)
-									}
-									onAbort={(workflow) =>
-										void handleWorkflowExecutionAction("abort", workflow)
-									}
-									onArchive={handleArchiveWorkflow}
-								/>
-							) : (
-								<WorktreeSessionRow
-									key={node.id}
-									node={node}
-									indentPx={WORKTREE_NAME_INDENT_PX}
-									agentState={
-										sessionAgentStates.get(node.id) ?? node.agentState
-									}
-									selected={isDirectSessionSelected(
-										scopedCenterSelection,
-										node,
-									)}
-									showClose
-									onSelect={() => handleSelectSession(node)}
-									onClose={() => void handleCloseSession(node.id)}
-								/>
-							),
-						)
+						nodes.map((node) => (
+							<WorkspaceTreeItemRow
+								key={node.id}
+								item={node}
+								indentPx={WORKTREE_NAME_INDENT_PX}
+								centerSelection={scopedCenterSelection}
+								onSelectNode={handleSelectNode}
+								onCloseNode={handleCloseNode}
+								onWorkflowAction={handleWorkflowExecutionAction}
+								onArchiveWorkflow={handleArchiveWorkflow}
+							/>
+						))
 					)}
 					{workflowActionError && (
 						<div
@@ -1047,6 +987,7 @@ function RepoTreeSectionView({
 	selectedRootPath,
 	centerSelection,
 	onSelectWorktree,
+	onCreateSession,
 }: {
 	repoPath: string;
 	branches: WorktreeBranch[];
@@ -1055,6 +996,7 @@ function RepoTreeSectionView({
 	selectedRootPath: string | null;
 	centerSelection: CenterSelection | null;
 	onSelectWorktree: WorkspaceListProps["onSelectWorktree"];
+	onCreateSession: WorkspaceListProps["onCreateSession"];
 }) {
 	const [collapsed, setCollapsed] = useState(false);
 	const [refreshing, setRefreshing] = useState(false);
@@ -1145,6 +1087,7 @@ function RepoTreeSectionView({
 								selectedRootPath={selectedRootPath}
 								centerSelection={centerSelection}
 								onSelectWorktree={onSelectWorktree}
+								onCreateSession={onCreateSession}
 								onDelete={setDeletingBranch}
 							/>
 						))
@@ -1166,11 +1109,13 @@ function RepoTreeSection({
 	selectedRootPath,
 	centerSelection,
 	onSelectWorktree,
+	onCreateSession,
 }: {
 	repoPath: string;
 	selectedRootPath: string | null;
 	centerSelection: CenterSelection | null;
 	onSelectWorktree: WorkspaceListProps["onSelectWorktree"];
+	onCreateSession: WorkspaceListProps["onCreateSession"];
 }) {
 	const { branches, loading, refresh } = useWorktreeList(repoPath);
 	return (
@@ -1182,6 +1127,7 @@ function RepoTreeSection({
 			selectedRootPath={selectedRootPath}
 			centerSelection={centerSelection}
 			onSelectWorktree={onSelectWorktree}
+			onCreateSession={onCreateSession}
 		/>
 	);
 }
@@ -1191,6 +1137,7 @@ export function WorkspaceList({
 	selectedRootPath,
 	centerSelection,
 	onSelectWorktree,
+	onCreateSession,
 	onAddRepo,
 	onShowSettings,
 }: WorkspaceListProps) {
@@ -1224,6 +1171,7 @@ export function WorkspaceList({
 						selectedRootPath={selectedRootPath}
 						centerSelection={centerSelection ?? null}
 						onSelectWorktree={onSelectWorktree}
+						onCreateSession={onCreateSession}
 					/>
 				))}
 				{repoPaths.length === 0 && (

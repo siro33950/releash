@@ -19,6 +19,16 @@ pub fn normalize_repo_path(path: &str) -> String {
             prev_slash = false;
         }
     }
+    // A filesystem root is already canonical. Trimming its only separator would turn
+    // `/` into an empty identity (and `C:/` into `C:`), which is unsafe once this value
+    // is used for worktree/session ownership comparisons.
+    let is_posix_root = result == "/";
+    let is_windows_drive_root =
+        result.len() == 3 && result.as_bytes()[1] == b':' && result.as_bytes()[2] == b'/';
+    if is_posix_root || is_windows_drive_root {
+        return result;
+    }
+
     let mut normalized = result.trim_end_matches('/').to_string();
     if had_unc_prefix && normalized.starts_with('/') && !normalized.starts_with("//") {
         normalized.insert(0, '/');
@@ -33,6 +43,12 @@ mod repo_path_tests {
     #[test]
     fn test_リポジトリパス正規化_末尾スラッシュ除去() {
         assert_eq!(normalize_repo_path("/repo/path/"), "/repo/path");
+    }
+
+    #[test]
+    fn test_リポジトリパス正規化_ルートは空文字にしない() {
+        assert_eq!(normalize_repo_path("/"), "/");
+        assert_eq!(normalize_repo_path("C:\\"), "C:/");
     }
 
     #[test]

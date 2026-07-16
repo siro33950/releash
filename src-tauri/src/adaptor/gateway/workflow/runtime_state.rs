@@ -148,6 +148,7 @@ impl WorkflowExecution {
             attempt,
             status: NodeExecutionStatus::Running,
             session_id: None,
+            display_command: None,
             artifact: None,
             token_usage: None,
             failure: None,

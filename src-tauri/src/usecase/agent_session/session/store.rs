@@ -7,6 +7,7 @@ use parking_lot::RwLock;
 use crate::domain::agent_session::{
     AgentSessionReader, AgentSessionStorage, AgentSessionStorageTypes,
 };
+use crate::domain::path::same_worktree_path;
 use crate::usecase::agent_session::context_meta::ContextEpochMeta;
 use crate::usecase::agent_session::event_log::{AgentSessionEvent, TurnEventLog};
 
@@ -277,7 +278,7 @@ impl SessionStore {
             .storage
             .list_metas(app_data_dir)?
             .into_iter()
-            .filter(|s| s.worktree_path == worktree_path && predicate(s))
+            .filter(|s| same_worktree_path(&s.worktree_path, worktree_path) && predicate(s))
             .map(|meta| meta.to_summary())
             .collect::<Vec<_>>();
         summaries.sort_by(|a, b| {
@@ -532,7 +533,7 @@ impl SessionStore {
             .storage
             .list_metas(app_data_dir)?
             .into_iter()
-            .filter(|session| session.worktree_path == worktree_path)
+            .filter(|session| same_worktree_path(&session.worktree_path, worktree_path))
             .map(|meta| meta.to_session(Vec::new()))
             .collect())
     }
@@ -546,7 +547,7 @@ impl SessionStore {
             .storage
             .list_metas(app_data_dir)?
             .into_iter()
-            .filter(|session| session.worktree_path == worktree_path)
+            .filter(|session| same_worktree_path(&session.worktree_path, worktree_path))
             .map(|session| session.id)
             .collect::<Vec<_>>();
         ids.into_iter()
@@ -917,5 +918,100 @@ impl SessionStore {
             streaming_final_seq,
             completed_at,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::*;
+
+    fn ids(values: impl IntoIterator<Item = String>) -> HashSet<String> {
+        values.into_iter().collect()
+    }
+
+    fn rewrite_persisted_worktree_path(app_data_dir: &Path, session_id: &str, worktree_path: &str) {
+        let meta_path = app_data_dir
+            .join("sessions")
+            .join(session_id)
+            .join("meta.json");
+        let mut meta: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&meta_path).unwrap()).unwrap();
+        meta["worktreePath"] = serde_json::Value::String(worktree_path.to_string());
+        std::fs::write(meta_path, serde_json::to_vec_pretty(&meta).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn worktree_session_queries_match_legacy_trailing_slash_without_prefix_collision() {
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let writer = crate::test_support::build_session_store();
+        let legacy = super::super::create_session_internal(
+            &writer,
+            app_data_dir.path(),
+            "/repo/",
+            Some("claude".to_string()),
+        )
+        .unwrap();
+        let canonical = super::super::create_session_internal(
+            &writer,
+            app_data_dir.path(),
+            "/repo",
+            Some("claude".to_string()),
+        )
+        .unwrap();
+        let other = super::super::create_session_internal(
+            &writer,
+            app_data_dir.path(),
+            "/repository",
+            Some("claude".to_string()),
+        )
+        .unwrap();
+
+        // Simulate metadata written before worktree paths were normalized on save.
+        rewrite_persisted_worktree_path(app_data_dir.path(), &legacy.id, "/repo/");
+        drop(writer);
+
+        let reader = crate::test_support::build_session_store();
+        let expected = HashSet::from([legacy.id.clone(), canonical.id.clone()]);
+        for query in ["/repo", "/repo/"] {
+            let summaries = reader.list_sessions(app_data_dir.path(), query).unwrap();
+            assert_eq!(
+                ids(summaries.iter().map(|session| session.id.clone())),
+                expected
+            );
+            assert!(
+                summaries
+                    .iter()
+                    .all(|session| session.worktree_path == "/repo"),
+                "read models must expose the normalized identity"
+            );
+
+            assert_eq!(
+                ids(reader
+                    .list_worktree_sessions(app_data_dir.path(), query)
+                    .unwrap()
+                    .into_iter()
+                    .map(|session| session.id),),
+                expected
+            );
+            assert_eq!(
+                ids(reader
+                    .list_worktree_sessions_full(app_data_dir.path(), query)
+                    .unwrap()
+                    .into_iter()
+                    .map(|session| session.id),),
+                expected
+            );
+        }
+
+        assert_eq!(
+            ids(reader
+                .list_sessions(app_data_dir.path(), "/repository")
+                .unwrap()
+                .into_iter()
+                .map(|session| session.id),),
+            HashSet::from([other.id])
+        );
     }
 }

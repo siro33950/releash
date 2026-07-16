@@ -553,6 +553,7 @@ pub(crate) fn workflow_event_timestamp(event: &WorkflowEvent) -> f64 {
         WorkflowEvent::ExecutionStarted { timestamp, .. }
         | WorkflowEvent::NodeStarted { timestamp, .. }
         | WorkflowEvent::SessionAttached { timestamp, .. }
+        | WorkflowEvent::CommandPrepared { timestamp, .. }
         | WorkflowEvent::StallObserved { timestamp, .. }
         | WorkflowEvent::StallCleared { timestamp, .. }
         | WorkflowEvent::NodeCompleted { timestamp, .. }
@@ -574,6 +575,7 @@ pub(crate) fn set_workflow_event_timestamp(event: &mut WorkflowEvent, commit_tim
         WorkflowEvent::ExecutionStarted { timestamp, .. }
         | WorkflowEvent::NodeStarted { timestamp, .. }
         | WorkflowEvent::SessionAttached { timestamp, .. }
+        | WorkflowEvent::CommandPrepared { timestamp, .. }
         | WorkflowEvent::StallObserved { timestamp, .. }
         | WorkflowEvent::StallCleared { timestamp, .. }
         | WorkflowEvent::NodeCompleted { timestamp, .. }
@@ -626,6 +628,7 @@ mod tests {
                 attempt: 3,
                 status: NodeExecutionStatus::Running,
                 session_id: None,
+                display_command: None,
                 artifact: None,
                 token_usage: None,
                 failure: None,
@@ -653,6 +656,7 @@ mod tests {
             attempt: 1,
             status: NodeExecutionStatus::Running,
             session_id: None,
+            display_command: None,
             artifact: None,
             token_usage: None,
             failure: None,

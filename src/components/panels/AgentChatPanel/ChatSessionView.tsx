@@ -663,8 +663,8 @@ export interface ChatSessionViewProps {
 	) => void;
 	onOpenDiffFile?: (filePath: string) => void;
 	/**
-	 * spec issues-1023: 画像 drop の登録 zone。AgentChatPanel = "agent"、
-	 * Workflow panel = 別 zone を指定する想定。未指定なら drop 受付なし。
+	 * 画像 drop の登録 zone。NodeContentView の Session content は "agent" を使う。
+	 * 未指定なら drop 受付なし。
 	 */
 	registerDropZone?: (
 		zone: DropZoneType,
@@ -673,8 +673,7 @@ export interface ChatSessionViewProps {
 	) => void;
 	dropZoneName?: DropZoneType;
 	/**
-	 * 親から sendMessage を呼び出すための ref（任意）。AgentChatPanel が外部に
-	 * sendMessageRef を公開しているため互換のために提供する。
+	 * 親から選択中Node SessionへsendMessageを呼び出すためのref（任意）。
 	 */
 	sendMessageRef?: React.MutableRefObject<
 		((content: string, mentions?: MentionReference[]) => Promise<void>) | null
@@ -682,8 +681,8 @@ export interface ChatSessionViewProps {
 }
 
 /**
- * spec issues-1023: AgentChatPanel と WorkflowView の双方から再利用される
- * 単一 session 用の chat view。message stream + activity status + error + MessageInput
+ * BoundSessionChatから再利用される単一session用のchat view。
+ * message stream + activity status + error + MessageInput
  * までを内包する。tab bar / session 切替 UI は本コンポーネントは持たない（親側責務）。
  */
 export function ChatSessionView({

@@ -434,6 +434,7 @@ mod tests {
             attempt,
             status,
             session_id: session_id.map(str::to_string),
+            display_command: None,
             artifact: None,
             token_usage: None,
             failure: None,

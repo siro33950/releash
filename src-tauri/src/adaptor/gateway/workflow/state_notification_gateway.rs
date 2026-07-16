@@ -392,6 +392,7 @@ mod tests {
                     attempt: 1,
                     status: NodeExecutionStatus::Succeeded,
                     session_id: None,
+                    display_command: None,
                     result_summary: Some("approve".to_string()),
                     artifact: Some(artifact),
                     token_usage: Some(TokenUsage {
@@ -505,6 +506,7 @@ mod tests {
             attempt: 1,
             status,
             session_id: None,
+            display_command: None,
             result_summary: None,
             artifact: None,
             token_usage: None,
@@ -609,6 +611,7 @@ mod tests {
                 attempt: 1,
                 status: NodeExecutionStatus::Aborted,
                 session_id: Some("old-session".to_string()),
+                display_command: None,
                 result_summary: None,
                 artifact: None,
                 token_usage: None,

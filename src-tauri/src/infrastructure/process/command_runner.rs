@@ -116,7 +116,7 @@ pub(crate) fn spawn_shell_command(
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let label = command_label(&cwd, shell_command);
+    let label = command_label(&cwd);
     Ok(RunningCommand {
         label,
         child,
@@ -160,9 +160,9 @@ where
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-fn command_label(cwd: &Path, shell_command: &str) -> String {
+fn command_label(cwd: &Path) -> String {
     let display = display_cwd(cwd);
-    format!("workflow command `{shell_command}` in {display}")
+    format!("workflow command in {display}")
 }
 
 fn display_cwd(cwd: &Path) -> String {
@@ -195,6 +195,28 @@ mod tests {
         assert_eq!(output.stdout, canonical_cwd.to_string_lossy());
         assert_eq!(output.stderr, "err");
         assert!(output.duration_ms < 60_000);
+    }
+
+    #[tokio::test]
+    async fn running_command_label_does_not_retain_shell_command() {
+        let cwd = TempDir::new().unwrap();
+        let secret_command = "printf '%s' label-secret-sentinel";
+
+        let running = spawn_shell_command(
+            cwd.path(),
+            secret_command,
+            std::iter::empty::<(String, String)>(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            running.label,
+            format!("workflow command in {}", display_cwd(cwd.path()))
+        );
+        assert!(!running.label.contains(secret_command));
+        assert!(!running.label.contains("label-secret-sentinel"));
+
+        running.wait().await.unwrap();
     }
 
     #[tokio::test]

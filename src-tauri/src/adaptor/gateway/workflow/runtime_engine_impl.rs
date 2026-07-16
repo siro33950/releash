@@ -6,12 +6,14 @@ use std::sync::{Arc, Weak};
 use tokio::sync::Mutex;
 
 mod activation;
+mod command_preparation;
 mod resume_orchestration;
 
 use activation::{
     rollback_active_interruption, run_runtime_activation, InterruptionRollback,
     RuntimeActivationGate,
 };
+use command_preparation::{command_execution_input_is_current, CommandExecutionInput};
 
 #[cfg(test)]
 use super::node_session_boundary::NodeSessionInfo;
@@ -206,10 +208,19 @@ pub struct WorkflowRuntimeService {
     abort_after_lookup_gate: AbortAfterLookupGate,
 }
 
-struct FanoutChildStartedLogObserver<'a, R: tauri::Runtime> {
-    engine: &'a WorkflowRuntimeService,
-    app: &'a tauri::AppHandle<R>,
-    execution_id: &'a str,
+enum RequiredEventCommitFailure {
+    /// No event fact became visible; rollbackable resources may be discarded.
+    BeforeDurableAppend(WorkflowEngineError),
+    /// Event facts are authoritative even though their metadata projection failed.
+    AfterDurableAppend(WorkflowEngineError),
+}
+
+impl RequiredEventCommitFailure {
+    fn into_workflow_error(self) -> WorkflowEngineError {
+        match self {
+            Self::BeforeDurableAppend(error) | Self::AfterDurableAppend(error) => error,
+        }
+    }
 }
 
 struct FanoutChildCompletionCommit {
@@ -260,20 +271,6 @@ struct WorkflowExecutionInsert {
     created_from: ExecutionOrigin,
     workflow_defaults: WorkflowDefaults,
     now: f64,
-}
-
-#[derive(Clone)]
-struct CommandExecutionInput {
-    execution_id: String,
-    node_execution_id: String,
-    node_name: String,
-    attempt: u32,
-    worktree_path: String,
-    command: String,
-    contract: Option<String>,
-    schemas: BTreeMap<String, DomainSchemaDef>,
-    fanout_parent: Option<String>,
-    session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -785,22 +782,6 @@ fn finalize_fanout_child_failure_state(
     })
 }
 
-impl<R: tauri::Runtime> workflow_runtime_session::FanoutChildTurnObserver
-    for FanoutChildStartedLogObserver<'_, R>
-{
-    fn child_turn_started(&self, started: workflow_runtime_session::FanoutChildStartedRuntime<'_>) {
-        self.engine.write_log(
-            self.app,
-            WorkflowEvent::SessionAttached {
-                execution_id: self.execution_id.to_string(),
-                node_execution_id: started.node_execution_id.to_string(),
-                session_id: started.session_id.to_string(),
-                timestamp: current_timestamp(),
-            },
-        );
-    }
-}
-
 fn current_node_for_stall_observation(
     exec: &WorkflowExecution,
     session_id: &str,
@@ -1015,6 +996,7 @@ impl WorkflowRuntimeService {
                     attempt: 1,
                     status: node_execution_status,
                     session_id: None,
+                    display_command: None,
                     artifact: None,
                     token_usage: None,
                     failure: None,
@@ -1201,6 +1183,7 @@ impl WorkflowRuntimeService {
             attempt: 1,
             status: NodeExecutionStatus::Running,
             session_id: None,
+            display_command: None,
             artifact: None,
             token_usage: None,
             failure: None,
@@ -4703,8 +4686,17 @@ impl WorkflowRuntimeService {
         app: &tauri::AppHandle<R>,
         session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
-        input: CommandExecutionInput,
+        mut input: CommandExecutionInput,
     ) -> Result<(), WorkflowEngineError> {
+        if !self.commit_command_prepared(app, &input).await? {
+            return Ok(());
+        }
+        let raw_command = input.raw_command.take().ok_or_else(|| {
+            WorkflowEngineError::InvalidState(format!(
+                "raw command for node execution '{}' is unavailable",
+                input.node_execution_id
+            ))
+        })?;
         // Keep the execution lock from the final current-node check through process registration.
         // A concurrent stop therefore has only two observable orders: it wins first and no process
         // is spawned, or the process is registered first and stop can always find and kill it.
@@ -4713,28 +4705,13 @@ impl WorkflowRuntimeService {
             let Some(execution) = executions.get(&input.execution_id) else {
                 return Ok(());
             };
-            let node_execution_is_active = execution.node_executions.iter().any(|node_execution| {
-                node_execution.id == input.node_execution_id && node_execution.status.is_active()
-            });
-            let input_is_current = if input.fanout_parent.is_some() {
-                node_execution_is_active
-                    && execution.fanout_runtime.as_ref().is_some_and(|fanout| {
-                        fanout.children.iter().any(|child| {
-                            child.node_execution_id == input.node_execution_id
-                                && child.state == FanoutChildRuntimeState::Running
-                        })
-                    })
-            } else {
-                node_execution_is_active
-                    && is_still_current_execution(execution, &input.node_name, input.attempt)
-            };
-            if !input_is_current {
+            if !command_execution_input_is_current(execution, &input) {
                 return Ok(());
             }
 
             let spawn_result = workflow_command_runner::spawn_shell_command(
                 &input.worktree_path,
-                &input.command,
+                &raw_command,
                 command_env(&input),
             );
             if let Ok(running) = &spawn_result {
@@ -4749,6 +4726,7 @@ impl WorkflowRuntimeService {
             }
             spawn_result
         };
+        drop(raw_command);
 
         let running = match spawn_result {
             Ok(running) => running,
@@ -4926,7 +4904,7 @@ impl WorkflowRuntimeService {
             node_name: node.name.clone(),
             attempt,
             worktree_path: exec.worktree_path.clone(),
-            command: rendered_command,
+            raw_command: Some(rendered_command),
             contract: node.artifact.clone(),
             schemas: workflow_schemas_to_domain(&exec.workflow.schemas),
             fanout_parent: None,
@@ -4944,20 +4922,7 @@ impl WorkflowRuntimeService {
         let Some(exec) = execs.get(&input.execution_id) else {
             return false;
         };
-        let execution_is_active = exec.node_executions.iter().any(|node_execution| {
-            node_execution.id == input.node_execution_id && node_execution.status.is_active()
-        });
-        if input.fanout_parent.is_some() {
-            execution_is_active
-                && exec.fanout_runtime.as_ref().is_some_and(|fanout| {
-                    fanout.children.iter().any(|child| {
-                        child.node_execution_id == input.node_execution_id
-                            && child.state == FanoutChildRuntimeState::Running
-                    })
-                })
-        } else {
-            is_still_current_execution(exec, &input.node_name, input.attempt) && execution_is_active
-        }
+        command_execution_input_is_current(exec, input)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -5863,6 +5828,16 @@ impl WorkflowRuntimeService {
         _session_store: &Arc<SessionStore>,
         commit: RequiredEventCommit<'_>,
     ) -> Result<(), WorkflowEngineError> {
+        self.commit_required_events_with_phase(app, commit)
+            .await
+            .map_err(RequiredEventCommitFailure::into_workflow_error)
+    }
+
+    async fn commit_required_events_with_phase<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        commit: RequiredEventCommit<'_>,
+    ) -> Result<(), RequiredEventCommitFailure> {
         let RequiredEventCommit {
             execution_id,
             snapshot_for_commit,
@@ -5880,14 +5855,18 @@ impl WorkflowRuntimeService {
         let append_result = {
             let mut executions = self.executions.lock().await;
             let Some(current) = executions.get_mut(execution_id) else {
-                return Err(WorkflowEngineError::InvalidState(format!(
-                    "execution {execution_id} disappeared before required event commit"
-                )));
+                return Err(RequiredEventCommitFailure::BeforeDurableAppend(
+                    WorkflowEngineError::InvalidState(format!(
+                        "execution {execution_id} disappeared before required event commit"
+                    )),
+                ));
             };
             if !commit_snapshot_is_current(current, snapshot_for_commit) {
-                return Err(WorkflowEngineError::InvalidState(format!(
-                    "execution {execution_id} changed before required event commit"
-                )));
+                return Err(RequiredEventCommitFailure::BeforeDurableAppend(
+                    WorkflowEngineError::InvalidState(format!(
+                        "execution {execution_id} changed before required event commit"
+                    )),
+                ));
             }
             let result = self.write_log_required_batch(app, &required_events);
             if result.is_err() {
@@ -5901,9 +5880,9 @@ impl WorkflowRuntimeService {
                 execution_store_snapshot_before,
             )
             .await;
-            return Err(WorkflowEngineError::SessionStore(format!(
-                "{append_error_context}: {e}"
-            )));
+            return Err(RequiredEventCommitFailure::BeforeDurableAppend(
+                WorkflowEngineError::SessionStore(format!("{append_error_context}: {e}")),
+            ));
         }
 
         let projection_error_context = "required event projection failed";
@@ -5911,9 +5890,9 @@ impl WorkflowRuntimeService {
             .sync_state_after_required_event_commit(snapshot_for_commit)
             .await
         {
-            return Err(WorkflowEngineError::SessionStore(format!(
-                "{projection_error_context}: {e}"
-            )));
+            return Err(RequiredEventCommitFailure::AfterDurableAppend(
+                WorkflowEngineError::SessionStore(format!("{projection_error_context}: {e}")),
+            ));
         }
 
         record_failed_snapshot_telemetry(snapshot_for_commit);
@@ -6364,11 +6343,11 @@ impl WorkflowRuntimeService {
                     node_name: child.node.name.clone(),
                     attempt: child.attempt,
                     worktree_path: worktree_path.to_string(),
-                    command: workflow_prompt::render_artifact_references(
+                    raw_command: Some(workflow_prompt::render_artifact_references(
                         command,
                         &command_artifacts,
                         child.item.as_ref(),
-                    ),
+                    )),
                     contract: child.node.artifact.clone(),
                     schemas: command_schemas.clone(),
                     fanout_parent: Some(fanout_start.parent_node_name.clone()),
@@ -6406,9 +6385,15 @@ impl WorkflowRuntimeService {
         };
 
         // Child IDs are allocated during expansion, after the parent transition commit. Commit
-        // their NodeStarted facts atomically with the expanded live state before activating any
-        // runtime; otherwise replay could miss children that are already running in memory.
+        // their NodeStarted and SessionAttached facts atomically with the expanded live state
+        // before broadcasting or activating any runtime. Workspace queries replay this log, so
+        // the first child-visible broadcast must never expose a Session Node whose attachment is
+        // still absent from the durable projection.
         if !fanout_start.children.is_empty() {
+            let session_ids_by_node_execution = child_setups
+                .iter()
+                .map(|setup| (setup.node_execution_id.as_str(), setup.session_id.as_str()))
+                .collect::<HashMap<_, _>>();
             let mut started_events = Vec::new();
             for child in &fanout_start.children {
                 started_events.push(WorkflowEvent::NodeStarted {
@@ -6427,7 +6412,25 @@ impl WorkflowRuntimeService {
                     ),
                     timestamp,
                 });
+                if let Some(session_id) =
+                    session_ids_by_node_execution.get(child.node_execution_id.as_str())
+                {
+                    started_events.push(WorkflowEvent::SessionAttached {
+                        execution_id: fanout_start.execution_id.clone(),
+                        node_execution_id: child.node_execution_id.clone(),
+                        session_id: (*session_id).to_string(),
+                        timestamp,
+                    });
+                }
                 if let Some(reused) = child.reused.as_ref() {
+                    if let Some(display_command) = reused.display_command.clone() {
+                        started_events.push(WorkflowEvent::CommandPrepared {
+                            execution_id: fanout_start.execution_id.clone(),
+                            node_execution_id: child.node_execution_id.clone(),
+                            display_command,
+                            timestamp,
+                        });
+                    }
                     if let Some(value) = reused.artifact.clone() {
                         started_events.push(WorkflowEvent::ArtifactProduced {
                             execution_id: fanout_start.execution_id.clone(),
@@ -6456,31 +6459,37 @@ impl WorkflowRuntimeService {
                 .execution_store
                 .active_execution_snapshot(&fanout_start.execution_id)
                 .await;
-            if let Err(error) = self
-                .commit_required_events(
+            if let Err(failure) = self
+                .commit_required_events_with_phase(
                     app,
-                    session_store,
                     RequiredEventCommit {
                         execution_id: &fanout_start.execution_id,
                         snapshot_for_commit: &snapshot,
                         snapshot_before: snapshot_before.clone(),
                         execution_store_snapshot_before,
                         required_events: started_events,
-                        append_error_context: "fanout child NodeStarted append failed",
+                        append_error_context: "fanout child start event append failed",
                     },
                 )
                 .await
             {
-                return Err(
-                    workflow_runtime_session::rollback_prepared_fanout_child_sessions(
-                        app,
-                        session_store,
-                        &self.session_workflow_refs,
-                        &child_setups,
-                        error,
-                    )
-                    .await,
-                );
+                return match failure {
+                    RequiredEventCommitFailure::BeforeDurableAppend(error) => Err(
+                        workflow_runtime_session::rollback_prepared_fanout_child_sessions(
+                            app,
+                            session_store,
+                            &self.session_workflow_refs,
+                            &child_setups,
+                            error,
+                        )
+                        .await,
+                    ),
+                    RequiredEventCommitFailure::AfterDurableAppend(error) => {
+                        // SessionAttached is already authoritative. Removing the ChatSession here
+                        // would leave replay pointing at a permanently unavailable Session.
+                        Err(error)
+                    }
+                };
             }
             if fanout_resume_checkpoint.is_some() {
                 self.fanout_resume_checkpoints
@@ -6543,11 +6552,6 @@ impl WorkflowRuntimeService {
             return Ok(());
         }
 
-        let observer = FanoutChildStartedLogObserver {
-            engine: self,
-            app,
-            execution_id: &fanout_start.execution_id,
-        };
         run_runtime_activation(
             &activation_gate,
             &fanout_start.execution_id,
@@ -6561,7 +6565,6 @@ impl WorkflowRuntimeService {
                 worktree_path,
                 &child_setups,
                 snapshot,
-                &observer,
             ),
         )
         .await?;
@@ -6840,6 +6843,7 @@ impl WorkflowRuntimeService {
                 attempt: 1,
                 status: node_status,
                 session_id: Some(current_session_id.to_string()),
+                display_command: None,
                 artifact: None,
                 token_usage: None,
                 failure: None,

@@ -40,16 +40,6 @@ pub enum NodeKindName {
     Fanout,
 }
 
-impl NodeKindName {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Command => "command",
-            Self::Session => "session",
-            Self::Fanout => "fanout",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum NodeKind {
     Command(CommandSpec),

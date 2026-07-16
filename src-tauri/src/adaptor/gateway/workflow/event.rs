@@ -70,6 +70,12 @@ pub enum WorkflowEvent {
         session_id: String,
         timestamp: f64,
     },
+    CommandPrepared {
+        execution_id: String,
+        node_execution_id: String,
+        display_command: String,
+        timestamp: f64,
+    },
     ArtifactProduced {
         execution_id: String,
         node_execution_id: String,
@@ -183,6 +189,7 @@ impl WorkflowEvent {
             Self::ExecutionStarted { execution_id, .. }
             | Self::NodeStarted { execution_id, .. }
             | Self::SessionAttached { execution_id, .. }
+            | Self::CommandPrepared { execution_id, .. }
             | Self::ArtifactProduced { execution_id, .. }
             | Self::NodeCompleted { execution_id, .. }
             | Self::NodeFailed { execution_id, .. }
@@ -204,6 +211,7 @@ impl WorkflowEvent {
             Self::ExecutionStarted { timestamp, .. }
             | Self::NodeStarted { timestamp, .. }
             | Self::SessionAttached { timestamp, .. }
+            | Self::CommandPrepared { timestamp, .. }
             | Self::ArtifactProduced { timestamp, .. }
             | Self::NodeCompleted { timestamp, .. }
             | Self::NodeFailed { timestamp, .. }
@@ -342,6 +350,22 @@ mod tests {
             .remove("permission_mode");
 
         assert!(serde_json::from_value::<WorkflowEvent>(legacy_value).is_err());
+    }
+
+    #[test]
+    fn command_prepared_round_trips_masked_display_command() {
+        let event = WorkflowEvent::CommandPrepared {
+            execution_id: "00000000-0000-4000-8000-000000000001".to_string(),
+            node_execution_id: "00000000-0000-4000-8000-000000000002".to_string(),
+            display_command: "printf '%s' '[REDACTED]'".to_string(),
+            timestamp: 2.0,
+        };
+
+        let value = serde_json::to_value(&event).unwrap();
+        assert_eq!(value["event"], "command_prepared");
+        assert_eq!(value["display_command"], "printf '%s' '[REDACTED]'");
+        assert_eq!(value["execution_id"], event.execution_id());
+        assert!(serde_json::from_value::<WorkflowEvent>(value).is_ok());
     }
 
     #[test]

@@ -43,6 +43,7 @@ fn node_execution_fixture(
         attempt,
         status,
         session_id: session_id.map(str::to_string),
+        display_command: None,
         artifact: None,
         token_usage: None,
         failure: None,
@@ -7120,6 +7121,7 @@ mod dispatch_boundary_tests {
                 attempt: 1,
                 status: NodeExecutionStatus::WaitingApproval,
                 session_id: Some("sess-1".to_string()),
+                display_command: None,
                 artifact: None,
                 token_usage: None,
                 failure: None,
@@ -7187,6 +7189,7 @@ mod dispatch_boundary_tests {
                             FanoutChildRuntimeState::Interrupted => NodeExecutionStatus::Aborted,
                         },
                         session_id: Some(child.session_id.clone()),
+                        display_command: None,
                         artifact: child.artifact.clone(),
                         token_usage: Some(child.token_usage.clone()),
                         failure: child.failure_kind.map(|kind| {
@@ -7822,6 +7825,7 @@ mod dispatch_boundary_tests {
                     attempt: 1,
                     status: NodeExecutionStatus::Succeeded,
                     session_id: Some("confirmed-session".to_string()),
+                    display_command: None,
                     artifact: Some(serde_json::json!({"prepared": true})),
                     token_usage: None,
                     failure: None,
@@ -7837,6 +7841,7 @@ mod dispatch_boundary_tests {
                     attempt: 1,
                     status: NodeExecutionStatus::Running,
                     session_id: Some("old-unconfirmed-session".to_string()),
+                    display_command: None,
                     artifact: None,
                     token_usage: None,
                     failure: None,
@@ -8318,7 +8323,13 @@ mod dispatch_boundary_tests {
             schemas: Default::default(),
             nodes: vec![
                 make_fanout_node("fanout-review", vec!["review-a", "review-b"]),
-                make_test_node("review-a", TestKind::Session, "implement", vec![], None),
+                make_test_node(
+                    "review-a",
+                    TestKind::Command,
+                    "printf confirmed",
+                    vec![],
+                    None,
+                ),
                 make_test_node("review-b", TestKind::Session, "implement", vec![], None),
             ],
         };
@@ -8350,7 +8361,7 @@ mod dispatch_boundary_tests {
                     execution_id: execution_id.clone(),
                     node_execution_id: child_a_v1.clone(),
                     node_name: "review-a".to_string(),
-                    kind: NodeKindName::Session,
+                    kind: NodeKindName::Command,
                     attempt: 1,
                     fanout_parent: Some(FanoutParentRef {
                         parent_node: "fanout-review".to_string(),
@@ -8360,10 +8371,10 @@ mod dispatch_boundary_tests {
                     }),
                     timestamp: 3.0,
                 },
-                WorkflowEvent::SessionAttached {
+                WorkflowEvent::CommandPrepared {
                     execution_id: execution_id.clone(),
                     node_execution_id: child_a_v1.clone(),
-                    session_id: "old-review-a-session".to_string(),
+                    display_command: "printf confirmed".to_string(),
                     timestamp: 3.1,
                 },
                 WorkflowEvent::ArtifactProduced {
@@ -8445,10 +8456,61 @@ mod dispatch_boundary_tests {
             .await
             .unwrap();
 
+        let attachment_visible_at_child_broadcast =
+            Arc::new(std::sync::Mutex::new(Vec::<bool>::new()));
+        let attachment_visible_for_listener = Arc::clone(&attachment_visible_at_child_broadcast);
+        let data_dir_for_listener = data_dir.clone();
+        let execution_id_for_listener = execution_id.clone();
+        app.listen("workflow-execution-changed", move |event| {
+            let Ok(payload): Result<serde_json::Value, _> = serde_json::from_str(event.payload())
+            else {
+                return;
+            };
+            if payload["workflowExecution"]["id"].as_str()
+                != Some(execution_id_for_listener.as_str())
+            {
+                return;
+            }
+            let events = WorkflowEventLog::new(&data_dir_for_listener)
+                .read_log(&execution_id_for_listener)
+                .expect("fanout broadcast must have a readable durable projection");
+            let restarted_child_is_visible = events.iter().any(|event| {
+                matches!(
+                    event,
+                    WorkflowEvent::NodeStarted {
+                        node_name,
+                        attempt: 2,
+                        ..
+                    } if node_name == "review-b"
+                )
+            });
+            if !restarted_child_is_visible {
+                return;
+            }
+            let replay = project_workflow_execution(&execution_id_for_listener, &events)
+                .expect("fanout broadcast projection must replay")
+                .expect("fanout broadcast projection must exist");
+            attachment_visible_for_listener.lock().unwrap().push(
+                replay.node_executions.iter().any(|node| {
+                    node.node_name == "review-b" && node.attempt == 2 && node.session_id.is_some()
+                }),
+            );
+        });
+
         engine
             .resume_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
             .await
             .unwrap();
+
+        assert_eq!(
+            attachment_visible_at_child_broadcast
+                .lock()
+                .unwrap()
+                .first()
+                .copied(),
+            Some(true),
+            "the first child-visible broadcast must follow durable SessionAttached facts"
+        );
 
         let executions = engine.executions.lock().await;
         let resumed = executions
@@ -8477,6 +8539,14 @@ mod dispatch_boundary_tests {
         assert_eq!(reused.result.as_deref(), Some("confirmed review"));
         assert_eq!(reused.token_usage.input_tokens, 11);
         assert_eq!(reused.token_usage.output_tokens, 7);
+        assert_eq!(
+            resumed
+                .node_executions
+                .iter()
+                .find(|node| node.id == reused.node_execution_id)
+                .and_then(|node| node.display_command.as_deref()),
+            Some("printf confirmed")
+        );
         assert_eq!(pending.state, FanoutChildRuntimeState::Running);
         assert!(!pending.session_id.is_empty());
         assert_ne!(pending.session_id, "old-review-b-session");
@@ -8488,6 +8558,15 @@ mod dispatch_boundary_tests {
         let events = WorkflowEventLog::new(&data_dir)
             .read_log(&execution_id)
             .unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::CommandPrepared {
+                node_execution_id,
+                display_command,
+                ..
+            } if node_execution_id == &reused_node_execution_id
+                && display_command == "printf confirmed"
+        )));
         assert!(events.iter().any(|event| matches!(
             event,
             WorkflowEvent::ArtifactProduced {
@@ -8511,15 +8590,22 @@ mod dispatch_boundary_tests {
                 ..
             } if node_execution_id == &reused_node_execution_id
         )));
-        assert!(events.iter().any(|event| matches!(
-            event,
-            WorkflowEvent::SessionAttached {
-                node_execution_id,
-                session_id,
-                ..
-            } if node_execution_id == &pending_node_execution_id
-                && session_id != "old-review-b-session"
-        )));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    WorkflowEvent::SessionAttached {
+                        node_execution_id,
+                        session_id,
+                        ..
+                    } if node_execution_id == &pending_node_execution_id
+                        && session_id != "old-review-b-session"
+                ))
+                .count(),
+            1,
+            "a newly activated fanout Session must be attached exactly once"
+        );
 
         engine
             .on_turn_complete(
@@ -10972,8 +11058,44 @@ mod dispatch_boundary_tests {
                 _ => None,
             })
             .expect("fanout command child ArtifactProduced must be recorded");
+        let prepared_position = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    WorkflowEvent::CommandPrepared {
+                        node_execution_id,
+                        display_command,
+                        ..
+                    } if node_execution_id == &child_node_execution_id
+                        && display_command == "printf '%s' \"$RELEASH_NODE_EXECUTION_ID\""
+                )
+            })
+            .expect("fanout command child CommandPrepared must be recorded");
+        let started_position = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    WorkflowEvent::NodeStarted { node_execution_id, .. }
+                        if node_execution_id == &child_node_execution_id
+                )
+            })
+            .unwrap();
+        let artifact_position = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    WorkflowEvent::ArtifactProduced { node_execution_id, .. }
+                        if node_execution_id == &child_node_execution_id
+                )
+            })
+            .unwrap();
 
         assert_eq!(artifact_node_execution_id, child_node_execution_id);
+        assert!(started_position < prepared_position);
+        assert!(prepared_position < artifact_position);
         assert_eq!(
             value["stdout"].as_str(),
             Some(child_node_execution_id.as_str())
@@ -11818,6 +11940,164 @@ mod dispatch_boundary_tests {
             .all(|event| !matches!(event, WorkflowEvent::ArtifactProduced { .. })));
     }
 
+    #[tokio::test]
+    async fn command_prepared_append_failure_prevents_process_spawn_and_rolls_back_display() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_execution_store_data_dir(data_dir.clone()).await;
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir);
+        let worktree = TempDir::new().unwrap();
+        let worktree_path = worktree.path().to_string_lossy().to_string();
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let workflow = WorkflowDefinitionYaml {
+            name: "command-prepared-append-failure".to_string(),
+            description: String::new(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![command_node(
+                "write-marker",
+                "printf spawned > .command-prepared-marker",
+                vec![],
+            )],
+        };
+        engine
+            .seed_active_execution_for_test(
+                execution_id.clone(),
+                workflow,
+                RuntimeExecutionState::Running,
+                worktree_path.clone(),
+                ExecutionOrigin::DesktopUi,
+            )
+            .await;
+
+        engine.fail_next_required_event_append_for_test();
+        let error = engine
+            .start_current_node_runtime(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                &worktree_path,
+            )
+            .await
+            .unwrap_err();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        assert!(error
+            .to_string()
+            .contains("command prepared event append failed"));
+        assert!(!worktree.path().join(".command-prepared-marker").exists());
+        assert!(read_dispatch_events(&app, &execution_id)
+            .iter()
+            .all(|event| !matches!(event, WorkflowEvent::CommandPrepared { .. })));
+        let executions = engine.executions.lock().await;
+        let execution = executions.get(&execution_id).unwrap();
+        assert!(execution.node_executions[0].display_command.is_none());
+        drop(executions);
+        assert!(engine.active_commands.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn command_prepared_masks_expanded_command_in_event_and_replay_projection() {
+        let app = make_dispatch_app();
+        let configured_secret = "COMMAND_PREPARED_SECRET_12345";
+        let app_config = app.state::<Arc<crate::adaptor::gateway::app_config::AppConfig>>();
+        app_config
+            .with_config_mut(|config| {
+                config.server.token = configured_secret.to_string();
+                Ok(())
+            })
+            .unwrap();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_execution_store_data_dir(data_dir.clone()).await;
+        let worktree = TempDir::new().unwrap();
+        let worktree_path = worktree.path().to_string_lossy().to_string();
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let mut command = command_node("consume-secret", "printf '{{ source.stdout }}'", vec![]);
+        command.inputs = vec!["source".to_string()];
+        engine
+            .seed_active_execution_for_test(
+                execution_id.clone(),
+                WorkflowDefinitionYaml {
+                    name: "command-prepared-secret-mask".to_string(),
+                    description: String::new(),
+                    builtin: false,
+                    schemas: Default::default(),
+                    nodes: vec![command],
+                },
+                RuntimeExecutionState::Running,
+                worktree_path.clone(),
+                ExecutionOrigin::DesktopUi,
+            )
+            .await;
+        {
+            let mut executions = engine.executions.lock().await;
+            executions.get_mut(&execution_id).unwrap().artifacts.insert(
+                "source".to_string(),
+                RuntimeArtifact {
+                    node_name: "source".to_string(),
+                    attempt: 1,
+                    session_id: None,
+                    result: None,
+                    artifact: Some(serde_json::json!({"stdout": configured_secret})),
+                    contract: None,
+                    token_usage: None,
+                    completed_at: 999.0,
+                },
+            );
+        }
+
+        let input = engine
+            .command_execution_input(&worktree_path)
+            .await
+            .unwrap();
+        assert!(input
+            .raw_command
+            .as_deref()
+            .unwrap()
+            .contains(configured_secret));
+        assert!(engine
+            .commit_command_prepared(app.handle(), &input)
+            .await
+            .unwrap());
+
+        let events = read_dispatch_events(&app, &execution_id);
+        let prepared = events
+            .iter()
+            .find(|event| matches!(event, WorkflowEvent::CommandPrepared { .. }))
+            .unwrap();
+        let prepared_json = serde_json::to_string(prepared).unwrap();
+        assert!(!prepared_json.contains(configured_secret));
+        assert!(prepared_json.contains("[REDACTED]"));
+        assert!(!serde_json::to_string(&events)
+            .unwrap()
+            .contains(configured_secret));
+        let ndjson = std::fs::read_to_string(
+            data_dir
+                .join("workflow_execution_logs")
+                .join(format!("{execution_id}.ndjson")),
+        )
+        .unwrap();
+        assert!(!ndjson.contains(configured_secret));
+        let projected = project_workflow_execution(&execution_id, &events)
+            .unwrap()
+            .unwrap();
+        let display_command = projected.node_executions[0]
+            .display_command
+            .as_deref()
+            .unwrap();
+        assert_eq!(display_command, "printf '[REDACTED]'");
+        assert!(!display_command.contains(configured_secret));
+        let executions = engine.executions.lock().await;
+        assert_eq!(
+            executions.get(&execution_id).unwrap().node_executions[0]
+                .display_command
+                .as_deref(),
+            Some("printf '[REDACTED]'")
+        );
+    }
+
     static COMMAND_SECRET_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     #[tokio::test]
@@ -11914,9 +12194,32 @@ mod dispatch_boundary_tests {
             start_command_workflow_for_test(&app, &engine, workflow, worktree.path()).await;
         let events = read_dispatch_events(&app, &execution_id);
         let (_, value) = artifact_event_for_node(&events, "echo_thread");
+        let echo_node_execution_id = events
+            .iter()
+            .find_map(|event| match event {
+                WorkflowEvent::NodeStarted {
+                    node_name,
+                    node_execution_id,
+                    ..
+                } if node_name == "echo_thread" => Some(node_execution_id),
+                _ => None,
+            })
+            .unwrap();
+        let display_command = events.iter().find_map(|event| match event {
+            WorkflowEvent::CommandPrepared {
+                node_execution_id,
+                display_command,
+                ..
+            } if node_execution_id == echo_node_execution_id => Some(display_command),
+            _ => None,
+        });
 
         assert_eq!(value["ok"], true);
         assert_eq!(value["stdout"], "thread-42");
+        assert_eq!(
+            display_command.map(String::as_str),
+            Some("printf 'thread-42'")
+        );
     }
 
     #[tokio::test]
@@ -12166,7 +12469,7 @@ mod dispatch_boundary_tests {
     }
 
     #[tokio::test]
-    async fn fanout_child_started_append_failure_rolls_back_sessions_refs_and_expansion() {
+    async fn fanout_child_start_event_append_failure_rolls_back_sessions_refs_and_expansion() {
         let app = make_dispatch_app();
         let data_dir = dispatch_data_dir(app.handle());
         let engine = WorkflowRuntimeService::new_for_test();
@@ -12199,7 +12502,7 @@ mod dispatch_boundary_tests {
         let error = engine
             .start_fanout_children(app.handle(), &session_store, &handles, worktree_path)
             .await
-            .expect_err("fanout child NodeStarted append failure must be propagated");
+            .expect_err("fanout child start event append failure must be propagated");
 
         assert!(
             matches!(error, WorkflowEngineError::SessionStore(_)),
@@ -12228,17 +12531,140 @@ mod dispatch_boundary_tests {
             HashMap::from([("fanout-review".to_string(), 1)])
         );
         drop(executions);
-        assert!(read_dispatch_events(&app, &execution_id)
+        assert!(
+            read_dispatch_events(&app, &execution_id)
+                .iter()
+                .all(|event| {
+                    !matches!(
+                        event,
+                        WorkflowEvent::NodeStarted {
+                            fanout_parent: Some(_),
+                            ..
+                        } | WorkflowEvent::SessionAttached { .. }
+                    )
+                }),
+            "NodeStarted and SessionAttached must roll back as one required batch"
+        );
+    }
+
+    #[tokio::test]
+    async fn fanout_child_post_commit_projection_failure_preserves_attached_sessions() {
+        let app = make_dispatch_app();
+        let data_dir = dispatch_data_dir(app.handle());
+        let engine = WorkflowRuntimeService::new_for_test();
+        engine.set_execution_store_data_dir(data_dir.clone()).await;
+        let (session_store, handles) = make_dispatch_deps(data_dir.clone());
+
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/fanout-child-post-commit-projection-failure";
+        let workflow = WorkflowDefinitionYaml {
+            name: "fanout-child-post-commit-projection-failure-wf".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![
+                make_fanout_node("fanout-review", vec!["review-a", "review-b"]),
+                make_fanout_child("review-a"),
+                make_fanout_child("review-b"),
+            ],
+        };
+        let mut exec =
+            make_waiting_approval_execution_with_workflow(&execution_id, worktree_path, workflow);
+        exec.state = RuntimeExecutionState::Running;
+        exec.current_session_id = None;
+        exec.node_executions[0].status = NodeExecutionStatus::Running;
+        exec.node_execution_counts = HashMap::from([("fanout-review".to_string(), 1)]);
+        append_started_events_for_execution(&data_dir, &exec);
+        insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
+
+        let bad_execution_store_data_dir = data_dir.join("execution-store-sync-blocker");
+        std::fs::write(&bad_execution_store_data_dir, "not a directory").unwrap();
+        engine
+            .set_execution_store_data_dir(bad_execution_store_data_dir)
+            .await;
+
+        let error = engine
+            .start_fanout_children(app.handle(), &session_store, &handles, worktree_path)
+            .await
+            .expect_err("post-commit ExecutionStore projection failure must be propagated");
+        assert!(
+            error
+                .to_string()
+                .contains("required event projection failed"),
+            "post-commit failure phase must remain diagnosable: {error}"
+        );
+
+        let stored_sessions = session_store
+            .list_sessions(&data_dir, worktree_path)
+            .unwrap();
+        assert_eq!(
+            stored_sessions.len(),
+            2,
+            "durably attached fanout Sessions must not be rolled back after append"
+        );
+        let refs = engine.session_workflow_refs.lock().await;
+        assert_eq!(refs.len(), 2);
+        assert!(stored_sessions.iter().all(|session| {
+            refs.get(&session.id)
+                .is_some_and(|reference| reference.execution_id == execution_id)
+        }));
+        drop(refs);
+
+        let executions = engine.executions.lock().await;
+        let execution = executions
+            .get(&execution_id)
+            .expect("durably committed fanout expansion must remain live");
+        let attached_children = execution
+            .node_executions
             .iter()
-            .all(|event| {
-                !matches!(
-                    event,
-                    WorkflowEvent::NodeStarted {
-                        fanout_parent: Some(_),
-                        ..
-                    }
+            .filter(|node| node.fanout_parent.is_some())
+            .map(|node| {
+                (
+                    node.id.clone(),
+                    node.session_id
+                        .clone()
+                        .expect("Session child must retain its committed attachment"),
                 )
-            }));
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(attached_children.len(), 2);
+        drop(executions);
+
+        let events = read_dispatch_events(&app, &execution_id);
+        for (node_execution_id, session_id) in &attached_children {
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(
+                        event,
+                        WorkflowEvent::SessionAttached {
+                            node_execution_id: attached_node_execution_id,
+                            session_id: attached_session_id,
+                            ..
+                        } if attached_node_execution_id == node_execution_id
+                            && attached_session_id == session_id
+                    ))
+                    .count(),
+                1,
+                "each live Session attachment must have exactly one durable fact"
+            );
+            assert!(stored_sessions
+                .iter()
+                .any(|session| session.id == *session_id));
+        }
+        let replay = project_workflow_execution(&execution_id, &events)
+            .unwrap()
+            .unwrap();
+        for (node_execution_id, session_id) in attached_children {
+            assert_eq!(
+                replay
+                    .node_executions
+                    .iter()
+                    .find(|node| node.id == node_execution_id)
+                    .and_then(|node| node.session_id.as_deref()),
+                Some(session_id.as_str())
+            );
+        }
     }
 
     /// Spec [04]: ApprovalResolved event は approve の事実だけを表し、コメントを
@@ -12371,6 +12797,7 @@ mod dispatch_boundary_tests {
                 attempt: 1,
                 status: NodeExecutionStatus::Running,
                 session_id: None,
+                display_command: None,
                 artifact: None,
                 token_usage: None,
                 failure: None,
@@ -13636,6 +14063,17 @@ mod dispatch_boundary_tests {
             projected_status("review-b"),
             crate::domain::workflow::NodeExecutionStatus::Aborted
         );
+        for node_name in ["review-a", "review-b"] {
+            assert!(
+                projected
+                    .node_executions
+                    .iter()
+                    .find(|execution| execution.node_name == node_name)
+                    .and_then(|execution| execution.session_id.as_deref())
+                    .is_some(),
+                "fanout Session attachment for {node_name} must survive partial interruption replay"
+            );
+        }
         assert!(projected
             .node_executions
             .iter()
@@ -14020,6 +14458,17 @@ mod dispatch_boundary_tests {
             projected_status("review-b"),
             crate::domain::workflow::NodeExecutionStatus::Aborted
         );
+        for node_name in ["review-a", "review-b"] {
+            assert!(
+                projected
+                    .node_executions
+                    .iter()
+                    .find(|execution| execution.node_name == node_name)
+                    .and_then(|execution| execution.session_id.as_deref())
+                    .is_some(),
+                "fanout Session attachment for {node_name} must survive activation failure replay"
+            );
+        }
         assert!(projected
             .node_executions
             .iter()
@@ -18245,6 +18694,17 @@ mod dispatch_boundary_tests {
             projected_status("review-b"),
             crate::domain::workflow::NodeExecutionStatus::Aborted
         );
+        for node_name in ["review-a", "review-b"] {
+            assert!(
+                projected
+                    .node_executions
+                    .iter()
+                    .find(|execution| execution.node_name == node_name)
+                    .and_then(|execution| execution.session_id.as_deref())
+                    .is_some(),
+                "fanout Session attachment for {node_name} must survive activation failure replay"
+            );
+        }
         assert!(projected
             .node_executions
             .iter()

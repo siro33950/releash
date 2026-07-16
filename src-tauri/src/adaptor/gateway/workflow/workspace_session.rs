@@ -21,6 +21,10 @@ impl StoredWorkspaceSessionGateway {
     }
 
     fn session_input(session: SessionSummary) -> WorkspaceSessionInput {
+        let workflow_execution_id = session
+            .workflow_node_context
+            .as_ref()
+            .map(|context| context.execution_id.clone());
         WorkspaceSessionInput {
             id: session.id,
             worktree_path: session.worktree_path,
@@ -28,6 +32,7 @@ impl StoredWorkspaceSessionGateway {
             updated_at: session.updated_at,
             first_message: session.first_message,
             workflow_node_session: session.workflow_node_session,
+            workflow_execution_id,
         }
     }
 }

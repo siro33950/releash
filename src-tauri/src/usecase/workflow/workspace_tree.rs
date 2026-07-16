@@ -1,18 +1,28 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt::Write as _;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
+use super::command::ApprovalCommand;
+use super::ports::WorkflowExecutionProjection;
 use super::query_service::WorkflowQueryService;
 use super::WorkflowUsecase;
-use crate::domain::workflow::status_aggregation::RepresentativeStatus;
+use crate::domain::path::same_worktree_path;
+use crate::domain::workflow::status_aggregation::{
+    aggregate_representative_statuses, session_result, NodeProgress, RepresentativeStatus,
+    SessionActivity,
+};
 use crate::domain::workflow::{
-    Artifact, ExecutionListFilter, FanoutParentRef, NodeExecution, NodeExecutionStatus,
-    WorkflowError, WorkflowExecution, WorkflowExecutionId, WorkflowExecutionManualArchiveRecord,
+    ExecutionListFilter, ExecutionStatus, FanoutSpec, ItemsSource, NodeDefinition, NodeExecution,
+    NodeExecutionStatus, NodeKind, NodeKindName, WorkflowDefinition, WorkflowError,
+    WorkflowExecution, WorkflowExecutionId, WorkflowExecutionManualArchiveRecord,
     WorkflowExecutionSummary, WORKFLOW_ARCHIVE_REASON_MANUAL,
 };
 
 const DEFAULT_SESSION_TITLE: &str = "NewSession";
+const DEFAULT_WORKFLOW_TITLE: &str = "Workflow";
 
 fn unix_timestamp_seconds() -> f64 {
     SystemTime::now()
@@ -39,7 +49,12 @@ pub(crate) struct WorkspaceSessionInput {
     pub state: WorkspaceSessionState,
     pub updated_at: f64,
     pub first_message: String,
+    /// Backend-only provenance used to keep closed workflow sessions available.
+    /// It is deliberately absent from every public Workspace DTO.
     pub workflow_node_session: bool,
+    /// Backend-only routing hint for id-based Workspace queries.
+    /// It is never serialized into the Workspace tree or Node detail DTOs.
+    pub workflow_execution_id: Option<String>,
 }
 
 pub(crate) trait WorkspaceSessionGateway: Send + Sync {
@@ -55,109 +70,111 @@ pub(crate) trait WorkspaceSessionGateway: Send + Sync {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WorkspaceTreeSnapshotDto {
+    pub nodes: Vec<WorkspaceTreeItemDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_node_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
-pub(crate) enum WorkspaceTreeNodeDto {
-    Session(WorkspaceSessionNodeDto),
-    Workflow(WorkspaceWorkflowExecutionDto),
+pub(crate) enum WorkspaceTreeItemDto {
+    Node(WorkspaceNodeDto),
+    Workflow(WorkspaceWorkflowDto),
+    Fanout(WorkspaceFanoutDto),
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct WorkspaceSessionNodeDto {
+pub(crate) struct WorkspaceNodeDto {
     pub id: String,
-    pub worktree_path: String,
-    pub title: String,
-    pub state: WorkspaceSessionState,
-    pub updated_at: f64,
-    pub workflow_node_session: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub node_execution_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub node_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attempt: Option<u32>,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct WorkspaceWorkflowExecutionDto {
-    pub execution_id: String,
-    pub worktree_path: String,
-    pub workflow_name: String,
     pub title: String,
     pub status: String,
-    pub can_stop: bool,
-    pub can_resume: bool,
-    pub can_abort: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub interruption_reason: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resume_from_node: Option<String>,
+    pub content_kind: &'static str,
+    pub capabilities: WorkspaceNodeCapabilitiesDto,
     pub updated_at: f64,
-    pub node_executions: Vec<WorkspaceWorkflowNodeExecutionDto>,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct WorkspaceWorkflowNodeExecutionDto {
-    pub kind: &'static str,
-    pub execution_id: String,
-    pub worktree_path: String,
-    pub title: String,
-    pub node_name: String,
-    pub node_kind: &'static str,
-    pub status: String,
-    pub node_execution_status: String,
-    pub can_approve: bool,
-    pub updated_at: f64,
-    pub attempt: u32,
-    pub node_execution_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub artifact: Option<WorkspaceArtifactDto>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fanout_parent: Option<WorkspaceFanoutParentDto>,
-    pub sessions: Vec<WorkspaceSessionNodeDto>,
-}
-
-/// WorkflowView 向けの選択 NodeExecution read model。
-///
-/// execution-level action permission と interrupted checkpoint は同じ node が tree に
-/// 複数並ぶ場合もあるため、一覧 DTO には複製せず detail response にだけ載せる。
-#[derive(Debug, Clone, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct WorkspaceWorkflowNodeDetailDto {
-    #[serde(flatten)]
-    pub node_execution: WorkspaceWorkflowNodeExecutionDto,
-    pub execution_status: String,
-    pub can_stop: bool,
-    pub can_resume: bool,
-    pub can_abort: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub interruption_reason: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resume_from_node: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct WorkspaceArtifactDto {
-    pub node_name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub contract: Option<String>,
-    pub value: serde_json::Value,
-    pub produced_at: f64,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct WorkspaceFanoutParentDto {
-    pub parent_node: String,
-    pub parent_attempt: u32,
+pub(crate) struct WorkspaceNodeCapabilitiesDto {
+    pub can_approve: bool,
+    pub can_close: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WorkspaceWorkflowDto {
+    pub id: String,
+    pub title: String,
+    pub status: String,
+    pub capabilities: WorkspaceWorkflowCapabilitiesDto,
+    pub children: Vec<WorkspaceTreeItemDto>,
+    pub updated_at: f64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WorkspaceWorkflowCapabilitiesDto {
+    pub can_stop: bool,
+    pub can_resume: bool,
+    pub can_abort: bool,
+    pub can_archive: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WorkspaceFanoutDto {
+    pub id: String,
+    pub title: String,
+    pub status: String,
+    pub children: Vec<WorkspaceTreeItemDto>,
+    pub updated_at: f64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WorkspaceNodeDetailDto {
+    pub id: String,
+    pub title: String,
+    pub status: String,
+    pub capabilities: WorkspaceNodeCapabilitiesDto,
+    pub updated_at: f64,
+    pub content: WorkspaceNodeContentDto,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub(crate) enum WorkspaceNodeContentDto {
+    Session(WorkspaceSessionNodeContentDto),
+    Command(WorkspaceCommandNodeContentDto),
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WorkspaceSessionNodeContentDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub item_index: Option<usize>,
-    pub child_index: usize,
+    pub session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WorkspaceCommandNodeContentDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<WorkspaceCommandResultDto>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WorkspaceCommandResultDto {
+    pub exit_code: i64,
+    /// Milliseconds, matching the command Artifact reserved field.
+    pub duration: u64,
+    pub stdout: String,
+    pub stderr: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -172,15 +189,63 @@ pub(crate) struct WorkspaceWorkflowHistoryItemDto {
     pub archive_reason: String,
 }
 
+#[derive(Debug, Clone)]
+struct WorkspaceNodeApprovalTarget {
+    execution_id: String,
+    node_name: String,
+    node_execution_id: String,
+}
+
+#[derive(Debug, Clone)]
+struct WorkspaceNodeRecord {
+    detail: WorkspaceNodeDetailDto,
+    approval: Option<WorkspaceNodeApprovalTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WorkspaceProjectionTarget {
+    /// Tree summary only. No selected-node content or session lookup index.
+    Snapshot,
+    /// Materialize detail and action target for this one opaque leaf ID.
+    Node(String),
+    /// Resolve this persisted Session ID to its opaque Workspace leaf ID.
+    Session(String),
+}
+
+impl WorkspaceProjectionTarget {
+    fn matches_node(&self, node_id: &str) -> bool {
+        matches!(self, Self::Node(target) if target == node_id)
+    }
+
+    fn matches_session(&self, session_id: &str) -> bool {
+        matches!(self, Self::Session(target) if target == session_id)
+    }
+}
+
+#[derive(Default)]
+struct WorkspaceProjectionIndex {
+    records: HashMap<String, WorkspaceNodeRecord>,
+    session_node_ids: HashMap<String, String>,
+}
+
+struct WorkspaceProjection {
+    snapshot: WorkspaceTreeSnapshotDto,
+    index: WorkspaceProjectionIndex,
+}
+
 impl WorkflowUsecase {
     pub(crate) fn collect_workspace_session_inputs(
         &self,
         worktree_path: &str,
     ) -> Result<Vec<WorkspaceSessionInput>, WorkflowError> {
-        let mut sessions = self.sessions.list_active_sessions(worktree_path)?;
+        // SessionStore and Workflow projections must receive the same managed-worktree
+        // identity. In particular, libgit2 reports the main worktree with a trailing `/`,
+        // while Workflow executions persist the canonical path without it.
+        let worktree_path = self.resolve_worktree_path(worktree_path)?;
+        let mut sessions = self.sessions.list_active_sessions(&worktree_path)?;
         sessions.extend(
             self.sessions
-                .list_closed_sessions(worktree_path)?
+                .list_closed_sessions(&worktree_path)?
                 .into_iter()
                 .filter(|session| session.workflow_node_session),
         );
@@ -191,11 +256,17 @@ impl WorkflowUsecase {
         &self,
         worktree_path: &str,
         sessions: Vec<WorkspaceSessionInput>,
-    ) -> Result<Vec<WorkspaceTreeNodeDto>, WorkflowError> {
+    ) -> Result<WorkspaceTreeSnapshotDto, WorkflowError> {
         let worktree_path = self.resolve_worktree_path(worktree_path)?;
         let archives = self.execution_archives.manual_archive_records()?;
         self.query
-            .list_workspace_tree_nodes(&worktree_path, sessions, &archives)
+            .project_workspace(
+                &worktree_path,
+                sessions,
+                &archives,
+                WorkspaceProjectionTarget::Snapshot,
+            )
+            .map(|projection| projection.snapshot)
     }
 
     pub(crate) fn list_workspace_workflow_history(
@@ -208,20 +279,74 @@ impl WorkflowUsecase {
             .list_workspace_workflow_history(&worktree_path, &archives)
     }
 
-    pub(crate) fn get_workspace_workflow_node_detail(
+    pub(crate) fn get_workspace_node_detail(
         &self,
         worktree_path: &str,
-        execution_id: &str,
-        node_execution_id: &str,
+        node_id: &str,
         sessions: Vec<WorkspaceSessionInput>,
-    ) -> Result<Option<WorkspaceWorkflowNodeDetailDto>, WorkflowError> {
+    ) -> Result<Option<WorkspaceNodeDetailDto>, WorkflowError> {
         let worktree_path = self.resolve_worktree_path(worktree_path)?;
-        self.query.get_workspace_workflow_node_detail(
+        let archives = self.execution_archives.manual_archive_records()?;
+        self.query
+            .project_workspace(
+                &worktree_path,
+                sessions,
+                &archives,
+                WorkspaceProjectionTarget::Node(node_id.to_string()),
+            )
+            .map(|mut projection| {
+                projection
+                    .index
+                    .records
+                    .remove(node_id)
+                    .map(|record| record.detail)
+            })
+    }
+
+    pub(crate) fn get_workspace_session_node_id(
+        &self,
+        worktree_path: &str,
+        session_id: &str,
+        sessions: Vec<WorkspaceSessionInput>,
+    ) -> Result<Option<String>, WorkflowError> {
+        let worktree_path = self.resolve_worktree_path(worktree_path)?;
+        let archives = self.execution_archives.manual_archive_records()?;
+        self.query
+            .project_workspace(
+                &worktree_path,
+                sessions,
+                &archives,
+                WorkspaceProjectionTarget::Session(session_id.to_string()),
+            )
+            .map(|mut projection| projection.index.session_node_ids.remove(session_id))
+    }
+
+    pub(crate) fn resolve_workspace_node_approval(
+        &self,
+        worktree_path: &str,
+        node_id: &str,
+        sessions: Vec<WorkspaceSessionInput>,
+    ) -> Result<ApprovalCommand, WorkflowError> {
+        let worktree_path = self.resolve_worktree_path(worktree_path)?;
+        let archives = self.execution_archives.manual_archive_records()?;
+        let mut projection = self.query.project_workspace(
             &worktree_path,
-            execution_id,
-            node_execution_id,
             sessions,
-        )
+            &archives,
+            WorkspaceProjectionTarget::Node(node_id.to_string()),
+        )?;
+        let record = projection.index.records.remove(node_id).ok_or_else(|| {
+            WorkflowError::external(format!("Workspace node not found: {node_id}"))
+        })?;
+        let target = record
+            .approval
+            .ok_or_else(|| WorkflowError::external("Workspace node is not waiting for approval"))?;
+        Ok(ApprovalCommand {
+            execution_id: target.execution_id,
+            node_name: target.node_name,
+            node_execution_id: Some(target.node_execution_id),
+            comment: None,
+        })
     }
 
     pub(crate) fn archive_workspace_workflow_execution(
@@ -262,19 +387,26 @@ impl WorkflowUsecase {
 }
 
 impl WorkflowQueryService {
-    pub(in crate::usecase::workflow) fn list_workspace_tree_nodes(
+    fn project_workspace(
         &self,
         worktree_path: &str,
         sessions: Vec<WorkspaceSessionInput>,
         archives: &[WorkflowExecutionManualArchiveRecord],
-    ) -> Result<Vec<WorkspaceTreeNodeDto>, WorkflowError> {
-        let summaries = self.list_executions(ExecutionListFilter {
+        target: WorkspaceProjectionTarget,
+    ) -> Result<WorkspaceProjection, WorkflowError> {
+        let mut summaries = self.list_executions(ExecutionListFilter {
             status: None,
             worktree_path: Some(worktree_path.to_string()),
         })?;
-        let executions = self.executions_for_summaries(&summaries)?;
-        Ok(project_workspace_tree_nodes(
-            sessions, summaries, executions, archives,
+        restrict_summaries_to_projection_target(&mut summaries, &sessions, &target);
+        let projections = self.execution_projections_for_summaries(&summaries, &target)?;
+        Ok(project_workspace_tree(
+            worktree_path,
+            sessions,
+            summaries,
+            projections,
+            archives,
+            &target,
         ))
     }
 
@@ -290,223 +422,582 @@ impl WorkflowQueryService {
         Ok(project_workspace_workflow_history(summaries, archives))
     }
 
-    pub(in crate::usecase::workflow) fn get_workspace_workflow_node_detail(
-        &self,
-        worktree_path: &str,
-        execution_id: &str,
-        node_execution_id: &str,
-        sessions: Vec<WorkspaceSessionInput>,
-    ) -> Result<Option<WorkspaceWorkflowNodeDetailDto>, WorkflowError> {
-        let Some(summary) = self.get_execution(execution_id)? else {
-            return Ok(None);
-        };
-        if summary.worktree_path != worktree_path {
-            return Ok(None);
-        }
-        let Some(execution) = self.get_execution_state(execution_id)? else {
-            return Ok(None);
-        };
-        let Some(node_execution) = execution
-            .node_executions
-            .iter()
-            .find(|node_execution| node_execution.id == node_execution_id)
-        else {
-            return Ok(None);
-        };
-        let sessions = session_index(sessions);
-        Ok(Some(workspace_node_detail(
-            &summary,
-            &execution,
-            node_execution,
-            &sessions,
-        )))
-    }
-
-    fn executions_for_summaries(
+    fn execution_projections_for_summaries(
         &self,
         summaries: &[WorkflowExecutionSummary],
-    ) -> Result<HashMap<String, WorkflowExecution>, WorkflowError> {
-        let mut executions = HashMap::new();
+        target: &WorkspaceProjectionTarget,
+    ) -> Result<HashMap<String, WorkflowExecutionProjection>, WorkflowError> {
+        let mut projections = HashMap::new();
         for summary in summaries {
-            if let Some(execution) = self.get_execution_state(&summary.execution_id)? {
-                executions.insert(summary.execution_id.clone(), execution);
+            let projection = match target {
+                // Selected Node detail may include its masked Command snapshot/result.
+                // Backend-routable IDs restrict this full replay to one execution.
+                WorkspaceProjectionTarget::Node(_) => {
+                    self.get_execution_with_definition(&summary.execution_id)?
+                }
+                // Tree summaries and Session lookup never need request, Command,
+                // or Artifact bodies and use the payload-stripped production path.
+                WorkspaceProjectionTarget::Snapshot | WorkspaceProjectionTarget::Session(_) => {
+                    self.get_workspace_execution_with_definition(&summary.execution_id)?
+                }
+            };
+            if let Some(projection) = projection {
+                projections.insert(summary.execution_id.clone(), projection);
             }
         }
-        Ok(executions)
+        Ok(projections)
     }
 }
 
-fn project_workspace_tree_nodes(
+fn project_workspace_tree(
+    worktree_path: &str,
     sessions: Vec<WorkspaceSessionInput>,
     summaries: Vec<WorkflowExecutionSummary>,
-    executions: HashMap<String, WorkflowExecution>,
+    projections: HashMap<String, WorkflowExecutionProjection>,
     archives: &[WorkflowExecutionManualArchiveRecord],
-) -> Vec<WorkspaceTreeNodeDto> {
-    let nested_session_ids = executions
+    target: &WorkspaceProjectionTarget,
+) -> WorkspaceProjection {
+    let session_index = session_index(&sessions, worktree_path);
+    let nested_session_ids = projections
         .values()
-        .flat_map(|execution| execution.node_executions.iter())
+        .flat_map(|projection| projection.execution.node_executions.iter())
         .filter_map(|node_execution| node_execution.session_id.clone())
         .collect::<HashSet<_>>();
-    let session_index = session_index(sessions.clone());
+    let mut index = WorkspaceProjectionIndex::default();
 
     let mut direct_sessions = sessions
         .into_iter()
         .filter(|session| {
-            !session.workflow_node_session && !nested_session_ids.contains(&session.id)
-        })
-        .map(|session| session_node(session, None, None, None))
-        .collect::<Vec<_>>();
-    direct_sessions.sort_by(compare_session_nodes);
-
-    let mut workflow_executions = summaries
-        .into_iter()
-        .filter(|summary| !is_workflow_archived(&summary.execution_id, archives))
-        .map(|summary| {
-            let execution = executions.get(&summary.execution_id);
-            workspace_workflow_execution(summary, execution, &session_index)
+            same_worktree_path(&session.worktree_path, worktree_path)
+                && !session.workflow_node_session
+                && !nested_session_ids.contains(&session.id)
         })
         .collect::<Vec<_>>();
-    workflow_executions.sort_by(|left, right| compare_titles(&left.title, &right.title));
+    direct_sessions.sort_by(|left, right| {
+        compare_titles(&session_title(left, None), &session_title(right, None))
+            .then_with(|| left.id.cmp(&right.id))
+    });
 
-    direct_sessions
+    let mut nodes = direct_sessions
         .into_iter()
-        .map(WorkspaceTreeNodeDto::Session)
-        .chain(
-            workflow_executions
-                .into_iter()
-                .map(WorkspaceTreeNodeDto::Workflow),
-        )
-        .collect()
+        .map(|session| project_direct_session(session, target, &mut index))
+        .collect::<Vec<_>>();
+
+    let mut workflows = summaries
+        .into_iter()
+        .filter(|summary| {
+            // Archiving removes a Workflow branch from the tree, but it must not
+            // invalidate the Node that is already selected in the center view.
+            // Targeted detail/session lookups are worktree-authorized above and
+            // remain routable so the bound Session transcript and input survive
+            // a concurrent archive refresh.
+            !matches!(target, WorkspaceProjectionTarget::Snapshot)
+                || !is_workflow_archived(&summary.execution_id, archives)
+        })
+        .collect::<Vec<_>>();
+    workflows.sort_by(|left, right| {
+        compare_titles(&workflow_title(left), &workflow_title(right))
+            .then_with(|| left.execution_id.cmp(&right.execution_id))
+    });
+    nodes.extend(workflows.into_iter().map(|summary| {
+        let projection = projections.get(&summary.execution_id);
+        project_workflow(summary, projection, &session_index, target, &mut index)
+    }));
+
+    let preferred_node_id = preferred_node_id(&nodes);
+    WorkspaceProjection {
+        snapshot: WorkspaceTreeSnapshotDto {
+            nodes,
+            preferred_node_id,
+        },
+        index,
+    }
 }
 
-fn workspace_workflow_execution(
+fn restrict_summaries_to_projection_target(
+    summaries: &mut Vec<WorkflowExecutionSummary>,
+    sessions: &[WorkspaceSessionInput],
+    target: &WorkspaceProjectionTarget,
+) {
+    let execution_id = match target {
+        WorkspaceProjectionTarget::Snapshot => return,
+        WorkspaceProjectionTarget::Node(node_id) => workflow_execution_id_from_node_id(node_id),
+        WorkspaceProjectionTarget::Session(session_id) => {
+            let Some(session) = sessions.iter().find(|session| session.id == *session_id) else {
+                summaries.clear();
+                return;
+            };
+            if !session.workflow_node_session {
+                summaries.clear();
+                return;
+            }
+            let Some(execution_id) = session.workflow_execution_id.clone() else {
+                // Preserve lookup for legacy workflow Sessions whose persisted metadata
+                // predates the execution routing hint.
+                return;
+            };
+            Some(execution_id)
+        }
+    };
+
+    match execution_id {
+        Some(execution_id) => {
+            summaries.retain(|summary| summary.execution_id == execution_id);
+        }
+        None => summaries.clear(),
+    }
+}
+
+fn project_direct_session(
+    session: WorkspaceSessionInput,
+    target: &WorkspaceProjectionTarget,
+    index: &mut WorkspaceProjectionIndex,
+) -> WorkspaceTreeItemDto {
+    let id = opaque_node_id(&format!("session\0{}", session.id));
+    let title = session_title(&session, None);
+    let status = standalone_session_status(&session.state)
+        .as_str()
+        .to_string();
+    let capabilities = WorkspaceNodeCapabilitiesDto {
+        can_approve: false,
+        can_close: !matches!(
+            session.state,
+            WorkspaceSessionState::Closed | WorkspaceSessionState::Archived
+        ),
+    };
+    let node = WorkspaceNodeDto {
+        id: id.clone(),
+        title: title.clone(),
+        status: status.clone(),
+        content_kind: "session",
+        capabilities: capabilities.clone(),
+        updated_at: session.updated_at,
+    };
+    if target.matches_session(&session.id) {
+        index
+            .session_node_ids
+            .insert(session.id.clone(), id.clone());
+    }
+    if target.matches_node(&id) {
+        index.records.insert(
+            id.clone(),
+            WorkspaceNodeRecord {
+                detail: WorkspaceNodeDetailDto {
+                    id,
+                    title,
+                    status,
+                    capabilities,
+                    updated_at: session.updated_at,
+                    content: WorkspaceNodeContentDto::Session(WorkspaceSessionNodeContentDto {
+                        session_id: Some(session.id),
+                    }),
+                },
+                approval: None,
+            },
+        );
+    }
+    WorkspaceTreeItemDto::Node(node)
+}
+
+fn project_workflow(
     summary: WorkflowExecutionSummary,
-    execution: Option<&WorkflowExecution>,
+    projection: Option<&WorkflowExecutionProjection>,
     sessions: &HashMap<String, WorkspaceSessionInput>,
-) -> WorkspaceWorkflowExecutionDto {
+    target: &WorkspaceProjectionTarget,
+    index: &mut WorkspaceProjectionIndex,
+) -> WorkspaceTreeItemDto {
+    let execution = projection.map(|projection| &projection.execution);
+    let children = projection
+        .and_then(|projection| projection.definition.as_ref())
+        .map(|definition| {
+            project_workflow_children(&summary, execution, definition, sessions, target, index)
+        })
+        .unwrap_or_default();
     let status = execution
         .map(|execution| execution.status)
         .unwrap_or(summary.status);
     let updated_at = execution
         .map(|execution| execution.updated_at)
         .unwrap_or(summary.updated_at);
-    let interruption_reason = execution
-        .and_then(|execution| execution.interruption_reason.as_ref())
-        .or(summary.interruption_reason.as_ref())
-        .map(|reason| reason.as_str().to_string());
-    let resume_from_node = execution
-        .and_then(|execution| execution.resume_from_node.clone())
-        .or_else(|| summary.resume_from_node.clone());
-    let node_executions = execution
-        .map(|execution| {
-            execution
-                .node_executions
-                .iter()
-                .map(|node_execution| {
-                    workspace_node_execution(&summary, execution, node_execution, sessions)
-                })
-                .collect()
-        })
-        .unwrap_or_default();
 
-    WorkspaceWorkflowExecutionDto {
-        execution_id: summary.execution_id.clone(),
-        worktree_path: summary.worktree_path.clone(),
-        workflow_name: summary.workflow_name.clone(),
+    WorkspaceTreeItemDto::Workflow(WorkspaceWorkflowDto {
+        // Execution IDs remain opaque transport identifiers. The Workspace UI
+        // never parses or renders them, and existing workflow actions can reuse it.
+        id: summary.execution_id.clone(),
         title: workflow_title(&summary),
-        status: representative_status(status.as_str()),
-        can_stop: status.can_stop(),
-        can_resume: status.can_resume(),
-        can_abort: status.can_abort(),
-        interruption_reason,
-        resume_from_node,
+        status: representative_status(status.as_str()).as_str().to_string(),
+        capabilities: WorkspaceWorkflowCapabilitiesDto {
+            can_stop: status.can_stop(),
+            can_resume: status.can_resume(),
+            can_abort: status.can_abort(),
+            can_archive: matches!(
+                status,
+                ExecutionStatus::Completed | ExecutionStatus::Failed | ExecutionStatus::Aborted
+            ),
+        },
+        children,
         updated_at,
-        node_executions,
-    }
+    })
 }
 
-fn workspace_node_execution(
+fn project_workflow_children(
     summary: &WorkflowExecutionSummary,
-    execution: &WorkflowExecution,
-    node_execution: &NodeExecution,
+    execution: Option<&WorkflowExecution>,
+    definition: &WorkflowDefinition,
     sessions: &HashMap<String, WorkspaceSessionInput>,
-) -> WorkspaceWorkflowNodeExecutionDto {
-    let nested_sessions = node_execution
-        .session_id
-        .as_ref()
-        .and_then(|session_id| sessions.get(session_id))
-        .cloned()
-        .map(|session| {
-            vec![session_node(
-                session,
-                Some(node_execution.id.clone()),
-                Some(node_execution.node_name.clone()),
-                Some(node_execution.attempt),
-            )]
-        })
+    target: &WorkspaceProjectionTarget,
+    index: &mut WorkspaceProjectionIndex,
+) -> Vec<WorkspaceTreeItemDto> {
+    let child_names = definition
+        .nodes
+        .iter()
+        .filter_map(|node| node.fanout())
+        .flat_map(|fanout| fanout.child.iter().cloned())
+        .collect::<HashSet<_>>();
+    let node_executions = execution
+        .map(|execution| execution.node_executions.as_slice())
         .unwrap_or_default();
 
-    WorkspaceWorkflowNodeExecutionDto {
-        kind: "node",
-        execution_id: node_execution.execution_id.clone(),
-        worktree_path: summary.worktree_path.clone(),
-        title: node_execution.node_name.clone(),
-        node_name: node_execution.node_name.clone(),
-        node_kind: node_execution.kind.as_str(),
-        status: representative_status(node_execution.status.as_str()),
-        node_execution_status: node_execution.status.as_str().to_string(),
-        can_approve: node_execution.status == NodeExecutionStatus::WaitingApproval,
-        updated_at: node_execution
-            .completed_at
-            .unwrap_or_else(|| execution.updated_at.max(node_execution.started_at)),
-        attempt: node_execution.attempt,
-        node_execution_id: node_execution.id.clone(),
-        session_id: node_execution.session_id.clone(),
-        artifact: node_execution.artifact.as_ref().map(workspace_artifact),
-        fanout_parent: node_execution
+    definition
+        .nodes
+        .iter()
+        .filter(|node| !child_names.contains(&node.name))
+        .map(|node| match &node.kind {
+            NodeKind::Fanout(spec) => project_fanout(
+                summary, execution, definition, node, spec, sessions, target, index,
+            ),
+            NodeKind::Session(_) | NodeKind::Command(_) => {
+                let attempts = node_executions
+                    .iter()
+                    .filter(|node_execution| {
+                        node_execution.fanout_parent.is_none()
+                            && node_execution.node_name == node.name
+                    })
+                    .collect::<Vec<_>>();
+                project_workflow_node(
+                    summary,
+                    &format!("node\0{}", node.name),
+                    &node.name,
+                    node.kind_name(),
+                    attempts,
+                    sessions,
+                    target,
+                    index,
+                )
+            }
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct FanoutSlot {
+    item_index: Option<usize>,
+    child_index: usize,
+    child_name: String,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn project_fanout(
+    summary: &WorkflowExecutionSummary,
+    execution: Option<&WorkflowExecution>,
+    definition: &WorkflowDefinition,
+    fanout_node: &NodeDefinition,
+    spec: &FanoutSpec,
+    sessions: &HashMap<String, WorkspaceSessionInput>,
+    target: &WorkspaceProjectionTarget,
+    index: &mut WorkspaceProjectionIndex,
+) -> WorkspaceTreeItemDto {
+    let node_executions = execution
+        .map(|execution| execution.node_executions.as_slice())
+        .unwrap_or_default();
+    let parent_attempts = node_executions
+        .iter()
+        .filter(|node_execution| {
+            node_execution.fanout_parent.is_none() && node_execution.node_name == fanout_node.name
+        })
+        .collect::<Vec<_>>();
+    let mut actual = BTreeMap::<FanoutSlot, Vec<&NodeExecution>>::new();
+    for node_execution in node_executions.iter().filter(|node_execution| {
+        node_execution
             .fanout_parent
             .as_ref()
-            .map(workspace_fanout_parent),
-        sessions: nested_sessions,
-    }
-}
-
-fn workspace_node_detail(
-    summary: &WorkflowExecutionSummary,
-    execution: &WorkflowExecution,
-    node_execution: &NodeExecution,
-    sessions: &HashMap<String, WorkspaceSessionInput>,
-) -> WorkspaceWorkflowNodeDetailDto {
-    let status = execution.status;
-    WorkspaceWorkflowNodeDetailDto {
-        node_execution: workspace_node_execution(summary, execution, node_execution, sessions),
-        execution_status: representative_status(status.as_str()),
-        can_stop: status.can_stop(),
-        can_resume: status.can_resume(),
-        can_abort: status.can_abort(),
-        interruption_reason: execution
-            .interruption_reason
+            .is_some_and(|parent| parent.parent_node == fanout_node.name)
+    }) {
+        let parent = node_execution
+            .fanout_parent
             .as_ref()
-            .map(|reason| reason.as_str().to_string()),
-        resume_from_node: execution.resume_from_node.clone(),
+            .expect("filtered fanout child must have a parent");
+        actual
+            .entry(FanoutSlot {
+                item_index: parent.item_index,
+                child_index: parent.child_index,
+                child_name: node_execution.node_name.clone(),
+            })
+            .or_default()
+            .push(node_execution);
+    }
+
+    let mut slots = expected_fanout_slots(spec, actual.is_empty());
+    for slot in actual.keys() {
+        if !slots.contains(slot) {
+            slots.push(slot.clone());
+        }
+    }
+    slots.sort();
+    slots.dedup();
+
+    let children = slots
+        .into_iter()
+        .map(|slot| {
+            let child_definition = definition
+                .nodes
+                .iter()
+                .find(|node| node.name == slot.child_name);
+            let attempts = actual.remove(&slot).unwrap_or_default();
+            let kind = child_definition
+                .map(NodeDefinition::kind_name)
+                .or_else(|| attempts.first().map(|attempt| attempt.kind))
+                .unwrap_or(NodeKindName::Session);
+            project_workflow_node(
+                summary,
+                &format!(
+                    "fanout-child\0{}\0{:?}\0{}\0{}",
+                    fanout_node.name, slot.item_index, slot.child_index, slot.child_name
+                ),
+                &slot.child_name,
+                kind,
+                attempts,
+                sessions,
+                target,
+                index,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let child_statuses = children.iter().filter_map(tree_item_status);
+    let parent_status = latest_node_execution(&parent_attempts)
+        .map(|node_execution| representative_status(node_execution.status.as_str()));
+    let status = aggregate_representative_statuses(child_statuses.chain(parent_status))
+        .unwrap_or(RepresentativeStatus::Queued);
+    let child_updated = children.iter().map(tree_item_updated_at);
+    let parent_updated = parent_attempts.iter().map(|node_execution| {
+        node_execution
+            .completed_at
+            .unwrap_or(node_execution.started_at)
+    });
+    let updated_at = child_updated
+        .chain(parent_updated)
+        .max_by(f64::total_cmp)
+        .unwrap_or(summary.started_at);
+
+    WorkspaceTreeItemDto::Fanout(WorkspaceFanoutDto {
+        id: opaque_branch_id(&format!(
+            "workflow\0{}\0fanout\0{}",
+            summary.execution_id, fanout_node.name
+        )),
+        title: fanout_node.name.clone(),
+        status: status.as_str().to_string(),
+        children,
+        updated_at,
+    })
+}
+
+fn expected_fanout_slots(spec: &FanoutSpec, no_actual_children: bool) -> Vec<FanoutSlot> {
+    let item_indices = match &spec.items {
+        Some(ItemsSource::Literal(items)) => items
+            .iter()
+            .enumerate()
+            .map(|(index, _)| Some(index))
+            .collect::<Vec<_>>(),
+        Some(ItemsSource::ArtifactField { .. }) if no_actual_children => vec![None],
+        Some(ItemsSource::ArtifactField { .. }) => Vec::new(),
+        None => vec![None],
+    };
+    item_indices
+        .into_iter()
+        .flat_map(|item_index| {
+            spec.child
+                .iter()
+                .enumerate()
+                .map(move |(child_index, child_name)| FanoutSlot {
+                    item_index,
+                    child_index,
+                    child_name: child_name.clone(),
+                })
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn project_workflow_node(
+    summary: &WorkflowExecutionSummary,
+    semantic_key: &str,
+    title: &str,
+    kind: NodeKindName,
+    attempts: Vec<&NodeExecution>,
+    sessions: &HashMap<String, WorkspaceSessionInput>,
+    target: &WorkspaceProjectionTarget,
+    index: &mut WorkspaceProjectionIndex,
+) -> WorkspaceTreeItemDto {
+    let id = opaque_workflow_node_id(&summary.execution_id, semantic_key);
+    let latest = latest_node_execution(&attempts);
+    let session = latest
+        .and_then(|node_execution| node_execution.session_id.as_ref())
+        .and_then(|session_id| sessions.get(session_id));
+    let status = latest
+        .map(|node_execution| workflow_node_status(node_execution, session))
+        .unwrap_or(RepresentativeStatus::Queued);
+    let updated_at = latest
+        .map(|node_execution| {
+            let execution_updated = node_execution
+                .completed_at
+                .unwrap_or(node_execution.started_at);
+            session
+                .map(|session| session.updated_at.max(execution_updated))
+                .unwrap_or(execution_updated)
+        })
+        .unwrap_or(summary.started_at);
+    let capabilities = WorkspaceNodeCapabilitiesDto {
+        can_approve: latest.is_some_and(|node_execution| {
+            node_execution.status == NodeExecutionStatus::WaitingApproval
+        }),
+        can_close: false,
+    };
+    let status_value = status.as_str().to_string();
+    let content_kind = match kind {
+        NodeKindName::Command => "command",
+        NodeKindName::Session | NodeKindName::Fanout => "session",
+    };
+    let node = WorkspaceNodeDto {
+        id: id.clone(),
+        title: title.to_string(),
+        status: status_value.clone(),
+        content_kind,
+        capabilities: capabilities.clone(),
+        updated_at,
+    };
+
+    if let WorkspaceProjectionTarget::Session(session_id) = target {
+        if attempts.iter().any(|node_execution| {
+            node_execution.session_id.as_deref() == Some(session_id.as_str())
+                && sessions.contains_key(session_id)
+        }) {
+            index
+                .session_node_ids
+                .insert(session_id.clone(), id.clone());
+        }
+    }
+    if target.matches_node(&id) {
+        // Content can retain command output, so it is materialized only for the
+        // one explicitly selected leaf. Snapshot/Session projections never clone it.
+        let content = match kind {
+            NodeKindName::Command => {
+                WorkspaceNodeContentDto::Command(WorkspaceCommandNodeContentDto {
+                    display_command: latest
+                        .and_then(|node_execution| node_execution.display_command.clone()),
+                    result: latest.and_then(command_result),
+                })
+            }
+            NodeKindName::Session | NodeKindName::Fanout => {
+                WorkspaceNodeContentDto::Session(WorkspaceSessionNodeContentDto {
+                    // A replayed attachment is not a usable chat until the Session
+                    // store can supply it for this worktree.
+                    session_id: session.map(|session| session.id.clone()),
+                })
+            }
+        };
+        let approval = latest.and_then(|node_execution| {
+            (node_execution.status == NodeExecutionStatus::WaitingApproval).then(|| {
+                WorkspaceNodeApprovalTarget {
+                    execution_id: node_execution.execution_id.clone(),
+                    node_name: node_execution.node_name.clone(),
+                    node_execution_id: node_execution.id.clone(),
+                }
+            })
+        });
+        index.records.insert(
+            id.clone(),
+            WorkspaceNodeRecord {
+                detail: WorkspaceNodeDetailDto {
+                    id,
+                    title: title.to_string(),
+                    status: status_value,
+                    capabilities,
+                    updated_at,
+                    content,
+                },
+                approval,
+            },
+        );
+    }
+    WorkspaceTreeItemDto::Node(node)
+}
+
+fn command_result(node_execution: &NodeExecution) -> Option<WorkspaceCommandResultDto> {
+    let object = node_execution.artifact.as_ref()?.value.as_object()?;
+    let exit_code = object.get("exit_code")?.as_i64()?;
+    let duration = object.get("duration")?.as_u64()?;
+    let stdout = object.get("stdout")?.as_str()?.to_string();
+    let stderr = object.get("stderr")?.as_str()?.to_string();
+    Some(WorkspaceCommandResultDto {
+        exit_code,
+        duration,
+        stdout,
+        stderr,
+    })
+}
+
+fn latest_node_execution<'a>(attempts: &[&'a NodeExecution]) -> Option<&'a NodeExecution> {
+    attempts.iter().copied().max_by(|left, right| {
+        left.started_at
+            .total_cmp(&right.started_at)
+            .then_with(|| {
+                left.fanout_parent
+                    .as_ref()
+                    .map(|parent| parent.parent_attempt)
+                    .unwrap_or_default()
+                    .cmp(
+                        &right
+                            .fanout_parent
+                            .as_ref()
+                            .map(|parent| parent.parent_attempt)
+                            .unwrap_or_default(),
+                    )
+            })
+            .then_with(|| left.attempt.cmp(&right.attempt))
+            .then_with(|| left.id.cmp(&right.id))
+    })
+}
+
+fn workflow_node_status(
+    node_execution: &NodeExecution,
+    session: Option<&WorkspaceSessionInput>,
+) -> RepresentativeStatus {
+    let node = NodeProgress::from_status_str(node_execution.status.as_str());
+    session
+        .map(|session| session_result(node, session_activity(&session.state)))
+        .unwrap_or_else(|| representative_status(node_execution.status.as_str()))
+}
+
+fn standalone_session_status(state: &WorkspaceSessionState) -> RepresentativeStatus {
+    match state {
+        WorkspaceSessionState::Active => RepresentativeStatus::Running,
+        WorkspaceSessionState::Idle => RepresentativeStatus::Waiting,
+        WorkspaceSessionState::Done
+        | WorkspaceSessionState::Closed
+        | WorkspaceSessionState::Archived => RepresentativeStatus::Completed,
+        WorkspaceSessionState::Error => RepresentativeStatus::Error,
     }
 }
 
-fn workspace_artifact(artifact: &Artifact) -> WorkspaceArtifactDto {
-    WorkspaceArtifactDto {
-        node_name: artifact.node_name.clone(),
-        contract: artifact.contract.clone(),
-        value: artifact.value.clone(),
-        produced_at: artifact.produced_at,
-    }
-}
-
-fn workspace_fanout_parent(parent: &FanoutParentRef) -> WorkspaceFanoutParentDto {
-    WorkspaceFanoutParentDto {
-        parent_node: parent.parent_node.clone(),
-        parent_attempt: parent.parent_attempt,
-        item_index: parent.item_index,
-        child_index: parent.child_index,
+fn session_activity(state: &WorkspaceSessionState) -> SessionActivity {
+    match state {
+        WorkspaceSessionState::Active => SessionActivity::Running,
+        WorkspaceSessionState::Idle => SessionActivity::Waiting,
+        WorkspaceSessionState::Done
+        | WorkspaceSessionState::Closed
+        | WorkspaceSessionState::Archived => SessionActivity::Done,
+        WorkspaceSessionState::Error => SessionActivity::Error,
     }
 }
 
@@ -524,7 +1015,9 @@ fn project_workspace_workflow_history(
                 execution_id: summary.execution_id.clone(),
                 worktree_path: summary.worktree_path.clone(),
                 title: workflow_title(&summary),
-                status: representative_status(summary.status.as_str()),
+                status: representative_status(summary.status.as_str())
+                    .as_str()
+                    .to_string(),
                 updated_at: summary.updated_at,
                 archived_at: record.archived_at,
                 archive_reason: WORKFLOW_ARCHIVE_REASON_MANUAL.to_string(),
@@ -534,29 +1027,27 @@ fn project_workspace_workflow_history(
     history.sort_by(|left, right| {
         right
             .archived_at
-            .partial_cmp(&left.archived_at)
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .total_cmp(&left.archived_at)
             .then_with(|| compare_titles(&left.title, &right.title))
             .then_with(|| left.execution_id.cmp(&right.execution_id))
     });
     history
 }
 
-fn session_index(sessions: Vec<WorkspaceSessionInput>) -> HashMap<String, WorkspaceSessionInput> {
+fn session_index(
+    sessions: &[WorkspaceSessionInput],
+    worktree_path: &str,
+) -> HashMap<String, WorkspaceSessionInput> {
     sessions
-        .into_iter()
+        .iter()
+        .filter(|session| same_worktree_path(&session.worktree_path, worktree_path))
+        .cloned()
         .map(|session| (session.id.clone(), session))
         .collect()
 }
 
-fn session_node(
-    session: WorkspaceSessionInput,
-    node_execution_id: Option<String>,
-    node_name: Option<String>,
-    attempt: Option<u32>,
-) -> WorkspaceSessionNodeDto {
-    let title = node_name
-        .as_deref()
+fn session_title(session: &WorkspaceSessionInput, node_name: Option<&str>) -> String {
+    node_name
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
@@ -564,31 +1055,17 @@ fn session_node(
             let first_message = session.first_message.trim();
             (!first_message.is_empty()).then(|| first_message.to_string())
         })
-        .unwrap_or_else(|| DEFAULT_SESSION_TITLE.to_string());
-
-    WorkspaceSessionNodeDto {
-        id: session.id,
-        worktree_path: session.worktree_path,
-        title,
-        state: session.state,
-        updated_at: session.updated_at,
-        workflow_node_session: session.workflow_node_session,
-        node_execution_id,
-        node_name,
-        attempt,
-    }
+        .unwrap_or_else(|| DEFAULT_SESSION_TITLE.to_string())
 }
 
-fn representative_status(status: &str) -> String {
+fn representative_status(status: &str) -> RepresentativeStatus {
     RepresentativeStatus::from_status_str(status)
-        .as_str()
-        .to_string()
 }
 
 fn workflow_title(summary: &WorkflowExecutionSummary) -> String {
     let workflow_name = summary.workflow_name.trim();
     if workflow_name.is_empty() {
-        summary.execution_id.clone()
+        DEFAULT_WORKFLOW_TITLE.to_string()
     } else {
         workflow_name.to_string()
     }
@@ -603,25 +1080,100 @@ fn is_workflow_archived(
         .any(|record| record.execution_id == execution_id)
 }
 
-fn compare_session_nodes(
-    left: &WorkspaceSessionNodeDto,
-    right: &WorkspaceSessionNodeDto,
-) -> std::cmp::Ordering {
-    compare_titles(&left.title, &right.title).then_with(|| left.id.cmp(&right.id))
-}
-
 fn compare_titles(left: &str, right: &str) -> std::cmp::Ordering {
     left.to_lowercase()
         .cmp(&right.to_lowercase())
         .then_with(|| left.cmp(right))
 }
 
+fn tree_item_status(item: &WorkspaceTreeItemDto) -> Option<RepresentativeStatus> {
+    Some(representative_status(match item {
+        WorkspaceTreeItemDto::Node(node) => &node.status,
+        WorkspaceTreeItemDto::Workflow(workflow) => &workflow.status,
+        WorkspaceTreeItemDto::Fanout(fanout) => &fanout.status,
+    }))
+}
+
+fn tree_item_updated_at(item: &WorkspaceTreeItemDto) -> f64 {
+    match item {
+        WorkspaceTreeItemDto::Node(node) => node.updated_at,
+        WorkspaceTreeItemDto::Workflow(workflow) => workflow.updated_at,
+        WorkspaceTreeItemDto::Fanout(fanout) => fanout.updated_at,
+    }
+}
+
+fn preferred_node_id(nodes: &[WorkspaceTreeItemDto]) -> Option<String> {
+    let mut ordered = Vec::<&WorkspaceNodeDto>::new();
+    collect_leaf_nodes(nodes, &mut ordered);
+    ordered
+        .iter()
+        .find(|node| matches!(node.status.as_str(), "running" | "waiting"))
+        .or_else(|| ordered.first())
+        .map(|node| node.id.clone())
+}
+
+fn collect_leaf_nodes<'a>(
+    items: &'a [WorkspaceTreeItemDto],
+    nodes: &mut Vec<&'a WorkspaceNodeDto>,
+) {
+    for item in items {
+        match item {
+            WorkspaceTreeItemDto::Node(node) => nodes.push(node),
+            WorkspaceTreeItemDto::Workflow(workflow) => {
+                collect_leaf_nodes(&workflow.children, nodes)
+            }
+            WorkspaceTreeItemDto::Fanout(fanout) => collect_leaf_nodes(&fanout.children, nodes),
+        }
+    }
+}
+
+fn opaque_node_id(semantic_key: &str) -> String {
+    opaque_id("node", semantic_key)
+}
+
+fn opaque_workflow_node_id(execution_id: &str, semantic_key: &str) -> String {
+    let execution_id = uuid::Uuid::parse_str(execution_id)
+        .expect("persisted Workflow execution IDs must be UUIDs");
+    let digest = Sha256::digest(semantic_key.as_bytes());
+    let mut encoded = format!("node-w-{}-", execution_id.simple());
+    for byte in &digest[..16] {
+        write!(&mut encoded, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    encoded
+}
+
+fn workflow_execution_id_from_node_id(node_id: &str) -> Option<String> {
+    let encoded = node_id.strip_prefix("node-w-")?;
+    let (execution_id, digest) = encoded.split_once('-')?;
+    if digest.len() != 32 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    uuid::Uuid::parse_str(execution_id)
+        .ok()
+        .map(|execution_id| execution_id.to_string())
+}
+
+fn opaque_branch_id(semantic_key: &str) -> String {
+    opaque_id("branch", semantic_key)
+}
+
+fn opaque_id(prefix: &str, semantic_key: &str) -> String {
+    let digest = Sha256::digest(semantic_key.as_bytes());
+    let mut encoded = String::with_capacity(prefix.len() + 1 + 32);
+    encoded.push_str(prefix);
+    encoded.push('-');
+    for byte in &digest[..16] {
+        write!(&mut encoded, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    encoded
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::workflow::{
-        ExecutionInterruptionReason, ExecutionOrigin, ExecutionStatus, NodeExecutionStatus,
-        NodeKindName, TokenUsage,
+        Artifact, CommandSpec, ExecutionOrigin, NodeExecutionFailure, NodeExecutionFailureKind,
+        TokenUsage,
     };
 
     fn summary() -> WorkflowExecutionSummary {
@@ -642,7 +1194,33 @@ mod tests {
         }
     }
 
-    fn execution() -> WorkflowExecution {
+    fn node(
+        id: &str,
+        name: &str,
+        kind: NodeKindName,
+        attempt: u32,
+        status: NodeExecutionStatus,
+    ) -> NodeExecution {
+        NodeExecution {
+            id: id.to_string(),
+            execution_id: summary().execution_id,
+            node_name: name.to_string(),
+            kind,
+            attempt,
+            status,
+            session_id: None,
+            display_command: None,
+            result_summary: None,
+            artifact: None,
+            token_usage: None,
+            failure: None,
+            fanout_parent: None,
+            started_at: f64::from(attempt),
+            completed_at: None,
+        }
+    }
+
+    fn execution(nodes: Vec<NodeExecution>) -> WorkflowExecution {
         WorkflowExecution {
             id: summary().execution_id,
             workflow_name: "review".to_string(),
@@ -657,260 +1235,823 @@ mod tests {
             interruption_reason: None,
             resume_from_node: None,
             total_token_usage: TokenUsage::default(),
-            node_executions: vec![NodeExecution {
-                id: "node-execution-plan".to_string(),
-                execution_id: "00000000-0000-4000-8000-000000000001".to_string(),
-                node_name: "plan".to_string(),
-                kind: NodeKindName::Session,
-                attempt: 1,
-                status: NodeExecutionStatus::Running,
-                session_id: Some("session-plan".to_string()),
-                result_summary: None,
-                artifact: None,
-                token_usage: None,
-                failure: None,
-                fanout_parent: None,
-                started_at: 2.0,
-                completed_at: None,
-            }],
+            node_executions: nodes,
             artifacts: Vec::new(),
             fanouts: Vec::new(),
             approval_target: None,
         }
     }
 
-    fn node_execution(
-        id: &str,
-        node_name: &str,
-        status: NodeExecutionStatus,
-        fanout_parent: Option<FanoutParentRef>,
-    ) -> NodeExecution {
-        NodeExecution {
-            id: id.to_string(),
-            execution_id: "00000000-0000-4000-8000-000000000001".to_string(),
-            node_name: node_name.to_string(),
-            kind: NodeKindName::Session,
-            attempt: 1,
-            status,
-            session_id: None,
-            result_summary: None,
-            artifact: None,
-            token_usage: None,
-            failure: None,
-            fanout_parent,
-            started_at: 2.0,
-            completed_at: None,
+    fn definition(nodes: Vec<NodeDefinition>) -> WorkflowDefinition {
+        WorkflowDefinition {
+            name: "review".to_string(),
+            nodes,
+            ..Default::default()
         }
     }
 
+    fn session_definition(name: &str) -> NodeDefinition {
+        NodeDefinition {
+            name: name.to_string(),
+            kind: NodeKind::Session(Default::default()),
+            ..Default::default()
+        }
+    }
+
+    fn command_definition(name: &str) -> NodeDefinition {
+        NodeDefinition {
+            name: name.to_string(),
+            kind: NodeKind::Command(CommandSpec {
+                command: "ignored raw template".to_string(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn projection(
+        definition: WorkflowDefinition,
+        execution: WorkflowExecution,
+    ) -> HashMap<String, WorkflowExecutionProjection> {
+        HashMap::from([(
+            summary().execution_id,
+            WorkflowExecutionProjection {
+                execution,
+                definition: Some(definition),
+            },
+        )])
+    }
+
+    fn workflow_node_target(name: &str) -> WorkspaceProjectionTarget {
+        WorkspaceProjectionTarget::Node(opaque_workflow_node_id(
+            &summary().execution_id,
+            &format!("node\0{name}"),
+        ))
+    }
+
     #[test]
-    fn workspace_tree_projects_only_canonical_node_executions() {
-        let summary = summary();
-        let execution = execution();
-        let nodes = project_workspace_tree_nodes(
+    fn opaque_workflow_node_id_routes_to_one_execution_without_exposing_attempts() {
+        let execution_id = summary().execution_id;
+        let first = opaque_workflow_node_id(&execution_id, "node\0plan");
+        let retried = opaque_workflow_node_id(&execution_id, "node\0plan");
+
+        assert_eq!(first, retried);
+        assert_eq!(
+            workflow_execution_id_from_node_id(&first),
+            Some(execution_id)
+        );
+        assert!(!first.contains("attempt"));
+        assert_eq!(
+            workflow_execution_id_from_node_id("node-not-routable"),
+            None
+        );
+    }
+
+    #[test]
+    fn id_based_projection_targets_restrict_workflow_replay() {
+        let mut other = summary();
+        other.execution_id = "00000000-0000-4000-8000-000000000002".to_string();
+        let mut summaries = vec![summary(), other.clone()];
+
+        restrict_summaries_to_projection_target(&mut summaries, &[], &workflow_node_target("plan"));
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].execution_id, summary().execution_id);
+
+        let mut direct = vec![summary(), other.clone()];
+        restrict_summaries_to_projection_target(
+            &mut direct,
+            &[],
+            &WorkspaceProjectionTarget::Node(opaque_node_id("session\0direct")),
+        );
+        assert!(direct.is_empty());
+
+        let mut session_lookup = vec![summary(), other.clone()];
+        restrict_summaries_to_projection_target(
+            &mut session_lookup,
+            &[WorkspaceSessionInput {
+                id: "workflow-session".to_string(),
+                worktree_path: "/repo".to_string(),
+                state: WorkspaceSessionState::Idle,
+                updated_at: 1.0,
+                first_message: String::new(),
+                workflow_node_session: true,
+                workflow_execution_id: Some(other.execution_id.clone()),
+            }],
+            &WorkspaceProjectionTarget::Session("workflow-session".to_string()),
+        );
+        assert_eq!(session_lookup, vec![other]);
+    }
+
+    #[test]
+    fn direct_session_is_a_leaf_and_summary_is_an_allowlist() {
+        let projected = project_workspace_tree(
+            "/repo",
+            vec![
+                WorkspaceSessionInput {
+                    id: "session-secret-id".to_string(),
+                    worktree_path: "/repo/".to_string(),
+                    state: WorkspaceSessionState::Active,
+                    updated_at: 4.0,
+                    first_message: "Investigate failure".to_string(),
+                    workflow_node_session: false,
+                    workflow_execution_id: None,
+                },
+                WorkspaceSessionInput {
+                    id: "foreign-session".to_string(),
+                    worktree_path: "/repository".to_string(),
+                    state: WorkspaceSessionState::Active,
+                    updated_at: 5.0,
+                    first_message: "must not appear".to_string(),
+                    workflow_node_session: false,
+                    workflow_execution_id: None,
+                },
+            ],
+            Vec::new(),
+            HashMap::new(),
+            &[],
+            &WorkspaceProjectionTarget::Session("session-secret-id".to_string()),
+        );
+        let WorkspaceTreeItemDto::Node(node) = &projected.snapshot.nodes[0] else {
+            panic!("expected node")
+        };
+        assert_eq!(node.title, "Investigate failure");
+        assert_eq!(node.status, "running");
+        assert_eq!(projected.snapshot.preferred_node_id, Some(node.id.clone()));
+        assert_eq!(
+            projected.index.session_node_ids.get("session-secret-id"),
+            Some(&node.id),
+            "NewSession lookup must return the opaque Workspace node ID"
+        );
+        assert!(
+            projected.index.records.is_empty(),
+            "Session lookup must not materialize node detail"
+        );
+
+        let value = serde_json::to_value(&projected.snapshot).unwrap();
+        let serialized = value.to_string();
+        assert!(!serialized.contains("session-secret-id"));
+        assert!(!serialized.contains("firstMessage"));
+        assert!(!serialized.contains("workflowNodeSession"));
+        assert!(!serialized.contains("executionId"));
+        assert!(!serialized.contains("attempt"));
+        assert!(!serialized.contains("artifact"));
+    }
+
+    #[test]
+    fn absent_definition_snapshot_never_reconstructs_tree_order_from_execution_history() {
+        let workflow_summary = summary();
+        let projected = project_workspace_tree(
+            "/repo",
+            Vec::new(),
+            vec![workflow_summary.clone()],
+            HashMap::from([(
+                workflow_summary.execution_id,
+                WorkflowExecutionProjection {
+                    execution: execution(vec![node(
+                        "history-only",
+                        "plan",
+                        NodeKindName::Session,
+                        1,
+                        NodeExecutionStatus::Running,
+                    )]),
+                    definition: None,
+                },
+            )]),
+            &[],
+            &WorkspaceProjectionTarget::Snapshot,
+        );
+        let WorkspaceTreeItemDto::Workflow(workflow) = &projected.snapshot.nodes[0] else {
+            panic!("expected workflow")
+        };
+        assert!(workflow.children.is_empty());
+    }
+
+    #[test]
+    fn declaration_order_and_queued_nodes_come_from_execution_snapshot() {
+        let definition = definition(vec![
+            command_definition("build"),
+            session_definition("review"),
+        ]);
+        let projected = project_workspace_tree(
+            "/repo",
+            Vec::new(),
+            vec![summary()],
+            projection(definition, execution(Vec::new())),
+            &[],
+            &WorkspaceProjectionTarget::Snapshot,
+        );
+        let WorkspaceTreeItemDto::Workflow(workflow) = &projected.snapshot.nodes[0] else {
+            panic!("expected workflow")
+        };
+        let titles = workflow
+            .children
+            .iter()
+            .map(|item| match item {
+                WorkspaceTreeItemDto::Node(node) => node.title.as_str(),
+                _ => panic!("expected leaf"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(titles, vec!["build", "review"]);
+        assert!(workflow.children.iter().all(|item| {
+            matches!(item, WorkspaceTreeItemDto::Node(node) if node.status == "queued")
+        }));
+    }
+
+    #[test]
+    fn fanout_children_are_nested_once_and_retry_attempts_share_one_node() {
+        let fanout = NodeDefinition {
+            name: "reviews".to_string(),
+            kind: NodeKind::Fanout(FanoutSpec {
+                child: vec!["review".to_string()],
+                items: None,
+            }),
+            ..Default::default()
+        };
+        let mut first = node(
+            "child-attempt-1",
+            "review",
+            NodeKindName::Session,
+            1,
+            NodeExecutionStatus::Failed,
+        );
+        first.fanout_parent = Some(crate::domain::workflow::FanoutParentRef {
+            parent_node: "reviews".to_string(),
+            parent_attempt: 1,
+            item_index: None,
+            child_index: 0,
+        });
+        let mut retry = node(
+            "child-attempt-2",
+            "review",
+            NodeKindName::Session,
+            2,
+            NodeExecutionStatus::Running,
+        );
+        retry.fanout_parent = Some(crate::domain::workflow::FanoutParentRef {
+            parent_node: "reviews".to_string(),
+            parent_attempt: 2,
+            item_index: None,
+            child_index: 0,
+        });
+        let projected = project_workspace_tree(
+            "/repo",
+            Vec::new(),
+            vec![summary()],
+            projection(
+                definition(vec![fanout, session_definition("review")]),
+                execution(vec![first, retry]),
+            ),
+            &[],
+            &WorkspaceProjectionTarget::Snapshot,
+        );
+        let WorkspaceTreeItemDto::Workflow(workflow) = &projected.snapshot.nodes[0] else {
+            panic!("expected workflow")
+        };
+        assert_eq!(workflow.children.len(), 1);
+        let WorkspaceTreeItemDto::Fanout(fanout) = &workflow.children[0] else {
+            panic!("expected fanout")
+        };
+        assert_eq!(fanout.children.len(), 1);
+        let WorkspaceTreeItemDto::Node(node) = &fanout.children[0] else {
+            panic!("expected node")
+        };
+        assert_eq!(node.title, "review");
+        assert_eq!(node.status, "running");
+        let serialized = serde_json::to_string(&projected.snapshot).unwrap();
+        assert!(!serialized.contains("child-attempt"));
+        assert!(!serialized.contains("parentAttempt"));
+        assert!(!serialized.contains("itemIndex"));
+        assert!(!serialized.contains("childIndex"));
+    }
+
+    #[test]
+    fn literal_fanout_items_expand_to_distinct_leaf_nodes_in_item_then_child_order() {
+        let fanout = NodeDefinition {
+            name: "matrix".to_string(),
+            kind: NodeKind::Fanout(FanoutSpec {
+                child: vec!["lint".to_string(), "test".to_string()],
+                items: Some(ItemsSource::Literal(vec![
+                    serde_json::json!({"package": "core"}),
+                    serde_json::json!({"package": "ui"}),
+                ])),
+            }),
+            ..Default::default()
+        };
+        let mut executions = Vec::new();
+        for (item_index, child_name) in [(0, "lint"), (0, "test"), (1, "lint"), (1, "test")] {
+            let child_index = usize::from(child_name == "test");
+            let mut child = node(
+                &format!("{child_name}-{item_index}"),
+                child_name,
+                NodeKindName::Command,
+                1,
+                NodeExecutionStatus::Succeeded,
+            );
+            child.started_at += item_index as f64;
+            child.fanout_parent = Some(crate::domain::workflow::FanoutParentRef {
+                parent_node: "matrix".to_string(),
+                parent_attempt: 1,
+                item_index: Some(item_index),
+                child_index,
+            });
+            executions.push(child);
+        }
+        let projected = project_workspace_tree(
+            "/repo",
+            Vec::new(),
+            vec![summary()],
+            projection(
+                definition(vec![
+                    fanout,
+                    command_definition("lint"),
+                    command_definition("test"),
+                ]),
+                execution(executions),
+            ),
+            &[],
+            &WorkspaceProjectionTarget::Snapshot,
+        );
+        let WorkspaceTreeItemDto::Workflow(workflow) = &projected.snapshot.nodes[0] else {
+            panic!("expected workflow")
+        };
+        assert_eq!(workflow.children.len(), 1, "children must not be flat");
+        let WorkspaceTreeItemDto::Fanout(fanout) = &workflow.children[0] else {
+            panic!("expected fanout")
+        };
+        let titles = fanout
+            .children
+            .iter()
+            .map(|item| match item {
+                WorkspaceTreeItemDto::Node(node) => node.title.as_str(),
+                _ => panic!("expected leaf"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(titles, vec!["lint", "test", "lint", "test"]);
+        let ids = fanout
+            .children
+            .iter()
+            .map(|item| match item {
+                WorkspaceTreeItemDto::Node(node) => node.id.as_str(),
+                _ => panic!("expected leaf"),
+            })
+            .collect::<HashSet<_>>();
+        assert_eq!(ids.len(), 4);
+    }
+
+    #[test]
+    fn branch_status_capabilities_and_session_activity_are_backend_aggregated() {
+        let fanout = NodeDefinition {
+            name: "checks".to_string(),
+            kind: NodeKind::Fanout(FanoutSpec {
+                child: vec!["lint".to_string(), "test".to_string()],
+                items: None,
+            }),
+            ..Default::default()
+        };
+        let mut plan = node(
+            "plan-execution",
+            "plan",
+            NodeKindName::Session,
+            1,
+            NodeExecutionStatus::Succeeded,
+        );
+        plan.session_id = Some("plan-session".to_string());
+        let mut parent = node(
+            "fanout-parent",
+            "checks",
+            NodeKindName::Fanout,
+            1,
+            NodeExecutionStatus::Succeeded,
+        );
+        parent.completed_at = Some(3.0);
+        let mut lint = node(
+            "lint-execution",
+            "lint",
+            NodeKindName::Command,
+            1,
+            NodeExecutionStatus::Failed,
+        );
+        lint.fanout_parent = Some(crate::domain::workflow::FanoutParentRef {
+            parent_node: "checks".to_string(),
+            parent_attempt: 1,
+            item_index: None,
+            child_index: 0,
+        });
+        let mut test = node(
+            "test-execution",
+            "test",
+            NodeKindName::Command,
+            1,
+            NodeExecutionStatus::WaitingApproval,
+        );
+        test.fanout_parent = Some(crate::domain::workflow::FanoutParentRef {
+            parent_node: "checks".to_string(),
+            parent_attempt: 1,
+            item_index: None,
+            child_index: 1,
+        });
+        let mut runtime = execution(vec![plan, parent, lint, test]);
+        runtime.status = ExecutionStatus::WaitingApproval;
+        let mut workflow_summary = summary();
+        workflow_summary.status = ExecutionStatus::WaitingApproval;
+        let projected = project_workspace_tree(
+            "/repo",
             vec![WorkspaceSessionInput {
-                id: "session-plan".to_string(),
+                id: "plan-session".to_string(),
                 worktree_path: "/repo".to_string(),
                 state: WorkspaceSessionState::Active,
-                updated_at: 3.0,
-                first_message: "Plan".to_string(),
+                updated_at: 5.0,
+                first_message: "body excluded".to_string(),
                 workflow_node_session: true,
+                workflow_execution_id: Some(summary().execution_id),
             }],
-            vec![summary.clone()],
-            HashMap::from([(summary.execution_id.clone(), execution)]),
+            vec![workflow_summary],
+            projection(
+                definition(vec![
+                    session_definition("plan"),
+                    fanout,
+                    command_definition("lint"),
+                    command_definition("test"),
+                ]),
+                runtime,
+            ),
             &[],
+            &WorkspaceProjectionTarget::Snapshot,
         );
-
-        let WorkspaceTreeNodeDto::Workflow(workflow) = &nodes[0] else {
-            panic!("expected workflow execution")
+        let WorkspaceTreeItemDto::Workflow(workflow) = &projected.snapshot.nodes[0] else {
+            panic!("expected workflow")
         };
-        assert_eq!(workflow.node_executions.len(), 1);
+        assert_eq!(workflow.status, "waiting");
+        assert!(workflow.capabilities.can_stop);
+        assert!(!workflow.capabilities.can_resume);
+        assert!(workflow.capabilities.can_abort);
+        assert!(!workflow.capabilities.can_archive);
+
+        let WorkspaceTreeItemDto::Node(plan) = &workflow.children[0] else {
+            panic!("expected plan")
+        };
         assert_eq!(
-            workflow.node_executions[0].node_execution_id,
-            "node-execution-plan"
+            plan.status, "running",
+            "live session overrides completed attempt"
         );
-        let value = serde_json::to_value(workflow).unwrap();
-        assert!(value.get("steps").is_none());
-        assert!(value["nodeExecutions"][0].get("stepName").is_none());
-        assert!(value["nodeExecutions"][0].get("runIndex").is_none());
+        let WorkspaceTreeItemDto::Fanout(fanout) = &workflow.children[1] else {
+            panic!("expected fanout")
+        };
+        assert_eq!(fanout.status, "failed");
+        let WorkspaceTreeItemDto::Node(waiting) = &fanout.children[1] else {
+            panic!("expected waiting child")
+        };
+        assert_eq!(waiting.status, "waiting");
+        assert!(waiting.capabilities.can_approve);
     }
 
     #[test]
-    fn missing_execution_projection_does_not_reconstruct_legacy_nodes() {
-        let nodes = project_workspace_tree_nodes(Vec::new(), vec![summary()], HashMap::new(), &[]);
-        let WorkspaceTreeNodeDto::Workflow(workflow) = &nodes[0] else {
-            panic!("expected workflow execution")
-        };
-        assert!(workflow.node_executions.is_empty());
-    }
-
-    #[test]
-    fn interrupted_execution_projects_checkpoint_and_backend_owned_actions() {
-        let summary = WorkflowExecutionSummary {
-            status: ExecutionStatus::Interrupted,
-            current_node: None,
-            interruption_reason: Some(ExecutionInterruptionReason::Stop),
-            resume_from_node: Some("review".to_string()),
-            ..summary()
-        };
-        let nodes =
-            project_workspace_tree_nodes(Vec::new(), vec![summary.clone()], HashMap::new(), &[]);
-
-        let WorkspaceTreeNodeDto::Workflow(workflow) = &nodes[0] else {
-            panic!("expected workflow execution")
-        };
-        assert_eq!(workflow.status, "interrupted");
-        assert!(!workflow.can_stop);
-        assert!(workflow.can_resume);
-        assert!(workflow.can_abort);
-        assert_eq!(workflow.interruption_reason.as_deref(), Some("stop"));
-        assert_eq!(workflow.resume_from_node.as_deref(), Some("review"));
-
-        let value = serde_json::to_value(workflow).unwrap();
-        assert_eq!(value["interruptionReason"], "stop");
-        assert_eq!(value["resumeFromNode"], "review");
-        assert_eq!(value["canStop"], false);
-        assert_eq!(value["canResume"], true);
-        assert_eq!(value["canAbort"], true);
-
-        let execution = WorkflowExecution {
-            status: ExecutionStatus::Interrupted,
-            current_node: None,
-            interruption_reason: Some(ExecutionInterruptionReason::Stop),
-            resume_from_node: Some("review".to_string()),
-            node_executions: vec![node_execution(
-                "node-execution-review",
-                "review",
-                NodeExecutionStatus::Aborted,
-                None,
-            )],
-            ..execution()
-        };
-        let detail = workspace_node_detail(
-            &summary,
-            &execution,
-            &execution.node_executions[0],
-            &HashMap::new(),
+    fn command_detail_contains_only_masked_snapshot_and_standard_result() {
+        let mut command = node(
+            "command-attempt",
+            "build",
+            NodeKindName::Command,
+            1,
+            NodeExecutionStatus::Succeeded,
         );
-        assert_eq!(detail.execution_status, "interrupted");
-        assert!(!detail.can_stop);
-        assert!(detail.can_resume);
-        assert!(detail.can_abort);
-        assert_eq!(detail.interruption_reason.as_deref(), Some("stop"));
-        assert_eq!(detail.resume_from_node.as_deref(), Some("review"));
-
-        let value = serde_json::to_value(detail).unwrap();
-        assert_eq!(value["executionStatus"], "interrupted");
-        assert_eq!(value["interruptionReason"], "stop");
-        assert_eq!(value["resumeFromNode"], "review");
-        assert_eq!(value["nodeExecutionId"], "node-execution-review");
-        assert!(value.get("nodeExecution").is_none());
-    }
-
-    #[test]
-    fn node_detail_does_not_fall_back_to_stale_summary_checkpoint() {
-        let stale_summary = WorkflowExecutionSummary {
-            status: ExecutionStatus::Interrupted,
-            current_node: None,
-            interruption_reason: Some(ExecutionInterruptionReason::Stop),
-            resume_from_node: Some("review".to_string()),
-            ..summary()
-        };
-        let execution = execution();
-
-        let detail = workspace_node_detail(
-            &stale_summary,
-            &execution,
-            &execution.node_executions[0],
-            &HashMap::new(),
-        );
-
-        assert_eq!(detail.execution_status, "running");
-        assert_eq!(detail.interruption_reason, None);
-        assert_eq!(detail.resume_from_node, None);
-    }
-
-    #[test]
-    fn multiple_waiting_fanout_children_are_individually_approvable() {
-        let summary = summary();
-        let execution = WorkflowExecution {
-            status: ExecutionStatus::WaitingApproval,
-            current_node: Some("reviews".to_string()),
-            node_executions: vec![
-                node_execution("parent", "reviews", NodeExecutionStatus::Running, None),
-                node_execution(
-                    "child-1",
-                    "review",
-                    NodeExecutionStatus::WaitingApproval,
-                    Some(FanoutParentRef {
-                        parent_node: "reviews".to_string(),
-                        parent_attempt: 1,
-                        item_index: Some(0),
-                        child_index: 0,
-                    }),
-                ),
-                node_execution(
-                    "child-2",
-                    "review",
-                    NodeExecutionStatus::WaitingApproval,
-                    Some(FanoutParentRef {
-                        parent_node: "reviews".to_string(),
-                        parent_attempt: 1,
-                        item_index: Some(1),
-                        child_index: 0,
-                    }),
-                ),
-            ],
-            approval_target: None,
-            ..execution()
-        };
-        let nodes = project_workspace_tree_nodes(
-            Vec::new(),
-            vec![summary.clone()],
-            HashMap::from([(summary.execution_id.clone(), execution)]),
-            &[],
-        );
-
-        let WorkspaceTreeNodeDto::Workflow(workflow) = &nodes[0] else {
-            panic!("expected workflow execution")
-        };
-        let approvable = workflow
-            .node_executions
-            .iter()
-            .filter(|node| node.can_approve)
-            .map(|node| node.node_execution_id.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(approvable, vec!["child-1", "child-2"]);
-    }
-
-    #[test]
-    fn single_waiting_approval_still_sets_can_approve() {
-        let summary = summary();
-        let execution = WorkflowExecution {
-            status: ExecutionStatus::WaitingApproval,
-            node_executions: vec![node_execution(
-                "node-execution-plan",
-                "plan",
-                NodeExecutionStatus::WaitingApproval,
-                None,
-            )],
-            approval_target: Some(crate::domain::workflow::ApprovalTarget {
-                node_execution_id: "node-execution-plan".to_string(),
-                node_name: "plan".to_string(),
-                session_id: None,
+        command.display_command = Some("echo ***".to_string());
+        command.completed_at = Some(3.0);
+        command.artifact = Some(Artifact {
+            node_name: "build".to_string(),
+            contract: Some("BuildOutput".to_string()),
+            value: serde_json::json!({
+                "ok": true,
+                "exit_code": 0,
+                "duration": 42,
+                "stdout": "done",
+                "stderr": "",
+                "private_contract_field": "must not leak"
             }),
-            ..execution()
-        };
-        let nodes = project_workspace_tree_nodes(
+            produced_at: 3.0,
+        });
+        let projected = project_workspace_tree(
+            "/repo",
             Vec::new(),
-            vec![summary.clone()],
-            HashMap::from([(summary.execution_id.clone(), execution)]),
+            vec![summary()],
+            projection(
+                definition(vec![command_definition("build")]),
+                execution(vec![command]),
+            ),
             &[],
+            &workflow_node_target("build"),
+        );
+        let WorkspaceTreeItemDto::Workflow(workflow) = &projected.snapshot.nodes[0] else {
+            panic!("expected workflow")
+        };
+        let WorkspaceTreeItemDto::Node(node) = &workflow.children[0] else {
+            panic!("expected node")
+        };
+        let detail = &projected.index.records[&node.id].detail;
+        assert_eq!(projected.index.records.len(), 1);
+        assert!(projected.index.session_node_ids.is_empty());
+        let WorkspaceNodeContentDto::Command(content) = &detail.content else {
+            panic!("expected command content")
+        };
+        assert_eq!(content.display_command.as_deref(), Some("echo ***"));
+        assert_eq!(content.result.as_ref().unwrap().duration, 42);
+        let detail_json = serde_json::to_string(detail).unwrap();
+        assert!(!detail_json.contains("private_contract_field"));
+        let summary_json = serde_json::to_string(&projected.snapshot).unwrap();
+        assert!(!summary_json.contains("echo ***"));
+        assert!(!summary_json.contains("done"));
+    }
+
+    #[test]
+    fn snapshot_mode_never_materializes_command_payloads() {
+        const DISPLAY_SENTINEL: &str = "SNAPSHOT_MUST_NOT_CLONE_DISPLAY_COMMAND";
+        const OUTPUT_SENTINEL: &str = "SNAPSHOT_MUST_NOT_CLONE_COMMAND_OUTPUT";
+        let mut command = node(
+            "command-attempt",
+            "build",
+            NodeKindName::Command,
+            1,
+            NodeExecutionStatus::Succeeded,
+        );
+        command.display_command = Some(DISPLAY_SENTINEL.to_string());
+        command.artifact = Some(Artifact {
+            node_name: "build".to_string(),
+            contract: None,
+            value: serde_json::json!({
+                "exit_code": 0,
+                "duration": 1,
+                "stdout": OUTPUT_SENTINEL,
+                "stderr": OUTPUT_SENTINEL
+            }),
+            produced_at: 3.0,
+        });
+        let projected = project_workspace_tree(
+            "/repo",
+            Vec::new(),
+            vec![summary()],
+            projection(
+                definition(vec![command_definition("build")]),
+                execution(vec![command]),
+            ),
+            &[],
+            &WorkspaceProjectionTarget::Snapshot,
         );
 
-        let WorkspaceTreeNodeDto::Workflow(workflow) = &nodes[0] else {
-            panic!("expected workflow execution")
+        assert!(projected.index.records.is_empty());
+        assert!(projected.index.session_node_ids.is_empty());
+        let summary_json = serde_json::to_string(&projected.snapshot).unwrap();
+        assert!(!summary_json.contains(DISPLAY_SENTINEL));
+        assert!(!summary_json.contains(OUTPUT_SENTINEL));
+    }
+
+    #[test]
+    fn latest_waiting_attempt_owns_approval_and_retry_stable_id() {
+        let failed = node(
+            "attempt-1",
+            "review",
+            NodeKindName::Session,
+            1,
+            NodeExecutionStatus::Failed,
+        );
+        let waiting = node(
+            "attempt-2",
+            "review",
+            NodeKindName::Session,
+            2,
+            NodeExecutionStatus::WaitingApproval,
+        );
+        let first = project_workspace_tree(
+            "/repo",
+            Vec::new(),
+            vec![summary()],
+            projection(
+                definition(vec![session_definition("review")]),
+                execution(vec![failed.clone()]),
+            ),
+            &[],
+            &WorkspaceProjectionTarget::Snapshot,
+        );
+        let retried = project_workspace_tree(
+            "/repo",
+            Vec::new(),
+            vec![summary()],
+            projection(
+                definition(vec![session_definition("review")]),
+                execution(vec![failed, waiting]),
+            ),
+            &[],
+            &workflow_node_target("review"),
+        );
+        let leaf_id = |projection: &WorkspaceProjection| {
+            let WorkspaceTreeItemDto::Workflow(workflow) = &projection.snapshot.nodes[0] else {
+                panic!("expected workflow")
+            };
+            let WorkspaceTreeItemDto::Node(node) = &workflow.children[0] else {
+                panic!("expected node")
+            };
+            node.id.clone()
         };
-        assert!(workflow.node_executions[0].can_approve);
+        let first_id = leaf_id(&first);
+        let retried_id = leaf_id(&retried);
+        assert_eq!(first_id, retried_id);
+        let record = &retried.index.records[&retried_id];
+        assert!(record.detail.capabilities.can_approve);
+        assert_eq!(
+            record.approval.as_ref().unwrap().node_execution_id,
+            "attempt-2"
+        );
+    }
+
+    #[test]
+    fn missing_session_keeps_node_but_returns_no_unusable_session_id() {
+        let mut running = node(
+            "session-node",
+            "plan",
+            NodeKindName::Session,
+            1,
+            NodeExecutionStatus::Running,
+        );
+        running.session_id = Some("missing-session".to_string());
+        let projected = project_workspace_tree(
+            "/repo",
+            Vec::new(),
+            vec![summary()],
+            projection(
+                definition(vec![session_definition("plan")]),
+                execution(vec![running]),
+            ),
+            &[],
+            &workflow_node_target("plan"),
+        );
+        let WorkspaceTreeItemDto::Workflow(workflow) = &projected.snapshot.nodes[0] else {
+            panic!("expected workflow")
+        };
+        let WorkspaceTreeItemDto::Node(node) = &workflow.children[0] else {
+            panic!("expected node")
+        };
+        assert_eq!(node.status, "running");
+        let WorkspaceNodeContentDto::Session(content) =
+            &projected.index.records[&node.id].detail.content
+        else {
+            panic!("expected session")
+        };
+        assert_eq!(content.session_id, None);
+        assert!(projected.index.session_node_ids.is_empty());
+    }
+
+    #[test]
+    fn stored_workflow_session_is_available_to_detail_and_opaque_lookup() {
+        let mut running = node(
+            "session-node",
+            "plan",
+            NodeKindName::Session,
+            1,
+            NodeExecutionStatus::Running,
+        );
+        running.session_id = Some("stored-session".to_string());
+        let stored_session = WorkspaceSessionInput {
+            id: "stored-session".to_string(),
+            worktree_path: "/repo/".to_string(),
+            state: WorkspaceSessionState::Active,
+            updated_at: 4.0,
+            first_message: "stored body".to_string(),
+            workflow_node_session: true,
+            workflow_execution_id: Some(summary().execution_id),
+        };
+        let definition = definition(vec![session_definition("plan")]);
+        let runtime = execution(vec![running]);
+        let detail_projection = project_workspace_tree(
+            "/repo",
+            vec![stored_session.clone()],
+            vec![summary()],
+            projection(definition.clone(), runtime.clone()),
+            &[],
+            &workflow_node_target("plan"),
+        );
+        let node_id = workflow_node_target("plan");
+        let WorkspaceProjectionTarget::Node(node_id) = node_id else {
+            unreachable!()
+        };
+        let WorkspaceNodeContentDto::Session(content) =
+            &detail_projection.index.records[&node_id].detail.content
+        else {
+            panic!("expected session")
+        };
+        assert_eq!(content.session_id.as_deref(), Some("stored-session"));
+
+        let lookup_projection = project_workspace_tree(
+            "/repo",
+            vec![stored_session],
+            vec![summary()],
+            projection(definition, runtime),
+            &[],
+            &WorkspaceProjectionTarget::Session("stored-session".to_string()),
+        );
+        assert_eq!(
+            lookup_projection
+                .index
+                .session_node_ids
+                .get("stored-session"),
+            Some(&node_id)
+        );
+        assert!(lookup_projection.index.records.is_empty());
+    }
+
+    #[test]
+    fn archived_workflow_is_hidden_from_tree_but_selected_session_detail_remains_available() {
+        let mut running = node(
+            "session-node",
+            "plan",
+            NodeKindName::Session,
+            1,
+            NodeExecutionStatus::Running,
+        );
+        running.session_id = Some("stored-session".to_string());
+        let stored_session = WorkspaceSessionInput {
+            id: "stored-session".to_string(),
+            worktree_path: "/repo".to_string(),
+            state: WorkspaceSessionState::Active,
+            updated_at: 4.0,
+            first_message: String::new(),
+            workflow_node_session: true,
+            workflow_execution_id: Some(summary().execution_id),
+        };
+        let archives = vec![WorkflowExecutionManualArchiveRecord {
+            execution_id: summary().execution_id,
+            archived_at: 5.0,
+        }];
+
+        let snapshot = project_workspace_tree(
+            "/repo",
+            vec![stored_session.clone()],
+            vec![summary()],
+            projection(
+                definition(vec![session_definition("plan")]),
+                execution(vec![running.clone()]),
+            ),
+            &archives,
+            &WorkspaceProjectionTarget::Snapshot,
+        );
+        assert!(
+            snapshot.snapshot.nodes.is_empty(),
+            "archive still removes the Workflow branch from the tree"
+        );
+
+        let target = workflow_node_target("plan");
+        let WorkspaceProjectionTarget::Node(node_id) = &target else {
+            unreachable!()
+        };
+        let detail = project_workspace_tree(
+            "/repo",
+            vec![stored_session],
+            vec![summary()],
+            projection(
+                definition(vec![session_definition("plan")]),
+                execution(vec![running]),
+            ),
+            &archives,
+            &target,
+        );
+        let WorkspaceNodeContentDto::Session(content) =
+            &detail.index.records[node_id].detail.content
+        else {
+            panic!("expected session detail")
+        };
+        assert_eq!(content.session_id.as_deref(), Some("stored-session"));
+    }
+
+    #[test]
+    fn failure_metadata_never_enters_workspace_summary_or_detail() {
+        let mut failed = node(
+            "internal-node-id",
+            "build",
+            NodeKindName::Command,
+            1,
+            NodeExecutionStatus::Failed,
+        );
+        failed.failure = Some(NodeExecutionFailure {
+            reason: "raw internal failure".to_string(),
+            kind: NodeExecutionFailureKind::InfrastructureCrash,
+        });
+        let projected = project_workspace_tree(
+            "/repo",
+            Vec::new(),
+            vec![summary()],
+            projection(
+                definition(vec![command_definition("build")]),
+                execution(vec![failed]),
+            ),
+            &[],
+            &workflow_node_target("build"),
+        );
+        let serialized = serde_json::to_string(&projected.snapshot).unwrap();
+        assert!(!serialized.contains("internal-node-id"));
+        assert!(!serialized.contains("raw internal failure"));
+        let details = projected
+            .index
+            .records
+            .values()
+            .map(|record| serde_json::to_string(&record.detail).unwrap())
+            .collect::<String>();
+        assert!(!details.contains("internal-node-id"));
+        assert!(!details.contains("raw internal failure"));
     }
 }

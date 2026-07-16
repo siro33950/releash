@@ -33,6 +33,7 @@ pub(crate) struct FanoutChildExpansion {
 #[derive(Debug, Clone)]
 pub(crate) struct ReusableFanoutChild {
     pub(crate) result: Option<String>,
+    pub(crate) display_command: Option<String>,
     pub(crate) artifact: Option<serde_json::Value>,
     pub(crate) contract: Option<String>,
     pub(crate) token_usage: Option<TokenUsage>,
@@ -226,6 +227,19 @@ pub(crate) fn apply_fanout_runtime_state(
                     execution.session_id = Some(session_id.clone());
                 }
             }
+            if let Some(display_command) = child
+                .reused
+                .as_ref()
+                .and_then(|reused| reused.display_command.clone())
+            {
+                if let Some(execution) = exec
+                    .node_executions
+                    .iter_mut()
+                    .find(|execution| execution.id == child.node_execution_id)
+                {
+                    execution.display_command = Some(display_command);
+                }
+            }
             if let Some(reused) = child.reused.as_ref() {
                 exec.complete_node_execution(
                     &child.node_execution_id,
@@ -380,6 +394,16 @@ mod tests {
         }
     }
 
+    fn command_node(name: &str, command: &str) -> NodeDefinition {
+        NodeDefinition {
+            name: name.to_string(),
+            kind: NodeKind::Command(CommandSpec {
+                command: command.to_string(),
+            }),
+            ..Default::default()
+        }
+    }
+
     fn fanout_node(children: &[&str], items: Option<ItemsSource>) -> NodeDefinition {
         NodeDefinition {
             name: "fanout-review".to_string(),
@@ -499,13 +523,14 @@ mod tests {
     fn apply_fanout_runtime_state_seeds_reused_child_without_a_session() {
         let mut exec = workflow_execution_with_nodes(vec![
             fanout_node(&["review"], None),
-            session_node("review"),
+            command_node("review", "printf confirmed"),
         ]);
         exec.node_execution_counts
             .insert("fanout-review".to_string(), 2);
         let mut context = prepare_fanout_start_context(&exec).unwrap();
         context.children[0].reused = Some(ReusableFanoutChild {
             result: Some("confirmed".to_string()),
+            display_command: Some("printf confirmed".to_string()),
             artifact: Some(serde_json::json!({"ok": true})),
             contract: Some("review".to_string()),
             token_usage: Some(TokenUsage {
@@ -531,6 +556,10 @@ mod tests {
             projected.status,
             crate::adaptor::gateway::workflow::state::NodeExecutionStatus::Succeeded
         );
+        assert_eq!(
+            projected.display_command.as_deref(),
+            Some("printf confirmed")
+        );
     }
 
     #[test]
@@ -545,6 +574,7 @@ mod tests {
         let pending_node_execution_id = context.children[1].node_execution_id.clone();
         context.children[0].reused = Some(ReusableFanoutChild {
             result: Some("already confirmed".to_string()),
+            display_command: None,
             artifact: Some(serde_json::json!({"verdict": "pass"})),
             contract: Some("review".to_string()),
             token_usage: Some(TokenUsage {

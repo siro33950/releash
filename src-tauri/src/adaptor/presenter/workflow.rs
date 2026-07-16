@@ -105,6 +105,7 @@ pub fn node_execution_to_view(node: workflow::NodeExecution) -> workflow_wire::N
         attempt: node.attempt,
         status: node_status_to_view(node.status),
         session_id: node.session_id,
+        display_command: node.display_command,
         result_summary: node.result_summary,
         artifact: node.artifact.map(artifact_to_view),
         token_usage: node.token_usage.map(token_usage_to_view),
@@ -221,6 +222,7 @@ mod tests {
             attempt: 1,
             status: workflow::NodeExecutionStatus::WaitingApproval,
             session_id: Some("session-1".to_string()),
+            display_command: None,
             result_summary: None,
             artifact: Some(artifact("review")),
             token_usage: Some(workflow::TokenUsage {
@@ -276,5 +278,18 @@ mod tests {
         assert_eq!(value["approvalTarget"]["sessionId"], "session-1");
         assert_eq!(value["interruptionReason"], "stop");
         assert_eq!(value["resumeFromNode"], "review");
+    }
+
+    #[test]
+    fn maps_masked_command_display_to_camel_case_wire_field() {
+        let mut command = node();
+        command.kind = workflow::NodeKindName::Command;
+        command.session_id = None;
+        command.display_command = Some("printf '[REDACTED]'".to_string());
+
+        let value = serde_json::to_value(node_execution_to_view(command)).unwrap();
+
+        assert_eq!(value["displayCommand"], "printf '[REDACTED]'");
+        assert!(value.get("display_command").is_none());
     }
 }

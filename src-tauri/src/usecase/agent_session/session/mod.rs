@@ -21,6 +21,7 @@ use crate::domain::agent_session::services::{
 use crate::domain::agent_session::value_objects::{
     ToolOutputRef as DomainToolOutputRef, ToolOutputSummary as DomainToolOutputSummary,
 };
+use crate::domain::repository::normalize_repo_path;
 use crate::domain::workflow::WorkflowNodeContext;
 use crate::usecase::agent_session::context_meta::ContextEpochMeta;
 
@@ -630,7 +631,7 @@ impl From<SessionMeta> for SessionReviewContext {
     fn from(meta: SessionMeta) -> Self {
         Self {
             id: meta.id,
-            worktree_path: meta.worktree_path,
+            worktree_path: normalize_repo_path(&meta.worktree_path),
             state: meta.state,
             selected_model: meta.selected_model,
             backend_id: Some(meta.backend_id),
@@ -1048,7 +1049,7 @@ impl SessionMeta {
     pub fn from_session(session: &ChatSession) -> Self {
         Self {
             id: session.id.clone(),
-            worktree_path: session.worktree_path.clone(),
+            worktree_path: normalize_repo_path(&session.worktree_path),
             state: session.state.clone(),
             created_at: session.created_at,
             updated_at: session.updated_at,
@@ -1073,7 +1074,7 @@ impl SessionMeta {
     pub fn to_session(&self, messages: Vec<ChatMessage>) -> ChatSession {
         ChatSession {
             id: self.id.clone(),
-            worktree_path: self.worktree_path.clone(),
+            worktree_path: normalize_repo_path(&self.worktree_path),
             messages,
             state: self.state.clone(),
             created_at: self.created_at,
@@ -1094,7 +1095,7 @@ impl SessionMeta {
     pub fn to_summary(&self) -> SessionSummary {
         SessionSummary {
             id: self.id.clone(),
-            worktree_path: self.worktree_path.clone(),
+            worktree_path: normalize_repo_path(&self.worktree_path),
             state: self.state.clone(),
             created_at: self.created_at,
             updated_at: self.updated_at,
@@ -1120,7 +1121,7 @@ impl ChatSession {
     pub fn to_summary(&self) -> SessionSummary {
         SessionSummary {
             id: self.id.clone(),
-            worktree_path: self.worktree_path.clone(),
+            worktree_path: normalize_repo_path(&self.worktree_path),
             state: self.state.clone(),
             created_at: self.created_at,
             updated_at: self.updated_at,
@@ -1317,7 +1318,7 @@ fn build_new_session(
     let now = now_timestamp();
     ChatSession {
         id: uuid::Uuid::new_v4().to_string(),
-        worktree_path: worktree_path.to_string(),
+        worktree_path: normalize_repo_path(worktree_path),
         messages: Vec::new(),
         state: SessionState::Active,
         created_at: now,
@@ -1708,6 +1709,36 @@ mod tests {
         session.workflow_node_session = true;
         assert!(session.is_workflow_node_session());
         assert!(session.to_summary().is_workflow_node_session());
+    }
+
+    #[test]
+    fn session_worktree_path_is_normalized_across_creation_and_read_models() {
+        let created = build_new_session(
+            r"C:\repo\worktree/",
+            Some("claude".to_string()),
+            crate::domain::agent_session::PermissionMode::Edit,
+            None,
+            false,
+            false,
+            None,
+        );
+        assert_eq!(created.worktree_path, "C:/repo/worktree");
+
+        let mut legacy_session = created.clone();
+        legacy_session.worktree_path = "/repo/".to_string();
+        assert_eq!(legacy_session.to_summary().worktree_path, "/repo");
+
+        let from_session = SessionMeta::from_session(&legacy_session);
+        assert_eq!(from_session.worktree_path, "/repo");
+
+        let mut legacy_meta = from_session;
+        legacy_meta.worktree_path = "/repo/".to_string();
+        assert_eq!(legacy_meta.to_session(Vec::new()).worktree_path, "/repo");
+        assert_eq!(legacy_meta.to_summary().worktree_path, "/repo");
+        assert_eq!(
+            SessionReviewContext::from(legacy_meta).worktree_path,
+            "/repo"
+        );
     }
 
     #[test]

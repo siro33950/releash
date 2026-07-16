@@ -1,14 +1,19 @@
+use std::sync::Arc;
+
 use tauri::State;
 
 use crate::adaptor::controller::state::AppState;
 use crate::usecase::workflow::{
-    WorkspaceTreeNodeDto, WorkspaceWorkflowHistoryItemDto, WorkspaceWorkflowNodeDetailDto,
+    WorkflowRuntimeUsecase, WorkspaceNodeDetailDto, WorkspaceTreeSnapshotDto,
+    WorkspaceWorkflowHistoryItemDto,
 };
 
 pub(super) const COMMAND_NAMES: &[&str] = &[
     "list_workspace_worktree_nodes",
     "list_workspace_workflow_history",
-    "get_workspace_workflow_node_detail",
+    "get_workspace_node_detail",
+    "get_workspace_session_node_id",
+    "approve_workspace_node",
     "archive_workspace_workflow_execution",
     "restore_workspace_workflow_execution",
 ];
@@ -22,7 +27,9 @@ pub(crate) fn invoke_handler(
     tauri::generate_handler![
         list_workspace_worktree_nodes,
         list_workspace_workflow_history,
-        get_workspace_workflow_node_detail,
+        get_workspace_node_detail,
+        get_workspace_session_node_id,
+        approve_workspace_node,
         archive_workspace_workflow_execution,
         restore_workspace_workflow_execution,
     ]
@@ -32,7 +39,7 @@ pub(crate) fn invoke_handler(
 pub async fn list_workspace_worktree_nodes(
     app_state: State<'_, AppState>,
     worktree_path: String,
-) -> Result<Vec<WorkspaceTreeNodeDto>, String> {
+) -> Result<WorkspaceTreeSnapshotDto, String> {
     let workflow_usecase = app_state.workflow_usecase.clone();
     let nodes = tokio::task::spawn_blocking(move || {
         let sessions = workflow_usecase
@@ -64,28 +71,65 @@ pub async fn list_workspace_workflow_history(
 }
 
 #[tauri::command]
-pub async fn get_workspace_workflow_node_detail(
+pub async fn get_workspace_node_detail(
     app_state: State<'_, AppState>,
     worktree_path: String,
-    execution_id: String,
-    node_execution_id: String,
-) -> Result<Option<WorkspaceWorkflowNodeDetailDto>, String> {
+    node_id: String,
+) -> Result<Option<WorkspaceNodeDetailDto>, String> {
     let workflow_usecase = app_state.workflow_usecase.clone();
     tokio::task::spawn_blocking(move || {
         let sessions = workflow_usecase
             .collect_workspace_session_inputs(&worktree_path)
             .map_err(|e| e.to_string())?;
         workflow_usecase
-            .get_workspace_workflow_node_detail(
-                &worktree_path,
-                &execution_id,
-                &node_execution_id,
-                sessions,
-            )
+            .get_workspace_node_detail(&worktree_path, &node_id, sessions)
             .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("task join error: {e}"))?
+}
+
+#[tauri::command]
+pub async fn get_workspace_session_node_id(
+    app_state: State<'_, AppState>,
+    worktree_path: String,
+    session_id: String,
+) -> Result<Option<String>, String> {
+    let workflow_usecase = app_state.workflow_usecase.clone();
+    tokio::task::spawn_blocking(move || {
+        let sessions = workflow_usecase
+            .collect_workspace_session_inputs(&worktree_path)
+            .map_err(|e| e.to_string())?;
+        workflow_usecase
+            .get_workspace_session_node_id(&worktree_path, &session_id, sessions)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
+}
+
+#[tauri::command]
+pub async fn approve_workspace_node(
+    app_state: State<'_, AppState>,
+    runtime: State<'_, Arc<WorkflowRuntimeUsecase>>,
+    worktree_path: String,
+    node_id: String,
+) -> Result<(), String> {
+    let workflow_usecase = app_state.workflow_usecase.clone();
+    let command = tokio::task::spawn_blocking(move || {
+        let sessions = workflow_usecase
+            .collect_workspace_session_inputs(&worktree_path)
+            .map_err(|e| e.to_string())?;
+        workflow_usecase
+            .resolve_workspace_node_approval(&worktree_path, &node_id, sessions)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))??;
+    runtime
+        .resolve_approval(command)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -122,6 +166,8 @@ pub async fn restore_workspace_workflow_execution(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use crate::domain::workflow::WorkflowError;
     use crate::usecase::workflow::{
         WorkspaceSessionGateway, WorkspaceSessionInput, WorkspaceSessionState,
@@ -130,56 +176,87 @@ mod tests {
     struct FakeWorkspaceSessionGateway {
         active: Vec<WorkspaceSessionInput>,
         closed: Vec<WorkspaceSessionInput>,
+        requested_worktree_paths: Arc<Mutex<Vec<String>>>,
     }
 
     impl WorkspaceSessionGateway for FakeWorkspaceSessionGateway {
         fn list_active_sessions(
             &self,
-            _worktree_path: &str,
+            worktree_path: &str,
         ) -> Result<Vec<WorkspaceSessionInput>, WorkflowError> {
+            self.requested_worktree_paths
+                .lock()
+                .unwrap()
+                .push(worktree_path.to_string());
             Ok(self.active.clone())
         }
 
         fn list_closed_sessions(
             &self,
-            _worktree_path: &str,
+            worktree_path: &str,
         ) -> Result<Vec<WorkspaceSessionInput>, WorkflowError> {
+            self.requested_worktree_paths
+                .lock()
+                .unwrap()
+                .push(worktree_path.to_string());
             Ok(self.closed.clone())
         }
     }
 
     fn session(
         id: &str,
+        worktree_path: &str,
         state: WorkspaceSessionState,
         workflow_node_session: bool,
     ) -> WorkspaceSessionInput {
         WorkspaceSessionInput {
             id: id.to_string(),
-            worktree_path: "/repo/wt".to_string(),
+            worktree_path: worktree_path.to_string(),
             state,
             updated_at: 2.0,
             first_message: id.to_string(),
             workflow_node_session,
+            workflow_execution_id: None,
         }
     }
 
     #[test]
     fn workspace_session_collection_includes_closed_workflow_nodes_only() {
+        let worktree = tempfile::tempdir().unwrap();
+        let canonical_worktree = worktree.path().canonicalize().unwrap();
+        let canonical_worktree = canonical_worktree.to_string_lossy().to_string();
+        let requested_worktree_paths = Arc::new(Mutex::new(Vec::new()));
         let gateway = FakeWorkspaceSessionGateway {
-            active: vec![session("active", WorkspaceSessionState::Active, false)],
+            active: vec![session(
+                "active",
+                &canonical_worktree,
+                WorkspaceSessionState::Active,
+                false,
+            )],
             closed: vec![
-                session("closed-regular", WorkspaceSessionState::Closed, false),
-                session("closed-node", WorkspaceSessionState::Closed, true),
+                session(
+                    "closed-regular",
+                    &canonical_worktree,
+                    WorkspaceSessionState::Closed,
+                    false,
+                ),
+                session(
+                    "closed-node",
+                    &canonical_worktree,
+                    WorkspaceSessionState::Closed,
+                    true,
+                ),
             ],
+            requested_worktree_paths: requested_worktree_paths.clone(),
         };
         let workflow_usecase =
             crate::adaptor::controller::wiring::build_workflow_usecase_with_workspace_sessions(
-                "/tmp/releash-test",
+                worktree.path(),
                 std::sync::Arc::new(gateway),
             );
 
         let sessions = workflow_usecase
-            .collect_workspace_session_inputs("/repo/wt")
+            .collect_workspace_session_inputs(&format!("{canonical_worktree}/"))
             .unwrap();
 
         assert_eq!(
@@ -188,6 +265,11 @@ mod tests {
                 .map(|session| session.id.as_str())
                 .collect::<Vec<_>>(),
             vec!["active", "closed-node"]
+        );
+        assert_eq!(
+            *requested_worktree_paths.lock().unwrap(),
+            vec![canonical_worktree.clone(), canonical_worktree],
+            "Session collection must use the same canonical worktree identity for active and closed inputs"
         );
     }
 }

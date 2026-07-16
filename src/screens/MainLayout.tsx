@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { PanelLeft, PanelRight } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -11,18 +12,20 @@ import { BranchSelector } from "@/components/layout/BranchSelector";
 
 import { RightPanelHeader } from "@/components/layout/RightPanelHeader";
 import { type TogglePanel, ViewToolbar } from "@/components/layout/ViewToolbar";
-import { AgentChatPanel } from "@/components/panels/AgentChatPanel";
+import { NodeContentView } from "@/components/panels/NodeContentView";
 import { ReviewPanel } from "@/components/panels/ReviewPanel";
 import { RightSidebarBottom } from "@/components/panels/RightSidebarBottom";
 import { SettingsModal } from "@/components/panels/SettingsModal";
-import { WorkflowView } from "@/components/panels/WorkflowView";
 import { Button } from "@/components/ui/button";
 import {
 	Tooltip,
 	TooltipContent,
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { AgentChatProvider } from "@/contexts/AgentChatContext";
+import {
+	AgentChatProvider,
+	useAgentChatContext,
+} from "@/contexts/AgentChatContext";
 import { ReviewThreadHandoffProvider } from "@/contexts/ReviewThreadHandoffContext";
 import { useBaseBranch } from "@/hooks/useBaseBranch";
 import { useCurrentBranch } from "@/hooks/useCurrentBranch";
@@ -42,18 +45,81 @@ import type { AppSettings } from "@/types/settings";
 import type { WorkspaceState } from "@/types/workspace-state";
 import type {
 	CenterSelection,
-	CenterSelectionRequest,
+	NewSessionCreationRequest,
 } from "@/types/workspace-tree";
-
-const WORKFLOW_CENTER_MIN_WIDTH = 336;
 
 interface MainLayoutProps {
 	selectedRootPath: string | null;
 	settings: AppSettings;
 	onSettingsSave: (settings: AppSettings) => void;
 	leftNav: React.ReactNode;
-	centerSelectionRequest?: CenterSelectionRequest | null;
+	centerSelection?: CenterSelection | null;
+	newSessionCreationRequest?: NewSessionCreationRequest | null;
 	onCenterSelectionResolved?: (selection: CenterSelection) => void;
+}
+
+function NewSessionCreationBridge({
+	worktreePath,
+	request,
+	onCreated,
+}: {
+	worktreePath: string;
+	request: NewSessionCreationRequest | null;
+	onCreated?: (selection: CenterSelection) => void;
+}) {
+	const { createNewSession } = useAgentChatContext();
+	const requestTaskRef = useRef<{
+		requestId: number;
+		task: Promise<string | null>;
+	} | null>(null);
+	const deliveredRequestIdRef = useRef<number | null>(null);
+
+	useEffect(() => {
+		if (!request || request.worktreePath !== worktreePath) return;
+		if (deliveredRequestIdRef.current === request.requestId) return;
+		let cancelled = false;
+
+		let task =
+			requestTaskRef.current?.requestId === request.requestId
+				? requestTaskRef.current.task
+				: null;
+		if (task == null) {
+			task = createNewSession().then(async (sessionId) => {
+				if (!sessionId) return null;
+				return invoke<string | null>("get_workspace_session_node_id", {
+					worktreePath,
+					sessionId,
+				});
+			});
+			requestTaskRef.current = { requestId: request.requestId, task };
+		}
+
+		void task
+			.then((nodeId) => {
+				if (!nodeId || cancelled) return;
+				if (requestTaskRef.current?.requestId === request.requestId) {
+					requestTaskRef.current = null;
+				}
+				deliveredRequestIdRef.current = request.requestId;
+				window.dispatchEvent(
+					new CustomEvent("workspace-tree-refresh", {
+						detail: { worktreePath },
+					}),
+				);
+				onCreated?.({ kind: "node", worktreePath, nodeId });
+			})
+			.catch((error: unknown) => {
+				if (!cancelled) {
+					console.warn("[NewSessionCreationBridge] create failed", error);
+				}
+			});
+
+		return () => {
+			cancelled = true;
+		};
+	}, [createNewSession, onCreated, request, worktreePath]);
+
+	return null;
 }
 
 function WorktreeContent({
@@ -67,7 +133,7 @@ function WorktreeContent({
 	rightSlot,
 	togglePanels,
 	centerSelection,
-	centerSelectionRequest,
+	newSessionCreationRequest,
 	onCenterSelectionResolved,
 	initialWorkspaceState,
 	internalStateMapRef,
@@ -82,7 +148,7 @@ function WorktreeContent({
 	rightSlot?: React.ReactNode;
 	togglePanels: TogglePanel[];
 	centerSelection: CenterSelection | null;
-	centerSelectionRequest?: CenterSelectionRequest | null;
+	newSessionCreationRequest?: NewSessionCreationRequest | null;
 	onCenterSelectionResolved?: (selection: CenterSelection) => void;
 	initialWorkspaceState?: WorkspaceState;
 	internalStateMapRef: React.MutableRefObject<
@@ -181,21 +247,6 @@ function WorktreeContent({
 		null;
 	const scopedCenterSelection =
 		centerSelection?.worktreePath === rootPath ? centerSelection : null;
-	const scopedCenterSelectionRequest =
-		centerSelectionRequest?.worktreePath === rootPath
-			? centerSelectionRequest
-			: null;
-	const showWorkflow = scopedCenterSelection?.kind === "workflowNode";
-	const handleNewSessionCreated = useCallback(
-		(sessionId: string) => {
-			onCenterSelectionResolved?.({
-				kind: "agentSession",
-				worktreePath: rootPath,
-				sessionId,
-			});
-		},
-		[onCenterSelectionResolved, rootPath],
-	);
 	const handleOpenDiffFile = useCallback(
 		(filePath: string) => {
 			s.setSelectedDiffFile(filePath);
@@ -211,41 +262,27 @@ function WorktreeContent({
 
 	return (
 		<AgentChatProvider worktreePath={rootPath}>
+			<NewSessionCreationBridge
+				worktreePath={rootPath}
+				request={newSessionCreationRequest ?? null}
+				onCreated={onCenterSelectionResolved}
+			/>
 			<ReviewThreadHandoffProvider worktreeName={worktreeName}>
 				{/* Center */}
-				<Panel
-					id="center"
-					defaultSize="50%"
-					minSize={showWorkflow ? WORKFLOW_CENTER_MIN_WIDTH : "30%"}
-				>
+				<Panel id="center" defaultSize="50%" minSize="30%">
 					<div className="h-full relative overflow-hidden flex flex-col">
-						{showWorkflow ? (
-							<WorkflowView
-								worktreePath={rootPath}
-								selectionRequest={
-									scopedCenterSelectionRequest ?? scopedCenterSelection
-								}
-								leftPanels={leftPanels}
-								rightSlot={rightSlot}
-							/>
-						) : (
-							<>
-								<ViewToolbar leftPanels={leftPanels} rightSlot={rightSlot} />
-								<div className="flex-1 overflow-hidden">
-									<AgentChatPanel
-										worktreePath={rootPath}
-										selectionRequest={scopedCenterSelectionRequest}
-										activeEditorPath={activeEditorPath}
-										openEditorPaths={openEditorPaths}
-										activeEditorSelection={activeEditorSelection}
-										registerDropZone={s.registerDropZone}
-										sendMessageRef={sendAgentMessageRef}
-										onOpenDiffFile={handleOpenDiffFile}
-										onNewSessionCreated={handleNewSessionCreated}
-									/>
-								</div>
-							</>
-						)}
+						<NodeContentView
+							worktreePath={rootPath}
+							nodeId={scopedCenterSelection?.nodeId ?? null}
+							leftPanels={leftPanels}
+							rightSlot={rightSlot}
+							activeEditorPath={activeEditorPath}
+							openEditorPaths={openEditorPaths}
+							activeEditorSelection={activeEditorSelection}
+							registerDropZone={s.registerDropZone}
+							sendMessageRef={sendAgentMessageRef}
+							onOpenDiffFile={handleOpenDiffFile}
+						/>
 					</div>
 				</Panel>
 				<Separator />
@@ -361,7 +398,8 @@ export function MainLayout({
 	settings,
 	onSettingsSave,
 	leftNav,
-	centerSelectionRequest,
+	centerSelection,
+	newSessionCreationRequest,
 	onCenterSelectionResolved,
 }: MainLayoutProps) {
 	const leftNavRef = useRef<PanelImperativeHandle>(null);
@@ -369,14 +407,6 @@ export function MainLayout({
 
 	const [leftNavVisible, setLeftNavVisible] = useState(true);
 	const [rightVisible, setRightVisible] = useState(true);
-	const [centerSelection, setCenterSelection] =
-		useState<CenterSelection | null>(null);
-
-	useEffect(() => {
-		if (!centerSelectionRequest) return;
-		setCenterSelection(centerSelectionRequest);
-	}, [centerSelectionRequest]);
-
 	// --- Workspace state persistence ---
 	const { internalStateMapRef, getInitialState, stateReady } =
 		useWorkspacePersistence({
@@ -534,8 +564,8 @@ export function MainLayout({
 								branchSelector={branchSelector}
 								rightSlot={rightSlotContent}
 								togglePanels={togglePanels}
-								centerSelection={centerSelection}
-								centerSelectionRequest={centerSelectionRequest}
+								centerSelection={centerSelection ?? null}
+								newSessionCreationRequest={newSessionCreationRequest}
 								onCenterSelectionResolved={onCenterSelectionResolved}
 								initialWorkspaceState={getInitialState(selectedRootPath)}
 								internalStateMapRef={internalStateMapRef}

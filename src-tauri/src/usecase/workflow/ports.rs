@@ -16,6 +16,17 @@ pub struct WorkflowEventDraft {
     pub payload: serde_json::Value,
 }
 
+/// One-read event-log projection used by Workspace UI queries.
+///
+/// `definition` is the immutable snapshot persisted by `ExecutionStarted`.  The
+/// optional shape keeps existing in-memory/fake repositories source-compatible;
+/// production repositories should override `get_execution_with_definition`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorkflowExecutionProjection {
+    pub execution: WorkflowExecution,
+    pub definition: Option<WorkflowDefinition>,
+}
+
 pub trait WorkflowEventRepository: Send + Sync {
     #[cfg(test)]
     fn append(&self, event: &WorkflowEventDraft) -> Result<(), WorkflowError>;
@@ -45,6 +56,31 @@ pub trait WorkflowExecutionProjectionRepository: Send + Sync {
         &self,
         execution_id: &WorkflowExecutionId,
     ) -> Result<Option<WorkflowExecution>, WorkflowError>;
+
+    fn get_execution_with_definition(
+        &self,
+        execution_id: &WorkflowExecutionId,
+    ) -> Result<Option<WorkflowExecutionProjection>, WorkflowError> {
+        self.get_execution(execution_id).map(|execution| {
+            execution.map(|execution| WorkflowExecutionProjection {
+                execution,
+                definition: None,
+            })
+        })
+    }
+
+    /// Returns the execution shape needed to build a Workspace tree summary.
+    ///
+    /// Production persistence adapters should override this method so large
+    /// request, command, and Artifact bodies are not materialized while
+    /// replaying the append-only log. The default keeps lightweight fakes and
+    /// alternate adapters source-compatible.
+    fn get_workspace_execution_with_definition(
+        &self,
+        execution_id: &WorkflowExecutionId,
+    ) -> Result<Option<WorkflowExecutionProjection>, WorkflowError> {
+        self.get_execution_with_definition(execution_id)
+    }
 }
 
 pub trait WorkflowDefinitionSourceGateway: Send + Sync {

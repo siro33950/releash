@@ -6,12 +6,14 @@ import type { SessionStatus } from "@/types/session";
 import type { WorkflowExecutionChangedPayload } from "@/types/workflow";
 import type {
 	WorkspaceSessionHistoryItem,
-	WorkspaceTreeNode,
+	WorkspaceTreeItem,
+	WorkspaceTreeSnapshot,
 	WorkspaceWorkflowHistoryItem,
 } from "@/types/workspace-tree";
 
 interface UseWorkspaceTreeNodesResult {
-	nodes: WorkspaceTreeNode[];
+	nodes: WorkspaceTreeItem[];
+	preferredNodeId: string | null;
 	closedSessions: WorkspaceSessionHistoryItem[];
 	workflowHistory: WorkspaceWorkflowHistoryItem[];
 	loading: boolean;
@@ -26,7 +28,8 @@ interface WorkspaceTreeRefreshDetail {
 export function useWorkspaceTreeNodes(
 	worktreePath: string | null | undefined,
 ): UseWorkspaceTreeNodesResult {
-	const [nodes, setNodes] = useState<WorkspaceTreeNode[]>([]);
+	const [nodes, setNodes] = useState<WorkspaceTreeItem[]>([]);
+	const [preferredNodeId, setPreferredNodeId] = useState<string | null>(null);
 	const [closedSessions, setClosedSessions] = useState<
 		WorkspaceSessionHistoryItem[]
 	>([]);
@@ -39,10 +42,8 @@ export function useWorkspaceTreeNodes(
 	const refreshSeqRef = useRef(0);
 	const loadedWorktreePathRef = useRef<string | null>(null);
 	const errorWorktreePathRef = useRef<string | null>(null);
-	const nodesRef = useRef<WorkspaceTreeNode[]>([]);
 
-	const updateNodes = useCallback((nextNodes: WorkspaceTreeNode[]) => {
-		nodesRef.current = nextNodes;
+	const updateNodes = useCallback((nextNodes: WorkspaceTreeItem[]) => {
 		setNodes(nextNodes);
 	}, []);
 
@@ -56,8 +57,8 @@ export function useWorkspaceTreeNodes(
 			refreshSeqRef.current += 1;
 			loadedWorktreePathRef.current = null;
 			errorWorktreePathRef.current = null;
-			nodesRef.current = [];
 			setNodes([]);
+			setPreferredNodeId(null);
 			setClosedSessions([]);
 			setWorkflowHistory([]);
 			setLoading(false);
@@ -70,9 +71,9 @@ export function useWorkspaceTreeNodes(
 			setLoading(true);
 		}
 		try {
-			const [nextNodes, nextClosedSessions, nextWorkflowHistory] =
+			const [snapshot, nextClosedSessions, nextWorkflowHistory] =
 				await Promise.all([
-					invoke<WorkspaceTreeNode[]>("list_workspace_worktree_nodes", {
+					invoke<WorkspaceTreeSnapshot>("list_workspace_worktree_nodes", {
 						worktreePath,
 					}),
 					listClosedSessions(worktreePath),
@@ -84,16 +85,16 @@ export function useWorkspaceTreeNodes(
 			if (seq !== refreshSeqRef.current) return;
 			loadedWorktreePathRef.current = worktreePath;
 			errorWorktreePathRef.current = null;
-			updateNodes(nextNodes);
-			setClosedSessions(
-				nextClosedSessions.filter((session) => !session.workflowNodeSession),
-			);
+			updateNodes(snapshot.nodes);
+			setPreferredNodeId(snapshot.preferredNodeId ?? null);
+			setClosedSessions(nextClosedSessions);
 			setWorkflowHistory(nextWorkflowHistory);
 			setError(null);
 		} catch (e) {
 			if (seq !== refreshSeqRef.current) return;
 			if (!hasLoadedCurrentWorktree()) {
 				updateNodes([]);
+				setPreferredNodeId(null);
 				setClosedSessions([]);
 				setWorkflowHistory([]);
 			}
@@ -115,17 +116,6 @@ export function useWorkspaceTreeNodes(
 			void refresh();
 		}, 80);
 	}, [refresh]);
-
-	const hasSessionNode = useCallback((sessionId: string): boolean => {
-		return nodesRef.current.some((node) => {
-			if (node.kind === "session") {
-				return node.id === sessionId;
-			}
-			return node.nodeExecutions.some((execution) =>
-				execution.sessions.some((session) => session.id === sessionId),
-			);
-		});
-	}, []);
 
 	useEffect(() => {
 		void refresh();
@@ -155,13 +145,7 @@ export function useWorkspaceTreeNodes(
 				(event) => {
 					if (!mounted) return;
 					if (event.payload.worktree_path !== worktreePath) return;
-					if (
-						!hasSessionNode(event.payload.chat_session_id) ||
-						event.payload.session_state === "closed" ||
-						event.payload.session_state === "archived"
-					) {
-						scheduleRefresh();
-					}
+					scheduleRefresh();
 				},
 			);
 			if (!mounted) {
@@ -200,7 +184,7 @@ export function useWorkspaceTreeNodes(
 				refreshTimerRef.current = null;
 			}
 		};
-	}, [hasSessionNode, scheduleRefresh, worktreePath]);
+	}, [scheduleRefresh, worktreePath]);
 
 	const currentError =
 		errorWorktreePathRef.current === worktreePath ? error : null;
@@ -214,6 +198,7 @@ export function useWorkspaceTreeNodes(
 
 	return {
 		nodes,
+		preferredNodeId,
 		closedSessions,
 		workflowHistory,
 		loading: currentLoading,
