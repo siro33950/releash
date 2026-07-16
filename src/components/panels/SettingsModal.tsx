@@ -984,21 +984,40 @@ function BackgroundSection({
 	);
 }
 
+// URL の hostname を厳密一致で判定する（substring 判定は
+// `https://evil.com/discord.com/api/webhooks/` 等で回避可能なため使わない）。
+function detectWebhookType(
+	raw: string,
+): "Discord" | "Slack" | "Generic (Slack format)" | null {
+	if (!raw) return null;
+	let host: string;
+	let pathname: string;
+	try {
+		const url = new URL(raw);
+		host = url.hostname.toLowerCase();
+		pathname = url.pathname;
+	} catch {
+		return "Generic (Slack format)";
+	}
+	if (
+		(host === "discord.com" || host === "discordapp.com") &&
+		pathname.startsWith("/api/webhooks/")
+	) {
+		return "Discord";
+	}
+	if (host === "hooks.slack.com") {
+		return "Slack";
+	}
+	return "Generic (Slack format)";
+}
+
 function NotificationsSection({
 	webhook,
 }: {
 	webhook: ReturnType<typeof useWebhookConfig>;
 }) {
 	const webhookUrlValue = webhook.draft.webhook_url;
-	const detectedWebhookType =
-		webhookUrlValue.includes("discord.com/api/webhooks/") ||
-		webhookUrlValue.includes("discordapp.com/api/webhooks/")
-			? "Discord"
-			: webhookUrlValue.includes("hooks.slack.com/")
-				? "Slack"
-				: webhookUrlValue
-					? "Generic (Slack format)"
-					: null;
+	const detectedWebhookType = detectWebhookType(webhookUrlValue);
 
 	return (
 		<div className="flex flex-col gap-2">
