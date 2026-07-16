@@ -35,6 +35,7 @@ vi.mock("./useSessionStore", () => ({
 		updatedAt: 1000,
 		permissionMode: "edit",
 	}),
+	createWorkspaceSession: vi.fn().mockResolvedValue("workspace-session"),
 	addMessage: vi.fn(),
 	updateSessionAgentInfo: vi.fn().mockResolvedValue(undefined),
 	closeSession: vi.fn().mockResolvedValue(undefined),
@@ -2334,6 +2335,54 @@ describe("useAgentChat", () => {
 		);
 		// R4-02: New session starts with default model (null)
 		expect(result.current.selectedModel).toBeNull();
+	});
+
+	it("createNewWorkspaceSession uses the idempotency key and hydrates the Session", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+
+		const session = {
+			id: "workspace-session",
+			worktreePath: "/repo",
+			messages: [],
+			state: "active",
+			createdAt: 2000,
+			updatedAt: 2000,
+			permissionMode: "edit",
+			backendId: "claude",
+		};
+		vi.mocked(sessionStore.createWorkspaceSession).mockResolvedValueOnce(
+			session.id,
+		);
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
+			session,
+			turnPhase: "idle",
+			selectedModel: "sonnet",
+			availableModels: [{ value: "sonnet" }],
+		} as never);
+
+		let sessionId = "";
+		await act(async () => {
+			sessionId =
+				await result.current.createNewWorkspaceSession("request-uuid");
+		});
+
+		expect(sessionStore.createWorkspaceSession).toHaveBeenCalledWith(
+			"request-uuid",
+			"/repo",
+			"edit",
+			null,
+			null,
+		);
+		expect(sessionStore.getSession).toHaveBeenCalledWith("workspace-session");
+		expect(sessionId).toBe("workspace-session");
+		expect(result.current.activeSession?.id).toBe("workspace-session");
 	});
 
 	it("createNewSession loads model metadata for the new empty session", async () => {

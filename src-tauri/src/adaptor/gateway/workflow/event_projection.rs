@@ -811,6 +811,29 @@ mod tests {
     }
 
     #[test]
+    fn node_executions_preserve_node_started_append_order_when_timestamps_tie() {
+        let events = vec![
+            started(),
+            node_started("a-1", "A", EventNodeKindName::Session),
+            node_started("b-1", "B", EventNodeKindName::Command),
+            node_started("a-2", "A", EventNodeKindName::Session),
+            node_started("c-1", "C", EventNodeKindName::Command),
+        ];
+
+        let execution = project_workflow_execution(EXECUTION_ID, &events)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            execution
+                .node_executions
+                .iter()
+                .map(|node| (node.node_name.as_str(), node.id.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("A", "a-1"), ("B", "b-1"), ("A", "a-2"), ("C", "c-1")]
+        );
+    }
+
+    #[test]
     fn command_prepared_restores_only_the_masked_display_command() {
         let raw_secret = "RAW_COMMAND_SECRET_12345";
         let events = vec![

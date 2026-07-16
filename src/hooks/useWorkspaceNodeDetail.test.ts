@@ -196,21 +196,119 @@ describe("useWorkspaceNodeDetail", () => {
 		await waitFor(() => expect(result.current.detail?.title).toBe("updated"));
 	});
 
-	it("ignores an older retry response that resolves after the latest detail", async () => {
+	it("treats an authoritative null refresh as Node removal", async () => {
+		responses.push(detail("node", "current"), null);
+		const { result } = renderHook(() =>
+			useWorkspaceNodeDetail({ worktreePath: "/repo", nodeId: "node" }),
+		);
+		await waitFor(() => expect(result.current.detail?.title).toBe("current"));
+
+		act(() => {
+			window.dispatchEvent(
+				new CustomEvent("workspace-tree-refresh", {
+					detail: { worktreePath: "/repo" },
+				}),
+			);
+		});
+
+		await waitFor(() => expect(result.current.loading).toBe(false));
+		expect(result.current.detail).toBeNull();
+		expect(result.current.missingNodeId).toBe("node");
+		expect(result.current.error).toBeNull();
+	});
+
+	it("keeps current detail when a background refresh fails", async () => {
+		responses.push(detail("node", "current"));
+		const { result } = renderHook(() =>
+			useWorkspaceNodeDetail({ worktreePath: "/repo", nodeId: "node" }),
+		);
+		await waitFor(() => expect(result.current.detail?.title).toBe("current"));
+		mockInvoke.mockRejectedValueOnce(new Error("offline"));
+
+		act(() => {
+			window.dispatchEvent(
+				new CustomEvent("workspace-tree-refresh", {
+					detail: { worktreePath: "/repo" },
+				}),
+			);
+		});
+
+		await waitFor(() => expect(result.current.error).toBe("offline"));
+		expect(result.current.detail?.title).toBe("current");
+		expect(result.current.missingNodeId).toBeNull();
+	});
+
+	it("ignores an older occurrence response after selecting a newer occurrence", async () => {
+		const firstOccurrenceRefresh = deferred<WorkspaceNodeDetail | null>();
+		const secondOccurrenceLoad = deferred<WorkspaceNodeDetail | null>();
+		responses.push(
+			detailWithSession("occurrence-a-1", "A", "session-a-1"),
+			firstOccurrenceRefresh.promise,
+			secondOccurrenceLoad.promise,
+		);
+		const { result, rerender } = renderHook(
+			({ nodeId }) => useWorkspaceNodeDetail({ worktreePath: "/repo", nodeId }),
+			{ initialProps: { nodeId: "occurrence-a-1" } },
+		);
+		await waitFor(() =>
+			expect(result.current.detail?.id).toBe("occurrence-a-1"),
+		);
+
+		act(() => {
+			window.dispatchEvent(
+				new CustomEvent("workspace-tree-refresh", {
+					detail: { worktreePath: "/repo" },
+				}),
+			);
+		});
+		rerender({ nodeId: "occurrence-a-2" });
+
+		await act(async () => {
+			secondOccurrenceLoad.resolve(
+				detailWithSession("occurrence-a-2", "A", "session-a-2"),
+			);
+			await secondOccurrenceLoad.promise;
+		});
+		await waitFor(() =>
+			expect(result.current.detail?.content).toEqual({
+				kind: "session",
+				sessionId: "session-a-2",
+			}),
+		);
+
+		await act(async () => {
+			firstOccurrenceRefresh.resolve(
+				detailWithSession("occurrence-a-1", "A", "stale-session-a-1"),
+			);
+			await firstOccurrenceRefresh.promise;
+		});
+		expect(result.current.detail?.id).toBe("occurrence-a-2");
+		expect(result.current.detail?.content).toEqual({
+			kind: "session",
+			sessionId: "session-a-2",
+		});
+	});
+
+	it("ignores an older refresh response for the same occurrence", async () => {
 		const older = deferred<WorkspaceNodeDetail | null>();
 		const latest = deferred<WorkspaceNodeDetail | null>();
 		responses.push(
-			detailWithSession("stable-node", "attempt 1", "session-attempt-1"),
+			detailWithSession("occurrence-a-1", "A", "session-a-1"),
 			older.promise,
 			latest.promise,
 		);
 		const { result } = renderHook(() =>
 			useWorkspaceNodeDetail({
 				worktreePath: "/repo",
-				nodeId: "stable-node",
+				nodeId: "occurrence-a-1",
 			}),
 		);
-		await waitFor(() => expect(result.current.detail?.title).toBe("attempt 1"));
+		await waitFor(() =>
+			expect(result.current.detail?.content).toEqual({
+				kind: "session",
+				sessionId: "session-a-1",
+			}),
+		);
 
 		act(() => {
 			window.dispatchEvent(
@@ -227,27 +325,26 @@ describe("useWorkspaceNodeDetail", () => {
 
 		await act(async () => {
 			latest.resolve(
-				detailWithSession("stable-node", "latest retry", "session-attempt-3"),
+				detailWithSession("occurrence-a-1", "A", "latest-session-a-1"),
 			);
 			await latest.promise;
 		});
 		await waitFor(() =>
 			expect(result.current.detail?.content).toEqual({
 				kind: "session",
-				sessionId: "session-attempt-3",
+				sessionId: "latest-session-a-1",
 			}),
 		);
 
 		await act(async () => {
 			older.resolve(
-				detailWithSession("stable-node", "stale retry", "session-attempt-2"),
+				detailWithSession("occurrence-a-1", "A", "stale-session-a-1"),
 			);
 			await older.promise;
 		});
-		expect(result.current.detail?.title).toBe("latest retry");
 		expect(result.current.detail?.content).toEqual({
 			kind: "session",
-			sessionId: "session-attempt-3",
+			sessionId: "latest-session-a-1",
 		});
 	});
 

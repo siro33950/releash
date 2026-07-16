@@ -21,7 +21,7 @@ https://github.com/siro33950/releash/milestone/82
 | D5 | session `permission` | **現行 3 値（ask/edit/full）のまま**。docs（full-pipeline.yml / syntax doc）の `permission: read` は #1337 の正本化で修正する。 |
 | D6 | 旧 template 変数 | **全廃し Artifact 参照に統一**。`{{ project_name }}`/`{{ path_alias.* }}`/`{{ vars.* }}`/`{{ task }}`/workflow の `variables:` セクションを廃止（#1326）。built-in の spec_dir 連携（contract 出力からの抽出ハードコード）は「authoring が spec_dir field を持つ Artifact を産出 → 後続が `inputs:` + `{{ <node>.spec_dir }}` で参照」に書き換え。 |
 | D7 | Automation 編集 UI | **YAML 直接編集 + Diagnostic 表示に簡素化**。StepEditor/WorkflowEditor のフォーム編集を廃止し、Monaco での YAML 編集 + Rust が返す Diagnostic のインライン表示に寄せる（#1322 で置換、#1323 で code/span 表示化）。 |
-| D8 | Workspace 観測 UI | **Node 中心の再帰ツリー + 単一 NodeContentView**。NewSession は Workflow 非所属の単独 Node、Workflow と Fanout は Node を束ねる branch、Node content は Session または Command とする。Workflow/Fanout は独自の中央 view を持たない。backend の NodeExecution は保持し、Rust が Workspace UI 専用 read model へ投影する（#1454）。 |
+| D8 | Workspace 観測 UI | **Node 中心の再帰ツリー + 単一 NodeContentView**。NewSession は Workflow 非所属の単独 Node、Workflow と Fanout は Node を束ねる branch、Node content は Session または Command とする。Workflow/Fanout は独自の中央 view を持たない。backend の NodeExecution は保持し、Rust が実行occurrenceをevent projectionの実行順どおりWorkspace UI専用read modelへ投影する。同じ定義Nodeの反復も実行ごとに別行とする（#1454）。 |
 
 ## 3. 計画側の決定事項（P1〜P15）
 
@@ -39,7 +39,7 @@ https://github.com/siro33950/releash/milestone/82
 - **P12 (workflow start の名前解決)**: `releash workflow start <workflow-name>` は WorkflowDefinition.name で解決する（name↔file の対応は loader が所有、名前重複は Diagnostic）。request 未指定は空文字列の request Artifact とする。
 - **P13 (session の artifact 提出)**: `session` + `artifact:` は Contract 検証済み提出まで node 完了しない（現行 repair 機構を踏襲、max_attempts 超過で失敗）。よって session node は完了時 artifact 存在が保証され、P11 の missing-field は実質 command node のみ。
 - **P14 (NodeExecution のアドレスと fanout leaf、設計検証で追加)**: fanout child は同名 NodeExecution が並走するため、engine 採番の `node_execution_id` を第一級識別子とし、approve / output submit は並走時にこれでアドレスする（session への env `RELEASH_NODE_EXECUTION_ID` 注入で agent 側は通常意識しない）。fanout child は leaf 専用（通常遷移の対象・entry になれない、fanout の入れ子不可 = WFC006）。child の Artifact は親 fanout の配列にのみ格納し node 名 map に載せない。明示 stop は typed command（`StopExecution`）として #1335 で追加。`additionalProperties` の既定は JSON Schema と同じ true。詳細は design.md §5/§6 R7/§8.5。
-- **P15 (domain read model と Workspace UI projection の分離)**: WorkflowExecution / NodeExecution / Fanout は engine・event log・CLI/API の正規 read modelとして維持する。Workspace UI はこれを直接 timeline 表示せず、Rust が `Node | Workflow | Fanout` の再帰 tree summary と選択 Node detail に投影する。attempt / fanout 座標 /内部 ID は UI に露出しない（#1454）。
+- **P15 (domain read model と Workspace UI projection の分離)**: WorkflowExecution / NodeExecution / Fanout は engine・event log・CLI/API の正規 read modelとして維持する。Rust が `Node | Workflow | Fanout` の再帰 tree summary と選択 Node detail に投影し、NodeExecutionの発生順を実行occurrenceの並びとして保持する。同じ定義Nodeのretry/loopもoccurrenceごとに別行とし、各行には後続occurrenceの追加で変化しないopaque IDを割り当てる。attempt / fanout 座標 / 内部 ID は UI に露出しない（#1454）。
 
 ## 3.5 実装原則（最優先）
 

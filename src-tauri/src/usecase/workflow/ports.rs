@@ -21,6 +21,8 @@ pub struct WorkflowEventDraft {
 /// `definition` is the immutable snapshot persisted by `ExecutionStarted`.  The
 /// optional shape keeps existing in-memory/fake repositories source-compatible;
 /// production repositories should override `get_execution_with_definition`.
+/// `execution.node_executions` preserves `NodeStarted` append order; Workspace
+/// presentation projections rely on that order and must not timestamp-sort it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkflowExecutionProjection {
     pub execution: WorkflowExecution,
@@ -153,6 +155,11 @@ pub trait WorkflowResumeExecutionGateway: Send + Sync {
 #[async_trait::async_trait]
 pub trait WorkflowApprovalGateway: Send + Sync {
     async fn resolve_approval(&self, command: ApprovalCommand) -> Result<(), WorkflowError>;
+}
+
+#[async_trait::async_trait]
+pub(crate) trait WorkspaceNodeSessionCloseGateway: Send + Sync {
+    async fn close_session(&self, session_id: &str) -> Result<(), WorkflowError>;
 }
 
 #[async_trait::async_trait]

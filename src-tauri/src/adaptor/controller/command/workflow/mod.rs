@@ -478,6 +478,7 @@ mod tests {
     const REQUIRED_WORKSPACE_EXECUTION_COMMANDS: &[&str] = &[
         "approve_workspace_node",
         "archive_workspace_workflow_execution",
+        "close_workspace_node",
         "get_workspace_node_detail",
         "get_workspace_session_node_id",
         "restore_workspace_workflow_execution",

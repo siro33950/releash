@@ -8,8 +8,14 @@ export interface CenterSelection {
 }
 
 export interface NewSessionCreationRequest {
-	requestId: number;
+	requestId: string;
 	worktreePath: string;
+	attempt: number;
+}
+
+export interface NewSessionCreationStatus {
+	pending: boolean;
+	error: string | null;
 }
 
 export type WorkspaceNodeStatus =

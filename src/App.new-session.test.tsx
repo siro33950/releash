@@ -1,8 +1,16 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+interface TestRequest {
+	requestId: string;
+	worktreePath: string;
+	attempt: number;
+}
 
 const mocks = vi.hoisted(() => ({
 	openWorktreeTab: vi.fn(),
+	selectedWorktreeId: "wt-a",
+	lastRequests: new Map<string, TestRequest>(),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -27,8 +35,11 @@ vi.mock("@/hooks/useUpdateChecker", () => ({
 }));
 vi.mock("@/hooks/useWorkspaceNavigation", () => ({
 	useWorkspaceNavigation: () => ({
-		worktrees: [{ id: "wt", rootPath: "/wt" }],
-		selectedWorktreeId: "wt",
+		worktrees: [
+			{ id: "wt-a", rootPath: "/wt-a" },
+			{ id: "wt-b", rootPath: "/wt-b" },
+		],
+		selectedWorktreeId: mocks.selectedWorktreeId,
 		openWorktreeTab: mocks.openWorktreeTab,
 	}),
 }));
@@ -47,63 +58,243 @@ vi.mock("@/components/panels/SettingsModal", () => ({
 }));
 vi.mock("@/components/workspace/WorkspaceList", () => ({
 	WorkspaceList: ({
+		autoSelectPreferredNode,
+		newSessionCreationStatusByWorktree,
 		onCreateSession,
+		onSelectWorktree,
 	}: {
+		autoSelectPreferredNode?: boolean;
+		newSessionCreationStatusByWorktree?: Record<
+			string,
+			{ pending: boolean; error: string | null }
+		>;
 		onCreateSession: (worktreePath: string) => void;
-	}) => (
-		<button type="button" onClick={() => onCreateSession("/wt")}>
-			Create session
-		</button>
-	),
-}));
-vi.mock("@/screens/MainLayout", () => ({
-	MainLayout: ({
-		leftNav,
-		newSessionCreationRequest,
-		onCenterSelectionResolved,
-	}: {
-		leftNav: React.ReactNode;
-		newSessionCreationRequest?: { requestId: number } | null;
-		onCenterSelectionResolved?: (selection: {
-			kind: "node";
-			worktreePath: string;
-			nodeId: string;
-		}) => void;
+		onSelectWorktree: (
+			worktreePath: string,
+			branch?: string,
+			repo?: string,
+			selection?: {
+				kind: "node";
+				worktreePath: string;
+				nodeId: string;
+			},
+		) => void;
 	}) => (
 		<div>
-			{leftNav}
-			<div data-testid="request-id">
-				{newSessionCreationRequest?.requestId ?? "none"}
+			<div data-testid="auto-select">
+				{autoSelectPreferredNode ? "awaiting" : "settled"}
 			</div>
+			<div data-testid="creation-error-a">
+				{newSessionCreationStatusByWorktree?.["/wt-a"]?.error ?? "none"}
+			</div>
+			<button type="button" onClick={() => onCreateSession("/wt-a")}>
+				Create A
+			</button>
+			<button type="button" onClick={() => onCreateSession("/wt-b")}>
+				Create B
+			</button>
 			<button
 				type="button"
 				onClick={() =>
-					onCenterSelectionResolved?.({
+					onSelectWorktree("/wt-a", undefined, undefined, {
 						kind: "node",
-						worktreePath: "/wt",
-						nodeId: "node-created",
+						worktreePath: "/wt-a",
+						nodeId: "node-a",
 					})
 				}
 			>
-				Resolve request
+				Select A
+			</button>
+			<button
+				type="button"
+				onClick={() =>
+					autoSelectPreferredNode &&
+					onSelectWorktree("/wt-a", undefined, undefined, {
+						kind: "node",
+						worktreePath: "/wt-a",
+						nodeId: "preferred-a",
+					})
+				}
+			>
+				Apply preferred A
 			</button>
 		</div>
 	),
 }));
+vi.mock("@/screens/MainLayout", () => ({
+	MainLayout: ({
+		selectedRootPath,
+		leftNav,
+		centerSelection,
+		newSessionCreationRequest,
+		onNewSessionCreated,
+		onNewSessionCreationFailed,
+		onCenterNodeMissing,
+	}: {
+		selectedRootPath: string | null;
+		leftNav: React.ReactNode;
+		centerSelection?: {
+			kind: "node";
+			worktreePath: string;
+			nodeId: string;
+		} | null;
+		newSessionCreationRequest?: TestRequest | null;
+		onNewSessionCreated?: (
+			request: TestRequest,
+			selection: {
+				kind: "node";
+				worktreePath: string;
+				nodeId: string;
+			},
+		) => void;
+		onNewSessionCreationFailed?: (request: TestRequest, error: string) => void;
+		onCenterNodeMissing?: (worktreePath: string, nodeId: string) => void;
+	}) => {
+		if (newSessionCreationRequest) {
+			mocks.lastRequests.set(
+				newSessionCreationRequest.worktreePath,
+				newSessionCreationRequest,
+			);
+		}
+		return (
+			<div>
+				{leftNav}
+				<div data-testid="active-worktree">{selectedRootPath ?? "none"}</div>
+				<div data-testid="request-id">
+					{newSessionCreationRequest?.requestId ?? "none"}
+				</div>
+				<div data-testid="request-attempt">
+					{newSessionCreationRequest?.attempt ?? "none"}
+				</div>
+				<div data-testid="center-node">{centerSelection?.nodeId ?? "none"}</div>
+				<button
+					type="button"
+					onClick={() => {
+						if (!newSessionCreationRequest) return;
+						onNewSessionCreated?.(newSessionCreationRequest, {
+							kind: "node",
+							worktreePath: newSessionCreationRequest.worktreePath,
+							nodeId: `created-${newSessionCreationRequest.worktreePath}`,
+						});
+					}}
+				>
+					Resolve current
+				</button>
+				<button
+					type="button"
+					onClick={() => {
+						if (!newSessionCreationRequest) return;
+						onNewSessionCreationFailed?.(newSessionCreationRequest, "offline");
+					}}
+				>
+					Fail current
+				</button>
+				<button
+					type="button"
+					onClick={() => {
+						const request = mocks.lastRequests.get("/wt-a");
+						if (!request) return;
+						onNewSessionCreated?.(request, {
+							kind: "node",
+							worktreePath: "/wt-a",
+							nodeId: "created-/wt-a",
+						});
+					}}
+				>
+					Resolve saved A
+				</button>
+				<button
+					type="button"
+					onClick={() => {
+						if (!centerSelection) return;
+						onCenterNodeMissing?.(
+							centerSelection.worktreePath,
+							centerSelection.nodeId,
+						);
+					}}
+				>
+					Invalidate center
+				</button>
+			</div>
+		);
+	},
+}));
 
 const { default: App } = await import("./App");
 
+beforeEach(() => {
+	vi.clearAllMocks();
+	mocks.selectedWorktreeId = "wt-a";
+	mocks.lastRequests.clear();
+});
+
+describe("App Workspace selection lifecycle", () => {
+	it("does not consume initial selection until preferred Node exists", () => {
+		render(<App />);
+		expect(screen.getByTestId("auto-select")).toHaveTextContent("awaiting");
+
+		fireEvent.click(screen.getByRole("button", { name: "Apply preferred A" }));
+		expect(screen.getByTestId("center-node")).toHaveTextContent("preferred-a");
+		expect(screen.getByTestId("auto-select")).toHaveTextContent("settled");
+	});
+
+	it("shows empty after authoritative removal and does not auto-fallback", () => {
+		render(<App />);
+		fireEvent.click(screen.getByRole("button", { name: "Select A" }));
+		expect(screen.getByTestId("center-node")).toHaveTextContent("node-a");
+
+		fireEvent.click(screen.getByRole("button", { name: "Invalidate center" }));
+		expect(screen.getByTestId("center-node")).toHaveTextContent("none");
+		expect(screen.getByTestId("auto-select")).toHaveTextContent("settled");
+		fireEvent.click(screen.getByRole("button", { name: "Apply preferred A" }));
+		expect(screen.getByTestId("center-node")).toHaveTextContent("none");
+	});
+});
+
 describe("App NewSession creation requests", () => {
-	it("uses a monotonic id across two successful consecutive creations", () => {
+	it("deduplicates pending clicks and retries a failure with the same request id", () => {
 		render(<App />);
 
-		fireEvent.click(screen.getByRole("button", { name: "Create session" }));
-		expect(screen.getByTestId("request-id")).toHaveTextContent("1");
-		fireEvent.click(screen.getByRole("button", { name: "Resolve request" }));
-		expect(screen.getByTestId("request-id")).toHaveTextContent("none");
+		fireEvent.click(screen.getByRole("button", { name: "Create A" }));
+		const requestId = screen.getByTestId("request-id").textContent;
+		expect(requestId).not.toBe("none");
+		expect(screen.getByTestId("request-attempt")).toHaveTextContent("1");
+		fireEvent.click(screen.getByRole("button", { name: "Create A" }));
+		expect(screen.getByTestId("request-id")).toHaveTextContent(requestId ?? "");
+		expect(screen.getByTestId("request-attempt")).toHaveTextContent("1");
 
-		fireEvent.click(screen.getByRole("button", { name: "Create session" }));
-		expect(screen.getByTestId("request-id")).toHaveTextContent("2");
-		expect(mocks.openWorktreeTab).toHaveBeenCalledTimes(2);
+		fireEvent.click(screen.getByRole("button", { name: "Fail current" }));
+		expect(screen.getByTestId("request-id")).toHaveTextContent("none");
+		expect(screen.getByTestId("creation-error-a")).toHaveTextContent(
+			"Session creation failed: offline",
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: "Create A" }));
+		expect(screen.getByTestId("request-id")).toHaveTextContent(requestId ?? "");
+		expect(screen.getByTestId("request-attempt")).toHaveTextContent("2");
+		fireEvent.click(screen.getByRole("button", { name: "Resolve current" }));
+		expect(screen.getByTestId("request-id")).toHaveTextContent("none");
+		expect(screen.getByTestId("center-node")).toHaveTextContent(
+			"created-/wt-a",
+		);
+	});
+
+	it("records an inactive Worktree completion without changing the active center", () => {
+		const view = render(<App />);
+		fireEvent.click(screen.getByRole("button", { name: "Create A" }));
+
+		mocks.selectedWorktreeId = "wt-b";
+		view.rerender(<App />);
+		expect(screen.getByTestId("active-worktree")).toHaveTextContent("/wt-b");
+		expect(screen.getByTestId("center-node")).toHaveTextContent("none");
+		fireEvent.click(screen.getByRole("button", { name: "Resolve saved A" }));
+		expect(screen.getByTestId("center-node")).toHaveTextContent("none");
+
+		mocks.selectedWorktreeId = "wt-a";
+		view.rerender(<App />);
+		expect(screen.getByTestId("center-node")).toHaveTextContent(
+			"created-/wt-a",
+		);
+		expect(screen.getByTestId("request-id")).toHaveTextContent("none");
 	});
 });

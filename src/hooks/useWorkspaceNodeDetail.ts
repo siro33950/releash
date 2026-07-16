@@ -18,6 +18,7 @@ export interface WorkspaceNodeDetailState {
 	detail: WorkspaceNodeDetail | null;
 	loading: boolean;
 	error: string | null;
+	missingNodeId: string | null;
 }
 
 export function useWorkspaceNodeDetail({
@@ -28,6 +29,7 @@ export function useWorkspaceNodeDetail({
 		detail: null,
 		loading: false,
 		error: null,
+		missingNodeId: null,
 	});
 	const detailRef = useRef<WorkspaceNodeDetail | null>(null);
 	const loadSeqRef = useRef(0);
@@ -40,7 +42,12 @@ export function useWorkspaceNodeDetail({
 		if (!worktreePath || !nodeId) {
 			loadSeqRef.current += 1;
 			detailRef.current = null;
-			setState({ detail: null, loading: false, error: null });
+			setState({
+				detail: null,
+				loading: false,
+				error: null,
+				missingNodeId: null,
+			});
 			return;
 		}
 
@@ -48,7 +55,12 @@ export function useWorkspaceNodeDetail({
 		let unlistenWorkflow: UnlistenFn | null = null;
 		let unlistenSessionStatus: UnlistenFn | null = null;
 		detailRef.current = null;
-		setState({ detail: null, loading: true, error: null });
+		setState({
+			detail: null,
+			loading: true,
+			error: null,
+			missingNodeId: null,
+		});
 
 		const load = (preserveDetail: boolean) => {
 			const loadSeq = ++loadSeqRef.current;
@@ -56,6 +68,7 @@ export function useWorkspaceNodeDetail({
 				detail: preserveDetail ? previous.detail : null,
 				loading: true,
 				error: null,
+				missingNodeId: null,
 			}));
 			void invoke<WorkspaceNodeDetail | null>("get_workspace_node_detail", {
 				worktreePath,
@@ -63,16 +76,13 @@ export function useWorkspaceNodeDetail({
 			})
 				.then((next) => {
 					if (cancelled || loadSeq !== loadSeqRef.current) return;
-					if (next == null && preserveDetail && detailRef.current != null) {
-						setState({
-							detail: detailRef.current,
-							loading: false,
-							error: null,
-						});
-						return;
-					}
 					detailRef.current = next;
-					setState({ detail: next, loading: false, error: null });
+					setState({
+						detail: next,
+						loading: false,
+						error: null,
+						missingNodeId: next == null ? nodeId : null,
+					});
 				})
 				.catch((error) => {
 					if (cancelled || loadSeq !== loadSeqRef.current) return;
@@ -83,11 +93,17 @@ export function useWorkspaceNodeDetail({
 							detail: detailRef.current,
 							loading: false,
 							error: message,
+							missingNodeId: null,
 						});
 						return;
 					}
 					detailRef.current = null;
-					setState({ detail: null, loading: false, error: message });
+					setState({
+						detail: null,
+						loading: false,
+						error: message,
+						missingNodeId: null,
+					});
 				});
 		};
 

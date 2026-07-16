@@ -1162,31 +1162,6 @@ export function ChatSessionView({
 	}, [handleCopyLatestAgentText]);
 
 	useEffect(() => {
-		const handleCopyEvent = () => {
-			void handleCopyLatestAgentText();
-		};
-		window.addEventListener("agent-copy-latest-response", handleCopyEvent);
-		return () =>
-			window.removeEventListener("agent-copy-latest-response", handleCopyEvent);
-	}, [handleCopyLatestAgentText]);
-
-	useEffect(() => {
-		const handleRawScrollbackEvent = () => {
-			toggleRawScrollback();
-		};
-		window.addEventListener(
-			"agent-toggle-raw-scrollback",
-			handleRawScrollbackEvent,
-		);
-		return () => {
-			window.removeEventListener(
-				"agent-toggle-raw-scrollback",
-				handleRawScrollbackEvent,
-			);
-		};
-	}, [toggleRawScrollback]);
-
-	useEffect(() => {
 		if (activeSearchIndex < searchMatches.length) return;
 		setActiveSearchIndex(Math.max(searchMatches.length - 1, 0));
 	}, [activeSearchIndex, searchMatches.length]);
@@ -1260,15 +1235,6 @@ export function ChatSessionView({
 		};
 		window.addEventListener("keydown", handleFindShortcut);
 		return () => window.removeEventListener("keydown", handleFindShortcut);
-	}, [openThreadSearch]);
-
-	useEffect(() => {
-		const handleFindEvent = () => {
-			openThreadSearch();
-		};
-		window.addEventListener("agent-open-thread-find", handleFindEvent);
-		return () =>
-			window.removeEventListener("agent-open-thread-find", handleFindEvent);
 	}, [openThreadSearch]);
 
 	useLayoutEffect(() => {

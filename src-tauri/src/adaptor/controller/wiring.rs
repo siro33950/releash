@@ -43,14 +43,14 @@ use crate::adaptor::gateway::workflow::{
 };
 use crate::adaptor::gateway::workflow::{
     RepoPathsManagedWorktreeGateway, RepositoryManagedWorktreeGateway,
-    StoredWorkspaceSessionGateway, TauriNodeExecutionLifecycleGateway,
-    TauriWorkflowExternalEditorGateway, TauriWorkflowRuntimeCommandGateway,
-    TauriWorkflowRuntimeCommandGatewayDeps, WorkflowConfigPathFileGateway,
-    WorkflowDefinitionFileRepository, WorkflowDefinitionFileSourceGateway,
-    WorkflowDiagnosticsFileGateway, WorkflowEventLogRepository,
-    WorkflowExecutionArchiveFileRepository, WorkflowExecutionFileRepository,
-    WorkflowExecutionProjectionLogRepository, WorkflowFacetFileRepository,
-    WorkflowSecretSourceConfigGateway,
+    StoredWorkspaceNodeSessionCloseGateway, StoredWorkspaceSessionGateway,
+    TauriNodeExecutionLifecycleGateway, TauriWorkflowExternalEditorGateway,
+    TauriWorkflowRuntimeCommandGateway, TauriWorkflowRuntimeCommandGatewayDeps,
+    WorkflowConfigPathFileGateway, WorkflowDefinitionFileRepository,
+    WorkflowDefinitionFileSourceGateway, WorkflowDiagnosticsFileGateway,
+    WorkflowEventLogRepository, WorkflowExecutionArchiveFileRepository,
+    WorkflowExecutionFileRepository, WorkflowExecutionProjectionLogRepository,
+    WorkflowFacetFileRepository, WorkflowSecretSourceConfigGateway,
 };
 use crate::domain::app_config::{AgentConfigRepository, ConfigRepository, ConfigSecretRepository};
 use crate::domain::git_host::{CacheTtl, IssueInfo, PrStatus};
@@ -77,7 +77,7 @@ use crate::usecase::workflow::ports::ExternalEditorGateway;
 use crate::usecase::workflow::query_service::WorkflowQueryService;
 use crate::usecase::workflow::{
     NodeExecutionLifecycleUsecase, WorkflowReadUsecase, WorkflowRuntimeUsecase, WorkflowUsecase,
-    WorkspaceSessionGateway,
+    WorkspaceNodeActionResolver, WorkspaceNodeCommandUsecase, WorkspaceSessionGateway,
 };
 
 pub(crate) fn build_agent_backend_registry(
@@ -181,6 +181,20 @@ pub(crate) fn build_stored_session_lifecycle_usecase(
         session_store,
         Arc::new(RegistryAgentSessionBackendLifecycleGateway::new(registry)),
         Arc::new(RuntimeAgentSessionCloser::new(runtime)),
+    )
+}
+
+pub(crate) fn build_workspace_node_command_usecase(
+    resolver: Arc<dyn WorkspaceNodeActionResolver>,
+    lifecycle: Arc<StoredSessionLifecycleUsecase>,
+    data_dir: impl Into<PathBuf>,
+) -> WorkspaceNodeCommandUsecase {
+    WorkspaceNodeCommandUsecase::new(
+        resolver,
+        Arc::new(StoredWorkspaceNodeSessionCloseGateway::new(
+            lifecycle,
+            data_dir.into(),
+        )),
     )
 }
 

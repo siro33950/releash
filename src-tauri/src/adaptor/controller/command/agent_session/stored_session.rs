@@ -12,6 +12,9 @@ use crate::usecase::agent_session::session::{
     add_message_internal, ChatMessage, ChatSession, MessageRole, RestoreSessionResponse,
     SessionStore, SessionSummary, StoredSessionLifecycleUsecase,
 };
+use crate::usecase::agent_session::workspace_session_creation::{
+    SessionCreationRequest, WorkspaceSessionCreationRequest, WorkspaceSessionCreationUsecase,
+};
 
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
@@ -26,7 +29,7 @@ pub async fn list_sessions(
 
 #[tauri::command]
 pub fn create_session(
-    state: State<'_, Arc<SessionStore>>,
+    creation: State<'_, Arc<WorkspaceSessionCreationUsecase>>,
     registry: State<'_, Arc<AgentBackendRegistry>>,
     app: tauri::AppHandle,
     worktree_path: String,
@@ -35,27 +38,43 @@ pub fn create_session(
     model_id: Option<String>,
 ) -> Result<ChatSession, String> {
     let data_dir = resolve_data_dir(&app)?;
-    let permission_mode = crate::domain::agent_session::PermissionMode::parse(&permission_mode)
-        .map_err(|e| e.to_string())?;
-    let resolved_model = match model_id.as_deref() {
-        Some(model_id) => Some(registry.resolve_model_entry(model_id)?),
-        None => None,
-    };
-    let resolved_backend_id = registry.resolve_backend_id(
-        resolved_model
-            .as_ref()
-            .map(|entry| entry.backend.clone())
-            .or(backend_id),
-    )?;
-    crate::usecase::agent_session::session::create_session_with_model_and_plan_mode(
-        state.inner().as_ref(),
+    creation.create_session(
         registry.inner().as_ref(),
         &data_dir,
-        &worktree_path,
-        resolved_backend_id,
-        permission_mode,
-        resolved_model.map(|entry| entry.model_id),
-        false,
+        SessionCreationRequest {
+            worktree_path,
+            permission_mode,
+            backend_id,
+            model_id,
+        },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub fn create_workspace_session(
+    creation: State<'_, Arc<WorkspaceSessionCreationUsecase>>,
+    registry: State<'_, Arc<AgentBackendRegistry>>,
+    app: tauri::AppHandle,
+    request_id: String,
+    worktree_path: String,
+    permission_mode: String,
+    backend_id: Option<String>,
+    model_id: Option<String>,
+) -> Result<String, String> {
+    let data_dir = resolve_data_dir(&app)?;
+    creation.create_workspace_session(
+        registry.inner().as_ref(),
+        &data_dir,
+        WorkspaceSessionCreationRequest {
+            request_id,
+            session: SessionCreationRequest {
+                worktree_path,
+                permission_mode,
+                backend_id,
+                model_id,
+            },
+        },
     )
 }
 

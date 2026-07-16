@@ -4,8 +4,8 @@ use tauri::State;
 
 use crate::adaptor::controller::state::AppState;
 use crate::usecase::workflow::{
-    WorkflowRuntimeUsecase, WorkspaceNodeDetailDto, WorkspaceTreeSnapshotDto,
-    WorkspaceWorkflowHistoryItemDto,
+    CloseWorkspaceNodeCommand, WorkflowRuntimeUsecase, WorkspaceNodeCommandUsecase,
+    WorkspaceNodeDetailDto, WorkspaceTreeSnapshotDto, WorkspaceWorkflowHistoryItemDto,
 };
 
 pub(super) const COMMAND_NAMES: &[&str] = &[
@@ -13,6 +13,7 @@ pub(super) const COMMAND_NAMES: &[&str] = &[
     "list_workspace_workflow_history",
     "get_workspace_node_detail",
     "get_workspace_session_node_id",
+    "close_workspace_node",
     "approve_workspace_node",
     "archive_workspace_workflow_execution",
     "restore_workspace_workflow_execution",
@@ -29,6 +30,7 @@ pub(crate) fn invoke_handler(
         list_workspace_workflow_history,
         get_workspace_node_detail,
         get_workspace_session_node_id,
+        close_workspace_node,
         approve_workspace_node,
         archive_workspace_workflow_execution,
         restore_workspace_workflow_execution,
@@ -109,6 +111,21 @@ pub async fn get_workspace_session_node_id(
 }
 
 #[tauri::command]
+pub async fn close_workspace_node(
+    usecase: State<'_, Arc<WorkspaceNodeCommandUsecase>>,
+    worktree_path: String,
+    node_id: String,
+) -> Result<(), String> {
+    usecase
+        .close_workspace_node(CloseWorkspaceNodeCommand {
+            worktree_path,
+            node_id,
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub async fn approve_workspace_node(
     app_state: State<'_, AppState>,
     runtime: State<'_, Arc<WorkflowRuntimeUsecase>>,
@@ -170,7 +187,8 @@ mod tests {
 
     use crate::domain::workflow::WorkflowError;
     use crate::usecase::workflow::{
-        WorkspaceSessionGateway, WorkspaceSessionInput, WorkspaceSessionState,
+        WorkspaceNodeActionResolver, WorkspaceSessionGateway, WorkspaceSessionInput,
+        WorkspaceSessionState,
     };
 
     struct FakeWorkspaceSessionGateway {
@@ -271,5 +289,40 @@ mod tests {
             vec![canonical_worktree.clone(), canonical_worktree],
             "Session collection must use the same canonical worktree identity for active and closed inputs"
         );
+    }
+
+    #[test]
+    fn workspace_close_resolver_maps_opaque_node_id_to_direct_session() {
+        let worktree = tempfile::tempdir().unwrap();
+        let canonical_worktree = worktree.path().canonicalize().unwrap();
+        let canonical_worktree = canonical_worktree.to_string_lossy().to_string();
+        let gateway = FakeWorkspaceSessionGateway {
+            active: vec![session(
+                "direct-session",
+                &canonical_worktree,
+                WorkspaceSessionState::Idle,
+                false,
+            )],
+            closed: Vec::new(),
+            requested_worktree_paths: Arc::new(Mutex::new(Vec::new())),
+        };
+        let workflow_usecase =
+            crate::adaptor::controller::wiring::build_workflow_usecase_with_workspace_sessions(
+                worktree.path(),
+                Arc::new(gateway),
+            );
+        let sessions = workflow_usecase
+            .collect_workspace_session_inputs(&canonical_worktree)
+            .unwrap();
+        let snapshot = workflow_usecase
+            .list_workspace_tree_nodes(&canonical_worktree, sessions)
+            .unwrap();
+        let node_id = snapshot.preferred_node_id.unwrap();
+
+        let target = workflow_usecase
+            .resolve_close_target(&canonical_worktree, &node_id)
+            .unwrap();
+
+        assert_eq!(target.session_id, "direct-session");
     }
 }

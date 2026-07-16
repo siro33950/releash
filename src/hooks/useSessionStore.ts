@@ -322,6 +322,22 @@ export async function createSession(
 	return convertLegacySession(raw);
 }
 
+export async function createWorkspaceSession(
+	requestId: string,
+	worktreePath: string,
+	permissionMode: PermissionMode,
+	backendId?: string | null,
+	modelId?: string | null,
+): Promise<string> {
+	return invoke<string>("create_workspace_session", {
+		requestId,
+		worktreePath,
+		permissionMode,
+		backendId: backendId ?? null,
+		modelId: modelId ?? null,
+	});
+}
+
 export async function closeSession(sessionId: string): Promise<void> {
 	return invoke("close_session", { sessionId });
 }

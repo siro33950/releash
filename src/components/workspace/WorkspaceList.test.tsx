@@ -23,7 +23,6 @@ const mocks = vi.hoisted(() => ({
 	emit: vi.fn().mockResolvedValue(undefined),
 	openUrl: vi.fn().mockResolvedValue(undefined),
 	archiveSession: vi.fn().mockResolvedValue(undefined),
-	closeSession: vi.fn().mockResolvedValue(undefined),
 	restoreSession: vi.fn().mockResolvedValue(undefined),
 	refreshTree: vi.fn().mockResolvedValue(undefined),
 	refreshWorktrees: vi.fn().mockResolvedValue(undefined),
@@ -45,7 +44,6 @@ vi.mock("@tauri-apps/api/event", () => ({ emit: mocks.emit }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: mocks.openUrl }));
 vi.mock("@/hooks/useSessionStore", () => ({
 	archiveSession: mocks.archiveSession,
-	closeSession: mocks.closeSession,
 	restoreSession: mocks.restoreSession,
 }));
 vi.mock("@/hooks/useWorkflowConfig", () => ({
@@ -281,7 +279,9 @@ describe("WorkspaceList", () => {
 			nodes: recursiveTree,
 			preferredNodeId: directNode.id,
 		});
-		const { onSelectWorktree, rerender } = renderWorkspaceList();
+		const { onSelectWorktree, rerender } = renderWorkspaceList({
+			autoSelectPreferredNode: true,
+		});
 
 		await waitFor(() => expect(onSelectWorktree).toHaveBeenCalledTimes(1));
 		expect(onSelectWorktree).toHaveBeenCalledWith(
@@ -304,6 +304,7 @@ describe("WorkspaceList", () => {
 				repoPaths={["/repo"]}
 				selectedRootPath="/repo/wt"
 				centerSelection={null}
+				autoSelectPreferredNode={true}
 				onSelectWorktree={onSelectWorktree}
 				onCreateSession={vi.fn()}
 				onAddRepo={vi.fn()}
@@ -311,6 +312,117 @@ describe("WorkspaceList", () => {
 			/>,
 		);
 		expect(onSelectWorktree).toHaveBeenCalledTimes(1);
+	});
+
+	it("keeps initial selection eligible while an empty snapshot has no preferred Node", async () => {
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: [],
+			preferredNodeId: null,
+		});
+		const { onSelectWorktree, rerender } = renderWorkspaceList({
+			autoSelectPreferredNode: true,
+		});
+		expect(onSelectWorktree).not.toHaveBeenCalled();
+
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: recursiveTree,
+			preferredNodeId: directNode.id,
+		});
+		rerender(
+			<WorkspaceList
+				repoPaths={["/repo"]}
+				selectedRootPath="/repo/wt"
+				centerSelection={null}
+				autoSelectPreferredNode={true}
+				onSelectWorktree={onSelectWorktree}
+				onCreateSession={vi.fn()}
+				onAddRepo={vi.fn()}
+				onShowSettings={vi.fn()}
+			/>,
+		);
+
+		await waitFor(() => expect(onSelectWorktree).toHaveBeenCalledTimes(1));
+		expect(onSelectWorktree).toHaveBeenCalledWith(
+			"/repo/wt",
+			"feature",
+			"repo",
+			{
+				kind: "node",
+				worktreePath: "/repo/wt",
+				nodeId: directNode.id,
+			},
+		);
+	});
+
+	it("resets the preferred selection guard when the same branch gets a new Worktree path", async () => {
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: recursiveTree,
+			preferredNodeId: directNode.id,
+		});
+		const { onSelectWorktree, onCreateSession, rerender } = renderWorkspaceList(
+			{ autoSelectPreferredNode: true },
+		);
+		await waitFor(() => expect(onSelectWorktree).toHaveBeenCalledTimes(1));
+
+		mocks.worktreeBranches = [{ ...makeBranch(), worktree_path: null }];
+		rerender(
+			<WorkspaceList
+				repoPaths={["/repo"]}
+				selectedRootPath={null}
+				centerSelection={null}
+				autoSelectPreferredNode={true}
+				onSelectWorktree={onSelectWorktree}
+				onCreateSession={onCreateSession}
+				onAddRepo={vi.fn()}
+				onShowSettings={vi.fn()}
+			/>,
+		);
+
+		const recreatedNode = { ...directNode, id: "recreated-node" };
+		mocks.worktreeBranches = [
+			{ ...makeBranch(), worktree_path: "/repo/wt-recreated" },
+		];
+		mocks.treeStateOverrides.set("/repo/wt-recreated", {
+			nodes: [recreatedNode],
+			preferredNodeId: recreatedNode.id,
+		});
+		rerender(
+			<WorkspaceList
+				repoPaths={["/repo"]}
+				selectedRootPath="/repo/wt-recreated"
+				centerSelection={null}
+				autoSelectPreferredNode={true}
+				onSelectWorktree={onSelectWorktree}
+				onCreateSession={onCreateSession}
+				onAddRepo={vi.fn()}
+				onShowSettings={vi.fn()}
+			/>,
+		);
+
+		await waitFor(() => expect(onSelectWorktree).toHaveBeenCalledTimes(2));
+		expect(onSelectWorktree).toHaveBeenLastCalledWith(
+			"/repo/wt-recreated",
+			"feature",
+			"repo",
+			{
+				kind: "node",
+				worktreePath: "/repo/wt-recreated",
+				nodeId: recreatedNode.id,
+			},
+		);
+	});
+
+	it("does not apply a later preferred Node after selection was resolved empty", async () => {
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: recursiveTree,
+			preferredNodeId: directNode.id,
+		});
+		const { onSelectWorktree } = renderWorkspaceList({
+			autoSelectPreferredNode: false,
+		});
+
+		await Promise.resolve();
+		expect(onSelectWorktree).not.toHaveBeenCalled();
 	});
 
 	it("keeps a stable Node selected when the tree snapshot is replaced", () => {
@@ -344,6 +456,105 @@ describe("WorkspaceList", () => {
 		).toHaveAttribute("aria-current", "page");
 	});
 
+	it("keeps occurrence order and the selected past occurrence when later executions append", async () => {
+		const user = userEvent.setup();
+		const occurrenceA1: WorkspaceTreeItem = {
+			kind: "node",
+			id: "occurrence-a-1",
+			title: "A",
+			status: "completed",
+			contentKind: "session",
+			capabilities: { canApprove: false, canClose: false },
+			updatedAt: 1,
+		};
+		const occurrenceB: WorkspaceTreeItem = {
+			...occurrenceA1,
+			id: "occurrence-b-1",
+			title: "B",
+			updatedAt: 2,
+		};
+		const occurrenceA2: WorkspaceTreeItem = {
+			...occurrenceA1,
+			id: "occurrence-a-2",
+			updatedAt: 3,
+		};
+		const occurrenceC: WorkspaceTreeItem = {
+			...occurrenceA1,
+			id: "occurrence-c-1",
+			title: "C",
+			status: "running",
+			updatedAt: 4,
+		};
+		const workflow = (children: WorkspaceTreeItem[]): WorkspaceTreeItem => ({
+			kind: "workflow",
+			id: "loop-workflow",
+			title: "Loop workflow",
+			status: "running",
+			capabilities: {
+				canStop: true,
+				canResume: false,
+				canAbort: true,
+				canArchive: false,
+			},
+			updatedAt: 4,
+			children,
+		});
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: [workflow([occurrenceA1, occurrenceB])],
+		});
+		const selection = {
+			kind: "node" as const,
+			worktreePath: "/repo/wt",
+			nodeId: occurrenceA1.id,
+		};
+		const { onSelectWorktree, rerender } = renderWorkspaceList({
+			centerSelection: selection,
+		});
+
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: [workflow([occurrenceA1, occurrenceB, occurrenceA2, occurrenceC])],
+		});
+		rerender(
+			<WorkspaceList
+				repoPaths={["/repo"]}
+				selectedRootPath="/repo/wt"
+				centerSelection={selection}
+				onSelectWorktree={onSelectWorktree}
+				onCreateSession={vi.fn()}
+				onAddRepo={vi.fn()}
+				onShowSettings={vi.fn()}
+			/>,
+		);
+
+		const executionLabels = screen
+			.getAllByRole("button")
+			.map((button) => button.getAttribute("aria-label"))
+			.filter((label) => label?.match(/^[ABC],/));
+		expect(executionLabels).toEqual([
+			"A, completed",
+			"B, completed",
+			"A, completed",
+			"C, running",
+		]);
+		const [firstA, secondA] = screen.getAllByRole("button", {
+			name: /^A, completed$/,
+		});
+		expect(firstA).toHaveAttribute("aria-current", "page");
+		expect(secondA).not.toHaveAttribute("aria-current");
+
+		await user.click(secondA);
+		expect(onSelectWorktree).toHaveBeenLastCalledWith(
+			"/repo/wt",
+			"feature",
+			"repo",
+			{
+				kind: "node",
+				worktreePath: "/repo/wt",
+				nodeId: "occurrence-a-2",
+			},
+		);
+	});
+
 	it("sends NewSession through the separate creation operation", async () => {
 		const user = userEvent.setup();
 		const { onCreateSession, onSelectWorktree } = renderWorkspaceList();
@@ -357,25 +568,44 @@ describe("WorkspaceList", () => {
 
 	it("closes only a Node allowed by backend capability", async () => {
 		const user = userEvent.setup();
-		mocks.invoke.mockResolvedValue({
-			id: directNode.id,
-			title: directNode.title,
-			status: directNode.status,
-			capabilities: directNode.capabilities,
-			updatedAt: 1,
-			content: { kind: "session", sessionId: "session-1" },
-		});
+		mocks.invoke.mockResolvedValue(null);
+		const detailRefresh = vi.fn();
+		window.addEventListener("workspace-tree-refresh", detailRefresh);
 		renderWorkspaceList();
 
 		await user.click(
 			screen.getByRole("button", { name: "Close Direct session" }),
 		);
 
-		expect(mocks.invoke).toHaveBeenCalledWith("get_workspace_node_detail", {
+		expect(mocks.invoke).toHaveBeenCalledWith("close_workspace_node", {
 			worktreePath: "/repo/wt",
 			nodeId: directNode.id,
 		});
-		expect(mocks.closeSession).toHaveBeenCalledWith("session-1");
+		expect(mocks.refreshTree).toHaveBeenCalledOnce();
+		expect(detailRefresh).toHaveBeenCalledOnce();
+		window.removeEventListener("workspace-tree-refresh", detailRefresh);
+	});
+
+	it("invalidates Node detail when Close commits but tree refresh fails", async () => {
+		const user = userEvent.setup();
+		mocks.invoke.mockResolvedValue(null);
+		mocks.refreshTree.mockRejectedValueOnce(new Error("tree offline"));
+		const detailRefresh = vi.fn();
+		window.addEventListener("workspace-tree-refresh", detailRefresh);
+		renderWorkspaceList();
+
+		await user.click(
+			screen.getByRole("button", { name: "Close Direct session" }),
+		);
+
+		await waitFor(() => expect(detailRefresh).toHaveBeenCalledOnce());
+		expect(mocks.invoke).toHaveBeenCalledWith("close_workspace_node", {
+			worktreePath: "/repo/wt",
+			nodeId: directNode.id,
+		});
+		expect(mocks.refreshTree).toHaveBeenCalledOnce();
+		expect(screen.getByRole("alert")).toHaveTextContent("tree offline");
+		window.removeEventListener("workspace-tree-refresh", detailRefresh);
 	});
 
 	it("enables Workflow actions only from backend capabilities", async () => {

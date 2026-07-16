@@ -11,7 +11,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 Element.prototype.scrollIntoView = vi.fn();
 
 const mocks = vi.hoisted(() => ({
-	createNewSession: vi.fn(),
+	createNewWorkspaceSession: vi.fn(),
 	invoke: vi.fn(),
 	nodeContentViewProps: vi.fn(),
 }));
@@ -64,7 +64,9 @@ vi.mock("@/hooks/useBaseBranch", () => ({
 }));
 vi.mock("@/contexts/AgentChatContext", () => ({
 	AgentChatProvider: ({ children }: { children: React.ReactNode }) => children,
-	useAgentChatContext: () => ({ createNewSession: mocks.createNewSession }),
+	useAgentChatContext: () => ({
+		createNewWorkspaceSession: mocks.createNewWorkspaceSession,
+	}),
 }));
 vi.mock("@/contexts/ReviewThreadHandoffContext", () => ({
 	ReviewThreadHandoffProvider: ({ children }: { children: React.ReactNode }) =>
@@ -130,10 +132,10 @@ vi.mock("@/components/layout/ViewToolbar", () => ({
 const { MainLayout } = await import("./MainLayout");
 const { DEFAULT_SETTINGS } = await import("@/types/settings");
 
-function renderMainLayout(
+function mainLayoutElement(
 	props: Partial<React.ComponentProps<typeof MainLayout>> = {},
 ) {
-	return render(
+	return (
 		<StrictMode>
 			<TooltipProvider>
 				<MainLayout
@@ -144,15 +146,31 @@ function renderMainLayout(
 					{...props}
 				/>
 			</TooltipProvider>
-		</StrictMode>,
+		</StrictMode>
 	);
+}
+
+function renderMainLayout(
+	props: Partial<React.ComponentProps<typeof MainLayout>> = {},
+) {
+	return render(mainLayoutElement(props));
+}
+
+function deferred<T>() {
+	let resolve!: (value: T) => void;
+	let reject!: (reason?: unknown) => void;
+	const promise = new Promise<T>((res, rej) => {
+		resolve = res;
+		reject = rej;
+	});
+	return { promise, resolve, reject };
 }
 
 describe("MainLayout node-centered workspace", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mocks.invoke.mockResolvedValue(null);
-		mocks.createNewSession.mockResolvedValue(null);
+		mocks.createNewWorkspaceSession.mockResolvedValue("session-default");
 	});
 
 	it("always renders the toolbar-backed NodeContentView in the center", () => {
@@ -205,22 +223,25 @@ describe("MainLayout node-centered workspace", () => {
 	});
 
 	it("resolves NewSession through the backend before selecting its Node", async () => {
-		mocks.createNewSession.mockResolvedValue("session-new");
+		mocks.createNewWorkspaceSession.mockResolvedValue("session-new");
 		mocks.invoke.mockResolvedValue("node-opaque-new");
-		const onCenterSelectionResolved = vi.fn();
+		const onNewSessionCreated = vi.fn();
 		const refreshListener = vi.fn();
 		window.addEventListener("workspace-tree-refresh", refreshListener);
+		const request = {
+			worktreePath: "/managed/wt",
+			requestId: "request-7",
+			attempt: 1,
+		};
 
 		renderMainLayout({
-			newSessionCreationRequest: {
-				worktreePath: "/managed/wt",
-				requestId: 7,
-			},
-			onCenterSelectionResolved,
+			newSessionCreationRequest: request,
+			onNewSessionCreated,
 		});
 
 		await waitFor(() => {
-			expect(mocks.createNewSession).toHaveBeenCalledTimes(1);
+			expect(mocks.createNewWorkspaceSession).toHaveBeenCalledTimes(1);
+			expect(mocks.createNewWorkspaceSession).toHaveBeenCalledWith("request-7");
 			expect(mocks.invoke).toHaveBeenCalledWith(
 				"get_workspace_session_node_id",
 				{
@@ -228,7 +249,7 @@ describe("MainLayout node-centered workspace", () => {
 					sessionId: "session-new",
 				},
 			);
-			expect(onCenterSelectionResolved).toHaveBeenCalledWith({
+			expect(onNewSessionCreated).toHaveBeenCalledWith(request, {
 				kind: "node",
 				worktreePath: "/managed/wt",
 				nodeId: "node-opaque-new",
@@ -237,6 +258,129 @@ describe("MainLayout node-centered workspace", () => {
 		});
 
 		window.removeEventListener("workspace-tree-refresh", refreshListener);
+	});
+
+	it("keeps one creation task across Worktree unmount and remount", async () => {
+		const pending = deferred<string>();
+		mocks.createNewWorkspaceSession.mockReturnValue(pending.promise);
+		mocks.invoke.mockResolvedValue("node-a");
+		const onNewSessionCreated = vi.fn();
+		const request = {
+			worktreePath: "/managed/wt",
+			requestId: "request-a",
+			attempt: 1,
+		};
+		const view = renderMainLayout({
+			selectedRootPath: "/managed/wt",
+			newSessionCreationRequest: request,
+			onNewSessionCreated,
+		});
+		await waitFor(() =>
+			expect(mocks.createNewWorkspaceSession).toHaveBeenCalledTimes(1),
+		);
+
+		view.rerender(
+			mainLayoutElement({
+				selectedRootPath: "/managed/other",
+				newSessionCreationRequest: null,
+				onNewSessionCreated,
+			}),
+		);
+		view.rerender(
+			mainLayoutElement({
+				selectedRootPath: "/managed/wt",
+				newSessionCreationRequest: request,
+				onNewSessionCreated,
+			}),
+		);
+		expect(mocks.createNewWorkspaceSession).toHaveBeenCalledTimes(1);
+
+		pending.resolve("session-a");
+		await waitFor(() => {
+			expect(onNewSessionCreated).toHaveBeenCalledOnce();
+			expect(onNewSessionCreated).toHaveBeenCalledWith(request, {
+				kind: "node",
+				worktreePath: "/managed/wt",
+				nodeId: "node-a",
+			});
+		});
+		expect(mocks.createNewWorkspaceSession).toHaveBeenCalledTimes(1);
+	});
+
+	it("prunes a settled creation task after its request is acknowledged", async () => {
+		mocks.createNewWorkspaceSession.mockResolvedValue("session-pruned");
+		mocks.invoke.mockResolvedValue("node-pruned");
+		const onNewSessionCreated = vi.fn();
+		const request = {
+			worktreePath: "/managed/wt",
+			requestId: "request-pruned",
+			attempt: 1,
+		};
+		const view = renderMainLayout({
+			newSessionCreationRequest: request,
+			onNewSessionCreated,
+		});
+		await waitFor(() => expect(onNewSessionCreated).toHaveBeenCalledOnce());
+		expect(mocks.createNewWorkspaceSession).toHaveBeenCalledTimes(1);
+
+		view.rerender(
+			mainLayoutElement({
+				newSessionCreationRequest: null,
+				onNewSessionCreated,
+			}),
+		);
+		view.rerender(
+			mainLayoutElement({
+				newSessionCreationRequest: request,
+				onNewSessionCreated,
+			}),
+		);
+
+		await waitFor(() =>
+			expect(mocks.createNewWorkspaceSession).toHaveBeenCalledTimes(2),
+		);
+	});
+
+	it("keeps a pending task deduplicated until a failed attempt settles", async () => {
+		const pending = deferred<string>();
+		mocks.createNewWorkspaceSession.mockReturnValue(pending.promise);
+		const onNewSessionCreationFailed = vi.fn();
+		const request = {
+			worktreePath: "/managed/wt",
+			requestId: "request-failed",
+			attempt: 1,
+		};
+		const view = renderMainLayout({
+			newSessionCreationRequest: request,
+			onNewSessionCreationFailed,
+		});
+		await waitFor(() =>
+			expect(mocks.createNewWorkspaceSession).toHaveBeenCalledTimes(1),
+		);
+
+		view.rerender(
+			mainLayoutElement({
+				selectedRootPath: "/managed/other",
+				newSessionCreationRequest: null,
+				onNewSessionCreationFailed,
+			}),
+		);
+		view.rerender(
+			mainLayoutElement({
+				newSessionCreationRequest: request,
+				onNewSessionCreationFailed,
+			}),
+		);
+		expect(mocks.createNewWorkspaceSession).toHaveBeenCalledTimes(1);
+
+		pending.reject(new Error("offline"));
+		await waitFor(() =>
+			expect(onNewSessionCreationFailed).toHaveBeenCalledWith(
+				request,
+				"offline",
+			),
+		);
+		expect(mocks.createNewWorkspaceSession).toHaveBeenCalledTimes(1);
 	});
 
 	it("keeps BranchSelector in the right panel header", () => {

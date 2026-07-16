@@ -566,6 +566,76 @@ mod tests {
     }
 
     #[test]
+    fn full_and_workspace_projections_preserve_the_same_node_started_order() {
+        let temp = tempfile::tempdir().unwrap();
+        let execution_id =
+            WorkflowExecutionId::new("00000000-0000-4000-8000-000000000307").unwrap();
+        let definition = WorkflowDefinitionYaml {
+            name: "loop-order".to_string(),
+            description: String::new(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: Vec::new(),
+        };
+        let node_started =
+            |node_execution_id: &str, node_name: &str, kind: NodeKindName, attempt: u32| {
+                WorkflowEvent::NodeStarted {
+                    execution_id: execution_id.to_string(),
+                    node_execution_id: node_execution_id.to_string(),
+                    node_name: node_name.to_string(),
+                    kind,
+                    attempt,
+                    fanout_parent: None,
+                    timestamp: 11.0,
+                }
+            };
+        WorkflowEventLog::new(temp.path())
+            .append_batch(&[
+                WorkflowEvent::ExecutionStarted {
+                    execution_id: execution_id.to_string(),
+                    workflow_name: definition.name.clone(),
+                    worktree_path: "/repo".to_string(),
+                    created_from: ExecutionOrigin::Cli,
+                    request: String::new(),
+                    permission_mode: "ask".to_string(),
+                    definition,
+                    timestamp: 10.0,
+                },
+                node_started("a-1", "A", NodeKindName::Session, 1),
+                node_started("b-1", "B", NodeKindName::Command, 1),
+                node_started("a-2", "A", NodeKindName::Session, 2),
+                node_started("c-1", "C", NodeKindName::Command, 1),
+            ])
+            .unwrap();
+
+        let repository = WorkflowExecutionProjectionLogRepository::new(temp.path());
+        let full = repository
+            .get_execution_with_definition(&execution_id)
+            .unwrap()
+            .unwrap();
+        let workspace = repository
+            .get_workspace_execution_with_definition(&execution_id)
+            .unwrap()
+            .unwrap();
+        let order = |projection: &WorkflowExecutionProjection| {
+            projection
+                .execution
+                .node_executions
+                .iter()
+                .map(|node| (node.node_name.clone(), node.id.clone()))
+                .collect::<Vec<_>>()
+        };
+        let expected = vec![
+            ("A".to_string(), "a-1".to_string()),
+            ("B".to_string(), "b-1".to_string()),
+            ("A".to_string(), "a-2".to_string()),
+            ("C".to_string(), "c-1".to_string()),
+        ];
+        assert_eq!(order(&full), expected);
+        assert_eq!(order(&workspace), expected);
+    }
+
+    #[test]
     fn workspace_projection_replays_resume_without_artifact_dependent_checkpoint() {
         let temp = tempfile::tempdir().unwrap();
         let execution_id =

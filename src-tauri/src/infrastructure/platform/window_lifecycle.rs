@@ -117,8 +117,7 @@ mod tests {
 
     use crate::domain::app_config::repository::ConfigUpdate;
     use crate::domain::app_config::value_objects::{
-        AgentShortcutConfig, AppConfigDocument, AppSettings, ServerConfig, TelemetryConfig,
-        TlsConfig, WorkflowConfig,
+        AppConfigDocument, AppSettings, ServerConfig, TelemetryConfig, TlsConfig, WorkflowConfig,
     };
     use crate::domain::app_config::AppConfigError;
     use crate::domain::notification::{DesktopNotifyMode, NotifyConfig};
@@ -241,7 +240,6 @@ mod tests {
                 last_root_path: String::new(),
                 last_repo_paths: Vec::new(),
                 external_editor: String::new(),
-                agent_shortcuts: AgentShortcutConfig::default(),
             },
             workflow: WorkflowConfig {
                 approval_auto_approve: false,

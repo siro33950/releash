@@ -32,7 +32,7 @@ https://github.com/siro33950/releash/milestone/82 に従って移行する。各
 - **P6**: 予約 Artifact 名は `request` / `item` のみ。`tasks` は予約語ではない。Task Entity / WorkflowExecution-owned tasks[] / `releash task ...` は実装しない（issue #1333 は撤回済み）。
 - **P11**: rules の `on:` 参照 field が実行時に不在なら no-match とし catch-all `next` に落ちる。artifact 検証が失敗しうる node が Contract field を rules で参照する場合、`next` catch-all を必須とする（網羅検証に含める）。command の `ok` は `exit_code==0 && (artifact 未指定 || validation 成功)`。
 - **P13**: `session` + `artifact:` は Contract 検証済み提出まで node 完了しない（既存 repair 機構を踏襲）。
-- **P15**: WorkflowExecution / NodeExecution domain read modelは維持し、Workspace UIにはRust-ownedの再帰tree summaryと選択Node detailを提供する。attempt・fanout座標・内部IDをUIへ露出しない（#1454）。
+- **P15**: WorkflowExecution / NodeExecution domain read modelは維持し、Workspace UIにはRust-ownedの再帰tree summaryと選択Node detailを提供する。実行済みNodeはevent projectionの実行順を保ち、同じ定義Nodeのretry/loopも実行occurrenceごとに別行とする。attempt・fanout座標・内部IDをUIへ露出しない（#1454）。
 
 ## 実装原則（最優先: 最もシンプルな実装にする）
 

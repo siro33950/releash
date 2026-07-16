@@ -45,11 +45,7 @@ import {
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Textarea } from "@/components/ui/textarea";
-import {
-	archiveSession,
-	closeSession as closeSessionApi,
-	restoreSession,
-} from "@/hooks/useSessionStore";
+import { archiveSession, restoreSession } from "@/hooks/useSessionStore";
 import { useWorkflowConfig } from "@/hooks/useWorkflowConfig";
 import { useWorkspaceTreeNodes } from "@/hooks/useWorkspaceTreeNodes";
 import { useWorktreeList } from "@/hooks/useWorktreeList";
@@ -61,8 +57,8 @@ import {
 import type { WorktreeBranch } from "@/types/git";
 import type {
 	CenterSelection,
+	NewSessionCreationStatus,
 	WorkspaceNode,
-	WorkspaceNodeDetail,
 	WorkspaceSessionHistoryItem,
 	WorkspaceTreeItem,
 	WorkspaceWorkflow,
@@ -78,6 +74,8 @@ interface WorkspaceListProps {
 	repoPaths: string[];
 	selectedRootPath: string | null;
 	centerSelection?: CenterSelection | null;
+	autoSelectPreferredNode?: boolean;
+	newSessionCreationStatusByWorktree?: Record<string, NewSessionCreationStatus>;
 	onSelectWorktree: (
 		rootPath: string,
 		branchName?: string,
@@ -408,6 +406,8 @@ function WorktreeTreeItem({
 	repoName,
 	selectedRootPath,
 	centerSelection,
+	autoSelectPreferredNode,
+	newSessionCreationStatus,
 	onSelectWorktree,
 	onCreateSession,
 	onDelete,
@@ -416,6 +416,8 @@ function WorktreeTreeItem({
 	repoName: string;
 	selectedRootPath: string | null;
 	centerSelection: CenterSelection | null;
+	autoSelectPreferredNode: boolean;
+	newSessionCreationStatus?: NewSessionCreationStatus;
 	onSelectWorktree: WorkspaceListProps["onSelectWorktree"];
 	onCreateSession: WorkspaceListProps["onCreateSession"];
 	onDelete: (branch: WorktreeBranch) => void;
@@ -434,7 +436,21 @@ function WorktreeTreeItem({
 		null,
 	);
 	const [workflowStarting, setWorkflowStarting] = useState(false);
-	const preferredSelectionHandledRef = useRef(false);
+	const preferredSelectionRequestRef = useRef<{
+		worktreePath: string | null;
+		requested: boolean;
+	}>({
+		worktreePath: branch.worktree_path,
+		requested: false,
+	});
+	if (
+		preferredSelectionRequestRef.current.worktreePath !== branch.worktree_path
+	) {
+		preferredSelectionRequestRef.current = {
+			worktreePath: branch.worktree_path,
+			requested: false,
+		};
+	}
 	const scopedCenterSelection =
 		centerSelection?.worktreePath === branch.worktree_path
 			? centerSelection
@@ -472,18 +488,20 @@ function WorktreeTreeItem({
 	);
 
 	useEffect(() => {
-		if (preferredSelectionHandledRef.current) return;
+		if (!autoSelectPreferredNode) return;
+		if (preferredSelectionRequestRef.current.requested) return;
 		if (!branch.worktree_path) return;
 		if (branch.worktree_path !== selectedRootPath) return;
 		if (scopedCenterSelection != null || treeLoading || treeError) return;
-		preferredSelectionHandledRef.current = true;
 		if (!preferredNodeId) return;
+		preferredSelectionRequestRef.current.requested = true;
 		selectCenter({
 			kind: "node",
 			worktreePath: branch.worktree_path,
 			nodeId: preferredNodeId,
 		});
 	}, [
+		autoSelectPreferredNode,
 		branch.worktree_path,
 		preferredNodeId,
 		scopedCenterSelection,
@@ -602,14 +620,15 @@ function WorktreeTreeItem({
 			if (!branch.worktree_path || !node.capabilities.canClose) return;
 			setWorkflowActionError(null);
 			try {
-				const detail = await invoke<WorkspaceNodeDetail | null>(
-					"get_workspace_node_detail",
-					{ worktreePath: branch.worktree_path, nodeId: node.id },
+				await invoke("close_workspace_node", {
+					worktreePath: branch.worktree_path,
+					nodeId: node.id,
+				});
+				window.dispatchEvent(
+					new CustomEvent("workspace-tree-refresh", {
+						detail: { worktreePath: branch.worktree_path },
+					}),
 				);
-				if (detail?.content.kind !== "session" || !detail.content.sessionId) {
-					throw new Error("Session is unavailable.");
-				}
-				await closeSessionApi(detail.content.sessionId);
 				await refreshTree();
 			} catch (error) {
 				setWorkflowActionError(
@@ -828,9 +847,18 @@ function WorktreeTreeItem({
 								</Button>
 							</DropdownMenuTrigger>
 							<DropdownMenuContent align="end" className="w-56">
-								<DropdownMenuItem onSelect={handleNewSession}>
-									<MessageSquare className="size-3.5" />
-									NewSession
+								<DropdownMenuItem
+									disabled={newSessionCreationStatus?.pending === true}
+									onSelect={handleNewSession}
+								>
+									{newSessionCreationStatus?.pending ? (
+										<Loader2 className="size-3.5 animate-spin" />
+									) : (
+										<MessageSquare className="size-3.5" />
+									)}
+									{newSessionCreationStatus?.pending
+										? "Creating Session..."
+										: "NewSession"}
 								</DropdownMenuItem>
 								<DropdownMenuSeparator />
 								<DropdownMenuSub>
@@ -926,6 +954,15 @@ function WorktreeTreeItem({
 							{workflowActionError}
 						</div>
 					)}
+					{newSessionCreationStatus?.error && (
+						<div
+							role="alert"
+							className="mt-1 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+							style={{ marginLeft: WORKTREE_NAME_INDENT_PX }}
+						>
+							{newSessionCreationStatus.error}
+						</div>
+					)}
 				</div>
 			)}
 			<Dialog
@@ -986,6 +1023,8 @@ function RepoTreeSectionView({
 	refresh,
 	selectedRootPath,
 	centerSelection,
+	autoSelectPreferredNode,
+	newSessionCreationStatusByWorktree,
 	onSelectWorktree,
 	onCreateSession,
 }: {
@@ -995,6 +1034,8 @@ function RepoTreeSectionView({
 	refresh: (options?: { silent?: boolean }) => Promise<void>;
 	selectedRootPath: string | null;
 	centerSelection: CenterSelection | null;
+	autoSelectPreferredNode: boolean;
+	newSessionCreationStatusByWorktree?: Record<string, NewSessionCreationStatus>;
 	onSelectWorktree: WorkspaceListProps["onSelectWorktree"];
 	onCreateSession: WorkspaceListProps["onCreateSession"];
 }) {
@@ -1086,6 +1127,12 @@ function RepoTreeSectionView({
 								repoName={repoName}
 								selectedRootPath={selectedRootPath}
 								centerSelection={centerSelection}
+								autoSelectPreferredNode={autoSelectPreferredNode}
+								newSessionCreationStatus={
+									branch.worktree_path
+										? newSessionCreationStatusByWorktree?.[branch.worktree_path]
+										: undefined
+								}
 								onSelectWorktree={onSelectWorktree}
 								onCreateSession={onCreateSession}
 								onDelete={setDeletingBranch}
@@ -1108,12 +1155,16 @@ function RepoTreeSection({
 	repoPath,
 	selectedRootPath,
 	centerSelection,
+	autoSelectPreferredNode,
+	newSessionCreationStatusByWorktree,
 	onSelectWorktree,
 	onCreateSession,
 }: {
 	repoPath: string;
 	selectedRootPath: string | null;
 	centerSelection: CenterSelection | null;
+	autoSelectPreferredNode: boolean;
+	newSessionCreationStatusByWorktree?: Record<string, NewSessionCreationStatus>;
 	onSelectWorktree: WorkspaceListProps["onSelectWorktree"];
 	onCreateSession: WorkspaceListProps["onCreateSession"];
 }) {
@@ -1126,6 +1177,8 @@ function RepoTreeSection({
 			refresh={refresh}
 			selectedRootPath={selectedRootPath}
 			centerSelection={centerSelection}
+			autoSelectPreferredNode={autoSelectPreferredNode}
+			newSessionCreationStatusByWorktree={newSessionCreationStatusByWorktree}
 			onSelectWorktree={onSelectWorktree}
 			onCreateSession={onCreateSession}
 		/>
@@ -1136,6 +1189,8 @@ export function WorkspaceList({
 	repoPaths,
 	selectedRootPath,
 	centerSelection,
+	autoSelectPreferredNode = false,
+	newSessionCreationStatusByWorktree,
 	onSelectWorktree,
 	onCreateSession,
 	onAddRepo,
@@ -1170,6 +1225,10 @@ export function WorkspaceList({
 						repoPath={repoPath}
 						selectedRootPath={selectedRootPath}
 						centerSelection={centerSelection ?? null}
+						autoSelectPreferredNode={autoSelectPreferredNode}
+						newSessionCreationStatusByWorktree={
+							newSessionCreationStatusByWorktree
+						}
 						onSelectWorktree={onSelectWorktree}
 						onCreateSession={onCreateSession}
 					/>

@@ -311,7 +311,7 @@ pub struct NodeExecution {
 
 Fanout は「`fanout_parent` で子を束ねた derived view」（親 NodeExecution + 子 NodeExecution 列 + 配列 Artifact）。Artifact map（`request` 含む、fanout child を除く §5）も projection が提供。workflow API / CLI / event log はこの domain read modelを正とし、旧 `WorkflowStateSnapshot` / `StepHistoryEntry` / `StepOutput` / `ParallelStepState` は削除する。Tauri command rename は `goal-10-issue-1331.md` 実装内容 4 の一覧どおり。
 
-Workspace UI は domain read model の直接 mirror ではない。#1454 で §13 の UI 専用 query projectionを追加し、NodeExecutionのattempt列やfanout座標を画面構造へ露出しない。domainの事実は失わず、UIが必要とするtree summaryと選択Node detailへRustで投影する。
+Workspace UI は domain read model の直接 mirror ではない。#1454 で §13 の UI 専用 query projectionを追加し、event replayで復元したNodeExecutionの発生順を実行occurrenceの並びとして保持する。同じ定義Nodeの反復もoccurrenceごとに別行へ投影する一方、attempt値・fanout座標・内部IDは画面へ露出しない。domainの事実は失わず、UIが必要とするtree summaryと選択Node detailへRustで投影する。
 
 ## 11. Local API（#1332、D1）
 
@@ -353,9 +353,10 @@ releash workflow output get <execution-id> --node <node>
 ## 13. Frontend（D7, D8）
 
 - **Automation panel**: WorkflowList（一覧・複製・削除）+ Monaco YAML editor + Diagnostic 表示（保存時に backend へ invoke → `Diagnostic[]` を受けインライン marker + 一覧表示）。フォーム編集（StepEditor / WorkflowEditor のフィールド UI）は削除。facet（policy/knowledge/instruction）の管理 UI は現行機能を維持する。
-- **Workspace tree（#1454）**: 一つの再帰 tree として表現する。`NewSession` は Workflow 非所属の単独 Node、Workflow は複数 Node を束ねる branch、Fanout は Workflow 内の複数 Node を束ねる branch、Node は `Session | Command` contentを持つleafとする。Session/Commandを追加のtree行にはしない。
+- **Workspace tree（#1454）**: 一つの再帰 tree として表現する。`NewSession` は Workflow 非所属の単独 Node、Workflow は複数 Node を束ねる branch、Fanout は Workflow 内の複数 Node を束ねる branch、Node は `Session | Command` contentを持つleafとする。Node配下にSession/Command content用の子行は作らない。
 - **中央表示（#1454）**: `WorkflowView`を削除し、中央は常に単一の`NodeContentView`を使う。Session contentは単独Node・Workflow Nodeとも同じ`BoundSessionChat`を表示し、Command contentは実行時のmasked Command、status、exit code、duration、stdout、stderrを表示する。Workflow/Fanoutは独自detail viewを持たず、treeの展開・折り畳みだけを行う。
-- **Workspace UI read model（#1454）**: Rustが次の再帰summaryと選択Node detailを所有する。frontendは表示、選択IDの受け渡し、backend command呼び出しだけを行い、status集約・retry集約・fanout階層化・capability判定を行わない。
+- **Agent command境界（#1454 follow-up）**: Session tabに依存した旧Agent command paletteと設定可能shortcutは廃止し、そのTauri command/config/UIも残さない。`ChatSessionView`内で完結するFind/Raw scrollback/Copy toolbarと固定`Cmd/Ctrl+F`・`Ctrl+O`は維持する。旧New/Search/Previous/Next thread commandはNode中心UIへ暗黙に読み替えず廃止する。
+- **Workspace UI read model（#1454）**: Rustが次の再帰summaryと選択Node detailを所有する。frontendは表示、選択IDの受け渡し、backend command呼び出しだけを行い、実行順決定・fanout階層化・status/capability判定を行わない。
 
 ```rust
 enum WorkspaceTreeItemDto {
@@ -376,13 +377,16 @@ enum WorkspaceNodeContentDto {
 - `Node`は`id / title / status / content_kind / capabilities / updated_at`を持ち、childrenを持たない。
 - `Workflow`は`id / title / status / capabilities / children / updated_at`を持ち、contentを持たない。
 - `Fanout`は`id / title / status / children / updated_at`を持ち、contentと独自actionを持たない。
-- WorkflowDefinitionの宣言順を基準にtreeを作り、fanout childをWorkflow直下へ重複表示しない。未開始Nodeはqueuedで表示する。
-- retry/loopのattemptは同じUI Nodeへ集約する。独立したSession/Command contentはNodeとして残すが、NodeExecution/attemptごとの重複行は作らない。
+- 実行済みNodeはevent projectionが復元した実行順を保つ。同じ定義Nodeが反復された場合も実行occurrenceごとに別行を作り、`A → B → A → C`をその順で表示する。未開始Nodeはqueuedで表示する。
+- fanout親の各実行occurrenceはFanout branch、対応するchildの各実行occurrenceはそのbranch配下のNodeとして実行順に投影する。fanout childをWorkflow直下へ重複表示しない。
 - `fanout_parent`は階層構築だけに使う。execution ID、NodeExecution ID、attempt、fanout parent attempt、item/child index、raw kindをheader/treeへ表示しない。
 - tree summaryにSession本文、Command output、Artifact本文を含めない。汎用`get_workspace_node_detail(worktree_path, node_id)`で選択Nodeだけを取得する。
+- 実行occurrenceごとに異なるopaque Node IDを返す。frontendはIDを解析せず、後続occurrenceの追加後も既存IDを維持する。detailは選択IDが指す実行occurrenceのSessionまたはCommandを返す。
 - `CenterSelection`は`{ kind: "node", worktreePath, nodeId }`へ統一する。NewSessionは選択variantではなく作成操作とし、作成後のNodeを表示する。
 - Workflow action（stop/resume/abort/archive）とNode action（approve、単独Sessionのclose）はRustが返すcapabilityに従う。
-- 初回表示用`preferred_node_id`はrunning/waiting Nodeを優先するが、更新時に表示中Nodeを勝手に切り替えない。retry後もUI Node IDを維持する。
+- 初回表示用`preferred_node_id`はrunning/waiting Nodeを優先するが、更新時に表示中Nodeを勝手に切り替えない。retry/loopで新しいoccurrenceが追加されても、選択中の過去occurrenceを維持する。
+- frontendはWorktreeごとに`awaiting_initial | selected | resolved_empty`だけを保持する。空snapshotでは初回選択資格を維持し、backend detailが`None`になった選択だけをempty stateへ遷移させる。tree非表示でもdetailが残るarchive済みNodeは選択を維持する。
+- 単独SessionのCloseはopaque Node IDを受けるRust commandで解決する。NewSessionはApp-owned request UUIDをRustへ渡し、同UUIDをSession IDとして永続化するcheck-and-saveによりWorktree切り替え、並行呼び出し、再起動後retryでも冪等にする。
 
 ## 14. 削除一覧（旧 → 処置）
 

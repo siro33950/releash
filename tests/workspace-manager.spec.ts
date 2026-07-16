@@ -230,7 +230,7 @@ test.describe("Workspace Manager", () => {
 			list_branches_with_status: kanbanBranches.filter(
 				(branch) => branch.name === "feat/wip",
 			),
-			create_session: session,
+			create_workspace_session: session.id,
 			get_session: rawSession("session-new", worktreePath, ""),
 			get_workspace_session_node_id: "node-new-opaque",
 			get_workspace_node_detail: {
@@ -251,6 +251,18 @@ test.describe("Workspace Manager", () => {
 
 		await expect(page.getByText("New session", { exact: true })).toBeVisible();
 		await expect(page.getByPlaceholder("Send a message...")).toBeVisible();
+		const creation = await page.evaluate(() =>
+			window.__TAURI_INTERNALS__?.invocations.find(
+				(entry) => entry.cmd === "create_workspace_session",
+			),
+		);
+		expect(creation?.args).toEqual({
+			requestId: expect.any(String),
+			worktreePath,
+			permissionMode: "edit",
+			backendId: null,
+			modelId: null,
+		});
 		const lookup = await page.evaluate(() =>
 			window.__TAURI_INTERNALS__?.invocations.find(
 				(entry) => entry.cmd === "get_workspace_session_node_id",
@@ -260,6 +272,171 @@ test.describe("Workspace Manager", () => {
 			worktreePath,
 			sessionId: "session-new",
 		});
+	});
+
+	test("closing the selected standalone Session clears the center", async ({
+		page,
+	}) => {
+		const worktreePath = "/test/repo-worktrees/feat-wip";
+		const node = {
+			kind: "node",
+			id: "node-direct-opaque",
+			title: "Direct session",
+			status: "running",
+			contentKind: "session",
+			capabilities: { canApprove: false, canClose: true },
+			updatedAt: 1000,
+		};
+		const detail = {
+			id: node.id,
+			title: node.title,
+			status: node.status,
+			capabilities: node.capabilities,
+			updatedAt: node.updatedAt,
+			content: { kind: "session", sessionId: "session-direct" },
+		};
+		const config = buildMockConfig({
+			list_branches_with_status: kanbanBranches.filter(
+				(branch) => branch.name === "feat/wip",
+			),
+			list_workspace_worktree_nodes: {
+				nodes: [node],
+				preferredNodeId: node.id,
+			},
+			get_workspace_node_detail: detail,
+			get_session: rawSession("session-direct", worktreePath, "Before close"),
+			close_workspace_node: null,
+		});
+		await setupTauriMock(page, config);
+		await waitForApp(page);
+		await page
+			.getByRole("button", { name: "Direct session, running" })
+			.click();
+		await expect(page.getByText("Before close", { exact: true })).toBeVisible();
+
+		await page.evaluate(() => {
+			window.__TAURI_INTERNALS__?.setMockResponse(
+				"list_workspace_worktree_nodes",
+				{ nodes: [], preferredNodeId: null },
+			);
+			window.__TAURI_INTERNALS__?.setMockResponse(
+				"get_workspace_node_detail",
+				null,
+			);
+		});
+		await page
+			.getByRole("button", { name: "Close Direct session" })
+			.click();
+
+		await expect(
+			page.getByText("Select a Node from the Workspace tree."),
+		).toBeVisible();
+		await expect(
+			page.getByRole("button", { name: /Direct session/ }),
+		).toHaveCount(0);
+		const invocations = await page.evaluate(
+			() => window.__TAURI_INTERNALS__?.invocations ?? [],
+		);
+		expect(invocations).toContainEqual({
+			cmd: "close_workspace_node",
+			args: { worktreePath, nodeId: node.id },
+		});
+		expect(invocations.some((entry) => entry.cmd === "close_session")).toBe(
+			false,
+		);
+	});
+
+	test("the first Workflow Node is selected after an initially empty snapshot", async ({
+		page,
+	}) => {
+		const worktreePath = "/test/repo-worktrees/feat-wip";
+		const workflowNode = {
+			kind: "node",
+			id: "node-first-workflow-opaque",
+			title: "First workflow Session",
+			status: "running",
+			contentKind: "session",
+			capabilities: { canApprove: false, canClose: false },
+			updatedAt: 1000,
+		};
+		const firstWorkflowSession = rawSession(
+			"session-first-workflow",
+			worktreePath,
+			"First workflow transcript",
+		);
+		const config = buildMockConfig({
+			list_worktrees: [{ path: worktreePath, branch: "feat/wip" }],
+			list_branches_with_status: kanbanBranches.filter(
+				(branch) => branch.name === "feat/wip",
+			),
+			list_workspace_worktree_nodes: {
+				nodes: [],
+				preferredNodeId: null,
+			},
+		});
+		await setupTauriMock(page, config);
+		await waitForApp(page);
+		await expect(page.getByText("No sessions or workflows")).toBeVisible();
+
+		await page.evaluate(
+			({ worktreePath, workflowNode, firstWorkflowSession }) => {
+				window.__TAURI_INTERNALS__?.setMockResponse(
+					"list_workspace_worktree_nodes",
+					{
+						nodes: [
+							{
+								kind: "workflow",
+								id: "workflow-first",
+								title: "First workflow",
+								status: "running",
+								capabilities: {
+									canStop: true,
+									canResume: false,
+									canAbort: true,
+									canArchive: false,
+								},
+								children: [workflowNode],
+								updatedAt: 1000,
+							},
+						],
+						preferredNodeId: workflowNode.id,
+					},
+				);
+				window.__TAURI_INTERNALS__?.setMockResponse(
+					"get_workspace_node_detail",
+					{
+						id: workflowNode.id,
+						title: workflowNode.title,
+						status: workflowNode.status,
+						capabilities: workflowNode.capabilities,
+						updatedAt: workflowNode.updatedAt,
+						content: {
+							kind: "session",
+							sessionId: "session-first-workflow",
+						},
+					},
+				);
+				window.__TAURI_INTERNALS__?.setMockResponse(
+					"get_session",
+					firstWorkflowSession,
+				);
+				window.dispatchEvent(
+					new CustomEvent("workspace-tree-refresh", {
+						detail: { worktreePath },
+					}),
+				);
+			},
+			{
+				worktreePath,
+				workflowNode,
+				firstWorkflowSession,
+			},
+		);
+
+		await expect(
+			page.getByText("First workflow transcript", { exact: true }),
+		).toBeVisible();
+		await expect(page.getByPlaceholder("Send a message...")).toBeVisible();
 	});
 
 	test("Workflow Session uses the complete shared chat and permission surface", async ({
@@ -514,118 +691,181 @@ test.describe("Workspace Manager", () => {
 		await expect(page.getByText(/attempt 4/i)).not.toBeVisible();
 	});
 
-	test("retry refresh preserves the selected opaque Node while detail advances", async ({
+	test("a later occurrence appends without replacing the selected past occurrence", async ({
 		page,
 	}) => {
 		const worktreePath = "/test/repo-worktrees/feat-wip";
-		const nodeSummary = {
+		const firstOccurrence = {
 			kind: "node",
-			id: "stable-retry-node",
-			title: "Retryable review",
+			id: "occurrence-a-1",
+			title: "Loop step",
 			status: "running",
 			contentKind: "session",
 			capabilities: { canApprove: false, canClose: false },
 			updatedAt: 1000,
+		};
+		const workflowSummary = {
+			kind: "workflow",
+			id: "loop-workflow",
+			title: "Loop workflow",
+			status: "running",
+			capabilities: {
+				canStop: true,
+				canResume: false,
+				canAbort: true,
+				canArchive: false,
+			},
+			updatedAt: 1000,
+			children: [firstOccurrence],
 		};
 		const config = buildMockConfig({
 			list_branches_with_status: kanbanBranches.filter(
 				(branch) => branch.name === "feat/wip",
 			),
 			list_workspace_worktree_nodes: {
-				nodes: [nodeSummary],
+				nodes: [workflowSummary],
 				preferredNodeId: null,
 			},
 			get_workspace_node_detail: {
-				id: "stable-retry-node",
-				title: "Retryable review",
+				id: "occurrence-a-1",
+				title: "Loop step",
 				status: "running",
 				capabilities: { canApprove: false, canClose: false },
 				updatedAt: 1000,
-				content: { kind: "session", sessionId: "retry-session-1" },
+				content: { kind: "session", sessionId: "loop-session-a-1" },
 			},
 			get_session: rawSession(
-				"retry-session-1",
+				"loop-session-a-1",
 				worktreePath,
-				"First attempt body",
+				"First occurrence body",
 			),
 		});
 		await setupTauriMock(page, config);
 		await waitForApp(page);
-		const selectedRow = page.getByRole("button", {
-			name: "Retryable review, running",
+		const firstRow = page.getByRole("button", {
+			name: "Loop step, running",
 			exact: true,
 		});
-		await selectedRow.click();
-		await expect(page.getByText("First attempt body", { exact: true })).toBeVisible();
-		await expect(selectedRow).toHaveAttribute("aria-current", "page");
+		await firstRow.click();
+		await expect(
+			page.getByText("First occurrence body", { exact: true }),
+		).toBeVisible();
+		await expect(firstRow).toHaveAttribute("aria-current", "page");
 
 		await page.evaluate(
-			({ worktreePath, nodeSummary }) => {
+			({ worktreePath, workflowSummary, firstOccurrence }) => {
 				const internals = window.__TAURI_INTERNALS__;
 				if (!internals) throw new Error("Tauri mock not initialized");
+				const completedFirst = {
+					...firstOccurrence,
+					status: "completed",
+					updatedAt: 2000,
+				};
+				const secondOccurrence = {
+					...firstOccurrence,
+					id: "occurrence-a-2",
+					status: "running",
+					updatedAt: 3000,
+				};
 				internals.setMockResponse("list_workspace_worktree_nodes", {
-					nodes: [{ ...nodeSummary, status: "completed", updatedAt: 2000 }],
-					preferredNodeId: "stable-retry-node",
+					nodes: [
+						{
+							...workflowSummary,
+							updatedAt: 3000,
+							children: [completedFirst, secondOccurrence],
+						},
+					],
+					preferredNodeId: "occurrence-a-2",
 				});
 				internals.setMockResponse("get_workspace_node_detail", {
-					id: "stable-retry-node",
-					title: "Retryable review",
+					id: "occurrence-a-1",
+					title: "Loop step",
 					status: "completed",
 					capabilities: { canApprove: false, canClose: false },
 					updatedAt: 2000,
-					content: { kind: "session", sessionId: "retry-session-2" },
+					content: { kind: "session", sessionId: "loop-session-a-1" },
 				});
-				internals.setMockResponse(
-					"get_session",
-					{
-						id: "retry-session-2",
-						worktreePath,
-						messages: [
-							{
-								id: "retry-message-2",
-								role: "agent",
-								content: "Latest retry body",
-								timestamp: 2000,
-							},
-						],
-						state: "active",
-						createdAt: 1000,
-						updatedAt: 2000,
-						agentSessionId: "agent-retry-2",
-						permissionMode: "ask",
-						planMode: false,
-						permissionProfileId: null,
-						backendId: null,
-						selectedModel: "",
-						availableModels: [],
-						canChangeBackend: false,
-						pendingQueue: [],
-						pendingPermissionRequest: null,
-						turnPhase: "idle",
-						initialPage: {
-							nextCursor: null,
-							hasMore: false,
-							totalCount: 1,
-						},
-					},
-				);
 				window.dispatchEvent(
 					new CustomEvent("workspace-tree-refresh", {
 						detail: { worktreePath },
 					}),
 				);
 			},
-			{ worktreePath, nodeSummary },
+			{ worktreePath, workflowSummary, firstOccurrence },
 		);
 
-		await expect(page.getByText("Latest retry body", { exact: true })).toBeVisible();
-		const retriedRow = page.getByRole("button", {
-			name: "Retryable review, completed",
+		const completedFirstRow = page.getByRole("button", {
+			name: "Loop step, completed",
 			exact: true,
 		});
-		await expect(retriedRow).toHaveAttribute("aria-current", "page");
-		await expect(page.getByText("First attempt body", { exact: true })).not.toBeVisible();
-		await expect(page.getByText(/attempt 2/i)).not.toBeVisible();
+		const secondRow = page.getByRole("button", {
+			name: "Loop step, running",
+			exact: true,
+		});
+		await expect(completedFirstRow).toHaveAttribute("aria-current", "page");
+		await expect(secondRow).not.toHaveAttribute("aria-current");
+		await expect(
+			page.getByText("First occurrence body", { exact: true }),
+		).toBeVisible();
+
+		await page.evaluate(
+			({ worktreePath }) => {
+				const internals = window.__TAURI_INTERNALS__;
+				if (!internals) throw new Error("Tauri mock not initialized");
+				internals.setMockResponse("get_workspace_node_detail", {
+					id: "occurrence-a-2",
+					title: "Loop step",
+					status: "running",
+					capabilities: { canApprove: false, canClose: false },
+					updatedAt: 3000,
+					content: { kind: "session", sessionId: "loop-session-a-2" },
+				});
+				internals.setMockResponse("get_session", {
+					id: "loop-session-a-2",
+					worktreePath,
+					messages: [
+						{
+							id: "loop-message-a-2",
+							role: "agent",
+							content: "Second occurrence body",
+							timestamp: 3000,
+						},
+					],
+					state: "active",
+					createdAt: 3000,
+					updatedAt: 3000,
+					agentSessionId: "agent-loop-a-2",
+					permissionMode: "ask",
+					planMode: false,
+					permissionProfileId: null,
+					backendId: null,
+					selectedModel: "",
+					availableModels: [],
+					canChangeBackend: false,
+					pendingQueue: [],
+					pendingQueueCount: 0,
+					pendingPermissionRequest: null,
+					pendingPermissionStateRevision: 1,
+					turnPhase: "idle",
+					initialPage: {
+						nextCursor: null,
+						hasMore: false,
+						totalCount: 1,
+					},
+				});
+			},
+			{ worktreePath },
+		);
+		await secondRow.click();
+
+		await expect(
+			page.getByText("Second occurrence body", { exact: true }),
+		).toBeVisible();
+		await expect(secondRow).toHaveAttribute("aria-current", "page");
+		await expect(
+			page.getByText("First occurrence body", { exact: true }),
+		).not.toBeVisible();
+		await expect(page.getByText(/attempt/i)).not.toBeVisible();
 	});
 });
 

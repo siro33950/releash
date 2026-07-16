@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
 		detail: null as WorkspaceNodeDetail | null,
 		loading: false,
 		error: null as string | null,
+		missingNodeId: null as string | null,
 	},
 	boundSessionChat: vi.fn(),
 	approveWorkspaceNode: vi.fn().mockResolvedValue(null),
@@ -69,11 +70,38 @@ beforeEach(() => {
 	mocks.detailState.detail = null;
 	mocks.detailState.loading = false;
 	mocks.detailState.error = null;
+	mocks.detailState.missingNodeId = null;
 	mocks.boundSessionChat.mockClear();
 	mocks.approveWorkspaceNode.mockClear();
 });
 
 describe("NodeContentView", () => {
+	it("reports only an authoritative missing result for the selected Node", () => {
+		const onNodeMissing = vi.fn();
+		mocks.detailState.missingNodeId = "old-node";
+		const { rerender } = render(
+			<NodeContentView
+				worktreePath="/repo"
+				nodeId="new-node"
+				registerDropZone={vi.fn()}
+				onNodeMissing={onNodeMissing}
+			/>,
+		);
+		expect(onNodeMissing).not.toHaveBeenCalled();
+
+		mocks.detailState.missingNodeId = "new-node";
+		rerender(
+			<NodeContentView
+				worktreePath="/repo"
+				nodeId="new-node"
+				registerDropZone={vi.fn()}
+				onNodeMissing={onNodeMissing}
+			/>,
+		);
+		expect(onNodeMissing).toHaveBeenCalledOnce();
+		expect(onNodeMissing).toHaveBeenCalledWith("/repo", "new-node");
+	});
+
 	it("uses the same complete BoundSessionChat for standalone and Workflow Session Nodes", () => {
 		mocks.detailState.detail = sessionDetail(
 			"standalone",

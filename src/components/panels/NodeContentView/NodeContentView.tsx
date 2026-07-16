@@ -1,6 +1,6 @@
 import { AlertTriangle } from "lucide-react";
 import type React from "react";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { type TogglePanel, ViewToolbar } from "@/components/layout/ViewToolbar";
 import { BoundSessionChat } from "@/components/panels/AgentChatPanel";
 import { Button } from "@/components/ui/button";
@@ -33,6 +33,7 @@ interface NodeContentViewProps {
 		((content: string, mentions?: MentionReference[]) => Promise<void>) | null
 	>;
 	onOpenDiffFile?: (filePath: string) => void;
+	onNodeMissing?: (worktreePath: string, nodeId: string) => void;
 }
 
 export function NodeContentView({
@@ -46,9 +47,15 @@ export function NodeContentView({
 	registerDropZone,
 	sendMessageRef,
 	onOpenDiffFile,
+	onNodeMissing,
 }: NodeContentViewProps) {
 	const state = useWorkspaceNodeDetail({ worktreePath, nodeId });
 	const detail = state.detail;
+
+	useEffect(() => {
+		if (!nodeId || state.missingNodeId !== nodeId) return;
+		onNodeMissing?.(worktreePath, nodeId);
+	}, [nodeId, onNodeMissing, state.missingNodeId, worktreePath]);
 
 	return (
 		<div className="flex h-full min-h-0 flex-col overflow-hidden">

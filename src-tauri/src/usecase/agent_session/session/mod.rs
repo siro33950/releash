@@ -1315,9 +1315,32 @@ fn build_new_session(
     workflow_node_session: bool,
     workflow_node_context: Option<WorkflowNodeContextDto>,
 ) -> ChatSession {
+    build_new_session_with_id(
+        uuid::Uuid::new_v4().to_string(),
+        worktree_path,
+        backend_id,
+        permission_mode,
+        selected_model,
+        plan_mode,
+        workflow_node_session,
+        workflow_node_context,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_new_session_with_id(
+    session_id: String,
+    worktree_path: &str,
+    backend_id: Option<String>,
+    permission_mode: crate::domain::agent_session::PermissionMode,
+    selected_model: Option<String>,
+    plan_mode: bool,
+    workflow_node_session: bool,
+    workflow_node_context: Option<WorkflowNodeContextDto>,
+) -> ChatSession {
     let now = now_timestamp();
     ChatSession {
-        id: uuid::Uuid::new_v4().to_string(),
+        id: session_id,
         worktree_path: normalize_repo_path(worktree_path),
         messages: Vec::new(),
         state: SessionState::Active,
@@ -1404,6 +1427,35 @@ pub fn create_session_with_model_and_plan_mode(
         None => registry.default_model_for(&backend_id)?,
     };
     let session = build_new_session(
+        worktree_path,
+        Some(backend_id),
+        permission_mode,
+        Some(selected_model),
+        plan_mode,
+        false,
+        None,
+    );
+    session_store.save_full_session_for_migration_or_restore(data_dir, &session)?;
+    Ok(session)
+}
+
+/// Create a non-workflow session from fully resolved creation options and a stable ID.
+///
+/// Workspace session creation uses the client request UUID as the session ID so a retry can
+/// recover the already committed session after the process-local request state has been lost.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn create_session_with_resolved_options_and_id(
+    session_store: &SessionStore,
+    data_dir: &std::path::Path,
+    session_id: String,
+    worktree_path: &str,
+    backend_id: String,
+    permission_mode: crate::domain::agent_session::PermissionMode,
+    selected_model: String,
+    plan_mode: bool,
+) -> Result<ChatSession, String> {
+    let session = build_new_session_with_id(
+        session_id,
         worktree_path,
         Some(backend_id),
         permission_mode,

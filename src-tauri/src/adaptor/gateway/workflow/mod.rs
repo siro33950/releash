@@ -92,7 +92,9 @@ pub(crate) use runtime_resolver::resolve_workflow_by_name;
 pub(crate) use secret_source_gateway::EmptySecretSourceGateway;
 pub(crate) use secret_source_gateway::WorkflowSecretSourceConfigGateway;
 pub(crate) use state_notification_gateway::emit_workflow_execution_from_snapshot;
-pub(crate) use workspace_session::StoredWorkspaceSessionGateway;
+pub(crate) use workspace_session::{
+    StoredWorkspaceNodeSessionCloseGateway, StoredWorkspaceSessionGateway,
+};
 #[cfg(test)]
 pub(crate) use worktree_gateway::PassthroughManagedWorktreeGateway;
 pub(crate) use worktree_gateway::RepoPathsManagedWorktreeGateway;

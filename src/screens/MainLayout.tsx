@@ -55,69 +55,61 @@ interface MainLayoutProps {
 	leftNav: React.ReactNode;
 	centerSelection?: CenterSelection | null;
 	newSessionCreationRequest?: NewSessionCreationRequest | null;
-	onCenterSelectionResolved?: (selection: CenterSelection) => void;
+	onNewSessionCreated?: (
+		request: NewSessionCreationRequest,
+		selection: CenterSelection,
+	) => void;
+	onNewSessionCreationFailed?: (
+		request: NewSessionCreationRequest,
+		error: string,
+	) => void;
+	onCenterNodeMissing?: (worktreePath: string, nodeId: string) => void;
+}
+
+type StartNewSessionCreation = (
+	request: NewSessionCreationRequest,
+	create: () => Promise<CenterSelection>,
+) => void;
+
+interface NewSessionCreationTask {
+	task: Promise<CenterSelection>;
+	settled: boolean;
+}
+
+function newSessionCreationTaskKey(request: NewSessionCreationRequest): string {
+	return `${request.requestId}:${request.attempt}`;
 }
 
 function NewSessionCreationBridge({
 	worktreePath,
 	request,
-	onCreated,
+	startCreation,
 }: {
 	worktreePath: string;
 	request: NewSessionCreationRequest | null;
-	onCreated?: (selection: CenterSelection) => void;
+	startCreation: StartNewSessionCreation;
 }) {
-	const { createNewSession } = useAgentChatContext();
-	const requestTaskRef = useRef<{
-		requestId: number;
-		task: Promise<string | null>;
-	} | null>(null);
-	const deliveredRequestIdRef = useRef<number | null>(null);
+	const { createNewWorkspaceSession } = useAgentChatContext();
 
 	useEffect(() => {
 		if (!request || request.worktreePath !== worktreePath) return;
-		if (deliveredRequestIdRef.current === request.requestId) return;
-		let cancelled = false;
-
-		let task =
-			requestTaskRef.current?.requestId === request.requestId
-				? requestTaskRef.current.task
-				: null;
-		if (task == null) {
-			task = createNewSession().then(async (sessionId) => {
-				if (!sessionId) return null;
-				return invoke<string | null>("get_workspace_session_node_id", {
+		startCreation(request, async () => {
+			const sessionId = await createNewWorkspaceSession(request.requestId);
+			const nodeId = await invoke<string | null>(
+				"get_workspace_session_node_id",
+				{
 					worktreePath,
 					sessionId,
-				});
-			});
-			requestTaskRef.current = { requestId: request.requestId, task };
-		}
-
-		void task
-			.then((nodeId) => {
-				if (!nodeId || cancelled) return;
-				if (requestTaskRef.current?.requestId === request.requestId) {
-					requestTaskRef.current = null;
-				}
-				deliveredRequestIdRef.current = request.requestId;
-				window.dispatchEvent(
-					new CustomEvent("workspace-tree-refresh", {
-						detail: { worktreePath },
-					}),
+				},
+			);
+			if (!nodeId) {
+				throw new Error(
+					"Created Session is missing from the Workspace read model.",
 				);
-				onCreated?.({ kind: "node", worktreePath, nodeId });
-			})
-			.catch((error: unknown) => {
-				if (!cancelled) {
-					console.warn("[NewSessionCreationBridge] create failed", error);
-				}
-			});
-
-		return () => {
-			cancelled = true;
-		};
-	}, [createNewSession, onCreated, request, worktreePath]);
+			}
+			return { kind: "node", worktreePath, nodeId };
+		});
+	}, [createNewWorkspaceSession, request, startCreation, worktreePath]);
 
 	return null;
 }
@@ -134,7 +126,8 @@ function WorktreeContent({
 	togglePanels,
 	centerSelection,
 	newSessionCreationRequest,
-	onCenterSelectionResolved,
+	startNewSessionCreation,
+	onCenterNodeMissing,
 	initialWorkspaceState,
 	internalStateMapRef,
 }: {
@@ -149,7 +142,8 @@ function WorktreeContent({
 	togglePanels: TogglePanel[];
 	centerSelection: CenterSelection | null;
 	newSessionCreationRequest?: NewSessionCreationRequest | null;
-	onCenterSelectionResolved?: (selection: CenterSelection) => void;
+	startNewSessionCreation: StartNewSessionCreation;
+	onCenterNodeMissing?: (worktreePath: string, nodeId: string) => void;
 	initialWorkspaceState?: WorkspaceState;
 	internalStateMapRef: React.MutableRefObject<
 		Map<string, InternalWorktreeState>
@@ -265,7 +259,7 @@ function WorktreeContent({
 			<NewSessionCreationBridge
 				worktreePath={rootPath}
 				request={newSessionCreationRequest ?? null}
-				onCreated={onCenterSelectionResolved}
+				startCreation={startNewSessionCreation}
 			/>
 			<ReviewThreadHandoffProvider worktreeName={worktreeName}>
 				{/* Center */}
@@ -282,6 +276,7 @@ function WorktreeContent({
 							registerDropZone={s.registerDropZone}
 							sendMessageRef={sendAgentMessageRef}
 							onOpenDiffFile={handleOpenDiffFile}
+							onNodeMissing={onCenterNodeMissing}
 						/>
 					</div>
 				</Panel>
@@ -400,13 +395,67 @@ export function MainLayout({
 	leftNav,
 	centerSelection,
 	newSessionCreationRequest,
-	onCenterSelectionResolved,
+	onNewSessionCreated,
+	onNewSessionCreationFailed,
+	onCenterNodeMissing,
 }: MainLayoutProps) {
 	const leftNavRef = useRef<PanelImperativeHandle>(null);
 	const rightPanelRef = useRef<PanelImperativeHandle>(null);
 
 	const [leftNavVisible, setLeftNavVisible] = useState(true);
 	const [rightVisible, setRightVisible] = useState(true);
+	const newSessionTasksRef = useRef(new Map<string, NewSessionCreationTask>());
+	const activeNewSessionTaskKey = newSessionCreationRequest
+		? newSessionCreationTaskKey(newSessionCreationRequest)
+		: null;
+	const activeNewSessionTaskKeyRef = useRef(activeNewSessionTaskKey);
+	activeNewSessionTaskKeyRef.current = activeNewSessionTaskKey;
+	useEffect(() => {
+		for (const [key, entry] of newSessionTasksRef.current) {
+			if (entry.settled && key !== activeNewSessionTaskKey) {
+				newSessionTasksRef.current.delete(key);
+			}
+		}
+	}, [activeNewSessionTaskKey]);
+	const startNewSessionCreation = useCallback<StartNewSessionCreation>(
+		(request, create) => {
+			const key = newSessionCreationTaskKey(request);
+			if (newSessionTasksRef.current.has(key)) return;
+			const task = Promise.resolve().then(create);
+			const entry: NewSessionCreationTask = { task, settled: false };
+			newSessionTasksRef.current.set(key, entry);
+			const settle = () => {
+				entry.settled = true;
+				if (activeNewSessionTaskKeyRef.current !== key) {
+					newSessionTasksRef.current.delete(key);
+				}
+			};
+			void task.then(
+				(selection) => {
+					try {
+						window.dispatchEvent(
+							new CustomEvent("workspace-tree-refresh", {
+								detail: { worktreePath: request.worktreePath },
+							}),
+						);
+						onNewSessionCreated?.(request, selection);
+					} finally {
+						settle();
+					}
+				},
+				(error: unknown) => {
+					try {
+						const message =
+							error instanceof Error ? error.message : String(error);
+						onNewSessionCreationFailed?.(request, message);
+					} finally {
+						settle();
+					}
+				},
+			);
+		},
+		[onNewSessionCreated, onNewSessionCreationFailed],
+	);
 	// --- Workspace state persistence ---
 	const { internalStateMapRef, getInitialState, stateReady } =
 		useWorkspacePersistence({
@@ -566,7 +615,8 @@ export function MainLayout({
 								togglePanels={togglePanels}
 								centerSelection={centerSelection ?? null}
 								newSessionCreationRequest={newSessionCreationRequest}
-								onCenterSelectionResolved={onCenterSelectionResolved}
+								startNewSessionCreation={startNewSessionCreation}
+								onCenterNodeMissing={onCenterNodeMissing}
 								initialWorkspaceState={getInitialState(selectedRootPath)}
 								internalStateMapRef={internalStateMapRef}
 							/>

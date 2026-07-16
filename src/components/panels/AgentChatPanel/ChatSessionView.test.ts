@@ -76,6 +76,12 @@ vi.mock("@tanstack/react-virtual", () => ({
 	}),
 }));
 
+const clipboardWriteText = vi.fn().mockResolvedValue(undefined);
+Object.defineProperty(navigator, "clipboard", {
+	configurable: true,
+	value: { writeText: clipboardWriteText },
+});
+
 const session: ChatSession = {
 	id: "s1",
 	worktreePath: "/repo",
@@ -193,6 +199,11 @@ beforeEach(() => {
 	mockVirtualRange.startIndex = 0;
 	mockVirtualRange.endIndex = null;
 	mockOffsetOverrides.clear();
+	clipboardWriteText.mockClear();
+	Object.defineProperty(navigator, "clipboard", {
+		configurable: true,
+		value: { writeText: clipboardWriteText },
+	});
 });
 
 const pendingPermission: PermissionRequest = {
@@ -202,6 +213,72 @@ const pendingPermission: PermissionRequest = {
 	input: { command: "echo hi" },
 	title: "Run command",
 };
+
+describe("ChatSessionView session-local controls", () => {
+	const sessionWithAgentResponse: ChatSession = {
+		...session,
+		messages: [
+			...session.messages,
+			{
+				id: "m2",
+				role: "agent",
+				parts: [{ type: "text", content: "Latest agent response" }],
+				timestamp: 1002,
+			},
+		],
+	};
+
+	it("keeps find and raw scrollback available from the toolbar", async () => {
+		const user = userEvent.setup();
+		renderChatSessionView({ testSession: sessionWithAgentResponse });
+
+		await user.click(
+			screen.getByRole("button", { name: "Enable raw scrollback" }),
+		);
+		expect(
+			screen.getByRole("button", { name: "Disable raw scrollback" }),
+		).toBeInTheDocument();
+
+		await user.click(
+			screen.getByRole("button", { name: "Find in current thread" }),
+		);
+		expect(
+			screen.getByPlaceholderText("Find in current thread"),
+		).toBeInTheDocument();
+	});
+
+	it("keeps the fixed Cmd/Ctrl+F find shortcut", () => {
+		renderChatSessionView({ testSession: sessionWithAgentResponse });
+
+		fireEvent.keyDown(window, { key: "f", metaKey: true });
+
+		expect(
+			screen.getByPlaceholderText("Find in current thread"),
+		).toBeInTheDocument();
+	});
+
+	it("keeps copy available from the toolbar", async () => {
+		renderChatSessionView({ testSession: sessionWithAgentResponse });
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Copy latest agent response" }),
+		);
+
+		await waitFor(() =>
+			expect(clipboardWriteText).toHaveBeenCalledWith("Latest agent response"),
+		);
+	});
+
+	it("keeps the fixed Ctrl+O copy shortcut", async () => {
+		renderChatSessionView({ testSession: sessionWithAgentResponse });
+
+		fireEvent.keyDown(window, { key: "o", ctrlKey: true });
+
+		await waitFor(() =>
+			expect(clipboardWriteText).toHaveBeenCalledWith("Latest agent response"),
+		);
+	});
+});
 
 describe("ChatSessionView stall status", () => {
 	it("shows the active stall observation while streaming", () => {
