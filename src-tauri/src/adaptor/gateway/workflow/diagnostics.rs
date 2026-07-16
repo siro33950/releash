@@ -2244,7 +2244,6 @@ nodes:
                 SchemaDef::Object {
                     properties: Default::default(),
                     required: Default::default(),
-                    additional_properties: false,
                 },
             )]
             .into_iter()
@@ -2678,7 +2677,6 @@ nodes:
                 SchemaDef::Object {
                     properties: Default::default(),
                     required: Default::default(),
-                    additional_properties: false,
                 },
             )]
             .into_iter()
@@ -2732,7 +2730,6 @@ nodes:
                         .into_iter()
                         .collect(),
                     required: ["path".to_string()].into_iter().collect(),
-                    additional_properties: false,
                 },
             )]
             .into_iter()

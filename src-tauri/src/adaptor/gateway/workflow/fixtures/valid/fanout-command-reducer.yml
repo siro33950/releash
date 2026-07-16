@@ -7,14 +7,12 @@ schemas:
       lgtm:
         type: boolean
     required: [lgtm]
-    additionalProperties: false
   judge-result:
     type: object
     properties:
       all_lgtm:
         type: boolean
     required: [all_lgtm]
-    additionalProperties: false
 nodes:
   - name: review
     fanout:

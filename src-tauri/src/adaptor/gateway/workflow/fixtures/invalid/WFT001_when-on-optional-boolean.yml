@@ -6,7 +6,6 @@ schemas:
     properties:
       passed:
         type: boolean
-    additionalProperties: false
 nodes:
   - name: judge
     artifact: verdict

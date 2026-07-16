@@ -14,7 +14,6 @@ schemas:
     required:
       - passed
       - decision
-    additionalProperties: false
 nodes:
   - name: judge
     artifact: verdict

@@ -1,11 +1,13 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde_json::Value;
 
+use crate::adaptor::gateway::workflow::domain_mapping::workflow_schemas_to_domain;
 use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::facet::FacetContents;
-use crate::adaptor::gateway::workflow::schema::NodeDefinition;
+use crate::adaptor::gateway::workflow::schema::{NodeDefinition, SchemaDef};
 use crate::adaptor::gateway::workflow::state::RuntimeArtifact;
+use crate::domain::workflow::services::contract as workflow_contract;
 use crate::domain::workflow::services::reference::{
     self, resolve_runtime_reference, REQUEST_ARTIFACT,
 };
@@ -172,6 +174,7 @@ pub(crate) fn render_fanout_child_workflow_instruction(
 pub(crate) fn append_artifact_completion_action(
     prompt: &mut String,
     artifact: Option<&str>,
+    schemas: &BTreeMap<String, SchemaDef>,
     execution_id: &str,
     node_name: &str,
     node_execution_id: Option<&str>,
@@ -179,6 +182,9 @@ pub(crate) fn append_artifact_completion_action(
     let Some(contract) = artifact else {
         return;
     };
+    let domain_schemas = workflow_schemas_to_domain(schemas);
+    let schema_guidance =
+        workflow_contract::render_contract_prompt_guidance(&domain_schemas, contract);
     let action = crate::adaptor::gateway::workflow::facet::artifact_completion_action(
         contract,
         execution_id,
@@ -186,6 +192,10 @@ pub(crate) fn append_artifact_completion_action(
         node_execution_id,
     );
     if !prompt.is_empty() {
+        prompt.push_str("\n\n");
+    }
+    if let Some(schema_guidance) = schema_guidance {
+        prompt.push_str(&schema_guidance);
         prompt.push_str("\n\n");
     }
     prompt.push_str(&action);
@@ -197,6 +207,7 @@ pub(crate) fn build_node_prompt(
     execution_id: &str,
     request: Option<&str>,
     artifacts: &HashMap<String, RuntimeArtifact>,
+    schemas: &BTreeMap<String, SchemaDef>,
 ) -> Result<(Option<String>, String), WorkflowEngineError> {
     if !node.has_facet_refs() {
         return Err(WorkflowEngineError::InvalidWorkflow(format!(
@@ -222,11 +233,27 @@ pub(crate) fn build_node_prompt(
     append_artifact_completion_action(
         &mut prompt,
         node.artifact.as_deref(),
+        schemas,
         execution_id,
         &node.name,
         None,
     );
     Ok((system_prompt, prompt))
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FanoutChildPromptContext<'a> {
+    item: Option<&'a Value>,
+    node_execution_id: &'a str,
+}
+
+impl<'a> FanoutChildPromptContext<'a> {
+    pub(crate) fn new(item: Option<&'a Value>, node_execution_id: &'a str) -> Self {
+        Self {
+            item,
+            node_execution_id,
+        }
+    }
 }
 
 pub(crate) fn build_fanout_child_prompt(
@@ -235,8 +262,8 @@ pub(crate) fn build_fanout_child_prompt(
     execution_id: &str,
     request: Option<&str>,
     artifacts: &HashMap<String, RuntimeArtifact>,
-    item: Option<&Value>,
-    node_execution_id: &str,
+    context: FanoutChildPromptContext<'_>,
+    schemas: &BTreeMap<String, SchemaDef>,
 ) -> Result<(Option<String>, String), WorkflowEngineError> {
     if node.has_facet_refs() && facet_contents.is_none_or(FacetContents::is_empty) {
         return Err(WorkflowEngineError::InvalidWorkflow(format!(
@@ -249,16 +276,17 @@ pub(crate) fn build_fanout_child_prompt(
     let composed = crate::adaptor::gateway::workflow::facet::compose_facets(facet_contents);
     let system_prompt = composed
         .system_prompt
-        .map(|content| render_prompt_content(&content, &artifacts, item));
-    let rendered_user = render_prompt_content(&composed.user_message, &artifacts, item);
+        .map(|content| render_prompt_content(&content, &artifacts, context.item));
+    let rendered_user = render_prompt_content(&composed.user_message, &artifacts, context.item);
     let rendered_user = inject_input_artifacts(&rendered_user, &node.inputs, &artifacts);
-    let mut user_message = inject_fanout_item(&rendered_user, node.input.as_deref(), item);
+    let mut user_message = inject_fanout_item(&rendered_user, node.input.as_deref(), context.item);
     append_artifact_completion_action(
         &mut user_message,
         node.artifact.as_deref(),
+        schemas,
         execution_id,
         &node.name,
-        Some(node_execution_id),
+        Some(context.node_execution_id),
     );
 
     Ok((system_prompt, user_message))
@@ -310,8 +338,15 @@ mod tests {
             ..NodeDefinition::default()
         };
 
-        let error = build_node_prompt(&node, None, "execution-1", None, &HashMap::new())
-            .expect_err("node without facet refs must be rejected");
+        let error = build_node_prompt(
+            &node,
+            None,
+            "execution-1",
+            None,
+            &HashMap::new(),
+            &BTreeMap::new(),
+        )
+        .expect_err("node without facet refs must be rejected");
 
         assert!(matches!(
             error,
@@ -345,6 +380,7 @@ mod tests {
             "execution-1",
             Some("ship"),
             &outputs,
+            &BTreeMap::new(),
         )
         .unwrap();
 
@@ -373,8 +409,15 @@ mod tests {
             },
         )]);
 
-        let (_system, prompt) =
-            build_node_prompt(&node, Some(&resolved), "execution-1", Some(""), &outputs).unwrap();
+        let (_system, prompt) = build_node_prompt(
+            &node,
+            Some(&resolved),
+            "execution-1",
+            Some(""),
+            &outputs,
+            &BTreeMap::new(),
+        )
+        .unwrap();
 
         assert!(prompt.contains("Spec dir: docs/specs/foo"));
     }
@@ -392,8 +435,8 @@ mod tests {
             "execution-1",
             None,
             &HashMap::new(),
-            Some(&item),
-            "node-execution-1",
+            FanoutChildPromptContext::new(Some(&item), "node-execution-1"),
+            &BTreeMap::new(),
         )
         .unwrap();
 
@@ -429,8 +472,8 @@ mod tests {
             "execution-1",
             Some("ship"),
             &outputs,
-            Some(&item),
-            "node-execution-1",
+            FanoutChildPromptContext::new(Some(&item), "node-execution-1"),
+            &BTreeMap::new(),
         )
         .unwrap();
 
@@ -449,10 +492,29 @@ mod tests {
         node.artifact = Some("review-result".to_string());
         let resolved = instruction_contents("Review the change.");
 
-        let (_system, prompt) =
-            build_node_prompt(&node, Some(&resolved), "execution-1", None, &HashMap::new())
-                .unwrap();
+        let schemas = BTreeMap::from([(
+            "review-result".to_string(),
+            SchemaDef::Object {
+                properties: BTreeMap::from([(
+                    "verdict".to_string(),
+                    SchemaDef::String { r#enum: None },
+                )]),
+                required: ["verdict".to_string()].into_iter().collect(),
+            },
+        )]);
+        let (_system, prompt) = build_node_prompt(
+            &node,
+            Some(&resolved),
+            "execution-1",
+            None,
+            &HashMap::new(),
+            &schemas,
+        )
+        .unwrap();
 
+        assert!(prompt.contains("## Artifact contract"));
+        assert!(prompt.contains("\"verdict\": \"string\""));
+        assert!(prompt.contains("Fields not listed in `properties` are accepted"));
         assert!(prompt.contains("releash workflow output submit execution-1"));
         assert!(prompt.contains("--node review"));
         assert!(prompt.contains("--type review-result"));
@@ -475,8 +537,8 @@ mod tests {
             "execution-1",
             None,
             &HashMap::new(),
-            Some(&item),
-            "node-execution-1",
+            FanoutChildPromptContext::new(Some(&item), "node-execution-1"),
+            &BTreeMap::new(),
         )
         .unwrap();
 

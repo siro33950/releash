@@ -8,7 +8,6 @@ schemas:
       spec_dir: string
     required:
     - spec_dir
-    additionalProperties: false
 nodes:
 - name: write_requirements
   session:

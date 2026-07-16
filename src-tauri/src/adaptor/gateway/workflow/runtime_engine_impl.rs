@@ -3622,6 +3622,13 @@ impl WorkflowRuntimeService {
         let cli_alias = crate::infrastructure::platform::path_aliases::alias_name_for_profile(
             crate::infrastructure::platform::path_aliases::BuildProfile::current(),
         );
+        let schemas = {
+            let executions = self.executions.lock().await;
+            let execution = executions
+                .get(execution_id)
+                .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(execution_id.to_string()))?;
+            workflow_schemas_to_domain(&execution.workflow.schemas)
+        };
         let prompt = match (violation, schema_violations) {
             (SubmissionViolation::InvalidSubmitOutput, Some(violations)) => {
                 workflow_contract::build_schema_violation_repair_prompt(
@@ -3630,6 +3637,7 @@ impl WorkflowRuntimeService {
                     node_name,
                     contract,
                     violations,
+                    &schemas,
                 )
             }
             _ => workflow_contract::build_missing_artifact_repair_prompt(
@@ -3637,6 +3645,7 @@ impl WorkflowRuntimeService {
                 execution_id,
                 node_name,
                 contract,
+                &schemas,
             ),
         };
         let permission_mode = PermissionMode::parse_canonical(&session.permission_mode)
@@ -5083,6 +5092,7 @@ impl WorkflowRuntimeService {
             &execution_id_for_ref,
             task_clone.as_deref(),
             &artifacts_clone,
+            &workflow_clone.schemas,
         )?;
         let workflow_instruction = workflow_prompt::render_node_workflow_instruction(
             &node_clone,
@@ -5202,6 +5212,7 @@ impl WorkflowRuntimeService {
             execution_id,
             request,
             artifacts,
+            &BTreeMap::new(),
         )?;
         dispatch_session_start(
             gate,
@@ -5802,6 +5813,7 @@ impl WorkflowRuntimeService {
             &fanout_start,
             &prompt_inputs,
             &facet_contents,
+            &workflow_for_facets.schemas,
         )
         .await?;
 

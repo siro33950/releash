@@ -11,7 +11,6 @@ schemas:
           - retry
     required:
       - decision
-    additionalProperties: false
 nodes:
   - name: judge
     artifact: verdict

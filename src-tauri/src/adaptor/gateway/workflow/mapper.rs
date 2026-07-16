@@ -269,14 +269,12 @@ fn domain_schema_to_schema(
         domain::SchemaDef::Object {
             properties,
             required,
-            additional_properties,
         } => crate::adaptor::gateway::workflow::schema::SchemaDef::Object {
             properties: properties
                 .iter()
                 .map(|(name, schema)| (name.clone(), domain_schema_to_schema(schema)))
                 .collect(),
             required: required.clone(),
-            additional_properties: *additional_properties,
         },
         domain::SchemaDef::Array { items } => {
             crate::adaptor::gateway::workflow::schema::SchemaDef::Array {
@@ -473,7 +471,6 @@ mod tests {
                 domain::SchemaDef::Object {
                     properties: Default::default(),
                     required: Default::default(),
-                    additional_properties: false,
                 },
             )]
             .into_iter()
@@ -503,8 +500,7 @@ mod tests {
                 "builtin": false,
                 "schemas": {
                     "plan": {
-                        "type": "object",
-                        "additionalProperties": false
+                        "type": "object"
                     }
                 },
                 "nodes": [{

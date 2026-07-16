@@ -48,8 +48,8 @@ pub fn schema_def_from_json(value: &Value) -> Result<SchemaDef, String> {
         "object" => {
             reject_schema_keywords(
                 object.keys().map(String::as_str),
-                &["type", "properties", "required", "additionalProperties"],
-                "object schema supports only properties, required, and additionalProperties",
+                &["type", "properties", "required"],
+                "object schema supports only properties and required",
             )?;
             let properties = match object.get("properties") {
                 Some(value) => value
@@ -68,19 +68,9 @@ pub fn schema_def_from_json(value: &Value) -> Result<SchemaDef, String> {
                 Some(value) => parse_string_array(value, "required")?.into_iter().collect(),
                 None => BTreeSet::new(),
             };
-            let additional_properties = object
-                .get("additionalProperties")
-                .map(|value| {
-                    value
-                        .as_bool()
-                        .ok_or_else(|| "additionalProperties must be a boolean".to_string())
-                })
-                .transpose()?
-                .unwrap_or(true);
             Ok(SchemaDef::Object {
                 properties,
                 required,
-                additional_properties,
             })
         }
         "array" => {
@@ -122,7 +112,6 @@ pub fn schema_def_to_json_value(schema: &SchemaDef) -> Value {
         SchemaDef::Object {
             properties,
             required,
-            additional_properties,
         } => {
             let mut object = serde_json::Map::new();
             object.insert("type".to_string(), Value::String("object".to_string()));
@@ -144,9 +133,6 @@ pub fn schema_def_to_json_value(schema: &SchemaDef) -> Value {
                     "required".to_string(),
                     Value::Array(required.iter().cloned().map(Value::String).collect()),
                 );
-            }
-            if !additional_properties {
-                object.insert("additionalProperties".to_string(), Value::Bool(false));
             }
             Value::Object(object)
         }
@@ -244,7 +230,6 @@ fn validate_at(
         SchemaDef::Object {
             properties,
             required,
-            additional_properties,
         } => {
             let Some(object) = value.as_object() else {
                 push(violations, path, "expected object");
@@ -268,17 +253,6 @@ fn validate_at(
                         &format!("{path}.{field}"),
                         violations,
                     );
-                }
-            }
-            if !additional_properties {
-                for field in object.keys() {
-                    if !properties.contains_key(field) {
-                        push(
-                            violations,
-                            &format!("{path}.{field}"),
-                            "additional property not allowed",
-                        );
-                    }
                 }
             }
         }
@@ -391,7 +365,6 @@ mod contract_schema_tests {
         SchemaDef::Object {
             properties,
             required: required.iter().map(|value| (*value).to_string()).collect(),
-            additional_properties: false,
         }
     }
 
@@ -423,7 +396,26 @@ mod contract_schema_tests {
         .unwrap_err();
         assert!(violations.iter().any(|v| v.path == "$.ok"));
         assert!(violations.iter().any(|v| v.path == "$.verdict"));
-        assert!(violations.iter().any(|v| v.path == "$.extra"));
+        assert!(!violations.iter().any(|v| v.path == "$.extra"));
+    }
+
+    #[test]
+    fn test_schema検証_objectは未宣言fieldを受理する() {
+        let schema = object(
+            BTreeMap::from([("spec_dir".to_string(), SchemaDef::String { r#enum: None })]),
+            &["spec_dir"],
+        );
+
+        assert!(validate(
+            &serde_json::json!({
+                "spec_dir": "docs/specs/issues-1469",
+                "spec_id": "issues-1469",
+                "metadata": {"source": "agent"}
+            }),
+            &schema,
+            &BTreeMap::new(),
+        )
+        .is_ok());
     }
 
     #[test]
@@ -503,17 +495,10 @@ mod contract_schema_tests {
         let object_schema = schema_def_from_json(&serde_json::json!({
             "type": "object",
             "properties": {"verdict": {"type": "string", "enum": ["LGTM"]}},
-            "required": ["verdict"],
-            "additionalProperties": false
+            "required": ["verdict"]
         }))
         .unwrap();
-        assert!(matches!(
-            object_schema,
-            SchemaDef::Object {
-                additional_properties: false,
-                ..
-            }
-        ));
+        assert!(matches!(object_schema, SchemaDef::Object { .. }));
     }
 
     #[test]
@@ -537,7 +522,11 @@ mod contract_schema_tests {
             ),
             (
                 serde_json::json!({"type": "object", "items": "x"}),
-                "object schema supports only properties, required, and additionalProperties",
+                "object schema supports only properties and required",
+            ),
+            (
+                serde_json::json!({"type": "object", "additionalProperties": false}),
+                "object schema supports only properties and required",
             ),
             (
                 serde_json::json!({"type": "boolean", "enum": ["yes"]}),
@@ -571,8 +560,7 @@ mod contract_schema_tests {
                 "properties": {
                     "verdict": {"type": "string", "enum": ["LGTM"]}
                 },
-                "required": ["verdict"],
-                "additionalProperties": false
+                "required": ["verdict"]
             })
         );
     }
@@ -591,7 +579,6 @@ mod contract_schema_tests {
                 ("note".to_string(), SchemaDef::String { r#enum: None }),
             ]),
             required: BTreeSet::from(["flag".to_string(), "verdict".to_string()]),
-            additional_properties: true,
         };
         assert_eq!(
             routing_field_kind(&schema, "flag"),

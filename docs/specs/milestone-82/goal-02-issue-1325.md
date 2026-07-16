@@ -6,7 +6,7 @@
 
 ## 実装内容
 
-1. **schemas: セクション**（schema.rs + domain）: workflow 直下に `schemas: { <名前>: <JSON Schema subset> }` を追加。D2 の subset（type/properties/required/items/enum/additionalProperties、scalar string、配列要素は名前付き参照）を Rust の型として定義し、subset 外の構文は load 時 Diagnostic。
+1. **schemas: セクション**（schema.rs + domain）: workflow 直下に `schemas: { <名前>: <JSON Schema subset> }` を追加。D2 の subset（type/properties/required/items/enum、scalar string、配列要素は名前付き参照）を Rust の型として定義し、subset 外の構文は load 時 Diagnostic。Object の未宣言 field は常に受理する。
 2. **Contract 検証エンジン**（domain service）: JSON value を subset schema で検証する validator を新設。`domain/workflow/services/contract.rs` の contract-validation メタブロック解析・`spec-directory` ハードコード（52-67 行）を置換・撤去する（spec_dir の generic な後継は #1326 の inputs 参照）。
 3. **artifact: / input:**: node 共通 field `artifact: <Contract 名>` / `input: <Contract 名>` を実装。未定義 Contract 参照は Diagnostic。各 NodeExecution は最大 1 つの Contract 検証済み Artifact を産出し、**Node 名で参照**できるよう projection / state に artifact 保管を実装する（参照 path に Contract 名を出さない）。
 4. **提出経路の統一**: session の CLI submit（`workflow output submit`）と、（#1328 で実装される）command stdout-JSON が同じ Artifact 検証・保存経路を通る構造にする。OutputSubmitted event / repair 機構（ContractRepairRequested、StructuredOutputRepairPolicy）を schemas 検証に接続し、repair prompt の文面を schemas 語彙に更新する。P13: session + artifact は検証済み提出まで完了しない（既存挙動踏襲）。

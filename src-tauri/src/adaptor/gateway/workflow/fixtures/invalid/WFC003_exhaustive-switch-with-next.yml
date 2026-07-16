@@ -8,7 +8,6 @@ schemas:
         type: string
         enum: [SHIP, HOLD]
     required: [verdict]
-    additionalProperties: false
 nodes:
   - name: judge
     artifact: route

@@ -267,14 +267,12 @@ pub(crate) fn schema_def_to_domain(schema: &schema::SchemaDef) -> domain::Schema
         schema::SchemaDef::Object {
             properties,
             required,
-            additional_properties,
         } => domain::SchemaDef::Object {
             properties: properties
                 .iter()
                 .map(|(name, schema)| (name.clone(), schema_def_to_domain(schema)))
                 .collect(),
             required: required.clone(),
-            additional_properties: *additional_properties,
         },
         schema::SchemaDef::Array { items } => domain::SchemaDef::Array {
             items: items.clone(),

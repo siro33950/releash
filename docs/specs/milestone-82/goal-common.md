@@ -20,7 +20,7 @@ https://github.com/siro33950/releash/milestone/82 に従って移行する。各
 ## 確定済み設計判断（覆さないこと。詳細は plan.md §2〜§3）
 
 - **D1**: CLI の正は Tauri アプリ内に新設する最小 local API（localhost + 認証トークン）。#1332 で実装。
-- **D2**: `schemas:` は JSON Schema subset（`type`/`properties`/`required`/`items`/`enum`/`additionalProperties`）の自前実装。routing 参照 field は required かつ boolean/enum。scalar(string) Contract を許可（request 用）。配列要素型は inline 不可・名前付き Contract 参照（`items: <名前>`）。
+- **D2**: `schemas:` は JSON Schema subset（`type`/`properties`/`required`/`items`/`enum`）の自前実装。Object の未宣言 field は常に受理する。routing 参照 field は required かつ boolean/enum。scalar(string) Contract を許可（request 用）。配列要素型は inline 不可・名前付き Contract 参照（`items: <名前>`）。
 - **D3**: command の標準結果（`ok`/`exit_code`/`stdout`/`stderr`/`duration`）は Artifact の予約 field。`artifact:` Contract field と単一名前空間に合成し、予約名衝突は load 時 Diagnostic。
 - **D5**: session の permission 許可値は ask/edit/full の現行 3 値のまま。`read` は追加しない。
 - **D6**: `{{ project_name }}` / `{{ path_alias.* }}` / `{{ vars.* }}` / `{{ task }}` / workflow の `variables:` は全廃。template 参照は `{{ request }}` / `{{ <node>.<field> }}` / `{{ item.<field> }}` のみ。

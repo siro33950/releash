@@ -426,8 +426,7 @@ pub(crate) mod test_support {
                                 "properties": {
                                     "status": {"type": "string"}
                                 },
-                                "required": ["status"],
-                                "additionalProperties": false
+                                "required": ["status"]
                             }
                         },
                         "nodes": [{

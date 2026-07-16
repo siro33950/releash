@@ -8,7 +8,6 @@ schemas:
         type: boolean
     required:
       - passed
-    additionalProperties: false
 nodes:
   - name: fanout
     artifact: verdict

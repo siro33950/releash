@@ -340,7 +340,6 @@ mod tests {
                         SchemaDef::String { r#enum: None },
                     )]),
                     required: BTreeSet::from(["status".to_string()]),
-                    additional_properties: true,
                 },
             )]),
             nodes: vec![NodeDefinition {

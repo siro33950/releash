@@ -389,7 +389,6 @@ mod tests {
                 SchemaDef::Object {
                     properties: Default::default(),
                     required: Default::default(),
-                    additional_properties: false,
                 },
             )]
             .into_iter()
@@ -683,7 +682,6 @@ mod tests {
                     required: ["spec_dir".to_string(), "design".to_string()]
                         .into_iter()
                         .collect(),
-                    additional_properties: false,
                 },
             )]
             .into_iter()
@@ -720,7 +718,13 @@ mod tests {
             let validated = validate_submission_output_with_secrets(
                 &workflow,
                 "spec-directory",
-                serde_json::json!({"spec_dir": "docs/specs/issues-1327"}),
+                serde_json::json!({
+                    "spec_dir": "docs/specs/issues-1327",
+                    "spec_id": "issues-1327",
+                    "files": ["docs/specs/issues-1327/requirements.md"],
+                    "related_issue": 1327,
+                    "open_questions_resolved": true
+                }),
                 &[],
             )
             .unwrap();

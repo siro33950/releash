@@ -883,6 +883,7 @@ mod tests {
                     "00000000-0000-0000-0000-000000000000",
                     Some(TASK_TEXT),
                     &artifacts,
+                    &wf.schemas,
                 )
                 .expect("build_node_prompt must succeed");
                 for input in &node.inputs {
@@ -922,6 +923,7 @@ mod tests {
                     "00000000-0000-0000-0000-000000000000",
                     Some("issues-123"),
                     &HashMap::new(),
+                    &wf.schemas,
                 )
                 .expect("build_node_prompt must succeed");
 
@@ -971,6 +973,7 @@ mod tests {
             "00000000-0000-0000-0000-000000000000",
             Some(&evil),
             &HashMap::new(),
+            &wf.schemas,
         )
         .expect("build_node_prompt must succeed");
 

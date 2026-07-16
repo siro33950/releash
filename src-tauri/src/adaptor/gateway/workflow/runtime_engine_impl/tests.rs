@@ -589,7 +589,6 @@ fn object_schema_for_test(fields: &[&str]) -> SchemaDef {
             .map(|field| (field.to_string(), SchemaDef::String { r#enum: None }))
             .collect(),
         required: fields.iter().map(|field| field.to_string()).collect(),
-        additional_properties: false,
     }
 }
 
@@ -1803,7 +1802,6 @@ fn bool_object_schema(field: &str) -> SchemaDef {
             .into_iter()
             .collect(),
         required: [field.to_string()].into_iter().collect(),
-        additional_properties: true,
     }
 }
 
@@ -1818,7 +1816,6 @@ fn enum_object_schema(field: &str, values: &[&str]) -> SchemaDef {
         .into_iter()
         .collect(),
         required: [field.to_string()].into_iter().collect(),
-        additional_properties: true,
     }
 }
 
@@ -2730,6 +2727,7 @@ fn approved_policy_injected_output_uses_sanitized_contract_payload_without_globa
         "execution-1",
         None,
         &outputs,
+        &BTreeMap::new(),
     )
     .unwrap();
     assert!(prompt.contains("[REDACTED]"));
@@ -2799,6 +2797,7 @@ fn approved_policy_masks_raw_secrets_before_state_variables_history_and_injectio
         "execution-1",
         None,
         &exec.artifacts,
+        &exec.workflow.schemas,
     )
     .unwrap();
     assert!(prompt.contains("[REDACTED]"));
@@ -2953,6 +2952,7 @@ fn build_node_prompt_full_pipeline() {
         "00000000-0000-0000-0000-000000000000",
         Some("Fix bug"),
         &outputs,
+        &BTreeMap::new(),
     )
     .unwrap();
 
@@ -2998,6 +2998,7 @@ fn build_node_prompt_no_facet_refs_returns_error() {
         "00000000-0000-0000-0000-000000000000",
         None,
         &HashMap::new(),
+        &BTreeMap::new(),
     );
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
@@ -3022,6 +3023,7 @@ fn build_node_prompt_policy_only_system_prompt_set() {
         "00000000-0000-0000-0000-000000000000",
         None,
         &HashMap::new(),
+        &BTreeMap::new(),
     )
     .unwrap();
 
@@ -3053,6 +3055,7 @@ fn build_node_prompt_passes_composed_system_prompt_through() {
         "00000000-0000-0000-0000-000000000000",
         None,
         &HashMap::new(),
+        &BTreeMap::new(),
     )
     .unwrap();
 
@@ -3116,6 +3119,7 @@ fn build_node_prompt_expands_artifact_field_references_in_user_message() {
         "00000000-0000-0000-0000-000000000000",
         Some("implement the authored spec"),
         &outputs,
+        &BTreeMap::new(),
     )
     .unwrap();
     let instruction = workflow_prompt::render_node_workflow_instruction(
@@ -3253,6 +3257,7 @@ async fn dispatch_session_start_passes_composed_system_prompt_to_gate() {
         "00000000-0000-0000-0000-000000000000",
         None,
         &HashMap::new(),
+        &BTreeMap::new(),
     )
     .unwrap();
 
@@ -3375,6 +3380,7 @@ async fn dispatch_session_start_passes_none_when_no_facets() {
         "00000000-0000-0000-0000-000000000000",
         None,
         &HashMap::new(),
+        &BTreeMap::new(),
     )
     .unwrap();
 
@@ -3937,8 +3943,11 @@ fn build_fanout_child_prompt_splits_facets_into_system_and_user() {
         "11111111-1111-1111-1111-111111111111",
         None,
         &HashMap::new(),
-        None,
-        "22222222-2222-4222-8222-222222222222",
+        workflow_prompt::FanoutChildPromptContext::new(
+            None,
+            "22222222-2222-4222-8222-222222222222",
+        ),
+        &BTreeMap::new(),
     )
     .unwrap();
 
@@ -3989,8 +3998,11 @@ fn build_fanout_child_prompt_no_policy_or_contract_returns_none_system_prompt() 
         "11111111-1111-1111-1111-111111111111",
         None,
         &HashMap::new(),
-        None,
-        "22222222-2222-4222-8222-222222222222",
+        workflow_prompt::FanoutChildPromptContext::new(
+            None,
+            "22222222-2222-4222-8222-222222222222",
+        ),
+        &BTreeMap::new(),
     )
     .unwrap();
 
@@ -11449,6 +11461,7 @@ mod dispatch_boundary_tests {
             "session-reducer-execution",
             None,
             &outputs,
+            &BTreeMap::new(),
         )
         .unwrap();
         assert!(prompt.contains("## input: review"));

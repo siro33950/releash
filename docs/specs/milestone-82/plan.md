@@ -15,7 +15,7 @@ https://github.com/siro33950/releash/milestone/82
 | # | 論点 | 決定 |
 |---|---|---|
 | D1 | #1332 の local API | **最小 local API を新設**。Tauri アプリ内に localhost バインドの API サーバ（認証トークン付き）を立て、CLI の start/executions/status/logs/approve/abort/output をこれ経由に移行。file-direct/pending file は必要最小の adapter に縮退。#77-79 のデーモン化の土台。 |
-| D2 | `schemas:` の Contract dialect | **JSON Schema subset を自前実装**。`type`/`properties`/`required`/`items`/`enum`/`additionalProperties` に限定。routing 参照 field は required かつ boolean/enum を load 時 Diagnostic で強制。`request` 用に scalar（string）Contract を許可。配列要素型は inline 不可、名前付き Contract 参照（`items: <名前>`）。 |
+| D2 | `schemas:` の Contract dialect | **JSON Schema subset を自前実装**。`type`/`properties`/`required`/`items`/`enum` に限定し、Object の未宣言 field は常に受理する。routing 参照 field は required かつ boolean/enum を load 時 Diagnostic で強制。`request` 用に scalar（string）Contract を許可。配列要素型は inline 不可、名前付き Contract 参照（`items: <名前>`）。 |
 | D3 | command 標準結果と Artifact | **単一名前空間＋予約 field**。command node の Artifact は常に予約 field `ok`/`exit_code`/`stdout`/`stderr`/`duration` を持ち、`artifact:` Contract の field はそれに合成される。Contract が予約名を宣言したら load 時 Diagnostic。rules の `on:` は `ok` も Contract field も同じ規則で参照。 |
 | D4 | Codex /goal 分割 | **issue 単位で 14 goal**。wave 順（§5）に 1 goal = 1 PR で逐次実行。 |
 | D5 | session `permission` | **現行 3 値（ask/edit/full）のまま**。docs（full-pipeline.yml / syntax doc）の `permission: read` は #1337 の正本化で修正する。 |
@@ -38,7 +38,7 @@ https://github.com/siro33950/releash/milestone/82
 - **P11 (missing-field routing 意味論)**: `when`/`switch` の `on:` が参照する field が実行時に不在（command の artifact validation 失敗等）の場合は no-match とし、catch-all `next` に落ちる。網羅検証は「artifact 検証が失敗しうる node が Contract field を rules で参照する場合、`next` catch-all 必須」を要求する。command の `ok` は `exit_code==0 && (artifact 未指定 || validation 成功)` の合成とする（D3 と併せて #1327/#1328 で実装、#1337 で文書化）。
 - **P12 (workflow start の名前解決)**: `releash workflow start <workflow-name>` は WorkflowDefinition.name で解決する（name↔file の対応は loader が所有、名前重複は Diagnostic）。request 未指定は空文字列の request Artifact とする。
 - **P13 (session の artifact 提出)**: `session` + `artifact:` は Contract 検証済み提出まで node 完了しない（現行 repair 機構を踏襲、max_attempts 超過で失敗）。よって session node は完了時 artifact 存在が保証され、P11 の missing-field は実質 command node のみ。
-- **P14 (NodeExecution のアドレスと fanout leaf、設計検証で追加)**: fanout child は同名 NodeExecution が並走するため、engine 採番の `node_execution_id` を第一級識別子とし、approve / output submit は並走時にこれでアドレスする（session への env `RELEASH_NODE_EXECUTION_ID` 注入で agent 側は通常意識しない）。fanout child は leaf 専用（通常遷移の対象・entry になれない、fanout の入れ子不可 = WFC006）。child の Artifact は親 fanout の配列にのみ格納し node 名 map に載せない。明示 stop は typed command（`StopExecution`）として #1335 で追加。`additionalProperties` の既定は JSON Schema と同じ true。詳細は design.md §5/§6 R7/§8.5。
+- **P14 (NodeExecution のアドレスと fanout leaf、設計検証で追加)**: fanout child は同名 NodeExecution が並走するため、engine 採番の `node_execution_id` を第一級識別子とし、approve / output submit は並走時にこれでアドレスする（session への env `RELEASH_NODE_EXECUTION_ID` 注入で agent 側は通常意識しない）。fanout child は leaf 専用（通常遷移の対象・entry になれない、fanout の入れ子不可 = WFC006）。child の Artifact は親 fanout の配列にのみ格納し node 名 map に載せない。明示 stop は typed command（`StopExecution`）として #1335 で追加。詳細は design.md §5/§6 R7/§8.5。
 - **P15 (domain read model と Workspace UI projection の分離)**: WorkflowExecution / NodeExecution / Fanout は engine・event log・CLI/API の正規 read modelとして維持する。Rust が `Node | Workflow | Fanout` の再帰 tree summary と選択 Node detail に投影し、NodeExecutionの発生順を実行occurrenceの並びとして保持する。同じ定義Nodeのretry/loopもoccurrenceごとに別行とし、各行には後続occurrenceの追加で変化しないopaque IDを割り当てる。attempt / fanout 座標 / 内部 ID は UI に露出しない（#1454）。
 
 ## 3.5 実装原則（最優先）

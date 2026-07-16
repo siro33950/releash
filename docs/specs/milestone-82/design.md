@@ -110,7 +110,6 @@ pub enum SchemaDef {
     Object {
         properties: BTreeMap<String, SchemaDef>,
         required: BTreeSet<String>,          // default 空
-        additional_properties: bool,          // default true（JSON Schema と同じ。未宣言 field は無視して通す）
     },
     Array { items: String },                 // 要素型は名前付き Contract 参照のみ。inline 不可
     String { r#enum: Option<Vec<String>> },
@@ -120,8 +119,8 @@ pub enum SchemaDef {
 }
 ```
 
-- YAML 表記は JSON Schema 風（`type: object` / `properties:` / `required:` / `items: <Contract名>` / `enum:` / `additionalProperties:`）。この subset 外のキーワード（`oneOf` / `format` / `pattern` / `default` 等）は WFS002。
-- `additionalProperties` の既定は **true**（JSON Schema の既定に合わせる）。閉じた検証が必要な Contract だけ `additionalProperties: false` を明示宣言する。
+- YAML 表記は JSON Schema 風（`type: object` / `properties:` / `required:` / `items: <Contract名>` / `enum:`）。この subset 外のキーワード（`oneOf` / `format` / `pattern` / `default` 等）は WFS002。
+- Object は未宣言 field を常に受理し、閉じた Object を設定するキーワードは持たない。
 - **検証エンジン** `contract_schema::validate(value: &serde_json::Value, schema: &SchemaDef, schemas: &Map) -> Result<(), Vec<Violation>>`。Violation は JSON path + 理由。repair prompt はこの Violation 一覧から生成する。
 - **routing 可能 field** の判定:
   - Object Contract の property `p` が routing 可能 ⇔ `p ∈ required` かつ型が `Boolean` または `String{enum: Some(_)}`。
