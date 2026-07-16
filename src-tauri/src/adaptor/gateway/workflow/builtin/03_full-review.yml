@@ -30,7 +30,7 @@ nodes:
       instruction: review-acceptance
 - name: review-acceptance-gpt55
   session:
-    model: gpt-5.5
+    model: gpt-5.6-sol
     permission: full
     gate: auto
     facets:
@@ -48,7 +48,7 @@ nodes:
       instruction: review-structure
 - name: review-structure-gpt55
   session:
-    model: gpt-5.5
+    model: gpt-5.6-sol
     permission: full
     gate: auto
     facets:
@@ -66,7 +66,7 @@ nodes:
       instruction: review-quality
 - name: review-quality-gpt55
   session:
-    model: gpt-5.5
+    model: gpt-5.6-sol
     permission: full
     gate: auto
     facets:
@@ -84,7 +84,7 @@ nodes:
       instruction: review-test
 - name: review-test-gpt55
   session:
-    model: gpt-5.5
+    model: gpt-5.6-sol
     permission: full
     gate: auto
     facets:
@@ -102,7 +102,7 @@ nodes:
       instruction: review-security
 - name: review-security-gpt55
   session:
-    model: gpt-5.5
+    model: gpt-5.6-sol
     permission: full
     gate: auto
     facets:
@@ -120,7 +120,7 @@ nodes:
       instruction: review-architecture
 - name: review-architecture-gpt55
   session:
-    model: gpt-5.5
+    model: gpt-5.6-sol
     permission: full
     gate: auto
     facets:
@@ -145,7 +145,7 @@ nodes:
       instruction: full-review-verify-and-classify
 - name: verify-gpt55
   session:
-    model: gpt-5.5
+    model: gpt-5.6-sol
     permission: full
     gate: auto
     facets:

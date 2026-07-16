@@ -42,7 +42,7 @@ mod tests {
 
         assert_eq!(
             policy.stale_timeout(&TimeoutContext::new(
-                Some("gpt-5.5".to_string()),
+                Some("gpt-5.6-sol".to_string()),
                 NodeKindName::Session,
                 None
             )),
@@ -52,7 +52,7 @@ mod tests {
             policy.stale_timeout(&TimeoutContext::new(
                 None,
                 NodeKindName::Session,
-                Some("05_review-fix_gpt55".to_string())
+                Some("05_review-fix_codex".to_string())
             )),
             EXTENDED_STALE_TIMEOUT
         );
@@ -77,9 +77,9 @@ mod tests {
         );
         assert_eq!(
             TimeoutPolicy::default().stale_timeout(&TimeoutContext::new(
-                Some("gpt-5.5".to_string()),
+                Some("gpt-5.6-sol".to_string()),
                 NodeKindName::Session,
-                Some("05_review-fix_gpt55".to_string())
+                Some("05_review-fix_codex".to_string())
             )),
             Duration::from_secs(180)
         );

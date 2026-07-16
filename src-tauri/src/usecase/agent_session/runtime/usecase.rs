@@ -4614,7 +4614,7 @@ mod tests {
         }));
         registry.register(Arc::new(DispatchBackend {
             id: "codex",
-            model: "gpt-5.5",
+            model: "gpt-5.6-sol",
             calls,
         }));
         registry.set_default(Some(default_id.to_string()));

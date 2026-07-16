@@ -18,7 +18,7 @@ schemas:
 nodes:
 - name: implement
   session:
-    model: gpt-5.5
+    model: gpt-5.6-sol
     permission: edit
     gate: auto
     facets:
@@ -35,7 +35,7 @@ nodes:
   - next: fix
 - name: review_spec
   session:
-    model: gpt-5.5
+    model: gpt-5.6-sol
     permission: full
     gate: auto
     facets:
@@ -44,7 +44,7 @@ nodes:
       instruction: spec-implement-review-spec
 - name: review_design
   session:
-    model: gpt-5.5
+    model: gpt-5.6-sol
     permission: full
     gate: auto
     facets:
@@ -53,7 +53,7 @@ nodes:
       instruction: spec-implement-review-design
 - name: fix
   session:
-    model: gpt-5.5
+    model: gpt-5.6-sol
     permission: full
     gate: auto
     facets:
@@ -70,7 +70,7 @@ nodes:
         completed: report
 - name: report
   session:
-    model: gpt-5.5
+    model: gpt-5.6-sol
     permission: full
     gate: approval
     facets:

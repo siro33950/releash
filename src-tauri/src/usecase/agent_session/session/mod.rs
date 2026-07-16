@@ -3036,7 +3036,7 @@ mod tests {
     fn fixed_model_registry() -> TestBackendResolver {
         TestBackendResolver::default()
             .with_backend("claude", "claude-opus-4-8")
-            .with_backend("codex", "gpt-5.5")
+            .with_backend("codex", "gpt-5.6-sol")
             .with_default("claude")
     }
 
@@ -3078,7 +3078,7 @@ mod tests {
         let registry = fixed_model_registry();
 
         // 永続化される selected_model は bare model_id（entry id ではない）。
-        let default_model = "gpt-5.5".to_string();
+        let default_model = "gpt-5.6-sol".to_string();
 
         let session = create_session_with_initial_model(
             &store,

@@ -50,7 +50,7 @@ schemas:
 nodes:
 - name: check_and_make_tasks
   session:
-    model: gpt-5.5
+    model: gpt-5.6-sol
     permission: full
     gate: auto
     facets:
@@ -66,7 +66,7 @@ nodes:
         LGTM: report
 - name: implement_tasks
   session:
-    model: gpt-5.5
+    model: gpt-5.6-sol
     permission: full
     gate: auto
     facets:

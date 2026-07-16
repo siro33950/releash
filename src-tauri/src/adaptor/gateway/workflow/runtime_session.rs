@@ -805,13 +805,13 @@ mod tests {
     fn workflow_node_context_with_runtime_timeouts_injects_gateway_policy_values() {
         let settings = NodeSessionCreationSettings {
             backend_id: Some("codex".to_string()),
-            selected_model: Some("gpt-5.5".to_string()),
+            selected_model: Some("gpt-5.6-sol".to_string()),
             permission_mode: PermissionMode::Edit,
         };
         let context = WorkflowNodeContext {
             execution_id: "execution-1".to_string(),
             node_execution_id: "node-execution-1".to_string(),
-            workflow_name: "05_review-fix_gpt55".to_string(),
+            workflow_name: "05_review-fix_codex".to_string(),
             node_name: "review".to_string(),
             attempt: 1,
             parent_node_name: None,
@@ -843,7 +843,7 @@ mod tests {
         let context = WorkflowNodeContext {
             execution_id: "execution-1".to_string(),
             node_execution_id: "node-execution-1".to_string(),
-            workflow_name: "05_review-fix_gpt55".to_string(),
+            workflow_name: "05_review-fix_codex".to_string(),
             node_name: "review".to_string(),
             attempt: 1,
             parent_node_name: None,

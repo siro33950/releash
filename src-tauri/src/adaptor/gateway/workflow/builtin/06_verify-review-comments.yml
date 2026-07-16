@@ -50,7 +50,7 @@ schemas:
 nodes:
 - name: import_pr_review_comments
   session:
-    model: gpt-5.5
+    model: gpt-5.6-sol
     permission: full
     gate: auto
     facets:
@@ -88,7 +88,7 @@ nodes:
         LGTM: commit_push_and_reply
 - name: implement_tasks
   session:
-    model: gpt-5.5
+    model: gpt-5.6-sol
     permission: full
     gate: auto
     facets:

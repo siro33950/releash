@@ -674,7 +674,7 @@ mod tests {
 
     fn make_adapter_app() -> AdapterTestApp {
         let mut config = crate::adaptor::gateway::app_config::ReleashConfig::default();
-        config.agents.codex.models = vec!["default".to_string(), "gpt-5.5".to_string()];
+        config.agents.codex.models = vec!["default".to_string(), "gpt-5.6-sol".to_string()];
         config.agents.default = Some("codex".to_string());
         let app_config = Arc::new(crate::adaptor::gateway::app_config::AppConfig::new(
             config,

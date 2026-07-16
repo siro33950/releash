@@ -91,7 +91,7 @@ nodes:
     artifact: review_verdict
   - name: review_gpt
     session:
-      model: gpt-5.5
+      model: gpt-5.6-sol
       permission: ask
       gate: auto
       facets:

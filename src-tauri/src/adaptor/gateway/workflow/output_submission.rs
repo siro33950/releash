@@ -708,8 +708,8 @@ mod tests {
     fn validate_submission_output_accepts_authoring_builtin_spec_directory_contract() {
         for workflow_name in [
             "01_authoring_draft",
-            "01_authoring_gpt55",
-            "01_authoring_opus48",
+            "01_authoring_codex",
+            "01_authoring_claude",
         ] {
             let workflow =
                 crate::adaptor::gateway::workflow::builtin::load_builtin_workflow_resolved(

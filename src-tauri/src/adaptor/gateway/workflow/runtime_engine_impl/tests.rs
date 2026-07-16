@@ -2157,8 +2157,8 @@ fn decide_next_node_routes_switch_from_artifact() {
 fn apply_advance_routes_builtin_review_fix_switch_by_verdict() {
     for workflow_name in [
         "05_review-fix",
-        "05_review-fix_gpt55",
-        "05_review-fix_opus48",
+        "05_review-fix_codex",
+        "05_review-fix_claude",
     ] {
         let workflow = crate::adaptor::gateway::workflow::builtin::load_builtin_workflow_resolved(
             workflow_name,
@@ -2193,7 +2193,7 @@ fn apply_advance_routes_builtin_review_fix_switch_by_verdict() {
 
 #[test]
 fn apply_advance_routes_builtin_implement_switch_by_verdict() {
-    for workflow_name in ["02_implement_gpt55", "02_implement_opus48"] {
+    for workflow_name in ["02_implement_codex", "02_implement_claude"] {
         let workflow = crate::adaptor::gateway::workflow::builtin::load_builtin_workflow_resolved(
             workflow_name,
         )
