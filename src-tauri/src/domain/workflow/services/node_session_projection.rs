@@ -216,6 +216,7 @@ mod tests {
                 attempt: 1,
                 status: NodeExecutionStatus::Running,
                 session_id: Some("fanout-session".to_string()),
+                display_command: None,
                 result_summary: None,
                 artifact: None,
                 token_usage: None,

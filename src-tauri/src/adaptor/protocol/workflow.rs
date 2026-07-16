@@ -107,6 +107,8 @@ pub struct NodeExecutionView {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub display_command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub result_summary: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub artifact: Option<ArtifactView>,

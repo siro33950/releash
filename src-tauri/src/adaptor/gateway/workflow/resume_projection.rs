@@ -19,6 +19,7 @@ pub(crate) struct ConfirmedFanoutChild {
     pub(crate) item_index: Option<usize>,
     pub(crate) child_index: usize,
     pub(crate) result_summary: Option<String>,
+    pub(crate) display_command: Option<String>,
     pub(crate) artifact: Option<serde_json::Value>,
     pub(crate) contract: Option<String>,
     pub(crate) token_usage: Option<TokenUsage>,
@@ -162,6 +163,7 @@ pub(crate) fn project_resume_checkpoint(
                 item_index: parent.item_index,
                 child_index: parent.child_index,
                 result_summary: node.result_summary.clone(),
+                display_command: node.display_command.clone(),
                 artifact: artifact.map(|artifact| artifact.value.clone()),
                 contract: artifact.and_then(|artifact| artifact.contract.clone()),
                 token_usage: node.token_usage.clone(),
@@ -177,6 +179,11 @@ pub(crate) fn project_resume_checkpoint(
                         confirmed.token_usage = confirmed_by_coordinate
                             .get(&coordinate)
                             .and_then(|(_, previous)| previous.token_usage.clone());
+                    }
+                    if confirmed.display_command.is_none() {
+                        confirmed.display_command = confirmed_by_coordinate
+                            .get(&coordinate)
+                            .and_then(|(_, previous)| previous.display_command.clone());
                     }
                     confirmed_by_coordinate.insert(coordinate, (parent.parent_attempt, confirmed));
                 }

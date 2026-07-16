@@ -17,7 +17,7 @@ use crate::domain::workflow::{
 use super::event_draft;
 use super::ports::{
     WorkflowDefinitionSourceGateway, WorkflowEventDraft, WorkflowEventRepository,
-    WorkflowExecutionProjectionRepository,
+    WorkflowExecutionProjection, WorkflowExecutionProjectionRepository,
 };
 
 pub type WorkflowEventView = Value;
@@ -171,6 +171,24 @@ impl WorkflowQueryService {
     ) -> Result<Option<WorkflowExecution>, WorkflowError> {
         let execution_id = WorkflowExecutionId::new(execution_id.to_string())?;
         self.execution_projection.get_execution(&execution_id)
+    }
+
+    pub(in crate::usecase::workflow) fn get_execution_with_definition(
+        &self,
+        execution_id: &str,
+    ) -> Result<Option<WorkflowExecutionProjection>, WorkflowError> {
+        let execution_id = WorkflowExecutionId::new(execution_id.to_string())?;
+        self.execution_projection
+            .get_execution_with_definition(&execution_id)
+    }
+
+    pub(in crate::usecase::workflow) fn get_workspace_execution_with_definition(
+        &self,
+        execution_id: &str,
+    ) -> Result<Option<WorkflowExecutionProjection>, WorkflowError> {
+        let execution_id = WorkflowExecutionId::new(execution_id.to_string())?;
+        self.execution_projection
+            .get_workspace_execution_with_definition(&execution_id)
     }
 
     pub fn get_node_detail(
@@ -617,6 +635,7 @@ mod tests {
                 attempt: 1,
                 status: NodeExecutionStatus::Running,
                 session_id: None,
+                display_command: None,
                 result_summary: None,
                 artifact: None,
                 token_usage: None,

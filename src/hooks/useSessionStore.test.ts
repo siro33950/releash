@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	createWorkspaceSession,
 	getSession,
 	getSessionPage,
 	planAgentChatEviction,
@@ -106,6 +107,27 @@ describe("session paging", () => {
 			inputTokens: 1,
 			outputTokens: 2,
 		});
+	});
+
+	it("createWorkspaceSession forwards the stable idempotency key", async () => {
+		vi.mocked(invoke).mockResolvedValueOnce("request-uuid");
+
+		const sessionId = await createWorkspaceSession(
+			"request-uuid",
+			"/repo",
+			"ask",
+			"claude",
+			"sonnet",
+		);
+
+		expect(invoke).toHaveBeenCalledWith("create_workspace_session", {
+			requestId: "request-uuid",
+			worktreePath: "/repo",
+			permissionMode: "ask",
+			backendId: "claude",
+			modelId: "sonnet",
+		});
+		expect(sessionId).toBe("request-uuid");
 	});
 
 	it("getSessionPage forwards cursor and limit", async () => {

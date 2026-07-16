@@ -204,7 +204,16 @@ const baseIpcHandler: Record<string, unknown> = {
 
 	// Agent chat sessions
 	list_sessions: [],
+	init_agent_sessions: {
+		sessions: [],
+		activeSession: null,
+		permissionMode: "edit",
+		planMode: false,
+	},
+	list_agent_backends: { backends: [], defaultId: null },
 	get_session: null,
+	get_session_page: null,
+	plan_agent_chat_eviction: { evictSessionIds: [] },
 	create_session: {
 		id: "mock-session-1",
 		worktreePath: "/test/repo",
@@ -213,6 +222,7 @@ const baseIpcHandler: Record<string, unknown> = {
 		createdAt: 1000,
 		updatedAt: 1000,
 	},
+	create_workspace_session: "mock-session-1",
 	close_session: null,
 	restore_session: null,
 	list_closed_sessions: [],
@@ -248,9 +258,12 @@ const baseIpcHandler: Record<string, unknown> = {
 	resolve_worktree_by_execution: null,
 
 	// Workspace tree
-	list_workspace_worktree_nodes: [],
+	list_workspace_worktree_nodes: { nodes: [], preferredNodeId: null },
 	list_workspace_workflow_history: [],
-	get_workspace_workflow_node_detail: null,
+	get_workspace_node_detail: null,
+	close_workspace_node: null,
+	approve_workspace_node: null,
+	get_workspace_session_node_id: null,
 	archive_workspace_workflow_execution: null,
 	restore_workspace_workflow_execution: null,
 };

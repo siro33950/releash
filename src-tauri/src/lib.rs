@@ -42,6 +42,11 @@ pub fn run() {
     let session_store = Arc::new(usecase::agent_session::session::SessionStore::new(
         session_storage.clone(),
     ));
+    let workspace_session_creation_usecase = Arc::new(
+        usecase::agent_session::workspace_session_creation::WorkspaceSessionCreationUsecase::new(
+            session_store.clone(),
+        ),
+    );
     let review_comment_usecase =
         Arc::new(adaptor::controller::wiring::build_review_comment_usecase());
     let prompt_suggestion_usecase = Arc::new(
@@ -59,6 +64,7 @@ pub fn run() {
         ))
         .manage(review_comment_usecase)
         .manage(session_store)
+        .manage(workspace_session_creation_usecase)
         .manage(prompt_suggestion_usecase)
         .manage(Arc::clone(&pty_gateway))
         .manage(infrastructure::file_watcher::FileWatcherManager::default())
@@ -354,11 +360,25 @@ pub fn run() {
                     .state::<Arc<usecase::agent_session::runtime::AgentSessionRuntimeUsecase>>()
                     .inner()
                     .clone();
-                app.manage(Arc::new(
+                let stored_session_lifecycle = Arc::new(
                     adaptor::controller::wiring::build_stored_session_lifecycle_usecase(
                         runtime_session_store,
                         stored_lifecycle_registry,
                         stored_lifecycle_runtime,
+                    ),
+                );
+                app.manage(stored_session_lifecycle.clone());
+                let workspace_node_resolver: Arc<
+                    dyn usecase::workflow::WorkspaceNodeActionResolver,
+                > = app
+                    .state::<adaptor::controller::state::AppState>()
+                    .workflow_usecase
+                    .clone();
+                app.manage(Arc::new(
+                    adaptor::controller::wiring::build_workspace_node_command_usecase(
+                        workspace_node_resolver,
+                        stored_session_lifecycle,
+                        data_dir.clone(),
                     ),
                 ));
             }

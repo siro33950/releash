@@ -1,4 +1,4 @@
-use crate::domain::path::to_canonical_forward_slash;
+use crate::domain::repository::normalize_repo_path;
 use crate::domain::workflow::services::node_session_projection::NodeSessionProjection;
 use crate::domain::workflow::status_aggregation::{
     aggregate_representative_statuses, session_result, NodeProgress, RepresentativeStatus,
@@ -242,7 +242,7 @@ impl AgentStatusCenter {
     }
 
     fn canonical_worktree_path(path: &str) -> String {
-        to_canonical_forward_slash(path)
+        normalize_repo_path(path)
     }
 
     fn normalize_session_paths(status: &mut SessionStatus) {
@@ -1277,6 +1277,23 @@ mod tests {
         assert_eq!(workspace.worktree_path, "C:/repo/wt");
         assert!(center.get_workspace("C:/repo/wt").is_some());
         assert!(center.get_workspace(r"C:\repo\wt").is_some());
+    }
+
+    #[test]
+    fn update_session_trims_trailing_worktree_slash_before_storing() {
+        let center = AgentStatusCenter::new();
+        let changes = center.update_session(mk_session(
+            "s1",
+            "/repo/wt/",
+            TurnPhase::Streaming,
+            SessionState::Active,
+        ));
+
+        let session = changes.session.unwrap();
+        assert_eq!(session.worktree_id, "/repo/wt");
+        assert_eq!(session.worktree_path, "/repo/wt");
+        assert!(center.get_workspace("/repo/wt").is_some());
+        assert!(center.get_workspace("/repo/wt/").is_some());
     }
 
     #[test]

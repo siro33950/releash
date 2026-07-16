@@ -1,49 +1,21 @@
-import type { AgentState } from "./protocol";
-import type { SessionState, SessionSummary } from "./session";
-import type {
-	Artifact,
-	ExecutionInterruptionReason,
-	NodeExecutionStatus,
-	NodeKind,
-	WorkflowExecutionSummary,
-} from "./workflow";
+import type { SessionSummary } from "./session";
+import type { WorkflowExecutionSummary } from "./workflow";
 
-export type CenterSelection =
-	| {
-			kind: "agentSession";
-			worktreePath: string;
-			sessionId: string;
-	  }
-	| {
-			kind: "newAgentSession";
-			worktreePath: string;
-	  }
-	| {
-			kind: "workflowNode";
-			worktreePath: string;
-			executionId: string;
-			nodeExecutionId: string;
-			nodeName: string;
-	  };
-
-export type CenterSelectionRequest = CenterSelection & {
-	requestId: number;
-	branchName?: string;
-	repoName?: string;
-};
-
-export interface WorkspaceSessionNode {
-	kind: "session";
-	id: string;
+export interface CenterSelection {
+	kind: "node";
 	worktreePath: string;
-	title: string;
-	state: SessionState;
-	updatedAt: number;
-	workflowNodeSession: boolean;
-	nodeExecutionId?: string | null;
-	nodeName?: string | null;
-	attempt?: number | null;
-	agentState?: AgentState | null;
+	nodeId: string;
+}
+
+export interface NewSessionCreationRequest {
+	requestId: string;
+	worktreePath: string;
+	attempt: number;
+}
+
+export interface NewSessionCreationStatus {
+	pending: boolean;
+	error: string | null;
 }
 
 export type WorkspaceNodeStatus =
@@ -56,56 +28,86 @@ export type WorkspaceNodeStatus =
 	| "aborted"
 	| "completed";
 
-export interface WorkspaceFanoutParent {
-	parentNode: string;
-	parentAttempt: number;
-	itemIndex?: number;
-	childIndex: number;
+export interface WorkspaceNodeCapabilities {
+	canApprove: boolean;
+	canClose: boolean;
 }
 
-export interface WorkspaceWorkflowNodeExecution {
+export interface WorkspaceWorkflowCapabilities {
+	canStop: boolean;
+	canResume: boolean;
+	canAbort: boolean;
+	canArchive: boolean;
+}
+
+export interface WorkspaceNode {
 	kind: "node";
-	nodeExecutionId: string;
-	executionId: string;
-	worktreePath: string;
+	id: string;
 	title: string;
-	nodeName: string;
 	status: WorkspaceNodeStatus;
-	nodeKind: NodeKind;
-	nodeExecutionStatus?: NodeExecutionStatus;
-	canApprove?: boolean;
+	contentKind: "session" | "command";
+	capabilities: WorkspaceNodeCapabilities;
 	updatedAt: number;
-	attempt: number;
-	sessionId?: string;
-	artifact?: Artifact;
-	fanoutParent?: WorkspaceFanoutParent;
-	sessions: WorkspaceSessionNode[];
 }
 
-export interface WorkspaceWorkflowNodeDetail
-	extends WorkspaceWorkflowNodeExecution {
-	executionStatus: WorkspaceNodeStatus;
-	canStop: boolean;
-	canResume: boolean;
-	canAbort: boolean;
-	interruptionReason?: ExecutionInterruptionReason;
-	resumeFromNode?: string;
-}
-
-export interface WorkspaceWorkflowExecutionNode {
+export interface WorkspaceWorkflow {
 	kind: "workflow";
-	executionId: string;
-	worktreePath: string;
-	workflowName: string;
+	id: string;
 	title: string;
 	status: WorkspaceNodeStatus;
-	canStop: boolean;
-	canResume: boolean;
-	canAbort: boolean;
-	interruptionReason?: ExecutionInterruptionReason;
-	resumeFromNode?: string;
+	capabilities: WorkspaceWorkflowCapabilities;
+	children: WorkspaceTreeItem[];
 	updatedAt: number;
-	nodeExecutions: WorkspaceWorkflowNodeExecution[];
+}
+
+export interface WorkspaceFanout {
+	kind: "fanout";
+	id: string;
+	title: string;
+	status: WorkspaceNodeStatus;
+	children: WorkspaceTreeItem[];
+	updatedAt: number;
+}
+
+export type WorkspaceTreeItem =
+	| WorkspaceNode
+	| WorkspaceWorkflow
+	| WorkspaceFanout;
+
+export interface WorkspaceTreeSnapshot {
+	nodes: WorkspaceTreeItem[];
+	preferredNodeId?: string | null;
+}
+
+export interface WorkspaceSessionNodeContent {
+	kind: "session";
+	sessionId?: string | null;
+}
+
+export interface WorkspaceCommandResult {
+	exitCode: number;
+	duration: number;
+	stdout: string;
+	stderr: string;
+}
+
+export interface WorkspaceCommandNodeContent {
+	kind: "command";
+	displayCommand?: string | null;
+	result?: WorkspaceCommandResult | null;
+}
+
+export type WorkspaceNodeContent =
+	| WorkspaceSessionNodeContent
+	| WorkspaceCommandNodeContent;
+
+export interface WorkspaceNodeDetail {
+	id: string;
+	title: string;
+	status: WorkspaceNodeStatus;
+	capabilities: WorkspaceNodeCapabilities;
+	updatedAt: number;
+	content: WorkspaceNodeContent;
 }
 
 export interface WorkspaceWorkflowHistoryItem {
@@ -118,28 +120,4 @@ export interface WorkspaceWorkflowHistoryItem {
 	archiveReason: "auto_no_sessions" | "manual" | string;
 }
 
-export type WorkspaceTreeNode =
-	| WorkspaceSessionNode
-	| WorkspaceWorkflowExecutionNode;
-
 export type WorkspaceSessionHistoryItem = SessionSummary;
-
-interface NodeExecutionRepresentative {
-	nodeExecutionId: string;
-	executionId: string;
-	nodeName: string;
-	attempt: number | null;
-	representative: WorkspaceNodeStatus;
-}
-
-interface WorkflowExecutionRepresentative {
-	executionId: string;
-	representative: WorkspaceNodeStatus;
-}
-
-export interface WorktreeNodeStatusView {
-	worktreePath: string;
-	version: number;
-	nodeExecutions: NodeExecutionRepresentative[];
-	workflowExecutions: WorkflowExecutionRepresentative[];
-}

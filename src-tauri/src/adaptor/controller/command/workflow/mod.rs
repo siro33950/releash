@@ -476,8 +476,11 @@ mod tests {
     ];
 
     const REQUIRED_WORKSPACE_EXECUTION_COMMANDS: &[&str] = &[
-        "get_workspace_workflow_node_detail",
+        "approve_workspace_node",
         "archive_workspace_workflow_execution",
+        "close_workspace_node",
+        "get_workspace_node_detail",
+        "get_workspace_session_node_id",
         "restore_workspace_workflow_execution",
     ];
 
@@ -490,6 +493,7 @@ mod tests {
         "resolve_active_run_by_worktree",
         "resolve_worktree_by_run",
         "get_workspace_workflow_step_detail",
+        "get_workspace_workflow_node_detail",
         "archive_workspace_workflow_run",
         "restore_workspace_workflow_run",
     ];
@@ -801,6 +805,7 @@ mod tests {
                 WorkflowEvent::ExecutionStarted { .. } => "ExecutionStarted",
                 WorkflowEvent::NodeStarted { .. } => "NodeStarted",
                 WorkflowEvent::SessionAttached { .. } => "SessionAttached",
+                WorkflowEvent::CommandPrepared { .. } => "CommandPrepared",
                 WorkflowEvent::StallObserved { .. } => "StallObserved",
                 WorkflowEvent::StallCleared { .. } => "StallCleared",
                 WorkflowEvent::NodeCompleted { .. } => "NodeCompleted",

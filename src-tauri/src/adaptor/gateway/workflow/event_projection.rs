@@ -29,6 +29,44 @@ pub fn project_workflow_execution(
     execution_id: &str,
     events: &[WorkflowEvent],
 ) -> Result<Option<WorkflowExecution>, String> {
+    project_workflow_execution_with_payload_policy(
+        execution_id,
+        events,
+        ProjectionPayloadPolicy::Retained,
+    )
+}
+
+/// Projects the canonical execution state without requiring retained body
+/// payloads. This is used by summary-only consumers whose event reader replaces
+/// request and Artifact values with empty sentinels before replay.
+///
+/// All lifecycle/node/fanout reduction remains shared with the canonical
+/// projector. Only the artifact-dependent resume checkpoint is omitted: a
+/// stripped Artifact cannot safely reproduce a routing decision, and Workspace
+/// summaries need the interrupted status/capability rather than that internal
+/// checkpoint.
+pub(crate) fn project_payload_stripped_workflow_execution(
+    execution_id: &str,
+    events: &[WorkflowEvent],
+) -> Result<Option<WorkflowExecution>, String> {
+    project_workflow_execution_with_payload_policy(
+        execution_id,
+        events,
+        ProjectionPayloadPolicy::Stripped,
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProjectionPayloadPolicy {
+    Retained,
+    Stripped,
+}
+
+fn project_workflow_execution_with_payload_policy(
+    execution_id: &str,
+    events: &[WorkflowEvent],
+    payload_policy: ProjectionPayloadPolicy,
+) -> Result<Option<WorkflowExecution>, String> {
     for event in events {
         if event.execution_id() != execution_id {
             return Err(format!(
@@ -128,6 +166,7 @@ pub fn project_workflow_execution(
                     attempt: *attempt,
                     status: NodeExecutionStatus::Running,
                     session_id: None,
+                    display_command: None,
                     result_summary: None,
                     artifact: None,
                     token_usage: None,
@@ -144,6 +183,19 @@ pub fn project_workflow_execution(
             } => {
                 node_mut(&mut execution, node_execution_id, "session_attached")?.session_id =
                     Some(session_id.clone());
+            }
+            WorkflowEvent::CommandPrepared {
+                node_execution_id,
+                display_command,
+                ..
+            } => {
+                let node = node_mut(&mut execution, node_execution_id, "command_prepared")?;
+                if node.kind != NodeKindName::Command {
+                    return Err(format!(
+                        "execution {execution_id} command_prepared targets non-command node_execution_id {node_execution_id}"
+                    ));
+                }
+                node.display_command = Some(display_command.clone());
             }
             WorkflowEvent::ArtifactProduced {
                 node_execution_id,
@@ -276,8 +328,12 @@ pub fn project_workflow_execution(
                         execution.status.as_str()
                     ));
                 }
-                let resume_from_node =
-                    derive_resume_from_node(definition, &execution.node_executions)?;
+                let resume_from_node = match payload_policy {
+                    ProjectionPayloadPolicy::Retained => {
+                        derive_resume_from_node(definition, &execution.node_executions)?
+                    }
+                    ProjectionPayloadPolicy::Stripped => None,
+                };
                 execution.status = ExecutionStatus::Interrupted;
                 execution.completed_at = None;
                 execution.error_reason = None;
@@ -754,6 +810,87 @@ mod tests {
         event
     }
 
+    #[test]
+    fn node_executions_preserve_node_started_append_order_when_timestamps_tie() {
+        let events = vec![
+            started(),
+            node_started("a-1", "A", EventNodeKindName::Session),
+            node_started("b-1", "B", EventNodeKindName::Command),
+            node_started("a-2", "A", EventNodeKindName::Session),
+            node_started("c-1", "C", EventNodeKindName::Command),
+        ];
+
+        let execution = project_workflow_execution(EXECUTION_ID, &events)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            execution
+                .node_executions
+                .iter()
+                .map(|node| (node.node_name.as_str(), node.id.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("A", "a-1"), ("B", "b-1"), ("A", "a-2"), ("C", "c-1")]
+        );
+    }
+
+    #[test]
+    fn command_prepared_restores_only_the_masked_display_command() {
+        let raw_secret = "RAW_COMMAND_SECRET_12345";
+        let events = vec![
+            started(),
+            node_started("command-1", "run", EventNodeKindName::Command),
+            WorkflowEvent::CommandPrepared {
+                execution_id: EXECUTION_ID.to_string(),
+                node_execution_id: "command-1".to_string(),
+                display_command: "printf '[REDACTED]'".to_string(),
+                timestamp: 2.5,
+            },
+        ];
+
+        let execution = project_workflow_execution(EXECUTION_ID, &events)
+            .unwrap()
+            .unwrap();
+        let display_command = execution.node_executions[0]
+            .display_command
+            .as_deref()
+            .unwrap();
+        assert_eq!(display_command, "printf '[REDACTED]'");
+        assert!(!display_command.contains(raw_secret));
+    }
+
+    #[test]
+    fn command_prepared_rejects_a_non_command_node() {
+        let events = vec![
+            started(),
+            node_started("session-1", "review", EventNodeKindName::Session),
+            WorkflowEvent::CommandPrepared {
+                execution_id: EXECUTION_ID.to_string(),
+                node_execution_id: "session-1".to_string(),
+                display_command: "true".to_string(),
+                timestamp: 2.5,
+            },
+        ];
+
+        let error = project_workflow_execution(EXECUTION_ID, &events).unwrap_err();
+        assert!(error.contains("command_prepared targets non-command"));
+    }
+
+    #[test]
+    fn command_prepared_rejects_an_unknown_node_execution() {
+        let events = vec![
+            started(),
+            WorkflowEvent::CommandPrepared {
+                execution_id: EXECUTION_ID.to_string(),
+                node_execution_id: "missing-command".to_string(),
+                display_command: "true".to_string(),
+                timestamp: 2.5,
+            },
+        ];
+
+        let error = project_workflow_execution(EXECUTION_ID, &events).unwrap_err();
+        assert!(error.contains("unknown node_execution_id missing-command"));
+    }
+
     fn node_completed(
         id: &str,
         name: &str,
@@ -1208,6 +1345,7 @@ mod tests {
             attempt,
             status,
             session_id: session_id.map(str::to_string),
+            display_command: None,
             result_summary: None,
             artifact: None,
             token_usage,

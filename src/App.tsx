@@ -14,8 +14,20 @@ import { MainLayout } from "@/screens/MainLayout";
 import type { ProviderStatus, WorktreeEntry } from "@/types/git";
 import type {
 	CenterSelection,
-	CenterSelectionRequest,
+	NewSessionCreationRequest,
+	NewSessionCreationStatus,
 } from "@/types/workspace-tree";
+
+type WorktreeCenterState =
+	| { phase: "awaitingInitial" }
+	| { phase: "selected"; selection: CenterSelection }
+	| { phase: "resolvedEmpty" };
+
+interface NewSessionCreationState {
+	request: NewSessionCreationRequest;
+	status: "pending" | "failed";
+	error: string | null;
+}
 
 function App() {
 	const { settings, updateSettings, updateTheme } = useSettings();
@@ -29,8 +41,45 @@ function App() {
 		Record<string, ProviderStatus | null>
 	>({});
 	const [showAppSettings, setShowAppSettings] = useState(false);
-	const [centerSelectionRequest, setCenterSelectionRequest] =
-		useState<CenterSelectionRequest | null>(null);
+	const [centerStateByWorktree, setCenterStateByWorktree] = useState<
+		Record<string, WorktreeCenterState>
+	>({});
+	const [newSessionCreationByWorktree, setNewSessionCreationByWorktree] =
+		useState<Record<string, NewSessionCreationState>>({});
+
+	const selectedRootPath = useMemo(() => {
+		if (!selectedWorktreeId) return null;
+		const tab = worktrees.find((t) => t.id === selectedWorktreeId);
+		return tab?.rootPath ?? null;
+	}, [worktrees, selectedWorktreeId]);
+	const activeCenterState = selectedRootPath
+		? (centerStateByWorktree[selectedRootPath] ?? {
+				phase: "awaitingInitial" as const,
+			})
+		: null;
+	const centerSelection =
+		activeCenterState?.phase === "selected"
+			? activeCenterState.selection
+			: null;
+	const activeNewSessionCreation = selectedRootPath
+		? newSessionCreationByWorktree[selectedRootPath]
+		: undefined;
+	const newSessionCreationRequest =
+		activeNewSessionCreation?.status === "pending"
+			? activeNewSessionCreation.request
+			: null;
+	const newSessionCreationStatusByWorktree = useMemo<
+		Record<string, NewSessionCreationStatus>
+	>(() => {
+		return Object.fromEntries(
+			Object.entries(newSessionCreationByWorktree).map(
+				([worktreePath, state]) => [
+					worktreePath,
+					{ pending: state.status === "pending", error: state.error },
+				],
+			),
+		);
+	}, [newSessionCreationByWorktree]);
 
 	useEffect(() => {
 		const suppress = (e: MouseEvent) => e.preventDefault();
@@ -114,31 +163,97 @@ function App() {
 		) => {
 			openWorktreeTab(rootPath, branchName, repoName);
 			if (centerSelection) {
-				setCenterSelectionRequest((prev) => ({
-					...centerSelection,
-					requestId: (prev?.requestId ?? 0) + 1,
-					branchName,
-					repoName,
+				setCenterStateByWorktree((current) => ({
+					...current,
+					[rootPath]: { phase: "selected", selection: centerSelection },
 				}));
 			}
 		},
 		[openWorktreeTab],
 	);
+	const handleCreateSession = useCallback(
+		(rootPath: string, branchName?: string, repoName?: string) => {
+			openWorktreeTab(rootPath, branchName, repoName);
+			setNewSessionCreationByWorktree((current) => {
+				const existing = current[rootPath];
+				if (existing?.status === "pending") return current;
+				const request: NewSessionCreationRequest = existing
+					? {
+							...existing.request,
+							attempt: existing.request.attempt + 1,
+						}
+					: {
+							requestId: globalThis.crypto.randomUUID(),
+							worktreePath: rootPath,
+							attempt: 1,
+						};
+				return {
+					...current,
+					[rootPath]: { request, status: "pending", error: null },
+				};
+			});
+		},
+		[openWorktreeTab],
+	);
 
-	const handleCenterSelectionResolved = useCallback(
-		(centerSelection: CenterSelection) => {
-			setCenterSelectionRequest((prev) => ({
-				...centerSelection,
-				requestId: (prev?.requestId ?? 0) + 1,
-				branchName:
-					prev?.worktreePath === centerSelection.worktreePath
-						? prev.branchName
-						: undefined,
-				repoName:
-					prev?.worktreePath === centerSelection.worktreePath
-						? prev.repoName
-						: undefined,
+	const handleNewSessionCreated = useCallback(
+		(request: NewSessionCreationRequest, selection: CenterSelection) => {
+			setCenterStateByWorktree((current) => ({
+				...current,
+				[selection.worktreePath]: { phase: "selected", selection },
 			}));
+			setNewSessionCreationByWorktree((current) => {
+				const active = current[request.worktreePath];
+				if (
+					active?.request.requestId !== request.requestId ||
+					active.request.attempt !== request.attempt
+				) {
+					return current;
+				}
+				const next = { ...current };
+				delete next[request.worktreePath];
+				return next;
+			});
+		},
+		[],
+	);
+	const handleNewSessionCreationFailed = useCallback(
+		(request: NewSessionCreationRequest, error: string) => {
+			setNewSessionCreationByWorktree((current) => {
+				const active = current[request.worktreePath];
+				if (
+					active?.request.requestId !== request.requestId ||
+					active.request.attempt !== request.attempt
+				) {
+					return current;
+				}
+				return {
+					...current,
+					[request.worktreePath]: {
+						...active,
+						status: "failed",
+						error: `Session creation failed: ${error}`,
+					},
+				};
+			});
+		},
+		[],
+	);
+	const handleCenterNodeMissing = useCallback(
+		(worktreePath: string, nodeId: string) => {
+			setCenterStateByWorktree((current) => {
+				const active = current[worktreePath];
+				if (
+					active?.phase !== "selected" ||
+					active.selection.nodeId !== nodeId
+				) {
+					return current;
+				}
+				return {
+					...current,
+					[worktreePath]: { phase: "resolvedEmpty" },
+				};
+			});
 		},
 		[],
 	);
@@ -163,19 +278,16 @@ function App() {
 
 	useMenuEvents(menuHandlers);
 
-	const selectedRootPath = useMemo(() => {
-		if (!selectedWorktreeId) return null;
-		const tab = worktrees.find((t) => t.id === selectedWorktreeId);
-		return tab?.rootPath ?? null;
-	}, [worktrees, selectedWorktreeId]);
-
 	const leftNav = useMemo(
 		() => (
 			<WorkspaceList
 				repoPaths={repoPaths}
 				selectedRootPath={selectedRootPath}
-				centerSelection={centerSelectionRequest}
+				centerSelection={centerSelection}
+				autoSelectPreferredNode={activeCenterState?.phase === "awaitingInitial"}
+				newSessionCreationStatusByWorktree={newSessionCreationStatusByWorktree}
 				onSelectWorktree={handleSelectWorktree}
+				onCreateSession={handleCreateSession}
 				onAddRepo={handleAddRepo}
 				onShowSettings={() => setShowAppSettings(true)}
 			/>
@@ -183,8 +295,11 @@ function App() {
 		[
 			repoPaths,
 			selectedRootPath,
-			centerSelectionRequest,
+			centerSelection,
+			activeCenterState?.phase,
+			newSessionCreationStatusByWorktree,
 			handleSelectWorktree,
+			handleCreateSession,
 			handleAddRepo,
 		],
 	);
@@ -197,8 +312,11 @@ function App() {
 				settings={settings}
 				onSettingsSave={updateSettings}
 				leftNav={leftNav}
-				centerSelectionRequest={centerSelectionRequest}
-				onCenterSelectionResolved={handleCenterSelectionResolved}
+				centerSelection={centerSelection}
+				newSessionCreationRequest={newSessionCreationRequest}
+				onNewSessionCreated={handleNewSessionCreated}
+				onNewSessionCreationFailed={handleNewSessionCreationFailed}
+				onCenterNodeMissing={handleCenterNodeMissing}
 			/>
 
 			{/* App Settings */}

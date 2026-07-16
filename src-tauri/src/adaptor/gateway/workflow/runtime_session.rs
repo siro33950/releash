@@ -241,21 +241,6 @@ pub(crate) async fn broadcast_state<R: tauri::Runtime>(
     .await;
 }
 
-pub(crate) async fn emit_workflow_runtime_projection<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    worktree_path: &str,
-    commit_snapshot: RuntimeCommitSnapshot,
-) {
-    crate::adaptor::gateway::workflow::emit_workflow_execution_from_snapshot(
-        app,
-        worktree_path,
-        crate::adaptor::gateway::workflow::state::runtime_commit_snapshot_to_domain_snapshot(
-            commit_snapshot,
-        ),
-    )
-    .await;
-}
-
 /// AgentSessionを中断する。
 pub(crate) async fn interrupt_agent(runtime: &Arc<AgentSessionRuntimeUsecase>, session_id: &str) {
     if let Err(e) = runtime.interrupt(session_id).await {
@@ -526,46 +511,7 @@ pub(crate) async fn rollback_prepared_fanout_child_sessions<R: tauri::Runtime>(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn activate_fanout_child_sessions<R: tauri::Runtime, O>(
-    app: &tauri::AppHandle<R>,
-    _branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
-    session_store: &Arc<SessionStore>,
-    runtime: &Arc<AgentSessionRuntimeUsecase>,
-    open_tabs: &Arc<OpenTabRegistry>,
-    worktree_path: &str,
-    child_setups: &[FanoutChildSessionSetup],
-    snapshot: RuntimeCommitSnapshot,
-    observer: &O,
-) -> Result<(), WorkflowEngineError>
-where
-    O: FanoutChildTurnObserver + ?Sized,
-{
-    broadcast_state(app, worktree_path, snapshot.clone()).await;
-    start_fanout_child_sessions(
-        app,
-        None,
-        session_store,
-        runtime,
-        open_tabs,
-        worktree_path,
-        child_setups,
-        Some(snapshot),
-        observer,
-    )
-    .await
-}
-
-pub(crate) struct FanoutChildStartedRuntime<'a> {
-    pub(crate) node_execution_id: &'a str,
-    pub(crate) session_id: &'a str,
-}
-
-pub(crate) trait FanoutChildTurnObserver {
-    fn child_turn_started(&self, started: FanoutChildStartedRuntime<'_>);
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn start_fanout_child_sessions<R: tauri::Runtime, O>(
+pub(crate) async fn activate_fanout_child_sessions<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     _branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     _session_store: &Arc<SessionStore>,
@@ -573,12 +519,17 @@ pub(crate) async fn start_fanout_child_sessions<R: tauri::Runtime, O>(
     open_tabs: &Arc<OpenTabRegistry>,
     worktree_path: &str,
     child_setups: &[FanoutChildSessionSetup],
-    commit_snapshot_for_projection: Option<RuntimeCommitSnapshot>,
-    observer: &O,
-) -> Result<(), WorkflowEngineError>
-where
-    O: FanoutChildTurnObserver + ?Sized,
-{
+    snapshot: RuntimeCommitSnapshot,
+) -> Result<(), WorkflowEngineError> {
+    broadcast_state(app, worktree_path, snapshot).await;
+    start_fanout_child_sessions(runtime, open_tabs, child_setups).await
+}
+
+async fn start_fanout_child_sessions(
+    runtime: &Arc<AgentSessionRuntimeUsecase>,
+    open_tabs: &Arc<OpenTabRegistry>,
+    child_setups: &[FanoutChildSessionSetup],
+) -> Result<(), WorkflowEngineError> {
     let mut created_session_ids: Vec<String> = Vec::new();
     let mut runtime_guards = Vec::new();
 
@@ -586,9 +537,6 @@ where
         let runtime_guard = runtime.acquire_session_lock(&setup.session_id).await;
         runtime_guards.push(runtime_guard);
         open_tabs.add(&setup.session_id);
-        if let Some(state) = commit_snapshot_for_projection.clone() {
-            emit_workflow_runtime_projection(app, worktree_path, state).await;
-        }
         created_session_ids.push(setup.session_id.clone());
     }
 
@@ -618,11 +566,6 @@ where
             ));
         }
         drop(runtime_guard);
-
-        observer.child_turn_started(FanoutChildStartedRuntime {
-            node_execution_id: &setup.node_execution_id,
-            session_id: &setup.session_id,
-        });
     }
 
     Ok(())
@@ -1037,6 +980,7 @@ mod tests {
         let pending_node_execution_id = fanout_start.children[1].node_execution_id.clone();
         fanout_start.children[0].reused = Some(workflow_fanout_runtime::ReusableFanoutChild {
             result: Some("already confirmed".to_string()),
+            display_command: None,
             artifact: Some(serde_json::json!({ "verdict": "pass" })),
             contract: Some("review".to_string()),
             token_usage: Some(TokenUsage {

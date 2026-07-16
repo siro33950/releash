@@ -3,10 +3,9 @@ import { type UseAgentChatResult, useAgentChat } from "@/hooks/useAgentChat";
 import { useWorkflowState } from "@/hooks/useWorkflowState";
 
 /**
- * spec issues-1023: `useAgentChat` を MainLayout レベルに引き上げ、AgentChatPanel と
- * WorkflowView が同一の reducer state（session store / streaming / activity）を
- * Context 経由で共有するための provider。両 panel で別々に `useAgentChat` を呼び出すと
- * useReducer state が分離して破綻するため、必ず本 provider でラップして使う。
+ * `useAgentChat` を MainLayout レベルに置き、NodeContentView が表示する全 Session Nodeで
+ * 同じ reducer state（session store / streaming / activity）を共有する provider。
+ * BoundSessionChat は必ずこの provider の内側で使う。
  */
 const AgentChatContext = createContext<UseAgentChatResult | null>(null);
 

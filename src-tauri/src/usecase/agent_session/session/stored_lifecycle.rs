@@ -83,6 +83,19 @@ impl StoredSessionLifecycleUsecase {
         Ok(())
     }
 
+    pub(crate) async fn close_session(
+        &self,
+        data_dir: &Path,
+        session_id: &str,
+    ) -> Result<(), String> {
+        self.runtime_closer.close_agent_session(session_id).await?;
+        SessionLifecycleController {
+            session_store: &self.session_store,
+            data_dir,
+        }
+        .close_session_state(session_id)
+    }
+
     pub(crate) async fn fork_session(
         &self,
         data_dir: &Path,
@@ -331,13 +344,17 @@ mod tests {
     #[derive(Default)]
     struct FakeRuntimeCloser {
         closed: Mutex<Vec<String>>,
+        error: Mutex<Option<String>>,
     }
 
     #[async_trait]
     impl AgentSessionRuntimeCloser for FakeRuntimeCloser {
         async fn close_agent_session(&self, session_id: &str) -> Result<(), String> {
             self.closed.lock().push(session_id.to_string());
-            Ok(())
+            match self.error.lock().clone() {
+                Some(error) => Err(error),
+                None => Ok(()),
+            }
         }
     }
 
@@ -397,6 +414,67 @@ mod tests {
         assert_eq!(archived.len(), 1);
         assert_eq!(archived[0].backend_id.as_deref(), Some("codex"));
         assert_eq!(archived[0].agent_session_id.as_deref(), Some("thread-1"));
+    }
+
+    #[tokio::test]
+    async fn close_session_stops_runtime_before_marking_session_closed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(crate::test_support::build_session_store());
+        let backend_lifecycle = Arc::new(FakeBackendLifecycle::new());
+        let runtime = Arc::new(FakeRuntimeCloser::default());
+        let session_id = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
+        store
+            .save_full_session_for_migration_or_restore(
+                tmp.path(),
+                &codex_session(session_id, SessionState::Idle),
+            )
+            .unwrap();
+
+        usecase(store.clone(), backend_lifecycle, runtime.clone())
+            .close_session(tmp.path(), session_id)
+            .await
+            .unwrap();
+
+        assert_eq!(runtime.closed.lock().as_slice(), [session_id]);
+        assert_eq!(
+            store
+                .get_session_shell(tmp.path(), session_id)
+                .unwrap()
+                .unwrap()
+                .state,
+            SessionState::Closed
+        );
+    }
+
+    #[tokio::test]
+    async fn close_session_keeps_session_open_when_runtime_close_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(crate::test_support::build_session_store());
+        let backend_lifecycle = Arc::new(FakeBackendLifecycle::new());
+        let runtime = Arc::new(FakeRuntimeCloser::default());
+        *runtime.error.lock() = Some("runtime unavailable".to_string());
+        let session_id = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
+        store
+            .save_full_session_for_migration_or_restore(
+                tmp.path(),
+                &codex_session(session_id, SessionState::Idle),
+            )
+            .unwrap();
+
+        let error = usecase(store.clone(), backend_lifecycle, runtime)
+            .close_session(tmp.path(), session_id)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, "runtime unavailable");
+        assert_eq!(
+            store
+                .get_session_shell(tmp.path(), session_id)
+                .unwrap()
+                .unwrap()
+                .state,
+            SessionState::Idle
+        );
     }
 
     #[tokio::test]

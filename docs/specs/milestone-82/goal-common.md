@@ -10,7 +10,7 @@ https://github.com/siro33950/releash/milestone/82 に従って移行する。各
 3. `docs/workflow-engine-evolution-plan.md`（戦略・中核モデル・テスト方針の一次 Owner）
 4. `docs/workflow-yaml-syntax.md`（目標構文の正本）
 5. `docs/examples/full-pipeline.yml`（完成形の参照例。整合確認に使う。通常改修対象にしない）
-6. `docs/specs/milestone-82/plan.md`（実装計画。設計判断 D1〜D7 / P1〜P13 と現状実装マップ）
+6. `docs/specs/milestone-82/plan.md`（実装計画。設計判断 D1〜D8 / P1〜P15 と現状実装マップ）
 7. **`docs/specs/milestone-82/design.md`（詳細設計の正本。型定義・検証規則・event 語彙・API・削除一覧はここに従う。設計をやり直さない）**
 8. 対象 issue 本文: `gh issue view <issue番号> --repo siro33950/releash`
 9. milestone 説明: `gh api repos/siro33950/releash/milestones/82 --jq .description`
@@ -25,12 +25,14 @@ https://github.com/siro33950/releash/milestone/82 に従って移行する。各
 - **D5**: session の permission 許可値は ask/edit/full の現行 3 値のまま。`read` は追加しない。
 - **D6**: `{{ project_name }}` / `{{ path_alias.* }}` / `{{ vars.* }}` / `{{ task }}` / workflow の `variables:` は全廃。template 参照は `{{ request }}` / `{{ <node>.<field> }}` / `{{ item.<field> }}` のみ。
 - **D7**: workflow 編集 UI はフォーム編集を廃止し、YAML 直接編集 + Rust が返す Diagnostic 表示に簡素化する。
+- **D8**: Workspace UI はNode中心の再帰treeと単一NodeContentViewに統一する。Workflow/FanoutはNodeを束ねるbranchであり、独自中央viewを持たない（#1454）。
 - **P2**: WorkflowExecution.status は running/waiting_approval/completed/failed/aborted を維持（#1335 で interrupted を追加）。
 - **P3**: fanout 実行中は child の rules を無視する（Diagnostic にしない）。
 - **P4**: event log（NDJSON）/ 実行 state の在庫は破棄前提。schema 変更で互換 reader・変換層を書かない。
 - **P6**: 予約 Artifact 名は `request` / `item` のみ。`tasks` は予約語ではない。Task Entity / WorkflowExecution-owned tasks[] / `releash task ...` は実装しない（issue #1333 は撤回済み）。
 - **P11**: rules の `on:` 参照 field が実行時に不在なら no-match とし catch-all `next` に落ちる。artifact 検証が失敗しうる node が Contract field を rules で参照する場合、`next` catch-all を必須とする（網羅検証に含める）。command の `ok` は `exit_code==0 && (artifact 未指定 || validation 成功)`。
 - **P13**: `session` + `artifact:` は Contract 検証済み提出まで node 完了しない（既存 repair 機構を踏襲）。
+- **P15**: WorkflowExecution / NodeExecution domain read modelは維持し、Workspace UIにはRust-ownedの再帰tree summaryと選択Node detailを提供する。実行済みNodeはevent projectionの実行順を保ち、同じ定義Nodeのretry/loopも実行occurrenceごとに別行とする。attempt・fanout座標・内部IDをUIへ露出しない（#1454）。
 
 ## 実装原則（最優先: 最もシンプルな実装にする）
 

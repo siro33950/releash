@@ -1,5 +1,5 @@
 import type React from "react";
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAgentChatContext } from "@/contexts/AgentChatContext";
 import { deriveActivityStatus } from "@/hooks/deriveActivityStatus";
 import type { DropZoneType } from "@/hooks/useNativeFileDrop";
@@ -30,7 +30,7 @@ interface BoundSessionChatProps {
 	>;
 	onOpenDiffFile?: (filePath: string) => void;
 	/**
-	 * sessionId が既に AgentChatPanel の active として読み込み済みかどうかを親が知っている
+	 * sessionId が既に session store へ読み込み済みかどうかを親が知っている
 	 * ケース向けの最適化フック。指定なし（default false）の場合は本コンポーネントが
 	 * sessionId 変更時に `loadSession` を呼び出して sessionsById に upsert する。
 	 */
@@ -39,8 +39,8 @@ interface BoundSessionChatProps {
 
 /**
  * 「指定 sessionId に対する完全な chat UI（message stream + MessageInput + handlers）」を
- * 提供する component。AgentChatPanel と WorkflowView の両方から、sessionId だけを
- * 渡すと chat 部分は共通実装になる、というのが本 component の責務境界。
+ * 提供する component。単独Session NodeとWorkflow Session Nodeを区別せず、
+ * NodeContentViewからsessionIdだけを渡して共通表示する。
  *
  * 内部処理:
  *   - `getSessionById(sessionId)` で sessionsById から ChatSession を解決
@@ -87,6 +87,10 @@ export function BoundSessionChat({
 		getSessionPermissionMode,
 		getSessionPlanMode,
 	} = useAgentChatContext();
+	const [loadState, setLoadState] = useState<{
+		sessionId: string | null;
+		status: "loading" | "loaded" | "unavailable";
+	}>({ sessionId: null, status: "loading" });
 
 	// SDK listener gating: 本 view が表示している session を viewable に登録する。
 	useEffect(() => {
@@ -97,10 +101,33 @@ export function BoundSessionChat({
 
 	// sessionId 変化時に sessionsById に最新を upsert する。
 	useEffect(() => {
-		if (!sessionId || skipInitialLoad) return;
-		loadSession(sessionId).catch((e) =>
-			console.warn("[BoundSessionChat] loadSession failed", e),
-		);
+		if (!sessionId) {
+			setLoadState({ sessionId: null, status: "unavailable" });
+			return;
+		}
+		if (skipInitialLoad) {
+			setLoadState({ sessionId, status: "loaded" });
+			return;
+		}
+
+		let cancelled = false;
+		setLoadState({ sessionId, status: "loading" });
+		void loadSession(sessionId)
+			.then((loaded) => {
+				if (cancelled) return;
+				setLoadState({
+					sessionId,
+					status: loaded ? "loaded" : "unavailable",
+				});
+			})
+			.catch((e) => {
+				if (cancelled) return;
+				console.warn("[BoundSessionChat] loadSession failed", e);
+				setLoadState({ sessionId, status: "unavailable" });
+			});
+		return () => {
+			cancelled = true;
+		};
 	}, [sessionId, skipInitialLoad, loadSession]);
 
 	const session = getSessionById(sessionId);
@@ -189,7 +216,18 @@ export function BoundSessionChat({
 		[sessionId, respondPermission],
 	);
 
-	if (!session) return null;
+	if (!session) {
+		const unavailable =
+			loadState.sessionId === sessionId && loadState.status === "unavailable";
+		return (
+			<div
+				className="flex h-full items-center justify-center bg-background px-4 text-sm text-muted-foreground"
+				role={unavailable ? "alert" : "status"}
+			>
+				{unavailable ? "Session unavailable." : "Loading session..."}
+			</div>
+		);
+	}
 
 	const selectedModel = getSessionSelectedModel(session.id) ?? "";
 	const canChangeBackend = getSessionCanChangeBackend(session.id);

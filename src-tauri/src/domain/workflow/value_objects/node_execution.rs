@@ -50,6 +50,7 @@ pub struct NodeExecution {
     pub attempt: u32,
     pub status: NodeExecutionStatus,
     pub session_id: Option<String>,
+    pub display_command: Option<String>,
     pub result_summary: Option<String>,
     pub artifact: Option<Artifact>,
     pub token_usage: Option<TokenUsage>,

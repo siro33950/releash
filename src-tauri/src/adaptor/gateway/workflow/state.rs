@@ -74,6 +74,7 @@ pub struct NodeExecution {
     pub attempt: u32,
     pub status: NodeExecutionStatus,
     pub session_id: Option<String>,
+    pub display_command: Option<String>,
     pub artifact: Option<serde_json::Value>,
     pub token_usage: Option<TokenUsage>,
     pub failure: Option<NodeExecutionFailure>,
@@ -256,6 +257,7 @@ fn node_execution_to_domain(execution: NodeExecution) -> crate::domain::workflow
             NodeExecutionStatus::Aborted => crate::domain::workflow::NodeExecutionStatus::Aborted,
         },
         session_id: execution.session_id,
+        display_command: execution.display_command,
         result_summary: None,
         artifact: execution
             .artifact

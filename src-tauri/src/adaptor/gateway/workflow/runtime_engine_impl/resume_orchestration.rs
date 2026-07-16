@@ -34,6 +34,7 @@ fn runtime_node_execution(node: &crate::domain::workflow::NodeExecution) -> Node
             crate::domain::workflow::NodeExecutionStatus::Aborted => NodeExecutionStatus::Aborted,
         },
         session_id: node.session_id.clone(),
+        display_command: node.display_command.clone(),
         artifact: node
             .artifact
             .as_ref()
@@ -177,6 +178,7 @@ fn hydrate_resumed_execution(
         attempt: resumed_attempt,
         status: NodeExecutionStatus::Running,
         session_id: None,
+        display_command: None,
         artifact: None,
         token_usage: None,
         failure: None,
@@ -197,6 +199,7 @@ fn hydrate_resumed_execution(
                     child_index: child.child_index,
                     reusable: workflow_fanout_runtime::ReusableFanoutChild {
                         result: child.result_summary.clone(),
+                        display_command: child.display_command.clone(),
                         artifact: child.artifact.clone(),
                         contract: child.contract.clone(),
                         token_usage: child.token_usage.as_ref().map(runtime_token_usage),

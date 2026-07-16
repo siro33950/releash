@@ -166,6 +166,7 @@ mod tests {
             "add_repo_path",
             "append_review_comment",
             "apply_hooks_config",
+            "approve_workspace_node",
             "approve_workflow_node",
             "archive_open_session",
             "archive_session",
@@ -182,6 +183,7 @@ mod tests {
             "check_pr_provider_status",
             "close_agent_session",
             "close_session",
+            "close_workspace_node",
             "compute_hidden_ranges",
             "compute_hidden_ranges_from_content",
             "compute_markdown_diff_ranges",
@@ -190,6 +192,7 @@ mod tests {
             "compute_visible_markdown_blocks",
             "create_review_thread",
             "create_session",
+            "create_workspace_session",
             "create_worktree",
             "delete_branch",
             "delete_facet",
@@ -207,7 +210,6 @@ mod tests {
             "fork_session",
             "gc_ptys_for_worktree",
             "generate_hooks_config",
-            "get_agent_shortcut_settings",
             "get_app_settings",
             "get_automation_config_dir",
             "get_binary_file_at_branch_base",
@@ -262,7 +264,8 @@ mod tests {
             "get_workflow_source",
             "get_workflow_node_detail",
             "get_workspace_status",
-            "get_workspace_workflow_node_detail",
+            "get_workspace_node_detail",
+            "get_workspace_session_node_id",
             "get_worktree_dirty_count",
             "git_create_branch",
             "git_stage",
@@ -271,7 +274,6 @@ mod tests {
             "git_unstage_review_group",
             "init_agent_sessions",
             "interrupt_agent_query",
-            "is_agent_command_enabled",
             "kill_pty",
             "kill_ptys_by_worktree",
             "list_agent_backends",
@@ -301,7 +303,6 @@ mod tests {
             "prepare_image_attachment",
             "prepare_image_attachments_from_paths",
             "prepare_pasted_text_block",
-            "present_agent_command_palette",
             "present_agent_permission_request",
             "present_agent_tool_activity",
             "query_worktree_node_statuses",
@@ -316,7 +317,6 @@ mod tests {
             "report_frontend_error",
             "report_mounted_xterm_count",
             "report_usage_event",
-            "reset_agent_shortcut_settings",
             "resize_pty",
             "resolve_active_execution_by_worktree",
             "resolve_review_thread",
@@ -350,7 +350,6 @@ mod tests {
             "stop_watching",
             "sync_mentions_with_text",
             "unregister_active_terminal",
-            "update_agent_shortcut_settings",
             "update_app_settings",
             "update_crash_reporting",
             "update_external_editor",
@@ -408,6 +407,24 @@ mod tests {
         assert!(!expected_set.contains("get_review_text_diff"));
         assert!(!expected_set.contains("get_review_image_diff"));
         assert_eq!(registered_set, expected_set);
+    }
+
+    #[test]
+    fn retired_agent_command_palette_commands_are_not_registered() {
+        let registered = registered_command_names();
+
+        for retired_command in [
+            "present_agent_command_palette",
+            "is_agent_command_enabled",
+            "get_agent_shortcut_settings",
+            "update_agent_shortcut_settings",
+            "reset_agent_shortcut_settings",
+        ] {
+            assert!(
+                !registered.contains(&retired_command),
+                "retired command must not remain public: {retired_command}"
+            );
+        }
     }
 
     #[test]

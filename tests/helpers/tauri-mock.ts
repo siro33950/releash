@@ -1,7 +1,10 @@
 import type { Page } from "@playwright/test";
 
 export interface MockConfig {
-	/** cmd → 返り値のマッピング。関数の場合はシリアライズできないため、静的な値のみ対応 */
+	/**
+	 * cmd → 返り値のマッピング。関数はシリアライズできないため使用不可。
+	 * `{ __mockSequence: [...] }` は呼び出し順に返し、末尾へ到達後は最後の値を維持する。
+	 */
 	ipcHandler: Record<string, unknown>;
 }
 
@@ -11,6 +14,8 @@ interface TauriMockInternals {
 	unregisterCallback: (id: number) => void;
 	runCallback: (id: number, data: unknown) => void;
 	callbacks: Map<number, { cb: (data: unknown) => void; once: boolean }>;
+	invocations: Array<{ cmd: string; args: Record<string, unknown> }>;
+	setMockResponse: (cmd: string, value: unknown) => void;
 	metadata: {
 		currentWindow: { label: string };
 		currentWebview: { windowLabel: string; label: string };
@@ -66,11 +71,17 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 
 		// イベントリスナー管理
 		const eventListeners = new Map<string, number[]>();
+		const invocationCounts = new Map<string, number>();
+		const invocations: Array<{
+			cmd: string;
+			args: Record<string, unknown>;
+		}> = [];
 
 		async function invoke(
 			cmd: string,
 			args: Record<string, unknown> = {},
 		): Promise<unknown> {
+			invocations.push({ cmd, args });
 			// plugin:event 系のハンドリング
 			if (cmd === "plugin:event|listen") {
 				const event = args.event as string;
@@ -109,7 +120,21 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 
 			// ユーザー定義コマンド
 			if (cmd in cfg.ipcHandler) {
-				const value = cfg.ipcHandler[cmd];
+				let value = cfg.ipcHandler[cmd];
+				if (
+					value &&
+					typeof value === "object" &&
+					"__mockSequence" in (value as Record<string, unknown>)
+				) {
+					const sequence = (value as { __mockSequence: unknown[] })
+						.__mockSequence;
+					const index = invocationCounts.get(cmd) ?? 0;
+					invocationCounts.set(cmd, index + 1);
+					value =
+						sequence.length === 0
+							? null
+							: sequence[Math.min(index, sequence.length - 1)];
+				}
 				// { __mockError: "message" } の場合はエラーを投げる
 				if (
 					value &&
@@ -128,12 +153,17 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			return null;
 		}
 
-			window.__TAURI_INTERNALS__ = {
-				invoke,
-				transformCallback,
+		window.__TAURI_INTERNALS__ = {
+			invoke,
+			transformCallback,
 			unregisterCallback,
 			runCallback,
 			callbacks,
+			invocations,
+			setMockResponse: (cmd: string, value: unknown) => {
+				cfg.ipcHandler[cmd] = value;
+				invocationCounts.delete(cmd);
+			},
 			metadata: {
 				currentWindow: { label: "main" },
 				currentWebview: { windowLabel: "main", label: "main" },
@@ -141,9 +171,9 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			convertFileSrc: (path: string) => path,
 		};
 
-			window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
-				unregisterListener: (_event: string, id: number) =>
-					unregisterCallback(id),
+		window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+			unregisterListener: (_event: string, id: number) =>
+				unregisterCallback(id),
 		};
 	}, config);
 }
@@ -157,11 +187,11 @@ export async function emitTauriEvent(
 	event: string,
 	payload: unknown,
 ) {
-		await page.evaluate(
-			({ event, payload }) => {
-				const internals = window.__TAURI_INTERNALS__;
-				if (!internals) throw new Error("Tauri mock not initialized");
-			internals.invoke("plugin:event|emit", { event, payload });
+	await page.evaluate(
+		async ({ event, payload }) => {
+			const internals = window.__TAURI_INTERNALS__;
+			if (!internals) throw new Error("Tauri mock not initialized");
+			await internals.invoke("plugin:event|emit", { event, payload });
 		},
 		{ event, payload },
 	);

@@ -1,21 +1,19 @@
 /**
- * spec issues-1220 Rule「中央表示は CenterSelection から導出される」
- *
- * MainLayout 近傍の統合テスト。Workspace tree から workflowNode selection request が
- * 渡ると、中央エリアの AgentChatPanel と入れ替わりに WorkflowView が表示されることを
- * 担保する。
+ * Goal #1454: the center pane is always the generic NodeContentView. A new
+ * session is a creation request which is resolved to an opaque Workspace node
+ * id by the backend before it becomes a CenterSelection.
  */
-import { act, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import { StrictMode } from "react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
-// jsdom does not implement scrollIntoView / ResizeObserver
 Element.prototype.scrollIntoView = vi.fn();
 
-const agentChatPanelProps = vi.hoisted(() => ({
-	current: null as {
-		onNewSessionCreated?: (sessionId: string) => void;
-	} | null,
+const mocks = vi.hoisted(() => ({
+	createNewWorkspaceSession: vi.fn(),
+	invoke: vi.fn(),
+	nodeContentViewProps: vi.fn(),
 }));
 
 vi.mock("react-resizable-panels", () => ({
@@ -37,7 +35,7 @@ vi.mock("react-resizable-panels", () => ({
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
-	invoke: vi.fn().mockResolvedValue([]),
+	invoke: mocks.invoke,
 }));
 vi.mock("@tauri-apps/api/event", () => ({
 	listen: vi.fn().mockResolvedValue(() => {}),
@@ -64,11 +62,11 @@ vi.mock("@/hooks/useBaseBranch", () => ({
 		localBranches: ["main", "feature"],
 	}),
 }));
-vi.mock("@/hooks/useWorkflowState", () => ({
-	useWorkflowState: () => ({ workflowExecution: null }),
-}));
 vi.mock("@/contexts/AgentChatContext", () => ({
 	AgentChatProvider: ({ children }: { children: React.ReactNode }) => children,
+	useAgentChatContext: () => ({
+		createNewWorkspaceSession: mocks.createNewWorkspaceSession,
+	}),
 }));
 vi.mock("@/contexts/ReviewThreadHandoffContext", () => ({
 	ReviewThreadHandoffProvider: ({ children }: { children: React.ReactNode }) =>
@@ -92,15 +90,18 @@ vi.mock("@/screens/useWorktreeState", () => ({
 		setReviewCollapsed: vi.fn(),
 		rightBottomCollapsed: false,
 		setRightBottomCollapsed: vi.fn(),
+		registerDropZone: vi.fn(),
 	}),
 }));
 
-vi.mock("@/components/panels/AgentChatPanel", () => ({
-	AgentChatPanel: (props: {
-		onNewSessionCreated?: (sessionId: string) => void;
-	}) => {
-		agentChatPanelProps.current = props;
-		return <div data-testid="agent-chat-panel-mock" />;
+vi.mock("@/components/panels/NodeContentView", () => ({
+	NodeContentView: (props: unknown) => {
+		mocks.nodeContentViewProps(props);
+		return (
+			<div data-testid="node-content-view-mock">
+				<div data-testid="node-toolbar-mock" />
+			</div>
+		);
 	},
 }));
 vi.mock("@/components/panels/ReviewPanel", () => ({
@@ -111,11 +112,6 @@ vi.mock("@/components/panels/RightSidebarBottom", () => ({
 }));
 vi.mock("@/components/panels/SettingsModal", () => ({
 	SettingsModal: () => null,
-}));
-vi.mock("@/components/panels/WorkflowView", () => ({
-	WorkflowView: ({ worktreePath }: { worktreePath: string }) => (
-		<div data-testid="workflow-view-mock" data-worktree-path={worktreePath} />
-	),
 }));
 vi.mock("@/screens/WorktreeViewDialogs", () => ({
 	GitErrorDialog: () => null,
@@ -130,124 +126,268 @@ vi.mock("@/components/layout/RightPanelHeader", () => ({
 	),
 }));
 vi.mock("@/components/layout/ViewToolbar", () => ({
-	ViewToolbar: ({
-		centerSlot,
-		rightSlot,
-	}: {
-		centerSlot?: React.ReactNode;
-		rightSlot?: React.ReactNode;
-	}) => (
-		<div data-testid="view-toolbar-mock">
-			{centerSlot}
-			{rightSlot}
-		</div>
-	),
+	ViewToolbar: () => <div data-testid="empty-state-toolbar-mock" />,
 }));
 
 const { MainLayout } = await import("./MainLayout");
 const { DEFAULT_SETTINGS } = await import("@/types/settings");
-const defaultSettings = DEFAULT_SETTINGS;
 
-describe("MainLayout center selection", () => {
-	it("renders AgentChatPanel and ReviewPanel by default", () => {
-		render(
+function mainLayoutElement(
+	props: Partial<React.ComponentProps<typeof MainLayout>> = {},
+) {
+	return (
+		<StrictMode>
 			<TooltipProvider>
 				<MainLayout
 					selectedRootPath="/managed/wt"
-					settings={defaultSettings}
+					settings={DEFAULT_SETTINGS}
 					onSettingsSave={vi.fn()}
 					leftNav={<div />}
+					{...props}
 				/>
-			</TooltipProvider>,
-		);
-		expect(screen.getByTestId("agent-chat-panel-mock")).toBeInTheDocument();
+			</TooltipProvider>
+		</StrictMode>
+	);
+}
+
+function renderMainLayout(
+	props: Partial<React.ComponentProps<typeof MainLayout>> = {},
+) {
+	return render(mainLayoutElement(props));
+}
+
+function deferred<T>() {
+	let resolve!: (value: T) => void;
+	let reject!: (reason?: unknown) => void;
+	const promise = new Promise<T>((res, rej) => {
+		resolve = res;
+		reject = rej;
+	});
+	return { promise, resolve, reject };
+}
+
+describe("MainLayout node-centered workspace", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		mocks.invoke.mockResolvedValue(null);
+		mocks.createNewWorkspaceSession.mockResolvedValue("session-default");
+	});
+
+	it("always renders the toolbar-backed NodeContentView in the center", () => {
+		renderMainLayout();
+
+		expect(screen.getByTestId("node-content-view-mock")).toBeInTheDocument();
+		expect(screen.getByTestId("node-toolbar-mock")).toBeInTheDocument();
 		expect(screen.getByTestId("review-panel-mock")).toBeInTheDocument();
-		expect(screen.queryByTestId("workflow-view-mock")).toBeNull();
+		expect(mocks.nodeContentViewProps).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				worktreePath: "/managed/wt",
+				nodeId: null,
+			}),
+		);
 	});
 
-	it("places BranchSelector in the right panel header and not the center toolbar", () => {
-		render(
-			<TooltipProvider>
-				<MainLayout
-					selectedRootPath="/managed/wt"
-					settings={defaultSettings}
-					onSettingsSave={vi.fn()}
-					leftNav={<div />}
-				/>
-			</TooltipProvider>,
-		);
+	it("passes an opaque node selection to the generic center view", () => {
+		renderMainLayout({
+			centerSelection: {
+				kind: "node",
+				worktreePath: "/managed/wt",
+				nodeId: "opaque:not-an-execution-coordinate",
+			},
+		});
 
-		const branchSelector = screen.getByTestId("branch-selector-mock");
-		expect(screen.getByTestId("right-panel-header-mock")).toContainElement(
-			branchSelector,
+		expect(mocks.nodeContentViewProps).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				worktreePath: "/managed/wt",
+				nodeId: "opaque:not-an-execution-coordinate",
+			}),
 		);
-		for (const toolbar of screen.getAllByTestId("view-toolbar-mock")) {
-			expect(toolbar).not.toContainElement(branchSelector);
-		}
-	});
-
-	it("mounts WorkflowView with selectedRootPath when workflowNode selection is requested", async () => {
-		render(
-			<TooltipProvider>
-				<MainLayout
-					selectedRootPath="/managed/wt"
-					settings={defaultSettings}
-					onSettingsSave={vi.fn()}
-					leftNav={<div />}
-					centerSelectionRequest={{
-						kind: "workflowNode",
-						worktreePath: "/managed/wt",
-						executionId: "run-1",
-						nodeExecutionId: "run-1:review:1",
-						nodeName: "review",
-						requestId: 1,
-					}}
-				/>
-			</TooltipProvider>,
-		);
-
-		const panel = await screen.findByTestId("workflow-view-mock");
-		expect(panel).toBeInTheDocument();
-		expect(panel).toHaveAttribute("data-worktree-path", "/managed/wt");
 		expect(screen.getByTestId("panel-center")).toHaveAttribute(
 			"data-min-size",
-			"336",
+			"30%",
 		);
-		// AgentChat は中央から消え、Review は右パネルで残る
-		expect(screen.queryByTestId("agent-chat-panel-mock")).toBeNull();
-		await waitFor(() => {
-			expect(screen.getByTestId("review-panel-mock")).toBeInTheDocument();
-		});
 	});
 
-	it("resolves newAgentSession selection to the created agent session", () => {
-		agentChatPanelProps.current = null;
-		const onCenterSelectionResolved = vi.fn();
-		render(
-			<TooltipProvider>
-				<MainLayout
-					selectedRootPath="/managed/wt"
-					settings={defaultSettings}
-					onSettingsSave={vi.fn()}
-					leftNav={<div />}
-					centerSelectionRequest={{
-						kind: "newAgentSession",
-						worktreePath: "/managed/wt",
-						requestId: 1,
-					}}
-					onCenterSelectionResolved={onCenterSelectionResolved}
-				/>
-			</TooltipProvider>,
+	it("does not leak another worktree's selection into the current view", () => {
+		renderMainLayout({
+			centerSelection: {
+				kind: "node",
+				worktreePath: "/managed/other",
+				nodeId: "node-other",
+			},
+		});
+
+		expect(mocks.nodeContentViewProps).toHaveBeenLastCalledWith(
+			expect.objectContaining({ nodeId: null }),
+		);
+	});
+
+	it("resolves NewSession through the backend before selecting its Node", async () => {
+		mocks.createNewWorkspaceSession.mockResolvedValue("session-new");
+		mocks.invoke.mockResolvedValue("node-opaque-new");
+		const onNewSessionCreated = vi.fn();
+		const refreshListener = vi.fn();
+		window.addEventListener("workspace-tree-refresh", refreshListener);
+		const request = {
+			worktreePath: "/managed/wt",
+			requestId: "request-7",
+			attempt: 1,
+		};
+
+		renderMainLayout({
+			newSessionCreationRequest: request,
+			onNewSessionCreated,
+		});
+
+		await waitFor(() => {
+			expect(mocks.createNewWorkspaceSession).toHaveBeenCalledTimes(1);
+			expect(mocks.createNewWorkspaceSession).toHaveBeenCalledWith("request-7");
+			expect(mocks.invoke).toHaveBeenCalledWith(
+				"get_workspace_session_node_id",
+				{
+					worktreePath: "/managed/wt",
+					sessionId: "session-new",
+				},
+			);
+			expect(onNewSessionCreated).toHaveBeenCalledWith(request, {
+				kind: "node",
+				worktreePath: "/managed/wt",
+				nodeId: "node-opaque-new",
+			});
+			expect(refreshListener).toHaveBeenCalledTimes(1);
+		});
+
+		window.removeEventListener("workspace-tree-refresh", refreshListener);
+	});
+
+	it("keeps one creation task across Worktree unmount and remount", async () => {
+		const pending = deferred<string>();
+		mocks.createNewWorkspaceSession.mockReturnValue(pending.promise);
+		mocks.invoke.mockResolvedValue("node-a");
+		const onNewSessionCreated = vi.fn();
+		const request = {
+			worktreePath: "/managed/wt",
+			requestId: "request-a",
+			attempt: 1,
+		};
+		const view = renderMainLayout({
+			selectedRootPath: "/managed/wt",
+			newSessionCreationRequest: request,
+			onNewSessionCreated,
+		});
+		await waitFor(() =>
+			expect(mocks.createNewWorkspaceSession).toHaveBeenCalledTimes(1),
 		);
 
-		act(() => {
-			agentChatPanelProps.current?.onNewSessionCreated?.("new-s");
-		});
+		view.rerender(
+			mainLayoutElement({
+				selectedRootPath: "/managed/other",
+				newSessionCreationRequest: null,
+				onNewSessionCreated,
+			}),
+		);
+		view.rerender(
+			mainLayoutElement({
+				selectedRootPath: "/managed/wt",
+				newSessionCreationRequest: request,
+				onNewSessionCreated,
+			}),
+		);
+		expect(mocks.createNewWorkspaceSession).toHaveBeenCalledTimes(1);
 
-		expect(onCenterSelectionResolved).toHaveBeenCalledWith({
-			kind: "agentSession",
-			worktreePath: "/managed/wt",
-			sessionId: "new-s",
+		pending.resolve("session-a");
+		await waitFor(() => {
+			expect(onNewSessionCreated).toHaveBeenCalledOnce();
+			expect(onNewSessionCreated).toHaveBeenCalledWith(request, {
+				kind: "node",
+				worktreePath: "/managed/wt",
+				nodeId: "node-a",
+			});
 		});
+		expect(mocks.createNewWorkspaceSession).toHaveBeenCalledTimes(1);
+	});
+
+	it("prunes a settled creation task after its request is acknowledged", async () => {
+		mocks.createNewWorkspaceSession.mockResolvedValue("session-pruned");
+		mocks.invoke.mockResolvedValue("node-pruned");
+		const onNewSessionCreated = vi.fn();
+		const request = {
+			worktreePath: "/managed/wt",
+			requestId: "request-pruned",
+			attempt: 1,
+		};
+		const view = renderMainLayout({
+			newSessionCreationRequest: request,
+			onNewSessionCreated,
+		});
+		await waitFor(() => expect(onNewSessionCreated).toHaveBeenCalledOnce());
+		expect(mocks.createNewWorkspaceSession).toHaveBeenCalledTimes(1);
+
+		view.rerender(
+			mainLayoutElement({
+				newSessionCreationRequest: null,
+				onNewSessionCreated,
+			}),
+		);
+		view.rerender(
+			mainLayoutElement({
+				newSessionCreationRequest: request,
+				onNewSessionCreated,
+			}),
+		);
+
+		await waitFor(() =>
+			expect(mocks.createNewWorkspaceSession).toHaveBeenCalledTimes(2),
+		);
+	});
+
+	it("keeps a pending task deduplicated until a failed attempt settles", async () => {
+		const pending = deferred<string>();
+		mocks.createNewWorkspaceSession.mockReturnValue(pending.promise);
+		const onNewSessionCreationFailed = vi.fn();
+		const request = {
+			worktreePath: "/managed/wt",
+			requestId: "request-failed",
+			attempt: 1,
+		};
+		const view = renderMainLayout({
+			newSessionCreationRequest: request,
+			onNewSessionCreationFailed,
+		});
+		await waitFor(() =>
+			expect(mocks.createNewWorkspaceSession).toHaveBeenCalledTimes(1),
+		);
+
+		view.rerender(
+			mainLayoutElement({
+				selectedRootPath: "/managed/other",
+				newSessionCreationRequest: null,
+				onNewSessionCreationFailed,
+			}),
+		);
+		view.rerender(
+			mainLayoutElement({
+				newSessionCreationRequest: request,
+				onNewSessionCreationFailed,
+			}),
+		);
+		expect(mocks.createNewWorkspaceSession).toHaveBeenCalledTimes(1);
+
+		pending.reject(new Error("offline"));
+		await waitFor(() =>
+			expect(onNewSessionCreationFailed).toHaveBeenCalledWith(
+				request,
+				"offline",
+			),
+		);
+		expect(mocks.createNewWorkspaceSession).toHaveBeenCalledTimes(1);
+	});
+
+	it("keeps BranchSelector in the right panel header", () => {
+		renderMainLayout();
+
+		expect(screen.getByTestId("right-panel-header-mock")).toContainElement(
+			screen.getByTestId("branch-selector-mock"),
+		);
 	});
 });

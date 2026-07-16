@@ -18,6 +18,7 @@ pub(crate) mod runtime_command;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub(crate) mod turn_complete;
+mod workspace_node_command;
 mod workspace_tree;
 
 use serde_json::Value;
@@ -41,9 +42,12 @@ pub use output::WorkflowValidateOutputResult;
 use query_service::WorkflowQueryService;
 pub use query_service::{WorkflowEventView, WorkflowGetOutputResult};
 pub use runtime_command::WorkflowRuntimeUsecase;
+pub(crate) use workspace_node_command::{
+    CloseWorkspaceNodeCommand, WorkspaceNodeActionResolver, WorkspaceNodeCommandUsecase,
+};
 pub(crate) use workspace_tree::{
-    WorkspaceSessionGateway, WorkspaceSessionInput, WorkspaceSessionState, WorkspaceTreeNodeDto,
-    WorkspaceWorkflowHistoryItemDto, WorkspaceWorkflowNodeDetailDto,
+    WorkspaceNodeDetailDto, WorkspaceSessionGateway, WorkspaceSessionInput, WorkspaceSessionState,
+    WorkspaceTreeSnapshotDto, WorkspaceWorkflowHistoryItemDto,
 };
 
 #[derive(Clone)]

@@ -6,23 +6,24 @@ https://github.com/siro33950/releash/milestone/82
 
 現行 workflow engine は旧表現（`type: agent/bash/approval/parallel`、`output_contract`/`input_contracts`、`pass_output_from`/`pass_previous_response`/`workflow_variables`、`parallel_children`、`aggregate`/`all_match`/`any_match`、regex `rules.match`、`cycle_guard`、`run_id`/`WorkflowRun`/step 語彙）で実装されている。これを `command`/`session`/`fanout` の kind block、Contract 検証済み Artifact（`schemas:`/`artifact:`/`input:`/`inputs:`）、順序非依存 rules（`when`/`switch`/`next`/`loop_guard`）、WorkflowExecution/NodeExecution 主語の read model、typed command boundary、resume へ移行する。
 
-- 実装対象: 13 open issues（#1322 #1323 #1324 #1325 #1326 #1327 #1328 #1329 #1330 #1331 #1332 #1335 #1337）。**#1333 は撤回済み（CLOSED）**: Task Entity / WorkflowExecution-owned `tasks[]` / `releash task ...` は実装しない。
+- 実装対象: 14 issues（#1322 #1323 #1324 #1325 #1326 #1327 #1328 #1329 #1330 #1331 #1332 #1335 #1337 #1454）。**#1333 は撤回済み（CLOSED）**: Task Entity / WorkflowExecution-owned `tasks[]` / `releash task ...` は実装しない。#1454 は Goal 1〜13 完了後に追加された Workspace UI の follow-up であり、完了済み goal を再実装しない。
 - 仕様の正: `docs/workflow-engine-evolution-plan.md`（戦略）、`docs/workflow-yaml-syntax.md`（構文）、`docs/examples/full-pipeline.yml`（完成形例・整合確認用）、`docs/architecture/GLOSSARY.md`（語彙）。
 - 実装は Codex /goal で行う。1 issue = 1 goal = 1 PR、wave 順に逐次実行する。
 
-## 2. 確定済み設計判断（2026-07-07 合意）
+## 2. 確定済み設計判断（D1〜D7: 2026-07-07、D8: 2026-07-16）
 
 | # | 論点 | 決定 |
 |---|---|---|
 | D1 | #1332 の local API | **最小 local API を新設**。Tauri アプリ内に localhost バインドの API サーバ（認証トークン付き）を立て、CLI の start/executions/status/logs/approve/abort/output をこれ経由に移行。file-direct/pending file は必要最小の adapter に縮退。#77-79 のデーモン化の土台。 |
 | D2 | `schemas:` の Contract dialect | **JSON Schema subset を自前実装**。`type`/`properties`/`required`/`items`/`enum`/`additionalProperties` に限定。routing 参照 field は required かつ boolean/enum を load 時 Diagnostic で強制。`request` 用に scalar（string）Contract を許可。配列要素型は inline 不可、名前付き Contract 参照（`items: <名前>`）。 |
 | D3 | command 標準結果と Artifact | **単一名前空間＋予約 field**。command node の Artifact は常に予約 field `ok`/`exit_code`/`stdout`/`stderr`/`duration` を持ち、`artifact:` Contract の field はそれに合成される。Contract が予約名を宣言したら load 時 Diagnostic。rules の `on:` は `ok` も Contract field も同じ規則で参照。 |
-| D4 | Codex /goal 分割 | **issue 単位で 13 goal**。wave 順（§5）に 1 goal = 1 PR で逐次実行。 |
+| D4 | Codex /goal 分割 | **issue 単位で 14 goal**。wave 順（§5）に 1 goal = 1 PR で逐次実行。 |
 | D5 | session `permission` | **現行 3 値（ask/edit/full）のまま**。docs（full-pipeline.yml / syntax doc）の `permission: read` は #1337 の正本化で修正する。 |
 | D6 | 旧 template 変数 | **全廃し Artifact 参照に統一**。`{{ project_name }}`/`{{ path_alias.* }}`/`{{ vars.* }}`/`{{ task }}`/workflow の `variables:` セクションを廃止（#1326）。built-in の spec_dir 連携（contract 出力からの抽出ハードコード）は「authoring が spec_dir field を持つ Artifact を産出 → 後続が `inputs:` + `{{ <node>.spec_dir }}` で参照」に書き換え。 |
 | D7 | Automation 編集 UI | **YAML 直接編集 + Diagnostic 表示に簡素化**。StepEditor/WorkflowEditor のフォーム編集を廃止し、Monaco での YAML 編集 + Rust が返す Diagnostic のインライン表示に寄せる（#1322 で置換、#1323 で code/span 表示化）。 |
+| D8 | Workspace 観測 UI | **Node 中心の再帰ツリー + 単一 NodeContentView**。NewSession は Workflow 非所属の単独 Node、Workflow と Fanout は Node を束ねる branch、Node content は Session または Command とする。Workflow/Fanout は独自の中央 view を持たない。backend の NodeExecution は保持し、Rust が実行occurrenceをevent projectionの実行順どおりWorkspace UI専用read modelへ投影する。同じ定義Nodeの反復も実行ごとに別行とする（#1454）。 |
 
-## 3. 計画側の決定事項（P1〜P13）
+## 3. 計画側の決定事項（P1〜P15）
 
 - **P1 (#1322/#1324 境界)**: #1322 で `session.gate`（auto/approval、省略時 auto）を構文導入し、旧 `type: approval` の受け皿にする。gate 必須化・approve typed command・reject/rerun 削除の完遂は #1324。
 - **P2 (status 語彙)**: WorkflowExecution.status は現行 running/waiting_approval/completed/failed/aborted を維持（waiting_approval は gate: approval 待ちの derived 状態）。#1335 で interrupted（再開可能）を追加。
@@ -38,6 +39,7 @@ https://github.com/siro33950/releash/milestone/82
 - **P12 (workflow start の名前解決)**: `releash workflow start <workflow-name>` は WorkflowDefinition.name で解決する（name↔file の対応は loader が所有、名前重複は Diagnostic）。request 未指定は空文字列の request Artifact とする。
 - **P13 (session の artifact 提出)**: `session` + `artifact:` は Contract 検証済み提出まで node 完了しない（現行 repair 機構を踏襲、max_attempts 超過で失敗）。よって session node は完了時 artifact 存在が保証され、P11 の missing-field は実質 command node のみ。
 - **P14 (NodeExecution のアドレスと fanout leaf、設計検証で追加)**: fanout child は同名 NodeExecution が並走するため、engine 採番の `node_execution_id` を第一級識別子とし、approve / output submit は並走時にこれでアドレスする（session への env `RELEASH_NODE_EXECUTION_ID` 注入で agent 側は通常意識しない）。fanout child は leaf 専用（通常遷移の対象・entry になれない、fanout の入れ子不可 = WFC006）。child の Artifact は親 fanout の配列にのみ格納し node 名 map に載せない。明示 stop は typed command（`StopExecution`）として #1335 で追加。`additionalProperties` の既定は JSON Schema と同じ true。詳細は design.md §5/§6 R7/§8.5。
+- **P15 (domain read model と Workspace UI projection の分離)**: WorkflowExecution / NodeExecution / Fanout は engine・event log・CLI/API の正規 read modelとして維持する。Rust が `Node | Workflow | Fanout` の再帰 tree summary と選択 Node detail に投影し、NodeExecutionの発生順を実行occurrenceの並びとして保持する。同じ定義Nodeのretry/loopもoccurrenceごとに別行とし、各行には後続occurrenceの追加で変化しないopaque IDを割り当てる。attempt / fanout 座標 / 内部 ID は UI に露出しない（#1454）。
 
 ## 3.5 実装原則（最優先）
 
@@ -74,9 +76,12 @@ wave 2（表現単位の移行）     : Goal 6 #1328 → Goal 7 #1324 → Goal 8
 wave 3（state / command 境界）: Goal 10 #1331 → Goal 11 #1332
 wave 4（resume）            : Goal 12 #1335
 wave 5（最終 cleanup・正本化）: Goal 13 #1337
+wave 6（Workspace UI 再設計） : Goal 14 #1454
 ```
 
 各 issue は「新語彙の実装 → runtime/projection/CLI・API/UI/built-in/tests の移行 → 対応する旧語彙の削除または拒否」までを同一 goal で完了する。まだ移行していない別表現は巻き込まない（例: #1322 の fanout block は暫定的に既存 parallel_children/aggregate を内包し、中身の置換は #1329/#1330）。
+
+Goal 14 は完了済み Goal 1〜13 の個別仕様を変更しない。確定済み domain/event modelを入力として、Workspace UI の投影と表示境界だけを置き換える。
 
 ## 6. リスクと注意点
 
@@ -108,3 +113,4 @@ wave 5（最終 cleanup・正本化）: Goal 13 #1337
 | 11 | #1332 CLI/API command boundary 新語彙化 | `goal-11-issue-1332.md` |
 | 12 | #1335 Resume を abort-only recovery から移行 | `goal-12-issue-1335.md` |
 | 13 | #1337 Workflow YAML 文法の最終 cleanup と正本化 | `goal-13-issue-1337.md` |
+| 14 | #1454 Workspace UIをNode中心の再帰ツリーに統一 | `goal-14-issue-1454.md` |
