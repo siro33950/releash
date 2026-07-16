@@ -21,7 +21,9 @@ export const workflowNodeIconClasses: Record<WorkspaceNodeStatus, string> = {
 };
 
 /** running / waiting のときにアイコンを pulse させるかの判定。 */
-export function isWorkspaceNodePulseStatus(status: WorkspaceNodeStatus): boolean {
+export function isWorkspaceNodePulseStatus(
+	status: WorkspaceNodeStatus,
+): boolean {
 	return status === "running" || status === "waiting";
 }
 
