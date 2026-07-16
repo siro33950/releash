@@ -858,6 +858,7 @@ mod tests {
             "execution-1",
             task,
             &std::collections::HashMap::new(),
+            &std::collections::BTreeMap::new(),
         )
         .expect("prompt rendering");
         let rendered_instruction = prompt_rendering::render_node_workflow_instruction(

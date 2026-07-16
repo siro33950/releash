@@ -12,7 +12,6 @@ pub enum SchemaDef {
     Object {
         properties: BTreeMap<String, SchemaDef>,
         required: BTreeSet<String>,
-        additional_properties: bool,
     },
     Array {
         items: String,
@@ -54,14 +53,12 @@ fn schema_def_from_domain(schema: domain_workflow::SchemaDef) -> SchemaDef {
         domain_workflow::SchemaDef::Object {
             properties,
             required,
-            additional_properties,
         } => SchemaDef::Object {
             properties: properties
                 .into_iter()
                 .map(|(name, schema)| (name, schema_def_from_domain(schema)))
                 .collect(),
             required,
-            additional_properties,
         },
         domain_workflow::SchemaDef::Array { items } => SchemaDef::Array { items },
         domain_workflow::SchemaDef::String { r#enum } => SchemaDef::String { r#enum },
@@ -998,8 +995,7 @@ nodes:
             serde_json::json!({
                 "type": "object",
                 "properties": {"verdict": {"type": "string", "enum": ["LGTM"]}},
-                "required": ["verdict"],
-                "additionalProperties": false
+                "required": ["verdict"]
             }),
         ] {
             let gateway_schema: SchemaDef = serde_json::from_value(value.clone()).unwrap();
@@ -1023,6 +1019,19 @@ nodes:
         .unwrap_err();
 
         assert!(err.to_string().contains("array schema supports only items"));
+    }
+
+    #[test]
+    fn schemas_reject_retired_additional_properties_keyword() {
+        let err = serde_json::from_value::<SchemaDef>(serde_json::json!({
+            "type": "object",
+            "additionalProperties": false
+        }))
+        .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("object schema supports only properties and required"));
     }
 
     #[test]

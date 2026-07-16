@@ -1,5 +1,8 @@
 use std::sync::Arc;
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::{BTreeMap, HashMap},
+    path::Path,
+};
 
 use tokio::sync::Mutex;
 
@@ -16,6 +19,7 @@ use crate::adaptor::gateway::workflow::node_settings::{
 };
 use crate::adaptor::gateway::workflow::prompt_rendering as workflow_prompt;
 use crate::adaptor::gateway::workflow::runtime_state::{SessionWorkflowRef, WorkflowExecution};
+use crate::adaptor::gateway::workflow::schema::SchemaDef;
 use crate::adaptor::gateway::workflow::state::RuntimeCommitSnapshot;
 use crate::domain::agent_session::PermissionMode;
 use crate::domain::workflow::{
@@ -284,9 +288,10 @@ pub(crate) async fn prepare_fanout_child_session_setups<R: tauri::Runtime>(
     fanout_start: &FanoutStartContext,
     prompt_inputs: &FanoutPromptInputs,
     facet_contents: &WorkflowFacetContents,
+    schemas: &BTreeMap<String, SchemaDef>,
 ) -> Result<Vec<FanoutChildSessionSetup>, WorkflowEngineError> {
     let prompt_plans =
-        prepare_fanout_child_prompt_plans(fanout_start, prompt_inputs, facet_contents)?;
+        prepare_fanout_child_prompt_plans(fanout_start, prompt_inputs, facet_contents, schemas)?;
     let creation_plans = prepare_fanout_child_creation_plans(registry, fanout_start, prompt_plans)?;
     let data_dir = crate::infrastructure::platform::app_data_dir::resolve_data_dir(app)
         .map_err(|e| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {e}")))?;
@@ -365,6 +370,7 @@ fn prepare_fanout_child_prompt_plans(
     fanout_start: &FanoutStartContext,
     prompt_inputs: &FanoutPromptInputs,
     facet_contents: &WorkflowFacetContents,
+    schemas: &BTreeMap<String, SchemaDef>,
 ) -> Result<Vec<FanoutChildPromptPlan>, WorkflowEngineError> {
     fanout_start
         .children
@@ -378,8 +384,11 @@ fn prepare_fanout_child_prompt_plans(
                 &fanout_start.execution_id,
                 fanout_start.request.as_deref(),
                 &prompt_inputs.artifacts,
-                child.item.as_ref(),
-                &child.node_execution_id,
+                workflow_prompt::FanoutChildPromptContext::new(
+                    child.item.as_ref(),
+                    &child.node_execution_id,
+                ),
+                schemas,
             )?;
             Ok(FanoutChildPromptPlan {
                 expansion_index,
@@ -994,6 +1003,7 @@ mod tests {
             &fanout_start,
             &prompt_inputs,
             &WorkflowFacetContents::default(),
+            &exec.workflow.schemas,
         )
         .unwrap();
 

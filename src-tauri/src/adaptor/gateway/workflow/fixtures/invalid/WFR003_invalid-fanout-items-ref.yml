@@ -7,7 +7,6 @@ schemas:
       values:
         type: string
     required: [values]
-    additionalProperties: false
   target:
     type: string
 nodes:

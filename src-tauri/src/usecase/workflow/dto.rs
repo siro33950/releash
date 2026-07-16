@@ -380,8 +380,7 @@ mod tests {
                 serde_json::json!({
                     "type": "object",
                     "properties": {},
-                    "required": [],
-                    "additionalProperties": false
+                    "required": []
                 }),
             )]
             .into_iter()
@@ -416,8 +415,7 @@ mod tests {
                     "plan": {
                         "type": "object",
                         "properties": {},
-                        "required": [],
-                        "additionalProperties": false
+                        "required": []
                     }
                 },
                 "nodes": [{

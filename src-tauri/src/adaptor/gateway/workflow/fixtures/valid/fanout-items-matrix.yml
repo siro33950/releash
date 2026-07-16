@@ -7,7 +7,6 @@ schemas:
       path:
         type: string
     required: [path]
-    additionalProperties: false
 nodes:
   - name: fanout
     fanout:

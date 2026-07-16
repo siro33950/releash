@@ -7,7 +7,6 @@ schemas:
       decision:
         type: string
         enum: [done, fix]
-    additionalProperties: false
 nodes:
   - name: judge
     artifact: verdict

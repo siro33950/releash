@@ -19,7 +19,6 @@ pub enum SchemaDef {
     Object {
         properties: BTreeMap<String, SchemaDef>,
         required: BTreeSet<String>,
-        additional_properties: bool,
     },
     Array {
         items: String,

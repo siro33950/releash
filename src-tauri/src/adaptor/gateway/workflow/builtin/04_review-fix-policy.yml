@@ -14,7 +14,6 @@ schemas:
     required:
     - verdict
     - summary
-    additionalProperties: false
 nodes:
 - name: decide_policy
   session:

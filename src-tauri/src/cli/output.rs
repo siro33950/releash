@@ -263,7 +263,6 @@ mod tests {
                         SchemaDef::String { r#enum: None },
                     )]),
                     required: BTreeSet::from(["verdict".to_string()]),
-                    additional_properties: false,
                 },
             )]),
             nodes: vec![NodeDefinition {

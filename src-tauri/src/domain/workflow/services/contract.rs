@@ -60,15 +60,40 @@ pub fn validate_artifact_value(
     }
 }
 
+pub fn render_contract_prompt_guidance(
+    schemas: &BTreeMap<String, SchemaDef>,
+    contract: &str,
+) -> Option<String> {
+    let schema = schemas.get(contract)?;
+    let schema_json =
+        serde_json::to_string_pretty(&contract_schema::schema_def_to_json_value(schema))
+            .unwrap_or_else(|_| "null".to_string());
+    let additional_fields_guidance = matches!(schema, SchemaDef::Object { .. })
+        .then_some("\nFields not listed in `properties` are accepted, but omit fields that downstream nodes do not need.")
+        .unwrap_or_default();
+
+    Some(format!(
+        "## Artifact contract\n\n\
+The `--json` argument must be a JSON value matching the `{contract}` schema below. The schema itself is not the value to submit.\n\n\
+```json\n{schema_json}\n\
+```\
+{additional_fields_guidance}"
+    ))
+}
+
 pub fn build_missing_artifact_repair_prompt(
     cli_alias: &str,
     execution_id: &str,
     node_name: &str,
     contract: &str,
+    schemas: &BTreeMap<String, SchemaDef>,
 ) -> String {
+    let schema_guidance = render_contract_prompt_guidance(schemas, contract)
+        .map(|guidance| format!("\n\n{guidance}"))
+        .unwrap_or_default();
     format!(
         "The required Artifact for this workflow node has not been submitted.\n\n\
-Submit it by running this command with a JSON value that satisfies the `{contract}` schema:\n\n\
+Submit it by running this command with a JSON value that satisfies the `{contract}` schema:{schema_guidance}\n\n\
 ```sh\n\
 {cli_alias} workflow output submit {execution_id} \\\n  --node {node_name} \\\n  --type {contract} \\\n  --json '{{...}}'\n\
 ```\n\n\
@@ -82,11 +107,15 @@ pub fn build_schema_violation_repair_prompt(
     node_name: &str,
     contract: &str,
     violations: &[SchemaViolation],
+    schemas: &BTreeMap<String, SchemaDef>,
 ) -> String {
     let details = format_schema_violations(violations);
+    let schema_guidance = render_contract_prompt_guidance(schemas, contract)
+        .map(|guidance| format!("\n\n{guidance}"))
+        .unwrap_or_default();
     format!(
         "The submitted Artifact did not satisfy the `{contract}` schema.\n\n\
-Schema violations:\n{details}\n\n\
+Schema violations:\n{details}{schema_guidance}\n\n\
 Submit a corrected Artifact with:\n\n\
 ```sh\n\
 {cli_alias} workflow output submit {execution_id} \\\n  --node {node_name} \\\n  --type {contract} \\\n  --json '{{...}}'\n\
@@ -132,7 +161,6 @@ mod contract_service_tests {
                         },
                     )]),
                     required: BTreeSet::from(["verdict".to_string()]),
-                    additional_properties: true,
                 },
             )]),
             nodes: vec![
@@ -203,10 +231,18 @@ mod contract_service_tests {
 
     #[test]
     fn test_missing_artifact_repair_prompt_uses_schema_vocabulary_and_node_flag() {
-        let prompt =
-            build_missing_artifact_repair_prompt("releash-dev", "execution-1", "review", "review");
+        let workflow = workflow();
+        let prompt = build_missing_artifact_repair_prompt(
+            "releash-dev",
+            "execution-1",
+            "review",
+            "review",
+            &workflow.schemas,
+        );
         assert!(prompt.contains("Artifact"));
         assert!(prompt.contains("schema"));
+        assert!(prompt.contains("\"verdict\""));
+        assert!(prompt.contains("Fields not listed in `properties` are accepted"));
         assert!(prompt.contains(
             "```sh\nreleash-dev workflow output submit execution-1 \\\n  --node review \\\n  --type review \\\n  --json '{...}'\n```"
         ));
@@ -217,6 +253,7 @@ mod contract_service_tests {
 
     #[test]
     fn test_schema_violation_repair_prompt_contains_copyable_command() {
+        let workflow = workflow();
         let prompt = build_schema_violation_repair_prompt(
             "releash-dev",
             "execution-1",
@@ -226,15 +263,39 @@ mod contract_service_tests {
                 path: "$.verdict".to_string(),
                 reason: "expected one of [LGTM, FIX]".to_string(),
             }],
+            &workflow.schemas,
         );
 
         assert!(prompt.contains("- $.verdict: expected one of [LGTM, FIX]"));
+        assert!(prompt.contains("\"enum\": ["));
         assert!(prompt.contains(
             "```sh\nreleash-dev workflow output submit execution-1 \\\n  --node review \\\n  --type review \\\n  --json '{...}'\n```"
         ));
         assert!(!prompt.contains("\n+  --"));
         let deprecated_step_flag = ["--", "step"].concat();
         assert!(!prompt.contains(&deprecated_step_flag));
+    }
+
+    #[test]
+    fn test_contract_prompt_guidance_explains_object_schema_and_extra_fields() {
+        let schemas = BTreeMap::from([(
+            "spec-directory".to_string(),
+            SchemaDef::Object {
+                properties: BTreeMap::from([(
+                    "spec_dir".to_string(),
+                    SchemaDef::String { r#enum: None },
+                )]),
+                required: BTreeSet::from(["spec_dir".to_string()]),
+            },
+        )]);
+
+        let guidance = render_contract_prompt_guidance(&schemas, "spec-directory").unwrap();
+
+        assert!(guidance.contains("\"spec_dir\": \"string\""));
+        assert!(guidance.contains("\"required\": ["));
+        assert!(!guidance.contains("additionalProperties"));
+        assert!(guidance.contains("Fields not listed in `properties` are accepted"));
+        assert!(render_contract_prompt_guidance(&schemas, "missing").is_none());
     }
 
     #[test]

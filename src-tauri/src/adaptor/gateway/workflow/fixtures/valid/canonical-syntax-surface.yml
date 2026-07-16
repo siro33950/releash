@@ -16,7 +16,6 @@ schemas:
         type: array
         items: text
     required: [path, enabled, count, ratio, labels]
-    additionalProperties: false
   target-list:
     type: object
     properties:
@@ -24,7 +23,6 @@ schemas:
         type: array
         items: target
     required: [targets]
-    additionalProperties: false
   route:
     type: object
     properties:
@@ -32,7 +30,6 @@ schemas:
         type: string
         enum: [SHIP, HOLD]
     required: [verdict]
-    additionalProperties: false
 nodes:
   - name: prepare
     command: "printf '%s' '{{ request }}'"

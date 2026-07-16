@@ -8,7 +8,6 @@ schemas:
         type: boolean
     required:
       - ok
-    additionalProperties: false
 nodes:
   - name: build
     artifact: output

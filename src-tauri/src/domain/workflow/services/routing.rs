@@ -635,7 +635,6 @@ mod routing_tests {
         SchemaDef::Object {
             properties: BTreeMap::from([(field.to_string(), SchemaDef::Boolean)]),
             required: BTreeSet::from([field.to_string()]),
-            additional_properties: true,
         }
     }
 
@@ -648,7 +647,6 @@ mod routing_tests {
                 },
             )]),
             required: BTreeSet::from([field.to_string()]),
-            additional_properties: true,
         }
     }
 
@@ -659,7 +657,6 @@ mod routing_tests {
                 .map(|(name, schema)| (name.to_string(), schema))
                 .collect(),
             required: required.iter().map(|value| (*value).to_string()).collect(),
-            additional_properties: true,
         }
     }
 

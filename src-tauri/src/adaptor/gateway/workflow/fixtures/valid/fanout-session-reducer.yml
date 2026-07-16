@@ -7,7 +7,6 @@ schemas:
       lgtm:
         type: boolean
     required: [lgtm]
-    additionalProperties: false
   review-decision:
     type: object
     properties:
@@ -15,7 +14,6 @@ schemas:
         type: string
         enum: [READY, NEEDS_FIX]
     required: [verdict]
-    additionalProperties: false
 nodes:
   - name: review
     fanout:

@@ -29,7 +29,6 @@ schemas:
     - problem
     - expected
     - actual
-    additionalProperties: false
   review-fix-tasks:
     type: object
     properties:
@@ -46,7 +45,6 @@ schemas:
     - verdict
     - tasks
     - summary
-    additionalProperties: false
 nodes:
 - name: import_pr_review_comments
   session:

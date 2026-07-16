@@ -7,7 +7,6 @@ schemas:
       verdict:
         type: string
     required: [verdict]
-    additionalProperties: false
 nodes:
   - name: fanout
     fanout:

@@ -10,7 +10,6 @@ schemas:
         type: array
         items: target
     required: [targets]
-    additionalProperties: false
 nodes:
   - name: source
     artifact: source-output

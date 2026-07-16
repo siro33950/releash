@@ -170,7 +170,6 @@ String はそのまま、それ以外の値は JSON serialize して置き換え
 - `required`
 - `items`
 - `enum`
-- `additionalProperties`
 
 対応する型は `object` / `array` / `string` / `boolean` / `integer` / `number`。`string` Contract は scalar `string` としても宣言できる。subset 外の keyword は受理しない。
 
@@ -187,7 +186,6 @@ schemas:
         type: string
         enum: [SHIP, HOLD]
     required: [path, approved, verdict]
-    additionalProperties: false
 
   work_items:
     type: array
@@ -199,7 +197,7 @@ schemas:
 - 配列の `items` は inline schema ではなく、同じ `schemas` 内の名前付き Contract を参照する。
 - `required` の各 field は `properties` に存在しなければならない。
 - `string` の `enum` は一つ以上の文字列を持つ。
-- `additionalProperties` の既定値は `true`。閉じた Object が必要な場合だけ `false` を明示する。
+- Object の `properties` にない field も受理する。`properties` は宣言済み field の型検証に使い、未宣言 field を拒否する設定は持たない。
 - routing が参照する Contract field は、`properties` への宣言に加えて **`required` に含まれていなければならない**。`when.on` は required boolean、`switch.on` は required string enum に限る。
 - command の予約 field `ok` は Contract 宣言なしで常に boolean routing field として使える。
 

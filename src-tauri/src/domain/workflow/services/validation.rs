@@ -1326,7 +1326,6 @@ mod tests {
                 .map(|field| ((*field).to_string(), SchemaDef::String { r#enum: None }))
                 .collect(),
             required: BTreeSet::new(),
-            additional_properties: false,
         }
     }
 
@@ -1434,7 +1433,6 @@ mod tests {
                 SchemaDef::Object {
                     properties: BTreeMap::from([("ok".to_string(), SchemaDef::Boolean)]),
                     required: BTreeSet::from(["ok".to_string()]),
-                    additional_properties: true,
                 },
             )]),
         );
@@ -1943,7 +1941,6 @@ mod tests {
                             },
                         )]),
                         required: BTreeSet::from(["targets".to_string()]),
-                        additional_properties: false,
                     },
                 ),
                 ("target".to_string(), SchemaDef::String { r#enum: None }),
@@ -2426,7 +2423,6 @@ mod tests {
                 .map(|field| ((*field).to_string(), SchemaDef::String { r#enum: None }))
                 .collect(),
             required: required.iter().map(|field| (*field).to_string()).collect(),
-            additional_properties: true,
         }
     }
 
@@ -2551,7 +2547,6 @@ mod tests {
             SchemaDef::Object {
                 properties: BTreeMap::new(),
                 required: BTreeSet::from(["verdict".to_string()]),
-                additional_properties: true,
             },
         );
 
@@ -2640,7 +2635,6 @@ mod tests {
             SchemaDef::Object {
                 properties: BTreeMap::from([("ok".to_string(), SchemaDef::Boolean)]),
                 required: BTreeSet::from(["ok".to_string()]),
-                additional_properties: true,
             },
         );
 
