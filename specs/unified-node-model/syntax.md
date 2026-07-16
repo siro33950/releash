@@ -76,6 +76,7 @@ main:
 
   - `inputs`: `<パラメータ名>: <供給元>` のマップ。子のどのパラメータに何を渡すか。供給元は兄弟 node 名（field パス `<node>.<field>` 可）、自分（この sequence）の input パラメータ名、root では `request`（起動時入力）、fanout では `items`（展開の各要素）。
   - `rules`: 辺定義のリスト。中身（`when` / `switch` / `next` / `loop_guard`）と検証（排他・網羅・ループ健全性）は現行のまま。**辺に承認は置かない**（human が進行を止めたい箇所は Node 側の `completion: approval`）。**`rules: []`（空リスト）は出る辺なしの明示 = 終端**（リスト中間に終端を置く場合に使う）。
+  - `on_failure`: この子が失敗したときの扱い。**省略時は中断**（resume で失敗した node を再実行 — 失敗は直すべきもの、が既定）。`ignore` = 失敗しても続行する（fanout では失敗子を結果の配列から除く。失敗 node の artifact に依存する下流があれば load 時 Diagnostic）。`retry: <n>` = 新しい attempt で最大 n 回自動再実行し（isolated なら attempt ごとに worktree 再生成）、尽きたら既定（中断）へ。失敗の重要度は文脈の性質なので、Node 定義ではなく扱い（children エントリ）に書く。
 - **終端 = 出る辺（rules またはリストの次）が無い node**。children に載らず行き先参照だけされる node は次を持たないため終端。
 - 配線の原則: **配線は、その node を子として扱う合成子が書く**。sequence が孫（fanout の child 等）に配線することはない。名前解決は自分の children に閉じる。
 
@@ -103,7 +104,7 @@ children:
 ```
 
 - **名前は配線（entry / rules / inputs）から参照されるためにある。参照されないエントリは無名でよい**。fanout の子は配線されないため④が自然に書ける（無名の子でも `artifact` は fanout の子 artifact 配列に集約されるため意味を持つ）。sequence 内の無名エントリも、隣接辺（リストの次へ）で到達できるため合法。
-- 判別: マップ要素のキーが単一の非予約語なら名前付き（②③。kind ブロックの有無で判別）、予約語で始まれば無名（④）。**予約語 = kind 名（`command` / `session` / `fanout` / `sequence` / `ref`）とフィールド名（`input` / `artifact` / `completion` / `worktree` / `inputs` / `rules` / `items` / `entry` / `output` / `children`）。予約語は node 名として使用禁止**。
+- 判別: マップ要素のキーが単一の非予約語なら名前付き（②③。kind ブロックの有無で判別）、予約語で始まれば無名（④）。**予約語 = kind 名（`command` / `session` / `fanout` / `sequence` / `ref`）とフィールド名（`input` / `artifact` / `completion` / `worktree` / `inputs` / `rules` / `on_failure` / `items` / `entry` / `output` / `children`）。予約語は node 名として使用禁止**。
 - ③は**純粋な糖衣**である。インライン宣言された node の名前は、カタログに置いたのと同じ定義内の単一名前空間に登録され、load 時に「カタログ + 参照」へ正規化される。意味論は1つ。名前衝突は Diagnostic。
 - インラインで書けるのは普通の Node のみ。`ref` の参照先（別 WorkflowDefinition）の中身を展開して書くことはできない（decisions.md「inline サブワークフロー定義は持たない」のまま）。
 
@@ -122,6 +123,7 @@ fix_each:
 
 - `children`: 展開対象のリスト（sequence の children と同形式。上記「children の要素」参照）。子は配線されないため無名エントリ（④）も書ける。
 - `items`: 展開する配列の定義。**宛先と共通供給は children の inputs で書く**（sequence と同一の構文）。展開の各要素は予約供給元名 `items` として配線する。child のパラメータが1つで items がある場合は宛先が一意なので inputs を省略できる。
+- 失敗した子の扱いは children エントリの `on_failure`（sequence と共通。上記「sequence」参照）で書く。
 - 子を隔離して並走させたい場合は、**fanout node の `worktree: isolated`**（Node 共通フィールド・kind の外）で宣言する。child の node 定義には書かない。`isolated` は子の実行ごとに親の worktree HEAD から branch + worktree を生成し、diff は branch に残る。
 
 ## command / session

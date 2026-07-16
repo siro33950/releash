@@ -14,6 +14,7 @@
 #   - sequence のネスト（部品 sequence + input / artifact） … implement_and_verify
 #   - sequence の output（artifact の供給元指定） … implement_and_verify
 #   - fanout の items + 複数パラメータ供給（items / 共通文脈の配線）… implement_all
+#   - children エントリの on_failure（失敗時の自動再実行 / 無視）… implement_all
 #   - fanout node の worktree: isolated    … implement_all
 #   - fanout node の completion: approval  … implement_all（全子完了 + human 承認）
 #   - 単独 node の worktree: isolated … spike
@@ -138,6 +139,8 @@ nodes:
             inputs:
               feature: items               # 展開の各要素をこのパラメータへ
               plan: plan_features          # 全子共通の供給
+            on_failure:
+              retry: 1                     # 失敗した子だけ自動で再実行（尽きたら中断）
       items: plan_features.features
     worktree: isolated                     # 子（実行）ごとに独立 worktree で並走
     completion: approval                   # 全子完了後、human が一括確認して完了
