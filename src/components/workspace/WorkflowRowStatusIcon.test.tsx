@@ -49,16 +49,14 @@ describe("WorkflowRowStatusIcon", () => {
 		}
 	});
 
-	it.each([
-		"queued",
-		"running",
-		"completed",
-		"error",
-	] as const)("exposes %s as the title", (status) => {
-		renderIcon(status);
+	it.each(["queued", "running", "completed", "error"] as const)(
+		"exposes %s as the title",
+		(status) => {
+			renderIcon(status);
 
-		expect(screen.getByTitle(status)).toBeInTheDocument();
-	});
+			expect(screen.getByTitle(status)).toBeInTheDocument();
+		},
+	);
 
 	it("falls back to muted color without pulse for an unknown runtime status", () => {
 		const { container } = renderIcon("future-status" as WorkspaceNodeStatus);

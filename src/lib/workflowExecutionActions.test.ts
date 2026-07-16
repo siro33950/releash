@@ -20,16 +20,16 @@ describe("executeWorkflowAction", () => {
 		["stop", "stop_workflow"],
 		["resume", "resume_workflow"],
 		["abort", "abort_workflow"],
-	] satisfies [
-		WorkflowExecutionAction,
-		string,
-	][])("invokes the %s command through the shared mapping", async (action, command) => {
-		await executeWorkflowAction(action, "execution-1");
+	] satisfies [WorkflowExecutionAction, string][])(
+		"invokes the %s command through the shared mapping",
+		async (action, command) => {
+			await executeWorkflowAction(action, "execution-1");
 
-		expect(invokeMock).toHaveBeenCalledWith(command, {
-			executionId: "execution-1",
-		});
-	});
+			expect(invokeMock).toHaveBeenCalledWith(command, {
+				executionId: "execution-1",
+			});
+		},
+	);
 
 	it("normalizes command errors", async () => {
 		invokeMock.mockRejectedValueOnce("denied");

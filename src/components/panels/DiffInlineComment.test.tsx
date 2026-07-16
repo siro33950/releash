@@ -66,29 +66,29 @@ describe("DiffInlineComment", () => {
 			{ elapsedMs: 5 * 60000, expectedLabel: "5m" },
 			{ elapsedMs: 3 * 3600000, expectedLabel: "3h" },
 			{ elapsedMs: 2 * 86400000, expectedLabel: "2d" },
-		])("renders $expectedLabel from comment createdAt", ({
-			elapsedMs,
-			expectedLabel,
-		}) => {
-			render(
-				<DiffInlineComment
-					comment={makeComment({
-						comments: [
-							{
-								id: "comment-relative",
-								threadId: "c1",
-								author: { kind: "human", displayName: "Human" },
-								content: "Relative time comment",
-								createdAt: fixedNow.getTime() - elapsedMs,
-							},
-						],
-					})}
-					{...defaultProps}
-				/>,
-			);
+		])(
+			"renders $expectedLabel from comment createdAt",
+			({ elapsedMs, expectedLabel }) => {
+				render(
+					<DiffInlineComment
+						comment={makeComment({
+							comments: [
+								{
+									id: "comment-relative",
+									threadId: "c1",
+									author: { kind: "human", displayName: "Human" },
+									content: "Relative time comment",
+									createdAt: fixedNow.getTime() - elapsedMs,
+								},
+							],
+						})}
+						{...defaultProps}
+					/>,
+				);
 
-			expect(screen.getByText(expectedLabel)).toBeInTheDocument();
-		});
+				expect(screen.getByText(expectedLabel)).toBeInTheDocument();
+			},
+		);
 
 		it("switches the rendered label from now to 1m at 60 seconds", () => {
 			render(

@@ -147,24 +147,24 @@ describe("MarkdownDiffViewer", () => {
 			command: "compute_markdown_inline_chunks",
 			label: "inline",
 		},
-	])("shows backend read model errors in $label mode", async ({
-		diffMode,
-		command,
-	}) => {
-		mockReadModel({ rejectCommands: { [command]: "backend failed" } });
-		render(
-			<MarkdownDiffViewer
-				originalContent="old text"
-				modifiedContent="new text"
-				diffMode={diffMode}
-			/>,
-		);
+	])(
+		"shows backend read model errors in $label mode",
+		async ({ diffMode, command }) => {
+			mockReadModel({ rejectCommands: { [command]: "backend failed" } });
+			render(
+				<MarkdownDiffViewer
+					originalContent="old text"
+					modifiedContent="new text"
+					diffMode={diffMode}
+				/>,
+			);
 
-		const alert = await screen.findByRole("alert");
-		expect(alert).toHaveTextContent(
-			"Failed to load markdown diff: backend failed",
-		);
-	});
+			const alert = await screen.findByRole("alert");
+			expect(alert).toHaveTextContent(
+				"Failed to load markdown diff: backend failed",
+			);
+		},
+	);
 
 	describe("split mode", () => {
 		it("renders grid container with separator", async () => {
