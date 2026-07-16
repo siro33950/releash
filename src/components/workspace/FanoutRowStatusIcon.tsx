@@ -1,10 +1,6 @@
 import { GitFork } from "lucide-react";
-import { cn } from "@/lib/utils";
 import type { WorkspaceNodeStatus } from "@/types/workspace-tree";
-import { workflowNodeIconClasses } from "./WorkflowNodeStatusIcon";
-
-const pulseStatuses: ReadonlySet<WorkspaceNodeStatus> =
-	new Set<WorkspaceNodeStatus>(["running", "waiting"]);
+import { WorkspaceBranchStatusIcon } from "./WorkspaceBranchStatusIcon";
 
 interface FanoutRowStatusIconProps {
 	status: WorkspaceNodeStatus;
@@ -12,20 +8,6 @@ interface FanoutRowStatusIconProps {
 	iconClassName?: string;
 }
 
-export function FanoutRowStatusIcon({
-	status,
-	containerClassName,
-	iconClassName = "size-3.5 shrink-0",
-}: FanoutRowStatusIconProps) {
-	const colorClassName =
-		workflowNodeIconClasses[status] ?? "text-muted-foreground";
-	const pulseClassName = pulseStatuses.has(status)
-		? "animate-pulse"
-		: undefined;
-
-	return (
-		<span className={containerClassName} title={status}>
-			<GitFork className={cn(iconClassName, colorClassName, pulseClassName)} />
-		</span>
-	);
+export function FanoutRowStatusIcon(props: FanoutRowStatusIconProps) {
+	return <WorkspaceBranchStatusIcon {...props} icon={GitFork} />;
 }

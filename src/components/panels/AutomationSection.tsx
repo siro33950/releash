@@ -8,7 +8,6 @@ import { FacetDetail } from "./automation/FacetDetail";
 import { FacetEditor } from "./automation/FacetEditor";
 import { FacetList } from "./automation/FacetList";
 import { NameInputDialog } from "./automation/NameInputDialog";
-import { facetKindToDirName } from "./automation/utils";
 import {
 	WorkflowDetail,
 	WorkflowSourceDiagnosticDetail,
@@ -192,8 +191,7 @@ export function AutomationSection({
 
 	const handleDeleteFacet = useCallback(
 		(key: string) => {
-			const dirName = facetKindToDirName(facetSubTab);
-			const facetId = `${dirName}/${key}`;
+			const facetId = `${facetSubTab}/${key}`;
 			const usage = report.facet_usage[facetId] ?? [];
 			const message =
 				usage.length > 0

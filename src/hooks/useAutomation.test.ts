@@ -345,7 +345,7 @@ describe("useAutomation", () => {
 						},
 					],
 					workflow_summaries: {
-						broken: { error_count: 1, warning_count: 0, info_count: 0 },
+						broken: { error_count: 1, info_count: 0 },
 					},
 					facet_summaries: {},
 					facet_usage: {},
@@ -371,7 +371,6 @@ describe("useAutomation", () => {
 		);
 		expect(result.current.report.workflow_summaries.broken).toEqual({
 			error_count: 1,
-			warning_count: 0,
 			info_count: 0,
 		});
 	});

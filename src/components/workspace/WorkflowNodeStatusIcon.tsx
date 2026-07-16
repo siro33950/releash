@@ -20,6 +20,11 @@ export const workflowNodeIconClasses: Record<WorkspaceNodeStatus, string> = {
 	completed: "text-green-600 dark:text-green-300",
 };
 
+/** running / waiting のときにアイコンを pulse させるかの判定。 */
+export function isWorkspaceNodePulseStatus(status: WorkspaceNodeStatus): boolean {
+	return status === "running" || status === "waiting";
+}
+
 interface WorkflowNodeStatusIconProps {
 	status: WorkspaceNodeStatus;
 	containerClassName?: string;

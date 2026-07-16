@@ -70,11 +70,22 @@ pub enum FacetKind {
 }
 
 impl FacetKind {
+    /// ストレージ上のディレクトリ名（複数形）。ファイルシステム経路にのみ使う。
     pub fn dir_name(&self) -> &str {
         match self {
             Self::Policy => "policies",
             Self::Knowledge => "knowledge",
             Self::Instruction => "instructions",
+        }
+    }
+
+    /// UI / CLI / DiagnosticReport が共有する正規識別子（単数形）。
+    /// backend command の `parse_domain_facet_kind` が受理する語彙と一致する。
+    pub fn canonical_name(&self) -> &str {
+        match self {
+            Self::Policy => "policy",
+            Self::Knowledge => "knowledge",
+            Self::Instruction => "instruction",
         }
     }
 }
@@ -275,7 +286,7 @@ pub fn list_facet_summaries(
     kind: FacetKind,
     base_dir: &Path,
 ) -> Result<Vec<super::schema::FacetSummary>, FacetError> {
-    let kind_name = kind.dir_name().to_string();
+    let kind_name = kind.canonical_name().to_string();
     let mut summaries = Vec::new();
     let dir = base_dir.join(kind.dir_name());
 

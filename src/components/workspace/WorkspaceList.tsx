@@ -67,7 +67,10 @@ import type {
 import { CreateWorktreeModal } from "./CreateWorktreeModal";
 import { DeleteWorktreeDialog } from "./DeleteWorktreeDialog";
 import { FanoutRowStatusIcon } from "./FanoutRowStatusIcon";
-import { workflowNodeIconClasses } from "./WorkflowNodeStatusIcon";
+import {
+	isWorkspaceNodePulseStatus,
+	workflowNodeIconClasses,
+} from "./WorkflowNodeStatusIcon";
 import { WorkflowRowStatusIcon } from "./WorkflowRowStatusIcon";
 
 interface WorkspaceListProps {
@@ -163,10 +166,9 @@ function WorkspaceNodeRow({
 	onClose?: () => void;
 }) {
 	const ContentIcon = node.contentKind === "session" ? Bot : Terminal;
-	const pulseClassName =
-		node.status === "running" || node.status === "waiting"
-			? "animate-pulse"
-			: "";
+	const pulseClassName = isWorkspaceNodePulseStatus(node.status)
+		? "animate-pulse"
+		: "";
 	return (
 		<div
 			className={`group flex h-8 w-full items-center gap-2 rounded-md pr-2 text-left text-sm transition-colors ${

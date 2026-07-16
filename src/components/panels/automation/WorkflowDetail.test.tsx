@@ -140,7 +140,7 @@ describe("WorkflowDetail Monaco diagnostics", () => {
 				},
 				{
 					code: "WFR003",
-					severity: "warning",
+					severity: "info",
 					stage: "resolve",
 					span: {
 						start_line: 4,
@@ -194,7 +194,7 @@ describe("WorkflowDetail Monaco diagnostics", () => {
 				code: "WFT001",
 			},
 			{
-				severity: 4,
+				severity: 2,
 				message: "WFR003: unknown reference",
 				startLineNumber: 4,
 				startColumn: 2,

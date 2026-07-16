@@ -213,7 +213,7 @@ export interface FacetSummary {
 	builtin: boolean;
 }
 
-type DiagnosticSeverity = "error" | "warning" | "info";
+type DiagnosticSeverity = "error" | "info";
 type DiagnosticStage = "parse_shape" | "resolve" | "typecheck" | "control_flow";
 
 interface DiagnosticSpan {
@@ -238,7 +238,6 @@ export interface DiagnosticView {
 
 export interface DiagnosticSummary {
 	error_count: number;
-	warning_count: number;
 	info_count: number;
 }
 

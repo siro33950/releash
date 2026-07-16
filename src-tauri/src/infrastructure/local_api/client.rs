@@ -8,8 +8,6 @@ use url::Url;
 
 use super::{local_api_discovery_path, LocalApiDiscovery};
 
-pub(crate) const WORKFLOW_START_REQUEST_TIMEOUT: Duration = Duration::from_secs(305);
-
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum LocalApiClientError {
     #[error("local API discovery file の読み込みに失敗しました ({}): {source}", path.display())]
@@ -116,17 +114,14 @@ impl LocalApiHttpClient {
         self.send(self.client.post(url).json(body))
     }
 
-    pub(crate) fn post_workflow_start<B: Serialize + ?Sized, T: DeserializeOwned>(
+    pub(crate) fn post_json_with_timeout<B: Serialize + ?Sized, T: DeserializeOwned>(
         &self,
+        segments: &[&str],
         body: &B,
+        timeout: Duration,
     ) -> Result<T, LocalApiClientError> {
-        let url = self.endpoint(&["v1", "workflow", "executions"])?;
-        self.send(
-            self.client
-                .post(url)
-                .timeout(WORKFLOW_START_REQUEST_TIMEOUT)
-                .json(body),
-        )
+        let url = self.endpoint(segments)?;
+        self.send(self.client.post(url).timeout(timeout).json(body))
     }
 
     pub(crate) fn post_empty<T: DeserializeOwned>(
@@ -327,13 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn workflow_start_timeout_covers_the_runtime_startup_boundary() {
-        assert!(WORKFLOW_START_REQUEST_TIMEOUT > Duration::from_secs(5));
-        assert!(WORKFLOW_START_REQUEST_TIMEOUT >= Duration::from_secs(300));
-    }
-
-    #[test]
-    fn workflow_start_returns_a_committed_id_after_more_than_five_seconds() {
+    fn post_json_with_timeout_returns_a_committed_id_after_more_than_five_seconds() {
         let target = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let target_port = target.local_addr().unwrap().port();
         let server = std::thread::spawn(move || {
@@ -352,7 +341,11 @@ mod tests {
         let client = LocalApiHttpClient::discover(temp.path()).unwrap().unwrap();
 
         let response: serde_json::Value = client
-            .post_workflow_start(&serde_json::json!({"workflowName": "slow-start"}))
+            .post_json_with_timeout(
+                &["v1", "workflow", "executions"],
+                &serde_json::json!({"workflowName": "slow-start"}),
+                Duration::from_secs(305),
+            )
             .unwrap();
 
         assert_eq!(

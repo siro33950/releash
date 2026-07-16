@@ -471,7 +471,13 @@ mod tests {
                 .into_iter()
                 .map(|key| FacetSummary {
                     key,
-                    kind: kind.dir_name().to_string(),
+                    // 本番 (gateway facet.rs) と同じ canonical 語彙をテストでも再現する。
+                    kind: match kind {
+                        FacetKind::Policy => "policy",
+                        FacetKind::Knowledge => "knowledge",
+                        FacetKind::Instruction => "instruction",
+                    }
+                    .to_string(),
                     description: String::new(),
                     builtin: false,
                 })

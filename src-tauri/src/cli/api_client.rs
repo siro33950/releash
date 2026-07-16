@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::Duration;
 
 use super::common::CliError;
 use crate::adaptor::controller::api::protocol::{
@@ -12,6 +13,8 @@ use crate::usecase::workflow::{WorkflowGetOutputResult, WorkflowValidateOutputRe
 
 const NODE_EXECUTION_ID_ENV: &str = "RELEASH_NODE_EXECUTION_ID";
 const RECONCILIATION_PAGE_LIMIT: usize = 100;
+/// workflow start は runtime 起動を含むため read-only 経路より長い timeout を許す。
+const WORKFLOW_START_REQUEST_TIMEOUT: Duration = Duration::from_secs(305);
 
 #[derive(Debug)]
 pub(super) enum ApiRequestError {
@@ -99,7 +102,11 @@ impl LocalApiClient {
         &self,
         request: &StartExecutionRequest,
     ) -> Result<StartExecutionResponse, ApiRequestError> {
-        match self.transport.post_workflow_start(request) {
+        match self.transport.post_json_with_timeout(
+            &["v1", "workflow", "executions"],
+            request,
+            WORKFLOW_START_REQUEST_TIMEOUT,
+        ) {
             Ok(response) => Ok(response),
             Err(
                 error @ (LocalApiClientError::Request(_)

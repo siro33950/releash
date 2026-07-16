@@ -8,6 +8,7 @@ pub enum FacetKind {
 }
 
 impl FacetKind {
+    /// ストレージ上のディレクトリ名（複数形）。ファイルシステム経路にのみ使う。
     pub fn dir_name(self) -> &'static str {
         match self {
             Self::Policy => "policies",

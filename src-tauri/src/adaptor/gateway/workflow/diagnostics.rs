@@ -106,7 +106,6 @@ impl DiagnosticItem {
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct DiagnosticSummary {
     pub error_count: usize,
-    pub warning_count: usize,
     pub info_count: usize,
 }
 
@@ -898,7 +897,7 @@ pub fn diagnose_all(workflows_dir: &Path, facets_base_dir: &Path) -> DiagnosticR
     for kind in &ALL_FACET_KINDS {
         let summaries = facet::list_facet_summaries(*kind, facets_base_dir).unwrap_or_default();
         for summary in &summaries {
-            let facet_id = format!("{}/{}", kind.dir_name(), summary.key);
+            let facet_id = format!("{}/{}", kind.canonical_name(), summary.key);
 
             // ファセットキー命名規則チェック
             if facet::validate_facet_key(&summary.key).is_err() {
@@ -912,7 +911,7 @@ pub fn diagnose_all(workflows_dir: &Path, facets_base_dir: &Path) -> DiagnosticR
                         summary.key
                     ),
                 )
-                .facet(summary.key.clone(), kind.dir_name().to_string())
+                .facet(summary.key.clone(), kind.canonical_name().to_string())
                 .field("key");
                 add_diagnostic(&mut items, &mut facet_summaries, &facet_id, item);
             }
@@ -927,10 +926,10 @@ pub fn diagnose_all(workflows_dir: &Path, facets_base_dir: &Path) -> DiagnosticR
                     format!(
                         "ビルトインファセット '{}' ({})",
                         summary.key,
-                        kind.dir_name()
+                        kind.canonical_name()
                     ),
                 )
-                .facet(summary.key.clone(), kind.dir_name().to_string());
+                .facet(summary.key.clone(), kind.canonical_name().to_string());
                 add_diagnostic(&mut items, &mut facet_summaries, &facet_id, item);
             }
 
@@ -939,7 +938,7 @@ pub fn diagnose_all(workflows_dir: &Path, facets_base_dir: &Path) -> DiagnosticR
                 check_template_variables(
                     &content,
                     &summary.key,
-                    kind.dir_name(),
+                    kind.canonical_name(),
                     &facet_id,
                     &mut items,
                     &mut facet_summaries,
@@ -947,7 +946,7 @@ pub fn diagnose_all(workflows_dir: &Path, facets_base_dir: &Path) -> DiagnosticR
                 check_facet_template_references(
                     &content,
                     &summary.key,
-                    kind.dir_name(),
+                    kind.canonical_name(),
                     &facet_id,
                     &workflow_lookup,
                     &facet_usage,
@@ -973,7 +972,7 @@ fn collect_all_facet_keys(base_dir: &Path) -> HashSet<String> {
     for kind in &ALL_FACET_KINDS {
         if let Ok(list) = facet::list_facets(*kind, base_dir) {
             for key in list {
-                keys.insert(format!("{}/{}", kind.dir_name(), key));
+                keys.insert(format!("{}/{}", kind.canonical_name(), key));
             }
         }
     }
@@ -1225,7 +1224,7 @@ impl<'a> FacetRefCheckContext<'a> {
 
     /// 単一の facet 参照について usage 記録と存在チェックを行う。
     fn check(&mut self, node_name: &str, slot: &str, kind: FacetKind, key: &str) {
-        let facet_id = format!("{}/{}", kind.dir_name(), key);
+        let facet_id = format!("{}/{}", kind.canonical_name(), key);
 
         self.facet_usage
             .entry(facet_id.clone())
@@ -1246,12 +1245,12 @@ impl<'a> FacetRefCheckContext<'a> {
                     "node '{}' が存在しないファセット '{}' ({}) を参照しています",
                     node_name,
                     key,
-                    kind.dir_name()
+                    kind.canonical_name()
                 ),
             )
             .workflow(self.workflow_name.to_string())
             .node(node_name.to_string())
-            .facet(key.to_string(), kind.dir_name().to_string())
+            .facet(key.to_string(), kind.canonical_name().to_string())
             .field(slot.to_string());
             add_diagnostic(
                 self.items,
@@ -1771,7 +1770,7 @@ nodes:
         assert!(workflow_summary.error_count >= 2);
         let facet_summary = report
             .facet_summaries
-            .get("instructions/bad")
+            .get("instruction/bad")
             .expect("semantic facet errors must count toward facet summary");
         assert!(facet_summary.error_count >= 2);
     }
@@ -2528,7 +2527,7 @@ nodes:
         save_workflow_yaml(wf_dir, &wf);
 
         let report = diagnose_all(wf_dir, wf_dir);
-        let usage = report.facet_usage.get("instructions/impl");
+        let usage = report.facet_usage.get("instruction/impl");
         assert!(usage.is_some());
         assert_eq!(usage.unwrap().len(), 1);
         assert_eq!(usage.unwrap()[0].workflow_name, "test-wf");

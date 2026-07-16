@@ -291,6 +291,7 @@ WorkflowDefinition の先頭 Node から実行を開始し、各 Node の確定 
 ## 既知の制約
 
 - `{{ ... }}` の shell 補間は quoting や escaping を自動で行わない。String はそのまま、それ以外は JSON 文字列として埋め込まれるため、引用符、改行、shell metacharacter を含む値は command を壊したり意図しない shell 解釈を招きうる。workflow author が利用箇所に合う quoting を行い、信頼できない値を shell syntax に直接連結しないこと。stdin / 一時ファイル等の安全な Artifact ABI は現行文法の対象外。
+- **信頼境界の注意**: command に補間される Artifact 値には、`request`（人間入力）だけでなく session（agent 出力）・前段 command 出力・fanout item が含まれる。agent 出力は Contract の JSON Schema 検証を通るが shell metacharacter はサニタイズされない。外部コンテンツ（PR / review comment 等）を処理した agent が細工した文字列を Artifact として出力し、それを下流 command node が補間すると、開発者マシン上でユーザー権限の shell が実行されうる。command node へ補間する参照が agent 由来 Artifact を含む場合は、この間接的な実行経路を前提に quoting するか、判断材料としてのみ session 内で扱い command に直接補間しないこと。
 - command に YAML で指定する timeout は無い。abort / stop / アプリ終了は process group を停止するが、hang した command は agent session の stall observation 対象外であり、自動 stall 判定では止まらない。
 - fanout の parallelism 上限、fanout 固有 retry / fail-fast、Node ごとの timeout は authoring syntax に持たない。
 

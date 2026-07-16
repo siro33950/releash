@@ -294,13 +294,13 @@ describe("AutomationSection", () => {
 			facets: [
 				{
 					key: "coding",
-					kind: "policies",
+					kind: "policy",
 					description: "Coding policy",
 					builtin: true,
 				},
 				{
 					key: "my-policy",
-					kind: "policies",
+					kind: "policy",
 					description: "Custom policy",
 					builtin: false,
 				},
@@ -351,7 +351,7 @@ describe("AutomationSection", () => {
 			facets: [
 				{
 					key: "my-policy",
-					kind: "policies",
+					kind: "policy",
 					description: "Test",
 					builtin: false,
 				},
@@ -383,7 +383,7 @@ describe("AutomationSection", () => {
 			facets: [
 				{
 					key: "my-policy",
-					kind: "policies",
+					kind: "policy",
 					description: "Test",
 					builtin: false,
 				},
@@ -415,7 +415,7 @@ describe("AutomationSection", () => {
 			facets: [
 				{
 					key: "test-facet",
-					kind: "policies",
+					kind: "policy",
 					description: "Test",
 					builtin: false,
 				},
@@ -446,7 +446,7 @@ describe("AutomationSection", () => {
 			facets: [
 				{
 					key: "my-policy",
-					kind: "policies",
+					kind: "policy",
 					description: "Test",
 					builtin: false,
 				},
@@ -456,7 +456,7 @@ describe("AutomationSection", () => {
 				workflow_summaries: {},
 				facet_summaries: {},
 				facet_usage: {
-					"policies/my-policy": [
+					"policy/my-policy": [
 						{
 							workflow_name: "wf-1",
 							node_name: "step-1",
@@ -495,7 +495,7 @@ describe("AutomationSection", () => {
 			facets: [
 				{
 					key: "my-facet",
-					kind: "policies",
+					kind: "policy",
 					description: "Test",
 					builtin: false,
 				},
@@ -659,7 +659,7 @@ describe("AutomationSection", () => {
 					},
 					{
 						code: "WFT004",
-						severity: "warning",
+						severity: "info",
 						stage: "typecheck",
 						message: "Consider adding artifact schema",
 						workflow_name: "diag-wf",
@@ -689,7 +689,7 @@ describe("AutomationSection", () => {
 			facets: [
 				{
 					key: "my-policy",
-					kind: "policies",
+					kind: "policy",
 					description: "Test",
 					builtin: false,
 				},
@@ -697,7 +697,7 @@ describe("AutomationSection", () => {
 			report: {
 				...EMPTY_REPORT,
 				facet_usage: {
-					"policies/my-policy": [
+					"policy/my-policy": [
 						{
 							workflow_name: "wf-alpha",
 							node_name: "step-1",
@@ -731,7 +731,7 @@ describe("AutomationSection", () => {
 			facets: [
 				{
 					key: "test-facet",
-					kind: "policies",
+					kind: "policy",
 					description: "Test",
 					builtin: false,
 				},
@@ -741,11 +741,11 @@ describe("AutomationSection", () => {
 				items: [
 					{
 						code: "FAC003",
-						severity: "warning",
+						severity: "info",
 						stage: "resolve",
 						message: "Template variable not provided",
 						facet_key: "test-facet",
-						facet_kind: "policies",
+						facet_kind: "policy",
 					},
 				],
 			},
@@ -776,15 +776,14 @@ describe("AutomationSection", () => {
 				workflow_summaries: {
 					"wf-with-errors": {
 						error_count: 2,
-						warning_count: 1,
-						info_count: 0,
+						info_count: 3,
 					},
 				},
 			},
 		});
 		render(<AutomationSection automation={automation} />);
 		expect(screen.getByText("2")).toBeInTheDocument();
-		expect(screen.getByText("1")).toBeInTheDocument();
+		expect(screen.getByText("3")).toBeInTheDocument();
 	});
 
 	it("facet list shows usage count", async () => {
@@ -793,7 +792,7 @@ describe("AutomationSection", () => {
 			facets: [
 				{
 					key: "used-policy",
-					kind: "policies",
+					kind: "policy",
 					description: "Used",
 					builtin: false,
 				},
@@ -801,7 +800,7 @@ describe("AutomationSection", () => {
 			report: {
 				...EMPTY_REPORT,
 				facet_usage: {
-					"policies/used-policy": [
+					"policy/used-policy": [
 						{
 							workflow_name: "wf-1",
 							node_name: "step-1",

@@ -30,7 +30,10 @@ impl Serialize for SchemaDef {
     where
         S: Serializer,
     {
-        contract_schema::schema_def_to_json_value(&schema_def_to_domain(self)).serialize(serializer)
+        contract_schema::schema_def_to_json_value(&super::domain_mapping::schema_def_to_domain(
+            self,
+        ))
+        .serialize(serializer)
     }
 }
 
@@ -65,32 +68,6 @@ fn schema_def_from_domain(schema: domain_workflow::SchemaDef) -> SchemaDef {
         domain_workflow::SchemaDef::Boolean => SchemaDef::Boolean,
         domain_workflow::SchemaDef::Integer => SchemaDef::Integer,
         domain_workflow::SchemaDef::Number => SchemaDef::Number,
-    }
-}
-
-fn schema_def_to_domain(schema: &SchemaDef) -> domain_workflow::SchemaDef {
-    match schema {
-        SchemaDef::Object {
-            properties,
-            required,
-            additional_properties,
-        } => domain_workflow::SchemaDef::Object {
-            properties: properties
-                .iter()
-                .map(|(name, schema)| (name.clone(), schema_def_to_domain(schema)))
-                .collect(),
-            required: required.clone(),
-            additional_properties: *additional_properties,
-        },
-        SchemaDef::Array { items } => domain_workflow::SchemaDef::Array {
-            items: items.clone(),
-        },
-        SchemaDef::String { r#enum } => domain_workflow::SchemaDef::String {
-            r#enum: r#enum.clone(),
-        },
-        SchemaDef::Boolean => domain_workflow::SchemaDef::Boolean,
-        SchemaDef::Integer => domain_workflow::SchemaDef::Integer,
-        SchemaDef::Number => domain_workflow::SchemaDef::Number,
     }
 }
 
@@ -1027,7 +1004,12 @@ nodes:
         ] {
             let gateway_schema: SchemaDef = serde_json::from_value(value.clone()).unwrap();
             let domain_schema = contract_schema::schema_def_from_json(&value).unwrap();
-            assert_eq!(schema_def_to_domain(&gateway_schema), domain_schema);
+            assert_eq!(
+                crate::adaptor::gateway::workflow::domain_mapping::schema_def_to_domain(
+                    &gateway_schema
+                ),
+                domain_schema
+            );
         }
     }
 

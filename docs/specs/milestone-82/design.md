@@ -20,8 +20,10 @@
 | `domain/workflow/services/routing.rs` | 新規 | §6 rules 静的検証 + 実行時評価。旧 `transition.rs` の regex 評価を置換（#1327） |
 | `domain/workflow/services/reference.rs` | 新規 | §5 参照 parser（旧 variable_renderer 置換、#1326） |
 | `domain/workflow/services/validation.rs` | 置換 | §7 の resolve / typecheck / control-flow 段に再編（#1323） |
-| `domain/workflow/services/{parallel,approval_rules,contract}.rs` | 置換/削除 | fanout 展開規則 / approve 検証（reject 削除）/ 削除（#1329, #1324, #1325） |
-| `infrastructure/process/command_runner.rs` | 新規 | §8.1 shell 実行 + cancellation（#1328） |
+| `domain/workflow/services/{parallel,approval_rules}.rs` | 置換/削除 | fanout 展開規則 / approve 検証（reject 削除）（#1329, #1324） |
+| `domain/workflow/services/contract.rs` | 置換 | §4 の `contract_schema` を薄くラップする helper（node の Contract 解決 / Artifact 検証 / repair prompt 生成）。旧 facet contract / メタブロック解析 / spec-directory ハードコードは撤去済み（#1325） |
+| `infrastructure/process/command_runner.rs` | 新規 | §8.1 shell 実行 + cancellation（#1328）。出力上限 / label は呼び出し側が `OutputLimit` として注入し、adaptor への依存を持たない |
+| `adaptor/gateway/workflow/runtime_engine_impl/{activation,command_preparation,lifecycle_commands,resume_orchestration}.rs` | 新規（分割） | engine 本体から kind / lifecycle 経路を切り出した submodule。`lifecycle_commands.rs` は abort / stop / resume の typed command 群 |
 | `adaptor/gateway/workflow/event.rs`, `log.rs`, `event_projection.rs` | 置換 | §9 event 語彙・§10 projection（各 goal + #1331 で最終化） |
 | `adaptor/gateway/workflow/{run,state}.rs` ほか step_* 系 | 置換 | §10 read model（#1331） |
 | `adaptor/gateway/workflow/pending_command.rs`, `cli/workflow_io.rs` | 削除 | pending file 機構（#1332） |
@@ -180,7 +182,7 @@ node 完了時、`route(node, artifact) -> Target`:
 ```rust
 pub struct Diagnostic {
     pub code: String,        // 下表が唯一の正。テストで固定
-    pub severity: Severity,  // Error | Warning
+    pub severity: Severity,  // Error | Info（Info は builtin 注記など非阻害の情報）
     pub stage: Stage,        // ParseShape | Resolve | Typecheck | ControlFlow
     pub span: Option<Span>,  // { start_line, start_col, end_line, end_col }
     pub message: String,
@@ -210,12 +212,16 @@ pub struct Diagnostic {
 | WFT004 | artifact: に Object 以外の Contract / fanout への artifact 宣言 |
 | WFT005 | 予約 field 衝突（command artifact Contract が ok 等を宣言） |
 | WFT006 | 判別 rule 不能な node への When/Switch（fanout / artifact 無し session） |
+| WFT900 | permission / model の不正（無効な permission 値・permission 欠落・model 解決失敗） |
 | WFC001 | 到達不能 node |
-| WFC002 | 排他違反（判別 rule 2 個以上、Next 重複） |
-| WFC003 | 網羅違反（catch-all 欠落、被覆済み switch への next、R4 の next 欠落） |
+| WFC002 | 排他違反（判別 rule 2 個以上、loop_guard 2 個以上、判別 rule と単独 next の併存） |
+| WFC003 | 網羅違反（catch-all の next 重複、被覆済み switch への next、switch 非被覆で next 欠落、R4 の next 欠落） |
 | WFC004 | switch enum の被覆漏れ（next 無しの場合） |
-| WFC005 | 到達可能な loop_guard の無い cycle |
+| WFC005 | 到達可能な loop_guard の無い cycle / loop_guard の max_iterations 不正 |
 | WFC006 | fanout child の leaf 違反（child への通常遷移 / entry / fanout の入れ子） |
+| WFR900 | facet 参照の解決失敗（未定義 facet） |
+
+なお WFR900（Resolve 段）/ WFT900（Typecheck 段）は facet・permission・model の参照/解決失敗を表す。stage は code 接頭辞（WFR→Resolve / WFT→Typecheck / WFC→ControlFlow / それ以外→ParseShape）で決まる。
 
 ## 8. Runtime 実行経路
 
@@ -261,7 +267,7 @@ NDJSON append-only（`log.rs`）。**最終形の variant を下表で固定**�
 
 | variant | fields（全てに execution_id, timestamp） |
 |---|---|
-| ExecutionStarted | workflow_name, worktree_path, definition（snapshot）, request: String |
+| ExecutionStarted | workflow_name, worktree_path, definition（snapshot）, request: String, permission_mode（resume 時の permission 復元用） |
 | NodeStarted | node_execution_id, node_name, kind, attempt, fanout_parent?: { parent_node, parent_attempt, item_index?, child_index } |
 | SessionAttached | node_execution_id, session_id |
 | CommandPrepared | node_execution_id, display_command（Artifact 参照展開後・secret mask 済み。raw command は永続化しない、#1454） |

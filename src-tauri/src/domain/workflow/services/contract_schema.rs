@@ -13,14 +13,12 @@ pub struct SchemaViolation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum RoutingFieldKind {
     Boolean,
     Enum,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum RoutingFieldError {
     NotObject,
     MissingProperty { field: String },
@@ -183,8 +181,6 @@ pub fn validate(
     }
 }
 
-// Staged deliverable for #1327: routing rules wiring will consume this helper.
-#[allow(dead_code)]
 pub fn routing_field_kind(
     schema: &SchemaDef,
     field: &str,

@@ -9,7 +9,7 @@ import type {
 	NodeDefinition,
 	WorkflowDefinition,
 } from "@/types/workflow";
-import { DiagnosticViewRow } from "./DiagnosticBadge";
+import { DiagnosticsPanel } from "./DiagnosticBadge";
 
 type WorkflowRule = NonNullable<NodeDefinition["rules"]>[number];
 
@@ -46,17 +46,7 @@ export function WorkflowDetail({
 				)}
 			</div>
 
-			{items.length > 0 && (
-				<div className="flex flex-col gap-1.5 rounded-md border border-border p-3">
-					<span className="text-xs font-medium">Diagnostics</span>
-					{items.map((item) => (
-						<DiagnosticViewRow
-							key={`${item.code}-${item.span?.start_line ?? "na"}-${item.span?.start_col ?? "na"}-${item.message}-${item.field ?? ""}`}
-							item={item}
-						/>
-					))}
-				</div>
-			)}
+			<DiagnosticsPanel items={items} />
 
 			{source && <WorkflowSourcePane source={source} diagnostics={items} />}
 
@@ -99,17 +89,7 @@ export function WorkflowSourceDiagnosticDetail({
 				</Button>
 			</div>
 
-			{items.length > 0 && (
-				<div className="flex flex-col gap-1.5 rounded-md border border-border p-3">
-					<span className="text-xs font-medium">Diagnostics</span>
-					{items.map((item) => (
-						<DiagnosticViewRow
-							key={`${item.code}-${item.span?.start_line ?? "na"}-${item.span?.start_col ?? "na"}-${item.message}-${item.field ?? ""}`}
-							item={item}
-						/>
-					))}
-				</div>
-			)}
+			<DiagnosticsPanel items={items} />
 
 			<WorkflowSourcePane source={source} diagnostics={items} />
 		</div>
@@ -229,17 +209,7 @@ export function WorkflowSourceEditor({
 
 			{saveError && <p className="text-xs text-destructive">{saveError}</p>}
 
-			{diagnostics.length > 0 && (
-				<div className="flex flex-col gap-1.5 rounded-md border border-border p-3">
-					<span className="text-xs font-medium">Diagnostics</span>
-					{diagnostics.map((item) => (
-						<DiagnosticViewRow
-							key={`${item.code}-${item.span?.start_line ?? "na"}-${item.span?.start_col ?? "na"}-${item.message}-${item.field ?? ""}`}
-							item={item}
-						/>
-					))}
-				</div>
-			)}
+			<DiagnosticsPanel items={diagnostics} />
 
 			<div
 				ref={hostRef}
@@ -326,9 +296,7 @@ function applyMonacoMarkers(
 		const severity =
 			item.severity === "error"
 				? monaco.MarkerSeverity.Error
-				: item.severity === "warning"
-					? monaco.MarkerSeverity.Warning
-					: monaco.MarkerSeverity.Info;
+				: monaco.MarkerSeverity.Info;
 		return [
 			{
 				severity,

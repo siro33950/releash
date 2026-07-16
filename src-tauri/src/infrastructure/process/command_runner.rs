@@ -6,7 +6,13 @@ use tokio::process::Command;
 use tokio::sync::watch;
 
 use super::child_process;
-use crate::adaptor::gateway::workflow::output_limit::{MAX_OUTPUT_SIZE, TRUNCATION_MARKER};
+
+/// 出力キャプチャの上限。ドメイン固有の定数を持ち込まないよう呼び出し側が注入する。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct OutputLimit {
+    pub(crate) max_bytes: usize,
+    pub(crate) truncation_marker: &'static str,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CommandRunOutput {
@@ -41,6 +47,7 @@ impl ActiveCommandHandle {
 
 pub(crate) struct RunningCommand {
     label: String,
+    output_limit: OutputLimit,
     child: tokio::process::Child,
     stdout: Option<tokio::process::ChildStdout>,
     stderr: Option<tokio::process::ChildStderr>,
@@ -57,8 +64,9 @@ impl RunningCommand {
     pub(crate) async fn wait(mut self) -> Result<CommandRunOutput, CommandRunnerError> {
         let mut stdout = self.stdout.take();
         let mut stderr = self.stderr.take();
-        let stdout_task = tokio::spawn(async move { read_pipe(stdout.as_mut()).await });
-        let stderr_task = tokio::spawn(async move { read_pipe(stderr.as_mut()).await });
+        let limit = self.output_limit;
+        let stdout_task = tokio::spawn(async move { read_pipe(stdout.as_mut(), limit).await });
+        let stderr_task = tokio::spawn(async move { read_pipe(stderr.as_mut(), limit).await });
 
         let status = tokio::select! {
             status = self.child.wait() => {
@@ -99,6 +107,8 @@ pub(crate) fn spawn_shell_command(
     cwd: impl AsRef<Path>,
     shell_command: &str,
     env: impl IntoIterator<Item = (String, String)>,
+    label_prefix: &str,
+    output_limit: OutputLimit,
 ) -> Result<RunningCommand, CommandRunnerError> {
     let cwd = cwd.as_ref().to_path_buf();
     let mut command = Command::new("/bin/sh");
@@ -116,9 +126,10 @@ pub(crate) fn spawn_shell_command(
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let label = command_label(&cwd);
+    let label = command_label(label_prefix, &cwd);
     Ok(RunningCommand {
         label,
+        output_limit,
         child,
         stdout,
         stderr,
@@ -128,14 +139,14 @@ pub(crate) fn spawn_shell_command(
     })
 }
 
-async fn read_pipe<T>(pipe: Option<&mut T>) -> std::io::Result<String>
+async fn read_pipe<T>(pipe: Option<&mut T>, limit: OutputLimit) -> std::io::Result<String>
 where
     T: AsyncReadExt + Unpin,
 {
     let Some(pipe) = pipe else {
         return Ok(String::new());
     };
-    let mut bytes = Vec::with_capacity(MAX_OUTPUT_SIZE + TRUNCATION_MARKER.len());
+    let mut bytes = Vec::with_capacity(limit.max_bytes + limit.truncation_marker.len());
     let mut buf = [0_u8; 8192];
     let mut truncated = false;
     loop {
@@ -143,7 +154,7 @@ where
         if read == 0 {
             break;
         }
-        let remaining = MAX_OUTPUT_SIZE.saturating_sub(bytes.len());
+        let remaining = limit.max_bytes.saturating_sub(bytes.len());
         if remaining > 0 {
             let keep = remaining.min(read);
             bytes.extend_from_slice(&buf[..keep]);
@@ -155,14 +166,14 @@ where
         }
     }
     if truncated {
-        bytes.extend_from_slice(TRUNCATION_MARKER.as_bytes());
+        bytes.extend_from_slice(limit.truncation_marker.as_bytes());
     }
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-fn command_label(cwd: &Path) -> String {
+fn command_label(prefix: &str, cwd: &Path) -> String {
     let display = display_cwd(cwd);
-    format!("workflow command in {display}")
+    format!("{prefix} in {display}")
 }
 
 fn display_cwd(cwd: &Path) -> String {
@@ -176,6 +187,12 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    const TEST_LABEL: &str = "workflow command";
+    const TEST_LIMIT: OutputLimit = OutputLimit {
+        max_bytes: 100 * 1024,
+        truncation_marker: "... (truncated)",
+    };
+
     #[tokio::test]
     async fn shell_command_runs_in_cwd_and_captures_output_and_status() {
         let cwd = TempDir::new().unwrap();
@@ -185,6 +202,8 @@ mod tests {
             cwd.path(),
             "printf '%s' \"$PWD\"; printf '%s' err >&2; exit 7",
             std::iter::empty::<(String, String)>(),
+            TEST_LABEL,
+            TEST_LIMIT,
         )
         .unwrap()
         .wait()
@@ -206,6 +225,8 @@ mod tests {
             cwd.path(),
             secret_command,
             std::iter::empty::<(String, String)>(),
+            TEST_LABEL,
+            TEST_LIMIT,
         )
         .unwrap();
 
@@ -226,6 +247,8 @@ mod tests {
             cwd.path(),
             "sleep 30",
             std::iter::empty::<(String, String)>(),
+            TEST_LABEL,
+            TEST_LIMIT,
         )
         .unwrap();
         let handle = running.handle();
@@ -244,6 +267,8 @@ mod tests {
             cwd.path(),
             "head -c 200000 /dev/zero | tr '\\0' x; head -c 200000 /dev/zero | tr '\\0' e >&2",
             std::iter::empty::<(String, String)>(),
+            TEST_LABEL,
+            TEST_LIMIT,
         )
         .unwrap()
         .wait()
@@ -251,9 +276,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(output.exit_code, 0);
-        assert!(output.stdout.ends_with(TRUNCATION_MARKER));
-        assert!(output.stderr.ends_with(TRUNCATION_MARKER));
-        assert!(output.stdout.len() <= MAX_OUTPUT_SIZE + TRUNCATION_MARKER.len());
-        assert!(output.stderr.len() <= MAX_OUTPUT_SIZE + TRUNCATION_MARKER.len());
+        let marker = TEST_LIMIT.truncation_marker;
+        assert!(output.stdout.ends_with(marker));
+        assert!(output.stderr.ends_with(marker));
+        assert!(output.stdout.len() <= TEST_LIMIT.max_bytes + marker.len());
+        assert!(output.stderr.len() <= TEST_LIMIT.max_bytes + marker.len());
     }
 }

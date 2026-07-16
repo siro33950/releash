@@ -116,6 +116,6 @@ mod tests {
 
         assert!(summaries
             .iter()
-            .any(|summary| summary.key == "impl" && summary.kind == "instructions"));
+            .any(|summary| summary.key == "impl" && summary.kind == "instruction"));
     }
 }

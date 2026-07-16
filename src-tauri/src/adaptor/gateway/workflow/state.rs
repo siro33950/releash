@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use crate::adaptor::gateway::workflow::domain_mapping::{
-    runtime_execution_state_to_domain, workflow_definition_to_domain,
+    artifacts_to_domain, node_history_entries_to_domain, runtime_execution_state_to_domain,
+    token_usage_to_domain, workflow_definition_to_domain,
 };
 pub use crate::adaptor::gateway::workflow::event::{FanoutParentRef, TokenUsage};
 use crate::adaptor::gateway::workflow::schema::{NodeKindName, WorkflowDefinitionYaml};
@@ -167,19 +168,11 @@ pub(crate) fn runtime_commit_snapshot_to_domain_snapshot(
         current_node_index: state.current_node_index,
         current_node_name: state.current_node_name,
         current_session_id: state.current_session_id,
-        node_history: state
-            .node_history
-            .into_iter()
-            .map(node_history_entry_to_domain)
-            .collect(),
+        node_history: node_history_entries_to_domain(&state.node_history),
         node_execution_counts: state.node_execution_counts,
         workflow_definition,
-        total_token_usage: token_usage_to_domain(state.total_token_usage),
-        artifacts: state
-            .artifacts
-            .into_iter()
-            .map(|(key, artifact)| (key, runtime_artifact_to_domain(artifact)))
-            .collect(),
+        total_token_usage: token_usage_to_domain(&state.total_token_usage),
+        artifacts: artifacts_to_domain(&state.artifacts),
         node_executions: state
             .node_executions
             .into_iter()
@@ -187,48 +180,6 @@ pub(crate) fn runtime_commit_snapshot_to_domain_snapshot(
             .collect(),
         started_at: state.started_at,
         updated_at: state.updated_at,
-    }
-}
-
-fn token_usage_to_domain(usage: TokenUsage) -> crate::domain::workflow::TokenUsage {
-    crate::domain::workflow::TokenUsage {
-        input_tokens: usage.input_tokens,
-        output_tokens: usage.output_tokens,
-    }
-}
-
-fn node_history_entry_to_domain(
-    entry: NodeHistoryEntry,
-) -> crate::domain::workflow::NodeHistoryEntry {
-    crate::domain::workflow::NodeHistoryEntry {
-        node_name: entry.node_name,
-        completed_at: entry.completed_at,
-        result: entry.result,
-        session_id: entry.session_id,
-        token_usage: entry.token_usage.map(token_usage_to_domain),
-        artifact: entry.artifact,
-        attempt: entry.attempt,
-        fanout_children: entry
-            .fanout_children
-            .map(|children| children.into_iter().map(child_output_to_domain).collect()),
-        state: entry.state,
-    }
-}
-
-fn child_output_to_domain(
-    output: FanoutChildSnapshot,
-) -> crate::domain::workflow::FanoutChildSnapshot {
-    crate::domain::workflow::FanoutChildSnapshot {
-        node_name: output.node_name,
-        session_id: output.session_id,
-        result: output.result,
-        attempt: output.attempt,
-        completed_at: output.completed_at,
-        artifact: output.artifact,
-        contract: output.contract,
-        state: output.state,
-        failure_kind: output.failure_kind,
-        failure_disposition: output.failure_disposition,
     }
 }
 
@@ -267,7 +218,7 @@ fn node_execution_to_domain(execution: NodeExecution) -> crate::domain::workflow
                 value,
                 produced_at: artifact_produced_at,
             }),
-        token_usage: execution.token_usage.map(token_usage_to_domain),
+        token_usage: execution.token_usage.as_ref().map(token_usage_to_domain),
         failure: execution
             .failure
             .map(|failure| crate::domain::workflow::NodeExecutionFailure {
@@ -284,18 +235,5 @@ fn node_execution_to_domain(execution: NodeExecution) -> crate::domain::workflow
         }),
         started_at: execution.started_at,
         completed_at: execution.completed_at,
-    }
-}
-
-fn runtime_artifact_to_domain(output: RuntimeArtifact) -> crate::domain::workflow::RuntimeArtifact {
-    crate::domain::workflow::RuntimeArtifact {
-        node_name: output.node_name,
-        attempt: output.attempt,
-        session_id: output.session_id,
-        result: output.result,
-        artifact: output.artifact,
-        contract: output.contract,
-        token_usage: output.token_usage.map(token_usage_to_domain),
-        completed_at: output.completed_at,
     }
 }
