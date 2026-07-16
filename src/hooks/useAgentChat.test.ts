@@ -1882,7 +1882,7 @@ describe("useAgentChat", () => {
 		const agentMsg = activeSession?.messages.find((m) => m.id === "msg-2");
 		const textParts = agentMsg?.parts.filter((p) => p.type === "text");
 		expect(textParts).toHaveLength(1);
-		expect((textParts?.[0] as { content: string }).content).toBe(
+		expect((textParts?.[0] as { content: string } | undefined)?.content).toBe(
 			"streamed content",
 		);
 		// isStreaming should be restored
@@ -4155,9 +4155,9 @@ describe("Worktree switch (unmount/remount) streaming persistence via Rust backe
 		const agentMsg = activeSession?.messages.find((m) => m.id === "msg-2");
 		const agentTextParts = agentMsg?.parts.filter((p) => p.type === "text");
 		expect(agentTextParts).toHaveLength(1);
-		expect((agentTextParts?.[0] as { content: string }).content).toBe(
-			"streaming response",
-		);
+		expect(
+			(agentTextParts?.[0] as { content: string } | undefined)?.content,
+		).toBe("streaming response");
 		// Streaming state should be restored from backend
 		expect(result2.current.isStreaming).toBe(true);
 	});
@@ -4233,7 +4233,7 @@ describe("Worktree switch (unmount/remount) streaming persistence via Rust backe
 		const agentMsg = activeSession?.messages.find((m) => m.id === "msg-2");
 		const textParts = agentMsg?.parts.filter((p) => p.type === "text");
 		expect(textParts).toHaveLength(1);
-		expect((textParts?.[0] as { content: string }).content).toBe(
+		expect((textParts?.[0] as { content: string } | undefined)?.content).toBe(
 			"final response",
 		);
 		expect(result2.current.isStreaming).toBe(false);
@@ -4353,8 +4353,8 @@ describe("Worktree switch (unmount/remount) streaming persistence via Rust backe
 			(m) => m.id === "msg-2",
 		);
 		expect(agentMsg).toBeDefined();
-		expect((agentMsg?.parts[0] as { content: string }).content).toBe(
-			"completed response",
-		);
+		expect(
+			(agentMsg?.parts[0] as { content: string } | undefined)?.content,
+		).toBe("completed response");
 	});
 });
