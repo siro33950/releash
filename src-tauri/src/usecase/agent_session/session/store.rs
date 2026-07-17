@@ -11,14 +11,15 @@ use crate::domain::agent_session::{
 use crate::domain::path::same_worktree_path;
 use crate::usecase::agent_session::context_meta::ContextEpochMeta;
 use crate::usecase::agent_session::event_log::{
-    AgentSessionEvent, BackendSessionRecoveryProjection, BackendSessionRecoveryReason,
-    GoalReactivationOutcome, SessionReadModel, TurnEventLog,
+    latest_turn_interruption, AgentSessionEvent, BackendSessionRecoveryProjection,
+    BackendSessionRecoveryReason, GoalReactivationOutcome, SessionReadModel, TurnEventLog,
 };
 
 use super::{
     error_reason_for_state, now_timestamp, ChatMessage, ChatSession, ContextCarryState,
     MessagePart, MessageRole, PageCursor, PendingRecoveryMessage, SessionAttachment, SessionMeta,
     SessionPage, SessionReviewContext, SessionState, SessionSummary, SessionToolOutput,
+    TurnInterruption,
 };
 
 /// `SessionState` の遷移を観測する購読者向けコールバック。
@@ -123,6 +124,11 @@ pub(crate) type SessionSetStateHook =
 #[cfg(test)]
 pub(crate) type SessionProjectionHook =
     Arc<dyn Fn(&str, &SessionState, Option<&str>) -> Result<(), String> + Send + Sync>;
+#[cfg(test)]
+pub(crate) type SessionAppendedEventHook = Arc<dyn Fn(&str, &AgentSessionEvent) + Send + Sync>;
+#[cfg(test)]
+pub(crate) type SessionEventProjectionHook =
+    Arc<dyn Fn(&str, Option<u64>) -> Result<(), String> + Send + Sync>;
 
 pub struct SessionStore {
     storage: Arc<dyn SessionStoragePort>,
@@ -141,6 +147,10 @@ pub struct SessionStore {
     set_state_hook: RwLock<Option<SessionSetStateHook>>,
     #[cfg(test)]
     projection_hook: RwLock<Option<SessionProjectionHook>>,
+    #[cfg(test)]
+    appended_event_hook: RwLock<Option<SessionAppendedEventHook>>,
+    #[cfg(test)]
+    event_projection_hook: RwLock<Option<SessionEventProjectionHook>>,
 }
 
 fn compact_session_title(title: &str) -> String {
@@ -269,6 +279,10 @@ impl SessionStore {
             set_state_hook: RwLock::new(None),
             #[cfg(test)]
             projection_hook: RwLock::new(None),
+            #[cfg(test)]
+            appended_event_hook: RwLock::new(None),
+            #[cfg(test)]
+            event_projection_hook: RwLock::new(None),
         }
     }
 
@@ -300,6 +314,16 @@ impl SessionStore {
     #[cfg(test)]
     pub(crate) fn set_projection_hook_for_test(&self, hook: SessionProjectionHook) {
         *self.projection_hook.write() = Some(hook);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_appended_event_hook_for_test(&self, hook: SessionAppendedEventHook) {
+        *self.appended_event_hook.write() = Some(hook);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_event_projection_hook_for_test(&self, hook: SessionEventProjectionHook) {
+        *self.event_projection_hook.write() = Some(hook);
     }
 
     pub fn list_sessions(
@@ -492,6 +516,8 @@ impl SessionStore {
         forked_meta.provider_session_generation = 0;
         forked_meta.context_reinjection_generation = None;
         forked_meta.context_carry = None;
+        forked_meta.last_turn_interruption = None;
+        forked_meta.last_turn_id = Some(0);
         forked_meta.workflow_node_session = false;
 
         self.storage
@@ -534,7 +560,7 @@ impl SessionStore {
         app_data_dir: &Path,
         session_id: &str,
         limit: usize,
-    ) -> Result<Option<(ChatSession, SessionPage)>, String> {
+    ) -> Result<Option<(ChatSession, SessionPage, Option<TurnInterruption>)>, String> {
         let Some(meta) = self.storage.get_session_meta(app_data_dir, session_id)? else {
             return Ok(None);
         };
@@ -550,7 +576,7 @@ impl SessionStore {
                 latest_token_usage: None,
             });
         let session = meta.to_session(page.messages.clone());
-        Ok(Some((session, page)))
+        Ok(Some((session, page, meta.last_turn_interruption)))
     }
 
     pub fn get_session_meta(
@@ -613,10 +639,11 @@ impl SessionStore {
         if self.storage.take_event_log_recovered(session_id) {
             self.notify_event_log_recovered(session_id);
         }
-        Ok(TurnEventLog::from_events(events)
-            .project()
-            .status
-            .session_state)
+        #[cfg(test)]
+        if let Some(hook) = self.appended_event_hook.read().clone() {
+            hook(session_id, &event);
+        }
+        self.project_session_events(app_data_dir, session_id, &events)
     }
 
     pub(crate) fn append_session_event_and_project_read_model(
@@ -635,13 +662,18 @@ impl SessionStore {
         if self.storage.take_event_log_recovered(session_id) {
             self.notify_event_log_recovered(session_id);
         }
-        let projected = TurnEventLog::from_events(events).project();
+        let projected = TurnEventLog::from_events(events.clone()).project();
         let projected_state = projected.status.session_state.clone();
-        self.set_session_projection(
+        self.set_event_projection(
             app_data_dir,
             session_id,
             projected_state.clone(),
             projected.error_reason.clone(),
+            latest_turn_interruption(&events),
+            events.iter().rev().find_map(|event| match event {
+                AgentSessionEvent::TurnStarted { turn_id, .. } => Some(*turn_id),
+                _ => None,
+            }),
         )?;
         Ok(projected)
     }
@@ -759,7 +791,7 @@ impl SessionStore {
             let mut prepare = |all_events: &[AgentSessionEvent], meta: &SessionMeta| {
                 let projected = TurnEventLog::from_events(all_events.to_vec()).project();
                 let mut projected_meta =
-                    self.projected_meta_for_commit(session_id, meta, &projected)?;
+                    self.projected_meta_for_commit(session_id, meta, all_events, &projected)?;
                 projected_meta.state_revision = meta.state_revision.saturating_add(1);
                 previous_projection = Some(PreviousSessionProjection {
                     state: meta.state.clone(),
@@ -791,6 +823,7 @@ impl SessionStore {
         &self,
         _session_id: &str,
         meta: &SessionMeta,
+        events: &[AgentSessionEvent],
         projected: &SessionReadModel,
     ) -> Result<SessionMeta, String> {
         #[cfg(test)]
@@ -805,6 +838,15 @@ impl SessionStore {
         projected_meta.state = projected.status.session_state.clone();
         projected_meta.error_reason =
             error_reason_for_state(&projected_meta.state, &projected.error_reason);
+        projected_meta.last_turn_interruption = latest_turn_interruption(events);
+        projected_meta.last_turn_id = events.iter().rev().find_map(|event| match event {
+            AgentSessionEvent::TurnStarted { turn_id, .. } => Some(*turn_id),
+            _ => None,
+        });
+        #[cfg(test)]
+        if let Some(hook) = self.event_projection_hook.read().clone() {
+            hook(_session_id, projected_meta.last_turn_id)?;
+        }
         Ok(projected_meta)
     }
 
@@ -828,6 +870,86 @@ impl SessionStore {
                 previous.state_revision,
             );
         }
+    }
+
+    pub fn append_turn_started_and_project_state(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        event: AgentSessionEvent,
+    ) -> Result<(), String> {
+        let turn_id = match &event {
+            AgentSessionEvent::TurnStarted { turn_id, .. } => *turn_id,
+            _ => return Err("Turn start projection requires a TurnStarted event".to_string()),
+        };
+        self.append_session_event_without_projection(app_data_dir, session_id, event.clone())?;
+        if let Err(projection_error) = self.set_event_projection(
+            app_data_dir,
+            session_id,
+            SessionState::Active,
+            None,
+            None,
+            Some(turn_id),
+        ) {
+            let recovery = self
+                .load_session_events(app_data_dir, session_id)
+                .and_then(|events| {
+                    self.project_session_events(app_data_dir, session_id, &events)
+                        .map(|_| ())
+                });
+            return match recovery {
+                Ok(()) => Err(projection_error),
+                Err(recovery_error) => Err(format!(
+                    "{projection_error}; failed to recover committed turn projection: {recovery_error}"
+                )),
+            };
+        }
+        #[cfg(test)]
+        if let Some(hook) = self.appended_event_hook.read().clone() {
+            hook(session_id, &event);
+        }
+        Ok(())
+    }
+
+    pub fn project_session_events(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        events: &[AgentSessionEvent],
+    ) -> Result<SessionState, String> {
+        let last_turn_interruption = latest_turn_interruption(events);
+        let last_turn_id = events.iter().rev().find_map(|event| match event {
+            AgentSessionEvent::TurnStarted { turn_id, .. } => Some(*turn_id),
+            _ => None,
+        });
+        let projected = TurnEventLog::from_events(events.to_vec()).project();
+        let projected_state = projected.status.session_state.clone();
+        self.set_event_projection(
+            app_data_dir,
+            session_id,
+            projected_state.clone(),
+            projected.error_reason,
+            last_turn_interruption,
+            last_turn_id,
+        )?;
+        Ok(projected_state)
+    }
+
+    pub fn next_turn_id(&self, app_data_dir: &Path, session_id: &str) -> Result<u64, String> {
+        let meta = self.require_meta(app_data_dir, session_id)?;
+        let last_turn_id = match meta.last_turn_id {
+            Some(turn_id) => turn_id,
+            None => self
+                .load_session_events(app_data_dir, session_id)?
+                .iter()
+                .rev()
+                .find_map(|event| match event {
+                    AgentSessionEvent::TurnStarted { turn_id, .. } => Some(*turn_id),
+                    _ => None,
+                })
+                .unwrap_or(0),
+        };
+        Ok(last_turn_id.saturating_add(1))
     }
 
     pub fn append_session_event_without_projection(
@@ -1258,43 +1380,43 @@ impl SessionStore {
         Ok(())
     }
 
-    fn set_session_projection(
+    fn set_event_projection(
         &self,
         app_data_dir: &Path,
         session_id: &str,
         state: SessionState,
         error_reason: Option<String>,
+        last_turn_interruption: Option<TurnInterruption>,
+        last_turn_id: Option<u64>,
     ) -> Result<(), String> {
         #[cfg(test)]
         if let Some(hook) = self.projection_hook.read().clone() {
             hook(session_id, &state, error_reason.as_deref())?;
         }
+        #[cfg(test)]
+        if let Some(hook) = self.event_projection_hook.read().clone() {
+            hook(session_id, last_turn_id)?;
+        }
         let state_for_notify = state.clone();
         let projected_error_reason = error_reason_for_state(&state, &error_reason);
         let mut previous_error_reason = None;
-        let mut worktree_path = None;
         let (meta, state_changed) = self.update_meta_only(app_data_dir, session_id, |meta| {
             previous_error_reason = Some(meta.error_reason.clone());
-            worktree_path = Some(meta.worktree_path.clone());
-            meta.error_reason = projected_error_reason.clone();
             meta.state = state;
+            meta.error_reason = projected_error_reason.clone();
+            meta.last_turn_interruption = last_turn_interruption;
+            meta.last_turn_id = last_turn_id;
             meta.updated_at = now_timestamp();
             Ok(())
         })?;
-        if state_changed {
-            self.notify_state_change(
-                session_id,
-                &meta.worktree_path,
-                &state_for_notify,
-                meta.state_revision,
-            );
-        } else if previous_error_reason
-            .expect("update_session_meta must invoke closure before returning Ok")
-            != projected_error_reason
+        if state_changed
+            || previous_error_reason
+                .expect("update_session_meta must invoke closure before returning Ok")
+                != projected_error_reason
         {
             self.notify_state_change(
                 session_id,
-                &worktree_path.expect("session meta must include a worktree path"),
+                &meta.worktree_path,
                 &state_for_notify,
                 meta.state_revision,
             );

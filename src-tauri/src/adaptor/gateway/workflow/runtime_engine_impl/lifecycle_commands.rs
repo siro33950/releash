@@ -176,14 +176,8 @@ impl WorkflowRuntimeService {
                     activation_guard = Some(activation_gate.lock.lock().await);
                 }
                 let _activation_guard = activation_guard;
-                self.finish_committed_abort(
-                    app,
-                    session_store,
-                    agent_runtime,
-                    execution_id,
-                    &session_ids,
-                )
-                .await;
+                self.finish_committed_abort(app, agent_runtime, execution_id, &session_ids)
+                    .await;
                 self.execution_store
                     .finish_active_interruption(interruption_reservation)
                     .await
@@ -251,7 +245,6 @@ impl WorkflowRuntimeService {
     pub(crate) async fn stop_workflow_execution<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
-        session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         execution_id: &str,
     ) -> Result<(), WorkflowEngineError> {
@@ -268,7 +261,6 @@ impl WorkflowRuntimeService {
         if !self
             .interrupt_active_execution(
                 app,
-                session_store,
                 agent_runtime,
                 execution_id,
                 ExecutionInterruptionReason::Stop,
@@ -377,14 +369,8 @@ impl WorkflowRuntimeService {
             .await?;
         match commit {
             AbortCommit::Aborted { session_ids } => {
-                self.finish_committed_abort(
-                    app,
-                    session_store,
-                    agent_runtime,
-                    execution_id,
-                    &session_ids,
-                )
-                .await;
+                self.finish_committed_abort(app, agent_runtime, execution_id, &session_ids)
+                    .await;
                 Ok(AbortOutcome::Aborted)
             }
             AbortCommit::NotFound => Ok(AbortOutcome::NotFound),
@@ -557,7 +543,6 @@ impl WorkflowRuntimeService {
     async fn finish_committed_abort<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
-        session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         execution_id: &str,
         session_ids: &[String],
@@ -569,13 +554,8 @@ impl WorkflowRuntimeService {
         for session_id in session_ids {
             workflow_runtime_session::interrupt_agent(agent_runtime, session_id).await;
         }
-        self.finalize_terminal_transition_after_required_append(
-            app,
-            session_store,
-            agent_runtime,
-            execution_id,
-        )
-        .await;
+        self.finalize_terminal_transition_after_required_append(app, agent_runtime, execution_id)
+            .await;
     }
 
     /// `abort_workflow_by_execution_id` の post-commit 区間。state は呼出し前に Aborted に
@@ -590,7 +570,6 @@ impl WorkflowRuntimeService {
     pub(super) async fn finalize_terminal_transition_after_required_append<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
-        session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         execution_id: &str,
     ) {
@@ -605,8 +584,6 @@ impl WorkflowRuntimeService {
         // terminal session の release と refs cleanup。
         let terminal_session_ids = workflow_runtime_commit::terminal_node_session_ids(&snapshot);
         workflow_runtime_session::release_completed_node_sessions(
-            app,
-            session_store,
             agent_runtime,
             &terminal_session_ids,
         )

@@ -523,6 +523,7 @@ pub(super) enum InterruptReasonSnapshot {
     Abort,
     Timeout,
     Crash,
+    SessionClosed,
 }
 
 impl From<InterruptReason> for InterruptReasonSnapshot {
@@ -531,6 +532,7 @@ impl From<InterruptReason> for InterruptReasonSnapshot {
             InterruptReason::Abort => Self::Abort,
             InterruptReason::Timeout => Self::Timeout,
             InterruptReason::Crash => Self::Crash,
+            InterruptReason::SessionClosed => Self::SessionClosed,
         }
     }
 }

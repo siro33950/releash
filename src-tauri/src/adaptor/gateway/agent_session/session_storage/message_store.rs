@@ -675,8 +675,9 @@ impl FileSessionStorage {
             .as_ref()
             .map(|meta| meta.provider_session_generation)
             .unwrap_or_default();
-        let context_reinjection_generation =
-            preserved_recovery_meta.and_then(|meta| meta.context_reinjection_generation);
+        let context_reinjection_generation = preserved_recovery_meta
+            .as_ref()
+            .and_then(|meta| meta.context_reinjection_generation);
         std::fs::create_dir_all(messages_dir_in_dir(dir))
             .map_err(|e| format!("Failed to create messages dir: {e}"))?;
         std::fs::create_dir_all(attachments_dir_in_dir(dir))
@@ -743,6 +744,10 @@ impl FileSessionStorage {
         meta.provider_session_generation = provider_session_generation;
         meta.context_reinjection_generation = context_reinjection_generation;
         meta.state_revision = state_revision;
+        if let Some(previous) = preserved_recovery_meta {
+            meta.last_turn_interruption = previous.last_turn_interruption;
+            meta.last_turn_id = previous.last_turn_id;
+        }
         meta.body_format_version = SESSION_BODY_FORMAT_VERSION;
         write_private_context_to_dir(dir, &meta)?;
         write_json_pretty_atomic(&meta_file_in_dir(dir), &meta, "session meta")?;

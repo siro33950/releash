@@ -82,7 +82,29 @@ use super::streaming::{
     StreamingFlushDecision,
 };
 
-type SessionRuntimeLock = Arc<Mutex<()>>;
+struct SessionTransitionOwner {
+    lock: Arc<Mutex<()>>,
+    durable_turn_start: parking_lot::Mutex<Option<DurableTurnStart>>,
+}
+
+impl Default for SessionTransitionOwner {
+    fn default() -> Self {
+        Self {
+            lock: Arc::new(Mutex::new(())),
+            durable_turn_start: parking_lot::Mutex::new(None),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct DurableTurnStart {
+    backend_id: String,
+    turn_id: u64,
+    agent_message_id: String,
+    current_turn_input: QueuedTurnInput,
+}
+
+type SessionRuntimeLock = Arc<SessionTransitionOwner>;
 
 #[derive(Default)]
 struct SessionRuntimeLockRegistry {
@@ -176,6 +198,98 @@ impl Drop for TestSessionRuntimeLockOwnerReservation {
             "session runtime lock must be released by its acquiring test flow"
         );
         held.remove(&self.owner);
+    }
+}
+
+const CLOSE_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(200);
+const CLOSE_DRAIN_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
+
+#[derive(Default)]
+struct ShutdownAdmissionState {
+    shutting_down: bool,
+    active_operations: usize,
+}
+
+#[derive(Default)]
+struct ShutdownAdmission {
+    state: std::sync::Mutex<ShutdownAdmissionState>,
+    idle: tokio::sync::Notify,
+}
+
+impl ShutdownAdmission {
+    fn admit(self: &Arc<Self>) -> Result<ShutdownAdmissionGuard, AgentRuntimeError> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.shutting_down {
+            return Err(AgentRuntimeError::Other(
+                "Agent session runtime is shutting down".to_string(),
+            ));
+        }
+        state.active_operations += 1;
+        Ok(ShutdownAdmissionGuard {
+            admission: Arc::clone(self),
+        })
+    }
+
+    fn begin_shutdown(&self) {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .shutting_down = true;
+    }
+
+    fn cancel_shutdown(&self) {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .shutting_down = false;
+    }
+
+    async fn wait_for_idle(&self) {
+        loop {
+            let notified = self.idle.notified();
+            if self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .active_operations
+                == 0
+            {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    #[cfg(test)]
+    fn is_shutting_down(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .shutting_down
+    }
+}
+
+struct ShutdownAdmissionGuard {
+    admission: Arc<ShutdownAdmission>,
+}
+
+impl Drop for ShutdownAdmissionGuard {
+    fn drop(&mut self) {
+        let became_idle = {
+            let mut state = self
+                .admission
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.active_operations -= 1;
+            state.active_operations == 0
+        };
+        if became_idle {
+            self.admission.idle.notify_one();
+        }
     }
 }
 
@@ -362,6 +476,7 @@ struct RuntimeContext {
     data_dir: Arc<PathBuf>,
     sessions: Arc<Mutex<RuntimeSessionMap>>,
     session_locks: SessionRuntimeLocks,
+    shutdown_admission: Arc<ShutdownAdmission>,
     workflow_turn_complete_notifier: Arc<RwLock<Option<Arc<dyn WorkflowTurnCompleteNotifier>>>>,
     workflow_stall_notifier: Arc<RwLock<Option<Arc<dyn WorkflowStallNotifier>>>>,
 }
@@ -454,6 +569,12 @@ struct StalledActiveTurnTarget {
     runtime: Arc<dyn AgentSessionRuntime>,
 }
 
+#[derive(Clone, Copy)]
+enum SessionCloseMode {
+    Always,
+    IfIdle,
+}
+
 pub struct AgentSessionRuntimeUsecase {
     ctx: RuntimeContext,
 }
@@ -484,6 +605,7 @@ impl AgentSessionRuntimeUsecase {
                 data_dir: Arc::new(data_dir),
                 sessions: Arc::new(Mutex::new(RuntimeSessionMap::new())),
                 session_locks: Arc::new(SessionRuntimeLockRegistry::default()),
+                shutdown_admission: Arc::new(ShutdownAdmission::default()),
                 workflow_turn_complete_notifier: Arc::new(RwLock::new(None)),
                 workflow_stall_notifier: Arc::new(RwLock::new(None)),
             },
@@ -530,12 +652,16 @@ impl AgentSessionRuntimeUsecase {
         &self,
         req: SendAgentMessageRequest,
     ) -> Result<SendMessageResponse, AgentRuntimeError> {
+        let _admission_guard = self.ctx.shutdown_admission.admit()?;
         let mut session_guard = match req.chat_session_id.as_deref() {
             Some(session_id) => {
                 Some(acquire_session_control_after_recovery(&self.ctx, session_id).await)
             }
             None => None,
         };
+        if let Some(session_id) = req.chat_session_id.as_deref() {
+            self.ensure_session_not_closing(session_id).await?;
+        }
         let session = self.resolve_or_create_session(&req).await?;
         if session_guard.is_none() {
             session_guard =
@@ -701,8 +827,10 @@ impl AgentSessionRuntimeUsecase {
         session_id: &str,
         opts: StartSessionOptions,
     ) -> Result<(), AgentRuntimeError> {
+        let _admission_guard = self.ctx.shutdown_admission.admit()?;
         let _session_guard = acquire_session_control_after_recovery(&self.ctx, session_id).await;
         ensure_backend_recovery_operation_allowed(&self.ctx, session_id)?;
+        self.ensure_session_not_closing(session_id).await?;
         let mut session = self
             .ctx
             .session_store
@@ -763,6 +891,7 @@ impl AgentSessionRuntimeUsecase {
             .acquire_session_control_after_recovery(session_id)
             .await;
         ensure_backend_recovery_operation_allowed(&self.ctx, session_id)?;
+        self.ensure_session_not_closing(session_id).await?;
         let pending = self
             .pending_permission_for_response(session_id, &response)
             .await?;
@@ -1094,21 +1223,24 @@ impl AgentSessionRuntimeUsecase {
         session_id: &str,
         backend_id: &str,
     ) -> Result<GetSessionResponse, AgentRuntimeError> {
-        let session_guard = acquire_session_control_after_recovery(&self.ctx, session_id).await;
-        ensure_backend_recovery_operation_allowed(&self.ctx, session_id)?;
         let selected_model = self
             .ctx
             .registry
             .default_model_for(backend_id)
             .map_err(AgentRuntimeError::Other)?;
-        self.apply_backend_selection_locked(
-            session_id,
-            backend_id.to_string(),
-            Some(selected_model),
-            true,
-        )
+        self.run_session_close(session_id, SessionCloseMode::Always, || async {
+            ensure_backend_recovery_operation_allowed(&self.ctx, session_id)?;
+            self.ctx
+                .session_store
+                .update_backend_selection(
+                    &self.ctx.data_dir,
+                    session_id,
+                    backend_id.to_string(),
+                    Some(selected_model),
+                )
+                .map_err(AgentRuntimeError::Other)
+        })
         .await?;
-        drop(session_guard);
         self.get_session(session_id)
             .await?
             .ok_or_else(|| AgentRuntimeError::Other(format!("Session not found: {session_id}")))
@@ -1149,7 +1281,8 @@ impl AgentSessionRuntimeUsecase {
             .update_backend_selection(&self.ctx.data_dir, session_id, backend_id, selected_model)
             .map_err(AgentRuntimeError::Other)?;
         if backend_changed || restart_same_backend {
-            self.close_session_locked(session_id).await?;
+            self.begin_session_close_locked(session_id).await?;
+            self.close_session_runtime_locked(session_id).await;
         }
         Ok(backend_changed)
     }
@@ -1173,22 +1306,197 @@ impl AgentSessionRuntimeUsecase {
     /// event log before returning session control, including persisting an
     /// interrupted recovery failure and publishing its user-facing error part.
     pub async fn close_session(&self, session_id: &str) -> Result<(), AgentRuntimeError> {
-        let _session_guard = acquire_session_control_after_recovery(&self.ctx, session_id).await;
-        self.close_session_locked(session_id).await
+        self.run_session_close(session_id, SessionCloseMode::Always, || async { Ok(()) })
+            .await?;
+        Ok(())
     }
 
-    /// Closes the runtime without acquiring session control or waiting for recovery.
-    /// Callers must already own the per-session control guard or intentionally use
-    /// the force-close semantics exposed by [`Self::force_close_session`].
-    async fn close_session_locked(&self, session_id: &str) -> Result<(), AgentRuntimeError> {
-        let runtime = {
+    pub async fn close_session_if_idle(&self, session_id: &str) -> Result<bool, AgentRuntimeError> {
+        Ok(self
+            .run_session_close(session_id, SessionCloseMode::IfIdle, || async { Ok(()) })
+            .await?
+            .is_some())
+    }
+
+    async fn run_session_close<T, F, Fut>(
+        &self,
+        session_id: &str,
+        mode: SessionCloseMode,
+        after_finish: F,
+    ) -> Result<Option<T>, AgentRuntimeError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<T, AgentRuntimeError>>,
+    {
+        let session_guard = acquire_session_control_after_recovery(&self.ctx, session_id).await;
+        let should_drain = match mode {
+            SessionCloseMode::Always => self.begin_session_close_locked(session_id).await?,
+            SessionCloseMode::IfIdle => {
+                let mut sessions = self.ctx.sessions.lock().await;
+                let Some(state) = sessions.get_mut(session_id) else {
+                    return Ok(None);
+                };
+                if state.runtime.is_none()
+                    || state.phase != RuntimeSessionPhase::Idle
+                    || !state.pending_queue.is_empty()
+                {
+                    return Ok(None);
+                }
+                state.closing = true;
+                false
+            }
+        };
+        let session_guard = match mode {
+            SessionCloseMode::Always => {
+                drop(session_guard);
+                if should_drain {
+                    self.drain_closing_turn(session_id).await;
+                }
+                let guard = acquire_session_runtime_lock(&self.ctx.session_locks, session_id).await;
+                publish_durable_turn_start(&self.ctx, session_id, &guard.owner).await;
+                guard
+            }
+            SessionCloseMode::IfIdle => session_guard,
+        };
+        let workflow_notification = self.finalize_session_close_locked(session_id).await?;
+        let output = match after_finish().await {
+            Ok(output) => output,
+            Err(error) => {
+                if let Some(state) = self.ctx.sessions.lock().await.get_mut(session_id) {
+                    state.closing = false;
+                }
+                drop(session_guard);
+                if let Some(workflow_notification) = workflow_notification {
+                    dispatch_workflow_turn_complete_notification(
+                        &self.ctx.workflow_turn_complete_notifier,
+                        workflow_notification,
+                    )
+                    .await;
+                }
+                return Err(error);
+            }
+        };
+        self.close_session_runtime_locked(session_id).await;
+        drop(session_guard);
+        if let Some(workflow_notification) = workflow_notification {
+            dispatch_workflow_turn_complete_notification(
+                &self.ctx.workflow_turn_complete_notifier,
+                workflow_notification,
+            )
+            .await;
+        }
+        Ok(Some(output))
+    }
+
+    pub async fn close_all(&self) -> Result<(), AgentRuntimeError> {
+        self.ctx.shutdown_admission.begin_shutdown();
+        self.ctx.shutdown_admission.wait_for_idle().await;
+        let mut session_ids = {
+            let sessions = self.ctx.sessions.lock().await;
+            sessions.keys().cloned().collect::<Vec<_>>()
+        };
+        let pending_session_ids = {
+            let session_locks = self.ctx.session_locks.map.lock().await;
+            session_locks
+                .iter()
+                .filter(|(_, owner)| owner.durable_turn_start.lock().is_some())
+                .map(|(session_id, _)| session_id.clone())
+                .collect::<Vec<_>>()
+        };
+        for session_id in pending_session_ids {
+            if !session_ids.contains(&session_id) {
+                session_ids.push(session_id);
+            }
+        }
+        let results = futures_util::future::join_all(
+            session_ids
+                .iter()
+                .map(|session_id| self.close_session(session_id)),
+        )
+        .await;
+        let errors = session_ids
+            .iter()
+            .zip(results)
+            .filter_map(|(session_id, result)| {
+                result.err().map(|error| format!("{session_id}: {error}"))
+            })
+            .collect::<Vec<_>>();
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            {
+                let mut sessions = self.ctx.sessions.lock().await;
+                for state in sessions.values_mut() {
+                    state.closing = false;
+                }
+            }
+            self.ctx.shutdown_admission.cancel_shutdown();
+            Err(AgentRuntimeError::Other(format!(
+                "Failed to close agent sessions: {}",
+                errors.join("; ")
+            )))
+        }
+    }
+
+    async fn begin_session_close_locked(
+        &self,
+        session_id: &str,
+    ) -> Result<bool, AgentRuntimeError> {
+        let should_finalize = {
             let mut sessions = self.ctx.sessions.lock().await;
-            sessions.remove(session_id).and_then(|state| state.runtime)
+            let Some(state) = sessions.get_mut(session_id) else {
+                return Ok(false);
+            };
+            state.closing = true;
+            state.phase != RuntimeSessionPhase::Idle
+        };
+        if should_finalize {
+            flush_streaming_update(&self.ctx, session_id, true)
+                .await
+                .map_err(AgentRuntimeError::Other)?;
+        }
+        Ok(should_finalize)
+    }
+
+    async fn finalize_session_close_locked(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<WorkflowTurnCompleteNotification>, AgentRuntimeError> {
+        let should_finalize = {
+            let sessions = self.ctx.sessions.lock().await;
+            sessions
+                .get(session_id)
+                .is_some_and(|state| state.phase != RuntimeSessionPhase::Idle)
+        };
+        let workflow_notification = if should_finalize {
+            complete_turn(
+                &self.ctx,
+                session_id,
+                None,
+                TurnResult::Interrupted {
+                    reason: DomainInterruptReason::SessionClosed,
+                    error: None,
+                },
+            )
+            .await
+            .map_err(AgentRuntimeError::Other)?
+        } else {
+            None
+        };
+        Ok(workflow_notification)
+    }
+
+    async fn close_session_runtime_locked(&self, session_id: &str) {
+        let runtime = {
+            let sessions = self.ctx.sessions.lock().await;
+            sessions
+                .get(session_id)
+                .and_then(|state| state.runtime.clone())
         };
         if let Some(runtime) = runtime {
             runtime.close().await;
         }
-        Ok(())
+        self.ctx.sessions.lock().await.remove(session_id);
     }
 
     /// Closes the live runtime immediately without waiting for backend recovery.
@@ -1199,19 +1507,28 @@ impl AgentSessionRuntimeUsecase {
         &self,
         session_id: &str,
     ) -> Result<(), AgentRuntimeError> {
-        self.close_session_locked(session_id).await
+        self.close_session_runtime_locked(session_id).await;
+        Ok(())
     }
 
-    pub async fn close_all(&self) {
-        let runtimes = {
-            let mut sessions = self.ctx.sessions.lock().await;
-            sessions
-                .drain()
-                .filter_map(|(_, state)| state.runtime)
-                .collect::<Vec<_>>()
-        };
-        for runtime in runtimes {
-            runtime.close().await;
+    async fn drain_closing_turn(&self, session_id: &str) {
+        let deadline = tokio::time::Instant::now() + CLOSE_DRAIN_TIMEOUT;
+        loop {
+            let still_active = {
+                let sessions = self.ctx.sessions.lock().await;
+                sessions
+                    .get(session_id)
+                    .is_some_and(|state| state.phase != RuntimeSessionPhase::Idle)
+            };
+            if !still_active {
+                return;
+            }
+
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return;
+            }
+            tokio::time::sleep(CLOSE_DRAIN_POLL_INTERVAL.min(deadline - now)).await;
         }
     }
 
@@ -1308,7 +1625,7 @@ impl AgentSessionRuntimeUsecase {
         session_id: &str,
     ) -> Result<Option<GetSessionResponse>, AgentRuntimeError> {
         let _session_guard = acquire_session_control_after_recovery(&self.ctx, session_id).await;
-        let Some((session, page)) = self
+        let Some((session, page, last_turn_interruption)) = self
             .ctx
             .session_store
             .get_session_with_latest_page(
@@ -1365,6 +1682,7 @@ impl AgentSessionRuntimeUsecase {
                 total_count,
             }),
             latest_token_usage: latest_token_usage.or(page.latest_token_usage),
+            last_turn_interruption,
         };
         Ok(Some(response))
     }
@@ -1432,12 +1750,19 @@ impl AgentSessionRuntimeUsecase {
         })
     }
 
-    pub async fn is_runtime_busy(&self, session_id: &str) -> bool {
-        self.is_turn_busy(session_id).await
-    }
-
+    #[cfg(test)]
     pub async fn has_live_runtime(&self, session_id: &str) -> bool {
         self.live_runtime(session_id).await.is_some()
+    }
+
+    async fn ensure_session_not_closing(&self, session_id: &str) -> Result<(), AgentRuntimeError> {
+        let sessions = self.ctx.sessions.lock().await;
+        if sessions.get(session_id).is_some_and(|state| state.closing) {
+            return Err(AgentRuntimeError::Other(format!(
+                "Agent session is closing: {session_id}"
+            )));
+        }
+        Ok(())
     }
 
     /// Acquires the per-session runtime lock.
@@ -1448,7 +1773,9 @@ impl AgentSessionRuntimeUsecase {
     /// UI and event notifications, including session state-change emits, must run after the guard
     /// is dropped.
     pub async fn acquire_session_lock(&self, session_id: &str) -> SessionRuntimeLockGuard {
-        acquire_session_runtime_lock(&self.ctx.session_locks, session_id).await
+        let guard = acquire_session_runtime_lock(&self.ctx.session_locks, session_id).await;
+        publish_durable_turn_start(&self.ctx, session_id, &guard.owner).await;
+        guard
     }
 
     /// Waits for backend recovery and acquires exclusive session control.
@@ -1480,7 +1807,7 @@ impl AgentSessionRuntimeUsecase {
         };
         locks
             .get(session_id)
-            .is_some_and(|lock| lock.try_lock().is_err())
+            .is_some_and(|owner| owner.lock.try_lock().is_err())
     }
 
     pub async fn start_turn_locked(
@@ -1491,7 +1818,9 @@ impl AgentSessionRuntimeUsecase {
         base_system_prompt: Option<String>,
         workflow_instructions: Vec<String>,
     ) -> Result<(), AgentRuntimeError> {
+        let _admission_guard = self.ctx.shutdown_admission.admit()?;
         ensure_backend_recovery_operation_allowed(&self.ctx, session_id)?;
+        self.ensure_session_not_closing(session_id).await?;
         let mut session = self
             .ctx
             .session_store
@@ -1825,9 +2154,22 @@ impl AgentSessionRuntimeUsecase {
             )
             .map_err(AgentRuntimeError::Other)?
             .unwrap_or_else(|| human_message.clone());
+        let transition_owner = session_transition_owner(&self.ctx.session_locks, &session.id).await;
+        let mut current_turn_input = QueuedTurnInput::new(
+            payload.prompt.clone(),
+            payload.permission_mode,
+            payload.plan_mode,
+            payload.permission_profile_id.clone(),
+            payload.images.clone(),
+            session.worktree_path.clone(),
+            payload.mentions.clone(),
+            payload.editor_context.clone(),
+        );
+        current_turn_input.existing_human_message_id = Some(human_message.id.clone());
+        current_turn_input.existing_agent_message_id = Some(agent_message_id.clone());
         self.ctx
             .session_store
-            .append_session_event_and_project_state(
+            .append_turn_started_and_project_state(
                 &self.ctx.data_dir,
                 &session.id,
                 AgentSessionEvent::TurnStarted {
@@ -1839,27 +2181,15 @@ impl AgentSessionRuntimeUsecase {
                 },
             )
             .map_err(AgentRuntimeError::Other)?;
-        let generation = {
-            let mut sessions = self.ctx.sessions.lock().await;
-            let state = sessions
-                .entry(session.id.clone())
-                .or_insert_with(|| RuntimeSessionState::new(backend_id.clone()));
-            state.reset_for_turn(turn_id, agent_message_id.clone());
-            let mut current_turn_input = QueuedTurnInput::new(
-                payload.prompt.clone(),
-                payload.permission_mode,
-                payload.plan_mode,
-                payload.permission_profile_id.clone(),
-                payload.images.clone(),
-                session.worktree_path.clone(),
-                payload.mentions.clone(),
-                payload.editor_context.clone(),
-            );
-            current_turn_input.existing_human_message_id = Some(human_message.id.clone());
-            current_turn_input.existing_agent_message_id = state.streaming_message_id.clone();
-            state.current_turn_input = Some(current_turn_input);
-            state.generation
-        };
+        *transition_owner.durable_turn_start.lock() = Some(DurableTurnStart {
+            backend_id,
+            turn_id,
+            agent_message_id: agent_message_id.clone(),
+            current_turn_input,
+        });
+        let generation = publish_durable_turn_start(&self.ctx, &session.id, &transition_owner)
+            .await
+            .expect("durable turn start must be published by its transition owner");
         let runtime = match self
             .ensure_runtime(session, payload.system_prompt.clone())
             .await
@@ -3008,6 +3338,7 @@ async fn acquire_session_control_after_recovery(
                 .is_some_and(|state| state.backend_recovery.is_some())
         };
         if !recovery_started {
+            publish_durable_turn_start(ctx, session_id, &guard.owner).await;
             reconcile_incomplete_backend_recovery(ctx, session_id).await;
             return guard;
         }
@@ -3081,6 +3412,7 @@ async fn reconcile_incomplete_backend_recovery(ctx: &RuntimeContext, session_id:
 pub struct SessionRuntimeLockGuard {
     session_id: String,
     guard: Option<OwnedMutexGuard<()>>,
+    owner: SessionRuntimeLock,
     locks: SessionRuntimeLocks,
     #[cfg(test)]
     test_owner_reservation: TestSessionRuntimeLockOwnerReservation,
@@ -3099,6 +3431,41 @@ impl SessionRuntimeLockGuard {
 /// including the same session recursively. Backend I/O awaits such as process startup and stdin
 /// writes must be limited to the smallest range required for per-session ordering. UI and event
 /// notifications, including session state-change emits, must run after the guard is dropped.
+async fn session_transition_owner(
+    session_locks: &SessionRuntimeLocks,
+    session_id: &str,
+) -> SessionRuntimeLock {
+    let mut locks = session_locks.map.lock().await;
+    let pending_prune = {
+        let mut pending = session_locks
+            .pending_prune
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::mem::take(&mut *pending)
+    };
+    let mut still_referenced = HashSet::new();
+    for pending_session_id in pending_prune {
+        if locks.get(&pending_session_id).is_some_and(|owner| {
+            Arc::strong_count(owner) == 1 && owner.durable_turn_start.lock().is_none()
+        }) {
+            locks.remove(&pending_session_id);
+        } else if locks.contains_key(&pending_session_id) {
+            still_referenced.insert(pending_session_id);
+        }
+    }
+    if !still_referenced.is_empty() {
+        session_locks
+            .pending_prune
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .extend(still_referenced);
+    }
+    locks
+        .entry(session_id.to_string())
+        .or_insert_with(|| Arc::new(SessionTransitionOwner::default()))
+        .clone()
+}
+
 async fn acquire_session_runtime_lock(
     session_locks: &SessionRuntimeLocks,
     session_id: &str,
@@ -3106,46 +3473,34 @@ async fn acquire_session_runtime_lock(
     #[cfg(test)]
     let test_owner_reservation = TestSessionRuntimeLockOwnerReservation::reserve(session_id);
 
-    let lock = {
-        let mut locks = session_locks.map.lock().await;
-        let pending_prune = {
-            let mut pending = session_locks
-                .pending_prune
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            std::mem::take(&mut *pending)
-        };
-        let mut still_referenced = HashSet::new();
-        for pending_session_id in pending_prune {
-            if locks
-                .get(&pending_session_id)
-                .is_some_and(|lock| Arc::strong_count(lock) == 1)
-            {
-                locks.remove(&pending_session_id);
-            } else if locks.contains_key(&pending_session_id) {
-                still_referenced.insert(pending_session_id);
-            }
-        }
-        if !still_referenced.is_empty() {
-            session_locks
-                .pending_prune
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .extend(still_referenced);
-        }
-        locks
-            .entry(session_id.to_string())
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
-    };
-    let guard = lock.lock_owned().await;
+    let owner = session_transition_owner(session_locks, session_id).await;
+    let guard = Arc::clone(&owner.lock).lock_owned().await;
     SessionRuntimeLockGuard {
         session_id: session_id.to_string(),
         guard: Some(guard),
+        owner,
         locks: Arc::clone(session_locks),
         #[cfg(test)]
         test_owner_reservation,
     }
+}
+
+async fn publish_durable_turn_start(
+    ctx: &RuntimeContext,
+    session_id: &str,
+    owner: &SessionTransitionOwner,
+) -> Option<u64> {
+    if owner.durable_turn_start.lock().is_none() {
+        return None;
+    }
+    let mut sessions = ctx.sessions.lock().await;
+    let pending = owner.durable_turn_start.lock().take()?;
+    let state = sessions
+        .entry(session_id.to_string())
+        .or_insert_with(|| RuntimeSessionState::new(pending.backend_id));
+    state.reset_for_turn(pending.turn_id, pending.agent_message_id);
+    state.current_turn_input = Some(pending.current_turn_input);
+    Some(state.generation)
 }
 
 impl Drop for SessionRuntimeLockGuard {
@@ -3506,15 +3861,29 @@ async fn apply_runtime_event(
     runtime_epoch: u64,
     event: AgentRuntimeEvent,
 ) -> RuntimeEventPostActions {
-    let is_current_runtime = {
+    let (is_current_runtime, terminal_committed) = {
         let sessions = ctx.sessions.lock().await;
-        sessions
-            .get(session_id)
-            .is_some_and(|state| state.runtime_epoch == runtime_epoch)
+        sessions.get(session_id).map_or((false, false), |state| {
+            (
+                state.runtime_epoch == runtime_epoch,
+                state.phase != RuntimeSessionPhase::Idle
+                    && state
+                        .current_turn_id
+                        .or(state.last_turn_id)
+                        .is_some_and(|turn_id| state.terminal_turn_id == Some(turn_id)),
+            )
+        })
     };
     if !is_current_runtime {
         log::debug!(
             "dropping {} from stale runtime epoch {runtime_epoch} for {session_id}",
+            runtime_event_kind(&event)
+        );
+        return RuntimeEventPostActions::default();
+    }
+    if terminal_committed && runtime_event_targets_current_turn(&event) {
+        log::debug!(
+            "dropping {} after durable terminal commit for {session_id}",
             runtime_event_kind(&event)
         );
         return RuntimeEventPostActions::default();
@@ -3721,7 +4090,13 @@ async fn apply_runtime_event(
             } else {
                 false
             };
-            let workflow_notification = complete_turn(ctx, session_id, None, result).await;
+            let workflow_notification = match complete_turn(ctx, session_id, None, result).await {
+                Ok(notification) => notification,
+                Err(error) => {
+                    log::warn!("failed to durably complete turn for {session_id}: {error}");
+                    return RuntimeEventPostActions::default();
+                }
+            };
             if wait_for_trailing_fatal {
                 let mut sessions = ctx.sessions.lock().await;
                 if let Some(state) = sessions.get_mut(session_id) {
@@ -3771,8 +4146,9 @@ async fn apply_runtime_event(
                     })
             };
             let mut actions = RuntimeEventPostActions::default();
+            let mut crash_persistence_failed = false;
             if should_complete_crash {
-                actions.workflow_notification = complete_turn(
+                match complete_turn(
                     ctx,
                     session_id,
                     None,
@@ -3781,7 +4157,14 @@ async fn apply_runtime_event(
                         error: Some(message.clone()),
                     },
                 )
-                .await;
+                .await
+                {
+                    Ok(notification) => actions.workflow_notification = notification,
+                    Err(error) => {
+                        log::warn!("failed to durably record fatal turn for {session_id}: {error}");
+                        crash_persistence_failed = true;
+                    }
+                }
             }
             let runtime = {
                 let mut sessions = ctx.sessions.lock().await;
@@ -3793,8 +4176,12 @@ async fn apply_runtime_event(
             {
                 let mut sessions = ctx.sessions.lock().await;
                 if let Some(state) = sessions.get_mut(session_id) {
-                    state.phase = RuntimeSessionPhase::Idle;
-                    state.stall_observation_active = false;
+                    if crash_persistence_failed {
+                        state.rollback_started_turn();
+                    } else {
+                        state.phase = RuntimeSessionPhase::Idle;
+                        state.stall_observation_active = false;
+                    }
                 }
             }
             if !should_complete_crash && !trailing_completed_crash {
@@ -3871,6 +4258,18 @@ async fn apply_runtime_event(
         }
     };
     RuntimeEventPostActions::default()
+}
+
+fn runtime_event_targets_current_turn(event: &AgentRuntimeEvent) -> bool {
+    matches!(
+        event,
+        AgentRuntimeEvent::PartsMerged(_)
+            | AgentRuntimeEvent::PermissionRequested(_)
+            | AgentRuntimeEvent::TokenUsageUpdated(_)
+            | AgentRuntimeEvent::KeepAlive
+            | AgentRuntimeEvent::TurnCompleted(_)
+            | AgentRuntimeEvent::Fatal { .. }
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4006,7 +4405,9 @@ async fn apply_parts(
         );
     }
     if emit_now {
-        flush_streaming_update(ctx, session_id, false).await;
+        if let Err(error) = flush_streaming_update(ctx, session_id, false).await {
+            log::warn!("failed to persist coalesced streaming parts for {session_id}: {error}");
+        }
     } else if let Some(delay) = schedule_delay {
         spawn_delayed_stream_flush(ctx, session_id.to_string(), delay);
     }
@@ -4022,32 +4423,35 @@ fn spawn_delayed_stream_flush(
     spawner.spawn(Box::pin(async move {
         tokio::time::sleep(delay).await;
         let _session_guard = acquire_session_runtime_lock(&ctx.session_locks, &session_id).await;
-        flush_streaming_update(&ctx, &session_id, false).await;
+        if let Err(error) = flush_streaming_update(&ctx, &session_id, false).await {
+            log::warn!("failed to persist delayed streaming parts for {session_id}: {error}");
+        }
     }));
 }
 
-async fn flush_streaming_update(ctx: &RuntimeContext, session_id: &str, force_persist: bool) {
+async fn flush_streaming_update(
+    ctx: &RuntimeContext,
+    session_id: &str,
+    force_persist: bool,
+) -> Result<(), String> {
     let now = std::time::Instant::now();
     let (payload, persist_snapshot, emit_suppressed) = {
         let mut sessions = ctx.sessions.lock().await;
         let Some(state) = sessions.get_mut(session_id) else {
-            return;
+            return Ok(());
         };
         state.stream_flush_scheduled = false;
+        let message_id = state
+            .streaming_message_id
+            .clone()
+            .or_else(|| state.last_agent_message_id.clone());
         let retry = state.retry_stream_delta.take();
         let payload = if let Some(retry) = retry {
-            retry
-        } else {
-            let message_id = state
-                .streaming_message_id
-                .clone()
-                .or_else(|| state.last_agent_message_id.clone());
-            let Some(message_id) = message_id else {
-                return;
+            Some(retry)
+        } else if state.pending_stream_snapshot || !state.pending_stream_parts.is_empty() {
+            let Some(message_id) = message_id.clone() else {
+                return Ok(());
             };
-            if !state.pending_stream_snapshot && state.pending_stream_parts.is_empty() {
-                return;
-            }
             let snapshot = state.pending_stream_snapshot || state.streaming_delta_seq == 0;
             let parts = if snapshot {
                 state.streaming_parts.clone()
@@ -4056,39 +4460,57 @@ async fn flush_streaming_update(ctx: &RuntimeContext, session_id: &str, force_pe
             };
             state.pending_stream_bytes = 0;
             state.pending_stream_snapshot = false;
-            PendingStreamDelta {
+            Some(PendingStreamDelta {
                 message_id,
                 seq: state.streaming_delta_seq.saturating_add(1),
                 snapshot,
                 parts,
                 message: None,
                 authoritative: false,
-            }
+            })
+        } else {
+            None
         };
-        let persist =
+        let persist = message_id.and_then(|message_id| {
             should_persist_streaming_snapshot(state.last_stream_persist_at, now, force_persist)
                 .then(|| {
-                    state.last_stream_persist_at = Some(now);
-                    state.streaming_parts.clone()
-                });
+                    let seq = payload
+                        .as_ref()
+                        .map(|payload| payload.seq)
+                        .unwrap_or_else(|| state.streaming_delta_seq.saturating_add(1));
+                    (message_id, seq, state.streaming_parts.clone())
+                })
+        });
         (payload, persist, state.stream_emit_suppressed)
     };
 
-    if let Some(parts) = persist_snapshot {
-        if let Err(error) = ctx.session_store.persist_message_parts(
+    let persist_result = if let Some((message_id, seq, parts)) = persist_snapshot {
+        match ctx.session_store.persist_message_parts(
             &ctx.data_dir,
             session_id,
-            &payload.message_id,
+            &message_id,
             &parts,
-            payload.seq,
+            seq,
             None,
         ) {
-            log::warn!("failed to persist coalesced streaming parts for {session_id}: {error}");
+            Ok(_) => {
+                if let Some(state) = ctx.sessions.lock().await.get_mut(session_id) {
+                    state.last_stream_persist_at = Some(now);
+                }
+                Ok(())
+            }
+            Err(error) => Err(error),
         }
-    }
+    } else {
+        Ok(())
+    };
+
+    let Some(payload) = payload else {
+        return persist_result;
+    };
 
     if emit_suppressed {
-        return;
+        return persist_result;
     }
 
     let emitted = ctx
@@ -4099,7 +4521,7 @@ async fn flush_streaming_update(ctx: &RuntimeContext, session_id: &str, force_pe
     {
         let mut sessions = ctx.sessions.lock().await;
         let Some(state) = sessions.get_mut(session_id) else {
-            return;
+            return persist_result;
         };
         if emitted {
             state.streaming_delta_seq = state.streaming_delta_seq.max(payload.seq);
@@ -4112,6 +4534,7 @@ async fn flush_streaming_update(ctx: &RuntimeContext, session_id: &str, force_pe
     if let Some(delay) = retry_delay {
         spawn_delayed_stream_flush(ctx, session_id.to_string(), delay);
     }
+    persist_result
 }
 
 async fn emit_streaming_delta_or_retry(
@@ -4582,7 +5005,7 @@ async fn complete_turn(
     session_id: &str,
     expected_generation: Option<u64>,
     result: crate::domain::agent_session::entities::TurnResult,
-) -> Option<WorkflowTurnCompleteNotification> {
+) -> Result<Option<WorkflowTurnCompleteNotification>, String> {
     let emit_crash_snapshot = matches!(
         &result,
         TurnResult::Interrupted {
@@ -4601,34 +5024,125 @@ async fn complete_turn(
         log::debug!(
             "skipping turn completion for {session_id}: turn already completed or generation mismatch (expected={expected_generation:?})"
         );
-        return None;
+        return Ok(None);
     }
-    flush_streaming_update(ctx, session_id, true).await;
+    flush_streaming_update(ctx, session_id, true).await?;
     let completed_at = crate::usecase::agent_session::session::now_timestamp();
     let terminal = terminal_projection(&result);
-    let (
-        message_id,
-        parts,
-        seq,
-        turn_id,
-        started_at,
-        telemetry_dims,
-        pending_permission_state_revision,
-    ) = {
-        let mut sessions = ctx.sessions.lock().await;
-        let state = sessions.get_mut(session_id)?;
+    let (message_id, parts, seq, turn_id, started_at, telemetry_dims) = {
+        let sessions = ctx.sessions.lock().await;
+        let Some(state) = sessions.get(session_id) else {
+            return Ok(None);
+        };
         if state.phase == RuntimeSessionPhase::Idle
             || expected_generation.is_some_and(|generation| state.generation != generation)
         {
-            return None;
+            return Ok(None);
+        }
+        let message_id = state.streaming_message_id.clone();
+        let turn_id = state.current_turn_id.or(state.last_turn_id);
+        let started_at = state.turn_started_at;
+        let telemetry_dims =
+            session_telemetry_dimensions(&ctx.session_store, &ctx.data_dir, session_id);
+        (
+            message_id,
+            state.streaming_parts.clone(),
+            state.streaming_delta_seq,
+            turn_id,
+            started_at,
+            telemetry_dims,
+        )
+    };
+    let mut projected = None;
+    let mut crash_snapshot = None;
+    if let (Some(turn_id), Some(message_id)) = (turn_id, message_id.clone()) {
+        let final_seq = if emit_crash_snapshot {
+            seq.saturating_add(1)
+        } else {
+            seq
+        };
+        let events = final_turn_events(
+            &ctx.session_store,
+            &ctx.data_dir,
+            session_id,
+            turn_id,
+            &message_id,
+            &parts,
+            &terminal,
+        )?;
+        let (model, persisted_parts) = persist_with_retry(
+            ctx,
+            session_id,
+            PersistFailureKind::FinalPartsRecorded,
+            || {
+                ctx.session_store.append_terminal_events_and_materialize(
+                    &ctx.data_dir,
+                    session_id,
+                    &events,
+                    &message_id,
+                    final_seq,
+                    completed_at,
+                )
+            },
+        )
+        .await?;
+        {
+            let mut sessions = ctx.sessions.lock().await;
+            if let Some(state) = sessions.get_mut(session_id) {
+                if state.current_turn_id.or(state.last_turn_id) == Some(turn_id) {
+                    state.terminal_turn_id = Some(turn_id);
+                }
+            }
+        }
+        if emit_crash_snapshot {
+            crash_snapshot = Some(PendingStreamDelta {
+                message_id,
+                seq: final_seq,
+                snapshot: true,
+                parts: persisted_parts,
+                message: None,
+                authoritative: true,
+            });
+        }
+        projected = Some(model);
+    }
+    if let Some(snapshot) = crash_snapshot {
+        emit_streaming_delta_or_retry(ctx, session_id, snapshot).await;
+    }
+    let session_state = projected
+        .as_ref()
+        .map(|model| model.status.session_state.clone())
+        .or_else(|| (!emit_crash_snapshot).then(|| terminal.session_state.clone()));
+    if let Some(projected_state) = session_state.as_ref() {
+        let (exit_code, interrupted) = match projected_state {
+            SessionState::Idle => (0, true),
+            SessionState::Done => (0, false),
+            SessionState::Error => (terminal.exit_code.max(1), terminal.interrupted),
+            _ => (terminal.exit_code, terminal.interrupted),
+        };
+        let lifecycle =
+            crate::usecase::agent_session::session::lifecycle_controller::SessionLifecycleController {
+                session_store: &ctx.session_store,
+                data_dir: &ctx.data_dir,
+            };
+        lifecycle.complete_turn_state(session_id, exit_code, interrupted)?;
+    }
+    let pending_permission_state_revision = {
+        let mut sessions = ctx.sessions.lock().await;
+        let Some(state) = sessions.get_mut(session_id) else {
+            return Ok(None);
+        };
+        if state.phase == RuntimeSessionPhase::Idle
+            || expected_generation.is_some_and(|generation| state.generation != generation)
+        {
+            return Ok(None);
         }
         state.phase = RuntimeSessionPhase::Idle;
         let pending_permission_state_revision = state.clear_pending_permission_request();
         state.permission_wait_started_at = None;
         state.permission_wait_diagnostic_emitted = false;
         state.stall_observation_active = false;
-        let message_id = state.streaming_message_id.clone();
-        state.last_agent_message_id = message_id.clone();
+        state.last_agent_message_id = message_id;
         let usage = match &result {
             crate::domain::agent_session::entities::TurnResult::Completed {
                 token_usage, ..
@@ -4641,108 +5155,17 @@ async fn complete_turn(
         if let Some(usage) = usage {
             state.latest_token_usage = Some(usage);
         }
-        let turn_id = state.current_turn_id.or(state.last_turn_id);
-        let started_at = state.turn_started_at.take();
+        state.turn_started_at = None;
         state.streaming_message_id = None;
         state.current_turn_id = None;
         state.current_turn_input = None;
-        let telemetry_dims =
-            session_telemetry_dimensions(&ctx.session_store, &ctx.data_dir, session_id);
-        (
-            message_id,
-            state.streaming_parts.clone(),
-            state.streaming_delta_seq,
-            turn_id,
-            started_at,
-            telemetry_dims,
-            pending_permission_state_revision,
-        )
+        state.domain_streaming_parts.clear();
+        state.streaming_parts.clear();
+        state.streaming_delta_seq = 0;
+        state.stream_emit_failure_count = 0;
+        state.stream_emit_suppressed = false;
+        pending_permission_state_revision
     };
-    let mut projected = None;
-    let mut crash_snapshot = None;
-    if let (Some(turn_id), Some(message_id)) = (turn_id, message_id.clone()) {
-        let final_seq = if emit_crash_snapshot {
-            seq.saturating_add(1)
-        } else {
-            seq
-        };
-        let materialized = match final_turn_events(
-            &ctx.session_store,
-            &ctx.data_dir,
-            session_id,
-            turn_id,
-            &message_id,
-            &parts,
-            &terminal,
-        ) {
-            Ok(events) => {
-                persist_with_retry(
-                    ctx,
-                    session_id,
-                    PersistFailureKind::FinalPartsRecorded,
-                    || {
-                        ctx.session_store.append_terminal_events_and_materialize(
-                            &ctx.data_dir,
-                            session_id,
-                            &events,
-                            &message_id,
-                            final_seq,
-                            completed_at,
-                        )
-                    },
-                )
-                .await
-            }
-            Err(error) => Err(error),
-        };
-        match materialized {
-            Ok((model, persisted_parts)) => {
-                projected = Some(model);
-                if emit_crash_snapshot {
-                    crash_snapshot = Some(PendingStreamDelta {
-                        message_id,
-                        seq: final_seq,
-                        snapshot: true,
-                        parts: persisted_parts,
-                        message: None,
-                        authoritative: true,
-                    });
-                }
-            }
-            Err(error) => {
-                log::warn!("failed to materialize terminal turn for {session_id}: {error}");
-            }
-        }
-    }
-    if let Some(snapshot) = crash_snapshot {
-        emit_streaming_delta_or_retry(ctx, session_id, snapshot).await;
-    }
-    {
-        let mut sessions = ctx.sessions.lock().await;
-        if let Some(state) = sessions.get_mut(session_id) {
-            state.domain_streaming_parts.clear();
-            state.streaming_parts.clear();
-            state.streaming_delta_seq = 0;
-            state.stream_emit_failure_count = 0;
-            state.stream_emit_suppressed = false;
-        }
-    };
-    let session_state = projected
-        .as_ref()
-        .map(|model| model.status.session_state.clone())
-        .or_else(|| (!emit_crash_snapshot).then(|| terminal.session_state.clone()));
-    let lifecycle =
-        crate::usecase::agent_session::session::lifecycle_controller::SessionLifecycleController {
-            session_store: &ctx.session_store,
-            data_dir: &ctx.data_dir,
-        };
-    if projected.is_some() || !emit_crash_snapshot {
-        if let Err(error) =
-            lifecycle.complete_turn_state(session_id, terminal.exit_code, terminal.interrupted)
-        {
-            log::warn!("failed to persist terminal session state for {session_id}: {error}");
-        }
-    }
     if let (Some(started_at), Some(dims)) = (started_at, telemetry_dims) {
         crate::other::telemetry::record_agent_turn_duration(
             crate::other::telemetry::AgentTurn::Complete,
@@ -4771,25 +5194,25 @@ async fn complete_turn(
             session_state,
         },
     );
-    workflow_notification
+    Ok(workflow_notification)
 }
 
 async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &str) {
-    let (queued, runtime) = {
+    let (queued, runtime, backend_id) = {
         let sessions = ctx.sessions.lock().await;
         let Some(state) = sessions.get(session_id) else {
             return;
         };
-        if state.backend_recovery.is_some() {
-            return;
-        }
-        if state.phase != RuntimeSessionPhase::Idle {
+        if state.closing
+            || state.backend_recovery.is_some()
+            || state.phase != RuntimeSessionPhase::Idle
+        {
             return;
         }
         let Some(queued) = state.pending_queue.front().cloned() else {
             return;
         };
-        (queued, state.runtime.clone())
+        (queued, state.runtime.clone(), state.backend_id.clone())
     };
 
     let Some(session) = (match ctx
@@ -4965,7 +5388,8 @@ async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &str) {
         }
     }
     let prompt = apply_restore_prompt_prefix(queued.content.clone(), &restore_plan);
-    if let Err(error) = ctx.session_store.append_session_event_and_project_state(
+    let transition_owner = session_transition_owner(&ctx.session_locks, session_id).await;
+    if let Err(error) = ctx.session_store.append_turn_started_and_project_state(
         &ctx.data_dir,
         session_id,
         AgentSessionEvent::TurnStarted {
@@ -4979,14 +5403,15 @@ async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &str) {
         log::warn!("failed to append queued TurnStarted for {session_id}: {error}");
         return;
     }
-    let generation = {
-        let mut sessions = ctx.sessions.lock().await;
-        let Some(state) = sessions.get_mut(session_id) else {
-            return;
-        };
-        state.reset_for_turn(turn_id, agent_message.id.clone());
-        state.current_turn_input = Some(queued_for_turn.clone());
-        state.generation
+    *transition_owner.durable_turn_start.lock() = Some(DurableTurnStart {
+        backend_id,
+        turn_id,
+        agent_message_id: agent_message.id.clone(),
+        current_turn_input: queued_for_turn.clone(),
+    });
+    let Some(generation) = publish_durable_turn_start(ctx, session_id, &transition_owner).await
+    else {
+        return;
     };
     if let Err(error) = runtime
         .start_turn(TurnInput {
@@ -5353,11 +5778,7 @@ fn next_turn_id(
     data_dir: &Path,
     session_id: &str,
 ) -> Result<u64, String> {
-    let events = session_store.load_session_events(data_dir, session_id)?;
-    Ok(TurnEventLog::from_events(events)
-        .current_turn_id()
-        .unwrap_or(0)
-        .saturating_add(1))
+    session_store.next_turn_id(data_dir, session_id)
 }
 
 struct PendingPermissionForResponse {
@@ -5566,6 +5987,16 @@ fn final_turn_events(
     parts: &[MessagePart],
     terminal: &TerminalProjection,
 ) -> Result<Vec<AgentSessionEvent>, String> {
+    let existing_events = session_store.load_session_events(data_dir, session_id)?;
+    if existing_events.iter().any(|event| {
+        matches!(
+            event,
+            AgentSessionEvent::TurnCompleted { turn_id: id, .. }
+                | AgentSessionEvent::TurnInterrupted { turn_id: id, .. } if *id == turn_id
+        )
+    }) {
+        return Ok(Vec::new());
+    }
     let mut appended = vec![AgentSessionEvent::FinalPartsRecorded {
         turn_id,
         message_id: message_id.to_string(),
@@ -5584,7 +6015,7 @@ fn final_turn_events(
             });
         }
         TerminalEventProjection::Interrupted { reason, error } => {
-            let mut events = session_store.load_session_events(data_dir, session_id)?;
+            let mut events = existing_events;
             events.extend(appended.iter().cloned());
             let before = events.len();
             finalize_turn(
@@ -5633,6 +6064,9 @@ fn terminal_projection(result: &TurnResult) -> TerminalProjection {
                 }
                 DomainInterruptReason::Crash => {
                     (1, SessionState::Error, EventInterruptReason::Crash)
+                }
+                DomainInterruptReason::SessionClosed => {
+                    (0, SessionState::Idle, EventInterruptReason::SessionClosed)
                 }
             };
             TerminalProjection {
@@ -5921,6 +6355,7 @@ impl AgentSessionRuntime for TestFailingAgentRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adaptor::gateway::agent_session::FileSessionStorage;
     use crate::adaptor::gateway::workflow::StoredWorkspaceSessionGateway;
     use crate::domain::agent_session::gateway::{
         AgentBackend, AgentSessionRuntime, ForkSessionRequest,
@@ -5954,7 +6389,7 @@ mod tests {
     use std::path::Path;
     use std::pin::Pin;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Barrier, Mutex};
     use std::time::Duration;
     use tokio::sync::Notify;
 
@@ -6056,7 +6491,7 @@ mod tests {
         let map = locks.map.lock().await;
         assert!(
             map.get("session-a")
-                .is_some_and(|lock| lock.try_lock().is_err()),
+                .is_some_and(|owner| owner.lock.try_lock().is_err()),
             "an actively held session lock must remain in the registry"
         );
         assert!(map.contains_key("session-b"));
@@ -6799,6 +7234,1488 @@ mod tests {
         pending_permission_request_msg(&permission_request(id)).unwrap()
     }
 
+    #[test]
+    fn terminal_projection_maps_session_closed_to_idle_interruption() {
+        let projection = terminal_projection(&TurnResult::Interrupted {
+            reason: DomainInterruptReason::SessionClosed,
+            error: None,
+        });
+
+        assert_eq!(projection.exit_code, 0);
+        assert!(projection.interrupted);
+        assert_eq!(projection.session_state, SessionState::Idle);
+        assert!(matches!(
+            projection.event,
+            TerminalEventProjection::Interrupted {
+                reason: EventInterruptReason::SessionClosed,
+                error: None,
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn close_session_finalizes_streaming_turn_and_persists_terminal_projection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id.clone();
+        let agent_message_id = response.agent_message.unwrap().id;
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::PartsMerged(vec![DomainMessagePart::Text {
+                    content: "persisted prefix".to_string(),
+                    parent_tool_use_id: None,
+                }]),
+            )
+            .unwrap();
+        wait_for_persisted_text(
+            &session_store,
+            tmp.path(),
+            &session_id,
+            &agent_message_id,
+            "persisted prefix",
+        )
+        .await;
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::PartsMerged(vec![
+                    DomainMessagePart::Text {
+                        content: "close tail".to_string(),
+                        parent_tool_use_id: None,
+                    },
+                    DomainMessagePart::ToolUse {
+                        id: "toolu-1".to_string(),
+                        tool: "Task".to_string(),
+                        input:
+                            crate::domain::agent_session::value_objects::JsonPayload::new_unchecked(
+                                r#"{"run_in_background":true}"#.to_string(),
+                            ),
+                        parent_tool_use_id: None,
+                    },
+                    DomainMessagePart::ToolResult {
+                        content: "background task launched".to_string(),
+                        is_error: false,
+                        tool_use_id: Some("toolu-1".to_string()),
+                        parent_tool_use_id: None,
+                        content_ref: None,
+                        summary: None,
+                    },
+                    DomainMessagePart::ToolUse {
+                        id: "toolu-2".to_string(),
+                        tool: "Read".to_string(),
+                        input:
+                            crate::domain::agent_session::value_objects::JsonPayload::new_unchecked(
+                                "{}".to_string(),
+                            ),
+                        parent_tool_use_id: None,
+                    },
+                ]),
+            )
+            .unwrap();
+        wait_for_streaming_text(&usecase, &session_id, "close tail").await;
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::PermissionRequested(permission_request("perm-close")),
+            )
+            .unwrap();
+        wait_for_turn_phase(&usecase, &session_id, TurnPhase::WaitingPermission).await;
+        let before_close_parts =
+            persisted_message_parts(&session_store, tmp.path(), &session_id, &agent_message_id);
+        assert!(before_close_parts.iter().any(|part| matches!(
+            part,
+            MessagePart::Text { content, .. } if content.contains("persisted prefix")
+        )));
+        assert!(!before_close_parts.iter().any(|part| matches!(
+            part,
+            MessagePart::Text { content, .. } if content.contains("close tail")
+        )));
+        assert!(!before_close_parts
+            .iter()
+            .any(|part| matches!(part, MessagePart::Permission { .. })));
+
+        usecase.close_session(&session_id).await.unwrap();
+
+        let events = session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::TurnInterrupted {
+                reason: EventInterruptReason::SessionClosed,
+                exit_code: 0,
+                ..
+            }
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::ToolCallFailed { tool_use_id, .. } if tool_use_id == "toolu-2"
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::TaskStatusChanged {
+                task_tool_use_id,
+                status,
+                ..
+            } if task_tool_use_id == "toolu-1" && status == "stopped"
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::PermissionResolved {
+                request_id: Some(request_id),
+                decision: crate::usecase::agent_session::event_log::PermissionDecision::Cancelled,
+                ..
+            } if request_id == "perm-close"
+        )));
+        assert!(latest_unresolved_permission_request(&events).is_none());
+        let projected = TurnEventLog::from_events(events).project();
+        assert_eq!(projected.status.session_state, SessionState::Idle);
+        assert_eq!(projected.status.turn_phase, TurnPhase::Idle);
+
+        let reopened = usecase
+            .get_session(&session_id)
+            .await
+            .unwrap()
+            .expect("reopened session");
+        assert_eq!(reopened.turn_phase, TurnPhase::Idle);
+        assert!(reopened.pending_permission_request.is_none());
+        assert_eq!(
+            reopened.last_turn_interruption,
+            Some(crate::usecase::agent_session::session::TurnInterruption {
+                message_id: agent_message_id.clone(),
+                reason:
+                    crate::usecase::agent_session::session::TurnInterruptionReason::SessionClosed,
+            })
+        );
+        let parts = reopened
+            .session
+            .messages
+            .iter()
+            .find(|message| message.id == agent_message_id)
+            .and_then(|message| message.parts.as_ref())
+            .expect("persisted agent parts");
+        assert!(parts.iter().any(|part| matches!(
+            part,
+            MessagePart::Text { content, .. } if content.contains("close tail")
+        )));
+        assert!(parts.iter().any(|part| matches!(
+            part,
+            MessagePart::ToolResult {
+                tool_use_id: Some(tool_use_id),
+                is_error: true,
+                ..
+            } if tool_use_id == "toolu-2"
+        )));
+        assert!(parts.iter().any(|part| matches!(
+            part,
+            MessagePart::ToolResult {
+                tool_use_id: Some(tool_use_id),
+                is_error: false,
+                ..
+            } if tool_use_id == "toolu-1"
+        )));
+        assert!(parts.iter().any(|part| matches!(
+            part,
+            MessagePart::TaskStatus {
+                task_tool_use_id,
+                status,
+                ..
+            } if task_tool_use_id == "toolu-1" && status == "stopped"
+        )));
+        assert!(parts.iter().any(|part| matches!(
+            part,
+            MessagePart::Permission {
+                status: PermissionPartStatus::Cancelled,
+                ..
+            }
+        )));
+        assert!(controller
+            .call_kinds_for(&session_id)
+            .contains(&TestRuntimeCallKind::Close));
+    }
+
+    #[tokio::test]
+    async fn close_session_without_active_turn_does_not_create_interruption() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("claude-4-sonnet".to_string()),
+                plan_mode: false,
+                workflow_node_session: false,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        usecase
+            .start_session(
+                &session.id,
+                StartSessionOptions {
+                    permission_mode: PermissionMode::Edit,
+                    plan_mode: false,
+                },
+            )
+            .await
+            .unwrap();
+        let events_before = session_store
+            .load_session_events(tmp.path(), &session.id)
+            .unwrap();
+
+        usecase.close_session(&session.id).await.unwrap();
+
+        assert_eq!(
+            session_store
+                .load_session_events(tmp.path(), &session.id)
+                .unwrap(),
+            events_before
+        );
+        assert!(controller
+            .call_kinds_for(&session.id)
+            .contains(&TestRuntimeCallKind::Close));
+    }
+
+    #[tokio::test]
+    async fn close_session_keeps_runtime_state_when_force_flush_fails_and_can_retry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+        let fail_once = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        session_store.set_persist_parts_hook_for_test({
+            let fail_once = Arc::clone(&fail_once);
+            Arc::new(move |_, _, _| {
+                if fail_once.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    Err("injected close flush failure".to_string())
+                } else {
+                    Ok(())
+                }
+            })
+        });
+
+        let error = usecase.close_session(&session_id).await.unwrap_err();
+
+        assert!(error.to_string().contains("injected close flush failure"));
+        assert!(usecase.has_live_runtime(&session_id).await);
+        assert_eq!(
+            usecase.turn_phase(&session_id).await,
+            Some(TurnPhase::Streaming)
+        );
+        assert!(!controller
+            .call_kinds_for(&session_id)
+            .contains(&TestRuntimeCallKind::Close));
+        assert!(!session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event, AgentSessionEvent::TurnInterrupted { .. })));
+
+        usecase.close_session(&session_id).await.unwrap();
+        assert!(!usecase.has_live_runtime(&session_id).await);
+    }
+
+    #[tokio::test]
+    async fn close_all_failure_reopens_admission_and_session_transition() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let failed_session_id = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap()
+            .session
+            .id;
+        let successful_session_id = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap()
+            .session
+            .id;
+        let fail_once = Arc::new(AtomicBool::new(true));
+        session_store.set_persist_parts_hook_for_test({
+            let fail_once = Arc::clone(&fail_once);
+            let failed_session_id = failed_session_id.clone();
+            Arc::new(move |session_id, _, _| {
+                if session_id == failed_session_id && fail_once.swap(false, Ordering::SeqCst) {
+                    Err("injected application close flush failure".to_string())
+                } else {
+                    Ok(())
+                }
+            })
+        });
+
+        let error = usecase.close_all().await.unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("injected application close flush failure"));
+        assert!(error.to_string().contains(&failed_session_id));
+        assert!(!usecase.has_live_runtime(&successful_session_id).await);
+        assert!(controller
+            .call_kinds_for(&successful_session_id)
+            .contains(&TestRuntimeCallKind::Close));
+        assert_eq!(
+            session_store
+                .load_session_events(tmp.path(), &successful_session_id)
+                .unwrap()
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    AgentSessionEvent::TurnInterrupted {
+                        reason: EventInterruptReason::SessionClosed,
+                        ..
+                    }
+                ))
+                .count(),
+            1
+        );
+        assert!(usecase.has_live_runtime(&failed_session_id).await);
+        assert!(!session_store
+            .load_session_events(tmp.path(), &failed_session_id)
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event, AgentSessionEvent::TurnInterrupted { .. })));
+        assert!(!usecase.ctx.shutdown_admission.is_shutting_down());
+        assert!(
+            !usecase
+                .ctx
+                .sessions
+                .lock()
+                .await
+                .get(&failed_session_id)
+                .expect("failed session remains")
+                .closing
+        );
+        usecase
+            .send_message(SendAgentMessageRequest {
+                chat_session_id: Some(failed_session_id),
+                worktree_path: tmp.path().to_string_lossy().to_string(),
+                content: "accepted after failed application shutdown".to_string(),
+                permission_mode: PermissionMode::Edit,
+                plan_mode: false,
+                backend_id: Some("claude".to_string()),
+                model_id: None,
+                images: None,
+                mentions: None,
+                editor_context: None,
+            })
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn close_all_finalizes_every_active_session_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let mut session_ids = Vec::new();
+        for _ in 0..2 {
+            session_ids.push(
+                usecase
+                    .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+                    .await
+                    .unwrap()
+                    .session
+                    .id,
+            );
+        }
+
+        usecase.close_all().await.unwrap();
+
+        for session_id in session_ids {
+            assert!(!usecase.has_live_runtime(&session_id).await);
+            assert!(controller
+                .call_kinds_for(&session_id)
+                .contains(&TestRuntimeCallKind::Close));
+            assert_eq!(
+                session_store
+                    .load_session_events(tmp.path(), &session_id)
+                    .unwrap()
+                    .iter()
+                    .filter(|event| matches!(
+                        event,
+                        AgentSessionEvent::TurnInterrupted {
+                            reason: EventInterruptReason::SessionClosed,
+                            ..
+                        }
+                    ))
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn close_session_appends_terminal_batch_atomically_and_can_retry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+        let terminal_failures = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        session_store.set_append_event_hook_for_test({
+            let terminal_failures = Arc::clone(&terminal_failures);
+            Arc::new(move |_, event| {
+                if matches!(event, AgentSessionEvent::TurnInterrupted { .. })
+                    && terminal_failures.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                        < PERSIST_MAX_ATTEMPTS
+                {
+                    Err("injected terminal append failure".to_string())
+                } else {
+                    Ok(())
+                }
+            })
+        });
+
+        let error = usecase.close_session(&session_id).await.unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("injected terminal append failure"));
+        assert!(usecase.has_live_runtime(&session_id).await);
+        assert_eq!(
+            usecase.turn_phase(&session_id).await,
+            Some(TurnPhase::Streaming)
+        );
+        assert!(!controller
+            .call_kinds_for(&session_id)
+            .contains(&TestRuntimeCallKind::Close));
+        let failed_events = session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap();
+        assert!(!failed_events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::FinalPartsRecorded { .. }
+                | AgentSessionEvent::TurnInterrupted { .. }
+        )));
+
+        usecase.close_session(&session_id).await.unwrap();
+        let events = session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, AgentSessionEvent::TurnInterrupted { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn close_session_rolls_back_terminal_when_message_persist_fails_and_can_retry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+        let agent_message_id = response.agent_message.unwrap().id;
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::PartsMerged(vec![DomainMessagePart::Text {
+                    content: "text committed before terminal".to_string(),
+                    parent_tool_use_id: None,
+                }]),
+            )
+            .unwrap();
+        wait_for_streaming_text(&usecase, &session_id, "text committed before terminal").await;
+        let persist_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        session_store.set_persist_parts_hook_for_test({
+            let persist_count = Arc::clone(&persist_count);
+            Arc::new(move |_, _, _| {
+                let call = persist_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if (2..2 + PERSIST_MAX_ATTEMPTS).contains(&call) {
+                    Err("injected final message persist failure".to_string())
+                } else {
+                    Ok(())
+                }
+            })
+        });
+
+        let error = usecase.close_session(&session_id).await.unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("injected final message persist failure"));
+        assert!(usecase.has_live_runtime(&session_id).await);
+        assert_eq!(
+            usecase.turn_phase(&session_id).await,
+            Some(TurnPhase::Streaming)
+        );
+        assert!(!controller
+            .call_kinds_for(&session_id)
+            .contains(&TestRuntimeCallKind::Close));
+        let events_after_terminal = session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap();
+        assert_eq!(
+            events_after_terminal
+                .iter()
+                .filter(|event| matches!(event, AgentSessionEvent::TurnInterrupted { .. }))
+                .count(),
+            0
+        );
+
+        usecase.close_session(&session_id).await.unwrap();
+        assert!(!usecase.has_live_runtime(&session_id).await);
+        let events = session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, AgentSessionEvent::TurnInterrupted { .. }))
+                .count(),
+            1
+        );
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::PermissionRequested { request, .. }
+                if request.id == "late-permission"
+        )));
+        let persisted_parts =
+            persisted_message_parts(&session_store, tmp.path(), &session_id, &agent_message_id);
+        assert!(persisted_parts.iter().any(|part| matches!(
+            part,
+            MessagePart::Text { content, .. } if content.contains("text committed before terminal")
+        )));
+    }
+
+    #[tokio::test]
+    async fn set_session_backend_finalizes_active_turn_before_runtime_close() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+
+        let switched = usecase
+            .set_session_backend(&session_id, "codex")
+            .await
+            .unwrap();
+
+        assert_eq!(switched.session.backend_id.as_deref(), Some("codex"));
+        let events = session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::TurnInterrupted {
+                reason: EventInterruptReason::SessionClosed,
+                ..
+            }
+        )));
+        assert!(controller
+            .call_kinds_for(&session_id)
+            .contains(&TestRuntimeCallKind::Close));
+    }
+
+    #[tokio::test]
+    async fn set_session_backend_serializes_competing_send_with_runtime_transition() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, _controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+        let switch_task = tokio::spawn({
+            let usecase = Arc::clone(&usecase);
+            let session_id = session_id.clone();
+            async move { usecase.set_session_backend(&session_id, "codex").await }
+        });
+        wait_for_session_closing(&usecase, &session_id).await;
+
+        let during_transition = session_store
+            .get_session_meta(tmp.path(), &session_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(during_transition.backend_id, "claude");
+        let send_error = usecase
+            .send_message(SendAgentMessageRequest {
+                chat_session_id: Some(session_id.clone()),
+                worktree_path: tmp.path().to_string_lossy().to_string(),
+                content: "competing backend send".to_string(),
+                permission_mode: PermissionMode::Edit,
+                plan_mode: false,
+                backend_id: Some("claude".to_string()),
+                model_id: None,
+                images: None,
+                mentions: None,
+                editor_context: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(send_error.to_string().contains("Agent session is closing"));
+
+        let switched = switch_task.await.unwrap().unwrap();
+        assert_eq!(switched.session.backend_id.as_deref(), Some("codex"));
+        assert!(!usecase.has_live_runtime(&session_id).await);
+        let resumed = usecase
+            .send_message(SendAgentMessageRequest {
+                chat_session_id: Some(session_id.clone()),
+                worktree_path: tmp.path().to_string_lossy().to_string(),
+                content: "send after backend switch".to_string(),
+                permission_mode: PermissionMode::Edit,
+                plan_mode: false,
+                backend_id: Some("codex".to_string()),
+                model_id: None,
+                images: None,
+                mentions: None,
+                editor_context: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(resumed.session.backend_id.as_deref(), Some("codex"));
+        let sessions = usecase.ctx.sessions.lock().await;
+        assert_eq!(
+            sessions
+                .get(&session_id)
+                .map(|state| state.backend_id.as_str()),
+            Some("codex")
+        );
+    }
+
+    #[tokio::test]
+    async fn close_all_finalizes_active_turn_for_fresh_runtime_restore() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let agent_message_id = response.agent_message.unwrap().id;
+        let session_id = response.session.id;
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::PartsMerged(vec![DomainMessagePart::Text {
+                    content: "persisted prefix".to_string(),
+                    parent_tool_use_id: None,
+                }]),
+            )
+            .unwrap();
+        wait_for_persisted_text(
+            &session_store,
+            tmp.path(),
+            &session_id,
+            &agent_message_id,
+            "persisted prefix",
+        )
+        .await;
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::PartsMerged(vec![
+                    DomainMessagePart::Text {
+                        content: "shutdown tail".to_string(),
+                        parent_tool_use_id: None,
+                    },
+                    DomainMessagePart::ToolUse {
+                        id: "toolu-shutdown".to_string(),
+                        tool: "Task".to_string(),
+                        input:
+                            crate::domain::agent_session::value_objects::JsonPayload::new_unchecked(
+                                r#"{"run_in_background":true}"#.to_string(),
+                            ),
+                        parent_tool_use_id: None,
+                    },
+                    DomainMessagePart::ToolResult {
+                        content: "background task launched".to_string(),
+                        is_error: false,
+                        tool_use_id: Some("toolu-shutdown".to_string()),
+                        parent_tool_use_id: None,
+                        content_ref: None,
+                        summary: None,
+                    },
+                ]),
+            )
+            .unwrap();
+        wait_for_streaming_text(&usecase, &session_id, "shutdown tail").await;
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::PermissionRequested(permission_request("perm-shutdown")),
+            )
+            .unwrap();
+        wait_for_turn_phase(&usecase, &session_id, TurnPhase::WaitingPermission).await;
+        let before_shutdown_parts =
+            persisted_message_parts(&session_store, tmp.path(), &session_id, &agent_message_id);
+        assert!(before_shutdown_parts.iter().any(|part| matches!(
+            part,
+            MessagePart::Text { content, .. } if content.contains("persisted prefix")
+        )));
+        assert!(!before_shutdown_parts.iter().any(|part| matches!(
+            part,
+            MessagePart::Text { content, .. } if content.contains("shutdown tail")
+        )));
+        assert!(!before_shutdown_parts
+            .iter()
+            .any(|part| matches!(part, MessagePart::Permission { .. })));
+
+        usecase.close_all().await.unwrap();
+        drop(usecase);
+        let restarted =
+            crate::test_support::build_agent_runtime_usecase(session_store.clone(), tmp.path());
+
+        let reopened = restarted
+            .get_session(&session_id)
+            .await
+            .unwrap()
+            .expect("restored session");
+        assert_eq!(reopened.turn_phase, TurnPhase::Idle);
+        assert_eq!(
+            reopened.last_turn_interruption,
+            Some(crate::usecase::agent_session::session::TurnInterruption {
+                message_id: agent_message_id.clone(),
+                reason:
+                    crate::usecase::agent_session::session::TurnInterruptionReason::SessionClosed,
+            })
+        );
+        assert!(reopened.pending_permission_request.is_none());
+        assert!(reopened.session.messages.iter().any(|message| {
+            message.parts.as_ref().is_some_and(|parts| {
+                parts.iter().any(|part| {
+                    matches!(
+                        part,
+                        MessagePart::Text { content, .. } if content.contains("shutdown tail")
+                    )
+                })
+            })
+        }));
+        let parts = reopened
+            .session
+            .messages
+            .iter()
+            .find(|message| message.id == agent_message_id)
+            .and_then(|message| message.parts.as_ref())
+            .expect("persisted shutdown parts");
+        assert!(parts.iter().any(|part| matches!(
+            part,
+            MessagePart::TaskStatus {
+                task_tool_use_id,
+                status,
+                ..
+            } if task_tool_use_id == "toolu-shutdown" && status == "stopped"
+        )));
+        assert!(parts.iter().any(|part| matches!(
+            part,
+            MessagePart::Permission {
+                status: PermissionPartStatus::Cancelled,
+                ..
+            }
+        )));
+        let events = session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::TurnInterrupted {
+                reason: EventInterruptReason::SessionClosed,
+                ..
+            }
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::TaskStatusChanged {
+                task_tool_use_id,
+                status,
+                ..
+            } if task_tool_use_id == "toolu-shutdown" && status == "stopped"
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::PermissionResolved {
+                request_id: Some(request_id),
+                decision: crate::usecase::agent_session::event_log::PermissionDecision::Cancelled,
+                ..
+            } if request_id == "perm-shutdown"
+        )));
+        assert!(latest_unresolved_permission_request(&events).is_none());
+        assert!(controller
+            .call_kinds_for(&session_id)
+            .contains(&TestRuntimeCallKind::Close));
+    }
+
+    #[tokio::test]
+    async fn close_session_drains_competing_backend_completion_without_overwrite() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+        let close_task = tokio::spawn({
+            let usecase = Arc::clone(&usecase);
+            let session_id = session_id.clone();
+            async move { usecase.close_session(&session_id).await }
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!close_task.is_finished());
+
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::TurnCompleted(TurnResult::Completed {
+                    stop_reason: None,
+                    token_usage: None,
+                }),
+            )
+            .unwrap();
+        close_task.await.unwrap().unwrap();
+
+        let events = session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap();
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, AgentSessionEvent::TurnCompleted { .. })));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::TurnInterrupted {
+                reason: EventInterruptReason::SessionClosed,
+                ..
+            }
+        )));
+    }
+
+    #[tokio::test]
+    async fn close_session_waits_for_competing_send_message_before_finalizing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("claude-4-sonnet".to_string()),
+                plan_mode: false,
+                workflow_node_session: false,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        controller.pause_start_turn();
+        let send_task = tokio::spawn({
+            let usecase = Arc::clone(&usecase);
+            let session_id = session.id.clone();
+            let worktree_path = tmp.path().to_string_lossy().to_string();
+            async move {
+                usecase
+                    .send_message(SendAgentMessageRequest {
+                        chat_session_id: Some(session_id),
+                        worktree_path,
+                        content: "competing send".to_string(),
+                        permission_mode: PermissionMode::Edit,
+                        plan_mode: false,
+                        backend_id: Some("claude".to_string()),
+                        model_id: None,
+                        images: None,
+                        mentions: None,
+                        editor_context: None,
+                    })
+                    .await
+            }
+        });
+        wait_for_call(&controller, &session.id, TestRuntimeCallKind::StartTurn).await;
+
+        let close_task = tokio::spawn({
+            let usecase = Arc::clone(&usecase);
+            let session_id = session.id.clone();
+            async move { usecase.close_session(&session_id).await }
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!close_task.is_finished());
+
+        controller.release_start_turn();
+        send_task.await.unwrap().unwrap();
+        close_task.await.unwrap().unwrap();
+
+        assert!(!usecase.has_live_runtime(&session.id).await);
+        assert!(session_store
+            .load_session_events(tmp.path(), &session.id)
+            .unwrap()
+            .iter()
+            .any(|event| matches!(
+                event,
+                AgentSessionEvent::TurnInterrupted {
+                    reason: EventInterruptReason::SessionClosed,
+                    ..
+                }
+            )));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn blocked_turn_start_does_not_block_other_session_and_remains_terminalizable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = Arc::new(FileSessionStorage::default());
+        let session_store = Arc::new(SessionStore::new(storage.clone()));
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("claude-4-sonnet".to_string()),
+                plan_mode: false,
+                workflow_node_session: true,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        let unrelated_session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("claude-4-sonnet".to_string()),
+                plan_mode: false,
+                workflow_node_session: false,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        usecase
+            .start_session(
+                &unrelated_session.id,
+                StartSessionOptions {
+                    permission_mode: PermissionMode::Edit,
+                    plan_mode: false,
+                },
+            )
+            .await
+            .unwrap();
+        storage.reset_event_read_count();
+        let hook_entered = Arc::new(Barrier::new(2));
+        let release_hook = Arc::new(Barrier::new(2));
+        let global_registry_was_available = Arc::new(AtomicBool::new(false));
+        session_store.set_appended_event_hook_for_test({
+            let sessions = Arc::clone(&usecase.ctx.sessions);
+            let session_id = session.id.clone();
+            let hook_entered = Arc::clone(&hook_entered);
+            let release_hook = Arc::clone(&release_hook);
+            let global_registry_was_available = Arc::clone(&global_registry_was_available);
+            Arc::new(move |event_session_id, event| {
+                if event_session_id == session_id
+                    && matches!(event, AgentSessionEvent::TurnStarted { .. })
+                {
+                    global_registry_was_available
+                        .store(sessions.try_lock().is_ok(), Ordering::SeqCst);
+                    hook_entered.wait();
+                    release_hook.wait();
+                }
+            })
+        });
+        controller.pause_start_turn();
+        let start_task = tokio::spawn({
+            let usecase = Arc::clone(&usecase);
+            let session_id = session.id.clone();
+            async move {
+                let _session_guard = usecase.acquire_session_lock(&session_id).await;
+                usecase
+                    .start_turn_locked(
+                        &session_id,
+                        PermissionMode::Edit,
+                        "cancel during durable start".to_string(),
+                        None,
+                        Vec::new(),
+                    )
+                    .await
+            }
+        });
+
+        hook_entered.wait();
+        assert_eq!(storage.event_read_count(), 0);
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            usecase.close_session(&unrelated_session.id),
+        )
+        .await
+        .expect("unrelated session close must not wait for another session's append")
+        .unwrap();
+        let global_registry_guard = usecase.ctx.sessions.lock().await;
+        start_task.abort();
+        release_hook.wait();
+        assert!(start_task.await.unwrap_err().is_cancelled());
+        drop(global_registry_guard);
+        assert!(global_registry_was_available.load(Ordering::SeqCst));
+
+        usecase.close_all().await.unwrap();
+
+        let events = session_store
+            .load_session_events(tmp.path(), &session.id)
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    AgentSessionEvent::TurnInterrupted {
+                        reason: EventInterruptReason::SessionClosed,
+                        ..
+                    }
+                ))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn conditional_idle_close_keeps_turn_that_wins_session_transition() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("claude-4-sonnet".to_string()),
+                plan_mode: false,
+                workflow_node_session: true,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        usecase
+            .start_session(
+                &session.id,
+                StartSessionOptions {
+                    permission_mode: PermissionMode::Edit,
+                    plan_mode: false,
+                },
+            )
+            .await
+            .unwrap();
+        controller.pause_start_turn();
+        let transition_guard = usecase.acquire_session_lock(&session.id).await;
+        let send_task = tokio::spawn({
+            let usecase = Arc::clone(&usecase);
+            let session_id = session.id.clone();
+            let worktree_path = tmp.path().to_string_lossy().to_string();
+            async move {
+                usecase
+                    .send_message(SendAgentMessageRequest {
+                        chat_session_id: Some(session_id),
+                        worktree_path,
+                        content: "turn wins transition".to_string(),
+                        permission_mode: PermissionMode::Edit,
+                        plan_mode: false,
+                        backend_id: Some("claude".to_string()),
+                        model_id: None,
+                        images: None,
+                        mentions: None,
+                        editor_context: None,
+                    })
+                    .await
+            }
+        });
+        tokio::task::yield_now().await;
+        let close_task = tokio::spawn({
+            let usecase = Arc::clone(&usecase);
+            let session_id = session.id.clone();
+            async move { usecase.close_session_if_idle(&session_id).await }
+        });
+        tokio::task::yield_now().await;
+        drop(transition_guard);
+        wait_for_call(&controller, &session.id, TestRuntimeCallKind::StartTurn).await;
+        assert!(!close_task.is_finished());
+
+        controller.release_start_turn();
+        send_task.await.unwrap().unwrap();
+        assert!(!close_task.await.unwrap().unwrap());
+
+        assert!(usecase.has_live_runtime(&session.id).await);
+        assert_eq!(
+            usecase.turn_phase(&session.id).await,
+            Some(TurnPhase::Streaming)
+        );
+        assert!(!session_store
+            .load_session_events(tmp.path(), &session.id)
+            .unwrap()
+            .iter()
+            .any(|event| matches!(
+                event,
+                AgentSessionEvent::TurnInterrupted {
+                    reason: EventInterruptReason::SessionClosed,
+                    ..
+                }
+            )));
+        usecase.close_session(&session.id).await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn close_all_waits_for_admitted_send_before_snapshotting_sessions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("claude-4-sonnet".to_string()),
+                plan_mode: false,
+                workflow_node_session: false,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        let hook_entered = Arc::new(Barrier::new(2));
+        let release_hook = Arc::new(Barrier::new(2));
+        let blocked = Arc::new(AtomicBool::new(false));
+        session_store.set_append_event_hook_for_test({
+            let session_id = session.id.clone();
+            let hook_entered = Arc::clone(&hook_entered);
+            let release_hook = Arc::clone(&release_hook);
+            let blocked = Arc::clone(&blocked);
+            Arc::new(move |event_session_id, event| {
+                if event_session_id == session_id
+                    && matches!(event, AgentSessionEvent::TurnStarted { .. })
+                    && !blocked.swap(true, Ordering::SeqCst)
+                {
+                    hook_entered.wait();
+                    release_hook.wait();
+                }
+                Ok(())
+            })
+        });
+        controller.pause_start_turn();
+        let send_task = tokio::spawn({
+            let usecase = Arc::clone(&usecase);
+            let session_id = session.id.clone();
+            let worktree_path = tmp.path().to_string_lossy().to_string();
+            async move {
+                usecase
+                    .send_message(SendAgentMessageRequest {
+                        chat_session_id: Some(session_id),
+                        worktree_path,
+                        content: "admitted before shutdown".to_string(),
+                        permission_mode: PermissionMode::Edit,
+                        plan_mode: false,
+                        backend_id: Some("claude".to_string()),
+                        model_id: None,
+                        images: None,
+                        mentions: None,
+                        editor_context: None,
+                    })
+                    .await
+            }
+        });
+
+        hook_entered.wait();
+        let close_task = tokio::spawn({
+            let usecase = Arc::clone(&usecase);
+            async move { usecase.close_all().await }
+        });
+        let shutdown_deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while !usecase.ctx.shutdown_admission.is_shutting_down() {
+            assert!(std::time::Instant::now() < shutdown_deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(!close_task.is_finished());
+        release_hook.wait();
+
+        let send_error = usecase
+            .send_message(SendAgentMessageRequest {
+                chat_session_id: Some(session.id.clone()),
+                worktree_path: tmp.path().to_string_lossy().to_string(),
+                content: "rejected after shutdown".to_string(),
+                permission_mode: PermissionMode::Edit,
+                plan_mode: false,
+                backend_id: Some("claude".to_string()),
+                model_id: None,
+                images: None,
+                mentions: None,
+                editor_context: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(send_error.to_string().contains("runtime is shutting down"));
+        let start_error = usecase
+            .start_session(
+                &session.id,
+                StartSessionOptions {
+                    permission_mode: PermissionMode::Edit,
+                    plan_mode: false,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(start_error.to_string().contains("runtime is shutting down"));
+
+        wait_for_call(&controller, &session.id, TestRuntimeCallKind::StartTurn).await;
+        assert!(!close_task.is_finished());
+        controller.release_start_turn();
+        send_task.await.unwrap().unwrap();
+        close_task.await.unwrap().unwrap();
+
+        let events = session_store
+            .load_session_events(tmp.path(), &session.id)
+            .unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::TurnInterrupted {
+                reason: EventInterruptReason::SessionClosed,
+                ..
+            }
+        )));
+        assert!(controller
+            .call_kinds_for(&session.id)
+            .contains(&TestRuntimeCallKind::Close));
+    }
+
+    #[tokio::test]
+    async fn close_session_waits_for_competing_permission_response_before_finalizing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::PermissionRequested(permission_request("perm-close-race")),
+            )
+            .unwrap();
+        wait_for_turn_phase(&usecase, &session_id, TurnPhase::WaitingPermission).await;
+        controller.pause_respond_permission();
+        let response_task = tokio::spawn({
+            let usecase = Arc::clone(&usecase);
+            let session_id = session_id.clone();
+            async move {
+                usecase
+                    .respond_permission(
+                        &session_id,
+                        PermissionResponse {
+                            request_id: "perm-close-race".to_string(),
+                            decision: PermissionResponseDecision::Allow {
+                                updated_input: None,
+                                answers: None,
+                            },
+                        },
+                    )
+                    .await
+            }
+        });
+        wait_for_call(
+            &controller,
+            &session_id,
+            TestRuntimeCallKind::RespondPermission {
+                request_id: "perm-close-race".to_string(),
+            },
+        )
+        .await;
+
+        let close_task = tokio::spawn({
+            let usecase = Arc::clone(&usecase);
+            let session_id = session_id.clone();
+            async move { usecase.close_session(&session_id).await }
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!close_task.is_finished());
+
+        controller.release_respond_permission();
+        response_task.await.unwrap().unwrap();
+        close_task.await.unwrap().unwrap();
+
+        let events = session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::PermissionResolved {
+                request_id: Some(request_id),
+                decision: crate::usecase::agent_session::event_log::PermissionDecision::Allowed,
+                ..
+            } if request_id == "perm-close-race"
+        )));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::PermissionResolved {
+                request_id: Some(request_id),
+                decision: crate::usecase::agent_session::event_log::PermissionDecision::Cancelled,
+                ..
+            } if request_id == "perm-close-race"
+        )));
+    }
+
+    #[tokio::test]
+    async fn close_session_rejects_new_send_while_event_drain_is_active() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, _controller) =
+            build_agent_runtime_usecase_with_controller(session_store, tmp.path());
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+        let close_task = tokio::spawn({
+            let usecase = Arc::clone(&usecase);
+            let session_id = session_id.clone();
+            async move { usecase.close_session(&session_id).await }
+        });
+        wait_for_session_closing(&usecase, &session_id).await;
+
+        let error = usecase
+            .send_message(SendAgentMessageRequest {
+                chat_session_id: Some(session_id.clone()),
+                worktree_path: tmp.path().to_string_lossy().to_string(),
+                content: "too late".to_string(),
+                permission_mode: PermissionMode::Edit,
+                plan_mode: false,
+                backend_id: Some("claude".to_string()),
+                model_id: None,
+                images: None,
+                mentions: None,
+                editor_context: None,
+            })
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("Agent session is closing"));
+        close_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn get_session_reads_interruption_projection_without_loading_long_event_log() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = Arc::new(FileSessionStorage::default());
+        let session_store = Arc::new(SessionStore::new(storage.clone()));
+        let (usecase, _controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("claude-4-sonnet".to_string()),
+                plan_mode: false,
+                workflow_node_session: false,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        session_store
+            .append_session_event_and_project_state(
+                tmp.path(),
+                &session.id,
+                AgentSessionEvent::TurnStarted {
+                    turn_id: 1,
+                    message_id: "human-long".to_string(),
+                    assistant_message_id: Some("agent-long".to_string()),
+                    prompt: PromptInput::default(),
+                    at: 1.0,
+                },
+            )
+            .unwrap();
+        for index in 0..500 {
+            session_store
+                .append_session_event_without_projection(
+                    tmp.path(),
+                    &session.id,
+                    AgentSessionEvent::TextRecorded {
+                        turn_id: 1,
+                        message_id: "agent-long".to_string(),
+                        content: format!("chunk-{index}"),
+                        parent_tool_use_id: None,
+                    },
+                )
+                .unwrap();
+        }
+        session_store
+            .append_session_event_and_project_state(
+                tmp.path(),
+                &session.id,
+                AgentSessionEvent::TurnInterrupted {
+                    turn_id: 1,
+                    reason: EventInterruptReason::SessionClosed,
+                    exit_code: 0,
+                    error: None,
+                },
+            )
+            .unwrap();
+        storage.reset_event_read_count();
+
+        let response = usecase
+            .get_session(&session.id)
+            .await
+            .unwrap()
+            .expect("session response");
+
+        assert_eq!(
+            response.last_turn_interruption,
+            Some(crate::usecase::agent_session::session::TurnInterruption {
+                message_id: "agent-long".to_string(),
+                reason:
+                    crate::usecase::agent_session::session::TurnInterruptionReason::SessionClosed,
+            })
+        );
+        assert_eq!(storage.event_read_count(), 0);
+    }
+
     #[tokio::test]
     async fn get_session_returns_in_memory_pending_permission_request() {
         let tmp = tempfile::tempdir().unwrap();
@@ -7503,6 +9420,83 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 if usecase.turn_phase(session_id).await == Some(phase) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    fn persisted_message_parts(
+        session_store: &SessionStore,
+        data_dir: &Path,
+        session_id: &str,
+        message_id: &str,
+    ) -> Vec<MessagePart> {
+        session_store
+            .load_full_session_for_restore(data_dir, session_id)
+            .unwrap()
+            .expect("persisted session")
+            .messages
+            .into_iter()
+            .find(|message| message.id == message_id)
+            .and_then(|message| message.parts)
+            .unwrap_or_default()
+    }
+
+    async fn wait_for_persisted_text(
+        session_store: &SessionStore,
+        data_dir: &Path,
+        session_id: &str,
+        message_id: &str,
+        expected: &str,
+    ) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if persisted_message_parts(session_store, data_dir, session_id, message_id)
+                    .iter()
+                    .any(|part| {
+                        matches!(part, MessagePart::Text { content, .. } if content.contains(expected))
+                    })
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn wait_for_streaming_text(
+        usecase: &AgentSessionRuntimeUsecase,
+        session_id: &str,
+        expected: &str,
+    ) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if usecase.streaming_parts(session_id).await.iter().any(|part| {
+                    matches!(part, MessagePart::Text { content, .. } if content.contains(expected))
+                }) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn wait_for_session_closing(usecase: &AgentSessionRuntimeUsecase, session_id: &str) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let closing = {
+                    let sessions = usecase.ctx.sessions.lock().await;
+                    sessions.get(session_id).is_some_and(|state| state.closing)
+                };
+                if closing {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(5)).await;
@@ -8517,7 +10511,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn turn_completed_append_failure_retries_and_keeps_notice_visible() {
+    async fn turn_completed_append_failure_retries_and_keeps_turn_retryable() {
         let tmp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(build_session_store());
         let event_notifier = Arc::new(RecordingAgentNotifier::default());
@@ -8569,7 +10563,10 @@ mod tests {
         })
         .await
         .expect("turn completion persistence should exhaust retries");
-        wait_for_turn_phase(&usecase, &session_id, TurnPhase::Idle).await;
+        assert_eq!(
+            usecase.turn_phase(&session_id).await,
+            Some(TurnPhase::Streaming)
+        );
 
         assert_eq!(
             attempts.load(std::sync::atomic::Ordering::SeqCst),
@@ -8694,7 +10691,10 @@ mod tests {
         })
         .await
         .expect("final parts persistence should exhaust retries");
-        wait_for_turn_phase(&usecase, &session_id, TurnPhase::Idle).await;
+        assert_eq!(
+            usecase.turn_phase(&session_id).await,
+            Some(TurnPhase::Streaming)
+        );
 
         let fresh_store = build_session_store();
         let reloaded = fresh_store
@@ -9936,7 +11936,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn backend_selection_mutations_reject_each_locked_session_state() {
+    async fn cross_backend_set_model_rejects_each_locked_session_state() {
         #[derive(Clone, Copy)]
         enum LockedState {
             Messages,
@@ -9949,7 +11949,7 @@ mod tests {
             LockedState::AgentSessionId,
             LockedState::ActiveTurn,
         ] {
-            for use_set_model in [false, true] {
+            {
                 let tmp = tempfile::tempdir().unwrap();
                 let session_store = Arc::new(build_session_store());
                 let (usecase, controller) =
@@ -10009,17 +12009,10 @@ mod tests {
                     }
                 }
 
-                let result = if use_set_model {
-                    usecase
-                        .set_model(&session.id, "codex:gpt-5")
-                        .await
-                        .map(|_| ())
-                } else {
-                    usecase
-                        .set_session_backend(&session.id, "codex")
-                        .await
-                        .map(|_| ())
-                };
+                let result = usecase
+                    .set_model(&session.id, "codex:gpt-5")
+                    .await
+                    .map(|_| ());
 
                 assert_eq!(result, Err(AgentRuntimeError::BackendSelectionLocked));
                 let saved = session_store

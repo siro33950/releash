@@ -1609,7 +1609,6 @@ impl WorkflowRuntimeService {
             let _ = self
                 .interrupt_active_execution(
                     app,
-                    session_store,
                     agent_runtime,
                     &execution_id,
                     ExecutionInterruptionReason::Crash,
@@ -2111,7 +2110,6 @@ impl WorkflowRuntimeService {
             if let Some(reason) = interruption_reason {
                 self.interrupt_active_execution(
                     app,
-                    session_store,
                     agent_runtime,
                     &session_ref.execution_id,
                     reason,
@@ -2380,8 +2378,6 @@ impl WorkflowRuntimeService {
         .await?;
 
         workflow_runtime_session::release_completed_node_sessions(
-            app,
-            session_store,
             agent_runtime,
             &completed_node_session_ids,
         )
@@ -2701,8 +2697,6 @@ impl WorkflowRuntimeService {
         // broadcast / terminal log / cleanup / 次 node 起動 / auto-approve primitive は
         // ここで実行する。
         workflow_runtime_session::release_completed_node_sessions(
-            app,
-            session_store,
             agent_runtime,
             &completed_node_session_ids,
         )
@@ -3296,7 +3290,6 @@ impl WorkflowRuntimeService {
                 if let NodeOutcome::Persist(snapshot) = outcome {
                     self.persist_release_and_broadcast(
                         app,
-                        session_store,
                         agent_runtime,
                         worktree_path,
                         snapshot,
@@ -3366,8 +3359,6 @@ impl WorkflowRuntimeService {
         }
 
         workflow_runtime_session::release_completed_node_sessions(
-            app,
-            session_store,
             agent_runtime,
             &completed_node_session_ids,
         )
@@ -4259,7 +4250,6 @@ impl WorkflowRuntimeService {
                     let _ = self
                         .interrupt_current_command_node(
                             app,
-                            session_store,
                             agent_runtime,
                             &failure_input,
                             ExecutionInterruptionReason::Crash,
@@ -4277,7 +4267,6 @@ impl WorkflowRuntimeService {
                     if let Err(error) = self
                         .interrupt_current_command_node(
                             app,
-                            session_store,
                             agent_runtime,
                             &input,
                             ExecutionInterruptionReason::Crash,
@@ -4296,7 +4285,6 @@ impl WorkflowRuntimeService {
                 let _ = self
                     .interrupt_current_command_node(
                         app,
-                        session_store,
                         agent_runtime,
                         &input,
                         ExecutionInterruptionReason::Crash,
@@ -4610,7 +4598,6 @@ impl WorkflowRuntimeService {
     async fn interrupt_active_execution<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
-        session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         execution_id: &str,
         reason: ExecutionInterruptionReason,
@@ -4804,13 +4791,8 @@ impl WorkflowRuntimeService {
         for session_id in &session_ids {
             workflow_runtime_session::interrupt_agent(agent_runtime, session_id).await;
         }
-        workflow_runtime_session::release_completed_node_sessions(
-            app,
-            session_store,
-            agent_runtime,
-            &session_ids,
-        )
-        .await;
+        workflow_runtime_session::release_completed_node_sessions(agent_runtime, &session_ids)
+            .await;
         self.cleanup_session_workflow_refs_by_execution_id(execution_id)
             .await;
         workflow_runtime_session::broadcast_state(app, &worktree_path, snapshot).await;
@@ -4834,7 +4816,6 @@ impl WorkflowRuntimeService {
     async fn interrupt_current_command_node<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
-        session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         input: &CommandExecutionInput,
         reason: ExecutionInterruptionReason,
@@ -4856,14 +4837,8 @@ impl WorkflowRuntimeService {
             true
         };
         if is_current {
-            self.interrupt_active_execution(
-                app,
-                session_store,
-                agent_runtime,
-                &input.execution_id,
-                reason,
-            )
-            .await?;
+            self.interrupt_active_execution(app, agent_runtime, &input.execution_id, reason)
+                .await?;
         }
         Ok(())
     }
@@ -5354,10 +5329,8 @@ impl WorkflowRuntimeService {
     /// `persist_release_and_broadcast` 呼び出し）専用に温存する。
     /// 本 issue scope の command 受理 handler は required event append 前の rollback 可能な
     /// projection と post-commit `release_completed_node_sessions` の組み合わせを使う。
-    async fn sync_persist_release<R: tauri::Runtime>(
+    async fn sync_persist_release(
         &self,
-        app: &tauri::AppHandle<R>,
-        session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         snapshot: &RuntimeCommitSnapshot,
         completed_node_session_ids: &[String],
@@ -5380,8 +5353,6 @@ impl WorkflowRuntimeService {
             return Err(e);
         }
         workflow_runtime_session::release_completed_node_sessions(
-            app,
-            session_store,
             agent_runtime,
             completed_node_session_ids,
         )
@@ -5437,20 +5408,13 @@ impl WorkflowRuntimeService {
     async fn persist_release_and_broadcast<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
-        session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         worktree_path: &str,
         snapshot: RuntimeCommitSnapshot,
         completed_node_session_ids: &[String],
     ) -> Result<RuntimeCommitSnapshot, WorkflowEngineError> {
-        self.sync_persist_release(
-            app,
-            session_store,
-            agent_runtime,
-            &snapshot,
-            completed_node_session_ids,
-        )
-        .await?;
+        self.sync_persist_release(agent_runtime, &snapshot, completed_node_session_ids)
+            .await?;
         self.finalize_after_commit(app, &snapshot, worktree_path, true)
             .await;
         Ok(snapshot)
@@ -5518,8 +5482,6 @@ impl WorkflowRuntimeService {
             )
             .await?;
             workflow_runtime_session::release_completed_node_sessions(
-                app,
-                session_store,
                 agent_runtime,
                 &completed_node_session_ids,
             )
@@ -5527,8 +5489,6 @@ impl WorkflowRuntimeService {
         } else {
             // 必須 event 無し: 従来通り sync_persist_release のみ。
             self.sync_persist_release(
-                app,
-                session_store,
                 agent_runtime,
                 &snapshot_for_commit,
                 &completed_node_session_ids,
@@ -5607,7 +5567,6 @@ impl WorkflowRuntimeService {
                     let _ = self
                         .interrupt_active_execution(
                             app,
-                            session_store,
                             agent_runtime,
                             &snapshot.execution_id,
                             ExecutionInterruptionReason::Crash,
@@ -5635,7 +5594,6 @@ impl WorkflowRuntimeService {
                     let _ = self
                         .interrupt_active_execution(
                             app,
-                            session_store,
                             agent_runtime,
                             &snapshot.execution_id,
                             ExecutionInterruptionReason::Crash,
@@ -5663,7 +5621,6 @@ impl WorkflowRuntimeService {
                     let _ = self
                         .interrupt_active_execution(
                             app,
-                            session_store,
                             agent_runtime,
                             &snapshot.execution_id,
                             ExecutionInterruptionReason::Crash,

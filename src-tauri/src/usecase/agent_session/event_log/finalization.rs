@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 
-use super::events::{AgentSessionEvent, InterruptReason, PermissionDecision, TurnId};
+use super::events::{
+    assistant_message_id_for_turn, AgentSessionEvent, InterruptReason, PermissionDecision, TurnId,
+};
 use super::part_events::permission_request_id;
 use crate::usecase::agent_session::session::PermissionRequestMsg;
 
@@ -16,6 +18,20 @@ pub fn finalize_turn(
     }
 
     let interrupted_content = interruption_content(reason, error.as_deref());
+    if reason == InterruptReason::SessionClosed {
+        if let Some(message_id) = assistant_message_id_for_turn(events, turn_id) {
+            for task_tool_use_id in active_background_tasks(events, turn_id) {
+                events.push(AgentSessionEvent::TaskStatusChanged {
+                    turn_id,
+                    message_id: message_id.clone(),
+                    task_tool_use_id,
+                    status: "stopped".to_string(),
+                    description: None,
+                    summary: Some(interrupted_content.clone()),
+                });
+            }
+        }
+    }
     for tool_use_id in unfinished_tool_calls(events, turn_id) {
         events.push(AgentSessionEvent::ToolCallFailed {
             turn_id,
@@ -123,6 +139,43 @@ fn unfinished_tool_calls(events: &[AgentSessionEvent], turn_id: TurnId) -> Vec<S
     started
         .into_iter()
         .filter(|tool_use_id| !finished.contains(tool_use_id))
+        .collect()
+}
+
+fn active_background_tasks(events: &[AgentSessionEvent], turn_id: TurnId) -> Vec<String> {
+    let mut started = Vec::new();
+    let mut terminal = HashSet::new();
+    for event in events {
+        match event {
+            AgentSessionEvent::ToolCallStarted {
+                turn_id: id,
+                tool_use_id,
+                input,
+                ..
+            } if *id == turn_id
+                && input
+                    .get("run_in_background")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false) =>
+            {
+                started.push(tool_use_id.clone());
+            }
+            AgentSessionEvent::TaskStatusChanged {
+                turn_id: id,
+                task_tool_use_id,
+                status,
+                ..
+            } if *id == turn_id
+                && matches!(status.as_str(), "completed" | "failed" | "stopped") =>
+            {
+                terminal.insert(task_tool_use_id.clone());
+            }
+            _ => {}
+        }
+    }
+    started
+        .into_iter()
+        .filter(|tool_use_id| !terminal.contains(tool_use_id))
         .collect()
 }
 

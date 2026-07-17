@@ -253,29 +253,19 @@ pub(crate) async fn interrupt_agent(runtime: &Arc<AgentSessionRuntimeUsecase>, s
     }
 }
 
-pub(crate) async fn release_completed_node_session<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    session_store: &Arc<SessionStore>,
+pub(crate) async fn release_completed_node_session(
     runtime: &Arc<AgentSessionRuntimeUsecase>,
     session_id: &str,
 ) {
-    crate::adaptor::gateway::workflow::release_node_runtime_on_done(
-        app,
-        session_store,
-        runtime,
-        session_id,
-    )
-    .await;
+    crate::adaptor::gateway::workflow::release_node_runtime_on_done(runtime, session_id).await;
 }
 
-pub(crate) async fn release_completed_node_sessions<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    session_store: &Arc<SessionStore>,
+pub(crate) async fn release_completed_node_sessions(
     runtime: &Arc<AgentSessionRuntimeUsecase>,
     session_ids: &[String],
 ) {
     for session_id in session_ids {
-        release_completed_node_session(app, session_store, runtime, session_id).await;
+        release_completed_node_session(runtime, session_id).await;
     }
 }
 

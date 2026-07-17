@@ -4,9 +4,8 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use super::layout::{
-    event_log_file_in_dir, meta_event_transaction_file_in_dir, meta_file_in_dir,
-    sync_file_and_parent, sync_parent_dir, validate_meta, write_json_pretty_atomic,
-    write_json_pretty_atomic_durable,
+    meta_event_transaction_file_in_dir, meta_file_in_dir, sync_file_and_parent, sync_parent_dir,
+    validate_meta, write_json_pretty_atomic, write_json_pretty_atomic_durable,
 };
 use super::FileSessionStorage;
 use crate::usecase::agent_session::event_log::AgentSessionEvent;
@@ -185,7 +184,7 @@ impl FileSessionStorage {
                 .map_err(TransactionApplyError::retryable)?;
         }
         if !transaction.events.is_empty() {
-            sync_file_and_parent(&event_log_file_in_dir(dir), "session event log")
+            sync_file_and_parent(&Self::event_append_file_in_dir(dir), "session event log")
                 .map_err(TransactionApplyError::retryable)?;
         }
         #[cfg(test)]

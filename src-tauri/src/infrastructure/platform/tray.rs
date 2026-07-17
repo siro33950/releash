@@ -9,6 +9,12 @@ use tauri::{
 };
 
 pub static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+pub(crate) static QUIT_REQUESTED_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub(crate) fn mark_quit_requested() {
+    QUIT_REQUESTED.store(true, Ordering::SeqCst);
+}
 
 pub mod ids {
     pub const SHOW_WINDOW: &str = "tray-show-window";
@@ -69,7 +75,7 @@ fn handle_menu_event(
             }
         }
         ids::QUIT => {
-            QUIT_REQUESTED.store(true, Ordering::SeqCst);
+            mark_quit_requested();
             on_quit_requested(app.clone());
         }
         _ => {}

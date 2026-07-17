@@ -1,9 +1,9 @@
 use super::layout::{
-    attachment_file_in_dir, attachments_dir_in_dir, content_hash, event_log_file_in_dir,
-    index_file_in_dir, legacy_meta_file, message_file_in_dir, meta_event_transaction_file_in_dir,
-    meta_file_in_dir, private_context_file_in_dir, session_dir, session_file, sessions_dir,
-    tool_output_file_in_dir, tool_outputs_dir_in_dir, write_json_pretty_atomic,
-    write_json_pretty_atomic_durable,
+    attachment_file_in_dir, attachments_dir_in_dir, content_hash, event_batches_dir_in_dir,
+    event_log_file_in_dir, event_tail_file_in_dir, index_file_in_dir, legacy_meta_file,
+    message_file_in_dir, meta_event_transaction_file_in_dir, meta_file_in_dir,
+    private_context_file_in_dir, session_dir, session_file, sessions_dir, tool_output_file_in_dir,
+    tool_outputs_dir_in_dir, write_json_pretty_atomic, write_json_pretty_atomic_durable,
 };
 use super::transaction::{SessionMetaEventTransaction, TransactionApplyStep};
 use super::*;
@@ -91,6 +91,16 @@ fn message(id: &str, content: &str, timestamp: f64) -> ChatMessage {
     }
 }
 
+fn turn_started_event(turn_id: u64) -> AgentSessionEvent {
+    AgentSessionEvent::TurnStarted {
+        turn_id,
+        message_id: format!("human-{turn_id}"),
+        assistant_message_id: Some(format!("agent-{turn_id}")),
+        prompt: PromptInput::default(),
+        at: turn_id as f64,
+    }
+}
+
 fn png_bytes(payload: &[u8]) -> Vec<u8> {
     let mut bytes = vec![0x89, 0x50, 0x4E, 0x47];
     bytes.extend_from_slice(payload);
@@ -169,6 +179,236 @@ fn save_and_load_session() {
     let loaded = loaded.unwrap();
     assert_eq!(loaded.id, UUID1);
     assert_eq!(loaded.messages.len(), 1);
+}
+
+#[test]
+fn terminal_batch_append_does_not_read_or_rewrite_existing_event_history() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileSessionStorage::default();
+    let session = make_session(UUID1, "/repo");
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .unwrap();
+    for turn_id in 1..=128 {
+        store
+            .append_session_event_without_projection(
+                tmp.path(),
+                UUID1,
+                &turn_started_event(turn_id),
+            )
+            .unwrap();
+    }
+    store.reset_event_read_count();
+    let tail = [turn_started_event(129), turn_started_event(130)];
+
+    store
+        .append_session_events(tmp.path(), UUID1, &tail)
+        .unwrap();
+
+    assert_eq!(store.event_read_count(), 0);
+    let events = store.load_session_events(tmp.path(), UUID1).unwrap();
+    assert_eq!(events.len(), 130);
+    assert_eq!(&events[128..], tail.as_slice());
+}
+
+#[test]
+fn normal_events_after_terminal_batch_use_one_bounded_tail_without_directory_scans() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileSessionStorage::default();
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .unwrap();
+    store
+        .append_session_event_without_projection(tmp.path(), UUID1, &turn_started_event(1))
+        .unwrap();
+    store
+        .append_session_events(
+            tmp.path(),
+            UUID1,
+            &[turn_started_event(2), turn_started_event(3)],
+        )
+        .unwrap();
+    store.reset_event_batch_directory_scan_count();
+
+    for turn_id in 4..=203 {
+        store
+            .append_session_event_without_projection(
+                tmp.path(),
+                UUID1,
+                &turn_started_event(turn_id),
+            )
+            .unwrap();
+    }
+
+    assert_eq!(store.event_batch_directory_scan_count(), 0);
+    let dir = session_dir(tmp.path(), UUID1).unwrap();
+    assert_eq!(
+        std::fs::read_dir(event_batches_dir_in_dir(&dir))
+            .unwrap()
+            .count(),
+        1
+    );
+    assert!(event_tail_file_in_dir(&dir).exists());
+    let events = store.load_session_events(tmp.path(), UUID1).unwrap();
+    assert_eq!(events.len(), 203);
+    assert_eq!(
+        events,
+        (1..=203).map(turn_started_event).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn turn_id_allocation_and_start_projection_stay_bounded_and_survive_full_save() {
+    let tmp = TempDir::new().unwrap();
+    let storage = Arc::new(FileSessionStorage::default());
+    let store = crate::usecase::agent_session::session::SessionStore::new(storage.clone());
+    let session = make_session(UUID1, "/repo");
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .unwrap();
+    store
+        .append_turn_started_and_project_state(tmp.path(), UUID1, turn_started_event(1))
+        .unwrap();
+    for index in 0..500 {
+        store
+            .append_session_event_without_projection(
+                tmp.path(),
+                UUID1,
+                AgentSessionEvent::TextRecorded {
+                    turn_id: 1,
+                    message_id: "agent-1".to_string(),
+                    content: format!("chunk-{index}"),
+                    parent_tool_use_id: None,
+                },
+            )
+            .unwrap();
+    }
+    storage.reset_event_read_count();
+
+    assert_eq!(store.next_turn_id(tmp.path(), UUID1).unwrap(), 2);
+    store
+        .append_turn_started_and_project_state(tmp.path(), UUID1, turn_started_event(2))
+        .unwrap();
+    assert_eq!(storage.event_read_count(), 0);
+
+    let restored = store
+        .load_full_session_for_restore(tmp.path(), UUID1)
+        .unwrap()
+        .unwrap();
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &restored)
+        .unwrap();
+    let meta = store.get_session_meta(tmp.path(), UUID1).unwrap().unwrap();
+    assert_eq!(meta.last_turn_id, Some(2));
+    assert_eq!(store.next_turn_id(tmp.path(), UUID1).unwrap(), 3);
+    assert_eq!(storage.event_read_count(), 0);
+}
+
+#[test]
+fn legacy_meta_without_turn_id_projection_falls_back_to_event_history() {
+    let tmp = TempDir::new().unwrap();
+    let storage = Arc::new(FileSessionStorage::default());
+    let store = crate::usecase::agent_session::session::SessionStore::new(storage);
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .unwrap();
+    store
+        .append_session_event_without_projection(tmp.path(), UUID1, turn_started_event(9))
+        .unwrap();
+    let meta_path = meta_file_in_dir(&session_dir(tmp.path(), UUID1).unwrap());
+    let mut meta =
+        serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&meta_path).unwrap())
+            .unwrap();
+    meta.as_object_mut().unwrap().remove("lastTurnId");
+    std::fs::write(&meta_path, serde_json::to_vec_pretty(&meta).unwrap()).unwrap();
+    drop(store);
+
+    let storage = Arc::new(FileSessionStorage::default());
+    let store = crate::usecase::agent_session::session::SessionStore::new(storage.clone());
+    store.get_session_meta(tmp.path(), UUID1).unwrap().unwrap();
+    storage.reset_event_read_count();
+
+    assert_eq!(store.next_turn_id(tmp.path(), UUID1).unwrap(), 10);
+    assert_eq!(storage.event_read_count(), 1);
+}
+
+#[test]
+fn turn_start_projection_rejects_non_start_event_without_appending_it() {
+    let tmp = TempDir::new().unwrap();
+    let store = make_session_store();
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .unwrap();
+
+    let error = store
+        .append_turn_started_and_project_state(
+            tmp.path(),
+            UUID1,
+            AgentSessionEvent::TextRecorded {
+                turn_id: 1,
+                message_id: "agent-1".to_string(),
+                content: "not a turn start".to_string(),
+                parent_tool_use_id: None,
+            },
+        )
+        .unwrap_err();
+
+    assert!(error.contains("requires a TurnStarted event"));
+    assert!(store
+        .load_session_events(tmp.path(), UUID1)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn turn_start_projection_failure_recovers_committed_id_before_retry() {
+    let tmp = TempDir::new().unwrap();
+    let store = make_session_store();
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .unwrap();
+    let fail_once = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    store.set_event_projection_hook_for_test({
+        let fail_once = Arc::clone(&fail_once);
+        Arc::new(move |_, last_turn_id| {
+            if last_turn_id == Some(1) && fail_once.swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                Err("injected turn projection failure".to_string())
+            } else {
+                Ok(())
+            }
+        })
+    });
+
+    let error = store
+        .append_turn_started_and_project_state(tmp.path(), UUID1, turn_started_event(1))
+        .unwrap_err();
+
+    assert!(error.contains("injected turn projection failure"));
+    assert_eq!(
+        store
+            .get_session_meta(tmp.path(), UUID1)
+            .unwrap()
+            .unwrap()
+            .last_turn_id,
+        Some(1)
+    );
+    assert_eq!(store.next_turn_id(tmp.path(), UUID1).unwrap(), 2);
+
+    store
+        .append_turn_started_and_project_state(tmp.path(), UUID1, turn_started_event(2))
+        .unwrap();
+    let started_turn_ids = store
+        .load_session_events(tmp.path(), UUID1)
+        .unwrap()
+        .into_iter()
+        .filter_map(|event| match event {
+            AgentSessionEvent::TurnStarted { turn_id, .. } => Some(turn_id),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(started_turn_ids, vec![1, 2]);
+    assert_eq!(store.next_turn_id(tmp.path(), UUID1).unwrap(), 3);
 }
 
 #[test]
@@ -2651,6 +2891,8 @@ fn list_sessions_ignores_legacy_flat_json_and_sidecar() {
         workflow_instructions: Vec::new(),
         agent_read_paths: None,
         context_epoch: None,
+        last_turn_interruption: None,
+        last_turn_id: Some(0),
         first_message_preview: "Hello legacy".to_string(),
         message_count: 1,
         body_format_version: SESSION_BODY_FORMAT_VERSION,

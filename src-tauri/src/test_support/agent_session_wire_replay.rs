@@ -164,6 +164,7 @@ fn map_interrupt_reason(reason: DomainInterruptReason) -> InterruptReason {
         DomainInterruptReason::Abort => InterruptReason::Abort,
         DomainInterruptReason::Timeout => InterruptReason::Timeout,
         DomainInterruptReason::Crash => InterruptReason::Crash,
+        DomainInterruptReason::SessionClosed => InterruptReason::SessionClosed,
     }
 }
 
@@ -172,5 +173,6 @@ fn interrupt_exit_code(reason: DomainInterruptReason) -> i64 {
         DomainInterruptReason::Abort => 0,
         DomainInterruptReason::Timeout => 124,
         DomainInterruptReason::Crash => 1,
+        DomainInterruptReason::SessionClosed => 0,
     }
 }

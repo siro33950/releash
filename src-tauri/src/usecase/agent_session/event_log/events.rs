@@ -53,6 +53,34 @@ pub enum InterruptReason {
     Abort,
     Timeout,
     Crash,
+    SessionClosed,
+}
+
+pub(super) fn assistant_message_id_for_turn(
+    events: &[AgentSessionEvent],
+    turn_id: TurnId,
+) -> Option<String> {
+    events.iter().find_map(|event| match event {
+        AgentSessionEvent::TurnStarted {
+            turn_id: id,
+            message_id,
+            assistant_message_id,
+            ..
+        } if *id == turn_id => Some(assistant_message_id_for_started_turn(
+            message_id,
+            assistant_message_id.as_deref(),
+        )),
+        _ => None,
+    })
+}
+
+pub(super) fn assistant_message_id_for_started_turn(
+    message_id: &str,
+    assistant_message_id: Option<&str>,
+) -> String {
+    assistant_message_id
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("{message_id}:agent"))
 }
 
 impl InterruptReason {
@@ -61,6 +89,7 @@ impl InterruptReason {
             Self::Abort => "abort",
             Self::Timeout => "timeout",
             Self::Crash => "crash",
+            Self::SessionClosed => "session_closed",
         }
     }
 }

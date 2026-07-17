@@ -5,7 +5,7 @@ use crate::usecase::agent_session::event_log::AgentTurnFailureSignal;
 use crate::usecase::agent_session::session::{
     AttachmentRef, MessageMention, MessagePart, PermissionPartStatus, PermissionRequestKindMsg,
     PermissionRequestMsg, SessionState, SystemNotificationType, TodoListItem, ToolOutputRef,
-    ToolOutputSummary,
+    ToolOutputSummary, TurnInterruption, TurnInterruptionReason,
 };
 use crate::usecase::agent_session::status::TurnPhase;
 
@@ -1053,19 +1053,21 @@ fn a_later_turn_start_clears_current_error_but_preserves_error_history() {
 }
 
 #[test]
-fn terminal_status_projection_marks_abort_as_idle() {
-    let read_model = project(&[
-        start_event(),
-        AgentSessionEvent::TurnInterrupted {
-            turn_id: 1,
-            reason: InterruptReason::Abort,
-            exit_code: 1,
-            error: None,
-        },
-    ]);
+fn terminal_status_projection_marks_abort_and_session_closed_as_idle() {
+    for reason in [InterruptReason::Abort, InterruptReason::SessionClosed] {
+        let read_model = project(&[
+            start_event(),
+            AgentSessionEvent::TurnInterrupted {
+                turn_id: 1,
+                reason,
+                exit_code: 0,
+                error: None,
+            },
+        ]);
 
-    assert_eq!(read_model.status.session_state, SessionState::Idle);
-    assert_eq!(read_model.status.turn_phase, TurnPhase::Idle);
+        assert_eq!(read_model.status.session_state, SessionState::Idle);
+        assert_eq!(read_model.status.turn_phase, TurnPhase::Idle);
+    }
 }
 
 #[test]
@@ -1074,6 +1076,7 @@ fn finalization_closes_tools_permissions_and_turn() {
         InterruptReason::Abort,
         InterruptReason::Timeout,
         InterruptReason::Crash,
+        InterruptReason::SessionClosed,
     ] {
         let mut events = vec![
             start_event(),
@@ -1127,6 +1130,92 @@ fn finalization_closes_tools_permissions_and_turn() {
             })
         );
     }
+}
+
+#[test]
+fn session_closed_finalization_stops_active_background_task_after_launch_result() {
+    let mut events = vec![
+        start_event(),
+        AgentSessionEvent::ToolCallStarted {
+            turn_id: 1,
+            tool_use_id: "background-task".to_string(),
+            tool: "Task".to_string(),
+            input: serde_json::json!({ "run_in_background": true }),
+            parent_tool_use_id: None,
+        },
+        AgentSessionEvent::ToolCallSucceeded {
+            turn_id: 1,
+            tool_use_id: "background-task".to_string(),
+            content: "background task launched".to_string(),
+            content_ref: None,
+            summary: None,
+        },
+    ];
+
+    finalize_turn(&mut events, 1, InterruptReason::SessionClosed, None, 0);
+
+    assert!(events.iter().any(|event| matches!(
+        event,
+        AgentSessionEvent::TaskStatusChanged {
+            task_tool_use_id,
+            status,
+            ..
+        } if task_tool_use_id == "background-task" && status == "stopped"
+    )));
+    assert!(project(&events)
+        .agent_parts_for_message("agent-1")
+        .iter()
+        .any(|part| matches!(
+            part,
+            MessagePart::TaskStatus {
+                task_tool_use_id,
+                status,
+                ..
+            } if task_tool_use_id == "background-task" && status == "stopped"
+        )));
+}
+
+#[test]
+fn latest_turn_interruption_exposes_message_and_session_closed_reason() {
+    let events = vec![
+        start_event(),
+        AgentSessionEvent::TurnInterrupted {
+            turn_id: 1,
+            reason: InterruptReason::SessionClosed,
+            exit_code: 0,
+            error: None,
+        },
+    ];
+
+    assert_eq!(
+        latest_turn_interruption(&events),
+        Some(TurnInterruption {
+            message_id: "agent-1".to_string(),
+            reason: TurnInterruptionReason::SessionClosed,
+        })
+    );
+}
+
+#[test]
+fn latest_turn_interruption_ignores_an_older_interrupted_turn() {
+    let events = vec![
+        start_event(),
+        AgentSessionEvent::TurnInterrupted {
+            turn_id: 1,
+            reason: InterruptReason::SessionClosed,
+            exit_code: 0,
+            error: None,
+        },
+        turn_started_event(2),
+        AgentSessionEvent::TurnCompleted {
+            turn_id: 2,
+            exit_code: 0,
+            stop_reason: None,
+            token_usage: None,
+        },
+    ];
+
+    assert_eq!(latest_turn_interruption(&events), None);
 }
 
 #[test]
@@ -1228,6 +1317,7 @@ fn finalization_uses_reason_label_when_error_is_none() {
         (InterruptReason::Abort, "abort により中断"),
         (InterruptReason::Timeout, "timeout により中断"),
         (InterruptReason::Crash, "crash により中断"),
+        (InterruptReason::SessionClosed, "session_closed により中断"),
     ] {
         let mut events = vec![
             start_event(),
@@ -1345,4 +1435,30 @@ fn projector_restores_unfinished_recovery_and_its_reconciliation_terminal() {
         at: 11.0,
     };
     assert!(project(&[started, completed]).backend_recovery.is_none());
+}
+
+#[test]
+fn session_closed_does_not_overwrite_existing_crash_terminal() {
+    let mut events = vec![start_event()];
+    finalize_turn(&mut events, 1, InterruptReason::Crash, None, 1);
+    let crashed = events.clone();
+
+    finalize_turn(&mut events, 1, InterruptReason::SessionClosed, None, 0);
+
+    assert_eq!(events, crashed);
+}
+
+#[test]
+fn interrupt_reason_deserialization_remains_backward_compatible() {
+    for (serialized, expected) in [
+        ("\"abort\"", InterruptReason::Abort),
+        ("\"timeout\"", InterruptReason::Timeout),
+        ("\"crash\"", InterruptReason::Crash),
+        ("\"session_closed\"", InterruptReason::SessionClosed),
+    ] {
+        assert_eq!(
+            serde_json::from_str::<InterruptReason>(serialized).unwrap(),
+            expected
+        );
+    }
 }

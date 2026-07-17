@@ -3,9 +3,9 @@ use std::cell::Cell;
 
 use serde::{Deserialize, Serialize};
 
-use super::events::{AgentSessionEvent, TurnId};
+use super::events::AgentSessionEvent;
 #[cfg(test)]
-use super::events::{InterruptReason, PromptInput};
+use super::events::{InterruptReason, PromptInput, TurnId};
 #[cfg(test)]
 use super::finalization::finalize_turn;
 #[cfg(test)]
@@ -75,13 +75,6 @@ impl TurnEventLog {
             prompt,
             at,
         });
-    }
-
-    pub fn current_turn_id(&self) -> Option<TurnId> {
-        self.events.iter().rev().find_map(|event| match event {
-            AgentSessionEvent::TurnStarted { turn_id, .. } => Some(*turn_id),
-            _ => None,
-        })
     }
 
     pub fn project(&self) -> SessionReadModel {

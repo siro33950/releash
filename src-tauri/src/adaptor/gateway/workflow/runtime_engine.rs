@@ -61,7 +61,6 @@ pub(crate) trait WorkflowRuntimeEngine: Send + Sync {
     async fn stop_workflow_execution(
         &self,
         app: &tauri::AppHandle,
-        session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         execution_id: &str,
     ) -> Result<(), WorkflowEngineError>;
@@ -235,18 +234,11 @@ impl WorkflowRuntimeEngine for WorkflowRuntimeService {
     async fn stop_workflow_execution(
         &self,
         app: &tauri::AppHandle,
-        session_store: &Arc<SessionStore>,
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         execution_id: &str,
     ) -> Result<(), WorkflowEngineError> {
-        WorkflowRuntimeService::stop_workflow_execution(
-            self,
-            app,
-            session_store,
-            agent_runtime,
-            execution_id,
-        )
-        .await
+        WorkflowRuntimeService::stop_workflow_execution(self, app, agent_runtime, execution_id)
+            .await
     }
 
     async fn resume_workflow_execution(

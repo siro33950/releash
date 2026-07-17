@@ -332,6 +332,22 @@ describe("ChatSessionView session-local controls", () => {
 		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 	});
 
+	it("shows the durable SessionClosed interruption on the reopened agent turn", () => {
+		renderChatSessionView({
+			testSession: {
+				...sessionWithAgentResponse,
+				lastTurnInterruption: {
+					messageId: "m2",
+					reason: "session_closed",
+				},
+			},
+		});
+
+		expect(screen.getByTestId("turn-interruption-chip")).toHaveTextContent(
+			"Interrupted: Session closed",
+		);
+	});
+
 	it("keeps find and raw scrollback available from the toolbar", async () => {
 		const user = userEvent.setup();
 		renderChatSessionView({ testSession: sessionWithAgentResponse });

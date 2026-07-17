@@ -7974,23 +7974,12 @@ mod dispatch_boundary_tests {
 
         if reason == ExecutionInterruptionReason::Stop {
             engine
-                .stop_workflow_execution(
-                    app.handle(),
-                    &session_store,
-                    &agent_runtime,
-                    &execution_id,
-                )
+                .stop_workflow_execution(app.handle(), &agent_runtime, &execution_id)
                 .await
                 .unwrap();
         } else {
             assert!(engine
-                .interrupt_active_execution(
-                    app.handle(),
-                    &session_store,
-                    &agent_runtime,
-                    &execution_id,
-                    reason,
-                )
+                .interrupt_active_execution(app.handle(), &agent_runtime, &execution_id, reason,)
                 .await
                 .unwrap());
         }
@@ -8109,7 +8098,7 @@ mod dispatch_boundary_tests {
         append_resumable_two_node_events(&data_dir, &exec);
         insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
         engine
-            .stop_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
+            .stop_workflow_execution(app.handle(), &agent_runtime, &execution_id)
             .await
             .unwrap();
         let checkpoint_before = engine
@@ -8206,7 +8195,7 @@ mod dispatch_boundary_tests {
         append_resumable_two_node_events(&data_dir, &exec);
         insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
         engine
-            .stop_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
+            .stop_workflow_execution(app.handle(), &agent_runtime, &execution_id)
             .await
             .unwrap();
 
@@ -8279,7 +8268,7 @@ mod dispatch_boundary_tests {
         append_resumable_two_node_events(&data_dir, &exec);
         insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
         engine
-            .stop_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
+            .stop_workflow_execution(app.handle(), &agent_runtime, &execution_id)
             .await
             .unwrap();
 
@@ -8705,7 +8694,7 @@ mod dispatch_boundary_tests {
         let engine = WorkflowRuntimeService::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
-        let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
+        let (_session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
         let execution_id = uuid::Uuid::new_v4().to_string();
         let worktree = TempDir::new().unwrap();
         let exec = make_waiting_approval_execution(
@@ -8716,7 +8705,7 @@ mod dispatch_boundary_tests {
         insert_execution_and_register_active(&engine, exec, ExecutionOrigin::DesktopUi).await;
 
         engine
-            .stop_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
+            .stop_workflow_execution(app.handle(), &agent_runtime, &execution_id)
             .await
             .unwrap();
 
@@ -8822,17 +8811,11 @@ mod dispatch_boundary_tests {
 
         let stop_engine = engine.clone();
         let stop_app = app.handle().clone();
-        let stop_session_store = session_store.clone();
         let stop_agent_runtime = agent_runtime.clone();
         let stop_execution_id = execution_id.clone();
         let mut stop_task = tokio::spawn(async move {
             stop_engine
-                .stop_workflow_execution(
-                    &stop_app,
-                    &stop_session_store,
-                    &stop_agent_runtime,
-                    &stop_execution_id,
-                )
+                .stop_workflow_execution(&stop_app, &stop_agent_runtime, &stop_execution_id)
                 .await
         });
         tokio::time::timeout(std::time::Duration::from_secs(2), &mut stop_task)
@@ -8987,7 +8970,7 @@ mod dispatch_boundary_tests {
         let PausedFanoutActivation {
             app,
             engine,
-            session_store,
+            session_store: _,
             agent_runtime,
             controller,
             execution_id,
@@ -8998,12 +8981,7 @@ mod dispatch_boundary_tests {
 
         tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            engine.stop_workflow_execution(
-                app.handle(),
-                &session_store,
-                &agent_runtime,
-                &execution_id,
-            ),
+            engine.stop_workflow_execution(app.handle(), &agent_runtime, &execution_id),
         )
         .await
         .expect("stop must abort and join stuck fanout child activation tasks")
@@ -9165,7 +9143,7 @@ mod dispatch_boundary_tests {
         let PausedFanoutActivation {
             app,
             engine,
-            session_store,
+            session_store: _,
             agent_runtime,
             controller,
             execution_id,
@@ -9177,12 +9155,7 @@ mod dispatch_boundary_tests {
         engine.fail_next_required_event_append_for_test();
         let stop_error = tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            engine.stop_workflow_execution(
-                app.handle(),
-                &session_store,
-                &agent_runtime,
-                &execution_id,
-            ),
+            engine.stop_workflow_execution(app.handle(), &agent_runtime, &execution_id),
         )
         .await
         .expect("failed stop must decide rollback without waiting for backend start")
@@ -9228,7 +9201,7 @@ mod dispatch_boundary_tests {
         }
 
         engine
-            .stop_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
+            .stop_workflow_execution(app.handle(), &agent_runtime, &execution_id)
             .await
             .unwrap();
     }
@@ -9307,12 +9280,7 @@ mod dispatch_boundary_tests {
             .fail_next_active_interruption_rollback_for_test();
         let stop_error = tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            engine.stop_workflow_execution(
-                app.handle(),
-                &session_store,
-                &agent_runtime,
-                &execution_id,
-            ),
+            engine.stop_workflow_execution(app.handle(), &agent_runtime, &execution_id),
         )
         .await
         .expect("failed stop append must roll back without waiting for the paused backend")
@@ -9361,7 +9329,7 @@ mod dispatch_boundary_tests {
         assert_eq!(started_execution_id, execution_id);
 
         engine
-            .stop_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
+            .stop_workflow_execution(app.handle(), &agent_runtime, &execution_id)
             .await
             .unwrap();
         assert!(controller
@@ -9606,7 +9574,7 @@ mod dispatch_boundary_tests {
 
         assert!(matches!(
             engine
-                .stop_workflow_execution(app.handle(), &session_store, &agent_runtime, &missing_id,)
+                .stop_workflow_execution(app.handle(), &agent_runtime, &missing_id,)
                 .await,
             Err(WorkflowEngineError::ExecutionNotFound(_))
         ));
@@ -9717,7 +9685,7 @@ mod dispatch_boundary_tests {
             .unwrap();
         assert!(matches!(
             engine
-                .stop_workflow_execution(app.handle(), &session_store, &agent_runtime, &running_id,)
+                .stop_workflow_execution(app.handle(), &agent_runtime, &running_id,)
                 .await,
             Err(WorkflowEngineError::InvalidState(_))
         ));
@@ -9779,12 +9747,7 @@ mod dispatch_boundary_tests {
         ));
         assert!(matches!(
             engine
-                .stop_workflow_execution(
-                    app.handle(),
-                    &session_store,
-                    &agent_runtime,
-                    &completed_id,
-                )
+                .stop_workflow_execution(app.handle(), &agent_runtime, &completed_id,)
                 .await,
             Err(WorkflowEngineError::InvalidState(_))
         ));
@@ -9830,12 +9793,7 @@ mod dispatch_boundary_tests {
             .unwrap();
         assert!(matches!(
             mismatch_engine
-                .stop_workflow_execution(
-                    app.handle(),
-                    &session_store,
-                    &agent_runtime,
-                    &mismatch_id,
-                )
+                .stop_workflow_execution(app.handle(), &agent_runtime, &mismatch_id,)
                 .await,
             Err(WorkflowEngineError::UnauthorizedWorktree(_))
         ));
@@ -11506,7 +11464,7 @@ mod dispatch_boundary_tests {
         let engine = WorkflowRuntimeService::new_for_test();
         let data_dir = dispatch_data_dir(app.handle());
         engine.set_execution_store_data_dir(data_dir.clone()).await;
-        let (session_store, handles) = make_dispatch_deps(data_dir.clone());
+        let (_session_store, handles) = make_dispatch_deps(data_dir.clone());
         let received_payloads: Arc<std::sync::Mutex<Vec<String>>> =
             Arc::new(std::sync::Mutex::new(Vec::new()));
         let received_for_listener = Arc::clone(&received_payloads);
@@ -11594,7 +11552,6 @@ mod dispatch_boundary_tests {
         assert!(engine
             .interrupt_active_execution(
                 app.handle(),
-                &session_store,
                 &handles,
                 &execution_id,
                 ExecutionInterruptionReason::Crash,
@@ -11999,10 +11956,10 @@ mod dispatch_boundary_tests {
         wait_for_active_command(&engine, &execution_id).await;
         let child_pid = wait_for_pid_file(&worktree.path().join("child.pid")).await;
         let data_dir = dispatch_data_dir(app.handle());
-        let (session_store, agent_runtime) = make_dispatch_deps(data_dir);
+        let (_session_store, agent_runtime) = make_dispatch_deps(data_dir);
 
         engine
-            .stop_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
+            .stop_workflow_execution(app.handle(), &agent_runtime, &execution_id)
             .await
             .unwrap();
 
@@ -12057,7 +12014,7 @@ mod dispatch_boundary_tests {
         let (session_store, agent_runtime) = make_dispatch_deps(data_dir);
 
         engine
-            .stop_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
+            .stop_workflow_execution(app.handle(), &agent_runtime, &execution_id)
             .await
             .unwrap();
         wait_for_inactive_command(&engine, &execution_id).await;
@@ -12139,10 +12096,10 @@ mod dispatch_boundary_tests {
         let metadata_dir = data_dir.join("workflow_executions");
         std::fs::remove_dir_all(&metadata_dir).unwrap();
         std::fs::write(&metadata_dir, b"block metadata persistence").unwrap();
-        let (session_store, agent_runtime) = make_dispatch_deps(data_dir);
+        let (_session_store, agent_runtime) = make_dispatch_deps(data_dir);
 
         engine
-            .stop_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
+            .stop_workflow_execution(app.handle(), &agent_runtime, &execution_id)
             .await
             .expect("the durable stop fact remains accepted");
 

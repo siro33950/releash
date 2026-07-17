@@ -40,6 +40,7 @@ import type {
 	QueuedAgentTurn,
 	SessionNotice,
 	SlashCommand,
+	TurnInterruption,
 } from "@/types/session";
 import { getTextContent } from "@/types/session";
 import {
@@ -354,17 +355,32 @@ function ThinkingPart({
 function AgentMessageMeta({
 	msg,
 	isStreaming,
+	interruption,
 }: {
 	msg: ChatMessage;
 	isStreaming: boolean;
+	interruption?: TurnInterruption | null;
 }) {
 	if (isStreaming) return null;
 	const formattedTime = formatMessageTime(msg.timestamp);
 	const copyableText = getTextContent(msg.parts).trim();
-	if (!formattedTime && !copyableText) return null;
+	if (!formattedTime && !copyableText && !interruption) return null;
+	const interruptionReason = interruption
+		? interruption.reason === "session_closed"
+			? "Session closed"
+			: interruption.reason
+		: null;
 
 	return (
 		<div className="flex items-center gap-1 px-5 pb-1 text-[11px] text-muted-foreground">
+			{interruptionReason && (
+				<span
+					className="rounded-full border border-border bg-muted/60 px-2 py-0.5"
+					data-testid="turn-interruption-chip"
+				>
+					Interrupted: {interruptionReason}
+				</span>
+			)}
 			{formattedTime && <span>{formattedTime}</span>}
 			{copyableText && (
 				<MessageCopyButton
@@ -1498,6 +1514,11 @@ export function ChatSessionView({
 								<AgentMessageMeta
 									msg={msg}
 									isStreaming={isLastAgentStreaming}
+									interruption={
+										session.lastTurnInterruption?.messageId === msg.id
+											? session.lastTurnInterruption
+											: null
+									}
 								/>
 							</div>
 						);
