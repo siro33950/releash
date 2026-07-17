@@ -1,4 +1,4 @@
-use std::future::Future;
+use std::future::{ready, Future};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 
@@ -159,27 +159,48 @@ pub(super) async fn run_runtime_activation<F, T>(
 where
     F: Future<Output = Result<T, WorkflowEngineError>>,
 {
-    tokio::pin!(future);
+    run_runtime_activation_with_cancel_cleanup(
+        gate,
+        execution_id,
+        activation_kind,
+        future,
+        ready(()),
+    )
+    .await
+}
+
+pub(super) async fn run_runtime_activation_with_cancel_cleanup<F, C, T>(
+    gate: &RuntimeActivationGate,
+    execution_id: &str,
+    activation_kind: &str,
+    future: F,
+    cancel_cleanup: C,
+) -> Result<T, WorkflowEngineError>
+where
+    F: Future<Output = Result<T, WorkflowEngineError>>,
+    C: Future<Output = ()>,
+{
+    let mut future = Box::pin(future);
     loop {
         tokio::select! {
             biased;
             _ = gate.cancelled() => {
                 gate.acknowledge_cancel();
-                match gate.cancel_decision().await {
-                    ACTIVATION_CANCEL_COMMIT => {
-                        return Err(WorkflowEngineError::InvalidState(format!(
+                let error = match gate.cancel_decision().await {
+                    ACTIVATION_CANCEL_COMMIT => WorkflowEngineError::InvalidState(format!(
                             "execution {execution_id} {activation_kind} activation was cancelled"
-                        )));
-                    }
+                        )),
                     ACTIVATION_CANCEL_ROLLBACK => {
                         gate.reset_cancel();
+                        continue;
                     }
-                    decision => {
-                        return Err(WorkflowEngineError::InvalidState(format!(
+                    decision => WorkflowEngineError::InvalidState(format!(
                             "execution {execution_id} {activation_kind} activation received invalid cancellation decision {decision}"
-                        )));
-                    }
-                }
+                        )),
+                };
+                drop(future);
+                cancel_cleanup.await;
+                return Err(error);
             }
             result = &mut future => return result,
         }

@@ -1,6 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+#[cfg(test)]
+use std::sync::OnceLock;
+use std::sync::{Arc, Mutex as StdMutex, RwLock};
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -77,7 +79,101 @@ use super::streaming::{
 };
 
 type SessionRuntimeLock = Arc<Mutex<()>>;
-type SessionRuntimeLocks = Arc<Mutex<HashMap<String, SessionRuntimeLock>>>;
+
+#[derive(Default)]
+struct SessionRuntimeLockRegistry {
+    // Acquired asynchronously and never held while waiting for a per-session lock.
+    map: Mutex<HashMap<String, SessionRuntimeLock>>,
+    // Synchronous so guard Drop can always enqueue cleanup without a Tokio runtime.
+    pending_prune: StdMutex<HashSet<String>>,
+}
+
+type SessionRuntimeLocks = Arc<SessionRuntimeLockRegistry>;
+
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum TestSessionRuntimeLockOwner {
+    Task(tokio::task::Id),
+    Thread(std::thread::ThreadId),
+}
+
+#[cfg(test)]
+impl TestSessionRuntimeLockOwner {
+    fn current() -> Self {
+        tokio::task::try_id()
+            .map(Self::Task)
+            .unwrap_or_else(|| Self::Thread(std::thread::current().id()))
+    }
+}
+
+#[cfg(test)]
+fn held_session_locks() -> &'static StdMutex<HashMap<TestSessionRuntimeLockOwner, String>> {
+    static HELD_SESSION_LOCKS: OnceLock<StdMutex<HashMap<TestSessionRuntimeLockOwner, String>>> =
+        OnceLock::new();
+    HELD_SESSION_LOCKS.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+#[cfg(test)]
+struct TestSessionRuntimeLockOwnerReservation {
+    owner: TestSessionRuntimeLockOwner,
+    session_id: String,
+}
+
+#[cfg(test)]
+impl TestSessionRuntimeLockOwnerReservation {
+    fn reserve(session_id: &str) -> Self {
+        let owner = TestSessionRuntimeLockOwner::current();
+        let mut held = held_session_locks()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(
+            !held.contains_key(&owner),
+            "session runtime lock re-entry is forbidden: owner={owner:?}, held={held:?}, requested={session_id}"
+        );
+        held.insert(owner.clone(), session_id.to_string());
+        Self {
+            owner,
+            session_id: session_id.to_string(),
+        }
+    }
+
+    fn adopt_for_current_flow(&mut self) {
+        let current_owner = TestSessionRuntimeLockOwner::current();
+        if current_owner == self.owner {
+            return;
+        }
+        let mut held = held_session_locks()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(
+            held.get(&self.owner),
+            Some(&self.session_id),
+            "transferred session runtime lock must retain its acquiring test owner"
+        );
+        assert!(
+            !held.contains_key(&current_owner),
+            "session runtime lock transfer target must not already hold a lock: owner={current_owner:?}, held={held:?}"
+        );
+        held.remove(&self.owner);
+        held.insert(current_owner.clone(), self.session_id.clone());
+        self.owner = current_owner;
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestSessionRuntimeLockOwnerReservation {
+    fn drop(&mut self) {
+        let mut held = held_session_locks()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(
+            held.get(&self.owner),
+            Some(&self.session_id),
+            "session runtime lock must be released by its acquiring test flow"
+        );
+        held.remove(&self.owner);
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -367,7 +463,7 @@ impl AgentSessionRuntimeUsecase {
                 instruction_source,
                 data_dir: Arc::new(data_dir),
                 sessions: Arc::new(Mutex::new(RuntimeSessionMap::new())),
-                session_locks: Arc::new(Mutex::new(HashMap::new())),
+                session_locks: Arc::new(SessionRuntimeLockRegistry::default()),
                 workflow_turn_complete_notifier: Arc::new(RwLock::new(None)),
                 workflow_stall_notifier: Arc::new(RwLock::new(None)),
             },
@@ -1235,8 +1331,25 @@ impl AgentSessionRuntimeUsecase {
         self.live_runtime(session_id).await.is_some()
     }
 
+    /// Acquires the per-session runtime lock.
+    ///
+    /// While the returned guard is held, callers must not acquire another session runtime lock,
+    /// including the same session recursively. Backend I/O awaits such as process startup and
+    /// stdin writes must be limited to the smallest range required for per-session ordering.
+    /// UI and event notifications, including session state-change emits, must run after the guard
+    /// is dropped.
     pub async fn acquire_session_lock(&self, session_id: &str) -> SessionRuntimeLockGuard {
         acquire_session_runtime_lock(&self.ctx.session_locks, session_id).await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn session_runtime_lock_is_held_for_test(&self, session_id: &str) -> bool {
+        let Ok(locks) = self.ctx.session_locks.map.try_lock() else {
+            return true;
+        };
+        locks
+            .get(session_id)
+            .is_some_and(|lock| lock.try_lock().is_err())
     }
 
     pub async fn start_turn_locked(
@@ -2436,14 +2549,57 @@ pub struct SessionRuntimeLockGuard {
     session_id: String,
     guard: Option<OwnedMutexGuard<()>>,
     locks: SessionRuntimeLocks,
+    #[cfg(test)]
+    test_owner_reservation: TestSessionRuntimeLockOwnerReservation,
 }
 
+#[cfg(test)]
+impl SessionRuntimeLockGuard {
+    pub(crate) fn adopt_for_current_test_flow(&mut self) {
+        self.test_owner_reservation.adopt_for_current_flow();
+    }
+}
+
+/// Acquires the per-session runtime lock used to serialize runtime state transitions.
+///
+/// While the returned guard is held, callers must not acquire another session runtime lock,
+/// including the same session recursively. Backend I/O awaits such as process startup and stdin
+/// writes must be limited to the smallest range required for per-session ordering. UI and event
+/// notifications, including session state-change emits, must run after the guard is dropped.
 async fn acquire_session_runtime_lock(
     session_locks: &SessionRuntimeLocks,
     session_id: &str,
 ) -> SessionRuntimeLockGuard {
+    #[cfg(test)]
+    let test_owner_reservation = TestSessionRuntimeLockOwnerReservation::reserve(session_id);
+
     let lock = {
-        let mut locks = session_locks.lock().await;
+        let mut locks = session_locks.map.lock().await;
+        let pending_prune = {
+            let mut pending = session_locks
+                .pending_prune
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            std::mem::take(&mut *pending)
+        };
+        let mut still_referenced = HashSet::new();
+        for pending_session_id in pending_prune {
+            if locks
+                .get(&pending_session_id)
+                .is_some_and(|lock| Arc::strong_count(lock) == 1)
+            {
+                locks.remove(&pending_session_id);
+            } else if locks.contains_key(&pending_session_id) {
+                still_referenced.insert(pending_session_id);
+            }
+        }
+        if !still_referenced.is_empty() {
+            session_locks
+                .pending_prune
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .extend(still_referenced);
+        }
         locks
             .entry(session_id.to_string())
             .or_insert_with(|| Arc::new(Mutex::new(())))
@@ -2454,32 +2610,19 @@ async fn acquire_session_runtime_lock(
         session_id: session_id.to_string(),
         guard: Some(guard),
         locks: Arc::clone(session_locks),
+        #[cfg(test)]
+        test_owner_reservation,
     }
 }
 
 impl Drop for SessionRuntimeLockGuard {
     fn drop(&mut self) {
         self.guard.take();
-        let session_id = self.session_id.clone();
-        let locks = Arc::clone(&self.locks);
-        match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
-                handle.spawn(async move {
-                    let mut locks = locks.lock().await;
-                    if locks
-                        .get(&session_id)
-                        .is_some_and(|lock| Arc::strong_count(lock) == 1)
-                    {
-                        locks.remove(&session_id);
-                    }
-                });
-            }
-            Err(_) => {
-                log::warn!(
-                    "skip prune_session_runtime_lock: no tokio runtime (session={session_id})"
-                );
-            }
-        }
+        self.locks
+            .pending_prune
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(self.session_id.clone());
     }
 }
 
@@ -4805,6 +4948,226 @@ mod tests {
         fn instruction_cache_key(&self, _worktree_root: &Path) -> Option<String> {
             None
         }
+    }
+
+    fn test_session_runtime_locks() -> SessionRuntimeLocks {
+        Arc::new(SessionRuntimeLockRegistry::default())
+    }
+
+    #[tokio::test]
+    async fn released_session_runtime_lock_is_pruned_on_the_next_acquire() {
+        let locks = test_session_runtime_locks();
+        let released = acquire_session_runtime_lock(&locks, "released").await;
+        assert!(locks.map.lock().await.contains_key("released"));
+
+        drop(released);
+        let active = acquire_session_runtime_lock(&locks, "active").await;
+
+        let map = locks.map.lock().await;
+        assert!(!map.contains_key("released"));
+        assert!(map.contains_key("active"));
+        drop(map);
+        drop(active);
+    }
+
+    #[test]
+    fn dropping_session_runtime_lock_without_a_runtime_still_schedules_prune() {
+        let locks = test_session_runtime_locks();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let released = runtime.block_on(acquire_session_runtime_lock(&locks, "released"));
+
+        drop(runtime);
+        drop(released);
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let active = acquire_session_runtime_lock(&locks, "active").await;
+            let map = locks.map.lock().await;
+            assert!(!map.contains_key("released"));
+            assert!(map.contains_key("active"));
+            drop(map);
+            drop(active);
+        });
+    }
+
+    #[tokio::test]
+    async fn session_runtime_locks_serialize_one_session_and_keep_sessions_independent() {
+        let locks = test_session_runtime_locks();
+        let first = acquire_session_runtime_lock(&locks, "session-a").await;
+        let waiter_locks = Arc::clone(&locks);
+        let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                let guard = acquire_session_runtime_lock(&waiter_locks, "session-a").await;
+                acquired_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                drop(guard);
+            });
+        });
+
+        assert!(acquired_rx.recv_timeout(Duration::from_millis(50)).is_err());
+        drop(first);
+        acquired_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        let other = acquire_session_runtime_lock(&locks, "session-b").await;
+        let map = locks.map.lock().await;
+        assert!(
+            map.get("session-a")
+                .is_some_and(|lock| lock.try_lock().is_err()),
+            "an actively held session lock must remain in the registry"
+        );
+        assert!(map.contains_key("session-b"));
+        drop(map);
+        drop(other);
+
+        release_tx.send(()).unwrap();
+        waiter.join().unwrap();
+
+        let final_guard = acquire_session_runtime_lock(&locks, "final").await;
+        assert!(!locks.map.lock().await.contains_key("session-a"));
+        drop(final_guard);
+    }
+
+    #[tokio::test]
+    async fn repeated_session_runtime_locks_do_not_accumulate_registry_entries() {
+        let locks = test_session_runtime_locks();
+
+        for index in 0..100 {
+            let guard = acquire_session_runtime_lock(&locks, &format!("session-{index}")).await;
+            assert_eq!(locks.map.lock().await.len(), 1);
+            drop(guard);
+        }
+
+        let final_guard = acquire_session_runtime_lock(&locks, "final").await;
+        let map = locks.map.lock().await;
+        assert_eq!(map.len(), 1);
+        assert!(map.contains_key("final"));
+        drop(map);
+        drop(final_guard);
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "session runtime lock re-entry is forbidden")]
+    async fn session_runtime_lock_reentry_is_detected_in_tests() {
+        let locks = test_session_runtime_locks();
+        let _first = acquire_session_runtime_lock(&locks, "session-a").await;
+        let _second = acquire_session_runtime_lock(&locks, "session-b").await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn session_runtime_lock_reentry_is_detected_on_a_multi_thread_runtime() {
+        let locks = test_session_runtime_locks();
+        let task = tokio::spawn(async move {
+            let _first = acquire_session_runtime_lock(&locks, "session-a").await;
+            tokio::task::yield_now().await;
+            let _second = acquire_session_runtime_lock(&locks, "session-b").await;
+        });
+
+        let error = task.await.expect_err("re-entry must panic");
+        assert!(error.is_panic());
+    }
+
+    #[tokio::test]
+    async fn concurrently_polled_session_runtime_lock_acquires_detect_reentry() {
+        let locks = test_session_runtime_locks();
+        let holder_a_locks = Arc::clone(&locks);
+        let holder_b_locks = Arc::clone(&locks);
+        let (holder_a_ready_tx, holder_a_ready_rx) = tokio::sync::oneshot::channel();
+        let (holder_b_ready_tx, holder_b_ready_rx) = tokio::sync::oneshot::channel();
+        let (release_holder_a_tx, release_holder_a_rx) = tokio::sync::oneshot::channel();
+        let (release_holder_b_tx, release_holder_b_rx) = tokio::sync::oneshot::channel();
+        let holder_a = tokio::spawn(async move {
+            let guard = acquire_session_runtime_lock(&holder_a_locks, "session-a").await;
+            holder_a_ready_tx.send(()).unwrap();
+            release_holder_a_rx.await.unwrap();
+            drop(guard);
+        });
+        let holder_b = tokio::spawn(async move {
+            let guard = acquire_session_runtime_lock(&holder_b_locks, "session-b").await;
+            holder_b_ready_tx.send(()).unwrap();
+            release_holder_b_rx.await.unwrap();
+            drop(guard);
+        });
+        holder_a_ready_rx.await.unwrap();
+        holder_b_ready_rx.await.unwrap();
+
+        let reentry_locks = Arc::clone(&locks);
+        let reentry = tokio::spawn(async move {
+            let acquire_a = acquire_session_runtime_lock(&reentry_locks, "session-a");
+            let acquire_b = acquire_session_runtime_lock(&reentry_locks, "session-b");
+            tokio::join!(acquire_a, acquire_b)
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !reentry.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("parallel re-entry must be detected before either session lock is released");
+
+        release_holder_a_tx.send(()).unwrap();
+        holder_a.await.unwrap();
+        release_holder_b_tx.send(()).unwrap();
+        holder_b.await.unwrap();
+
+        let error = match reentry.await {
+            Ok(_) => panic!("parallel re-entry must panic"),
+            Err(error) => error,
+        };
+        assert!(error.is_panic());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn session_runtime_lock_drop_removes_task_ownership_from_another_thread() {
+        let locks = test_session_runtime_locks();
+        let task = tokio::spawn(async move {
+            let first = acquire_session_runtime_lock(&locks, "session-a").await;
+            tokio::task::spawn_blocking(move || drop(first))
+                .await
+                .unwrap();
+
+            let second = acquire_session_runtime_lock(&locks, "session-b").await;
+            drop(second);
+        });
+
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "session runtime lock re-entry is forbidden")]
+    async fn transferred_session_runtime_lock_detects_reentry_in_the_receiving_flow() {
+        let locks = test_session_runtime_locks();
+        let task_locks = Arc::clone(&locks);
+        let mut first =
+            tokio::spawn(
+                async move { acquire_session_runtime_lock(&task_locks, "session-a").await },
+            )
+            .await
+            .unwrap();
+        first.adopt_for_current_test_flow();
+
+        let _second = acquire_session_runtime_lock(&locks, "session-b").await;
+    }
+
+    #[tokio::test]
+    async fn sequential_session_runtime_lock_acquires_are_not_reentry() {
+        let locks = test_session_runtime_locks();
+        let first = acquire_session_runtime_lock(&locks, "session-a").await;
+        drop(first);
+
+        let second = acquire_session_runtime_lock(&locks, "session-b").await;
+        drop(second);
     }
 
     #[test]

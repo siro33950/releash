@@ -8851,6 +8851,373 @@ mod dispatch_boundary_tests {
         assert!(!engine.contains_execution_for_test(&execution_id).await);
     }
 
+    #[derive(Clone, Copy)]
+    enum PausedFanoutActivationWait {
+        StartTurn,
+        StartTurnPrompt,
+    }
+
+    struct PausedFanoutActivation {
+        app: DispatchTestApp,
+        engine: WorkflowRuntimeService,
+        session_store: Arc<SessionStore>,
+        agent_runtime: Arc<AgentSessionRuntimeUsecase>,
+        controller: crate::test_support::TestAgentRuntimeController,
+        execution_id: String,
+        child_session_ids: Vec<String>,
+        start_task: tokio::task::JoinHandle<Result<String, WorkflowEngineError>>,
+        _worktree: TempDir,
+    }
+
+    async fn setup_paused_fanout_activation(
+        wait_for: PausedFanoutActivationWait,
+    ) -> PausedFanoutActivation {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_execution_store_data_dir(data_dir.clone()).await;
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let (agent_runtime, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                data_dir,
+            );
+        controller.pause_start_turn();
+        let worktree = TempDir::new().unwrap();
+        let worktree_path = worktree.path().to_string_lossy().to_string();
+        let workflow = WorkflowDefinitionYaml {
+            name: "paused-fanout-activation".to_string(),
+            description: String::new(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![
+                make_fanout_node("fanout-review", vec!["review-a", "review-b"]),
+                make_fanout_child("review-a"),
+                make_fanout_child("review-b"),
+            ],
+        };
+
+        let start_engine = engine.clone();
+        let start_app = app.handle().clone();
+        let start_session_store = session_store.clone();
+        let start_agent_runtime = agent_runtime.clone();
+        let start_worktree_path = worktree_path.clone();
+        let start_task = tokio::spawn(async move {
+            start_engine
+                .start_resolved_workflow(
+                    &start_app,
+                    &start_session_store,
+                    &start_agent_runtime,
+                    workflow,
+                    start_worktree_path,
+                    None,
+                    ExecutionOrigin::DesktopUi,
+                    PermissionMode::Edit,
+                )
+                .await
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let reached_wait_point = controller.calls().iter().any(|call| match wait_for {
+                    PausedFanoutActivationWait::StartTurn => matches!(
+                        call.kind,
+                        crate::test_support::TestRuntimeCallKind::StartTurn
+                    ),
+                    PausedFanoutActivationWait::StartTurnPrompt => matches!(
+                        call.kind,
+                        crate::test_support::TestRuntimeCallKind::StartTurnPrompt { .. }
+                    ),
+                });
+                if reached_wait_point {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the first fanout child must reach the paused backend");
+
+        let (execution_id, child_session_ids) = {
+            let executions = engine.executions.lock().await;
+            let (execution_id, execution) = find_by_worktree(&executions, &worktree_path)
+                .expect("fanout execution must be visible before child activation completes");
+            let child_session_ids = execution
+                .fanout_runtime
+                .as_ref()
+                .expect("fanout runtime")
+                .children
+                .iter()
+                .map(|child| child.session_id.clone())
+                .collect::<Vec<_>>();
+            (execution_id.clone(), child_session_ids)
+        };
+        assert_eq!(child_session_ids.len(), 2);
+
+        PausedFanoutActivation {
+            app,
+            engine,
+            session_store,
+            agent_runtime,
+            controller,
+            execution_id,
+            child_session_ids,
+            start_task,
+            _worktree: worktree,
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_stop_aborts_stuck_fanout_activation_tasks_before_returning() {
+        let PausedFanoutActivation {
+            app,
+            engine,
+            session_store,
+            agent_runtime,
+            controller,
+            execution_id,
+            child_session_ids,
+            mut start_task,
+            _worktree,
+        } = setup_paused_fanout_activation(PausedFanoutActivationWait::StartTurn).await;
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            engine.stop_workflow_execution(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                &execution_id,
+            ),
+        )
+        .await
+        .expect("stop must abort and join stuck fanout child activation tasks")
+        .expect("stop should succeed");
+
+        let started_execution_id =
+            tokio::time::timeout(std::time::Duration::from_secs(2), &mut start_task)
+                .await
+                .expect("workflow start must finish without releasing the backend gate")
+                .expect("workflow start task should join")
+                .expect("workflow start should remain accepted");
+        assert_eq!(started_execution_id, execution_id);
+        for session_id in &child_session_ids {
+            assert!(
+                !agent_runtime.session_runtime_lock_is_held_for_test(session_id),
+                "fanout child session lock must be released before stop returns: {session_id}"
+            );
+        }
+
+        let calls_after_stop = controller.calls();
+        controller.release_start_turn();
+        tokio::task::yield_now().await;
+        assert_eq!(controller.calls(), calls_after_stop);
+        assert_eq!(
+            calls_after_stop
+                .iter()
+                .filter(|call| matches!(
+                    call.kind,
+                    crate::test_support::TestRuntimeCallKind::StartTurnPrompt { .. }
+                ))
+                .count(),
+            1,
+            "the later fanout child must not start after interruption"
+        );
+    }
+
+    #[tokio::test]
+    async fn active_abort_quiesces_fanout_children_before_terminal_cleanup() {
+        let PausedFanoutActivation {
+            app,
+            engine,
+            session_store,
+            agent_runtime,
+            controller,
+            execution_id,
+            child_session_ids,
+            mut start_task,
+            _worktree,
+        } = setup_paused_fanout_activation(PausedFanoutActivationWait::StartTurnPrompt).await;
+
+        let lookup_completed = Arc::new(tokio::sync::Notify::new());
+        let continue_precommit = Arc::new(tokio::sync::Notify::new());
+        engine
+            .pause_abort_after_lookup_for_test(lookup_completed.clone(), continue_precommit.clone())
+            .await;
+        let abort_engine = engine.clone();
+        let abort_app = app.handle().clone();
+        let abort_session_store = session_store.clone();
+        let abort_agent_runtime = agent_runtime.clone();
+        let abort_execution_id = execution_id.clone();
+        let abort_task = tokio::spawn(async move {
+            abort_engine
+                .abort_workflow_execution(
+                    &abort_app,
+                    &abort_session_store,
+                    &abort_agent_runtime,
+                    &abort_execution_id,
+                    None,
+                )
+                .await
+        });
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            lookup_completed.notified(),
+        )
+        .await
+        .expect("abort must acknowledge cancellation before pre-commit");
+        let starts_at_acknowledgement = controller
+            .calls()
+            .iter()
+            .filter(|call| {
+                matches!(
+                    call.kind,
+                    crate::test_support::TestRuntimeCallKind::StartTurnPrompt { .. }
+                )
+            })
+            .count();
+        assert_eq!(starts_at_acknowledgement, 1);
+
+        // Completing backend start while abort is deciding must not poll the quiesced parent
+        // activation or allow the later child to start.
+        controller.release_start_turn();
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        assert_eq!(
+            controller
+                .calls()
+                .iter()
+                .filter(|call| {
+                    matches!(
+                        call.kind,
+                        crate::test_support::TestRuntimeCallKind::StartTurnPrompt { .. }
+                    )
+                })
+                .count(),
+            starts_at_acknowledgement,
+            "cancel acknowledgement must quiesce every fanout child while abort is deciding"
+        );
+
+        continue_precommit.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(2), abort_task)
+            .await
+            .expect("abort must finish after the durable decision")
+            .expect("abort task should join")
+            .expect("abort should succeed");
+        let started_execution_id =
+            tokio::time::timeout(std::time::Duration::from_secs(2), &mut start_task)
+                .await
+                .expect("workflow start must finish after committed cancellation")
+                .expect("workflow start task should join")
+                .expect("workflow start should remain accepted");
+        assert_eq!(started_execution_id, execution_id);
+
+        let calls_after_abort = controller.calls();
+        assert_eq!(
+            calls_after_abort
+                .iter()
+                .filter(|call| {
+                    matches!(
+                        call.kind,
+                        crate::test_support::TestRuntimeCallKind::StartTurnPrompt { .. }
+                    )
+                })
+                .count(),
+            1,
+            "terminal cleanup must not be followed by another fanout child start"
+        );
+        for session_id in &child_session_ids {
+            assert!(
+                !agent_runtime.has_live_runtime(session_id).await,
+                "terminal cleanup must leave no live child runtime: {session_id}"
+            );
+            assert!(
+                !agent_runtime.session_runtime_lock_is_held_for_test(session_id),
+                "terminal cleanup must run after child activation lock release: {session_id}"
+            );
+        }
+        let metadata = engine
+            .execution_store()
+            .get_execution(&execution_id)
+            .await
+            .unwrap();
+        assert_eq!(metadata.status, ExecutionStatus::Aborted);
+        assert!(!engine.contains_execution_for_test(&execution_id).await);
+    }
+
+    #[tokio::test]
+    async fn stop_append_failure_resumes_the_quiesced_fanout_activation() {
+        let PausedFanoutActivation {
+            app,
+            engine,
+            session_store,
+            agent_runtime,
+            controller,
+            execution_id,
+            child_session_ids,
+            mut start_task,
+            _worktree,
+        } = setup_paused_fanout_activation(PausedFanoutActivationWait::StartTurnPrompt).await;
+
+        engine.fail_next_required_event_append_for_test();
+        let stop_error = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            engine.stop_workflow_execution(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                &execution_id,
+            ),
+        )
+        .await
+        .expect("failed stop must decide rollback without waiting for backend start")
+        .expect_err("the injected append failure must reject stop");
+        assert!(matches!(stop_error, WorkflowEngineError::SessionStore(_)));
+        assert_eq!(
+            engine
+                .execution_store()
+                .get_execution(&execution_id)
+                .await
+                .unwrap()
+                .status,
+            ExecutionStatus::Running
+        );
+        for session_id in &child_session_ids {
+            assert!(
+                agent_runtime.session_runtime_lock_is_held_for_test(session_id),
+                "rollback must preserve the existing child reservation: {session_id}"
+            );
+        }
+
+        controller.release_start_turn();
+        let started_execution_id =
+            tokio::time::timeout(std::time::Duration::from_secs(2), &mut start_task)
+                .await
+                .expect("rolled-back fanout activation must resume")
+                .expect("workflow start task should join")
+                .expect("workflow start should remain accepted");
+        assert_eq!(started_execution_id, execution_id);
+        for session_id in &child_session_ids {
+            assert_eq!(
+                controller
+                    .call_kinds_for(session_id)
+                    .iter()
+                    .filter(|call| matches!(
+                        call,
+                        crate::test_support::TestRuntimeCallKind::StartTurnPrompt { .. }
+                    ))
+                    .count(),
+                1,
+                "rollback must resume each reserved child exactly once: {session_id}"
+            );
+        }
+
+        engine
+            .stop_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn stop_append_failure_resumes_the_paused_session_activation_and_restores_running() {
         let app = make_dispatch_app();
@@ -17932,6 +18299,16 @@ mod dispatch_boundary_tests {
         handles
             .insert_failing_runtime_state_for_test(session_id)
             .await;
+        let lock_states_at_broadcast = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let lock_states_for_listener = Arc::clone(&lock_states_at_broadcast);
+        let handles_for_listener = Arc::clone(&handles);
+        let session_id_for_listener = session_id.to_string();
+        app.listen("workflow-execution-changed", move |_| {
+            lock_states_for_listener.lock().unwrap().push(
+                handles_for_listener
+                    .session_runtime_lock_is_held_for_test(&session_id_for_listener),
+            );
+        });
 
         engine
             .handle_missing_required_output(
@@ -17952,6 +18329,17 @@ mod dispatch_boundary_tests {
             )
             .await
             .unwrap();
+
+        let lock_states_at_broadcast = lock_states_at_broadcast.lock().unwrap();
+        assert!(
+            !lock_states_at_broadcast.is_empty(),
+            "repair start failure must broadcast the terminal workflow state"
+        );
+        assert!(
+            lock_states_at_broadcast.iter().all(|is_held| !is_held),
+            "terminal workflow state must be broadcast after the session runtime lock is released"
+        );
+        drop(lock_states_at_broadcast);
 
         assert!(
             !engine.contains_execution_for_test(&execution_id).await,

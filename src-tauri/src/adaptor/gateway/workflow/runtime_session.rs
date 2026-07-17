@@ -1,10 +1,10 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::{
     collections::{BTreeMap, HashMap},
     path::Path,
 };
 
-use tokio::sync::Mutex;
+use tokio::sync::{oneshot, Mutex};
 
 use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::execution_registry::find_by_worktree;
@@ -27,6 +27,7 @@ use crate::domain::workflow::{
 };
 use crate::usecase::agent_session::backend_registry::AgentBackendRegistry;
 use crate::usecase::agent_session::context::BranchDiffContextPort;
+use crate::usecase::agent_session::runtime::usecase::SessionRuntimeLockGuard;
 use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
 use crate::usecase::agent_session::session::{ChatSession, OpenTabRegistry, SessionStore};
 
@@ -529,55 +530,228 @@ pub(crate) async fn activate_fanout_child_sessions<R: tauri::Runtime>(
     worktree_path: &str,
     child_setups: &[FanoutChildSessionSetup],
     snapshot: RuntimeCommitSnapshot,
+    activation_tasks: Arc<FanoutActivationTaskTracker>,
 ) -> Result<(), WorkflowEngineError> {
+    let activations =
+        reserve_fanout_child_sessions(runtime, child_setups, &activation_tasks).await?;
     broadcast_state(app, worktree_path, snapshot).await;
-    start_fanout_child_sessions(runtime, open_tabs, child_setups).await
+    start_fanout_child_sessions(runtime, open_tabs, activations).await
+}
+
+#[derive(Default)]
+pub(crate) struct FanoutActivationTaskTracker {
+    tasks: StdMutex<Vec<FanoutActivationTaskCancellation>>,
+}
+
+struct FanoutActivationTaskCancellation {
+    abort: tokio::task::AbortHandle,
+    completed: oneshot::Receiver<()>,
+}
+
+impl FanoutActivationTaskTracker {
+    fn register(&self, abort: tokio::task::AbortHandle, completed: oneshot::Receiver<()>) {
+        self.tasks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(FanoutActivationTaskCancellation { abort, completed });
+    }
+
+    pub(crate) async fn abort_and_wait(&self) {
+        let tasks = {
+            let mut tasks = self
+                .tasks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            std::mem::take(&mut *tasks)
+        };
+        for task in &tasks {
+            task.abort.abort();
+        }
+        for task in tasks {
+            let _ = task.completed.await;
+        }
+    }
+}
+
+struct FanoutActivationTaskCompletion(Option<oneshot::Sender<()>>);
+
+impl Drop for FanoutActivationTaskCompletion {
+    fn drop(&mut self) {
+        if let Some(completed) = self.0.take() {
+            let _ = completed.send(());
+        }
+    }
+}
+
+struct FanoutChildSessionActivation {
+    session_id: String,
+    node_name: String,
+    permission_mode: PermissionMode,
+    user_message: String,
+    system_prompt: Option<String>,
+    workflow_instructions: Vec<String>,
+    reserved: Option<oneshot::Receiver<()>>,
+    start: Option<oneshot::Sender<()>>,
+    task: Option<tokio::task::JoinHandle<Option<SessionRuntimeLockGuard>>>,
+}
+
+impl Drop for FanoutChildSessionActivation {
+    fn drop(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+    }
+}
+
+async fn reserve_fanout_child_sessions(
+    runtime: &Arc<AgentSessionRuntimeUsecase>,
+    child_setups: &[FanoutChildSessionSetup],
+    activation_tasks: &FanoutActivationTaskTracker,
+) -> Result<Vec<FanoutChildSessionActivation>, WorkflowEngineError> {
+    let mut activations = Vec::with_capacity(child_setups.len());
+
+    for setup in child_setups {
+        let permission_mode = PermissionMode::parse_canonical(&setup.permission_mode)
+            .map_err(|e| WorkflowEngineError::InvalidWorkflow(e.to_string()))?;
+        let runtime = Arc::clone(runtime);
+        let session_id = setup.session_id.clone();
+        let session_id_for_task = session_id.clone();
+        let node_name = setup.node_name.clone();
+        let user_message = setup.user_message.clone();
+        let system_prompt = setup.system_prompt.clone();
+        let workflow_instructions = setup
+            .workflow_instruction
+            .clone()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let (reserved_tx, reserved_rx) = oneshot::channel();
+        let (start_tx, start_rx) = oneshot::channel();
+        let (completed_tx, completed_rx) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _completion = FanoutActivationTaskCompletion(Some(completed_tx));
+            let runtime_guard = runtime.acquire_session_lock(&session_id_for_task).await;
+            if reserved_tx.send(()).is_err() || start_rx.await.is_err() {
+                drop(runtime_guard);
+                return None;
+            }
+            Some(runtime_guard)
+        });
+        activation_tasks.register(task.abort_handle(), completed_rx);
+        activations.push(FanoutChildSessionActivation {
+            session_id,
+            node_name,
+            permission_mode,
+            user_message,
+            system_prompt,
+            workflow_instructions,
+            reserved: Some(reserved_rx),
+            start: Some(start_tx),
+            task: Some(task),
+        });
+    }
+
+    for activation in &mut activations {
+        let reserved = activation.reserved.take().ok_or_else(|| {
+            WorkflowEngineError::InvalidState(format!(
+                "fanout child '{}' activation reservation was already consumed",
+                activation.session_id
+            ))
+        })?;
+        reserved.await.map_err(|_| {
+            WorkflowEngineError::AgentSession(format!(
+                "fanout child '{}' activation task ended before reserving its session",
+                activation.session_id
+            ))
+        })?;
+    }
+
+    Ok(activations)
 }
 
 async fn start_fanout_child_sessions(
     runtime: &Arc<AgentSessionRuntimeUsecase>,
     open_tabs: &Arc<OpenTabRegistry>,
-    child_setups: &[FanoutChildSessionSetup],
+    mut activations: Vec<FanoutChildSessionActivation>,
 ) -> Result<(), WorkflowEngineError> {
-    let mut created_session_ids: Vec<String> = Vec::new();
-    let mut runtime_guards = Vec::new();
+    let created_session_ids = activations
+        .iter()
+        .map(|activation| activation.session_id.clone())
+        .collect::<Vec<_>>();
 
-    for setup in child_setups {
-        let runtime_guard = runtime.acquire_session_lock(&setup.session_id).await;
-        runtime_guards.push(runtime_guard);
-        open_tabs.add(&setup.session_id);
-        created_session_ids.push(setup.session_id.clone());
+    for activation in &activations {
+        open_tabs.add(&activation.session_id);
     }
 
-    for setup in child_setups {
-        let runtime_guard = runtime_guards.remove(0);
-        let permission_mode = PermissionMode::parse_canonical(&setup.permission_mode)
-            .map_err(|e| WorkflowEngineError::InvalidWorkflow(e.to_string()))?;
-        if let Err(e) = runtime
-            .start_turn_locked(
-                &setup.session_id,
-                permission_mode,
-                setup.user_message.clone(),
-                setup.system_prompt.clone(),
-                setup.workflow_instruction.clone().into_iter().collect(),
-            )
-            .await
-        {
+    for activation in &mut activations {
+        if let Err(error) = start_single_fanout_child(runtime, activation).await {
             for session_id in &created_session_ids {
                 interrupt_agent(runtime, session_id).await;
             }
-            return Err(WorkflowEngineError::with_agent_runtime_context(
-                format!(
-                    "Failed to start turn for fanout child '{}'",
-                    setup.node_name
-                ),
-                e,
-            ));
+            return Err(error);
         }
-        drop(runtime_guard);
     }
 
     Ok(())
+}
+
+async fn start_single_fanout_child(
+    runtime: &Arc<AgentSessionRuntimeUsecase>,
+    activation: &mut FanoutChildSessionActivation,
+) -> Result<(), WorkflowEngineError> {
+    let started = activation
+        .start
+        .take()
+        .is_some_and(|start| start.send(()).is_ok());
+    if !started {
+        return Err(WorkflowEngineError::AgentSession(format!(
+            "fanout child '{}' activation task ended before start",
+            activation.session_id
+        )));
+    }
+
+    let task = activation.task.take().ok_or_else(|| {
+        WorkflowEngineError::InvalidState(format!(
+            "fanout child '{}' activation task was already consumed",
+            activation.session_id
+        ))
+    })?;
+    let runtime_guard = task
+        .await
+        .map_err(|error| {
+            WorkflowEngineError::AgentSession(format!(
+                "fanout child '{}' activation task failed: {error}",
+                activation.session_id
+            ))
+        })?
+        .ok_or_else(|| {
+            WorkflowEngineError::AgentSession(format!(
+                "fanout child '{}' activation task ended before transferring its session reservation",
+                activation.session_id
+            ))
+        })?;
+    #[cfg(test)]
+    let mut runtime_guard = runtime_guard;
+    #[cfg(test)]
+    runtime_guard.adopt_for_current_test_flow();
+    let result = runtime
+        .start_turn_locked(
+            &activation.session_id,
+            activation.permission_mode,
+            std::mem::take(&mut activation.user_message),
+            activation.system_prompt.take(),
+            std::mem::take(&mut activation.workflow_instructions),
+        )
+        .await;
+    drop(runtime_guard);
+    result.map_err(|error| {
+        WorkflowEngineError::with_agent_runtime_context(
+            format!(
+                "Failed to start turn for fanout child '{}'",
+                activation.node_name
+            ),
+            error,
+        )
+    })
 }
 
 #[cfg(test)]
@@ -596,7 +770,11 @@ mod tests {
         BackendCapabilities, ModelDescriptor, ModelId, SkillEntry,
     };
     use crate::domain::workflow::NodeKindName;
+    use crate::test_support::TestRuntimeCallKind;
+    use crate::usecase::agent_session::runtime::SendAgentMessageRequest;
+    use crate::usecase::agent_session::session::SessionCreationAttributes;
     use async_trait::async_trait;
+    use std::time::Duration;
 
     struct RuntimeSessionMockBackend {
         id: &'static str,
@@ -1032,6 +1210,151 @@ mod tests {
         assert_eq!(
             creation_plans[0].workflow_node_context.node_name,
             "review-pending"
+        );
+    }
+
+    #[tokio::test]
+    async fn fanout_reserves_later_child_activation_before_publishing_sessions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let (runtime, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                Arc::clone(&session_store),
+                tmp.path(),
+            );
+        let worktree_path = tmp.path().to_string_lossy().to_string();
+        let first_session =
+            crate::usecase::agent_session::session::create_session_internal_with_attributes(
+                &session_store,
+                tmp.path(),
+                &worktree_path,
+                Some("codex".to_string()),
+                PermissionMode::Edit,
+                SessionCreationAttributes {
+                    selected_model: Some("gpt-5".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let second_session =
+            crate::usecase::agent_session::session::create_session_internal_with_attributes(
+                &session_store,
+                tmp.path(),
+                &worktree_path,
+                Some("codex".to_string()),
+                PermissionMode::Edit,
+                SessionCreationAttributes {
+                    selected_model: Some("gpt-5".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let setups = vec![
+            FanoutChildSessionSetup {
+                node_execution_id: "node-execution-first".to_string(),
+                node_name: "first".to_string(),
+                session_id: first_session.id.clone(),
+                system_prompt: None,
+                workflow_instruction: None,
+                user_message: "workflow-first".to_string(),
+                permission_mode: PermissionMode::Edit.as_str().to_string(),
+            },
+            FanoutChildSessionSetup {
+                node_execution_id: "node-execution-second".to_string(),
+                node_name: "second".to_string(),
+                session_id: second_session.id.clone(),
+                system_prompt: None,
+                workflow_instruction: None,
+                user_message: "workflow-second".to_string(),
+                permission_mode: PermissionMode::Edit.as_str().to_string(),
+            },
+        ];
+        controller.pause_start_turn();
+
+        let activation_tasks = FanoutActivationTaskTracker::default();
+        let activations = reserve_fanout_child_sessions(&runtime, &setups, &activation_tasks)
+            .await
+            .unwrap();
+        assert!(runtime.session_runtime_lock_is_held_for_test(&first_session.id));
+        assert!(runtime.session_runtime_lock_is_held_for_test(&second_session.id));
+
+        let open_tabs = Arc::new(OpenTabRegistry::default());
+        let start_runtime = Arc::clone(&runtime);
+        let start_open_tabs = Arc::clone(&open_tabs);
+        let start = tokio::spawn(async move {
+            start_fanout_child_sessions(&start_runtime, &start_open_tabs, activations).await
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if controller
+                    .call_kinds_for(&first_session.id)
+                    .iter()
+                    .any(|call| {
+                        matches!(
+                            call,
+                            TestRuntimeCallKind::StartTurnPrompt { prompt }
+                                if prompt == "workflow-first"
+                        )
+                    })
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let send_runtime = Arc::clone(&runtime);
+        let second_session_id = second_session.id.clone();
+        let send_worktree_path = worktree_path.clone();
+        let mut send = tokio::spawn(async move {
+            send_runtime
+                .send_message(SendAgentMessageRequest {
+                    chat_session_id: Some(second_session_id),
+                    worktree_path: send_worktree_path,
+                    content: "user-second".to_string(),
+                    permission_mode: PermissionMode::Edit,
+                    plan_mode: false,
+                    backend_id: Some("codex".to_string()),
+                    model_id: Some("gpt-5".to_string()),
+                    images: None,
+                    mentions: None,
+                    editor_context: None,
+                })
+                .await
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut send)
+                .await
+                .is_err(),
+            "the later child operation must wait behind its reserved workflow activation"
+        );
+        assert!(controller
+            .call_kinds_for(&second_session.id)
+            .iter()
+            .all(|call| !matches!(call, TestRuntimeCallKind::StartTurnPrompt { .. })));
+
+        controller.release_start_turn();
+        start.await.unwrap().unwrap();
+        let send_response = send.await.unwrap().unwrap();
+
+        assert!(send_response.agent_message.is_none());
+        assert!(send_response.queued_turn.is_some());
+        assert_eq!(send_response.pending_queue_count, 1);
+        assert_eq!(
+            controller
+                .call_kinds_for(&second_session.id)
+                .into_iter()
+                .filter(|call| matches!(call, TestRuntimeCallKind::StartTurnPrompt { .. }))
+                .collect::<Vec<_>>(),
+            vec![TestRuntimeCallKind::StartTurnPrompt {
+                prompt: "workflow-second".to_string(),
+            }]
+        );
+        assert_eq!(
+            open_tabs.snapshot(),
+            [first_session.id, second_session.id].into_iter().collect()
         );
     }
 }
