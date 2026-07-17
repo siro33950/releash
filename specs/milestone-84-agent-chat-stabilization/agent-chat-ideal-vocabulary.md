@@ -14,11 +14,11 @@ milestone 84「Agentチャット安定化」のドキュメント群:
 
 ## 設計原則
 
-- **V-P1 (no-silent-drop / fail-closed control plane)**: wire 層は届いたメッセージを無言破棄してはならない。content-plane の変換先が無い既知・未知メッセージは `Notice(kind=UnsupportedMessage)` と構造化ログへ着地させ、session を継続できる。permission / configuration ack、Goal、provider mode / reviewer、turn completion、応答必須 server request など control-plane の未知・decode 失敗は raw ref と protocol identity を `ProtocolIncompatible` に記録し、新規 turn を fail-closed で block する。active turn中ならpending permissionをcancelしprovider interrupt後に`Interrupted(ProtocolIncompatible)`で必ずfinalizeして、spinner/dialogを残さない。「捨てる」は明示的な設計判断としてのみ許され、本書に記録する。
+- **V-P1 (no-silent-drop / fail-closed control plane)**: wire 層は届いたメッセージを無言破棄してはならない。parse可能かつcontent-planeと分類でき、projection先だけが未対応の既知・未知message/partは、payload長・digest・分類・上限付きredacted sampleだけを`Notice(kind=UnsupportedMessage)`と構造化ログへdurable記録してsessionを継続できる。既知variantのtyped decode failure、content/controlを分類できないmalformed frame、size上限超過、およびpermission / configuration ack、Goal、provider mode / reviewer、turn completion、応答必須server requestなどcontrol-planeの未知・decode失敗も同じbounded summaryと取得済みの部分protocol identityを`ProtocolIncompatible`に記録し、新規turnをfail-closedでblockする。完全evidenceが必要な場合だけ、secret plaintextをredactしたpayloadを暗号化・per-session quota・object size上限・TTL・参照認可付きevidence storeへ保存し、`ProviderEvidenceRef`で参照する。active turn中ならpending permissionをcancelしprovider interrupt後に`Interrupted(ProtocolIncompatible)`で必ずfinalizeして、spinner/dialogを残さない。「捨てる」は明示的な設計判断としてのみ許され、本書に記録する。
 - **V-P2 (parity)**: 同一概念は backend に依らず同一の語彙要素へ写像する。backend 固有の概念（Codex の item 種別等）は新しい part 種を増やすのではなく、既存語彙の kind / フィールドへ写像する。
 - **V-P3 (durable 表現可能性)**: UI に表示されるべき全情報は、この語彙（part / turn outcome / usage / notice）で表現でき、durable event として記録できなければならない。transient にしか存在しない表示情報を作らない。
 - **V-P4 (additive 進化)**: 永続化される語彙（durable event / read model）の変更は additive-only とし、既存セッションの読み込み互換を壊さない。
-- **V-P5 (full-retention 回避)**: 語彙拡張はサマリ・参照（`ToolOutputRef`）・スナップショットで表現し、wire の生ペイロード全量を恒久保存しない。
+- **V-P5 (full-retention 回避)**: 語彙拡張はサマリ・認可付き期限参照（`ToolOutputRef` / `ProviderEvidenceRef`）・スナップショットで表現し、wire の生ペイロード全量やsecret plaintextをdurable event / 構造化ログへ恒久保存しない。
 - **V-P6 (Rust-owned configuration)**: Agent の実行設定は Releash の Rust backend が正本を所有する。frontend は capability と確定済み設定の mirror に留め、adapter の受理前に確定表示しない。turn 送信時の frontend 値で設定を上書きしない。
 
 ## 現行語彙と不足の対応
@@ -34,7 +34,7 @@ milestone 84「Agentチャット安定化」のドキュメント群:
 | `PermissionRequest` | `domain/agent_session/entities/permission_request.rs` | `PermissionQuestion` に id / is_secret / is_other 無し（CX-1）。整形表示情報無し（SD-6）。決定の実効性表現無し（CL-1）。`Cancelled` が dead code |
 | `TodoListItem` | `domain/agent_session/value_objects/todo_list_item.rs` | `completed: bool` のみ。in_progress / priority 無し（RG-5） |
 | `SystemNotificationType` | `domain/agent_session/value_objects/system_notification_type.rs` | `Compaction` のみ。運用系通知の受け皿無し（CX-7/RG-6/CL-5） |
-| `AgentSessionEvent`（durable） | `usecase/agent_session/event_log/events.rs:104` | 上記の拡張を受ける器が無い。`TurnTokenUsage` が input/output のみ |
+| `AgentSessionEvent`（現行legacy persistence schema） | `usecase/agent_session/event_log/events.rs:104` | serde・usecase表示型・`serde_json::Value`へ依存し、新しいdomain eventとして流用できない。`TurnTokenUsage`もinput/outputのみ |
 | Agent 実行設定 | `PermissionMode { Ask, Edit, Full }` と `plan_mode: bool` が分離 | Goal / Reasoning effort が無く、mode の provider 写像・更新確定・永続化が一つの設定として扱われていない（#1445〜#1451） |
 
 ## 理想形
@@ -311,10 +311,18 @@ pub enum TurnResult {
         stats: TurnStats,
     },
     Interrupted {
-        reason: InterruptReason,     // UserAbort / Timeout / Crash / SessionClosed を追加
+        reason: InterruptReason,     // 下記closed enumの全variantを表現する
         error: Option<String>,
         stats: TurnStats,            // 中断でも usage を失わない
     },
+}
+
+pub enum InterruptReason {
+    UserAbort,
+    Timeout,
+    Crash,
+    SessionClosed,
+    ProtocolIncompatible,
 }
 
 pub enum TurnStopReason {
@@ -366,8 +374,10 @@ pub struct TokenUsage {
 - `TurnCompleted(TurnResult)` — V-D7 の拡張型に
 - `TokenUsageUpdated(TokenUsage)` — V-D8 の拡張型に
 - `BackendSessionCleared` — dead code を解消し配線（lifecycle I9 / SD-1）
-- `SessionConfigurationChanged(AgentSessionConfigurationProjection)` — selected / effective / pending / reconciliation の authoritative projection を通知。旧 `PermissionModeChanged` を置換する
+- `ProviderConfigurationStateObserved(ProviderConfigurationObservation)` — provider wireをadaptorがprovider-neutralなmodel / permission dimensions / reasoning effort / evidence refへ正規化したobservation。usecaseはこれをcanonical observation / reconciliation eventへ接続する。旧`PermissionModeChanged`を置換するが、query read modelや`available_actions`をruntime gateway入力へ含めない
 - `PermissionRequested` / `SlashCommandsUpdated` / `KeepAlive` / `Fatal` — 現行維持
+
+`AgentRuntimeEvent`はprovider runtimeからusecaseへ入るbackend gateway型であり、client-facing eventではない。full `AgentSessionConfigurationProjection`はこのenumへ載せず、§11のquery/watch境界がpinned committed sourceと同じevaluation contextから構築した`AgentSessionReadModelDelta::SessionConfigurationChanged`として通知する。
 
 ### 9. AgentSessionConfiguration（AgentMode / AgentGoal / ReasoningEffort）
 
@@ -413,7 +423,7 @@ pub struct ProviderGoalSnapshot {
     pub observation_id: String,
     pub provider_goal_ref: Option<String>,
     pub correlation: ProviderGoalCorrelation,
-    pub raw_status: String,
+    pub normalized_status: Option<AgentGoalStatus>,
     pub objective: Option<String>,
     pub token_budget: Option<u64>,           // read-only。ReasoningEffort とは無関係
     pub tokens_used: Option<u64>,
@@ -421,28 +431,52 @@ pub struct ProviderGoalSnapshot {
     pub evaluated_turns: Option<u64>,
     pub latest_evaluator_reason: Option<String>,
     pub created_at: Option<String>,
+    pub provider_evidence_ref: ProviderEvidenceRef,
 }
 
-pub struct ClaudeGoalCommandEvidence {
+pub struct ProviderEvidenceRef {
+    pub provider_id: String,
+    pub scope: ProviderEvidenceScope,
+    pub evidence_kind: String,
+    pub evidence_id: String,
+    pub expires_at: String,
+}
+
+pub enum ProviderEvidenceScope {
+    Session { session_id: String },
+    LaunchAttempt { attempt_id: String },
+}
+
+pub enum ProtocolFrameClassification {
+    Content,
+    Control,
+    Unclassified,
+}
+
+pub struct BoundedProtocolEvidenceSummary {
+    pub payload_length_bytes: u64,
+    pub payload_digest: String,
+    pub classification: ProtocolFrameClassification,
+    pub decode_failure_kind: Option<String>,
+    pub redacted_sample: Option<String>, // implementation-defined fixed byte limit以下
+    pub provider_evidence_ref: Option<ProviderEvidenceRef>,
+}
+
+pub struct GoalCommandAcceptanceEvidence {
     pub observation_id: String,
     pub transition_id: String,
-    pub command_uuid: String,
-    pub executable_version: String,
     pub expected_objective_hash: String,
     pub observed_objective_hash: String,
-    pub command_lifecycle_completed_ref: String,
     pub goal_snapshot: ProviderGoalSnapshot,
-    pub provider_turn_ref: Option<String>,
-    pub raw_control_refs: Vec<String>,
+    pub provider_evidence_ref: ProviderEvidenceRef,
     pub observed_at: String,
 }
 
 pub struct GoalPrecommitControlConflictObservation {
     pub observation_id: String,
     pub transition_id: String,
-    pub command_uuid: Option<String>,
     pub control_kind: String,
-    pub raw_control_ref: String,
+    pub provider_evidence_ref: ProviderEvidenceRef,
     pub fail_closed_response_ref: Option<String>,
     pub interrupt_outcome: Option<String>,
     pub observed_at: String,
@@ -591,7 +625,7 @@ pub enum ProviderTurnInterruptStatus {
 
 pub struct ProviderTurnObservation {
     pub provider_turn_ref: Option<String>,
-    pub raw_status: Option<String>,
+    pub provider_evidence_ref: Option<ProviderEvidenceRef>,
     pub interrupt_status: ProviderTurnInterruptStatus,
     pub observed_at: String,
 }
@@ -651,6 +685,12 @@ pub struct GoalTransitionRecord {
     pub reason: Option<String>,
     pub evidence_ref: Option<String>,
     pub provider_snapshot: Option<ProviderGoalSnapshot>,
+}
+
+pub struct AgentGoalState {
+    pub current_goal: Option<AgentGoal>,  // terminal Goal も clear / replace までは current
+    pub pending_transition: Option<PendingGoalTransition>,
+    pub sync_state: GoalSyncState,
 }
 
 pub struct SessionGoalProjection {
@@ -755,7 +795,11 @@ pub enum ConfigurationPatch {
         model: ProviderModelRef,
         reasoning_effort: EffortSelection,
     },
-    SetMode(AgentMode),
+    SetMode {
+        mode: AgentMode,
+        // mode == Bypass のとき必須。それ以外はNone。
+        bypass_confirmation: Option<BypassChallengeConfirmation>,
+    },
     SetReasoningEffort(EffortSelection),
 }
 
@@ -770,10 +814,9 @@ pub struct PendingConfigurationUpdate {
 pub struct ProviderConfigurationObservation {
     pub observation_id: String,
     pub model: Option<ProviderModelRef>,
-    pub raw_mode: Option<String>,
     pub permission_snapshot: Option<ProviderPermissionSnapshot>,
-    pub reasoning_effort: Option<String>,
-    pub raw_control_ref: Option<String>,
+    pub reasoning_effort: Option<ReasoningEffort>,
+    pub provider_evidence_ref: Option<ProviderEvidenceRef>,
     pub observed_at: String,
 }
 
@@ -804,11 +847,46 @@ pub enum ConfigurationSyncState {
     ReconciliationRequired(ConfigurationReconciliation),
 }
 
+// query_models owned。committed event / projection dataからquery_service_implが
+// AgentSessionConfiguration aggregateを経由せず直接構築する。
+pub struct AgentSessionConfigurationSelectionSnapshot {
+    pub model: ProviderModelRef,
+    pub mode: AgentMode,
+    pub reasoning_effort: EffortSelection,
+    pub revision: u64,
+}
+
 pub struct AgentSessionConfigurationProjection {
-    pub selected: AgentSessionConfiguration, // adapter が受理したユーザー選択
+    pub selected: AgentSessionConfigurationSelectionSnapshot, // adapter が受理したユーザー選択のread model
     pub effective: AgentEffectiveConfiguration, // provider が現在使用中の値
     pub pending_update: Option<PendingConfigurationUpdate>,
     pub sync_state: ConfigurationSyncState,
+    pub available_actions: Vec<ConfigurationActionAvailability>,
+}
+
+// command / migration がloadする最小state。query専用available_actionsを含めない。
+pub struct AgentSessionConfigurationLoadState {
+    pub selected: AgentSessionConfiguration,
+    pub effective: AgentEffectiveConfiguration,
+    pub pending_update: Option<PendingConfigurationUpdate>,
+    pub sync_state: ConfigurationSyncState,
+}
+
+pub enum ConfigurationAction {
+    SetModel {
+        model: ProviderModelRef,
+        reasoning_effort: EffortSelection,
+    },
+    SetMode(AgentMode),
+    SetReasoningEffort(EffortSelection),
+}
+
+pub struct ConfigurationActionAvailability {
+    pub action: ConfigurationAction,
+    pub enabled: bool,
+    pub reason: Option<String>,
+    pub update_timing: ConfigurationUpdateTiming,
+    pub requires_bypass_challenge: bool,
 }
 
 pub struct TurnStartIntent {
@@ -836,6 +914,17 @@ pub enum TurnExecutionConfigurationIntent {
     },
 }
 
+// shared kernel owned。Workflow contextが意味を所有する相関値を両contextへ運ぶが、
+// AgentSession domainからWorkflow domain型を直接importしない。
+pub struct NodeDefinitionName(pub String);
+
+pub struct NodeExecutionRef {
+    pub workflow_execution_id: String,
+    pub node_execution_id: String,       // NodeExecution.id
+    pub node_name: NodeDefinitionName,   // NodeDefinition.name / NodeExecution.node_name
+    pub node_attempt: u32,               // NodeExecution.attempt
+}
+
 pub enum TurnConfigurationSource {
     SessionEffective { revision: u64 },
     QueueItem {
@@ -844,10 +933,8 @@ pub enum TurnConfigurationSource {
         execution_id: String,
         snapshot_hash: String,
     },
-    WorkflowNode {
-        run_id: String,
-        node_id: String,
-        execution_attempt_id: String,
+    NodeExecution {
+        execution: NodeExecutionRef,
         resolved_configuration_hash: String,
     },
 }
@@ -884,6 +971,12 @@ pub enum TurnStartState {
 }
 
 pub enum AgentSessionConfigurationState {
+    Ready(AgentSessionConfigurationLoadState),
+    NeedsConfigurationResolution(ConfigurationResolutionProblem),
+}
+
+// query serviceがpinned sourceから直接構築するclient-facing read model。
+pub enum AgentSessionConfigurationReadModel {
     Ready(AgentSessionConfigurationProjection),
     NeedsConfigurationResolution(ConfigurationResolutionProblem),
 }
@@ -891,8 +984,8 @@ pub enum AgentSessionConfigurationState {
 pub enum ConfigurationResolutionScope {
     Session,
     QueueItem { item_id: String },
-    WorkflowRun { run_id: String },
-    WorkflowNode { run_id: String, node_id: String },
+    WorkflowExecution { workflow_execution_id: String },
+    NodeExecution(NodeExecutionRef),
 }
 
 pub enum ExecutionConfigurationField {
@@ -968,6 +1061,15 @@ pub struct QueueExecutionPrepared {
     pub challenge: BypassConfirmationChallenge,
 }
 
+// QueueExecutionRequestedをappendするcommand input。Bypass snapshotではconfirmation必須。
+pub struct QueueExecutionStartIntent {
+    pub item_id: String,
+    pub execution_id: String,
+    pub expected_item_revision: u64,
+    pub snapshot_hash: String,
+    pub bypass_confirmation: Option<BypassChallengeConfirmation>,
+}
+
 pub struct QueueItemRebased {
     pub item_id: String,
     pub expected_item_revision: u64,
@@ -1034,10 +1136,8 @@ pub enum BypassChallengeGuard {
         action_hash: String,
         target_hash: String,
     },
-    WorkflowNode {
-        run_id: String,
-        node_id: String,
-        execution_attempt_id: String,
+    NodeExecution {
+        execution: NodeExecutionRef,
         resolution_id: String,
         resolved_configuration_hash: String,
     },
@@ -1060,6 +1160,12 @@ pub struct BypassConfirmationChallenge {
     pub residual_protections: Vec<ResidualProtection>,
     pub managed_policy_revision: String,
     pub issued_at: String,
+}
+
+// consume command / intentがchallenge idと対で提示するsecret。
+pub struct BypassChallengeConfirmation {
+    pub challenge_id: String,
+    pub nonce: String,
 }
 
 pub enum BypassChallengeState {
@@ -1114,15 +1220,13 @@ pub struct PreparedAgentLaunch {
 pub struct StartAgentLaunch {
     pub attempt_id: String,
     pub canonical_draft_hash: String,
-    pub bypass_challenge_id: Option<String>,
+    pub bypass_confirmation: Option<BypassChallengeConfirmation>,
 }
 
 pub enum AgentLaunchOrigin {
     Manual,
-    WorkflowNode {
-        run_id: String,
-        node_id: String,
-        execution_attempt_id: String,
+    NodeExecution {
+        execution: NodeExecutionRef,
         resolution_id: String,
         resolved_configuration_hash: String,
     },
@@ -1149,8 +1253,8 @@ pub struct AgentConfigurationTemplate {
 
 pub enum ConfigurationValueSource {
     LaunchBaseline { revision: u64 },
-    RunDefault { revision: u64 },
-    NodeOverride { revision: u64 },
+    WorkflowExecutionDefault { revision: u64 },
+    NodeDefinitionOverride { revision: u64 },
 }
 
 pub struct LaunchConfigurationBaseline {
@@ -1166,8 +1270,8 @@ pub struct ResolvedLaunchConfiguration {
     pub resolution_version: u32,
     pub canonical_hash: String,
     pub baseline_revision: u64,
-    pub run_default_revision: u64,
-    pub node_override_revision: u64,
+    pub workflow_execution_default_revision: u64,
+    pub node_definition_override_revision: u64,
     pub model: ProviderModelRef,
     pub mode: AgentMode,
     pub reasoning_effort: EffortSelection,
@@ -1181,26 +1285,37 @@ pub struct WorkflowWaitingConfiguration {
 }
 
 pub struct WorkflowWaitingBypassConfirmation {
-    pub run_id: String,
-    pub node_id: String,
-    pub execution_attempt_id: String,
+    pub execution: NodeExecutionRef,
     pub resolution_id: String,
     pub resolved_configuration_hash: String,
     pub challenge: BypassConfirmationChallenge,
 }
 
-pub struct WorkflowNodeBypassPrepared {
+pub struct NodeExecutionBypassPrepared {
     pub waiting: WorkflowWaitingBypassConfirmation,
     pub expected_workflow_seq: u64,
     pub prepared_at: String,
 }
 
-pub enum WorkflowNodeExecutionGateState {
+// NodeExecutionLaunchRequestedをappendするusecase input。Bypass解決時はconfirmation必須。
+pub struct NodeExecutionLaunchIntent {
+    pub execution: NodeExecutionRef,
+    pub resolution_id: String,
+    pub resolved_configuration_hash: String,
+    pub agent_launch_attempt_id: String,
+    pub bypass_confirmation: Option<BypassChallengeConfirmation>,
+}
+
+pub enum NodeExecutionGateState {
     Ready,
     WaitingConfiguration(WorkflowWaitingConfiguration),
     WaitingBypassConfirmation(WorkflowWaitingBypassConfirmation),
     BypassConfirmationExpired(WorkflowWaitingBypassConfirmation),
-    Starting { execution_attempt_id: String },
+    Starting {
+        node_execution_id: String,
+        node_attempt: u32,
+        agent_launch_attempt_id: String,
+    },
 }
 
 pub enum LaunchStage {
@@ -1496,6 +1611,8 @@ pub struct AgentLaunchPreflight {
     pub state: AgentLaunchPreflightState,
 }
 
+// ここからのcapability / control strategyはadaptor/gatewayがprotocol identityと
+// runtime contextから構築するbackend read model。domain aggregate/eventはwire fieldを所有しない。
 pub enum ModeControlStrategy {
     ClaudePermissionMode,
     CodexCompositePolicy,
@@ -1592,20 +1709,19 @@ pub enum AutoOperationalState {
     Aborted,
 }
 
-pub enum ProviderPermissionSnapshot {
-    Claude {
-        permission_mode: String,
-        auto_state: AutoOperationalState,
-        allow_dangerously_skip_permissions: bool,
-    },
-    Codex {
-        sandbox_policy: String,
-        approval_policy: String,
-        approvals_reviewer: String,
-        collaboration_mode: Option<String>,
-        permission_profile_id: Option<String>,
-        auto_state: AutoOperationalState,
-    },
+pub enum PermissionDimension {
+    Sandbox(SandboxIntent),
+    Approval(ApprovalIntent),
+    Reviewer(ReviewerIntent),
+    CollaborationPreset { name: String },
+    AutoOperation(AutoOperationalState),
+}
+
+pub struct ProviderPermissionSnapshot {
+    pub provider_id: String,
+    pub dimensions: Vec<PermissionDimension>,
+    pub evidence_ref: ProviderEvidenceRef,
+    pub observed_at: String,
 }
 
 pub struct ProviderPermissionState {
@@ -1615,7 +1731,70 @@ pub struct ProviderPermissionState {
 }
 ```
 
-`AgentBackendCapabilities` は pin した schema version と application scope を含む。Goalとeffortのavailabilityはschema上の存在だけでなく、workspace trust、session、managed policy、deployment/organization上限、capability overrideを含む実行contextで再評価し、source/context hash/checked atを返す。`SessionGoalProjection.available_actions` は raw capability と現在 status、pending transition、managed policy を Rust query が評価した結果であり、frontend は遷移表を再実装しない。
+#### bounded-context 間の型所有
+
+Workflow contextが意味を所有する`workflow_execution_id / node_execution_id / node_name / node_attempt`は、両contextが依存できる**shared kernel**の`NodeDefinitionName / NodeExecutionRef`だけで運ぶ。`TurnConfigurationSource`、`ConfigurationResolutionScope`、`BypassChallengeGuard`、`AgentLaunchOrigin`などAgentSession側の型がWorkflow domainの`NodeDefinitionName`やNodeExecution entityを直接importしてはならない。
+
+逆方向も同様に、Workflow側の`AgentConfigurationTemplate / WorkflowWaitingBypassConfirmation / NodeExecutionGateState`が必要とするmode / effort / Goal spec / configuration resolutionはshared-kernelのcross-context contract valueとして参照し、AgentSession aggregate/entityを直接importしない。各sibling domainはshared-kernel valueと自aggregate valueの変換を自境界で行う。AgentSession domainとWorkflow domainが互いのdomain型を直接importする双方向配置は採用しない。最終的なRust moduleファイル配置は#1446以降で確定してよいが、所有者はusecase DTOではなくshared kernelとする。
+
+以下は **adaptor/gateway の service / command model** であり、上の domain value / event へ含めない。provider adapter は pin した wire をこの型へ decode し、raw field と control ref を evidence store に保存したうえで、provider-neutral な `ProviderPermissionSnapshot` / `GoalCommandAcceptanceEvidence` へ変換する。domain は `ProviderEvidenceRef` だけでその証跡を参照する。
+
+`ProviderEvidenceRef`が指すevidence storeはadaptor/infrastructure境界のbounded storeとする。full payloadが必要なwriteでもsecret plaintextを保存前にredactし、暗号化at rest、session scopeごとの参照認可、objectごとのTTL、単一object byte上限、per-session aggregate byte quotaを必須にする。object上限またはquota超過はfull bodyをevent/logへfallbackせず明示errorとし、期限切れ・scope不一致のreadも拒否する。durable event / structured log / Noticeに残せるのは`BoundedProtocolEvidenceSummary`の長さ・digest・分類・decode failure種別・固定上限以下のredacted sampleと任意のrefだけで、full bodyを恒久保存しない。具体的な暗号方式・byte上限値・TTL値は#1446以降で決める。
+
+```rust
+pub enum ProviderPermissionWireSnapshot {
+    Claude(ClaudePermissionWireSnapshot),
+    Codex(CodexPermissionWireSnapshot),
+}
+
+pub struct ClaudePermissionWireSnapshot {
+    pub permission_mode: String,
+    pub auto_state: String,
+    pub allow_dangerously_skip_permissions: bool,
+    pub raw_control_refs: Vec<String>,
+}
+
+pub struct CodexPermissionWireSnapshot {
+    pub sandbox_policy: String,
+    pub approval_policy: String,
+    pub approvals_reviewer: String,
+    pub collaboration_mode: Option<String>,
+    pub permission_profile_id: Option<String>,
+    pub auto_state: String,
+    pub raw_control_refs: Vec<String>,
+}
+
+pub struct ClaudeGoalCommandEvidence {
+    pub observation_id: String,
+    pub transition_id: String,
+    pub command_uuid: String,
+    pub executable_version: String,
+    pub expected_objective_hash: String,
+    pub observed_objective_hash: String,
+    pub command_lifecycle_completed_ref: String,
+    pub goal_snapshot: ProviderGoalSnapshot,
+    pub provider_turn_ref: Option<String>,
+    pub raw_control_refs: Vec<String>,
+    pub observed_at: String,
+}
+
+pub enum ProviderGoalWireSnapshot {
+    Claude {
+        provider_goal_ref: Option<String>,
+        raw_status: String,
+        raw_control_refs: Vec<String>,
+    },
+    Codex {
+        provider_goal_ref: Option<String>,
+        raw_status: String,
+        raw_control_refs: Vec<String>,
+    },
+}
+```
+
+`AgentGoalState` は `AgentGoal` の id/revision、current同時最大1件、pending transition、sync stateの不変条件を所有し、Command側だけで再構築・利用するdomain aggregateである。`SessionGoalProjection`はdomain aggregateではなく、`query_service_impl`がpinned snapshot lease上のcommitted Goal event / projection dataとruntime capability / managed policy dataから直接組み立てるread modelである。Query側は`AgentGoalState`を再構築・経由せず、表示・転送要求で決まる`available_actions`と`latest_transition`をmutation stateへ保持しない。
+
+`AgentBackendCapabilities` は pin した schema version と application scope を含む。Goalとeffortのavailabilityはschema上の存在だけでなく、workspace trust、session、managed policy、deployment/organization上限、capability overrideを含む実行contextで再評価し、source/context hash/checked atを返す。`SessionGoalProjection.available_actions` は raw capability と現在 status、pending transition、managed policy を Rust query が評価した結果である。`AgentSessionConfigurationProjection.available_actions` は Idle、configuration/Goal sync、pending update/transition、control-operation lease、runtime capability、managed policyから、model/mode/effortの各候補についてRust queryが評価し、disabled reason、反映時点、Bypass challenge要否を返す。frontend はどちらの遷移・enablement表も再実装しない。
 
 #### AgentMode の意味と provider 写像
 
@@ -1632,16 +1811,16 @@ pub struct ProviderPermissionState {
 - Claude Autoはprovider classifierへのdelegationに加え、keep-workingとclarifying question削減のbehavior nudgeを持つ。Codex `auto_review` は sandbox を広げず reviewer を user から別 agent へ替えるだけで、同じbehavior nudgeを合成しない。Releash 自身が provider 共通の安全判定器を持つ、という意味でもない。各差はtyped`ModeEffect`としてUI/turn auditへ出す。review status は `inProgress / approved / denied / timedOut / aborted` を全域写像し、approved / denied だけを `PermissionResolvedBy::Auto` とする。inProgress は activity、timedOut / aborted は未解決のまま manual fallback または Notice とし、自動解決を合成しない。
 - Claude Auto が連続 block 等で manual prompt へ一時 fallback しても selected mode は Auto のままである。`AutoOperationalState::ManualFallback` と理由を read model / Notice へ出し、mode 値を書き換えない。
 - Codex Plan preset が reasoning effort を含む場合、明示選択済み effort を黙って上書きしない。明示 override が可能なら適用し、不可能なら mode / effort の capability conflict として解決を要求する。
-- Claude の `dontAsk` は `Auto` と同義ではない。Claude / Codex の複合的な permission state は `ProviderPermissionSnapshot` に損失なく保持し、`normalized_mode=None` の session は `ReconciliationRequired` として turn を開始しない。
-- `Bypass` は通常のprovider操作承認を最大限迂回するintentであり、provider固有のresidual protections、Releash managed policy、workflow human checkpoint、承認 node、停止条件を迂回しない。`BypassConfirmationChallenge` は target mode、期限、nonce に加え、Sessionなら`session_id + selected_revision`、New Agentなら`attempt_id + canonical_draft_hash`、Queueなら`session_id + item_id + execution_id + snapshot_hash`、Workflowなら`run_id + node_id + execution_attempt_id + resolution_id + resolved_configuration_hash`、reconciliationならscope＋resolution attempt＋expected observation/seq＋action/target hashへ束縛する。Launch/Queue/Workflowのprepare eventと`BypassChallengeIssued`は同じlocal atomic batchでappendする。provider I/O前にRust usecaseがmanaged policyとguardを再検査し、`BypassChallengeConsumed`を各durable intentと同じlocal atomic batchでappendする。provider I/O中にlockは保持しない。provider失敗後もconsumedのままとし、同一intent id・同一guardのidempotent retryだけが再利用できる。waiting projectionはchallenge全体を保持し、reload後もguard/期限/residual protectionsを復元する。template に `Bypass` を保存しても権限付与にはならない。
+- Claude の `dontAsk` は `Auto` と同義ではない。Claude / Codex の複合的な permission state は adaptor/gateway が provider 固有 raw snapshot として損失なく evidence store に保持し、domain には正規化した `PermissionDimension`、effects、residual protections、provider/evidence ref だけを渡す。正規化不能または `normalized_mode=None` の session は `ReconciliationRequired` として turn を開始しない。
+- `Bypass` は通常のprovider操作承認を最大限迂回するintentであり、provider固有のresidual protections、Releash managed policy、workflow human checkpoint、承認 node、停止条件を迂回しない。`BypassConfirmationChallenge` は target mode、期限、nonce に加え、Sessionなら`session_id + selected_revision`、New Agentなら`attempt_id + canonical_draft_hash`、Queueなら`session_id + item_id + execution_id + snapshot_hash`、Workflowなら`NodeExecutionRef + resolution_id + resolved_configuration_hash`、reconciliationならscope＋resolution attempt＋expected observation/seq＋action/target hashへ束縛する。Launch/Queue/Workflowのprepare eventと`BypassChallengeIssued`は同じlocal atomic batchでappendする。`ConfigurationPatch::SetMode { mode: Bypass, .. }`、`StartAgentLaunch`、`QueueExecutionStartIntent`、`NodeExecutionLaunchIntent`はchallenge idとnonceを一体の`BypassChallengeConfirmation`として受け取る。consume usecaseは提示nonceを当該Issued challengeのnonceとconstant-time相当で照合し、未失効の`expires_at`、完全一致するguard、認可済みcaller/session/workspace scope、managed policyを全て再検査できた場合だけ、`BypassChallengeConsumed`を各durable intentと同じlocal atomic batchでappendする。`challenge_id`と、clientから観測可能な`attempt_id` / `canonical_draft_hash` / snapshot hashだけをbearer proofとしてconsumeしてはならない。nonceはIssued中の認可済みclientだけが持つsecretであり、terminal projection/logからredactする。provider I/O中にlockは保持しない。provider失敗後もconsumedのままとし、同一intent id・同一guardのidempotent retryだけが再利用できる。waiting projectionはchallenge全体を保持し、reload後もguard/期限/residual protectionsを復元する。template に `Bypass` を保存しても権限付与にはならない。
 
 #### AgentGoal
 
-- Goal 本体と lifecycle の正本は常に Releash に置き、configuration aggregate から完全に分離する。`SessionGoalProjection.current_goal` は同時に最大 1 件で、Active / Paused / Blocked のときだけ active と呼ぶ。Completed / Failed も clear または次の set までは current として履歴表示し、Goal の set / edit / transition / clear で configuration revision を進めない。
-- `goal_id` と provider の opaque ref で通知を相関し、置換前 Goal の遅延 completion が新 Goal を完了させないようにする。raw observationの`ProviderGoalSnapshot`自身へprovider refと`Matched { goal_id, revision } / Unmatched / Ambiguous`をdurableに保存し、crash/replay後も相関判定を再現する。Unmatched/Ambiguousをcurrent Goalへ適用しない。transition は `source`（User / Provider / Evaluator / System）、理由、時刻、任意の `evidence_ref` を記録する。
+- Goal本体とlifecycleのmutation authorityはReleashの`AgentGoalState`、durable authorityはcanonical Goal eventに置き、configuration aggregateから完全に分離する。`AgentGoalState.current_goal`は同時に最大1件で、Active / Paused / Blockedのときだけactiveと呼ぶ。Completed / Failedもclearまたは次のsetまではcurrentとして保持し、backend queryがevent/projection dataから`SessionGoalProjection`へ表示する。Goalのset / edit / transition / clearでconfiguration revisionを進めない。
+- `goal_id` と provider の opaque ref で通知を相関し、置換前 Goal の遅延 completion が新 Goal を完了させないようにする。domainの`ProviderGoalSnapshot`へprovider ref、normalized status、`Matched { goal_id, revision } / Unmatched / Ambiguous`、`ProviderEvidenceRef`をdurableに保存し、crash/replay後も相関判定を再現する。raw provider status / control fieldはadaptor/gatewayの`ProviderGoalWireSnapshot`としてevidence storeへ保存する。Unmatched/Ambiguousをcurrent Goalへ適用しない。transition は `source`（User / Provider / Evaluator / System）、理由、時刻、任意の `evidence_ref` を記録する。
 - Goal capability は `set / edit / clear / pause / resume / readback / completion_event / auto_continuation / max_objective_length` を項目別に `Native / Emulated / Unsupported(reason)` で返す。各actionはmode同様に`schema_supported / runtime_available / availability_source / availability_context_hash / unavailable_reason / checked_at`を持ち、workspace/session/managed-policy context変更時に再評価する。adapter の適用戦略は `ProviderNativeRpc`、`ProviderCliCommand`、明示した `ReleashManagedEvaluator`、`Unsupported` のいずれかとし、暗黙の prompt 接頭辞で対応済みに見せない。
-- Codex `thread/goal/set|get|clear`・goal notification は pin した typed RPC adapter（`ProviderNativeRpc`）で扱う。status は `active → Active`、`paused → Paused`、`complete → Completed`、`blocked / usageLimited / budgetLimited → Blocked` と全域写像し、raw status と read-only accounting を `ProviderGoalSnapshot` に保持する。unknown status は raw snapshot を失わず Goal reconciliation に入り、`Failed` は Releash / System 固有で Codex native status とは扱わない。objective変更はset RPCによる`Edit` emulationとして`ReplacesProviderGoalIdentity / ResetsProviderProgress`を宣言する。
-- Claude で公開確認できる surface は typed Goal RPC ではなく `/goal` CLI command（`ProviderCliCommand`）であり、setとactive Goalのobjective変更はGoal保存/置換と同時にturnを開始する。`Set`は`StartsTurn`、`Edit`は`StartsTurn / ReplacesProviderGoalIdentity / ResetsProviderProgress`を宣言する。pinしたCLI fixtureで`system/command_lifecycle(completed, command_uuid)`とtyped Goal state (`goal_set`/`goal_status`またはactive Goal snapshot)の両方を観測し、要求objective hash一致を確認した`ClaudeGoalCommandEvidence`だけをacceptance evidenceにする。content-plane deltaだけをbufferし、evidence後に`ProviderGoalCommandEvidenceObserved + GoalSet/GoalTransitioned + TurnStarted`をatomic appendして公開する。commit前の`can_use_tool`/`request_user_dialog`等の応答必須control-planeはbufferせずfail-closed応答→interruptし、`GoalPrecommitControlConflictObserved`を保存してGoal/turn reconciliationへ送る。shape/order/相関をfixtureで証明できないCLI versionではStartsTurn actionを`Unsupported`にする。
+- Codex `thread/goal/set|get|clear`・goal notification は pin した typed RPC adapter（`ProviderNativeRpc`）で扱う。status は `active → Active`、`paused → Paused`、`complete → Completed`、`blocked / usageLimited / budgetLimited → Blocked` と全域写像し、normalized statusとread-only accountingをdomainの`ProviderGoalSnapshot`に保持する。raw statusはadaptor/gatewayの`ProviderGoalWireSnapshot`とevidence storeに保持し、unknown statusは`normalized_status=None`とその`ProviderEvidenceRef`でGoal reconciliationに入る。`Failed` は Releash / System 固有で Codex native status とは扱わない。objective変更はset RPCによる`Edit` emulationとして`ReplacesProviderGoalIdentity / ResetsProviderProgress`を宣言する。
+- Claude で公開確認できる surface は typed Goal RPC ではなく `/goal` CLI command（`ProviderCliCommand`）であり、setとactive Goalのobjective変更はGoal保存/置換と同時にturnを開始する。`Set`は`StartsTurn`、`Edit`は`StartsTurn / ReplacesProviderGoalIdentity / ResetsProviderProgress`を宣言する。pinしたCLI fixtureで`system/command_lifecycle(completed, command_uuid)`とtyped Goal state (`goal_set`/`goal_status`またはactive Goal snapshot)の両方を観測し、要求objective hash一致を確認した adaptor/gateway の`ClaudeGoalCommandEvidence`だけをacceptance evidenceにする。adapterはraw command evidenceをevidence storeへ保存し、domain eventにはprovider-neutralな`GoalCommandAcceptanceEvidence`と`ProviderEvidenceRef`を渡す。content-plane deltaだけをbufferし、evidence後に`ProviderGoalCommandEvidenceObserved + GoalSet/GoalTransitioned + TurnStarted`をatomic appendして公開する。commit前の`can_use_tool`/`request_user_dialog`等の応答必須control-planeはbufferせずfail-closed応答→interruptし、`GoalPrecommitControlConflictObserved`を保存してGoal/turn reconciliationへ送る。shape/order/相関をfixtureで証明できないCLI versionではStartsTurn actionを`Unsupported`にする。
 - Claude `/goal` actionを広告するにはCLI versionだけでなく、workspace trust、`disableAllHooks`、managed `allowManagedHooksOnly`等のruntime requirementを確認する。取得不能・不充足なら理由付き`Unsupported`またはdisabledにする。Claude Codeの`--resume / --continue`によるSession復元はGoal Actionの`Resume`とは別で、Goal state復元とaccounting baseline resetを表しても自動でturnを開始したとは扱わない。clear後に`/goal <objective>`でGoal Resumeをemulateする場合だけ、再setに伴う`StartsTurn / ReplacesProviderGoalIdentity / ResetsProviderProgress`を宣言する。
 - native pause / resume がない provider で clear / re-set を使う場合、`ResetsProviderProgress / StartsTurn / ReplacesProviderGoalIdentity` 等の意味損失を `Emulated.effects` に列挙し、操作前に表示する。effect を観測・補償できない version では `Unsupported` とする。
 - provider 固有 Goal token budget / tokens used / elapsed time / evaluated turn count の設定 UI と accounting 集計は今回の scope 外である。受信値とlatest evaluator reasonは小さなread-only snapshotとして監査表示できるが、ReasoningEffort と結び付けない。
@@ -1662,13 +1841,13 @@ pub struct ProviderPermissionState {
 
 外部 provider と local persistence は atomic transaction にできないため、model / mode / reasoning effort の更新を「ack 後に一括保存」とは扱わない。1 command は `ConfigurationPatch` の 1 variant だけを送り、full target snapshot は Rust が base selected revision から導出する。
 
-1. user 起点の execution-affecting 更新は初期実装では `Idle` のみ受け付ける。Session共通`SessionControlOperationLease`を取得し、`base_selected_revision` を CAS 検証してcapabilityとmanaged policyを確認する。`sync_state != Synced`、Goal sync stateが非Synced、Goal transition pending、別control lease中は次の更新を拒否する。`Bypass` は一回限りの confirmation challenge も検証する。
+1. user 起点の execution-affecting 更新は初期実装では `Idle` のみ受け付ける。Session共通`SessionControlOperationLease`を取得し、`base_selected_revision` を CAS 検証してcapabilityとmanaged policyを確認する。`sync_state != Synced`、Goal sync stateが非Synced、Goal transition pending、別control lease中は次の更新を拒否する。`SetMode { mode: Bypass, bypass_confirmation: Some(..) }` はchallenge id / nonce・期限・guard・caller scopeを一回限りのconfirmationとして検証し、`None`またはnonce不一致をprovider I/O前に拒否する。
 2. provider I/O の前に `ConfigurationUpdateRequested { update_id, base_selected_revision, target_revision, patch, applies_from }` を event log へ append する。append 成功が durable intent の commit point であり、失敗したら provider へ送らない。
 3. `Live` は adapter が provider-native 更新または明示された Releash-managed strategy を直ちに適用する。`NextTurn / SessionRestart` で独立した provider 設定 API が無い場合、adapter は typed capability に基づき staging を受理するだけで、provider 適用済みとは報告しない。複数 provider field が必要なら adapter 内で順序・補償を所有し、部分成功を success として返さない。
 4. live の provider ack、または next-turn / restart staging の adapter acceptance 後に `SessionConfigurationSelected` event を appendし、selected configuration の唯一の durable commit point とする。live は `SessionConfigurationActivated` も appendして effective revision を進める。next-turn / restart は pending request を保持したまま `AwaitingNextTurn / AwaitingRestart` とし、実際の provider activation event append まで effective を進めない。
 5. providerが独立configuration APIを持つ`AwaitingNextTurn`は、次turnのprovider startより前にselected patchを適用し、activation ackと`SessionConfigurationActivated` appendが完了してからeffective snapshotでturnを開始する。`AwaitingRestart`もrestart/readback後に同じ順序でactivateする。
 6. model/mode/effortを`turn/start` payloadでしか適用できないproviderでは、activation前`TurnStarted`を要求しない。`TurnStartRequested.execution_configuration`は、既に確定したSession/queue値なら`ExistingEffective(ResolvedTurnConfiguration)`、pending selectedなら`ActivateSelected { selected, originating_update_id, canonical_target_hash, prevalidated_context_hash }`とし、provider ack前のtargetをeffective型へ詰めない。queue起点はitemのcanonical semantic snapshotとitem revision/execution id/hashを固定し、current selectedから再構成しない。ack/readback後に初めてactual effectiveを`TurnStarted`へ保存する。`SessionConfigurationActivated`は`ActivateSelected`をsession-scopeで実際にactivateした場合だけappendし、queue per-turn overrideは`QueueItemStarted + TurnStarted`だけをatomic commitしてSession effectiveを変更しない。timeout/ack不明は`TurnStartReconciliation`へ移す。Reuse/Accept成功とCancel/CleanUp成功はqueue terminal/message markerまで同じbatchで閉じ、未完了intentは同じinput/correlationで回復する。
-7. `SessionConfigurationSelected`前のprovider rejectだけは`ConfigurationUpdateRejected`を記録してpendingを消し、旧selected/effectiveを維持する。selected commit後のNextTurn/Restart activation reject・timeoutはselectedを巻き戻さず、new selected / old effectiveのまま`ConfigurationReconciliationRequired`としてturn / queue drain / workflow resumeをblockする。明示rollbackを選んだ場合は旧effective相当を新しいselected revisionとしてcanonical eventへappendし、revisionを逆行させない。ack後のcanonical event append失敗、部分成功、provider-originated競合も同じreconciliationへ送る。`ProviderConfigurationStateObserved`はmodel/effortに加え、Claudeのraw modeまたはCodexのsandbox/approval/reviewer/collaboration preset等を`ProviderPermissionSnapshot`として複合状態のまま保持し、raw control refも残す。readbackで全fieldを確認できない場合は安全なrollback/acceptをallowed actionsへ出さない。readback / idempotent reapply / rollback /明示acceptを`ConfigurationReconciled`で確定する。reconciliation自身には`reconciliation_id`を発行し、local request由来のときだけ`originating_update_id`、provider観測があるときだけ`observation_id`を関連付ける。provider-originated driftのために架空のupdateを合成しない。結果がBypassになる解決は汎用`BypassChallengeGuard::Reconciliation`でscope、resolution attempt、observation/seq、action/target hashへ束縛し、fresh challengeとpolicy/gate再検査を必須にする。
+7. `SessionConfigurationSelected`前のprovider rejectだけは`ConfigurationUpdateRejected`を記録してpendingを消し、旧selected/effectiveを維持する。selected commit後のNextTurn/Restart activation reject・timeoutはselectedを巻き戻さず、new selected / old effectiveのまま`ConfigurationReconciliationRequired`としてturn / queue drain / workflow resumeをblockする。明示rollbackを選んだ場合は旧effective相当を新しいselected revisionとしてcanonical eventへappendし、revisionを逆行させない。ack後のcanonical event append失敗、部分成功、provider-originated競合も同じreconciliationへ送る。`ProviderConfigurationStateObserved`はmodel/effortに加え、adaptor/gatewayがClaudeのraw modeまたはCodexのsandbox/approval/reviewer/collaboration preset等をprovider固有evidenceとして保存し、正規化した`ProviderPermissionSnapshot`と`ProviderEvidenceRef`をdomainへ渡す。readbackで必要な全dimensionを確認できない場合は安全なrollback/acceptをallowed actionsへ出さない。readback / idempotent reapply / rollback /明示acceptを`ConfigurationReconciled`で確定する。reconciliation自身には`reconciliation_id`を発行し、local request由来のときだけ`originating_update_id`、provider観測があるときだけ`observation_id`を関連付ける。provider-originated driftのために架空のupdateを合成しない。結果がBypassになる解決は汎用`BypassChallengeGuard::Reconciliation`でscope、resolution attempt、observation/seq、action/target hashへ束縛し、fresh challengeとpolicy/gate再検査を必須にする。
 
 idempotence は revision だけでなく `update_id` で判定する。`ProviderConfigurationStateObserved`のappend自体で`ObservationPending { observation_id }`へ遷移し、canonical activation/no-change acceptance/reconciliation eventが同じobservation idをconsumeするまで新規turnをblockする。restart時は未consumed observationを再評価する。provider-originated change は pending update と同値なら ack として扱い、異なる場合は上書きせず reconciliation に入る。`SessionMeta` は event log から再構築できる projection/cache であり、cache 更新失敗は `PersistFailure` と再投影で回復する。canonical event append 失敗と同一視しない。
 
@@ -1688,7 +1867,7 @@ launch draftの`initial_goal`はconfigurationに混ぜてprovider createへ送�
 
 RetryGoal / ContinueWithoutGoal / CancelSessionはexpected transition/attempt seqをCASし、`InitialGoalResolutionRequested { resolution_attempt_id, action }`をappendして`ResolvingInitialGoalFailure`へ移す。RetryGoalは`InitialGoalResolutionCompleted { action: RetryGoal, next_transition_id }`＋新transition idのlaunch/Goal intentを同じtransactionでcommitして`WaitingForInitialGoal`へ移す。ContinueWithoutGoalはresolution completed＋launch completed、CancelSessionはcleanup後にresolution completed＋launch cancelled＋session closedを同じtransactionで確定する。結果不明は同resolution attemptのLaunchReconciliationへ移し、暗黙retryしない。
 
-Workflow originでは全modeで`execution_attempt_id + resolution_id`からstableなattempt idを導出し、`WorkflowNodeExecutionRequested + AgentLaunchAttemptStarted`をworkflow/launch stream横断の同じtransactionで開始する。Bypassだけは先に`WorkflowNodeBypassPrepared + BypassChallengeIssued`をcommitして待機し、確認後の共通開始transactionへ`BypassChallengeConsumed`を追加する。完了時は`AgentLaunchCompleted + WorkflowNodeAgentBound`、失敗/取消時は`AgentLaunchFailed/Cancelled + WorkflowNodeAgentLaunchFailed/Cancelled`を同じtransactionで確定し、retryは新execution attempt idを使う。
+NodeExecution originでは既存の`NodeExecution.id + resolution_id`からstableなAgent launch attempt idを導出し、相関はshared-kernelの`NodeExecutionRef`として保存する。`NodeExecutionLaunchIntent`から`NodeExecutionLaunchRequested + AgentLaunchAttemptStarted`をworkflow/launch stream横断の同じtransactionで開始する。Bypassだけは先に`NodeExecutionBypassPrepared + BypassChallengeIssued`をcommitして待機し、challenge id / nonce・期限・guard・caller scopeの検証後に共通開始transactionへ`BypassChallengeConsumed`を追加する。完了時は`AgentLaunchCompleted + NodeExecutionAgentBound`、失敗/取消時は`AgentLaunchFailed/Cancelled + NodeExecutionAgentLaunchFailed/Cancelled`を同じtransactionで確定し、retryは新しい`NodeExecution.id / attempt`を使う。
 
 #### Provider 仕様の根拠と pinning
 
@@ -1696,81 +1875,341 @@ Workflow originでは全modeで`execution_attempt_id + resolution_id`からstabl
 - Codex: [App Server](https://learn.chatgpt.com/docs/app-server)、[Auto-review](https://learn.chatgpt.com/docs/sandboxing/auto-review)、[long-running Goal](https://learn.chatgpt.com/docs/long-running-work) と、[openai/codex app-server README / generated schema](https://github.com/openai/codex/tree/main/codex-rs/app-server) を規範入力とする。
 - living docs は調査・意味の根拠、実装 wire の規範は dependency に pin した CLI / SDK tag が生成する schema と fixture とする。ただし schema だけを pin して PATH 上の別 version を起動してはならない。
 - initialize 前後に `BackendProtocolIdentity { executable_version, schema_tag, commit_sha, schema_hash, experimental_flags, initialize_capabilities_hash }` を取得し、compiled adapter の compatibility manifest と照合する。Codex schema の experimental flag、Claude/Codex launch gate、runtime capability も identity に含める。
-- 不一致や control-plane decode failure は低強調 `UnsupportedMessage` で続行せず、Session確立後はsession-level、確立前はdurable launch attemptの`ProtocolIncompatible`としてfail-closedにする。initialize途中で全identity fieldを取得できない場合も`ObservedProtocolIdentity`の取得済みfieldとraw control refを失わない。version 更新時は mode availability、Goal status / RPC、reasoning effort option、approval / sandbox / reviewer field の差分を D1 と parity fixture で review する。
+- 不一致や control-plane decode failure は低強調 `UnsupportedMessage` で続行せず、Session確立後はsession-level、確立前はdurable launch attemptの`ProtocolIncompatible`としてfail-closedにする。initialize途中で全identity fieldを取得できない場合も`ObservedProtocolIdentity`の取得済みfieldと`BoundedProtocolEvidenceSummary`、必要時だけ認可・TTL・quota付き`ProviderEvidenceRef`を失わない。version 更新時は mode availability、Goal status / RPC、reasoning effort option、approval / sandbox / reviewer field の差分を D1 と parity fixture で review する。
 
 #### 旧データの移行
 
-| 旧設定 | 新 `AgentMode` |
-|---|---|
-| `plan_mode = true` | `Plan` |
-| `permission_mode = Ask` / legacy `readonly` | `Ask` |
-| `permission_mode = Edit` | `Edit` |
-| `permission_mode = Full` | `NeedsConfigurationResolution(LegacyBypassConfirmationRequired)` |
+| 旧設定 | resolved `AgentMode` | command / migration load用 `AgentSessionConfigurationState` |
+|---|---|---|
+| `plan_mode = true`（permission modeは任意） | `Plan` | `Ready` |
+| `plan_mode = false`, `permission_mode = Ask` / legacy `readonly` | `Ask` | `Ready` |
+| `plan_mode = false`, `permission_mode = Edit` | `Edit` | `Ready` |
+| `plan_mode = false`, `permission_mode = Full` | 未確定 | `NeedsConfigurationResolution(ConfigurationResolutionProblem { fields: [{ field: Mode, reason: LegacyBypassConfirmationRequired, ... }], ... })` |
 
-`plan_mode = true` を permission mode より優先する。既知の model 値も `ProviderModelRef` へ移し、selected effort は `ProviderDefault`、effective は pinned table / readback で判定できる場合だけ concrete value、できなければ理由付き `Unknown` とする。Full以外の既知legacy値は`selected.revision = effective.revision = 1`へidempotentにlazy migrationし、自動write-backしない。legacy Full Sessionはsendをblockし、fresh challenge、managed policy、runtime availability、provider gateを確認してから新しいrevisionのBypassとしてcommitする。workflow templateのFullはBypass intentへ移せても権限付与ではなく、既存Run/queueを含む各executionで新challengeを必須とする。次の成功した設定writeでcurrent schemaとmigration audit eventを保存する。
+`plan_mode = true` を permission mode より優先する。この写像とlegacy Fullのsend block / fresh rechallengeはquery projectionではなくcommand / migration load用`AgentSessionConfigurationState`を参照し、`Ready`にquery専用`available_actions`を要求しない。既知の model 値も `ProviderModelRef` へ移し、selected effort は `ProviderDefault`、effective は pinned table / readback で判定できる場合だけ concrete value、できなければ理由付き `Unknown` とする。`plan_mode = true`、または`plan_mode = false`かつFull以外の既知legacy値は`selected.revision = effective.revision = 1`へidempotentにlazy migrationし、自動write-backしない。`plan_mode = false`のlegacy Full Sessionはcommand側load stateでsendをblockし、fresh challenge、managed policy、runtime availability、provider gateを確認してから新しいrevisionのBypassとしてcommitする。workflow templateのFullはBypass intentへ移せても権限付与ではなく、既存WorkflowExecution/queueを含む各executionで新challengeを必須とする。次の成功した設定writeでcurrent schemaとmigration audit eventを保存する。
 
-mode / model の欠損・未知値を `Edit` 等へ既定化せず、scope、field、raw payload、resolution id、allowed actions を持つ `NeedsConfigurationResolution` として turn / queue drain / workflow resume を block する。migration 対象は SessionMeta だけでなく、既存 queue item、workflow definition、`RunStarted` snapshot、Tauri / WebSocket DTO を含む。旧 Workflow Run に復元可能な snapshot が無い場合も `Edit` へ戻さず、`WorkflowWaitingConfiguration` に置く。
+mode / model の欠損・未知値を `Edit` 等へ既定化せず、scope、field、raw payload、resolution id、allowed actions を持つ `NeedsConfigurationResolution` として turn / queue drain / workflow resume を block する。migration 対象は SessionMeta だけでなく、既存 queue item、workflow definition、`WorkflowExecutionStarted` snapshot、Tauri / WebSocket DTO を含む。legacy WorkflowExecution に復元可能な snapshot が無い場合も `Edit` へ戻さず、`WorkflowWaitingConfiguration` に置く。
 
 ### 9.5 Local atomic event transaction
 
-launch / Session / Goal / workflow / queueを跨ぐ「同じlocal atomic batch」は説明上の比喩ではなく、Rust-owned `LocalEventTransactionStore`の1 transactionを意味する。新しいexecution-affecting eventを独立JSON logへ順番にappendしてatomic扱いしてはならない。
+launch / Session / Goal / workflow / queueを跨ぐ「同じlocal atomic batch」は説明上の比喩ではなく、domainの`LocalEventTransactionRepository` portの背後にあるRust-owned `LocalEventTransactionStore`の1 transactionを意味する。新しいexecution-affecting eventを独立JSON logへ順番にappendしてatomic扱いしてはならない。
 
 ```rust
-pub struct EventStreamKey {
-    pub kind: String,
+pub enum AgentSessionStreamKind {
+    Session,
+    Turn,
+    LaunchAttempt,
+    Goal,
+    Queue,
+    BypassChallenge,
+}
+
+pub enum WorkflowStreamKind {
+    WorkflowExecution,
+    NodeExecution,
+}
+
+pub struct EventStreamKey<Kind> {
+    pub kind: Kind,
     pub id: String,
 }
 
-pub struct TypedEventEnvelope {
-    pub event_type: String,
-    pub schema_version: u32,
-    pub payload: JsonPayload,
+pub type AgentSessionStreamKey = EventStreamKey<AgentSessionStreamKind>;
+pub type WorkflowStreamKey = EventStreamKey<WorkflowStreamKind>;
+
+pub enum LocalEventStreamKey {
+    AgentSession(AgentSessionStreamKey),
+    Workflow(WorkflowStreamKey),
 }
 
-pub struct AtomicStreamAppend {
-    pub stream: EventStreamKey,
+pub enum LocalEventContext {
+    AgentSession,
+    Workflow,
+}
+
+pub struct AtomicStreamAppend<Key, Event> {
+    pub stream: Key,
     pub expected_head_seq: u64,
-    pub events: Vec<TypedEventEnvelope>,
+    pub events: Vec<Event>, // bounded context が定義する closed domain event。JSON/serde 型ではない
+}
+
+pub enum LocalAtomicParticipant {
+    // launch / Session / Goal / queue stream。event namespace は AgentSession context 内で閉じる。
+    AgentSession(AtomicStreamAppend<AgentSessionStreamKey, AgentSessionDomainEvent>),
+    // WorkflowExecution / NodeExecution stream。AgentSessionDomainEvent へ結合しない。
+    Workflow(AtomicStreamAppend<WorkflowStreamKey, WorkflowDomainEvent>),
+}
+
+pub struct LocalAtomicBatch {
+    pub batch_id: String,
+    pub idempotency_key: String,
+    pub participants: Vec<LocalAtomicParticipant>,
+}
+
+pub struct LocalAtomicParticipantCommitted {
+    pub stream: LocalEventStreamKey,
+    pub previous_head_seq: u64,
+    pub committed_head_seq: u64,
+    pub event_count: u32,
 }
 
 pub struct LocalAtomicBatchCommitted {
     pub batch_id: String,
     pub idempotency_key: String,
     pub global_commit_seq: u64,
-    pub participants: Vec<AtomicStreamAppend>,
+    pub participants: Vec<LocalAtomicParticipantCommitted>,
     pub committed_at: String,
+}
+
+pub struct LocalSnapshotBarrier {
+    pub global_commit_seq: u64,
+}
+
+pub struct LocalReadSourceKey {
+    pub context: String,
+    pub source: String,
+}
+
+pub struct LocalSnapshotRequest {
+    pub required_sources: Vec<LocalReadSourceKey>,
+}
+
+pub struct LocalSnapshotLease {
+    pub lease_id: String,
+    pub barrier: LocalSnapshotBarrier,
+    pub required_sources: Vec<LocalReadSourceKey>,
+    pub expires_at: String,
+}
+
+pub struct LocalWatchRequest {
+    pub watch_key: String,
+    pub streams: Vec<LocalEventStreamKey>,
+    pub snapshot: LocalSnapshotRequest,
+    pub after_surface_seq: Option<u64>,
+}
+
+pub enum LocalWatchBootstrapPlan {
+    Replay { after_global_commit_seq: u64 },
+    SnapshotRequired,
+}
+
+pub struct LocalWatchFence {
+    pub snapshot: LocalSnapshotLease,
+    pub bootstrap: LocalWatchBootstrapPlan,
+}
+
+pub struct LocalWatchStreamAdvance {
+    pub stream: LocalEventStreamKey,
+    pub committed_head_seq: u64,
+}
+
+pub struct LocalWatchCommitNotice {
+    pub global_commit_seq: u64,
+    pub streams: Vec<LocalWatchStreamAdvance>,
+}
+
+pub struct LocalWatchUpdateFence {
+    subscription_id: String,
+    update_id: String,
+    snapshot: LocalSnapshotLease,
+    notice: LocalWatchCommitNotice,
+}
+
+impl LocalWatchUpdateFence {
+    pub fn snapshot(&self) -> &LocalSnapshotLease { &self.snapshot }
+    pub fn notice(&self) -> &LocalWatchCommitNotice { &self.notice }
+}
+
+pub enum LocalEventTransactionError {
+    HeadConflict { stream: LocalEventStreamKey },
+    IdempotencyConflict { idempotency_key: String },
+    StreamContextMismatch {
+        stream: LocalEventStreamKey,
+        participant_context: LocalEventContext,
+    },
+    DuplicateStreamParticipant { stream: LocalEventStreamKey },
+    SnapshotExpired { lease_id: String },
+    SnapshotSourceNotCovered { source: LocalReadSourceKey },
+    ProjectionBehind {
+        source: LocalReadSourceKey,
+        required_global_commit_seq: u64,
+        applied_through_global_commit_seq: u64,
+    },
+    WatchBootstrapNotFinished { subscription_id: String },
+    WatchUpdateOutstanding { subscription_id: String, update_id: String },
+    WatchFenceMismatch {
+        expected_subscription_id: String,
+        actual_subscription_id: String,
+    },
+    WatchLeaseReleased { lease_id: String },
+    WatchLagged { resume_after_global_commit_seq: u64 },
+    WatchClosed,
+    PersistFailure { reason: String },
+}
+
+#[async_trait::async_trait]
+pub trait LocalEventTransactionRepository: Send + Sync {
+    async fn commit_batch(&self, batch: LocalAtomicBatch) -> Result<LocalAtomicBatchCommitted, LocalEventTransactionError>;
+    async fn acquire_snapshot(&self, request: LocalSnapshotRequest) -> Result<LocalSnapshotLease, LocalEventTransactionError>;
+    async fn release_snapshot(&self, lease: LocalSnapshotLease) -> Result<(), LocalEventTransactionError>;
+}
+
+// AgentSession / launch / workflow等の各read repositoryが、この契約を具体query/output型で実装する。
+#[async_trait::async_trait]
+pub trait LocalCommittedReadRepository<Query, Output>: Send + Sync {
+    async fn read_at(&self, snapshot: &LocalSnapshotLease, query: Query) -> Result<Output, LocalEventTransactionError>;
+}
+
+pub struct LocalWatchHandle {
+    subscription_id: String, // gateway-owned receiverを指すopaque token
+    fence: LocalWatchFence,
+}
+
+impl LocalWatchHandle {
+    pub fn bootstrap_fence(&self) -> &LocalWatchFence { &self.fence }
+}
+
+#[async_trait::async_trait]
+pub trait LocalWatchRepository: Send + Sync {
+    async fn open_watch(&self, request: LocalWatchRequest) -> Result<LocalWatchHandle, LocalEventTransactionError>;
+    async fn finish_bootstrap(&self, handle: &mut LocalWatchHandle) -> Result<(), LocalEventTransactionError>;
+    async fn receive(&self, handle: &mut LocalWatchHandle) -> Result<LocalWatchUpdateFence, LocalEventTransactionError>;
+    async fn finish_update(&self, handle: &mut LocalWatchHandle, update: LocalWatchUpdateFence) -> Result<(), LocalEventTransactionError>;
+    async fn close_watch(&self, handle: LocalWatchHandle) -> Result<(), LocalEventTransactionError>;
 }
 ```
 
-- `commit_batch`は全participantのheadをCASし、per-stream seqとglobal commit seqを割当て、typed event payload、batch id、idempotency key、head更新を単一のdurable transactionでcommitする。SQLite WAL等の実transactionを使い、participant logへの逐次append＋補償で代用しない。
+- domainに定義する非genericな`LocalEventTransactionRepository` traitが、非同期の`commit_batch(LocalAtomicBatch) -> Result<LocalAtomicBatchCommitted, LocalEventTransactionError>`と`acquire_snapshot / release_snapshot`を内向きwrite/snapshot portとして公開する。read側はcontext-specificな`LocalCommittedReadRepository::read_at`と`LocalWatchRepository::open_watch`を使う。3 portは現行gateway群と同じ`#[async_trait::async_trait]`かつ`Send + Sync`でobject-safeにし、`Arc<dyn LocalEventTransactionRepository>`、具体`Query / Output`を束縛した`Arc<dyn LocalCommittedReadRepository<..>>`、`Arc<dyn LocalWatchRepository>`としてtask間共有できる。`LocalAtomicParticipant`はcontextごとの`AtomicStreamAppend<Key, Event>`を明示的なsum typeで包むため、同じbatchにheterogeneous participantを入れても各`Event`はclosed domain event型のままである。usecase/query serviceはJSON payload、serde、schema version、SQLite、WALを参照しない。
+- launch / Session / Goal / queue eventはdomain-ownedの`AgentSessionDomainEvent`、workflow eventはdomain-ownedの`WorkflowDomainEvent`として別namespaceを保つ。`docs/architecture/GLOSSARY.md`で使用禁止の`WorkflowEvent`をdomain語として採用せず、巨大な共通domain event enumへのvariant併合、JSON/type erasure、既存outer-layer schema型の流用を禁止する。新しいbounded contextをtransactionへ参加させるときは`LocalAtomicParticipant`へ明示variantを追加し、repository実装のexhaustive mappingを要求する。
+- 現行の`usecase/agent_session/event_log/events.rs::AgentSessionEvent`と`adaptor/gateway/workflow/event.rs::WorkflowEvent`はserde、表示用usecase型、`WorkflowDefinitionYaml`、`serde_json::Value`を含む**legacy persistence schema**であり、domain portへ渡さない。`adaptor/gateway`のrepository実装が`AgentSessionDomainEvent / WorkflowDomainEvent`をvariantごとにmatchし、`PersistenceEventEnvelope { event_type, schema_version, serialized_payload }` command modelへ変換して`infrastructure`のSQLite/WAL transaction clientを呼ぶ。F7/L12 migrationは旧schemaをgatewayでlazy upcastしてdomain projection入力へ変換し、順序を保って新storeへidempotent importする。移行後は旧logへdual-writeせず、未知の旧event/fieldはV-D11に従ってraw保全する。`LocalEventTransactionStore`はこのportの背後のdurable機構であり、usecaseから直接参照しない。
+- `AgentSessionStreamKey`は`AgentSessionStreamKind`だけ、`WorkflowStreamKey`は`WorkflowStreamKind`だけを受け取るため、participant variantとstream contextの不一致は通常のdomain構築では型上表現できない。taggedな`LocalEventStreamKey`のcontext variant＋closed kind＋idがgatewayのCAS namespace/headを一意に決める。legacy upcastやcorrupt persistenceなど型境界外から不一致が到達した場合は`StreamContextMismatch`としてrejectし、別namespaceへ推測fallbackしない。
+- `commit_batch`は同一`LocalEventStreamKey`を1 batchへ複数回含めることを許可せず、`DuplicateStreamParticipant`でbatch全体をrejectする。したがって1 streamのevent連結順と`expected_head_seq`は単一participantだけが所有し、gatewayは全participantのheadを一度ずつCASしてper-stream seqとglobal commit seqを割当て、typed event payload、batch id、idempotency key、head更新を単一のdurable transactionでcommitする。constructorは重複を早期拒否してよいが、`commit_batch`もこの不変条件を必ず検査する。`LocalAtomicBatchCommitted`はevent payloadを内包・appendしない非再帰なcommit receiptである。SQLite WAL等の実transactionを使い、participant logへの逐次append＋補償で代用しない。
 - commit前のbatchはどのquery/projector/watchにも見せない。crashがcommit前なら0件、commit後なら全participantが見える。`batch_id/idempotency_key`の再実行は同じ結果を返し、異なるpayloadならconflictにする。別のPrepared/Committed二相状態を外へ露出しない。
-- per-stream event log/read model/cacheはcommitted transactionから再構築するprojection/indexである。legacy JSON eventはF7 migrationで順序を保ってstoreへidempotent importし、移行後に新eventを旧logへdual-writeしない。
+- per-stream event log/read model/cacheはcommitted transactionから再構築するprojection/indexである。event rowとprojection versionは`global_commit_seq`を保持し、各projection sourceは自分に無関係なcommitもskip済みとして順番にconsumeし、全commitを処理またはskipした連続上限だけを`applied_through_global_commit_seq` watermarkとしてdurableに進める。current rowの上書きだけにせずsnapshot以下の最新版を読めるようにする。`acquire_snapshot(LocalSnapshotRequest)`はcommitted global headと全`required_sources`のwatermarkの最小値である**common readable watermark**以下にだけbarrierを置く。同じbatchのeventだけが見えてprojectionが未適用のbarrierは発行しない。`LocalSnapshotLease`はそのbarrierとsource集合を有効期限までpinし、gatewayは未失効leaseの最小barrierをGC horizonとして、そのbarrierを満たすために必要なevent/projection versionをpruneしない。明示releaseはidempotentとし、未release leaseも`expires_at`後に回収できるため、全過去versionのfull-retentionを要求しない。
+- AgentSession / launch / workflow等の各context-specific read-side portは、event・projectionを読む全methodを`read_at(&LocalSnapshotLease, query)`契約にする。各portは自sourceがleaseの`required_sources`に含まれ、`applied_through_global_commit_seq >= lease.barrier.global_commit_seq`であることを検証する。source未列挙ならnon-retryableな`SnapshotSourceNotCovered`、追随していなければ`ProjectionBehind`を返してstale projectionを成功扱いしない。複数repositoryを合成するquery serviceは必要な全sourceを列挙して最初に1回だけleaseを取得し、全committed sourceへ同じleaseを渡し、成功・失敗を問わず最後にreleaseする。途中の1 sourceでも`SnapshotExpired`または`ProjectionBehind`になった場合は部分結果を捨て、projection追随をbounded waitした後にfresh leaseで**query全体**をbounded retryする。retry上限後はretryable errorを返し、source単位の再読込やlatest readとの混在、snapshot超のprojection返却を禁止する。capability / managed policyは同じquery evaluation contextで評価し、そのcontext hashとchecked-atを結果へ固定する。
 - provider I/O前のintent batchはcommit成功後だけ送信可能。provider ack後のcanonical batchがcommitできなければ、旧stateへ戻ったふりをせず外部observation付きreconciliationへ進む。
-- `get_session`、`get_agent_launch`、workflow queryと各watchはglobal commit barrierでsnapshot/replay cursorを取得し、同じbatchの一部だけを描画しない。surface固有seqはcommitted batchのper-stream seqから導出する。
+- `get_session`、`get_agent_launch`、workflow queryは全sourceを同じsnapshot leaseの`read_at`で読み、同じbatchの一部だけを描画しない。surface固有seqはcommitted batchのper-stream seqから導出する。
+- watch開始は`open_watch`が1つのstorage transaction / commit lock内で、surface cursorからreplay可否を決め、requestの全`required_sources`が追随したcommon readable watermarkへsnapshot leaseを取得し、そのbarrierより後のcommitを受けるsubscription/receiverを登録したopaque token付き`LocalWatchHandle`を返す。handle/fenceのfieldは非公開とし、usecase-owned watch serviceはread-only accessorで得たbootstrap fenceだけからsnapshotまたはreplayをquery serviceに構築させ、送信可能なtyped frameへmaterializeした後に同じportの`finish_bootstrap`を呼ぶ。以後`receive`は次のnoticeだけを返さず、全required sourceが当該`global_commit_seq`まで追随した時点で、そのcommitへ**厳密にpinした**leaseを持つ`LocalWatchUpdateFence`を返す。各update fenceは発行元handleの`subscription_id`へ内部的に束縛し、`finish_update`は別handle由来のfenceを`WatchFenceMismatch`で拒否する。watch serviceはaccessorから得たleaseだけでtyped projection/deltaを構築し、同じfenceの`finish_update`でleaseをreleaseしてから次を受ける。receiver registryはgatewayが所有し、usecase/controllerはtokenからregistryやbroadcasterへ直接到達しない。snapshot取得とsubscription登録、notice受信とcommit固定lease取得を別callにしない。
+- watch phase不変条件は最低限gatewayがsubscription id単位にruntime enforceする。順序は`bootstrap -> active -> pending-update -> active`であり、bootstrap未完了中の`receive`は`WatchBootstrapNotFinished`、未finishのupdateがある間の次の`receive`は`WatchUpdateOutstanding`、release済みbootstrap/live leaseを`read_at`・`finish_*`・別updateに再利用する操作は`WatchLeaseReleased`でrejectする。実装はこの契約より強いtypestateのconsume型遷移を採用してよいが、同一mutable handleだけを使う実装でもこれらのruntime検査と明示errorを省略してはならない。
+- subscription bufferはgateway-ownedの件数・byte上限を持ち、bootstrap中、projection追随待ち、live配信中のいずれもcommit処理をblockしない。上限超過、receiver lag、projection追随のbounded timeoutは通知を黙って捨てず`WatchLagged { resume_after_global_commit_seq }`でsubscriptionをterminalにして登録を解放し、watch serviceは部分bootstrap/deltaを捨てて新しいhandleを開き直す（cursorがretention外ならfull snapshot）。bootstrap中のlease失効、live fenceの`SnapshotExpired / ProjectionBehind`でも`close_watch`してwatch全体をやり直す。
+- client disconnect、handler cancel、正常終了を受けたwatch serviceは同じportの`close_watch`を必ず呼ぶ。`close_watch`はhandleをclosedへmarkしてreceiver/subscriptionをregistryから解除し新規enqueueを止め、次にbounded bufferをdrain/dropし、次にoutstanding live update lease、最後に未release bootstrap leaseを解放して、発行済みfence/tokenを無効化する順で全resourceを回収する。この順序と結果はidempotentであり、途中までclose済みでも残りを回収する。serviceのcancellation guardもcloseを起動し、handlerはservice taskをcancelするだけでportを直接呼ばない。process crash時はin-memory receiver registry自体が破棄され、未release leaseは期限で回収される。これにより切断したsubscriptionをgateway registryへ残さず、get→subscribe間の欠落、無制限buffer、commitへのbackpressureを同時に避ける。
 
-### 10. Durable event（AgentSessionEvent）の進化
+### 10. Durable event の進化（bounded context 別）
 
 **V-D11**: 進化規約（V-P4 の具体化）:
 
-1. 変更は additive-only。既存 variant のフィールド追加は `#[serde(default)]` 必須。
-2. 新規 variant 追加時、旧バージョンの Releash が読む可能性は考慮しない（前方互換は不要）が、新バージョンは全ての旧イベントを読めること（後方互換必須）。
-3. event log ファイルに `schema_version` を持たせ、読み込み時に lazy migration（旧 `completed: bool` → `TodoStatus` 等は読み込み写像で吸収し、書き戻しはしない）。
-4. 未知イベント・未知フィールドは読み飛ばさず raw のまま保持し、projector は無視、書き戻しで保全する。
+1. domain-owned `AgentSessionDomainEvent / WorkflowDomainEvent` のsemantic variant追加はadditive-onlyとし、gateway変換のexhaustive matchを同時に更新する。domain eventにserde属性やschema versionを持たせない。
+2. gatewayのpersistence command model変更はadditive-onlyとし、既存variantへのfield追加は`#[serde(default)]`を必須にする。旧バージョンのReleashが新variantを読む前方互換は不要だが、新バージョンは全旧eventを読めること（後方互換必須）。
+3. `schema_version`はevent logの`PersistenceEventEnvelope`に持たせ、gateway読み込み時にlazy upcastする（旧`completed: bool` → `TodoStatus`等はcommand modelへの読み込み写像で吸収し、書き戻しはしない）。
+4. 未知event・未知fieldはgatewayがrawのまま保持し、projectorは無視、書き戻しで保全する。未知payloadをdomain eventのcatch-all variantやJSONへ落とさない。
 
-追加・変更する durable event:
+#### AgentSessionDomainEvent / AgentSession persistence schema
+
+`AgentSessionDomainEvent`は次のvariantだけを持つclosed enumである。payload fieldの完全定義は#1446以降で行うが、membershipは本節が完全かつ規範的であり、§8の既存eventと本節の追加eventを含む。gatewayはこの全membershipをexhaustive matchしてpersistence command modelへ変換し、catch-all variantを設けない。
+
+```rust
+pub enum AgentSessionDomainEvent {
+    TurnStarted,
+    MessagePartRecorded,
+    FinalPartsRecorded,
+    TurnCompleted,
+    TokenUsageUpdated,
+    ToolCallStarted,
+    ToolCallSucceeded,
+    ToolCallFailed,
+    ToolResultRecorded,
+    ToolCallRetried,
+    ToolCallStatusChanged,
+    PermissionRequested,
+    PermissionResolved,
+    PermissionResponseRequested,
+    PermissionResponseRejected,
+    ProviderPermissionResponseObserved,
+    PermissionResponseReconciliationRequired,
+    PermissionResponseReconciled,
+    TaskStatusChanged,
+    TodoListSnapshotRecorded,
+    NoticeRecorded,
+    ImageRecorded,
+    ImageRefRecorded,
+    BackendSessionCleared,
+    SessionClosed,
+    ConfigurationUpdateRequested,
+    ConfigurationUpdateRejected,
+    SessionConfigurationSelected,
+    SessionConfigurationActivated,
+    BackendSessionRecoveryStarted,
+    SessionConfigurationReactivated,
+    SessionGoalReactivated,
+    BackendSessionRecoveryCompleted,
+    ProviderConfigurationStateObserved,
+    ConfigurationObservationAccepted,
+    ConfigurationReconciliationRequired,
+    ConfigurationReconciled,
+    TurnStartRequested,
+    TurnStartReconciliationRequired,
+    TurnStartReconciled,
+    TurnInterruptRequested,
+    QueuePaused,
+    QueueResumed,
+    QueueItemEnqueued,
+    QueueItemCancelled,
+    QueueExecutionPrepared,
+    QueueExecutionRequested,
+    QueueItemStarted,
+    QueueItemFailed,
+    QueueItemResolutionRequired,
+    QueueItemRebased,
+    QueueItemRequeued,
+    ReconciliationResolutionRequested,
+    AgentLaunchDraftPrepared,
+    AgentLaunchPreparationExpired,
+    AgentLaunchPreparationCancelled,
+    AgentLaunchAttemptStarted,
+    AgentLaunchStageAdvanced,
+    AgentLaunchReconciliationRequired,
+    AgentLaunchProtocolIncompatible,
+    AgentLaunchReconciled,
+    AgentLaunchCompleted,
+    AgentLaunchFailed,
+    AgentLaunchCancelled,
+    SessionCreated,
+    LaunchInitialGoalRejected,
+    InitialGoalResolutionRequested,
+    InitialGoalResolutionCompleted,
+    BypassChallengeIssued,
+    BypassChallengeConsumed,
+    BypassChallengeExpired,
+    BypassChallengeCancelled,
+    GoalTransitionRequested,
+    GoalTransitionRejected,
+    ProviderGoalCommandEvidenceObserved,
+    GoalPrecommitControlConflictObserved,
+    GoalSet,
+    GoalTransitioned,
+    GoalCleared,
+    ProviderGoalStateObserved,
+    GoalObservationAccepted,
+    GoalReconciliationRequired,
+    GoalReconciled,
+    BackendProtocolIdentified,
+    ProtocolIncompatible,
+}
+```
+
+このcomplete membershipに対する追加・payload変更とlegacy persistence schemaからの写像は次のとおり:
 
 | 変更 | 内容 | 解消 |
 |---|---|---|
 | `ToolCallStatusChanged { turn_id, tool_use_id, status, exit_code?, at }` 追加 | ToolCall 状態遷移の記録 | RG-4/RG-8/SD-5 |
 | `NoticeRecorded { turn_id?, message_id, notice }` 追加 | `SystemNotificationRecorded` を後継（旧型は読み込み継続） | CX-7/RG-6/CL-5 |
-| `TurnCompleted` 系の outcome 拡張 | stop_reason / stats / 構造化 error | CL-3/4/RG-3/9/RT-5 |
+| `TurnCompleted` 系の outcome 拡張 | stop_reason / stats / 構造化 error。active turnのprotocol driftは`TurnCompleted { result: TurnResult::Interrupted { reason: InterruptReason::ProtocolIncompatible, .. } }`としてdurable化し、last TurnResult / Idle projectionへ再投影する | CL-3/4/RG-3/9/RT-5/#1445 |
 | `TurnTokenUsage` → V-D8 型 | cache / cost | RG-9 |
 | `PermissionResolved` に `resolved_by` / `effective` 追加 | 実効性の記録 | CL-1 |
 | `PermissionResponseRequested / Rejected / ProviderPermissionResponseObserved / PermissionResponseReconciliationRequired / Reconciled` 追加 | response id、redacted answers、明示reject後のPending復帰、request cancel/tool start、ack不明と解決attemptをwrite-ahead回復。secret plaintextは保存しない | CL-1/CX-1 |
 | `TodoListSnapshotRecorded` の item 拡張 | status / priority | RG-5 |
 | `ImageRecorded` / `ImageRefRecorded` の配線 | tool 出力 image | CL-6/RG-7 |
 | `ConfigurationUpdateRequested / Rejected` 追加 | `update_id`、base / target revision、discriminated patch、activation timing を write-ahead 記録 | #1397/#1445〜#1448 |
-| `LocalAtomicBatchCommitted` transaction envelope 追加 | multi-stream head CAS、per-stream/global seq、typed participants、idempotencyを単一transactionで確定しhalf-commitを禁止 | #1445/#1446/#1450 |
 | `SessionConfigurationSelected / Activated` 追加 | selected / effective revision と model を含む小さな設定 snapshot を別々に確定。各 event append が canonical commit point | #1397/#1445〜#1448 |
 | `BackendSessionRecoveryStarted / SessionConfigurationReactivated / SessionGoalReactivated / BackendSessionRecoveryCompleted` 追加 | resume metadata clearとbarrier開始、observation相関付きconfiguration/Goal復旧、両aggregateの最終atomic完了を同じrecovery idで確定 | #1397/#1407/#1449 |
 | `ProviderConfigurationStateObserved / ConfigurationObservationAccepted / ConfigurationReconciliationRequired / Reconciled` 追加 | observation append時にblockし、同じobservation idをoutcomeがconsume。複合provider stateと解決をdurable化 | #1397/#1445〜#1448 |
@@ -1781,30 +2220,73 @@ pub struct LocalAtomicBatchCommitted {
 | `AgentLaunchDraftPrepared / PreparationExpired / PreparationCancelled / AttemptStarted / StageAdvanced / LaunchReconciliationRequired / LaunchProtocolIncompatible / Reconciled / Completed / Failed / Cancelled` 追加 | reservation、create correlation、provider/local ref、initial Goal handoff、観測、部分protocol identity、recoveryと全terminalをattempt streamへ保存 | #1445 |
 | `SessionCreated` 追加（Session stream） | session id、originating launch attempt、provider/session ref、protocol identityを持ち、initial configuration seedとのmulti-stream batchをSession公開のcommit pointにする | #1445 |
 | `LaunchInitialGoalRejected / InitialGoalResolutionRequested / Completed` 追加 | launch側rejectを再投影し、RetryGoal/ContinueWithoutGoal/CancelSessionをCAS＋write-aheadで排他して各actionを必ず終端 | #1445/#1449 |
-| `WorkflowNodeBypassPrepared / WorkflowNodeExecutionRequested / WorkflowNodeAgentBound / WorkflowNodeAgentLaunchFailed / WorkflowNodeAgentLaunchCancelled` 追加 | challenge待機、stable attempt、workflow/launch origin、成功/失敗/取消terminalをlaunch terminalとのmulti-stream batchで相関 | #1450 |
 | `BypassChallengeIssued / Consumed / Expired / Cancelled` 追加 | execution/reconciliation固有guard、期限、one-time consume、managed-policy再検査とreload可能なchallenge stateを監査 | #1446/#1448 |
 | `GoalTransitionRequested / GoalTransitionRejected` 追加 | `transition_id`、goal id / base revision、操作を Goal 専用 write-ahead protocol で記録。成功終端はcanonical Goal eventだけとする | #1449 |
-| `ProviderGoalCommandEvidenceObserved / GoalPrecommitControlConflictObserved` 追加 | Claude StartsTurnのcommand UUID＋completed lifecycle＋objective一致Goal stateをacceptance evidenceにし、commit前control requestのfail-closed/reconciliationを監査 | #1449/#1416 |
+| `ProviderGoalCommandEvidenceObserved / GoalPrecommitControlConflictObserved` 追加 | provider-neutralな`GoalCommandAcceptanceEvidence` / `ProviderEvidenceRef`を保存する。Claude固有command UUID、completed lifecycle、raw control requestはadaptor/gateway evidenceとして保持し、objective一致Goal stateのacceptanceとcommit前control requestのfail-closed/reconciliationを監査 | #1449/#1416 |
 | `GoalSet / GoalTransitioned / GoalCleared` 追加 | goal revision、source、reason、evidence ref、`ProviderGoalSnapshot`をcanonicalに記録。Claude set/editではGoal event＋TurnStartedをatomic batch append | #1449 |
 | `ProviderGoalStateObserved / GoalObservationAccepted / GoalReconciliationRequired / Reconciled` 追加 | provider ref＋Matched/Unmatched/Ambiguousを保存し、observation append時block、同じidをoutcomeがconsume | #1449 |
 | `BackendProtocolIdentified / ProtocolIncompatible` 追加 | 実行 binary と compiled schema / flags / capabilities の一致を監査し、control-plane drift を fail-closed 化 | #1445/#1447〜#1449 |
 | `TurnStarted` に resolved effective configuration / `EffectiveModeSnapshot` / Goal ref / protocol identity 追加 | provider/model/mode/effort、当時のpermission/effects/residual protections/context、Goalを不変監査可能にする | #1450 |
 
+#### WorkflowDomainEvent / Workflow persistence schema
+
+`WorkflowDomainEvent`は次のvariantだけを持つclosed enumである。payload fieldの完全定義は#1446以降で行うが、membershipは本節が完全かつ規範的であり、gatewayは全variantをexhaustive matchする。`NodeExecution*` eventはこのenumだけに属し、`AgentSessionDomainEvent`へ逆流させない。domain-owned `WorkflowDomainEvent` からgateway command modelへ変換し、既存`WorkflowEvent` persistence schemaをdomain portへ流用しない。
+
+```rust
+pub enum WorkflowDomainEvent {
+    WorkflowExecutionStarted,
+    NodeExecutionStarted,
+    NodeExecutionCommandPrepared,
+    WorkflowArtifactProduced,
+    NodeExecutionCompleted,
+    NodeExecutionFailed,
+    WorkflowApprovalRequested,
+    WorkflowApprovalResolved,
+    WorkflowContractViolated,
+    NodeExecutionStallObserved,
+    NodeExecutionStallCleared,
+    WorkflowExecutionCompleted,
+    WorkflowExecutionFailed,
+    WorkflowExecutionAborted,
+    WorkflowExecutionInterrupted,
+    WorkflowExecutionResumed,
+    NodeExecutionBypassPrepared,
+    NodeExecutionLaunchRequested,
+    NodeExecutionAgentBound,
+    NodeExecutionAgentLaunchFailed,
+    NodeExecutionAgentLaunchCancelled,
+}
+```
+
+このcomplete membershipに対する追加・payload変更とlegacy persistence schemaからの写像は次のとおり:
+
+| 変更 | 内容 | 解消 |
+|---|---|---|
+| `NodeExecutionBypassPrepared / NodeExecutionLaunchRequested / NodeExecutionAgentBound / NodeExecutionAgentLaunchFailed / NodeExecutionAgentLaunchCancelled` 追加 | `NodeExecution.id / node_name / attempt`でchallenge待機、stable launch attempt、workflow/launch origin、成功/失敗/取消terminalをlaunch terminalとのmulti-stream batchで相関 | #1450 |
+
+#### Transaction metadata（domain event enum 外）
+
+| 変更 | 内容 | 解消 |
+|---|---|---|
+| `LocalAtomicBatchCommitted` commit receipt 追加 | multi-stream head CAS、per-stream/global seq、event count、idempotencyの確定結果を返す。`AgentSessionDomainEvent` / `WorkflowDomainEvent`のvariantとしてappendせず、event payloadも内包しない | #1445/#1446/#1450 |
+
 `PermissionResolvedBy::Auto` は provider classifier / reviewer の approved / denied を表し、取得できる decision reason / review item ref を同じ permission 履歴へ保存する。inProgress / timedOut / aborted や manual fallback を resolution として合成しない。単に `AgentMode::Auto` だったという理由だけで自動許可を合成しない。
 
 ### 11. Read model / GetSessionResponse（完全復元）
 
-read model は「UI が描画する全て」を保持する（lifecycle I 群・presentation P1 の前提）。`get_session` は runtime 可視状態の完全スナップショットとsession `seq`を返す: messages(parts) / turn_phase / pending・Responding・reconciliation中のpermission / `QueueProjection`（item revision、active＋bounded recent terminal＋paused＋seq）/ `TurnStartState` / latest TokenUsage / last TurnResult / notices / `AgentSessionConfigurationState` / `SessionGoalProjection` / `SessionControlOperationLease` / `ProviderPermissionState` / `AgentProtocolState` / capabilities / pending observation・reconciliation・resolution attempt / available actions・mode effects。古いqueue terminal履歴は`get_queue_history(session_id, cursor, limit) -> QueueHistoryPage`でpage取得する。Bypass waiting stateはfull challenge viewを埋め、独立query `get_bypass_challenge(challenge_id) -> BypassChallengeProjection`もIssued/Consumed/Expired/Cancelledを返す。nonceは認可済みclientへIssued中だけ返し、terminal projectionではredactする。
+client-facing watchのapplication境界はusecase-ownedな`AgentSessionWatchService` / `AgentLaunchWatchService`とする。Session側は`AgentSessionWatchFrame::Snapshot(GetSessionResponse) | Delta(AgentSessionReadModelDelta)`、launch側は`AgentLaunchWatchFrame::Snapshot(AgentLaunchProjection) | Changed(AgentLaunchChanged)`だけを返す。`AgentSessionReadModelDelta`はquery DTOとしてexhaustiveに型付けし、configuration変更は`SessionConfigurationChanged(AgentSessionConfigurationProjection)`というfull read-model deltaにする。各serviceは内部で`LocalWatchRepository`とquery serviceを協調させ、bootstrap leaseまたはlive `LocalWatchUpdateFence.snapshot`だけからframeを構築する。Tauri / WebSocket handlerはserviceを開始してtyped frameをprotocolへ写すだけで、`LocalWatchCommitNotice`、Repository、QueryService、snapshot leaseを直接扱わない。
 
-Session確立前のNew AgentはSession read modelに押し込まない。S9aは`get_agent_launch_preflight(workspace_id, provider_id, context)`から`Checking | Compatible(AgentBackendCapabilities) | ProtocolIncompatible(partial identity)`を取得する。`prepare_agent_launch`はattempt id/hashをreserveし、Bypassなら`AgentLaunchDraftPrepared + BypassChallengeIssued`を同じlocal batch、non-BypassならPrepared単独でappendする。Queue/Workflow Bypassも各Prepared＋ChallengeIssuedをatomic appendする。確認後の`start_agent_launch`がdraft hash、preflight context、policy/gateを再検証し、`BypassChallengeConsumed + AgentLaunchAttemptStarted`をlocal atomic batchでappendしてからprovider I/Oする。draft変更・期限切れはreservation/challengeを失効させ、再prepareを要求する。
+read model は「UI が描画する全て」を保持する（lifecycle I 群・presentation P1 の前提）。`get_session` は runtime 可視状態の完全スナップショットとsession `seq`を返す: messages(parts) / turn_phase / pending・Responding・reconciliation中のpermission / `QueueProjection`（item revision、active＋bounded recent terminal＋paused＋seq）/ `TurnStartState` / latest TokenUsage / last TurnResult / notices / query専用`AgentSessionConfigurationReadModel` / `SessionGoalProjection` / `SessionControlOperationLease` / `ProviderPermissionState` / `AgentProtocolState` / capabilities / pending observation・reconciliation・resolution attempt / available actions・mode effects。古いqueue terminal履歴は`get_queue_history(session_id, cursor, limit) -> QueueHistoryPage`でpage取得する。Bypass waiting stateはfull challenge viewを埋め、独立query `get_bypass_challenge(challenge_id) -> BypassChallengeProjection`もIssued/Consumed/Expired/Cancelledを返す。nonceは認可済みclientへIssued中だけ返し、terminal projectionではredactする。
 
-reserved attempt idで分離したdurable launch event streamから`get_agent_launch(attempt_id) -> AgentLaunchProjection`を再構築する。projectionは`Prepared / Started / PreparationExpired / PreparationCancelled`を含み、prepare後start前のreloadも復元する。`AgentLaunchChanged`はmutable fieldの取りこぼしを避けるため小さなfull projectionを運ぶ。購読は`watch_agent_launch(attempt_id, after_seq)`で、serverがsnapshot/replayとsubscription登録を同じbarrier内で行う。retention内なら`after_seq`より後をreplayし、古すぎるcursorは最新snapshotを返すため、get→subscribe間のraceを作らない。`seq`はattempt単位で単調増加し、reload/reconnectまたはgap/逆行検出時はsnapshotを再取得する。Completed後もretention期間内はSession idへの相関を保持し、launch失敗・reconciliation・pre-session ProtocolIncompatibleを復元できる。
+Session確立前のNew AgentはSession read modelに押し込まない。S9aは`get_agent_launch_preflight(workspace_id, provider_id, context)`から`Checking | Compatible(AgentBackendCapabilities) | ProtocolIncompatible(partial identity)`を取得する。`prepare_agent_launch`はattempt id/hashをreserveし、Bypassなら`AgentLaunchDraftPrepared + BypassChallengeIssued`を同じlocal batch、non-BypassならPrepared単独でappendする。Queue/Workflow Bypassも各Prepared＋ChallengeIssuedをatomic appendする。確認後の`start_agent_launch`は`StartAgentLaunch.bypass_confirmation`のchallenge id / nonceをIssued challengeへ照合し、draft hash、preflight context、期限、guard、caller scope、policy/gateも再検証できた場合だけ`BypassChallengeConsumed + AgentLaunchAttemptStarted`をlocal atomic batchでappendしてからprovider I/Oする。attempt id / draft hashだけではconsumeできない。draft変更・期限切れはreservation/challengeを失効させ、再prepareを要求する。
+
+reserved attempt idで分離したdurable launch event streamから`get_agent_launch(attempt_id) -> AgentLaunchProjection`を再構築する。projectionは`Prepared / Started / PreparationExpired / PreparationCancelled`を含み、prepare後start前のreloadも復元する。`AgentLaunchChanged`はmutable fieldの取りこぼしを避けるため小さなfull projectionを運ぶ。購読は`watch_agent_launch(attempt_id, after_seq)`で、service内部の`open_watch`がcursorのreplay可否、required sourceのcommon watermarkへ固定したsnapshot lease取得、barrier後subscription/receiver登録を同じstorage transaction / commit lockで行う。`AgentLaunchWatchService`はbootstrap fenceまたは各notice commitへ厳密にpinされたlive fenceの`read_at`でprojectionを構築し、`finish_bootstrap / finish_update`後にtyped frameを返す。lag/lease失効/ProjectionBehind/gap/逆行では`close_watch`して部分結果を捨て、snapshotから再openするためget→subscribe間のraceを作らない。`seq`はattempt単位で単調増加する。Completed後もretention期間内はSession idへの相関を保持し、launch失敗・reconciliation・pre-session ProtocolIncompatibleを復元できる。
 
 Goal履歴はcurrent projectionへfull-retentionしない。`get_goal_history(session_id, cursor, limit) -> GoalHistoryPage`と`get_goal_revision(session_id, goal_id, revision)`をevent logからpage/id lookupし、transition kind/result/time、before/after objective/status、source/evidence、launch相関を返す。`TurnStarted`のgoal id/revisionはこのrevision lookupで後から解決でき、Goal clear/replace後も当時のobjectiveを監査できる。
 
-event log の `SessionConfigurationSelected / Activated` と Goal canonical event を唯一の durable commit point とする。`SessionMeta` の configuration / Goal snapshot は高速 projection/cache であり、event から再構築できる。cache 更新失敗は canonical provider drift ではなく `PersistFailure` と再投影で回復する。Workflow は `RunStarted` と step resolution event を commit point、run metadata を projection とする。queue item と Workflow step execution は effective configuration snapshot と `goal_id + goal_revision` を保持し、turn read model は provider/model/mode/effective effort/Goal/protocol identity を展開表示できる。
+event log の `SessionConfigurationSelected / Activated` と Goal canonical event を唯一の durable commit point とする。`SessionMeta` の configuration / Goal snapshot は高速 projection/cache であり、event から再構築できる。cache 更新失敗は canonical provider drift ではなく `PersistFailure` と再投影で回復する。Workflow は `WorkflowExecutionStarted` と NodeExecution resolution event を commit point、WorkflowExecution metadata を projection とする。queue item と NodeExecution は effective configuration snapshot と `goal_id + goal_revision` を保持し、turn read model は provider/model/mode/effective effort/Goal/protocol identity を展開表示できる。
 
-一般Sessionの購読は`watch_session(session_id, after_seq)`を唯一の入口とし、serverがsnapshot/replay決定とsubscription登録を同じbarrier内で行う。`get_session`後にそのseqでwatchした場合も、cursor以後を必ずreplayして「最後のeventだけ逃し次eventが無い」窓を作らない。cursorがretention外ならfull snapshotを返す。snapshot/deltaのsession単位seqは単調増加し、frontendは欠落・逆行時にsnapshotを再取得する（FE-3 / presentation P1）。
+一般Sessionの購読は`watch_session(session_id, after_seq)`を唯一の入口とし、`AgentSessionWatchService`内部の`open_watch`がsnapshot/replay決定、required sourceのcommon watermarkへ固定したsnapshot lease取得、barrier後subscription/receiver登録を同じcommit境界で行う。bootstrapはhandleのfence、live更新は`receive`が当該notice commitへ厳密にpinした`LocalWatchUpdateFence`の`read_at`だけを使い、typed snapshot/deltaをmaterializeしてから`finish_bootstrap / finish_update`する。`get_session`後にそのseqでwatchした場合も、cursor以後を必ずreplayして「最後のeventだけ逃し次eventが無い」窓を作らない。cursorがretention外、またはlag/lease失効/ProjectionBehind/gap/逆行なら`close_watch`してfull snapshotから再openする。snapshot/deltaのsession単位seqは単調増加し、disconnect時も`close_watch`でsubscriptionを解放する（FE-3 / presentation P1）。
 
 ### 12. Wire 層の型付け（写像の入口）
 
@@ -1812,7 +2294,7 @@ event log の `SessionConfigurationSelected / Activated` と Goal canonical even
 - **V-D12b**: Claude は Claude Agent SDK の型定義（`sdk.d.ts` の StdoutMessage union）を正とした typed model（serde struct/enum）を `infrastructure/agent_session/claude/wire.rs` に定義する（ST-2）。SDK バージョンを wire.rs に明記し、更新時に差分レビューする。
 - mode / Goal / reasoning effort の capability、更新要求、ack / error、provider permission snapshot も typed request / response として定義し、文字列比較や frontend fallback に戻さない。Claude `/goal` は公開 typed RPC と偽装せず、side effect を宣言した typed `ProviderCliCommand` adapter とする。
 - spawn した executable の `BackendProtocolIdentity` を initialize 時に検証する。compiled schema と互換でない binary、experimental flag、initialize capability の組合せでは session を開始しない。
-- content-plane の typed decode 失敗・未対応 variant は V-P1 に従い `Notice(UnsupportedMessage)` ＋構造化ログへ着地させる。control-plane は `ProtocolIncompatible` または対象 aggregate の reconciliation へ着地させ、新規 turn を block する。両者の件数を parity テスト（ST-7）で別々に検証する。
+- parse可能かつcontent-planeと分類できた未知message/partだけは、payload長・digest・content分類・固定上限以下のsecret-redacted sampleをV-P1の`Notice(UnsupportedMessage)`＋構造化ログへdurable記録する。既知variantのdecode failure、content/controlを分類できないmalformed frame、size上限超過も、長さ・digest・分類/失敗種別・bounded redacted sampleと取得済みの部分protocol identityだけを`ProtocolIncompatible`へ記録し、full bodyをevent/logへ恒久保存せず新規turnをblockする。完全evidenceが必要な場合だけ暗号化・per-session quota・object size上限・TTL・参照認可付きstoreへ保存して`ProviderEvidenceRef`で参照し、secret plaintextはstoreにも保存しない。control-plane未知値/variantは`ProtocolIncompatible`または対象aggregateのreconciliationへ着地させる。各分類の件数をparityテスト（ST-7）で別々に検証する。
 
 ## トレーサビリティ（本書が解消する問題）
 
@@ -1842,6 +2324,8 @@ event log の `SessionConfigurationSelected / Activated` と Goal canonical even
 | #1447 | V-D10 5 mode の cross-backend 写像 |
 | #1448 | V-D10 `ReasoningEffort` / model capability（V-D8 `TokenUsage` とは別概念） |
 | #1449 | V-D10 `AgentGoal` lifecycle / provider capability |
+| #1450 | V-D10 workflow template / resolved launch configuration / queue snapshot と §10 durable event |
+| #1451 | §11 backend-owned read model / available actions と V-D10 capability-driven UI 契約 |
 
 **語彙変更が不要な独立修正**（本ドキュメント群の設計を待たずに着手可能）: CX-4（tokenUsage フィールド名）、CX-9（initialize commands の dead code — V-D12a に内包可）、OB-7（画像のみ送信時の空 text block）。CX-1 の wire 形式修正は V-D6 の型を前提に行う。
 
