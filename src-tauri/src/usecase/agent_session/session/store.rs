@@ -9,12 +9,14 @@ use crate::domain::agent_session::{
 };
 use crate::domain::path::same_worktree_path;
 use crate::usecase::agent_session::context_meta::ContextEpochMeta;
-use crate::usecase::agent_session::event_log::{AgentSessionEvent, TurnEventLog};
+use crate::usecase::agent_session::event_log::{
+    AgentSessionEvent, BackendSessionRecoveryReason, GoalReactivationOutcome, TurnEventLog,
+};
 
 use super::{
     now_timestamp, ChatMessage, ChatSession, ContextCarryState, MessagePart, PageCursor,
-    SessionAttachment, SessionMeta, SessionPage, SessionReviewContext, SessionState,
-    SessionSummary, SessionToolOutput,
+    PendingRecoveryMessage, SessionAttachment, SessionMeta, SessionPage, SessionReviewContext,
+    SessionState, SessionSummary, SessionToolOutput,
 };
 
 /// `SessionState` の遷移を観測する購読者向けコールバック。
@@ -108,6 +110,7 @@ pub struct SessionStore {
     storage: Arc<dyn SessionStoragePort>,
     state_change_listeners: RwLock<Vec<SessionStateChangeListener>>,
     event_log_recovery_listeners: RwLock<Vec<SessionEventLogRecoveryListener>>,
+    recovery_publication_snapshots: RwLock<HashMap<String, SessionSummary>>,
     #[cfg(test)]
     save_hook: RwLock<Option<SessionSaveHook>>,
     #[cfg(test)]
@@ -233,6 +236,7 @@ impl SessionStore {
             storage,
             state_change_listeners: RwLock::new(Vec::new()),
             event_log_recovery_listeners: RwLock::new(Vec::new()),
+            recovery_publication_snapshots: RwLock::new(HashMap::new()),
             #[cfg(test)]
             save_hook: RwLock::new(None),
             #[cfg(test)]
@@ -289,6 +293,56 @@ impl SessionStore {
         self.list_sessions_filtered(app_data_dir, worktree_path, |s| {
             s.state == SessionState::Closed
         })
+    }
+
+    pub(crate) fn hold_recovery_publication_snapshot(&self, summary: SessionSummary) {
+        self.recovery_publication_snapshots
+            .write()
+            .insert(summary.id.clone(), summary);
+    }
+
+    pub(crate) fn release_recovery_publication_snapshot(&self, session_id: &str) {
+        self.recovery_publication_snapshots
+            .write()
+            .remove(session_id);
+    }
+
+    pub fn list_published_sessions(
+        &self,
+        app_data_dir: &Path,
+        worktree_path: &str,
+    ) -> Result<Vec<SessionSummary>, String> {
+        let summaries = self.list_sessions(app_data_dir, worktree_path)?;
+        Ok(self.overlay_recovery_publication_snapshots(summaries))
+    }
+
+    pub fn list_published_closed_sessions(
+        &self,
+        app_data_dir: &Path,
+        worktree_path: &str,
+    ) -> Result<Vec<SessionSummary>, String> {
+        let summaries = self.list_closed_sessions(app_data_dir, worktree_path)?;
+        Ok(self.overlay_recovery_publication_snapshots(summaries))
+    }
+
+    fn overlay_recovery_publication_snapshots(
+        &self,
+        mut summaries: Vec<SessionSummary>,
+    ) -> Vec<SessionSummary> {
+        let snapshots = self.recovery_publication_snapshots.read();
+        for summary in &mut summaries {
+            if let Some(snapshot) = snapshots.get(&summary.id) {
+                let published_title = summary.first_message.clone();
+                *summary = snapshot.clone();
+                summary.first_message = published_title;
+            }
+        }
+        summaries.sort_by(|a, b| {
+            b.updated_at
+                .partial_cmp(&a.updated_at)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        summaries
     }
 
     fn list_sessions_filtered(
@@ -390,6 +444,8 @@ impl SessionStore {
         forked_meta.created_at = now;
         forked_meta.updated_at = now;
         forked_meta.agent_session_id = None;
+        forked_meta.provider_session_generation = 0;
+        forked_meta.context_reinjection_generation = None;
         forked_meta.context_carry = None;
         forked_meta.workflow_node_session = false;
 
@@ -537,6 +593,187 @@ impl SessionStore {
             self.notify_event_log_recovered(session_id);
         }
         Ok(())
+    }
+
+    pub fn begin_backend_session_recovery(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        recovery_id: &str,
+        reason: BackendSessionRecoveryReason,
+    ) -> Result<SessionMeta, String> {
+        let old_provider_session_generation = self
+            .require_meta(app_data_dir, session_id)?
+            .provider_session_generation;
+        let event = AgentSessionEvent::BackendSessionRecoveryStarted {
+            recovery_id: recovery_id.to_string(),
+            old_provider_session_generation,
+            reason,
+            at: now_timestamp(),
+        };
+        #[cfg(test)]
+        if let Some(hook) = self.append_event_hook.read().clone() {
+            hook(session_id, &event)?;
+        }
+        self.storage.update_session_meta_and_append_session_events(
+            app_data_dir,
+            session_id,
+            &mut |meta| {
+                if meta.provider_session_generation != old_provider_session_generation {
+                    return Err(format!(
+                        "Backend session generation changed while starting recovery: expected {old_provider_session_generation}, actual {}",
+                        meta.provider_session_generation
+                    ));
+                }
+                meta.agent_session_id = None;
+                meta.context_reinjection_generation = None;
+                meta.context_carry = Some(ContextCarryState::Failed);
+                meta.updated_at = now_timestamp();
+                Ok(())
+            },
+            &[event],
+        )
+    }
+
+    pub fn complete_backend_session_recovery(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        recovery_id: &str,
+        old_provider_session_generation: u64,
+        backend_session_id: String,
+    ) -> Result<SessionMeta, String> {
+        let provider_session_generation = old_provider_session_generation.saturating_add(1);
+        let at = now_timestamp();
+        let pending_recovery_message = PendingRecoveryMessage::Notice {
+            recovery_id: recovery_id.to_string(),
+            message_id: uuid::Uuid::new_v4().to_string(),
+        };
+        let events = vec![
+            AgentSessionEvent::SessionConfigurationReactivated {
+                recovery_id: recovery_id.to_string(),
+                provider_session_generation,
+                consumed_observation_id: None,
+                at,
+            },
+            AgentSessionEvent::SessionGoalReactivated {
+                recovery_id: recovery_id.to_string(),
+                outcome: GoalReactivationOutcome::NoCurrentGoal,
+                provider_session_generation,
+                restoring_turn_id: None,
+                consumed_observation_id: None,
+                at,
+            },
+            AgentSessionEvent::BackendSessionRecoveryCompleted {
+                recovery_id: recovery_id.to_string(),
+                provider_session_generation,
+                at,
+            },
+        ];
+        #[cfg(test)]
+        if let Some(hook) = self.append_event_hook.read().clone() {
+            for event in &events {
+                hook(session_id, event)?;
+            }
+        }
+        self.storage.update_session_meta_and_append_session_events(
+            app_data_dir,
+            session_id,
+            &mut |meta| {
+                if meta.provider_session_generation != old_provider_session_generation {
+                    return Err(format!(
+                        "Backend session generation changed while completing recovery: expected {old_provider_session_generation}, actual {}",
+                        meta.provider_session_generation
+                    ));
+                }
+                meta.agent_session_id = Some(backend_session_id.clone());
+                meta.provider_session_generation = provider_session_generation;
+                meta.context_reinjection_generation = Some(provider_session_generation);
+                meta.pending_recovery_message = Some(pending_recovery_message.clone());
+                meta.updated_at = at;
+                Ok(())
+            },
+            &events,
+        )
+    }
+
+    pub fn fail_backend_session_recovery(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        recovery_id: &str,
+        error: &str,
+    ) -> Result<SessionMeta, String> {
+        let at = now_timestamp();
+        let message_id = self
+            .storage
+            .load_full_session_for_restore(app_data_dir, session_id)?
+            .and_then(|session| {
+                session
+                    .messages
+                    .into_iter()
+                    .rev()
+                    .find(|message| message.role == super::MessageRole::Agent)
+                    .map(|message| message.id)
+            })
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let pending_recovery_message = PendingRecoveryMessage::Error {
+            recovery_id: recovery_id.to_string(),
+            message_id,
+            error: error.to_string(),
+        };
+        let event = AgentSessionEvent::BackendSessionRecoveryFailed {
+            recovery_id: recovery_id.to_string(),
+            error: error.to_string(),
+            at,
+        };
+        #[cfg(test)]
+        if let Some(hook) = self.append_event_hook.read().clone() {
+            hook(session_id, &event)?;
+        }
+        self.storage.update_session_meta_and_append_session_events(
+            app_data_dir,
+            session_id,
+            &mut |meta| {
+                meta.state = SessionState::Error;
+                meta.pending_recovery_message = Some(pending_recovery_message.clone());
+                meta.updated_at = at;
+                Ok(())
+            },
+            &[event],
+        )
+    }
+
+    pub(crate) fn clear_pending_recovery_message(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        delivered: &PendingRecoveryMessage,
+    ) -> Result<(), String> {
+        self.update_meta_only(app_data_dir, session_id, |meta| {
+            if meta.pending_recovery_message.as_ref() == Some(delivered) {
+                meta.pending_recovery_message = None;
+            }
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    pub fn record_backend_session_established(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        backend_session_id: String,
+        context_carry: Option<ContextCarryState>,
+    ) -> Result<Option<SessionMeta>, String> {
+        self.update_meta_if_changed(app_data_dir, session_id, |meta| {
+            meta.agent_session_id = Some(backend_session_id.clone());
+            meta.context_carry = context_carry.clone();
+            meta.provider_session_generation = meta.provider_session_generation.saturating_add(1);
+            meta.context_reinjection_generation = None;
+            meta.updated_at = now_timestamp();
+            Ok(true)
+        })
     }
 
     pub fn load_previous_human_message_before_agent(
@@ -864,6 +1101,25 @@ impl SessionStore {
         })
     }
 
+    pub fn complete_context_reinjection_if_required(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        reinjected: bool,
+    ) -> Result<Option<SessionMeta>, String> {
+        self.update_meta_if_changed(app_data_dir, session_id, |meta| {
+            if meta.context_reinjection_generation != Some(meta.provider_session_generation) {
+                return Ok(false);
+            }
+            meta.context_reinjection_generation = None;
+            if reinjected {
+                meta.context_carry = Some(ContextCarryState::Reinjected);
+            }
+            meta.updated_at = now_timestamp();
+            Ok(true)
+        })
+    }
+
     pub fn update_system_context_private_meta_if_changed(
         &self,
         app_data_dir: &Path,
@@ -889,6 +1145,7 @@ impl SessionStore {
         })
     }
 
+    #[cfg(test)]
     pub fn update_resume_metadata_if_changed(
         &self,
         app_data_dir: &Path,

@@ -43,11 +43,7 @@ impl FileSessionStorage {
         if !is_valid_attachment_id(attachment_id) {
             return Err(format!("Invalid attachment id: {attachment_id}"));
         }
-        self.ensure_loaded(app_data_dir)?;
-        if let Some(err) = self.invalid_sessions.read().get(session_id) {
-            return Err(err.clone());
-        }
-        if !self.cache.read().contains_key(session_id) {
+        if !self.reconcile_session_transaction(app_data_dir, session_id)? {
             return Ok(None);
         }
         let dir = session_dir(app_data_dir, session_id)?;

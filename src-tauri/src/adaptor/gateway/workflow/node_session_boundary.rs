@@ -219,7 +219,7 @@ impl<'a, R: tauri::Runtime> NodeSessionDeps for RealNodeSessionDeps<'a, R> {
             .map_err(|e| WorkflowEngineError::InvalidWorkflow(e.to_string()))?;
         let _runtime_guard = self
             .agent_runtime
-            .acquire_session_lock(node_session_id)
+            .acquire_session_control_after_recovery(node_session_id)
             .await;
         self.agent_runtime
             .start_turn_locked(

@@ -15,16 +15,13 @@ impl FileSessionStorage {
         session_id: &str,
         forked_meta: &SessionMeta,
     ) -> Result<(), String> {
-        self.ensure_loaded(app_data_dir)?;
-        if let Some(err) = self.invalid_sessions.read().get(session_id) {
-            return Err(err.clone());
-        }
-        if !self.cache.read().contains_key(session_id) {
+        if !self.reconcile_session_transaction(app_data_dir, session_id)? {
             return Err(format!("Session not found: {session_id}"));
         }
         let parent_dir = session_dir(app_data_dir, session_id)?;
         let forked_meta = validate_meta(forked_meta.clone(), &forked_meta.id)?;
         let _lock = self.file_lock.lock();
+        self.apply_pending_session_transaction(&parent_dir, session_id)?;
         let fork_dir = session_dir(app_data_dir, &forked_meta.id)?;
         let tmp_dir = sessions_dir(app_data_dir).join(format!("{}.tmp", forked_meta.id));
         let write_result = (|| -> Result<(), String> {

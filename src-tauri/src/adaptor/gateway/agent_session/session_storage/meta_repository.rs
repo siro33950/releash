@@ -7,7 +7,9 @@ use super::layout::{
     session_file, sessions_dir, validate_meta, write_json_pretty_atomic, UUID_RE,
 };
 use super::private_context::{hydrate_meta_private_context, write_private_context_to_dir};
+use super::transaction::SessionMetaEventTransaction;
 use super::FileSessionStorage;
+use crate::usecase::agent_session::event_log::AgentSessionEvent;
 use crate::usecase::agent_session::session::{SessionMeta, SessionReviewContext};
 
 impl FileSessionStorage {
@@ -16,6 +18,9 @@ impl FileSessionStorage {
         dir: &Path,
         expected_id: &str,
     ) -> Result<SessionMeta, String> {
+        #[cfg(test)]
+        self.meta_read_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let file = std::fs::File::open(meta_file_in_dir(dir))
             .map_err(|_| invalid_session_error_message_with_id(expected_id))?;
         let mut meta: SessionMeta = serde_json::from_reader(BufReader::new(file))
@@ -36,6 +41,9 @@ impl FileSessionStorage {
         }
         self.cache.write().remove(session_id);
         self.invalid_sessions.write().remove(session_id);
+        self.materialization_pending_sessions
+            .write()
+            .remove(session_id);
     }
 
     pub fn list_metas(&self, app_data_dir: &Path) -> Result<Vec<SessionMeta>, String> {
@@ -43,6 +51,21 @@ impl FileSessionStorage {
             crate::other::telemetry::HotPath::SessionList,
             || {
                 self.ensure_loaded(app_data_dir)?;
+                let session_ids = self
+                    .materialization_pending_sessions
+                    .read()
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                for session_id in session_ids {
+                    if let Err(error) =
+                        self.reconcile_session_transaction(app_data_dir, &session_id)
+                    {
+                        log::warn!(
+                            "failed to reconcile pending session transaction while listing {session_id}: {error}"
+                        );
+                    }
+                }
                 Ok(self.cache.read().values().cloned().collect())
             },
         )
@@ -60,7 +83,9 @@ impl FileSessionStorage {
         crate::other::telemetry::measure_result(
             crate::other::telemetry::HotPath::SessionGetMeta,
             || {
-                self.ensure_loaded(app_data_dir)?;
+                if !self.reconcile_session_transaction(app_data_dir, session_id)? {
+                    return Ok(None);
+                }
                 if let Some(err) = self.invalid_sessions.read().get(session_id) {
                     return Err(err.clone());
                 }
@@ -80,8 +105,15 @@ impl FileSessionStorage {
                 if !UUID_RE.is_match(session_id) {
                     return Ok(None);
                 }
-
                 let dir = session_dir(app_data_dir, session_id)?;
+                if self
+                    .materialization_pending_sessions
+                    .read()
+                    .contains(session_id)
+                {
+                    let _lock = self.file_lock.lock();
+                    self.apply_pending_session_transaction(&dir, session_id)?;
+                }
                 if meta_file_in_dir(&dir).exists() {
                     return self
                         .read_meta_from_dir(&dir, session_id)
@@ -113,6 +145,7 @@ impl FileSessionStorage {
         }
         let _lock = self.file_lock.lock();
         let dir = session_dir(app_data_dir, session_id)?;
+        self.apply_pending_session_transaction(&dir, session_id)?;
         let mut meta = self.read_meta_from_dir(&dir, session_id)?;
         update(&mut meta)?;
         let meta = validate_meta(meta, session_id)?;
@@ -120,6 +153,94 @@ impl FileSessionStorage {
         write_json_pretty_atomic(&meta_file_in_dir(&dir), &meta, "session meta")?;
         self.cache.write().insert(meta.id.clone(), meta.clone());
         Ok(meta)
+    }
+
+    pub fn update_session_meta_and_append_session_events(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        update: &mut dyn FnMut(&mut SessionMeta) -> Result<(), String>,
+        events: &[AgentSessionEvent],
+    ) -> Result<SessionMeta, String> {
+        self.ensure_loaded(app_data_dir)?;
+        if let Some(err) = self.invalid_sessions.read().get(session_id) {
+            return Err(err.clone());
+        }
+        if !self.cache.read().contains_key(session_id) {
+            return Err(format!("Session not found: {session_id}"));
+        }
+        let _lock = self.file_lock.lock();
+        let dir = session_dir(app_data_dir, session_id)?;
+        self.apply_pending_session_transaction(&dir, session_id)?;
+        let mut meta = self.read_meta_from_dir(&dir, session_id)?;
+        update(&mut meta)?;
+        let meta = validate_meta(meta, session_id)?;
+
+        let base_event_count = self.read_session_events_from_dir(&dir)?.len();
+        let transaction =
+            SessionMetaEventTransaction::new(session_id, base_event_count, meta.clone(), events);
+        self.commit_meta_event_transaction(&dir, &transaction)?;
+        self.cache.write().insert(meta.id.clone(), meta.clone());
+        Ok(meta)
+    }
+
+    pub(super) fn reconcile_session_transaction(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+    ) -> Result<bool, String> {
+        self.ensure_loaded(app_data_dir)?;
+        if let Some(err) = self.invalid_sessions.read().get(session_id) {
+            return Err(err.clone());
+        }
+        if !self.cache.read().contains_key(session_id) {
+            return Ok(false);
+        }
+        if !self
+            .materialization_pending_sessions
+            .read()
+            .contains(session_id)
+        {
+            return Ok(true);
+        }
+        let _lock = self.file_lock.lock();
+        if !self
+            .materialization_pending_sessions
+            .read()
+            .contains(session_id)
+        {
+            return Ok(true);
+        }
+        let dir = session_dir(app_data_dir, session_id)?;
+        self.apply_committed_meta_event_transaction(&dir, session_id)?;
+        let meta = self.read_meta_from_dir(&dir, session_id)?;
+        self.cache.write().insert(session_id.to_string(), meta);
+        Ok(true)
+    }
+
+    pub(super) fn apply_pending_session_transaction(
+        &self,
+        dir: &Path,
+        session_id: &str,
+    ) -> Result<(), String> {
+        if self
+            .materialization_pending_sessions
+            .read()
+            .contains(session_id)
+        {
+            self.apply_committed_meta_event_transaction(dir, session_id)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reset_meta_read_count(&self) {
+        self.meta_read_count.store(0, Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn meta_read_count(&self) -> usize {
+        self.meta_read_count.load(Ordering::SeqCst)
     }
 
     pub(super) fn ensure_loaded(&self, app_data_dir: &Path) -> Result<(), String> {
@@ -152,6 +273,14 @@ impl FileSessionStorage {
                 else {
                     continue;
                 };
+                if let Err(err) = self.apply_committed_meta_event_transaction(&path, &session_id) {
+                    log::error!(
+                        "Failed to recover session transaction {:?}: {err}",
+                        path.display()
+                    );
+                    invalid_sessions.insert(session_id, err);
+                    continue;
+                }
                 match self.read_meta_from_dir(&path, &session_id) {
                     Ok(meta) => {
                         cache.insert(session_id, meta);

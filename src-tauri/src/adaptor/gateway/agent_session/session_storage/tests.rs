@@ -1,18 +1,21 @@
 use super::layout::{
     attachment_file_in_dir, attachments_dir_in_dir, content_hash, index_file_in_dir,
-    legacy_meta_file, message_file_in_dir, meta_file_in_dir, private_context_file_in_dir,
-    session_dir, session_file, sessions_dir, tool_output_file_in_dir, tool_outputs_dir_in_dir,
-    write_json_pretty_atomic,
+    legacy_meta_file, message_file_in_dir, meta_event_transaction_file_in_dir, meta_file_in_dir,
+    private_context_file_in_dir, session_dir, session_file, sessions_dir, tool_output_file_in_dir,
+    tool_outputs_dir_in_dir, write_json_pretty_atomic, write_json_pretty_atomic_durable,
 };
+use super::transaction::{SessionMetaEventTransaction, TransactionApplyStep};
 use super::*;
 use crate::domain::agent_session::services::MAX_IMAGE_BYTES;
 use crate::domain::agent_session::ContextSourceKind;
 use crate::usecase::agent_session::context_meta::{ContextEpochMeta, ContextSourceRevisionMeta};
+use crate::usecase::agent_session::event_log::{AgentSessionEvent, BackendSessionRecoveryReason};
 use crate::usecase::agent_session::session::{
     AttachmentRef, ChatMessage, ContextCarryState, MessagePart, MessageRole, SessionState,
     SESSION_BODY_FORMAT_VERSION, TOOL_OUTPUT_PREVIEW_BYTES,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
 use tempfile::TempDir;
 
@@ -679,7 +682,7 @@ fn get_session_tool_output_returns_none_for_unreferenced_stale_blob() {
         content_ref: None,
         summary: None,
     }]);
-    write_json_pretty_atomic(
+    write_json_pretty_atomic_durable(
         &message_file_in_dir(&dir, index[0].seq),
         &updated_message,
         "message chunk",
@@ -2104,6 +2107,373 @@ fn get_session_page_and_restore_ignore_legacy_flat_json() {
 }
 
 #[test]
+fn full_session_restore_save_preserves_provider_session_generation() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileSessionStorage::default();
+    let session = make_session(UUID1, "/repo");
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .unwrap();
+    store
+        .update_session_meta(tmp.path(), UUID1, &mut |meta| {
+            meta.provider_session_generation = 7;
+            meta.context_reinjection_generation = Some(7);
+            Ok(())
+        })
+        .unwrap();
+
+    let restored = store
+        .load_full_session_for_restore(tmp.path(), UUID1)
+        .unwrap()
+        .unwrap();
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &restored)
+        .unwrap();
+
+    let meta = store.get_session_meta(tmp.path(), UUID1).unwrap().unwrap();
+    assert_eq!(meta.provider_session_generation, 7);
+    assert_eq!(meta.context_reinjection_generation, Some(7));
+}
+
+#[test]
+fn committed_meta_event_transaction_recovers_all_participants_after_restart() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileSessionStorage::default();
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .unwrap();
+    let old_meta = store
+        .update_session_meta(tmp.path(), UUID1, &mut |meta| {
+            meta.agent_session_id = Some("dead-thread".to_string());
+            meta.provider_session_generation = 3;
+            Ok(())
+        })
+        .unwrap();
+    let mut committed_meta = old_meta.clone();
+    committed_meta.agent_session_id = None;
+    committed_meta.context_carry = Some(ContextCarryState::Failed);
+    let event = AgentSessionEvent::BackendSessionRecoveryStarted {
+        recovery_id: "recovery-1".to_string(),
+        old_provider_session_generation: 3,
+        reason: BackendSessionRecoveryReason::BackendSessionLost,
+        at: 1001.0,
+    };
+    let transaction =
+        SessionMetaEventTransaction::new(UUID1, 0, committed_meta, std::slice::from_ref(&event));
+    let dir = session_dir(tmp.path(), UUID1).unwrap();
+
+    // Before the commit record is installed, neither participant has changed.
+    assert_eq!(
+        store.load_session_events(tmp.path(), UUID1).unwrap(),
+        vec![]
+    );
+    assert_eq!(
+        store
+            .get_session_meta(tmp.path(), UUID1)
+            .unwrap()
+            .unwrap()
+            .agent_session_id
+            .as_deref(),
+        Some("dead-thread")
+    );
+
+    // Simulate a process exit immediately after the single durable commit point,
+    // before meta.json or events.json have been materialized.
+    write_json_pretty_atomic(
+        &meta_event_transaction_file_in_dir(&dir),
+        &transaction,
+        "test session meta/event transaction",
+    )
+    .unwrap();
+    drop(store);
+
+    let reopened = FileSessionStorage::default();
+    let recovered_meta = reopened
+        .get_session_meta(tmp.path(), UUID1)
+        .unwrap()
+        .unwrap();
+    let recovered_events = reopened.load_session_events(tmp.path(), UUID1).unwrap();
+    assert_eq!(recovered_meta.agent_session_id, None);
+    assert_eq!(
+        recovered_meta.context_carry,
+        Some(ContextCarryState::Failed)
+    );
+    assert_eq!(recovered_events, vec![event]);
+    assert!(!meta_event_transaction_file_in_dir(&dir).exists());
+}
+
+#[test]
+fn committed_meta_event_transaction_repairs_interrupted_event_append_after_restart() {
+    for partial_trailing_event in [false, true] {
+        let tmp = TempDir::new().unwrap();
+        let store = FileSessionStorage::default();
+        store
+            .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+            .unwrap();
+        let dir = session_dir(tmp.path(), UUID1).unwrap();
+        let base_event = AgentSessionEvent::BackendSessionRecoveryStarted {
+            recovery_id: "recovery-base".to_string(),
+            old_provider_session_generation: 0,
+            reason: BackendSessionRecoveryReason::BackendSessionLost,
+            at: 1001.0,
+        };
+        let committed_event = AgentSessionEvent::SessionConfigurationReactivated {
+            recovery_id: "recovery-committed".to_string(),
+            provider_session_generation: 1,
+            consumed_observation_id: None,
+            at: 1002.0,
+        };
+        store
+            .append_session_event_to_dir(&dir, &base_event)
+            .unwrap();
+        store
+            .append_session_event_to_dir(&dir, &committed_event)
+            .unwrap();
+
+        let mut committed_meta = store.get_session_meta(tmp.path(), UUID1).unwrap().unwrap();
+        committed_meta.agent_session_id = Some("fresh-provider-session".to_string());
+        committed_meta.provider_session_generation = 1;
+        let transaction = SessionMetaEventTransaction::new(
+            UUID1,
+            1,
+            committed_meta,
+            std::slice::from_ref(&committed_event),
+        );
+        write_json_pretty_atomic(
+            &meta_event_transaction_file_in_dir(&dir),
+            &transaction,
+            "test session meta/event transaction",
+        )
+        .unwrap();
+
+        let event_path = super::layout::event_log_file_in_dir(&dir);
+        let content = std::fs::read_to_string(&event_path).unwrap();
+        let interrupted_at = if partial_trailing_event {
+            content.find("recovery-committed").unwrap() + "recovery".len()
+        } else {
+            content.rfind(']').unwrap()
+        };
+        std::fs::write(&event_path, &content[..interrupted_at]).unwrap();
+        drop(store);
+
+        let reopened = FileSessionStorage::default();
+        let recovered_meta = reopened
+            .get_session_meta(tmp.path(), UUID1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            recovered_meta.agent_session_id.as_deref(),
+            Some("fresh-provider-session")
+        );
+        assert_eq!(
+            reopened.load_session_events(tmp.path(), UUID1).unwrap(),
+            vec![base_event.clone(), committed_event.clone()]
+        );
+        assert!(!meta_event_transaction_file_in_dir(&dir).exists());
+
+        let completed_event = AgentSessionEvent::BackendSessionRecoveryCompleted {
+            recovery_id: "recovery-committed".to_string(),
+            provider_session_generation: 1,
+            at: 1003.0,
+        };
+        reopened
+            .append_session_event_without_projection(tmp.path(), UUID1, &completed_event)
+            .unwrap();
+        let physical_events: Vec<AgentSessionEvent> =
+            serde_json::from_slice(&std::fs::read(&event_path).unwrap()).unwrap();
+        assert_eq!(
+            physical_events,
+            vec![base_event, committed_event, completed_event]
+        );
+    }
+}
+
+#[test]
+fn committed_recovery_materialization_failures_converge_for_every_accessor() {
+    for failed_step in [
+        TransactionApplyStep::Events,
+        TransactionApplyStep::Meta,
+        TransactionApplyStep::Cleanup,
+    ] {
+        let tmp = TempDir::new().unwrap();
+        let storage = Arc::new(FileSessionStorage::default());
+        storage
+            .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+            .unwrap();
+        let session_store =
+            crate::usecase::agent_session::session::SessionStore::new(storage.clone());
+        session_store
+            .begin_backend_session_recovery(
+                tmp.path(),
+                UUID1,
+                "recovery-committed",
+                BackendSessionRecoveryReason::BackendSessionLost,
+            )
+            .unwrap();
+
+        let fail_once = Arc::new(AtomicBool::new(true));
+        storage.set_transaction_apply_hook_for_test(Some(Arc::new({
+            let fail_once = fail_once.clone();
+            move |is_completion, step| {
+                if is_completion && step == failed_step && fail_once.swap(false, Ordering::SeqCst) {
+                    return Err(format!("injected {failed_step:?} materialization failure"));
+                }
+                Ok(())
+            }
+        })));
+
+        let committed = session_store
+            .complete_backend_session_recovery(
+                tmp.path(),
+                UUID1,
+                "recovery-committed",
+                0,
+                "fresh-provider-session".to_string(),
+            )
+            .expect("a post-commit materialization failure is still a successful commit");
+        assert_eq!(committed.provider_session_generation, 1);
+        assert_eq!(committed.context_reinjection_generation, Some(1));
+
+        let meta = storage
+            .get_session_meta(tmp.path(), UUID1)
+            .unwrap()
+            .unwrap();
+        let listed = storage.list_metas(tmp.path()).unwrap();
+        let restored = storage
+            .load_full_session_for_restore(tmp.path(), UUID1)
+            .unwrap()
+            .unwrap();
+        let events = storage.load_session_events(tmp.path(), UUID1).unwrap();
+
+        assert_eq!(
+            meta.agent_session_id.as_deref(),
+            Some("fresh-provider-session")
+        );
+        assert_eq!(meta.provider_session_generation, 1);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].provider_session_generation, 1);
+        assert_eq!(
+            restored.agent_session_id.as_deref(),
+            Some("fresh-provider-session")
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::BackendSessionRecoveryCompleted { .. }
+        )));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::BackendSessionRecoveryFailed { .. }
+        )));
+        assert!(
+            !meta_event_transaction_file_in_dir(&session_dir(tmp.path(), UUID1).unwrap()).exists()
+        );
+    }
+}
+
+#[test]
+fn list_metas_isolates_a_pending_session_that_cannot_be_materialized() {
+    let tmp = TempDir::new().unwrap();
+    let storage = Arc::new(FileSessionStorage::default());
+    for session_id in [UUID1, UUID2] {
+        storage
+            .save_full_session_for_migration_or_restore(
+                tmp.path(),
+                &make_session(session_id, "/repo"),
+            )
+            .unwrap();
+    }
+    let session_store = crate::usecase::agent_session::session::SessionStore::new(storage.clone());
+    session_store
+        .begin_backend_session_recovery(
+            tmp.path(),
+            UUID1,
+            "pending-recovery",
+            BackendSessionRecoveryReason::BackendSessionLost,
+        )
+        .unwrap();
+    storage.set_transaction_apply_hook_for_test(Some(Arc::new(|is_completion, _| {
+        if is_completion {
+            return Err("injected persistent materialization failure".to_string());
+        }
+        Ok(())
+    })));
+    session_store
+        .complete_backend_session_recovery(
+            tmp.path(),
+            UUID1,
+            "pending-recovery",
+            0,
+            "fresh-provider-session".to_string(),
+        )
+        .expect("the durable commit succeeds while materialization remains pending");
+
+    let listed = storage
+        .list_metas(tmp.path())
+        .expect("one pending session must not fail the complete list");
+    assert_eq!(listed.len(), 2);
+    assert!(listed.iter().any(|meta| meta.id == UUID2));
+    assert_eq!(
+        listed
+            .iter()
+            .find(|meta| meta.id == UUID1)
+            .expect("the committed cache meta remains visible")
+            .provider_session_generation,
+        1
+    );
+    assert!(storage.get_session_meta(tmp.path(), UUID1).is_err());
+
+    storage.set_transaction_apply_hook_for_test(None);
+    let reconciled = storage.list_metas(tmp.path()).unwrap();
+    let recovered = reconciled
+        .iter()
+        .find(|meta| meta.id == UUID1)
+        .expect("the pending session is materialized by a later list");
+    assert_eq!(
+        recovered.agent_session_id.as_deref(),
+        Some("fresh-provider-session")
+    );
+    assert_eq!(recovered.provider_session_generation, 1);
+    assert!(storage
+        .get_session_meta(tmp.path(), UUID1)
+        .unwrap()
+        .is_some());
+}
+
+#[test]
+fn clean_session_list_and_page_reads_do_not_rescan_meta() {
+    let tmp = TempDir::new().unwrap();
+    let storage = FileSessionStorage::default();
+    for session_id in [UUID1, UUID2, UUID3] {
+        storage
+            .save_full_session_for_migration_or_restore(
+                tmp.path(),
+                &make_session(session_id, "/repo"),
+            )
+            .unwrap();
+    }
+
+    // Startup owns the one directory scan and transaction reconciliation pass.
+    assert_eq!(storage.list_metas(tmp.path()).unwrap().len(), 3);
+    storage.reset_meta_read_count();
+
+    for _ in 0..2 {
+        assert_eq!(storage.list_metas(tmp.path()).unwrap().len(), 3);
+        for session_id in [UUID1, UUID2, UUID3] {
+            assert!(storage
+                .get_session_page(tmp.path(), session_id, None, 10)
+                .unwrap()
+                .is_some());
+        }
+    }
+
+    assert_eq!(
+        storage.meta_read_count(),
+        0,
+        "clean list/page access must stay on cache/index reads instead of rescanning every meta"
+    );
+}
+
+#[test]
 fn list_sessions_ignores_legacy_flat_json_and_sidecar() {
     let tmp = TempDir::new().unwrap();
     write_session_json(
@@ -2118,7 +2488,10 @@ fn list_sessions_ignores_legacy_flat_json_and_sidecar() {
         created_at: 1000.0,
         updated_at: 1001.0,
         agent_session_id: Some("agent-session".to_string()),
+        provider_session_generation: 1,
+        context_reinjection_generation: None,
         context_carry: Some(ContextCarryState::Resumed),
+        pending_recovery_message: None,
         permission_mode: "edit".to_string(),
         plan_mode: false,
         selected_model: Some("gpt-5".to_string()),

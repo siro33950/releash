@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use super::events::{
-    AgentSessionEvent, InterruptReason, PromptInput, TurnId, TurnStopReason, TurnTokenUsage,
+    AgentSessionEvent, BackendSessionRecoveryReason, InterruptReason, PromptInput, TurnId,
+    TurnStopReason, TurnTokenUsage,
 };
 use super::finalization::has_unresolved_permissions;
 use super::part_events::{permission_request_id, permission_tool_use_id};
@@ -54,6 +55,22 @@ pub struct SessionReadModel {
     #[allow(dead_code)]
     // issues-1301 B-5/E-1: retry projection is retained for tool retry surface while runtime events are fully migrated.
     pub tool_retries: Vec<ToolRetryProjection>,
+    #[cfg_attr(test, serde(skip_serializing_if = "Option::is_none"))]
+    pub backend_recovery: Option<BackendSessionRecoveryProjection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(test, derive(serde::Serialize))]
+pub enum BackendSessionRecoveryProjection {
+    Recovering {
+        recovery_id: String,
+        old_provider_session_generation: u64,
+        reason: BackendSessionRecoveryReason,
+    },
+    ReconciliationRequired {
+        recovery_id: String,
+        error: String,
+    },
 }
 
 impl SessionReadModel {
@@ -72,9 +89,43 @@ pub fn project(events: &[AgentSessionEvent]) -> SessionReadModel {
     let mut terminal_by_turn: HashMap<TurnId, TerminalEvent> = HashMap::new();
     let mut tool_retries = Vec::new();
     let mut session_closed = false;
+    let mut backend_recovery = None;
 
     for event in events {
         match event {
+            AgentSessionEvent::BackendSessionRecoveryStarted {
+                recovery_id,
+                old_provider_session_generation,
+                reason,
+                ..
+            } => {
+                backend_recovery = Some(BackendSessionRecoveryProjection::Recovering {
+                    recovery_id: recovery_id.clone(),
+                    old_provider_session_generation: *old_provider_session_generation,
+                    reason: *reason,
+                });
+            }
+            AgentSessionEvent::SessionConfigurationReactivated { .. }
+            | AgentSessionEvent::SessionGoalReactivated { .. } => {}
+            AgentSessionEvent::BackendSessionRecoveryCompleted { recovery_id, .. } => {
+                if matches!(
+                    &backend_recovery,
+                    Some(BackendSessionRecoveryProjection::Recovering {
+                        recovery_id: active,
+                        ..
+                    }) if active == recovery_id
+                ) {
+                    backend_recovery = None;
+                }
+            }
+            AgentSessionEvent::BackendSessionRecoveryFailed {
+                recovery_id, error, ..
+            } => {
+                backend_recovery = Some(BackendSessionRecoveryProjection::ReconciliationRequired {
+                    recovery_id: recovery_id.clone(),
+                    error: error.clone(),
+                });
+            }
             AgentSessionEvent::TurnStarted {
                 turn_id,
                 message_id,
@@ -428,6 +479,7 @@ pub fn project(events: &[AgentSessionEvent]) -> SessionReadModel {
         status,
         workflow_turn_complete,
         tool_retries,
+        backend_recovery,
     }
 }
 

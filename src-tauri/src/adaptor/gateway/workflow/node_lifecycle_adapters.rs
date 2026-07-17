@@ -51,6 +51,22 @@ pub(crate) async fn should_release_runtime_on_tab_close(
     runtime.has_live_runtime(session_id).await && !runtime.is_runtime_busy(session_id).await
 }
 
+async fn close_idle_node_runtime_with_session_lock(
+    runtime: &AgentSessionRuntimeUsecase,
+    session_id: &str,
+) -> Result<(), NodeExecutionLifecycleError> {
+    let _lifecycle_guard = runtime
+        .acquire_session_control_after_recovery(session_id)
+        .await;
+    close_idle_node_runtime_state(runtime, session_id, || async {
+        runtime
+            .force_close_session(session_id)
+            .await
+            .map_err(|error| NodeExecutionLifecycleError::AgentSession(error.to_string()))
+    })
+    .await
+}
+
 pub(crate) fn open_node_session_tab_state(
     session_store: &SessionStore,
     data_dir: &std::path::Path,
@@ -139,14 +155,7 @@ impl<R: tauri::Runtime> NodeExecutionRuntimeGateway for TauriNodeExecutionRuntim
         &self,
         session_id: &str,
     ) -> Result<(), NodeExecutionLifecycleError> {
-        let _lifecycle_guard = self.runtime.acquire_session_lock(session_id).await;
-        close_idle_node_runtime_state(self.runtime, session_id, || async {
-            self.runtime
-                .close_session(session_id)
-                .await
-                .map_err(|e| NodeExecutionLifecycleError::AgentSession(e.to_string()))
-        })
-        .await
+        close_idle_node_runtime_with_session_lock(self.runtime, session_id).await
     }
 
     async fn close_runtime_on_node_done(
@@ -155,7 +164,7 @@ impl<R: tauri::Runtime> NodeExecutionRuntimeGateway for TauriNodeExecutionRuntim
     ) -> Result<(), NodeExecutionLifecycleError> {
         let _ = self.app;
         self.runtime
-            .close_session(session_id)
+            .force_close_session(session_id)
             .await
             .map_err(|e| NodeExecutionLifecycleError::AgentSession(e.to_string()))
     }
@@ -226,14 +235,7 @@ impl NodeExecutionRuntimeGateway for TauriNodeExecutionLifecycleGateway {
         &self,
         session_id: &str,
     ) -> Result<(), NodeExecutionLifecycleError> {
-        let _lifecycle_guard = self.runtime.acquire_session_lock(session_id).await;
-        close_idle_node_runtime_state(&self.runtime, session_id, || async {
-            self.runtime
-                .close_session(session_id)
-                .await
-                .map_err(|e| NodeExecutionLifecycleError::AgentSession(e.to_string()))
-        })
-        .await
+        close_idle_node_runtime_with_session_lock(&self.runtime, session_id).await
     }
 
     async fn close_runtime_on_node_done(
@@ -312,7 +314,7 @@ mod tests {
     ) {
         release_node_runtime_on_done_state(|| async {
             runtime
-                .close_session(session_id)
+                .force_close_session(session_id)
                 .await
                 .map_err(|error| NodeExecutionLifecycleError::AgentSession(error.to_string()))?;
             Ok(())
@@ -485,6 +487,22 @@ mod tests {
         insert_runtime(&handles, "node", TurnPhase::Idle, false).await;
 
         assert!(should_release_runtime_on_tab_close(&handles, "node").await);
+    }
+
+    #[tokio::test]
+    async fn production_tab_close_releases_idle_runtime_without_relocking_session() {
+        let handles = runtime_for_test();
+        insert_runtime(&handles, "node", TurnPhase::Idle, false).await;
+
+        tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            close_idle_node_runtime_with_session_lock(&handles, "node"),
+        )
+        .await
+        .expect("idle runtime close must not deadlock on the session lock")
+        .unwrap();
+
+        assert!(!handles.has_live_runtime("node").await);
     }
 
     #[tokio::test]

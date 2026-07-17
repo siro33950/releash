@@ -41,11 +41,7 @@ impl FileSessionStorage {
         crate::other::telemetry::measure_result(
             crate::other::telemetry::HotPath::SessionLoadFull,
             || {
-                self.ensure_loaded(app_data_dir)?;
-                if let Some(err) = self.invalid_sessions.read().get(session_id) {
-                    return Err(err.clone());
-                }
-                if !self.cache.read().contains_key(session_id) {
+                if !self.reconcile_session_transaction(app_data_dir, session_id)? {
                     return Ok(None);
                 }
                 self.load_full_session_from_layout(app_data_dir, session_id)
@@ -63,11 +59,7 @@ impl FileSessionStorage {
         crate::other::telemetry::measure_result(
             crate::other::telemetry::HotPath::SessionGetPage,
             || {
-                self.ensure_loaded(app_data_dir)?;
-                if let Some(err) = self.invalid_sessions.read().get(session_id) {
-                    return Err(err.clone());
-                }
-                if !self.cache.read().contains_key(session_id) {
+                if !self.reconcile_session_transaction(app_data_dir, session_id)? {
                     return Ok(None);
                 }
                 let dir = session_dir(app_data_dir, session_id)?;
@@ -120,6 +112,9 @@ impl FileSessionStorage {
         let dir = sessions_dir(app_data_dir);
         std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create sessions dir: {e}"))?;
         let session_dir = session_dir(app_data_dir, &session.id)?;
+        if session_dir.exists() {
+            self.apply_committed_meta_event_transaction(&session_dir, &session.id)?;
+        }
         self.write_split_session_to_dir(&session_dir, session, true)?;
         if let Ok(file) = session_file(app_data_dir, &session.id) {
             let _ = std::fs::remove_file(file);
@@ -127,7 +122,7 @@ impl FileSessionStorage {
         if let Ok(file) = legacy_meta_file(app_data_dir, &session.id) {
             let _ = std::fs::remove_file(file);
         }
-        let meta = validate_meta(SessionMeta::from_session(session), &session.id)?;
+        let meta = self.read_meta_from_dir(&session_dir, &session.id)?;
         let mut cache = self.cache.write();
         let state_changed = cache.get(&session.id).map(|p| &p.state) != Some(&session.state);
         cache.insert(session.id.clone(), meta);
@@ -145,11 +140,7 @@ impl FileSessionStorage {
         crate::other::telemetry::measure_result(
             crate::other::telemetry::HotPath::SessionGetPage,
             || {
-                self.ensure_loaded(app_data_dir)?;
-                if let Some(err) = self.invalid_sessions.read().get(session_id) {
-                    return Err(err.clone());
-                }
-                if !self.cache.read().contains_key(session_id) {
+                if !self.reconcile_session_transaction(app_data_dir, session_id)? {
                     return Ok(None);
                 }
                 let dir = session_dir(app_data_dir, session_id)?;
@@ -189,15 +180,12 @@ impl FileSessionStorage {
                     .unwrap_or(0)
             },
             || {
-                self.ensure_loaded(app_data_dir)?;
-                if let Some(err) = self.invalid_sessions.read().get(session_id) {
-                    return Err(err.clone());
-                }
-                if !self.cache.read().contains_key(session_id) {
+                if !self.reconcile_session_transaction(app_data_dir, session_id)? {
                     return Err(format!("Session not found: {session_id}"));
                 }
                 let _lock = self.file_lock.lock();
                 let dir = session_dir(app_data_dir, session_id)?;
+                self.apply_pending_session_transaction(&dir, session_id)?;
                 let mut index =
                     self.read_consistent_index_from_dir_with_lock_held(&dir, session_id)?;
                 let seq = index
@@ -269,15 +257,12 @@ impl FileSessionStorage {
                     .unwrap_or(0)
             },
             || {
-                self.ensure_loaded(app_data_dir)?;
-                if let Some(err) = self.invalid_sessions.read().get(session_id) {
-                    return Err(err.clone());
-                }
-                if !self.cache.read().contains_key(session_id) {
+                if !self.reconcile_session_transaction(app_data_dir, session_id)? {
                     return Err(format!("Session not found: {session_id}"));
                 }
                 let _lock = self.file_lock.lock();
                 let dir = session_dir(app_data_dir, session_id)?;
+                self.apply_pending_session_transaction(&dir, session_id)?;
                 let mut index =
                     self.read_consistent_index_from_dir_with_lock_held(&dir, session_id)?;
                 let Some(entry) = index.iter_mut().find(|entry| entry.id == message_id) else {
@@ -618,6 +603,15 @@ impl FileSessionStorage {
         session: &ChatSession,
         reuse_existing_index: bool,
     ) -> Result<(), String> {
+        let preserved_recovery_meta = reuse_existing_index
+            .then(|| self.read_meta_from_dir(dir, &session.id).ok())
+            .flatten();
+        let provider_session_generation = preserved_recovery_meta
+            .as_ref()
+            .map(|meta| meta.provider_session_generation)
+            .unwrap_or_default();
+        let context_reinjection_generation =
+            preserved_recovery_meta.and_then(|meta| meta.context_reinjection_generation);
         std::fs::create_dir_all(messages_dir_in_dir(dir))
             .map_err(|e| format!("Failed to create messages dir: {e}"))?;
         std::fs::create_dir_all(attachments_dir_in_dir(dir))
@@ -681,6 +675,8 @@ impl FileSessionStorage {
         }
         index.sort_by_key(|entry| entry.seq);
         let mut meta = validate_meta(SessionMeta::from_session(session), &session.id)?;
+        meta.provider_session_generation = provider_session_generation;
+        meta.context_reinjection_generation = context_reinjection_generation;
         meta.body_format_version = SESSION_BODY_FORMAT_VERSION;
         write_private_context_to_dir(dir, &meta)?;
         write_json_pretty_atomic(&meta_file_in_dir(dir), &meta, "session meta")?;

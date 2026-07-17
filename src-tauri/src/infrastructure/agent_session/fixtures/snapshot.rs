@@ -583,12 +583,14 @@ pub(super) struct TodoListItemSnapshot {
 #[derive(Serialize)]
 pub(super) enum SystemNotificationTypeSnapshot {
     Compaction,
+    SessionRecovery,
 }
 
 impl From<SystemNotificationType> for SystemNotificationTypeSnapshot {
     fn from(notification_type: SystemNotificationType) -> Self {
         match notification_type {
             SystemNotificationType::Compaction => Self::Compaction,
+            SystemNotificationType::SessionRecovery => Self::SessionRecovery,
         }
     }
 }

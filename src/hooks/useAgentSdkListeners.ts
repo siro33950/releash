@@ -78,6 +78,7 @@ interface PendingMessageConsumed {
 	agent_message: {
 		id: string;
 		role: "agent";
+		parts?: MessagePart[] | null;
 		timestamp: number;
 	};
 }
@@ -569,7 +570,7 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 					message: {
 						id: agent_message.id,
 						role: agent_message.role,
-						parts: [],
+						parts: agent_message.parts ?? [],
 						timestamp: agent_message.timestamp,
 					},
 				});

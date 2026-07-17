@@ -244,6 +244,7 @@ fn system_notification_type_from_domain(
 ) -> SystemNotificationType {
     match value {
         DomainSystemNotificationType::Compaction => SystemNotificationType::Compaction,
+        DomainSystemNotificationType::SessionRecovery => SystemNotificationType::SessionRecovery,
     }
 }
 

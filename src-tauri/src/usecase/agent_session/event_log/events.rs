@@ -99,9 +99,69 @@ pub struct TurnTokenUsage {
     pub output_tokens: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackendSessionRecoveryReason {
+    ResumeMismatch,
+    BackendSessionLost,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum GoalReactivationOutcome {
+    NoCurrentGoal,
+    TerminalGoalUnchanged {
+        goal_id: String,
+        goal_revision: u64,
+    },
+    Restored {
+        goal_id: String,
+        goal_revision: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_goal_ref: Option<String>,
+    },
+    ObservedUnchanged {
+        goal_id: String,
+        goal_revision: u64,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentSessionEvent {
+    BackendSessionRecoveryStarted {
+        recovery_id: String,
+        old_provider_session_generation: u64,
+        reason: BackendSessionRecoveryReason,
+        at: f64,
+    },
+    SessionConfigurationReactivated {
+        recovery_id: String,
+        provider_session_generation: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        consumed_observation_id: Option<String>,
+        at: f64,
+    },
+    SessionGoalReactivated {
+        recovery_id: String,
+        outcome: GoalReactivationOutcome,
+        provider_session_generation: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        restoring_turn_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        consumed_observation_id: Option<String>,
+        at: f64,
+    },
+    BackendSessionRecoveryCompleted {
+        recovery_id: String,
+        provider_session_generation: u64,
+        at: f64,
+    },
+    BackendSessionRecoveryFailed {
+        recovery_id: String,
+        error: String,
+        at: f64,
+    },
     TurnStarted {
         turn_id: TurnId,
         message_id: String,

@@ -196,8 +196,8 @@ export type MessagePart =
 	  }
 	| {
 			type: "system_notification";
-			notificationType: "compaction";
-			status: "in_progress" | "completed" | "error";
+			notificationType: "compaction" | "session_recovery";
+			status: "in_progress" | "completed" | "recovered" | "error";
 			label: string;
 			detail?: string;
 			hookId?: string;

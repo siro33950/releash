@@ -59,8 +59,6 @@ pub enum AgentRuntimeEvent {
         backend_session_id: String,
         resume: ResumeOutcome,
     },
-    #[allow(dead_code)]
-    // issues-1301 D-2/D-7: emitted by resume-mismatch/recovery paths once backend session clearing is fully wired.
     BackendSessionCleared,
     PartsMerged(Vec<MessagePart>),
     PermissionRequested(PermissionRequest),
@@ -86,6 +84,7 @@ pub enum ResumeOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentBackendError {
     StartupTimeout { retry_count: u32, max_retries: u32 },
+    BackendSessionLost { requested_resume_id: String },
     Unavailable(String),
     Invalid(String),
     Other(String),
@@ -100,6 +99,12 @@ impl std::fmt::Display for AgentBackendError {
             } => write!(
                 f,
                 "Timed out waiting for agent session startup (retry_count={retry_count}, max_retries={max_retries})"
+            ),
+            Self::BackendSessionLost {
+                requested_resume_id,
+            } => write!(
+                f,
+                "Backend session is no longer available: {requested_resume_id}"
             ),
             Self::Unavailable(message) | Self::Invalid(message) | Self::Other(message) => {
                 f.write_str(message)

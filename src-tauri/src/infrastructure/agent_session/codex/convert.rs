@@ -60,7 +60,7 @@ fn convert_response(
             Some(METHOD_INITIALIZE | METHOD_THREAD_START | METHOD_THREAD_RESUME)
         ) {
             let mut events = Vec::new();
-            if state.requested_resume_id.is_some() {
+            if state.requested_resume_id.is_some() && is_backend_session_lost_error(error) {
                 events.push(AgentRuntimeEvent::BackendSessionCleared);
             }
             events.push(AgentRuntimeEvent::Fatal {
@@ -71,6 +71,9 @@ fn convert_response(
         let message = error_message(error);
         if source_method.as_deref() == Some(METHOD_TURN_START) {
             state.turn_id = None;
+            if is_backend_session_lost_error(error) {
+                return vec![AgentRuntimeEvent::BackendSessionCleared];
+            }
             return vec![
                 AgentRuntimeEvent::PartsMerged(vec![MessagePart::Error {
                     content: message.clone(),
@@ -727,6 +730,23 @@ fn error_message(error: &Value) -> String {
         .to_string()
 }
 
+fn is_backend_session_lost_error(error: &Value) -> bool {
+    let message = error_message(error).to_ascii_lowercase();
+    if message.trim() == "not found" {
+        return true;
+    }
+    let missing_thread = message.contains("thread")
+        && (message.contains("not found")
+            || message.contains("does not exist")
+            || message.contains("no longer exists")
+            || message.contains("unknown"));
+    if missing_thread {
+        return true;
+    }
+    let serialized = error.to_string().to_ascii_lowercase();
+    serialized.contains("thread_not_found") || serialized.contains("threadnotfound")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1143,19 +1163,17 @@ mod tests {
             &mut state,
         );
 
+        // thread 消失を示さない error は BackendSessionCleared を先行しない
         assert_eq!(
             events,
-            vec![
-                AgentRuntimeEvent::BackendSessionCleared,
-                AgentRuntimeEvent::Fatal {
-                    message: "initialize failed".to_string(),
-                },
-            ]
+            vec![AgentRuntimeEvent::Fatal {
+                message: "initialize failed".to_string(),
+            }]
         );
     }
 
     #[test]
-    fn test_startup_response_errorは_resume時だけ_backend_session_clearedを先行する() {
+    fn test_startup_response_dead_thread_errorは_resume時に_backend_session_clearedを先行する() {
         let mut state = CodexConvertState {
             requested_resume_id: Some("thread-old".to_string()),
             ..CodexConvertState::default()
@@ -1176,6 +1194,31 @@ mod tests {
             AgentRuntimeEvent::BackendSessionCleared
         ));
         assert!(matches!(events[1], AgentRuntimeEvent::Fatal { .. }));
+    }
+
+    #[test]
+    fn test_startup_response_non_thread_errorは_resume時も_backend_session_clearedにしない() {
+        let mut state = CodexConvertState {
+            requested_resume_id: Some("thread-old".to_string()),
+            ..CodexConvertState::default()
+        };
+        state
+            .client_response_methods
+            .insert(2, METHOD_THREAD_RESUME.to_string());
+        let events = convert_jsonrpc_message(
+            &json!({
+                "id": 2,
+                "error": { "message": "bad api key" }
+            }),
+            &mut state,
+        );
+
+        assert_eq!(
+            events,
+            vec![AgentRuntimeEvent::Fatal {
+                message: "bad api key".to_string(),
+            }]
+        );
     }
 
     #[test]
@@ -1216,6 +1259,48 @@ mod tests {
                 }),
             ]
         );
+    }
+
+    #[test]
+    fn test_turn_start_dead_thread_errorは_backend_session_clearedへ変換する() {
+        let mut state = CodexConvertState::default();
+        state
+            .client_response_methods
+            .insert(101, METHOD_TURN_START.to_string());
+
+        let events = convert_jsonrpc_message(
+            &json!({
+                "id": 101,
+                "error": { "message": "thread not found" }
+            }),
+            &mut state,
+        );
+
+        assert_eq!(events, vec![AgentRuntimeEvent::BackendSessionCleared]);
+    }
+
+    #[test]
+    fn test_turn_start_non_thread_errorは従来どおり_failed完了へ変換する() {
+        let mut state = CodexConvertState::default();
+        state
+            .client_response_methods
+            .insert(101, METHOD_TURN_START.to_string());
+
+        let events = convert_jsonrpc_message(
+            &json!({
+                "id": 101,
+                "error": { "message": "model not found" }
+            }),
+            &mut state,
+        );
+
+        assert!(matches!(
+            events.as_slice(),
+            [
+                AgentRuntimeEvent::PartsMerged(_),
+                AgentRuntimeEvent::TurnCompleted(TurnResult::Failed { .. })
+            ]
+        ));
     }
 
     #[test]

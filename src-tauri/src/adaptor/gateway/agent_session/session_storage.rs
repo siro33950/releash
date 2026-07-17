@@ -21,6 +21,7 @@ mod meta_repository;
 mod private_context;
 mod titles;
 mod tool_output_blob;
+mod transaction;
 
 #[cfg(test)]
 mod tests;
@@ -33,11 +34,19 @@ pub struct FileSessionStorage {
     /// Spec issues-947: 1つの不正セッションで全体ロードを Err にせず、無関係な正常セッションの
     /// 一覧取得・取得は素通しさせる。値は API に返す汎化済みエラー文言（フルパス・serde 生メッセージは含まない）。
     pub(super) invalid_sessions: RwLock<HashMap<String, String>>,
+    /// Durable commit 済みだが meta/events への反映が完了していない session。
+    /// clean session の read path で transaction marker を毎回確認しないため、
+    /// process 内の reconciliation 対象を session id 単位で限定する。
+    pub(super) materialization_pending_sessions: RwLock<HashSet<String>>,
     pub(super) file_lock: parking_lot::Mutex<()>,
     pub(super) loaded: AtomicBool,
     pub(super) recovered_event_logs: RwLock<HashSet<String>>,
     #[cfg(test)]
     pub(super) message_read_count: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    pub(super) meta_read_count: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    transaction_apply_hook: RwLock<Option<transaction::TransactionApplyHook>>,
 }
 
 impl Default for FileSessionStorage {
@@ -45,11 +54,16 @@ impl Default for FileSessionStorage {
         Self {
             cache: RwLock::new(HashMap::new()),
             invalid_sessions: RwLock::new(HashMap::new()),
+            materialization_pending_sessions: RwLock::new(HashSet::new()),
             file_lock: parking_lot::Mutex::new(()),
             loaded: AtomicBool::new(false),
             recovered_event_logs: RwLock::new(HashSet::new()),
             #[cfg(test)]
             message_read_count: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            meta_read_count: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            transaction_apply_hook: RwLock::new(None),
         }
     }
 }
@@ -196,6 +210,22 @@ impl crate::domain::agent_session::AgentSessionWriter for FileSessionStorage {
         update: &mut dyn FnMut(&mut Self::Meta) -> Result<(), String>,
     ) -> Result<Self::Meta, String> {
         FileSessionStorage::update_session_meta(self, app_data_dir, session_id, update)
+    }
+
+    fn update_session_meta_and_append_session_events(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        update: &mut dyn FnMut(&mut Self::Meta) -> Result<(), String>,
+        events: &[Self::Event],
+    ) -> Result<Self::Meta, String> {
+        FileSessionStorage::update_session_meta_and_append_session_events(
+            self,
+            app_data_dir,
+            session_id,
+            update,
+            events,
+        )
     }
 
     fn save_full_session_for_migration_or_restore(

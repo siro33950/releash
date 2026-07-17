@@ -3650,7 +3650,9 @@ impl WorkflowRuntimeService {
         };
         let permission_mode = PermissionMode::parse_canonical(&session.permission_mode)
             .map_err(|e| WorkflowEngineError::InvalidWorkflow(e.to_string()))?;
-        let runtime_guard = agent_runtime.acquire_session_lock(session_id).await;
+        let runtime_guard = agent_runtime
+            .acquire_session_control_after_recovery(session_id)
+            .await;
         let start_result = agent_runtime
             .start_turn_locked(
                 session_id,
