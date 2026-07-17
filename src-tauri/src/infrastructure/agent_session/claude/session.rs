@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 
 use futures_util::stream::{self, Stream};
 use serde_json::Value;
+use tokio::io::AsyncBufRead;
 use tokio::sync::{mpsc, Mutex};
 
 use crate::domain::agent_session::entities::{
@@ -14,10 +15,13 @@ use crate::domain::agent_session::gateway::{
     AgentBackendError, AgentRuntimeEvent, AgentSessionRuntime, SessionSpec, TurnInput,
 };
 use crate::domain::agent_session::value_objects::{ModelId, PermissionMode};
+use crate::infrastructure::agent_session::stdout_line_reader::{
+    StdoutDiagnostics, StdoutItem, StdoutLineReader,
+};
 
 use super::convert::{convert_claude_message, ClaudeConvertState};
 use super::permission::claude_permission_response;
-use super::process::{ClaudeStdioHandle, ClaudeStdioProcess, ClaudeStdoutItem};
+use super::process::{ClaudeStdioHandle, ClaudeStdioProcess};
 use super::wire::{
     claude_wire_mode, control_request_subtype, initialize_request, interrupt_request, message_type,
     set_model_request, set_permission_mode_request, user_message, ClaudeWireMode,
@@ -45,6 +49,18 @@ struct ClaudeRuntimeProcess {
     closed: Arc<AtomicBool>,
 }
 
+#[async_trait::async_trait]
+trait ClaudeResponseWriter {
+    async fn write_json(&self, value: &Value) -> Result<(), String>;
+}
+
+#[async_trait::async_trait]
+impl ClaudeResponseWriter for ClaudeStdioHandle {
+    async fn write_json(&self, value: &Value) -> Result<(), String> {
+        ClaudeStdioHandle::write_json(self, value).await
+    }
+}
+
 #[derive(Debug)]
 struct ClaudeRuntimeState {
     session_id: String,
@@ -69,7 +85,7 @@ struct ClaudeRuntimeState {
     turn_generation: u64,
     synthetic_abort_turn_generation: Option<u64>,
     discarded_synthetic_abort_generations: HashSet<u64>,
-    oversize_dropped_count: u64,
+    stdout_diagnostics: StdoutDiagnostics,
 }
 
 impl ClaudeSessionRuntime {
@@ -146,7 +162,7 @@ impl ClaudeRuntimeState {
             turn_generation: 0,
             synthetic_abort_turn_generation: None,
             discarded_synthetic_abort_generations: HashSet::new(),
-            oversize_dropped_count: 0,
+            stdout_diagnostics: StdoutDiagnostics::default(),
         }
     }
 
@@ -311,7 +327,7 @@ async fn spawn_runtime_process(
     let read_handle = handle.clone();
     tokio::spawn(async move {
         read_loop(
-            &mut process,
+            process.stdout_mut(),
             read_handle,
             read_state,
             events_tx,
@@ -333,29 +349,44 @@ async fn spawn_runtime_process(
     Ok(ClaudeRuntimeProcess { handle, closed })
 }
 
-async fn read_loop(
-    process: &mut ClaudeStdioProcess,
-    handle: ClaudeStdioHandle,
+async fn read_loop<R, W>(
+    stdout: &mut StdoutLineReader<R>,
+    handle: W,
     state: Arc<Mutex<ClaudeRuntimeState>>,
     events_tx: mpsc::UnboundedSender<AgentRuntimeEvent>,
     closed: Arc<AtomicBool>,
     requested_resume_id: Option<String>,
     initial_wire_mode: super::wire::ClaudeWireMode,
-) {
+) where
+    R: AsyncBufRead + Unpin,
+    W: ClaudeResponseWriter,
+{
     let mut convert_state = ClaudeConvertState::new(requested_resume_id, initial_wire_mode);
     loop {
-        match process.next_json().await {
-            Ok(Some(ClaudeStdoutItem::OversizeDropped { bytes })) => {
+        match stdout.next().await {
+            Ok(Some(StdoutItem::Oversize { probe })) => {
                 if closed.load(Ordering::Relaxed) {
                     break;
                 }
                 let event = {
                     let mut state = state.lock().await;
-                    record_oversize_drop(&mut state, bytes)
+                    let content = state
+                        .stdout_diagnostics
+                        .record_oversize_drop("claude", &probe);
+                    oversize_drop_event(content)
                 };
                 let _ = events_tx.send(event);
             }
-            Ok(Some(ClaudeStdoutItem::Json(message))) => {
+            Ok(Some(StdoutItem::NonJson { probe })) => {
+                if closed.load(Ordering::Relaxed) {
+                    break;
+                }
+                let mut state = state.lock().await;
+                state
+                    .stdout_diagnostics
+                    .record_non_json_skip("claude", &probe);
+            }
+            Ok(Some(StdoutItem::Json(message))) => {
                 if closed.load(Ordering::Relaxed) {
                     break;
                 }
@@ -400,11 +431,9 @@ async fn read_loop(
     }
 }
 
-fn record_oversize_drop(state: &mut ClaudeRuntimeState, bytes: usize) -> AgentRuntimeEvent {
-    state.oversize_dropped_count = state.oversize_dropped_count.saturating_add(1);
-    log::warn!("claude stdout dropped an oversized line: {bytes} bytes");
+fn oversize_drop_event(content: String) -> AgentRuntimeEvent {
     AgentRuntimeEvent::PartsMerged(vec![MessagePart::Error {
-        content: "backend からの応答 1 件がサイズ上限（8MB）を超えたため破棄しました".to_string(),
+        content,
         parent_tool_use_id: None,
     }])
 }
@@ -550,7 +579,11 @@ async fn emit_crash_if_unexpected(
         state.turn_active = false;
         state.aborting = false;
         state.pending_inputs.clear();
-        (was_turn_active, aborting, state.oversize_dropped_count)
+        (
+            was_turn_active,
+            aborting,
+            state.stdout_diagnostics.oversize_dropped_count(),
+        )
     };
     let message = if oversize_dropped_count > 0 {
         format!("{message}（サイズ超過破棄 {oversize_dropped_count} 件）")
@@ -582,7 +615,7 @@ fn prepare_start_turn_state(
     state.synthetic_abort_turn_generation = None;
     state.turn_generation = state.turn_generation.saturating_add(1);
     state.turn_active = true;
-    state.oversize_dropped_count = 0;
+    state.stdout_diagnostics.reset();
     let next_wire_mode = claude_wire_mode(input.permission_mode, input.plan_mode);
     let replace_spec = if restart_after_synthetic_abort || state.system_prompt != system_prompt {
         let mut spec = state.session_spec_with_system_prompt(system_prompt);
@@ -615,6 +648,17 @@ mod tests {
         PermissionRequestStatus, TokenUsage, TurnStopReason,
     };
     use crate::domain::agent_session::value_objects::JsonPayload;
+    use crate::infrastructure::agent_session::stdout_line_reader::{LineProbe, StdoutLineReader};
+    use tokio::io::AsyncWriteExt;
+
+    struct NoopResponseWriter;
+
+    #[async_trait::async_trait]
+    impl ClaudeResponseWriter for NoopResponseWriter {
+        async fn write_json(&self, _value: &Value) -> Result<(), String> {
+            Ok(())
+        }
+    }
 
     #[cfg(unix)]
     fn write_fake_claude_cli(dir: &std::path::Path) -> std::path::PathBuf {
@@ -831,15 +875,28 @@ exec sleep 30
     #[test]
     fn test_record_oversize_dropは_error_partを合成しカウントを加算する() {
         let mut state = test_state();
+        let probe = LineProbe {
+            kind_hint: Some("assistant".to_string()),
+            bytes: 9 * 1024 * 1024,
+        };
 
-        let event = record_oversize_drop(&mut state, 9 * 1024 * 1024);
-        let _ = record_oversize_drop(&mut state, 10 * 1024 * 1024);
+        let content = state
+            .stdout_diagnostics
+            .record_oversize_drop("claude", &probe);
+        let event = oversize_drop_event(content);
+        let _ = state.stdout_diagnostics.record_oversize_drop(
+            "claude",
+            &LineProbe {
+                kind_hint: None,
+                bytes: 10 * 1024 * 1024,
+            },
+        );
 
-        assert_eq!(state.oversize_dropped_count, 2);
+        assert_eq!(state.stdout_diagnostics.oversize_dropped_count(), 2);
         assert_eq!(
             event,
             AgentRuntimeEvent::PartsMerged(vec![MessagePart::Error {
-                content: "backend からの応答 1 件がサイズ上限（8MB）を超えたため破棄しました"
+                content: "backend からの応答 1 件がサイズ上限（8MB）を超えたため破棄しました（推定種別: assistant）"
                     .to_string(),
                 parent_tool_use_id: None,
             }])
@@ -847,9 +904,108 @@ exec sleep 30
     }
 
     #[test]
+    fn test_record_non_json_skipは_skipカウントを加算する() {
+        let mut state = test_state();
+        let probe = LineProbe {
+            kind_hint: None,
+            bytes: 17,
+        };
+
+        state
+            .stdout_diagnostics
+            .record_non_json_skip("claude", &probe);
+        state
+            .stdout_diagnostics
+            .record_non_json_skip("claude", &probe);
+
+        assert_eq!(state.stdout_diagnostics.skipped_non_json_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_claude_read_loopは_mixed_stdout_fixture後も処理を継続する() {
+        let fixture =
+            include_bytes!("../../../../tests/fixtures/agent_session/mixed_stdout_claude.jsonl");
+        let (mut writer, reader) = tokio::io::duplex(4096);
+        let mut stdout = StdoutLineReader::with_max_line_bytes(
+            tokio::io::BufReader::with_capacity(64, reader),
+            256,
+        );
+        let state = Arc::new(Mutex::new(test_state()));
+        let read_state = Arc::clone(&state);
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        let closed = Arc::new(AtomicBool::new(false));
+        let read_closed = Arc::clone(&closed);
+        let read_task = tokio::spawn(async move {
+            read_loop(
+                &mut stdout,
+                NoopResponseWriter,
+                read_state,
+                events_tx,
+                read_closed,
+                None,
+                ClaudeWireMode::Default,
+            )
+            .await;
+        });
+
+        writer.write_all(fixture).await.unwrap();
+        let events = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            let mut events = Vec::new();
+            loop {
+                let event = events_rx.recv().await.unwrap();
+                let completed = matches!(event, AgentRuntimeEvent::TurnCompleted(_));
+                events.push(event);
+                if completed {
+                    return events;
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+        let state = state.lock().await;
+        assert_eq!(state.stdout_diagnostics.skipped_non_json_count(), 2);
+        assert_eq!(state.stdout_diagnostics.oversize_dropped_count(), 1);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentRuntimeEvent::TurnCompleted(TurnResult::Completed { .. })
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentRuntimeEvent::PartsMerged(parts)
+                if parts.iter().any(|part| matches!(
+                    part,
+                    MessagePart::Error { content, .. }
+                        if content.contains("推定種別: assistant")
+                ))
+        )));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            AgentRuntimeEvent::Fatal { .. }
+                | AgentRuntimeEvent::TurnCompleted(TurnResult::Interrupted {
+                    reason: InterruptReason::Crash,
+                    ..
+                })
+        )));
+        assert!(!read_task.is_finished());
+        drop(state);
+        closed.store(true, Ordering::Relaxed);
+        read_task.abort();
+    }
+
+    #[test]
     fn test_prepare_start_turn_stateは_サイズ超過破棄カウントをリセットする() {
         let mut state = test_state();
-        state.oversize_dropped_count = 3;
+        let probe = LineProbe {
+            kind_hint: None,
+            bytes: 9 * 1024 * 1024,
+        };
+        let _ = state
+            .stdout_diagnostics
+            .record_oversize_drop("claude", &probe);
+        state
+            .stdout_diagnostics
+            .record_non_json_skip("claude", &probe);
 
         let input = TurnInput {
             prompt: "next".to_string(),
@@ -862,7 +1018,8 @@ exec sleep 30
         };
         prepare_start_turn_state(&mut state, &input, input.system_prompt.clone());
 
-        assert_eq!(state.oversize_dropped_count, 0);
+        assert_eq!(state.stdout_diagnostics.oversize_dropped_count(), 0);
+        assert_eq!(state.stdout_diagnostics.skipped_non_json_count(), 0);
     }
 
     #[tokio::test]
@@ -871,7 +1028,16 @@ exec sleep 30
         {
             let mut state = state.lock().await;
             state.turn_active = true;
-            state.oversize_dropped_count = 2;
+            let probe = LineProbe {
+                kind_hint: None,
+                bytes: 9 * 1024 * 1024,
+            };
+            let _ = state
+                .stdout_diagnostics
+                .record_oversize_drop("claude", &probe);
+            let _ = state
+                .stdout_diagnostics
+                .record_oversize_drop("claude", &probe);
         }
         let (tx, mut rx) = mpsc::unbounded_channel();
         let closed = AtomicBool::new(false);

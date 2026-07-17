@@ -5,11 +5,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
 use crate::domain::agent_session::gateway::SessionSpec;
+use crate::infrastructure::agent_session::stdout_line_reader::StdoutLineReader;
 use crate::infrastructure::process::child_env::AgentChildEnv;
 use crate::infrastructure::process::child_process::{configure_process_group, staged_shutdown};
 use crate::infrastructure::process::child_stderr::drain_child_stderr;
@@ -19,20 +20,7 @@ use crate::infrastructure::process::pid_registry::{
 
 use super::wire::{claude_wire_mode, ClaudeWireMode};
 
-pub(crate) const MAX_CLAUDE_STDOUT_LINE_BYTES: usize = 8 * 1024 * 1024;
 const CLAUDE_SCRUBBED_ENV: &[&str] = &["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"];
-
-#[derive(Debug)]
-pub(crate) enum ClaudeStdoutItem {
-    Json(Value),
-    OversizeDropped { bytes: usize },
-}
-
-#[derive(Debug)]
-enum ClaudeStdoutLine {
-    Line(Vec<u8>),
-    Oversize { bytes: usize },
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ClaudeProcessConfig {
@@ -64,7 +52,7 @@ pub(crate) struct ClaudeStdioHandle {
 
 pub(crate) struct ClaudeStdioProcess {
     handle: ClaudeStdioHandle,
-    stdout: BufReader<ChildStdout>,
+    stdout: StdoutLineReader<BufReader<ChildStdout>>,
     _system_prompt_file: Option<tempfile::NamedTempFile>,
 }
 
@@ -154,7 +142,7 @@ impl ClaudeStdioProcess {
                 stdin: Arc::new(Mutex::new(Some(stdin))),
                 pid_registration,
             },
-            stdout: BufReader::new(stdout),
+            stdout: StdoutLineReader::new(BufReader::new(stdout)),
             _system_prompt_file: system_prompt_file,
         })
     }
@@ -163,28 +151,8 @@ impl ClaudeStdioProcess {
         self.handle.clone()
     }
 
-    pub(crate) async fn next_json(&mut self) -> Result<Option<ClaudeStdoutItem>, String> {
-        next_stdout_item(&mut self.stdout).await
-    }
-}
-
-async fn next_stdout_item<R>(stdout: &mut R) -> Result<Option<ClaudeStdoutItem>, String>
-where
-    R: tokio::io::AsyncBufRead + Unpin,
-{
-    loop {
-        match read_stdout_line_limited(stdout).await? {
-            None => return Ok(None),
-            Some(ClaudeStdoutLine::Oversize { bytes }) => {
-                return Ok(Some(ClaudeStdoutItem::OversizeDropped { bytes }));
-            }
-            Some(ClaudeStdoutLine::Line(line)) => match serde_json::from_slice::<Value>(&line) {
-                Ok(value) => return Ok(Some(ClaudeStdoutItem::Json(value))),
-                Err(error) => {
-                    log::warn!("skipping non-json claude stdout line: {error}");
-                }
-            },
-        }
+    pub(crate) fn stdout_mut(&mut self) -> &mut StdoutLineReader<BufReader<ChildStdout>> {
+        &mut self.stdout
     }
 }
 
@@ -205,70 +173,6 @@ mod child_env_tests {
         assert!(env
             .scrub_envs()
             .contains(&"CLAUDE_CODE_ENTRYPOINT".to_string()));
-    }
-}
-
-async fn read_stdout_line_limited<R>(stdout: &mut R) -> Result<Option<ClaudeStdoutLine>, String>
-where
-    R: tokio::io::AsyncBufRead + Unpin,
-{
-    let mut line = Vec::new();
-    loop {
-        let available = stdout
-            .fill_buf()
-            .await
-            .map_err(|error| format!("failed to read claude stdout: {error}"))?;
-        if available.is_empty() {
-            return if line.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(ClaudeStdoutLine::Line(line)))
-            };
-        }
-        let take = available
-            .iter()
-            .position(|byte| *byte == b'\n')
-            .map(|index| index + 1)
-            .unwrap_or(available.len());
-        if line.len().saturating_add(take) > MAX_CLAUDE_STDOUT_LINE_BYTES {
-            log::warn!(
-                "claude stdout line exceeded {} bytes",
-                MAX_CLAUDE_STDOUT_LINE_BYTES
-            );
-            let mut dropped = line.len().saturating_add(take);
-            line.clear();
-            let reached_newline = available[..take].last() == Some(&b'\n');
-            stdout.consume(take);
-            if reached_newline {
-                return Ok(Some(ClaudeStdoutLine::Oversize { bytes: dropped - 1 }));
-            }
-            loop {
-                let available = stdout
-                    .fill_buf()
-                    .await
-                    .map_err(|error| format!("failed to read claude stdout: {error}"))?;
-                if available.is_empty() {
-                    return Ok(Some(ClaudeStdoutLine::Oversize { bytes: dropped }));
-                }
-                let take = available
-                    .iter()
-                    .position(|byte| *byte == b'\n')
-                    .map(|index| index + 1)
-                    .unwrap_or(available.len());
-                let reached_newline = available[..take].last() == Some(&b'\n');
-                dropped = dropped.saturating_add(take);
-                stdout.consume(take);
-                if reached_newline {
-                    return Ok(Some(ClaudeStdoutLine::Oversize { bytes: dropped - 1 }));
-                }
-            }
-        }
-        let reached_newline = available[..take].last() == Some(&b'\n');
-        line.extend_from_slice(&available[..take]);
-        stdout.consume(take);
-        if reached_newline {
-            return Ok(Some(ClaudeStdoutLine::Line(line)));
-        }
     }
 }
 
@@ -480,59 +384,5 @@ mod tests {
         assert_eq!(first_semver("Claude Code 2.1.3"), Some((2, 1, 3)));
         assert_eq!(first_semver("claude 2.0"), Some((2, 0, 0)));
         assert_eq!(first_semver("no version"), None);
-    }
-
-    #[tokio::test]
-    async fn test_next_stdout_item_8mb未満の巨大行を正常にパースする() {
-        let payload = "a".repeat(MAX_CLAUDE_STDOUT_LINE_BYTES - 1024);
-        let input = format!("{{\"data\":\"{payload}\"}}\n");
-        let mut reader = tokio::io::BufReader::with_capacity(64 * 1024, input.as_bytes());
-
-        let item = next_stdout_item(&mut reader).await.unwrap();
-
-        match item {
-            Some(ClaudeStdoutItem::Json(value)) => {
-                assert_eq!(value["data"].as_str().unwrap().len(), payload.len());
-            }
-            other => panic!("expected Json, got {other:?}"),
-        }
-        assert!(next_stdout_item(&mut reader).await.unwrap().is_none());
-    }
-
-    #[tokio::test]
-    async fn test_next_stdout_item_超過行はoversize_droppedを返し後続行の処理を継続する() {
-        let payload = "b".repeat(MAX_CLAUDE_STDOUT_LINE_BYTES + 1);
-        let input = format!("{{\"data\":\"{payload}\"}}\n{{\"ok\":true}}\n");
-        let mut reader = tokio::io::BufReader::with_capacity(64 * 1024, input.as_bytes());
-
-        let first = next_stdout_item(&mut reader).await.unwrap();
-        assert!(matches!(
-            first,
-            Some(ClaudeStdoutItem::OversizeDropped { bytes })
-                if bytes > MAX_CLAUDE_STDOUT_LINE_BYTES
-        ));
-
-        let second = next_stdout_item(&mut reader).await.unwrap();
-        match second {
-            Some(ClaudeStdoutItem::Json(value)) => {
-                assert_eq!(value["ok"], serde_json::json!(true));
-            }
-            other => panic!("expected Json, got {other:?}"),
-        }
-        assert!(next_stdout_item(&mut reader).await.unwrap().is_none());
-    }
-
-    #[tokio::test]
-    async fn test_next_stdout_item_改行なしeofの超過行もoversize_droppedとして可視化する() {
-        let payload = "c".repeat(MAX_CLAUDE_STDOUT_LINE_BYTES + 1);
-        let mut reader = tokio::io::BufReader::with_capacity(64 * 1024, payload.as_bytes());
-
-        let first = next_stdout_item(&mut reader).await.unwrap();
-        assert!(matches!(
-            first,
-            Some(ClaudeStdoutItem::OversizeDropped { bytes })
-                if bytes == MAX_CLAUDE_STDOUT_LINE_BYTES + 1
-        ));
-        assert!(next_stdout_item(&mut reader).await.unwrap().is_none());
     }
 }

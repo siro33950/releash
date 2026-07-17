@@ -12,7 +12,8 @@ use crate::domain::agent_session::value_objects::{
 };
 
 use super::wire::{
-    message_kind, AppServerMessageKind, METHOD_TURN_START, NOTIFY_AGENT_MESSAGE_DELTA,
+    message_kind, AppServerMessageKind, METHOD_INITIALIZE, METHOD_THREAD_RESUME,
+    METHOD_THREAD_START, METHOD_TURN_START, NOTIFY_AGENT_MESSAGE_DELTA,
     NOTIFY_COMMAND_OUTPUT_DELTA, NOTIFY_ERROR, NOTIFY_FILE_CHANGE_OUTPUT_DELTA,
     NOTIFY_FILE_CHANGE_PATCH_UPDATED, NOTIFY_ITEM_COMPLETED, NOTIFY_ITEM_STARTED,
     NOTIFY_THREAD_COMPACTED, NOTIFY_THREAD_STARTED, NOTIFY_THREAD_TOKEN_USAGE_UPDATED,
@@ -22,11 +23,9 @@ use super::wire::{
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct CodexConvertState {
-    pub thread_id: Option<String>,
     pub turn_id: Option<String>,
     pub latest_usage: Option<TokenUsage>,
     pub requested_resume_id: Option<String>,
-    pub startup_request_id: Option<u64>,
     pub client_response_methods: HashMap<u64, String>,
     pub compaction_in_progress: bool,
 }
@@ -56,7 +55,10 @@ fn convert_response(
 ) -> Vec<AgentRuntimeEvent> {
     let source_method = state.client_response_methods.remove(&id);
     if let Some(error) = message.get("error") {
-        if state.startup_request_id == Some(id) {
+        if matches!(
+            source_method.as_deref(),
+            Some(METHOD_INITIALIZE | METHOD_THREAD_START | METHOD_THREAD_RESUME)
+        ) {
             let mut events = Vec::new();
             if state.requested_resume_id.is_some() {
                 events.push(AgentRuntimeEvent::BackendSessionCleared);
@@ -88,7 +90,6 @@ fn convert_response(
     }
     let result = message.get("result").unwrap_or(&Value::Null);
     if let Some(thread_id) = get_string(result, &["thread", "id"]) {
-        state.thread_id = Some(thread_id.to_string());
         return vec![AgentRuntimeEvent::SessionEstablished {
             backend_session_id: thread_id.to_string(),
             resume: resume_outcome(state.requested_resume_id.as_deref(), thread_id),
@@ -109,7 +110,6 @@ fn convert_notification(
     match method {
         NOTIFY_THREAD_STARTED => get_string(params, &["thread", "id"])
             .map(|thread_id| {
-                state.thread_id = Some(thread_id.to_string());
                 vec![AgentRuntimeEvent::SessionEstablished {
                     backend_session_id: thread_id.to_string(),
                     resume: resume_outcome(state.requested_resume_id.as_deref(), thread_id),
@@ -1070,9 +1070,11 @@ mod tests {
     #[test]
     fn test_startup_response_errorは新規threadでも_fatalにする() {
         let mut state = CodexConvertState {
-            startup_request_id: Some(2),
             ..CodexConvertState::default()
         };
+        state
+            .client_response_methods
+            .insert(2, METHOD_THREAD_START.to_string());
         let events = convert_jsonrpc_message(
             &json!({
                 "id": 2,
@@ -1090,12 +1092,43 @@ mod tests {
     }
 
     #[test]
+    fn test_initialize_response_errorは_fatalにする() {
+        let mut state = CodexConvertState {
+            requested_resume_id: Some("thread-old".to_string()),
+            ..CodexConvertState::default()
+        };
+        state
+            .client_response_methods
+            .insert(1, METHOD_INITIALIZE.to_string());
+
+        let events = convert_jsonrpc_message(
+            &json!({
+                "id": 1,
+                "error": { "message": "initialize failed" }
+            }),
+            &mut state,
+        );
+
+        assert_eq!(
+            events,
+            vec![
+                AgentRuntimeEvent::BackendSessionCleared,
+                AgentRuntimeEvent::Fatal {
+                    message: "initialize failed".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn test_startup_response_errorは_resume時だけ_backend_session_clearedを先行する() {
         let mut state = CodexConvertState {
             requested_resume_id: Some("thread-old".to_string()),
-            startup_request_id: Some(2),
             ..CodexConvertState::default()
         };
+        state
+            .client_response_methods
+            .insert(2, METHOD_THREAD_RESUME.to_string());
         let events = convert_jsonrpc_message(
             &json!({
                 "id": 2,

@@ -5,13 +5,17 @@ use crate::domain::agent_session::services::filter_agent_skills_for_query;
 use crate::domain::agent_session::value_objects::{
     BackendCapabilities, ModelDescriptor, ModelId, SkillEntry,
 };
+use crate::infrastructure::agent_session::stdout_line_reader::{
+    StdoutDiagnostics, StdoutItem, StdoutLineReader,
+};
 use serde_json::{json, Value};
+use tokio::io::AsyncBufRead;
 
 use super::app_server::CodexAppServerProcess;
 use super::wire::{
-    initialize_request, initialized_notification, message_kind, request, AppServerMessageKind,
-    METHOD_FUZZY_FILE_SEARCH, METHOD_SKILLS_LIST, METHOD_THREAD_ARCHIVE, METHOD_THREAD_FORK,
-    METHOD_THREAD_UNARCHIVE,
+    initialize_request, initialized_notification, request, PendingClientRequests,
+    METHOD_FUZZY_FILE_SEARCH, METHOD_INITIALIZE, METHOD_SKILLS_LIST, METHOD_THREAD_ARCHIVE,
+    METHOD_THREAD_FORK, METHOD_THREAD_UNARCHIVE,
 };
 
 pub(crate) const CODEX_BACKEND_ID: &str = "codex";
@@ -201,19 +205,13 @@ impl CodexBackend {
             return Err(AgentBackendError::Other(error));
         }
 
-        let response_result = tokio::time::timeout(std::time::Duration::from_secs(15), async {
-            loop {
-                let Some(message) = process.next_json().await? else {
-                    return Err("codex app-server exited before one-shot response".to_string());
-                };
-                if message_kind(&message) == Some(AppServerMessageKind::Response { id: 2 }) {
-                    if let Some(error) = message.get("error") {
-                        return Err(error.to_string());
-                    }
-                    return Ok(message.get("result").cloned().unwrap_or(Value::Null));
-                }
-            }
-        })
+        let mut pending_requests = PendingClientRequests::default();
+        pending_requests.register(1, METHOD_INITIALIZE);
+        pending_requests.register(2, method);
+        let response_result = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            read_one_shot_response(process.stdout_mut(), pending_requests, 2),
+        )
         .await;
         process.shutdown().await;
         response_result
@@ -222,6 +220,46 @@ impl CodexBackend {
                 max_retries: 0,
             })?
             .map_err(AgentBackendError::Other)
+    }
+}
+
+async fn read_one_shot_response<R>(
+    stdout: &mut StdoutLineReader<R>,
+    mut pending_requests: PendingClientRequests,
+    expected_id: u64,
+) -> Result<Value, String>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let mut diagnostics = StdoutDiagnostics::default();
+    loop {
+        let Some(item) = stdout.next().await? else {
+            return Err("codex app-server exited before one-shot response".to_string());
+        };
+        let message = match item {
+            StdoutItem::Json(message) => message,
+            StdoutItem::NonJson { probe } => {
+                diagnostics.record_non_json_skip("codex one-shot", &probe);
+                continue;
+            }
+            StdoutItem::Oversize { probe } => {
+                let _ = diagnostics.record_oversize_drop("codex one-shot", &probe);
+                continue;
+            }
+        };
+        let Some(response) = pending_requests.take_response(&message)? else {
+            continue;
+        };
+        if let Some(error) = message.get("error") {
+            return Err(error.to_string());
+        }
+        if response.id != expected_id {
+            continue;
+        }
+        return Ok(message
+            .get("result")
+            .cloned()
+            .expect("validated JSON-RPC response must contain result or error"));
     }
 }
 
@@ -297,6 +335,7 @@ fn result_array<'a>(result: &'a Value, key: &str) -> Vec<&'a Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::BufReader;
 
     #[test]
     fn test_codex_models_固定順と表示名を返す() {
@@ -314,6 +353,56 @@ mod tests {
 
         assert_eq!(ids, vec!["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",]);
         assert_eq!(names, vec!["GPT-5.6 Sol", "GPT-5.6 Terra", "GPT-5.6 Luna",]);
+    }
+
+    #[tokio::test]
+    async fn test_one_shot_response必須field欠落は失敗として扱う() {
+        let input = br#"{"id":2}
+"#;
+        let mut stdout = StdoutLineReader::new(BufReader::new(&input[..]));
+        let mut pending = PendingClientRequests::default();
+        pending.register(2, METHOD_SKILLS_LIST);
+
+        let result = read_one_shot_response(&mut stdout, pending, 2).await;
+
+        assert!(matches!(
+            result,
+            Err(message) if message.contains("expected exactly one of result or error")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_one_shot_responseは_initialize_errorを期待応答より先に返す() {
+        let input = br#"{"id":1,"error":{"code":-32603,"message":"initialize failed"}}
+{"id":2,"result":{"skills":[]}}
+"#;
+        let mut stdout = StdoutLineReader::new(BufReader::new(&input[..]));
+        let mut pending = PendingClientRequests::default();
+        pending.register(1, METHOD_INITIALIZE);
+        pending.register(2, METHOD_SKILLS_LIST);
+
+        let result = read_one_shot_response(&mut stdout, pending, 2).await;
+
+        assert_eq!(
+            result.unwrap_err(),
+            json!({ "code": -32603, "message": "initialize failed" }).to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_one_shot_responseは非jsonと上限超過行をskipして正常応答を返す() {
+        let payload = "x".repeat(64);
+        let input = format!(
+            "diagnostic output\n{{\"method\":\"ignored\",\"params\":{{\"data\":\"{payload}\"}}}}\n{{\"id\":2,\"result\":{{\"skills\":[]}}}}\n"
+        );
+        let mut stdout =
+            StdoutLineReader::with_max_line_bytes(BufReader::new(input.as_bytes()), 48);
+        let mut pending = PendingClientRequests::default();
+        pending.register(2, METHOD_SKILLS_LIST);
+
+        let result = read_one_shot_response(&mut stdout, pending, 2).await;
+
+        assert_eq!(result.unwrap(), json!({ "skills": [] }));
     }
 
     #[test]

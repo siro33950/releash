@@ -6,21 +6,25 @@ use std::time::Duration;
 
 use futures_util::stream::{self, Stream};
 use serde_json::{json, Value};
+use tokio::io::AsyncBufRead;
 use tokio::sync::{mpsc, Mutex};
 
-use crate::domain::agent_session::entities::{AttachmentPayload, PermissionResponse};
+use crate::domain::agent_session::entities::{AttachmentPayload, MessagePart, PermissionResponse};
 use crate::domain::agent_session::gateway::{
     AgentBackendError, AgentRuntimeEvent, AgentSessionRuntime, SessionSpec, TurnInput,
 };
 use crate::domain::agent_session::value_objects::{EditorContext, ModelId, PermissionMode};
+use crate::infrastructure::agent_session::stdout_line_reader::{
+    StdoutDiagnostics, StdoutItem, StdoutLineReader,
+};
 
 use super::app_server::{CodexAppServerHandle, CodexAppServerProcess};
 use super::convert::{convert_jsonrpc_message, CodexConvertState};
 use super::permission::{codex_permission_response, codex_permission_settings};
 use super::wire::{
     initialize_request, initialized_notification, message_kind, request, AppServerMessageKind,
-    METHOD_THREAD_RESUME, METHOD_THREAD_SETTINGS_UPDATE, METHOD_THREAD_START,
-    METHOD_TURN_INTERRUPT, METHOD_TURN_START,
+    PendingClientRequests, METHOD_INITIALIZE, METHOD_THREAD_NAME_SET, METHOD_THREAD_RESUME,
+    METHOD_THREAD_SETTINGS_UPDATE, METHOD_THREAD_START, METHOD_TURN_INTERRUPT, METHOD_TURN_START,
 };
 
 const AGENT_PROCESS_EXITED_UNEXPECTEDLY: &str = "Agent process exited unexpectedly";
@@ -40,11 +44,10 @@ struct CodexRuntimeState {
     startup_error: Option<String>,
     cwd: String,
     model: ModelId,
-    permission_mode: PermissionMode,
-    plan_mode: bool,
     permission_profile_id: Option<String>,
     pending_methods: HashMap<u64, String>,
-    pending_client_methods: HashMap<u64, String>,
+    pending_client_requests: PendingClientRequests,
+    stdout_diagnostics: StdoutDiagnostics,
 }
 
 impl CodexSessionRuntime {
@@ -79,7 +82,7 @@ impl CodexSessionRuntime {
     }
 
     async fn open_once(cli_path: String, spec: SessionSpec) -> Result<Self, AgentBackendError> {
-        let process = CodexAppServerProcess::spawn(
+        let mut process = CodexAppServerProcess::spawn(
             &cli_path,
             &spec.session_id,
             Some(&spec.cwd),
@@ -90,33 +93,40 @@ impl CodexSessionRuntime {
         .map_err(AgentBackendError::Other)?;
         let handle = process.handle();
         let (events_tx, events_rx) = mpsc::unbounded_channel();
+        let startup_request_id = 2;
+        let startup_method = if spec.resume.is_some() {
+            METHOD_THREAD_RESUME
+        } else {
+            METHOD_THREAD_START
+        };
+        let mut pending_client_requests = PendingClientRequests::default();
+        pending_client_requests.register(1, METHOD_INITIALIZE);
+        pending_client_requests.register(startup_request_id, startup_method);
         let state = Arc::new(Mutex::new(CodexRuntimeState {
             thread_id: None,
             turn_id: None,
             startup_error: None,
             cwd: spec.cwd.clone(),
             model: spec.model.clone(),
-            permission_mode: spec.permission_mode,
-            plan_mode: spec.plan_mode,
             permission_profile_id: spec.permission_profile_id.clone(),
             pending_methods: HashMap::new(),
-            pending_client_methods: HashMap::new(),
+            pending_client_requests,
+            stdout_diagnostics: StdoutDiagnostics::default(),
         }));
         let closed = Arc::new(AtomicBool::new(false));
         let read_state = Arc::clone(&state);
         let read_closed = Arc::clone(&closed);
         let requested_resume_id = spec.resume.clone();
-        let startup_request_id = 2;
         tokio::spawn(async move {
             read_loop(
-                process,
+                process.stdout_mut(),
                 read_state,
                 events_tx,
                 read_closed,
                 requested_resume_id,
-                startup_request_id,
             )
             .await;
+            process.shutdown().await;
         });
 
         if let Err(error) = handle
@@ -169,6 +179,28 @@ impl CodexSessionRuntime {
     fn next_request_id(&self) -> u64 {
         self.next_id.fetch_add(1, Ordering::Relaxed)
     }
+
+    async fn write_tracked_request(
+        &self,
+        request_id: u64,
+        method: &str,
+        value: &Value,
+    ) -> Result<(), AgentBackendError> {
+        self.state
+            .lock()
+            .await
+            .pending_client_requests
+            .register(request_id, method);
+        if let Err(error) = self.handle.write_json(value).await {
+            self.state
+                .lock()
+                .await
+                .pending_client_requests
+                .remove(request_id);
+            return Err(AgentBackendError::Other(error));
+        }
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
@@ -186,30 +218,12 @@ impl AgentSessionRuntime for CodexSessionRuntime {
         let request_id = self.next_request_id();
         let request = {
             let mut state = self.state.lock().await;
-            state.permission_mode = input.permission_mode;
-            state.plan_mode = input.plan_mode;
             state.permission_profile_id = input.permission_profile_id.clone();
-            let request = build_turn_start_request(request_id, &thread_id, &state, input)?;
-            state
-                .pending_client_methods
-                .insert(request_id, METHOD_TURN_START.to_string());
-            request
+            state.stdout_diagnostics.reset();
+            build_turn_start_request(request_id, &thread_id, &state, input)?
         };
-        if let Err(error) = self
-            .handle
-            .write_json(&request)
+        self.write_tracked_request(request_id, METHOD_TURN_START, &request)
             .await
-            .map_err(AgentBackendError::Other)
-        {
-            self.state
-                .lock()
-                .await
-                .pending_client_methods
-                .remove(&request_id);
-            Err(error)
-        } else {
-            Ok(())
-        }
     }
 
     async fn interrupt(&self) -> Result<(), AgentBackendError> {
@@ -223,18 +237,17 @@ impl AgentSessionRuntime for CodexSessionRuntime {
         let Some(turn_id) = turn_id else {
             return Ok(());
         };
+        let request_id = self.next_request_id();
         let value = request(
-            self.next_request_id(),
+            request_id,
             METHOD_TURN_INTERRUPT,
             json!({
                 "threadId": thread_id,
                 "turnId": turn_id,
             }),
         );
-        self.handle
-            .write_json(&value)
+        self.write_tracked_request(request_id, METHOD_TURN_INTERRUPT, &value)
             .await
-            .map_err(AgentBackendError::Other)
     }
 
     async fn respond_permission(
@@ -264,9 +277,7 @@ impl AgentSessionRuntime for CodexSessionRuntime {
         plan_mode: bool,
     ) -> Result<(), AgentBackendError> {
         let (thread_id, cwd, permission_profile_id) = {
-            let mut state = self.state.lock().await;
-            state.permission_mode = mode;
-            state.plan_mode = plan_mode;
+            let state = self.state.lock().await;
             (
                 state.thread_id.clone(),
                 state.cwd.clone(),
@@ -286,14 +297,10 @@ impl AgentSessionRuntime for CodexSessionRuntime {
         if let Some(sandbox_policy) = settings.sandbox_policy {
             params["sandboxPolicy"] = sandbox_policy;
         }
-        self.handle
-            .write_json(&request(
-                self.next_request_id(),
-                METHOD_THREAD_SETTINGS_UPDATE,
-                params,
-            ))
+        let request_id = self.next_request_id();
+        let value = request(request_id, METHOD_THREAD_SETTINGS_UPDATE, params);
+        self.write_tracked_request(request_id, METHOD_THREAD_SETTINGS_UPDATE, &value)
             .await
-            .map_err(AgentBackendError::Other)
     }
 
     async fn set_model(&self, model: &ModelId) -> Result<(), AgentBackendError> {
@@ -306,17 +313,17 @@ impl AgentSessionRuntime for CodexSessionRuntime {
         let Some(thread_id) = thread_id else {
             return Ok(());
         };
-        self.handle
-            .write_json(&request(
-                self.next_request_id(),
-                super::wire::METHOD_THREAD_NAME_SET,
-                json!({
-                    "threadId": thread_id,
-                    "name": title,
-                }),
-            ))
+        let request_id = self.next_request_id();
+        let value = request(
+            request_id,
+            METHOD_THREAD_NAME_SET,
+            json!({
+                "threadId": thread_id,
+                "name": title,
+            }),
+        );
+        self.write_tracked_request(request_id, METHOD_THREAD_NAME_SET, &value)
             .await
-            .map_err(AgentBackendError::Other)
     }
 
     async fn close(&self) {
@@ -334,22 +341,44 @@ fn take_pending_method(
     })
 }
 
-async fn read_loop(
-    mut process: CodexAppServerProcess,
+async fn read_loop<R>(
+    stdout: &mut StdoutLineReader<R>,
     state: Arc<Mutex<CodexRuntimeState>>,
     events_tx: mpsc::UnboundedSender<AgentRuntimeEvent>,
     closed: Arc<AtomicBool>,
     requested_resume_id: Option<String>,
-    startup_request_id: u64,
-) {
+) where
+    R: AsyncBufRead + Unpin,
+{
     let mut convert_state = CodexConvertState {
         requested_resume_id,
-        startup_request_id: Some(startup_request_id),
         ..CodexConvertState::default()
     };
     loop {
-        match process.next_json().await {
-            Ok(Some(message)) => {
+        match stdout.next().await {
+            Ok(Some(StdoutItem::NonJson { probe })) => {
+                if closed.load(Ordering::Relaxed) {
+                    break;
+                }
+                let mut state = state.lock().await;
+                state
+                    .stdout_diagnostics
+                    .record_non_json_skip("codex", &probe);
+            }
+            Ok(Some(StdoutItem::Oversize { probe })) => {
+                if closed.load(Ordering::Relaxed) {
+                    break;
+                }
+                let event = {
+                    let mut state = state.lock().await;
+                    let content = state
+                        .stdout_diagnostics
+                        .record_oversize_drop("codex", &probe);
+                    oversize_drop_event(content)
+                };
+                let _ = events_tx.send(event);
+            }
+            Ok(Some(StdoutItem::Json(message))) => {
                 if closed.load(Ordering::Relaxed) {
                     break;
                 }
@@ -357,10 +386,22 @@ async fn read_loop(
                     Some(AppServerMessageKind::Request { id, method }) => {
                         state.lock().await.pending_methods.insert(id, method);
                     }
-                    Some(AppServerMessageKind::Response { id }) => {
-                        if let Some(method) = state.lock().await.pending_client_methods.remove(&id)
-                        {
-                            convert_state.client_response_methods.insert(id, method);
+                    Some(AppServerMessageKind::Response { .. }) => {
+                        let pending_response = {
+                            let mut state = state.lock().await;
+                            state.pending_client_requests.take_response(&message)
+                        };
+                        match pending_response {
+                            Ok(Some(response)) => {
+                                convert_state
+                                    .client_response_methods
+                                    .insert(response.id, response.method);
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                emit_read_failure(&state, &events_tx, &closed, &error).await;
+                                break;
+                            }
                         }
                     }
                     _ => {}
@@ -392,41 +433,59 @@ async fn read_loop(
                 }
             }
             Ok(None) => {
-                if !closed.load(Ordering::Relaxed) {
-                    log::warn!("Codex app-server exited unexpectedly");
-                    if state.lock().await.turn_id.is_some() {
-                        let _ = events_tx.send(AgentRuntimeEvent::TurnCompleted(
-                            crate::domain::agent_session::entities::TurnResult::Interrupted {
-                                reason:
-                                    crate::domain::agent_session::entities::InterruptReason::Crash,
-                                error: Some(AGENT_PROCESS_EXITED_UNEXPECTEDLY.to_string()),
-                            },
-                        ));
-                    }
-                    let _ = events_tx.send(AgentRuntimeEvent::Fatal {
-                        message: AGENT_PROCESS_EXITED_UNEXPECTEDLY.to_string(),
-                    });
+                if closed.load(Ordering::Relaxed) {
+                    break;
                 }
+                log::warn!("Codex app-server exited unexpectedly");
+                emit_read_failure(
+                    &state,
+                    &events_tx,
+                    &closed,
+                    AGENT_PROCESS_EXITED_UNEXPECTEDLY,
+                )
+                .await;
                 break;
             }
             Err(error) => {
-                if !closed.load(Ordering::Relaxed) {
-                    if state.lock().await.turn_id.is_some() {
-                        let _ = events_tx.send(AgentRuntimeEvent::TurnCompleted(
-                            crate::domain::agent_session::entities::TurnResult::Interrupted {
-                                reason:
-                                    crate::domain::agent_session::entities::InterruptReason::Crash,
-                                error: Some(error.clone()),
-                            },
-                        ));
-                    }
-                    let _ = events_tx.send(AgentRuntimeEvent::Fatal { message: error });
-                }
+                emit_read_failure(&state, &events_tx, &closed, &error).await;
                 break;
             }
         }
     }
-    process.shutdown().await;
+}
+
+fn oversize_drop_event(content: String) -> AgentRuntimeEvent {
+    AgentRuntimeEvent::PartsMerged(vec![MessagePart::Error {
+        content,
+        parent_tool_use_id: None,
+    }])
+}
+
+async fn emit_read_failure(
+    state: &Arc<Mutex<CodexRuntimeState>>,
+    events_tx: &mpsc::UnboundedSender<AgentRuntimeEvent>,
+    closed: &AtomicBool,
+    error: &str,
+) {
+    if closed.load(Ordering::Relaxed) {
+        return;
+    }
+    let turn_active = {
+        let mut state = state.lock().await;
+        state.startup_error = Some(error.to_string());
+        state.turn_id.is_some()
+    };
+    if turn_active {
+        let _ = events_tx.send(AgentRuntimeEvent::TurnCompleted(
+            crate::domain::agent_session::entities::TurnResult::Interrupted {
+                reason: crate::domain::agent_session::entities::InterruptReason::Crash,
+                error: Some(error.to_string()),
+            },
+        ));
+    }
+    let _ = events_tx.send(AgentRuntimeEvent::Fatal {
+        message: error.to_string(),
+    });
 }
 
 fn startup_timeout_for_spec(spec: &SessionSpec) -> Duration {
@@ -607,10 +666,43 @@ fn editor_context_value(context: Option<&EditorContext>) -> Option<Value> {
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::agent_session::entities::{InterruptReason, TurnResult};
     use crate::domain::agent_session::value_objects::ModelId;
     use crate::infrastructure::agent_session::codex::wire;
+    use crate::infrastructure::agent_session::stdout_line_reader::{LineProbe, StdoutLineReader};
+    use tokio::io::AsyncWriteExt;
 
     use super::*;
+
+    struct ThreadLogCapture {
+        thread_id: StdMutex<Option<std::thread::ThreadId>>,
+        messages: StdMutex<Vec<String>>,
+    }
+
+    impl log::Log for ThreadLogCapture {
+        fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+            metadata.level() <= log::Level::Warn
+        }
+
+        fn log(&self, record: &log::Record<'_>) {
+            if self.enabled(record.metadata())
+                && self.thread_id.lock().unwrap().as_ref() == Some(&std::thread::current().id())
+            {
+                self.messages
+                    .lock()
+                    .unwrap()
+                    .push(record.args().to_string());
+            }
+        }
+
+        fn flush(&self) {}
+    }
+
+    static TEST_LOG_CAPTURE: ThreadLogCapture = ThreadLogCapture {
+        thread_id: StdMutex::new(None),
+        messages: StdMutex::new(Vec::new()),
+    };
+    static TEST_LOG_CAPTURE_INIT: std::sync::Once = std::sync::Once::new();
 
     #[cfg(unix)]
     fn write_fake_codex_cli(dir: &std::path::Path) -> std::path::PathBuf {
@@ -664,6 +756,20 @@ exec sleep 30
         }
     }
 
+    fn runtime_state() -> CodexRuntimeState {
+        CodexRuntimeState {
+            thread_id: Some("thread".to_string()),
+            turn_id: Some("turn".to_string()),
+            startup_error: None,
+            cwd: "/repo".to_string(),
+            model: ModelId::parse("gpt-5.6-sol").unwrap(),
+            permission_profile_id: None,
+            pending_methods: HashMap::new(),
+            pending_client_requests: PendingClientRequests::default(),
+            stdout_diagnostics: StdoutDiagnostics::default(),
+        }
+    }
+
     #[test]
     fn test_thread_start_planは検証済み_string_collaboration_modeを使う() {
         let value = build_thread_start_request(7, &spec(true)).unwrap();
@@ -677,18 +783,8 @@ exec sleep 30
 
     #[test]
     fn test_turn_start_imagesは_data_urlを使う() {
-        let state = CodexRuntimeState {
-            thread_id: Some("thread".to_string()),
-            turn_id: None,
-            startup_error: None,
-            cwd: "/repo".to_string(),
-            model: ModelId::parse("gpt-5.6-sol").unwrap(),
-            permission_mode: PermissionMode::Ask,
-            plan_mode: false,
-            permission_profile_id: None,
-            pending_methods: HashMap::new(),
-            pending_client_methods: HashMap::new(),
-        };
+        let mut state = runtime_state();
+        state.turn_id = None;
         let value = build_turn_start_request(
             8,
             "thread",
@@ -742,11 +838,10 @@ exec sleep 30
             startup_error: None,
             cwd: "/repo".to_string(),
             model: ModelId::parse("gpt-5.6-sol").unwrap(),
-            permission_mode: PermissionMode::Ask,
-            plan_mode: false,
             permission_profile_id: None,
             pending_methods: HashMap::new(),
-            pending_client_methods: HashMap::new(),
+            pending_client_requests: PendingClientRequests::default(),
+            stdout_diagnostics: StdoutDiagnostics::default(),
         };
 
         assert!(matches!(
@@ -760,6 +855,268 @@ exec sleep 30
             take_pending_method(&mut state, 7).unwrap(),
             wire::REQUEST_COMMAND_APPROVAL
         );
+    }
+
+    #[tokio::test]
+    async fn test_startup_response必須field欠落はread_loopで失敗する() {
+        let input = br#"{"id":2}
+"#;
+        let mut stdout = StdoutLineReader::new(tokio::io::BufReader::new(&input[..]));
+        let mut runtime_state = runtime_state();
+        runtime_state.thread_id = None;
+        runtime_state.turn_id = None;
+        runtime_state
+            .pending_client_requests
+            .register(2, METHOD_THREAD_START);
+        let state = Arc::new(Mutex::new(runtime_state));
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+
+        read_loop(
+            &mut stdout,
+            Arc::clone(&state),
+            events_tx,
+            Arc::new(AtomicBool::new(false)),
+            None,
+        )
+        .await;
+
+        assert!(state
+            .lock()
+            .await
+            .startup_error
+            .as_deref()
+            .is_some_and(|message| message.contains("expected exactly one")));
+        assert!(matches!(
+            events_rx.try_recv().unwrap(),
+            AgentRuntimeEvent::Fatal { message }
+                if message.contains("expected exactly one of result or error")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_turn_start_response必須field欠落はread_loopで失敗する() {
+        let input = br#"{"id":100}
+"#;
+        let mut stdout = StdoutLineReader::new(tokio::io::BufReader::new(&input[..]));
+        let mut runtime_state = runtime_state();
+        runtime_state
+            .pending_client_requests
+            .register(100, METHOD_TURN_START);
+        let state = Arc::new(Mutex::new(runtime_state));
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+
+        read_loop(
+            &mut stdout,
+            state,
+            events_tx,
+            Arc::new(AtomicBool::new(false)),
+            None,
+        )
+        .await;
+
+        assert!(matches!(
+            events_rx.try_recv().unwrap(),
+            AgentRuntimeEvent::TurnCompleted(TurnResult::Interrupted {
+                reason: InterruptReason::Crash,
+                error: Some(message),
+            }) if message.contains("expected exactly one of result or error")
+        ));
+        assert!(matches!(
+            events_rx.try_recv().unwrap(),
+            AgentRuntimeEvent::Fatal { .. }
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_read_loop_eofは_closed状態に応じて予期しない終了を報告する() {
+        TEST_LOG_CAPTURE_INIT.call_once(|| {
+            log::set_logger(&TEST_LOG_CAPTURE).unwrap();
+            log::set_max_level(log::LevelFilter::Warn);
+        });
+        *TEST_LOG_CAPTURE.thread_id.lock().unwrap() = Some(std::thread::current().id());
+
+        let input = b"";
+        let mut stdout = StdoutLineReader::new(tokio::io::BufReader::new(&input[..]));
+        let state = Arc::new(Mutex::new(runtime_state()));
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        read_loop(
+            &mut stdout,
+            state,
+            events_tx,
+            Arc::new(AtomicBool::new(false)),
+            None,
+        )
+        .await;
+
+        assert!(matches!(
+            events_rx.try_recv().unwrap(),
+            AgentRuntimeEvent::TurnCompleted(TurnResult::Interrupted {
+                reason: InterruptReason::Crash,
+                ..
+            })
+        ));
+        assert!(matches!(
+            events_rx.try_recv().unwrap(),
+            AgentRuntimeEvent::Fatal { .. }
+        ));
+        assert!(TEST_LOG_CAPTURE
+            .messages
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|message| message == "Codex app-server exited unexpectedly"));
+
+        TEST_LOG_CAPTURE.messages.lock().unwrap().clear();
+        let mut stdout = StdoutLineReader::new(tokio::io::BufReader::new(&input[..]));
+        let state = Arc::new(Mutex::new(runtime_state()));
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        read_loop(
+            &mut stdout,
+            state,
+            events_tx,
+            Arc::new(AtomicBool::new(true)),
+            None,
+        )
+        .await;
+
+        assert!(events_rx.try_recv().is_err());
+        assert!(TEST_LOG_CAPTURE.messages.lock().unwrap().is_empty());
+        *TEST_LOG_CAPTURE.thread_id.lock().unwrap() = None;
+    }
+
+    #[tokio::test]
+    async fn test_codex_read_loopは_mixed_stdout_fixture後も処理を継続する() {
+        let fixture =
+            include_bytes!("../../../../tests/fixtures/agent_session/mixed_stdout_codex.jsonl");
+        let (mut writer, reader) = tokio::io::duplex(4096);
+        let mut stdout = StdoutLineReader::with_max_line_bytes(
+            tokio::io::BufReader::with_capacity(64, reader),
+            256,
+        );
+        let state = Arc::new(Mutex::new(runtime_state()));
+        let read_state = Arc::clone(&state);
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        let closed = Arc::new(AtomicBool::new(false));
+        let read_closed = Arc::clone(&closed);
+        let read_task = tokio::spawn(async move {
+            read_loop(&mut stdout, read_state, events_tx, read_closed, None).await;
+        });
+
+        writer.write_all(fixture).await.unwrap();
+        let events = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            let mut events = Vec::new();
+            loop {
+                let event = events_rx.recv().await.unwrap();
+                let processed_following_json = matches!(
+                    &event,
+                    AgentRuntimeEvent::PartsMerged(parts)
+                        if parts.iter().any(|part| matches!(
+                            part,
+                            MessagePart::Text { content, .. } if content == "ok"
+                        ))
+                );
+                events.push(event);
+                if processed_following_json {
+                    return events;
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+        let state = state.lock().await;
+        assert_eq!(state.stdout_diagnostics.skipped_non_json_count(), 2);
+        assert_eq!(state.stdout_diagnostics.oversize_dropped_count(), 1);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentRuntimeEvent::PartsMerged(parts)
+                if parts.iter().any(|part| matches!(
+                    part,
+                    MessagePart::Error { content, .. }
+                        if content.contains("推定種別: item/agentMessage/delta")
+                ))
+        )));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            AgentRuntimeEvent::Fatal { .. }
+                | AgentRuntimeEvent::TurnCompleted(TurnResult::Interrupted {
+                    reason: InterruptReason::Crash,
+                    ..
+                })
+        )));
+        assert!(!read_task.is_finished());
+        drop(state);
+        closed.store(true, Ordering::Relaxed);
+        read_task.abort();
+    }
+
+    #[tokio::test]
+    async fn test_codex_read_loopは_pending中の非jsonをskipして応答と後続通知を処理する() {
+        let input = br#"diagnostic output while request is pending
+{"id":100,"result":{}}
+{"method":"item/agentMessage/delta","params":{"delta":"after pending response"}}
+"#;
+        let (mut writer, reader) = tokio::io::duplex(1024);
+        let mut stdout = StdoutLineReader::new(tokio::io::BufReader::new(reader));
+        let mut runtime_state = runtime_state();
+        runtime_state
+            .pending_client_requests
+            .register(100, METHOD_TURN_START);
+        let state = Arc::new(Mutex::new(runtime_state));
+        let read_state = Arc::clone(&state);
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        let closed = Arc::new(AtomicBool::new(false));
+        let read_closed = Arc::clone(&closed);
+        let read_task = tokio::spawn(async move {
+            read_loop(&mut stdout, read_state, events_tx, read_closed, None).await;
+        });
+
+        writer.write_all(input).await.unwrap();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(matches!(
+            event,
+            AgentRuntimeEvent::PartsMerged(parts)
+                if parts.iter().any(|part| matches!(
+                    part,
+                    MessagePart::Text { content, .. } if content == "after pending response"
+                ))
+        ));
+        assert!(events_rx.try_recv().is_err());
+        let mut state = state.lock().await;
+        assert_eq!(state.stdout_diagnostics.skipped_non_json_count(), 1);
+        assert!(state
+            .pending_client_requests
+            .take_response(&json!({ "id": 100, "result": {} }))
+            .unwrap()
+            .is_none());
+        assert!(!read_task.is_finished());
+        drop(state);
+        closed.store(true, Ordering::Relaxed);
+        read_task.abort();
+    }
+
+    #[test]
+    fn test_codex_stdout診断カウントは次turn開始時にリセットする() {
+        let mut state = runtime_state();
+        let probe = LineProbe {
+            kind_hint: None,
+            bytes: 9 * 1024 * 1024,
+        };
+        let _ = state
+            .stdout_diagnostics
+            .record_oversize_drop("codex", &probe);
+        state
+            .stdout_diagnostics
+            .record_non_json_skip("codex", &probe);
+
+        state.stdout_diagnostics.reset();
+
+        assert_eq!(state.stdout_diagnostics.oversize_dropped_count(), 0);
+        assert_eq!(state.stdout_diagnostics.skipped_non_json_count(), 0);
     }
 
     #[cfg(unix)]
