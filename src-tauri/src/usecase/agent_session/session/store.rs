@@ -21,6 +21,7 @@ use super::{
 /// 引数は `(session_id, worktree_path, new_state)`。
 pub type SessionStateChangeListener =
     Arc<dyn Fn(&str, &str, &SessionState) + Send + Sync + 'static>;
+pub type SessionEventLogRecoveryListener = Arc<dyn Fn(&str) + Send + Sync + 'static>;
 
 pub trait SessionReviewContextReader: Send + Sync {
     fn get_session_review_context(
@@ -28,6 +29,12 @@ pub trait SessionReviewContextReader: Send + Sync {
         app_data_dir: &Path,
         session_id: &str,
     ) -> Result<Option<SessionReviewContext>, String>;
+}
+
+/// Gateway が物理 event log を修復した事実を usecase へ一度だけ伝える signal。
+/// 修復方式や storage format は domain の writer API へ露出させない。
+pub(crate) trait SessionEventLogRecoverySignal: Send + Sync {
+    fn take_event_log_recovered(&self, session_id: &str) -> bool;
 }
 
 pub trait SessionStoragePort:
@@ -42,6 +49,7 @@ pub trait SessionStoragePort:
         ToolOutput = SessionToolOutput,
         Event = AgentSessionEvent,
     > + SessionReviewContextReader
+    + SessionEventLogRecoverySignal
     + Send
     + Sync
 {
@@ -59,6 +67,7 @@ impl<T> SessionStoragePort for T where
             ToolOutput = SessionToolOutput,
             Event = AgentSessionEvent,
         > + SessionReviewContextReader
+        + SessionEventLogRecoverySignal
         + Send
         + Sync
 {
@@ -91,10 +100,14 @@ pub(crate) type SessionPersistPartsHook =
 #[cfg(test)]
 pub(crate) type SessionAppendEventHook =
     Arc<dyn Fn(&str, &AgentSessionEvent) -> Result<(), String> + Send + Sync>;
+#[cfg(test)]
+pub(crate) type SessionSetStateHook =
+    Arc<dyn Fn(&str, &SessionState) -> Result<(), String> + Send + Sync>;
 
 pub struct SessionStore {
     storage: Arc<dyn SessionStoragePort>,
     state_change_listeners: RwLock<Vec<SessionStateChangeListener>>,
+    event_log_recovery_listeners: RwLock<Vec<SessionEventLogRecoveryListener>>,
     #[cfg(test)]
     save_hook: RwLock<Option<SessionSaveHook>>,
     #[cfg(test)]
@@ -103,6 +116,8 @@ pub struct SessionStore {
     persist_parts_hook: RwLock<Option<SessionPersistPartsHook>>,
     #[cfg(test)]
     append_event_hook: RwLock<Option<SessionAppendEventHook>>,
+    #[cfg(test)]
+    set_state_hook: RwLock<Option<SessionSetStateHook>>,
 }
 
 fn compact_session_title(title: &str) -> String {
@@ -217,6 +232,7 @@ impl SessionStore {
         Self {
             storage,
             state_change_listeners: RwLock::new(Vec::new()),
+            event_log_recovery_listeners: RwLock::new(Vec::new()),
             #[cfg(test)]
             save_hook: RwLock::new(None),
             #[cfg(test)]
@@ -225,6 +241,8 @@ impl SessionStore {
             persist_parts_hook: RwLock::new(None),
             #[cfg(test)]
             append_event_hook: RwLock::new(None),
+            #[cfg(test)]
+            set_state_hook: RwLock::new(None),
         }
     }
 
@@ -246,6 +264,11 @@ impl SessionStore {
     #[cfg(test)]
     pub(crate) fn set_append_event_hook_for_test(&self, hook: SessionAppendEventHook) {
         *self.append_event_hook.write() = Some(hook);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_state_hook_for_test(&self, hook: SessionSetStateHook) {
+        *self.set_state_hook.write() = Some(hook);
     }
 
     pub fn list_sessions(
@@ -469,6 +492,18 @@ impl SessionStore {
         session_id: &str,
         event: AgentSessionEvent,
     ) -> Result<SessionState, String> {
+        let projected_state =
+            self.append_session_event_and_project(app_data_dir, session_id, event)?;
+        self.set_session_state(app_data_dir, session_id, projected_state.clone())?;
+        Ok(projected_state)
+    }
+
+    pub fn append_session_event_and_project(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        event: AgentSessionEvent,
+    ) -> Result<SessionState, String> {
         #[cfg(test)]
         if let Some(hook) = self.append_event_hook.read().clone() {
             hook(session_id, &event)?;
@@ -476,11 +511,13 @@ impl SessionStore {
         let events = self
             .storage
             .append_session_event(app_data_dir, session_id, &event)?;
+        if self.storage.take_event_log_recovered(session_id) {
+            self.notify_event_log_recovered(session_id);
+        }
         let projected_state = TurnEventLog::from_events(events)
             .project()
             .status
             .session_state;
-        self.set_session_state(app_data_dir, session_id, projected_state.clone())?;
         Ok(projected_state)
     }
 
@@ -495,7 +532,11 @@ impl SessionStore {
             hook(session_id, &event)?;
         }
         self.storage
-            .append_session_event_without_projection(app_data_dir, session_id, &event)
+            .append_session_event_without_projection(app_data_dir, session_id, &event)?;
+        if self.storage.take_event_log_recovered(session_id) {
+            self.notify_event_log_recovered(session_id);
+        }
+        Ok(())
     }
 
     pub fn load_previous_human_message_before_agent(
@@ -608,10 +649,21 @@ impl SessionStore {
         self.state_change_listeners.write().push(listener);
     }
 
+    pub fn register_event_log_recovery_listener(&self, listener: SessionEventLogRecoveryListener) {
+        self.event_log_recovery_listeners.write().push(listener);
+    }
+
     fn notify_state_change(&self, session_id: &str, worktree_path: &str, new_state: &SessionState) {
         let listeners = self.state_change_listeners.read().clone();
         for listener in listeners {
             listener(session_id, worktree_path, new_state);
+        }
+    }
+
+    fn notify_event_log_recovered(&self, session_id: &str) {
+        let listeners = self.event_log_recovery_listeners.read().clone();
+        for listener in listeners {
+            listener(session_id);
         }
     }
 
@@ -680,6 +732,10 @@ impl SessionStore {
         session_id: &str,
         state: SessionState,
     ) -> Result<(), String> {
+        #[cfg(test)]
+        if let Some(hook) = self.set_state_hook.read().clone() {
+            hook(session_id, &state)?;
+        }
         let state_for_notify = state.clone();
         let change = self.update_meta_only(app_data_dir, session_id, |meta| {
             meta.state = state;

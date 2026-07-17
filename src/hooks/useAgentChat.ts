@@ -13,6 +13,7 @@ import type {
 	PermissionRequest,
 	PlanMode,
 	QueuedAgentTurn,
+	SessionNotice,
 	SessionSummary,
 	SlashCommand,
 	TokenUsage,
@@ -184,6 +185,7 @@ export interface UseAgentChatResult {
 	getSessionStallObservation: (
 		sessionId: string,
 	) => AgentStallObservation | null;
+	getSessionNotice: (sessionId: string) => SessionNotice | null;
 	getSessionLatestTokenUsage: (sessionId: string) => TokenUsage | null;
 	getSessionRuntimeSlashCommands: (sessionId: string) => SlashCommand[];
 	cancelQueuedTurn: (
@@ -1517,6 +1519,11 @@ export function useAgentChat(
 		}
 		return map;
 	}, [worktreeSessionStatuses]);
+	const getSessionNotice = useCallback(
+		(sessionId: string): SessionNotice | null =>
+			worktreeSessionStatuses.get(sessionId)?.notice ?? null,
+		[worktreeSessionStatuses],
+	);
 
 	const activityStatus = useMemo(
 		() => deriveActivityStatus(activeSession?.messages, activeTurnPhase),
@@ -1665,6 +1672,7 @@ export function useAgentChat(
 		getSessionPendingPermission,
 		getSessionPendingQueue,
 		getSessionStallObservation,
+		getSessionNotice,
 		getSessionLatestTokenUsage,
 		getSessionRuntimeSlashCommands,
 		cancelQueuedTurn,

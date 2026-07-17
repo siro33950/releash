@@ -45,6 +45,7 @@ pub(crate) use read_paths::{
     agent_read_paths_from_message, agent_read_paths_from_messages, agent_read_paths_from_parts,
     merge_agent_read_paths,
 };
+pub(crate) use store::SessionEventLogRecoverySignal;
 pub use store::{SessionReaderPort, SessionReviewContextReader, SessionStore};
 pub(crate) use stored_lifecycle::{
     AgentSessionBackendLifecycleGateway, AgentSessionRuntimeCloser, BackendSessionLifecycleRequest,

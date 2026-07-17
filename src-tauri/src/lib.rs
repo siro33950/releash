@@ -339,7 +339,7 @@ pub fn run() {
                     .path()
                     .app_data_dir()
                     .expect("failed to resolve app data directory");
-                app.manage(Arc::new(
+                let runtime_usecase = Arc::new(
                     usecase::agent_session::runtime::AgentSessionRuntimeUsecase::new(
                         runtime_session_store.clone(),
                         runtime_registry,
@@ -351,7 +351,12 @@ pub fn run() {
                         runtime_instruction_source,
                         runtime_data_dir,
                     ),
-                ));
+                );
+                adaptor::controller::event_log_recovery_wiring::register_event_log_recovery_listener(
+                    runtime_session_store.clone(),
+                    &runtime_usecase,
+                );
+                app.manage(runtime_usecase);
                 let stored_lifecycle_registry = app
                     .state::<Arc<usecase::agent_session::backend_registry::AgentBackendRegistry>>()
                     .inner()

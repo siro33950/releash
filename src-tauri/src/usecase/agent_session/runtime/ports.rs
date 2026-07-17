@@ -7,7 +7,7 @@ use crate::usecase::agent_session::session::{
     ChatMessage, ChatSession, ContextCarryState, ModelInfo, PermissionRequestMsg, SessionState,
     TokenUsage,
 };
-use crate::usecase::agent_session::status::TurnPhase;
+use crate::usecase::agent_session::status::{SessionNotice, TurnPhase};
 use crate::usecase::workflow::ports::{
     WorkflowStallClearedNotification, WorkflowStallObservedNotification,
     WorkflowTurnCompleteNotification,
@@ -48,6 +48,8 @@ pub(crate) struct AgentStallObservedPayload {
 }
 
 pub(crate) trait AgentSessionEventNotifier: Send + Sync {
+    fn persist_notice(&self, notice: SessionNotice);
+
     fn session_state_changed(&self, payload: AgentSessionStateChangedPayload);
 
     fn stall_observed(&self, payload: AgentStallObservedPayload);

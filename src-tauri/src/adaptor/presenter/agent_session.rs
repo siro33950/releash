@@ -10,7 +10,7 @@ use crate::usecase::agent_session::session::{
     project_tool_output_parts_for_stream, ChatMessage, ChatSession, ContextCarryState, ModelInfo,
     PermissionRequestMsg, SessionState, TokenUsage,
 };
-use crate::usecase::agent_session::status::TurnPhase;
+use crate::usecase::agent_session::status::{SessionNotice, TurnPhase};
 
 pub(crate) struct TauriAgentSessionEventNotifier {
     app: tauri::AppHandle,
@@ -95,6 +95,10 @@ struct AgentPendingMessageConsumedPayload {
 }
 
 impl AgentSessionEventNotifier for TauriAgentSessionEventNotifier {
+    fn persist_notice(&self, notice: SessionNotice) {
+        let _ = self.app.emit("agent-session-notice", notice);
+    }
+
     fn session_state_changed(&self, payload: AgentSessionStateChangedPayload) {
         let _ = self.app.emit(
             "agent-session-state-changed",

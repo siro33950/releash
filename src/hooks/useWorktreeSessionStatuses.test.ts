@@ -1,6 +1,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { SessionStatus } from "@/types/session";
+import type { SessionNotice, SessionStatus } from "@/types/session";
 import { useWorktreeSessionStatuses } from "./useWorktreeSessionStatuses";
 
 const mockInvoke = vi.fn();
@@ -110,6 +110,140 @@ describe("useWorktreeSessionStatuses", () => {
 
 		expect(result.current.size).toBe(1);
 		expect(result.current.get("z")).toBeUndefined();
+	});
+
+	it("merges session-scoped notice events into the backend status snapshot", async () => {
+		mockInvoke.mockResolvedValue([makeStatus()]);
+		type EventPayload = SessionStatus | SessionNotice;
+		type Cb = (event: { payload: EventPayload }) => void;
+		const callbacks: Record<string, Cb> = {};
+		mockListen.mockImplementation((event: string, fn: Cb) => {
+			callbacks[event] = fn;
+			return Promise.resolve(vi.fn());
+		});
+		const { result } = renderHook(() => useWorktreeSessionStatuses("/tmp/wt"));
+		await waitFor(() => {
+			expect(result.current.has("session-1")).toBe(true);
+		});
+		const notice: SessionNotice = {
+			sessionId: "session-1",
+			kind: "persist_failure",
+			message: "Unable to save the session.",
+			createdAt: 2_000,
+		};
+
+		await act(async () => {
+			callbacks["agent-session-notice"]?.({ payload: notice });
+		});
+
+		expect(result.current.get("session-1")?.notice).toEqual(notice);
+	});
+
+	it("keeps a notice pushed while the initial status snapshot is pending", async () => {
+		type EventPayload = SessionStatus | SessionNotice;
+		type Cb = (event: { payload: EventPayload }) => void;
+		const callbacks: Record<string, Cb> = {};
+		mockListen.mockImplementation((event: string, fn: Cb) => {
+			callbacks[event] = fn;
+			return Promise.resolve(vi.fn());
+		});
+		let resolveInitial: ((statuses: SessionStatus[]) => void) | undefined;
+		mockInvoke.mockImplementation(
+			() =>
+				new Promise<SessionStatus[]>((resolve) => {
+					resolveInitial = resolve;
+				}),
+		);
+		const { result } = renderHook(() => useWorktreeSessionStatuses("/tmp/wt"));
+		await waitFor(() => {
+			expect(callbacks["agent-session-notice"]).toBeDefined();
+		});
+		const notice: SessionNotice = {
+			sessionId: "session-1",
+			kind: "persist_failure",
+			message: "Unable to save the session.",
+			createdAt: 2_000,
+		};
+
+		await act(async () => {
+			callbacks["session-status-changed"]?.({
+				payload: makeStatus({ notice: null, last_activity_at: 1_000 }),
+			});
+			callbacks["agent-session-notice"]?.({ payload: notice });
+			resolveInitial?.([makeStatus({ notice: null, last_activity_at: 1_000 })]);
+		});
+
+		await waitFor(() => {
+			expect(result.current.get("session-1")?.notice).toEqual(notice);
+		});
+	});
+
+	it("keeps a newer snapshot notice over an older pending push", async () => {
+		type EventPayload = SessionStatus | SessionNotice;
+		type Cb = (event: { payload: EventPayload }) => void;
+		const callbacks: Record<string, Cb> = {};
+		mockListen.mockImplementation((event: string, fn: Cb) => {
+			callbacks[event] = fn;
+			return Promise.resolve(vi.fn());
+		});
+		let resolveInitial: ((statuses: SessionStatus[]) => void) | undefined;
+		mockInvoke.mockImplementation(
+			() =>
+				new Promise<SessionStatus[]>((resolve) => {
+					resolveInitial = resolve;
+				}),
+		);
+		const { result } = renderHook(() => useWorktreeSessionStatuses("/tmp/wt"));
+		await waitFor(() => {
+			expect(callbacks["agent-session-notice"]).toBeDefined();
+		});
+		const pendingNotice: SessionNotice = {
+			sessionId: "session-1",
+			kind: "persist_failure",
+			message: "Older pending notice",
+			createdAt: 2_000,
+		};
+		const snapshotNotice: SessionNotice = {
+			sessionId: "session-1",
+			kind: "event_log_recovered",
+			message: "Newer snapshot notice",
+			createdAt: 3_000,
+		};
+
+		await act(async () => {
+			callbacks["agent-session-notice"]?.({ payload: pendingNotice });
+			resolveInitial?.([makeStatus({ notice: snapshotNotice })]);
+		});
+
+		await waitFor(() => {
+			expect(result.current.get("session-1")?.notice).toEqual(snapshotNotice);
+		});
+	});
+
+	it("applies a backend status push that clears a persist notice", async () => {
+		const notice: SessionNotice = {
+			sessionId: "session-1",
+			kind: "persist_failure",
+			message: "Unable to save the session.",
+			createdAt: 2_000,
+		};
+		mockInvoke.mockResolvedValue([makeStatus({ notice })]);
+		type Cb = (event: { payload: SessionStatus }) => void;
+		let statusChanged: Cb | undefined;
+		mockListen.mockImplementation((event: string, fn: Cb) => {
+			if (event === "session-status-changed") statusChanged = fn;
+			return Promise.resolve(vi.fn());
+		});
+		const { result } = renderHook(() => useWorktreeSessionStatuses("/tmp/wt"));
+		await waitFor(() => {
+			expect(result.current.get("session-1")?.notice).toEqual(notice);
+		});
+
+		await act(async () => {
+			statusChanged?.({ payload: makeStatus({ notice: null }) });
+		});
+
+		expect(result.current.get("session-1")?.notice).toBeNull();
 	});
 
 	it("returns empty Map when invoke fails", async () => {

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 
@@ -6,8 +6,9 @@ use parking_lot::RwLock;
 
 use crate::usecase::agent_session::event_log::AgentSessionEvent;
 use crate::usecase::agent_session::session::{
-    ChatMessage, ChatSession, MessagePart, PageCursor, SessionAttachment, SessionMeta, SessionPage,
-    SessionReviewContext, SessionReviewContextReader, SessionToolOutput,
+    ChatMessage, ChatSession, MessagePart, PageCursor, SessionAttachment,
+    SessionEventLogRecoverySignal, SessionMeta, SessionPage, SessionReviewContext,
+    SessionReviewContextReader, SessionToolOutput,
 };
 
 mod attachment_blob;
@@ -34,6 +35,7 @@ pub struct FileSessionStorage {
     pub(super) invalid_sessions: RwLock<HashMap<String, String>>,
     pub(super) file_lock: parking_lot::Mutex<()>,
     pub(super) loaded: AtomicBool,
+    pub(super) recovered_event_logs: RwLock<HashSet<String>>,
     #[cfg(test)]
     pub(super) message_read_count: std::sync::atomic::AtomicUsize,
 }
@@ -45,6 +47,7 @@ impl Default for FileSessionStorage {
             invalid_sessions: RwLock::new(HashMap::new()),
             file_lock: parking_lot::Mutex::new(()),
             loaded: AtomicBool::new(false),
+            recovered_event_logs: RwLock::new(HashSet::new()),
             #[cfg(test)]
             message_read_count: std::sync::atomic::AtomicUsize::new(0),
         }
@@ -154,6 +157,12 @@ impl SessionReviewContextReader for FileSessionStorage {
         session_id: &str,
     ) -> Result<Option<SessionReviewContext>, String> {
         FileSessionStorage::get_session_review_context(self, app_data_dir, session_id)
+    }
+}
+
+impl SessionEventLogRecoverySignal for FileSessionStorage {
+    fn take_event_log_recovered(&self, session_id: &str) -> bool {
+        self.recovered_event_logs.write().remove(session_id)
     }
 }
 

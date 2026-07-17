@@ -6,6 +6,7 @@ import type {
 	PermissionMode,
 	PermissionRequest,
 	PlanMode,
+	SessionNotice,
 } from "@/types/session";
 
 const mocks = vi.hoisted(() => ({
@@ -36,6 +37,7 @@ vi.mock("./ChatSessionView", () => ({
 		onRespondPermission,
 		onSend,
 		stallObservation,
+		notice,
 	}: {
 		session: ChatSession;
 		permissionMode: PermissionMode;
@@ -48,6 +50,7 @@ vi.mock("./ChatSessionView", () => ({
 		) => void;
 		onSend: (content: string) => Promise<boolean>;
 		stallObservation?: AgentStallObservation | null;
+		notice?: SessionNotice | null;
 	}) => (
 		<div data-testid={`chat-${session.id}`}>
 			<span data-testid={`permission-${session.id}`}>{permissionMode}</span>
@@ -75,6 +78,9 @@ vi.mock("./ChatSessionView", () => ({
 				{stallObservation
 					? `${stallObservation.turnPhase}:${stallObservation.idleSecs}`
 					: "none"}
+			</span>
+			<span data-testid={`notice-${session.id}`}>
+				{notice?.message ?? "none"}
 			</span>
 		</div>
 	),
@@ -113,6 +119,7 @@ function setContext(
 	sessionsById: Record<string, ChatSession>,
 	pendingPermissions: Record<string, PermissionRequest | null> = {},
 	stallObservations: Record<string, AgentStallObservation | null> = {},
+	notices: Record<string, SessionNotice | null> = {},
 ) {
 	mocks.useAgentChatContext.mockReturnValue({
 		getSessionById: (sessionId: string | null | undefined) =>
@@ -134,6 +141,7 @@ function setContext(
 		getSessionPendingQueue: vi.fn().mockReturnValue([]),
 		getSessionStallObservation: (sessionId: string) =>
 			stallObservations[sessionId] ?? null,
+		getSessionNotice: (sessionId: string) => notices[sessionId] ?? null,
 		getSessionRuntimeSlashCommands: vi.fn().mockReturnValue([]),
 		availableModels: [],
 		availableModelsByBackend: {},
@@ -258,6 +266,46 @@ describe("BoundSessionChat", () => {
 
 		expect(screen.getByTestId("stall-session-a")).toHaveTextContent(
 			"streaming:181",
+		);
+	});
+
+	it("passes only the selected session notice to ChatSessionView", () => {
+		setContext(
+			{
+				"session-a": makeSession("session-a", "edit", false),
+				"session-b": makeSession("session-b", "edit", false),
+			},
+			{},
+			{},
+			{
+				"session-a": {
+					sessionId: "session-a",
+					kind: "persist_failure",
+					message: "Session A notice",
+					createdAt: 2_000,
+				},
+				"session-b": {
+					sessionId: "session-b",
+					kind: "event_log_recovered",
+					message: "Session B notice",
+					createdAt: 3_000,
+				},
+			},
+		);
+
+		render(
+			<BoundSessionChat
+				sessionId="session-a"
+				worktreePath="/repo"
+				skipInitialLoad
+			/>,
+		);
+
+		expect(screen.getByTestId("notice-session-a")).toHaveTextContent(
+			"Session A notice",
+		);
+		expect(screen.getByTestId("notice-session-a")).not.toHaveTextContent(
+			"Session B notice",
 		);
 	});
 

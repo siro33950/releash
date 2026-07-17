@@ -38,6 +38,7 @@ import type {
 	PermissionRequest,
 	PlanMode,
 	QueuedAgentTurn,
+	SessionNotice,
 	SlashCommand,
 } from "@/types/session";
 import { getTextContent } from "@/types/session";
@@ -629,6 +630,7 @@ export interface ChatSessionViewProps {
 	pendingPermission: PermissionRequest | null;
 	pendingQueue: QueuedAgentTurn[];
 	stallObservation?: AgentStallObservation | null;
+	notice?: SessionNotice | null;
 	runtimeSlashCommands?: SlashCommand[];
 	selectedBackendId: string | null;
 	canChangeBackend: boolean;
@@ -699,6 +701,7 @@ export function ChatSessionView({
 	pendingPermission,
 	pendingQueue,
 	stallObservation,
+	notice,
 	runtimeSlashCommands = [],
 	selectedBackendId,
 	canChangeBackend,
@@ -1716,6 +1719,22 @@ export function ChatSessionView({
 					<div className="px-2 pb-2">
 						<div className="bg-destructive/10 text-destructive rounded-lg px-3 py-2 text-sm">
 							{error}
+						</div>
+					</div>
+				)}
+				{notice && (
+					<div className="px-2 pb-2">
+						<div
+							className={
+								notice.kind === "persist_failure"
+									? "flex items-start gap-2 rounded border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+									: "flex items-start gap-2 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300"
+							}
+							role={notice.kind === "persist_failure" ? "alert" : "status"}
+							data-testid="session-notice-banner"
+						>
+							<AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+							<span>{notice.message}</span>
 						</div>
 					</div>
 				)}
