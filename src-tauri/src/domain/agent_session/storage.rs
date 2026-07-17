@@ -111,7 +111,7 @@ pub trait AgentSessionWriter: AgentSessionStorageTypes {
         app_data_dir: &Path,
         session_id: &str,
         message: &Self::Message,
-    ) -> Result<(), String>;
+    ) -> Result<Self::Meta, String>;
 
     fn persist_message_parts(
         &self,

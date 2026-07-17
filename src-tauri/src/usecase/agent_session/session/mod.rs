@@ -1478,6 +1478,27 @@ pub fn add_message_internal(
     parts: Option<Vec<MessagePart>>,
     mentions: Option<Vec<crate::domain::code::MentionReference>>,
 ) -> Result<ChatMessage, String> {
+    add_message_with_meta_internal(
+        session_store,
+        data_dir,
+        session_id,
+        role,
+        content,
+        parts,
+        mentions,
+    )
+    .map(|(message, _)| message)
+}
+
+pub(super) fn add_message_with_meta_internal(
+    session_store: &SessionStore,
+    data_dir: &std::path::Path,
+    session_id: &str,
+    role: MessageRole,
+    content: &str,
+    parts: Option<Vec<MessagePart>>,
+    mentions: Option<Vec<crate::domain::code::MentionReference>>,
+) -> Result<(ChatMessage, SessionMeta), String> {
     let now = now_timestamp();
     let mentions_for_persist = mentions.map(|v| {
         v.into_iter()
@@ -1495,8 +1516,8 @@ pub fn add_message_internal(
         timestamp: now,
         mentions: mentions_for_persist,
     };
-    session_store.append_message(data_dir, session_id, &message)?;
-    Ok(message)
+    let meta = session_store.append_message(data_dir, session_id, &message)?;
+    Ok((message, meta))
 }
 
 #[cfg(test)]

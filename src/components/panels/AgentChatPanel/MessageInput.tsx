@@ -51,9 +51,6 @@ interface PastedTextBlock {
 
 export interface MessageInputHandle {
 	addImageAttachments: (attachments: ImageAttachment[]) => void;
-	setDraft: (content: string) => void;
-	getDraft: () => string;
-	clearDraft: () => void;
 }
 
 interface MessageInputProps {
@@ -61,7 +58,7 @@ interface MessageInputProps {
 		content: string,
 		images?: ImageAttachment[],
 		mentions?: MentionReference[],
-	) => void | Promise<void>;
+	) => Promise<boolean>;
 	onInterrupt: () => void;
 	isStreaming: boolean;
 	/** interrupt 要求済みで turn 終了待ちの楽観状態。停止ボタンを停止中表示にする。*/
@@ -108,7 +105,10 @@ export function MessageInput({
 }: MessageInputProps) {
 	const planModeSwitchId = useId();
 	const [value, setValue] = useState("");
+	const draftRevisionRef = useRef(0);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
+	const [isSubmitting, setIsSubmitting] = useState(false);
+	const isSubmittingRef = useRef(false);
 	const [slashPopupDismissed, setSlashPopupDismissed] = useState(false);
 	const [selectedIndex, setSelectedIndex] = useState(0);
 	const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([]);
@@ -145,6 +145,7 @@ export function MessageInput({
 		return merged;
 	}, [runtimeSlashCommands]);
 	const setComposerValue = useCallback((nextValue: string) => {
+		draftRevisionRef.current += 1;
 		setValue(nextValue);
 		requestAnimationFrame(() => {
 			const el = textareaRef.current;
@@ -156,6 +157,7 @@ export function MessageInput({
 	}, []);
 	const setComposerValueWithCaret = useCallback(
 		(nextValue: string, caret: number) => {
+			draftRevisionRef.current += 1;
 			setValue(nextValue);
 			requestAnimationFrame(() => {
 				const el = textareaRef.current;
@@ -202,29 +204,8 @@ export function MessageInput({
 				const newImages = attachments.map(createAttachedImage);
 				setAttachedImages((prev) => [...prev, ...newImages]);
 			},
-			setDraft: (content: string) => {
-				setComposerValue(content);
-				setSlashPopupDismissed(false);
-				requestAnimationFrame(() => textareaRef.current?.focus());
-			},
-			getDraft: () => value,
-			clearDraft: () => {
-				setValue("");
-				setAttachedImages([]);
-				setPastedTextBlocks([]);
-				setMentionRefs([]);
-				setSlashPopupDismissed(false);
-				setSelectedIndex(0);
-				setMentionTrigger(null);
-				setMentionDismissed(false);
-				setMentionSelectedIndex(0);
-				setSkillTrigger(null);
-				setSkillDismissed(false);
-				setSkillSelectedIndex(0);
-				requestAnimationFrame(() => textareaRef.current?.focus());
-			},
 		}),
-		[createAttachedImage, setComposerValue, value],
+		[createAttachedImage],
 	);
 
 	const showSlashPopup =
@@ -334,7 +315,9 @@ export function MessageInput({
 	}, [skillQuery, skillDismissed, worktreePath, currentBackendId]);
 
 	const handleSelectCommand = useCallback((cmd: SlashCommand) => {
-		setValue(`/${cmd.name} `);
+		const nextValue = `/${cmd.name} `;
+		draftRevisionRef.current += 1;
+		setValue(nextValue);
 		setSlashPopupDismissed(true);
 		setSelectedIndex(0);
 		if (textareaRef.current) {
@@ -388,6 +371,7 @@ export function MessageInput({
 				mentionTrigger.start + 1 + mentionTrigger.query.length;
 			const after = value.slice(replacementEnd).replace(/^\s/, "");
 			const newValue = `${before}${token} ${after}`;
+			draftRevisionRef.current += 1;
 			setValue(newValue);
 			setMentionRefs((prev) => [
 				...prev,
@@ -417,6 +401,7 @@ export function MessageInput({
 				.replace(/^\s/, "");
 			const token = `/${skill.name}`;
 			const newValue = `${before}${token} ${after}`;
+			draftRevisionRef.current += 1;
 			setValue(newValue);
 			setSkillTrigger(null);
 			setSkillDismissed(true);
@@ -434,58 +419,102 @@ export function MessageInput({
 	);
 
 	const handleSubmit = useCallback(() => {
+		if (isSubmittingRef.current) return;
 		const trimmed = value.trim();
 		const hasImages = attachedImages.length > 0;
 		if (!trimmed && !hasImages) return;
 
-		const submitContent = async (submittedContent: string) => {
-			const currentMentions =
-				mentionRefs.length === 0
-					? undefined
-					: await syncMentionsForSubmit(submittedContent);
-			if (hasImages) {
-				onSend(
+		const submittedDraftRevision = draftRevisionRef.current;
+		const submittedImages = attachedImages;
+		const submittedImageIds = new Set(submittedImages.map((image) => image.id));
+		const submittedPastedTextIds = new Set(
+			pastedTextBlocks.map((block) => block.id),
+		);
+		const submittedMentions = mentionRefs;
+		isSubmittingRef.current = true;
+		setIsSubmitting(true);
+
+		const submitContent = async () => {
+			let failureStage: "pre-send processing" | "send" = "pre-send processing";
+			try {
+				let submittedContent = trimmed;
+				if (pastedTextBlocks.length > 0) {
+					try {
+						submittedContent = await expandSubmittedContent(trimmed);
+					} catch (error) {
+						console.error("Failed to expand pasted text blocks:", error);
+						return;
+					}
+				}
+				const currentMentions =
+					submittedMentions.length === 0
+						? undefined
+						: await syncMentionsForSubmit(submittedContent);
+				failureStage = "send";
+				const sent = await onSend(
 					submittedContent,
-					attachedImages.map((img) => img.attachment),
+					hasImages
+						? submittedImages.map((image) => image.attachment)
+						: undefined,
 					currentMentions,
 				);
-			} else {
-				onSend(submittedContent, undefined, currentMentions);
-			}
-			setValue("");
-			setAttachedImages([]);
-			setPastedTextBlocks([]);
-			setMentionRefs([]);
-			setSlashPopupDismissed(false);
-			setSelectedIndex(0);
-			setMentionTrigger(null);
-			setMentionDismissed(false);
-			setMentionSelectedIndex(0);
-			setSkillTrigger(null);
-			setSkillDismissed(false);
-			setSkillSelectedIndex(0);
-			if (textareaRef.current) {
-				textareaRef.current.style.height = "auto";
+				if (sent !== true) return;
+
+				const draftWasEdited =
+					draftRevisionRef.current !== submittedDraftRevision;
+				if (!draftWasEdited) {
+					setValue("");
+					setPastedTextBlocks((current) =>
+						current.filter((block) => !submittedPastedTextIds.has(block.id)),
+					);
+					setMentionRefs((current) => {
+						const remainingSubmitted = [...submittedMentions];
+						return current.filter((mention) => {
+							const submittedIndex = remainingSubmitted.findIndex(
+								(submitted) =>
+									submitted.filePath === mention.filePath &&
+									submitted.startLine === mention.startLine &&
+									submitted.endLine === mention.endLine,
+							);
+							if (submittedIndex === -1) return true;
+							remainingSubmitted.splice(submittedIndex, 1);
+							return false;
+						});
+					});
+				}
+				setAttachedImages((current) =>
+					current.filter((image) => !submittedImageIds.has(image.id)),
+				);
+				if (!draftWasEdited) {
+					setSlashPopupDismissed(false);
+					setSelectedIndex(0);
+					setMentionTrigger(null);
+					setMentionDismissed(false);
+					setMentionSelectedIndex(0);
+					setSkillTrigger(null);
+					setSkillDismissed(false);
+					setSkillSelectedIndex(0);
+					if (textareaRef.current) {
+						textareaRef.current.style.height = "auto";
+					}
+				}
+			} catch (error) {
+				console.error(`Message ${failureStage} failed:`, error);
+			} finally {
+				isSubmittingRef.current = false;
+				setIsSubmitting(false);
 			}
 		};
 
-		if (pastedTextBlocks.length > 0) {
-			void expandSubmittedContent(trimmed)
-				.then(submitContent)
-				.catch((e) => {
-					console.error("Failed to expand pasted text blocks:", e);
-				});
-			return;
-		}
-		void submitContent(trimmed);
+		void submitContent();
 	}, [
 		value,
 		onSend,
 		attachedImages,
 		expandSubmittedContent,
-		mentionRefs.length,
+		mentionRefs,
 		syncMentionsForSubmit,
-		pastedTextBlocks.length,
+		pastedTextBlocks,
 	]);
 
 	const handleKeyDown = useCallback(
@@ -604,6 +633,7 @@ export function MessageInput({
 	const handleChange = useCallback(
 		(e: React.ChangeEvent<HTMLTextAreaElement>) => {
 			const newValue = e.target.value;
+			draftRevisionRef.current += 1;
 			setValue(newValue);
 			setSlashPopupDismissed(false);
 			setSelectedIndex(0);
@@ -820,7 +850,7 @@ export function MessageInput({
 								size="icon"
 								className="h-7 w-7 shrink-0"
 								onClick={handleSubmit}
-								disabled={!canSend}
+								disabled={!canSend || isSubmitting}
 								aria-label={submitLabel}
 								title={submitLabel}
 							>

@@ -314,7 +314,6 @@ impl SessionStore {
         self.set_session_state(app_data_dir, session_id, SessionState::Archived)
     }
 
-    #[allow(dead_code)] // Search uses session_titles() to avoid N+1; single-title lookup is retained for focused callers.
     pub fn session_title(
         &self,
         app_data_dir: &Path,
@@ -868,7 +867,7 @@ impl SessionStore {
         app_data_dir: &Path,
         session_id: &str,
         message: &ChatMessage,
-    ) -> Result<(), String> {
+    ) -> Result<SessionMeta, String> {
         #[cfg(test)]
         if let Some(hook) = self.append_message_hook.read().clone() {
             hook(session_id, message)?;

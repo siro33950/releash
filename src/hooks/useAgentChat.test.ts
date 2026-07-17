@@ -268,13 +268,15 @@ describe("useAgentChat", () => {
 
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
+		let succeeded: boolean | undefined;
 		await act(async () => {
-			await result.current.sendMessage(
+			succeeded = await result.current.sendMessage(
 				result.current.activeSession?.id ?? null,
 				"hello",
 			);
 		});
 
+		expect(succeeded).toBe(true);
 		expect(sessionStore.sendAgentMessage).toHaveBeenCalledWith(
 			null,
 			"/repo",
@@ -285,6 +287,24 @@ describe("useAgentChat", () => {
 			undefined,
 			undefined,
 		);
+	});
+
+	it("sendMessage returns false when the send API fails", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		vi.mocked(sessionStore.sendAgentMessage).mockRejectedValueOnce(
+			new Error("send failed"),
+		);
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		let succeeded: boolean | undefined;
+		await act(async () => {
+			succeeded = await result.current.sendMessage(null, "keep this");
+		});
+
+		expect(succeeded).toBe(false);
+		expect(result.current.error).toContain("メッセージ送信に失敗");
 	});
 
 	it("sendMessage passes images to sendAgentMessage", async () => {
@@ -674,6 +694,51 @@ describe("useAgentChat", () => {
 		expect(
 			result.current.activeSession?.messages.map((message) => message.id),
 		).toEqual(["msg-1", "msg-2"]);
+	});
+
+	it("sendMessage mirrors a non-empty accepted pending queue", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		const pendingQueue = [
+			{
+				id: "queued-1",
+				contentPreview: "follow-up",
+				createdAt: 1002,
+				permissionMode: "edit" as const,
+				imageCount: 0,
+			},
+		];
+		vi.mocked(sessionStore.sendAgentMessage).mockResolvedValueOnce({
+			session: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [],
+				state: "active",
+				createdAt: 1000,
+				updatedAt: 1002,
+				permissionMode: "edit",
+			},
+			humanMessage: {
+				id: "msg-queued",
+				role: "human",
+				parts: [{ type: "text", content: "follow-up" }],
+				timestamp: 1002,
+			},
+			agentMessage: null,
+			queuedTurn: pendingQueue[0],
+			pendingQueue,
+			pendingQueueCount: 1,
+			canChangeBackend: false,
+			sessions: [],
+		});
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		await act(async () => {
+			await result.current.sendMessage("s1", "follow-up");
+		});
+
+		expect(result.current.getSessionPendingQueue("s1")).toEqual(pendingQueue);
 	});
 
 	it("sendMessage can create a new session without activating it", async () => {

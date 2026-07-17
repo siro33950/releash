@@ -29,10 +29,11 @@ use crate::usecase::agent_session::event_log::{
     WorkflowTurnCompleteInput,
 };
 use crate::usecase::agent_session::session::{
-    add_message_internal, apply_tool_result_update, create_session_with_model_and_plan_mode,
-    ChatMessage, ChatSession, ContextCarryState, GetSessionResponse, ImageAttachment,
-    InitialSessionPage, MessagePart, MessageRole, ModelInfo, OpenTabRegistry, PermissionRequestMsg,
-    QueuedAgentTurn, SessionState, SessionStore, SessionSummary, INITIAL_SESSION_PAGE_LIMIT,
+    add_message_internal, add_message_with_meta_internal, apply_tool_result_update,
+    create_session_with_model_and_plan_mode, ChatMessage, ChatSession, ContextCarryState,
+    GetSessionResponse, ImageAttachment, InitialSessionPage, MessagePart, MessageRole, ModelInfo,
+    OpenTabRegistry, PermissionRequestMsg, QueuedAgentTurn, SessionMeta, SessionState,
+    SessionStore, SessionSummary, INITIAL_SESSION_PAGE_LIMIT,
 };
 use crate::usecase::agent_session::status::{
     AgentStatusCenter, AgentStatusNotifier, SessionStatus, TurnPhase, TurnPhaseRepr,
@@ -168,6 +169,50 @@ pub struct SendMessageResponse {
     pub sessions: Vec<SessionSummary>,
 }
 
+struct SendResponseProjection {
+    session: ChatSession,
+    sessions: Vec<SessionSummary>,
+}
+
+impl SendResponseProjection {
+    fn into_accepted_queue_response(
+        mut self,
+        session_title: Option<String>,
+        human_message: ChatMessage,
+        persisted_meta: SessionMeta,
+        queued_turn: QueuedAgentTurn,
+        pending_queue: Vec<QueuedAgentTurn>,
+    ) -> SendMessageResponse {
+        self.session = persisted_meta.to_session(Vec::new());
+        let mut persisted_summary = persisted_meta.to_summary();
+        if let Some(title) = session_title {
+            persisted_summary.first_message = title;
+        }
+        if let Some(summary) = self
+            .sessions
+            .iter_mut()
+            .find(|summary| summary.id == self.session.id)
+        {
+            *summary = persisted_summary;
+        }
+        self.sessions.sort_by(|a, b| {
+            b.updated_at
+                .partial_cmp(&a.updated_at)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        SendMessageResponse {
+            session: self.session,
+            human_message,
+            agent_message: None,
+            queued_turn: Some(queued_turn),
+            pending_queue_count: pending_queue.len(),
+            pending_queue,
+            can_change_backend: false,
+            sessions: self.sessions,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CancelQueuedTurnResponse {
@@ -289,12 +334,11 @@ impl AgentSessionRuntimeUsecase {
         let backend_id = required_backend_id(&session)?;
         self.recover_queued_turn_if_idle_without_runtime(&session_id)
             .await;
-        let stalled_active_turn = self.stalled_active_turn_target(&session_id).await?;
-        if stalled_active_turn.is_some() && !self.backend_supports_steering(&backend_id) {
-            return Err(AgentRuntimeError::Other(format!(
-                "active-turn steering is not available for backend '{backend_id}'"
-            )));
-        }
+        let stalled_active_turn = if self.backend_supports_steering(&backend_id) {
+            self.stalled_active_turn_target(&session_id).await?
+        } else {
+            None
+        };
         if self.is_turn_busy(&session_id).await {
             if let Some(target) = stalled_active_turn {
                 target
@@ -317,7 +361,7 @@ impl AgentSessionRuntimeUsecase {
                     })
                     .await
                     .map_err(AgentRuntimeError::from)?;
-                let human_message = add_human_message_internal(
+                let (human_message, _) = add_human_message_internal(
                     &self.ctx.session_store,
                     &self.ctx.data_dir,
                     &session_id,
@@ -334,7 +378,17 @@ impl AgentSessionRuntimeUsecase {
                     self.pending_queue(&session_id).await,
                 );
             }
-            let human_message = add_human_message_internal(
+            // Resolve fallible read-model projections before accepting the message. Once the
+            // human message is persisted and queued, the command must return an accepted
+            // response so the composer cannot retain and resend an already-queued input.
+            let response_projection =
+                self.prepare_send_response_projection(&session_id, &session.worktree_path)?;
+            let session_title = self
+                .ctx
+                .session_store
+                .session_title(&self.ctx.data_dir, &session_id)
+                .map_err(AgentRuntimeError::Other)?;
+            let (human_message, persisted_meta) = add_human_message_internal(
                 &self.ctx.session_store,
                 &self.ctx.data_dir,
                 &session_id,
@@ -362,17 +416,16 @@ impl AgentSessionRuntimeUsecase {
                 state.pending_queue.push_back(queued);
                 pending_queue_view(state)
             };
-            return self.send_response(
-                &session_id,
-                &session.worktree_path,
+            return Ok(response_projection.into_accepted_queue_response(
+                session_title,
                 human_message,
-                None,
-                Some(queued_view),
+                persisted_meta,
+                queued_view,
                 pending_queue,
-            );
+            ));
         }
 
-        let human_message = add_human_message_internal(
+        let (human_message, _) = add_human_message_internal(
             &self.ctx.session_store,
             &self.ctx.data_dir,
             &session_id,
@@ -1681,6 +1734,24 @@ impl AgentSessionRuntimeUsecase {
         queued_turn: Option<QueuedAgentTurn>,
         pending_queue: Vec<QueuedAgentTurn>,
     ) -> Result<SendMessageResponse, AgentRuntimeError> {
+        let projection = self.prepare_send_response_projection(session_id, worktree_path)?;
+        Ok(SendMessageResponse {
+            session: projection.session,
+            human_message,
+            agent_message,
+            queued_turn,
+            pending_queue_count: pending_queue.len(),
+            pending_queue,
+            can_change_backend: false,
+            sessions: projection.sessions,
+        })
+    }
+
+    fn prepare_send_response_projection(
+        &self,
+        session_id: &str,
+        worktree_path: &str,
+    ) -> Result<SendResponseProjection, AgentRuntimeError> {
         let session = self
             .ctx
             .session_store
@@ -1692,16 +1763,7 @@ impl AgentSessionRuntimeUsecase {
             .session_store
             .list_sessions(&self.ctx.data_dir, worktree_path)
             .map_err(AgentRuntimeError::Other)?;
-        Ok(SendMessageResponse {
-            session,
-            human_message,
-            agent_message,
-            queued_turn,
-            pending_queue_count: pending_queue.len(),
-            pending_queue,
-            can_change_backend: false,
-            sessions,
-        })
+        Ok(SendResponseProjection { session, sessions })
     }
 
     fn available_models_for_session(
@@ -3717,9 +3779,9 @@ fn add_human_message_internal(
     content: &str,
     images: &[ImageAttachment],
     mentions: &[crate::domain::code::MentionReference],
-) -> Result<ChatMessage, AgentRuntimeError> {
+) -> Result<(ChatMessage, SessionMeta), AgentRuntimeError> {
     let parts = human_parts(content, images);
-    add_message_internal(
+    add_message_with_meta_internal(
         session_store,
         data_dir,
         session_id,
@@ -5776,6 +5838,152 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_send_message_queue受理後のprojection障害でも成功応答を返す() {
+        // Given: an active turn whose message index does not yet include an orphan chunk, and a
+        // projection store that becomes unreadable while the queued human message is persisted.
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                tmp.path(),
+            );
+        let first = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = first.session.id;
+        wait_for_start_prompt_count(&controller, &session_id, 1).await;
+        let orphan = ChatMessage {
+            id: "orphan-agent-message".to_string(),
+            role: MessageRole::Agent,
+            content: "recovered orphan".to_string(),
+            thinking: None,
+            activities: None,
+            parts: None,
+            streaming_final_seq: 0,
+            timestamp: first.session.updated_at,
+            mentions: None,
+        };
+        let orphan_path = tmp
+            .path()
+            .join("sessions")
+            .join(&session_id)
+            .join("messages")
+            .join("3.json");
+        std::fs::write(
+            orphan_path,
+            serde_json::to_vec_pretty(&orphan).expect("orphan message must serialize"),
+        )
+        .unwrap();
+        let titles_path = tmp.path().join("session_titles.json");
+        session_store.set_append_message_hook_for_test(Arc::new(move |_, _| {
+            std::fs::write(&titles_path, "{").map_err(|error| error.to_string())
+        }));
+
+        // When: the follow-up is accepted into the pending queue.
+        let response = usecase
+            .send_message(SendAgentMessageRequest {
+                chat_session_id: Some(session_id.clone()),
+                worktree_path: tmp.path().to_string_lossy().to_string(),
+                content: "queue exactly once".to_string(),
+                permission_mode: PermissionMode::Edit,
+                plan_mode: false,
+                backend_id: Some("claude".to_string()),
+                model_id: None,
+                images: None,
+                mentions: None,
+                editor_context: None,
+            })
+            .await
+            .expect("accepted queue input must not fail during response projection");
+
+        // Then: the accepted response uses the append's repaired post-write meta even though a
+        // fresh all-session projection now fails, and the queued message exists exactly once.
+        assert!(response.queued_turn.is_some());
+        assert_eq!(response.pending_queue_count, 1);
+        let response_message_count = response
+            .sessions
+            .iter()
+            .find(|summary| summary.id == session_id)
+            .map(|summary| summary.message_count)
+            .expect("accepted session summary must be present");
+        assert!(session_store
+            .list_sessions(tmp.path(), tmp.path().to_string_lossy().as_ref())
+            .is_err());
+        let stored = session_store
+            .load_full_session_for_restore(tmp.path(), &session_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(response_message_count, 4);
+        assert_eq!(response_message_count, stored.messages.len());
+        assert!(stored
+            .messages
+            .iter()
+            .any(|message| message.id == orphan.id));
+        assert_eq!(
+            stored
+                .messages
+                .iter()
+                .filter(|message| message.content == "queue exactly once")
+                .count(),
+            1
+        );
+        assert_eq!(usecase.pending_queue(&session_id).await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_send_message_queue受理応答のsummaryにcustom_titleを再適用する() {
+        // Given: a busy session with an observed stall and a custom title.
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                tmp.path(),
+            );
+        let first = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = first.session.id;
+        wait_for_start_prompt_count(&controller, &session_id, 1).await;
+        mark_stall_observation_active_for_test(&usecase, &session_id).await;
+        let custom_title = "Investigate queued follow-up";
+        session_store
+            .set_session_title(tmp.path(), &session_id, Some(custom_title))
+            .unwrap();
+
+        // When: the follow-up is accepted into the pending queue.
+        let response = usecase
+            .send_message(SendAgentMessageRequest {
+                chat_session_id: Some(session_id.clone()),
+                worktree_path: tmp.path().to_string_lossy().to_string(),
+                content: "queue this".to_string(),
+                permission_mode: PermissionMode::Edit,
+                plan_mode: false,
+                backend_id: Some("claude".to_string()),
+                model_id: None,
+                images: None,
+                mentions: None,
+                editor_context: None,
+            })
+            .await
+            .unwrap();
+
+        // Then: replacing the summary with post-write meta does not discard the custom title.
+        assert!(response.queued_turn.is_some());
+        assert_eq!(
+            response
+                .sessions
+                .iter()
+                .find(|summary| summary.id == session_id)
+                .map(|summary| summary.first_message.as_str()),
+            Some(custom_title)
+        );
+    }
+
+    #[tokio::test]
     async fn test_failed終端したturnの後も同一sessionへの次sendは新turnを開始できる() {
         // Given: a session whose turn ends as Failed (e.g. Codex remote compact failure).
         let tmp = tempfile::tempdir().unwrap();
@@ -7599,7 +7807,25 @@ mod tests {
             .await
             .unwrap();
         wait_for_stall_observation_count(&event_notifier, 1).await;
-        let send_error = tokio::time::timeout(
+        let images = vec![ImageAttachment {
+            data: "iVBORw==".to_string(),
+            media_type: "image/png".to_string(),
+        }];
+        let mentions = vec![crate::domain::code::MentionReference {
+            file_path: "src/main.rs".to_string(),
+            start_line: Some(10),
+            end_line: Some(20),
+        }];
+        let editor_context = AgentEditorContext {
+            active_editor_path: Some("src/main.rs".to_string()),
+            open_editor_paths: vec!["src/main.rs".to_string(), "README.md".to_string()],
+            selection: Some(AgentEditorSelection {
+                file_path: "src/main.rs".to_string(),
+                start_line: 10,
+                end_line: 20,
+            }),
+        };
+        let response = tokio::time::timeout(
             Duration::from_millis(200),
             usecase.send_message(SendAgentMessageRequest {
                 chat_session_id: Some(session.id.clone()),
@@ -7609,21 +7835,35 @@ mod tests {
                 plan_mode: false,
                 backend_id: Some("claude".to_string()),
                 model_id: None,
-                images: None,
-                mentions: None,
-                editor_context: None,
+                images: Some(images.clone()),
+                mentions: Some(mentions.clone()),
+                editor_context: Some(editor_context.clone()),
             }),
         )
         .await
         .expect("send_message must not wait for stale recovery")
-        .expect_err("stalled active turn on a non-steering backend must be explicit");
+        .expect("stalled active turn on a non-steering backend must queue");
         wait_for_workflow_stall_notification_count(&workflow_stall_notifier, 1).await;
 
-        // Then: the watchdog only emits a non-terminal signal and tries non-destructive recovery.
-        assert!(
-            format!("{send_error:?}").contains("active-turn steering is not available"),
-            "stalled retry/continue must not be silently queued: {send_error:?}"
-        );
+        // Then: the watchdog remains non-terminal and the follow-up is durably queued.
+        assert!(response.agent_message.is_none());
+        assert!(response.queued_turn.is_some());
+        assert_eq!(response.pending_queue_count, 1);
+        {
+            let sessions = usecase.ctx.sessions.lock().await;
+            let queued = sessions
+                .get(&session.id)
+                .and_then(|state| state.pending_queue.front())
+                .expect("stalled follow-up must remain in the pending queue");
+            assert_eq!(queued.content, "next");
+            assert_eq!(queued.images, images);
+            assert_eq!(queued.mentions, mentions);
+            assert_eq!(queued.editor_context, Some(editor_context));
+            assert_eq!(
+                queued.existing_human_message_id.as_deref(),
+                Some(response.human_message.id.as_str())
+            );
+        }
         let calls = controller.call_kinds_for(&session.id);
         assert!(calls.contains(&TestRuntimeCallKind::Reconnect));
         assert!(!calls.contains(&TestRuntimeCallKind::Interrupt));
@@ -7632,9 +7872,13 @@ mod tests {
             usecase.turn_phase(&session.id).await,
             Some(TurnPhase::Streaming)
         );
-        assert!(usecase.pending_queue(&session.id).await.is_empty());
         let loaded = usecase.get_session(&session.id).await.unwrap().unwrap();
         assert_eq!(loaded.session.state, SessionState::Active);
+        assert!(loaded
+            .session
+            .messages
+            .iter()
+            .any(|message| message.id == response.human_message.id));
         assert!(event_notifier.stall_observations().iter().any(|payload| {
             payload.chat_session_id == session.id
                 && payload.turn_phase == TurnPhase::Streaming
@@ -7648,6 +7892,24 @@ mod tests {
                     && payload.turn_phase == "streaming"
                     && payload.signal_count >= 1
             }));
+
+        // And: completion of the stalled turn drains the queued follow-up into a new turn.
+        controller
+            .emit(
+                &session.id,
+                AgentRuntimeEvent::TurnCompleted(TurnResult::Completed {
+                    stop_reason: None,
+                    token_usage: None,
+                }),
+            )
+            .unwrap();
+        wait_for_start_prompt_count(&controller, &session.id, 2).await;
+        assert!(usecase.pending_queue(&session.id).await.is_empty());
+        assert!(controller.call_kinds_for(&session.id).contains(
+            &TestRuntimeCallKind::StartTurnPrompt {
+                prompt: "next".to_string(),
+            }
+        ));
     }
 
     #[tokio::test]

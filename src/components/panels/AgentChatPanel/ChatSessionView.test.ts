@@ -6,6 +6,7 @@ import type {
 	AgentStallObservation,
 	ChatSession,
 	PermissionRequest,
+	QueuedAgentTurn,
 } from "@/types/session";
 import { ChatSessionView } from "./ChatSessionView";
 
@@ -109,6 +110,7 @@ interface RenderOptions {
 		onEvicted?: (eviction: { count: number; direction: "older" }) => void;
 	}) => void;
 	pendingPermission?: PermissionRequest | null;
+	pendingQueue?: QueuedAgentTurn[];
 	onRespondPermission?: (
 		requestId: string,
 		allow: boolean,
@@ -123,6 +125,7 @@ function chatSessionViewElement({
 	onLoadOlderMessages = vi.fn().mockResolvedValue(undefined),
 	onEvictOlderMessages,
 	pendingPermission = null,
+	pendingQueue = [],
 	onRespondPermission = vi.fn(),
 }: RenderOptions = {}) {
 	return createElement(ChatSessionView, {
@@ -137,12 +140,12 @@ function chatSessionViewElement({
 		backends: [],
 		selectedModel: "claude:sonnet",
 		pendingPermission,
-		pendingQueue: [],
+		pendingQueue,
 		stallObservation,
 		selectedBackendId: null,
 		canChangeBackend: false,
 		worktreePath: "/repo",
-		onSend: vi.fn().mockResolvedValue(undefined),
+		onSend: vi.fn().mockResolvedValue(true),
 		onInterrupt: vi.fn(),
 		onCancelQueuedTurn: vi.fn().mockResolvedValue(undefined),
 		onLoadOlderMessages,
@@ -227,6 +230,32 @@ describe("ChatSessionView session-local controls", () => {
 			},
 		],
 	};
+
+	it("renders text and image-only pending queue entries", () => {
+		renderChatSessionView({
+			pendingQueue: [
+				{
+					id: "queued-text",
+					contentPreview: "Review the failing logs",
+					createdAt: 1002,
+					permissionMode: "edit",
+					imageCount: 0,
+				},
+				{
+					id: "queued-image",
+					contentPreview: "",
+					createdAt: 1003,
+					permissionMode: "edit",
+					imageCount: 1,
+				},
+			],
+		});
+
+		expect(screen.getByText("Queued 1")).toBeInTheDocument();
+		expect(screen.getByText("Review the failing logs")).toBeInTheDocument();
+		expect(screen.getByText("Queued 2")).toBeInTheDocument();
+		expect(screen.getByText("[image]")).toBeInTheDocument();
+	});
 
 	it("keeps find and raw scrollback available from the toolbar", async () => {
 		const user = userEvent.setup();

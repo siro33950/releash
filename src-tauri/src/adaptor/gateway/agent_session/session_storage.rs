@@ -202,7 +202,7 @@ impl crate::domain::agent_session::AgentSessionWriter for FileSessionStorage {
         app_data_dir: &Path,
         session_id: &str,
         message: &Self::Message,
-    ) -> Result<(), String> {
+    ) -> Result<Self::Meta, String> {
         FileSessionStorage::append_message(self, app_data_dir, session_id, message)
     }
 

@@ -123,7 +123,7 @@ export interface UseAgentChatResult {
 		images?: ImageAttachment[],
 		mentions?: MentionReference[],
 		options?: SendMessageOptions,
-	) => Promise<void>;
+	) => Promise<boolean>;
 	interrupt: (sessionId: string) => void;
 	selectSession: (sessionId: string) => Promise<void>;
 	refreshSessions: (
@@ -798,7 +798,7 @@ export function useAgentChat(
 			options?: SendMessageOptions,
 		) => {
 			const trimmed = content.trim();
-			if (!trimmed && (!images || images.length === 0)) return;
+			if (!trimmed && (!images || images.length === 0)) return false;
 
 			try {
 				const wPath = worktreePathRef.current;
@@ -911,11 +911,13 @@ export function useAgentChat(
 				}
 				dispatch({ type: "SET_SESSIONS", sessions: response.sessions });
 				dispatchWorkspaceTreeRefresh(response.session.worktreePath);
+				return true;
 			} catch (e) {
 				dispatch({
 					type: "SET_ERROR",
 					error: `メッセージ送信に失敗: ${e}`,
 				});
+				return false;
 			}
 		},
 		[
