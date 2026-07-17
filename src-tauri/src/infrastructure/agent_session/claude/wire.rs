@@ -141,10 +141,14 @@ pub(crate) fn user_message(
     prompt: &str,
     images: impl IntoIterator<Item = (String, String)>,
 ) -> Value {
-    let mut content = vec![json!({
-        "type": "text",
-        "text": prompt,
-    })];
+    let images = images.into_iter().collect::<Vec<_>>();
+    let mut content = Vec::new();
+    if !prompt.is_empty() || images.is_empty() {
+        content.push(json!({
+            "type": "text",
+            "text": prompt,
+        }));
+    }
     for (media_type, data) in images {
         content.push(json!({
             "type": "image",
@@ -181,12 +185,43 @@ mod tests {
     #[test]
     fn test_claude_user_message画像をstream_json形式にする() {
         let message = user_message("hello", [("image/png".to_string(), "abc".to_string())]);
+        let content = message["message"]["content"].as_array().unwrap();
 
         assert_eq!(message["type"], TYPE_USER);
-        assert_eq!(message["message"]["content"][0]["text"], "hello");
-        assert_eq!(
-            message["message"]["content"][1]["source"]["media_type"],
-            "image/png"
-        );
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "hello");
+        assert_eq!(content[1]["type"], "image");
+        assert_eq!(content[1]["source"]["media_type"], "image/png");
+    }
+
+    #[test]
+    fn test_claude_user_message画像のみなら空text_blockを含めない() {
+        let message = user_message("", [("image/png".to_string(), "abc".to_string())]);
+        let content = message["message"]["content"].as_array().unwrap();
+
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["type"], "image");
+        assert_eq!(content[0]["source"]["media_type"], "image/png");
+    }
+
+    #[test]
+    fn test_claude_user_message本文のみならtext_blockだけを含める() {
+        let message = user_message("hello", []);
+        let content = message["message"]["content"].as_array().unwrap();
+
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "hello");
+    }
+
+    #[test]
+    fn test_claude_user_message本文も画像もなければ空text_blockを含める() {
+        let message = user_message("", []);
+        let content = message["message"]["content"].as_array().unwrap();
+
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "");
     }
 }
