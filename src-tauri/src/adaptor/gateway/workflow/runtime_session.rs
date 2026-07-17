@@ -611,8 +611,14 @@ async fn reserve_fanout_child_sessions(
     let mut activations = Vec::with_capacity(child_setups.len());
 
     for setup in child_setups {
-        let permission_mode = PermissionMode::parse_canonical(&setup.permission_mode)
-            .map_err(|e| WorkflowEngineError::InvalidWorkflow(e.to_string()))?;
+        let permission_mode = match PermissionMode::parse_canonical(&setup.permission_mode) {
+            Ok(permission_mode) => permission_mode,
+            Err(error) => {
+                let error = WorkflowEngineError::InvalidWorkflow(error.to_string());
+                activation_tasks.abort_and_wait().await;
+                return Err(error);
+            }
+        };
         let runtime = Arc::clone(runtime);
         let session_id = setup.session_id.clone();
         let session_id_for_task = session_id.clone();
@@ -650,22 +656,38 @@ async fn reserve_fanout_child_sessions(
         });
     }
 
-    for activation in &mut activations {
-        let reserved = activation.reserved.take().ok_or_else(|| {
-            WorkflowEngineError::InvalidState(format!(
-                "fanout child '{}' activation reservation was already consumed",
-                activation.session_id
-            ))
-        })?;
-        reserved.await.map_err(|_| {
-            WorkflowEngineError::AgentSession(format!(
-                "fanout child '{}' activation task ended before reserving its session",
-                activation.session_id
-            ))
-        })?;
-    }
+    wait_for_fanout_child_session_reservations(&mut activations, activation_tasks).await?;
 
     Ok(activations)
+}
+
+async fn wait_for_fanout_child_session_reservations(
+    activations: &mut [FanoutChildSessionActivation],
+    activation_tasks: &FanoutActivationTaskTracker,
+) -> Result<(), WorkflowEngineError> {
+    for activation in activations.iter_mut() {
+        let reserved = match activation.reserved.take() {
+            Some(reserved) => reserved,
+            None => {
+                let error = WorkflowEngineError::InvalidState(format!(
+                    "fanout child '{}' activation reservation was already consumed",
+                    activation.session_id
+                ));
+                activation_tasks.abort_and_wait().await;
+                return Err(error);
+            }
+        };
+        if reserved.await.is_err() {
+            let error = WorkflowEngineError::AgentSession(format!(
+                "fanout child '{}' activation task ended before reserving its session",
+                activation.session_id
+            ));
+            activation_tasks.abort_and_wait().await;
+            return Err(error);
+        }
+    }
+
+    Ok(())
 }
 
 async fn start_fanout_child_sessions(
@@ -862,6 +884,45 @@ mod tests {
         }));
         registry.set_default(Some("codex".to_string()));
         registry
+    }
+
+    async fn register_held_session_lock(
+        runtime: &Arc<AgentSessionRuntimeUsecase>,
+        activation_tasks: &FanoutActivationTaskTracker,
+        session_id: &str,
+    ) {
+        let runtime = Arc::clone(runtime);
+        let session_id = session_id.to_string();
+        let (acquired_tx, acquired_rx) = oneshot::channel();
+        let (completed_tx, completed_rx) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _completion = FanoutActivationTaskCompletion(Some(completed_tx));
+            let _runtime_guard = runtime.acquire_session_lock(&session_id).await;
+            let _ = acquired_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        activation_tasks.register(task.abort_handle(), completed_rx);
+        tokio::time::timeout(Duration::from_secs(1), acquired_rx)
+            .await
+            .expect("test session lock must be acquired")
+            .expect("test session lock task must remain active");
+    }
+
+    fn fanout_activation_with_reservation(
+        session_id: &str,
+        reserved: Option<oneshot::Receiver<()>>,
+    ) -> FanoutChildSessionActivation {
+        FanoutChildSessionActivation {
+            session_id: session_id.to_string(),
+            node_name: "child".to_string(),
+            permission_mode: PermissionMode::Edit,
+            user_message: "workflow-child".to_string(),
+            system_prompt: None,
+            workflow_instructions: Vec::new(),
+            reserved,
+            start: None,
+            task: None,
+        }
     }
 
     fn workflow_context_for_test() -> WorkflowNodeContext {
@@ -1211,6 +1272,105 @@ mod tests {
             creation_plans[0].workflow_node_context.node_name,
             "review-pending"
         );
+    }
+
+    #[tokio::test]
+    async fn invalid_fanout_permission_waits_for_activation_task_cleanup_before_returning() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let (runtime, _) = crate::test_support::build_agent_runtime_usecase_with_controller(
+            session_store,
+            tmp.path(),
+        );
+        let activation_tasks = FanoutActivationTaskTracker::default();
+        let held_session_id = "held-before-invalid-permission";
+        register_held_session_lock(&runtime, &activation_tasks, held_session_id).await;
+        let invalid_permission_mode = "invalid";
+        let setups = vec![FanoutChildSessionSetup {
+            node_execution_id: "node-execution-child".to_string(),
+            node_name: "child".to_string(),
+            session_id: "child-session".to_string(),
+            system_prompt: None,
+            workflow_instruction: None,
+            user_message: "workflow-child".to_string(),
+            permission_mode: invalid_permission_mode.to_string(),
+        }];
+
+        let error = match reserve_fanout_child_sessions(&runtime, &setups, &activation_tasks).await
+        {
+            Ok(_) => panic!("invalid permission mode must fail fanout reservation"),
+            Err(error) => error,
+        };
+
+        match error {
+            WorkflowEngineError::InvalidWorkflow(message) => assert_eq!(
+                message,
+                PermissionMode::parse_canonical(invalid_permission_mode)
+                    .unwrap_err()
+                    .to_string()
+            ),
+            other => panic!("unexpected error: {other:?}"),
+        }
+        assert!(!runtime.session_runtime_lock_is_held_for_test(held_session_id));
+    }
+
+    #[tokio::test]
+    async fn consumed_fanout_reservation_waits_for_activation_task_cleanup_before_returning() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let (runtime, _) = crate::test_support::build_agent_runtime_usecase_with_controller(
+            session_store,
+            tmp.path(),
+        );
+        let activation_tasks = FanoutActivationTaskTracker::default();
+        let held_session_id = "held-before-consumed-reservation";
+        register_held_session_lock(&runtime, &activation_tasks, held_session_id).await;
+        let mut activations = vec![fanout_activation_with_reservation("child-session", None)];
+
+        let error = wait_for_fanout_child_session_reservations(&mut activations, &activation_tasks)
+            .await
+            .unwrap_err();
+
+        match error {
+            WorkflowEngineError::InvalidState(message) => assert_eq!(
+                message,
+                "fanout child 'child-session' activation reservation was already consumed"
+            ),
+            other => panic!("unexpected error: {other:?}"),
+        }
+        assert!(!runtime.session_runtime_lock_is_held_for_test(held_session_id));
+    }
+
+    #[tokio::test]
+    async fn ended_fanout_reservation_task_waits_for_activation_task_cleanup_before_returning() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let (runtime, _) = crate::test_support::build_agent_runtime_usecase_with_controller(
+            session_store,
+            tmp.path(),
+        );
+        let activation_tasks = FanoutActivationTaskTracker::default();
+        let held_session_id = "held-before-ended-reservation";
+        register_held_session_lock(&runtime, &activation_tasks, held_session_id).await;
+        let (reserved_tx, reserved_rx) = oneshot::channel();
+        drop(reserved_tx);
+        let mut activations = vec![fanout_activation_with_reservation(
+            "child-session",
+            Some(reserved_rx),
+        )];
+
+        let error = wait_for_fanout_child_session_reservations(&mut activations, &activation_tasks)
+            .await
+            .unwrap_err();
+
+        match error {
+            WorkflowEngineError::AgentSession(message) => assert_eq!(
+                message,
+                "fanout child 'child-session' activation task ended before reserving its session"
+            ),
+            other => panic!("unexpected error: {other:?}"),
+        }
+        assert!(!runtime.session_runtime_lock_is_held_for_test(held_session_id));
     }
 
     #[tokio::test]
