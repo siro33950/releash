@@ -155,7 +155,7 @@ export function BoundSessionChat({
 		) => {
 			const targetSessionId = options?.forkNewSession ? null : sessionId;
 			if (!targetSessionId && !options?.forkNewSession)
-				return Promise.resolve();
+				return Promise.resolve(false);
 			const sendOptions =
 				options?.activateNewSession === undefined && !options?.editorContext
 					? undefined

@@ -646,7 +646,7 @@ export interface ChatSessionViewProps {
 			forkNewSession?: boolean;
 			editorContext?: AgentEditorContext;
 		},
-	) => Promise<void>;
+	) => Promise<boolean>;
 	onInterrupt: () => void;
 	onCancelQueuedTurn: (queuedTurnId?: string | null) => Promise<void>;
 	onLoadOlderMessages?: () => Promise<void>;
@@ -1129,7 +1129,7 @@ export function ChatSessionView({
 			images?: ImageAttachment[],
 			mentions?: MentionReference[],
 		) => {
-			await onSend(content, images, mentions, {
+			return onSend(content, images, mentions, {
 				editorContext: currentEditorContext,
 			});
 		},
@@ -1353,10 +1353,12 @@ export function ChatSessionView({
 	// Expose sendMessage to parent via ref (without images parameter)
 	useEffect(() => {
 		if (sendMessageRef) {
-			sendMessageRef.current = (
+			sendMessageRef.current = async (
 				content: string,
 				mentions?: MentionReference[],
-			) => handleComposerSend(content, undefined, mentions);
+			) => {
+				await handleComposerSend(content, undefined, mentions);
+			};
 		}
 		return () => {
 			if (sendMessageRef) {

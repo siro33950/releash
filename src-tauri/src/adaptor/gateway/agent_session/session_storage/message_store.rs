@@ -180,7 +180,7 @@ impl FileSessionStorage {
         app_data_dir: &Path,
         session_id: &str,
         message: &ChatMessage,
-    ) -> Result<(), String> {
+    ) -> Result<SessionMeta, String> {
         measure_save_result(
             crate::other::telemetry::HotPath::SessionAppend,
             || {
@@ -244,9 +244,11 @@ impl FileSessionStorage {
                 write_private_context_to_dir(&dir, &meta)?;
                 write_json_pretty_atomic(&index_file_in_dir(&dir), &index, "session index")?;
                 write_json_pretty_atomic(&meta_file_in_dir(&dir), &meta, "session meta")?;
-                self.cache.write().insert(session_id.to_string(), meta);
+                self.cache
+                    .write()
+                    .insert(session_id.to_string(), meta.clone());
                 self.invalid_sessions.write().remove(session_id);
-                Ok(())
+                Ok(meta)
             },
         )
     }

@@ -15,7 +15,7 @@ import { findMentionTrigger, findSkillTrigger } from "./popupInputUtils";
 const mockInvoke = vi.mocked(invoke);
 
 const defaultProps = {
-	onSend: vi.fn(),
+	onSend: vi.fn().mockResolvedValue(true),
 	onInterrupt: vi.fn(),
 	isStreaming: false,
 	mode: "edit" as const,
@@ -103,7 +103,7 @@ describe("MessageInput", () => {
 	});
 
 	it("calls onSend when send button is clicked", () => {
-		const onSend = vi.fn();
+		const onSend = vi.fn().mockResolvedValue(true);
 		render(<MessageInput {...defaultProps} onSend={onSend} />);
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.change(textarea, { target: { value: "Hello" } });
@@ -111,18 +111,135 @@ describe("MessageInput", () => {
 		expect(onSend).toHaveBeenCalledWith("Hello", undefined, undefined);
 	});
 
-	it("clears input after sending", () => {
-		render(<MessageInput {...defaultProps} />);
+	it("clears input only after sending succeeds", async () => {
+		let resolveSend: ((value: boolean) => void) | undefined;
+		const onSend = vi.fn(
+			() =>
+				new Promise<boolean>((resolve) => {
+					resolveSend = resolve;
+				}),
+		);
+		render(<MessageInput {...defaultProps} onSend={onSend} />);
 		const textarea = screen.getByPlaceholderText(
 			"Send a message...",
 		) as HTMLTextAreaElement;
 		fireEvent.change(textarea, { target: { value: "Hello" } });
 		fireEvent.click(screen.getByLabelText("Send message"));
-		expect(textarea.value).toBe("");
+		expect(textarea.value).toBe("Hello");
+
+		await act(async () => resolveSend?.(true));
+		await waitFor(() => expect(textarea.value).toBe(""));
 	});
 
+	it("preserves input when sending fails or rejects", async () => {
+		const sendError = new Error("send failed");
+		const consoleError = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => {});
+		const onSend = vi
+			.fn()
+			.mockResolvedValueOnce(false)
+			.mockRejectedValueOnce(sendError);
+		render(<MessageInput {...defaultProps} onSend={onSend} />);
+		const textarea = screen.getByPlaceholderText(
+			"Send a message...",
+		) as HTMLTextAreaElement;
+		fireEvent.change(textarea, { target: { value: "Keep this" } });
+
+		fireEvent.click(screen.getByLabelText("Send message"));
+		await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+		expect(textarea.value).toBe("Keep this");
+
+		fireEvent.click(screen.getByLabelText("Send message"));
+		await waitFor(() => expect(onSend).toHaveBeenCalledTimes(2));
+		expect(textarea.value).toBe("Keep this");
+		await waitFor(() =>
+			expect(consoleError).toHaveBeenCalledWith(
+				"Message send failed:",
+				sendError,
+			),
+		);
+		consoleError.mockRestore();
+	});
+
+	it("serializes submissions and preserves edited input and attachments added in flight", async () => {
+		let resolveSend: ((value: boolean) => void) | undefined;
+		const onSend = vi.fn(
+			() =>
+				new Promise<boolean>((resolve) => {
+					resolveSend = resolve;
+				}),
+		);
+		const ref = createRef<MessageInputHandle>();
+		render(<MessageInput {...defaultProps} onSend={onSend} ref={ref} />);
+		const textarea = screen.getByPlaceholderText(
+			"Send a message...",
+		) as HTMLTextAreaElement;
+		const firstImage = { data: "Zmlyc3Q=", mediaType: "image/png" };
+		const followUpImage = { data: "c2Vjb25k", mediaType: "image/png" };
+		act(() => ref.current?.addImageAttachments([firstImage]));
+		fireEvent.change(textarea, { target: { value: "First" } });
+
+		fireEvent.click(screen.getByLabelText("Send message"));
+		fireEvent.change(textarea, { target: { value: "FirstFollow-up" } });
+		act(() => ref.current?.addImageAttachments([followUpImage]));
+		fireEvent.click(screen.getByLabelText("Send message"));
+
+		expect(onSend).toHaveBeenCalledTimes(1);
+		expect(onSend).toHaveBeenCalledWith("First", [firstImage], undefined);
+
+		await act(async () => resolveSend?.(true));
+		await waitFor(() => expect(textarea.value).toBe("FirstFollow-up"));
+		expect(screen.getAllByTestId("image-preview-item")).toHaveLength(1);
+		expect(screen.getByAltText("Attached").getAttribute("src")).toBe(
+			"data:image/png;base64,c2Vjb25k",
+		);
+	});
+
+	it.each([
+		{
+			draftChanges: ["google"],
+			expectedDraft: "google",
+			caseName: "prefix replacement",
+		},
+		{
+			draftChanges: ["cargo"],
+			expectedDraft: "cargo",
+			caseName: "suffix replacement",
+		},
+		{
+			draftChanges: ["google", "go"],
+			expectedDraft: "go",
+			caseName: "replacement edited back to the submitted value",
+		},
+	])(
+		"preserves a $caseName while sending",
+		async ({ draftChanges, expectedDraft }) => {
+			let resolveSend: ((value: boolean) => void) | undefined;
+			const onSend = vi.fn(
+				() =>
+					new Promise<boolean>((resolve) => {
+						resolveSend = resolve;
+					}),
+			);
+			render(<MessageInput {...defaultProps} onSend={onSend} />);
+			const textarea = screen.getByPlaceholderText(
+				"Send a message...",
+			) as HTMLTextAreaElement;
+			fireEvent.change(textarea, { target: { value: "go" } });
+
+			fireEvent.click(screen.getByLabelText("Send message"));
+			for (const draft of draftChanges) {
+				fireEvent.change(textarea, { target: { value: draft } });
+			}
+
+			await act(async () => resolveSend?.(true));
+			await waitFor(() => expect(textarea.value).toBe(expectedDraft));
+		},
+	);
+
 	it("sends on Cmd/Ctrl+Enter", () => {
-		const onSend = vi.fn();
+		const onSend = vi.fn().mockResolvedValue(true);
 		render(<MessageInput {...defaultProps} onSend={onSend} />);
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.change(textarea, { target: { value: "Hello" } });
@@ -131,7 +248,7 @@ describe("MessageInput", () => {
 	});
 
 	it("does not send on Enter alone (Enter is reserved for newline)", () => {
-		const onSend = vi.fn();
+		const onSend = vi.fn().mockResolvedValue(true);
 		render(<MessageInput {...defaultProps} onSend={onSend} />);
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.change(textarea, { target: { value: "Hello" } });
@@ -140,7 +257,7 @@ describe("MessageInput", () => {
 	});
 
 	it("does not send on Shift+Enter", () => {
-		const onSend = vi.fn();
+		const onSend = vi.fn().mockResolvedValue(true);
 		render(<MessageInput {...defaultProps} onSend={onSend} />);
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.change(textarea, { target: { value: "Hello" } });
@@ -260,7 +377,7 @@ describe("MessageInput", () => {
 	});
 
 	it("does not send whitespace-only messages", () => {
-		const onSend = vi.fn();
+		const onSend = vi.fn().mockResolvedValue(true);
 		render(<MessageInput {...defaultProps} onSend={onSend} />);
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.change(textarea, { target: { value: "   " } });
@@ -268,8 +385,8 @@ describe("MessageInput", () => {
 		expect(onSend).not.toHaveBeenCalled();
 	});
 
-	it("sends slash commands to the agent without native interception", () => {
-		const onSend = vi.fn();
+	it("sends slash commands to the agent without native interception", async () => {
+		const onSend = vi.fn().mockResolvedValue(true);
 		render(<MessageInput {...defaultProps} onSend={onSend} />);
 		const textarea = screen.getByPlaceholderText(
 			"Send a message...",
@@ -282,11 +399,11 @@ describe("MessageInput", () => {
 			undefined,
 			undefined,
 		);
-		expect(textarea.value).toBe("");
+		await waitFor(() => expect(textarea.value).toBe(""));
 	});
 
 	it("sends unknown slash commands to the agent", () => {
-		const onSend = vi.fn();
+		const onSend = vi.fn().mockResolvedValue(true);
 		render(<MessageInput {...defaultProps} onSend={onSend} />);
 		const textarea = screen.getByPlaceholderText("Send a message...");
 		fireEvent.change(textarea, { target: { value: "/status" } });
@@ -295,8 +412,8 @@ describe("MessageInput", () => {
 		expect(onSend).toHaveBeenCalledWith("/status", undefined, undefined);
 	});
 
-	it("sends runtime slash commands to the SDK path without native handlers", () => {
-		const onSend = vi.fn();
+	it("sends runtime slash commands to the SDK path without native handlers", async () => {
+		const onSend = vi.fn().mockResolvedValue(true);
 		render(
 			<MessageInput
 				{...defaultProps}
@@ -315,7 +432,7 @@ describe("MessageInput", () => {
 			undefined,
 			undefined,
 		);
-		expect(textarea.value).toBe("");
+		await waitFor(() => expect(textarea.value).toBe(""));
 	});
 
 	it("renders ModeSelector inside the input container", () => {
@@ -584,7 +701,7 @@ describe("MessageInput slash command popup", () => {
 	});
 
 	it("sends with Cmd+Enter even when popup is open", () => {
-		const onSend = vi.fn();
+		const onSend = vi.fn().mockResolvedValue(true);
 		render(
 			<MessageInput
 				{...defaultProps}
@@ -646,7 +763,7 @@ describe("MessageInput image attachments", () => {
 	});
 
 	it("sends images with onSend when images are attached", () => {
-		const onSend = vi.fn();
+		const onSend = vi.fn().mockResolvedValue(true);
 		const ref = createRef<MessageInputHandle>();
 		render(<MessageInput {...defaultProps} onSend={onSend} ref={ref} />);
 		act(() => {
@@ -663,7 +780,7 @@ describe("MessageInput image attachments", () => {
 	});
 
 	it("sends images only (no text) when text is empty", () => {
-		const onSend = vi.fn();
+		const onSend = vi.fn().mockResolvedValue(true);
 		const ref = createRef<MessageInputHandle>();
 		render(<MessageInput {...defaultProps} onSend={onSend} ref={ref} />);
 		act(() => {
@@ -673,7 +790,7 @@ describe("MessageInput image attachments", () => {
 		expect(onSend).toHaveBeenCalledWith("", [sampleAttachment], undefined);
 	});
 
-	it("clears image preview after sending", () => {
+	it("clears image preview after sending", async () => {
 		const ref = createRef<MessageInputHandle>();
 		render(<MessageInput {...defaultProps} ref={ref} />);
 		act(() => {
@@ -681,7 +798,31 @@ describe("MessageInput image attachments", () => {
 		});
 		expect(screen.getByTestId("image-preview-list")).toBeDefined();
 		fireEvent.click(screen.getByLabelText("Send message"));
-		expect(screen.queryByTestId("image-preview-list")).toBeNull();
+		await waitFor(() =>
+			expect(screen.queryByTestId("image-preview-list")).toBeNull(),
+		);
+	});
+
+	it("preserves attached images when sending fails", async () => {
+		const onSend = vi.fn().mockResolvedValue(false);
+		const ref = createRef<MessageInputHandle>();
+		render(<MessageInput {...defaultProps} onSend={onSend} ref={ref} />);
+		act(() => {
+			ref.current?.addImageAttachments([sampleAttachment]);
+		});
+		fireEvent.change(screen.getByPlaceholderText("Send a message..."), {
+			target: { value: "Keep the image" },
+		});
+
+		fireEvent.click(screen.getByLabelText("Send message"));
+
+		await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+		expect(screen.getByTestId("image-preview-list")).toBeDefined();
+		expect(onSend).toHaveBeenCalledWith(
+			"Keep the image",
+			[sampleAttachment],
+			undefined,
+		);
 	});
 
 	it("supports multiple image attachments", () => {
@@ -778,7 +919,7 @@ describe("MessageInput image attachments", () => {
 			placeholder: "[Pasted text #1]",
 			content: longText,
 		};
-		const onSend = vi.fn();
+		const onSend = vi.fn().mockResolvedValue(true);
 		mockInvoke.mockImplementation((command, args) => {
 			if (command === "prepare_pasted_text_block") {
 				expect(args).toEqual({ index: 1, content: longText });
@@ -816,6 +957,165 @@ describe("MessageInput image attachments", () => {
 				undefined,
 				undefined,
 			),
+		);
+	});
+
+	it("clears collapsed paste metadata after a successful send", async () => {
+		const longText = Array.from({ length: 24 }, (_, i) => `line ${i + 1}`).join(
+			"\n",
+		);
+		const block = {
+			id: 1,
+			placeholder: "[Pasted text #1]",
+			content: longText,
+		};
+		const onSend = vi.fn().mockResolvedValue(true);
+		const expand = vi.fn().mockResolvedValue("expanded prompt");
+		mockInvoke.mockImplementation((command) => {
+			if (command === "prepare_pasted_text_block") {
+				return Promise.resolve(block);
+			}
+			if (command === "expand_pasted_text_blocks") {
+				return expand();
+			}
+			return Promise.resolve([]);
+		});
+		render(<MessageInput {...defaultProps} onSend={onSend} />);
+		const textarea = screen.getByPlaceholderText(
+			"Send a message...",
+		) as HTMLTextAreaElement;
+		const clipboardData = {
+			items: [],
+			getData: (type: string) => (type === "text/plain" ? longText : ""),
+		};
+
+		await act(async () => {
+			fireEvent.paste(textarea, { clipboardData });
+		});
+		await waitFor(() => expect(textarea.value).toBe(block.placeholder));
+		fireEvent.click(screen.getByLabelText("Send message"));
+		await waitFor(() => expect(textarea.value).toBe(""));
+
+		fireEvent.change(textarea, { target: { value: "plain follow-up" } });
+		fireEvent.click(screen.getByLabelText("Send message"));
+		await waitFor(() => expect(onSend).toHaveBeenCalledTimes(2));
+
+		expect(expand).toHaveBeenCalledTimes(1);
+		expect(onSend).toHaveBeenLastCalledWith(
+			"plain follow-up",
+			undefined,
+			undefined,
+		);
+	});
+
+	it("preserves collapsed pasted text when sending fails", async () => {
+		const longText = Array.from({ length: 24 }, (_, i) => `line ${i + 1}`).join(
+			"\n",
+		);
+		const block = {
+			id: 1,
+			placeholder: "[Pasted text #1]",
+			content: longText,
+		};
+		const onSend = vi.fn().mockResolvedValue(false);
+		const expand = vi.fn().mockResolvedValue("expanded prompt");
+		mockInvoke.mockImplementation((command) => {
+			if (command === "prepare_pasted_text_block")
+				return Promise.resolve(block);
+			if (command === "expand_pasted_text_blocks") return expand();
+			return Promise.resolve([]);
+		});
+		render(<MessageInput {...defaultProps} onSend={onSend} />);
+		const textarea = screen.getByPlaceholderText(
+			"Send a message...",
+		) as HTMLTextAreaElement;
+		const clipboardData = {
+			items: [],
+			getData: (type: string) => (type === "text/plain" ? longText : ""),
+		};
+		await act(async () => {
+			fireEvent.paste(textarea, { clipboardData });
+		});
+		await waitFor(() => expect(textarea.value).toBe("[Pasted text #1]"));
+
+		fireEvent.click(screen.getByLabelText("Send message"));
+		await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+		expect(textarea.value).toBe("[Pasted text #1]");
+
+		fireEvent.click(screen.getByLabelText("Send message"));
+		await waitFor(() => expect(onSend).toHaveBeenCalledTimes(2));
+		expect(expand).toHaveBeenCalledTimes(2);
+	});
+
+	it("preserves collapsed paste metadata when the draft is edited in flight", async () => {
+		const longText = Array.from({ length: 24 }, (_, i) => `line ${i + 1}`).join(
+			"\n",
+		);
+		const block = {
+			id: 1,
+			placeholder: "[Pasted text #1]",
+			content: longText,
+		};
+		let resolveFirstSend: ((value: boolean) => void) | undefined;
+		const onSend = vi
+			.fn()
+			.mockImplementationOnce(
+				() =>
+					new Promise<boolean>((resolve) => {
+						resolveFirstSend = resolve;
+					}),
+			)
+			.mockResolvedValueOnce(true);
+		const expand = vi.fn((content: string) =>
+			Promise.resolve(
+				content === block.placeholder
+					? "expanded prompt"
+					: "expanded prompt follow-up",
+			),
+		);
+		mockInvoke.mockImplementation((command, args) => {
+			if (command === "prepare_pasted_text_block") {
+				return Promise.resolve(block);
+			}
+			if (command === "expand_pasted_text_blocks") {
+				expect(args).toEqual({
+					content: expect.any(String),
+					blocks: [block],
+				});
+				return expand((args as { content: string }).content);
+			}
+			return Promise.resolve([]);
+		});
+		render(<MessageInput {...defaultProps} onSend={onSend} />);
+		const textarea = screen.getByPlaceholderText(
+			"Send a message...",
+		) as HTMLTextAreaElement;
+		const clipboardData = {
+			items: [],
+			getData: (type: string) => (type === "text/plain" ? longText : ""),
+		};
+		await act(async () => {
+			fireEvent.paste(textarea, { clipboardData });
+		});
+		await waitFor(() => expect(textarea.value).toBe(block.placeholder));
+
+		fireEvent.click(screen.getByLabelText("Send message"));
+		await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+		fireEvent.change(textarea, {
+			target: { value: `${block.placeholder} follow-up` },
+		});
+		await act(async () => resolveFirstSend?.(true));
+		await waitFor(() =>
+			expect(textarea.value).toBe(`${block.placeholder} follow-up`),
+		);
+
+		fireEvent.click(screen.getByLabelText("Send message"));
+		await waitFor(() => expect(onSend).toHaveBeenCalledTimes(2));
+		expect(expand).toHaveBeenCalledTimes(2);
+		expect(onSend).toHaveBeenLastCalledWith(
+			"expanded prompt follow-up",
+			undefined,
+			undefined,
 		);
 	});
 });
@@ -1190,7 +1490,7 @@ describe("MessageInput mention popup", () => {
 	});
 
 	it("sends mentions with onSend after selecting a mention", async () => {
-		const onSend = vi.fn();
+		const onSend = vi.fn().mockResolvedValue(true);
 		mockInvoke.mockImplementation((command, args) => {
 			if (command === "list_mentionable_files") {
 				return Promise.resolve(mentionFiles);
@@ -1240,8 +1540,293 @@ describe("MessageInput mention popup", () => {
 		]);
 	});
 
+	it("clears mention metadata after a successful send", async () => {
+		const onSend = vi.fn().mockResolvedValue(true);
+		const syncedMention = {
+			filePath: "src/main.rs",
+			startLine: undefined,
+			endLine: undefined,
+		};
+		const syncMentions = vi.fn().mockResolvedValue([syncedMention]);
+		mockInvoke.mockImplementation((command, args) => {
+			if (command === "list_mentionable_files") {
+				return Promise.resolve(mentionFiles);
+			}
+			if (command === "sync_mentions_with_text") {
+				return syncMentions(args);
+			}
+			return Promise.resolve([]);
+		});
+		render(
+			<MessageInput
+				{...defaultProps}
+				onSend={onSend}
+				worktreePath="/test/repo"
+			/>,
+		);
+		const textarea = screen.getByPlaceholderText(
+			"Send a message...",
+		) as HTMLTextAreaElement;
+		fireEvent.change(textarea, {
+			target: { value: "@", selectionStart: 1 },
+		});
+		await act(() => vi.advanceTimersByTimeAsync(150));
+		fireEvent.keyDown(textarea, { key: "Enter" });
+		fireEvent.click(screen.getByLabelText("Send message"));
+		await act(async () => {
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+		expect(textarea.value).toBe("");
+
+		fireEvent.change(textarea, {
+			target: { value: "plain follow-up", selectionStart: 15 },
+		});
+		fireEvent.click(screen.getByLabelText("Send message"));
+		await act(async () => {
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+
+		expect(syncMentions).toHaveBeenCalledTimes(1);
+		expect(onSend).toHaveBeenCalledTimes(2);
+		expect(onSend).toHaveBeenLastCalledWith(
+			"plain follow-up",
+			undefined,
+			undefined,
+		);
+	});
+
+	it("preserves input metadata and logs the stage when mention sync rejects", async () => {
+		const longText = Array.from({ length: 24 }, (_, i) => `line ${i + 1}`).join(
+			"\n",
+		);
+		const block = {
+			id: 1,
+			placeholder: "[Pasted text #1]",
+			content: longText,
+		};
+		const syncedMention = {
+			filePath: "src/main.rs",
+			startLine: undefined,
+			endLine: undefined,
+		};
+		const syncError = new Error("mention sync failed");
+		const syncMentions = vi
+			.fn()
+			.mockRejectedValueOnce(syncError)
+			.mockResolvedValueOnce([syncedMention]);
+		const expand = vi.fn().mockResolvedValue("expanded prompt @src/main.rs");
+		const onSend = vi.fn().mockResolvedValue(true);
+		const consoleError = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => {});
+		const ref = createRef<MessageInputHandle>();
+		mockInvoke.mockImplementation((command, args) => {
+			if (command === "prepare_pasted_text_block") {
+				return Promise.resolve(block);
+			}
+			if (command === "expand_pasted_text_blocks") {
+				return expand(args);
+			}
+			if (command === "list_mentionable_files") {
+				return Promise.resolve(mentionFiles);
+			}
+			if (command === "sync_mentions_with_text") {
+				return syncMentions(args);
+			}
+			return Promise.resolve([]);
+		});
+		render(
+			<MessageInput
+				{...defaultProps}
+				onSend={onSend}
+				ref={ref}
+				worktreePath="/test/repo"
+			/>,
+		);
+		const textarea = screen.getByPlaceholderText(
+			"Send a message...",
+		) as HTMLTextAreaElement;
+		act(() => ref.current?.addImageAttachments([sampleAttachment]));
+		fireEvent.change(textarea, {
+			target: { value: "@", selectionStart: 1 },
+		});
+		await act(() => vi.advanceTimersByTimeAsync(150));
+		fireEvent.keyDown(textarea, { key: "Enter" });
+		await act(() => vi.advanceTimersByTimeAsync(0));
+		await act(async () => {
+			fireEvent.paste(textarea, {
+				clipboardData: {
+					items: [],
+					getData: (type: string) => (type === "text/plain" ? longText : ""),
+				},
+			});
+		});
+
+		await act(async () => {
+			fireEvent.click(screen.getByLabelText("Send message"));
+			await Promise.resolve();
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+
+		expect(onSend).not.toHaveBeenCalled();
+		expect(textarea.value).toBe(`@src/main.rs ${block.placeholder}`);
+		expect(screen.getByTestId("image-preview-list")).toBeDefined();
+		expect(screen.getByLabelText("Send message").hasAttribute("disabled")).toBe(
+			false,
+		);
+		expect(expand).toHaveBeenCalledTimes(1);
+		expect(syncMentions).toHaveBeenCalledWith({
+			text: "expanded prompt @src/main.rs",
+			refs: [syncedMention],
+		});
+		expect(consoleError).toHaveBeenCalledWith(
+			"Message pre-send processing failed:",
+			syncError,
+		);
+		expect(screen.queryByText("mention sync failed")).toBeNull();
+
+		await act(async () => {
+			fireEvent.click(screen.getByLabelText("Send message"));
+			await Promise.resolve();
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+		expect(expand).toHaveBeenCalledTimes(2);
+		expect(syncMentions).toHaveBeenCalledTimes(2);
+		expect(onSend).toHaveBeenCalledWith(
+			"expanded prompt @src/main.rs",
+			[sampleAttachment],
+			[syncedMention],
+		);
+		consoleError.mockRestore();
+	});
+
+	it("preserves mention references when sending fails", async () => {
+		const onSend = vi.fn().mockResolvedValue(false);
+		const syncedMention = {
+			filePath: "src/main.rs",
+			startLine: undefined,
+			endLine: undefined,
+		};
+		mockInvoke.mockImplementation((command) => {
+			if (command === "list_mentionable_files") {
+				return Promise.resolve(mentionFiles);
+			}
+			if (command === "sync_mentions_with_text") {
+				return Promise.resolve([syncedMention]);
+			}
+			return Promise.resolve([]);
+		});
+		render(
+			<MessageInput
+				{...defaultProps}
+				onSend={onSend}
+				worktreePath="/test/repo"
+			/>,
+		);
+		const textarea = screen.getByPlaceholderText(
+			"Send a message...",
+		) as HTMLTextAreaElement;
+		fireEvent.change(textarea, {
+			target: { value: "@", selectionStart: 1 },
+		});
+		await act(() => vi.advanceTimersByTimeAsync(150));
+		fireEvent.keyDown(textarea, { key: "Enter" });
+
+		fireEvent.click(screen.getByLabelText("Send message"));
+		await act(async () => Promise.resolve());
+		expect(textarea.value).toBe("@src/main.rs ");
+		expect(onSend).toHaveBeenCalledWith("@src/main.rs", undefined, [
+			syncedMention,
+		]);
+
+		fireEvent.click(screen.getByLabelText("Send message"));
+		await act(async () => Promise.resolve());
+		expect(onSend).toHaveBeenCalledTimes(2);
+		expect(onSend).toHaveBeenLastCalledWith("@src/main.rs", undefined, [
+			syncedMention,
+		]);
+	});
+
+	it("preserves mention metadata when the draft is edited in flight", async () => {
+		let resolveFirstSend: ((value: boolean) => void) | undefined;
+		const onSend = vi
+			.fn()
+			.mockImplementationOnce(
+				() =>
+					new Promise<boolean>((resolve) => {
+						resolveFirstSend = resolve;
+					}),
+			)
+			.mockResolvedValueOnce(true);
+		const syncedMention = {
+			filePath: "src/main.rs",
+			startLine: undefined,
+			endLine: undefined,
+		};
+		const syncMentions = vi.fn().mockResolvedValue([syncedMention]);
+		mockInvoke.mockImplementation((command, args) => {
+			if (command === "list_mentionable_files") {
+				return Promise.resolve(mentionFiles);
+			}
+			if (command === "sync_mentions_with_text") {
+				return syncMentions(args);
+			}
+			return Promise.resolve([]);
+		});
+		render(
+			<MessageInput
+				{...defaultProps}
+				onSend={onSend}
+				worktreePath="/test/repo"
+			/>,
+		);
+		const textarea = screen.getByPlaceholderText(
+			"Send a message...",
+		) as HTMLTextAreaElement;
+		fireEvent.change(textarea, {
+			target: { value: "@", selectionStart: 1 },
+		});
+		await act(() => vi.advanceTimersByTimeAsync(150));
+		fireEvent.keyDown(textarea, { key: "Enter" });
+
+		await act(async () => {
+			fireEvent.click(screen.getByLabelText("Send message"));
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+		expect(onSend).toHaveBeenCalledTimes(1);
+		fireEvent.change(textarea, {
+			target: {
+				value: "@src/main.rs follow-up",
+				selectionStart: 22,
+			},
+		});
+		await act(async () => resolveFirstSend?.(true));
+		expect(textarea.value).toBe("@src/main.rs follow-up");
+
+		await act(async () => {
+			fireEvent.click(screen.getByLabelText("Send message"));
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+		expect(syncMentions).toHaveBeenCalledTimes(2);
+		expect(syncMentions).toHaveBeenLastCalledWith({
+			text: "@src/main.rs follow-up",
+			refs: [syncedMention],
+		});
+		expect(onSend).toHaveBeenLastCalledWith(
+			"@src/main.rs follow-up",
+			undefined,
+			[syncedMention],
+		);
+	});
+
 	it("sends quoted mention paths with spaces as structured mentions", async () => {
-		const onSend = vi.fn();
+		const onSend = vi.fn().mockResolvedValue(true);
 		mockInvoke.mockImplementation((command, args) => {
 			if (command === "list_mentionable_files") {
 				return Promise.resolve(["docs/my file.md"]);
@@ -1296,7 +1881,7 @@ describe("MessageInput mention popup", () => {
 	});
 
 	it("excludes deleted mentions from onSend", async () => {
-		const onSend = vi.fn();
+		const onSend = vi.fn().mockResolvedValue(true);
 		render(
 			<MessageInput
 				{...defaultProps}
@@ -1324,7 +1909,7 @@ describe("MessageInput mention popup", () => {
 	});
 
 	it("extracts line number from @filePath:L50 in text", async () => {
-		const onSend = vi.fn();
+		const onSend = vi.fn().mockResolvedValue(true);
 		mockInvoke.mockImplementation((command, args) => {
 			if (command === "list_mentionable_files") {
 				return Promise.resolve(mentionFiles);
@@ -1379,7 +1964,7 @@ describe("MessageInput mention popup", () => {
 	});
 
 	it("extracts line range from @filePath:L10-L20 in text", async () => {
-		const onSend = vi.fn();
+		const onSend = vi.fn().mockResolvedValue(true);
 		mockInvoke.mockImplementation((command, args) => {
 			if (command === "list_mentionable_files") {
 				return Promise.resolve(mentionFiles);

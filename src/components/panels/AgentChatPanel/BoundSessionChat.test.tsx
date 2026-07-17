@@ -14,7 +14,7 @@ const mocks = vi.hoisted(() => ({
 	loadOlderMessages: vi.fn().mockResolvedValue(undefined),
 	evictOlderMessages: vi.fn().mockResolvedValue(undefined),
 	registerViewableSession: vi.fn(() => vi.fn()),
-	sendMessage: vi.fn().mockResolvedValue(undefined),
+	sendMessage: vi.fn().mockResolvedValue(true),
 	interrupt: vi.fn(),
 	cancelQueuedTurn: vi.fn().mockResolvedValue(undefined),
 	setPermissionMode: vi.fn(),
@@ -46,7 +46,7 @@ vi.mock("./ChatSessionView", () => ({
 			allow: boolean,
 			updatedInput?: Record<string, unknown>,
 		) => void;
-		onSend: (content: string) => Promise<void>;
+		onSend: (content: string) => Promise<boolean>;
 		stallObservation?: AgentStallObservation | null;
 	}) => (
 		<div data-testid={`chat-${session.id}`}>
