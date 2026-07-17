@@ -433,6 +433,9 @@ async fn read_loop<R>(
                 }
             }
             Ok(None) => {
+                if closed.load(Ordering::Relaxed) {
+                    break;
+                }
                 log::warn!("Codex app-server exited unexpectedly");
                 emit_read_failure(
                     &state,
@@ -671,6 +674,36 @@ mod tests {
 
     use super::*;
 
+    struct ThreadLogCapture {
+        thread_id: StdMutex<Option<std::thread::ThreadId>>,
+        messages: StdMutex<Vec<String>>,
+    }
+
+    impl log::Log for ThreadLogCapture {
+        fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+            metadata.level() <= log::Level::Warn
+        }
+
+        fn log(&self, record: &log::Record<'_>) {
+            if self.enabled(record.metadata())
+                && self.thread_id.lock().unwrap().as_ref() == Some(&std::thread::current().id())
+            {
+                self.messages
+                    .lock()
+                    .unwrap()
+                    .push(record.args().to_string());
+            }
+        }
+
+        fn flush(&self) {}
+    }
+
+    static TEST_LOG_CAPTURE: ThreadLogCapture = ThreadLogCapture {
+        thread_id: StdMutex::new(None),
+        messages: StdMutex::new(Vec::new()),
+    };
+    static TEST_LOG_CAPTURE_INIT: std::sync::Once = std::sync::Once::new();
+
     #[cfg(unix)]
     fn write_fake_codex_cli(dir: &std::path::Path) -> std::path::PathBuf {
         use std::os::unix::fs::PermissionsExt;
@@ -892,6 +925,63 @@ exec sleep 30
             events_rx.try_recv().unwrap(),
             AgentRuntimeEvent::Fatal { .. }
         ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_read_loop_eofは_closed状態に応じて予期しない終了を報告する() {
+        TEST_LOG_CAPTURE_INIT.call_once(|| {
+            log::set_logger(&TEST_LOG_CAPTURE).unwrap();
+            log::set_max_level(log::LevelFilter::Warn);
+        });
+        *TEST_LOG_CAPTURE.thread_id.lock().unwrap() = Some(std::thread::current().id());
+
+        let input = b"";
+        let mut stdout = StdoutLineReader::new(tokio::io::BufReader::new(&input[..]));
+        let state = Arc::new(Mutex::new(runtime_state()));
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        read_loop(
+            &mut stdout,
+            state,
+            events_tx,
+            Arc::new(AtomicBool::new(false)),
+            None,
+        )
+        .await;
+
+        assert!(matches!(
+            events_rx.try_recv().unwrap(),
+            AgentRuntimeEvent::TurnCompleted(TurnResult::Interrupted {
+                reason: InterruptReason::Crash,
+                ..
+            })
+        ));
+        assert!(matches!(
+            events_rx.try_recv().unwrap(),
+            AgentRuntimeEvent::Fatal { .. }
+        ));
+        assert!(TEST_LOG_CAPTURE
+            .messages
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|message| message == "Codex app-server exited unexpectedly"));
+
+        TEST_LOG_CAPTURE.messages.lock().unwrap().clear();
+        let mut stdout = StdoutLineReader::new(tokio::io::BufReader::new(&input[..]));
+        let state = Arc::new(Mutex::new(runtime_state()));
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        read_loop(
+            &mut stdout,
+            state,
+            events_tx,
+            Arc::new(AtomicBool::new(true)),
+            None,
+        )
+        .await;
+
+        assert!(events_rx.try_recv().is_err());
+        assert!(TEST_LOG_CAPTURE.messages.lock().unwrap().is_empty());
+        *TEST_LOG_CAPTURE.thread_id.lock().unwrap() = None;
     }
 
     #[tokio::test]

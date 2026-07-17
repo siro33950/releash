@@ -250,11 +250,11 @@ where
         let Some(response) = pending_requests.take_response(&message)? else {
             continue;
         };
-        if response.id != expected_id {
-            continue;
-        }
         if let Some(error) = message.get("error") {
             return Err(error.to_string());
+        }
+        if response.id != expected_id {
+            continue;
         }
         return Ok(message
             .get("result")
@@ -369,6 +369,24 @@ mod tests {
             result,
             Err(message) if message.contains("expected exactly one of result or error")
         ));
+    }
+
+    #[tokio::test]
+    async fn test_one_shot_responseは_initialize_errorを期待応答より先に返す() {
+        let input = br#"{"id":1,"error":{"code":-32603,"message":"initialize failed"}}
+{"id":2,"result":{"skills":[]}}
+"#;
+        let mut stdout = StdoutLineReader::new(BufReader::new(&input[..]));
+        let mut pending = PendingClientRequests::default();
+        pending.register(1, METHOD_INITIALIZE);
+        pending.register(2, METHOD_SKILLS_LIST);
+
+        let result = read_one_shot_response(&mut stdout, pending, 2).await;
+
+        assert_eq!(
+            result.unwrap_err(),
+            json!({ "code": -32603, "message": "initialize failed" }).to_string()
+        );
     }
 
     #[tokio::test]

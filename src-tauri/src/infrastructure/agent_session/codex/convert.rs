@@ -12,12 +12,13 @@ use crate::domain::agent_session::value_objects::{
 };
 
 use super::wire::{
-    message_kind, AppServerMessageKind, METHOD_THREAD_RESUME, METHOD_THREAD_START,
-    METHOD_TURN_START, NOTIFY_AGENT_MESSAGE_DELTA, NOTIFY_COMMAND_OUTPUT_DELTA, NOTIFY_ERROR,
-    NOTIFY_FILE_CHANGE_OUTPUT_DELTA, NOTIFY_FILE_CHANGE_PATCH_UPDATED, NOTIFY_ITEM_COMPLETED,
-    NOTIFY_ITEM_STARTED, NOTIFY_THREAD_COMPACTED, NOTIFY_THREAD_STARTED,
-    NOTIFY_THREAD_TOKEN_USAGE_UPDATED, NOTIFY_TURN_COMPLETED, NOTIFY_TURN_STARTED,
-    REQUEST_COMMAND_APPROVAL, REQUEST_FILE_CHANGE_APPROVAL, REQUEST_PERMISSIONS_APPROVAL,
+    message_kind, AppServerMessageKind, METHOD_INITIALIZE, METHOD_THREAD_RESUME,
+    METHOD_THREAD_START, METHOD_TURN_START, NOTIFY_AGENT_MESSAGE_DELTA,
+    NOTIFY_COMMAND_OUTPUT_DELTA, NOTIFY_ERROR, NOTIFY_FILE_CHANGE_OUTPUT_DELTA,
+    NOTIFY_FILE_CHANGE_PATCH_UPDATED, NOTIFY_ITEM_COMPLETED, NOTIFY_ITEM_STARTED,
+    NOTIFY_THREAD_COMPACTED, NOTIFY_THREAD_STARTED, NOTIFY_THREAD_TOKEN_USAGE_UPDATED,
+    NOTIFY_TURN_COMPLETED, NOTIFY_TURN_STARTED, REQUEST_COMMAND_APPROVAL,
+    REQUEST_FILE_CHANGE_APPROVAL, REQUEST_PERMISSIONS_APPROVAL,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -56,7 +57,7 @@ fn convert_response(
     if let Some(error) = message.get("error") {
         if matches!(
             source_method.as_deref(),
-            Some(METHOD_THREAD_START | METHOD_THREAD_RESUME)
+            Some(METHOD_INITIALIZE | METHOD_THREAD_START | METHOD_THREAD_RESUME)
         ) {
             let mut events = Vec::new();
             if state.requested_resume_id.is_some() {
@@ -1087,6 +1088,35 @@ mod tests {
             vec![AgentRuntimeEvent::Fatal {
                 message: "bad api key".to_string(),
             }]
+        );
+    }
+
+    #[test]
+    fn test_initialize_response_errorは_fatalにする() {
+        let mut state = CodexConvertState {
+            requested_resume_id: Some("thread-old".to_string()),
+            ..CodexConvertState::default()
+        };
+        state
+            .client_response_methods
+            .insert(1, METHOD_INITIALIZE.to_string());
+
+        let events = convert_jsonrpc_message(
+            &json!({
+                "id": 1,
+                "error": { "message": "initialize failed" }
+            }),
+            &mut state,
+        );
+
+        assert_eq!(
+            events,
+            vec![
+                AgentRuntimeEvent::BackendSessionCleared,
+                AgentRuntimeEvent::Fatal {
+                    message: "initialize failed".to_string(),
+                },
+            ]
         );
     }
 
