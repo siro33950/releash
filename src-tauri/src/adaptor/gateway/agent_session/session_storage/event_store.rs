@@ -1,13 +1,18 @@
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::Write;
 use std::path::Path;
 
+use serde::{Deserialize, Serialize};
+
 use super::layout::{
-    event_batches_dir_in_dir, event_log_file_in_dir, event_tail_file_in_dir, session_dir,
-    write_json_pretty_atomic, write_json_pretty_atomic_durable,
+    event_batches_dir_in_dir, event_log_file_in_dir, event_tail_file_in_dir,
+    queue_pause_checkpoint_file_in_dir, session_dir, write_json_pretty_atomic,
+    write_json_pretty_atomic_durable,
 };
 use super::transaction::TransactionApplyError;
 use super::FileSessionStorage;
-use crate::usecase::agent_session::event_log::AgentSessionEvent;
+use crate::usecase::agent_session::event_log::{
+    apply_event_to_queue_pause, AgentSessionEvent, TurnEventLog,
+};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct AppendOutcome {
@@ -15,6 +20,19 @@ pub(super) struct AppendOutcome {
 }
 
 impl FileSessionStorage {
+    pub fn load_queue_paused_at(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+    ) -> Result<Option<f64>, String> {
+        if !self.reconcile_session_transaction(app_data_dir, session_id)? {
+            return Err(format!("Session not found: {session_id}"));
+        }
+        let _lock = self.file_lock.lock();
+        let dir = session_dir(app_data_dir, session_id)?;
+        load_queue_pause_projection_from_dir(&dir)
+    }
+
     pub fn load_session_events(
         &self,
         app_data_dir: &Path,
@@ -47,29 +65,6 @@ impl FileSessionStorage {
         self.read_session_events_from_dir(&dir)
     }
 
-    #[cfg(test)]
-    pub fn append_session_events(
-        &self,
-        app_data_dir: &Path,
-        session_id: &str,
-        new_events: &[AgentSessionEvent],
-    ) -> Result<(), String> {
-        self.ensure_loaded(app_data_dir)?;
-        if let Some(err) = self.invalid_sessions.read().get(session_id) {
-            return Err(err.clone());
-        }
-        if !self.cache.read().contains_key(session_id) {
-            return Err(format!("Session not found: {session_id}"));
-        }
-        let _lock = self.file_lock.lock();
-        let dir = session_dir(app_data_dir, session_id)?;
-        let outcome = self.append_session_events_to_dir(&dir, new_events)?;
-        if outcome.recovered {
-            self.record_event_log_recovery(session_id);
-        }
-        Ok(())
-    }
-
     pub fn append_session_event_without_projection(
         &self,
         app_data_dir: &Path,
@@ -96,6 +91,28 @@ impl FileSessionStorage {
         log::warn!(
             "agent_session_event_log_recovered session_id={session_id} recovery=tail_truncation"
         );
+    }
+
+    pub fn append_session_events(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        events: &[AgentSessionEvent],
+    ) -> Result<(), String> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        if !self.reconcile_session_transaction(app_data_dir, session_id)? {
+            return Err(format!("Session not found: {session_id}"));
+        }
+        let _lock = self.file_lock.lock();
+        let dir = session_dir(app_data_dir, session_id)?;
+        self.apply_pending_session_transaction(&dir, session_id)?;
+        let outcome = self.append_session_events_to_dir(&dir, events)?;
+        if outcome.recovered {
+            self.record_event_log_recovery(session_id);
+        }
+        Ok(())
     }
 
     pub(super) fn read_session_events_from_dir(
@@ -190,15 +207,7 @@ impl FileSessionStorage {
         dir: &Path,
         event: &AgentSessionEvent,
     ) -> Result<AppendOutcome, String> {
-        if event_batches_dir_in_dir(dir).exists() || event_tail_file_in_dir(dir).exists() {
-            let legacy_outcome = self.repair_event_array_if_needed(&event_log_file_in_dir(dir))?;
-            let tail_outcome = self.append_event_to_array(&event_tail_file_in_dir(dir), event)?;
-            Ok(AppendOutcome {
-                recovered: legacy_outcome.recovered || tail_outcome.recovered,
-            })
-        } else {
-            self.append_event_to_legacy_array(dir, event)
-        }
+        append_event_log_record(dir, EventLogRecordRef::Event(event), "event")
     }
 
     pub(super) fn append_session_events_to_dir(
@@ -206,162 +215,10 @@ impl FileSessionStorage {
         dir: &Path,
         events: &[AgentSessionEvent],
     ) -> Result<AppendOutcome, String> {
-        let legacy_outcome = self.repair_event_array_if_needed(&event_log_file_in_dir(dir))?;
-        let tail_outcome = self.repair_event_array_if_needed(&event_tail_file_in_dir(dir))?;
-        self.publish_event_batch_to_dir(dir, events)?;
-        Ok(AppendOutcome {
-            recovered: legacy_outcome.recovered || tail_outcome.recovered,
-        })
-    }
-
-    fn publish_event_batch_to_dir(
-        &self,
-        dir: &Path,
-        events: &[AgentSessionEvent],
-    ) -> Result<(), String> {
         if events.is_empty() {
-            return Ok(());
-        }
-        let batches_dir = event_batches_dir_in_dir(dir);
-        std::fs::create_dir_all(&batches_dir)
-            .map_err(|e| format!("Failed to create session event batch dir: {e}"))?;
-        let mut next_sequence = self
-            .committed_event_batch_paths(dir)?
-            .iter()
-            .filter_map(|path| {
-                path.file_stem()
-                    .and_then(|stem| stem.to_str())
-                    .and_then(|stem| stem.parse::<u64>().ok())
-            })
-            .max()
-            .unwrap_or(0)
-            .checked_add(1)
-            .ok_or_else(|| "Failed to allocate session event batch sequence".to_string())?;
-        let tail_path = event_tail_file_in_dir(dir);
-        if tail_path.exists() {
-            let rotated_tail_path = batches_dir.join(format!("{next_sequence:020}.json"));
-            std::fs::rename(&tail_path, &rotated_tail_path)
-                .map_err(|e| format!("Failed to rotate session event tail: {e}"))?;
-            next_sequence = next_sequence
-                .checked_add(1)
-                .ok_or_else(|| "Failed to allocate session event batch sequence".to_string())?;
-        }
-        let path = batches_dir.join(format!("{next_sequence:020}.json"));
-        write_json_pretty_atomic(&path, &events, "session event batch")
-    }
-
-    fn append_event_to_legacy_array(
-        &self,
-        dir: &Path,
-        event: &AgentSessionEvent,
-    ) -> Result<AppendOutcome, String> {
-        let path = event_log_file_in_dir(dir);
-        self.append_event_to_array(&path, event)
-    }
-
-    fn append_event_to_array(
-        &self,
-        path: &Path,
-        event: &AgentSessionEvent,
-    ) -> Result<AppendOutcome, String> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create session event log dir: {e}"))?;
-        }
-        let mut file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path)
-            .map_err(|e| format!("Failed to open session event log: {e}"))?;
-        let payload = serde_json::to_string_pretty(event)
-            .map(|payload| indent_json_payload(&payload))
-            .map_err(|e| format!("Failed to serialize session event: {e}"))?;
-        let len = file
-            .metadata()
-            .map_err(|e| format!("Failed to stat session event log: {e}"))?
-            .len();
-        if len == 0 {
-            write!(file, "[\n{payload}\n]\n")
-                .map_err(|e| format!("Failed to append session event: {e}"))?;
-            file.flush()
-                .map_err(|e| format!("Failed to flush session event log: {e}"))?;
             return Ok(AppendOutcome::default());
         }
-
-        let mut recovered = false;
-        let mut closing = last_non_whitespace_byte(&mut file, len)?;
-        let needs_recovery = match closing {
-            Some((_, b']')) => !event_log_is_valid_json(&mut file)?,
-            _ => true,
-        };
-        if needs_recovery {
-            let events = recover_session_events_from_file(&mut file)?;
-            rewrite_session_events(&mut file, &events)?;
-            let repaired_len = file
-                .metadata()
-                .map_err(|e| format!("Failed to stat repaired session event log: {e}"))?
-                .len();
-            closing = last_non_whitespace_byte(&mut file, repaired_len)?;
-            recovered = true;
-        }
-        let Some((closing_pos, b']')) = closing else {
-            return Err(
-                "Failed to append session event: repaired event log is not a JSON array"
-                    .to_string(),
-            );
-        };
-        let previous = last_non_whitespace_byte(&mut file, closing_pos)?;
-        let is_empty_array = matches!(previous, Some((_, b'[')));
-        file.set_len(closing_pos)
-            .map_err(|e| format!("Failed to truncate session event log: {e}"))?;
-        file.seek(SeekFrom::End(0))
-            .map_err(|e| format!("Failed to seek session event log: {e}"))?;
-        let suffix = if is_empty_array {
-            format!("\n{payload}\n]\n")
-        } else {
-            format!(",\n{payload}\n]\n")
-        };
-        file.write_all(suffix.as_bytes())
-            .map_err(|e| format!("Failed to append session events: {e}"))?;
-        file.flush()
-            .map_err(|e| format!("Failed to flush session event log: {e}"))?;
-        Ok(AppendOutcome { recovered })
-    }
-
-    fn repair_event_array_if_needed(&self, path: &Path) -> Result<AppendOutcome, String> {
-        let mut file = match std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(path)
-        {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(AppendOutcome::default());
-            }
-            Err(error) => return Err(format!("Failed to open session event log: {error}")),
-        };
-        let len = file
-            .metadata()
-            .map_err(|error| format!("Failed to stat session event log: {error}"))?
-            .len();
-        let valid = if len == 0 {
-            false
-        } else {
-            matches!(last_non_whitespace_byte(&mut file, len)?, Some((_, b']')))
-                && event_log_is_valid_json(&mut file)?
-        };
-        if valid {
-            return Ok(AppendOutcome::default());
-        }
-        let events = if len == 0 {
-            Vec::new()
-        } else {
-            recover_session_events_from_file(&mut file)?
-        };
-        rewrite_session_events(&mut file, &events)?;
-        Ok(AppendOutcome { recovered: true })
+        append_event_log_record(dir, EventLogRecordRef::Batch { events }, "event batch")
     }
 
     pub(super) fn committed_event_batch_paths(
@@ -418,37 +275,271 @@ fn committed_event_batch_paths(dir: &Path) -> Result<Vec<std::path::PathBuf>, St
     Ok(paths)
 }
 
-fn recover_session_events_from_file(
-    file: &mut std::fs::File,
-) -> Result<Vec<AgentSessionEvent>, String> {
-    file.seek(SeekFrom::Start(0))
-        .map_err(|e| format!("Failed to seek damaged session event log: {e}"))?;
-    let mut content = String::new();
-    file.read_to_string(&mut content)
-        .map_err(|e| format!("Failed to read damaged session event log: {e}"))?;
-    recover_unclosed_session_events(&content).map_err(|_| {
-        "Failed to append session event: event log tail could not be recovered".to_string()
-    })
+#[derive(Serialize)]
+#[serde(untagged)]
+enum EventLogRecordRef<'a> {
+    Event(&'a AgentSessionEvent),
+    Batch { events: &'a [AgentSessionEvent] },
 }
 
-fn rewrite_session_events(
-    file: &mut std::fs::File,
-    events: &[AgentSessionEvent],
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum EventLogRecord {
+    Event(Box<AgentSessionEvent>),
+    Batch { events: Vec<AgentSessionEvent> },
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QueuePauseCheckpoint {
+    event_log_len: u64,
+    queue_paused_at: Option<f64>,
+}
+
+fn append_event_log_record(
+    dir: &Path,
+    record: EventLogRecordRef<'_>,
+    description: &str,
+) -> Result<AppendOutcome, String> {
+    append_event_log_record_with_fault(dir, record, description, None)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EventLogWriteFault {
+    RepairWrite,
+    RepairSync,
+    RepairBeforeRename,
+    AppendAfterPayload,
+    AppendAfterClosing,
+    AppendSync,
+}
+
+fn append_event_log_record_with_fault(
+    dir: &Path,
+    record: EventLogRecordRef<'_>,
+    description: &str,
+    fault: Option<EventLogWriteFault>,
+) -> Result<AppendOutcome, String> {
+    let path = event_log_file_in_dir(dir);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create session event log dir: {e}"))?;
+    }
+    let payload = serde_json::to_string_pretty(&record)
+        .map_err(|e| format!("Failed to serialize session {description}: {e}"))?;
+    let mut content = match std::fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(format!("Failed to read session event log: {error}")),
+    };
+    let len = content.len() as u64;
+    let checkpoint = matching_queue_pause_checkpoint(dir, len);
+    let mut projection_is_current = checkpoint.is_some();
+    let mut queue_paused_at = checkpoint.and_then(|checkpoint| checkpoint.queue_paused_at);
+    let mut recovered = false;
+    if content.is_empty() {
+        content = "[]".to_string();
+        projection_is_current = true;
+    } else if !projection_is_current {
+        match parse_event_log_records(&content) {
+            Ok(events) => {
+                queue_paused_at = project_queue_pause(events.iter());
+            }
+            Err(_) => {
+                let (events, recovered_content) = recover_unclosed_event_log(&content).map_err(
+                    |_| {
+                        "Failed to append session event: event log does not end with a JSON array; tail could not be recovered".to_string()
+                    },
+                )?;
+                queue_paused_at = project_queue_pause(events.iter());
+                invalidate_queue_pause_checkpoint(dir)?;
+                replace_recovered_event_log_atomic(&path, &recovered_content, fault)?;
+                content = recovered_content;
+                recovered = true;
+            }
+        }
+        projection_is_current = true;
+    }
+    debug_assert!(projection_is_current);
+    invalidate_queue_pause_checkpoint(dir)?;
+    let closing_pos = content
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| !ch.is_whitespace())
+        .filter(|(_, ch)| *ch == ']')
+        .map(|(position, _)| position)
+        .ok_or_else(|| {
+            "Failed to append session event: event log does not end with a JSON array".to_string()
+        })?;
+    let prefix = &content[..closing_pos];
+    let is_empty_array = prefix.chars().rev().find(|ch| !ch.is_whitespace()) == Some('[');
+    let payload = if is_empty_array {
+        format!("\n{}", indent_json_payload(&payload))
+    } else {
+        format!(",\n{}", indent_json_payload(&payload))
+    };
+    replace_appended_event_log_atomic(&path, prefix, &payload, "\n]\n", fault)?;
+    let queue_paused_at = apply_record_to_queue_pause(queue_paused_at, &record);
+    let committed_len = std::fs::metadata(&path)
+        .map_err(|error| format!("Failed to stat session event log: {error}"))?
+        .len();
+    persist_queue_pause_checkpoint(dir, committed_len, queue_paused_at);
+    Ok(AppendOutcome { recovered })
+}
+
+fn replace_recovered_event_log_atomic(
+    path: &Path,
+    recovered: &str,
+    fault: Option<EventLogWriteFault>,
 ) -> Result<(), String> {
-    let payload = serde_json::to_string_pretty(events)
-        .map_err(|e| format!("Failed to serialize recovered session event log: {e}"))?;
-    file.set_len(0)
-        .map_err(|e| format!("Failed to truncate damaged session event log: {e}"))?;
-    file.seek(SeekFrom::Start(0))
-        .map_err(|e| format!("Failed to seek repaired session event log: {e}"))?;
-    writeln!(file, "{payload}")
-        .map_err(|e| format!("Failed to rewrite recovered session event log: {e}"))?;
-    file.flush()
-        .map_err(|e| format!("Failed to flush recovered session event log: {e}"))
+    let temp_path = path.with_extension("json.tmp");
+    let result = (|| -> Result<(), String> {
+        let mut file = std::fs::File::create(&temp_path)
+            .map_err(|error| format!("Failed to create repaired session event log: {error}"))?;
+        if fault == Some(EventLogWriteFault::RepairWrite) {
+            let split = recovered.len() / 2;
+            file.write_all(&recovered.as_bytes()[..split])
+                .map_err(|error| format!("Failed to repair session event log: {error}"))?;
+            return Err("injected repaired session event log write failure".to_string());
+        }
+        file.write_all(recovered.as_bytes())
+            .map_err(|error| format!("Failed to repair session event log: {error}"))?;
+        if fault == Some(EventLogWriteFault::RepairSync) {
+            return Err("injected repaired session event log sync failure".to_string());
+        }
+        file.sync_all()
+            .map_err(|error| format!("Failed to sync repaired session event log: {error}"))?;
+        if fault == Some(EventLogWriteFault::RepairBeforeRename) {
+            return Err("injected crash before repaired session event log rename".to_string());
+        }
+        std::fs::rename(&temp_path, path)
+            .map_err(|error| format!("Failed to rename repaired session event log: {error}"))
+    })();
+    if result.is_err() && fault != Some(EventLogWriteFault::RepairBeforeRename) {
+        let _ = std::fs::remove_file(&temp_path);
+    }
+    result
+}
+
+fn replace_appended_event_log_atomic(
+    path: &Path,
+    prefix: &str,
+    payload: &str,
+    closing: &str,
+    fault: Option<EventLogWriteFault>,
+) -> Result<(), String> {
+    let temp_path = path.with_extension("json.tmp");
+    let result = (|| -> Result<(), String> {
+        let mut file = std::fs::File::create(&temp_path)
+            .map_err(|error| format!("Failed to create session event log temp file: {error}"))?;
+        file.write_all(prefix.as_bytes())
+            .map_err(|error| format!("Failed to write session event log prefix: {error}"))?;
+        file.write_all(payload.as_bytes())
+            .map_err(|error| format!("Failed to append session event log payload: {error}"))?;
+        if fault == Some(EventLogWriteFault::AppendAfterPayload) {
+            return Err("injected failure after session event log payload write".to_string());
+        }
+        file.write_all(closing.as_bytes())
+            .map_err(|error| format!("Failed to close session event log: {error}"))?;
+        if fault == Some(EventLogWriteFault::AppendAfterClosing) {
+            return Err("injected failure after session event log closing write".to_string());
+        }
+        if fault == Some(EventLogWriteFault::AppendSync) {
+            return Err("injected session event log sync failure".to_string());
+        }
+        file.sync_all()
+            .map_err(|error| format!("Failed to sync session event log: {error}"))?;
+        std::fs::rename(&temp_path, path)
+            .map_err(|error| format!("Failed to rename session event log temp file: {error}"))
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp_path);
+    }
+    result
+}
+
+fn load_queue_pause_projection_from_dir(dir: &Path) -> Result<Option<f64>, String> {
+    let event_log_path = event_log_file_in_dir(dir);
+    let event_log_len = match std::fs::metadata(&event_log_path) {
+        Ok(metadata) => metadata.len(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(error) => return Err(format!("Failed to stat session event log: {error}")),
+    };
+    if let Some(checkpoint) = matching_queue_pause_checkpoint(dir, event_log_len) {
+        return Ok(checkpoint.queue_paused_at);
+    }
+    let (queue_paused_at, projection_is_checkpointable) =
+        match std::fs::read_to_string(&event_log_path) {
+            Ok(content) => match parse_event_log_records(&content) {
+                Ok(events) => (project_queue_pause(events.iter()), true),
+                Err(error) => {
+                    let events = recover_unclosed_session_events(&content)
+                        .map_err(|_| format!("Failed to parse session event log: {error}"))?;
+                    // A recovered in-memory projection must not attest that the damaged file is
+                    // current. Leave the checkpoint stale so the next append repairs the log and
+                    // publishes the recovery signal.
+                    (project_queue_pause(events.iter()), false)
+                }
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (None, true),
+            Err(error) => return Err(format!("Failed to read session event log: {error}")),
+        };
+    if projection_is_checkpointable {
+        persist_queue_pause_checkpoint(dir, event_log_len, queue_paused_at);
+    }
+    Ok(queue_paused_at)
+}
+
+fn matching_queue_pause_checkpoint(dir: &Path, event_log_len: u64) -> Option<QueuePauseCheckpoint> {
+    let content = std::fs::read_to_string(queue_pause_checkpoint_file_in_dir(dir)).ok()?;
+    let checkpoint = serde_json::from_str::<QueuePauseCheckpoint>(&content).ok()?;
+    (checkpoint.event_log_len == event_log_len).then_some(checkpoint)
+}
+
+fn persist_queue_pause_checkpoint(dir: &Path, event_log_len: u64, queue_paused_at: Option<f64>) {
+    let checkpoint = QueuePauseCheckpoint {
+        event_log_len,
+        queue_paused_at,
+    };
+    if let Err(error) = write_json_pretty_atomic(
+        &queue_pause_checkpoint_file_in_dir(dir),
+        &checkpoint,
+        "queue pause checkpoint",
+    ) {
+        // event log remains the durable source of truth. A missing/stale checkpoint is rebuilt
+        // by the next narrow read instead of turning a committed append into a false failure.
+        log::warn!("failed to persist queue pause checkpoint: {error}");
+    }
+}
+
+fn invalidate_queue_pause_checkpoint(dir: &Path) -> Result<(), String> {
+    match std::fs::remove_file(queue_pause_checkpoint_file_in_dir(dir)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "Failed to invalidate queue pause checkpoint: {error}"
+        )),
+    }
+}
+
+fn apply_record_to_queue_pause(
+    queue_paused_at: Option<f64>,
+    record: &EventLogRecordRef<'_>,
+) -> Option<f64> {
+    match record {
+        EventLogRecordRef::Event(event) => apply_event_to_queue_pause(queue_paused_at, event),
+        EventLogRecordRef::Batch { events } => events
+            .iter()
+            .fold(queue_paused_at, apply_event_to_queue_pause),
+    }
+}
+
+fn project_queue_pause<'a>(events: impl IntoIterator<Item = &'a AgentSessionEvent>) -> Option<f64> {
+    TurnEventLog::from_events(events.into_iter().cloned().collect()).queue_paused_at()
 }
 
 fn parse_session_events_content(content: &str) -> Result<Vec<AgentSessionEvent>, String> {
-    match serde_json::from_str(content) {
+    match parse_event_log_records(content) {
         Ok(events) => Ok(events),
         Err(error) => recover_unclosed_session_events(content)
             .map_err(|_| format!("Failed to parse session event log: {error}")),
@@ -456,6 +547,10 @@ fn parse_session_events_content(content: &str) -> Result<Vec<AgentSessionEvent>,
 }
 
 fn recover_unclosed_session_events(content: &str) -> Result<Vec<AgentSessionEvent>, ()> {
+    recover_unclosed_event_log(content).map(|(events, _)| events)
+}
+
+fn recover_unclosed_event_log(content: &str) -> Result<(Vec<AgentSessionEvent>, String), ()> {
     if !content.trim_start().starts_with('[') {
         return Err(());
     }
@@ -466,9 +561,13 @@ fn recover_unclosed_session_events(content: &str) -> Result<Vec<AgentSessionEven
         if let Some(stripped) = prefix.strip_suffix(',') {
             prefix = stripped.trim_end();
         }
-        if let Some(candidate) = close_unclosed_json_containers(prefix) {
-            if let Ok(events) = serde_json::from_str(&candidate) {
-                return Ok(events);
+        if let Some((candidate, closed_nested_container)) = close_unclosed_json_containers(prefix) {
+            if let Ok(records) = parse_event_log_record_envelopes(&candidate) {
+                let incomplete_batch = closed_nested_container
+                    && matches!(records.last(), Some(EventLogRecord::Batch { .. }));
+                if !incomplete_batch {
+                    return Ok((flatten_event_log_records(records), candidate));
+                }
             }
         }
         if end == 0 {
@@ -478,7 +577,7 @@ fn recover_unclosed_session_events(content: &str) -> Result<Vec<AgentSessionEven
     }
 }
 
-fn close_unclosed_json_containers(prefix: &str) -> Option<String> {
+fn close_unclosed_json_containers(prefix: &str) -> Option<(String, bool)> {
     let mut stack = Vec::new();
     let mut in_string = false;
     let mut escaped = false;
@@ -505,11 +604,32 @@ fn close_unclosed_json_containers(prefix: &str) -> Option<String> {
     if in_string {
         return None;
     }
+    let closed_nested_container = stack.len() > 1;
     let mut candidate = prefix.to_string();
     for opening in stack.into_iter().rev() {
         candidate.push(if opening == '[' { ']' } else { '}' });
     }
-    Some(candidate)
+    Some((candidate, closed_nested_container))
+}
+
+fn parse_event_log_record_envelopes(
+    content: &str,
+) -> Result<Vec<EventLogRecord>, serde_json::Error> {
+    serde_json::from_str(content)
+}
+
+fn flatten_event_log_records(records: Vec<EventLogRecord>) -> Vec<AgentSessionEvent> {
+    records
+        .into_iter()
+        .flat_map(|record| match record {
+            EventLogRecord::Event(event) => vec![*event],
+            EventLogRecord::Batch { events } => events,
+        })
+        .collect()
+}
+
+fn parse_event_log_records(content: &str) -> Result<Vec<AgentSessionEvent>, serde_json::Error> {
+    parse_event_log_record_envelopes(content).map(flatten_event_log_records)
 }
 
 fn previous_char_boundary(value: &str, end: usize) -> usize {
@@ -528,31 +648,6 @@ fn indent_json_payload(payload: &str) -> String {
         .join("\n")
 }
 
-fn event_log_is_valid_json(file: &mut std::fs::File) -> Result<bool, String> {
-    file.seek(SeekFrom::Start(0))
-        .map_err(|e| format!("Failed to seek session event log: {e}"))?;
-    Ok(serde_json::from_reader::<_, serde::de::IgnoredAny>(file).is_ok())
-}
-
-fn last_non_whitespace_byte(
-    file: &mut std::fs::File,
-    end_exclusive: u64,
-) -> Result<Option<(u64, u8)>, String> {
-    let mut pos = end_exclusive;
-    let mut byte = [0_u8; 1];
-    while pos > 0 {
-        pos -= 1;
-        file.seek(SeekFrom::Start(pos))
-            .map_err(|e| format!("Failed to seek session event log: {e}"))?;
-        file.read_exact(&mut byte)
-            .map_err(|e| format!("Failed to read session event log: {e}"))?;
-        if !byte[0].is_ascii_whitespace() {
-            return Ok(Some((pos, byte[0])));
-        }
-    }
-    Ok(None)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -560,7 +655,6 @@ mod tests {
     use crate::usecase::agent_session::session::{
         ChatSession, MessagePart, SessionEventLogRecoverySignal, SessionState,
     };
-    use std::io::BufReader;
 
     const SESSION_ID: &str = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
 
@@ -626,8 +720,8 @@ mod tests {
     }
 
     fn read_events(dir: &Path) -> Vec<AgentSessionEvent> {
-        let file = std::fs::File::open(event_log_file_in_dir(dir)).unwrap();
-        serde_json::from_reader(BufReader::new(file)).unwrap()
+        let content = std::fs::read_to_string(event_log_file_in_dir(dir)).unwrap();
+        parse_session_events_content(&content).unwrap()
     }
 
     #[test]
@@ -925,6 +1019,28 @@ mod tests {
     }
 
     #[test]
+    fn append_repairs_missing_closing_array_bracket_before_writing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = FileSessionStorage::default();
+        storage
+            .append_session_event_to_dir(tmp.path(), &event(1))
+            .unwrap();
+        storage
+            .append_session_event_to_dir(tmp.path(), &event(2))
+            .unwrap();
+        let path = event_log_file_in_dir(tmp.path());
+        let content = std::fs::read_to_string(&path).unwrap();
+        let closing_pos = content.rfind(']').unwrap();
+        std::fs::write(&path, &content[..closing_pos]).unwrap();
+
+        storage
+            .append_session_event_to_dir(tmp.path(), &event(3))
+            .unwrap();
+
+        assert_eq!(read_events(tmp.path()), vec![event(1), event(2), event(3)]);
+    }
+
+    #[test]
     fn read_session_events_ignores_incomplete_trailing_event() {
         let tmp = tempfile::tempdir().unwrap();
         let storage = FileSessionStorage::default();
@@ -966,15 +1082,199 @@ mod tests {
     }
 
     #[test]
-    fn last_non_whitespace_byte_skips_trailing_whitespace() {
+    fn append_session_events_commits_the_batch_in_order() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("bytes.txt");
-        std::fs::write(&path, b"[1]\n \t").unwrap();
-        let mut file = std::fs::File::open(&path).unwrap();
-        let len = file.metadata().unwrap().len();
+        let storage = FileSessionStorage::default();
+        storage
+            .append_session_event_to_dir(tmp.path(), &event(1))
+            .unwrap();
 
-        let found = last_non_whitespace_byte(&mut file, len).unwrap();
+        storage
+            .append_session_events_to_dir(tmp.path(), &[event(2), event(3)])
+            .unwrap();
 
-        assert_eq!(found, Some((2, b']')));
+        assert_eq!(read_events(tmp.path()), vec![event(1), event(2), event(3)]);
+        let temp_files = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(temp_files, 0);
+        let raw = std::fs::read_to_string(event_log_file_in_dir(tmp.path())).unwrap();
+        assert!(raw.contains("\"events\""));
+    }
+
+    #[test]
+    fn incomplete_batch_envelope_recovers_without_partial_batch_visibility() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = FileSessionStorage::default();
+        storage
+            .append_session_event_to_dir(tmp.path(), &event(1))
+            .unwrap();
+        let path = event_log_file_in_dir(tmp.path());
+        let mut content = std::fs::read_to_string(&path).unwrap();
+        let closing = content.rfind(']').unwrap();
+        content.truncate(closing);
+        content.push_str(",\n  {\"events\":[{\"type\":\"queue_paused\",\"at\":2.0}");
+        std::fs::write(&path, content).unwrap();
+
+        assert_eq!(
+            storage.read_session_events_from_dir(tmp.path()).unwrap(),
+            vec![event(1)]
+        );
+    }
+
+    #[test]
+    fn append_discards_an_incomplete_batch_and_remains_writable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = FileSessionStorage::default();
+        storage
+            .append_session_event_to_dir(tmp.path(), &event(1))
+            .unwrap();
+        let path = event_log_file_in_dir(tmp.path());
+        let mut content = std::fs::read_to_string(&path).unwrap();
+        let closing = content.rfind(']').unwrap();
+        content.truncate(closing);
+        content.push_str(",\n  {\"events\":[{\"type\":\"queue_paused\",\"at\":2.0}");
+        std::fs::write(&path, content).unwrap();
+
+        storage
+            .append_session_event_to_dir(tmp.path(), &event(3))
+            .unwrap();
+
+        assert_eq!(read_events(tmp.path()), vec![event(1), event(3)]);
+    }
+
+    #[test]
+    fn queue_pause_checkpoint_avoids_reloading_a_long_event_history() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = FileSessionStorage::default();
+        for turn_id in 1..=100 {
+            storage
+                .append_session_event_to_dir(tmp.path(), &event(turn_id))
+                .unwrap();
+        }
+        storage
+            .append_session_event_to_dir(tmp.path(), &AgentSessionEvent::QueuePaused { at: 101.0 })
+            .unwrap();
+        assert_eq!(
+            load_queue_pause_projection_from_dir(tmp.path()).unwrap(),
+            Some(101.0)
+        );
+
+        let event_log_path = event_log_file_in_dir(tmp.path());
+        let len = std::fs::metadata(&event_log_path).unwrap().len() as usize;
+        std::fs::write(&event_log_path, vec![b'x'; len]).unwrap();
+
+        assert_eq!(
+            load_queue_pause_projection_from_dir(tmp.path()).unwrap(),
+            Some(101.0)
+        );
+        assert!(
+            std::fs::metadata(queue_pause_checkpoint_file_in_dir(tmp.path()))
+                .unwrap()
+                .len()
+                < 128
+        );
+    }
+
+    #[test]
+    fn append_session_events_failure_leaves_the_existing_log_unchanged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = FileSessionStorage::default();
+        let path = event_log_file_in_dir(tmp.path());
+        std::fs::write(&path, "{\n").unwrap();
+
+        let error = storage
+            .append_session_events_to_dir(tmp.path(), &[event(1), event(2)])
+            .unwrap_err();
+
+        assert!(error.contains("does not end with a JSON array"));
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "{\n");
+    }
+
+    #[test]
+    fn recovery_failures_preserve_the_complete_prefix_and_allow_retry() {
+        for fault in [
+            EventLogWriteFault::RepairWrite,
+            EventLogWriteFault::RepairSync,
+            EventLogWriteFault::RepairBeforeRename,
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let storage = FileSessionStorage::default();
+            storage
+                .append_session_event_to_dir(tmp.path(), &event(1))
+                .unwrap();
+            storage
+                .append_session_event_to_dir(tmp.path(), &event(2))
+                .unwrap();
+            let path = event_log_file_in_dir(tmp.path());
+            let content = std::fs::read_to_string(&path).unwrap();
+            let closing_pos = content.rfind(']').unwrap();
+            std::fs::write(&path, &content[..closing_pos]).unwrap();
+
+            let error = append_event_log_record_with_fault(
+                tmp.path(),
+                EventLogRecordRef::Event(&event(3)),
+                "event",
+                Some(fault),
+            )
+            .unwrap_err();
+
+            assert!(error.contains("injected"), "unexpected {fault:?}: {error}");
+            let reopened = FileSessionStorage::default();
+            assert_eq!(
+                reopened.read_session_events_from_dir(tmp.path()).unwrap(),
+                vec![event(1), event(2)],
+                "complete prefix changed after {fault:?}"
+            );
+            reopened
+                .append_session_event_to_dir(tmp.path(), &event(3))
+                .unwrap();
+            assert_eq!(
+                reopened.read_session_events_from_dir(tmp.path()).unwrap(),
+                vec![event(1), event(2), event(3)]
+            );
+        }
+    }
+
+    #[test]
+    fn append_faults_leave_the_previous_replay_and_bytes_unchanged() {
+        for fault in [
+            EventLogWriteFault::AppendAfterPayload,
+            EventLogWriteFault::AppendAfterClosing,
+            EventLogWriteFault::AppendSync,
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let storage = FileSessionStorage::default();
+            storage
+                .append_session_event_to_dir(tmp.path(), &event(1))
+                .unwrap();
+            let path = event_log_file_in_dir(tmp.path());
+            let bytes_before = std::fs::read(&path).unwrap();
+            let events_before = storage.read_session_events_from_dir(tmp.path()).unwrap();
+            let batch = [AgentSessionEvent::QueuePaused { at: 2.0 }, event(2)];
+
+            let error = append_event_log_record_with_fault(
+                tmp.path(),
+                EventLogRecordRef::Batch { events: &batch },
+                "event batch",
+                Some(fault),
+            )
+            .unwrap_err();
+
+            assert!(error.contains("injected"), "unexpected {fault:?}: {error}");
+            assert_eq!(std::fs::read(&path).unwrap(), bytes_before);
+            let reopened = FileSessionStorage::default();
+            assert_eq!(
+                reopened.read_session_events_from_dir(tmp.path()).unwrap(),
+                events_before
+            );
+            assert!(!reopened
+                .read_session_events_from_dir(tmp.path())
+                .unwrap()
+                .iter()
+                .any(|event| matches!(event, AgentSessionEvent::QueuePaused { .. })));
+        }
     }
 }

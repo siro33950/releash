@@ -323,6 +323,7 @@ mod tests {
             "resolve_review_thread",
             "resolve_worktree_by_execution",
             "resume_workflow",
+            "resume_agent_queue",
             "respond_agent_permission",
             "restore_session",
             "restore_workspace_workflow_execution",

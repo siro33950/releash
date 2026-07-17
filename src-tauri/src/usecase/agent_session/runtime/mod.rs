@@ -5,6 +5,7 @@ pub(crate) mod queue;
 pub(crate) mod session_state;
 pub(crate) mod stale;
 pub(crate) mod streaming;
+pub(crate) mod transitions;
 pub(crate) mod usecase;
 
 pub(crate) use usecase::{

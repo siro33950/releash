@@ -832,7 +832,6 @@ export function MessageInput({
 								variant="destructive"
 								className="h-7 w-7 shrink-0"
 								onClick={onInterrupt}
-								disabled={isInterrupting}
 								aria-label={
 									isInterrupting ? "Stopping agent" : "Interrupt agent"
 								}

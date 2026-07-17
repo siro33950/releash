@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
+use crate::other::error::AppError;
 use crate::usecase::agent_session::session::errors::session_target_rejected;
 use crate::usecase::agent_session::session::{
     AgentTaskListReport, AgentThreadSearchMatch, PageCursor, SessionPage, SessionSearchResult,
@@ -176,6 +177,20 @@ pub async fn interrupt_agent_query(
 }
 
 #[tauri::command]
+pub async fn resume_agent_queue(
+    runtime: tauri::State<
+        '_,
+        Arc<crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase>,
+    >,
+    chat_session_id: String,
+) -> Result<(), AppError> {
+    runtime
+        .resume_queue(&chat_session_id)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
 pub async fn cancel_agent_queued_turn(
     runtime: tauri::State<
         '_,
@@ -258,6 +273,33 @@ pub async fn start_agent_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resume_agent_queue_errors_preserve_typed_variants_and_string_wire_format() {
+        let startup =
+            crate::usecase::agent_session::runtime::usecase::AgentRuntimeError::StartupTimeout {
+                retry_count: 1,
+                max_retries: 2,
+            };
+        let startup_message = startup.to_string();
+        let startup = AppError::from(startup);
+        assert!(matches!(
+            startup,
+            AppError::AgentStartupTimeout {
+                retry_count: 1,
+                max_retries: 2
+            }
+        ));
+        assert_eq!(serde_json::to_value(&startup).unwrap(), startup_message);
+
+        let other = AppError::from(
+            crate::usecase::agent_session::runtime::usecase::AgentRuntimeError::Other(
+                "resume failed".to_string(),
+            ),
+        );
+        assert!(matches!(other, AppError::Internal(ref message) if message == "resume failed"));
+        assert_eq!(serde_json::to_value(&other).unwrap(), "resume failed");
+    }
 
     fn session_for_start_guard(
         workflow_node_session: bool,

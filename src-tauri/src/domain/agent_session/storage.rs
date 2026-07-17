@@ -201,6 +201,13 @@ pub trait AgentSessionWriter: AgentSessionStorageTypes {
             Self::MessagePart,
         >,
     ) -> Result<Vec<Self::MessagePart>, String>;
+
+    fn append_session_events(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        events: &[Self::Event],
+    ) -> Result<(), String>;
 }
 
 pub trait AgentSessionStorage: AgentSessionReader + AgentSessionWriter {}

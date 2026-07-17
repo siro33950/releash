@@ -86,6 +86,7 @@ pub struct SessionReadModel {
     pub messages: Vec<ChatMessage>,
     pub status: ProjectedStatus,
     pub error_reason: Option<String>,
+    pub queue_paused_at: Option<f64>,
     pub workflow_turn_complete: Option<WorkflowTurnCompleteInput>,
     #[allow(dead_code)]
     // issues-1301 B-5/E-1: retry projection is retained for tool retry surface while runtime events are fully migrated.
@@ -133,6 +134,7 @@ pub fn project(events: &[AgentSessionEvent]) -> SessionReadModel {
     let mut backend_recovery = None;
     let mut session_errored_reason = None;
     let mut session_error_messages = Vec::new();
+    let mut queue_paused_at = None;
 
     for (event_order, event) in events.iter().enumerate() {
         match event {
@@ -197,6 +199,10 @@ pub fn project(events: &[AgentSessionEvent]) -> SessionReadModel {
                     turns[index].assistant_message_id = assistant_message_id.clone();
                 }
                 turns[index].started_at = *at;
+            }
+            AgentSessionEvent::TurnInterruptRequested { .. } => {}
+            AgentSessionEvent::QueuePaused { .. } | AgentSessionEvent::QueueResumed { .. } => {
+                queue_paused_at = apply_event_to_queue_pause(queue_paused_at, event);
             }
             AgentSessionEvent::TextRecorded {
                 turn_id,
@@ -570,6 +576,7 @@ pub fn project(events: &[AgentSessionEvent]) -> SessionReadModel {
         messages,
         status,
         error_reason,
+        queue_paused_at,
         workflow_turn_complete,
         tool_retries,
         backend_recovery,
@@ -592,6 +599,51 @@ pub(crate) fn session_error_message(message_id: String, reason: String, at: f64)
         streaming_final_seq: 1,
         timestamp: at,
         mentions: None,
+    }
+}
+
+pub(crate) fn apply_event_to_queue_pause(
+    queue_paused_at: Option<f64>,
+    event: &AgentSessionEvent,
+) -> Option<f64> {
+    match event {
+        AgentSessionEvent::QueuePaused { at } => Some(*at),
+        AgentSessionEvent::QueueResumed {
+            expected_paused_at, ..
+        } if queue_paused_at == Some(*expected_paused_at) => None,
+        _ => queue_paused_at,
+    }
+}
+
+#[cfg(test)]
+mod queue_pause_tests {
+    use super::*;
+
+    #[test]
+    fn matching_resume_clears_the_observed_pause_revision() {
+        let events = [
+            AgentSessionEvent::QueuePaused { at: 10.0 },
+            AgentSessionEvent::QueueResumed {
+                expected_paused_at: 10.0,
+                at: 11.0,
+            },
+        ];
+
+        assert_eq!(project(&events).queue_paused_at, None);
+    }
+
+    #[test]
+    fn stale_resume_cannot_clear_a_newer_pause_revision() {
+        let events = [
+            AgentSessionEvent::QueuePaused { at: 10.0 },
+            AgentSessionEvent::QueuePaused { at: 11.0 },
+            AgentSessionEvent::QueueResumed {
+                expected_paused_at: 10.0,
+                at: 12.0,
+            },
+        ];
+
+        assert_eq!(project(&events).queue_paused_at, Some(11.0));
     }
 }
 

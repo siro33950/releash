@@ -12,6 +12,28 @@ pub(crate) mod stored_session;
 pub(crate) mod suggestion;
 pub(crate) mod tool_activity;
 
+use crate::other::error::AppError;
+use crate::usecase::agent_session::runtime::usecase::AgentRuntimeError;
+
+impl From<AgentRuntimeError> for AppError {
+    fn from(error: AgentRuntimeError) -> Self {
+        match error {
+            AgentRuntimeError::StartupTimeout {
+                retry_count,
+                max_retries,
+            } => Self::AgentStartupTimeout {
+                retry_count,
+                max_retries,
+            },
+            locked @ AgentRuntimeError::BackendSelectionLocked => {
+                Self::Internal(locked.to_string())
+            }
+            lost @ AgentRuntimeError::BackendSessionLost { .. } => Self::Internal(lost.to_string()),
+            AgentRuntimeError::Other(message) => Self::Internal(message),
+        }
+    }
+}
+
 pub(super) const COMMAND_NAMES: &[&str] = &[
     "get_session_status",
     "get_workspace_status",
@@ -22,6 +44,7 @@ pub(super) const COMMAND_NAMES: &[&str] = &[
     "list_agent_backends",
     "start_agent_session",
     "interrupt_agent_query",
+    "resume_agent_queue",
     "cancel_agent_queued_turn",
     "build_agent_task_list_report",
     "close_agent_session",
@@ -84,6 +107,7 @@ pub(crate) fn invoke_handler(
         backend::list_agent_backends,
         session::start_agent_session,
         session::interrupt_agent_query,
+        session::resume_agent_queue,
         session::cancel_agent_queued_turn,
         session::build_agent_task_list_report,
         session::close_agent_session,

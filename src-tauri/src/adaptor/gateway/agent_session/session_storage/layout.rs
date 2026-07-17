@@ -70,6 +70,10 @@ pub(super) fn event_tail_file_in_dir(session_dir: &Path) -> PathBuf {
     session_dir.join("events_tail.json")
 }
 
+pub(super) fn queue_pause_checkpoint_file_in_dir(session_dir: &Path) -> PathBuf {
+    session_dir.join("queue_pause_checkpoint.json")
+}
+
 pub(super) fn messages_dir_in_dir(session_dir: &Path) -> PathBuf {
     session_dir.join("messages")
 }

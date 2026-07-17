@@ -115,6 +115,8 @@ interface RenderOptions {
 	notice?: SessionNotice | null;
 	error?: string | null;
 	onDismissError?: () => void;
+	queuePaused?: boolean;
+	onResumeQueue?: () => Promise<void>;
 	onRespondPermission?: (
 		requestId: string,
 		allow: boolean,
@@ -133,6 +135,8 @@ function chatSessionViewElement({
 	notice = null,
 	error = null,
 	onDismissError = vi.fn(),
+	queuePaused = false,
+	onResumeQueue = vi.fn().mockResolvedValue(undefined),
 	onRespondPermission = vi.fn(),
 }: RenderOptions = {}) {
 	return createElement(ChatSessionView, {
@@ -149,6 +153,7 @@ function chatSessionViewElement({
 		selectedModel: "claude:sonnet",
 		pendingPermission,
 		pendingQueue,
+		queuePaused,
 		stallObservation,
 		notice,
 		selectedBackendId: null,
@@ -157,6 +162,7 @@ function chatSessionViewElement({
 		onSend: vi.fn().mockResolvedValue(true),
 		onInterrupt: vi.fn(),
 		onCancelQueuedTurn: vi.fn().mockResolvedValue(undefined),
+		onResumeQueue,
 		onLoadOlderMessages,
 		onEvictOlderMessages,
 		onPermissionModeChange: vi.fn(),
@@ -753,5 +759,26 @@ describe("ChatSessionView pending permission fallback", () => {
 				},
 			},
 		]);
+	});
+
+	it("offers an explicit resume action for a paused queue", async () => {
+		const onResumeQueue = vi.fn().mockResolvedValue(undefined);
+		renderChatSessionView({
+			pendingQueue: [
+				{
+					id: "queued-1",
+					contentPreview: "follow up",
+					createdAt: 1002,
+					permissionMode: "edit",
+					imageCount: 0,
+				},
+			],
+			queuePaused: true,
+			onResumeQueue,
+		});
+
+		await userEvent.click(screen.getByRole("button", { name: "Resume queue" }));
+
+		expect(onResumeQueue).toHaveBeenCalledOnce();
 	});
 });

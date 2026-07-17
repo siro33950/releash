@@ -34,14 +34,35 @@ pub(crate) struct CodexSessionRuntime {
     state: Arc<Mutex<CodexRuntimeState>>,
     events: StdMutex<Option<mpsc::UnboundedReceiver<AgentRuntimeEvent>>>,
     read_task: StdMutex<Option<tokio::task::JoinHandle<()>>>,
-    next_id: AtomicU64,
+    next_id: Arc<AtomicU64>,
     closed: Arc<AtomicBool>,
+}
+
+struct ReservedInterruptSender<W = CodexAppServerHandle> {
+    handle: W,
+    next_id: Arc<AtomicU64>,
+}
+
+#[async_trait::async_trait]
+trait JsonWriteSink: Send + Sync {
+    async fn write_json(&self, value: &Value) -> Result<(), String>;
+}
+
+#[async_trait::async_trait]
+impl JsonWriteSink for CodexAppServerHandle {
+    async fn write_json(&self, value: &Value) -> Result<(), String> {
+        CodexAppServerHandle::write_json(self, value).await
+    }
 }
 
 #[derive(Debug)]
 struct CodexRuntimeState {
     thread_id: Option<String>,
     turn_id: Option<String>,
+    active_turn_start_request_id: Option<u64>,
+    interrupt_requested_for: Option<u64>,
+    turn_start_handshake_active: bool,
+    interrupt_requested_during_start_handshake: bool,
     startup_error: Option<String>,
     requested_resume_id: Option<String>,
     resume_rejected: bool,
@@ -108,6 +129,10 @@ impl CodexSessionRuntime {
         let state = Arc::new(Mutex::new(CodexRuntimeState {
             thread_id: None,
             turn_id: None,
+            active_turn_start_request_id: None,
+            interrupt_requested_for: None,
+            turn_start_handshake_active: false,
+            interrupt_requested_during_start_handshake: false,
             startup_error: None,
             requested_resume_id: spec.resume.clone(),
             resume_rejected: false,
@@ -122,9 +147,15 @@ impl CodexSessionRuntime {
         let read_state = Arc::clone(&state);
         let read_closed = Arc::clone(&closed);
         let requested_resume_id = spec.resume.clone();
+        let next_id = Arc::new(AtomicU64::new(100));
+        let reserved_interrupt_sender = ReservedInterruptSender {
+            handle: handle.clone(),
+            next_id: Arc::clone(&next_id),
+        };
         let mut read_task = Some(tokio::spawn(async move {
             read_loop(
                 process.stdout_mut(),
+                reserved_interrupt_sender,
                 read_state,
                 events_tx,
                 read_closed,
@@ -172,7 +203,7 @@ impl CodexSessionRuntime {
             state,
             events: StdMutex::new(Some(events_rx)),
             read_task: StdMutex::new(read_task),
-            next_id: AtomicU64::new(100),
+            next_id,
             closed,
         })
     }
@@ -215,38 +246,55 @@ impl AgentSessionRuntime for CodexSessionRuntime {
     }
 
     async fn start_turn(&self, input: TurnInput) -> Result<(), AgentBackendError> {
-        let thread_id = wait_for_thread_id(&self.state, Duration::from_secs(15)).await?;
+        {
+            let mut state = self.state.lock().await;
+            state.begin_turn_start_handshake();
+        }
+        let thread_id = match wait_for_thread_id(&self.state, Duration::from_secs(15)).await {
+            Ok(thread_id) => thread_id,
+            Err(error) => {
+                self.state.lock().await.clear_turn_start_handshake();
+                return Err(error);
+            }
+        };
         let request_id = self.next_request_id();
         let request = {
             let mut state = self.state.lock().await;
             state.permission_profile_id = input.permission_profile_id.clone();
             state.stdout_diagnostics.reset();
-            build_turn_start_request(request_id, &thread_id, &state, input)?
+            let request = match build_turn_start_request(request_id, &thread_id, &state, input) {
+                Ok(request) => request,
+                Err(error) => {
+                    state.clear_turn_start_handshake();
+                    return Err(error);
+                }
+            };
+            state.register_turn_start_request(request_id);
+            request
         };
-        self.write_tracked_request(request_id, METHOD_TURN_START, &request)
+        if let Err(error) = self
+            .write_tracked_request(request_id, METHOD_TURN_START, &request)
             .await
+        {
+            self.state
+                .lock()
+                .await
+                .clear_failed_turn_start_request(request_id);
+            Err(error)
+        } else {
+            Ok(())
+        }
     }
 
     async fn interrupt(&self) -> Result<(), AgentBackendError> {
-        let (thread_id, turn_id) = {
-            let state = self.state.lock().await;
-            (state.thread_id.clone(), state.turn_id.clone())
-        };
-        let Some(thread_id) = thread_id else {
-            return Ok(());
-        };
-        let Some(turn_id) = turn_id else {
-            return Ok(());
-        };
         let request_id = self.next_request_id();
-        let value = request(
-            request_id,
-            METHOD_TURN_INTERRUPT,
-            json!({
-                "threadId": thread_id,
-                "turnId": turn_id,
-            }),
-        );
+        let value = {
+            let mut state = self.state.lock().await;
+            prepare_interrupt_request(&mut state, request_id)
+        };
+        let Some(value) = value else {
+            return Ok(());
+        };
         self.write_tracked_request(request_id, METHOD_TURN_INTERRUPT, &value)
             .await
     }
@@ -366,14 +414,16 @@ fn take_pending_method(
     })
 }
 
-async fn read_loop<R>(
+async fn read_loop<R, W>(
     stdout: &mut StdoutLineReader<R>,
+    reserved_interrupt_sender: ReservedInterruptSender<W>,
     state: Arc<Mutex<CodexRuntimeState>>,
     events_tx: mpsc::UnboundedSender<AgentRuntimeEvent>,
     closed: Arc<AtomicBool>,
     requested_resume_id: Option<String>,
 ) where
     R: AsyncBufRead + Unpin,
+    W: JsonWriteSink,
 {
     let mut convert_state = CodexConvertState {
         requested_resume_id,
@@ -432,8 +482,34 @@ async fn read_loop<R>(
                     _ => {}
                 }
                 let events = convert_jsonrpc_message(&message, &mut convert_state);
-                {
-                    state.lock().await.turn_id = convert_state.turn_id.clone();
+                let reserved_interrupt = {
+                    let mut state = state.lock().await;
+                    state.turn_id = convert_state.turn_id.clone();
+                    if state.interrupt_requested_for.is_some() {
+                        let request_id = reserved_interrupt_sender
+                            .next_id
+                            .fetch_add(1, Ordering::Relaxed);
+                        let request = take_reserved_interrupt_request(&mut state, request_id);
+                        if request.is_some() {
+                            state
+                                .pending_client_requests
+                                .register(request_id, METHOD_TURN_INTERRUPT);
+                        }
+                        request.map(|request| (request_id, request))
+                    } else {
+                        None
+                    }
+                };
+                if let Some((request_id, request)) = reserved_interrupt {
+                    if let Err(error) = reserved_interrupt_sender.handle.write_json(&request).await
+                    {
+                        state
+                            .lock()
+                            .await
+                            .pending_client_requests
+                            .remove(request_id);
+                        log::warn!("failed to send reserved Codex interrupt: {error}");
+                    }
                 }
                 for event in events {
                     {
@@ -452,7 +528,7 @@ async fn read_loop<R>(
                             state.startup_error = Some(message.clone());
                         }
                         if matches!(event, AgentRuntimeEvent::TurnCompleted(_)) {
-                            state.pending_methods.clear();
+                            reset_completed_turn_state(&mut state);
                         }
                     }
                     let _ = events_tx.send(event);
@@ -512,6 +588,91 @@ async fn emit_read_failure(
     let _ = events_tx.send(AgentRuntimeEvent::Fatal {
         message: error.to_string(),
     });
+}
+
+fn prepare_interrupt_request(state: &mut CodexRuntimeState, request_id: u64) -> Option<Value> {
+    let Some(thread_id) = state.thread_id.clone() else {
+        state.reserve_interrupt_for_start_handshake();
+        return None;
+    };
+    let Some(turn_id) = state.turn_id.clone() else {
+        if let Some(active_request_id) = state.active_turn_start_request_id {
+            state.interrupt_requested_for = Some(active_request_id);
+        } else {
+            state.reserve_interrupt_for_start_handshake();
+        }
+        return None;
+    };
+    state.interrupt_requested_for = None;
+    Some(turn_interrupt_request(request_id, thread_id, turn_id))
+}
+
+fn take_reserved_interrupt_request(
+    state: &mut CodexRuntimeState,
+    request_id: u64,
+) -> Option<Value> {
+    let requested_for = state.interrupt_requested_for?;
+    if state.active_turn_start_request_id != Some(requested_for) {
+        state.interrupt_requested_for = None;
+        return None;
+    }
+    prepare_interrupt_request(state, request_id)
+}
+
+fn turn_interrupt_request(request_id: u64, thread_id: String, turn_id: String) -> Value {
+    request(
+        request_id,
+        METHOD_TURN_INTERRUPT,
+        json!({
+            "threadId": thread_id,
+            "turnId": turn_id,
+        }),
+    )
+}
+
+fn reset_completed_turn_state(state: &mut CodexRuntimeState) {
+    state.turn_id = None;
+    state.active_turn_start_request_id = None;
+    state.interrupt_requested_for = None;
+    state.turn_start_handshake_active = false;
+    state.interrupt_requested_during_start_handshake = false;
+    state.pending_methods.clear();
+}
+
+impl CodexRuntimeState {
+    fn begin_turn_start_handshake(&mut self) {
+        self.turn_start_handshake_active = true;
+        self.interrupt_requested_during_start_handshake = false;
+    }
+
+    fn reserve_interrupt_for_start_handshake(&mut self) {
+        if self.turn_start_handshake_active {
+            self.interrupt_requested_during_start_handshake = true;
+        }
+    }
+
+    fn register_turn_start_request(&mut self, request_id: u64) {
+        self.active_turn_start_request_id = Some(request_id);
+        self.interrupt_requested_for = self
+            .interrupt_requested_during_start_handshake
+            .then_some(request_id);
+        self.turn_start_handshake_active = false;
+        self.interrupt_requested_during_start_handshake = false;
+    }
+
+    fn clear_turn_start_handshake(&mut self) {
+        self.turn_start_handshake_active = false;
+        self.interrupt_requested_during_start_handshake = false;
+    }
+
+    fn clear_failed_turn_start_request(&mut self, request_id: u64) {
+        self.pending_client_requests.remove(request_id);
+        if self.active_turn_start_request_id == Some(request_id) {
+            self.active_turn_start_request_id = None;
+            self.interrupt_requested_for = None;
+            self.clear_turn_start_handshake();
+        }
+    }
 }
 
 fn startup_timeout_for_spec(spec: &SessionSpec) -> Duration {
@@ -737,6 +898,26 @@ mod tests {
     };
     static TEST_LOG_CAPTURE_INIT: std::sync::Once = std::sync::Once::new();
 
+    #[derive(Clone, Default)]
+    struct RecordingJsonWriteSink {
+        writes: Arc<Mutex<Vec<Value>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl JsonWriteSink for RecordingJsonWriteSink {
+        async fn write_json(&self, value: &Value) -> Result<(), String> {
+            self.writes.lock().await.push(value.clone());
+            Ok(())
+        }
+    }
+
+    fn test_interrupt_sender() -> ReservedInterruptSender<RecordingJsonWriteSink> {
+        ReservedInterruptSender {
+            handle: RecordingJsonWriteSink::default(),
+            next_id: Arc::new(AtomicU64::new(100)),
+        }
+    }
+
     #[cfg(unix)]
     fn write_fake_codex_cli(dir: &std::path::Path) -> std::path::PathBuf {
         use std::os::unix::fs::PermissionsExt;
@@ -793,6 +974,10 @@ exec sleep 30
         CodexRuntimeState {
             thread_id: Some("thread".to_string()),
             turn_id: Some("turn".to_string()),
+            active_turn_start_request_id: None,
+            interrupt_requested_for: None,
+            turn_start_handshake_active: false,
+            interrupt_requested_during_start_handshake: false,
             startup_error: None,
             requested_resume_id: None,
             resume_rejected: false,
@@ -870,6 +1055,10 @@ exec sleep 30
         let mut state = CodexRuntimeState {
             thread_id: Some("thread".to_string()),
             turn_id: None,
+            active_turn_start_request_id: None,
+            interrupt_requested_for: None,
+            turn_start_handshake_active: false,
+            interrupt_requested_during_start_handshake: false,
             startup_error: None,
             requested_resume_id: None,
             resume_rejected: false,
@@ -910,6 +1099,7 @@ exec sleep 30
 
         read_loop(
             &mut stdout,
+            test_interrupt_sender(),
             Arc::clone(&state),
             events_tx,
             Arc::new(AtomicBool::new(false)),
@@ -961,6 +1151,7 @@ exec sleep 30
 
         read_loop(
             &mut stdout,
+            test_interrupt_sender(),
             state,
             events_tx,
             Arc::new(AtomicBool::new(false)),
@@ -995,6 +1186,7 @@ exec sleep 30
         let (events_tx, mut events_rx) = mpsc::unbounded_channel();
         read_loop(
             &mut stdout,
+            test_interrupt_sender(),
             state,
             events_tx,
             Arc::new(AtomicBool::new(false)),
@@ -1026,6 +1218,7 @@ exec sleep 30
         let (events_tx, mut events_rx) = mpsc::unbounded_channel();
         read_loop(
             &mut stdout,
+            test_interrupt_sender(),
             state,
             events_tx,
             Arc::new(AtomicBool::new(true)),
@@ -1053,7 +1246,15 @@ exec sleep 30
         let closed = Arc::new(AtomicBool::new(false));
         let read_closed = Arc::clone(&closed);
         let read_task = tokio::spawn(async move {
-            read_loop(&mut stdout, read_state, events_tx, read_closed, None).await;
+            read_loop(
+                &mut stdout,
+                test_interrupt_sender(),
+                read_state,
+                events_tx,
+                read_closed,
+                None,
+            )
+            .await;
         });
 
         writer.write_all(fixture).await.unwrap();
@@ -1122,7 +1323,15 @@ exec sleep 30
         let closed = Arc::new(AtomicBool::new(false));
         let read_closed = Arc::clone(&closed);
         let read_task = tokio::spawn(async move {
-            read_loop(&mut stdout, read_state, events_tx, read_closed, None).await;
+            read_loop(
+                &mut stdout,
+                test_interrupt_sender(),
+                read_state,
+                events_tx,
+                read_closed,
+                None,
+            )
+            .await;
         });
 
         writer.write_all(input).await.unwrap();
@@ -1200,6 +1409,133 @@ exec sleep 30
             wait_for_thread_id(&state, Duration::from_millis(1)).await,
             Err(AgentBackendError::Other(message)) if message == "bad api key"
         ));
+    }
+
+    #[test]
+    fn interrupt_before_turn_started_is_reserved_without_a_write_request() {
+        let mut state = runtime_state();
+        state.thread_id = Some("thread-1".to_string());
+        state.turn_id = None;
+        state.active_turn_start_request_id = Some(7);
+
+        let request = prepare_interrupt_request(&mut state, 100);
+
+        assert!(request.is_none());
+        assert_eq!(state.interrupt_requested_for, Some(7));
+    }
+
+    #[test]
+    fn interrupt_during_start_handshake_is_carried_to_the_registered_request() {
+        let mut state = runtime_state();
+        state.thread_id = None;
+        state.turn_id = None;
+        state.begin_turn_start_handshake();
+
+        assert!(prepare_interrupt_request(&mut state, 100).is_none());
+        assert!(state.interrupt_requested_during_start_handshake);
+
+        state.thread_id = Some("thread-1".to_string());
+        state.register_turn_start_request(7);
+
+        assert_eq!(state.active_turn_start_request_id, Some(7));
+        assert_eq!(state.interrupt_requested_for, Some(7));
+        assert!(!state.turn_start_handshake_active);
+        assert!(!state.interrupt_requested_during_start_handshake);
+    }
+
+    #[test]
+    fn interrupt_after_provider_terminal_does_not_reserve_for_the_next_turn() {
+        let mut state = runtime_state();
+        state.turn_id = None;
+
+        assert!(prepare_interrupt_request(&mut state, 100).is_none());
+        assert_eq!(state.interrupt_requested_for, None);
+    }
+
+    #[test]
+    fn turn_started_consumes_the_reserved_interrupt_immediately() {
+        let mut state = runtime_state();
+        state.thread_id = Some("thread-1".to_string());
+        state.turn_id = Some("turn-1".to_string());
+        state.active_turn_start_request_id = Some(7);
+        state.interrupt_requested_for = Some(7);
+
+        let request = take_reserved_interrupt_request(&mut state, 101).unwrap();
+
+        assert_eq!(request["method"], METHOD_TURN_INTERRUPT);
+        assert_eq!(request["params"]["threadId"], "thread-1");
+        assert_eq!(request["params"]["turnId"], "turn-1");
+        assert_eq!(state.interrupt_requested_for, None);
+    }
+
+    #[tokio::test]
+    async fn read_loop_writes_the_reserved_interrupt_exactly_once_after_turn_started() {
+        let input = br#"{"method":"turn/started","params":{"turn":{"id":"turn-1"}}}
+{"method":"item/agentMessage/delta","params":{"delta":"after interrupt"}}
+"#;
+        let mut stdout = StdoutLineReader::new(tokio::io::BufReader::new(&input[..]));
+        let mut runtime_state = runtime_state();
+        runtime_state.thread_id = Some("thread-1".to_string());
+        runtime_state.turn_id = None;
+        runtime_state.active_turn_start_request_id = Some(7);
+        assert!(prepare_interrupt_request(&mut runtime_state, 100).is_none());
+        let state = Arc::new(Mutex::new(runtime_state));
+        let sink = RecordingJsonWriteSink::default();
+        let writes = Arc::clone(&sink.writes);
+        let (events_tx, _events_rx) = mpsc::unbounded_channel();
+
+        read_loop(
+            &mut stdout,
+            ReservedInterruptSender {
+                handle: sink,
+                next_id: Arc::new(AtomicU64::new(101)),
+            },
+            Arc::clone(&state),
+            events_tx,
+            Arc::new(AtomicBool::new(false)),
+            None,
+        )
+        .await;
+
+        let writes = writes.lock().await;
+        let interrupts = writes
+            .iter()
+            .filter(|value| value["method"] == METHOD_TURN_INTERRUPT)
+            .collect::<Vec<_>>();
+        assert_eq!(interrupts.len(), 1);
+        assert_eq!(interrupts[0]["params"]["threadId"], "thread-1");
+        assert_eq!(interrupts[0]["params"]["turnId"], "turn-1");
+        assert_eq!(state.lock().await.interrupt_requested_for, None);
+    }
+
+    #[test]
+    fn interrupt_with_turn_id_builds_a_request_without_reservation() {
+        let mut state = runtime_state();
+        state.thread_id = Some("thread-1".to_string());
+        state.turn_id = Some("turn-1".to_string());
+        state.active_turn_start_request_id = Some(7);
+
+        let request = prepare_interrupt_request(&mut state, 102).unwrap();
+
+        assert_eq!(request["method"], METHOD_TURN_INTERRUPT);
+        assert_eq!(state.interrupt_requested_for, None);
+    }
+
+    #[test]
+    fn completed_turn_clears_interrupt_reservation_and_provider_turn_id() {
+        let mut state = runtime_state();
+        state.thread_id = Some("thread-1".to_string());
+        state.turn_id = Some("turn-1".to_string());
+        state.active_turn_start_request_id = Some(7);
+        state.interrupt_requested_for = Some(7);
+        state.pending_methods.insert(7, "permission".to_string());
+
+        reset_completed_turn_state(&mut state);
+
+        assert!(state.turn_id.is_none());
+        assert_eq!(state.active_turn_start_request_id, None);
+        assert_eq!(state.interrupt_requested_for, None);
+        assert!(state.pending_methods.is_empty());
     }
 
     #[cfg(unix)]

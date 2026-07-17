@@ -35,6 +35,7 @@ pub(crate) struct AgentSessionStateChangedPayload {
     pub completed_at: Option<f64>,
     pub interrupted: bool,
     pub session_state: Option<SessionState>,
+    pub queue_paused: Option<bool>,
     pub pending_permission_request: Option<PermissionRequestMsg>,
     pub pending_permission_state_revision: Option<u64>,
 }

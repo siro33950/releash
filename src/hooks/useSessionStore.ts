@@ -111,6 +111,7 @@ export type AgentSessionNoticeOperation =
 	| "load_session"
 	| "load_older"
 	| "cancel_queue"
+	| "resume_queue"
 	| "close_session"
 	| "restore_session"
 	| "archive_session"
@@ -167,6 +168,7 @@ export interface GetSessionResponse {
 	canChangeBackend: boolean;
 	pendingQueue?: QueuedAgentTurn[];
 	pendingQueueCount?: number;
+	queuePaused: boolean;
 	pendingPermissionRequest?: PermissionRequest | null;
 	pendingPermissionStateRevision?: number | null;
 	latestTokenUsage?: TokenUsage | null;
@@ -257,6 +259,7 @@ interface RawGetSessionResponse {
 	canChangeBackend?: boolean;
 	pendingQueue?: QueuedAgentTurn[];
 	pendingQueueCount?: number;
+	queuePaused?: boolean;
 	pendingPermissionRequest?: PermissionRequest | null;
 	pendingPermissionStateRevision?: number | null;
 	latestTokenUsage?: TokenUsage | null;
@@ -299,6 +302,7 @@ function convertRawGetSessionResponse(
 		canChangeBackend: raw.canChangeBackend ?? false,
 		pendingQueue: raw.pendingQueue ?? [],
 		pendingQueueCount: raw.pendingQueueCount ?? 0,
+		queuePaused: raw.queuePaused ?? false,
 		pendingPermissionRequest: raw.pendingPermissionRequest ?? null,
 		pendingPermissionStateRevision: raw.pendingPermissionStateRevision ?? 0,
 		latestTokenUsage: raw.latestTokenUsage ?? null,
@@ -558,6 +562,10 @@ export async function cancelAgentQueuedTurn(
 		chatSessionId,
 		queuedTurnId: queuedTurnId ?? null,
 	});
+}
+
+export async function resumeAgentQueue(chatSessionId: string): Promise<void> {
+	return invoke<void>("resume_agent_queue", { chatSessionId });
 }
 
 interface RawInitSessionsResponse {

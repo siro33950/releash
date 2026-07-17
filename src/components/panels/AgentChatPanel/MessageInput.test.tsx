@@ -283,6 +283,55 @@ describe("MessageInput", () => {
 		expect(onInterrupt).toHaveBeenCalled();
 	});
 
+	it("keeps the interrupt button clickable while stopping", () => {
+		const onInterrupt = vi.fn();
+		render(
+			<MessageInput
+				{...defaultProps}
+				onInterrupt={onInterrupt}
+				isStreaming={true}
+				isInterrupting={true}
+			/>,
+		);
+
+		const button = screen.getByLabelText("Stopping agent");
+		expect(button).not.toBeDisabled();
+		fireEvent.click(button);
+		expect(onInterrupt).toHaveBeenCalledOnce();
+	});
+
+	it("preserves draft text and attachments while stopping and re-interrupting", () => {
+		const onInterrupt = vi.fn();
+		const ref = createRef<MessageInputHandle>();
+		const { rerender } = render(
+			<MessageInput {...defaultProps} onInterrupt={onInterrupt} ref={ref} />,
+		);
+		const textarea = screen.getByPlaceholderText(
+			"Send a message...",
+		) as HTMLTextAreaElement;
+		fireEvent.change(textarea, { target: { value: "draft remains" } });
+		act(() => {
+			ref.current?.addImageAttachments([
+				{ data: "aGVsbG8=", mediaType: "image/png" },
+			]);
+		});
+
+		rerender(
+			<MessageInput
+				{...defaultProps}
+				onInterrupt={onInterrupt}
+				ref={ref}
+				isStreaming={true}
+				isInterrupting={true}
+			/>,
+		);
+		fireEvent.click(screen.getByLabelText("Stopping agent"));
+
+		expect(textarea.value).toBe("draft remains");
+		expect(screen.getAllByTestId("image-preview-item")).toHaveLength(1);
+		expect(onInterrupt).toHaveBeenCalledOnce();
+	});
+
 	it("interrupts with Ctrl+C while streaming and composer is empty", () => {
 		const onInterrupt = vi.fn();
 		render(

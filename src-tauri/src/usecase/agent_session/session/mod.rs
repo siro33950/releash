@@ -47,7 +47,9 @@ pub(crate) use read_paths::{
 };
 pub(crate) use store::ErrorEpisodeInput;
 pub(crate) use store::SessionEventLogRecoverySignal;
-pub use store::{SessionReaderPort, SessionReviewContextReader, SessionStore};
+pub use store::{
+    SessionQueuePauseReader, SessionReaderPort, SessionReviewContextReader, SessionStore,
+};
 pub(crate) use stored_lifecycle::{
     AgentSessionBackendLifecycleGateway, AgentSessionRuntimeCloser, BackendSessionLifecycleRequest,
     CloseSessionOutcome, RestoreSessionOutcome, StoredSessionClosePort,
@@ -992,6 +994,7 @@ pub struct GetSessionResponse {
     pub can_change_backend: bool,
     pub pending_queue: Vec<QueuedAgentTurn>,
     pub pending_queue_count: usize,
+    pub queue_paused: bool,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub pending_permission_request: Option<PermissionRequestMsg>,
     pub pending_permission_state_revision: u64,
@@ -1952,6 +1955,7 @@ mod tests {
             can_change_backend: false,
             pending_queue: Vec::new(),
             pending_queue_count: 0,
+            queue_paused: false,
             pending_permission_request: None,
             pending_permission_state_revision: 0,
             initial_page: None,

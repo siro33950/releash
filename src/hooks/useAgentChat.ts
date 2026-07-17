@@ -58,6 +58,7 @@ import {
 	listSessions,
 	planAgentChatEviction,
 	restoreSession as restoreSessionApi,
+	resumeAgentQueue,
 	sendAgentMessage,
 	sendWorkflowApprovalChatMessage,
 	setSessionBackend,
@@ -189,6 +190,7 @@ export interface UseAgentChatResult {
 	getSessionCanChangeBackend: (sessionId: string) => boolean;
 	getSessionPendingPermission: (sessionId: string) => PermissionRequest | null;
 	getSessionPendingQueue: (sessionId: string) => QueuedAgentTurn[];
+	getSessionQueuePaused: (sessionId: string) => boolean;
 	getSessionStallObservation: (
 		sessionId: string,
 	) => AgentStallObservation | null;
@@ -199,6 +201,7 @@ export interface UseAgentChatResult {
 		sessionId: string,
 		queuedTurnId?: string | null,
 	) => Promise<void>;
+	resumeQueue: (sessionId: string) => Promise<void>;
 }
 
 function startAgentProcess(
@@ -366,6 +369,7 @@ function dispatchSessionMeta(
 		availableModels: ModelInfo[];
 		canChangeBackend: boolean;
 		pendingQueue?: QueuedAgentTurn[];
+		queuePaused?: boolean;
 		pendingPermissionRequest?: PermissionRequest | null;
 		pendingPermissionStateRevision?: number | null;
 		latestTokenUsage?: TokenUsage | null;
@@ -412,6 +416,11 @@ function dispatchSessionMeta(
 		type: "SET_PENDING_QUEUE",
 		sessionId,
 		queue: response.pendingQueue ?? [],
+	});
+	dispatch({
+		type: "SET_QUEUE_PAUSED",
+		sessionId,
+		value: response.queuePaused ?? false,
 	});
 	dispatch({
 		type: "SET_PENDING_PERMISSION",
@@ -461,8 +470,6 @@ export function useAgentChat(
 	sessionPlanModesRef.current = state.sessionPlanModes;
 	const turnPhasesRef = useRef(state.turnPhases);
 	turnPhasesRef.current = state.turnPhases;
-	const interruptingRef = useRef(state.interrupting);
-	interruptingRef.current = state.interrupting;
 	const selectedBackendIdRef = useRef(state.selectedBackendId);
 	selectedBackendIdRef.current = state.selectedBackendId;
 	const availableModelsRef = useRef(state.availableModels);
@@ -920,8 +927,6 @@ export function useAgentChat(
 
 	const interrupt = useCallback((sessionId: string) => {
 		if (!sessionId) return;
-		// 既に interrupt 要求済みなら握りつぶす（連打抑止）。
-		if (interruptingRef.current[sessionId]) return;
 		// 楽観的に interrupting 状態へ。turn が idle になった時点で reducer が
 		// 自動クリアする。これで停止押下が即座に UI へ反映される。
 		dispatch({ type: "SET_INTERRUPTING", sessionId, value: true });
@@ -1131,6 +1136,26 @@ export function useAgentChat(
 		},
 		[],
 	);
+
+	const resumeQueue = useCallback(async (sessionId: string) => {
+		try {
+			await resumeAgentQueue(sessionId);
+			await clearSessionError(
+				dispatch,
+				sessionNoticeRequestControllersRef,
+				sessionId,
+				"resume_queue",
+			);
+		} catch (e) {
+			await setSessionError(
+				dispatch,
+				sessionNoticeRequestControllersRef,
+				sessionId,
+				"resume_queue",
+				`キューの再開に失敗: ${e}`,
+			);
+		}
+	}, []);
 
 	const removeOpenSession = useCallback(
 		async (
@@ -1821,6 +1846,7 @@ export function useAgentChat(
 	const turnPhasesState = state.turnPhases;
 	const sessionModelsState = state.sessionModels;
 	const pendingQueuesState = state.pendingQueues;
+	const queuePausedState = state.queuePaused;
 	const stallObservationsState = state.stallObservations ?? {};
 	const latestTokenUsageState = state.latestTokenUsage;
 	const runtimeSlashCommandsState = state.runtimeSlashCommands;
@@ -1884,6 +1910,10 @@ export function useAgentChat(
 		(sessionId: string): QueuedAgentTurn[] =>
 			pendingQueuesState[sessionId] ?? [],
 		[pendingQueuesState],
+	);
+	const getSessionQueuePaused = useCallback(
+		(sessionId: string): boolean => queuePausedState[sessionId] ?? false,
+		[queuePausedState],
 	);
 	const getSessionStallObservation = useCallback(
 		(sessionId: string): AgentStallObservation | null =>
@@ -1973,10 +2003,12 @@ export function useAgentChat(
 		getSessionCanChangeBackend,
 		getSessionPendingPermission,
 		getSessionPendingQueue,
+		getSessionQueuePaused,
 		getSessionStallObservation,
 		getSessionNotice,
 		getSessionLatestTokenUsage,
 		getSessionRuntimeSlashCommands,
 		cancelQueuedTurn,
+		resumeQueue,
 	};
 }

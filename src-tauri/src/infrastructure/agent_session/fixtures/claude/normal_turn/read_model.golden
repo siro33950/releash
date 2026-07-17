@@ -84,6 +84,7 @@
     "turn_phase": "idle"
   },
   "error_reason": null,
+  "queue_paused_at": null,
   "workflow_turn_complete": {
     "turn_id": 1,
     "exit_code": 0,

@@ -5,6 +5,7 @@ import {
 	getSession,
 	getSessionPage,
 	planAgentChatEviction,
+	resumeAgentQueue,
 	sendAgentMessage,
 	sendWorkflowApprovalChatMessage,
 } from "./useSessionStore";
@@ -266,6 +267,14 @@ describe("session paging", () => {
 			modelId: "claude-sonnet-4-6",
 			images: undefined,
 			mentions: undefined,
+		});
+	});
+
+	it("resumeAgentQueue invokes the explicit queue resume command", async () => {
+		await resumeAgentQueue("s1");
+
+		expect(invoke).toHaveBeenCalledWith("resume_agent_queue", {
+			chatSessionId: "s1",
 		});
 	});
 });

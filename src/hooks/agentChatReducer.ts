@@ -33,7 +33,7 @@ export interface AgentChatState {
 	turnPhases: Record<string, TurnPhase>;
 	/**
 	 * interrupt 要求を出してから turn が idle になるまでの楽観的フラグ。
-	 * 停止ボタン押下を即座に UI へ反映し、連打を防ぐ。turnPhase が idle に
+	 * 停止ボタン押下を即座に UI へ反映する。turnPhase が idle に
 	 * 遷移した時点で自動クリアされる。
 	 */
 	interrupting: Record<string, boolean>;
@@ -49,6 +49,7 @@ export interface AgentChatState {
 	pendingPermissionStateRevisions: Record<string, number>;
 	clearedPendingPermissionIds: Record<string, string>;
 	pendingQueues: Record<string, QueuedAgentTurn[]>;
+	queuePaused: Record<string, boolean>;
 	stallObservations?: Record<string, AgentStallObservation>;
 	latestTokenUsage: Record<string, TokenUsage | null>;
 	runtimeSlashCommands: Record<string, SlashCommand[]>;
@@ -115,6 +116,7 @@ export type AgentChatAction =
 			sessionId: string;
 			queue: QueuedAgentTurn[];
 	  }
+	| { type: "SET_QUEUE_PAUSED"; sessionId: string; value: boolean }
 	| {
 			type: "SET_STALL_OBSERVATION";
 			sessionId: string;
@@ -632,6 +634,14 @@ export function reducer(
 					[action.sessionId]: action.queue,
 				},
 			};
+		case "SET_QUEUE_PAUSED":
+			return {
+				...state,
+				queuePaused: {
+					...state.queuePaused,
+					[action.sessionId]: action.value,
+				},
+			};
 		case "SET_STALL_OBSERVATION":
 			return {
 				...state,
@@ -777,6 +787,7 @@ export function reducer(
 				state.clearedPendingPermissionIds;
 			const { [action.sessionId]: _pq, ...restPendingQueues } =
 				state.pendingQueues;
+			const { [action.sessionId]: _qp, ...restQueuePaused } = state.queuePaused;
 			const { [action.sessionId]: _so, ...restStallObservations } =
 				state.stallObservations ?? {};
 			const { [action.sessionId]: _tu, ...restLatestTokenUsage } =
@@ -803,6 +814,7 @@ export function reducer(
 				pendingPermissionStateRevisions: restPendingPermissionStateRevisions,
 				clearedPendingPermissionIds: restClearedPendingPermissionIds,
 				pendingQueues: restPendingQueues,
+				queuePaused: restQueuePaused,
 				stallObservations: restStallObservations,
 				latestTokenUsage: restLatestTokenUsage,
 				runtimeSlashCommands: restRuntimeSlashCommands,
@@ -878,6 +890,7 @@ export const INITIAL_STATE: AgentChatState = {
 	pendingPermissionStateRevisions: {},
 	clearedPendingPermissionIds: {},
 	pendingQueues: {},
+	queuePaused: {},
 	stallObservations: {},
 	latestTokenUsage: {},
 	runtimeSlashCommands: {},
