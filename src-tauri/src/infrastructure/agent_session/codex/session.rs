@@ -33,6 +33,7 @@ pub(crate) struct CodexSessionRuntime {
     handle: CodexAppServerHandle,
     state: Arc<Mutex<CodexRuntimeState>>,
     events: StdMutex<Option<mpsc::UnboundedReceiver<AgentRuntimeEvent>>>,
+    read_task: StdMutex<Option<tokio::task::JoinHandle<()>>>,
     next_id: AtomicU64,
     closed: Arc<AtomicBool>,
 }
@@ -117,7 +118,7 @@ impl CodexSessionRuntime {
         let read_state = Arc::clone(&state);
         let read_closed = Arc::clone(&closed);
         let requested_resume_id = spec.resume.clone();
-        tokio::spawn(async move {
+        let mut read_task = Some(tokio::spawn(async move {
             read_loop(
                 process.stdout_mut(),
                 read_state,
@@ -127,27 +128,24 @@ impl CodexSessionRuntime {
             )
             .await;
             process.shutdown().await;
-        });
+        }));
 
         if let Err(error) = handle
             .write_json(&initialize_request(1, env!("CARGO_PKG_VERSION")))
             .await
         {
-            closed.store(true, Ordering::Relaxed);
-            handle.shutdown().await;
+            shutdown_opening_process(&handle, &closed, &mut read_task).await;
             return Err(AgentBackendError::Other(error));
         }
         if let Err(error) = handle.write_json(&initialized_notification()).await {
-            closed.store(true, Ordering::Relaxed);
-            handle.shutdown().await;
+            shutdown_opening_process(&handle, &closed, &mut read_task).await;
             return Err(AgentBackendError::Other(error));
         }
         let thread_request = if let Some(thread_id) = spec.resume.as_deref() {
             match build_thread_resume_request(startup_request_id, thread_id, &spec) {
                 Ok(request) => request,
                 Err(error) => {
-                    closed.store(true, Ordering::Relaxed);
-                    handle.shutdown().await;
+                    shutdown_opening_process(&handle, &closed, &mut read_task).await;
                     return Err(error);
                 }
             }
@@ -155,15 +153,13 @@ impl CodexSessionRuntime {
             match build_thread_start_request(startup_request_id, &spec) {
                 Ok(request) => request,
                 Err(error) => {
-                    closed.store(true, Ordering::Relaxed);
-                    handle.shutdown().await;
+                    shutdown_opening_process(&handle, &closed, &mut read_task).await;
                     return Err(error);
                 }
             }
         };
         if let Err(error) = handle.write_json(&thread_request).await {
-            closed.store(true, Ordering::Relaxed);
-            handle.shutdown().await;
+            shutdown_opening_process(&handle, &closed, &mut read_task).await;
             return Err(AgentBackendError::Other(error));
         }
 
@@ -171,6 +167,7 @@ impl CodexSessionRuntime {
             handle,
             state,
             events: StdMutex::new(Some(events_rx)),
+            read_task: StdMutex::new(read_task),
             next_id: AtomicU64::new(100),
             closed,
         })
@@ -329,6 +326,30 @@ impl AgentSessionRuntime for CodexSessionRuntime {
     async fn close(&self) {
         self.closed.store(true, Ordering::Relaxed);
         self.handle.shutdown().await;
+        let read_task = self
+            .read_task
+            .lock()
+            .ok()
+            .and_then(|mut read_task| read_task.take());
+        if let Some(read_task) = read_task {
+            if let Err(error) = read_task.await {
+                log::warn!("failed to join Codex stdout reader: {error}");
+            }
+        }
+    }
+}
+
+async fn shutdown_opening_process(
+    handle: &CodexAppServerHandle,
+    closed: &Arc<AtomicBool>,
+    read_task: &mut Option<tokio::task::JoinHandle<()>>,
+) {
+    closed.store(true, Ordering::Relaxed);
+    handle.shutdown().await;
+    if let Some(read_task) = read_task.take() {
+        if let Err(error) = read_task.await {
+            log::warn!("failed to join Codex stdout reader: {error}");
+        }
     }
 }
 

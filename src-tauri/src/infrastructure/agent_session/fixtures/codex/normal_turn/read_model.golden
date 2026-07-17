@@ -1,0 +1,96 @@
+{
+  "messages": [
+    {
+      "id": "<PROMPT_MESSAGE_ID>",
+      "role": "human",
+      "content": "<USER_MESSAGE>",
+      "streamingFinalSeq": 0,
+      "timestamp": 1700000000.0
+    },
+    {
+      "id": "<ASSISTANT_MESSAGE_ID>",
+      "role": "agent",
+      "content": "<ASSISTANT_TEXT>",
+      "activities": [
+        {
+          "type": "tool_use",
+          "tool": "Bash",
+          "input": {
+            "command": "<COMMAND>",
+            "cwd": "<WORKTREE>",
+            "status": "inProgress"
+          },
+          "id": "<COMMAND_ITEM_ID>"
+        },
+        {
+          "type": "tool_result",
+          "content": "<COMMAND_OUTPUT><TOOL_RESULT>",
+          "isError": false,
+          "toolUseId": "<COMMAND_ITEM_ID>"
+        }
+      ],
+      "parts": [
+        {
+          "type": "text",
+          "content": "<ASSISTANT_TEXT>"
+        },
+        {
+          "type": "tool_use",
+          "tool": "Bash",
+          "input": {
+            "command": "<COMMAND>",
+            "cwd": "<WORKTREE>",
+            "status": "inProgress"
+          },
+          "id": "<COMMAND_ITEM_ID>"
+        },
+        {
+          "type": "permission",
+          "request": {
+            "id": "42",
+            "toolUseId": "<COMMAND_ITEM_ID>",
+            "toolName": "CodexCommand",
+            "kind": "tool_approval",
+            "input": {
+              "command": "<COMMAND>",
+              "cwd": "<WORKTREE>",
+              "itemId": "<COMMAND_ITEM_ID>",
+              "threadId": "<THREAD_ID>",
+              "turnId": "<TURN_ID>"
+            },
+            "title": "Codex approval requested",
+            "displayName": "CodexCommand",
+            "description": "Command approval"
+          },
+          "status": "pending"
+        },
+        {
+          "type": "tool_result",
+          "content": "<COMMAND_OUTPUT><TOOL_RESULT>",
+          "isError": false,
+          "toolUseId": "<COMMAND_ITEM_ID>"
+        }
+      ],
+      "streamingFinalSeq": 0,
+      "timestamp": 1700000000.0
+    }
+  ],
+  "status": {
+    "session_state": "done",
+    "turn_phase": "idle"
+  },
+  "workflow_turn_complete": {
+    "turn_id": 1,
+    "exit_code": 0,
+    "final_text_parts": [
+      "<ASSISTANT_TEXT>"
+    ],
+    "failure_signal": null,
+    "token_usage": {
+      "inputTokens": 0,
+      "outputTokens": 0
+    },
+    "interrupted": false
+  },
+  "tool_retries": []
+}

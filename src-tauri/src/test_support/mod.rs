@@ -29,6 +29,8 @@ use crate::usecase::agent_session::status::{
 
 pub(crate) mod git;
 
+mod agent_session_wire_replay;
+
 pub(crate) static TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 pub(crate) struct EnvVarGuard {
