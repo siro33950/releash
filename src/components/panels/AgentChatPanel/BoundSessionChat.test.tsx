@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
 	setPlanMode: vi.fn(),
 	setModel: vi.fn(),
 	respondPermission: vi.fn(),
+	dismissSessionError: vi.fn(),
 }));
 
 vi.mock("@/contexts/AgentChatContext", () => ({
@@ -36,8 +37,11 @@ vi.mock("./ChatSessionView", () => ({
 		pendingPermission,
 		onRespondPermission,
 		onSend,
+		onModelChange,
 		stallObservation,
 		notice,
+		error,
+		onDismissError,
 	}: {
 		session: ChatSession;
 		permissionMode: PermissionMode;
@@ -49,8 +53,11 @@ vi.mock("./ChatSessionView", () => ({
 			updatedInput?: Record<string, unknown>,
 		) => void;
 		onSend: (content: string) => Promise<boolean>;
+		onModelChange: (modelId: string) => void;
 		stallObservation?: AgentStallObservation | null;
 		notice?: SessionNotice | null;
+		error: string | null;
+		onDismissError: () => void;
 	}) => (
 		<div data-testid={`chat-${session.id}`}>
 			<span data-testid={`permission-${session.id}`}>{permissionMode}</span>
@@ -74,6 +81,9 @@ vi.mock("./ChatSessionView", () => ({
 			<button type="button" onClick={() => void onSend("hello")}>
 				Send message
 			</button>
+			<button type="button" onClick={() => onModelChange("codex:gpt-5")}>
+				Select Codex model
+			</button>
 			<span data-testid={`stall-${session.id}`}>
 				{stallObservation
 					? `${stallObservation.turnPhase}:${stallObservation.idleSecs}`
@@ -82,6 +92,14 @@ vi.mock("./ChatSessionView", () => ({
 			<span data-testid={`notice-${session.id}`}>
 				{notice?.message ?? "none"}
 			</span>
+			{error && (
+				<div data-testid={`error-${session.id}`}>
+					{error}
+					<button type="button" onClick={onDismissError}>
+						Dismiss error
+					</button>
+				</div>
+			)}
 		</div>
 	),
 }));
@@ -120,6 +138,7 @@ function setContext(
 	pendingPermissions: Record<string, PermissionRequest | null> = {},
 	stallObservations: Record<string, AgentStallObservation | null> = {},
 	notices: Record<string, SessionNotice | null> = {},
+	sessionErrors: Record<string, string | null> = {},
 ) {
 	mocks.useAgentChatContext.mockReturnValue({
 		getSessionById: (sessionId: string | null | undefined) =>
@@ -143,9 +162,10 @@ function setContext(
 			stallObservations[sessionId] ?? null,
 		getSessionNotice: (sessionId: string) => notices[sessionId] ?? null,
 		getSessionRuntimeSlashCommands: vi.fn().mockReturnValue([]),
+		getSessionError: (sessionId: string) => sessionErrors[sessionId] ?? null,
+		dismissSessionError: mocks.dismissSessionError,
 		availableModels: [],
 		availableModelsByBackend: {},
-		error: null,
 		sendMessage: mocks.sendMessage,
 		interrupt: mocks.interrupt,
 		cancelQueuedTurn: mocks.cancelQueuedTurn,
@@ -190,6 +210,117 @@ describe("BoundSessionChat", () => {
 			"full",
 		);
 		expect(screen.getByTestId("plan-session-b")).toHaveTextContent("true");
+	});
+
+	it("binds model selection to the session displayed by the pane", () => {
+		setContext({
+			"session-a": makeSession("session-a", "ask", false),
+		});
+
+		render(
+			<BoundSessionChat
+				sessionId="session-a"
+				worktreePath="/repo"
+				skipInitialLoad
+			/>,
+		);
+		fireEvent.click(screen.getByText("Select Codex model"));
+
+		expect(mocks.setModel).toHaveBeenCalledWith("session-a", "codex:gpt-5");
+	});
+
+	it("shows each session error only in its source pane", () => {
+		setContext(
+			{
+				"session-a": makeSession("session-a", "ask", false),
+				"session-b": makeSession("session-b", "full", true),
+			},
+			{},
+			{},
+			{},
+			{ "session-b": "send failed in B" },
+		);
+
+		render(
+			<div>
+				<BoundSessionChat
+					sessionId="session-a"
+					worktreePath="/repo"
+					skipInitialLoad
+				/>
+				<BoundSessionChat
+					sessionId="session-b"
+					worktreePath="/repo"
+					skipInitialLoad
+				/>
+			</div>,
+		);
+
+		expect(screen.queryByTestId("error-session-a")).not.toBeInTheDocument();
+		expect(screen.getByTestId("error-session-b")).toHaveTextContent(
+			"send failed in B",
+		);
+	});
+
+	it("keeps session A error visible when session B updates and dismisses only A", () => {
+		const sessions = {
+			"session-a": makeSession("session-a", "ask", false),
+			"session-b": makeSession("session-b", "full", true),
+		};
+		const errors = {
+			"session-a": "send failed in A",
+			"session-b": "load failed in B",
+		};
+		setContext(sessions, {}, {}, {}, errors);
+
+		const { rerender } = render(
+			<div>
+				<BoundSessionChat
+					sessionId="session-a"
+					worktreePath="/repo"
+					skipInitialLoad
+				/>
+				<BoundSessionChat
+					sessionId="session-b"
+					worktreePath="/repo"
+					skipInitialLoad
+				/>
+			</div>,
+		);
+
+		sessions["session-b"] = {
+			...sessions["session-b"],
+			state: "active",
+			updatedAt: 2000,
+		};
+		setContext(sessions, {}, {}, {}, errors);
+		rerender(
+			<div>
+				<BoundSessionChat
+					sessionId="session-a"
+					worktreePath="/repo"
+					skipInitialLoad
+				/>
+				<BoundSessionChat
+					sessionId="session-b"
+					worktreePath="/repo"
+					skipInitialLoad
+				/>
+			</div>,
+		);
+
+		expect(screen.getByTestId("error-session-a")).toHaveTextContent(
+			"send failed in A",
+		);
+		expect(screen.getByTestId("error-session-b")).toHaveTextContent(
+			"load failed in B",
+		);
+
+		fireEvent.click(
+			screen.getByTestId("error-session-a").querySelector("button") as Element,
+		);
+		expect(mocks.dismissSessionError).toHaveBeenCalledWith("session-a");
+		expect(mocks.dismissSessionError).not.toHaveBeenCalledWith("session-b");
 	});
 
 	it("passes each selected Node session its own pending permission and response handler", () => {
@@ -371,5 +502,24 @@ describe("BoundSessionChat", () => {
 		expect(await screen.findByRole("alert")).toHaveTextContent(
 			"Session unavailable.",
 		);
+	});
+
+	it("shows and dismisses a load failure notice before the session is hydrated", async () => {
+		const sessionErrors: Record<string, string> = {};
+		mocks.loadSession.mockImplementationOnce(async (sessionId: string) => {
+			sessionErrors[sessionId] = "セッション読み込みに失敗: unavailable";
+			throw new Error("unavailable");
+		});
+		setContext({}, {}, {}, {}, sessionErrors);
+
+		render(
+			<BoundSessionChat sessionId="missing-session" worktreePath="/repo" />,
+		);
+
+		expect(
+			await screen.findByText("セッション読み込みに失敗: unavailable"),
+		).toBeVisible();
+		fireEvent.click(screen.getByRole("button", { name: "Dismiss error" }));
+		expect(mocks.dismissSessionError).toHaveBeenCalledWith("missing-session");
 	});
 });

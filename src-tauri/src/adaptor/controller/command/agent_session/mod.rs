@@ -3,6 +3,7 @@ pub(crate) mod backend;
 pub(crate) mod edit_preview;
 pub(crate) mod image;
 pub(crate) mod model;
+pub(crate) mod notice;
 pub(crate) mod paste;
 pub(crate) mod permission;
 pub(crate) mod session;
@@ -35,6 +36,8 @@ pub(super) const COMMAND_NAMES: &[&str] = &[
     "search_agent_sessions",
     "search_agent_session_messages",
     "init_agent_sessions",
+    "get_agent_session_notice",
+    "update_agent_session_notice",
     "scan_agent_skills",
     "build_agent_edited_multi_edit_tool_input",
     "build_agent_edited_multi_edit_tool_input_all",
@@ -95,6 +98,8 @@ pub(crate) fn invoke_handler(
         session::search_agent_sessions,
         session::search_agent_session_messages,
         session::init_agent_sessions,
+        notice::get_agent_session_notice,
+        notice::update_agent_session_notice,
         action::scan_agent_skills,
         edit_preview::build_agent_edited_multi_edit_tool_input,
         edit_preview::build_agent_edited_multi_edit_tool_input_all,

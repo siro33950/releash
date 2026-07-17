@@ -61,7 +61,7 @@ use crate::infrastructure::agent_session::{
 use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
 use crate::usecase::agent_session::session::{
     AgentPromptSuggestionUsecase, OpenTabRegistry, SessionReaderPort, SessionStore,
-    StoredSessionLifecycleUsecase,
+    StoredSessionLifecycleUsecase, WorkflowNodeSessionRestorer,
 };
 use crate::usecase::code_query_service::CodeQueryService;
 use crate::usecase::code_usecase::CodeUsecase;
@@ -176,12 +176,50 @@ pub(crate) fn build_stored_session_lifecycle_usecase(
     session_store: Arc<SessionStore>,
     registry: Arc<crate::usecase::agent_session::backend_registry::AgentBackendRegistry>,
     runtime: Arc<AgentSessionRuntimeUsecase>,
+    workflow_node_restorer: Arc<NodeExecutionLifecycleUsecase>,
+    notice_usecase: Arc<crate::usecase::agent_session::notice::AgentSessionNoticeUsecase>,
 ) -> StoredSessionLifecycleUsecase {
+    let workflow_node_restorer = Arc::new(WorkflowNodeSessionRestorerAdapter {
+        lifecycle: workflow_node_restorer,
+    });
     StoredSessionLifecycleUsecase::new(
         session_store,
         Arc::new(RegistryAgentSessionBackendLifecycleGateway::new(registry)),
         Arc::new(RuntimeAgentSessionCloser::new(runtime)),
+        workflow_node_restorer,
+        notice_usecase,
     )
+}
+
+struct WorkflowNodeSessionRestorerAdapter {
+    lifecycle: Arc<NodeExecutionLifecycleUsecase>,
+}
+
+#[async_trait::async_trait]
+impl WorkflowNodeSessionRestorer for WorkflowNodeSessionRestorerAdapter {
+    async fn try_open_tab(&self, session_id: &str) -> Result<Option<String>, String> {
+        self.lifecycle
+            .try_open_tab(session_id)
+            .await
+            .map(|target| target.map(|target| target.worktree_path))
+            .map_err(|error| {
+                log::debug!(
+                    "failed to restore workflow node session tab for {session_id}: {error}"
+                );
+                crate::adaptor::controller::command::workflow::session_errors::workflow_node_tab_operation_failed()
+            })
+    }
+
+    async fn try_close_tab(&self, session_id: &str) -> Result<Option<String>, String> {
+        self.lifecycle
+            .close_tab_target(session_id)
+            .await
+            .map(|target| target.map(|target| target.worktree_path))
+            .map_err(|error| {
+                log::debug!("failed to close workflow node session tab for {session_id}: {error}");
+                crate::adaptor::controller::command::workflow::session_errors::workflow_node_tab_operation_failed()
+            })
+    }
 }
 
 pub(crate) fn build_workspace_node_command_usecase(

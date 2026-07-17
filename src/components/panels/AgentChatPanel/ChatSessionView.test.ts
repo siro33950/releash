@@ -113,6 +113,8 @@ interface RenderOptions {
 	pendingPermission?: PermissionRequest | null;
 	pendingQueue?: QueuedAgentTurn[];
 	notice?: SessionNotice | null;
+	error?: string | null;
+	onDismissError?: () => void;
 	onRespondPermission?: (
 		requestId: string,
 		allow: boolean,
@@ -129,6 +131,8 @@ function chatSessionViewElement({
 	pendingPermission = null,
 	pendingQueue = [],
 	notice = null,
+	error = null,
+	onDismissError = vi.fn(),
 	onRespondPermission = vi.fn(),
 }: RenderOptions = {}) {
 	return createElement(ChatSessionView, {
@@ -136,7 +140,8 @@ function chatSessionViewElement({
 		isStreaming,
 		isInterrupting: false,
 		activityStatus: null,
-		error: null,
+		error,
+		onDismissError,
 		permissionMode: "edit",
 		planMode: false,
 		availableModels: [],
@@ -222,6 +227,18 @@ const pendingPermission: PermissionRequest = {
 };
 
 describe("ChatSessionView session-local controls", () => {
+	it("renders a dismissible operation error banner", () => {
+		const onDismissError = vi.fn();
+		renderChatSessionView({
+			error: "send failed",
+			onDismissError,
+		});
+
+		expect(screen.getByRole("alert")).toHaveTextContent("send failed");
+		fireEvent.click(screen.getByRole("button", { name: "Dismiss error" }));
+		expect(onDismissError).toHaveBeenCalledOnce();
+	});
+
 	const sessionWithAgentResponse: ChatSession = {
 		...session,
 		messages: [

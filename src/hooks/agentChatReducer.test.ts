@@ -40,7 +40,8 @@ describe("agentChatReducer", () => {
 			activeSessionId: null,
 			turnPhases: {},
 			interrupting: {},
-			error: null,
+			sessionErrors: {},
+			sessionErrorRevisions: {},
 			permissionMode: "edit" as const,
 			planMode: false,
 			sessionPermissionModes: {},
@@ -266,20 +267,22 @@ describe("agentChatReducer", () => {
 				session,
 			});
 			expect(next.sessionsById[session.id]).toBe(session);
-			expect(next.error).toBeNull();
+			expect(next.sessionErrors).toEqual({});
 		});
 
-		it("UPSERT_SESSION clears error", () => {
+		it("preserves session A error when session B is upserted for a turn start", () => {
 			const stateWithError: AgentChatState = {
 				...INITIAL_STATE,
-				error: "some error",
+				sessionErrors: {
+					s1: "some error",
+				},
 			};
-			const session = makeSession();
+			const session = makeSession({ id: "s2" });
 			const next = reducer(stateWithError, {
 				type: "UPSERT_SESSION",
 				session,
 			});
-			expect(next.error).toBeNull();
+			expect(next.sessionErrors).toBe(stateWithError.sessionErrors);
 		});
 
 		it("UPSERT_SESSION preserves existing messages when the incoming session is a shell", () => {
@@ -311,6 +314,23 @@ describe("agentChatReducer", () => {
 			});
 			expect(next.activeSessionId).toBe(session.id);
 			expect(selectActiveSession(next)).toBe(session);
+		});
+
+		it("SET_ACTIVE_SESSION_ID preserves errors for every session", () => {
+			const sessionErrors = {
+				s1: "send failed",
+				s2: "load failed",
+			};
+			const next = reducer(
+				{
+					...INITIAL_STATE,
+					sessionsById: { s2: makeSession({ id: "s2" }) },
+					sessionErrors,
+				},
+				{ type: "SET_ACTIVE_SESSION_ID", sessionId: "s2" },
+			);
+
+			expect(next.sessionErrors).toBe(sessionErrors);
 		});
 
 		it("SET_ACTIVE_SESSION_ID null clears the active selection", () => {
@@ -586,22 +606,75 @@ describe("agentChatReducer", () => {
 		});
 	});
 
-	describe("SET_ERROR", () => {
-		it("sets error message", () => {
-			const next = reducer(INITIAL_STATE, {
-				type: "SET_ERROR",
-				error: "something failed",
+	describe("session errors", () => {
+		it("mirrors notice snapshots independently for each session", () => {
+			const withA = reducer(INITIAL_STATE, {
+				type: "SYNC_SESSION_ERROR",
+				sessionId: "s1",
+				revision: 1,
+				message: "send failed",
 			});
-			expect(next.error).toBe("something failed");
+			const withBoth = reducer(withA, {
+				type: "SYNC_SESSION_ERROR",
+				sessionId: "s2",
+				revision: 2,
+				message: "load failed",
+			});
+
+			expect(withBoth.sessionErrors).toEqual({
+				s1: "send failed",
+				s2: "load failed",
+			});
 		});
 
-		it("clears error with null", () => {
+		it("mirrors a cleared snapshot only in the addressed session", () => {
 			const state: AgentChatState = {
 				...INITIAL_STATE,
-				error: "old error",
+				sessionErrors: {
+					s1: "send failed",
+					s2: "other error",
+				},
+				sessionErrorRevisions: { s1: 1, s2: 2 },
 			};
-			const next = reducer(state, { type: "SET_ERROR", error: null });
-			expect(next.error).toBeNull();
+
+			const cleared = reducer(state, {
+				type: "SYNC_SESSION_ERROR",
+				sessionId: "s1",
+				revision: 3,
+				message: null,
+			});
+			expect(cleared.sessionErrors).toEqual({
+				s2: "other error",
+			});
+		});
+
+		it("records the revision for a null snapshot without an addressed error", () => {
+			const next = reducer(INITIAL_STATE, {
+				type: "SYNC_SESSION_ERROR",
+				sessionId: "missing",
+				revision: 1,
+				message: null,
+			});
+			expect(next.sessionErrorRevisions).toEqual({ missing: 1 });
+		});
+
+		it("ignores a delayed query snapshot after a newer event revision", () => {
+			const fromEvent = reducer(INITIAL_STATE, {
+				type: "SYNC_SESSION_ERROR",
+				sessionId: "s1",
+				revision: 2,
+				message: "new failure",
+			});
+
+			const afterDelayedQuery = reducer(fromEvent, {
+				type: "SYNC_SESSION_ERROR",
+				sessionId: "s1",
+				revision: 1,
+				message: null,
+			});
+
+			expect(afterDelayedQuery).toBe(fromEvent);
+			expect(afterDelayedQuery.sessionErrors.s1).toBe("new failure");
 		});
 	});
 
@@ -1396,6 +1469,11 @@ describe("agentChatReducer", () => {
 		it("removes session entries from all Record fields", () => {
 			const state: AgentChatState = {
 				...INITIAL_STATE,
+				sessionErrors: {
+					s1: "send failed",
+					s2: "load failed",
+				},
+				sessionErrorRevisions: { s1: 4, s2: 5 },
 				turnPhases: { s1: "streaming", s2: "idle" },
 				pendingPermissions: {
 					s1: {
@@ -1417,6 +1495,10 @@ describe("agentChatReducer", () => {
 				sessionId: "s1",
 			});
 			expect(next.turnPhases).toEqual({ s2: "idle" });
+			expect(next.sessionErrors).toEqual({
+				s2: "load failed",
+			});
+			expect(next.sessionErrorRevisions).toEqual({ s2: 5 });
 			expect(next.pendingPermissions).toEqual({});
 			expect(next.pendingPermissionStateRevisions).toEqual({});
 			expect(next.sessionModels).toEqual({ s2: "claude-3.5" });

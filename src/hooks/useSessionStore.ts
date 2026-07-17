@@ -104,6 +104,53 @@ export function convertLegacySession(session: LegacyChatSession): ChatSession {
 	};
 }
 
+export type AgentSessionNoticeOperation =
+	| "send"
+	| "load_session"
+	| "load_older"
+	| "cancel_queue"
+	| "close_session"
+	| "restore_session"
+	| "archive_session"
+	| "fork_session"
+	| "set_title"
+	| "respond_permission"
+	| "set_backend";
+
+export type AgentSessionNoticeUpdate =
+	| {
+			action: "failure";
+			operation: AgentSessionNoticeOperation;
+			message: string;
+	  }
+	| { action: "success"; operation: AgentSessionNoticeOperation }
+	| { action: "dismiss" }
+	| { action: "remove_session" };
+
+export interface AgentSessionNoticeSnapshot {
+	sessionId: string;
+	revision: number;
+	notice: { message: string } | null;
+}
+
+export async function getAgentSessionNotice(
+	sessionId: string,
+): Promise<AgentSessionNoticeSnapshot> {
+	return invoke<AgentSessionNoticeSnapshot>("get_agent_session_notice", {
+		sessionId,
+	});
+}
+
+export async function updateAgentSessionNotice(
+	sessionId: string,
+	update: AgentSessionNoticeUpdate,
+): Promise<AgentSessionNoticeSnapshot> {
+	return invoke<AgentSessionNoticeSnapshot>("update_agent_session_notice", {
+		sessionId,
+		update,
+	});
+}
+
 export async function listSessions(
 	worktreePath: string,
 ): Promise<SessionSummary[]> {

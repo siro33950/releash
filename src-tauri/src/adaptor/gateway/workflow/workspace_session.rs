@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::domain::workflow::WorkflowError;
 use crate::usecase::agent_session::session::{
-    SessionState, SessionStore, SessionSummary, StoredSessionLifecycleUsecase,
+    SessionState, SessionStore, SessionSummary, StoredSessionClosePort,
 };
 use crate::usecase::workflow::ports::WorkspaceNodeSessionCloseGateway;
 use crate::usecase::workflow::{
@@ -63,12 +63,12 @@ impl WorkspaceSessionGateway for StoredWorkspaceSessionGateway {
 }
 
 pub(crate) struct StoredWorkspaceNodeSessionCloseGateway {
-    lifecycle: Arc<StoredSessionLifecycleUsecase>,
+    lifecycle: Arc<dyn StoredSessionClosePort>,
     data_dir: PathBuf,
 }
 
 impl StoredWorkspaceNodeSessionCloseGateway {
-    pub(crate) fn new(lifecycle: Arc<StoredSessionLifecycleUsecase>, data_dir: PathBuf) -> Self {
+    pub(crate) fn new(lifecycle: Arc<dyn StoredSessionClosePort>, data_dir: PathBuf) -> Self {
         Self {
             lifecycle,
             data_dir,
@@ -82,6 +82,7 @@ impl WorkspaceNodeSessionCloseGateway for StoredWorkspaceNodeSessionCloseGateway
         self.lifecycle
             .close_session(&self.data_dir, session_id)
             .await
+            .map(|_| ())
             .map_err(WorkflowError::external)
     }
 }
@@ -94,5 +95,45 @@ fn workspace_session_state(state: SessionState) -> WorkspaceSessionState {
         SessionState::Error => WorkspaceSessionState::Error,
         SessionState::Closed => WorkspaceSessionState::Closed,
         SessionState::Archived => WorkspaceSessionState::Archived,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::usecase::agent_session::session::CloseSessionOutcome;
+    use parking_lot::Mutex;
+
+    #[derive(Default)]
+    struct RecordingClosePort {
+        calls: Mutex<Vec<(PathBuf, String)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl StoredSessionClosePort for RecordingClosePort {
+        async fn close_session(
+            &self,
+            data_dir: &std::path::Path,
+            session_id: &str,
+        ) -> Result<CloseSessionOutcome, String> {
+            self.calls
+                .lock()
+                .push((data_dir.to_path_buf(), session_id.to_string()));
+            Ok(CloseSessionOutcome::StoredSessionClosed)
+        }
+    }
+
+    #[tokio::test]
+    async fn workspace_node_close_boundary_delegates_to_shared_close_usecase() {
+        let port = Arc::new(RecordingClosePort::default());
+        let gateway =
+            StoredWorkspaceNodeSessionCloseGateway::new(port.clone(), PathBuf::from("/app-data"));
+
+        gateway.close_session("session-a").await.unwrap();
+
+        assert_eq!(
+            port.calls.lock().as_slice(),
+            [(PathBuf::from("/app-data"), "session-a".to_string())]
+        );
     }
 }
