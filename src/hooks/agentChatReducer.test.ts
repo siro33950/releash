@@ -1087,7 +1087,7 @@ describe("agentChatReducer", () => {
 	});
 
 	describe("SET_STREAMING_MESSAGE", () => {
-		it("replaces existing parts with a resync snapshot in sessionsById", () => {
+		it("replaces existing parts with a crash error snapshot in sessionsById", () => {
 			const msg = makeMessage({
 				id: "m1",
 				role: "agent",
@@ -1099,7 +1099,7 @@ describe("agentChatReducer", () => {
 			};
 			const cumulativeParts = [
 				{ type: "text" as const, content: "old updated" },
-				{ type: "thinking" as const, content: "reasoning" },
+				{ type: "error" as const, content: "CLI process exited" },
 			];
 			const next = reducer(state, {
 				type: "SET_STREAMING_MESSAGE",
@@ -1108,6 +1108,23 @@ describe("agentChatReducer", () => {
 				parts: cumulativeParts,
 			});
 			expect(next.sessionsById.s1.messages[0].parts).toEqual(cumulativeParts);
+		});
+
+		it("does not synthesize an unknown message from snapshot parts", () => {
+			const state: AgentChatState = {
+				...INITIAL_STATE,
+				sessionsById: {
+					s1: makeSession({ id: "s1", messages: [] }),
+				},
+			};
+			const next = reducer(state, {
+				type: "SET_STREAMING_MESSAGE",
+				sessionId: "s1",
+				messageId: "fatal-message-1",
+				parts: [{ type: "error", content: "app server stopped" }],
+			});
+
+			expect(next).toBe(state);
 		});
 
 		it("converges on re-delivery of the same snapshot payload", () => {
@@ -1165,7 +1182,7 @@ describe("agentChatReducer", () => {
 			expect(next).toBe(state);
 		});
 
-		it("does nothing when messageId is not found", () => {
+		it("does nothing when snapshot messageId is not found", () => {
 			const msg = makeMessage({ id: "m1", role: "agent" });
 			const state: AgentChatState = {
 				...INITIAL_STATE,

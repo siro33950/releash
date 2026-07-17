@@ -116,7 +116,12 @@ impl FileSessionStorage {
             self.apply_committed_meta_event_transaction(&session_dir, &session.id)
                 .map_err(|error| error.into_message())?;
         }
-        self.write_split_session_to_dir(&session_dir, session, true)?;
+        let previous_meta = self.read_meta_from_dir(&session_dir, &session.id).ok();
+        let state_revision = previous_meta
+            .as_ref()
+            .map(|meta| meta.state_revision.saturating_add(1))
+            .unwrap_or(1);
+        self.write_split_session_to_dir(&session_dir, session, true, state_revision)?;
         if let Ok(file) = session_file(app_data_dir, &session.id) {
             let _ = std::fs::remove_file(file);
         }
@@ -125,7 +130,7 @@ impl FileSessionStorage {
         }
         let meta = self.read_meta_from_dir(&session_dir, &session.id)?;
         let mut cache = self.cache.write();
-        let state_changed = cache.get(&session.id).map(|p| &p.state) != Some(&session.state);
+        let state_changed = previous_meta.as_ref().map(|meta| &meta.state) != Some(&session.state);
         cache.insert(session.id.clone(), meta);
         self.invalid_sessions.write().remove(&session.id);
         Ok(state_changed)
@@ -167,6 +172,127 @@ impl FileSessionStorage {
         )
     }
 
+    pub(super) fn next_message_seq(index: &[MessageIndexEntry]) -> u64 {
+        index
+            .iter()
+            .map(|entry| entry.seq)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1)
+    }
+
+    pub(super) fn message_path_for_append(dir: &Path, index: &[MessageIndexEntry]) -> PathBuf {
+        message_file_in_dir(dir, Self::next_message_seq(index))
+    }
+
+    pub(super) fn message_path_for_persist(
+        dir: &Path,
+        index: &[MessageIndexEntry],
+        session_id: &str,
+        message_id: &str,
+    ) -> Result<PathBuf, String> {
+        let entry = index
+            .iter()
+            .find(|entry| entry.id == message_id)
+            .ok_or_else(|| format!("Message not found: {session_id}/{message_id}"))?;
+        Ok(message_file_in_dir(dir, entry.seq))
+    }
+
+    pub(super) fn append_message_with_lock_held(
+        &self,
+        dir: &Path,
+        index: &mut Vec<MessageIndexEntry>,
+        mut meta: SessionMeta,
+        message: &ChatMessage,
+    ) -> Result<(SessionMeta, Vec<MessagePart>), String> {
+        let seq = Self::next_message_seq(index);
+        let (stored_message, attachment_refs) =
+            self.externalize_message_attachments(dir, message)?;
+        let stored_message = self.externalize_message_tool_outputs(dir, stored_message)?;
+        let hash = content_hash(&stored_message)?;
+        write_json_pretty_atomic(
+            &message_file_in_dir(dir, seq),
+            &stored_message,
+            "message chunk",
+        )?;
+
+        let was_empty = index.is_empty();
+        index.push(MessageIndexEntry {
+            id: stored_message.id.clone(),
+            seq,
+            role: stored_message.role.clone(),
+            timestamp: stored_message.timestamp,
+            content_hash: hash,
+            attachment_refs,
+            tool_output_refs: self.tool_output_refs_from_message(&stored_message),
+            token_meta: None,
+        });
+        meta.message_count = index.len();
+        meta.updated_at = message.timestamp;
+        if was_empty {
+            meta.first_message_preview =
+                first_message_preview(std::slice::from_ref(&stored_message));
+        }
+        if stored_message.role == MessageRole::Agent {
+            merge_agent_read_paths(
+                &mut meta.agent_read_paths,
+                agent_read_paths_from_message(&stored_message),
+            );
+        }
+        let persisted_parts = stored_message.parts.clone().unwrap_or_default();
+        Ok((meta, persisted_parts))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn persist_message_parts_with_lock_held(
+        &self,
+        dir: &Path,
+        session_id: &str,
+        index: &mut [MessageIndexEntry],
+        mut meta: SessionMeta,
+        message_id: &str,
+        parts: &[MessagePart],
+        streaming_final_seq: u64,
+        completed_at: Option<f64>,
+    ) -> Result<(SessionMeta, Vec<MessagePart>), String> {
+        let entry = index
+            .iter_mut()
+            .find(|entry| entry.id == message_id)
+            .ok_or_else(|| format!("Message not found: {session_id}/{message_id}"))?;
+        let path = message_file_in_dir(dir, entry.seq);
+        let mut message = self.read_message_file(&path)?;
+        let (content, thinking, activities) = parts_to_legacy(parts);
+        message.content = content;
+        message.thinking = thinking;
+        message.activities = activities;
+        message.parts = Some(parts.to_vec());
+        message.streaming_final_seq = streaming_final_seq;
+        let updated_at = completed_at.unwrap_or_else(now_timestamp);
+        if let Some(completed_at) = completed_at {
+            message.timestamp = completed_at;
+        }
+        let (message, attachment_refs) = self.externalize_message_attachments(dir, &message)?;
+        let message = self.externalize_message_tool_outputs(dir, message)?;
+        entry.timestamp = message.timestamp;
+        entry.content_hash = content_hash(&message)?;
+        entry.attachment_refs = attachment_refs;
+        entry.tool_output_refs = self.tool_output_refs_from_message(&message);
+        write_json_pretty_atomic(&path, &message, "message chunk")?;
+
+        meta.updated_at = updated_at;
+        if index.first().is_some_and(|first| first.id == message_id) {
+            meta.first_message_preview = first_message_preview(std::slice::from_ref(&message));
+        }
+        if message.role == MessageRole::Agent {
+            merge_agent_read_paths(
+                &mut meta.agent_read_paths,
+                agent_read_paths_from_parts(parts),
+            );
+        }
+        let persisted_parts = message.parts.clone().unwrap_or_default();
+        Ok((meta, persisted_parts))
+    }
+
     pub fn append_message(
         &self,
         app_data_dir: &Path,
@@ -189,46 +315,9 @@ impl FileSessionStorage {
                 self.apply_pending_session_transaction(&dir, session_id)?;
                 let mut index =
                     self.read_consistent_index_from_dir_with_lock_held(&dir, session_id)?;
-                let seq = index
-                    .iter()
-                    .map(|entry| entry.seq)
-                    .max()
-                    .unwrap_or(0)
-                    .saturating_add(1);
-                let (stored_message, attachment_refs) =
-                    self.externalize_message_attachments(&dir, message)?;
-                let stored_message = self.externalize_message_tool_outputs(&dir, stored_message)?;
-                let hash = content_hash(&stored_message)?;
-                write_json_pretty_atomic(
-                    &message_file_in_dir(&dir, seq),
-                    &stored_message,
-                    "message chunk",
-                )?;
-
-                let mut meta = self.read_meta_from_dir(&dir, session_id)?;
-                let was_empty = index.is_empty();
-                index.push(MessageIndexEntry {
-                    id: stored_message.id.clone(),
-                    seq,
-                    role: stored_message.role.clone(),
-                    timestamp: stored_message.timestamp,
-                    content_hash: hash,
-                    attachment_refs,
-                    tool_output_refs: self.tool_output_refs_from_message(&stored_message),
-                    token_meta: None,
-                });
-                meta.message_count = index.len();
-                meta.updated_at = message.timestamp;
-                if was_empty {
-                    meta.first_message_preview =
-                        first_message_preview(std::slice::from_ref(&stored_message));
-                }
-                if stored_message.role == MessageRole::Agent {
-                    merge_agent_read_paths(
-                        &mut meta.agent_read_paths,
-                        agent_read_paths_from_message(&stored_message),
-                    );
-                }
+                let meta = self.read_meta_from_dir(&dir, session_id)?;
+                let (meta, _) =
+                    self.append_message_with_lock_held(&dir, &mut index, meta, message)?;
 
                 write_private_context_to_dir(&dir, &meta)?;
                 write_json_pretty_atomic(&index_file_in_dir(&dir), &index, "session index")?;
@@ -266,43 +355,17 @@ impl FileSessionStorage {
                 self.apply_pending_session_transaction(&dir, session_id)?;
                 let mut index =
                     self.read_consistent_index_from_dir_with_lock_held(&dir, session_id)?;
-                let Some(entry) = index.iter_mut().find(|entry| entry.id == message_id) else {
-                    return Err(format!("Message not found: {session_id}/{message_id}"));
-                };
-                let path = message_file_in_dir(&dir, entry.seq);
-                let mut message = self.read_message_file(&path)?;
-                let (content, thinking, activities) = parts_to_legacy(parts);
-                message.content = content;
-                message.thinking = thinking;
-                message.activities = activities;
-                message.parts = Some(parts.to_vec());
-                message.streaming_final_seq = streaming_final_seq;
-                let updated_at = completed_at.unwrap_or_else(now_timestamp);
-                if let Some(completed_at) = completed_at {
-                    message.timestamp = completed_at;
-                }
-                let (message, attachment_refs) =
-                    self.externalize_message_attachments(&dir, &message)?;
-                let message = self.externalize_message_tool_outputs(&dir, message)?;
-                entry.timestamp = message.timestamp;
-                entry.content_hash = content_hash(&message)?;
-                entry.attachment_refs = attachment_refs;
-                entry.tool_output_refs = self.tool_output_refs_from_message(&message);
-                write_json_pretty_atomic(&path, &message, "message chunk")?;
-
-                let mut meta = self.read_meta_from_dir(&dir, session_id)?;
-                meta.updated_at = updated_at;
-                if index.first().is_some_and(|first| first.id == message_id) {
-                    meta.first_message_preview =
-                        first_message_preview(std::slice::from_ref(&message));
-                }
-                let persisted_parts = message.parts.clone().unwrap_or_default();
-                if message.role == MessageRole::Agent {
-                    merge_agent_read_paths(
-                        &mut meta.agent_read_paths,
-                        agent_read_paths_from_parts(parts),
-                    );
-                }
+                let meta = self.read_meta_from_dir(&dir, session_id)?;
+                let (meta, persisted_parts) = self.persist_message_parts_with_lock_held(
+                    &dir,
+                    session_id,
+                    &mut index,
+                    meta,
+                    message_id,
+                    parts,
+                    streaming_final_seq,
+                    completed_at,
+                )?;
                 write_private_context_to_dir(&dir, &meta)?;
                 write_json_pretty_atomic(&index_file_in_dir(&dir), &index, "session index")?;
                 write_json_pretty_atomic(&meta_file_in_dir(&dir), &meta, "session meta")?;
@@ -359,7 +422,7 @@ impl FileSessionStorage {
         self.read_consistent_index_from_dir_with_lock_held(dir, session_id)
     }
 
-    fn read_consistent_index_from_dir_with_lock_held(
+    pub(super) fn read_consistent_index_from_dir_with_lock_held(
         &self,
         dir: &Path,
         session_id: &str,
@@ -603,6 +666,7 @@ impl FileSessionStorage {
         dir: &Path,
         session: &ChatSession,
         reuse_existing_index: bool,
+        state_revision: u64,
     ) -> Result<(), String> {
         let preserved_recovery_meta = reuse_existing_index
             .then(|| self.read_meta_from_dir(dir, &session.id).ok())
@@ -678,6 +742,7 @@ impl FileSessionStorage {
         let mut meta = validate_meta(SessionMeta::from_session(session), &session.id)?;
         meta.provider_session_generation = provider_session_generation;
         meta.context_reinjection_generation = context_reinjection_generation;
+        meta.state_revision = state_revision;
         meta.body_format_version = SESSION_BODY_FORMAT_VERSION;
         write_private_context_to_dir(dir, &meta)?;
         write_json_pretty_atomic(&meta_file_in_dir(dir), &meta, "session meta")?;

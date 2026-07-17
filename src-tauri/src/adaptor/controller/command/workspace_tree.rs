@@ -231,6 +231,7 @@ mod tests {
             id: id.to_string(),
             worktree_path: worktree_path.to_string(),
             state,
+            error_reason: None,
             updated_at: 2.0,
             first_message: id.to_string(),
             workflow_node_session,

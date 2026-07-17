@@ -8,7 +8,7 @@ use crate::usecase::agent_session::event_log::AgentSessionEvent;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct AppendOutcome {
-    recovered: bool,
+    pub(super) recovered: bool,
 }
 
 impl FileSessionStorage {
@@ -62,7 +62,7 @@ impl FileSessionStorage {
         Ok(())
     }
 
-    fn record_event_log_recovery(&self, session_id: &str) {
+    pub(super) fn record_event_log_recovery(&self, session_id: &str) {
         self.recovered_event_logs
             .write()
             .insert(session_id.to_string());
@@ -349,6 +349,7 @@ mod tests {
             worktree_path: worktree_path.to_string_lossy().to_string(),
             messages: Vec::new(),
             state: SessionState::Active,
+            error_reason: None,
             created_at: 1.0,
             updated_at: 1.0,
             agent_session_id: None,

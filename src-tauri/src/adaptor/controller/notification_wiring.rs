@@ -36,7 +36,7 @@ fn register_agent_notification_listener_with_clock(
     clock: Arc<dyn NotificationClock>,
 ) {
     session_store.register_state_change_listener(Arc::new(
-        move |session_id, worktree_path, new_state| {
+        move |session_id, worktree_path, new_state, _state_revision| {
             let notification_usecase = notification_usecase.clone();
             let snapshot = match notification_snapshot_for_session_state_change(
                 notification_usecase.as_ref(),

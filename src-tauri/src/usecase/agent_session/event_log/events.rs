@@ -321,6 +321,11 @@ pub enum AgentSessionEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    SessionErrored {
+        message_id: String,
+        reason: String,
+        at: f64,
+    },
     SessionClosed {
         at: f64,
     },

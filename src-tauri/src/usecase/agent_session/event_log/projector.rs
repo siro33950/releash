@@ -51,6 +51,7 @@ pub struct ToolRetryProjection {
 pub struct SessionReadModel {
     pub messages: Vec<ChatMessage>,
     pub status: ProjectedStatus,
+    pub error_reason: Option<String>,
     pub workflow_turn_complete: Option<WorkflowTurnCompleteInput>,
     #[allow(dead_code)]
     // issues-1301 B-5/E-1: retry projection is retained for tool retry surface while runtime events are fully migrated.
@@ -81,6 +82,12 @@ impl SessionReadModel {
             .and_then(|message| message.parts.clone())
             .unwrap_or_default()
     }
+
+    pub fn message_for_id(&self, message_id: &str) -> Option<&ChatMessage> {
+        self.messages
+            .iter()
+            .find(|message| message.id == message_id)
+    }
 }
 
 pub fn project(events: &[AgentSessionEvent]) -> SessionReadModel {
@@ -90,8 +97,10 @@ pub fn project(events: &[AgentSessionEvent]) -> SessionReadModel {
     let mut tool_retries = Vec::new();
     let mut session_closed = false;
     let mut backend_recovery = None;
+    let mut session_errored_reason = None;
+    let mut session_error_messages = Vec::new();
 
-    for event in events {
+    for (event_order, event) in events.iter().enumerate() {
         match event {
             AgentSessionEvent::BackendSessionRecoveryStarted {
                 recovery_id,
@@ -133,6 +142,7 @@ pub fn project(events: &[AgentSessionEvent]) -> SessionReadModel {
                 prompt,
                 at,
             } => {
+                session_errored_reason = None;
                 let index = *turn_index.entry(*turn_id).or_insert_with(|| {
                     turns.push(TurnProjection::new(
                         *turn_id,
@@ -142,6 +152,7 @@ pub fn project(events: &[AgentSessionEvent]) -> SessionReadModel {
                             .unwrap_or_else(|| format!("{message_id}:agent")),
                         prompt.clone(),
                         *at,
+                        event_order,
                     ));
                     turns.len() - 1
                 });
@@ -461,25 +472,91 @@ pub fn project(events: &[AgentSessionEvent]) -> SessionReadModel {
                     },
                 );
             }
+            AgentSessionEvent::SessionErrored {
+                message_id,
+                reason,
+                at,
+            } => {
+                session_errored_reason = Some(reason.clone());
+                session_error_messages.push((
+                    event_order,
+                    session_error_message(message_id.clone(), reason.clone(), *at),
+                ));
+            }
             AgentSessionEvent::SessionClosed { .. } => {
                 session_closed = true;
             }
         }
     }
 
-    let messages = turns
+    let mut ordered_messages = turns
         .iter()
-        .flat_map(|turn| turn.to_messages())
+        .flat_map(|turn| {
+            turn.to_messages()
+                .into_iter()
+                .enumerate()
+                .map(|(message_order, message)| (turn.event_order, message_order, message))
+        })
         .collect::<Vec<_>>();
-    let status = project_status(events, session_closed, &terminal_by_turn);
+    ordered_messages.extend(
+        session_error_messages
+            .into_iter()
+            .map(|(event_order, message)| (event_order, 0, message)),
+    );
+    ordered_messages.sort_by_key(|(event_order, message_order, _)| (*event_order, *message_order));
+    let messages = ordered_messages
+        .into_iter()
+        .map(|(_, _, message)| message)
+        .collect::<Vec<_>>();
+    let status = project_status(
+        events,
+        session_closed,
+        &terminal_by_turn,
+        session_errored_reason.as_deref(),
+    );
+    let error_reason = (status.session_state == SessionState::Error)
+        .then(|| {
+            session_errored_reason.clone().or_else(|| {
+                turns.last().and_then(|turn| {
+                    turn.assistant_parts.iter().rev().find_map(|part| {
+                        if let MessagePart::Error { content, .. } = part {
+                            Some(content.clone())
+                        } else {
+                            None
+                        }
+                    })
+                })
+            })
+        })
+        .flatten();
     let workflow_turn_complete = project_workflow_turn_complete(&turns, &terminal_by_turn);
 
     SessionReadModel {
         messages,
         status,
+        error_reason,
         workflow_turn_complete,
         tool_retries,
         backend_recovery,
+    }
+}
+
+pub(crate) fn session_error_message(message_id: String, reason: String, at: f64) -> ChatMessage {
+    let parts = vec![MessagePart::Error {
+        content: reason,
+        parent_tool_use_id: None,
+    }];
+    let (content, thinking, activities) = parts_to_legacy(&parts);
+    ChatMessage {
+        id: message_id,
+        role: MessageRole::Agent,
+        content,
+        thinking,
+        activities,
+        parts: Some(parts),
+        streaming_final_seq: 1,
+        timestamp: at,
+        mentions: None,
     }
 }
 
@@ -490,6 +567,7 @@ struct TurnProjection {
     assistant_message_id: String,
     prompt: PromptInput,
     started_at: f64,
+    event_order: usize,
     assistant_parts: Vec<MessagePart>,
 }
 
@@ -500,6 +578,7 @@ impl TurnProjection {
         assistant_message_id: String,
         prompt: PromptInput,
         started_at: f64,
+        event_order: usize,
     ) -> Self {
         Self {
             turn_id,
@@ -507,6 +586,7 @@ impl TurnProjection {
             assistant_message_id,
             prompt,
             started_at,
+            event_order,
             assistant_parts: Vec::new(),
         }
     }
@@ -865,10 +945,17 @@ fn project_status(
     events: &[AgentSessionEvent],
     session_closed: bool,
     terminal_by_turn: &HashMap<TurnId, TerminalEvent>,
+    session_errored_reason: Option<&str>,
 ) -> ProjectedStatus {
     if session_closed {
         return ProjectedStatus {
             session_state: SessionState::Closed,
+            turn_phase: TurnPhase::Idle,
+        };
+    }
+    if session_errored_reason.is_some() {
+        return ProjectedStatus {
+            session_state: SessionState::Error,
             turn_phase: TurnPhase::Idle,
         };
     }

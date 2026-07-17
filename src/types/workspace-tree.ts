@@ -45,6 +45,7 @@ export interface WorkspaceNode {
 	id: string;
 	title: string;
 	status: WorkspaceNodeStatus;
+	errorReason?: string | null;
 	contentKind: "session" | "command";
 	capabilities: WorkspaceNodeCapabilities;
 	updatedAt: number;
@@ -105,6 +106,7 @@ export interface WorkspaceNodeDetail {
 	id: string;
 	title: string;
 	status: WorkspaceNodeStatus;
+	errorReason?: string | null;
 	capabilities: WorkspaceNodeCapabilities;
 	updatedAt: number;
 	content: WorkspaceNodeContent;

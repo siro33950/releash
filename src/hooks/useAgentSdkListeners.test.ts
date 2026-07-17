@@ -548,6 +548,58 @@ describe("agent-streaming-delta event", () => {
 		);
 	});
 
+	it("mirrors backend message metadata before applying an unknown-message snapshot", async () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		refs.getStreamingDeltaDropReason = vi
+			.fn()
+			.mockReturnValue("missing_message");
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-streaming-delta");
+		const parts = [{ type: "error" as const, content: "app server stopped" }];
+		await cb?.({
+			payload: {
+				chat_session_id: "session-1",
+				message_id: "fatal-message-1",
+				seq: 1,
+				snapshot: true,
+				parts,
+				message: {
+					id: "fatal-message-1",
+					role: "agent",
+					content: "app server stopped",
+					parts,
+					timestamp: 4321,
+				},
+			},
+		});
+
+		expect(refs.dispatch).toHaveBeenNthCalledWith(2, {
+			type: "ADD_MESSAGE",
+			sessionId: "session-1",
+			message: {
+				id: "fatal-message-1",
+				role: "agent",
+				parts,
+				timestamp: 4321,
+				mentions: undefined,
+			},
+		});
+		expect(refs.dispatch).toHaveBeenNthCalledWith(3, {
+			type: "SET_STREAMING_MESSAGE",
+			sessionId: "session-1",
+			messageId: "fatal-message-1",
+			parts,
+		});
+		expect(warn).not.toHaveBeenCalled();
+		warn.mockRestore();
+	});
+
 	it("warns before dispatching snapshot deltas for a missing message", async () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
@@ -811,6 +863,94 @@ describe("agent-session-state-changed event", () => {
 			type: "MARK_AGENT_TURN_COMPLETED",
 			sessionId: "session-1",
 			completedAt: 1234,
+		});
+	});
+
+	it("finalizes the live error message timestamp for an interrupted crash", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		setViewable(refs, "session-1");
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-session-state-changed");
+		cb?.({
+			payload: {
+				chat_session_id: "session-1",
+				turn_phase: "idle",
+				exit_code: 1,
+				completed_at: 4321,
+				interrupted: true,
+				session_state: "error",
+			},
+		});
+
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "MARK_AGENT_TURN_COMPLETED",
+			sessionId: "session-1",
+			completedAt: 4321,
+		});
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "UPDATE_SESSION_STATE",
+			sessionId: "session-1",
+			state: "error",
+		});
+	});
+
+	it("does not finalize prior history when an Idle-Fatal snapshot is retried after state change", async () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+		setViewable(refs, "session-1");
+		refs.getStreamingDeltaDropReason = vi
+			.fn()
+			.mockReturnValue("missing_message");
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		listenCallbacks.get("agent-session-state-changed")?.({
+			payload: {
+				chat_session_id: "session-1",
+				turn_phase: "idle",
+				exit_code: 1,
+				interrupted: true,
+				session_state: "error",
+			},
+		});
+		const parts = [{ type: "error" as const, content: "app server stopped" }];
+		await listenCallbacks.get("agent-streaming-delta")?.({
+			payload: {
+				chat_session_id: "session-1",
+				message_id: "fatal-message-1",
+				seq: 1,
+				snapshot: true,
+				parts,
+				message: {
+					id: "fatal-message-1",
+					role: "agent",
+					content: "app server stopped",
+					parts,
+					timestamp: 4321,
+				},
+			},
+		});
+
+		expect(refs.dispatch).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: "MARK_AGENT_TURN_COMPLETED" }),
+		);
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "ADD_MESSAGE",
+			sessionId: "session-1",
+			message: {
+				id: "fatal-message-1",
+				role: "agent",
+				parts,
+				timestamp: 4321,
+				mentions: undefined,
+			},
 		});
 	});
 

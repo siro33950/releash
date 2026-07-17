@@ -28,6 +28,9 @@ pub(crate) use finalization::{
 pub use log::TurnEventLog;
 pub(crate) use part_events::append_part_events;
 pub use part_events::PartEventMode;
+#[cfg(test)]
+pub(crate) use projector::session_error_message;
+pub(crate) use projector::SessionReadModel;
 pub use projector::{
     AgentTurnFailureSignal, BackendSessionRecoveryProjection, WorkflowTurnCompleteInput,
 };

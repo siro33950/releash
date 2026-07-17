@@ -935,6 +935,124 @@ fn terminal_status_projection_marks_timeout_and_crash_as_error() {
 }
 
 #[test]
+fn crash_projection_exposes_the_same_error_reason_as_the_error_part() {
+    let read_model = project(&[
+        start_event(),
+        AgentSessionEvent::TextRecorded {
+            turn_id: 1,
+            message_id: "agent-1".to_string(),
+            content: "partial output".to_string(),
+            parent_tool_use_id: None,
+        },
+        AgentSessionEvent::TurnInterrupted {
+            turn_id: 1,
+            reason: InterruptReason::Crash,
+            exit_code: 1,
+            error: Some("backend crashed".to_string()),
+        },
+    ]);
+
+    assert_eq!(read_model.error_reason.as_deref(), Some("backend crashed"));
+    assert_eq!(
+        read_model.agent_parts_for_message("agent-1"),
+        vec![
+            MessagePart::Text {
+                content: "partial output".to_string(),
+                parent_tool_use_id: None,
+            },
+            MessagePart::Error {
+                content: "backend crashed".to_string(),
+                parent_tool_use_id: None,
+            },
+        ]
+    );
+}
+
+#[test]
+fn idle_fatal_projects_a_standalone_error_message_and_reason() {
+    let read_model = project(&[AgentSessionEvent::SessionErrored {
+        message_id: "fatal-1".to_string(),
+        reason: "app server exited".to_string(),
+        at: 42.0,
+    }]);
+
+    assert_eq!(read_model.status.session_state, SessionState::Error);
+    assert_eq!(read_model.status.turn_phase, TurnPhase::Idle);
+    assert_eq!(
+        read_model.error_reason.as_deref(),
+        Some("app server exited")
+    );
+    let message = read_model.message_for_id("fatal-1").expect("error message");
+    assert_eq!(
+        message.role,
+        crate::usecase::agent_session::session::MessageRole::Agent
+    );
+    assert_eq!(
+        message.parts.as_deref(),
+        Some(
+            [MessagePart::Error {
+                content: "app server exited".to_string(),
+                parent_tool_use_id: None,
+            }]
+            .as_slice()
+        )
+    );
+    assert_eq!(message.timestamp, 42.0);
+    assert_eq!(message.streaming_final_seq, 1);
+}
+
+#[test]
+fn idle_fatal_reason_survives_unrelated_events_and_each_episode_remains_in_history() {
+    let read_model = project(&[
+        AgentSessionEvent::SessionErrored {
+            message_id: "fatal-1".to_string(),
+            reason: "first fatal".to_string(),
+            at: 20.0,
+        },
+        AgentSessionEvent::SessionErrored {
+            message_id: "fatal-2".to_string(),
+            reason: "latest fatal".to_string(),
+            at: 30.0,
+        },
+        AgentSessionEvent::ToolCallRetried {
+            turn_id: 99,
+            tool_use_id: "orphan".to_string(),
+            attempt: 2,
+        },
+    ]);
+
+    assert_eq!(read_model.status.session_state, SessionState::Error);
+    assert_eq!(read_model.error_reason.as_deref(), Some("latest fatal"));
+    assert_eq!(
+        read_model
+            .messages
+            .iter()
+            .map(|message| message.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["fatal-1", "fatal-2"]
+    );
+    assert_eq!(read_model.messages[0].timestamp, 20.0);
+    assert_eq!(read_model.messages[1].timestamp, 30.0);
+}
+
+#[test]
+fn a_later_turn_start_clears_current_error_but_preserves_error_history() {
+    let read_model = project(&[
+        AgentSessionEvent::SessionErrored {
+            message_id: "fatal-1".to_string(),
+            reason: "transient fatal".to_string(),
+            at: 5.0,
+        },
+        start_event(),
+    ]);
+
+    assert_eq!(read_model.status.session_state, SessionState::Active);
+    assert_eq!(read_model.error_reason, None);
+    assert!(read_model.message_for_id("fatal-1").is_some());
+    assert_eq!(read_model.messages[0].id, "fatal-1");
+}
+
+#[test]
 fn terminal_status_projection_marks_abort_as_idle() {
     let read_model = project(&[
         start_event(),

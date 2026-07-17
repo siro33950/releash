@@ -19,6 +19,7 @@ mod layout;
 mod message_store;
 mod meta_repository;
 mod private_context;
+mod projection_commit;
 mod titles;
 mod tool_output_blob;
 mod transaction;
@@ -27,6 +28,13 @@ mod transaction;
 mod tests;
 
 pub(crate) use gc::SessionGcMetaRead;
+
+#[cfg(test)]
+pub(crate) use projection_commit::ProjectionCommitStage;
+
+#[cfg(test)]
+pub(crate) type ProjectionCommitHook =
+    std::sync::Arc<dyn Fn(ProjectionCommitStage) -> Result<(), String> + Send + Sync>;
 
 pub struct FileSessionStorage {
     pub(super) cache: RwLock<HashMap<String, SessionMeta>>,
@@ -47,6 +55,8 @@ pub struct FileSessionStorage {
     pub(super) meta_read_count: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
     transaction_apply_hook: RwLock<Option<transaction::TransactionApplyHook>>,
+    #[cfg(test)]
+    pub(super) projection_commit_hook: RwLock<Option<ProjectionCommitHook>>,
 }
 
 impl Default for FileSessionStorage {
@@ -64,6 +74,8 @@ impl Default for FileSessionStorage {
             meta_read_count: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
             transaction_apply_hook: RwLock::new(None),
+            #[cfg(test)]
+            projection_commit_hook: RwLock::new(None),
         }
     }
 }
@@ -285,6 +297,27 @@ impl crate::domain::agent_session::AgentSessionWriter for FileSessionStorage {
             app_data_dir,
             session_id,
             event,
+        )
+    }
+
+    fn commit_session_projection(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        events: &[Self::Event],
+        prepare: &mut dyn crate::domain::agent_session::AgentSessionProjectionPreparer<
+            Self::Event,
+            Self::Meta,
+            Self::Message,
+            Self::MessagePart,
+        >,
+    ) -> Result<Vec<Self::MessagePart>, String> {
+        FileSessionStorage::commit_session_projection(
+            self,
+            app_data_dir,
+            session_id,
+            events,
+            prepare,
         )
     }
 }

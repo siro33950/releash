@@ -24,6 +24,7 @@ pub(crate) struct AgentStreamingDeltaPayload {
     pub seq: u64,
     pub snapshot: bool,
     pub parts: Vec<crate::usecase::agent_session::session::MessagePart>,
+    pub message: Option<ChatMessage>,
 }
 
 #[derive(Debug, Clone)]

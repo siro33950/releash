@@ -324,7 +324,7 @@ mod tests {
 
         let captured = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let captured_for_listener = captured.clone();
-        store.register_state_change_listener(Arc::new(move |_, _, state| {
+        store.register_state_change_listener(Arc::new(move |_, _, state, _| {
             captured_for_listener.lock().push(state.clone());
         }));
 

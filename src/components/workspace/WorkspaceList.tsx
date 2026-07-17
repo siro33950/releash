@@ -173,6 +173,10 @@ function WorkspaceNodeRow({
 	const pulseClassName = isWorkspaceNodePulseStatus(node.status)
 		? "animate-pulse"
 		: "";
+	const statusTitle =
+		node.status === "error" && node.errorReason
+			? node.errorReason
+			: `${node.contentKind}, ${node.status}`;
 	return (
 		<div
 			className={`group flex h-8 w-full items-center gap-2 rounded-md pr-2 text-left text-sm transition-colors ${
@@ -191,7 +195,7 @@ function WorkspaceNodeRow({
 			>
 				<span
 					className="flex size-5 shrink-0 items-center justify-center"
-					title={`${node.contentKind}, ${node.status}`}
+					title={statusTitle}
 				>
 					<ContentIcon
 						className={`size-3.5 shrink-0 ${workflowNodeIconClasses[node.status]} ${pulseClassName}`}

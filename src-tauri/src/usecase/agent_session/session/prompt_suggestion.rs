@@ -251,6 +251,8 @@ mod tests {
                 id: session_id.to_string(),
                 worktree_path: "/repo".to_string(),
                 state: SessionState::Idle,
+                error_reason: None,
+                state_revision: 0,
                 created_at: 1.0,
                 updated_at: 1.0,
                 agent_session_id: None,

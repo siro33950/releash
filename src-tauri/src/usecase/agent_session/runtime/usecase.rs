@@ -37,9 +37,10 @@ use crate::usecase::agent_session::event_log::{
 use crate::usecase::agent_session::session::{
     add_message_internal, add_message_with_meta_internal, apply_tool_result_update,
     create_session_with_model_and_plan_mode, ChatMessage, ChatSession, ContextCarryState,
-    GetSessionResponse, ImageAttachment, InitialSessionPage, MessagePart, MessageRole, ModelInfo,
-    OpenTabRegistry, PendingRecoveryMessage, PermissionRequestMsg, QueuedAgentTurn, SessionMeta,
-    SessionState, SessionStore, SessionSummary, INITIAL_SESSION_PAGE_LIMIT,
+    ErrorEpisodeInput, GetSessionResponse, ImageAttachment, InitialSessionPage, MessagePart,
+    MessageRole, ModelInfo, OpenTabRegistry, PendingRecoveryMessage, PermissionRequestMsg,
+    QueuedAgentTurn, SessionMeta, SessionState, SessionStore, SessionSummary,
+    INITIAL_SESSION_PAGE_LIMIT,
 };
 use crate::usecase::agent_session::status::{
     AgentStatusCenter, AgentStatusNotifier, SessionNotice, SessionNoticeKind, SessionStatus,
@@ -868,6 +869,8 @@ impl AgentSessionRuntimeUsecase {
                     seq,
                     snapshot: true,
                     parts,
+                    message: None,
+                    authoritative: true,
                 },
             )
             .await;
@@ -3463,6 +3466,7 @@ async fn persist_and_publish_recovery_error(
                 seq,
                 snapshot: true,
                 parts,
+                message: None,
             });
             return Ok(());
         }
@@ -3702,9 +3706,32 @@ async fn apply_runtime_event(
             }
         }
         AgentRuntimeEvent::TurnCompleted(result) => {
+            let trailing_fatal_message = match &result {
+                TurnResult::Interrupted {
+                    reason: DomainInterruptReason::Crash,
+                    error: Some(message),
+                } => Some(message.clone()),
+                _ => None,
+            };
+            let wait_for_trailing_fatal = if trailing_fatal_message.is_some() {
+                let sessions = ctx.sessions.lock().await;
+                sessions
+                    .get(session_id)
+                    .is_some_and(|state| state.phase != RuntimeSessionPhase::Idle)
+            } else {
+                false
+            };
             let workflow_notification = complete_turn(ctx, session_id, None, result).await;
+            if wait_for_trailing_fatal {
+                let mut sessions = ctx.sessions.lock().await;
+                if let Some(state) = sessions.get_mut(session_id) {
+                    state.pending_trailing_fatal_message = trailing_fatal_message;
+                }
+            }
             let mut actions = RuntimeEventPostActions::workflow(workflow_notification);
-            actions.drain();
+            if !wait_for_trailing_fatal {
+                actions.drain();
+            }
             return actions;
         }
         AgentRuntimeEvent::Fatal { message } => {
@@ -3727,12 +3754,21 @@ async fn apply_runtime_event(
                 actions.close_runtime(runtime);
                 return actions;
             }
-            let should_complete_crash = {
-                let sessions = ctx.sessions.lock().await;
+            let (should_complete_crash, trailing_completed_crash) = {
+                let mut sessions = ctx.sessions.lock().await;
                 sessions
-                    .get(session_id)
-                    .map(|state| state.phase != RuntimeSessionPhase::Idle)
-                    .unwrap_or(false)
+                    .get_mut(session_id)
+                    .map_or((false, false), |state| {
+                        if state.phase != RuntimeSessionPhase::Idle {
+                            state.pending_trailing_fatal_message = None;
+                            (true, false)
+                        } else {
+                            let trailing = state.pending_trailing_fatal_message.as_deref()
+                                == Some(message.as_str());
+                            state.pending_trailing_fatal_message = None;
+                            (false, trailing)
+                        }
+                    })
             };
             let mut actions = RuntimeEventPostActions::default();
             if should_complete_crash {
@@ -3761,30 +3797,73 @@ async fn apply_runtime_event(
                     state.stall_observation_active = false;
                 }
             }
-            if !should_complete_crash {
-                if let Err(error) = ctx.session_store.set_session_state(
-                    &ctx.data_dir,
-                    session_id,
-                    SessionState::Error,
-                ) {
-                    log::warn!("failed to persist fatal session state for {session_id}: {error}");
+            if !should_complete_crash && !trailing_completed_crash {
+                let completed_at = crate::usecase::agent_session::session::now_timestamp();
+                let message_id = uuid::Uuid::new_v4().to_string();
+                let projected_message = ctx
+                    .session_store
+                    .append_error_episode_and_materialize(
+                        &ctx.data_dir,
+                        session_id,
+                        ErrorEpisodeInput {
+                            message_id: message_id.clone(),
+                            reason: message.clone(),
+                            at: completed_at,
+                        },
+                    )
+                    .map(|(_, projected_message)| projected_message);
+                match projected_message {
+                    Ok(projected_message) => {
+                        let parts = projected_message.parts.clone().unwrap_or_default();
+                        {
+                            let mut sessions = ctx.sessions.lock().await;
+                            if let Some(state) = sessions.get_mut(session_id) {
+                                state.last_agent_message_id = Some(message_id.clone());
+                                state.streaming_delta_seq = 1;
+                            }
+                        }
+                        emit_streaming_delta_or_retry(
+                            ctx,
+                            session_id,
+                            PendingStreamDelta {
+                                message_id,
+                                seq: 1,
+                                snapshot: true,
+                                parts,
+                                message: Some(projected_message),
+                                authoritative: true,
+                            },
+                        )
+                        .await;
+                        emit_session_state_change(
+                            &ctx.session_store,
+                            &ctx.notifier,
+                            &ctx.status_center,
+                            &ctx.status_notifier,
+                            &ctx.data_dir,
+                            session_id,
+                            StateChange {
+                                turn_phase: TurnPhase::Idle,
+                                pending_permission_request: None,
+                                pending_permission_state_revision: None,
+                                exit_code: Some(1),
+                                // Idle-Fatal creates a standalone message that already carries its
+                                // backend timestamp. It must not finalize an older agent turn.
+                                completed_at: None,
+                                interrupted: true,
+                                session_state: Some(SessionState::Error),
+                            },
+                        );
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            "failed to materialize idle fatal episode for {session_id}: {error}"
+                        );
+                    }
                 }
-                emit_session_state_change(
-                    &ctx.session_store,
-                    &ctx.notifier,
-                    &ctx.status_center,
-                    &ctx.status_notifier,
-                    &ctx.data_dir,
-                    session_id,
-                    StateChange {
-                        turn_phase: TurnPhase::Idle,
-                        pending_permission_request: None,
-                        pending_permission_state_revision: None,
-                        exit_code: Some(1),
-                        completed_at: Some(crate::usecase::agent_session::session::now_timestamp()),
-                        interrupted: true,
-                        session_state: Some(SessionState::Error),
-                    },
+            } else if trailing_completed_crash {
+                log::debug!(
+                    "suppressed trailing fatal projection for completed crash in {session_id}"
                 );
             }
             actions.drain();
@@ -3942,6 +4021,7 @@ fn spawn_delayed_stream_flush(
     let spawner = Arc::clone(&ctx.spawner);
     spawner.spawn(Box::pin(async move {
         tokio::time::sleep(delay).await;
+        let _session_guard = acquire_session_runtime_lock(&ctx.session_locks, &session_id).await;
         flush_streaming_update(&ctx, &session_id, false).await;
     }));
 }
@@ -3981,6 +4061,8 @@ async fn flush_streaming_update(ctx: &RuntimeContext, session_id: &str, force_pe
                 seq: state.streaming_delta_seq.saturating_add(1),
                 snapshot,
                 parts,
+                message: None,
+                authoritative: false,
             }
         };
         let persist =
@@ -4009,13 +4091,9 @@ async fn flush_streaming_update(ctx: &RuntimeContext, session_id: &str, force_pe
         return;
     }
 
-    let emitted = ctx.notifier.streaming_delta(AgentStreamingDeltaPayload {
-        chat_session_id: session_id.to_string(),
-        message_id: payload.message_id.clone(),
-        seq: payload.seq,
-        snapshot: payload.snapshot,
-        parts: payload.parts.clone(),
-    });
+    let emitted = ctx
+        .notifier
+        .streaming_delta(payload.to_delta_payload(session_id));
 
     let mut retry_delay = None;
     {
@@ -4041,9 +4119,13 @@ async fn emit_streaming_delta_or_retry(
     session_id: &str,
     payload: PendingStreamDelta,
 ) {
+    if payload.authoritative {
+        emit_authoritative_streaming_delta_or_retry(ctx, session_id, payload).await;
+        return;
+    }
     {
-        let sessions = ctx.sessions.lock().await;
-        let Some(state) = sessions.get(session_id) else {
+        let mut sessions = ctx.sessions.lock().await;
+        let Some(state) = sessions.get_mut(session_id) else {
             return;
         };
         if state.stream_emit_suppressed {
@@ -4051,13 +4133,9 @@ async fn emit_streaming_delta_or_retry(
         }
     }
     let now = std::time::Instant::now();
-    let emitted = ctx.notifier.streaming_delta(AgentStreamingDeltaPayload {
-        chat_session_id: session_id.to_string(),
-        message_id: payload.message_id.clone(),
-        seq: payload.seq,
-        snapshot: payload.snapshot,
-        parts: payload.parts.clone(),
-    });
+    let emitted = ctx
+        .notifier
+        .streaming_delta(payload.to_delta_payload(session_id));
     let retry_delay = {
         let mut sessions = ctx.sessions.lock().await;
         let Some(state) = sessions.get_mut(session_id) else {
@@ -4072,6 +4150,143 @@ async fn emit_streaming_delta_or_retry(
     };
     if let Some(delay) = retry_delay {
         spawn_delayed_stream_flush(ctx, session_id.to_string(), delay);
+    }
+}
+
+async fn emit_authoritative_streaming_delta_or_retry(
+    ctx: &RuntimeContext,
+    session_id: &str,
+    payload: PendingStreamDelta,
+) {
+    let retry_delay = {
+        let mut sessions = ctx.sessions.lock().await;
+        let Some(state) = sessions.get_mut(session_id) else {
+            return;
+        };
+        prepare_authoritative_stream_emit(state, &payload.message_id);
+        if state.authoritative_stream_retries.is_empty() {
+            None
+        } else {
+            upsert_authoritative_stream_retry(state, payload.clone());
+            if state.authoritative_stream_flush_scheduled {
+                return;
+            }
+            state.authoritative_stream_flush_scheduled = true;
+            Some(super::streaming::STREAMING_EMIT_INTERVAL)
+        }
+    };
+    if let Some(delay) = retry_delay {
+        spawn_delayed_authoritative_stream_flush(ctx, session_id.to_string(), delay);
+        return;
+    }
+    let now = std::time::Instant::now();
+    let emitted = ctx
+        .notifier
+        .streaming_delta(payload.to_delta_payload(session_id));
+    let retry_delay = {
+        let mut sessions = ctx.sessions.lock().await;
+        let Some(state) = sessions.get_mut(session_id) else {
+            return;
+        };
+        if emitted {
+            state.last_stream_emit_at = Some(now);
+            state.authoritative_stream_emit_failure_count = 0;
+            None
+        } else {
+            on_authoritative_stream_emit_failure(state, session_id, &payload)
+        }
+    };
+    if let Some(delay) = retry_delay {
+        spawn_delayed_authoritative_stream_flush(ctx, session_id.to_string(), delay);
+    }
+}
+
+fn prepare_authoritative_stream_emit(state: &mut RuntimeSessionState, message_id: &str) {
+    // A backend-owned snapshot supersedes any older coalesced retry before the notifier call.
+    // Delayed flushes are serialized by the session runtime lock and therefore observe this
+    // updated state after the authoritative attempt completes.
+    state.retry_stream_delta = None;
+    state.stream_flush_scheduled = false;
+    state.stream_emit_failure_count = 0;
+    state.stream_emit_suppressed = false;
+    state
+        .authoritative_stream_retries
+        .retain(|retry| retry.message_id != message_id);
+}
+
+fn upsert_authoritative_stream_retry(state: &mut RuntimeSessionState, payload: PendingStreamDelta) {
+    if let Some(retry) = state
+        .authoritative_stream_retries
+        .iter_mut()
+        .find(|retry| retry.message_id == payload.message_id)
+    {
+        *retry = payload;
+    } else {
+        state.authoritative_stream_retries.push_back(payload);
+    }
+}
+
+fn spawn_delayed_authoritative_stream_flush(
+    ctx: &RuntimeContext,
+    session_id: String,
+    delay: std::time::Duration,
+) {
+    let ctx = ctx.clone();
+    let spawner = Arc::clone(&ctx.spawner);
+    spawner.spawn(Box::pin(async move {
+        tokio::time::sleep(delay).await;
+        let _session_guard = acquire_session_runtime_lock(&ctx.session_locks, &session_id).await;
+        flush_authoritative_stream_retry(&ctx, &session_id).await;
+    }));
+}
+
+async fn flush_authoritative_stream_retry(ctx: &RuntimeContext, session_id: &str) {
+    {
+        let mut sessions = ctx.sessions.lock().await;
+        let Some(state) = sessions.get_mut(session_id) else {
+            return;
+        };
+        state.authoritative_stream_flush_scheduled = false;
+    }
+    loop {
+        let payload = {
+            let sessions = ctx.sessions.lock().await;
+            let Some(state) = sessions.get(session_id) else {
+                return;
+            };
+            let Some(payload) = state.authoritative_stream_retries.front().cloned() else {
+                return;
+            };
+            payload
+        };
+        let emitted = ctx
+            .notifier
+            .streaming_delta(payload.to_delta_payload(session_id));
+        let retry_delay = {
+            let mut sessions = ctx.sessions.lock().await;
+            let Some(state) = sessions.get_mut(session_id) else {
+                return;
+            };
+            if emitted {
+                if state
+                    .authoritative_stream_retries
+                    .front()
+                    .is_some_and(|retry| {
+                        retry.message_id == payload.message_id && retry.seq == payload.seq
+                    })
+                {
+                    state.authoritative_stream_retries.pop_front();
+                }
+                state.authoritative_stream_emit_failure_count = 0;
+                None
+            } else {
+                on_authoritative_stream_emit_failure(state, session_id, &payload)
+            }
+        };
+        if let Some(delay) = retry_delay {
+            spawn_delayed_authoritative_stream_flush(ctx, session_id.to_string(), delay);
+            return;
+        }
     }
 }
 
@@ -4126,6 +4341,40 @@ fn on_stream_emit_failure(
         None
     } else {
         state.stream_flush_scheduled = true;
+        Some(super::streaming::STREAMING_EMIT_INTERVAL)
+    }
+}
+
+fn on_authoritative_stream_emit_failure(
+    state: &mut RuntimeSessionState,
+    session_id: &str,
+    payload: &PendingStreamDelta,
+) -> Option<std::time::Duration> {
+    state.authoritative_stream_emit_failure_count = state
+        .authoritative_stream_emit_failure_count
+        .saturating_add(1);
+    let failures = state.authoritative_stream_emit_failure_count;
+    log::warn!(
+        "authoritative agent-streaming-delta emit failure: chat_session={} message_id={} seq={} part_count={} consecutive_failures={}",
+        session_id,
+        payload.message_id,
+        payload.seq,
+        payload.parts.len(),
+        failures
+    );
+    if failures >= STREAM_EMIT_FAILURE_STOP_LIMIT {
+        log::error!(
+            "authoritative agent-streaming-delta emit failed {failures} consecutive times for chat_session={session_id}; stopping delivery retry"
+        );
+        state.authoritative_stream_retries.clear();
+        state.authoritative_stream_flush_scheduled = false;
+        return None;
+    }
+    upsert_authoritative_stream_retry(state, payload.clone());
+    if state.authoritative_stream_flush_scheduled {
+        None
+    } else {
+        state.authoritative_stream_flush_scheduled = true;
         Some(super::streaming::STREAMING_EMIT_INTERVAL)
     }
 }
@@ -4334,6 +4583,13 @@ async fn complete_turn(
     expected_generation: Option<u64>,
     result: crate::domain::agent_session::entities::TurnResult,
 ) -> Option<WorkflowTurnCompleteNotification> {
+    let emit_crash_snapshot = matches!(
+        &result,
+        TurnResult::Interrupted {
+            reason: DomainInterruptReason::Crash,
+            ..
+        }
+    );
     let should_complete = {
         let sessions = ctx.sessions.lock().await;
         sessions.get(session_id).is_some_and(|state| {
@@ -4348,6 +4604,7 @@ async fn complete_turn(
         return None;
     }
     flush_streaming_update(ctx, session_id, true).await;
+    let completed_at = crate::usecase::agent_session::session::now_timestamp();
     let terminal = terminal_projection(&result);
     let (
         message_id,
@@ -4402,43 +4659,63 @@ async fn complete_turn(
         )
     };
     let mut projected = None;
+    let mut crash_snapshot = None;
     if let (Some(turn_id), Some(message_id)) = (turn_id, message_id.clone()) {
-        let final_events_persisted = if let Err(error) =
-            append_final_turn_events(ctx, session_id, turn_id, &message_id, &parts, &terminal).await
-        {
-            log::warn!("failed to record terminal turn events for {session_id}: {error}");
-            false
+        let final_seq = if emit_crash_snapshot {
+            seq.saturating_add(1)
         } else {
-            true
+            seq
         };
-        projected = ctx
-            .session_store
-            .load_session_events(&ctx.data_dir, session_id)
-            .map(|events| TurnEventLog::from_events(events).project())
-            .map_err(|error| {
-                log::warn!("failed to project terminal turn events for {session_id}: {error}");
-                error
-            })
-            .ok();
-        let parts_to_persist = if final_events_persisted {
-            projected
-                .as_ref()
-                .map(|model| model.agent_parts_for_message(&message_id))
-                .filter(|parts| !parts.is_empty())
-                .unwrap_or_else(|| parts.clone())
-        } else {
-            parts.clone()
-        };
-        if let Err(error) = ctx.session_store.persist_message_parts(
+        let materialized = match final_turn_events(
+            &ctx.session_store,
             &ctx.data_dir,
             session_id,
+            turn_id,
             &message_id,
-            &parts_to_persist,
-            seq,
-            Some(crate::usecase::agent_session::session::now_timestamp()),
+            &parts,
+            &terminal,
         ) {
-            log::warn!("failed to persist completed parts for {session_id}: {error}");
+            Ok(events) => {
+                persist_with_retry(
+                    ctx,
+                    session_id,
+                    PersistFailureKind::FinalPartsRecorded,
+                    || {
+                        ctx.session_store.append_terminal_events_and_materialize(
+                            &ctx.data_dir,
+                            session_id,
+                            &events,
+                            &message_id,
+                            final_seq,
+                            completed_at,
+                        )
+                    },
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        };
+        match materialized {
+            Ok((model, persisted_parts)) => {
+                projected = Some(model);
+                if emit_crash_snapshot {
+                    crash_snapshot = Some(PendingStreamDelta {
+                        message_id,
+                        seq: final_seq,
+                        snapshot: true,
+                        parts: persisted_parts,
+                        message: None,
+                        authoritative: true,
+                    });
+                }
+            }
+            Err(error) => {
+                log::warn!("failed to materialize terminal turn for {session_id}: {error}");
+            }
         }
+    }
+    if let Some(snapshot) = crash_snapshot {
+        emit_streaming_delta_or_retry(ctx, session_id, snapshot).await;
     }
     {
         let mut sessions = ctx.sessions.lock().await;
@@ -4453,16 +4730,18 @@ async fn complete_turn(
     let session_state = projected
         .as_ref()
         .map(|model| model.status.session_state.clone())
-        .unwrap_or_else(|| terminal.session_state.clone());
+        .or_else(|| (!emit_crash_snapshot).then(|| terminal.session_state.clone()));
     let lifecycle =
         crate::usecase::agent_session::session::lifecycle_controller::SessionLifecycleController {
             session_store: &ctx.session_store,
             data_dir: &ctx.data_dir,
         };
-    if let Err(error) =
-        lifecycle.complete_turn_state(session_id, terminal.exit_code, terminal.interrupted)
-    {
-        log::warn!("failed to persist terminal session state for {session_id}: {error}");
+    if projected.is_some() || !emit_crash_snapshot {
+        if let Err(error) =
+            lifecycle.complete_turn_state(session_id, terminal.exit_code, terminal.interrupted)
+        {
+            log::warn!("failed to persist terminal session state for {session_id}: {error}");
+        }
     }
     if let (Some(started_at), Some(dims)) = (started_at, telemetry_dims) {
         crate::other::telemetry::record_agent_turn_duration(
@@ -4487,9 +4766,9 @@ async fn complete_turn(
             pending_permission_request: None,
             pending_permission_state_revision: Some(pending_permission_state_revision),
             exit_code: Some(terminal.exit_code),
-            completed_at: Some(crate::usecase::agent_session::session::now_timestamp()),
+            completed_at: Some(completed_at),
             interrupted: terminal.interrupted,
-            session_state: Some(session_state),
+            session_state,
         },
     );
     workflow_notification
@@ -5278,47 +5557,35 @@ async fn resync_permission_mode(
     Some(saved_mode)
 }
 
-async fn append_final_turn_events(
-    ctx: &RuntimeContext,
+fn final_turn_events(
+    session_store: &Arc<SessionStore>,
+    data_dir: &Path,
     session_id: &str,
     turn_id: u64,
     message_id: &str,
     parts: &[MessagePart],
     terminal: &TerminalProjection,
-) -> Result<(), String> {
-    append_session_event_and_project_state_with_retry(
-        ctx,
-        session_id,
-        PersistFailureKind::FinalPartsRecorded,
-        AgentSessionEvent::FinalPartsRecorded {
-            turn_id,
-            message_id: message_id.to_string(),
-            parts: parts.to_vec(),
-        },
-    )
-    .await?;
+) -> Result<Vec<AgentSessionEvent>, String> {
+    let mut appended = vec![AgentSessionEvent::FinalPartsRecorded {
+        turn_id,
+        message_id: message_id.to_string(),
+        parts: parts.to_vec(),
+    }];
     match &terminal.event {
         TerminalEventProjection::Completed {
             stop_reason,
             token_usage,
         } => {
-            append_session_event_and_project_state_with_retry(
-                ctx,
-                session_id,
-                PersistFailureKind::FinalPartsRecorded,
-                AgentSessionEvent::TurnCompleted {
-                    turn_id,
-                    exit_code: terminal.exit_code,
-                    stop_reason: *stop_reason,
-                    token_usage: *token_usage,
-                },
-            )
-            .await?;
+            appended.push(AgentSessionEvent::TurnCompleted {
+                turn_id,
+                exit_code: terminal.exit_code,
+                stop_reason: *stop_reason,
+                token_usage: *token_usage,
+            });
         }
         TerminalEventProjection::Interrupted { reason, error } => {
-            let mut events = ctx
-                .session_store
-                .load_session_events(&ctx.data_dir, session_id)?;
+            let mut events = session_store.load_session_events(data_dir, session_id)?;
+            events.extend(appended.iter().cloned());
             let before = events.len();
             finalize_turn(
                 &mut events,
@@ -5327,18 +5594,10 @@ async fn append_final_turn_events(
                 error.clone(),
                 terminal.exit_code,
             );
-            for event in events.into_iter().skip(before) {
-                append_session_event_and_project_state_with_retry(
-                    ctx,
-                    session_id,
-                    PersistFailureKind::FinalPartsRecorded,
-                    event,
-                )
-                .await?;
-            }
+            appended.extend(events.into_iter().skip(before));
         }
     }
-    Ok(())
+    Ok(appended)
 }
 
 fn terminal_projection(result: &TurnResult) -> TerminalProjection {
@@ -5944,6 +6203,119 @@ mod tests {
     }
 
     #[test]
+    fn authoritative_snapshot_retry_preserves_backend_message_and_parts() {
+        let message = crate::usecase::agent_session::event_log::session_error_message(
+            "fatal-message".to_string(),
+            "app server stopped".to_string(),
+            42.0,
+        );
+        let parts = message.parts.clone().unwrap();
+        let payload = PendingStreamDelta {
+            message_id: message.id.clone(),
+            seq: 1,
+            snapshot: true,
+            parts: parts.clone(),
+            message: Some(message),
+            authoritative: true,
+        };
+        let mut state = RuntimeSessionState::new("codex".to_string());
+
+        assert!(on_authoritative_stream_emit_failure(&mut state, "session-1", &payload).is_some());
+
+        let retry = state
+            .authoritative_stream_retries
+            .front()
+            .expect("retry snapshot");
+        assert_eq!(retry.parts, parts);
+        let retry_message = retry.message.as_ref().expect("backend message metadata");
+        assert_eq!(retry_message.id, "fatal-message");
+        assert_eq!(retry_message.role, MessageRole::Agent);
+        assert_eq!(retry_message.timestamp, 42.0);
+    }
+
+    #[test]
+    fn authoritative_snapshot_supersedes_older_retry() {
+        let mut state = RuntimeSessionState::new("codex".to_string());
+        state.retry_stream_delta = Some(PendingStreamDelta {
+            message_id: "streaming-message".to_string(),
+            seq: 1,
+            snapshot: true,
+            parts: vec![MessagePart::Text {
+                content: "partial output".to_string(),
+                parent_tool_use_id: None,
+            }],
+            message: None,
+            authoritative: false,
+        });
+        state.stream_flush_scheduled = true;
+        let message = crate::usecase::agent_session::event_log::session_error_message(
+            "fatal-message".to_string(),
+            "app server stopped".to_string(),
+            42.0,
+        );
+        let payload = PendingStreamDelta {
+            message_id: message.id.clone(),
+            seq: 1,
+            snapshot: true,
+            parts: message.parts.clone().unwrap(),
+            message: Some(message),
+            authoritative: true,
+        };
+
+        prepare_authoritative_stream_emit(&mut state, &payload.message_id);
+        assert!(state.retry_stream_delta.is_none());
+        assert!(!state.stream_flush_scheduled);
+        assert!(on_authoritative_stream_emit_failure(&mut state, "session-1", &payload).is_some());
+
+        let retry = state
+            .authoritative_stream_retries
+            .front()
+            .expect("latest retry snapshot");
+        assert_eq!(retry.message_id, "fatal-message");
+        assert!(retry.message.is_some());
+        assert!(retry.parts.iter().any(
+            |part| matches!(part, MessagePart::Error { content, .. } if content == "app server stopped")
+        ));
+    }
+
+    #[test]
+    fn authoritative_snapshot_retry_coalesces_only_the_same_message_id() {
+        let mut state = RuntimeSessionState::new("codex".to_string());
+        let older = PendingStreamDelta {
+            message_id: "fatal-message".to_string(),
+            seq: 1,
+            snapshot: true,
+            parts: vec![MessagePart::Text {
+                content: "older".to_string(),
+                parent_tool_use_id: None,
+            }],
+            message: None,
+            authoritative: true,
+        };
+        let newer = PendingStreamDelta {
+            seq: 2,
+            parts: vec![MessagePart::Text {
+                content: "newer".to_string(),
+                parent_tool_use_id: None,
+            }],
+            ..older.clone()
+        };
+
+        assert!(on_authoritative_stream_emit_failure(&mut state, "session-1", &older).is_some());
+        prepare_authoritative_stream_emit(&mut state, &newer.message_id);
+        state.authoritative_stream_flush_scheduled = false;
+        assert!(on_authoritative_stream_emit_failure(&mut state, "session-1", &newer).is_some());
+
+        assert_eq!(state.authoritative_stream_retries.len(), 1);
+        let retry = state.authoritative_stream_retries.front().unwrap();
+        assert_eq!(retry.seq, 2);
+        assert!(matches!(
+            retry.parts.as_slice(),
+            [MessagePart::Text { content, .. }] if content == "newer"
+        ));
+    }
+
+    #[test]
     fn workflow_execution_env_includes_run_and_node_execution_ids() {
         let context = crate::usecase::agent_session::session::workflow_node_context_mapper::to_dto(
             workflow_node_context(None, None, None),
@@ -6090,10 +6462,13 @@ mod tests {
         stall_observations: Mutex<Vec<AgentStallObservedPayload>>,
         stall_clears: Mutex<Vec<String>>,
         streaming_deltas: Mutex<Vec<AgentStreamingDeltaPayload>>,
+        delivered_streaming_deltas: Mutex<Vec<AgentStreamingDeltaPayload>>,
         permission_modes: Mutex<Vec<(String, String)>>,
         model_updates: Mutex<Vec<(String, Vec<ModelInfo>, String)>>,
         streaming_delta_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
         fail_streaming_delta: Mutex<bool>,
+        streaming_delta_outcomes: Mutex<std::collections::VecDeque<bool>>,
+        event_order: Mutex<Vec<&'static str>>,
     }
 
     impl RecordingAgentNotifier {
@@ -6117,6 +6492,10 @@ mod tests {
             self.streaming_deltas.lock().unwrap().clone()
         }
 
+        fn delivered_streaming_deltas(&self) -> Vec<AgentStreamingDeltaPayload> {
+            self.delivered_streaming_deltas.lock().unwrap().clone()
+        }
+
         fn permission_modes(&self) -> Vec<(String, String)> {
             self.permission_modes.lock().unwrap().clone()
         }
@@ -6132,6 +6511,14 @@ mod tests {
         fn set_streaming_delta_failure(&self, fail: bool) {
             *self.fail_streaming_delta.lock().unwrap() = fail;
         }
+
+        fn set_streaming_delta_outcomes(&self, outcomes: impl IntoIterator<Item = bool>) {
+            *self.streaming_delta_outcomes.lock().unwrap() = outcomes.into_iter().collect();
+        }
+
+        fn event_order(&self) -> Vec<&'static str> {
+            self.event_order.lock().unwrap().clone()
+        }
     }
 
     impl AgentSessionEventNotifier for RecordingAgentNotifier {
@@ -6140,6 +6527,7 @@ mod tests {
         }
 
         fn session_state_changed(&self, payload: AgentSessionStateChangedPayload) {
+            self.event_order.lock().unwrap().push("state_change");
             self.state_changes.lock().unwrap().push(payload);
         }
 
@@ -6158,8 +6546,21 @@ mod tests {
             if let Some(hook) = self.streaming_delta_hook.lock().unwrap().clone() {
                 hook();
             }
-            self.streaming_deltas.lock().unwrap().push(payload);
-            !*self.fail_streaming_delta.lock().unwrap()
+            let delivered = self
+                .streaming_delta_outcomes
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| !*self.fail_streaming_delta.lock().unwrap());
+            self.streaming_deltas.lock().unwrap().push(payload.clone());
+            if delivered {
+                self.delivered_streaming_deltas
+                    .lock()
+                    .unwrap()
+                    .push(payload);
+            }
+            self.event_order.lock().unwrap().push("streaming_delta");
+            delivered
         }
 
         fn supported_commands_updated(
@@ -6926,6 +7327,23 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 if notifier.streaming_deltas().len() >= expected_count {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn wait_for_error_state_change(notifier: &RecordingAgentNotifier, session_id: &str) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if notifier.state_changes().iter().any(|change| {
+                    change.chat_session_id == session_id
+                        && change.turn_phase == TurnPhase::Idle
+                        && change.session_state == Some(SessionState::Error)
+                }) {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(5)).await;
@@ -8160,7 +8578,7 @@ mod tests {
         let events = session_store
             .load_session_events(tmp.path(), &session_id)
             .unwrap();
-        assert!(events
+        assert!(!events
             .iter()
             .any(|event| matches!(event, AgentSessionEvent::FinalPartsRecorded { .. })));
         assert!(!events
@@ -8297,6 +8715,913 @@ mod tests {
         assert!(agent_parts
             .iter()
             .any(|part| matches!(part, MessagePart::ToolUse { .. })));
+    }
+
+    #[tokio::test]
+    async fn crash_emits_projected_error_snapshot_before_state_change_and_matches_reload() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::PartsMerged(vec![
+                    DomainMessagePart::Text {
+                        content: "partial output".to_string(),
+                        parent_tool_use_id: None,
+                    },
+                    DomainMessagePart::ToolUse {
+                        id: "tool-1".to_string(),
+                        tool: "Bash".to_string(),
+                        input:
+                            crate::domain::agent_session::value_objects::JsonPayload::new_unchecked(
+                                "{}".to_string(),
+                            ),
+                        parent_tool_use_id: None,
+                    },
+                ]),
+            )
+            .unwrap();
+        wait_for_stream_delta_count(&event_notifier, 1).await;
+        let order_start = event_notifier.event_order().len();
+
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::Fatal {
+                    message: "CLI process exited".to_string(),
+                },
+            )
+            .unwrap();
+
+        wait_for_last_stream_delta(&event_notifier, |delta| {
+            delta.snapshot
+                && delta.parts.iter().any(|part| {
+                    matches!(part, MessagePart::Error { content, .. } if content == "CLI process exited")
+                })
+        })
+        .await;
+        wait_for_error_state_change(&event_notifier, &session_id).await;
+        let live = event_notifier
+            .streaming_deltas()
+            .into_iter()
+            .rev()
+            .find(|delta| {
+                delta.snapshot
+                    && delta.parts.iter().any(|part| {
+                        matches!(part, MessagePart::Error { content, .. } if content == "CLI process exited")
+                    })
+            })
+            .unwrap();
+        assert!(live.parts.iter().any(|part| {
+            matches!(part, MessagePart::Text { content, .. } if content == "partial output")
+        }));
+        assert!(live.parts.iter().any(|part| {
+            matches!(
+                part,
+                MessagePart::ToolResult {
+                    tool_use_id: Some(tool_use_id),
+                    is_error: true,
+                    ..
+                } if tool_use_id == "tool-1"
+            )
+        }));
+        assert_eq!(
+            &event_notifier.event_order()[order_start..],
+            &["streaming_delta", "state_change"]
+        );
+
+        let reloaded = usecase.get_session(&session_id).await.unwrap().unwrap();
+        assert_eq!(
+            reloaded.session.error_reason.as_deref(),
+            Some("CLI process exited")
+        );
+        let persisted = reloaded
+            .session
+            .messages
+            .iter()
+            .find(|message| message.id == live.message_id)
+            .and_then(|message| message.parts.clone())
+            .unwrap();
+        assert_eq!(live.parts, persisted);
+        let summary = session_store
+            .list_sessions(tmp.path(), &reloaded.session.worktree_path)
+            .unwrap()
+            .into_iter()
+            .find(|summary| summary.id == session_id)
+            .unwrap();
+        assert_eq!(summary.error_reason.as_deref(), Some("CLI process exited"));
+    }
+
+    #[tokio::test]
+    async fn turn_completed_crash_followed_by_fatal_is_recorded_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::TurnCompleted(TurnResult::Interrupted {
+                    reason: DomainInterruptReason::Crash,
+                    error: Some("CLI process exited".to_string()),
+                }),
+            )
+            .unwrap();
+        wait_for_turn_phase(&usecase, &session_id, TurnPhase::Idle).await;
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::Fatal {
+                    message: "CLI process exited".to_string(),
+                },
+            )
+            .unwrap();
+        wait_for_call_count(&controller, &session_id, TestRuntimeCallKind::Close, 1).await;
+
+        let events = session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, AgentSessionEvent::TurnInterrupted { .. }))
+                .count(),
+            1
+        );
+        assert!(!events
+            .iter()
+            .any(|event| matches!(event, AgentSessionEvent::SessionErrored { .. })));
+        let reloaded = usecase.get_session(&session_id).await.unwrap().unwrap();
+        let error_contents = reloaded
+            .session
+            .messages
+            .iter()
+            .flat_map(|message| message.parts.iter().flatten())
+            .filter_map(|part| match part {
+                MessagePart::Error { content, .. } => Some(content.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(error_contents, vec!["CLI process exited"]);
+        assert_eq!(
+            event_notifier
+                .streaming_deltas()
+                .iter()
+                .filter(|delta| delta.parts.iter().any(|part| {
+                    matches!(part, MessagePart::Error { content, .. } if content == "CLI process exited")
+                }))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn crash_snapshot_supersedes_older_retry_and_lands_after_notifier_recovers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        event_notifier.set_streaming_delta_failure(true);
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store,
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::PartsMerged(vec![DomainMessagePart::Text {
+                    content: "partial output".to_string(),
+                    parent_tool_use_id: None,
+                }]),
+            )
+            .unwrap();
+        wait_for_stream_emit_failure_state(&usecase, &session_id, |failures, _| failures >= 1)
+            .await;
+
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::TurnCompleted(TurnResult::Interrupted {
+                    reason: DomainInterruptReason::Crash,
+                    error: Some("CLI process exited".to_string()),
+                }),
+            )
+            .unwrap();
+        wait_for_error_state_change(&event_notifier, &session_id).await;
+        event_notifier.set_streaming_delta_failure(false);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if event_notifier
+                    .delivered_streaming_deltas()
+                    .iter()
+                    .any(|delta| {
+                        delta.snapshot
+                            && delta.parts.iter().any(|part| {
+                                matches!(part, MessagePart::Error { content, .. } if content == "CLI process exited")
+                            })
+                    })
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let delivered = event_notifier.delivered_streaming_deltas();
+        let terminal = delivered
+            .iter()
+            .find(|delta| {
+                delta.parts.iter().any(|part| {
+                    matches!(part, MessagePart::Error { content, .. } if content == "CLI process exited")
+                })
+            })
+            .unwrap();
+        assert!(terminal.parts.iter().any(|part| {
+            matches!(part, MessagePart::Text { content, .. } if content == "partial output")
+        }));
+    }
+
+    #[tokio::test]
+    async fn successful_crash_snapshot_cancels_pre_final_retry_before_delayed_flush() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store,
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+        let partial_parts = vec![MessagePart::Text {
+            content: "partial output".to_string(),
+            parent_tool_use_id: None,
+        }];
+        {
+            let mut sessions = usecase.ctx.sessions.lock().await;
+            let state = sessions.get_mut(&session_id).unwrap();
+            state.streaming_parts = partial_parts.clone();
+            state.pending_stream_snapshot = true;
+        }
+        // The pre-final flush fails, then the authoritative crash snapshot succeeds.
+        event_notifier.set_streaming_delta_outcomes([false, true]);
+
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::TurnCompleted(TurnResult::Interrupted {
+                    reason: DomainInterruptReason::Crash,
+                    error: Some("CLI process exited".to_string()),
+                }),
+            )
+            .unwrap();
+        wait_for_error_state_change(&event_notifier, &session_id).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let attempted = event_notifier.streaming_deltas();
+        assert_eq!(attempted.len(), 2);
+        let delivered = event_notifier.delivered_streaming_deltas();
+        assert_eq!(delivered.len(), 1);
+        let terminal = delivered.last().unwrap();
+        assert_eq!(terminal.parts.first(), partial_parts.first());
+        assert!(terminal.parts.iter().any(|part| {
+            matches!(part, MessagePart::Error { content, .. } if content == "CLI process exited")
+        }));
+    }
+
+    #[tokio::test]
+    async fn crash_snapshot_retry_survives_queued_turn_reset_and_lands_after_recovery() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store,
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        let session_id = enqueue_second_turn_for_test(
+            &usecase,
+            &controller,
+            tmp.path().to_string_lossy().to_string(),
+        )
+        .await;
+        event_notifier.set_streaming_delta_failure(true);
+
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::Fatal {
+                    message: "CLI process exited".to_string(),
+                },
+            )
+            .unwrap();
+        wait_for_error_state_change(&event_notifier, &session_id).await;
+        wait_for_start_prompt_count(&controller, &session_id, 2).await;
+        assert_eq!(
+            usecase.turn_phase(&session_id).await,
+            Some(TurnPhase::Streaming)
+        );
+
+        event_notifier.set_streaming_delta_failure(false);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if event_notifier
+                    .delivered_streaming_deltas()
+                    .iter()
+                    .any(|delta| {
+                        delta.parts.iter().any(|part| {
+                            matches!(part, MessagePart::Error { content, .. } if content == "CLI process exited")
+                        })
+                    })
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn idle_fatal_is_durable_live_and_survives_later_projection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::TurnCompleted(TurnResult::Completed {
+                    stop_reason: None,
+                    token_usage: None,
+                }),
+            )
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if event_notifier.state_changes().iter().any(|change| {
+                    change.chat_session_id == session_id
+                        && change.session_state == Some(SessionState::Done)
+                }) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let order_start = event_notifier.event_order().len();
+
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::Fatal {
+                    message: "app server stopped".to_string(),
+                },
+            )
+            .unwrap();
+
+        wait_for_last_stream_delta(&event_notifier, |delta| {
+            delta.snapshot
+                && delta.message.as_ref().is_some_and(|message| {
+                    message.parts.as_deref()
+                        == Some(
+                            [MessagePart::Error {
+                                content: "app server stopped".to_string(),
+                                parent_tool_use_id: None,
+                            }]
+                            .as_slice(),
+                        )
+                })
+        })
+        .await;
+        wait_for_error_state_change(&event_notifier, &session_id).await;
+        assert!(event_notifier
+            .state_changes()
+            .iter()
+            .rev()
+            .find(|change| change.session_state == Some(SessionState::Error))
+            .is_some_and(|change| change.completed_at.is_none()));
+        assert_eq!(
+            &event_notifier.event_order()[order_start..],
+            &["streaming_delta", "state_change"]
+        );
+        let live = event_notifier
+            .streaming_deltas()
+            .into_iter()
+            .find(|delta| delta.message.is_some())
+            .unwrap();
+        assert_eq!(
+            live.parts,
+            vec![MessagePart::Error {
+                content: "app server stopped".to_string(),
+                parent_tool_use_id: None,
+            }]
+        );
+        let events = session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::SessionErrored { reason, .. } if reason == "app server stopped"
+        )));
+
+        let reloaded = usecase.get_session(&session_id).await.unwrap().unwrap();
+        assert_eq!(reloaded.session.state, SessionState::Error);
+        assert_eq!(
+            reloaded.session.error_reason.as_deref(),
+            Some("app server stopped")
+        );
+        let persisted = reloaded
+            .session
+            .messages
+            .iter()
+            .find(|message| message.id == live.message_id)
+            .and_then(|message| message.parts.clone())
+            .unwrap();
+        assert_eq!(live.parts, persisted);
+        assert_eq!(
+            live.message.as_ref().unwrap().timestamp,
+            reloaded
+                .session
+                .messages
+                .iter()
+                .find(|message| message.id == live.message_id)
+                .unwrap()
+                .timestamp
+        );
+        let summary = session_store
+            .list_sessions(tmp.path(), &reloaded.session.worktree_path)
+            .unwrap()
+            .into_iter()
+            .find(|summary| summary.id == session_id)
+            .unwrap();
+        assert_eq!(summary.error_reason.as_deref(), Some("app server stopped"));
+
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::Fatal {
+                    message: "app server stopped again".to_string(),
+                },
+            )
+            .unwrap();
+        wait_for_last_stream_delta(&event_notifier, |delta| {
+            delta.message.as_ref().is_some_and(|message| {
+                message.parts.as_deref()
+                    == Some(
+                        [MessagePart::Error {
+                            content: "app server stopped again".to_string(),
+                            parent_tool_use_id: None,
+                        }]
+                        .as_slice(),
+                    )
+            })
+        })
+        .await;
+        let second_live = event_notifier.streaming_deltas().last().cloned().unwrap();
+        assert_ne!(live.message_id, second_live.message_id);
+
+        let after_second_fatal = usecase.get_session(&session_id).await.unwrap().unwrap();
+        assert_eq!(
+            after_second_fatal.session.error_reason.as_deref(),
+            Some("app server stopped again")
+        );
+        let persisted_error_ids = after_second_fatal
+            .session
+            .messages
+            .iter()
+            .filter(|message| {
+                message.parts.as_ref().is_some_and(|parts| {
+                    parts
+                        .iter()
+                        .any(|part| matches!(part, MessagePart::Error { .. }))
+                })
+            })
+            .map(|message| message.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            persisted_error_ids,
+            vec![live.message_id.as_str(), second_live.message_id.as_str()]
+        );
+
+        session_store
+            .append_session_event_and_project_state(
+                tmp.path(),
+                &session_id,
+                AgentSessionEvent::ToolCallRetried {
+                    turn_id: 99,
+                    tool_use_id: "unrelated".to_string(),
+                    attempt: 1,
+                },
+            )
+            .unwrap();
+        let after_reprojection = usecase.get_session(&session_id).await.unwrap().unwrap();
+        assert_eq!(after_reprojection.session.state, SessionState::Error);
+        assert_eq!(
+            after_reprojection.session.error_reason.as_deref(),
+            Some("app server stopped again")
+        );
+    }
+
+    #[tokio::test]
+    async fn distinct_idle_fatal_retries_land_in_message_order_after_notifier_recovery() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store,
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::TurnCompleted(TurnResult::Completed {
+                    stop_reason: None,
+                    token_usage: None,
+                }),
+            )
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if event_notifier.state_changes().iter().any(|change| {
+                    change.chat_session_id == session_id
+                        && change.session_state == Some(SessionState::Done)
+                }) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let delivered_before = event_notifier.delivered_streaming_deltas().len();
+        event_notifier.set_streaming_delta_failure(true);
+
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::Fatal {
+                    message: "first fatal".to_string(),
+                },
+            )
+            .unwrap();
+        wait_for_last_stream_delta(&event_notifier, |delta| {
+            delta.message.as_ref().is_some_and(|message| {
+                message.parts.as_deref()
+                    == Some(
+                        [MessagePart::Error {
+                            content: "first fatal".to_string(),
+                            parent_tool_use_id: None,
+                        }]
+                        .as_slice(),
+                    )
+            })
+        })
+        .await;
+
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::Fatal {
+                    message: "second fatal".to_string(),
+                },
+            )
+            .unwrap();
+        let persisted_error_ids = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let reloaded = usecase.get_session(&session_id).await.unwrap().unwrap();
+                if reloaded.session.error_reason.as_deref() == Some("second fatal") {
+                    break reloaded
+                        .session
+                        .messages
+                        .iter()
+                        .filter(|message| {
+                            message.parts.as_ref().is_some_and(|parts| {
+                                parts
+                                    .iter()
+                                    .any(|part| matches!(part, MessagePart::Error { .. }))
+                            })
+                        })
+                        .map(|message| message.id.clone())
+                        .collect::<Vec<_>>();
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(persisted_error_ids.len(), 2);
+        assert_eq!(
+            event_notifier.delivered_streaming_deltas().len(),
+            delivered_before
+        );
+
+        event_notifier.set_streaming_delta_failure(false);
+        let delivered_ids = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let delivered = event_notifier.delivered_streaming_deltas();
+                if delivered.len() >= delivered_before + 2 {
+                    break delivered[delivered_before..]
+                        .iter()
+                        .map(|delta| delta.message_id.clone())
+                        .collect::<Vec<_>>();
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(delivered_ids, persisted_error_ids);
+    }
+
+    #[derive(Clone, Copy)]
+    enum IdleFatalPersistenceFailure {
+        AppendEvent,
+        AppendMessage,
+        ProjectMeta,
+    }
+
+    async fn assert_idle_fatal_persistence_failure_rolls_back(
+        failure: IdleFatalPersistenceFailure,
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::TurnCompleted(TurnResult::Completed {
+                    stop_reason: None,
+                    token_usage: None,
+                }),
+            )
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if event_notifier.state_changes().iter().any(|change| {
+                    change.chat_session_id == session_id
+                        && change.session_state == Some(SessionState::Done)
+                }) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        match failure {
+            IdleFatalPersistenceFailure::AppendEvent => {
+                session_store.set_append_event_hook_for_test(Arc::new(|_, event| {
+                    if matches!(event, AgentSessionEvent::SessionErrored { .. }) {
+                        Err("injected session error event failure".to_string())
+                    } else {
+                        Ok(())
+                    }
+                }));
+            }
+            IdleFatalPersistenceFailure::AppendMessage => {
+                session_store.set_append_message_hook_for_test(Arc::new(|_, message| {
+                    if message.parts.as_ref().is_some_and(|parts| {
+                        parts
+                            .iter()
+                            .any(|part| matches!(part, MessagePart::Error { .. }))
+                    }) {
+                        Err("injected session error message failure".to_string())
+                    } else {
+                        Ok(())
+                    }
+                }));
+            }
+            IdleFatalPersistenceFailure::ProjectMeta => {
+                session_store.set_projection_hook_for_test(Arc::new(|_, state, _| {
+                    if state == &SessionState::Error {
+                        Err("injected session error projection failure".to_string())
+                    } else {
+                        Ok(())
+                    }
+                }));
+            }
+        }
+        let delta_start = event_notifier.streaming_deltas().len();
+        let state_start = event_notifier.state_changes().len();
+
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::Fatal {
+                    message: "app server stopped".to_string(),
+                },
+            )
+            .unwrap();
+        wait_for_call(&controller, &session_id, TestRuntimeCallKind::Close).await;
+
+        let reloaded = usecase.get_session(&session_id).await.unwrap().unwrap();
+        assert_eq!(reloaded.session.state, SessionState::Done);
+        assert_eq!(reloaded.session.error_reason, None);
+        assert!(!reloaded.session.messages.iter().any(|message| {
+            message.parts.as_ref().is_some_and(|parts| {
+                parts.iter().any(|part| {
+                    matches!(part, MessagePart::Error { content, .. } if content == "app server stopped")
+                })
+            })
+        }));
+        assert!(!session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event, AgentSessionEvent::SessionErrored { .. })));
+        assert!(!event_notifier.streaming_deltas()[delta_start..]
+            .iter()
+            .any(|delta| delta.parts.iter().any(|part| {
+                matches!(part, MessagePart::Error { content, .. } if content == "app server stopped")
+            })));
+        assert!(!event_notifier.state_changes()[state_start..]
+            .iter()
+            .any(|change| change.session_state == Some(SessionState::Error)));
+    }
+
+    #[tokio::test]
+    async fn idle_fatal_append_event_failure_rolls_back_without_live_error() {
+        assert_idle_fatal_persistence_failure_rolls_back(IdleFatalPersistenceFailure::AppendEvent)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn idle_fatal_append_message_failure_rolls_back_without_live_error() {
+        assert_idle_fatal_persistence_failure_rolls_back(
+            IdleFatalPersistenceFailure::AppendMessage,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn idle_fatal_meta_projection_failure_rolls_back_without_live_error() {
+        assert_idle_fatal_persistence_failure_rolls_back(IdleFatalPersistenceFailure::ProjectMeta)
+            .await;
+    }
+
+    #[derive(Clone, Copy)]
+    enum CrashPersistenceFailure {
+        AppendEvent,
+        PersistParts,
+    }
+
+    async fn assert_crash_persistence_failure_rolls_back(failure: CrashPersistenceFailure) {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+        match failure {
+            CrashPersistenceFailure::AppendEvent => {
+                session_store.set_append_event_hook_for_test(Arc::new(|_, event| {
+                    if matches!(event, AgentSessionEvent::FinalPartsRecorded { .. }) {
+                        Err("injected final event failure".to_string())
+                    } else {
+                        Ok(())
+                    }
+                }));
+            }
+            CrashPersistenceFailure::PersistParts => {
+                session_store.set_persist_parts_hook_for_test(Arc::new(|_, _, _| {
+                    Err("injected final parts failure".to_string())
+                }));
+            }
+        }
+        let delta_start = event_notifier.streaming_deltas().len();
+        let state_start = event_notifier.state_changes().len();
+
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::Fatal {
+                    message: "CLI process exited".to_string(),
+                },
+            )
+            .unwrap();
+        wait_for_call(&controller, &session_id, TestRuntimeCallKind::Close).await;
+
+        let reloaded = usecase.get_session(&session_id).await.unwrap().unwrap();
+        assert_ne!(reloaded.session.state, SessionState::Error);
+        assert_eq!(reloaded.session.error_reason, None);
+        assert!(!reloaded.session.messages.iter().any(|message| {
+            message.parts.as_ref().is_some_and(|parts| {
+                parts.iter().any(|part| {
+                    matches!(part, MessagePart::Error { content, .. } if content == "CLI process exited")
+                })
+            })
+        }));
+        let events = session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap();
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::TurnInterrupted { .. }
+                | AgentSessionEvent::FinalPartsRecorded { .. }
+        )));
+        assert!(!event_notifier.streaming_deltas()[delta_start..]
+            .iter()
+            .any(|delta| delta.parts.iter().any(|part| {
+                matches!(part, MessagePart::Error { content, .. } if content == "CLI process exited")
+            })));
+        assert!(!event_notifier.state_changes()[state_start..]
+            .iter()
+            .any(|change| change.session_state == Some(SessionState::Error)));
+    }
+
+    #[tokio::test]
+    async fn crash_append_event_failure_rolls_back_without_live_error() {
+        assert_crash_persistence_failure_rolls_back(CrashPersistenceFailure::AppendEvent).await;
+    }
+
+    #[tokio::test]
+    async fn crash_persist_parts_failure_rolls_back_without_live_error() {
+        assert_crash_persistence_failure_rolls_back(CrashPersistenceFailure::PersistParts).await;
     }
 
     #[tokio::test]
@@ -9647,6 +10972,56 @@ mod tests {
                 .await,
             Some((0, false))
         );
+    }
+
+    #[tokio::test]
+    async fn crash終端snapshotはstreaming_emit完全停止後も回復したnotifierへ着地する() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        event_notifier.set_streaming_delta_failure(true);
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store,
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::PartsMerged(vec![DomainMessagePart::Text {
+                    content: "partial output".to_string(),
+                    parent_tool_use_id: None,
+                }]),
+            )
+            .unwrap();
+        wait_for_stream_emit_failure_state(&usecase, &session_id, |_, suppressed| suppressed).await;
+
+        event_notifier.set_streaming_delta_failure(false);
+        let delivered_before_crash = event_notifier.delivered_streaming_deltas().len();
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::Fatal {
+                    message: "CLI process exited".to_string(),
+                },
+            )
+            .unwrap();
+        wait_for_error_state_change(&event_notifier, &session_id).await;
+
+        let delivered = event_notifier.delivered_streaming_deltas();
+        assert!(delivered[delivered_before_crash..].iter().any(|delta| {
+            delta.snapshot
+                && delta.parts.iter().any(|part| {
+                    matches!(part, MessagePart::Error { content, .. } if content == "CLI process exited")
+                })
+        }));
     }
 
     #[tokio::test]

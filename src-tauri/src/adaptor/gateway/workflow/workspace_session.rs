@@ -32,6 +32,7 @@ impl StoredWorkspaceSessionGateway {
             id: session.id,
             worktree_path: session.worktree_path,
             state: workspace_session_state(session.state),
+            error_reason: session.error_reason,
             updated_at: session.updated_at,
             first_message: session.first_message,
             workflow_node_session: session.workflow_node_session,

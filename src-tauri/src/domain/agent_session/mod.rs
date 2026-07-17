@@ -9,6 +9,7 @@ pub(crate) use services::{
     normalize_path_components, replacement_action, snapshot_is_stale,
 };
 pub(crate) use storage::{
+    AgentSessionProjectedMessage, AgentSessionProjectionCommit, AgentSessionProjectionPreparer,
     AgentSessionReader, AgentSessionStorage, AgentSessionStorageTypes, AgentSessionWriter,
 };
 pub(crate) use value_objects::{

@@ -50,6 +50,7 @@ pub(crate) struct WorkspaceSessionInput {
     pub id: String,
     pub worktree_path: String,
     pub state: WorkspaceSessionState,
+    pub error_reason: Option<String>,
     pub updated_at: f64,
     pub first_message: String,
     /// Backend-only provenance used to keep closed workflow sessions available.
@@ -94,6 +95,8 @@ pub(crate) struct WorkspaceNodeDto {
     pub id: String,
     pub title: String,
     pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_reason: Option<String>,
     pub content_kind: &'static str,
     pub capabilities: WorkspaceNodeCapabilitiesDto,
     pub updated_at: f64,
@@ -142,6 +145,8 @@ pub(crate) struct WorkspaceNodeDetailDto {
     pub id: String,
     pub title: String,
     pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_reason: Option<String>,
     pub capabilities: WorkspaceNodeCapabilitiesDto,
     pub updated_at: f64,
     pub content: WorkspaceNodeContentDto,
@@ -614,6 +619,7 @@ fn project_direct_session(
         id: id.clone(),
         title: title.clone(),
         status: status.clone(),
+        error_reason: session.error_reason.clone(),
         content_kind: "session",
         capabilities: capabilities.clone(),
         updated_at: session.updated_at,
@@ -631,6 +637,7 @@ fn project_direct_session(
                     id,
                     title,
                     status,
+                    error_reason: session.error_reason,
                     capabilities,
                     updated_at: session.updated_at,
                     content: WorkspaceNodeContentDto::Session(WorkspaceSessionNodeContentDto {
@@ -1028,6 +1035,7 @@ fn project_workflow_node(
         id: id.clone(),
         title: title.to_string(),
         status: status_value.clone(),
+        error_reason: session.and_then(|session| session.error_reason.clone()),
         content_kind,
         capabilities: capabilities.clone(),
         updated_at,
@@ -1078,6 +1086,7 @@ fn project_workflow_node(
                     id,
                     title: title.to_string(),
                     status: status_value,
+                    error_reason: session.and_then(|session| session.error_reason.clone()),
                     capabilities,
                     updated_at,
                     content,
@@ -1543,6 +1552,7 @@ mod tests {
                 id: "workflow-session".to_string(),
                 worktree_path: "/repo".to_string(),
                 state: WorkspaceSessionState::Idle,
+                error_reason: None,
                 updated_at: 1.0,
                 first_message: String::new(),
                 workflow_node_session: true,
@@ -1562,6 +1572,7 @@ mod tests {
                     id: "session-secret-id".to_string(),
                     worktree_path: "/repo/".to_string(),
                     state: WorkspaceSessionState::Active,
+                    error_reason: None,
                     updated_at: 4.0,
                     first_message: "Investigate failure".to_string(),
                     workflow_node_session: false,
@@ -1571,6 +1582,7 @@ mod tests {
                     id: "foreign-session".to_string(),
                     worktree_path: "/repository".to_string(),
                     state: WorkspaceSessionState::Active,
+                    error_reason: None,
                     updated_at: 5.0,
                     first_message: "must not appear".to_string(),
                     workflow_node_session: false,
@@ -1617,6 +1629,7 @@ mod tests {
                 id: "session-to-close".to_string(),
                 worktree_path: "/repo".to_string(),
                 state: WorkspaceSessionState::Idle,
+                error_reason: None,
                 updated_at: 4.0,
                 first_message: "Close me".to_string(),
                 workflow_node_session: false,
@@ -1636,6 +1649,41 @@ mod tests {
                 .as_ref()
                 .map(|target| target.session_id.as_str()),
             Some("session-to-close")
+        );
+    }
+
+    #[test]
+    fn error_reason_is_exposed_on_direct_session_badges_and_detail() {
+        let node_id = opaque_node_id("session\0errored-session");
+        let projected = project_workspace_tree(
+            "/repo",
+            vec![WorkspaceSessionInput {
+                id: "errored-session".to_string(),
+                worktree_path: "/repo".to_string(),
+                state: WorkspaceSessionState::Error,
+                error_reason: Some("app server stopped".to_string()),
+                updated_at: 4.0,
+                first_message: "Errored session".to_string(),
+                workflow_node_session: false,
+                workflow_execution_id: None,
+            }],
+            Vec::new(),
+            HashMap::new(),
+            &[],
+            &WorkspaceProjectionTarget::Node(node_id.clone()),
+        );
+
+        let WorkspaceTreeItemDto::Node(node) = &projected.snapshot.nodes[0] else {
+            panic!("expected session node")
+        };
+        assert_eq!(node.status, "error");
+        assert_eq!(node.error_reason.as_deref(), Some("app server stopped"));
+        assert_eq!(
+            projected.index.records[&node_id]
+                .detail
+                .error_reason
+                .as_deref(),
+            Some("app server stopped")
         );
     }
 
@@ -2157,6 +2205,7 @@ mod tests {
                 id: "plan-session".to_string(),
                 worktree_path: "/repo".to_string(),
                 state: WorkspaceSessionState::Active,
+                error_reason: None,
                 updated_at: 5.0,
                 first_message: "body excluded".to_string(),
                 workflow_node_session: true,
@@ -2511,6 +2560,7 @@ mod tests {
             id: "stored-session".to_string(),
             worktree_path: "/repo/".to_string(),
             state: WorkspaceSessionState::Active,
+            error_reason: None,
             updated_at: 4.0,
             first_message: "stored body".to_string(),
             workflow_node_session: true,
@@ -2578,6 +2628,7 @@ mod tests {
                 id: "stored-session-1".to_string(),
                 worktree_path: "/repo".to_string(),
                 state: WorkspaceSessionState::Done,
+                error_reason: None,
                 updated_at: 3.0,
                 first_message: String::new(),
                 workflow_node_session: true,
@@ -2587,6 +2638,7 @@ mod tests {
                 id: "stored-session-2".to_string(),
                 worktree_path: "/repo".to_string(),
                 state: WorkspaceSessionState::Active,
+                error_reason: None,
                 updated_at: 4.0,
                 first_message: String::new(),
                 workflow_node_session: true,
@@ -2676,6 +2728,7 @@ mod tests {
             id: "stored-session".to_string(),
             worktree_path: "/repo".to_string(),
             state: WorkspaceSessionState::Active,
+            error_reason: None,
             updated_at: 4.0,
             first_message: String::new(),
             workflow_node_session: true,

@@ -52,7 +52,8 @@ describe("session paging", () => {
 					timestamp: 1001,
 				},
 			],
-			state: "active",
+			state: "error",
+			errorReason: "app server stopped",
 			createdAt: 1000,
 			updatedAt: 1000,
 			permissionMode: "edit",
@@ -90,6 +91,7 @@ describe("session paging", () => {
 				mentions: undefined,
 			},
 		]);
+		expect(response?.session.errorReason).toBe("app server stopped");
 		expect(response?.initialPage).toEqual({
 			nextCursor: "1",
 			hasMore: true,
