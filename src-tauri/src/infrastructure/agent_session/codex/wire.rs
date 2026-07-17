@@ -29,6 +29,8 @@
 //! - `thread/settings/update` accepted
 //!   `{ threadId, permissions: null, approvalPolicy, sandboxPolicy }`.
 
+use std::collections::HashMap;
+
 use serde_json::{json, Value};
 
 pub(crate) const METHOD_INITIALIZE: &str = "initialize";
@@ -76,6 +78,47 @@ pub(crate) enum AppServerMessageKind {
     Response { id: u64 },
     Request { id: u64, method: String },
     Notification { method: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExpectedClientResponse {
+    pub id: u64,
+    pub method: String,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct PendingClientRequests {
+    methods: HashMap<u64, String>,
+}
+
+impl PendingClientRequests {
+    pub(crate) fn register(&mut self, id: u64, method: impl Into<String>) {
+        self.methods.insert(id, method.into());
+    }
+
+    pub(crate) fn remove(&mut self, id: u64) {
+        self.methods.remove(&id);
+    }
+
+    pub(crate) fn take_response(
+        &mut self,
+        message: &Value,
+    ) -> Result<Option<ExpectedClientResponse>, String> {
+        let Some(AppServerMessageKind::Response { id }) = message_kind(message) else {
+            return Ok(None);
+        };
+        let Some(method) = self.methods.remove(&id) else {
+            return Ok(None);
+        };
+        let has_result = message.get("result").is_some();
+        let has_error = message.get("error").is_some();
+        if has_result == has_error {
+            return Err(format!(
+                "invalid Codex JSON-RPC response for {method}: expected exactly one of result or error"
+            ));
+        }
+        Ok(Some(ExpectedClientResponse { id, method }))
+    }
 }
 
 pub(crate) fn message_kind(message: &Value) -> Option<AppServerMessageKind> {
@@ -127,4 +170,53 @@ pub(crate) fn initialized_notification() -> Value {
 
 pub(crate) fn is_user_input_request_method(method: &str) -> bool {
     method == REQUEST_TOOL_USER_INPUT
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pending_client_requests_rejects_response_without_result_or_error() {
+        let mut pending = PendingClientRequests::default();
+        pending.register(2, METHOD_THREAD_START);
+
+        let result = pending.take_response(&json!({ "id": 2 }));
+
+        assert!(matches!(
+            result,
+            Err(message) if message.contains("expected exactly one of result or error")
+        ));
+    }
+
+    #[test]
+    fn pending_client_requests_rejects_response_with_result_and_error() {
+        let mut pending = PendingClientRequests::default();
+        pending.register(2, METHOD_THREAD_START);
+
+        let result = pending.take_response(&json!({
+            "id": 2,
+            "result": {},
+            "error": { "message": "ambiguous" }
+        }));
+
+        assert!(matches!(
+            result,
+            Err(message) if message.contains("expected exactly one of result or error")
+        ));
+    }
+
+    #[test]
+    fn pending_client_requests_returns_expected_request_metadata() {
+        let mut pending = PendingClientRequests::default();
+        pending.register(2, METHOD_THREAD_START);
+
+        let response = pending
+            .take_response(&json!({ "id": 2, "result": {} }))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(response.id, 2);
+        assert_eq!(response.method, METHOD_THREAD_START);
+    }
 }

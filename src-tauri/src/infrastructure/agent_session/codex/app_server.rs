@@ -2,10 +2,11 @@ use serde_json::Value;
 use std::process::Stdio;
 use std::sync::Arc;
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
+use crate::infrastructure::agent_session::stdout_line_reader::StdoutLineReader;
 use crate::infrastructure::process::child_env::AgentChildEnv;
 use crate::infrastructure::process::child_process::{configure_process_group, staged_shutdown};
 use crate::infrastructure::process::child_stderr::drain_child_stderr;
@@ -57,7 +58,7 @@ impl CodexAppServerHandle {
 
 pub(crate) struct CodexAppServerProcess {
     handle: CodexAppServerHandle,
-    stdout: Lines<BufReader<ChildStdout>>,
+    stdout: StdoutLineReader<BufReader<ChildStdout>>,
 }
 
 impl CodexAppServerProcess {
@@ -105,7 +106,7 @@ impl CodexAppServerProcess {
                 stdin: Arc::new(Mutex::new(Some(stdin))),
                 pid_registration,
             },
-            stdout: BufReader::new(stdout).lines(),
+            stdout: StdoutLineReader::new(BufReader::new(stdout)),
         })
     }
 
@@ -113,16 +114,8 @@ impl CodexAppServerProcess {
         self.handle.clone()
     }
 
-    pub(crate) async fn next_json(&mut self) -> Result<Option<Value>, String> {
-        let Some(line) = self
-            .stdout
-            .next_line()
-            .await
-            .map_err(|error| format!("failed to read codex app-server stdout: {error}"))?
-        else {
-            return Ok(None);
-        };
-        decode_jsonrpc_line(&line).map(Some)
+    pub(crate) fn stdout_mut(&mut self) -> &mut StdoutLineReader<BufReader<ChildStdout>> {
+        &mut self.stdout
     }
 
     pub(crate) async fn shutdown(self) {
@@ -136,20 +129,16 @@ pub(crate) fn encode_jsonl(message: &Value) -> Result<Vec<u8>, String> {
     Ok(line)
 }
 
-pub(crate) fn decode_jsonrpc_line(line: &str) -> Result<Value, String> {
-    serde_json::from_str::<Value>(line).map_err(|e| format!("invalid app-server JSON-RPC: {e}"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
 
     #[test]
-    fn test_jsonl_encode_decode() {
+    fn test_jsonl_encode() {
         let line = encode_jsonl(&json!({"id": 1, "result": {}})).unwrap();
         assert!(line.ends_with(b"\n"));
-        let decoded = decode_jsonrpc_line(std::str::from_utf8(&line).unwrap().trim()).unwrap();
+        let decoded = serde_json::from_slice::<Value>(&line).unwrap();
         assert_eq!(decoded["id"], 1);
     }
 
