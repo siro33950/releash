@@ -4797,7 +4797,13 @@ fn make_normal_node_exec_with_stall_observation() -> WorkflowExecution {
                     vec![Rule::Next("implement".to_string())],
                     None,
                 ),
-                make_test_node("implement", TestKind::Session, "implement", vec![], None),
+                make_test_node(
+                    "implement",
+                    TestKind::Session,
+                    "review-acceptance",
+                    vec![],
+                    None,
+                ),
             ],
         },
         state: RuntimeExecutionState::Running,
@@ -7106,7 +7112,11 @@ mod dispatch_boundary_tests {
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![make_approval_gated_session("review", "review", vec![])],
+            nodes: vec![make_approval_gated_session(
+                "review",
+                "review-acceptance",
+                vec![],
+            )],
         }
     }
 
@@ -7119,7 +7129,7 @@ mod dispatch_boundary_tests {
             nodes: vec![make_test_node(
                 "fix",
                 TestKind::Session,
-                "fix",
+                "review-acceptance",
                 vec![],
                 None,
             )],
@@ -7600,11 +7610,17 @@ mod dispatch_boundary_tests {
                             make_test_node(
                                 "plan",
                                 TestKind::Session,
-                                "implement",
+                                "review-acceptance",
                                 vec![Rule::Next("review".to_string())],
                                 None,
                             ),
-                            make_test_node("review", TestKind::Session, "implement", vec![], None),
+                            make_test_node(
+                                "review",
+                                TestKind::Session,
+                                "review-acceptance",
+                                vec![],
+                                None,
+                            ),
                         ],
                     },
                     timestamp: 100.0,
@@ -7836,11 +7852,17 @@ mod dispatch_boundary_tests {
                 make_test_node(
                     "prepare",
                     TestKind::Session,
-                    "implement",
+                    "review-acceptance",
                     vec![Rule::Next("execute".to_string())],
                     None,
                 ),
-                make_test_node("execute", TestKind::Session, "implement", vec![], None),
+                make_test_node(
+                    "execute",
+                    TestKind::Session,
+                    "review-acceptance",
+                    vec![],
+                    None,
+                ),
             ],
         };
         WorkflowExecution {
@@ -8121,7 +8143,7 @@ mod dispatch_boundary_tests {
                 make_test_node(
                     "fix",
                     TestKind::Session,
-                    "review-summary",
+                    "review-acceptance",
                     vec![Rule::Next("round".to_string())],
                     Some(Rule::LoopGuard {
                         max_iterations: 2,
@@ -8132,18 +8154,18 @@ mod dispatch_boundary_tests {
                 make_test_node(
                     "round",
                     TestKind::Session,
-                    "review-summary",
+                    "review-acceptance",
                     vec![Rule::Next("route".to_string())],
                     None,
                 ),
                 make_test_node(
                     "route",
                     TestKind::Session,
-                    "review-summary",
+                    "review-acceptance",
                     vec![Rule::Next("fix".to_string())],
                     None,
                 ),
-                make_test_node("done", TestKind::Session, "review-summary", vec![], None),
+                make_test_node("done", TestKind::Session, "review-acceptance", vec![], None),
             ],
         };
         let mut counts_at_reset = HashMap::from([("fix".to_string(), 2), ("round".to_string(), 1)]);
@@ -8585,7 +8607,13 @@ mod dispatch_boundary_tests {
                     vec![],
                     None,
                 ),
-                make_test_node("review-b", TestKind::Session, "implement", vec![], None),
+                make_test_node(
+                    "review-b",
+                    TestKind::Session,
+                    "review-acceptance",
+                    vec![],
+                    None,
+                ),
             ],
         };
         let parent_v1 = format!("{execution_id}-parent-1");
@@ -8976,8 +9004,13 @@ mod dispatch_boundary_tests {
         controller.pause_start_turn();
         let worktree = TempDir::new().unwrap();
         let worktree_path = worktree.path().to_string_lossy().to_string();
-        let mut review_node =
-            make_test_node("review", TestKind::Session, "implement", vec![], None);
+        let mut review_node = make_test_node(
+            "review",
+            TestKind::Session,
+            "review-acceptance",
+            vec![],
+            None,
+        );
         if let NodeKind::Session(session) = &mut review_node.kind {
             session.model = Some("claude-4-sonnet".to_string());
         }
@@ -9460,8 +9493,13 @@ mod dispatch_boundary_tests {
         controller.pause_start_turn();
         let worktree = TempDir::new().unwrap();
         let worktree_path = worktree.path().to_string_lossy().to_string();
-        let mut review_node =
-            make_test_node("review", TestKind::Session, "implement", vec![], None);
+        let mut review_node = make_test_node(
+            "review",
+            TestKind::Session,
+            "review-acceptance",
+            vec![],
+            None,
+        );
         if let NodeKind::Session(session) = &mut review_node.kind {
             session.model = Some("claude-4-sonnet".to_string());
         }
@@ -9591,8 +9629,13 @@ mod dispatch_boundary_tests {
         controller.pause_start_turn();
         let worktree = TempDir::new().unwrap();
         let worktree_path = worktree.path().to_string_lossy().to_string();
-        let mut review_node =
-            make_test_node("review", TestKind::Session, "implement", vec![], None);
+        let mut review_node = make_test_node(
+            "review",
+            TestKind::Session,
+            "review-acceptance",
+            vec![],
+            None,
+        );
         if let NodeKind::Session(session) = &mut review_node.kind {
             session.model = Some("claude-4-sonnet".to_string());
         }
@@ -9704,7 +9747,7 @@ mod dispatch_boundary_tests {
             nodes: vec![make_test_node(
                 "review",
                 TestKind::Session,
-                "implement",
+                "review-acceptance",
                 vec![],
                 None,
             )],
@@ -10365,7 +10408,7 @@ mod dispatch_boundary_tests {
                     // integration isolates engine behavior from the user's facet inventory by
                     // resolving every stub session through one installed test instruction.
                     session.facets = FacetRefs {
-                        instruction: Some("implement".to_string()),
+                        instruction: Some("review-acceptance".to_string()),
                         ..Default::default()
                     };
                 }
@@ -14121,14 +14164,14 @@ mod dispatch_boundary_tests {
                 make_fanout_child("worker"),
                 make_approval_gated_session(
                     "fix",
-                    "review-summary",
+                    "review-acceptance",
                     vec![Rule::LoopGuard {
                         max_iterations: 2,
                         on_exhausted: "done".to_string(),
                         reset_on: Some(reset_on.to_string()),
                     }],
                 ),
-                make_approval_gated_session("done", "review-summary", vec![]),
+                make_approval_gated_session("done", "review-acceptance", vec![]),
             ],
         };
         let mut execution = make_waiting_approval_execution_with_workflow(
@@ -14384,14 +14427,14 @@ mod dispatch_boundary_tests {
                 child,
                 make_approval_gated_session(
                     "fix",
-                    "review-summary",
+                    "review-acceptance",
                     vec![Rule::LoopGuard {
                         max_iterations: 2,
                         on_exhausted: "done".to_string(),
                         reset_on: Some("worker".to_string()),
                     }],
                 ),
-                make_approval_gated_session("done", "review-summary", vec![]),
+                make_approval_gated_session("done", "review-acceptance", vec![]),
             ],
         }
     }
@@ -14521,7 +14564,7 @@ mod dispatch_boundary_tests {
         let second_session_id = "fanout-approval-reset-session-1";
         let workflow = fanout_child_completion_reset_workflow(
             "fanout-approval-reset-parity",
-            make_approval_gated_session("worker", "review-summary", vec![]),
+            make_approval_gated_session("worker", "review-acceptance", vec![]),
         );
         let mut execution =
             make_waiting_approval_execution_with_workflow(&execution_id, worktree_path, workflow);
@@ -16505,7 +16548,7 @@ mod dispatch_boundary_tests {
                         nodes: vec![make_test_node(
                             "plan",
                             TestKind::Session,
-                            "implement",
+                            "review-acceptance",
                             vec![],
                             None,
                         )],
@@ -19548,7 +19591,7 @@ mod dispatch_boundary_tests {
             nodes: vec![
                 fanout,
                 child,
-                make_approval_gated_session("after-empty", "review-summary", vec![]),
+                make_approval_gated_session("after-empty", "review-acceptance", vec![]),
             ],
         };
         engine
@@ -19660,8 +19703,8 @@ mod dispatch_boundary_tests {
             nodes: vec![
                 fanout,
                 child,
-                make_approval_gated_session("child-next", "review-summary", vec![]),
-                make_approval_gated_session("parent-next", "review-summary", vec![]),
+                make_approval_gated_session("child-next", "review-acceptance", vec![]),
+                make_approval_gated_session("parent-next", "review-acceptance", vec![]),
             ],
         };
         let mut execution =

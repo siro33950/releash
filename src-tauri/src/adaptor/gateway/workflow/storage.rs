@@ -429,7 +429,7 @@ mod tests {
                 kind: NodeKind::Session(SessionSpec {
                     permission: Some("edit".to_string()),
                     facets: FacetRefs {
-                        instruction: Some("implement".to_string()),
+                        instruction: Some("review-acceptance".to_string()),
                         ..Default::default()
                     },
                     ..Default::default()

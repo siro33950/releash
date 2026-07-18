@@ -620,8 +620,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
         let keys = list_facets(FacetKind::Knowledge, tmp.path()).unwrap();
-        // custom: architecture + builtin: releash-thread-cli (BTreeSet で sort 済み)
-        assert_eq!(keys, vec!["architecture", "releash-thread-cli"]);
+        let mut expected = builtin::list_builtin_facet_keys(FacetKind::Knowledge)
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        expected.push("architecture".to_string());
+        expected.sort();
+        expected.dedup();
+        assert_eq!(keys, expected);
     }
 
     #[test]
@@ -630,7 +636,12 @@ mod tests {
         fs::create_dir_all(tmp.path().join("knowledge")).unwrap();
         let keys = list_facets(FacetKind::Knowledge, tmp.path()).unwrap();
         // custom dir は空でも builtin Knowledge facets は含まれる
-        assert_eq!(keys, vec!["releash-thread-cli"]);
+        let mut expected = builtin::list_builtin_facet_keys(FacetKind::Knowledge)
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        expected.sort();
+        assert_eq!(keys, expected);
     }
 
     #[test]
@@ -638,7 +649,12 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let keys = list_facets(FacetKind::Knowledge, tmp.path()).unwrap();
         // custom dir が存在しなくても builtin Knowledge facets は含まれる
-        assert_eq!(keys, vec!["releash-thread-cli"]);
+        let mut expected = builtin::list_builtin_facet_keys(FacetKind::Knowledge)
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        expected.sort();
+        assert_eq!(keys, expected);
     }
 
     // `resolve_node_facets` はモジュール直下の `#[cfg(test)] pub(crate)` ヘルパーを
