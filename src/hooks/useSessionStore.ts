@@ -18,6 +18,7 @@ import {
 	type SessionSummary,
 	type SessionToolOutput,
 	type TokenUsage,
+	type TurnInterruption,
 	type TurnPhase,
 } from "@/types/session";
 
@@ -261,6 +262,7 @@ interface RawGetSessionResponse {
 	latestTokenUsage?: TokenUsage | null;
 	workflowNodeSession?: boolean;
 	turnPhase: TurnPhase;
+	lastTurnInterruption?: TurnInterruption | null;
 	initialPage?: {
 		nextCursor?: string | null;
 		hasMore: boolean;
@@ -272,22 +274,25 @@ function convertRawGetSessionResponse(
 	raw: RawGetSessionResponse,
 ): GetSessionResponse {
 	return {
-		session: convertLegacySession({
-			id: raw.id,
-			worktreePath: raw.worktreePath,
-			messages: raw.messages,
-			state: raw.state,
-			errorReason: raw.errorReason,
-			createdAt: raw.createdAt,
-			updatedAt: raw.updatedAt,
-			agentSessionId: raw.agentSessionId,
-			contextCarry: raw.contextCarry,
-			permissionMode: raw.permissionMode,
-			planMode: raw.planMode,
-			permissionProfileId: raw.permissionProfileId,
-			backendId: raw.backendId,
-			workflowNodeSession: raw.workflowNodeSession,
-		}),
+		session: {
+			...convertLegacySession({
+				id: raw.id,
+				worktreePath: raw.worktreePath,
+				messages: raw.messages,
+				state: raw.state,
+				errorReason: raw.errorReason,
+				createdAt: raw.createdAt,
+				updatedAt: raw.updatedAt,
+				agentSessionId: raw.agentSessionId,
+				contextCarry: raw.contextCarry,
+				permissionMode: raw.permissionMode,
+				planMode: raw.planMode,
+				permissionProfileId: raw.permissionProfileId,
+				backendId: raw.backendId,
+				workflowNodeSession: raw.workflowNodeSession,
+			}),
+			lastTurnInterruption: raw.lastTurnInterruption ?? null,
+		},
 		turnPhase: raw.turnPhase,
 		selectedModel: raw.selectedModel,
 		availableModels: raw.availableModels ?? [],

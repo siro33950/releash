@@ -31,6 +31,7 @@ pub enum InterruptReason {
     // Stale watchdog no longer synthesizes timeout interrupts, but the domain boundary keeps the explicit backend/tool timeout vocabulary.
     Timeout,
     Crash,
+    SessionClosed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

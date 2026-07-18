@@ -1,4 +1,3 @@
-use std::future::Future;
 use std::sync::Arc;
 
 use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
@@ -29,42 +28,22 @@ pub(crate) fn resolve_node_session_with_data_dir(
     }))
 }
 
-pub(crate) async fn close_idle_node_runtime_state<F, Fut>(
+pub(crate) async fn close_idle_node_runtime_state(
     runtime: &AgentSessionRuntimeUsecase,
     session_id: &str,
-    close_runtime: F,
-) -> Result<(), NodeExecutionLifecycleError>
-where
-    F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<(), NodeExecutionLifecycleError>>,
-{
-    if should_release_runtime_on_tab_close(runtime, session_id).await {
-        close_runtime().await?;
-    }
-    Ok(())
-}
-
-pub(crate) async fn should_release_runtime_on_tab_close(
-    runtime: &AgentSessionRuntimeUsecase,
-    session_id: &str,
-) -> bool {
-    runtime.has_live_runtime(session_id).await && !runtime.is_runtime_busy(session_id).await
+) -> Result<(), NodeExecutionLifecycleError> {
+    runtime
+        .close_session_if_idle(session_id)
+        .await
+        .map(|_| ())
+        .map_err(|e| NodeExecutionLifecycleError::AgentSession(e.to_string()))
 }
 
 async fn close_idle_node_runtime_with_session_lock(
     runtime: &AgentSessionRuntimeUsecase,
     session_id: &str,
 ) -> Result<(), NodeExecutionLifecycleError> {
-    let _lifecycle_guard = runtime
-        .acquire_session_control_after_recovery(session_id)
-        .await;
-    close_idle_node_runtime_state(runtime, session_id, || async {
-        runtime
-            .force_close_session(session_id)
-            .await
-            .map_err(|error| NodeExecutionLifecycleError::AgentSession(error.to_string()))
-    })
-    .await
+    close_idle_node_runtime_state(runtime, session_id).await
 }
 
 pub(crate) fn open_node_session_tab_state(
@@ -144,13 +123,12 @@ pub(crate) fn try_close_node_session_tab_state(
     Ok(true)
 }
 
-struct TauriNodeExecutionRuntimeGateway<'a, R: tauri::Runtime> {
-    app: &'a tauri::AppHandle<R>,
+struct TauriNodeExecutionRuntimeGateway<'a> {
     runtime: &'a AgentSessionRuntimeUsecase,
 }
 
 #[async_trait::async_trait]
-impl<R: tauri::Runtime> NodeExecutionRuntimeGateway for TauriNodeExecutionRuntimeGateway<'_, R> {
+impl NodeExecutionRuntimeGateway for TauriNodeExecutionRuntimeGateway<'_> {
     async fn close_idle_runtime_on_tab_close(
         &self,
         session_id: &str,
@@ -162,7 +140,6 @@ impl<R: tauri::Runtime> NodeExecutionRuntimeGateway for TauriNodeExecutionRuntim
         &self,
         session_id: &str,
     ) -> Result<(), NodeExecutionLifecycleError> {
-        let _ = self.app;
         self.runtime
             .force_close_session(session_id)
             .await
@@ -253,18 +230,14 @@ pub(crate) fn mark_started_node_tab_open(open_tabs: &OpenTabRegistry, session_id
     open_tabs.add(session_id);
 }
 
-pub(crate) async fn release_node_runtime_on_done<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    session_store: &Arc<SessionStore>,
+pub(crate) async fn release_node_runtime_on_done(
     runtime: &Arc<AgentSessionRuntimeUsecase>,
     session_id: &str,
 ) {
     let runtime_gateway = TauriNodeExecutionRuntimeGateway {
-        app,
         runtime: runtime.as_ref(),
     };
     release_node_runtime_on_done_with_gateways(&runtime_gateway, session_id).await;
-    let _ = (app, session_store);
 }
 
 #[cfg(test)]
@@ -487,7 +460,11 @@ mod tests {
         let handles = runtime_for_test();
         insert_runtime(&handles, "node", TurnPhase::Idle, false).await;
 
-        assert!(should_release_runtime_on_tab_close(&handles, "node").await);
+        close_idle_node_runtime_state(&handles, "node")
+            .await
+            .unwrap();
+
+        assert!(!handles.has_live_runtime("node").await);
     }
 
     #[tokio::test]
@@ -510,15 +487,24 @@ mod tests {
     async fn tab_close_runtime_policy_keeps_busy_runtime() {
         let handles = runtime_for_test();
         insert_runtime(&handles, "node", TurnPhase::Streaming, false).await;
-        assert!(!should_release_runtime_on_tab_close(&handles, "node").await);
+        close_idle_node_runtime_state(&handles, "node")
+            .await
+            .unwrap();
+        assert!(handles.has_live_runtime("node").await);
 
-        handles.close_session("node").await.unwrap();
+        handles.force_close_session("node").await.unwrap();
         insert_runtime(&handles, "node", TurnPhase::WaitingPermission, false).await;
-        assert!(!should_release_runtime_on_tab_close(&handles, "node").await);
+        close_idle_node_runtime_state(&handles, "node")
+            .await
+            .unwrap();
+        assert!(handles.has_live_runtime("node").await);
 
-        handles.close_session("node").await.unwrap();
+        handles.force_close_session("node").await.unwrap();
         insert_runtime(&handles, "node", TurnPhase::Idle, true).await;
-        assert!(!should_release_runtime_on_tab_close(&handles, "node").await);
+        close_idle_node_runtime_state(&handles, "node")
+            .await
+            .unwrap();
+        assert!(handles.has_live_runtime("node").await);
     }
 
     #[tokio::test]

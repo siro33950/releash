@@ -270,6 +270,8 @@ mod tests {
                 workflow_instructions: Vec::new(),
                 agent_read_paths: None,
                 context_epoch: None,
+                last_turn_interruption: None,
+                last_turn_id: Some(0),
                 first_message_preview: "Implementation is done.".to_string(),
                 message_count: 200,
                 body_format_version: SESSION_BODY_FORMAT_VERSION,

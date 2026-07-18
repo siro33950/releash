@@ -1,26 +1,35 @@
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-#[async_trait::async_trait]
-trait AgentSessionShutdown {
-    async fn close_all(&self);
-}
+use crate::usecase::application_lifecycle::{
+    AgentSessionShutdownPort, ApplicationLifecycleError, ApplicationLifecycleUsecase,
+    LocalApiShutdownPort, WorkflowCommandShutdownPort,
+};
 
 #[async_trait::async_trait]
-impl AgentSessionShutdown for crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase {
-    async fn close_all(&self) {
-        crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase::close_all(self).await;
+impl AgentSessionShutdownPort
+    for crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase
+{
+    async fn close_all(&self) -> Result<(), ApplicationLifecycleError> {
+        crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase::close_all(self)
+            .await
+            .map_err(|error| ApplicationLifecycleError::AgentSessionShutdown(error.to_string()))
     }
 }
 
 #[async_trait::async_trait]
-trait WorkflowCommandShutdown {
-    async fn shutdown_active_commands(&self);
-}
-
-#[async_trait::async_trait]
-impl WorkflowCommandShutdown for crate::usecase::workflow::WorkflowRuntimeUsecase {
+impl WorkflowCommandShutdownPort for crate::usecase::workflow::WorkflowRuntimeUsecase {
     async fn shutdown_active_commands(&self) {
         crate::usecase::workflow::WorkflowRuntimeUsecase::shutdown_active_commands(self).await;
+    }
+}
+
+impl<F> LocalApiShutdownPort for F
+where
+    F: Fn() + Send + Sync,
+{
+    fn shutdown(&self) {
+        self();
     }
 }
 
@@ -30,67 +39,80 @@ pub(crate) fn request_application_quit_with_runtime<F>(
     workflow_runtime: Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>,
     shutdown_local_api: F,
 ) where
-    F: FnOnce() + Send + 'static,
+    F: Fn() + Send + Sync + 'static,
 {
     tauri::async_runtime::spawn(async move {
-        shutdown_local_api();
-        shutdown_application_services(workflow_runtime.as_ref(), runtime.as_ref()).await;
-        app.exit(0);
+        let lifecycle = ApplicationLifecycleUsecase::new(
+            runtime.as_ref(),
+            workflow_runtime.as_ref(),
+            &shutdown_local_api,
+        );
+        shutdown_application(&lifecycle, || app.exit(0)).await;
     });
 }
 
-async fn shutdown_application_services<W, A>(workflow_runtime: &W, runtime: &A)
-where
-    W: WorkflowCommandShutdown + Sync,
-    A: AgentSessionShutdown + Sync,
+async fn shutdown_application<A, W, L, F>(
+    lifecycle: &ApplicationLifecycleUsecase<'_, A, W, L>,
+    exit: F,
+) where
+    A: AgentSessionShutdownPort,
+    W: WorkflowCommandShutdownPort,
+    L: LocalApiShutdownPort,
+    F: FnOnce(),
 {
-    workflow_runtime.shutdown_active_commands().await;
-    // Kill all agent sessions before stopping the server.
-    runtime.close_all().await;
+    match lifecycle.shutdown().await {
+        Ok(()) => exit(),
+        Err(error) => {
+            crate::infrastructure::platform::tray::QUIT_REQUESTED.store(false, Ordering::SeqCst);
+            log::error!("application shutdown aborted: {error}");
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use tokio::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::*;
 
-    #[derive(Clone)]
-    struct RecordingShutdown {
-        calls: Arc<Mutex<Vec<&'static str>>>,
-    }
+    struct FailingShutdown;
 
     #[async_trait::async_trait]
-    impl WorkflowCommandShutdown for RecordingShutdown {
-        async fn shutdown_active_commands(&self) {
-            self.calls.lock().await.push("shutdown_active_commands");
+    impl AgentSessionShutdownPort for FailingShutdown {
+        async fn close_all(&self) -> Result<(), ApplicationLifecycleError> {
+            Err(ApplicationLifecycleError::AgentSessionShutdown(
+                "injected shutdown failure".to_string(),
+            ))
         }
     }
 
     #[async_trait::async_trait]
-    impl AgentSessionShutdown for RecordingShutdown {
-        async fn close_all(&self) {
-            self.calls.lock().await.push("close_all");
-        }
+    impl WorkflowCommandShutdownPort for FailingShutdown {
+        async fn shutdown_active_commands(&self) {}
+    }
+
+    impl LocalApiShutdownPort for FailingShutdown {
+        fn shutdown(&self) {}
     }
 
     #[tokio::test]
-    async fn application_quit_shuts_down_workflow_commands_before_agent_sessions() {
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let workflow_runtime = RecordingShutdown {
-            calls: calls.clone(),
-        };
-        let runtime = RecordingShutdown {
-            calls: calls.clone(),
-        };
+    async fn shutdown_failure_restores_exit_protection_and_allows_tray_retry() {
+        let shutdown = FailingShutdown;
+        let lifecycle = ApplicationLifecycleUsecase::new(&shutdown, &shutdown, &shutdown);
+        let exited = AtomicBool::new(false);
+        let _guard = crate::infrastructure::platform::tray::QUIT_REQUESTED_TEST_LOCK
+            .lock()
+            .unwrap();
+        crate::infrastructure::platform::tray::mark_quit_requested();
 
-        shutdown_application_services(&workflow_runtime, &runtime).await;
+        shutdown_application(&lifecycle, || exited.store(true, Ordering::SeqCst)).await;
 
-        assert_eq!(
-            calls.lock().await.as_slice(),
-            ["shutdown_active_commands", "close_all"]
-        );
+        assert!(!exited.load(Ordering::SeqCst));
+        assert!(!crate::infrastructure::platform::tray::QUIT_REQUESTED.load(Ordering::SeqCst));
+        assert!(crate::infrastructure::platform::window_lifecycle::should_prevent_exit());
+
+        crate::infrastructure::platform::tray::mark_quit_requested();
+        assert!(!crate::infrastructure::platform::window_lifecycle::should_prevent_exit());
+        crate::infrastructure::platform::tray::QUIT_REQUESTED.store(false, Ordering::SeqCst);
     }
 }

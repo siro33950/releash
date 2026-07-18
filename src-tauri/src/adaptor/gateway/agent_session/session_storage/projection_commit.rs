@@ -1,8 +1,10 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use super::layout::{
-    event_log_file_in_dir, index_file_in_dir, meta_file_in_dir, private_context_file_in_dir,
-    session_dir, write_binary_atomic, write_json_pretty_atomic,
+    event_batches_dir_in_dir, event_log_file_in_dir, event_tail_file_in_dir, index_file_in_dir,
+    meta_file_in_dir, private_context_file_in_dir, session_dir, write_binary_atomic,
+    write_json_pretty_atomic,
 };
 use super::private_context::write_private_context_to_dir;
 use super::FileSessionStorage;
@@ -54,6 +56,74 @@ impl FileSnapshot {
     }
 }
 
+struct EventLogSnapshot {
+    files: Vec<FileSnapshot>,
+    batch_paths: HashSet<PathBuf>,
+    batches_dir_existed: bool,
+}
+
+impl EventLogSnapshot {
+    fn capture(storage: &FileSessionStorage, dir: &Path) -> Result<Self, String> {
+        let files = [event_log_file_in_dir(dir), event_tail_file_in_dir(dir)]
+            .into_iter()
+            .map(FileSnapshot::capture)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            files,
+            batch_paths: storage
+                .committed_event_batch_paths(dir)?
+                .into_iter()
+                .collect(),
+            batches_dir_existed: event_batches_dir_in_dir(dir).exists(),
+        })
+    }
+
+    fn restore(&self, storage: &FileSessionStorage, dir: &Path) -> Result<(), String> {
+        let mut errors = Vec::new();
+        let current_batch_paths = match storage.committed_event_batch_paths(dir) {
+            Ok(paths) => paths,
+            Err(error) => {
+                errors.push(error);
+                Vec::new()
+            }
+        };
+        errors.extend(
+            current_batch_paths
+                .into_iter()
+                .filter(|path| !self.batch_paths.contains(path))
+                .filter_map(|path| {
+                    std::fs::remove_file(&path).err().map(|error| {
+                        format!(
+                            "Failed to remove rolled-back session event batch {}: {error}",
+                            path.display()
+                        )
+                    })
+                }),
+        );
+        errors.extend(
+            self.files
+                .iter()
+                .filter_map(|snapshot| snapshot.restore().err()),
+        );
+        if !self.batches_dir_existed {
+            let batches_dir = event_batches_dir_in_dir(dir);
+            if let Err(error) = std::fs::remove_dir(&batches_dir) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    errors.push(format!(
+                        "Failed to remove rolled-back session event batch dir {}: {error}",
+                        batches_dir.display()
+                    ));
+                }
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
+    }
+}
+
 impl FileSessionStorage {
     pub fn commit_session_projection(
         &self,
@@ -96,8 +166,8 @@ impl FileSessionStorage {
                 Self::message_path_for_persist(&dir, &index, session_id, message_id)?
             }
         };
+        let event_log_snapshot = EventLogSnapshot::capture(self, &dir)?;
         let snapshots = [
-            event_log_file_in_dir(&dir),
             message_path.clone(),
             index_file_in_dir(&dir),
             meta_file_in_dir(&dir),
@@ -109,9 +179,7 @@ impl FileSessionStorage {
 
         let mut recovered_event_log = false;
         let commit = (|| {
-            for event in events {
-                recovered_event_log |= self.append_session_event_to_dir(&dir, event)?.recovered;
-            }
+            recovered_event_log = self.append_session_events_to_dir(&dir, events)?.recovered;
             self.run_projection_commit_hook(ProjectionCommitStage::Events)?;
 
             let (meta, persisted_parts) = match prepared.message {
@@ -152,11 +220,14 @@ impl FileSessionStorage {
                 Ok(parts)
             }
             Err(error) => {
-                let restore_errors = snapshots
+                let mut restore_errors = snapshots
                     .iter()
                     .rev()
                     .filter_map(|snapshot| snapshot.restore().err())
                     .collect::<Vec<_>>();
+                if let Err(restore_error) = event_log_snapshot.restore(self, &dir) {
+                    restore_errors.push(restore_error);
+                }
                 if restore_errors.is_empty() {
                     Err(error)
                 } else {

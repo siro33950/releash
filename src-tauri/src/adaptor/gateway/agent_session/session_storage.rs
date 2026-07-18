@@ -57,6 +57,10 @@ pub struct FileSessionStorage {
     transaction_apply_hook: RwLock<Option<transaction::TransactionApplyHook>>,
     #[cfg(test)]
     pub(super) projection_commit_hook: RwLock<Option<ProjectionCommitHook>>,
+    #[cfg(test)]
+    pub(super) event_read_count: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    pub(super) event_batch_directory_scan_count: std::sync::atomic::AtomicUsize,
 }
 
 impl Default for FileSessionStorage {
@@ -76,6 +80,10 @@ impl Default for FileSessionStorage {
             transaction_apply_hook: RwLock::new(None),
             #[cfg(test)]
             projection_commit_hook: RwLock::new(None),
+            #[cfg(test)]
+            event_read_count: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            event_batch_directory_scan_count: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 }

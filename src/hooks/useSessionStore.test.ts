@@ -74,6 +74,10 @@ describe("session paging", () => {
 			},
 			pendingPermissionStateRevision: 4,
 			latestTokenUsage: { inputTokens: 1, outputTokens: 2 },
+			lastTurnInterruption: {
+				messageId: "agent-1",
+				reason: "session_closed",
+			},
 		});
 
 		const response = await getSession("s1");
@@ -108,6 +112,10 @@ describe("session paging", () => {
 		expect(response?.latestTokenUsage).toEqual({
 			inputTokens: 1,
 			outputTokens: 2,
+		});
+		expect(response?.session.lastTurnInterruption).toEqual({
+			messageId: "agent-1",
+			reason: "session_closed",
 		});
 	});
 

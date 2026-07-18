@@ -1,6 +1,7 @@
 pub(crate) mod agent_session;
 pub(crate) mod app_config;
 pub(crate) mod app_data_gc;
+pub(crate) mod application_lifecycle;
 pub(crate) mod code_dto;
 pub(crate) mod code_error;
 pub(crate) mod code_query_service;

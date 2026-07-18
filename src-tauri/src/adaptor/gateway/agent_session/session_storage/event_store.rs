@@ -1,7 +1,10 @@
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
-use super::layout::{event_log_file_in_dir, session_dir, write_json_pretty_atomic_durable};
+use super::layout::{
+    event_batches_dir_in_dir, event_log_file_in_dir, event_tail_file_in_dir, session_dir,
+    write_json_pretty_atomic, write_json_pretty_atomic_durable,
+};
 use super::transaction::TransactionApplyError;
 use super::FileSessionStorage;
 use crate::usecase::agent_session::event_log::AgentSessionEvent;
@@ -20,6 +23,7 @@ impl FileSessionStorage {
         if !self.reconcile_session_transaction(app_data_dir, session_id)? {
             return Err(format!("Session not found: {session_id}"));
         }
+        let _lock = self.file_lock.lock();
         let dir = session_dir(app_data_dir, session_id)?;
         self.read_session_events_from_dir(&dir)
     }
@@ -41,6 +45,29 @@ impl FileSessionStorage {
             self.record_event_log_recovery(session_id);
         }
         self.read_session_events_from_dir(&dir)
+    }
+
+    #[cfg(test)]
+    pub fn append_session_events(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        new_events: &[AgentSessionEvent],
+    ) -> Result<(), String> {
+        self.ensure_loaded(app_data_dir)?;
+        if let Some(err) = self.invalid_sessions.read().get(session_id) {
+            return Err(err.clone());
+        }
+        if !self.cache.read().contains_key(session_id) {
+            return Err(format!("Session not found: {session_id}"));
+        }
+        let _lock = self.file_lock.lock();
+        let dir = session_dir(app_data_dir, session_id)?;
+        let outcome = self.append_session_events_to_dir(&dir, new_events)?;
+        if outcome.recovered {
+            self.record_event_log_recovery(session_id);
+        }
+        Ok(())
     }
 
     pub fn append_session_event_without_projection(
@@ -75,35 +102,87 @@ impl FileSessionStorage {
         &self,
         dir: &Path,
     ) -> Result<Vec<AgentSessionEvent>, String> {
+        #[cfg(test)]
+        self.event_read_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let path = event_log_file_in_dir(dir);
-        match std::fs::read_to_string(&path) {
+        let mut events = match std::fs::read_to_string(&path) {
             Ok(content) => parse_session_events_content(&content),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
             Err(e) => Err(format!("Failed to read session event log: {e}")),
+        }?;
+        for batch_path in self.committed_event_batch_paths(dir)? {
+            let content = std::fs::read_to_string(&batch_path)
+                .map_err(|e| format!("Failed to read session event batch: {e}"))?;
+            let mut batch = serde_json::from_str::<Vec<AgentSessionEvent>>(&content)
+                .map_err(|e| format!("Failed to parse session event batch: {e}"))?;
+            events.append(&mut batch);
         }
+        let tail_path = event_tail_file_in_dir(dir);
+        match std::fs::read_to_string(&tail_path) {
+            Ok(content) => events.extend(parse_session_events_content(&content)?),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("Failed to read session event tail: {error}")),
+        }
+        Ok(events)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reset_event_read_count(&self) {
+        self.event_read_count
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn event_read_count(&self) -> usize {
+        self.event_read_count
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reset_event_batch_directory_scan_count(&self) {
+        self.event_batch_directory_scan_count
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn event_batch_directory_scan_count(&self) -> usize {
+        self.event_batch_directory_scan_count
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub(super) fn canonicalize_session_events_from_dir(
         &self,
         dir: &Path,
     ) -> Result<Vec<AgentSessionEvent>, TransactionApplyError> {
-        let path = event_log_file_in_dir(dir);
-        let content = match std::fs::read_to_string(&path) {
-            Ok(content) => content,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => {
-                return Err(TransactionApplyError::retryable(format!(
-                    "Failed to read session event log: {error}"
-                )))
-            }
-        };
-        let events =
-            parse_session_events_content(&content).map_err(TransactionApplyError::corrupt)?;
-        if serde_json::from_str::<Vec<AgentSessionEvent>>(&content).is_err() {
-            write_json_pretty_atomic_durable(&path, &events, "session event log")
-                .map_err(TransactionApplyError::retryable)?;
+        let mut events = canonicalize_event_array(&event_log_file_in_dir(dir))?;
+        for batch_path in self
+            .committed_event_batch_paths(dir)
+            .map_err(TransactionApplyError::retryable)?
+        {
+            let content = std::fs::read_to_string(&batch_path).map_err(|error| {
+                TransactionApplyError::retryable(format!(
+                    "Failed to read session event batch: {error}"
+                ))
+            })?;
+            let mut batch =
+                serde_json::from_str::<Vec<AgentSessionEvent>>(&content).map_err(|error| {
+                    TransactionApplyError::corrupt(format!(
+                        "Failed to parse session event batch: {error}"
+                    ))
+                })?;
+            events.append(&mut batch);
         }
+        events.extend(canonicalize_event_array(&event_tail_file_in_dir(dir))?);
         Ok(events)
+    }
+
+    pub(super) fn event_append_file_in_dir(dir: &Path) -> std::path::PathBuf {
+        if event_batches_dir_in_dir(dir).exists() || event_tail_file_in_dir(dir).exists() {
+            event_tail_file_in_dir(dir)
+        } else {
+            event_log_file_in_dir(dir)
+        }
     }
 
     pub(super) fn append_session_event_to_dir(
@@ -111,7 +190,80 @@ impl FileSessionStorage {
         dir: &Path,
         event: &AgentSessionEvent,
     ) -> Result<AppendOutcome, String> {
+        if event_batches_dir_in_dir(dir).exists() || event_tail_file_in_dir(dir).exists() {
+            let legacy_outcome = self.repair_event_array_if_needed(&event_log_file_in_dir(dir))?;
+            let tail_outcome = self.append_event_to_array(&event_tail_file_in_dir(dir), event)?;
+            Ok(AppendOutcome {
+                recovered: legacy_outcome.recovered || tail_outcome.recovered,
+            })
+        } else {
+            self.append_event_to_legacy_array(dir, event)
+        }
+    }
+
+    pub(super) fn append_session_events_to_dir(
+        &self,
+        dir: &Path,
+        events: &[AgentSessionEvent],
+    ) -> Result<AppendOutcome, String> {
+        let legacy_outcome = self.repair_event_array_if_needed(&event_log_file_in_dir(dir))?;
+        let tail_outcome = self.repair_event_array_if_needed(&event_tail_file_in_dir(dir))?;
+        self.publish_event_batch_to_dir(dir, events)?;
+        Ok(AppendOutcome {
+            recovered: legacy_outcome.recovered || tail_outcome.recovered,
+        })
+    }
+
+    fn publish_event_batch_to_dir(
+        &self,
+        dir: &Path,
+        events: &[AgentSessionEvent],
+    ) -> Result<(), String> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        let batches_dir = event_batches_dir_in_dir(dir);
+        std::fs::create_dir_all(&batches_dir)
+            .map_err(|e| format!("Failed to create session event batch dir: {e}"))?;
+        let mut next_sequence = self
+            .committed_event_batch_paths(dir)?
+            .iter()
+            .filter_map(|path| {
+                path.file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .and_then(|stem| stem.parse::<u64>().ok())
+            })
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| "Failed to allocate session event batch sequence".to_string())?;
+        let tail_path = event_tail_file_in_dir(dir);
+        if tail_path.exists() {
+            let rotated_tail_path = batches_dir.join(format!("{next_sequence:020}.json"));
+            std::fs::rename(&tail_path, &rotated_tail_path)
+                .map_err(|e| format!("Failed to rotate session event tail: {e}"))?;
+            next_sequence = next_sequence
+                .checked_add(1)
+                .ok_or_else(|| "Failed to allocate session event batch sequence".to_string())?;
+        }
+        let path = batches_dir.join(format!("{next_sequence:020}.json"));
+        write_json_pretty_atomic(&path, &events, "session event batch")
+    }
+
+    fn append_event_to_legacy_array(
+        &self,
+        dir: &Path,
+        event: &AgentSessionEvent,
+    ) -> Result<AppendOutcome, String> {
         let path = event_log_file_in_dir(dir);
+        self.append_event_to_array(&path, event)
+    }
+
+    fn append_event_to_array(
+        &self,
+        path: &Path,
+        event: &AgentSessionEvent,
+    ) -> Result<AppendOutcome, String> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("Failed to create session event log dir: {e}"))?;
@@ -121,16 +273,17 @@ impl FileSessionStorage {
             .write(true)
             .create(true)
             .truncate(false)
-            .open(&path)
+            .open(path)
             .map_err(|e| format!("Failed to open session event log: {e}"))?;
         let payload = serde_json::to_string_pretty(event)
+            .map(|payload| indent_json_payload(&payload))
             .map_err(|e| format!("Failed to serialize session event: {e}"))?;
         let len = file
             .metadata()
             .map_err(|e| format!("Failed to stat session event log: {e}"))?
             .len();
         if len == 0 {
-            write!(file, "[\n{}\n]\n", indent_json_payload(&payload))
+            write!(file, "[\n{payload}\n]\n")
                 .map_err(|e| format!("Failed to append session event: {e}"))?;
             file.flush()
                 .map_err(|e| format!("Failed to flush session event log: {e}"))?;
@@ -165,17 +318,104 @@ impl FileSessionStorage {
             .map_err(|e| format!("Failed to truncate session event log: {e}"))?;
         file.seek(SeekFrom::End(0))
             .map_err(|e| format!("Failed to seek session event log: {e}"))?;
-        if is_empty_array {
-            write!(file, "\n{}", indent_json_payload(&payload))
+        let suffix = if is_empty_array {
+            format!("\n{payload}\n]\n")
         } else {
-            write!(file, ",\n{}", indent_json_payload(&payload))
-        }
-        .map_err(|e| format!("Failed to append session event: {e}"))?;
-        write!(file, "\n]\n").map_err(|e| format!("Failed to close session event log: {e}"))?;
+            format!(",\n{payload}\n]\n")
+        };
+        file.write_all(suffix.as_bytes())
+            .map_err(|e| format!("Failed to append session events: {e}"))?;
         file.flush()
             .map_err(|e| format!("Failed to flush session event log: {e}"))?;
         Ok(AppendOutcome { recovered })
     }
+
+    fn repair_event_array_if_needed(&self, path: &Path) -> Result<AppendOutcome, String> {
+        let mut file = match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(AppendOutcome::default());
+            }
+            Err(error) => return Err(format!("Failed to open session event log: {error}")),
+        };
+        let len = file
+            .metadata()
+            .map_err(|error| format!("Failed to stat session event log: {error}"))?
+            .len();
+        let valid = if len == 0 {
+            false
+        } else {
+            matches!(last_non_whitespace_byte(&mut file, len)?, Some((_, b']')))
+                && event_log_is_valid_json(&mut file)?
+        };
+        if valid {
+            return Ok(AppendOutcome::default());
+        }
+        let events = if len == 0 {
+            Vec::new()
+        } else {
+            recover_session_events_from_file(&mut file)?
+        };
+        rewrite_session_events(&mut file, &events)?;
+        Ok(AppendOutcome { recovered: true })
+    }
+
+    pub(super) fn committed_event_batch_paths(
+        &self,
+        dir: &Path,
+    ) -> Result<Vec<std::path::PathBuf>, String> {
+        #[cfg(test)]
+        self.event_batch_directory_scan_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        committed_event_batch_paths(dir)
+    }
+}
+
+fn canonicalize_event_array(path: &Path) -> Result<Vec<AgentSessionEvent>, TransactionApplyError> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(TransactionApplyError::retryable(format!(
+                "Failed to read session event log: {error}"
+            )))
+        }
+    };
+    let events = parse_session_events_content(&content).map_err(TransactionApplyError::corrupt)?;
+    if serde_json::from_str::<Vec<AgentSessionEvent>>(&content).is_err() {
+        write_json_pretty_atomic_durable(path, &events, "session event log")
+            .map_err(TransactionApplyError::retryable)?;
+    }
+    Ok(events)
+}
+
+fn committed_event_batch_paths(dir: &Path) -> Result<Vec<std::path::PathBuf>, String> {
+    let batches_dir = event_batches_dir_in_dir(dir);
+    let entries = match std::fs::read_dir(&batches_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("Failed to read session event batch dir: {error}")),
+    };
+    let mut paths = Vec::new();
+    for entry in entries {
+        let path = entry
+            .map_err(|error| format!("Failed to read session event batch entry: {error}"))?
+            .path();
+        if path.extension().and_then(|extension| extension.to_str()) == Some("json")
+            && path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .is_some_and(|stem| stem.parse::<u64>().is_ok())
+        {
+            paths.push(path);
+        }
+    }
+    paths.sort();
+    Ok(paths)
 }
 
 fn recover_session_events_from_file(
@@ -317,7 +557,9 @@ fn last_non_whitespace_byte(
 mod tests {
     use super::*;
     use crate::usecase::agent_session::event_log::PromptInput;
-    use crate::usecase::agent_session::session::{ChatSession, MessagePart, SessionState};
+    use crate::usecase::agent_session::session::{
+        ChatSession, MessagePart, SessionEventLogRecoverySignal, SessionState,
+    };
     use std::io::BufReader;
 
     const SESSION_ID: &str = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
@@ -435,6 +677,111 @@ mod tests {
             .unwrap();
 
         assert_eq!(read_events(tmp.path()), vec![event(1), event(2)]);
+    }
+
+    #[test]
+    fn committed_batches_and_following_events_preserve_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = FileSessionStorage::default();
+
+        storage
+            .append_session_event_to_dir(tmp.path(), &event(1))
+            .unwrap();
+        storage
+            .append_session_events_to_dir(tmp.path(), &[event(2), event(3)])
+            .unwrap();
+        storage
+            .append_session_event_to_dir(tmp.path(), &event(4))
+            .unwrap();
+
+        assert_eq!(
+            storage.read_session_events_from_dir(tmp.path()).unwrap(),
+            vec![event(1), event(2), event(3), event(4)]
+        );
+    }
+
+    #[test]
+    fn incomplete_batch_segments_are_invisible_and_retry_commits_each_event_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = FileSessionStorage::default();
+        let batch = vec![event(2), event(3), event(4)];
+        storage
+            .append_session_event_to_dir(tmp.path(), &event(1))
+            .unwrap();
+        let batches_dir = event_batches_dir_in_dir(tmp.path());
+        std::fs::create_dir_all(&batches_dir).unwrap();
+        let temp_path = batches_dir.join("00000000000000000001.json.tmp");
+
+        for completed_event_count in 0..batch.len() {
+            let mut partial =
+                serde_json::to_string_pretty(&batch[..completed_event_count]).unwrap();
+            partial.truncate(partial.rfind(']').unwrap());
+            std::fs::write(&temp_path, partial).unwrap();
+
+            assert_eq!(
+                storage.read_session_events_from_dir(tmp.path()).unwrap(),
+                vec![event(1)]
+            );
+        }
+
+        storage
+            .append_session_events_to_dir(tmp.path(), &batch)
+            .unwrap();
+
+        assert_eq!(
+            storage.read_session_events_from_dir(tmp.path()).unwrap(),
+            vec![event(1), event(2), event(3), event(4)]
+        );
+        assert_eq!(committed_event_batch_paths(tmp.path()).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn batch_append_repairs_event_arrays_before_tail_rotation_and_records_recovery() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = storage_with_session(&tmp, SESSION_ID);
+        let dir = session_dir(tmp.path(), SESSION_ID).unwrap();
+        storage
+            .append_session_event_to_dir(&dir, &event(1))
+            .unwrap();
+        storage
+            .append_session_events_to_dir(&dir, &[event(2)])
+            .unwrap();
+        storage
+            .append_session_event_to_dir(&dir, &event(3))
+            .unwrap();
+        for path in [event_log_file_in_dir(&dir), event_tail_file_in_dir(&dir)] {
+            let content = std::fs::read_to_string(&path).unwrap();
+            let closing_pos = content.rfind(']').unwrap();
+            std::fs::write(path, &content[..closing_pos]).unwrap();
+        }
+
+        storage
+            .append_session_events(tmp.path(), SESSION_ID, &[event(4), event(5)])
+            .unwrap();
+
+        let legacy_content = std::fs::read_to_string(event_log_file_in_dir(&dir)).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Vec<AgentSessionEvent>>(&legacy_content).unwrap(),
+            vec![event(1)]
+        );
+        let batch_paths = committed_event_batch_paths(&dir).unwrap();
+        assert_eq!(batch_paths.len(), 3);
+        for path in &batch_paths {
+            let content = std::fs::read_to_string(path).unwrap();
+            serde_json::from_str::<Vec<AgentSessionEvent>>(&content).unwrap();
+        }
+        assert_eq!(
+            serde_json::from_str::<Vec<AgentSessionEvent>>(
+                &std::fs::read_to_string(&batch_paths[1]).unwrap()
+            )
+            .unwrap(),
+            vec![event(3)]
+        );
+        assert_eq!(
+            storage.read_session_events_from_dir(&dir).unwrap(),
+            (1..=5).map(event).collect::<Vec<_>>()
+        );
+        assert!(storage.take_event_log_recovered(SESSION_ID));
     }
 
     #[test]

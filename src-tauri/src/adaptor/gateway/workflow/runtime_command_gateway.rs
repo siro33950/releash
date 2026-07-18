@@ -185,12 +185,7 @@ impl WorkflowAbortExecutionGateway for TauriWorkflowRuntimeCommandGateway {
 impl WorkflowStopExecutionGateway for TauriWorkflowRuntimeCommandGateway {
     async fn stop_execution(&self, command: StopExecutionCommand) -> Result<(), WorkflowError> {
         self.engine
-            .stop_workflow_execution(
-                &self.app,
-                &self.session_store,
-                &self.agent_runtime,
-                &command.execution_id,
-            )
+            .stop_workflow_execution(&self.app, &self.agent_runtime, &command.execution_id)
             .await
             .map_err(workflow_engine_error_to_workflow_error)
     }

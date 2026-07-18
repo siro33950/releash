@@ -132,6 +132,17 @@ export type ContextCarryState = "resumed" | "reinjected" | "failed";
 
 export type TurnPhase = "idle" | "streaming" | "waiting_permission";
 
+export type TurnInterruptionReason =
+	| "abort"
+	| "timeout"
+	| "crash"
+	| "session_closed";
+
+export interface TurnInterruption {
+	messageId: string;
+	reason: TurnInterruptionReason;
+}
+
 export interface AgentStallObservation {
 	turnPhase: TurnPhase;
 	idleSecs: number;
@@ -292,6 +303,7 @@ export interface ChatSession {
 	backendId?: string | null;
 	workflowNodeSession?: boolean;
 	workflowNodeContext?: WorkflowNodeContext | null;
+	lastTurnInterruption?: TurnInterruption | null;
 }
 
 export function getTextContent(parts: MessagePart[]): string {

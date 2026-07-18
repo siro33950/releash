@@ -99,7 +99,7 @@ fn startup_visibility_action(close_to_tray: bool) -> StartupVisibilityAction {
     }
 }
 
-fn should_prevent_exit() -> bool {
+pub(crate) fn should_prevent_exit() -> bool {
     !super::tray::QUIT_REQUESTED.load(Ordering::SeqCst)
 }
 
@@ -198,6 +198,7 @@ mod tests {
 
     #[test]
     fn exit_is_prevented_until_tray_quit_is_requested() {
+        let _guard = super::super::tray::QUIT_REQUESTED_TEST_LOCK.lock().unwrap();
         super::super::tray::QUIT_REQUESTED.store(false, Ordering::SeqCst);
         assert!(should_prevent_exit());
 

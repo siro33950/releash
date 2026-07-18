@@ -441,7 +441,6 @@ pub(super) async fn resume_workflow_execution<R: tauri::Runtime + 'static>(
         if let Err(interrupt_error) = engine
             .interrupt_active_execution(
                 app,
-                session_store,
                 agent_runtime,
                 execution_id,
                 ExecutionInterruptionReason::Crash,

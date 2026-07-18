@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
 use super::events::{
-    AgentSessionEvent, BackendSessionRecoveryReason, InterruptReason, PromptInput, TurnId,
-    TurnStopReason, TurnTokenUsage,
+    assistant_message_id_for_started_turn, assistant_message_id_for_turn, AgentSessionEvent,
+    BackendSessionRecoveryReason, InterruptReason, PromptInput, TurnId, TurnStopReason,
+    TurnTokenUsage,
 };
 use super::finalization::has_unresolved_permissions;
 use super::part_events::{permission_request_id, permission_tool_use_id};
@@ -10,7 +11,7 @@ use crate::domain::agent_session::entities::ToolResultUpdate;
 use crate::usecase::agent_session::session::{
     apply_tool_result_update, parts_to_legacy, ChatMessage, MessagePart, MessageRole,
     PermissionPartStatus, PermissionRequestMsg, SessionState, SystemNotificationType, TodoListItem,
-    ToolOutputRef, ToolOutputSummary,
+    ToolOutputRef, ToolOutputSummary, TurnInterruption, TurnInterruptionReason,
 };
 use crate::usecase::agent_session::status::TurnPhase;
 
@@ -19,6 +20,39 @@ use crate::usecase::agent_session::status::TurnPhase;
 pub struct ProjectedStatus {
     pub session_state: SessionState,
     pub turn_phase: TurnPhase,
+}
+
+pub fn latest_turn_interruption(events: &[AgentSessionEvent]) -> Option<TurnInterruption> {
+    let turn_id = events.iter().rev().find_map(|event| match event {
+        AgentSessionEvent::TurnStarted { turn_id, .. } => Some(*turn_id),
+        _ => None,
+    })?;
+    let message_id = assistant_message_id_for_turn(events, turn_id)?;
+
+    events.iter().rev().find_map(|event| match event {
+        AgentSessionEvent::TurnInterrupted {
+            turn_id: terminal_turn_id,
+            reason,
+            ..
+        } if *terminal_turn_id == turn_id => Some(Some(TurnInterruption {
+            message_id: message_id.clone(),
+            reason: interruption_reason(*reason),
+        })),
+        AgentSessionEvent::TurnCompleted {
+            turn_id: terminal_turn_id,
+            ..
+        } if *terminal_turn_id == turn_id => Some(None),
+        _ => None,
+    })?
+}
+
+fn interruption_reason(reason: InterruptReason) -> TurnInterruptionReason {
+    match reason {
+        InterruptReason::Abort => TurnInterruptionReason::Abort,
+        InterruptReason::Timeout => TurnInterruptionReason::Timeout,
+        InterruptReason::Crash => TurnInterruptionReason::Crash,
+        InterruptReason::SessionClosed => TurnInterruptionReason::SessionClosed,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -147,9 +181,10 @@ pub fn project(events: &[AgentSessionEvent]) -> SessionReadModel {
                     turns.push(TurnProjection::new(
                         *turn_id,
                         message_id.clone(),
-                        assistant_message_id
-                            .clone()
-                            .unwrap_or_else(|| format!("{message_id}:agent")),
+                        assistant_message_id_for_started_turn(
+                            message_id,
+                            assistant_message_id.as_deref(),
+                        ),
                         prompt.clone(),
                         *at,
                         event_order,
@@ -980,7 +1015,7 @@ fn project_status(
                 turn_phase: TurnPhase::Idle,
             },
             TerminalEvent::Interrupted {
-                reason: InterruptReason::Abort,
+                reason: InterruptReason::Abort | InterruptReason::SessionClosed,
                 ..
             } => ProjectedStatus {
                 session_state: SessionState::Idle,

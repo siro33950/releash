@@ -136,6 +136,7 @@ pub(crate) struct TestAgentRuntimeController {
     calls: Arc<Mutex<Vec<TestRuntimeCall>>>,
     start_turn_gate: Arc<Mutex<Option<Arc<Notify>>>>,
     open_session_failures: Arc<Mutex<usize>>,
+    respond_permission_gate: Arc<Mutex<Option<Arc<Notify>>>>,
     start_turn_failures: Arc<Mutex<usize>>,
     respond_permission_failures: Arc<Mutex<usize>>,
     steer_failures: Arc<Mutex<usize>>,
@@ -233,6 +234,20 @@ impl TestAgentRuntimeController {
 
     pub(crate) fn fail_next_respond_permission(&self) {
         *self.respond_permission_failures.lock().unwrap() += 1;
+    }
+
+    pub(crate) fn pause_respond_permission(&self) {
+        *self.respond_permission_gate.lock().unwrap() = Some(Arc::new(Notify::new()));
+    }
+
+    pub(crate) fn release_respond_permission(&self) {
+        if let Some(gate) = self.respond_permission_gate.lock().unwrap().take() {
+            gate.notify_waiters();
+        }
+    }
+
+    fn respond_permission_gate(&self) -> Option<Arc<Notify>> {
+        self.respond_permission_gate.lock().unwrap().clone()
     }
 
     fn should_fail_respond_permission(&self) -> bool {
@@ -585,6 +600,9 @@ impl AgentSessionRuntime for TestAgentRuntime {
                 request_id: response.request_id,
             },
         );
+        if let Some(gate) = self.controller.respond_permission_gate() {
+            gate.notified().await;
+        }
         if self.controller.should_fail_respond_permission() {
             return Err(AgentBackendError::Other(
                 "injected test permission response failure".to_string(),

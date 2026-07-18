@@ -33,6 +33,7 @@ impl From<RuntimeSessionPhase> for TurnPhase {
 pub(crate) struct RuntimeSessionState {
     pub backend_id: String,
     pub runtime: Option<Arc<dyn AgentSessionRuntime>>,
+    pub closing: bool,
     pub phase: RuntimeSessionPhase,
     pub streaming_message_id: Option<String>,
     pub last_agent_message_id: Option<String>,
@@ -55,6 +56,7 @@ pub(crate) struct RuntimeSessionState {
     pub pending_trailing_fatal_message: Option<String>,
     pub current_turn_id: Option<u64>,
     pub last_turn_id: Option<u64>,
+    pub terminal_turn_id: Option<u64>,
     pub pending_permission_request: Option<PermissionRequestMsg>,
     pub pending_queue: VecDeque<QueuedTurnInput>,
     pub current_turn_input: Option<QueuedTurnInput>,
@@ -117,6 +119,7 @@ impl RuntimeSessionState {
         Self {
             backend_id,
             runtime: None,
+            closing: false,
             phase: RuntimeSessionPhase::Idle,
             streaming_message_id: None,
             last_agent_message_id: None,
@@ -138,6 +141,7 @@ impl RuntimeSessionState {
             pending_trailing_fatal_message: None,
             current_turn_id: None,
             last_turn_id: None,
+            terminal_turn_id: None,
             pending_permission_request: None,
             pending_queue: VecDeque::new(),
             current_turn_input: None,
@@ -184,6 +188,7 @@ impl RuntimeSessionState {
         self.pending_trailing_fatal_message = None;
         self.current_turn_id = Some(turn_id);
         self.last_turn_id = Some(turn_id);
+        self.terminal_turn_id = None;
         self.clear_pending_permission_request();
         self.current_turn_input = None;
         let now = Instant::now();
@@ -215,6 +220,7 @@ impl RuntimeSessionState {
         self.phase = RuntimeSessionPhase::Idle;
         self.streaming_message_id = None;
         self.current_turn_id = None;
+        self.terminal_turn_id = None;
         self.clear_pending_permission_request();
         self.current_turn_input = None;
         self.domain_streaming_parts.clear();

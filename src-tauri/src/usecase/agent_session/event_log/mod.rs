@@ -32,7 +32,8 @@ pub use part_events::PartEventMode;
 pub(crate) use projector::session_error_message;
 pub(crate) use projector::SessionReadModel;
 pub use projector::{
-    AgentTurnFailureSignal, BackendSessionRecoveryProjection, WorkflowTurnCompleteInput,
+    latest_turn_interruption, AgentTurnFailureSignal, BackendSessionRecoveryProjection,
+    WorkflowTurnCompleteInput,
 };
 
 #[cfg(test)]

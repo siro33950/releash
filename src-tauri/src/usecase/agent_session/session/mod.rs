@@ -54,6 +54,22 @@ pub(crate) use stored_lifecycle::{
     StoredSessionLifecycleUsecase, WorkflowNodeSessionRestorer,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnInterruptionReason {
+    Abort,
+    Timeout,
+    Crash,
+    SessionClosed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnInterruption {
+    pub message_id: String,
+    pub reason: TurnInterruptionReason,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TodoListItem {
@@ -643,6 +659,10 @@ pub struct SessionMeta {
     pub agent_read_paths: Option<Vec<PathBuf>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub context_epoch: Option<ContextEpochMeta>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub last_turn_interruption: Option<TurnInterruption>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub last_turn_id: Option<u64>,
     pub first_message_preview: String,
     pub message_count: usize,
     pub body_format_version: u32,
@@ -979,6 +999,8 @@ pub struct GetSessionResponse {
     pub initial_page: Option<InitialSessionPage>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub latest_token_usage: Option<TokenUsage>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub last_turn_interruption: Option<TurnInterruption>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1105,6 +1127,8 @@ impl SessionMeta {
             workflow_instructions: Vec::new(),
             agent_read_paths: Some(agent_read_paths_from_messages(&session.messages)),
             context_epoch: session.context_epoch.clone(),
+            last_turn_interruption: None,
+            last_turn_id: Some(0),
             first_message_preview: first_message_preview(&session.messages),
             message_count: session.messages.len(),
             body_format_version: SESSION_BODY_FORMAT_VERSION,
@@ -1932,6 +1956,7 @@ mod tests {
             pending_permission_state_revision: 0,
             initial_page: None,
             latest_token_usage: None,
+            last_turn_interruption: None,
         };
 
         let response_value = serde_json::to_value(&response).unwrap();
@@ -3506,5 +3531,21 @@ mod workflow_node_context_meta_tests {
         let meta = SessionMeta::from_session(&session_with_context(None));
         assert!(meta.workflow_node_context.is_none());
         assert_eq!(meta.to_summary().workflow_node_context, None);
+    }
+
+    #[test]
+    fn turn_interruption_read_model_keeps_existing_wire_vocabulary() {
+        let interruption = TurnInterruption {
+            message_id: "agent-1".to_string(),
+            reason: TurnInterruptionReason::SessionClosed,
+        };
+
+        let json = serde_json::to_string(&interruption).unwrap();
+
+        assert_eq!(json, r#"{"messageId":"agent-1","reason":"session_closed"}"#);
+        assert_eq!(
+            serde_json::from_str::<TurnInterruption>(&json).unwrap(),
+            interruption
+        );
     }
 }
