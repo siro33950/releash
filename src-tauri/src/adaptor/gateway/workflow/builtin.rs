@@ -782,10 +782,16 @@ mod tests {
                 );
                 top_resolved_count += 1;
             }
-            if session.facets.knowledge.is_some() {
+            if !session.facets.knowledge.is_empty() {
                 assert!(
-                    contents.knowledge.is_some(),
-                    "node '{}' has knowledge ref but facet contents knowledge is None",
+                    !contents.knowledge.is_empty(),
+                    "node '{}' has knowledge refs but facet contents knowledge is empty",
+                    node.name
+                );
+                assert_eq!(
+                    contents.knowledge.len(),
+                    session.facets.knowledge.len(),
+                    "node '{}' must resolve every knowledge ref",
                     node.name
                 );
                 top_resolved_count += 1;

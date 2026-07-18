@@ -77,13 +77,13 @@ pub enum SessionGate {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct FacetRefs {
     pub policy: Option<String>,
-    pub knowledge: Option<String>,
+    pub knowledge: Vec<String>,
     pub instruction: Option<String>,
 }
 
 impl FacetRefs {
     pub fn is_empty(&self) -> bool {
-        self.policy.is_none() && self.knowledge.is_none() && self.instruction.is_none()
+        self.policy.is_none() && self.knowledge.is_empty() && self.instruction.is_none()
     }
 }
 
@@ -224,7 +224,7 @@ mod definition_tests {
         let mut node = NodeDefinition::default();
         assert!(!node.has_facet_refs());
         if let Some(session) = node.session_mut() {
-            session.facets.instruction = Some("spec-authoring".to_string());
+            session.facets.knowledge = vec!["releash-thread-cli".to_string()];
         }
         assert!(node.has_facet_refs());
     }

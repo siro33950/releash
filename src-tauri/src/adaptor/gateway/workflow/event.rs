@@ -332,6 +332,70 @@ mod tests {
     }
 
     #[test]
+    fn execution_started_reads_legacy_scalar_knowledge_snapshot() {
+        let event = WorkflowEvent::ExecutionStarted {
+            execution_id: "00000000-0000-4000-8000-000000000001".to_string(),
+            workflow_name: "wf".to_string(),
+            worktree_path: "/repo".to_string(),
+            created_from: ExecutionOrigin::Cli,
+            request: "review".to_string(),
+            permission_mode: crate::domain::agent_session::PermissionMode::EDIT.to_string(),
+            definition: minimal_workflow(),
+            timestamp: 1.0,
+        };
+        let mut value = serde_json::to_value(event).unwrap();
+        value["definition"]["nodes"][0]["session"]["facets"]["knowledge"] =
+            serde_json::json!("legacy-knowledge");
+
+        let restored = serde_json::from_value::<WorkflowEvent>(value).unwrap();
+        let WorkflowEvent::ExecutionStarted { definition, .. } = &restored else {
+            panic!("expected execution_started event");
+        };
+        assert_eq!(
+            definition.nodes[0].session().unwrap().facets.knowledge,
+            vec!["legacy-knowledge"]
+        );
+
+        let serialized = serde_json::to_value(restored).unwrap();
+        assert_eq!(
+            serialized["definition"]["nodes"][0]["session"]["facets"]["knowledge"],
+            serde_json::json!("legacy-knowledge")
+        );
+    }
+
+    #[test]
+    fn execution_started_round_trips_multiple_knowledge_snapshot() {
+        let mut definition = minimal_workflow();
+        definition.nodes[0].session_mut().unwrap().facets.knowledge =
+            vec!["knowledge-a".to_string(), "knowledge-b".to_string()];
+        let event = WorkflowEvent::ExecutionStarted {
+            execution_id: "00000000-0000-4000-8000-000000000001".to_string(),
+            workflow_name: "wf".to_string(),
+            worktree_path: "/repo".to_string(),
+            created_from: ExecutionOrigin::Cli,
+            request: "review".to_string(),
+            permission_mode: crate::domain::agent_session::PermissionMode::EDIT.to_string(),
+            definition,
+            timestamp: 1.0,
+        };
+
+        let serialized = serde_json::to_value(&event).unwrap();
+        assert_eq!(
+            serialized["definition"]["nodes"][0]["session"]["facets"]["knowledge"],
+            serde_json::json!(["knowledge-a", "knowledge-b"])
+        );
+
+        let restored = serde_json::from_value::<WorkflowEvent>(serialized).unwrap();
+        let WorkflowEvent::ExecutionStarted { definition, .. } = restored else {
+            panic!("expected execution_started event");
+        };
+        assert_eq!(
+            definition.nodes[0].session().unwrap().facets.knowledge,
+            vec!["knowledge-a", "knowledge-b"]
+        );
+    }
+
+    #[test]
     fn execution_started_without_permission_mode_is_rejected() {
         let event = WorkflowEvent::ExecutionStarted {
             execution_id: "00000000-0000-4000-8000-000000000001".to_string(),

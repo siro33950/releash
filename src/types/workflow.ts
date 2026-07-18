@@ -60,7 +60,7 @@ export type SessionGate = "auto" | "approval";
 
 export interface FacetRefs {
 	policy?: string;
-	knowledge?: string;
+	knowledge?: string[];
 	instruction?: string;
 }
 

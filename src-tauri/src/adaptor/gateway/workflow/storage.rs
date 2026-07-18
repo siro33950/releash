@@ -160,8 +160,7 @@ pub fn parse_workflow_source(
         )])
     })?;
     workflow.builtin = builtin::is_builtin_workflow(&workflow.name);
-    let facet_contents = facet::resolve_workflow_facets(&workflow, facets_base_dir)?;
-    validate_resolved_facet_references(&workflow, &facet_contents)?;
+    let _ = resolve_and_validate_workflow_facets(&workflow, facets_base_dir)?;
     Ok(workflow)
 }
 
@@ -224,8 +223,7 @@ pub fn load_workflow(
     })?;
     // YAMLの builtin フラグは無視し、コード側（builtin.rs）で判定する
     workflow.builtin = builtin::is_builtin_workflow(&workflow.name);
-    let facet_contents = facet::resolve_workflow_facets(&workflow, facets_base_dir)?;
-    validate_resolved_facet_references(&workflow, &facet_contents)?;
+    let _ = resolve_and_validate_workflow_facets(&workflow, facets_base_dir)?;
     Ok(workflow)
 }
 
@@ -337,6 +335,14 @@ pub(crate) fn resolve_and_validate_workflow_facets(
     workflow: &WorkflowDefinitionYaml,
     facets_base_dir: &Path,
 ) -> Result<facet::WorkflowFacetContents, StorageError> {
+    let reference_diagnostics =
+        diagnostics::diagnose_workflow_facet_references(workflow, facets_base_dir)?;
+    if reference_diagnostics
+        .iter()
+        .any(|item| item.severity == diagnostics::Severity::Error)
+    {
+        return Err(StorageError::Diagnostics(reference_diagnostics));
+    }
     let facet_contents = facet::resolve_workflow_facets(workflow, facets_base_dir)?;
     validate_resolved_facet_references(workflow, &facet_contents)?;
     Ok(facet_contents)
@@ -352,13 +358,11 @@ fn validate_resolved_facet_references(
             node.fanout()
                 .is_some_and(|fanout| fanout.child.iter().any(|child| child == node_name))
         });
-        for content in [
-            contents.policy.as_deref(),
-            contents.knowledge.as_deref(),
-            contents.instruction.as_deref(),
-        ]
-        .into_iter()
-        .flatten()
+        for content in contents
+            .policy
+            .iter()
+            .chain(contents.knowledge.iter())
+            .chain(contents.instruction.iter())
         {
             if let Some(err) =
                 validation::validate_template_references(&domain_workflow, content, allow_item)
@@ -780,6 +784,45 @@ nodes:
         }
     }
 
+    #[test]
+    fn parse_and_load_validate_every_resolved_knowledge_body() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let knowledge = dir.join("knowledge");
+        std::fs::create_dir_all(&knowledge).unwrap();
+        std::fs::write(knowledge.join("first.md"), "FIRST_OK").unwrap();
+        std::fs::write(
+            knowledge.join("second.md"),
+            "SECOND_USES_{{ missing.field }}",
+        )
+        .unwrap();
+
+        let yaml = r#"
+name: knowledge-reference-validation
+description: every knowledge body is validated
+nodes:
+  - name: implement
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        knowledge: [first, second]
+"#;
+
+        for result in [parse_workflow_source(yaml, dir), {
+            let file_path = dir.join("knowledge-reference-validation.yml");
+            std::fs::write(&file_path, yaml).unwrap();
+            load_workflow(&file_path, dir)
+        }] {
+            assert!(matches!(
+                result.unwrap_err(),
+                StorageError::Validation(
+                    validation::ValidationError::InvalidArtifactReference { ref reference, .. }
+                ) if reference == "missing"
+            ));
+        }
+    }
+
     /// [02] schema 境界: 旧 `steps:` 表現で書かれた user-authored YAML は
     /// 新 schema (`nodes:` 必須 + `deny_unknown_fields`) として load に失敗する。
     /// これにより利用者は新表現で書き直さない限り実行に進めない。
@@ -819,10 +862,12 @@ steps:
             std::fs::create_dir_all(d).unwrap();
         }
         std::fs::write(policies.join("p.md"), "POLICY").unwrap();
-        std::fs::write(knowledge.join("k.md"), "KNOWLEDGE").unwrap();
+        std::fs::write(knowledge.join("k1.md"), "KNOWLEDGE_1").unwrap();
+        std::fs::write(knowledge.join("k2.md"), "KNOWLEDGE_2").unwrap();
         std::fs::write(instructions.join("i.md"), "INSTRUCTION").unwrap();
         std::fs::write(policies.join("pc.md"), "CHILD_POLICY").unwrap();
-        std::fs::write(knowledge.join("kc.md"), "CHILD_KNOWLEDGE").unwrap();
+        std::fs::write(knowledge.join("kc1.md"), "CHILD_KNOWLEDGE_1").unwrap();
+        std::fs::write(knowledge.join("kc2.md"), "CHILD_KNOWLEDGE_2").unwrap();
         std::fs::write(instructions.join("ic.md"), "CHILD_INSTRUCTION").unwrap();
 
         let yaml = r#"
@@ -835,7 +880,7 @@ nodes:
       gate: auto
       facets:
         policy: p
-        knowledge: k
+        knowledge: [k1, k2]
         instruction: i
     rules:
       - next: par
@@ -848,7 +893,7 @@ nodes:
       gate: auto
       facets:
         policy: pc
-        knowledge: kc
+        knowledge: [kc1, kc2]
         instruction: ic
   - name: c2
     session:
@@ -856,7 +901,7 @@ nodes:
       gate: auto
       facets:
         policy: pc
-        knowledge: kc
+        knowledge: [kc1, kc2]
         instruction: ic
 "#;
         let file_path = dir.join("facet-all.yml");
@@ -866,13 +911,22 @@ nodes:
 
         let lead_contents = resolved.for_node("lead").unwrap();
         assert_eq!(lead_contents.policy.as_deref(), Some("POLICY"));
-        assert_eq!(lead_contents.knowledge.as_deref(), Some("KNOWLEDGE"));
+        assert_eq!(
+            lead_contents.knowledge,
+            vec!["KNOWLEDGE_1".to_string(), "KNOWLEDGE_2".to_string()]
+        );
         assert_eq!(lead_contents.instruction.as_deref(), Some("INSTRUCTION"));
 
         for child_name in ["c1", "c2"] {
             let child_contents = resolved.for_node(child_name).unwrap();
             assert_eq!(child_contents.policy.as_deref(), Some("CHILD_POLICY"));
-            assert_eq!(child_contents.knowledge.as_deref(), Some("CHILD_KNOWLEDGE"));
+            assert_eq!(
+                child_contents.knowledge,
+                vec![
+                    "CHILD_KNOWLEDGE_1".to_string(),
+                    "CHILD_KNOWLEDGE_2".to_string()
+                ]
+            );
             assert_eq!(
                 child_contents.instruction.as_deref(),
                 Some("CHILD_INSTRUCTION")
@@ -880,27 +934,84 @@ nodes:
         }
     }
 
-    /// 欠損 facet を参照する workflow は load 段階で拒否される。
+    /// 各 kind の欠損 facet は load 段階で構造化 Diagnostic として拒否される。
     #[test]
     fn load_workflow_rejects_missing_facet() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path();
-        let yaml = r#"
-name: missing-facet
-description: missing facet test
+        for (facet_kind, facet_key, facet_yaml) in [
+            ("policy", "missing-policy", "policy: missing-policy"),
+            (
+                "knowledge",
+                "missing-knowledge",
+                "knowledge: [missing-knowledge]",
+            ),
+            (
+                "instruction",
+                "missing-instruction",
+                "instruction: missing-instruction",
+            ),
+        ] {
+            let tmp = TempDir::new().unwrap();
+            let dir = tmp.path();
+            let workflow_name = format!("missing-{facet_kind}");
+            let yaml = format!(
+                r#"
+name: {workflow_name}
+description: missing {facet_kind} test
 nodes:
   - name: implement
     session:
       permission: edit
       gate: auto
       facets:
-        policy: nonexistent-policy
-        instruction: implement
+        {facet_yaml}
+"#
+            );
+            let file_path = dir.join(format!("{workflow_name}.yml"));
+            std::fs::write(&file_path, yaml).unwrap();
+
+            let result = load_workflow(&file_path, dir);
+
+            let Err(StorageError::Diagnostics(items)) = result else {
+                panic!("missing {facet_kind} must return structured diagnostics");
+            };
+            let missing = items
+                .iter()
+                .find(|item| item.code == "FAC002")
+                .unwrap_or_else(|| panic!("missing {facet_kind} FAC002"));
+            assert_eq!(
+                missing.workflow_name.as_deref(),
+                Some(workflow_name.as_str())
+            );
+            assert_eq!(missing.node_name.as_deref(), Some("implement"));
+            assert_eq!(missing.facet_key.as_deref(), Some(facet_key));
+            assert_eq!(missing.facet_kind.as_deref(), Some(facet_kind));
+            assert_eq!(missing.field.as_deref(), Some(facet_kind));
+            assert!(missing.message.contains(facet_key));
+        }
+    }
+
+    #[test]
+    fn load_workflow_resolves_builtin_facet_with_broken_inventory() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("knowledge"), "not a directory").unwrap();
+        let yaml = r#"
+name: builtin-facet-with-broken-inventory
+description: builtin facet load test
+nodes:
+  - name: implement
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        knowledge: [releash-thread-cli]
 "#;
-        let file_path = dir.join("missing-facet.yml");
+        let file_path = dir.join("builtin-facet-with-broken-inventory.yml");
         std::fs::write(&file_path, yaml).unwrap();
-        let result = load_workflow(&file_path, dir);
-        assert!(matches!(result, Err(StorageError::FacetResolution(_))));
+
+        let workflow = load_workflow(&file_path, dir).unwrap();
+
+        assert_eq!(workflow.name, "builtin-facet-with-broken-inventory");
     }
 
     /// spec issues-1054 「未定義 workflow 変数の拒否」: facet 本文が宣言されていない

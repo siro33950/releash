@@ -301,6 +301,7 @@ mod tests {
                 name: "implement".to_string(),
                 kind: schema::NodeKind::Session(schema::SessionSpec {
                     facets: schema::FacetRefs {
+                        knowledge: vec!["knowledge-a".to_string(), "knowledge-b".to_string()],
                         instruction: Some("inst".to_string()),
                         ..Default::default()
                     },
@@ -312,6 +313,10 @@ mod tests {
 
         let mapped = workflow_definition_to_domain(&workflow);
 
+        assert_eq!(
+            mapped.nodes[0].session().unwrap().facets.knowledge,
+            vec!["knowledge-a", "knowledge-b"]
+        );
         assert_eq!(
             mapped.nodes[0]
                 .session()

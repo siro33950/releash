@@ -29,8 +29,8 @@ pub(crate) enum NodeKindDto {
 pub(crate) struct FacetRefsDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub knowledge: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub knowledge: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instruction: Option<String>,
 }
@@ -432,6 +432,37 @@ mod tests {
                     "rules": [{"type": "next", "next": "done"}]
                 }]
             })
+        );
+    }
+
+    #[test]
+    fn workflow_to_dto_maps_knowledge_refs_to_ordered_json_array() {
+        let definition = domain::WorkflowDefinition {
+            name: "wf".to_string(),
+            description: String::new(),
+            nodes: vec![domain::NodeDefinition {
+                name: "review".to_string(),
+                kind: domain::NodeKind::Session(domain::SessionSpec {
+                    facets: domain::FacetRefs {
+                        knowledge: vec!["knowledge-a".to_string(), "knowledge-b".to_string()],
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let dto = workflow_to_dto(&definition);
+
+        assert_eq!(
+            dto.nodes[0].session.as_ref().unwrap().facets.knowledge,
+            vec!["knowledge-a", "knowledge-b"]
+        );
+        assert_eq!(
+            serde_json::to_value(dto).unwrap()["nodes"][0]["session"]["facets"]["knowledge"],
+            serde_json::json!(["knowledge-a", "knowledge-b"])
         );
     }
 

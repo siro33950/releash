@@ -3922,7 +3922,8 @@ fn build_fanout_child_prompt_splits_facets_into_system_and_user() {
     std::fs::create_dir_all(&instructions).unwrap();
     std::fs::create_dir_all(&contracts).unwrap();
     std::fs::write(policies.join("pol.md"), "FANOUT_POLICY_BODY").unwrap();
-    std::fs::write(knowledges.join("know.md"), "FANOUT_KNOWLEDGE_BODY").unwrap();
+    std::fs::write(knowledges.join("know-a.md"), "FANOUT_KNOWLEDGE_A_BODY").unwrap();
+    std::fs::write(knowledges.join("know-b.md"), "FANOUT_KNOWLEDGE_B_BODY").unwrap();
     std::fs::write(instructions.join("inst.md"), "FANOUT_INSTRUCTION_BODY").unwrap();
     std::fs::write(contracts.join("oc.md"), "FANOUT_CONTRACT_BODY").unwrap();
 
@@ -3931,7 +3932,7 @@ fn build_fanout_child_prompt_splits_facets_into_system_and_user() {
         &mut child,
         FacetRefs {
             policy: Some("pol".to_string()),
-            knowledge: Some("know".to_string()),
+            knowledge: vec!["know-a".to_string(), "know-b".to_string()],
             instruction: Some("inst".to_string()),
         },
     );
@@ -3954,11 +3955,23 @@ fn build_fanout_child_prompt_splits_facets_into_system_and_user() {
     let sp = system_prompt.expect("system_prompt must be set for fanout child with policy/oc");
     // policy の本文が system_prompt に集約される
     assert!(sp.contains("FANOUT_POLICY_BODY"));
-    assert!(!sp.contains("FANOUT_KNOWLEDGE_BODY"));
+    assert!(!sp.contains("FANOUT_KNOWLEDGE_A_BODY"));
+    assert!(!sp.contains("FANOUT_KNOWLEDGE_B_BODY"));
     assert!(!sp.contains("FANOUT_INSTRUCTION_BODY"));
 
     // knowledge / instruction と Artifact 由来の完了時アクションは user_message に集約される。
-    assert!(user_message.contains("FANOUT_KNOWLEDGE_BODY"));
+    let knowledge_a = user_message.find("FANOUT_KNOWLEDGE_A_BODY").unwrap();
+    let knowledge_b = user_message.find("FANOUT_KNOWLEDGE_B_BODY").unwrap();
+    let instruction_position = user_message.find("FANOUT_INSTRUCTION_BODY").unwrap();
+    assert!(knowledge_a < knowledge_b);
+    assert!(knowledge_b < instruction_position);
+    for sentinel in [
+        "FANOUT_KNOWLEDGE_A_BODY",
+        "FANOUT_KNOWLEDGE_B_BODY",
+        "FANOUT_INSTRUCTION_BODY",
+    ] {
+        assert_eq!(user_message.matches(sentinel).count(), 1);
+    }
     assert!(user_message.contains("FANOUT_INSTRUCTION_BODY"));
     let instruction = workflow_prompt::render_fanout_child_workflow_instruction(
         &child,

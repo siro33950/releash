@@ -395,4 +395,45 @@ nodes:
         );
         assert!(!workflows.path().join("-invalid.yml").exists());
     }
+
+    #[test]
+    fn source_gateway_returns_structured_diagnostic_for_missing_knowledge() {
+        let workflows = TempDir::new().unwrap();
+        let facets = TempDir::new().unwrap();
+        let knowledge = facets.path().join("knowledge");
+        fs::create_dir_all(&knowledge).unwrap();
+        fs::write(knowledge.join("known.md"), "Known context.").unwrap();
+        let gateway = WorkflowDefinitionFileSourceGateway::new(workflows.path(), facets.path());
+        let source = r#"
+name: missing-knowledge
+description: missing knowledge diagnostic
+nodes:
+  - name: node
+    session:
+      permission: edit
+      gate: auto
+      facets:
+        knowledge: [known, missing-name]
+"#;
+
+        let error = gateway
+            .save_source_with_diagnostics(source, None)
+            .unwrap_err();
+        let WorkflowSourceSaveError::Diagnostics(items) = error else {
+            panic!("missing knowledge must remain a structured diagnostic");
+        };
+        let diagnostic = items
+            .iter()
+            .find(|item| item["code"] == "FAC002")
+            .expect("missing knowledge FAC002");
+        assert_eq!(diagnostic["workflow_name"], "missing-knowledge");
+        assert_eq!(diagnostic["node_name"], "node");
+        assert_eq!(diagnostic["facet_key"], "missing-name");
+        assert_eq!(diagnostic["facet_kind"], "knowledge");
+        assert_eq!(diagnostic["field"], "knowledge");
+        assert!(diagnostic["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("missing-name")));
+        assert!(!workflows.path().join("missing-knowledge.yml").exists());
+    }
 }

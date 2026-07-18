@@ -144,7 +144,9 @@ nodes:
       gate: approval
       facets:
         policy: triage
-        knowledge: releash-thread
+        knowledge:
+          - releash-thread
+          - releash-review
         instruction: decide-thread-fix   # item（{{ item.thread_id }}）で参照
     input: thread                        # パラメータ。fanout の各要素が入る
     artifact: fix_result
