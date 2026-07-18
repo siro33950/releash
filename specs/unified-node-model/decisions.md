@@ -2,7 +2,7 @@
 
 この文書は、Session / Command / Fanout / Sequence を単一の Node 概念に統一し、Worktree 配下の実行木として実行・観測・永続化するモデルを定義する。本モデルのマイルストーン・ISSUE は本書を元に作る。
 
-構成: 本書（モデルの決定）／[syntax.md](syntax.md)（YAML 構文の確定分）／[full-pipeline.yml](full-pipeline.yml)（現行例の新構文版）／[feature-batch.yml](feature-batch.yml)（新規・変更構文の網羅例）。
+構成: 本書（モデルの決定）／[syntax.md](syntax.md)（YAML 構文の確定分）／[examples/](examples/)（実例: full-cycle-development を新構文で書いた親 + ref 部品3つ）。
 
 語彙は [`architecture/GLOSSARY.md`](../../docs/architecture/GLOSSARY.md) を正とする。本書が導入する語彙は §語彙 に定義し、GLOSSARY への反映は実装マイルストーンで行う。
 
@@ -80,6 +80,7 @@ Sequence  -> 終端 node への到達
 
 - 合成子の子には任意の Node を書ける。fanout 先・子 Node を制限する子専用型は持たない。
 - サブワークフローは `ref: <WorkflowDefinition 名>` の名前参照で書く。参照先の中身を inline に展開して書くことはできない（同一 WorkflowDefinition 内の Node のインライン宣言は可。syntax.md「children の要素」参照）。
+- ref の入口は `request` のみ: 親は配線（inputs の宛先 `request`・String 値）で参照先の起動時入力を渡せる。人間が起動時に request を書くのと同じ入口であり、Workflow の「人間起動の単位」という性格を変えない。**出口は持たない**（成果は worktree の状態変化と実行木の観測で受け取る。親側で値の判定が必要なら、判定 node を親スコープに置く）。
 - 定義の健全性は load 時に検証する: 参照循環（A が B を含み B が A を含む）の拒否、最大深さ制限、未定義参照の Diagnostic。
 - ループの有界化ガード（loop_guard）は必須にしない。「条件が成立するまで回り続ける」定義は正当であり、その監督は実行中の観測・abort で行う。
 
@@ -177,7 +178,7 @@ worktree は Node が親から継承する実行コンテキストであり、�
 | milestone 85（delegate + worktree 隔離） | 相互依存なし・順序制約なし。`worktree: shared \| isolated` の意味論は #85 の確定判断を継承する。ただし Fanout での宣言場所は「child の node 定義」から「Fanout ブロック」へ改める（#85 の「fanout block 自体には不可」の改訂）。 |
 | milestone 84（Agent チャット安定化） | 独立。干渉しない。 |
 | `docs/workflow-engine-evolution-plan.md` | 「NodeDefinition 種別は command / session / fanout の3つ」「完了判定は session の gate」（gate → completion 改名・意味論維持）が改訂対象。改訂は実装マイルストーンの文法正本化 wave で行う。 |
-| `docs/workflow-yaml-syntax.md` | 改訂対象。改訂内容の確定分は [syntax.md](syntax.md) が正本（トップレベル = entry + nodes カタログ、sequence = entry + output + children、Interface とデータ配線の分離、completion、worktree、ref ほか）。改訂は同上。 |
+| `docs/workflow-yaml-syntax.md` | 改訂対象。改訂内容の確定分は [syntax.md](syntax.md) が正本（トップレベル = nodes カタログ + main 規約、sequence = entry + output + children、Interface とデータ配線の分離、completion、worktree、ref ほか）。改訂は同上。 |
 | `docs/architecture/GLOSSARY.md` | §語彙 の反映。同上。 |
 
 ## 語彙

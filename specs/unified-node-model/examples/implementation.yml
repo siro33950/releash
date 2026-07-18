@@ -1,0 +1,241 @@
+# 統一 Node モデルの実例: full-cycle-development の実装部品（親 workflow から ref で参照される）。
+# 元は builtin workflow full-cycle-development。起動時入力（request）に spec_dir を受け取る。
+# 構文の正本は ../syntax.md。
+name: implementation
+description: spec_dir の Spec を元に詳細設計とタスク分割を行い、タスクごとに実装 → 検証を隔離 worktree で並走させ、統合（マージ）後に整合性と Spec 適合を確認する。
+
+schemas:
+  document-reference: string
+  workflow-text: string
+  requirement-id: string
+  implement-task-id: string
+  implement-task-verification:
+    type: object
+    properties:
+      condition: string
+    required:
+    - condition
+  implement-task:
+    type: object
+    properties:
+      task_id: string
+      requirements:
+        type: array
+        items: requirement-id
+      depends_on:
+        type: array
+        items: implement-task-id
+      parallel:
+        type: boolean
+      files:
+        type: array
+        items: document-reference
+      outputs:
+        type: array
+        items: workflow-text
+      verify:
+        type: array
+        items: implement-task-verification
+    required:
+    - task_id
+    - requirements
+    - depends_on
+    - parallel
+    - files
+    - outputs
+    - verify
+  implement-tasks:
+    type: object
+    properties:
+      tasks:
+        type: array
+        items: implement-task
+    required:
+    - tasks
+  implement-task-check-result:
+    type: object
+    properties:
+      task_id: string
+      complete:
+        type: boolean
+      reason: string
+    required:
+    - task_id
+    - complete
+    - reason
+  integration-check:
+    type: object
+    properties:
+      complete:
+        type: boolean
+      issues:
+        type: array
+        items: workflow-text
+    required:
+    - complete
+    - issues
+
+nodes:
+  main:
+    sequence:
+      children:
+      - create_detailed_design:
+          inputs:
+            spec: request
+          rules:
+          - next: implement_all
+      - implement_all:
+          rules:
+          - next: merge_implementations
+      - merge_implementations:
+          inputs:
+            spec: request
+            results: implement_all
+          rules:
+          - next: check_integration
+      - check_integration:
+          inputs:
+            spec: request
+            results: implement_all
+          rules:
+          - when:
+              on: complete
+              then: implementation_report
+            next: fix_integration
+      - fix_integration:
+          inputs:
+            spec: request
+            check: check_integration
+          rules:
+          - loop_guard:
+              max_iterations: 2
+              on_exhausted: implementation_report
+          - next: check_integration
+      - implementation_report:
+          inputs:
+            spec: request
+            check: check_integration
+
+  create_detailed_design:
+    session:
+      model: gpt-5.6-sol
+      permission: full
+      facets:
+        policy: planning
+        knowledge:
+        - spec-requirements
+        - spec-behavior
+        - spec-design
+        - implement-task
+        instruction: create_detailed_design
+    input:
+    - spec
+    artifact: implement-tasks
+
+  # タスクごとに「実装 → 検証」の一連の流れを隔離 worktree で並走させる。
+  # 各子の diff は branch に残り、統合は merge_implementations が明示的に行う。
+  implement_all:
+    fanout:
+      children:
+      - implement_and_verify:
+          inputs:
+            task: items
+            spec: request
+      items: create_detailed_design.tasks
+    worktree: isolated
+
+  # 部品 sequence: 1 タスクの実装と検証。検証結果がこの Node の Artifact になる。
+  implement_and_verify:
+    sequence:
+      output: verify_task
+      children:
+      - implement_task:
+          inputs:
+            task: task
+            spec: spec
+          rules:
+          - next: verify_task
+      - verify_task:
+          inputs:
+            task: task
+            spec: spec
+    input:
+    - task: implement-task
+    - spec
+    artifact: implement-task-check-result
+
+  implement_task:
+    session:
+      model: gpt-5.6-sol
+      permission: full
+      facets:
+        policy: coding
+        knowledge: implement-task
+        instruction: implement
+    input:
+    - task
+    - spec
+
+  verify_task:
+    session:
+      model: claude-fable-5
+      permission: edit
+      facets:
+        policy: coding
+        knowledge: implement-task
+        instruction: check_implementation_task
+    input:
+    - task
+    - spec
+    artifact: implement-task-check-result
+
+  # 検証結果（implement_all の子 Artifact 配列）と各 task branch の diff を確認し、
+  # 親 worktree へ統合する。統合は通常の Git 操作（専用構文は持たない）。
+  merge_implementations:
+    session:
+      model: claude-fable-5
+      permission: full
+      facets:
+        policy: coding
+        instruction: merge_implementations
+    input:
+    - spec
+    - results
+
+  check_integration:
+    session:
+      model: claude-fable-5
+      permission: edit
+      facets:
+        policy: coding
+        knowledge:
+        - spec-requirements
+        - spec-behavior
+        - spec-design
+        instruction: check_integration
+    input:
+    - spec
+    - results
+    artifact: integration-check
+
+  fix_integration:
+    session:
+      model: gpt-5.6-sol
+      permission: full
+      facets:
+        policy: coding
+        instruction: fix_integration
+    input:
+    - spec
+    - check
+
+  implementation_report:
+    session:
+      model: gpt-5.6-sol
+      permission: edit
+      facets:
+        policy: coding
+        instruction: implementation_report
+    input:
+    - spec
+    - check

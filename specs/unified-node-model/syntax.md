@@ -2,25 +2,26 @@
 
 作成日: 2026-07-16
 
-統一 Node モデルの構文の確定事項を記録する。モデルの決定は [decisions.md](decisions.md)。例は2つ: [full-pipeline.yml](full-pipeline.yml)（現行正本の例と同じ workflow を新構文で書いたもの）と [feature-batch.yml](feature-batch.yml)（新規・変更構文の網羅例。カバレッジ一覧はファイル冒頭）。現行正本 [`docs/workflow-yaml-syntax.md`](../../docs/workflow-yaml-syntax.md) からの変更点を中心に書き、変更のない部分は現行を参照する。未確定の論点は末尾に列挙する。
+統一 Node モデルの構文の確定事項を記録する。モデルの決定は [decisions.md](decisions.md)。例は [examples/](examples/)（実際に使う開発フロー full-cycle-development を新構文で書いたもの。親 + ref 部品3つ）。現行正本 [`docs/workflow-yaml-syntax.md`](../../docs/workflow-yaml-syntax.md) からの変更点を中心に書き、変更のない部分は現行を参照する。未確定の論点は末尾に列挙する。
 
 記法: YAML はフロースタイル（`{}`）を使わず、常にブロックスタイルで書く。
 
 ## トップレベル
 
 ```yaml
-name: full-pipeline
-description: テスト→複数モデルレビュー→Open Thread修正→出荷判断
-entry: main
+name: full-cycle-development
+description: 入力収集 → spec 作成 → 実装 → レビューを human checkpoint 付きで一気通貫に実行する
 schemas:
   # Contract 定義（現行のまま）
 nodes:
-  # 全 Node のカタログ
+  main:
+    # root の Sequence
+  # ...（全 Node のカタログ）
 ```
 
-- `entry` は root の node を名前で指す。WorkflowExecution は entry の node から始まる。
-- 慣例: root の sequence は `main` と名付け、nodes の先頭に書く。
-- root をインラインで書く形は無い。書き方は1つ（カタログ + entry）に揃える。
+- **root は `main` という名前の node（規約）**。nodes に `main` が無ければ load 時 Diagnostic。WorkflowExecution は `main` から始まる。トップレベルに entry フィールドは持たない（C / Rust の main 関数と同じく、エントリポイントは規約名で決まる。root 名を変える実需が生じたら `entry:` を互換追加する）。
+- 慣例: `main` は nodes の先頭に書く。
+- root をインラインで書く形は無い。書き方は1つ（カタログ + main 規約）に揃える。
 
 ## nodes（カタログ）
 
@@ -74,7 +75,7 @@ main:
         - command: "cargo clippy -- -D warnings"
     ```
 
-  - `inputs`: `<パラメータ名>: <供給元>` のマップ。子のどのパラメータに何を渡すか。供給元は兄弟 node 名（field パス `<node>.<field>` 可）、自分（この sequence）の input パラメータ名、root では `request`（起動時入力）、fanout では `items`（展開の各要素）。
+  - `inputs`: `<パラメータ名>: <供給元>` のマップ。子のどのパラメータに何を渡すか。供給元は兄弟 node 名（field パス `<node>.<field>` 可）、自分（この sequence）の input パラメータ名、`request`（起動時入力。**定義スコープの予約供給元であり、定義内のどの合成子の配線からも直接参照できる** — 兄弟名の解決が children に閉じるのとは別扱い）、fanout では `items`（展開の各要素）。**ref node への供給は宛先 `request` のみ**（参照先 workflow の起動時入力 — 人間が起動時に書くのと同じ入口を親が配線する）。供給値は String（scalar Contract の Artifact または String の field パス）であることを load 時に検証する（参照先の内部は見ない — request の型は定義によらず String 固定のため検証が閉じる）。未配線なら空 request で走る（人間が空入力で起動したのと同じ）。
   - `rules`: 辺定義のリスト。中身（`when` / `switch` / `next` / `loop_guard`）と検証（排他・網羅・ループ健全性）は現行のまま。**辺に承認は置かない**（human が進行を止めたい箇所は Node 側の `completion: approval`）。**`rules: []`（空リスト）は出る辺なしの明示 = 終端**（リスト中間に終端を置く場合に使う）。
   - `on_failure`: この子が失敗したときの扱い。**省略時は中断**（resume で失敗した node を再実行 — 失敗は直すべきもの、が既定）。`ignore` = 失敗しても続行する（fanout では失敗子を結果の配列から除く。失敗 node の artifact に依存する下流があれば load 時 Diagnostic）。`retry: <n>` = 新しい attempt で最大 n 回自動再実行し（isolated なら attempt ごとに worktree 再生成）、尽きたら既定（中断）へ。失敗の重要度は文脈の性質なので、Node 定義ではなく扱い（children エントリ）に書く。
 - **終端 = 出る辺（rules またはリストの次）が無い node**。children に載らず行き先参照だけされる node は次を持たないため終端。

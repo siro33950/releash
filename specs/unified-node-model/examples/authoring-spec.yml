@@ -1,0 +1,241 @@
+# 統一 Node モデルの部品 workflow 例: spec_dir（request で受け取る）配下に要求・振る舞い・設計の
+# Spec 文書を作成し、human 承認と Open Thread 整理までを行う。元は builtin full-cycle-development
+# の authoring_spec 部分（親 full-cycle-development.yml から ref 参照）。構文の正本は ../syntax.md。
+name: authoring-spec
+description: spec_dir（request）配下に要求・振る舞い・設計の Spec 文書をステージごとに作成し、human 承認と Open Thread 整理までを行う。
+schemas:
+  behavior-authoring-result:
+    type: object
+    properties:
+      behavior_complete:
+        type: boolean
+    required:
+      - behavior_complete
+  design-authoring-result:
+    type: object
+    properties:
+      design_complete:
+        type: boolean
+    required:
+      - design_complete
+nodes:
+  # 要求 → 振る舞い → 設計 → 承認 → Thread 整理。各 authoring ステージは
+  # 「書く → 不備なら前段を直して書き直す」のループを自分のスコープに閉じる。
+  main:
+    sequence:
+      children:
+        - write_requirements:
+            inputs:
+              spec: request
+            rules:
+              - next: authoring_behavior
+        - authoring_behavior:
+            rules:
+              - next: authoring_design
+        - authoring_design:
+            inputs:
+              behavior: authoring_behavior
+            rules:
+              - next: spec_confirmation
+        - spec_confirmation:
+            inputs:
+              spec: request
+            rules:
+              - next: resolve_open_threads
+        - resolve_open_threads
+
+  # 振る舞い作成ステージ: 書く → 不備なら要求を直し behavior を消して書き直す（loop_guard 2）。
+  # 終端はステージの結果報告（complete で確定したか、上限到達で妥協したかを報告する）。
+  authoring_behavior:
+    sequence:
+      output: write_behavior
+      children:
+        - write_behavior:
+            inputs:
+              spec: request
+            rules:
+              - when:
+                  on: behavior_complete
+                  then: behavior_report
+                next: refine_requirements
+        - refine_requirements:
+            inputs:
+              spec: request
+            rules:
+              - loop_guard:
+                  max_iterations: 2
+                  on_exhausted: behavior_report
+              - next: delete_behavior
+        - delete_behavior:
+            command: "rm -f -- '{{ spec }}/behavior.md'"
+            input:
+              - spec
+            inputs:
+              spec: request
+            rules:
+              - next: write_behavior
+        - behavior_report:
+            inputs:
+              spec: request
+              result: write_behavior
+    artifact: behavior-authoring-result
+
+  # 設計作成ステージ: 書く → 不備なら振る舞いを直し design を消して書き直す（loop_guard 2）。
+  authoring_design:
+    sequence:
+      output: write_design
+      children:
+        - write_design:
+            inputs:
+              spec: request
+              behavior: behavior
+            rules:
+              - when:
+                  on: design_complete
+                  then: design_report
+                next: refine_behavior
+        - refine_behavior:
+            inputs:
+              spec: request
+              behavior: behavior
+            rules:
+              - loop_guard:
+                  max_iterations: 2
+                  on_exhausted: design_report
+              - next: delete_design
+        - delete_design:
+            command: "rm -f -- '{{ spec }}/design.md'"
+            input:
+              - spec
+            inputs:
+              spec: request
+            rules:
+              - next: write_design
+        - design_report:
+            inputs:
+              spec: request
+              result: write_design
+    input:
+      - behavior
+    artifact: design-authoring-result
+
+  # ---- 葉の部品 ----
+
+  write_requirements:
+    session:
+      model: claude-fable-5
+      permission: edit
+      facets:
+        policy: planning
+        knowledge: spec-requirements
+        instruction: write_requirements
+    input:
+      - spec
+
+  write_behavior:
+    session:
+      model: claude-fable-5
+      permission: edit
+      facets:
+        policy: planning
+        knowledge:
+          - spec-requirements
+          - spec-behavior
+          - releash-thread-cli
+        instruction: write_behavior
+    input:
+      - spec
+    artifact: behavior-authoring-result
+
+  refine_requirements:
+    session:
+      model: claude-fable-5
+      permission: edit
+      facets:
+        policy: planning
+        knowledge:
+          - spec-requirements
+          - releash-thread-cli
+        instruction: refine_requirements
+    input:
+      - spec
+
+  behavior_report:
+    session:
+      model: claude-fable-5
+      permission: edit
+      facets:
+        policy: planning
+        instruction: behavior_report
+    input:
+      - spec
+      - result
+
+  write_design:
+    session:
+      model: claude-fable-5
+      permission: edit
+      facets:
+        policy: planning
+        knowledge:
+          - spec-requirements
+          - spec-behavior
+          - spec-design
+          - releash-thread-cli
+        instruction: write_design
+    input:
+      - spec
+      - behavior
+    artifact: design-authoring-result
+
+  refine_behavior:
+    session:
+      model: claude-fable-5
+      permission: edit
+      facets:
+        policy: planning
+        knowledge:
+          - spec-requirements
+          - spec-behavior
+          - releash-thread-cli
+        instruction: refine_behavior
+    input:
+      - spec
+      - behavior
+
+  design_report:
+    session:
+      model: claude-fable-5
+      permission: edit
+      facets:
+        policy: planning
+        instruction: design_report
+    input:
+      - spec
+      - result
+
+  spec_confirmation:
+    session:
+      model: claude-fable-5
+      permission: edit
+      facets:
+        policy: planning
+        knowledge:
+          - spec-requirements
+          - spec-behavior
+          - spec-design
+          - releash-thread-cli
+        instruction: spec_confirmation
+    input:
+      - spec
+    completion: approval
+
+  resolve_open_threads:
+    command: >-
+      set -o pipefail;
+      releash review list --session-id "$RELEASH_SESSION_ID" --state open --json |
+      jq -r '.[].id' |
+      while IFS= read -r thread_id; do
+      releash review resolve "$thread_id" --session-id "$RELEASH_SESSION_ID"
+      --outcome resolved --summary "実装開始前のThread整理" --json >/dev/null || exit $?;
+      done

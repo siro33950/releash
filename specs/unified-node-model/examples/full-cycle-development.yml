@@ -1,0 +1,66 @@
+# 統一 Node モデルの例: 開発フロー全体の親 WorkflowDefinition。
+# collect_inputs で spec_dir を確定し、部品 authoring-spec / implementation / review を ref で束ねる。
+# 元は builtin workflow full-cycle-development。構文の正本は ../syntax.md。
+
+name: full-cycle-development
+description: 入力収集で spec_dir を確定し、authoring-spec（仕様策定）→ implementation（実装）→ review（full-review・fix-policy・review-fix）を Human checkpoint 付きで一気通貫に実行する。
+
+schemas:
+  document-reference: string
+  request-text: string
+  collected-inputs:
+    type: object
+    properties:
+      documents:
+        type: array
+        items: document-reference
+      requests:
+        type: array
+        items: request-text
+      spec_dir: string
+    required:
+    - documents
+    - requests
+    - spec_dir
+
+nodes:
+  main:
+    sequence:
+      children:
+      - collect_inputs:
+          inputs:
+            goal: request
+      - authoring:
+          inputs:
+            request: collect_inputs.spec_dir
+      - implementation:
+          inputs:
+            request: collect_inputs.spec_dir
+      - review:
+          inputs:
+            request: collect_inputs.spec_dir
+
+  # 導入 node: spec_dir をここで確定し、収集した documents / requests の
+  # 実体は spec_dir 配下のファイルとして worktree に書く
+  collect_inputs:
+    session:
+      model: gpt-5.6-sol
+      permission: edit
+      facets:
+        policy: planning
+        instruction: collect_inputs
+    input:
+    - goal
+    artifact: collected-inputs
+
+  # Spec 作成（authoring-spec.yml）
+  authoring:
+    ref: authoring-spec
+
+  # 実装（implementation.yml）
+  implementation:
+    ref: implementation
+
+  # レビューと修正（review.yml）
+  review:
+    ref: review

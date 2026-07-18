@@ -1,0 +1,552 @@
+# 統一 Node モデルの ref 部品例: full-review → review-fix-policy → review-fix のレビューサイクル。
+# 元は builtin full-cycle-development（現行構文）の review 区間。
+# 構文の正本は ../syntax.md。
+# request = spec_dir（Spec ディレクトリのパス）。親 workflow が collect_inputs.spec_dir を配線する。
+
+name: review
+description: 多観点レビュー → open thread 判定 → 修正ラウンド（方針決定 → 整合確認 → タスクごとに隔離修正 → 統合）を、クリーンになるまで繰り返し、最終確認（approval）で終える。
+
+schemas:
+  document-reference: string
+  thread-id: string
+  workflow-text: string
+  thread-reference:
+    type: object
+    properties:
+      thread_id: string
+    required:
+    - thread_id
+  thread-scan:
+    type: object
+    properties:
+      threads:
+        type: array
+        items: thread-reference
+      has_open_threads:
+        type: boolean
+    required:
+    - threads
+    - has_open_threads
+  policy-correction-task:
+    type: object
+    properties:
+      task_id: string
+      thread_ids:
+        type: array
+        items: thread-id
+      problem: string
+      required_changes:
+        type: array
+        items: workflow-text
+    required:
+    - task_id
+    - thread_ids
+    - problem
+    - required_changes
+  policy-consistency-result:
+    type: object
+    properties:
+      verdict:
+        type: string
+        enum:
+        - CONSISTENT
+        - NEEDS_CORRECTION
+      tasks:
+        type: array
+        items: policy-correction-task
+      summary: string
+    required:
+    - verdict
+    - tasks
+    - summary
+  fix-plan-task:
+    type: object
+    properties:
+      task_id: string
+      thread_id: string
+      target_files:
+        type: array
+        items: document-reference
+      implementation_steps:
+        type: array
+        items: workflow-text
+      acceptance_criteria:
+        type: array
+        items: workflow-text
+      non_goals:
+        type: array
+        items: workflow-text
+      source_policy: string
+    required:
+    - task_id
+    - thread_id
+    - target_files
+    - implementation_steps
+    - acceptance_criteria
+    - non_goals
+    - source_policy
+  fix-plan:
+    type: object
+    properties:
+      tasks:
+        type: array
+        items: fix-plan-task
+      summary: string
+    required:
+    - tasks
+    - summary
+  fix-verification:
+    type: object
+    properties:
+      task_id: string
+      fixed:
+        type: boolean
+      reason: string
+    required:
+    - task_id
+    - fixed
+    - reason
+
+nodes:
+  # レビューラウンド: review_scan（レビュー実施 + open 判定）と fix_round（修正）を、
+  # クリーンになるかラウンド上限まで繰り返す。整合ループは fix_round 内に閉じ、
+  # ラウンドごとにカウントがリセットされる（loop_guard のリセット境界 = スコープ）。
+  main:
+    sequence:
+      children:
+      - review_scan:
+          rules:
+          - when:
+              on: has_open_threads
+              then: fix_round
+            next: implementation_confirmation
+      - fix_round:
+          rules:
+          - loop_guard:
+              max_iterations: 2
+              on_exhausted: implementation_confirmation
+          - next: review_scan
+      - implementation_confirmation:
+          inputs:
+            spec: request
+
+  # 1ラウンドのレビュー実施と open thread 判定（純直列・隣接辺のみ）
+  review_scan:
+    sequence:
+      output: check_full_review_threads
+      children:
+      - full_review_fanout
+      - verify_full_review_fanout
+      - check_full_review_threads
+    artifact: thread-scan
+
+  # 修正ラウンド: 方針決定 → 整合確認ループ → 修正計画 →
+  # タスクごとに隔離 worktree で修正 + 検証 → 統合
+  fix_round:
+    sequence:
+      children:
+      - scan_open_threads:
+          command: >-
+            releash review list --session-id "$RELEASH_SESSION_ID" --state open --json |
+            jq '{threads: map({thread_id: .id}), has_open_threads: (length > 0)}'
+          artifact: thread-scan
+          rules:
+          - next: fix_policy_fanout
+      - fix_policy_fanout:
+          rules:
+          - next: check_fix_policy_consistency
+      - check_fix_policy_consistency:
+          inputs:
+            spec: request
+          rules:
+          - loop_guard:
+              max_iterations: 2
+              on_exhausted: create_fix_plan
+          - switch:
+              on: verdict
+              cases:
+                NEEDS_CORRECTION: fix_policy_conflict_fanout
+                CONSISTENT: create_fix_plan
+      - fix_policy_conflict_fanout:
+          rules:
+          - next: check_fix_policy_consistency
+      - create_fix_plan:
+          inputs:
+            spec: request
+            consistency: check_fix_policy_consistency
+          rules:
+          - next: fix_all
+      - fix_all:
+          rules:
+          - next: merge_fixes
+      - merge_fixes:
+          inputs:
+            spec: request
+            results: fix_all
+
+  # ---- full-review（12 観点 = 6 分野 × 2 モデル）----
+
+  full_review_fanout:
+    fanout:
+      children:
+      - full_review_acceptance_opus:
+          inputs:
+            spec: request
+      - full_review_acceptance_codex:
+          inputs:
+            spec: request
+      - full_review_structure_opus:
+          inputs:
+            spec: request
+      - full_review_structure_codex:
+          inputs:
+            spec: request
+      - full_review_quality_opus:
+          inputs:
+            spec: request
+      - full_review_quality_codex:
+          inputs:
+            spec: request
+      - full_review_test_opus:
+          inputs:
+            spec: request
+      - full_review_test_codex:
+          inputs:
+            spec: request
+      - full_review_security_opus:
+          inputs:
+            spec: request
+      - full_review_security_codex:
+          inputs:
+            spec: request
+      - full_review_architecture_opus:
+          inputs:
+            spec: request
+      - full_review_architecture_codex:
+          inputs:
+            spec: request
+
+  full_review_acceptance_opus:
+    session:
+      model: claude-opus-4-8
+      permission: edit
+      facets:
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: review-acceptance
+    input:
+    - spec
+  full_review_acceptance_codex:
+    session:
+      model: gpt-5.6-sol
+      permission: full
+      facets:
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: review-acceptance
+    input:
+    - spec
+  full_review_structure_opus:
+    session:
+      model: claude-opus-4-8
+      permission: edit
+      facets:
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: review-structure
+    input:
+    - spec
+  full_review_structure_codex:
+    session:
+      model: gpt-5.6-sol
+      permission: full
+      facets:
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: review-structure
+    input:
+    - spec
+  full_review_quality_opus:
+    session:
+      model: claude-opus-4-8
+      permission: edit
+      facets:
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: review-quality
+    input:
+    - spec
+  full_review_quality_codex:
+    session:
+      model: gpt-5.6-sol
+      permission: full
+      facets:
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: review-quality
+    input:
+    - spec
+  full_review_test_opus:
+    session:
+      model: claude-opus-4-8
+      permission: edit
+      facets:
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: review-test
+    input:
+    - spec
+  full_review_test_codex:
+    session:
+      model: gpt-5.6-sol
+      permission: full
+      facets:
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: review-test
+    input:
+    - spec
+  full_review_security_opus:
+    session:
+      model: claude-opus-4-8
+      permission: edit
+      facets:
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: review-security
+    input:
+    - spec
+  full_review_security_codex:
+    session:
+      model: gpt-5.6-sol
+      permission: full
+      facets:
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: review-security
+    input:
+    - spec
+  full_review_architecture_opus:
+    session:
+      model: claude-opus-4-8
+      permission: edit
+      facets:
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: review-architecture
+    input:
+    - spec
+  full_review_architecture_codex:
+    session:
+      model: gpt-5.6-sol
+      permission: full
+      facets:
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: review-architecture
+    input:
+    - spec
+
+  # ---- verify（レビュー結果の検証・分類）----
+
+  verify_full_review_fanout:
+    fanout:
+      children:
+      - verify_full_review_opus:
+          inputs:
+            spec: request
+      - verify_full_review_codex:
+          inputs:
+            spec: request
+
+  verify_full_review_opus:
+    session:
+      model: claude-opus-4-8
+      permission: edit
+      facets:
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: full-review-verify-and-classify
+    input:
+    - spec
+  verify_full_review_codex:
+    session:
+      model: gpt-5.6-sol
+      permission: full
+      facets:
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: full-review-verify-and-classify
+    input:
+    - spec
+
+  check_full_review_threads:
+    command: >-
+      releash review list --session-id "$RELEASH_SESSION_ID" --state open --json |
+      jq '{threads: map({thread_id: .id}), has_open_threads: (length > 0)}'
+    artifact: thread-scan
+
+  # ---- review-fix-policy ----
+
+  fix_policy_fanout:
+    fanout:
+      children:
+      - decide_fix_policy:
+          inputs:
+            thread: items
+            spec: request
+      items: scan_open_threads.threads
+
+  decide_fix_policy:
+    session:
+      model: gpt-5.6-sol
+      permission: full
+      facets:
+        policy: triage
+        knowledge:
+        - spec-requirements
+        - spec-behavior
+        - spec-design
+        - releash-thread-cli
+        instruction: decide_fix_policy
+    input:
+    - thread: thread-reference
+    - spec
+
+  check_fix_policy_consistency:
+    session:
+      model: gpt-5.6-sol
+      permission: full
+      facets:
+        policy: reviewing
+        knowledge:
+        - spec-requirements
+        - spec-behavior
+        - spec-design
+        - releash-thread-cli
+        instruction: check_fix_policy_consistency
+    input:
+    - spec
+    artifact: policy-consistency-result
+
+  fix_policy_conflict_fanout:
+    fanout:
+      children:
+      - correct_fix_policy:
+          inputs:
+            task: items
+            spec: request
+      items: check_fix_policy_consistency.tasks
+
+  correct_fix_policy:
+    session:
+      model: gpt-5.6-sol
+      permission: full
+      facets:
+        policy: triage
+        knowledge:
+        - spec-requirements
+        - spec-behavior
+        - spec-design
+        - releash-thread-cli
+        instruction: correct_fix_policy
+    input:
+    - task: policy-correction-task
+    - spec
+
+  # ---- review-fix（タスクごとに隔離 worktree で修正 + 検証 → 統合）----
+
+  create_fix_plan:
+    session:
+      model: gpt-5.6-sol
+      permission: full
+      facets:
+        policy: reviewing
+        knowledge:
+        - spec-requirements
+        - spec-behavior
+        - spec-design
+        - releash-thread-cli
+        instruction: create_fix_plan
+    input:
+    - spec
+    - consistency
+    artifact: fix-plan
+
+  fix_all:
+    fanout:
+      children:
+      - fix_and_verify:
+          inputs:
+            task: items
+            spec: request
+      items: create_fix_plan.tasks
+    worktree: isolated
+
+  # 部品 sequence: 1 修正タスクの実装と検証。検証結果がこの Node の Artifact になる。
+  fix_and_verify:
+    sequence:
+      output: verify_fix
+      children:
+      - fix_task:
+          inputs:
+            task: task
+            spec: spec
+          rules:
+          - next: verify_fix
+      - verify_fix:
+          inputs:
+            task: task
+            spec: spec
+    input:
+    - task: fix-plan-task
+    - spec
+    artifact: fix-verification
+
+  fix_task:
+    session:
+      model: gpt-5.6-sol
+      permission: full
+      facets:
+        policy: coding
+        knowledge: releash-thread-cli
+        instruction: implement_fix_task
+    input:
+    - task
+    - spec
+
+  verify_fix:
+    session:
+      model: claude-fable-5
+      permission: edit
+      facets:
+        policy: reviewing
+        knowledge: releash-thread-cli
+        instruction: verify_fix
+    input:
+    - task
+    - spec
+    artifact: fix-verification
+
+  merge_fixes:
+    session:
+      model: claude-fable-5
+      permission: full
+      facets:
+        policy: coding
+        instruction: merge_fixes
+    input:
+    - spec
+    - results
+
+  implementation_confirmation:
+    session:
+      model: gpt-5.6-sol
+      permission: full
+      facets:
+        policy: reporting
+        knowledge: releash-thread-cli
+        instruction: implementation_confirmation
+    input:
+    - spec
+    completion: approval
