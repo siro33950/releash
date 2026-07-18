@@ -8389,7 +8389,6 @@ mod tests {
             .await
             .unwrap();
         controller.pause_start_turn();
-        let transition_guard = usecase.acquire_session_lock(&session.id).await;
         let send_task = tokio::spawn({
             let usecase = Arc::clone(&usecase);
             let session_id = session.id.clone();
@@ -8411,15 +8410,13 @@ mod tests {
                     .await
             }
         });
-        tokio::task::yield_now().await;
+        wait_for_call(&controller, &session.id, TestRuntimeCallKind::StartTurn).await;
         let close_task = tokio::spawn({
             let usecase = Arc::clone(&usecase);
             let session_id = session.id.clone();
             async move { usecase.close_session_if_idle(&session_id).await }
         });
         tokio::task::yield_now().await;
-        drop(transition_guard);
-        wait_for_call(&controller, &session.id, TestRuntimeCallKind::StartTurn).await;
         assert!(!close_task.is_finished());
 
         controller.release_start_turn();
@@ -13739,6 +13736,11 @@ mod tests {
             SessionCreationAttributes::default(),
         )
         .unwrap();
+        let normal_before_recovery = session_store
+            .get_session_meta(tmp.path(), &normal_session.id)
+            .unwrap()
+            .unwrap()
+            .to_summary();
         usecase
             .start_session(
                 &session.id,
@@ -13853,10 +13855,13 @@ mod tests {
             .iter()
             .find(|summary| summary.id == normal_session.id)
             .unwrap();
-        assert_eq!(tauri_normal.state, normal_session.state);
-        assert_eq!(tauri_normal.updated_at, normal_session.updated_at);
+        assert_eq!(tauri_normal.state, normal_before_recovery.state);
+        assert_eq!(tauri_normal.updated_at, normal_before_recovery.updated_at);
         assert_eq!(workspace_normal.state, WorkspaceSessionState::Active);
-        assert_eq!(workspace_normal.updated_at, normal_session.updated_at);
+        assert_eq!(
+            workspace_normal.updated_at,
+            normal_before_recovery.updated_at
+        );
 
         let events_during_recovery = session_store
             .load_session_events(tmp.path(), &session.id)
