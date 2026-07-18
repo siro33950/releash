@@ -8,7 +8,7 @@ use super::storage;
 use crate::domain::workflow::validation::{self, ValidationError};
 
 const BUILTIN_FULL_CYCLE_DEVELOPMENT: &str = include_str!("builtin/full-cycle-development.yml");
-const BUILTIN_VERIFY_REVIEW_COMMENTS: &str = include_str!("builtin/06_verify-review-comments.yml");
+const BUILTIN_HANDLE_PR_REVIEW: &str = include_str!("builtin/handle-pr-review.yml");
 
 struct BuiltinEntry {
     filename: &'static str,
@@ -23,9 +23,9 @@ const BUILTINS: &[BuiltinEntry] = &[
         description: "authoring_draft → implement_codex → full-review → review-fix-policy → review-fix を Human checkpoint 付きで一気通貫に実行する。",
     },
     BuiltinEntry {
-        filename: "06_verify-review-comments.yml",
-        content: BUILTIN_VERIFY_REVIEW_COMMENTS,
-        description: "GitHub PR の unresolved review comment を Releash Thread に取り込み、review-fix 相当で対応後、commit/push して PR comment へまとめて返信する。",
+        filename: "handle-pr-review.yml",
+        content: BUILTIN_HANDLE_PR_REVIEW,
+        description: "現在のブランチに紐づくPRの未解決review commentを取り込み、方針整合性を確認して修正し、人間の確認後にcommit、push、replyを行う。",
     },
 ];
 
@@ -366,32 +366,45 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "review-fix-check-tasks",
-        content: include_str!("builtin_facets/instructions/review-fix-check-tasks.md"),
+        key: "import_pr_review_comments",
+        content: include_str!("builtin_facets/instructions/import_pr_review_comments.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "review-fix",
-        content: include_str!("builtin_facets/instructions/review-fix.md"),
+        key: "decide_pr_review_fix_policy",
+        content: include_str!("builtin_facets/instructions/decide_pr_review_fix_policy.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "verify-review-comments-import",
-        content: include_str!("builtin_facets/instructions/verify-review-comments-import.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "verify-review-comments-decide-policy",
+        key: "check_pr_review_fix_policy_consistency",
         content: include_str!(
-            "builtin_facets/instructions/verify-review-comments-decide-policy.md"
+            "builtin_facets/instructions/check_pr_review_fix_policy_consistency.md"
         ),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "verify-review-comments-commit-push-reply",
-        content: include_str!(
-            "builtin_facets/instructions/verify-review-comments-commit-push-reply.md"
-        ),
+        key: "correct_pr_review_fix_policy",
+        content: include_str!("builtin_facets/instructions/correct_pr_review_fix_policy.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "create_pr_review_fix_plan",
+        content: include_str!("builtin_facets/instructions/create_pr_review_fix_plan.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "implement_pr_review_fix_plan",
+        content: include_str!("builtin_facets/instructions/implement_pr_review_fix_plan.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "pr_review_confirmation",
+        content: include_str!("builtin_facets/instructions/pr_review_confirmation.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "finalize_pr_review",
+        content: include_str!("builtin_facets/instructions/finalize_pr_review.md"),
     },
 ];
 

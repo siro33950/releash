@@ -6,7 +6,7 @@ const EXTENDED_STALE_TIMEOUT: Duration = Duration::from_secs(600);
 
 const EXTENDED_STALE_MODELS: &[&str] = &["claude-opus-4-8", "gpt-5.6-sol"];
 
-const EXTENDED_STALE_TEMPLATES: &[&str] = &["full-cycle-development", "06_verify-review-comments"];
+const EXTENDED_STALE_TEMPLATES: &[&str] = &["full-cycle-development", "handle-pr-review"];
 
 pub(crate) fn workflow_runtime_timeout_policy() -> TimeoutPolicy {
     let policy = TimeoutPolicy::default();
