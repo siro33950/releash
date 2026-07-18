@@ -72,6 +72,11 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 		// イベントリスナー管理
 		const eventListeners = new Map<string, number[]>();
 		const invocationCounts = new Map<string, number>();
+		const agentSessionNotices = new Map<
+			string,
+			{ operation: string; message: string }
+		>();
+		let agentSessionNoticeRevision = 0;
 		const invocations: Array<{
 			cmd: string;
 			args: Record<string, unknown>;
@@ -146,6 +151,44 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 					);
 				}
 				return value;
+			}
+
+			if (
+				cmd === "get_agent_session_notice" ||
+				cmd === "update_agent_session_notice"
+			) {
+				const sessionId = args.sessionId as string;
+				if (cmd === "update_agent_session_notice") {
+					const update = args.update as {
+						action: "failure" | "success" | "dismiss" | "remove_session";
+						operation?: string;
+						message?: string;
+					};
+					let changed = false;
+					if (update.action === "failure" && update.operation && update.message) {
+						agentSessionNotices.set(sessionId, {
+							operation: update.operation,
+							message: update.message,
+						});
+						changed = true;
+					} else if (update.action === "success" && update.operation) {
+						if (
+							agentSessionNotices.get(sessionId)?.operation === update.operation
+						) {
+							agentSessionNotices.delete(sessionId);
+							changed = true;
+						}
+					} else {
+						changed = agentSessionNotices.delete(sessionId);
+					}
+					if (changed) agentSessionNoticeRevision += 1;
+				}
+				const notice = agentSessionNotices.get(sessionId);
+				return {
+					sessionId,
+					revision: agentSessionNoticeRevision,
+					notice: notice ? { message: notice.message } : null,
+				};
 			}
 
 			// 未定義コマンドはnull返却（ログ出力）

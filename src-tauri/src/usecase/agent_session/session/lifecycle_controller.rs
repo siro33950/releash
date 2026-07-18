@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::usecase::agent_session::event_log::{AgentSessionEvent, TurnEventLog};
 
-use super::{now_timestamp, ChatSession, RestoreSessionResponse, SessionState, SessionStore};
+use super::{now_timestamp, ChatSession, SessionState, SessionStore};
 
 pub struct SessionLifecycleController<'a> {
     pub session_store: &'a Arc<SessionStore>,
@@ -52,10 +52,7 @@ impl<'a> SessionLifecycleController<'a> {
             .map(|_| ())
     }
 
-    pub fn restore_session_state(
-        &self,
-        session: ChatSession,
-    ) -> Result<RestoreSessionResponse, String> {
+    pub fn restore_session_state(&self, session: ChatSession) -> Result<(), String> {
         let projected_state = self.project_session_state(&session.id)?;
         if projected_state != session.state {
             self.session_store
@@ -63,9 +60,7 @@ impl<'a> SessionLifecycleController<'a> {
         }
         self.session_store
             .set_session_state(self.data_dir, &session.id, SessionState::Idle)?;
-        Ok(RestoreSessionResponse {
-            restored_workflow_node: false,
-        })
+        Ok(())
     }
 
     fn project_session_state(&self, session_id: &str) -> Result<SessionState, String> {

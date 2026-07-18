@@ -622,6 +622,7 @@ export interface ChatSessionViewProps {
 	isInterrupting: boolean;
 	activityStatus: { label: string } | null;
 	error: string | null;
+	onDismissError: () => void;
 	permissionMode: PermissionMode;
 	planMode: PlanMode;
 	availableModels: ModelInfo[];
@@ -693,6 +694,7 @@ export function ChatSessionView({
 	isInterrupting,
 	activityStatus,
 	error,
+	onDismissError,
 	permissionMode,
 	planMode,
 	availableModels,
@@ -1717,8 +1719,19 @@ export function ChatSessionView({
 				</div>
 				{error && (
 					<div className="px-2 pb-2">
-						<div className="bg-destructive/10 text-destructive rounded-lg px-3 py-2 text-sm">
-							{error}
+						<div
+							className="flex items-start gap-2 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive"
+							role="alert"
+						>
+							<span className="min-w-0 flex-1">{error}</span>
+							<button
+								type="button"
+								className="shrink-0 rounded p-0.5 hover:bg-destructive/10"
+								aria-label="Dismiss error"
+								onClick={onDismissError}
+							>
+								<X className="size-3.5" />
+							</button>
 						</div>
 					</div>
 				)}

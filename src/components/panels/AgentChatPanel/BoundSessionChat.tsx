@@ -1,3 +1,4 @@
+import { X } from "lucide-react";
 import type React from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAgentChatContext } from "@/contexts/AgentChatContext";
@@ -77,7 +78,8 @@ export function BoundSessionChat({
 		getSessionRuntimeSlashCommands = () => [],
 		availableModels,
 		backends,
-		error,
+		getSessionError,
+		dismissSessionError,
 		sendMessage,
 		interrupt,
 		cancelQueuedTurn = async () => {},
@@ -142,6 +144,7 @@ export function BoundSessionChat({
 		if (!session) return null;
 		return deriveActivityStatus(session.messages, turnPhase);
 	}, [session, turnPhase]);
+	const error = sessionId ? getSessionError(sessionId) : null;
 
 	const handleSend = useCallback(
 		(
@@ -221,11 +224,31 @@ export function BoundSessionChat({
 		const unavailable =
 			loadState.sessionId === sessionId && loadState.status === "unavailable";
 		return (
-			<div
-				className="flex h-full items-center justify-center bg-background px-4 text-sm text-muted-foreground"
-				role={unavailable ? "alert" : "status"}
-			>
-				{unavailable ? "Session unavailable." : "Loading session..."}
+			<div className="flex h-full flex-col bg-background">
+				<div
+					className="flex min-h-0 flex-1 items-center justify-center px-4 text-sm text-muted-foreground"
+					role={unavailable ? "alert" : "status"}
+				>
+					{unavailable ? "Session unavailable." : "Loading session..."}
+				</div>
+				{error && sessionId && (
+					<div className="px-2 pb-2">
+						<div
+							className="flex items-start gap-2 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive"
+							role="alert"
+						>
+							<span className="min-w-0 flex-1">{error}</span>
+							<button
+								type="button"
+								className="shrink-0 rounded p-0.5 hover:bg-destructive/10"
+								aria-label="Dismiss error"
+								onClick={() => dismissSessionError(sessionId)}
+							>
+								<X className="size-3.5" />
+							</button>
+						</div>
+					</div>
+				)}
 			</div>
 		);
 	}
@@ -247,6 +270,7 @@ export function BoundSessionChat({
 			isInterrupting={isInterrupting}
 			activityStatus={activityStatus}
 			error={error}
+			onDismissError={() => dismissSessionError(session.id)}
 			permissionMode={permissionMode}
 			planMode={planMode}
 			availableModels={availableModels}

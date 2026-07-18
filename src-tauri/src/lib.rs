@@ -77,6 +77,21 @@ pub fn run() {
         .setup(move |app| {
             pty_gateway_for_setup.start_idle_sweeper(app.handle().clone());
             let data_dir = app.path().app_data_dir()?;
+            let session_store_state = app
+                .state::<Arc<usecase::agent_session::session::SessionStore>>()
+                .inner()
+                .clone();
+            let agent_session_notice_usecase = Arc::new(
+                adaptor::controller::agent_session_notice_wiring::build_agent_session_notice_usecase(
+                    session_store_state.clone(),
+                    &data_dir,
+                ),
+            );
+            adaptor::controller::agent_session_notice_wiring::register_session_notice_cleanup_listener(
+                session_store_state.as_ref(),
+                agent_session_notice_usecase.clone(),
+            );
+            app.manage(agent_session_notice_usecase);
             let cleanup_report =
                 infrastructure::process::pid_registry::cleanup_orphan_processes(&data_dir);
             if cleanup_report.scanned > 0 || cleanup_report.failures > 0 {
@@ -258,6 +273,17 @@ pub fn run() {
             infrastructure::platform::focus_tracker::install(app, focus_tracker.clone());
 
             {
+                let notice_usecase = app
+                    .state::<Arc<usecase::agent_session::notice::AgentSessionNoticeUsecase>>()
+                    .inner()
+                    .clone();
+                adaptor::controller::agent_session_notice_wiring::register_agent_session_notice_publisher(
+                    notice_usecase,
+                    app.handle().clone(),
+                );
+            }
+
+            {
                 let session_store_state = app
                     .state::<Arc<usecase::agent_session::session::SessionStore>>()
                     .inner()
@@ -365,11 +391,30 @@ pub fn run() {
                     .state::<Arc<usecase::agent_session::runtime::AgentSessionRuntimeUsecase>>()
                     .inner()
                     .clone();
+                let stored_lifecycle_notice = app
+                    .state::<Arc<usecase::agent_session::notice::AgentSessionNoticeUsecase>>()
+                    .inner()
+                    .clone();
+                let stored_lifecycle_open_tabs = app
+                    .state::<Arc<usecase::agent_session::session::OpenTabRegistry>>()
+                    .inner()
+                    .clone();
+                let workflow_node_restorer = Arc::new(
+                    adaptor::controller::wiring::build_node_execution_lifecycle_usecase(
+                        app.handle().clone(),
+                        runtime_session_store.clone(),
+                        stored_lifecycle_runtime.clone(),
+                        stored_lifecycle_open_tabs,
+                    ),
+                );
+                app.manage(workflow_node_restorer.clone());
                 let stored_session_lifecycle = Arc::new(
                     adaptor::controller::wiring::build_stored_session_lifecycle_usecase(
                         runtime_session_store,
                         stored_lifecycle_registry,
                         stored_lifecycle_runtime,
+                        workflow_node_restorer,
+                        stored_lifecycle_notice,
                     ),
                 );
                 app.manage(stored_session_lifecycle.clone());
@@ -403,15 +448,6 @@ pub fn run() {
                 .state::<Arc<dyn usecase::agent_session::context::BranchDiffContextPort>>()
                 .inner()
                 .clone();
-            let workflow_node_lifecycle_usecase = Arc::new(
-                adaptor::controller::wiring::build_node_execution_lifecycle_usecase(
-                    app.handle().clone(),
-                    session_store.clone(),
-                    agent_runtime.clone(),
-                    open_tabs.clone(),
-                ),
-            );
-            app.manage(workflow_node_lifecycle_usecase);
             let workflow_runtime_usecase =
                 Arc::new(adaptor::controller::wiring::build_workflow_runtime_usecase(
                     app.handle().clone(),

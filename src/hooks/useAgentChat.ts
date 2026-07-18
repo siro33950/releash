@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import type { AgentState } from "@/types/protocol";
 import type {
@@ -37,6 +38,9 @@ import {
 import { useAgentSdkListeners } from "./useAgentSdkListeners";
 import {
 	type ActiveMessageEvictionPlan,
+	type AgentSessionNoticeOperation,
+	type AgentSessionNoticeSnapshot,
+	type AgentSessionNoticeUpdate,
 	archiveOpenSession as archiveOpenSessionApi,
 	archiveSession as archiveSessionApi,
 	cancelAgentQueuedTurn,
@@ -44,6 +48,7 @@ import {
 	createSession,
 	createWorkspaceSession,
 	forkSession as forkSessionApi,
+	getAgentSessionNotice,
 	getSession,
 	getSessionPage,
 	initAgentSessions,
@@ -57,6 +62,7 @@ import {
 	sendWorkflowApprovalChatMessage,
 	setSessionBackend,
 	setSessionTitle as setSessionTitleApi,
+	updateAgentSessionNotice,
 } from "./useSessionStore";
 import { useWorktreeSessionStatuses } from "./useWorktreeSessionStatuses";
 
@@ -109,7 +115,6 @@ export interface UseAgentChatResult {
 	activeSession: ChatSession | null;
 	isStreaming: boolean;
 	activityStatus: ActivityStatus;
-	error: string | null;
 	permissionMode: PermissionMode;
 	planMode: PlanMode;
 	sessionAgentStates: Map<string, AgentState>;
@@ -174,6 +179,8 @@ export interface UseAgentChatResult {
 		options?: OlderMessageEvictionOptions,
 	) => Promise<void>;
 	/** per-session lookup（既存）。*/
+	getSessionError: (sessionId: string) => string | null;
+	dismissSessionError: (sessionId: string) => void;
 	getSessionTurnPhase: (sessionId: string) => TurnPhase;
 	getSessionInterrupting: (sessionId: string) => boolean;
 	getSessionPermissionMode: (sessionId: string) => PermissionMode;
@@ -257,6 +264,92 @@ function reportEvictionPlanSkipped(e: unknown): void {
 	console.warn(
 		`メッセージ退避計画の取得に失敗。退避をスキップし、次回トリガで再試行します: ${e}`,
 	);
+}
+
+type NoticeRequestControllersRef = {
+	current: Map<string, AbortController>;
+};
+
+function ensureNoticeController(
+	requestControllers: NoticeRequestControllersRef,
+	sessionId: string,
+): AbortController {
+	let controller = requestControllers.current.get(sessionId);
+	if (!controller || controller.signal.aborted) {
+		controller = new AbortController();
+		requestControllers.current.set(sessionId, controller);
+	}
+	return controller;
+}
+
+function dispatchNoticeSnapshot(
+	dispatch: React.Dispatch<AgentChatAction>,
+	snapshot: AgentSessionNoticeSnapshot,
+): void {
+	dispatch({
+		type: "SYNC_SESSION_ERROR",
+		sessionId: snapshot.sessionId,
+		revision: snapshot.revision,
+		message: snapshot.notice?.message ?? null,
+	});
+}
+
+async function syncSessionError(
+	dispatch: React.Dispatch<AgentChatAction>,
+	requestControllers: NoticeRequestControllersRef,
+	sessionId: string,
+	update: AgentSessionNoticeUpdate,
+): Promise<void> {
+	const controller = ensureNoticeController(requestControllers, sessionId);
+	try {
+		const snapshot = await updateAgentSessionNotice(sessionId, update);
+		if (controller.signal.aborted) return;
+		dispatchNoticeSnapshot(dispatch, snapshot);
+	} catch (error) {
+		console.error("Failed to synchronize agent session notice:", error);
+	}
+}
+
+async function setSessionError(
+	dispatch: React.Dispatch<AgentChatAction>,
+	requestControllers: NoticeRequestControllersRef,
+	sessionId: string | null,
+	operation: AgentSessionNoticeOperation,
+	message: string,
+): Promise<void> {
+	if (!sessionId) return;
+	await syncSessionError(dispatch, requestControllers, sessionId, {
+		action: "failure",
+		operation,
+		message,
+	});
+}
+
+async function clearSessionError(
+	dispatch: React.Dispatch<AgentChatAction>,
+	requestControllers: NoticeRequestControllersRef,
+	sessionId: string | null,
+	operation: AgentSessionNoticeOperation,
+): Promise<void> {
+	if (!sessionId) return;
+	await syncSessionError(dispatch, requestControllers, sessionId, {
+		action: "success",
+		operation,
+	});
+}
+
+function cleanupSessionMirror(
+	dispatch: React.Dispatch<AgentChatAction>,
+	sessionsByIdRef: { current: Record<string, ChatSession> },
+	requestControllers: NoticeRequestControllersRef,
+	sessionId: string,
+): void {
+	requestControllers.current.get(sessionId)?.abort();
+	requestControllers.current.delete(sessionId);
+	const { [sessionId]: _removed, ...remainingSessions } =
+		sessionsByIdRef.current;
+	sessionsByIdRef.current = remainingSessions;
+	dispatch({ type: "CLEANUP_SESSION", sessionId });
 }
 
 function dispatchSessionMeta(
@@ -381,6 +474,39 @@ export function useAgentChat(
 	const activeMessageEvictionsRef = useRef<Set<string>>(new Set());
 	const sessionAccessSeqRef = useRef(0);
 	const sessionEvictionRanksRef = useRef<Record<string, number>>({});
+	const sessionNoticeRequestControllersRef = useRef<
+		Map<string, AbortController>
+	>(new Map());
+
+	useEffect(() => {
+		let unlisten: UnlistenFn | null = null;
+		let cancelled = false;
+		void listen<AgentSessionNoticeSnapshot>(
+			"agent-session-notice-changed",
+			(event) => {
+				const sessionId = event.payload.sessionId;
+				let controller =
+					sessionNoticeRequestControllersRef.current.get(sessionId);
+				if (!controller && !sessionsByIdRef.current[sessionId]) return;
+				if (!controller) {
+					controller = new AbortController();
+					sessionNoticeRequestControllersRef.current.set(sessionId, controller);
+				}
+				if (controller.signal.aborted) return;
+				dispatchNoticeSnapshot(dispatch, event.payload);
+			},
+		).then((nextUnlisten) => {
+			if (cancelled) {
+				nextUnlisten();
+			} else {
+				unlisten = nextUnlisten;
+			}
+		});
+		return () => {
+			cancelled = true;
+			unlisten?.();
+		};
+	}, []);
 
 	const touchSessionAccess = useCallback((sessionId: string) => {
 		const nextRank = sessionAccessSeqRef.current + 1;
@@ -412,6 +538,18 @@ export function useAgentChat(
 	const viewableRegistry = useMemo<ViewableSessionRegistry>(
 		() => ({
 			register: (sessionId: string) => {
+				const controller = ensureNoticeController(
+					sessionNoticeRequestControllersRef,
+					sessionId,
+				);
+				void getAgentSessionNotice(sessionId)
+					.then((snapshot) => {
+						if (controller.signal.aborted) return;
+						dispatchNoticeSnapshot(dispatch, snapshot);
+					})
+					.catch((error) => {
+						console.error("Failed to query agent session notice:", error);
+					});
 				touchSessionAccess(sessionId);
 				const map = viewableIdsRef.current;
 				map.set(sessionId, (map.get(sessionId) ?? 0) + 1);
@@ -420,6 +558,12 @@ export function useAgentChat(
 					const next = (m.get(sessionId) ?? 0) - 1;
 					if (next <= 0) {
 						m.delete(sessionId);
+						if (!sessionsByIdRef.current[sessionId]) {
+							sessionNoticeRequestControllersRef.current
+								.get(sessionId)
+								?.abort();
+							sessionNoticeRequestControllersRef.current.delete(sessionId);
+						}
 						evictInactiveSessionsRef.current();
 					} else {
 						m.set(sessionId, next);
@@ -615,11 +759,8 @@ export function useAgentChat(
 					}
 				}
 				return sessions;
-			} catch (e) {
-				dispatch({
-					type: "SET_ERROR",
-					error: `セッション一覧の取得に失敗: ${e}`,
-				});
+			} catch (error) {
+				console.error("Failed to refresh agent sessions:", error);
 				return [];
 			}
 		},
@@ -630,11 +771,8 @@ export function useAgentChat(
 		try {
 			const sessions = await listClosedSessions(worktreePathRef.current);
 			dispatch({ type: "SET_CLOSED_SESSIONS", sessions });
-		} catch (e) {
-			dispatch({
-				type: "SET_ERROR",
-				error: `クローズ済みセッション一覧の取得に失敗: ${e}`,
-			});
+		} catch (error) {
+			console.error("Failed to refresh closed agent sessions:", error);
 		}
 	}, []);
 
@@ -643,6 +781,12 @@ export function useAgentChat(
 			try {
 				const response = await getSession(sessionId);
 				if (response) {
+					await clearSessionError(
+						dispatch,
+						sessionNoticeRequestControllersRef,
+						sessionId,
+						"load_session",
+					);
 					rememberInitialPage(response);
 					dispatch({ type: "UPSERT_SESSION", session: response.session });
 					dispatch({
@@ -654,10 +798,13 @@ export function useAgentChat(
 					dispatch({ type: "SET_ACTIVE_SESSION_ID", sessionId: null });
 				}
 			} catch (e) {
-				dispatch({
-					type: "SET_ERROR",
-					error: `セッションの読み込みに失敗: ${e}`,
-				});
+				await setSessionError(
+					dispatch,
+					sessionNoticeRequestControllersRef,
+					sessionId,
+					"load_session",
+					`セッションの読み込みに失敗: ${e}`,
+				);
 			}
 		},
 		[rememberInitialPage],
@@ -668,6 +815,12 @@ export function useAgentChat(
 			try {
 				const response = await getSession(sessionId);
 				if (response) {
+					await clearSessionError(
+						dispatch,
+						sessionNoticeRequestControllersRef,
+						sessionId,
+						"load_session",
+					);
 					rememberInitialPage(response);
 					dispatch({ type: "UPSERT_SESSION", session: response.session });
 					dispatchSessionMeta(dispatch, sessionId, response);
@@ -675,10 +828,13 @@ export function useAgentChat(
 				}
 				return null;
 			} catch (e) {
-				dispatch({
-					type: "SET_ERROR",
-					error: `session の読み込みに失敗: ${e}`,
-				});
+				await setSessionError(
+					dispatch,
+					sessionNoticeRequestControllersRef,
+					sessionId,
+					"load_session",
+					`session の読み込みに失敗: ${e}`,
+				);
 				throw e;
 			}
 		},
@@ -717,6 +873,12 @@ export function useAgentChat(
 					};
 					return;
 				}
+				await clearSessionError(
+					dispatch,
+					sessionNoticeRequestControllersRef,
+					sessionId,
+					"load_older",
+				);
 				const existingIds = new Set(
 					(sessionsByIdRef.current[sessionId]?.messages ?? []).map(
 						(message) => message.id,
@@ -744,10 +906,13 @@ export function useAgentChat(
 				};
 			} catch (e) {
 				pageState.loading = false;
-				dispatch({
-					type: "SET_ERROR",
-					error: `過去メッセージの読み込みに失敗: ${e}`,
-				});
+				await setSessionError(
+					dispatch,
+					sessionNoticeRequestControllersRef,
+					sessionId,
+					"load_older",
+					`過去メッセージの読み込みに失敗: ${e}`,
+				);
 			}
 		},
 		[touchSessionAccess],
@@ -876,6 +1041,12 @@ export function useAgentChat(
 										mentions,
 									);
 				const responseSessionId = response.session.id;
+				await clearSessionError(
+					dispatch,
+					sessionNoticeRequestControllersRef,
+					sessionId,
+					"send",
+				);
 				touchSessionAccess(responseSessionId);
 				dispatch({ type: "UPSERT_SESSION", session: response.session });
 				if (!response.queuedTurn) {
@@ -915,10 +1086,13 @@ export function useAgentChat(
 				dispatchWorkspaceTreeRefresh(response.session.worktreePath);
 				return true;
 			} catch (e) {
-				dispatch({
-					type: "SET_ERROR",
-					error: `メッセージ送信に失敗: ${e}`,
-				});
+				await setSessionError(
+					dispatch,
+					sessionNoticeRequestControllersRef,
+					sessionId,
+					"send",
+					`メッセージ送信に失敗: ${e}`,
+				);
 				return false;
 			}
 		},
@@ -934,38 +1108,74 @@ export function useAgentChat(
 		async (sessionId: string, queuedTurnId?: string | null) => {
 			try {
 				const response = await cancelAgentQueuedTurn(sessionId, queuedTurnId);
+				await clearSessionError(
+					dispatch,
+					sessionNoticeRequestControllersRef,
+					sessionId,
+					"cancel_queue",
+				);
 				dispatch({
 					type: "SET_PENDING_QUEUE",
 					sessionId: response.sessionId,
 					queue: response.pendingQueue,
 				});
 			} catch (e) {
-				dispatch({
-					type: "SET_ERROR",
-					error: `キューのキャンセルに失敗: ${e}`,
-				});
+				await setSessionError(
+					dispatch,
+					sessionNoticeRequestControllersRef,
+					sessionId,
+					"cancel_queue",
+					`キューのキャンセルに失敗: ${e}`,
+				);
 			}
 		},
 		[],
 	);
 
-	const closeSessionFn = useCallback(
-		async (sessionId: string) => {
+	const removeOpenSession = useCallback(
+		async (
+			sessionId: string,
+			mutation: (sessionId: string) => Promise<void>,
+			operation: "close_session" | "archive_session",
+			failureLabel: string,
+		) => {
+			const sessions = sessionsRef.current;
+			const idx = sessions.findIndex((s) => s.id === sessionId);
+			const isActive = activeSessionIdRef.current === sessionId;
 			try {
-				const sessions = sessionsRef.current;
-				const idx = sessions.findIndex((s) => s.id === sessionId);
-				await closeSessionApi(sessionId);
+				await mutation(sessionId);
+			} catch (e) {
+				await setSessionError(
+					dispatch,
+					sessionNoticeRequestControllersRef,
+					sessionId,
+					operation,
+					`${failureLabel}: ${e}`,
+				);
+				return;
+			}
 
-				dispatch({ type: "CLEANUP_SESSION", sessionId });
+			await syncSessionError(
+				dispatch,
+				sessionNoticeRequestControllersRef,
+				sessionId,
+				{ action: "remove_session" },
+			);
+			cleanupSessionMirror(
+				dispatch,
+				sessionsByIdRef,
+				sessionNoticeRequestControllersRef,
+				sessionId,
+			);
 
-				const isActive = activeSessionIdRef.current === sessionId;
-				if (isActive) {
-					const remaining = sessions.filter((s) => s.id !== sessionId);
-					const nextSession =
-						remaining.length > 0
-							? remaining[Math.min(idx, remaining.length - 1)]
-							: null;
-					if (nextSession) {
+			if (isActive) {
+				const remaining = sessions.filter((s) => s.id !== sessionId);
+				const nextSession =
+					remaining.length > 0
+						? remaining[Math.min(idx, remaining.length - 1)]
+						: null;
+				if (nextSession) {
+					try {
 						const response = await getSession(nextSession.id);
 						if (response) {
 							rememberInitialPage(response);
@@ -978,29 +1188,61 @@ export function useAgentChat(
 						} else {
 							dispatch({ type: "SET_ACTIVE_SESSION_ID", sessionId: null });
 						}
-					} else {
+					} catch (e) {
+						await setSessionError(
+							dispatch,
+							sessionNoticeRequestControllersRef,
+							nextSession.id,
+							"load_session",
+							`セッションの読み込みに失敗: ${e}`,
+						);
 						dispatch({ type: "SET_ACTIVE_SESSION_ID", sessionId: null });
 					}
+				} else {
+					dispatch({ type: "SET_ACTIVE_SESSION_ID", sessionId: null });
 				}
-
-				await refreshSessions();
-				await refreshClosedSessions();
-			} catch (e) {
-				dispatch({
-					type: "SET_ERROR",
-					error: `セッションクローズに失敗: ${e}`,
-				});
 			}
+
+			await refreshSessions();
+			await refreshClosedSessions();
 		},
 		[refreshSessions, refreshClosedSessions, rememberInitialPage],
 	);
 
+	const closeSessionFn = useCallback(
+		(sessionId: string) =>
+			removeOpenSession(
+				sessionId,
+				closeSessionApi,
+				"close_session",
+				"セッションクローズに失敗",
+			),
+		[removeOpenSession],
+	);
+
 	const restoreSessionFn = useCallback(
 		async (sessionId: string) => {
+			let restoredWorkflowNode = false;
 			try {
-				let restoredWorkflowNode = false;
 				const restoreResult = await restoreSessionApi(sessionId);
 				restoredWorkflowNode = restoreResult.restoredWorkflowNode === true;
+			} catch (e) {
+				await setSessionError(
+					dispatch,
+					sessionNoticeRequestControllersRef,
+					sessionId,
+					"restore_session",
+					`セッション復元に失敗: ${e}`,
+				);
+				return;
+			}
+			await clearSessionError(
+				dispatch,
+				sessionNoticeRequestControllersRef,
+				sessionId,
+				"restore_session",
+			);
+			try {
 				const response = await getSession(sessionId);
 				if (response) {
 					rememberInitialPage(response);
@@ -1025,14 +1267,17 @@ export function useAgentChat(
 				} else {
 					dispatch({ type: "SET_ACTIVE_SESSION_ID", sessionId: null });
 				}
-				await refreshSessions();
-				await refreshClosedSessions();
 			} catch (e) {
-				dispatch({
-					type: "SET_ERROR",
-					error: `セッション復元に失敗: ${e}`,
-				});
+				await setSessionError(
+					dispatch,
+					sessionNoticeRequestControllersRef,
+					sessionId,
+					"load_session",
+					`セッションの読み込みに失敗: ${e}`,
+				);
 			}
+			await refreshSessions();
+			await refreshClosedSessions();
 		},
 		[refreshSessions, refreshClosedSessions, rememberInitialPage],
 	);
@@ -1041,91 +1286,82 @@ export function useAgentChat(
 		async (sessionId: string) => {
 			try {
 				await archiveSessionApi(sessionId);
+				await syncSessionError(
+					dispatch,
+					sessionNoticeRequestControllersRef,
+					sessionId,
+					{ action: "remove_session" },
+				);
 				await refreshClosedSessions();
 			} catch (e) {
-				dispatch({
-					type: "SET_ERROR",
-					error: `セッションアーカイブに失敗: ${e}`,
-				});
+				await setSessionError(
+					dispatch,
+					sessionNoticeRequestControllersRef,
+					sessionId,
+					"archive_session",
+					`セッションアーカイブに失敗: ${e}`,
+				);
 			}
 		},
 		[refreshClosedSessions],
 	);
 
 	const archiveOpenSessionFn = useCallback(
-		async (sessionId: string) => {
-			try {
-				const sessions = sessionsRef.current;
-				const idx = sessions.findIndex((s) => s.id === sessionId);
-				await archiveOpenSessionApi(sessionId);
-				dispatch({ type: "CLEANUP_SESSION", sessionId });
-
-				const isActive = activeSessionIdRef.current === sessionId;
-				if (isActive) {
-					const remaining = sessions.filter((s) => s.id !== sessionId);
-					const nextSession =
-						remaining.length > 0
-							? remaining[Math.min(idx, remaining.length - 1)]
-							: null;
-					if (nextSession) {
-						const response = await getSession(nextSession.id);
-						if (response) {
-							rememberInitialPage(response);
-							dispatch({ type: "UPSERT_SESSION", session: response.session });
-							dispatch({
-								type: "SET_ACTIVE_SESSION_ID",
-								sessionId: response.session.id,
-							});
-							dispatchSessionMeta(dispatch, nextSession.id, response);
-						} else {
-							dispatch({ type: "SET_ACTIVE_SESSION_ID", sessionId: null });
-						}
-					} else {
-						dispatch({ type: "SET_ACTIVE_SESSION_ID", sessionId: null });
-					}
-				}
-
-				await refreshSessions();
-				await refreshClosedSessions();
-			} catch (e) {
-				dispatch({
-					type: "SET_ERROR",
-					error: `セッションアーカイブに失敗: ${e}`,
-				});
-			}
-		},
-		[refreshSessions, refreshClosedSessions, rememberInitialPage],
+		(sessionId: string) =>
+			removeOpenSession(
+				sessionId,
+				archiveOpenSessionApi,
+				"archive_session",
+				"セッションアーカイブに失敗",
+			),
+		[removeOpenSession],
 	);
 
 	const forkSessionFn = useCallback(
 		async (sessionId: string) => {
+			let forked: ChatSession;
 			try {
-				const forked = await forkSessionApi(sessionId);
+				forked = await forkSessionApi(sessionId);
+			} catch (e) {
+				await setSessionError(
+					dispatch,
+					sessionNoticeRequestControllersRef,
+					sessionId,
+					"fork_session",
+					`セッションのフォークに失敗: ${e}`,
+				);
+				return;
+			}
+			dispatch({ type: "UPSERT_SESSION", session: forked });
+			dispatch({ type: "SET_ACTIVE_SESSION_ID", sessionId: forked.id });
+			dispatch({
+				type: "SET_PERMISSION_MODE",
+				sessionId: forked.id,
+				mode: forked.permissionMode,
+			});
+			await clearSessionError(
+				dispatch,
+				sessionNoticeRequestControllersRef,
+				sessionId,
+				"fork_session",
+			);
+			try {
 				const response = await getSession(forked.id);
-				const activeSession = response?.session ?? forked;
 				if (response) {
 					rememberInitialPage(response);
+					dispatch({ type: "UPSERT_SESSION", session: response.session });
+					dispatchSessionMeta(dispatch, response.session.id, response);
 				}
-				dispatch({ type: "UPSERT_SESSION", session: activeSession });
-				dispatch({
-					type: "SET_ACTIVE_SESSION_ID",
-					sessionId: activeSession.id,
-				});
-				dispatch({
-					type: "SET_PERMISSION_MODE",
-					sessionId: activeSession.id,
-					mode: activeSession.permissionMode,
-				});
-				if (response) {
-					dispatchSessionMeta(dispatch, activeSession.id, response);
-				}
-				await refreshSessions();
 			} catch (e) {
-				dispatch({
-					type: "SET_ERROR",
-					error: `セッションのフォークに失敗: ${e}`,
-				});
+				await setSessionError(
+					dispatch,
+					sessionNoticeRequestControllersRef,
+					forked.id,
+					"load_session",
+					`セッションの読み込みに失敗: ${e}`,
+				);
 			}
+			await refreshSessions();
 		},
 		[refreshSessions, rememberInitialPage],
 	);
@@ -1136,12 +1372,21 @@ export function useAgentChat(
 				const summary = await setSessionTitleApi(sessionId, title);
 				await refreshSessions();
 				await refreshClosedSessions();
+				await clearSessionError(
+					dispatch,
+					sessionNoticeRequestControllersRef,
+					sessionId,
+					"set_title",
+				);
 				return summary.firstMessage || DEFAULT_SESSION_TITLE;
 			} catch (e) {
-				dispatch({
-					type: "SET_ERROR",
-					error: `セッションタイトル変更に失敗: ${e}`,
-				});
+				await setSessionError(
+					dispatch,
+					sessionNoticeRequestControllersRef,
+					sessionId,
+					"set_title",
+					`セッションタイトル変更に失敗: ${e}`,
+				);
 				throw e;
 			}
 		},
@@ -1190,60 +1435,48 @@ export function useAgentChat(
 			}
 			await refreshSessions();
 			return activeSession.id;
-		} catch (e) {
-			dispatch({
-				type: "SET_ERROR",
-				error: `セッション作成に失敗: ${e}`,
-			});
+		} catch (error) {
+			console.error("Failed to create agent session:", error);
 			return null;
 		}
 	}, [refreshSessions, rememberInitialPage]);
 
 	const createNewWorkspaceSession = useCallback(
 		async (requestId: string): Promise<string> => {
-			try {
-				const activeSessionSnapshot = activeSessionIdRef.current
-					? sessionsByIdRef.current[activeSessionIdRef.current]
-					: undefined;
-				const backendId =
-					activeSessionSnapshot?.backendId ?? selectedBackendIdRef.current;
-				const modelId = activeSessionSnapshot
-					? (sessionModelsRef.current[activeSessionSnapshot.id] ?? null)
-					: null;
-				const sessionId = await createWorkspaceSession(
-					requestId,
-					worktreePathRef.current,
-					permissionModeRef.current,
-					backendId,
-					modelId,
-				);
-				const response = await getSession(sessionId);
-				if (!response) {
-					throw new Error(`Created Session is unavailable: ${sessionId}`);
-				}
-				const activeSession = response.session;
-				rememberInitialPage(response);
-				dispatch({ type: "UPSERT_SESSION", session: activeSession });
-				dispatch({
-					type: "SET_ACTIVE_SESSION_ID",
-					sessionId: activeSession.id,
-				});
-				dispatch({
-					type: "SET_PERMISSION_MODE",
-					sessionId: activeSession.id,
-					mode: activeSession.permissionMode,
-				});
-				dispatchSessionMeta(dispatch, activeSession.id, response);
-				await refreshSessions();
-				return activeSession.id;
-			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
-				dispatch({
-					type: "SET_ERROR",
-					error: `セッション作成に失敗: ${message}`,
-				});
-				throw error;
+			const activeSessionSnapshot = activeSessionIdRef.current
+				? sessionsByIdRef.current[activeSessionIdRef.current]
+				: undefined;
+			const backendId =
+				activeSessionSnapshot?.backendId ?? selectedBackendIdRef.current;
+			const modelId = activeSessionSnapshot
+				? (sessionModelsRef.current[activeSessionSnapshot.id] ?? null)
+				: null;
+			const sessionId = await createWorkspaceSession(
+				requestId,
+				worktreePathRef.current,
+				permissionModeRef.current,
+				backendId,
+				modelId,
+			);
+			const response = await getSession(sessionId);
+			if (!response) {
+				throw new Error(`Created Session is unavailable: ${sessionId}`);
 			}
+			const activeSession = response.session;
+			rememberInitialPage(response);
+			dispatch({ type: "UPSERT_SESSION", session: activeSession });
+			dispatch({
+				type: "SET_ACTIVE_SESSION_ID",
+				sessionId: activeSession.id,
+			});
+			dispatch({
+				type: "SET_PERMISSION_MODE",
+				sessionId: activeSession.id,
+				mode: activeSession.permissionMode,
+			});
+			dispatchSessionMeta(dispatch, activeSession.id, response);
+			await refreshSessions();
+			return activeSession.id;
 		},
 		[refreshSessions, rememberInitialPage],
 	);
@@ -1308,13 +1541,25 @@ export function useAgentChat(
 				behavior: allow ? "allow" : "deny",
 				message: allow ? null : "User denied",
 				updatedInput: updatedInput ? JSON.stringify(updatedInput) : null,
-			}).catch((e) => {
-				console.error("Failed to respond to permission:", e);
-				dispatch({
-					type: "SET_ERROR",
-					error: `パーミッション応答に失敗: ${e}`,
+			})
+				.then(async () => {
+					await clearSessionError(
+						dispatch,
+						sessionNoticeRequestControllersRef,
+						sessionId,
+						"respond_permission",
+					);
+				})
+				.catch(async (e) => {
+					console.error("Failed to respond to permission:", e);
+					await setSessionError(
+						dispatch,
+						sessionNoticeRequestControllersRef,
+						sessionId,
+						"respond_permission",
+						`パーミッション応答に失敗: ${e}`,
+					);
 				});
-			});
 		},
 		[],
 	);
@@ -1328,18 +1573,55 @@ export function useAgentChat(
 		const selectedModel = availableModelsRef.current.find(
 			(model) => getModelInfoId(model) === normalizedModelId,
 		);
-		invoke("set_agent_model", {
-			chatSessionId: sessionId,
-			modelId: normalizedModelId,
-		})
+		const selectedBackend = selectedModel
+			? getModelInfoBackend(selectedModel)
+			: "";
+		const currentBackend = sessionsByIdRef.current[sessionId]?.backendId ?? "";
+		const persistSelectedModel = () =>
+			invoke("set_agent_model", {
+				chatSessionId: sessionId,
+				modelId: normalizedModelId,
+			});
+
+		if (
+			selectedBackend &&
+			currentBackend &&
+			selectedBackend !== currentBackend
+		) {
+			void persistSelectedModel()
+				.then(async () => {
+					await clearSessionError(
+						dispatch,
+						sessionNoticeRequestControllersRef,
+						sessionId,
+						"set_backend",
+					);
+					dispatch({
+						type: "SET_SESSION_MODEL",
+						sessionId,
+						modelId: normalizedModelId,
+						backendId: selectedBackend,
+					});
+				})
+				.catch(async (e) => {
+					await setSessionError(
+						dispatch,
+						sessionNoticeRequestControllersRef,
+						sessionId,
+						"set_backend",
+						`Agent の変更に失敗: ${e}`,
+					);
+				});
+			return;
+		}
+
+		persistSelectedModel()
 			.then(() => {
 				dispatch({
 					type: "SET_SESSION_MODEL",
 					sessionId,
 					modelId: normalizedModelId,
-					backendId: selectedModel
-						? getModelInfoBackend(selectedModel)
-						: undefined,
+					backendId: selectedBackend || undefined,
 				});
 			})
 			.catch((e) => {
@@ -1370,17 +1652,26 @@ export function useAgentChat(
 				return;
 			}
 			setSessionBackend(sessionId, backendId)
-				.then((response) => {
+				.then(async (response) => {
+					await clearSessionError(
+						dispatch,
+						sessionNoticeRequestControllersRef,
+						sessionId,
+						"set_backend",
+					);
 					if (activeSessionIdRef.current === sessionId) {
 						dispatch({ type: "UPSERT_SESSION", session: response.session });
 						dispatchSessionMeta(dispatch, sessionId, response);
 					}
 				})
-				.catch((e) => {
-					dispatch({
-						type: "SET_ERROR",
-						error: `Agent の変更に失敗: ${e}`,
-					});
+				.catch(async (e) => {
+					await setSessionError(
+						dispatch,
+						sessionNoticeRequestControllersRef,
+						sessionId,
+						"set_backend",
+						`Agent の変更に失敗: ${e}`,
+					);
 				});
 		},
 		[],
@@ -1472,11 +1763,8 @@ export function useAgentChat(
 					response.activeSession,
 				);
 			}
-		} catch (e) {
-			dispatch({
-				type: "SET_ERROR",
-				error: `セッション初期化に失敗: ${e}`,
-			});
+		} catch (error) {
+			console.error("Failed to initialize agent sessions:", error);
 		}
 	}, [rememberInitialPage]);
 
@@ -1538,6 +1826,19 @@ export function useAgentChat(
 	const runtimeSlashCommandsState = state.runtimeSlashCommands;
 	const canChangeBackendState = state.canChangeBackend;
 	const sessionsByIdState = state.sessionsById;
+	const sessionErrorsState = state.sessionErrors;
+	const getSessionError = useCallback(
+		(sessionId: string): string | null => sessionErrorsState[sessionId] ?? null,
+		[sessionErrorsState],
+	);
+	const dismissSessionError = useCallback((sessionId: string) => {
+		void syncSessionError(
+			dispatch,
+			sessionNoticeRequestControllersRef,
+			sessionId,
+			{ action: "dismiss" },
+		);
+	}, []);
 	const getSessionTurnPhase = useCallback(
 		(sessionId: string): TurnPhase => turnPhasesState[sessionId] ?? "idle",
 		[turnPhasesState],
@@ -1628,7 +1929,6 @@ export function useAgentChat(
 		activeSession,
 		isStreaming,
 		activityStatus,
-		error: state.error,
 		permissionMode: state.permissionMode,
 		planMode: state.planMode,
 		sessionAgentStates,
@@ -1663,6 +1963,8 @@ export function useAgentChat(
 		registerViewableSession,
 		loadOlderMessages,
 		evictOlderMessages,
+		getSessionError,
+		dismissSessionError,
 		getSessionTurnPhase,
 		getSessionInterrupting,
 		getSessionPermissionMode,

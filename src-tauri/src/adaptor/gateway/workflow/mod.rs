@@ -79,10 +79,6 @@ pub(crate) use node_lifecycle_adapters::close_node_session_tab_state;
 pub(crate) use node_lifecycle_adapters::{
     mark_started_node_tab_open, release_node_runtime_on_done, TauriNodeExecutionLifecycleGateway,
 };
-#[cfg(test)]
-pub(crate) use node_lifecycle_adapters::{
-    open_node_session_tab_state, resolve_node_session_with_data_dir,
-};
 pub(crate) use runtime_command_gateway::{
     TauriWorkflowRuntimeCommandGateway, TauriWorkflowRuntimeCommandGatewayDeps,
 };

@@ -45,7 +45,11 @@ import {
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Textarea } from "@/components/ui/textarea";
-import { archiveSession, restoreSession } from "@/hooks/useSessionStore";
+import {
+	archiveSession,
+	getAgentSessionNotice,
+	restoreSession,
+} from "@/hooks/useSessionStore";
 import { useWorkflowConfig } from "@/hooks/useWorkflowConfig";
 import { useWorkspaceTreeNodes } from "@/hooks/useWorkspaceTreeNodes";
 import { useWorktreeList } from "@/hooks/useWorktreeList";
@@ -437,6 +441,9 @@ function WorktreeTreeItem({
 	const [workflowActionError, setWorkflowActionError] = useState<string | null>(
 		null,
 	);
+	const [sessionHistoryNotices, setSessionHistoryNotices] = useState<
+		Record<string, string>
+	>({});
 	const [workflowStarting, setWorkflowStarting] = useState(false);
 	const preferredSelectionRequestRef = useRef<{
 		worktreePath: string | null;
@@ -644,7 +651,20 @@ function WorktreeTreeItem({
 	const handleRestoreSession = useCallback(
 		async (session: WorkspaceSessionHistoryItem) => {
 			if (!branch.worktree_path) return;
-			await restoreSession(session.id);
+			try {
+				await restoreSession(session.id);
+			} catch {
+				const snapshot = await getAgentSessionNotice(session.id);
+				setSessionHistoryNotices((current) => ({
+					...current,
+					...(snapshot.notice ? { [session.id]: snapshot.notice.message } : {}),
+				}));
+				return;
+			}
+			setSessionHistoryNotices((current) => {
+				const { [session.id]: _removed, ...remaining } = current;
+				return remaining;
+			});
 			await refreshTree();
 			const nodeId = await invoke<string | null>(
 				"get_workspace_session_node_id",
@@ -665,7 +685,20 @@ function WorktreeTreeItem({
 
 	const handleArchiveSession = useCallback(
 		async (sessionId: string) => {
-			await archiveSession(sessionId);
+			try {
+				await archiveSession(sessionId);
+			} catch {
+				const snapshot = await getAgentSessionNotice(sessionId);
+				setSessionHistoryNotices((current) => ({
+					...current,
+					...(snapshot.notice ? { [sessionId]: snapshot.notice.message } : {}),
+				}));
+				return;
+			}
+			setSessionHistoryNotices((current) => {
+				const { [sessionId]: _removed, ...remaining } = current;
+				return remaining;
+			});
 			await refreshTree();
 		},
 		[refreshTree],
@@ -956,6 +989,21 @@ function WorktreeTreeItem({
 							{workflowActionError}
 						</div>
 					)}
+					{closedSessions.map((session) => {
+						const notice = sessionHistoryNotices[session.id];
+						if (!notice) return null;
+						return (
+							<div
+								key={session.id}
+								role="alert"
+								data-session-id={session.id}
+								className="mt-1 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+								style={{ marginLeft: WORKTREE_NAME_INDENT_PX }}
+							>
+								{sessionLabel(session)}: {notice}
+							</div>
+						);
+					})}
 					{newSessionCreationStatus?.error && (
 						<div
 							role="alert"

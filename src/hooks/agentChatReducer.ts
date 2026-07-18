@@ -37,7 +37,10 @@ export interface AgentChatState {
 	 * 遷移した時点で自動クリアされる。
 	 */
 	interrupting: Record<string, boolean>;
-	error: string | null;
+	/** Rust-owned notice state の session_id 別 mirror。 */
+	sessionErrors: Record<string, string>;
+	/** 非同期 snapshot の逆転を拒否するための、session ごとの既知 revision。 */
+	sessionErrorRevisions: Record<string, number>;
 	permissionMode: PermissionMode;
 	planMode: PlanMode;
 	sessionPermissionModes: Record<string, PermissionMode>;
@@ -76,7 +79,12 @@ export type AgentChatAction =
 			pendingPermissionStateRevision?: number | null;
 	  }
 	| { type: "SET_INTERRUPTING"; sessionId: string; value: boolean }
-	| { type: "SET_ERROR"; error: string | null }
+	| {
+			type: "SYNC_SESSION_ERROR";
+			sessionId: string;
+			revision: number;
+			message: string | null;
+	  }
 	| {
 			type: "UPDATE_SESSION_STATE";
 			sessionId: string;
@@ -312,7 +320,6 @@ function upsertSession(
 		planMode: isActive ? (storedSession.planMode ?? false) : state.planMode,
 		sessionPermissionModes,
 		sessionPlanModes,
-		error: null,
 	};
 }
 
@@ -415,7 +422,6 @@ export function reducer(
 				return {
 					...state,
 					activeSessionId: null,
-					error: null,
 				};
 			}
 			const activeSession = state.sessionsById[action.sessionId];
@@ -430,7 +436,6 @@ export function reducer(
 					state.sessionPlanModes[action.sessionId] ??
 					activeSession?.planMode ??
 					state.planMode,
-				error: null,
 			};
 		}
 		case "ADD_MESSAGE": {
@@ -494,8 +499,31 @@ export function reducer(
 				interrupting: { ...state.interrupting, [action.sessionId]: true },
 			};
 		}
-		case "SET_ERROR":
-			return { ...state, error: action.error };
+		case "SYNC_SESSION_ERROR": {
+			const knownRevision = state.sessionErrorRevisions[action.sessionId];
+			if (knownRevision !== undefined && action.revision <= knownRevision) {
+				return state;
+			}
+			const sessionErrorRevisions = {
+				...state.sessionErrorRevisions,
+				[action.sessionId]: action.revision,
+			};
+			if (action.message !== null) {
+				return {
+					...state,
+					sessionErrorRevisions,
+					sessionErrors: {
+						...state.sessionErrors,
+						[action.sessionId]: action.message,
+					},
+				};
+			}
+			if (!(action.sessionId in state.sessionErrors)) {
+				return { ...state, sessionErrorRevisions };
+			}
+			const { [action.sessionId]: _drop, ...rest } = state.sessionErrors;
+			return { ...state, sessionErrors: rest, sessionErrorRevisions };
+		}
 		case "UPDATE_SESSION_STATE":
 			return updateSessionInStore(state, action.sessionId, (s) => ({
 				...s,
@@ -732,6 +760,10 @@ export function reducer(
 			}));
 		}
 		case "CLEANUP_SESSION": {
+			const { [action.sessionId]: _se, ...restSessionErrors } =
+				state.sessionErrors;
+			const { [action.sessionId]: _ser, ...restSessionErrorRevisions } =
+				state.sessionErrorRevisions;
 			const { [action.sessionId]: _tp, ...restTurnPhases } = state.turnPhases;
 			const { [action.sessionId]: _int, ...restInterrupting } =
 				state.interrupting;
@@ -763,6 +795,8 @@ export function reducer(
 				state.sessionsById;
 			return {
 				...state,
+				sessionErrors: restSessionErrors,
+				sessionErrorRevisions: restSessionErrorRevisions,
 				turnPhases: restTurnPhases,
 				interrupting: restInterrupting,
 				pendingPermissions: restPendingPermissions,
@@ -834,7 +868,8 @@ export const INITIAL_STATE: AgentChatState = {
 	activeSessionId: null,
 	turnPhases: {},
 	interrupting: {},
-	error: null,
+	sessionErrors: {},
+	sessionErrorRevisions: {},
 	permissionMode: "edit",
 	planMode: false,
 	sessionPermissionModes: {},

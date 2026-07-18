@@ -4,13 +4,11 @@ use tauri::Manager;
 
 use crate::usecase::agent_session::runtime::{AgentSessionRuntimeUsecase, SendMessageResponse};
 use crate::usecase::agent_session::session::{ChatSession, ImageAttachment};
-use crate::usecase::workflow::node_lifecycle::ResolvedWorkflowNodeSession;
-use crate::usecase::workflow::{NodeExecutionLifecycleUsecase, WorkflowRuntimeUsecase};
+use crate::usecase::workflow::WorkflowRuntimeUsecase;
 
 pub(crate) type AgentSessionRuntimeState = Arc<AgentSessionRuntimeUsecase>;
 pub(crate) type AgentImageAttachment = ImageAttachment;
 pub(crate) type AgentSendMessageResponse = SendMessageResponse;
-pub(crate) type NodeExecutionLifecycleUsecaseState = Arc<NodeExecutionLifecycleUsecase>;
 
 pub(crate) async fn emit_after_workflow_node_message<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -35,7 +33,7 @@ pub(crate) async fn emit_after_workflow_node_message<R: tauri::Runtime>(
 
 pub(crate) async fn emit_workflow_node_target_state<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-    target: &ResolvedWorkflowNodeSession,
+    worktree_path: &str,
 ) {
     let Some(runtime) = app
         .try_state::<Arc<WorkflowRuntimeUsecase>>()
@@ -43,12 +41,12 @@ pub(crate) async fn emit_workflow_node_target_state<R: tauri::Runtime>(
     else {
         return;
     };
-    let Ok(Some(state)) = runtime.get_state_by_worktree(&target.worktree_path).await else {
+    let Ok(Some(state)) = runtime.get_state_by_worktree(worktree_path).await else {
         return;
     };
     crate::adaptor::gateway::workflow::emit_workflow_execution_from_snapshot(
         app,
-        &target.worktree_path,
+        worktree_path,
         state,
     )
     .await;

@@ -197,6 +197,7 @@ pub struct AgentEditorSelection {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentRuntimeError {
     StartupTimeout { retry_count: u32, max_retries: u32 },
+    BackendSelectionLocked,
     Other(String),
 }
 
@@ -209,6 +210,9 @@ impl std::fmt::Display for AgentRuntimeError {
             } => write!(
                 f,
                 "Timed out waiting for agent session startup (retry_count={retry_count}, max_retries={max_retries})"
+            ),
+            Self::BackendSelectionLocked => f.write_str(
+                "Backend selection can only change before messages, an agent session, or an active turn exist",
             ),
             Self::Other(message) => f.write_str(message),
         }
@@ -1018,21 +1022,23 @@ impl AgentSessionRuntimeUsecase {
             .registry
             .resolve_model_entry(entry_id)
             .map_err(AgentRuntimeError::Other)?;
-        self.ctx
-            .session_store
-            .update_backend_selection(
-                &self.ctx.data_dir,
+        let backend_changed = self
+            .apply_backend_selection(
                 session_id,
                 entry.backend.clone(),
                 Some(entry.model_id.clone()),
+                false,
             )
-            .map_err(AgentRuntimeError::Other)?;
+            .await?;
         if let Ok(available_models) = self.ctx.registry.available_models(&entry.backend) {
             self.ctx
                 .notifier
                 .models_updated(session_id, available_models, entry.model_id.clone());
         }
-        if let Some(runtime) = self.live_runtime(session_id).await {
+        if !backend_changed {
+            let Some(runtime) = self.live_runtime(session_id).await else {
+                return Ok(());
+            };
             let model = ModelId::parse(&entry.model_id).map_err(AgentRuntimeError::Other)?;
             if let Err(error) = runtime.set_model(&model).await {
                 log::warn!("runtime model sync failed for {session_id}: {error}");
@@ -1051,19 +1057,57 @@ impl AgentSessionRuntimeUsecase {
             .registry
             .default_model_for(backend_id)
             .map_err(AgentRuntimeError::Other)?;
-        self.ctx
-            .session_store
-            .update_backend_selection(
-                &self.ctx.data_dir,
-                session_id,
-                backend_id.to_string(),
-                Some(selected_model),
-            )
-            .map_err(AgentRuntimeError::Other)?;
-        self.close_session(session_id).await?;
+        self.apply_backend_selection(
+            session_id,
+            backend_id.to_string(),
+            Some(selected_model),
+            true,
+        )
+        .await?;
         self.get_session(session_id)
             .await?
             .ok_or_else(|| AgentRuntimeError::Other(format!("Session not found: {session_id}")))
+    }
+
+    async fn apply_backend_selection(
+        &self,
+        session_id: &str,
+        backend_id: String,
+        selected_model: Option<String>,
+        restart_same_backend: bool,
+    ) -> Result<bool, AgentRuntimeError> {
+        let _session_guard = self.acquire_session_lock(session_id).await;
+        let session = self
+            .ctx
+            .session_store
+            .get_session_meta(&self.ctx.data_dir, session_id)
+            .map_err(AgentRuntimeError::Other)?
+            .ok_or_else(|| AgentRuntimeError::Other(format!("Session not found: {session_id}")))?;
+        let current_backend = session.backend_id.clone();
+        let backend_changed = current_backend != backend_id;
+        if backend_changed || restart_same_backend {
+            let turn_phase = {
+                let sessions = self.ctx.sessions.lock().await;
+                sessions
+                    .get(session_id)
+                    .map(|state| TurnPhase::from(state.phase))
+                    .unwrap_or(TurnPhase::Idle)
+            };
+            if session.message_count != 0
+                || session.agent_session_id.is_some()
+                || turn_phase != TurnPhase::Idle
+            {
+                return Err(AgentRuntimeError::BackendSelectionLocked);
+            }
+        }
+        self.ctx
+            .session_store
+            .update_backend_selection(&self.ctx.data_dir, session_id, backend_id, selected_model)
+            .map_err(AgentRuntimeError::Other)?;
+        if backend_changed || restart_same_backend {
+            self.close_session(session_id).await?;
+        }
+        Ok(backend_changed)
     }
 
     pub async fn set_session_title(
@@ -7718,12 +7762,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_model_persists_and_notifies_dto_when_runtime_sync_fails() {
+    async fn cross_backend_set_model_changes_an_unstarted_session() {
         let tmp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(build_session_store());
         let event_notifier = Arc::new(RecordingAgentNotifier::default());
         let status_notifier = Arc::new(RecordingStatusNotifier::default());
-        let (usecase, _controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
             session_store.clone(),
             tmp.path(),
             event_notifier.clone(),
@@ -7743,10 +7787,6 @@ mod tests {
             },
         )
         .unwrap();
-        usecase
-            .insert_failing_runtime_state_for_test(&session.id)
-            .await;
-
         usecase.set_model(&session.id, "codex:gpt-5").await.unwrap();
 
         let saved = session_store
@@ -7764,6 +7804,233 @@ mod tests {
         assert!(available_models.iter().any(|model| {
             model.id == "codex:gpt-5" && model.backend == "codex" && model.model_id == "gpt-5"
         }));
+        assert_eq!(
+            controller
+                .call_kinds_for(&session.id)
+                .into_iter()
+                .filter(|kind| kind == &TestRuntimeCallKind::Close)
+                .count(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn cross_backend_set_session_backend_changes_an_unstarted_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            Arc::new(RecordingAgentNotifier::default()),
+            Arc::new(RecordingStatusNotifier::default()),
+        );
+        let session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("claude-4-sonnet".to_string()),
+                plan_mode: false,
+                workflow_node_session: false,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        usecase
+            .set_session_backend(&session.id, "codex")
+            .await
+            .unwrap();
+
+        let saved = session_store
+            .get_session_meta(tmp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.backend_id, "codex");
+        assert_eq!(saved.selected_model.as_deref(), Some("gpt-5"));
+        assert_eq!(
+            controller
+                .call_kinds_for(&session.id)
+                .into_iter()
+                .filter(|kind| kind == &TestRuntimeCallKind::Close)
+                .count(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn backend_selection_mutations_reject_each_locked_session_state() {
+        #[derive(Clone, Copy)]
+        enum LockedState {
+            Messages,
+            AgentSessionId,
+            ActiveTurn,
+        }
+
+        for locked_state in [
+            LockedState::Messages,
+            LockedState::AgentSessionId,
+            LockedState::ActiveTurn,
+        ] {
+            for use_set_model in [false, true] {
+                let tmp = tempfile::tempdir().unwrap();
+                let session_store = Arc::new(build_session_store());
+                let (usecase, controller) =
+                    build_agent_runtime_usecase_with_controller_and_notifiers(
+                        session_store.clone(),
+                        tmp.path(),
+                        Arc::new(RecordingAgentNotifier::default()),
+                        Arc::new(RecordingStatusNotifier::default()),
+                    );
+                let mut session = create_session_internal_with_attributes(
+                    &session_store,
+                    tmp.path(),
+                    tmp.path().to_string_lossy().as_ref(),
+                    Some("claude".to_string()),
+                    PermissionMode::Edit,
+                    SessionCreationAttributes {
+                        selected_model: Some("claude-4-sonnet".to_string()),
+                        plan_mode: false,
+                        workflow_node_session: false,
+                        workflow_node_context: None,
+                    },
+                )
+                .unwrap();
+                match locked_state {
+                    LockedState::Messages => {
+                        session.messages.push(ChatMessage {
+                            id: "message-1".to_string(),
+                            role: MessageRole::Human,
+                            content: "hello".to_string(),
+                            thinking: None,
+                            activities: None,
+                            parts: Some(vec![MessagePart::Text {
+                                content: "hello".to_string(),
+                                parent_tool_use_id: None,
+                            }]),
+                            streaming_final_seq: 0,
+                            timestamp: 1.0,
+                            mentions: None,
+                        });
+                        session_store
+                            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+                            .unwrap();
+                    }
+                    LockedState::AgentSessionId => {
+                        session_store
+                            .update_agent_session_id(
+                                tmp.path(),
+                                &session.id,
+                                Some("agent-session".to_string()),
+                            )
+                            .unwrap();
+                    }
+                    LockedState::ActiveTurn => {
+                        usecase
+                            .insert_runtime_state_for_test(&session.id, TurnPhase::Streaming, false)
+                            .await;
+                    }
+                }
+
+                let result = if use_set_model {
+                    usecase
+                        .set_model(&session.id, "codex:gpt-5")
+                        .await
+                        .map(|_| ())
+                } else {
+                    usecase
+                        .set_session_backend(&session.id, "codex")
+                        .await
+                        .map(|_| ())
+                };
+
+                assert_eq!(result, Err(AgentRuntimeError::BackendSelectionLocked));
+                let saved = session_store
+                    .get_session_meta(tmp.path(), &session.id)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(saved.backend_id, "claude");
+                assert_eq!(saved.selected_model.as_deref(), Some("claude-4-sonnet"));
+                assert!(!controller
+                    .call_kinds_for(&session.id)
+                    .contains(&TestRuntimeCallKind::Close));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn backend_selection_persistence_failure_preserves_runtime_and_previous_selection() {
+        for use_set_model in [true, false] {
+            let tmp = tempfile::tempdir().unwrap();
+            let session_store = Arc::new(build_session_store());
+            let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+                session_store.clone(),
+                tmp.path(),
+                Arc::new(RecordingAgentNotifier::default()),
+                Arc::new(RecordingStatusNotifier::default()),
+            );
+            let session = create_session_internal_with_attributes(
+                &session_store,
+                tmp.path(),
+                tmp.path().to_string_lossy().as_ref(),
+                Some("claude".to_string()),
+                PermissionMode::Edit,
+                SessionCreationAttributes {
+                    selected_model: Some("claude-4-sonnet".to_string()),
+                    plan_mode: false,
+                    workflow_node_session: false,
+                    workflow_node_context: None,
+                },
+            )
+            .unwrap();
+            usecase
+                .start_session(
+                    &session.id,
+                    StartSessionOptions {
+                        permission_mode: PermissionMode::Edit,
+                        plan_mode: false,
+                    },
+                )
+                .await
+                .unwrap();
+            std::fs::remove_file(
+                tmp.path()
+                    .join("sessions")
+                    .join(&session.id)
+                    .join("meta.json"),
+            )
+            .unwrap();
+
+            let result = if use_set_model {
+                usecase
+                    .set_model(&session.id, "codex:gpt-5")
+                    .await
+                    .map(|_| ())
+            } else {
+                usecase
+                    .set_session_backend(&session.id, "codex")
+                    .await
+                    .map(|_| ())
+            };
+
+            assert!(result.is_err());
+            assert!(usecase.has_live_runtime(&session.id).await);
+            let saved = session_store
+                .get_session_meta(tmp.path(), &session.id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(saved.backend_id, "claude");
+            assert_eq!(saved.selected_model.as_deref(), Some("claude-4-sonnet"));
+            assert_eq!(
+                controller
+                    .call_kinds_for(&session.id)
+                    .into_iter()
+                    .filter(|kind| kind == &TestRuntimeCallKind::Close)
+                    .count(),
+                0
+            );
+        }
     }
 
     #[tokio::test]

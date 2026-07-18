@@ -4,6 +4,7 @@
 //! 受理し、controller が対応するドメイン値オブジェクトへ変換する。
 
 pub(crate) mod agent;
+pub(crate) mod agent_session_notice;
 pub(crate) mod code;
 pub(crate) mod mention;
 pub(crate) mod notion;

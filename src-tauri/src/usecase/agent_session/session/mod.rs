@@ -49,7 +49,8 @@ pub(crate) use store::SessionEventLogRecoverySignal;
 pub use store::{SessionReaderPort, SessionReviewContextReader, SessionStore};
 pub(crate) use stored_lifecycle::{
     AgentSessionBackendLifecycleGateway, AgentSessionRuntimeCloser, BackendSessionLifecycleRequest,
-    StoredSessionLifecycleUsecase,
+    CloseSessionOutcome, RestoreSessionOutcome, StoredSessionClosePort,
+    StoredSessionLifecycleUsecase, WorkflowNodeSessionRestorer,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

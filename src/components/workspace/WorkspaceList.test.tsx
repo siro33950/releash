@@ -1,4 +1,10 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import {
+	act,
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorktreeBranch } from "@/types/git";
@@ -24,6 +30,11 @@ const mocks = vi.hoisted(() => ({
 	openUrl: vi.fn().mockResolvedValue(undefined),
 	archiveSession: vi.fn().mockResolvedValue(undefined),
 	restoreSession: vi.fn().mockResolvedValue(undefined),
+	getAgentSessionNotice: vi.fn().mockResolvedValue({
+		sessionId: "closed-session",
+		revision: 1,
+		notice: null,
+	}),
 	refreshTree: vi.fn().mockResolvedValue(undefined),
 	refreshWorktrees: vi.fn().mockResolvedValue(undefined),
 	treeStateOverrides: new Map<string, MockWorkspaceTreeState>(),
@@ -44,6 +55,7 @@ vi.mock("@tauri-apps/api/event", () => ({ emit: mocks.emit }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: mocks.openUrl }));
 vi.mock("@/hooks/useSessionStore", () => ({
 	archiveSession: mocks.archiveSession,
+	getAgentSessionNotice: mocks.getAgentSessionNotice,
 	restoreSession: mocks.restoreSession,
 }));
 vi.mock("@/hooks/useWorkflowConfig", () => ({
@@ -85,6 +97,17 @@ const directNode: WorkspaceTreeItem = {
 	contentKind: "session",
 	capabilities: { canApprove: false, canClose: true },
 	updatedAt: 1,
+};
+
+const closedSession: WorkspaceSessionHistoryItem = {
+	id: "closed-session",
+	worktreePath: "/repo/wt",
+	state: "closed",
+	createdAt: 1,
+	updatedAt: 2,
+	firstMessage: "Closed session",
+	messageCount: 1,
+	permissionMode: "edit",
 };
 
 const recursiveTree: WorkspaceTreeItem[] = [
@@ -585,6 +608,100 @@ describe("WorkspaceList", () => {
 		expect(detailRefresh).toHaveBeenCalledOnce();
 		window.removeEventListener("workspace-tree-refresh", detailRefresh);
 	});
+
+	it("routes SessionHistory restore and archive through stored lifecycle commands", async () => {
+		const user = userEvent.setup();
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: recursiveTree,
+			closedSessions: [closedSession],
+		});
+		renderWorkspaceList();
+
+		await user.click(
+			screen.getByRole("button", { name: "Open menu for feature" }),
+		);
+		await user.hover(screen.getByRole("menuitem", { name: "SessionHistory" }));
+		const restoreItem = await screen.findByRole("menuitem", {
+			name: /Closed session/,
+		});
+		await waitFor(() => expect(mocks.refreshTree).toHaveBeenCalled());
+		mocks.refreshTree.mockClear();
+		act(() => restoreItem.focus());
+		await user.keyboard("{Enter}");
+
+		expect(mocks.restoreSession).toHaveBeenCalledWith("closed-session");
+		await waitFor(() => expect(mocks.refreshTree).toHaveBeenCalledOnce());
+
+		await user.click(
+			screen.getByRole("button", { name: "Open menu for feature" }),
+		);
+		await user.hover(screen.getByRole("menuitem", { name: "SessionHistory" }));
+		await waitFor(() => expect(mocks.refreshTree).toHaveBeenCalled());
+		mocks.refreshTree.mockClear();
+		fireEvent.click(
+			await screen.findByRole("button", { name: "Archive Closed session" }),
+		);
+
+		expect(mocks.archiveSession).toHaveBeenCalledWith("closed-session");
+		await waitFor(() => expect(mocks.refreshTree).toHaveBeenCalledOnce());
+	});
+
+	it.each([
+		["restore", "セッション復元に失敗: unavailable"],
+		["archive", "セッションアーカイブに失敗: unavailable"],
+	] as const)(
+		"shows the originating SessionHistory %s notice without viewable-session registration",
+		async (operation, message) => {
+			const user = userEvent.setup();
+			const otherSession = {
+				...closedSession,
+				id: "other-session",
+				firstMessage: "Other closed session",
+			};
+			mocks.treeStateOverrides.set("/repo/wt", {
+				nodes: recursiveTree,
+				closedSessions: [closedSession, otherSession],
+			});
+			mocks.getAgentSessionNotice.mockResolvedValueOnce({
+				sessionId: closedSession.id,
+				revision: 1,
+				notice: { message },
+			});
+			if (operation === "restore") {
+				mocks.restoreSession.mockRejectedValueOnce(new Error("unavailable"));
+			} else {
+				mocks.archiveSession.mockRejectedValueOnce(new Error("unavailable"));
+			}
+			renderWorkspaceList();
+
+			await user.click(
+				screen.getByRole("button", { name: "Open menu for feature" }),
+			);
+			await user.hover(
+				screen.getByRole("menuitem", { name: "SessionHistory" }),
+			);
+			if (operation === "restore") {
+				const items = await screen.findAllByRole("menuitem", {
+					name: /Closed session/,
+				});
+				act(() => items[0]?.focus());
+				await user.keyboard("{Enter}");
+			} else {
+				fireEvent.click(
+					await screen.findByRole("button", { name: "Archive Closed session" }),
+				);
+			}
+
+			const alert = await screen.findByRole("alert", { hidden: true });
+			expect(screen.getAllByRole("alert", { hidden: true })).toHaveLength(1);
+			expect(alert).toHaveAttribute("data-session-id", "closed-session");
+			expect(alert).toHaveTextContent(message);
+			expect(alert).not.toHaveTextContent("Other closed session");
+			expect(mocks.getAgentSessionNotice).toHaveBeenCalledWith(
+				"closed-session",
+			);
+		},
+	);
 
 	it("invalidates Node detail when Close commits but tree refresh fails", async () => {
 		const user = userEvent.setup();

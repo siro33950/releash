@@ -97,6 +97,10 @@ impl WorkflowEngineError {
             AgentRuntimeError::Other(message) => {
                 Self::AgentSession(format!("{context}: {message}"))
             }
+            AgentRuntimeError::BackendSelectionLocked => Self::AgentSession(format!(
+                "{context}: {}",
+                AgentRuntimeError::BackendSelectionLocked
+            )),
         }
     }
 }
@@ -109,6 +113,9 @@ impl From<AgentRuntimeError> for WorkflowEngineError {
                 failure_kind: NodeExecutionFailureKind::StartupTimeout,
                 retry_count: Some(retry_count),
             },
+            AgentRuntimeError::BackendSelectionLocked => {
+                Self::AgentSession(AgentRuntimeError::BackendSelectionLocked.to_string())
+            }
             AgentRuntimeError::Other(message) => Self::AgentSession(message),
         }
     }
