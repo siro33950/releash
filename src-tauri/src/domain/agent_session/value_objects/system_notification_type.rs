@@ -1,6 +1,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemNotificationType {
     Compaction,
+    SessionRecovery,
 }
 
 impl SystemNotificationType {
@@ -8,6 +9,7 @@ impl SystemNotificationType {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Compaction => "compaction",
+            Self::SessionRecovery => "session_recovery",
         }
     }
 }

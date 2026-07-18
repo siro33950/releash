@@ -19,8 +19,8 @@ mod part_events;
 mod projector;
 
 pub use events::{
-    AgentSessionEvent, InterruptReason, PermissionDecision, PromptInput, TurnStopReason,
-    TurnTokenUsage,
+    AgentSessionEvent, BackendSessionRecoveryReason, GoalReactivationOutcome, InterruptReason,
+    PermissionDecision, PromptInput, TurnStopReason, TurnTokenUsage,
 };
 pub(crate) use finalization::{
     finalize_turn, latest_unresolved_permission_request, UnresolvedPermissionRequest,
@@ -28,7 +28,9 @@ pub(crate) use finalization::{
 pub use log::TurnEventLog;
 pub(crate) use part_events::append_part_events;
 pub use part_events::PartEventMode;
-pub use projector::{AgentTurnFailureSignal, WorkflowTurnCompleteInput};
+pub use projector::{
+    AgentTurnFailureSignal, BackendSessionRecoveryProjection, WorkflowTurnCompleteInput,
+};
 
 #[cfg(test)]
 mod tests;

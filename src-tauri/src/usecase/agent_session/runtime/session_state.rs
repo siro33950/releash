@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use crate::domain::agent_session::entities::MessagePart as DomainMessagePart;
 use crate::domain::agent_session::gateway::AgentSessionRuntime;
+use crate::usecase::agent_session::event_log::BackendSessionRecoveryReason;
 use crate::usecase::agent_session::session::{MessagePart, PermissionRequestMsg, TokenUsage};
 use crate::usecase::agent_session::status::TurnPhase;
 
@@ -62,6 +63,15 @@ pub(crate) struct RuntimeSessionState {
     pub stall_observation_active: bool,
     pub generation: u64,
     pub runtime_epoch: u64,
+    pub provider_session_established: bool,
+    pub backend_recovery: Option<BackendSessionRecoveryState>,
+}
+
+pub(crate) struct BackendSessionRecoveryState {
+    pub recovery_id: String,
+    pub old_provider_session_generation: u64,
+    pub reason: BackendSessionRecoveryReason,
+    pub completion: tokio::sync::watch::Sender<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -116,11 +126,14 @@ impl RuntimeSessionState {
             stall_observation_active: false,
             generation: 0,
             runtime_epoch: 0,
+            provider_session_established: false,
+            backend_recovery: None,
         }
     }
 
     pub(crate) fn bump_runtime_epoch(&mut self) -> u64 {
         self.runtime_epoch = self.runtime_epoch.saturating_add(1);
+        self.provider_session_established = false;
         self.runtime_epoch
     }
 

@@ -155,6 +155,7 @@ pub struct PermissionRequestMsg {
 #[serde(rename_all = "snake_case")]
 pub enum SystemNotificationType {
     Compaction,
+    SessionRecovery,
 }
 
 impl SystemNotificationType {
@@ -162,6 +163,7 @@ impl SystemNotificationType {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Compaction => "compaction",
+            Self::SessionRecovery => "session_recovery",
         }
     }
 }
@@ -579,6 +581,20 @@ pub fn project_tool_output_parts_for_stream(parts: &[MessagePart]) -> Vec<Messag
         .collect()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum PendingRecoveryMessage {
+    Notice {
+        recovery_id: String,
+        message_id: String,
+    },
+    Error {
+        recovery_id: String,
+        message_id: String,
+        error: String,
+    },
+}
+
 /// meta.json。message body を含まない session 単位の保存正典。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -590,8 +606,16 @@ pub struct SessionMeta {
     pub updated_at: f64,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub agent_session_id: Option<String>,
+    #[serde(default)]
+    pub provider_session_generation: u64,
+    /// The provider generation whose first turn must receive a transcript reinjection.
+    /// Kept separate from `context_carry`, which reports the last applied carry strategy.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub context_reinjection_generation: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub context_carry: Option<ContextCarryState>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub(crate) pending_recovery_message: Option<PendingRecoveryMessage>,
     pub permission_mode: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub plan_mode: bool,
@@ -1056,7 +1080,10 @@ impl SessionMeta {
             created_at: session.created_at,
             updated_at: session.updated_at,
             agent_session_id: session.agent_session_id.clone(),
+            provider_session_generation: 0,
+            context_reinjection_generation: None,
             context_carry: session.context_carry.clone(),
+            pending_recovery_message: None,
             permission_mode: session.permission_mode.clone(),
             plan_mode: session.plan_mode,
             selected_model: session.selected_model.clone(),
@@ -2801,7 +2828,24 @@ mod tests {
     }
 
     #[test]
-    fn system_notification_rejects_non_compaction_type() {
+    fn session_recovery_notification_serde_roundtrip() {
+        let part = MessagePart::SystemNotification {
+            notification_type: SystemNotificationType::SessionRecovery,
+            status: "recovered".to_string(),
+            label: "backend セッションを作り直したため文脈は引き継がれません".to_string(),
+            detail: None,
+            hook_id: None,
+        };
+
+        let json = serde_json::to_string(&part).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["notificationType"], "session_recovery");
+        assert_eq!(value["status"], "recovered");
+        assert_eq!(serde_json::from_str::<MessagePart>(&json).unwrap(), part);
+    }
+
+    #[test]
+    fn system_notification_rejects_unknown_type() {
         let json = r#"{
             "type":"system_notification",
             "notificationType":"hook",

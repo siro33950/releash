@@ -100,6 +100,16 @@ pub trait AgentSessionWriter: AgentSessionStorageTypes {
         update: &mut dyn FnMut(&mut Self::Meta) -> Result<(), String>,
     ) -> Result<Self::Meta, String>;
 
+    /// Session meta の RMW と複数 event の追記を、同じ local storage lock の
+    /// commit boundary で確定する。
+    fn update_session_meta_and_append_session_events(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        update: &mut dyn FnMut(&mut Self::Meta) -> Result<(), String>,
+        events: &[Self::Event],
+    ) -> Result<Self::Meta, String>;
+
     fn save_full_session_for_migration_or_restore(
         &self,
         app_data_dir: &Path,

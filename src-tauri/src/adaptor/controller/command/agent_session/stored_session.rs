@@ -17,12 +17,13 @@ use crate::usecase::agent_session::workspace_session_creation::{
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn list_sessions(
-    state: State<'_, Arc<SessionStore>>,
-    app: tauri::AppHandle,
+    runtime: State<'_, Arc<AgentSessionRuntimeUsecase>>,
     worktree_path: String,
 ) -> Result<Vec<SessionSummary>, String> {
-    let data_dir = resolve_data_dir(&app)?;
-    state.list_sessions(&data_dir, &worktree_path)
+    runtime
+        .list_sessions(&worktree_path)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

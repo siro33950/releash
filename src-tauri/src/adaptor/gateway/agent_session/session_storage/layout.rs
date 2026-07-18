@@ -58,6 +58,10 @@ pub(super) fn event_log_file_in_dir(session_dir: &Path) -> PathBuf {
     session_dir.join("events.json")
 }
 
+pub(super) fn meta_event_transaction_file_in_dir(session_dir: &Path) -> PathBuf {
+    session_dir.join("meta_event_transaction.json")
+}
+
 pub(super) fn messages_dir_in_dir(session_dir: &Path) -> PathBuf {
     session_dir.join("messages")
 }
@@ -130,6 +134,31 @@ pub(super) fn write_json_pretty_atomic<T: Serialize>(
         return Err(err);
     }
     std::fs::rename(&tmp, path).map_err(|e| format!("Failed to rename {label} temp file: {e}"))
+}
+
+pub(super) fn write_json_pretty_atomic_durable<T: Serialize>(
+    path: &Path,
+    value: &T,
+    label: &str,
+) -> Result<(), String> {
+    write_json_pretty_atomic(path, value, label)?;
+    sync_file_and_parent(path, label)
+}
+
+pub(super) fn sync_file_and_parent(path: &Path, label: &str) -> Result<(), String> {
+    std::fs::File::open(path)
+        .and_then(|file| file.sync_all())
+        .map_err(|e| format!("Failed to sync {label}: {e}"))?;
+    sync_parent_dir(path, label)
+}
+
+pub(super) fn sync_parent_dir(path: &Path, label: &str) -> Result<(), String> {
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+    std::fs::File::open(parent)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|e| format!("Failed to sync {label} dir: {e}"))
 }
 
 pub(super) fn write_binary_atomic(path: &Path, bytes: &[u8], label: &str) -> Result<(), String> {

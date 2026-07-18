@@ -1,12 +1,13 @@
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
-use super::layout::{event_log_file_in_dir, session_dir};
+use super::layout::{event_log_file_in_dir, session_dir, write_json_pretty_atomic_durable};
+use super::transaction::TransactionApplyError;
 use super::FileSessionStorage;
 use crate::usecase::agent_session::event_log::AgentSessionEvent;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct AppendOutcome {
+pub(super) struct AppendOutcome {
     recovered: bool,
 }
 
@@ -16,11 +17,7 @@ impl FileSessionStorage {
         app_data_dir: &Path,
         session_id: &str,
     ) -> Result<Vec<AgentSessionEvent>, String> {
-        self.ensure_loaded(app_data_dir)?;
-        if let Some(err) = self.invalid_sessions.read().get(session_id) {
-            return Err(err.clone());
-        }
-        if !self.cache.read().contains_key(session_id) {
+        if !self.reconcile_session_transaction(app_data_dir, session_id)? {
             return Err(format!("Session not found: {session_id}"));
         }
         let dir = session_dir(app_data_dir, session_id)?;
@@ -33,15 +30,12 @@ impl FileSessionStorage {
         session_id: &str,
         event: &AgentSessionEvent,
     ) -> Result<Vec<AgentSessionEvent>, String> {
-        self.ensure_loaded(app_data_dir)?;
-        if let Some(err) = self.invalid_sessions.read().get(session_id) {
-            return Err(err.clone());
-        }
-        if !self.cache.read().contains_key(session_id) {
+        if !self.reconcile_session_transaction(app_data_dir, session_id)? {
             return Err(format!("Session not found: {session_id}"));
         }
         let _lock = self.file_lock.lock();
         let dir = session_dir(app_data_dir, session_id)?;
+        self.apply_pending_session_transaction(&dir, session_id)?;
         let outcome = self.append_session_event_to_dir(&dir, event)?;
         if outcome.recovered {
             self.record_event_log_recovery(session_id);
@@ -55,15 +49,12 @@ impl FileSessionStorage {
         session_id: &str,
         event: &AgentSessionEvent,
     ) -> Result<(), String> {
-        self.ensure_loaded(app_data_dir)?;
-        if let Some(err) = self.invalid_sessions.read().get(session_id) {
-            return Err(err.clone());
-        }
-        if !self.cache.read().contains_key(session_id) {
+        if !self.reconcile_session_transaction(app_data_dir, session_id)? {
             return Err(format!("Session not found: {session_id}"));
         }
         let _lock = self.file_lock.lock();
         let dir = session_dir(app_data_dir, session_id)?;
+        self.apply_pending_session_transaction(&dir, session_id)?;
         let outcome = self.append_session_event_to_dir(&dir, event)?;
         if outcome.recovered {
             self.record_event_log_recovery(session_id);
@@ -92,7 +83,30 @@ impl FileSessionStorage {
         }
     }
 
-    fn append_session_event_to_dir(
+    pub(super) fn canonicalize_session_events_from_dir(
+        &self,
+        dir: &Path,
+    ) -> Result<Vec<AgentSessionEvent>, TransactionApplyError> {
+        let path = event_log_file_in_dir(dir);
+        let content = match std::fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => {
+                return Err(TransactionApplyError::retryable(format!(
+                    "Failed to read session event log: {error}"
+                )))
+            }
+        };
+        let events =
+            parse_session_events_content(&content).map_err(TransactionApplyError::corrupt)?;
+        if serde_json::from_str::<Vec<AgentSessionEvent>>(&content).is_err() {
+            write_json_pretty_atomic_durable(&path, &events, "session event log")
+                .map_err(TransactionApplyError::retryable)?;
+        }
+        Ok(events)
+    }
+
+    pub(super) fn append_session_event_to_dir(
         &self,
         dir: &Path,
         event: &AgentSessionEvent,

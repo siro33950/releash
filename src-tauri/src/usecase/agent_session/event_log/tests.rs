@@ -1190,3 +1190,41 @@ fn finalization_is_idempotent() {
 
     assert_eq!(events, once);
 }
+
+#[test]
+fn projector_restores_unfinished_recovery_and_its_reconciliation_terminal() {
+    let started = AgentSessionEvent::BackendSessionRecoveryStarted {
+        recovery_id: "recovery-1".to_string(),
+        old_provider_session_generation: 4,
+        reason: BackendSessionRecoveryReason::BackendSessionLost,
+        at: 10.0,
+    };
+    assert!(matches!(
+        project(std::slice::from_ref(&started)).backend_recovery,
+        Some(BackendSessionRecoveryProjection::Recovering {
+            recovery_id,
+            old_provider_session_generation: 4,
+            reason: BackendSessionRecoveryReason::BackendSessionLost,
+        }) if recovery_id == "recovery-1"
+    ));
+
+    let failed = AgentSessionEvent::BackendSessionRecoveryFailed {
+        recovery_id: "recovery-1".to_string(),
+        error: "interrupted".to_string(),
+        at: 11.0,
+    };
+    assert!(matches!(
+        project(&[started.clone(), failed]).backend_recovery,
+        Some(BackendSessionRecoveryProjection::ReconciliationRequired {
+            recovery_id,
+            error,
+        }) if recovery_id == "recovery-1" && error == "interrupted"
+    ));
+
+    let completed = AgentSessionEvent::BackendSessionRecoveryCompleted {
+        recovery_id: "recovery-1".to_string(),
+        provider_session_generation: 5,
+        at: 11.0,
+    };
+    assert!(project(&[started, completed]).backend_recovery.is_none());
+}

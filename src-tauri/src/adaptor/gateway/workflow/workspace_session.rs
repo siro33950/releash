@@ -46,7 +46,7 @@ impl WorkspaceSessionGateway for StoredWorkspaceSessionGateway {
         worktree_path: &str,
     ) -> Result<Vec<WorkspaceSessionInput>, WorkflowError> {
         self.session_store
-            .list_sessions(&self.data_dir, worktree_path)
+            .list_published_sessions(&self.data_dir, worktree_path)
             .map(|sessions| sessions.into_iter().map(Self::session_input).collect())
             .map_err(WorkflowError::external)
     }
@@ -56,7 +56,7 @@ impl WorkspaceSessionGateway for StoredWorkspaceSessionGateway {
         worktree_path: &str,
     ) -> Result<Vec<WorkspaceSessionInput>, WorkflowError> {
         self.session_store
-            .list_closed_sessions(&self.data_dir, worktree_path)
+            .list_published_closed_sessions(&self.data_dir, worktree_path)
             .map(|sessions| sessions.into_iter().map(Self::session_input).collect())
             .map_err(WorkflowError::external)
     }

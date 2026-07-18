@@ -43,6 +43,8 @@ struct CodexRuntimeState {
     thread_id: Option<String>,
     turn_id: Option<String>,
     startup_error: Option<String>,
+    requested_resume_id: Option<String>,
+    resume_rejected: bool,
     cwd: String,
     model: ModelId,
     permission_profile_id: Option<String>,
@@ -107,6 +109,8 @@ impl CodexSessionRuntime {
             thread_id: None,
             turn_id: None,
             startup_error: None,
+            requested_resume_id: spec.resume.clone(),
+            resume_rejected: false,
             cwd: spec.cwd.clone(),
             model: spec.model.clone(),
             permission_profile_id: spec.permission_profile_id.clone(),
@@ -442,6 +446,7 @@ async fn read_loop<R>(
                         }
                         if let AgentRuntimeEvent::BackendSessionCleared = &event {
                             state.thread_id = None;
+                            state.resume_rejected = true;
                         }
                         if let AgentRuntimeEvent::Fatal { message } = &event {
                             state.startup_error = Some(message.clone());
@@ -531,6 +536,13 @@ async fn wait_for_thread_id(
                 return Ok(thread_id);
             }
             if let Some(error) = state.startup_error.clone() {
+                if state.resume_rejected {
+                    if let Some(requested_resume_id) = state.requested_resume_id.clone() {
+                        return Err(AgentBackendError::BackendSessionLost {
+                            requested_resume_id,
+                        });
+                    }
+                }
                 return Err(AgentBackendError::Other(error));
             }
         }
@@ -782,6 +794,8 @@ exec sleep 30
             thread_id: Some("thread".to_string()),
             turn_id: Some("turn".to_string()),
             startup_error: None,
+            requested_resume_id: None,
+            resume_rejected: false,
             cwd: "/repo".to_string(),
             model: ModelId::parse("gpt-5.6-sol").unwrap(),
             permission_profile_id: None,
@@ -857,6 +871,8 @@ exec sleep 30
             thread_id: Some("thread".to_string()),
             turn_id: None,
             startup_error: None,
+            requested_resume_id: None,
+            resume_rejected: false,
             cwd: "/repo".to_string(),
             model: ModelId::parse("gpt-5.6-sol").unwrap(),
             permission_profile_id: None,
@@ -911,6 +927,23 @@ exec sleep 30
             events_rx.try_recv().unwrap(),
             AgentRuntimeEvent::Fatal { message }
                 if message.contains("expected exactly one of result or error")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_thread_id_resume拒否は_backend_session_lostを返す() {
+        let mut runtime_state = runtime_state();
+        runtime_state.thread_id = None;
+        runtime_state.turn_id = None;
+        runtime_state.startup_error = Some("not found".to_string());
+        runtime_state.requested_resume_id = Some("thread-old".to_string());
+        runtime_state.resume_rejected = true;
+        let state = Arc::new(Mutex::new(runtime_state));
+
+        assert!(matches!(
+            wait_for_thread_id(&state, Duration::from_millis(1)).await,
+            Err(AgentBackendError::BackendSessionLost { requested_resume_id })
+                if requested_resume_id == "thread-old"
         ));
     }
 
@@ -1138,6 +1171,35 @@ exec sleep 30
 
         assert_eq!(state.stdout_diagnostics.oversize_dropped_count(), 0);
         assert_eq!(state.stdout_diagnostics.skipped_non_json_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_thread_id新規sessionのstartup_errorは_otherを維持する() {
+        let mut runtime_state = runtime_state();
+        runtime_state.thread_id = None;
+        runtime_state.turn_id = None;
+        runtime_state.startup_error = Some("bad api key".to_string());
+        let state = Arc::new(Mutex::new(runtime_state));
+
+        assert!(matches!(
+            wait_for_thread_id(&state, Duration::from_millis(1)).await,
+            Err(AgentBackendError::Other(message)) if message == "bad api key"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_thread_id_resume中の非thread_errorは_otherを維持する() {
+        let mut runtime_state = runtime_state();
+        runtime_state.thread_id = None;
+        runtime_state.turn_id = None;
+        runtime_state.startup_error = Some("bad api key".to_string());
+        runtime_state.requested_resume_id = Some("thread-old".to_string());
+        let state = Arc::new(Mutex::new(runtime_state));
+
+        assert!(matches!(
+            wait_for_thread_id(&state, Duration::from_millis(1)).await,
+            Err(AgentBackendError::Other(message)) if message == "bad api key"
+        ));
     }
 
     #[cfg(unix)]

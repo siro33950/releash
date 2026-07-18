@@ -391,6 +391,77 @@ describe("useAgentChat", () => {
 		expect((mod as Record<string, unknown>).buildClaudeCommand).toBeUndefined();
 	});
 
+	it("shows the recovery notice before the retried queued turn starts", async () => {
+		const { renderHook, act, waitFor } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const { result } = renderHook(() => useAgentChat("/repo"));
+		await waitFor(() => expect(result.current.activeSession?.id).toBe("s1"));
+
+		await act(async () => {
+			listenCallbacks.get("agent-pending-message-consumed")?.({
+				payload: {
+					chat_session_id: "s1",
+					agent_message: {
+						id: "recovery-notice",
+						role: "agent",
+						parts: [
+							{
+								type: "system_notification",
+								notificationType: "session_recovery",
+								status: "recovered",
+								label:
+									"backend セッションを作り直したため文脈は引き継がれません",
+							},
+						],
+						timestamp: 1001,
+					},
+				},
+			});
+		});
+		await waitFor(() =>
+			expect(result.current.activeSession?.messages).toHaveLength(1),
+		);
+
+		await act(async () => {
+			listenCallbacks.get("agent-pending-message-consumed")?.({
+				payload: {
+					chat_session_id: "s1",
+					queued_turn_id: "retry-1",
+					human_message: {
+						id: "retry-human",
+						role: "human",
+						content: "retry this turn",
+						timestamp: 1002,
+					},
+					agent_message: {
+						id: "retry-agent",
+						role: "agent",
+						parts: [],
+						timestamp: 1003,
+					},
+				},
+			});
+		});
+
+		await waitFor(() =>
+			expect(result.current.activeSession?.messages).toHaveLength(3),
+		);
+		const messages = result.current.activeSession?.messages ?? [];
+		expect(messages.map((message) => message.id)).toEqual([
+			"recovery-notice",
+			"retry-human",
+			"retry-agent",
+		]);
+		expect(messages[0].parts).toEqual([
+			{
+				type: "system_notification",
+				notificationType: "session_recovery",
+				status: "recovered",
+				label: "backend セッションを作り直したため文脈は引き継がれません",
+			},
+		]);
+	});
+
 	it("sendMessage calls sendAgentMessage with permissionMode", async () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");

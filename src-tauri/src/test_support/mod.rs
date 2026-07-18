@@ -13,7 +13,7 @@ use crate::domain::agent_session::gateway::{
     SessionSpec, TurnInput,
 };
 use crate::domain::agent_session::value_objects::{
-    BackendCapabilities, ModelDescriptor, ModelId, SkillEntry,
+    BackendCapabilities, ModelDescriptor, ModelId, PermissionMode, SkillEntry,
 };
 use crate::usecase::agent_session::backend_registry::AgentBackendRegistry;
 use crate::usecase::agent_session::context::InstructionSourcePort;
@@ -142,6 +142,8 @@ pub(crate) struct TestAgentRuntimeController {
     steering_available: Arc<Mutex<bool>>,
     reconnect_unavailable: Arc<Mutex<bool>>,
     reconnect_failures: Arc<Mutex<usize>>,
+    resume_open_failures: Arc<Mutex<usize>>,
+    open_failures: Arc<Mutex<usize>>,
 }
 
 impl TestAgentRuntimeController {
@@ -267,6 +269,32 @@ impl TestAgentRuntimeController {
         *self.reconnect_failures.lock().unwrap() += 1;
     }
 
+    pub(crate) fn fail_next_resume_open(&self) {
+        *self.resume_open_failures.lock().unwrap() += 1;
+    }
+
+    pub(crate) fn fail_next_open(&self) {
+        *self.open_failures.lock().unwrap() += 1;
+    }
+
+    fn should_fail_resume_open(&self) -> bool {
+        let mut failures = self.resume_open_failures.lock().unwrap();
+        if *failures == 0 {
+            return false;
+        }
+        *failures -= 1;
+        true
+    }
+
+    fn should_fail_open(&self) -> bool {
+        let mut failures = self.open_failures.lock().unwrap();
+        if *failures == 0 {
+            return false;
+        }
+        *failures -= 1;
+        true
+    }
+
     fn should_fail_reconnect(&self) -> bool {
         let mut failures = self.reconnect_failures.lock().unwrap();
         if *failures == 0 {
@@ -297,10 +325,23 @@ pub(crate) enum TestRuntimeCallKind {
         startup_timeout_ms: Option<u128>,
         startup_max_retries: Option<u32>,
         stale_timeout_ms: Option<u128>,
+        resume: Option<String>,
+        model: String,
+        permission_mode: PermissionMode,
+        plan_mode: bool,
     },
     StartTurn,
     StartTurnPrompt {
         prompt: String,
+    },
+    StartTurnEditorContext {
+        editor_context: Option<crate::domain::agent_session::value_objects::EditorContext>,
+    },
+    StartTurnImages {
+        images: Vec<crate::domain::agent_session::entities::AttachmentPayload>,
+    },
+    StartTurnSystemPrompt {
+        system_prompt: Option<String>,
     },
     SteerPrompt {
         prompt: String,
@@ -352,6 +393,7 @@ impl AgentBackend for TestAgentBackend {
         &self,
         spec: SessionSpec,
     ) -> Result<Box<dyn AgentSessionRuntime>, AgentBackendError> {
+        let requested_resume_id = spec.resume.clone();
         let (sender, receiver) = mpsc::unbounded_channel();
         self.controller.record(
             spec.session_id.clone(),
@@ -359,11 +401,27 @@ impl AgentBackend for TestAgentBackend {
                 startup_timeout_ms: spec.startup_timeout.map(|value| value.as_millis()),
                 startup_max_retries: spec.startup_max_retries,
                 stale_timeout_ms: spec.stale_timeout.map(|value| value.as_millis()),
+                resume: requested_resume_id.clone(),
+                model: spec.model.as_str().to_string(),
+                permission_mode: spec.permission_mode,
+                plan_mode: spec.plan_mode,
             },
         );
         if self.controller.should_fail_open_session() {
             return Err(AgentBackendError::Other(
                 "injected test open session failure".to_string(),
+            ));
+        }
+        if let Some(requested_resume_id) = requested_resume_id {
+            if self.controller.should_fail_resume_open() {
+                return Err(AgentBackendError::BackendSessionLost {
+                    requested_resume_id,
+                });
+            }
+        }
+        if self.controller.should_fail_open() {
+            return Err(AgentBackendError::Other(
+                "injected test open failure".to_string(),
             ));
         }
         self.controller.register(spec.session_id.clone(), sender);
@@ -443,7 +501,25 @@ impl AgentSessionRuntime for TestAgentRuntime {
         self.controller.record(
             self.session_id.clone(),
             TestRuntimeCallKind::StartTurnPrompt {
-                prompt: input.prompt,
+                prompt: input.prompt.clone(),
+            },
+        );
+        self.controller.record(
+            self.session_id.clone(),
+            TestRuntimeCallKind::StartTurnImages {
+                images: input.images.clone(),
+            },
+        );
+        self.controller.record(
+            self.session_id.clone(),
+            TestRuntimeCallKind::StartTurnSystemPrompt {
+                system_prompt: input.system_prompt.clone(),
+            },
+        );
+        self.controller.record(
+            self.session_id.clone(),
+            TestRuntimeCallKind::StartTurnEditorContext {
+                editor_context: input.editor_context,
             },
         );
         if let Some(gate) = gate {

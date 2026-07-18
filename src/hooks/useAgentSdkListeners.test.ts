@@ -1064,6 +1064,14 @@ describe("agent-pending-message-consumed event", () => {
 				agent_message: {
 					id: "msg-agent-001",
 					role: "agent",
+					parts: [
+						{
+							type: "system_notification",
+							notificationType: "session_recovery",
+							status: "recovered",
+							label: "backend セッションを作り直したため文脈は引き継がれません",
+						},
+					],
 					timestamp: 1234567,
 				},
 			},
@@ -1075,7 +1083,14 @@ describe("agent-pending-message-consumed event", () => {
 			message: {
 				id: "msg-agent-001",
 				role: "agent",
-				parts: [],
+				parts: [
+					{
+						type: "system_notification",
+						notificationType: "session_recovery",
+						status: "recovered",
+						label: "backend セッションを作り直したため文脈は引き継がれません",
+					},
+				],
 				timestamp: 1234567,
 			},
 		});

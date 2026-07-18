@@ -18,7 +18,9 @@ use crate::domain::agent_session::entities::{
 use crate::domain::agent_session::gateway::{
     AgentBackendError, AgentRuntimeEvent, AgentSessionRuntime, SessionSpec, TurnInput,
 };
-use crate::domain::agent_session::value_objects::{EditorContext, ModelId, PermissionMode};
+use crate::domain::agent_session::value_objects::{
+    EditorContext, ModelId, PermissionMode, SystemNotificationType as DomainSystemNotificationType,
+};
 use crate::domain::agent_session::{ContextSnapshot, ContextSourceKind};
 use crate::domain::workflow::WorkflowError;
 use crate::usecase::agent_session::backend_registry::{AgentBackendRegistry, BackendListResult};
@@ -27,6 +29,7 @@ use crate::usecase::agent_session::context::{
 };
 use crate::usecase::agent_session::event_log::{
     append_part_events, finalize_turn, latest_unresolved_permission_request, AgentSessionEvent,
+    BackendSessionRecoveryProjection, BackendSessionRecoveryReason,
     InterruptReason as EventInterruptReason, PartEventMode, PromptInput, TurnEventLog,
     TurnStopReason as EventTurnStopReason, TurnTokenUsage, UnresolvedPermissionRequest,
     WorkflowTurnCompleteInput,
@@ -35,8 +38,8 @@ use crate::usecase::agent_session::session::{
     add_message_internal, add_message_with_meta_internal, apply_tool_result_update,
     create_session_with_model_and_plan_mode, ChatMessage, ChatSession, ContextCarryState,
     GetSessionResponse, ImageAttachment, InitialSessionPage, MessagePart, MessageRole, ModelInfo,
-    OpenTabRegistry, PermissionRequestMsg, QueuedAgentTurn, SessionMeta, SessionState,
-    SessionStore, SessionSummary, INITIAL_SESSION_PAGE_LIMIT,
+    OpenTabRegistry, PendingRecoveryMessage, PermissionRequestMsg, QueuedAgentTurn, SessionMeta,
+    SessionState, SessionStore, SessionSummary, INITIAL_SESSION_PAGE_LIMIT,
 };
 use crate::usecase::agent_session::status::{
     AgentStatusCenter, AgentStatusNotifier, SessionNotice, SessionNoticeKind, SessionStatus,
@@ -64,8 +67,8 @@ use super::ports::{
 };
 use super::queue::QueuedTurnInput;
 use super::session_state::{
-    PendingStreamDelta, PermissionRequestVisibility, RuntimeSessionMap, RuntimeSessionPhase,
-    RuntimeSessionState,
+    BackendSessionRecoveryState, PendingStreamDelta, PermissionRequestVisibility,
+    RuntimeSessionMap, RuntimeSessionPhase, RuntimeSessionState,
 };
 use super::stale::{
     effective_stale_timeout, has_in_flight_tool_use, recovery_cap_reached, remaining_until_stale,
@@ -198,6 +201,7 @@ pub struct AgentEditorSelection {
 pub enum AgentRuntimeError {
     StartupTimeout { retry_count: u32, max_retries: u32 },
     BackendSelectionLocked,
+    BackendSessionLost { requested_resume_id: String },
     Other(String),
 }
 
@@ -213,6 +217,12 @@ impl std::fmt::Display for AgentRuntimeError {
             ),
             Self::BackendSelectionLocked => f.write_str(
                 "Backend selection can only change before messages, an agent session, or an active turn exist",
+            ),
+            Self::BackendSessionLost {
+                requested_resume_id,
+            } => write!(
+                f,
+                "Backend session is no longer available: {requested_resume_id}"
             ),
             Self::Other(message) => f.write_str(message),
         }
@@ -230,6 +240,11 @@ impl From<AgentBackendError> for AgentRuntimeError {
             } => Self::StartupTimeout {
                 retry_count,
                 max_retries,
+            },
+            AgentBackendError::BackendSessionLost {
+                requested_resume_id,
+            } => Self::BackendSessionLost {
+                requested_resume_id,
             },
             AgentBackendError::Unavailable(message)
             | AgentBackendError::Invalid(message)
@@ -515,12 +530,15 @@ impl AgentSessionRuntimeUsecase {
         req: SendAgentMessageRequest,
     ) -> Result<SendMessageResponse, AgentRuntimeError> {
         let mut session_guard = match req.chat_session_id.as_deref() {
-            Some(session_id) => Some(self.acquire_session_lock(session_id).await),
+            Some(session_id) => {
+                Some(acquire_session_control_after_recovery(&self.ctx, session_id).await)
+            }
             None => None,
         };
         let session = self.resolve_or_create_session(&req).await?;
         if session_guard.is_none() {
-            session_guard = Some(self.acquire_session_lock(&session.id).await);
+            session_guard =
+                Some(acquire_session_control_after_recovery(&self.ctx, &session.id).await);
         }
         let images = req.images.unwrap_or_default();
         let mentions = req.mentions.unwrap_or_default();
@@ -659,7 +677,7 @@ impl AgentSessionRuntimeUsecase {
                 permission_mode: req.permission_mode,
                 plan_mode: req.plan_mode,
                 permission_profile_id: session.permission_profile_id.clone(),
-                editor_context: req.editor_context.map(EditorContext::from),
+                editor_context: req.editor_context,
                 system_prompt,
             },
         )
@@ -682,7 +700,8 @@ impl AgentSessionRuntimeUsecase {
         session_id: &str,
         opts: StartSessionOptions,
     ) -> Result<(), AgentRuntimeError> {
-        let _session_guard = self.acquire_session_lock(session_id).await;
+        let _session_guard = acquire_session_control_after_recovery(&self.ctx, session_id).await;
+        ensure_backend_recovery_operation_allowed(&self.ctx, session_id)?;
         let mut session = self
             .ctx
             .session_store
@@ -707,7 +726,18 @@ impl AgentSessionRuntimeUsecase {
                 .map_err(AgentRuntimeError::Other)?;
             session.plan_mode = opts.plan_mode;
         }
-        self.ensure_runtime(&session, None).await.map(|_| ())
+        match self.ensure_runtime(&session, None).await {
+            Ok(_) => Ok(()),
+            Err(AgentRuntimeError::BackendSessionLost { .. }) => {
+                recover_backend_session(
+                    &self.ctx,
+                    session_id,
+                    BackendSessionRecoveryReason::BackendSessionLost,
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        }
     }
 
     pub async fn interrupt(&self, session_id: &str) -> Result<(), AgentRuntimeError> {
@@ -728,7 +758,10 @@ impl AgentSessionRuntimeUsecase {
         session_id: &str,
         response: PermissionResponse,
     ) -> Result<(), AgentRuntimeError> {
-        let _session_guard = self.acquire_session_lock(session_id).await;
+        let _session_guard = self
+            .acquire_session_control_after_recovery(session_id)
+            .await;
+        ensure_backend_recovery_operation_allowed(&self.ctx, session_id)?;
         let pending = self
             .pending_permission_for_response(session_id, &response)
             .await?;
@@ -964,6 +997,8 @@ impl AgentSessionRuntimeUsecase {
         session_id: &str,
         mode: PermissionMode,
     ) -> Result<(), AgentRuntimeError> {
+        let _session_guard = acquire_session_control_after_recovery(&self.ctx, session_id).await;
+        ensure_backend_recovery_operation_allowed(&self.ctx, session_id)?;
         self.ctx
             .session_store
             .update_permission_mode(&self.ctx.data_dir, session_id, mode.as_str())
@@ -991,6 +1026,8 @@ impl AgentSessionRuntimeUsecase {
         session_id: &str,
         plan_mode: bool,
     ) -> Result<(), AgentRuntimeError> {
+        let _session_guard = acquire_session_control_after_recovery(&self.ctx, session_id).await;
+        ensure_backend_recovery_operation_allowed(&self.ctx, session_id)?;
         self.ctx
             .session_store
             .update_plan_mode(&self.ctx.data_dir, session_id, plan_mode)
@@ -1017,13 +1054,15 @@ impl AgentSessionRuntimeUsecase {
         session_id: &str,
         entry_id: &str,
     ) -> Result<(), AgentRuntimeError> {
+        let _session_guard = acquire_session_control_after_recovery(&self.ctx, session_id).await;
+        ensure_backend_recovery_operation_allowed(&self.ctx, session_id)?;
         let entry = self
             .ctx
             .registry
             .resolve_model_entry(entry_id)
             .map_err(AgentRuntimeError::Other)?;
         let backend_changed = self
-            .apply_backend_selection(
+            .apply_backend_selection_locked(
                 session_id,
                 entry.backend.clone(),
                 Some(entry.model_id.clone()),
@@ -1052,31 +1091,33 @@ impl AgentSessionRuntimeUsecase {
         session_id: &str,
         backend_id: &str,
     ) -> Result<GetSessionResponse, AgentRuntimeError> {
+        let session_guard = acquire_session_control_after_recovery(&self.ctx, session_id).await;
+        ensure_backend_recovery_operation_allowed(&self.ctx, session_id)?;
         let selected_model = self
             .ctx
             .registry
             .default_model_for(backend_id)
             .map_err(AgentRuntimeError::Other)?;
-        self.apply_backend_selection(
+        self.apply_backend_selection_locked(
             session_id,
             backend_id.to_string(),
             Some(selected_model),
             true,
         )
         .await?;
+        drop(session_guard);
         self.get_session(session_id)
             .await?
             .ok_or_else(|| AgentRuntimeError::Other(format!("Session not found: {session_id}")))
     }
 
-    async fn apply_backend_selection(
+    async fn apply_backend_selection_locked(
         &self,
         session_id: &str,
         backend_id: String,
         selected_model: Option<String>,
         restart_same_backend: bool,
     ) -> Result<bool, AgentRuntimeError> {
-        let _session_guard = self.acquire_session_lock(session_id).await;
         let session = self
             .ctx
             .session_store
@@ -1105,7 +1146,7 @@ impl AgentSessionRuntimeUsecase {
             .update_backend_selection(&self.ctx.data_dir, session_id, backend_id, selected_model)
             .map_err(AgentRuntimeError::Other)?;
         if backend_changed || restart_same_backend {
-            self.close_session(session_id).await?;
+            self.close_session_locked(session_id).await?;
         }
         Ok(backend_changed)
     }
@@ -1123,7 +1164,20 @@ impl AgentSessionRuntimeUsecase {
         Ok(())
     }
 
+    /// Waits for an in-flight backend recovery and then closes the live runtime.
+    ///
+    /// This is the normal teardown entry point. It may also reconcile the durable
+    /// event log before returning session control, including persisting an
+    /// interrupted recovery failure and publishing its user-facing error part.
     pub async fn close_session(&self, session_id: &str) -> Result<(), AgentRuntimeError> {
+        let _session_guard = acquire_session_control_after_recovery(&self.ctx, session_id).await;
+        self.close_session_locked(session_id).await
+    }
+
+    /// Closes the runtime without acquiring session control or waiting for recovery.
+    /// Callers must already own the per-session control guard or intentionally use
+    /// the force-close semantics exposed by [`Self::force_close_session`].
+    async fn close_session_locked(&self, session_id: &str) -> Result<(), AgentRuntimeError> {
         let runtime = {
             let mut sessions = self.ctx.sessions.lock().await;
             sessions.remove(session_id).and_then(|state| state.runtime)
@@ -1132,6 +1186,17 @@ impl AgentSessionRuntimeUsecase {
             runtime.close().await;
         }
         Ok(())
+    }
+
+    /// Closes the live runtime immediately without waiting for backend recovery.
+    ///
+    /// This is reserved for lifecycle teardown paths where waiting for a provider
+    /// establishment event could deadlock shutdown or node cleanup.
+    pub(crate) async fn force_close_session(
+        &self,
+        session_id: &str,
+    ) -> Result<(), AgentRuntimeError> {
+        self.close_session_locked(session_id).await
     }
 
     pub async fn close_all(&self) {
@@ -1239,6 +1304,7 @@ impl AgentSessionRuntimeUsecase {
         &self,
         session_id: &str,
     ) -> Result<Option<GetSessionResponse>, AgentRuntimeError> {
+        let _session_guard = acquire_session_control_after_recovery(&self.ctx, session_id).await;
         let Some((session, page)) = self
             .ctx
             .session_store
@@ -1325,11 +1391,7 @@ impl AgentSessionRuntimeUsecase {
         worktree_path: &str,
         open_tabs: &OpenTabRegistry,
     ) -> Result<InitSessionsResponse, AgentRuntimeError> {
-        let sessions = self
-            .ctx
-            .session_store
-            .list_sessions(&self.ctx.data_dir, worktree_path)
-            .map_err(AgentRuntimeError::Other)?;
+        let sessions = self.list_sessions(worktree_path).await?;
         for session in &sessions {
             if session.is_workflow_node_session() && session.state != SessionState::Closed {
                 open_tabs.add(&session.id);
@@ -1386,6 +1448,28 @@ impl AgentSessionRuntimeUsecase {
         acquire_session_runtime_lock(&self.ctx.session_locks, session_id).await
     }
 
+    /// Waits for backend recovery and acquires exclusive session control.
+    ///
+    /// Besides waiting, this projects the complete durable event log. If recovery
+    /// was interrupted, it persists a Failed marker, moves the session to Error,
+    /// and publishes the user-facing recovery Error part before returning.
+    pub async fn acquire_session_control_after_recovery(
+        &self,
+        session_id: &str,
+    ) -> SessionRuntimeLockGuard {
+        acquire_session_control_after_recovery(&self.ctx, session_id).await
+    }
+
+    pub async fn list_sessions(
+        &self,
+        worktree_path: &str,
+    ) -> Result<Vec<SessionSummary>, AgentRuntimeError> {
+        self.ctx
+            .session_store
+            .list_published_sessions(&self.ctx.data_dir, worktree_path)
+            .map_err(AgentRuntimeError::Other)
+    }
+
     #[cfg(test)]
     pub(crate) fn session_runtime_lock_is_held_for_test(&self, session_id: &str) -> bool {
         let Ok(locks) = self.ctx.session_locks.map.try_lock() else {
@@ -1404,6 +1488,7 @@ impl AgentSessionRuntimeUsecase {
         base_system_prompt: Option<String>,
         workflow_instructions: Vec<String>,
     ) -> Result<(), AgentRuntimeError> {
+        ensure_backend_recovery_operation_allowed(&self.ctx, session_id)?;
         let mut session = self
             .ctx
             .session_store
@@ -1618,6 +1703,7 @@ impl AgentSessionRuntimeUsecase {
         req: &SendAgentMessageRequest,
     ) -> Result<ChatSession, AgentRuntimeError> {
         if let Some(session_id) = req.chat_session_id.as_deref() {
+            ensure_backend_recovery_operation_allowed(&self.ctx, session_id)?;
             let mut session = self
                 .ctx
                 .session_store
@@ -1626,7 +1712,15 @@ impl AgentSessionRuntimeUsecase {
                 .ok_or_else(|| {
                     AgentRuntimeError::Other(format!("Session not found: {session_id}"))
                 })?;
-            if session.permission_mode != req.permission_mode.as_str() {
+            let backend_recovery_in_progress = {
+                let sessions = self.ctx.sessions.lock().await;
+                sessions
+                    .get(session_id)
+                    .is_some_and(|state| state.backend_recovery.is_some())
+            };
+            if !backend_recovery_in_progress
+                && session.permission_mode != req.permission_mode.as_str()
+            {
                 self.ctx
                     .session_store
                     .update_permission_mode(
@@ -1637,7 +1731,7 @@ impl AgentSessionRuntimeUsecase {
                     .map_err(AgentRuntimeError::Other)?;
                 session.permission_mode = req.permission_mode.as_str().to_string();
             }
-            if session.plan_mode != req.plan_mode {
+            if !backend_recovery_in_progress && session.plan_mode != req.plan_mode {
                 self.ctx
                     .session_store
                     .update_plan_mode(&self.ctx.data_dir, session_id, req.plan_mode)
@@ -1685,16 +1779,14 @@ impl AgentSessionRuntimeUsecase {
         agent_message_id: String,
         mut payload: TurnStartPayload,
     ) -> Result<(), AgentRuntimeError> {
-        let restore_plan = if self.live_runtime(&session.id).await.is_none() {
-            let persisted = self
-                .ctx
-                .session_store
-                .load_full_session_for_restore(&self.ctx.data_dir, &session.id)
+        let had_runtime = self.live_runtime(&session.id).await.is_some();
+        let restore_policy =
+            context_restore_policy_for_turn(&self.ctx, &session.id, &agent_message_id, had_runtime)
                 .map_err(AgentRuntimeError::Other)?;
-            context_restore_plan_for_session_before_turn(persisted.as_ref(), &agent_message_id)
-        } else {
-            ContextRestorePlan::NoContext
-        };
+        let context_was_reinjected =
+            matches!(&restore_policy.plan, ContextRestorePlan::Reinject { .. });
+        let recovery_restore_required = restore_policy.recovery_restore_required;
+        let restore_plan = restore_policy.plan;
         if restore_plan.carry_state() == Some(ContextCarryState::Reinjected) {
             match self.ctx.session_store.update_context_carry_if_changed(
                 &self.ctx.data_dir,
@@ -1758,7 +1850,7 @@ impl AgentSessionRuntimeUsecase {
                 payload.images.clone(),
                 session.worktree_path.clone(),
                 payload.mentions.clone(),
-                None,
+                payload.editor_context.clone(),
             );
             current_turn_input.existing_human_message_id = Some(human_message.id.clone());
             current_turn_input.existing_agent_message_id = state.streaming_message_id.clone();
@@ -1770,6 +1862,15 @@ impl AgentSessionRuntimeUsecase {
             .await
         {
             Ok(runtime) => runtime,
+            Err(AgentRuntimeError::BackendSessionLost { .. }) => {
+                recover_backend_session(
+                    &self.ctx,
+                    &session.id,
+                    BackendSessionRecoveryReason::BackendSessionLost,
+                )
+                .await?;
+                return Ok(());
+            }
             Err(error) => {
                 {
                     let mut sessions = self.ctx.sessions.lock().await;
@@ -1835,11 +1936,18 @@ impl AgentSessionRuntimeUsecase {
                 permission_mode: payload.permission_mode,
                 plan_mode: payload.plan_mode,
                 permission_profile_id: payload.permission_profile_id,
-                editor_context: payload.editor_context,
+                editor_context: payload.editor_context.map(EditorContext::from),
             })
             .await;
         match start_result {
             Ok(()) => {
+                if recovery_restore_required {
+                    complete_context_reinjection_after_start(
+                        &self.ctx,
+                        &session.id,
+                        context_was_reinjected,
+                    );
+                }
                 self.spawn_stale_watchdog(
                     session.id.clone(),
                     generation,
@@ -2537,26 +2645,63 @@ fn spawn_event_pump_task(
     }));
 }
 
-async fn handle_resume_mismatch(ctx: &RuntimeContext, session_id: &str) -> RuntimeEventPostActions {
-    let mut actions = RuntimeEventPostActions::default();
-    let runtime = {
-        let mut sessions = ctx.sessions.lock().await;
-        let Some(state) = sessions.get_mut(session_id) else {
-            return actions;
-        };
-        let runtime = state.runtime.take();
-        if let Some(mut current_turn) = state.current_turn_input.take() {
-            current_turn.id = uuid::Uuid::new_v4().to_string();
-            state.pending_queue.push_front(current_turn);
-        }
-        state.rollback_started_turn();
-        runtime
-    };
-    actions.close_runtime(runtime);
-    match ctx
+struct TurnContextRestorePolicy {
+    plan: ContextRestorePlan,
+    recovery_restore_required: bool,
+}
+
+fn context_restore_policy_for_turn(
+    ctx: &RuntimeContext,
+    session_id: &str,
+    streaming_agent_message_id: &str,
+    had_runtime: bool,
+) -> Result<TurnContextRestorePolicy, String> {
+    let Some(meta) = ctx
         .session_store
-        .update_resume_metadata_if_changed(&ctx.data_dir, session_id, None, None)
-    {
+        .get_session_meta(&ctx.data_dir, session_id)?
+    else {
+        return Ok(TurnContextRestorePolicy {
+            plan: ContextRestorePlan::NoContext,
+            recovery_restore_required: false,
+        });
+    };
+    let reinjection_required =
+        meta.context_reinjection_generation == Some(meta.provider_session_generation);
+    if had_runtime && !reinjection_required {
+        return Ok(TurnContextRestorePolicy {
+            plan: ContextRestorePlan::NoContext,
+            recovery_restore_required: false,
+        });
+    }
+
+    let mut persisted = ctx
+        .session_store
+        .load_full_session_for_restore(&ctx.data_dir, session_id)?;
+    if reinjection_required {
+        if let Some(session) = persisted.as_mut() {
+            session.agent_session_id = None;
+            session.context_carry = None;
+        }
+    }
+    Ok(TurnContextRestorePolicy {
+        plan: context_restore_plan_for_session_before_turn(
+            persisted.as_ref(),
+            streaming_agent_message_id,
+        ),
+        recovery_restore_required: reinjection_required,
+    })
+}
+
+fn complete_context_reinjection_after_start(
+    ctx: &RuntimeContext,
+    session_id: &str,
+    reinjected: bool,
+) {
+    match ctx.session_store.complete_context_reinjection_if_required(
+        &ctx.data_dir,
+        session_id,
+        reinjected,
+    ) {
         Ok(Some(meta)) => ctx.notifier.context_carry_updated(
             session_id,
             meta.agent_session_id,
@@ -2565,8 +2710,244 @@ async fn handle_resume_mismatch(ctx: &RuntimeContext, session_id: &str) -> Runti
         ),
         Ok(None) => {}
         Err(error) => {
-            log::warn!("failed to clear resume metadata after mismatch for {session_id}: {error}");
+            log::warn!("failed to complete context reinjection for {session_id}: {error}")
         }
+    }
+}
+
+async fn recover_backend_session(
+    ctx: &RuntimeContext,
+    session_id: &str,
+    reason: BackendSessionRecoveryReason,
+) -> Result<(), AgentRuntimeError> {
+    let already_recovering = {
+        let sessions = ctx.sessions.lock().await;
+        sessions
+            .get(session_id)
+            .is_some_and(|state| state.backend_recovery.is_some())
+    };
+    if already_recovering {
+        return Ok(());
+    }
+
+    let recovery_id = uuid::Uuid::new_v4().to_string();
+    let published_summary = ctx
+        .session_store
+        .get_session_meta(&ctx.data_dir, session_id)
+        .map_err(AgentRuntimeError::Other)?
+        .ok_or_else(|| AgentRuntimeError::Other(format!("Session not found: {session_id}")))?
+        .to_summary();
+    ctx.session_store
+        .hold_recovery_publication_snapshot(published_summary);
+    let meta = match ctx.session_store.begin_backend_session_recovery(
+        &ctx.data_dir,
+        session_id,
+        &recovery_id,
+        reason,
+    ) {
+        Ok(meta) => meta,
+        Err(error) => {
+            let runtime = {
+                let mut sessions = ctx.sessions.lock().await;
+                sessions.get_mut(session_id).and_then(|state| {
+                    state.rollback_started_turn();
+                    state.runtime.take()
+                })
+            };
+            if let Some(runtime) = runtime {
+                if let Err(interrupt_error) = runtime.interrupt().await {
+                    log::warn!(
+                        "failed to interrupt runtime after recovery begin failure for {session_id}: {interrupt_error}"
+                    );
+                }
+                runtime.close().await;
+            }
+            fail_backend_session_recovery(ctx, session_id, &error).await;
+            return Err(AgentRuntimeError::Other(error));
+        }
+    };
+
+    let backend_id = meta.backend_id.clone();
+    let (completion, _) = tokio::sync::watch::channel(false);
+    let old_runtime = {
+        let mut sessions = ctx.sessions.lock().await;
+        let state = sessions
+            .entry(session_id.to_string())
+            .or_insert_with(|| RuntimeSessionState::new(backend_id));
+        let runtime = state.runtime.take();
+        if let Some(mut current_turn) = state.current_turn_input.take() {
+            current_turn.id = uuid::Uuid::new_v4().to_string();
+            state.pending_queue.push_front(current_turn);
+        }
+        state.rollback_started_turn();
+        state.backend_recovery = Some(BackendSessionRecoveryState {
+            recovery_id: recovery_id.clone(),
+            old_provider_session_generation: meta.provider_session_generation,
+            reason,
+            completion,
+        });
+        runtime
+    };
+    if let Some(runtime) = old_runtime {
+        runtime.close().await;
+    }
+
+    let session = match ctx
+        .session_store
+        .get_session_shell(&ctx.data_dir, session_id)
+        .map_err(AgentRuntimeError::Other)
+        .and_then(|session| {
+            session
+                .ok_or_else(|| AgentRuntimeError::Other(format!("Session not found: {session_id}")))
+        }) {
+        Ok(session) => session,
+        Err(error) => {
+            fail_backend_session_recovery(ctx, session_id, &error.to_string()).await;
+            return Err(error);
+        }
+    };
+    let queued = {
+        let sessions = ctx.sessions.lock().await;
+        sessions
+            .get(session_id)
+            .and_then(|state| state.pending_queue.front().cloned())
+    };
+    let system_prompt = match queued
+        .as_ref()
+        .map(|queued| {
+            build_queued_system_prompt(
+                &ctx.session_store,
+                ctx.branch_diff_context.as_deref(),
+                ctx.instruction_source.as_ref(),
+                &ctx.data_dir,
+                &session,
+                queued,
+            )
+        })
+        .transpose()
+        .map_err(AgentRuntimeError::Other)
+        .map(Option::flatten)
+    {
+        Ok(system_prompt) => system_prompt,
+        Err(error) => {
+            fail_backend_session_recovery(ctx, session_id, &error.to_string()).await;
+            return Err(error);
+        }
+    };
+
+    if let Err(error) = open_runtime_for_session(ctx, &session, system_prompt).await {
+        fail_backend_session_recovery(ctx, session_id, &error.to_string()).await;
+        return Err(error);
+    }
+    Ok(())
+}
+
+async fn complete_backend_session_recovery(
+    ctx: &RuntimeContext,
+    session_id: &str,
+    backend_session_id: String,
+) -> Result<bool, AgentRuntimeError> {
+    let recovery = {
+        let sessions = ctx.sessions.lock().await;
+        sessions.get(session_id).and_then(|state| {
+            state.backend_recovery.as_ref().map(|recovery| {
+                (
+                    recovery.recovery_id.clone(),
+                    recovery.old_provider_session_generation,
+                    recovery.reason,
+                )
+            })
+        })
+    };
+    let Some((recovery_id, old_provider_session_generation, reason)) = recovery else {
+        return Ok(false);
+    };
+    let meta = ctx
+        .session_store
+        .complete_backend_session_recovery(
+            &ctx.data_dir,
+            session_id,
+            &recovery_id,
+            old_provider_session_generation,
+            backend_session_id,
+        )
+        .map_err(AgentRuntimeError::Other)?;
+    ctx.notifier.context_carry_updated(
+        session_id,
+        meta.agent_session_id,
+        meta.context_carry,
+        meta.updated_at,
+    );
+    if let Err(error) = reconcile_pending_recovery_message(ctx, session_id).await {
+        log::warn!(
+            "failed to persist backend recovery notice for {session_id}; it remains pending: {error}"
+        );
+    }
+    let completion = {
+        let mut sessions = ctx.sessions.lock().await;
+        sessions.get_mut(session_id).and_then(|state| {
+            state
+                .backend_recovery
+                .take()
+                .map(|recovery| recovery.completion)
+        })
+    };
+    if let Some(completion) = completion {
+        let _ = completion.send(true);
+    }
+    ctx.session_store
+        .release_recovery_publication_snapshot(session_id);
+    log::debug!(
+        "completed backend session recovery for {session_id} ({reason:?}, recovery_id={recovery_id})"
+    );
+    Ok(true)
+}
+
+async fn fail_backend_session_recovery(ctx: &RuntimeContext, session_id: &str, error: &str) {
+    let (recovery_id, completion) = {
+        let mut sessions = ctx.sessions.lock().await;
+        sessions
+            .get_mut(session_id)
+            .and_then(|state| {
+                state.phase = RuntimeSessionPhase::Idle;
+                state
+                    .backend_recovery
+                    .take()
+                    .map(|recovery| (recovery.recovery_id, recovery.completion))
+            })
+            .map(|(recovery_id, completion)| (Some(recovery_id), Some(completion)))
+            .unwrap_or((None, None))
+    };
+    let recovery_failure_committed = if let Some(recovery_id) = recovery_id {
+        if let Err(persist_error) = ctx.session_store.fail_backend_session_recovery(
+            &ctx.data_dir,
+            session_id,
+            &recovery_id,
+            error,
+        ) {
+            log::warn!(
+                "failed to persist backend recovery failure for {session_id}: {persist_error}"
+            );
+            let _ =
+                ctx.session_store
+                    .set_session_state(&ctx.data_dir, session_id, SessionState::Error);
+            false
+        } else {
+            true
+        }
+    } else {
+        let _ = ctx
+            .session_store
+            .set_session_state(&ctx.data_dir, session_id, SessionState::Error);
+        false
+    };
+    let error_result = if recovery_failure_committed {
+        reconcile_pending_recovery_message(ctx, session_id).await
+    } else {
+        persist_and_publish_recovery_error(ctx, session_id, None, error).await
+    };
+    if let Err(persist_error) = error_result {
+        log::warn!("failed to persist backend recovery error for {session_id}: {persist_error}");
     }
     emit_session_state_change(
         &ctx.session_store,
@@ -2579,14 +2960,119 @@ async fn handle_resume_mismatch(ctx: &RuntimeContext, session_id: &str) -> Runti
             turn_phase: TurnPhase::Idle,
             pending_permission_request: None,
             pending_permission_state_revision: None,
-            exit_code: None,
-            completed_at: None,
-            interrupted: false,
-            session_state: Some(SessionState::Active),
+            exit_code: Some(1),
+            completed_at: Some(crate::usecase::agent_session::session::now_timestamp()),
+            interrupted: true,
+            session_state: Some(SessionState::Error),
         },
     );
-    actions.drain();
-    actions
+    ctx.session_store
+        .release_recovery_publication_snapshot(session_id);
+    if let Some(completion) = completion {
+        let _ = completion.send(true);
+    }
+}
+
+async fn wait_for_backend_session_recovery(ctx: &RuntimeContext, session_id: &str) {
+    let receiver = {
+        let sessions = ctx.sessions.lock().await;
+        sessions
+            .get(session_id)
+            .and_then(|state| state.backend_recovery.as_ref())
+            .map(|recovery| recovery.completion.subscribe())
+    };
+    let Some(mut receiver) = receiver else {
+        return;
+    };
+    while !*receiver.borrow() {
+        if receiver.changed().await.is_err() {
+            break;
+        }
+    }
+}
+
+async fn acquire_session_control_after_recovery(
+    ctx: &RuntimeContext,
+    session_id: &str,
+) -> SessionRuntimeLockGuard {
+    loop {
+        wait_for_backend_session_recovery(ctx, session_id).await;
+        let guard = acquire_session_runtime_lock(&ctx.session_locks, session_id).await;
+        let recovery_started = {
+            let sessions = ctx.sessions.lock().await;
+            sessions
+                .get(session_id)
+                .is_some_and(|state| state.backend_recovery.is_some())
+        };
+        if !recovery_started {
+            reconcile_incomplete_backend_recovery(ctx, session_id).await;
+            return guard;
+        }
+        drop(guard);
+    }
+}
+
+fn backend_recovery_projection(
+    ctx: &RuntimeContext,
+    session_id: &str,
+) -> Result<Option<BackendSessionRecoveryProjection>, AgentRuntimeError> {
+    let events = ctx
+        .session_store
+        .load_session_events(&ctx.data_dir, session_id)
+        .map_err(AgentRuntimeError::Other)?;
+    Ok(TurnEventLog::from_events(events).project().backend_recovery)
+}
+
+fn ensure_backend_recovery_operation_allowed(
+    ctx: &RuntimeContext,
+    session_id: &str,
+) -> Result<(), AgentRuntimeError> {
+    match backend_recovery_projection(ctx, session_id)? {
+        Some(BackendSessionRecoveryProjection::Recovering { .. }) => Err(AgentRuntimeError::Other(
+            "backend session recovery is still in progress".to_string(),
+        )),
+        Some(BackendSessionRecoveryProjection::ReconciliationRequired { error, .. }) => {
+            Err(AgentRuntimeError::Other(format!(
+                "backend session recovery requires reconciliation: {error}"
+            )))
+        }
+        None => Ok(()),
+    }
+}
+
+async fn reconcile_incomplete_backend_recovery(ctx: &RuntimeContext, session_id: &str) {
+    if let Err(error) = reconcile_pending_recovery_message(ctx, session_id).await {
+        log::warn!(
+            "failed to reconcile pending backend recovery message for {session_id}: {error}"
+        );
+    }
+    let projection = match backend_recovery_projection(ctx, session_id) {
+        Ok(projection) => projection,
+        Err(error) => {
+            log::warn!("failed to restore backend recovery state for {session_id}: {error}");
+            return;
+        }
+    };
+    let Some(BackendSessionRecoveryProjection::Recovering { recovery_id, .. }) = projection else {
+        return;
+    };
+    let error = "backend session recovery was interrupted before completion";
+    if let Err(persist_error) = ctx.session_store.fail_backend_session_recovery(
+        &ctx.data_dir,
+        session_id,
+        &recovery_id,
+        error,
+    ) {
+        log::warn!(
+            "failed to persist interrupted backend recovery for {session_id}: {persist_error}"
+        );
+        return;
+    }
+    if let Err(persist_error) = reconcile_pending_recovery_message(ctx, session_id).await {
+        log::warn!(
+            "failed to publish interrupted backend recovery for {session_id}: {persist_error}"
+        );
+    }
 }
 
 pub struct SessionRuntimeLockGuard {
@@ -2677,7 +3163,7 @@ struct TurnStartPayload {
     permission_mode: PermissionMode,
     plan_mode: bool,
     permission_profile_id: Option<String>,
-    editor_context: Option<EditorContext>,
+    editor_context: Option<AgentEditorContext>,
     system_prompt: Option<String>,
 }
 
@@ -2842,6 +3328,174 @@ fn runtime_event_kind(event: &AgentRuntimeEvent) -> &'static str {
     }
 }
 
+async fn reconcile_pending_recovery_message(
+    ctx: &RuntimeContext,
+    session_id: &str,
+) -> Result<(), String> {
+    let Some(meta) = ctx
+        .session_store
+        .get_session_meta(&ctx.data_dir, session_id)?
+    else {
+        return Ok(());
+    };
+    let Some(pending) = meta.pending_recovery_message else {
+        return Ok(());
+    };
+    match &pending {
+        PendingRecoveryMessage::Notice { message_id, .. } => {
+            persist_and_publish_recovery_notice(ctx, session_id, message_id)?;
+        }
+        PendingRecoveryMessage::Error {
+            message_id, error, ..
+        } => {
+            persist_and_publish_recovery_error(ctx, session_id, Some(message_id), error).await?;
+        }
+    }
+    ctx.session_store
+        .clear_pending_recovery_message(&ctx.data_dir, session_id, &pending)
+}
+
+fn persist_and_publish_recovery_notice(
+    ctx: &RuntimeContext,
+    session_id: &str,
+    message_id: &str,
+) -> Result<(), String> {
+    let parts = parts_from_domain(vec![DomainMessagePart::SystemNotification {
+        notification_type: DomainSystemNotificationType::SessionRecovery,
+        status: "recovered".to_string(),
+        label: "backend セッションを作り直したため文脈は引き継がれません".to_string(),
+        detail: None,
+        hook_id: None,
+    }]);
+    if ctx
+        .session_store
+        .load_full_session_for_restore(&ctx.data_dir, session_id)?
+        .is_some_and(|session| {
+            session
+                .messages
+                .iter()
+                .any(|message| message.id == message_id)
+        })
+    {
+        return Ok(());
+    }
+    let message = ChatMessage {
+        id: message_id.to_string(),
+        role: MessageRole::Agent,
+        content: String::new(),
+        thinking: None,
+        activities: None,
+        parts: Some(parts),
+        streaming_final_seq: 0,
+        timestamp: crate::usecase::agent_session::session::now_timestamp(),
+        mentions: None,
+    };
+    ctx.session_store
+        .append_message(&ctx.data_dir, session_id, &message)?;
+    ctx.notifier
+        .pending_message_consumed(session_id, None, None, message.clone());
+    Ok(())
+}
+
+async fn persist_and_publish_recovery_error(
+    ctx: &RuntimeContext,
+    session_id: &str,
+    pending_message_id: Option<&str>,
+    error: &str,
+) -> Result<(), String> {
+    let content = format!("backend session recovery failed: {error}");
+    let runtime_target = {
+        let sessions = ctx.sessions.lock().await;
+        sessions.get(session_id).and_then(|state| {
+            state.last_agent_message_id.clone().or_else(|| {
+                state
+                    .pending_queue
+                    .front()
+                    .and_then(|queued| queued.existing_agent_message_id.clone())
+            })
+        })
+    };
+    let persisted = ctx
+        .session_store
+        .load_full_session_for_restore(&ctx.data_dir, session_id)?;
+    let target = pending_message_id
+        .map(str::to_string)
+        .or(runtime_target)
+        .or_else(|| {
+            persisted.as_ref().and_then(|session| {
+                session
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|message| message.role == MessageRole::Agent)
+                    .map(|message| message.id.clone())
+            })
+        });
+    if let Some(message_id) = target {
+        let message = persisted.as_ref().and_then(|session| {
+            session
+                .messages
+                .iter()
+                .find(|message| message.id == message_id)
+        });
+        if let Some(message) = message {
+            let mut parts = message.parts.clone().unwrap_or_default();
+            let error_part = MessagePart::Error {
+                content,
+                parent_tool_use_id: None,
+            };
+            if parts.contains(&error_part) {
+                return Ok(());
+            }
+            merge_persisted_message_part(&mut parts, error_part);
+            let seq = message.streaming_final_seq.saturating_add(1);
+            ctx.session_store.persist_message_parts(
+                &ctx.data_dir,
+                session_id,
+                &message_id,
+                &parts,
+                seq,
+                Some(crate::usecase::agent_session::session::now_timestamp()),
+            )?;
+            let _ = ctx.notifier.streaming_delta(AgentStreamingDeltaPayload {
+                chat_session_id: session_id.to_string(),
+                message_id,
+                seq,
+                snapshot: true,
+                parts,
+            });
+            return Ok(());
+        }
+        if pending_message_id.is_none() {
+            return Err(format!(
+                "Recovery target agent message not found: {message_id}"
+            ));
+        }
+    }
+
+    let message = ChatMessage {
+        id: pending_message_id
+            .map(str::to_string)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+        role: MessageRole::Agent,
+        content: String::new(),
+        thinking: None,
+        activities: None,
+        parts: Some(vec![MessagePart::Error {
+            content,
+            parent_tool_use_id: None,
+        }]),
+        streaming_final_seq: 0,
+        timestamp: crate::usecase::agent_session::session::now_timestamp(),
+        mentions: None,
+    };
+    ctx.session_store
+        .append_message(&ctx.data_dir, session_id, &message)?;
+    ctx.notifier
+        .pending_message_consumed(session_id, None, None, message.clone());
+    Ok(())
+}
+
 async fn apply_runtime_event(
     ctx: &RuntimeContext,
     session_id: &str,
@@ -2872,7 +3526,48 @@ async fn apply_runtime_event(
                 resume,
                 crate::domain::agent_session::gateway::ResumeOutcome::Mismatch { .. }
             ) {
-                return handle_resume_mismatch(ctx, session_id).await;
+                if let Err(error) = recover_backend_session(
+                    ctx,
+                    session_id,
+                    BackendSessionRecoveryReason::ResumeMismatch,
+                )
+                .await
+                {
+                    log::warn!(
+                        "failed to recover backend session after resume mismatch for {session_id}: {error}"
+                    );
+                }
+                return RuntimeEventPostActions::default();
+            }
+            let is_first_established_event = {
+                let mut sessions = ctx.sessions.lock().await;
+                sessions.get_mut(session_id).is_some_and(|state| {
+                    if state.provider_session_established {
+                        false
+                    } else {
+                        state.provider_session_established = true;
+                        true
+                    }
+                })
+            };
+            if !is_first_established_event {
+                return RuntimeEventPostActions::default();
+            }
+            match complete_backend_session_recovery(ctx, session_id, backend_session_id.clone())
+                .await
+            {
+                Ok(true) => {
+                    start_next_queued_turn(ctx, session_id).await;
+                    return RuntimeEventPostActions::default();
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    log::warn!(
+                        "failed to complete backend session recovery for {session_id}: {error}"
+                    );
+                    fail_backend_session_recovery(ctx, session_id, &error.to_string()).await;
+                    return RuntimeEventPostActions::default();
+                }
             }
             let (agent_session_id, context_carry) = match resume {
                 crate::domain::agent_session::gateway::ResumeOutcome::Resumed => (
@@ -2886,10 +3581,10 @@ async fn apply_runtime_event(
                     unreachable!("resume mismatch is handled before metadata update")
                 }
             };
-            match ctx.session_store.update_resume_metadata_if_changed(
+            match ctx.session_store.record_backend_session_established(
                 &ctx.data_dir,
                 session_id,
-                agent_session_id,
+                agent_session_id.expect("established session id is always present"),
                 context_carry.clone(),
             ) {
                 Ok(Some(meta)) => ctx.notifier.context_carry_updated(
@@ -2905,22 +3600,14 @@ async fn apply_runtime_event(
             }
         }
         AgentRuntimeEvent::BackendSessionCleared => {
-            match ctx.session_store.update_resume_metadata_if_changed(
-                &ctx.data_dir,
+            if let Err(error) = recover_backend_session(
+                ctx,
                 session_id,
-                None,
-                Some(ContextCarryState::Failed),
-            ) {
-                Ok(Some(meta)) => ctx.notifier.context_carry_updated(
-                    session_id,
-                    meta.agent_session_id,
-                    meta.context_carry,
-                    meta.updated_at,
-                ),
-                Ok(None) => {}
-                Err(error) => {
-                    log::warn!("failed to clear backend session id for {session_id}: {error}");
-                }
+                BackendSessionRecoveryReason::BackendSessionLost,
+            )
+            .await
+            {
+                log::warn!("failed to recover cleared backend session for {session_id}: {error}");
             }
         }
         AgentRuntimeEvent::PartsMerged(parts) => {
@@ -3022,6 +3709,24 @@ async fn apply_runtime_event(
         }
         AgentRuntimeEvent::Fatal { message } => {
             log::warn!("agent runtime fatal for {session_id}: {message}");
+            let recovery_in_progress = {
+                let sessions = ctx.sessions.lock().await;
+                sessions
+                    .get(session_id)
+                    .is_some_and(|state| state.backend_recovery.is_some())
+            };
+            if recovery_in_progress {
+                let runtime = {
+                    let mut sessions = ctx.sessions.lock().await;
+                    sessions
+                        .get_mut(session_id)
+                        .and_then(|state| state.runtime.take())
+                };
+                fail_backend_session_recovery(ctx, session_id, &message).await;
+                let mut actions = RuntimeEventPostActions::default();
+                actions.close_runtime(runtime);
+                return actions;
+            }
             let should_complete_crash = {
                 let sessions = ctx.sessions.lock().await;
                 sessions
@@ -3796,6 +4501,9 @@ async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &str) {
         let Some(state) = sessions.get(session_id) else {
             return;
         };
+        if state.backend_recovery.is_some() {
+            return;
+        }
         if state.phase != RuntimeSessionPhase::Idle {
             return;
         }
@@ -3849,6 +4557,20 @@ async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &str) {
         Some(runtime) => runtime,
         None => match open_runtime_for_session(ctx, &session, system_prompt.clone()).await {
             Ok(runtime) => runtime,
+            Err(AgentRuntimeError::BackendSessionLost { .. }) => {
+                if let Err(error) = recover_backend_session(
+                    ctx,
+                    session_id,
+                    BackendSessionRecoveryReason::BackendSessionLost,
+                )
+                .await
+                {
+                    log::warn!(
+                        "failed to recover backend session for queued turn {session_id}: {error}"
+                    );
+                }
+                return;
+            }
             Err(error) => {
                 log::warn!("failed to reopen runtime for queued turn {session_id}: {error}");
                 if let Err(persist_error) =
@@ -3928,21 +4650,21 @@ async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &str) {
         front.existing_human_message_id = queued_for_turn.existing_human_message_id.clone();
         front.existing_agent_message_id = queued_for_turn.existing_agent_message_id.clone();
     }
-    let restore_plan = if had_runtime {
-        ContextRestorePlan::NoContext
-    } else {
-        let persisted = match ctx
-            .session_store
-            .load_full_session_for_restore(&ctx.data_dir, session_id)
-        {
-            Ok(session) => session,
+    let restore_policy =
+        match context_restore_policy_for_turn(ctx, session_id, &agent_message.id, had_runtime) {
+            Ok(policy) => policy,
             Err(error) => {
                 log::warn!("failed to load queued turn restore context for {session_id}: {error}");
-                None
+                TurnContextRestorePolicy {
+                    plan: ContextRestorePlan::NoContext,
+                    recovery_restore_required: false,
+                }
             }
         };
-        context_restore_plan_for_session_before_turn(persisted.as_ref(), &agent_message.id)
-    };
+    let context_was_reinjected =
+        matches!(&restore_policy.plan, ContextRestorePlan::Reinject { .. });
+    let recovery_restore_required = restore_policy.recovery_restore_required;
+    let restore_plan = restore_policy.plan;
     if restore_plan.carry_state() == Some(ContextCarryState::Reinjected) {
         match ctx.session_store.update_context_carry_if_changed(
             &ctx.data_dir,
@@ -4069,6 +4791,9 @@ async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &str) {
         );
         ctx.notifier
             .turn_prepared(&session, &human_message, &agent_message);
+        if recovery_restore_required {
+            complete_context_reinjection_after_start(ctx, session_id, context_was_reinjected);
+        }
         spawn_stale_watchdog_task(
             ctx,
             session_id.to_string(),
@@ -4937,6 +5662,7 @@ impl AgentSessionRuntime for TestFailingAgentRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adaptor::gateway::workflow::StoredWorkspaceSessionGateway;
     use crate::domain::agent_session::gateway::{
         AgentBackend, AgentSessionRuntime, ForkSessionRequest,
     };
@@ -4956,6 +5682,7 @@ mod tests {
     use crate::usecase::agent_session::session::{
         create_session_internal_with_attributes, ChatMessage, MessagePart, PermissionPartStatus,
         PermissionRequestKindMsg, PermissionRequestMsg, SessionCreationAttributes,
+        SystemNotificationType,
     };
     use crate::usecase::agent_session::status::{
         AgentStatusChanges, AgentStatusNotifier, TurnPhaseRepr,
@@ -4963,9 +5690,11 @@ mod tests {
     use crate::usecase::workflow::ports::{
         WorkflowStallClearedNotification, WorkflowStallObservedNotification,
     };
+    use crate::usecase::workflow::{WorkspaceSessionGateway, WorkspaceSessionState};
     use std::future::Future;
     use std::path::Path;
     use std::pin::Pin;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use tokio::sync::Notify;
@@ -6315,6 +7044,28 @@ mod tests {
                     .call_kinds_for(session_id)
                     .iter()
                     .filter(|kind| matches!(kind, TestRuntimeCallKind::StartTurnPrompt { .. }))
+                    .count();
+                if count >= expected_count {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn wait_for_open_count(
+        controller: &crate::test_support::TestAgentRuntimeController,
+        session_id: &str,
+        expected_count: usize,
+    ) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let count = controller
+                    .call_kinds_for(session_id)
+                    .iter()
+                    .filter(|kind| matches!(kind, TestRuntimeCallKind::OpenSession { .. }))
                     .count();
                 if count >= expected_count {
                     break;
@@ -9161,6 +9912,24 @@ mod tests {
         .unwrap();
 
         // When: the backend reports that the resumed id does not match the actual thread.
+        let editor_context = AgentEditorContext {
+            active_editor_path: Some("src/main.rs".to_string()),
+            open_editor_paths: vec!["src/main.rs".to_string(), "src/lib.rs".to_string()],
+            selection: Some(AgentEditorSelection {
+                file_path: "src/main.rs".to_string(),
+                start_line: 4,
+                end_line: 9,
+            }),
+        };
+        let images = vec![ImageAttachment {
+            data: "iVBORw==".to_string(),
+            media_type: "image/png".to_string(),
+        }];
+        let mentions = vec![crate::domain::code::MentionReference {
+            file_path: "src/lib.rs".to_string(),
+            start_line: Some(12),
+            end_line: Some(18),
+        }];
         usecase
             .send_message(SendAgentMessageRequest {
                 chat_session_id: Some(session.id.clone()),
@@ -9170,9 +9939,9 @@ mod tests {
                 plan_mode: false,
                 backend_id: Some("claude".to_string()),
                 model_id: None,
-                images: None,
-                mentions: None,
-                editor_context: None,
+                images: Some(images.clone()),
+                mentions: Some(mentions.clone()),
+                editor_context: Some(editor_context.clone()),
             })
             .await
             .unwrap();
@@ -9188,7 +9957,27 @@ mod tests {
                 },
             )
             .unwrap();
+        wait_for_open_count(&controller, &session.id, 2).await;
+        assert_eq!(
+            controller
+                .call_kinds_for(&session.id)
+                .iter()
+                .filter(|kind| matches!(kind, TestRuntimeCallKind::StartTurnPrompt { .. }))
+                .count(),
+            1,
+            "the retry must remain queued until the new backend session is established"
+        );
+        controller
+            .emit(
+                &session.id,
+                AgentRuntimeEvent::SessionEstablished {
+                    backend_session_id: "fresh-backend-session".to_string(),
+                    resume: crate::domain::agent_session::gateway::ResumeOutcome::NotRequested,
+                },
+            )
+            .unwrap();
         wait_for_start_prompt_count(&controller, &session.id, 2).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
 
         // Then: the retry prompt is reinjected, the stale backend id is cleared, and the
         // mismatched runtime was closed before reopening.
@@ -9207,16 +9996,231 @@ mod tests {
         assert!(controller
             .call_kinds_for(&session.id)
             .contains(&TestRuntimeCallKind::Close));
+        let editor_contexts = controller
+            .call_kinds_for(&session.id)
+            .into_iter()
+            .filter_map(|kind| match kind {
+                TestRuntimeCallKind::StartTurnEditorContext { editor_context } => editor_context,
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(editor_contexts.len(), 2);
+        assert_eq!(
+            editor_contexts[0],
+            EditorContext::from(editor_context.clone())
+        );
+        assert_eq!(editor_contexts[1], EditorContext::from(editor_context));
+        let turn_images = controller
+            .call_kinds_for(&session.id)
+            .into_iter()
+            .filter_map(|kind| match kind {
+                TestRuntimeCallKind::StartTurnImages { images } => Some(images),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let expected_images = images
+            .into_iter()
+            .map(|image| AttachmentPayload {
+                data: image.data,
+                media_type: image.media_type,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(turn_images, vec![expected_images.clone(), expected_images]);
+        let system_prompts = controller
+            .call_kinds_for(&session.id)
+            .into_iter()
+            .filter_map(|kind| match kind {
+                TestRuntimeCallKind::StartTurnSystemPrompt { system_prompt } => Some(system_prompt),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(system_prompts.len(), 2);
+        assert_eq!(system_prompts[0], system_prompts[1]);
+        assert!(system_prompts[0]
+            .as_deref()
+            .is_some_and(|prompt| prompt.contains("src/lib.rs")));
         let loaded = usecase.get_session(&session.id).await.unwrap().unwrap();
-        assert_eq!(loaded.session.agent_session_id, None);
+        assert_eq!(
+            loaded.session.agent_session_id.as_deref(),
+            Some("fresh-backend-session")
+        );
         assert_eq!(
             loaded.session.context_carry,
             Some(ContextCarryState::Reinjected)
         );
+        assert!(loaded.session.messages.iter().any(|message| {
+            message.parts.as_deref().is_some_and(|parts| {
+                parts.iter().any(|part| matches!(
+                    part,
+                    MessagePart::SystemNotification {
+                        notification_type: crate::usecase::agent_session::session::SystemNotificationType::SessionRecovery,
+                        label,
+                        ..
+                    } if label == "backend セッションを作り直したため文脈は引き継がれません"
+                ))
+            })
+        }));
+
+        let recovery_events = session_store
+            .load_session_events(tmp.path(), &session.id)
+            .unwrap()
+            .into_iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    AgentSessionEvent::BackendSessionRecoveryStarted { .. }
+                        | AgentSessionEvent::SessionConfigurationReactivated { .. }
+                        | AgentSessionEvent::SessionGoalReactivated { .. }
+                        | AgentSessionEvent::BackendSessionRecoveryCompleted { .. }
+                )
+            })
+            .collect::<Vec<_>>();
+        let retried_mentions = session_store
+            .load_session_events(tmp.path(), &session.id)
+            .unwrap()
+            .into_iter()
+            .filter_map(|event| match event {
+                AgentSessionEvent::TurnStarted { prompt, .. } if prompt.content == "continue" => {
+                    Some(prompt.mentions)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let expected_mentions = mentions
+            .into_iter()
+            .map(crate::usecase::agent_session::session::MessageMention::from_domain)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            retried_mentions,
+            vec![expected_mentions.clone(), expected_mentions]
+        );
+        assert_eq!(recovery_events.len(), 4);
+        let recovery_id = match &recovery_events[0] {
+            AgentSessionEvent::BackendSessionRecoveryStarted { recovery_id, .. } => {
+                recovery_id.clone()
+            }
+            event => panic!("unexpected recovery event: {event:?}"),
+        };
+        assert!(matches!(
+            &recovery_events[1],
+            AgentSessionEvent::SessionConfigurationReactivated {
+                recovery_id: actual,
+                provider_session_generation: 1,
+                ..
+            } if actual == &recovery_id
+        ));
+        assert!(matches!(
+            &recovery_events[2],
+            AgentSessionEvent::SessionGoalReactivated {
+                recovery_id: actual,
+                outcome: crate::usecase::agent_session::event_log::GoalReactivationOutcome::NoCurrentGoal,
+                provider_session_generation: 1,
+                ..
+            } if actual == &recovery_id
+        ));
+        assert!(matches!(
+            &recovery_events[3],
+            AgentSessionEvent::BackendSessionRecoveryCompleted {
+                recovery_id: actual,
+                provider_session_generation: 1,
+                ..
+            } if actual == &recovery_id
+        ));
+    }
+
+    #[test]
+    fn completed_recovery_restore_policy_is_identical_after_runtime_restart() {
+        let tmp = tempfile::tempdir().unwrap();
+        let original_store = Arc::new(build_session_store());
+        let session = create_session_internal_with_attributes(
+            &original_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("codex".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("gpt-5.6-sol".to_string()),
+                plan_mode: false,
+                workflow_node_session: false,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        add_message_internal(
+            &original_store,
+            tmp.path(),
+            &session.id,
+            MessageRole::Human,
+            "remember durable context",
+            None,
+            None,
+        )
+        .unwrap();
+        original_store
+            .begin_backend_session_recovery(
+                tmp.path(),
+                &session.id,
+                "durable-recovery",
+                BackendSessionRecoveryReason::BackendSessionLost,
+            )
+            .unwrap();
+        original_store
+            .complete_backend_session_recovery(
+                tmp.path(),
+                &session.id,
+                "durable-recovery",
+                0,
+                "fresh-provider-session".to_string(),
+            )
+            .unwrap();
+
+        let (running_usecase, _) =
+            build_agent_runtime_usecase_with_controller(original_store.clone(), tmp.path());
+        let without_restart = context_restore_policy_for_turn(
+            &running_usecase.ctx,
+            &session.id,
+            "next-agent-message",
+            true,
+        )
+        .unwrap();
+        let prompt_without_restart =
+            apply_restore_prompt_prefix("continue".to_string(), &without_restart.plan);
+        let carry_without_restart = original_store
+            .get_session_meta(tmp.path(), &session.id)
+            .unwrap()
+            .unwrap()
+            .context_carry;
+        drop(running_usecase);
+        drop(original_store);
+
+        let reopened_store = Arc::new(build_session_store());
+        let (restarted_usecase, _) =
+            build_agent_runtime_usecase_with_controller(reopened_store.clone(), tmp.path());
+        let after_restart = context_restore_policy_for_turn(
+            &restarted_usecase.ctx,
+            &session.id,
+            "next-agent-message",
+            false,
+        )
+        .unwrap();
+        let prompt_after_restart =
+            apply_restore_prompt_prefix("continue".to_string(), &after_restart.plan);
+        let meta_after_restart = reopened_store
+            .get_session_meta(tmp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+
+        assert!(without_restart.recovery_restore_required);
+        assert!(after_restart.recovery_restore_required);
+        assert_eq!(prompt_after_restart, prompt_without_restart);
+        assert!(prompt_after_restart.contains("releash_restored_conversation"));
+        assert!(prompt_after_restart.contains("remember durable context"));
+        assert_eq!(meta_after_restart.context_carry, carry_without_restart);
+        assert_eq!(meta_after_restart.context_reinjection_generation, Some(1));
     }
 
     #[tokio::test]
-    async fn test_backend_session_clearedは_context_carry_failedを書き込む() {
+    async fn test_backend_session_clearedは新規sessionでturnを再開する() {
         // Given: a session that was previously resumed.
         let tmp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(build_session_store());
@@ -9264,15 +10268,1611 @@ mod tests {
         controller
             .emit(&session.id, AgentRuntimeEvent::BackendSessionCleared)
             .unwrap();
+        wait_for_open_count(&controller, &session.id, 2).await;
+        controller
+            .emit(
+                &session.id,
+                AgentRuntimeEvent::SessionEstablished {
+                    backend_session_id: "replacement-session".to_string(),
+                    resume: crate::domain::agent_session::gateway::ResumeOutcome::NotRequested,
+                },
+            )
+            .unwrap();
+        wait_for_start_prompt_count(&controller, &session.id, 2).await;
         tokio::time::sleep(Duration::from_millis(20)).await;
 
-        // Then: the persisted resume metadata is cleared and the carry state is Failed.
+        // Then: the dead backend id is replaced and the original turn is retried.
         let loaded = usecase.get_session(&session.id).await.unwrap().unwrap();
-        assert_eq!(loaded.session.agent_session_id, None);
+        assert_eq!(
+            loaded.session.agent_session_id.as_deref(),
+            Some("replacement-session")
+        );
         assert_eq!(
             loaded.session.context_carry,
             Some(ContextCarryState::Failed)
         );
+    }
+
+    #[tokio::test]
+    async fn recovery_reopens_with_latest_persisted_configuration_and_generation_two() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("codex".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("gpt-5.6-sol".to_string()),
+                plan_mode: false,
+                workflow_node_session: false,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        let normal_session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes::default(),
+        )
+        .unwrap();
+        usecase
+            .start_session(
+                &session.id,
+                StartSessionOptions {
+                    permission_mode: PermissionMode::Edit,
+                    plan_mode: false,
+                },
+            )
+            .await
+            .unwrap();
+        controller
+            .emit(
+                &session.id,
+                AgentRuntimeEvent::SessionEstablished {
+                    backend_session_id: "initial-thread".to_string(),
+                    resume: crate::domain::agent_session::gateway::ResumeOutcome::NotRequested,
+                },
+            )
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let generation = session_store
+                    .get_session_meta(tmp.path(), &session.id)
+                    .unwrap()
+                    .unwrap()
+                    .provider_session_generation;
+                if generation == 1 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            session_store
+                .get_session_meta(tmp.path(), &session.id)
+                .unwrap()
+                .unwrap()
+                .provider_session_generation,
+            1
+        );
+
+        session_store
+            .update_backend_selection(
+                tmp.path(),
+                &session.id,
+                "claude".to_string(),
+                Some("claude-4-opus".to_string()),
+            )
+            .unwrap();
+        session_store
+            .update_permission_mode(tmp.path(), &session.id, PermissionMode::FULL)
+            .unwrap();
+        session_store
+            .update_plan_mode(tmp.path(), &session.id, true)
+            .unwrap();
+        let before_recovery = session_store
+            .get_session_meta(tmp.path(), &session.id)
+            .unwrap()
+            .unwrap()
+            .to_summary();
+
+        controller
+            .emit(&session.id, AgentRuntimeEvent::BackendSessionCleared)
+            .unwrap();
+        wait_for_open_count(&controller, &session.id, 2).await;
+
+        let opens = controller
+            .call_kinds_for(&session.id)
+            .into_iter()
+            .filter_map(|kind| match kind {
+                TestRuntimeCallKind::OpenSession {
+                    resume,
+                    model,
+                    permission_mode,
+                    plan_mode,
+                    ..
+                } => Some((resume, model, permission_mode, plan_mode)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(opens.len(), 2);
+        assert_eq!(opens[1].0, None);
+        assert_eq!(opens[1].1, "claude-4-opus");
+        assert_eq!(opens[1].2, PermissionMode::Full);
+        assert!(opens[1].3);
+
+        let worktree_path = tmp.path().to_string_lossy().to_string();
+        let tauri_sessions = usecase.list_sessions(&worktree_path).await.unwrap();
+        let workspace_sessions =
+            StoredWorkspaceSessionGateway::new(session_store.clone(), tmp.path().to_path_buf())
+                .list_active_sessions(&worktree_path)
+                .unwrap();
+        let tauri_recovering = tauri_sessions
+            .iter()
+            .find(|summary| summary.id == session.id)
+            .unwrap();
+        let workspace_recovering = workspace_sessions
+            .iter()
+            .find(|summary| summary.id == session.id)
+            .unwrap();
+        assert_eq!(tauri_recovering.state, before_recovery.state);
+        assert_eq!(tauri_recovering.updated_at, before_recovery.updated_at);
+        assert_eq!(workspace_recovering.state, WorkspaceSessionState::Active);
+        assert_eq!(workspace_recovering.updated_at, before_recovery.updated_at);
+        let tauri_normal = tauri_sessions
+            .iter()
+            .find(|summary| summary.id == normal_session.id)
+            .unwrap();
+        let workspace_normal = workspace_sessions
+            .iter()
+            .find(|summary| summary.id == normal_session.id)
+            .unwrap();
+        assert_eq!(tauri_normal.state, normal_session.state);
+        assert_eq!(tauri_normal.updated_at, normal_session.updated_at);
+        assert_eq!(workspace_normal.state, WorkspaceSessionState::Active);
+        assert_eq!(workspace_normal.updated_at, normal_session.updated_at);
+
+        let events_during_recovery = session_store
+            .load_session_events(tmp.path(), &session.id)
+            .unwrap();
+        let recovery_id = events_during_recovery
+            .iter()
+            .find_map(|event| match event {
+                AgentSessionEvent::BackendSessionRecoveryStarted {
+                    recovery_id,
+                    old_provider_session_generation: 1,
+                    ..
+                } => Some(recovery_id.clone()),
+                _ => None,
+            })
+            .expect("recovery starts from the established generation");
+
+        controller
+            .emit(
+                &session.id,
+                AgentRuntimeEvent::SessionEstablished {
+                    backend_session_id: "fresh-thread".to_string(),
+                    resume: crate::domain::agent_session::gateway::ResumeOutcome::NotRequested,
+                },
+            )
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let generation = session_store
+                    .get_session_meta(tmp.path(), &session.id)
+                    .unwrap()
+                    .unwrap()
+                    .provider_session_generation;
+                if generation == 2 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let recovered_meta = session_store
+            .get_session_meta(tmp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered_meta.backend_id, "claude");
+        assert_eq!(
+            recovered_meta.selected_model.as_deref(),
+            Some("claude-4-opus")
+        );
+        assert_eq!(recovered_meta.permission_mode, PermissionMode::FULL);
+        assert!(recovered_meta.plan_mode);
+        assert_eq!(recovered_meta.provider_session_generation, 2);
+        let recovered_events = session_store
+            .load_session_events(tmp.path(), &session.id)
+            .unwrap();
+        assert!(recovered_events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::SessionConfigurationReactivated {
+                recovery_id: actual,
+                provider_session_generation: 2,
+                ..
+            } if actual == &recovery_id
+        )));
+        assert!(recovered_events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::SessionGoalReactivated {
+                recovery_id: actual,
+                provider_session_generation: 2,
+                ..
+            } if actual == &recovery_id
+        )));
+        assert!(recovered_events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::BackendSessionRecoveryCompleted {
+                recovery_id: actual,
+                provider_session_generation: 2,
+                ..
+            } if actual == &recovery_id
+        )));
+    }
+
+    #[tokio::test]
+    async fn test_codex_resume失敗はfresh_sessionで復活しdead_threadを再利用しない() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                tmp.path(),
+            );
+        let mut session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("codex".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("gpt-5.6-sol".to_string()),
+                plan_mode: false,
+                workflow_node_session: false,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        session.agent_session_id = Some("dead-thread".to_string());
+        session_store
+            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .unwrap();
+        let unaffected_session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes::default(),
+        )
+        .unwrap();
+        controller.fail_next_resume_open();
+
+        usecase
+            .send_message(SendAgentMessageRequest {
+                chat_session_id: Some(session.id.clone()),
+                worktree_path: tmp.path().to_string_lossy().to_string(),
+                content: "recover this turn".to_string(),
+                permission_mode: PermissionMode::Edit,
+                plan_mode: false,
+                backend_id: Some("codex".to_string()),
+                model_id: None,
+                images: None,
+                mentions: None,
+                editor_context: None,
+            })
+            .await
+            .unwrap();
+
+        wait_for_open_count(&controller, &session.id, 2).await;
+        let resumes = controller
+            .call_kinds_for(&session.id)
+            .into_iter()
+            .filter_map(|kind| match kind {
+                TestRuntimeCallKind::OpenSession { resume, .. } => Some(resume),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            resumes,
+            vec![Some("dead-thread".to_string()), None],
+            "recovery must clear resume metadata before opening the replacement session"
+        );
+        assert!(session_store
+            .load_session_events(tmp.path(), &session.id)
+            .unwrap()
+            .iter()
+            .any(|event| matches!(
+                event,
+                AgentSessionEvent::BackendSessionRecoveryStarted {
+                    old_provider_session_generation: 0,
+                    reason: BackendSessionRecoveryReason::BackendSessionLost,
+                    ..
+                }
+            )));
+        assert!(!session_store
+            .load_session_events(tmp.path(), &session.id)
+            .unwrap()
+            .iter()
+            .any(|event| matches!(
+                event,
+                AgentSessionEvent::BackendSessionRecoveryCompleted { .. }
+            )));
+
+        let worktree_path = tmp.path().to_string_lossy().to_string();
+        let listed_during_recovery = tokio::time::timeout(
+            Duration::from_secs(1),
+            usecase.list_sessions(&worktree_path),
+        )
+        .await
+        .expect("another session's list must not wait for recovery establishment")
+        .unwrap();
+        assert!(listed_during_recovery
+            .iter()
+            .any(|summary| summary.id == unaffected_session.id));
+        assert_eq!(
+            listed_during_recovery
+                .iter()
+                .find(|summary| summary.id == session.id)
+                .expect("recovering session keeps its previously published summary")
+                .agent_session_id
+                .as_deref(),
+            Some("dead-thread"),
+            "the recovering session must not publish its cleared resume metadata"
+        );
+
+        let config_usecase = Arc::clone(&usecase);
+        let config_session_id = session.id.clone();
+        let config_update = tokio::spawn(async move {
+            config_usecase
+                .set_model(&config_session_id, "codex:gpt-5")
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            !config_update.is_finished(),
+            "configuration changes must remain blocked until recovery completes"
+        );
+
+        controller
+            .emit(
+                &session.id,
+                AgentRuntimeEvent::SessionEstablished {
+                    backend_session_id: "fresh-thread".to_string(),
+                    resume: crate::domain::agent_session::gateway::ResumeOutcome::NotRequested,
+                },
+            )
+            .unwrap();
+        config_update.await.unwrap().unwrap();
+        wait_for_start_prompt_count(&controller, &session.id, 1).await;
+        let listed = usecase.list_sessions(&worktree_path).await.unwrap();
+        let listed_session = listed
+            .iter()
+            .find(|summary| summary.id == session.id)
+            .expect("recovered session remains listed");
+        assert_eq!(
+            listed_session.agent_session_id.as_deref(),
+            Some("fresh-thread")
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let recovered = usecase.get_session(&session.id).await.unwrap().unwrap();
+        assert_eq!(
+            recovered.session.agent_session_id.as_deref(),
+            Some("fresh-thread")
+        );
+        let meta = session_store
+            .get_session_meta(tmp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(meta.provider_session_generation, 1);
+        assert!(recovered.session.messages.iter().any(|message| {
+            message.parts.as_deref().is_some_and(|parts| {
+                parts.iter().any(|part| matches!(
+                    part,
+                    MessagePart::SystemNotification {
+                        notification_type: crate::usecase::agent_session::session::SystemNotificationType::SessionRecovery,
+                        ..
+                    }
+                ))
+            })
+        }));
+
+        controller
+            .emit(
+                &session.id,
+                AgentRuntimeEvent::TurnCompleted(TurnResult::Completed {
+                    stop_reason: None,
+                    token_usage: None,
+                }),
+            )
+            .unwrap();
+        wait_for_turn_phase(&usecase, &session.id, TurnPhase::Idle).await;
+        usecase
+            .send_message(SendAgentMessageRequest {
+                chat_session_id: Some(session.id.clone()),
+                worktree_path: tmp.path().to_string_lossy().to_string(),
+                content: "follow up".to_string(),
+                permission_mode: PermissionMode::Edit,
+                plan_mode: false,
+                backend_id: Some("codex".to_string()),
+                model_id: None,
+                images: None,
+                mentions: None,
+                editor_context: None,
+            })
+            .await
+            .unwrap();
+        wait_for_start_prompt_count(&controller, &session.id, 2).await;
+        assert_eq!(
+            controller
+                .call_kinds_for(&session.id)
+                .iter()
+                .filter(|kind| matches!(kind, TestRuntimeCallKind::OpenSession { .. }))
+                .count(),
+            2,
+            "the recovered live runtime must not reopen the dead thread"
+        );
+    }
+
+    #[tokio::test]
+    async fn recovery_completion_without_pending_turn_publishes_notice_immediately() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let mut session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("codex".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("gpt-5.6-sol".to_string()),
+                plan_mode: false,
+                workflow_node_session: false,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        session.agent_session_id = Some("dead-thread".to_string());
+        session_store
+            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .unwrap();
+        controller.fail_next_resume_open();
+
+        usecase
+            .start_session(
+                &session.id,
+                StartSessionOptions {
+                    permission_mode: PermissionMode::Edit,
+                    plan_mode: false,
+                },
+            )
+            .await
+            .unwrap();
+        wait_for_open_count(&controller, &session.id, 2).await;
+        controller
+            .emit(
+                &session.id,
+                AgentRuntimeEvent::SessionEstablished {
+                    backend_session_id: "fresh-thread".to_string(),
+                    resume: crate::domain::agent_session::gateway::ResumeOutcome::NotRequested,
+                },
+            )
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        for _ in 0..2 {
+            let loaded = usecase.get_session(&session.id).await.unwrap().unwrap();
+            assert_eq!(
+                loaded
+                    .session
+                    .messages
+                    .iter()
+                    .flat_map(|message| message.parts.as_deref().unwrap_or_default())
+                    .filter(|part| matches!(
+                        part,
+                        MessagePart::SystemNotification {
+                            notification_type: SystemNotificationType::SessionRecovery,
+                            ..
+                        }
+                    ))
+                    .count(),
+                1
+            );
+        }
+        assert!(!controller
+            .call_kinds_for(&session.id)
+            .iter()
+            .any(|kind| matches!(kind, TestRuntimeCallKind::StartTurn)));
+    }
+
+    #[tokio::test]
+    async fn completed_recovery_notice_is_restored_once_before_the_next_turn_after_restart() {
+        let tmp = tempfile::tempdir().unwrap();
+        let original_store = Arc::new(build_session_store());
+        let session = create_session_internal_with_attributes(
+            &original_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("codex".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("gpt-5.6-sol".to_string()),
+                plan_mode: false,
+                workflow_node_session: false,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        original_store
+            .begin_backend_session_recovery(
+                tmp.path(),
+                &session.id,
+                "completed-before-restart",
+                BackendSessionRecoveryReason::BackendSessionLost,
+            )
+            .unwrap();
+        original_store
+            .complete_backend_session_recovery(
+                tmp.path(),
+                &session.id,
+                "completed-before-restart",
+                0,
+                "fresh-thread".to_string(),
+            )
+            .unwrap();
+        let before_restart = original_store
+            .load_full_session_for_restore(tmp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert!(before_restart.messages.is_empty());
+        assert!(original_store
+            .get_session_meta(tmp.path(), &session.id)
+            .unwrap()
+            .unwrap()
+            .pending_recovery_message
+            .is_some());
+        drop(original_store);
+
+        let reopened_store = Arc::new(build_session_store());
+        let (usecase, _) =
+            build_agent_runtime_usecase_with_controller(reopened_store.clone(), tmp.path());
+        let recovered = usecase.get_session(&session.id).await.unwrap().unwrap();
+        assert_eq!(
+            recovered
+                .session
+                .messages
+                .iter()
+                .flat_map(|message| message.parts.as_deref().unwrap_or_default())
+                .filter(|part| matches!(
+                    part,
+                    MessagePart::SystemNotification {
+                        notification_type: SystemNotificationType::SessionRecovery,
+                        ..
+                    }
+                ))
+                .count(),
+            1
+        );
+
+        usecase
+            .send_message(SendAgentMessageRequest {
+                chat_session_id: Some(session.id.clone()),
+                worktree_path: tmp.path().to_string_lossy().to_string(),
+                content: "next turn after restart".to_string(),
+                permission_mode: PermissionMode::Edit,
+                plan_mode: false,
+                backend_id: Some("codex".to_string()),
+                model_id: None,
+                images: None,
+                mentions: None,
+                editor_context: None,
+            })
+            .await
+            .unwrap();
+        let persisted = reopened_store
+            .load_full_session_for_restore(tmp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        let notice_index = persisted
+            .messages
+            .iter()
+            .position(|message| {
+                message.parts.as_deref().is_some_and(|parts| {
+                    parts.iter().any(|part| {
+                        matches!(
+                            part,
+                            MessagePart::SystemNotification {
+                                notification_type: SystemNotificationType::SessionRecovery,
+                                ..
+                            }
+                        )
+                    })
+                })
+            })
+            .unwrap();
+        let next_turn_index = persisted
+            .messages
+            .iter()
+            .position(|message| message.content == "next turn after restart")
+            .unwrap();
+        assert!(notice_index < next_turn_index);
+        assert_eq!(
+            persisted
+                .messages
+                .iter()
+                .flat_map(|message| message.parts.as_deref().unwrap_or_default())
+                .filter(|part| matches!(
+                    part,
+                    MessagePart::SystemNotification {
+                        notification_type: SystemNotificationType::SessionRecovery,
+                        ..
+                    }
+                ))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn recovery_notice_survives_retried_turn_start_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let mut session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("claude-4-sonnet".to_string()),
+                plan_mode: false,
+                workflow_node_session: false,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        session.agent_session_id = Some("old-session".to_string());
+        session_store
+            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .unwrap();
+        usecase
+            .send_message(SendAgentMessageRequest {
+                chat_session_id: Some(session.id.clone()),
+                worktree_path: tmp.path().to_string_lossy().to_string(),
+                content: "retry me".to_string(),
+                permission_mode: PermissionMode::Edit,
+                plan_mode: false,
+                backend_id: Some("claude".to_string()),
+                model_id: None,
+                images: None,
+                mentions: None,
+                editor_context: None,
+            })
+            .await
+            .unwrap();
+        controller
+            .emit(&session.id, AgentRuntimeEvent::BackendSessionCleared)
+            .unwrap();
+        wait_for_open_count(&controller, &session.id, 2).await;
+        controller.fail_next_start_turn();
+        controller
+            .emit(
+                &session.id,
+                AgentRuntimeEvent::SessionEstablished {
+                    backend_session_id: "fresh-session".to_string(),
+                    resume: crate::domain::agent_session::gateway::ResumeOutcome::NotRequested,
+                },
+            )
+            .unwrap();
+        wait_for_start_prompt_count(&controller, &session.id, 2).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let loaded = usecase.get_session(&session.id).await.unwrap().unwrap();
+        assert_eq!(loaded.session.state, SessionState::Error);
+        assert!(loaded.session.messages.iter().any(|message| {
+            message.parts.as_deref().is_some_and(|parts| {
+                parts.iter().any(|part| {
+                    matches!(
+                        part,
+                        MessagePart::SystemNotification {
+                            notification_type: SystemNotificationType::SessionRecovery,
+                            ..
+                        }
+                    )
+                })
+            })
+        }));
+    }
+
+    #[tokio::test]
+    async fn failed_recovery_error_part_is_reconciled_once_after_a_write_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let mut session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("codex".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("gpt-5.6-sol".to_string()),
+                plan_mode: false,
+                workflow_node_session: false,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        session.agent_session_id = Some("dead-thread".to_string());
+        session_store
+            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .unwrap();
+        let fail_error_once = Arc::new(AtomicBool::new(true));
+        session_store.set_persist_parts_hook_for_test(Arc::new({
+            let fail_error_once = fail_error_once.clone();
+            move |_, _, parts| {
+                if parts
+                    .iter()
+                    .any(|part| matches!(part, MessagePart::Error { .. }))
+                    && fail_error_once.swap(false, Ordering::SeqCst)
+                {
+                    return Err("injected recovery error persistence failure".to_string());
+                }
+                Ok(())
+            }
+        }));
+        controller.fail_next_resume_open();
+        controller.fail_next_open();
+
+        let result = usecase
+            .send_message(SendAgentMessageRequest {
+                chat_session_id: Some(session.id.clone()),
+                worktree_path: tmp.path().to_string_lossy().to_string(),
+                content: "recover".to_string(),
+                permission_mode: PermissionMode::Edit,
+                plan_mode: false,
+                backend_id: Some("codex".to_string()),
+                model_id: None,
+                images: None,
+                mentions: None,
+                editor_context: None,
+            })
+            .await;
+        assert!(result.is_err());
+        let before_reconcile = session_store
+            .load_full_session_for_restore(tmp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(before_reconcile.state, SessionState::Error);
+        assert!(!before_reconcile.messages.iter().any(|message| {
+            message.parts.as_deref().is_some_and(|parts| {
+                parts
+                    .iter()
+                    .any(|part| matches!(part, MessagePart::Error { .. }))
+            })
+        }));
+        assert!(session_store
+            .get_session_meta(tmp.path(), &session.id)
+            .unwrap()
+            .unwrap()
+            .pending_recovery_message
+            .is_some());
+
+        for _ in 0..2 {
+            let loaded = usecase.get_session(&session.id).await.unwrap().unwrap();
+            assert_eq!(loaded.session.state, SessionState::Error);
+            assert_eq!(
+                loaded
+                    .session
+                    .messages
+                    .iter()
+                    .flat_map(|message| message.parts.as_deref().unwrap_or_default())
+                    .filter(|part| matches!(
+                        part,
+                        MessagePart::Error { content, .. }
+                            if content.contains("injected test open failure")
+                    ))
+                    .count(),
+                1
+            );
+        }
+        assert!(session_store
+            .get_session_meta(tmp.path(), &session.id)
+            .unwrap()
+            .unwrap()
+            .pending_recovery_message
+            .is_none());
+        assert!(session_store
+            .load_session_events(tmp.path(), &session.id)
+            .unwrap()
+            .iter()
+            .any(|event| matches!(
+                event,
+                AgentSessionEvent::BackendSessionRecoveryFailed { .. }
+            )));
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_begin_failure_rolls_back_the_turn_and_publishes_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        session_store.set_append_event_hook_for_test(Arc::new(|_, event| {
+            if matches!(
+                event,
+                AgentSessionEvent::BackendSessionRecoveryStarted { .. }
+            ) {
+                return Err("injected recovery begin failure".to_string());
+            }
+            Ok(())
+        }));
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            Arc::new(RecordingStatusNotifier::default()),
+        );
+        let mut session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("codex".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("gpt-5.6-sol".to_string()),
+                plan_mode: false,
+                workflow_node_session: false,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        session.agent_session_id = Some("dead-thread".to_string());
+        session_store
+            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .unwrap();
+        controller.fail_next_resume_open();
+
+        let result = usecase
+            .send_message(SendAgentMessageRequest {
+                chat_session_id: Some(session.id.clone()),
+                worktree_path: tmp.path().to_string_lossy().to_string(),
+                content: "startup recovery".to_string(),
+                permission_mode: PermissionMode::Edit,
+                plan_mode: false,
+                backend_id: Some("codex".to_string()),
+                model_id: None,
+                images: None,
+                mentions: None,
+                editor_context: None,
+            })
+            .await;
+        assert!(result.is_err());
+        let loaded = usecase.get_session(&session.id).await.unwrap().unwrap();
+        assert_eq!(loaded.turn_phase, TurnPhase::Idle);
+        assert_eq!(loaded.session.state, SessionState::Error);
+        let agent_messages = loaded
+            .session
+            .messages
+            .iter()
+            .filter(|message| message.role == MessageRole::Agent)
+            .collect::<Vec<_>>();
+        assert!(!agent_messages.is_empty());
+        assert!(agent_messages.iter().all(|message| {
+            message.parts.as_deref().is_some_and(|parts| {
+                parts.iter().any(|part| {
+                    matches!(
+                        part,
+                        MessagePart::Error { content, .. }
+                            if content.contains("injected recovery begin failure")
+                    )
+                })
+            })
+        }));
+        assert!(usecase
+            .ctx
+            .sessions
+            .lock()
+            .await
+            .get(&session.id)
+            .is_none_or(|state| state.phase != RuntimeSessionPhase::Streaming));
+        assert!(event_notifier.streaming_deltas().iter().any(|delta| {
+            delta.parts.iter().any(|part| {
+                matches!(
+                    part,
+                    MessagePart::Error { content, .. }
+                        if content.contains("injected recovery begin failure")
+                )
+            })
+        }));
+    }
+
+    #[tokio::test]
+    async fn live_recovery_begin_failure_closes_runtime_and_publishes_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            Arc::new(RecordingStatusNotifier::default()),
+        );
+        let mut session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("codex".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("gpt-5.6-sol".to_string()),
+                plan_mode: false,
+                workflow_node_session: false,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        session.agent_session_id = Some("live-thread".to_string());
+        session_store
+            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .unwrap();
+        usecase
+            .send_message(SendAgentMessageRequest {
+                chat_session_id: Some(session.id.clone()),
+                worktree_path: tmp.path().to_string_lossy().to_string(),
+                content: "live recovery".to_string(),
+                permission_mode: PermissionMode::Edit,
+                plan_mode: false,
+                backend_id: Some("codex".to_string()),
+                model_id: None,
+                images: None,
+                mentions: None,
+                editor_context: None,
+            })
+            .await
+            .unwrap();
+        wait_for_turn_phase(&usecase, &session.id, TurnPhase::Streaming).await;
+        session_store.set_append_event_hook_for_test(Arc::new(|_, event| {
+            if matches!(
+                event,
+                AgentSessionEvent::BackendSessionRecoveryStarted { .. }
+            ) {
+                return Err("injected recovery begin failure".to_string());
+            }
+            Ok(())
+        }));
+
+        controller
+            .emit(&session.id, AgentRuntimeEvent::BackendSessionCleared)
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let meta = session_store
+                    .get_session_meta(tmp.path(), &session.id)
+                    .unwrap()
+                    .unwrap();
+                if meta.state == SessionState::Error {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let loaded = usecase.get_session(&session.id).await.unwrap().unwrap();
+        assert_eq!(loaded.turn_phase, TurnPhase::Idle);
+        assert_eq!(loaded.session.state, SessionState::Error);
+        let agent_messages = loaded
+            .session
+            .messages
+            .iter()
+            .filter(|message| message.role == MessageRole::Agent)
+            .collect::<Vec<_>>();
+        assert!(!agent_messages.is_empty());
+        assert!(agent_messages.iter().all(|message| {
+            message.parts.as_deref().is_some_and(|parts| {
+                parts.iter().any(|part| {
+                    matches!(
+                        part,
+                        MessagePart::Error { content, .. }
+                            if content.contains("injected recovery begin failure")
+                    )
+                })
+            })
+        }));
+        assert!(controller
+            .call_kinds_for(&session.id)
+            .contains(&TestRuntimeCallKind::Interrupt));
+        assert!(controller
+            .call_kinds_for(&session.id)
+            .contains(&TestRuntimeCallKind::Close));
+        assert!(usecase
+            .ctx
+            .sessions
+            .lock()
+            .await
+            .get(&session.id)
+            .is_none_or(|state| state.phase != RuntimeSessionPhase::Streaming));
+        assert!(event_notifier.streaming_deltas().iter().any(|delta| {
+            delta.parts.iter().any(|part| {
+                matches!(
+                    part,
+                    MessagePart::Error { content, .. }
+                        if content.contains("injected recovery begin failure")
+                )
+            })
+        }));
+    }
+
+    #[tokio::test]
+    async fn recovery_completion_commit_failure_persists_error_part() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        session_store.set_append_event_hook_for_test(Arc::new(|_, event| {
+            if matches!(
+                event,
+                AgentSessionEvent::BackendSessionRecoveryCompleted { .. }
+            ) {
+                return Err("injected completion commit failure".to_string());
+            }
+            Ok(())
+        }));
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let mut session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("codex".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("gpt-5.6-sol".to_string()),
+                plan_mode: false,
+                workflow_node_session: false,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        session.agent_session_id = Some("dead-thread".to_string());
+        session_store
+            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .unwrap();
+        controller.fail_next_resume_open();
+        usecase
+            .send_message(SendAgentMessageRequest {
+                chat_session_id: Some(session.id.clone()),
+                worktree_path: tmp.path().to_string_lossy().to_string(),
+                content: "recover".to_string(),
+                permission_mode: PermissionMode::Edit,
+                plan_mode: false,
+                backend_id: Some("codex".to_string()),
+                model_id: None,
+                images: None,
+                mentions: None,
+                editor_context: None,
+            })
+            .await
+            .unwrap();
+        wait_for_open_count(&controller, &session.id, 2).await;
+        controller
+            .emit(
+                &session.id,
+                AgentRuntimeEvent::SessionEstablished {
+                    backend_session_id: "fresh-thread".to_string(),
+                    resume: crate::domain::agent_session::gateway::ResumeOutcome::NotRequested,
+                },
+            )
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let loaded = session_store
+            .load_full_session_for_restore(tmp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.state, SessionState::Error);
+        assert!(loaded.messages.iter().any(|message| {
+            message.role == MessageRole::Agent
+                && message.parts.as_deref().is_some_and(|parts| {
+                    parts.iter().any(|part| {
+                        matches!(
+                            part,
+                            MessagePart::Error { content, .. }
+                                if content.contains("injected completion commit failure")
+                        )
+                    })
+                })
+        }));
+    }
+
+    #[tokio::test]
+    async fn recovery_notice_persistence_failure_does_not_demote_completed_recovery() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let mut session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("codex".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("gpt-5.6-sol".to_string()),
+                plan_mode: false,
+                workflow_node_session: false,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        session.agent_session_id = Some("dead-thread".to_string());
+        session_store
+            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .unwrap();
+        controller.fail_next_resume_open();
+        usecase
+            .send_message(SendAgentMessageRequest {
+                chat_session_id: Some(session.id.clone()),
+                worktree_path: tmp.path().to_string_lossy().to_string(),
+                content: "recover".to_string(),
+                permission_mode: PermissionMode::Edit,
+                plan_mode: false,
+                backend_id: Some("codex".to_string()),
+                model_id: None,
+                images: None,
+                mentions: None,
+                editor_context: None,
+            })
+            .await
+            .unwrap();
+        wait_for_open_count(&controller, &session.id, 2).await;
+        let fail_notice_once = Arc::new(AtomicBool::new(true));
+        session_store.set_append_message_hook_for_test(Arc::new({
+            let fail_notice_once = fail_notice_once.clone();
+            move |_, message| {
+                if message.parts.as_deref().is_some_and(|parts| {
+                    parts.iter().any(|part| {
+                        matches!(
+                            part,
+                            MessagePart::SystemNotification {
+                                notification_type: SystemNotificationType::SessionRecovery,
+                                ..
+                            }
+                        )
+                    })
+                }) && fail_notice_once.swap(false, Ordering::SeqCst)
+                {
+                    return Err("injected recovery notice persistence failure".to_string());
+                }
+                Ok(())
+            }
+        }));
+        let mut completion = usecase
+            .ctx
+            .sessions
+            .lock()
+            .await
+            .get(&session.id)
+            .and_then(|state| state.backend_recovery.as_ref())
+            .expect("recovery is in progress before fresh establishment")
+            .completion
+            .subscribe();
+
+        controller
+            .emit(
+                &session.id,
+                AgentRuntimeEvent::SessionEstablished {
+                    backend_session_id: "fresh-thread".to_string(),
+                    resume: crate::domain::agent_session::gateway::ResumeOutcome::NotRequested,
+                },
+            )
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), completion.changed())
+            .await
+            .expect("recovery completion signal is sent")
+            .unwrap();
+        assert!(*completion.borrow());
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let recovery_finished = usecase
+                    .ctx
+                    .sessions
+                    .lock()
+                    .await
+                    .get(&session.id)
+                    .is_none_or(|state| state.backend_recovery.is_none());
+                if recovery_finished {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let committed = session_store
+            .get_session_meta(tmp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_ne!(committed.state, SessionState::Error);
+        assert_eq!(committed.agent_session_id.as_deref(), Some("fresh-thread"));
+        assert!(committed.pending_recovery_message.is_some());
+        let listed = usecase
+            .list_sessions(tmp.path().to_string_lossy().as_ref())
+            .await
+            .unwrap();
+        assert_eq!(
+            listed
+                .iter()
+                .find(|summary| summary.id == session.id)
+                .unwrap()
+                .agent_session_id
+                .as_deref(),
+            Some("fresh-thread"),
+            "the publication snapshot is removed after the Completed commit"
+        );
+
+        usecase
+            .send_message(SendAgentMessageRequest {
+                chat_session_id: Some(session.id.clone()),
+                worktree_path: tmp.path().to_string_lossy().to_string(),
+                content: "next turn is not blocked".to_string(),
+                permission_mode: PermissionMode::Edit,
+                plan_mode: false,
+                backend_id: Some("codex".to_string()),
+                model_id: None,
+                images: None,
+                mentions: None,
+                editor_context: None,
+            })
+            .await
+            .unwrap();
+
+        let loaded = usecase.get_session(&session.id).await.unwrap().unwrap();
+        assert_ne!(loaded.session.state, SessionState::Error);
+        assert_eq!(
+            loaded
+                .session
+                .messages
+                .iter()
+                .flat_map(|message| message.parts.as_deref().unwrap_or_default())
+                .filter(|part| matches!(
+                    part,
+                    MessagePart::SystemNotification {
+                        notification_type: SystemNotificationType::SessionRecovery,
+                        ..
+                    }
+                ))
+                .count(),
+            1
+        );
+        assert!(session_store
+            .get_session_meta(tmp.path(), &session.id)
+            .unwrap()
+            .unwrap()
+            .pending_recovery_message
+            .is_none());
+        let events = session_store
+            .load_session_events(tmp.path(), &session.id)
+            .unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::BackendSessionRecoveryCompleted { .. }
+        )));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::BackendSessionRecoveryFailed { .. }
+        )));
+    }
+
+    #[tokio::test]
+    async fn unfinished_durable_recovery_is_reconciled_and_blocks_new_turns_after_restart() {
+        let tmp = tempfile::tempdir().unwrap();
+        let original_store = Arc::new(build_session_store());
+        let session = create_session_internal_with_attributes(
+            &original_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("codex".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("gpt-5.6-sol".to_string()),
+                plan_mode: false,
+                workflow_node_session: false,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        original_store
+            .begin_backend_session_recovery(
+                tmp.path(),
+                &session.id,
+                "interrupted-recovery",
+                BackendSessionRecoveryReason::BackendSessionLost,
+            )
+            .unwrap();
+        drop(original_store);
+
+        let reopened_store = Arc::new(build_session_store());
+        let (usecase, _) =
+            build_agent_runtime_usecase_with_controller(reopened_store.clone(), tmp.path());
+        let loaded = usecase.get_session(&session.id).await.unwrap().unwrap();
+        assert_eq!(loaded.session.state, SessionState::Error);
+        assert!(loaded.session.messages.iter().any(|message| {
+            message.parts.as_deref().is_some_and(|parts| {
+                parts
+                    .iter()
+                    .any(|part| matches!(part, MessagePart::Error { .. }))
+            })
+        }));
+        let message_count = loaded.session.messages.len();
+
+        let result = usecase
+            .send_message(SendAgentMessageRequest {
+                chat_session_id: Some(session.id.clone()),
+                worktree_path: tmp.path().to_string_lossy().to_string(),
+                content: "must remain blocked".to_string(),
+                permission_mode: PermissionMode::Edit,
+                plan_mode: false,
+                backend_id: Some("codex".to_string()),
+                model_id: None,
+                images: None,
+                mentions: None,
+                editor_context: None,
+            })
+            .await;
+        assert!(result.is_err());
+        assert_eq!(
+            reopened_store
+                .load_full_session_for_restore(tmp.path(), &session.id)
+                .unwrap()
+                .unwrap()
+                .messages
+                .len(),
+            message_count
+        );
+    }
+
+    #[tokio::test]
+    async fn public_send_and_workflow_lock_wait_for_recovery_completion() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let mut session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("codex".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("gpt-5.6-sol".to_string()),
+                plan_mode: false,
+                workflow_node_session: false,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        session.agent_session_id = Some("dead-thread".to_string());
+        session_store
+            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .unwrap();
+        controller.fail_next_resume_open();
+        usecase
+            .start_session(
+                &session.id,
+                StartSessionOptions {
+                    permission_mode: PermissionMode::Edit,
+                    plan_mode: false,
+                },
+            )
+            .await
+            .unwrap();
+        wait_for_open_count(&controller, &session.id, 2).await;
+
+        let send_usecase = Arc::clone(&usecase);
+        let send_session = session.id.clone();
+        let send_worktree = tmp.path().to_string_lossy().to_string();
+        let send = tokio::spawn(async move {
+            send_usecase
+                .send_message(SendAgentMessageRequest {
+                    chat_session_id: Some(send_session),
+                    worktree_path: send_worktree,
+                    content: "after recovery".to_string(),
+                    permission_mode: PermissionMode::Edit,
+                    plan_mode: false,
+                    backend_id: Some("codex".to_string()),
+                    model_id: None,
+                    images: None,
+                    mentions: None,
+                    editor_context: None,
+                })
+                .await
+        });
+        let workflow_usecase = Arc::clone(&usecase);
+        let workflow_session = session.id.clone();
+        let workflow_lock = tokio::spawn(async move {
+            let guard = workflow_usecase
+                .acquire_session_control_after_recovery(&workflow_session)
+                .await;
+            drop(guard);
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!send.is_finished());
+        assert!(!workflow_lock.is_finished());
+
+        controller
+            .emit(
+                &session.id,
+                AgentRuntimeEvent::SessionEstablished {
+                    backend_session_id: "fresh-thread".to_string(),
+                    resume: crate::domain::agent_session::gateway::ResumeOutcome::NotRequested,
+                },
+            )
+            .unwrap();
+        send.await.unwrap().unwrap();
+        workflow_lock.await.unwrap();
+        assert!(session_store
+            .load_session_events(tmp.path(), &session.id)
+            .unwrap()
+            .iter()
+            .any(|event| matches!(
+                event,
+                AgentSessionEvent::BackendSessionRecoveryCompleted { .. }
+            )));
+    }
+
+    #[tokio::test]
+    async fn public_close_waits_for_recovery_and_closed_state_does_not_reconcile_to_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let mut session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("codex".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("gpt-5.6-sol".to_string()),
+                plan_mode: false,
+                workflow_node_session: false,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        session.agent_session_id = Some("dead-thread".to_string());
+        session_store
+            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .unwrap();
+        controller.fail_next_resume_open();
+        usecase
+            .start_session(
+                &session.id,
+                StartSessionOptions {
+                    permission_mode: PermissionMode::Edit,
+                    plan_mode: false,
+                },
+            )
+            .await
+            .unwrap();
+        wait_for_open_count(&controller, &session.id, 2).await;
+
+        let close_usecase = Arc::clone(&usecase);
+        let close_session_id = session.id.clone();
+        let close =
+            tokio::spawn(async move { close_usecase.close_session(&close_session_id).await });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!close.is_finished());
+
+        controller
+            .emit(
+                &session.id,
+                AgentRuntimeEvent::SessionEstablished {
+                    backend_session_id: "fresh-thread".to_string(),
+                    resume: crate::domain::agent_session::gateway::ResumeOutcome::NotRequested,
+                },
+            )
+            .unwrap();
+        close.await.unwrap().unwrap();
+        crate::usecase::agent_session::session::lifecycle_controller::SessionLifecycleController {
+            session_store: &session_store,
+            data_dir: tmp.path(),
+        }
+        .close_session_state(&session.id)
+        .unwrap();
+
+        let events = session_store
+            .load_session_events(tmp.path(), &session.id)
+            .unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::BackendSessionRecoveryCompleted { .. }
+        )));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::BackendSessionRecoveryFailed { .. }
+        )));
+        let reopened_store = Arc::new(build_session_store());
+        let (reopened_usecase, _) =
+            build_agent_runtime_usecase_with_controller(reopened_store, tmp.path());
+        let reopened = reopened_usecase
+            .get_session(&session.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reopened.session.state, SessionState::Closed);
+    }
+
+    #[tokio::test]
+    async fn force_close_does_not_wait_for_recovery_establishment() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let mut session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("codex".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("gpt-5.6-sol".to_string()),
+                plan_mode: false,
+                workflow_node_session: false,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        session.agent_session_id = Some("dead-thread".to_string());
+        session_store
+            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .unwrap();
+        controller.fail_next_resume_open();
+        usecase
+            .start_session(
+                &session.id,
+                StartSessionOptions {
+                    permission_mode: PermissionMode::Edit,
+                    plan_mode: false,
+                },
+            )
+            .await
+            .unwrap();
+        wait_for_open_count(&controller, &session.id, 2).await;
+        assert!(usecase
+            .ctx
+            .sessions
+            .lock()
+            .await
+            .get(&session.id)
+            .is_some_and(|state| state.backend_recovery.is_some()));
+
+        tokio::time::timeout(
+            Duration::from_millis(200),
+            usecase.force_close_session(&session.id),
+        )
+        .await
+        .expect("force close must not wait for SessionEstablished")
+        .unwrap();
     }
 
     #[tokio::test]
@@ -9321,6 +11921,10 @@ mod tests {
                         startup_timeout_ms: Some(12_000),
                         startup_max_retries: Some(3),
                         stale_timeout_ms: None,
+                        resume: None,
+                        model: "claude-4-sonnet".to_string(),
+                        permission_mode: PermissionMode::Edit,
+                        plan_mode: false,
                     }
         }));
     }
