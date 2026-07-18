@@ -216,9 +216,23 @@ fn assert_golden_with_update(path: &Path, actual: &str, update: bool) {
 fn first_difference(expected: &str, actual: &str) -> String {
     let expected_lines = expected.lines().collect::<Vec<_>>();
     let actual_lines = actual.lines().collect::<Vec<_>>();
-    let line_index = (0..expected_lines.len().max(actual_lines.len()))
+    let Some(line_index) = (0..expected_lines.len().max(actual_lines.len()))
         .find(|index| expected_lines.get(*index) != actual_lines.get(*index))
-        .unwrap_or(0);
+    else {
+        return format!(
+            "trailing newline differs:\nexpected: {}\nactual:   {}",
+            if expected.ends_with('\n') {
+                "present"
+            } else {
+                "absent"
+            },
+            if actual.ends_with('\n') {
+                "present"
+            } else {
+                "absent"
+            }
+        );
+    };
     format!(
         "first difference at line {}:\nexpected: {}\nactual:   {}",
         line_index + 1,
@@ -284,6 +298,18 @@ mod tests {
         assert!(mismatch.contains("expected: before"));
         assert!(mismatch.contains("actual:   after"));
         assert!(missing.contains("run with UPDATE_GOLDEN=1 to generate it"));
+    }
+
+    #[test]
+    fn golden_helper_reports_trailing_newline_mismatch() {
+        assert_eq!(
+            first_difference("same", "same\n"),
+            "trailing newline differs:\nexpected: absent\nactual:   present"
+        );
+        assert_eq!(
+            first_difference("same\n", "same"),
+            "trailing newline differs:\nexpected: present\nactual:   absent"
+        );
     }
 
     fn panic_payload(result: Result<(), Box<dyn Any + Send>>) -> String {

@@ -656,7 +656,11 @@ fn question_from_value(value: &Value) -> PermissionQuestion {
 }
 
 fn token_usage_from_value(params: &Value) -> TokenUsage {
-    let usage = params.get("usage").unwrap_or(params);
+    let token_usage = params.get("tokenUsage");
+    let usage = token_usage
+        .and_then(|usage| usage.get("total"))
+        .or_else(|| params.get("usage"))
+        .unwrap_or(params);
     let input_tokens = usage
         .get("inputTokens")
         .or_else(|| usage.get("input_tokens"))
@@ -672,8 +676,9 @@ fn token_usage_from_value(params: &Value) -> TokenUsage {
         .or_else(|| usage.get("total_tokens"))
         .and_then(Value::as_u64)
         .or_else(|| Some(input_tokens + output_tokens));
-    let context_window_tokens = usage
-        .get("contextWindowTokens")
+    let context_window_tokens = token_usage
+        .and_then(|usage| usage.get("modelContextWindow"))
+        .or_else(|| usage.get("contextWindowTokens"))
         .or_else(|| usage.get("context_window_tokens"))
         .and_then(Value::as_u64);
     TokenUsage {
@@ -1033,7 +1038,16 @@ mod tests {
         let usage_events = convert_jsonrpc_message(
             &json!({
                 "method": "thread/tokenUsage/updated",
-                "params": { "inputTokens": 3, "outputTokens": 5, "totalTokens": 8 }
+                "params": {
+                    "tokenUsage": {
+                        "total": {
+                            "inputTokens": 4,
+                            "outputTokens": 6,
+                            "totalTokens": 10
+                        },
+                        "modelContextWindow": 128000
+                    }
+                }
             }),
             &mut state,
         );
@@ -1048,23 +1062,43 @@ mod tests {
         assert!(matches!(
             usage_events[0],
             AgentRuntimeEvent::TokenUsageUpdated(TokenUsage {
-                input_tokens: 3,
-                output_tokens: 5,
-                total_tokens: Some(8),
-                ..
+                input_tokens: 4,
+                output_tokens: 6,
+                total_tokens: Some(10),
+                context_window_tokens: Some(128000),
             })
         ));
         assert!(matches!(
             done_events[0],
             AgentRuntimeEvent::TurnCompleted(TurnResult::Completed {
                 token_usage: Some(TokenUsage {
-                    total_tokens: Some(8),
-                    ..
+                    input_tokens: 4,
+                    output_tokens: 6,
+                    total_tokens: Some(10),
+                    context_window_tokens: Some(128000),
                 }),
                 ..
             })
         ));
         assert_eq!(state.turn_id, None);
+    }
+
+    #[test]
+    fn test_token_usageのflat_schemaは後方互換として変換する() {
+        assert_eq!(
+            token_usage_from_value(&json!({
+                "inputTokens": 3,
+                "outputTokens": 5,
+                "totalTokens": 8,
+                "contextWindowTokens": 114000
+            })),
+            TokenUsage {
+                input_tokens: 3,
+                output_tokens: 5,
+                total_tokens: Some(8),
+                context_window_tokens: Some(114000),
+            }
+        );
     }
 
     #[test]

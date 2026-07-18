@@ -46,12 +46,12 @@ impl WireRecorder {
         let Some(root) = std::env::var_os(WIRE_RECORD_ENV) else {
             return Self { active: None };
         };
-        Self::start(
-            PathBuf::from(root),
-            backend,
-            MAX_PENDING_RECORDS,
-            MAX_PENDING_BYTES,
-        )
+        let root = PathBuf::from(root);
+        if root.as_os_str().is_empty() {
+            log::warn!("{WIRE_RECORD_ENV} is empty; wire recording is disabled");
+            return Self { active: None };
+        }
+        Self::start(root, backend, MAX_PENDING_RECORDS, MAX_PENDING_BYTES)
     }
 
     fn start(
@@ -267,6 +267,17 @@ mod tests {
         recorder.record(br#"{"type":"result"}"#.to_vec());
 
         assert!(recorder.active.is_none());
+    }
+
+    #[test]
+    fn empty_environment_does_not_record() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap();
+        let _guard = EnvVarGuard::set_value(WIRE_RECORD_ENV, "");
+        let recorder = WireRecorder::from_env(WireBackend::Claude);
+
+        recorder.record(br#"{"type":"result"}"#.to_vec());
+
+        assert!(!recorder.is_active());
     }
 
     #[tokio::test]

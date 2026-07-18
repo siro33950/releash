@@ -87,8 +87,8 @@
     ],
     "failure_signal": null,
     "token_usage": {
-      "inputTokens": 0,
-      "outputTokens": 0
+      "inputTokens": 4,
+      "outputTokens": 6
     },
     "interrupted": false
   },

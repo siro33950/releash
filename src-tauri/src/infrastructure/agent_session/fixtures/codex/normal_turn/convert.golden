@@ -112,10 +112,10 @@
     "events": [
       {
         "TokenUsageUpdated": {
-          "input_tokens": 0,
-          "output_tokens": 0,
-          "total_tokens": 0,
-          "context_window_tokens": null
+          "input_tokens": 4,
+          "output_tokens": 6,
+          "total_tokens": 10,
+          "context_window_tokens": 128000
         }
       }
     ]
@@ -128,10 +128,10 @@
           "Completed": {
             "stop_reason": null,
             "token_usage": {
-              "input_tokens": 0,
-              "output_tokens": 0,
-              "total_tokens": 0,
-              "context_window_tokens": null
+              "input_tokens": 4,
+              "output_tokens": 6,
+              "total_tokens": 10,
+              "context_window_tokens": 128000
             }
           }
         }
