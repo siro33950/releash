@@ -1,7 +1,8 @@
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use super::layout::{
     event_batches_dir_in_dir, event_log_file_in_dir, event_tail_file_in_dir,
@@ -10,9 +11,9 @@ use super::layout::{
 };
 use super::transaction::TransactionApplyError;
 use super::FileSessionStorage;
-use crate::usecase::agent_session::event_log::{
-    apply_event_to_queue_pause, AgentSessionEvent, TurnEventLog,
-};
+#[cfg(test)]
+use crate::usecase::agent_session::event_log::apply_event_to_queue_pause;
+use crate::usecase::agent_session::event_log::{AgentSessionEvent, TurnEventLog};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct AppendOutcome {
@@ -207,7 +208,16 @@ impl FileSessionStorage {
         dir: &Path,
         event: &AgentSessionEvent,
     ) -> Result<AppendOutcome, String> {
-        append_event_log_record(dir, EventLogRecordRef::Event(event), "event")
+        let _ = invalidate_queue_pause_checkpoint(dir);
+        if event_batches_dir_in_dir(dir).exists() || event_tail_file_in_dir(dir).exists() {
+            let legacy_outcome = self.repair_event_array_if_needed(&event_log_file_in_dir(dir))?;
+            let tail_outcome = self.append_event_to_array(&event_tail_file_in_dir(dir), event)?;
+            Ok(AppendOutcome {
+                recovered: legacy_outcome.recovered || tail_outcome.recovered,
+            })
+        } else {
+            self.append_event_to_legacy_array(dir, event)
+        }
     }
 
     pub(super) fn append_session_events_to_dir(
@@ -218,7 +228,162 @@ impl FileSessionStorage {
         if events.is_empty() {
             return Ok(AppendOutcome::default());
         }
-        append_event_log_record(dir, EventLogRecordRef::Batch { events }, "event batch")
+        let _ = invalidate_queue_pause_checkpoint(dir);
+        let legacy_outcome = self.repair_event_array_if_needed(&event_log_file_in_dir(dir))?;
+        let tail_outcome = self.repair_event_array_if_needed(&event_tail_file_in_dir(dir))?;
+        self.publish_event_batch_to_dir(dir, events)?;
+        Ok(AppendOutcome {
+            recovered: legacy_outcome.recovered || tail_outcome.recovered,
+        })
+    }
+
+    fn publish_event_batch_to_dir(
+        &self,
+        dir: &Path,
+        events: &[AgentSessionEvent],
+    ) -> Result<(), String> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        let batches_dir = event_batches_dir_in_dir(dir);
+        std::fs::create_dir_all(&batches_dir)
+            .map_err(|e| format!("Failed to create session event batch dir: {e}"))?;
+        let mut next_sequence = self
+            .committed_event_batch_paths(dir)?
+            .iter()
+            .filter_map(|path| {
+                path.file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .and_then(|stem| stem.parse::<u64>().ok())
+            })
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| "Failed to allocate session event batch sequence".to_string())?;
+        let tail_path = event_tail_file_in_dir(dir);
+        if tail_path.exists() {
+            let rotated_tail_path = batches_dir.join(format!("{next_sequence:020}.json"));
+            std::fs::rename(&tail_path, &rotated_tail_path)
+                .map_err(|e| format!("Failed to rotate session event tail: {e}"))?;
+            next_sequence = next_sequence
+                .checked_add(1)
+                .ok_or_else(|| "Failed to allocate session event batch sequence".to_string())?;
+        }
+        let path = batches_dir.join(format!("{next_sequence:020}.json"));
+        write_json_pretty_atomic(&path, &events, "session event batch")
+    }
+
+    fn append_event_to_legacy_array(
+        &self,
+        dir: &Path,
+        event: &AgentSessionEvent,
+    ) -> Result<AppendOutcome, String> {
+        self.append_event_to_array(&event_log_file_in_dir(dir), event)
+    }
+
+    fn append_event_to_array(
+        &self,
+        path: &Path,
+        event: &AgentSessionEvent,
+    ) -> Result<AppendOutcome, String> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create session event log dir: {e}"))?;
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .map_err(|e| format!("Failed to open session event log: {e}"))?;
+        let payload = serde_json::to_string_pretty(event)
+            .map(|payload| indent_json_payload(&payload))
+            .map_err(|e| format!("Failed to serialize session event: {e}"))?;
+        let len = file
+            .metadata()
+            .map_err(|e| format!("Failed to stat session event log: {e}"))?
+            .len();
+        if len == 0 {
+            write!(file, "[\n{payload}\n]\n")
+                .map_err(|e| format!("Failed to append session event: {e}"))?;
+            file.flush()
+                .map_err(|e| format!("Failed to flush session event log: {e}"))?;
+            return Ok(AppendOutcome::default());
+        }
+
+        let mut recovered = false;
+        let mut closing = last_non_whitespace_byte(&mut file, len)?;
+        let needs_recovery = match closing {
+            Some((_, b']')) => !event_log_is_valid_json(&mut file)?,
+            _ => true,
+        };
+        if needs_recovery {
+            let events = recover_session_events_from_file(&mut file)?;
+            rewrite_session_events(&mut file, &events)?;
+            let repaired_len = file
+                .metadata()
+                .map_err(|e| format!("Failed to stat repaired session event log: {e}"))?
+                .len();
+            closing = last_non_whitespace_byte(&mut file, repaired_len)?;
+            recovered = true;
+        }
+        let Some((closing_pos, b']')) = closing else {
+            return Err(
+                "Failed to append session event: repaired event log is not a JSON array"
+                    .to_string(),
+            );
+        };
+        let previous = last_non_whitespace_byte(&mut file, closing_pos)?;
+        let is_empty_array = matches!(previous, Some((_, b'[')));
+        file.set_len(closing_pos)
+            .map_err(|e| format!("Failed to truncate session event log: {e}"))?;
+        file.seek(SeekFrom::End(0))
+            .map_err(|e| format!("Failed to seek session event log: {e}"))?;
+        let suffix = if is_empty_array {
+            format!("\n{payload}\n]\n")
+        } else {
+            format!(",\n{payload}\n]\n")
+        };
+        file.write_all(suffix.as_bytes())
+            .map_err(|e| format!("Failed to append session events: {e}"))?;
+        file.flush()
+            .map_err(|e| format!("Failed to flush session event log: {e}"))?;
+        Ok(AppendOutcome { recovered })
+    }
+
+    fn repair_event_array_if_needed(&self, path: &Path) -> Result<AppendOutcome, String> {
+        let mut file = match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(AppendOutcome::default());
+            }
+            Err(error) => return Err(format!("Failed to open session event log: {error}")),
+        };
+        let len = file
+            .metadata()
+            .map_err(|error| format!("Failed to stat session event log: {error}"))?
+            .len();
+        let valid = if len == 0 {
+            false
+        } else {
+            matches!(last_non_whitespace_byte(&mut file, len)?, Some((_, b']')))
+                && event_log_is_valid_json(&mut file)?
+        };
+        if valid {
+            return Ok(AppendOutcome::default());
+        }
+        let events = if len == 0 {
+            Vec::new()
+        } else {
+            recover_session_events_from_file(&mut file)?
+        };
+        rewrite_session_events(&mut file, &events)?;
+        Ok(AppendOutcome { recovered: true })
     }
 
     pub(super) fn committed_event_batch_paths(
@@ -275,6 +440,61 @@ fn committed_event_batch_paths(dir: &Path) -> Result<Vec<std::path::PathBuf>, St
     Ok(paths)
 }
 
+fn recover_session_events_from_file(
+    file: &mut std::fs::File,
+) -> Result<Vec<AgentSessionEvent>, String> {
+    file.seek(SeekFrom::Start(0))
+        .map_err(|e| format!("Failed to seek damaged session event log: {e}"))?;
+    let mut content = String::new();
+    file.read_to_string(&mut content)
+        .map_err(|e| format!("Failed to read damaged session event log: {e}"))?;
+    recover_unclosed_session_events(&content).map_err(|_| {
+        "Failed to append session event: event log tail could not be recovered".to_string()
+    })
+}
+
+fn rewrite_session_events(
+    file: &mut std::fs::File,
+    events: &[AgentSessionEvent],
+) -> Result<(), String> {
+    let payload = serde_json::to_string_pretty(events)
+        .map_err(|e| format!("Failed to serialize recovered session event log: {e}"))?;
+    file.set_len(0)
+        .map_err(|e| format!("Failed to truncate damaged session event log: {e}"))?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|e| format!("Failed to seek repaired session event log: {e}"))?;
+    writeln!(file, "{payload}")
+        .map_err(|e| format!("Failed to rewrite recovered session event log: {e}"))?;
+    file.flush()
+        .map_err(|e| format!("Failed to flush recovered session event log: {e}"))
+}
+
+fn event_log_is_valid_json(file: &mut std::fs::File) -> Result<bool, String> {
+    file.seek(SeekFrom::Start(0))
+        .map_err(|e| format!("Failed to seek session event log: {e}"))?;
+    Ok(serde_json::from_reader::<_, serde::de::IgnoredAny>(file).is_ok())
+}
+
+fn last_non_whitespace_byte(
+    file: &mut std::fs::File,
+    end_exclusive: u64,
+) -> Result<Option<(u64, u8)>, String> {
+    let mut pos = end_exclusive;
+    let mut byte = [0_u8; 1];
+    while pos > 0 {
+        pos -= 1;
+        file.seek(SeekFrom::Start(pos))
+            .map_err(|e| format!("Failed to seek session event log: {e}"))?;
+        file.read_exact(&mut byte)
+            .map_err(|e| format!("Failed to read session event log: {e}"))?;
+        if !byte[0].is_ascii_whitespace() {
+            return Ok(Some((pos, byte[0])));
+        }
+    }
+    Ok(None)
+}
+
+#[cfg(test)]
 #[derive(Serialize)]
 #[serde(untagged)]
 enum EventLogRecordRef<'a> {
@@ -289,21 +509,15 @@ enum EventLogRecord {
     Batch { events: Vec<AgentSessionEvent> },
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct QueuePauseCheckpoint {
     event_log_len: u64,
+    event_log_fingerprint: String,
     queue_paused_at: Option<f64>,
 }
 
-fn append_event_log_record(
-    dir: &Path,
-    record: EventLogRecordRef<'_>,
-    description: &str,
-) -> Result<AppendOutcome, String> {
-    append_event_log_record_with_fault(dir, record, description, None)
-}
-
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EventLogWriteFault {
     RepairWrite,
@@ -314,6 +528,7 @@ enum EventLogWriteFault {
     AppendSync,
 }
 
+#[cfg(test)]
 fn append_event_log_record_with_fault(
     dir: &Path,
     record: EventLogRecordRef<'_>,
@@ -333,7 +548,8 @@ fn append_event_log_record_with_fault(
         Err(error) => return Err(format!("Failed to read session event log: {error}")),
     };
     let len = content.len() as u64;
-    let checkpoint = matching_queue_pause_checkpoint(dir, len);
+    let fingerprint = event_log_fingerprint(&[content.as_bytes()]);
+    let checkpoint = matching_queue_pause_checkpoint(dir, len, &fingerprint);
     let mut projection_is_current = checkpoint.is_some();
     let mut queue_paused_at = checkpoint.and_then(|checkpoint| checkpoint.queue_paused_at);
     let mut recovered = false;
@@ -378,15 +594,19 @@ fn append_event_log_record_with_fault(
     } else {
         format!(",\n{}", indent_json_payload(&payload))
     };
-    replace_appended_event_log_atomic(&path, prefix, &payload, "\n]\n", fault)?;
+    let closing = "\n]\n";
+    replace_appended_event_log_atomic(&path, prefix, &payload, closing, fault)?;
     let queue_paused_at = apply_record_to_queue_pause(queue_paused_at, &record);
     let committed_len = std::fs::metadata(&path)
         .map_err(|error| format!("Failed to stat session event log: {error}"))?
         .len();
-    persist_queue_pause_checkpoint(dir, committed_len, queue_paused_at);
+    let committed_fingerprint =
+        event_log_fingerprint(&[prefix.as_bytes(), payload.as_bytes(), closing.as_bytes()]);
+    persist_queue_pause_checkpoint(dir, committed_len, &committed_fingerprint, queue_paused_at);
     Ok(AppendOutcome { recovered })
 }
 
+#[cfg(test)]
 fn replace_recovered_event_log_atomic(
     path: &Path,
     recovered: &str,
@@ -421,6 +641,7 @@ fn replace_recovered_event_log_atomic(
     result
 }
 
+#[cfg(test)]
 fn replace_appended_event_log_atomic(
     path: &Path,
     prefix: &str,
@@ -460,45 +681,101 @@ fn replace_appended_event_log_atomic(
 
 fn load_queue_pause_projection_from_dir(dir: &Path) -> Result<Option<f64>, String> {
     let event_log_path = event_log_file_in_dir(dir);
-    let event_log_len = match std::fs::metadata(&event_log_path) {
-        Ok(metadata) => metadata.len(),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
-        Err(error) => return Err(format!("Failed to stat session event log: {error}")),
+    let legacy_content = match std::fs::read_to_string(&event_log_path) {
+        Ok(content) => Some(content),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(format!("Failed to read session event log: {error}")),
     };
-    if let Some(checkpoint) = matching_queue_pause_checkpoint(dir, event_log_len) {
+    let mut batch_contents = Vec::new();
+    for batch_path in committed_event_batch_paths(dir)? {
+        batch_contents.push(
+            std::fs::read_to_string(&batch_path)
+                .map_err(|error| format!("Failed to read session event batch: {error}"))?,
+        );
+    }
+    let tail_content = match std::fs::read_to_string(event_tail_file_in_dir(dir)) {
+        Ok(content) => Some(content),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(format!("Failed to read session event tail: {error}")),
+    };
+    let mut chunks = Vec::with_capacity(batch_contents.len() + 2);
+    chunks.push(legacy_content.as_deref().unwrap_or_default().as_bytes());
+    chunks.extend(batch_contents.iter().map(|content| content.as_bytes()));
+    chunks.push(tail_content.as_deref().unwrap_or_default().as_bytes());
+    let event_log_len = chunks.iter().map(|chunk| chunk.len() as u64).sum();
+    let fingerprint = event_log_fingerprint(&chunks);
+    if let Some(checkpoint) = matching_queue_pause_checkpoint(dir, event_log_len, &fingerprint) {
         return Ok(checkpoint.queue_paused_at);
     }
-    let (queue_paused_at, projection_is_checkpointable) =
-        match std::fs::read_to_string(&event_log_path) {
-            Ok(content) => match parse_event_log_records(&content) {
-                Ok(events) => (project_queue_pause(events.iter()), true),
-                Err(error) => {
-                    let events = recover_unclosed_session_events(&content)
-                        .map_err(|_| format!("Failed to parse session event log: {error}"))?;
-                    // A recovered in-memory projection must not attest that the damaged file is
-                    // current. Leave the checkpoint stale so the next append repairs the log and
-                    // publishes the recovery signal.
-                    (project_queue_pause(events.iter()), false)
-                }
-            },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (None, true),
-            Err(error) => return Err(format!("Failed to read session event log: {error}")),
-        };
+    let mut events = Vec::new();
+    let mut projection_is_checkpointable =
+        append_projection_event_array(legacy_content.as_deref(), "session event log", &mut events)?;
+    for content in &batch_contents {
+        let mut batch = serde_json::from_str::<Vec<AgentSessionEvent>>(content)
+            .map_err(|error| format!("Failed to parse session event batch: {error}"))?;
+        events.append(&mut batch);
+    }
+    projection_is_checkpointable &=
+        append_projection_event_array(tail_content.as_deref(), "session event tail", &mut events)?;
+    let queue_paused_at = project_queue_pause(events.iter());
     if projection_is_checkpointable {
-        persist_queue_pause_checkpoint(dir, event_log_len, queue_paused_at);
+        persist_queue_pause_checkpoint(dir, event_log_len, &fingerprint, queue_paused_at);
     }
     Ok(queue_paused_at)
 }
 
-fn matching_queue_pause_checkpoint(dir: &Path, event_log_len: u64) -> Option<QueuePauseCheckpoint> {
-    let content = std::fs::read_to_string(queue_pause_checkpoint_file_in_dir(dir)).ok()?;
-    let checkpoint = serde_json::from_str::<QueuePauseCheckpoint>(&content).ok()?;
-    (checkpoint.event_log_len == event_log_len).then_some(checkpoint)
+fn append_projection_event_array(
+    content: Option<&str>,
+    description: &str,
+    events: &mut Vec<AgentSessionEvent>,
+) -> Result<bool, String> {
+    let Some(content) = content else {
+        return Ok(true);
+    };
+    match parse_event_log_records(content) {
+        Ok(mut parsed) => {
+            events.append(&mut parsed);
+            Ok(true)
+        }
+        Err(error) => {
+            let mut recovered = recover_unclosed_session_events(content)
+                .map_err(|_| format!("Failed to parse {description}: {error}"))?;
+            events.append(&mut recovered);
+            // A recovered in-memory projection must not attest that the damaged file is current.
+            Ok(false)
+        }
+    }
 }
 
-fn persist_queue_pause_checkpoint(dir: &Path, event_log_len: u64, queue_paused_at: Option<f64>) {
+fn event_log_fingerprint(chunks: &[&[u8]]) -> String {
+    let mut hasher = Sha256::new();
+    for chunk in chunks {
+        hasher.update(chunk);
+    }
+    hex::encode(hasher.finalize())
+}
+
+fn matching_queue_pause_checkpoint(
+    dir: &Path,
+    event_log_len: u64,
+    event_log_fingerprint: &str,
+) -> Option<QueuePauseCheckpoint> {
+    let content = std::fs::read_to_string(queue_pause_checkpoint_file_in_dir(dir)).ok()?;
+    let checkpoint = serde_json::from_str::<QueuePauseCheckpoint>(&content).ok()?;
+    (checkpoint.event_log_len == event_log_len
+        && checkpoint.event_log_fingerprint == event_log_fingerprint)
+        .then_some(checkpoint)
+}
+
+fn persist_queue_pause_checkpoint(
+    dir: &Path,
+    event_log_len: u64,
+    event_log_fingerprint: &str,
+    queue_paused_at: Option<f64>,
+) {
     let checkpoint = QueuePauseCheckpoint {
         event_log_len,
+        event_log_fingerprint: event_log_fingerprint.to_string(),
         queue_paused_at,
     };
     if let Err(error) = write_json_pretty_atomic(
@@ -522,6 +799,7 @@ fn invalidate_queue_pause_checkpoint(dir: &Path) -> Result<(), String> {
     }
 }
 
+#[cfg(test)]
 fn apply_record_to_queue_pause(
     queue_paused_at: Option<f64>,
     record: &EventLogRecordRef<'_>,
@@ -720,8 +998,9 @@ mod tests {
     }
 
     fn read_events(dir: &Path) -> Vec<AgentSessionEvent> {
-        let content = std::fs::read_to_string(event_log_file_in_dir(dir)).unwrap();
-        parse_session_events_content(&content).unwrap()
+        FileSessionStorage::default()
+            .read_session_events_from_dir(dir)
+            .unwrap()
     }
 
     #[test]
@@ -1100,8 +1379,7 @@ mod tests {
             .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
             .count();
         assert_eq!(temp_files, 0);
-        let raw = std::fs::read_to_string(event_log_file_in_dir(tmp.path())).unwrap();
-        assert!(raw.contains("\"events\""));
+        assert_eq!(committed_event_batch_paths(tmp.path()).unwrap().len(), 1);
     }
 
     #[test]
@@ -1163,18 +1441,39 @@ mod tests {
         );
 
         let event_log_path = event_log_file_in_dir(tmp.path());
-        let len = std::fs::metadata(&event_log_path).unwrap().len() as usize;
-        std::fs::write(&event_log_path, vec![b'x'; len]).unwrap();
+        let content = std::fs::read_to_string(&event_log_path).unwrap();
+        let len = content.len();
+        let fingerprint = event_log_fingerprint(&[content.as_bytes()]);
+        persist_queue_pause_checkpoint(tmp.path(), len as u64, &fingerprint, Some(201.0));
+        assert_eq!(
+            load_queue_pause_projection_from_dir(tmp.path()).unwrap(),
+            Some(201.0),
+            "a matching checkpoint must avoid rebuilding the long projection"
+        );
+
+        let replaced_content = content.replacen("101.0", "102.0", 1);
+        assert_ne!(replaced_content, content);
+        assert_eq!(replaced_content.len(), len);
+        std::fs::write(&event_log_path, &replaced_content).unwrap();
 
         assert_eq!(
             load_queue_pause_projection_from_dir(tmp.path()).unwrap(),
-            Some(101.0)
+            Some(102.0),
+            "same-length content changes must rebuild the projection"
+        );
+        let checkpoint: QueuePauseCheckpoint = serde_json::from_slice(
+            &std::fs::read(queue_pause_checkpoint_file_in_dir(tmp.path())).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            checkpoint.event_log_fingerprint,
+            event_log_fingerprint(&[replaced_content.as_bytes()])
         );
         assert!(
             std::fs::metadata(queue_pause_checkpoint_file_in_dir(tmp.path()))
                 .unwrap()
                 .len()
-                < 128
+                < 256
         );
     }
 
@@ -1189,7 +1488,7 @@ mod tests {
             .append_session_events_to_dir(tmp.path(), &[event(1), event(2)])
             .unwrap_err();
 
-        assert!(error.contains("does not end with a JSON array"));
+        assert!(error.contains("tail could not be recovered"));
         assert_eq!(std::fs::read_to_string(path).unwrap(), "{\n");
     }
 

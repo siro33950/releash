@@ -566,7 +566,7 @@ pub(super) async fn force_finalize_interrupted_turn(
             state.bump_runtime_epoch();
             runtime
         };
-        let workflow_notification = complete_turn(
+        let workflow_notification = match complete_turn(
             ctx,
             session_id,
             Some(generation),
@@ -575,7 +575,14 @@ pub(super) async fn force_finalize_interrupted_turn(
                 error: None,
             },
         )
-        .await;
+        .await
+        {
+            Ok(notification) => notification,
+            Err(error) => {
+                log::warn!("failed to force-finalize interrupted turn for {session_id}: {error}");
+                None
+            }
+        };
         (runtime, workflow_notification)
     };
     ctx.session_locks.invalidate(session_id).await;

@@ -1357,6 +1357,7 @@ impl AgentSessionRuntimeUsecase {
                 },
             )
             .await
+            .map_err(AgentRuntimeError::Other)?
         } else {
             None
         };
@@ -2145,7 +2146,8 @@ impl AgentSessionRuntimeUsecase {
                     error: None,
                 },
             )
-            .await;
+            .await
+            .map_err(AgentRuntimeError::Other)?;
             if let Some(notification) = notification {
                 dispatch_workflow_turn_complete_notification(
                     &self.ctx.workflow_turn_complete_notifier,
@@ -2198,7 +2200,8 @@ impl AgentSessionRuntimeUsecase {
                             error: Some(message),
                         },
                     )
-                    .await;
+                    .await
+                    .map_err(AgentRuntimeError::Other)?;
                     if let Some(notification) = notification {
                         dispatch_workflow_turn_complete_notification(
                             &self.ctx.workflow_turn_complete_notifier,
@@ -2289,7 +2292,8 @@ impl AgentSessionRuntimeUsecase {
                         error: Some(message),
                     },
                 )
-                .await;
+                .await
+                .map_err(AgentRuntimeError::Other)?;
                 if let Some(notification) = notification {
                     dispatch_workflow_turn_complete_notification(
                         &self.ctx.workflow_turn_complete_notifier,
@@ -4060,7 +4064,13 @@ async fn apply_runtime_event(
             } else {
                 false
             };
-            let workflow_notification = complete_turn(ctx, session_id, None, result).await;
+            let workflow_notification = match complete_turn(ctx, session_id, None, result).await {
+                Ok(notification) => notification,
+                Err(error) => {
+                    log::warn!("failed to durably complete turn for {session_id}: {error}");
+                    return RuntimeEventPostActions::default();
+                }
+            };
             if wait_for_trailing_fatal {
                 let mut sessions = ctx.sessions.lock().await;
                 if let Some(state) = sessions.get_mut(session_id) {
@@ -4107,8 +4117,9 @@ async fn apply_runtime_event(
                     })
             };
             let mut actions = RuntimeEventPostActions::default();
+            let mut crash_persistence_failed = false;
             if should_complete_crash {
-                actions.workflow_notification = complete_turn(
+                match complete_turn(
                     ctx,
                     session_id,
                     None,
@@ -4117,7 +4128,14 @@ async fn apply_runtime_event(
                         error: Some(message.clone()),
                     },
                 )
-                .await;
+                .await
+                {
+                    Ok(notification) => actions.workflow_notification = notification,
+                    Err(error) => {
+                        log::warn!("failed to durably record fatal turn for {session_id}: {error}");
+                        crash_persistence_failed = true;
+                    }
+                }
             }
             let runtime = {
                 let mut sessions = ctx.sessions.lock().await;
@@ -4129,8 +4147,12 @@ async fn apply_runtime_event(
             {
                 let mut sessions = ctx.sessions.lock().await;
                 if let Some(state) = sessions.get_mut(session_id) {
-                    state.phase = RuntimeSessionPhase::Idle;
-                    state.stall_observation_active = false;
+                    if crash_persistence_failed {
+                        state.rollback_started_turn();
+                    } else {
+                        state.phase = RuntimeSessionPhase::Idle;
+                        state.stall_observation_active = false;
+                    }
                 }
             }
             if !should_complete_crash && !trailing_completed_crash {
@@ -4955,7 +4977,7 @@ pub(super) async fn complete_turn(
     session_id: &str,
     expected_generation: Option<u64>,
     result: crate::domain::agent_session::entities::TurnResult,
-) -> Option<WorkflowTurnCompleteNotification> {
+) -> Result<Option<WorkflowTurnCompleteNotification>, String> {
     complete_turn_with_acceptance_and_persist_kind(
         ctx,
         session_id,
@@ -4964,7 +4986,7 @@ pub(super) async fn complete_turn(
         PersistFailureKind::FinalPartsRecorded,
     )
     .await
-    .0
+    .map(|(notification, _)| notification)
 }
 
 async fn complete_turn_with_acceptance(
@@ -4972,7 +4994,7 @@ async fn complete_turn_with_acceptance(
     session_id: &str,
     expected_generation: Option<u64>,
     result: crate::domain::agent_session::entities::TurnResult,
-) -> (Option<WorkflowTurnCompleteNotification>, bool) {
+) -> Result<(Option<WorkflowTurnCompleteNotification>, bool), String> {
     complete_turn_with_acceptance_and_persist_kind(
         ctx,
         session_id,
@@ -4989,7 +5011,7 @@ async fn complete_turn_with_acceptance_and_persist_kind(
     expected_generation: Option<u64>,
     result: crate::domain::agent_session::entities::TurnResult,
     persist_kind: PersistFailureKind,
-) -> (Option<WorkflowTurnCompleteNotification>, bool) {
+) -> Result<(Option<WorkflowTurnCompleteNotification>, bool), String> {
     let _queue_transition_guard = ctx.transitions.acquire(session_id).await;
     let interrupt_was_accepted = {
         let sessions = ctx.sessions.lock().await;
@@ -5033,39 +5055,118 @@ async fn complete_turn_with_acceptance_and_persist_kind(
         log::debug!(
             "skipping turn completion for {session_id}: turn already completed or generation mismatch (expected={expected_generation:?})"
         );
-        return (None, false);
+        return Ok((None, false));
     }
-    if let Err(error) = flush_streaming_update(ctx, session_id, true).await {
-        log::warn!("failed to flush streaming update for {session_id}: {error}");
-    }
+    flush_streaming_update(ctx, session_id, true).await?;
     let completed_at = crate::usecase::agent_session::session::now_timestamp();
     let terminal = terminal_projection(&result);
-    let (
-        message_id,
-        parts,
-        seq,
-        turn_id,
-        started_at,
-        telemetry_dims,
-        pending_permission_state_revision,
-        queue_paused,
-    ) = {
-        let mut sessions = ctx.sessions.lock().await;
-        let Some(state) = sessions.get_mut(session_id) else {
-            return (None, false);
+    let (message_id, parts, seq, turn_id, started_at, telemetry_dims, queue_paused) = {
+        let sessions = ctx.sessions.lock().await;
+        let Some(state) = sessions.get(session_id) else {
+            return Ok((None, false));
         };
         if state.phase == RuntimeSessionPhase::Idle
             || expected_generation.is_some_and(|generation| state.generation != generation)
         {
-            return (None, false);
+            return Ok((None, false));
+        }
+        let telemetry_dims =
+            session_telemetry_dimensions(&ctx.session_store, &ctx.data_dir, session_id);
+        (
+            state.streaming_message_id.clone(),
+            state.streaming_parts.clone(),
+            state.streaming_delta_seq,
+            state.current_turn_id.or(state.last_turn_id),
+            state.turn_started_at,
+            telemetry_dims,
+            state.queue_paused,
+        )
+    };
+    let mut projected = None;
+    let mut crash_snapshot = None;
+    if let (Some(turn_id), Some(message_id)) = (turn_id, message_id.clone()) {
+        let final_seq = if emit_crash_snapshot {
+            seq.saturating_add(1)
+        } else {
+            seq
+        };
+        let events = final_turn_events(
+            &ctx.session_store,
+            &ctx.data_dir,
+            session_id,
+            turn_id,
+            &message_id,
+            &parts,
+            &terminal,
+        )?;
+        let (model, persisted_parts) = persist_with_retry(ctx, session_id, persist_kind, || {
+            ctx.session_store.append_terminal_events_and_materialize(
+                &ctx.data_dir,
+                session_id,
+                &events,
+                &message_id,
+                final_seq,
+                completed_at,
+            )
+        })
+        .await?;
+        {
+            let mut sessions = ctx.sessions.lock().await;
+            if let Some(state) = sessions.get_mut(session_id) {
+                if state.current_turn_id.or(state.last_turn_id) == Some(turn_id) {
+                    state.terminal_turn_id = Some(turn_id);
+                }
+            }
+        }
+        projected = Some(model);
+        if emit_crash_snapshot {
+            crash_snapshot = Some(PendingStreamDelta {
+                message_id,
+                seq: final_seq,
+                snapshot: true,
+                parts: persisted_parts,
+                message: None,
+                authoritative: true,
+            });
+        }
+    }
+    if let Some(snapshot) = crash_snapshot {
+        emit_streaming_delta_or_retry(ctx, session_id, snapshot).await;
+    }
+    let session_state = projected
+        .as_ref()
+        .map(|model| model.status.session_state.clone())
+        .or_else(|| (!emit_crash_snapshot).then(|| terminal.session_state.clone()));
+    if let Some(projected_state) = session_state.as_ref() {
+        let (exit_code, interrupted) = match projected_state {
+            SessionState::Idle => (0, true),
+            SessionState::Done => (0, false),
+            SessionState::Error => (terminal.exit_code.max(1), terminal.interrupted),
+            _ => (terminal.exit_code, terminal.interrupted),
+        };
+        let lifecycle =
+            crate::usecase::agent_session::session::lifecycle_controller::SessionLifecycleController {
+                session_store: &ctx.session_store,
+                data_dir: &ctx.data_dir,
+            };
+        lifecycle.complete_turn_state(session_id, exit_code, interrupted)?;
+    }
+    let pending_permission_state_revision = {
+        let mut sessions = ctx.sessions.lock().await;
+        let Some(state) = sessions.get_mut(session_id) else {
+            return Ok((None, false));
+        };
+        if state.phase == RuntimeSessionPhase::Idle
+            || expected_generation.is_some_and(|generation| state.generation != generation)
+        {
+            return Ok((None, false));
         }
         state.phase = RuntimeSessionPhase::Idle;
         let pending_permission_state_revision = state.clear_pending_permission_request();
         state.permission_wait_started_at = None;
         state.permission_wait_diagnostic_emitted = false;
         state.stall_observation_active = false;
-        let message_id = state.streaming_message_id.clone();
-        state.last_agent_message_id = message_id.clone();
+        state.last_agent_message_id = message_id;
         let usage = match &result {
             crate::domain::agent_session::entities::TurnResult::Completed {
                 token_usage, ..
@@ -5078,105 +5179,18 @@ async fn complete_turn_with_acceptance_and_persist_kind(
         if let Some(usage) = usage {
             state.latest_token_usage = Some(usage);
         }
-        let turn_id = state.current_turn_id.or(state.last_turn_id);
-        let started_at = state.turn_started_at.take();
+        state.turn_started_at = None;
         state.streaming_message_id = None;
         state.current_turn_id = None;
         state.current_turn_input = None;
         state.interrupt_requested_generation = None;
-        let telemetry_dims =
-            session_telemetry_dimensions(&ctx.session_store, &ctx.data_dir, session_id);
-        (
-            message_id,
-            state.streaming_parts.clone(),
-            state.streaming_delta_seq,
-            turn_id,
-            started_at,
-            telemetry_dims,
-            pending_permission_state_revision,
-            state.queue_paused,
-        )
+        state.domain_streaming_parts.clear();
+        state.streaming_parts.clear();
+        state.streaming_delta_seq = 0;
+        state.stream_emit_failure_count = 0;
+        state.stream_emit_suppressed = false;
+        pending_permission_state_revision
     };
-    let mut projected = None;
-    let mut crash_snapshot = None;
-    if let (Some(turn_id), Some(message_id)) = (turn_id, message_id.clone()) {
-        let final_seq = if emit_crash_snapshot {
-            seq.saturating_add(1)
-        } else {
-            seq
-        };
-        let materialized = match final_turn_events(
-            &ctx.session_store,
-            &ctx.data_dir,
-            session_id,
-            turn_id,
-            &message_id,
-            &parts,
-            &terminal,
-        ) {
-            Ok(events) => {
-                persist_with_retry(ctx, session_id, persist_kind, || {
-                    ctx.session_store.append_terminal_events_and_materialize(
-                        &ctx.data_dir,
-                        session_id,
-                        &events,
-                        &message_id,
-                        final_seq,
-                        completed_at,
-                    )
-                })
-                .await
-            }
-            Err(error) => Err(error),
-        };
-        match materialized {
-            Ok((model, persisted_parts)) => {
-                projected = Some(model);
-                if emit_crash_snapshot {
-                    crash_snapshot = Some(PendingStreamDelta {
-                        message_id,
-                        seq: final_seq,
-                        snapshot: true,
-                        parts: persisted_parts,
-                        message: None,
-                        authoritative: true,
-                    });
-                }
-            }
-            Err(error) => {
-                log::warn!("failed to materialize terminal turn for {session_id}: {error}");
-            }
-        }
-    }
-    if let Some(snapshot) = crash_snapshot {
-        emit_streaming_delta_or_retry(ctx, session_id, snapshot).await;
-    }
-    {
-        let mut sessions = ctx.sessions.lock().await;
-        if let Some(state) = sessions.get_mut(session_id) {
-            state.domain_streaming_parts.clear();
-            state.streaming_parts.clear();
-            state.streaming_delta_seq = 0;
-            state.stream_emit_failure_count = 0;
-            state.stream_emit_suppressed = false;
-        }
-    };
-    let session_state = projected
-        .as_ref()
-        .map(|model| model.status.session_state.clone())
-        .or_else(|| (!emit_crash_snapshot).then(|| terminal.session_state.clone()));
-    let lifecycle =
-        crate::usecase::agent_session::session::lifecycle_controller::SessionLifecycleController {
-            session_store: &ctx.session_store,
-            data_dir: &ctx.data_dir,
-        };
-    if projected.is_some() || !emit_crash_snapshot {
-        if let Err(error) =
-            lifecycle.complete_turn_state(session_id, terminal.exit_code, terminal.interrupted)
-        {
-            log::warn!("failed to persist terminal session state for {session_id}: {error}");
-        }
-    }
     if let (Some(started_at), Some(dims)) = (started_at, telemetry_dims) {
         crate::other::telemetry::record_agent_turn_duration(
             crate::other::telemetry::AgentTurn::Complete,
@@ -5206,7 +5220,7 @@ async fn complete_turn_with_acceptance_and_persist_kind(
             session_state,
         },
     );
-    (workflow_notification, interrupt_was_accepted)
+    Ok((workflow_notification, interrupt_was_accepted))
 }
 
 async fn turn_owns_runtime(
@@ -5531,7 +5545,7 @@ pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &st
             return;
         }
         log::warn!("failed to start queued turn for {session_id}: {error}");
-        if let Some(notification) = complete_turn_with_acceptance_and_persist_kind(
+        match complete_turn_with_acceptance_and_persist_kind(
             ctx,
             session_id,
             Some(generation),
@@ -5542,13 +5556,20 @@ pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &st
             PersistFailureKind::QueuedTurnInterrupt,
         )
         .await
-        .0
         {
-            dispatch_workflow_turn_complete_notification(
-                &ctx.workflow_turn_complete_notifier,
-                notification,
-            )
-            .await;
+            Ok((Some(notification), _)) => {
+                dispatch_workflow_turn_complete_notification(
+                    &ctx.workflow_turn_complete_notifier,
+                    notification,
+                )
+                .await;
+            }
+            Ok((None, _)) => {}
+            Err(persist_error) => {
+                log::warn!(
+                    "failed to persist queued turn interruption for {session_id}: {persist_error}"
+                );
+            }
         }
     } else {
         if !turn_owns_runtime(ctx, session_id, generation, &runtime).await {
@@ -10071,6 +10092,63 @@ mod tests {
                 kind: "event_log_recovered",
             } if logged_session_id == &session_id
         )));
+    }
+
+    #[tokio::test]
+    async fn batch_append_reports_event_log_recovery_through_blocking_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, _) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        let session = crate::usecase::agent_session::session::create_session_internal(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+        )
+        .unwrap();
+        session_store
+            .append_session_event_without_projection(
+                tmp.path(),
+                &session.id,
+                AgentSessionEvent::QueuePaused { at: 1.0 },
+            )
+            .unwrap();
+        let event_log_path = tmp
+            .path()
+            .join("sessions")
+            .join(&session.id)
+            .join("events.json");
+        let content = std::fs::read_to_string(&event_log_path).unwrap();
+        let closing_pos = content.rfind(']').expect("event log closing bracket");
+        std::fs::write(&event_log_path, &content[..closing_pos]).unwrap();
+
+        append_session_events_blocking(
+            &usecase.ctx,
+            &session.id,
+            vec![AgentSessionEvent::QueuePaused { at: 2.0 }],
+        )
+        .await
+        .unwrap();
+
+        assert!(event_notifier.notices().iter().any(|notice| {
+            notice.session_id == session.id && notice.kind == SessionNoticeKind::EventLogRecovered
+        }));
+        assert_eq!(
+            session_store
+                .load_session_events(tmp.path(), &session.id)
+                .unwrap()
+                .iter()
+                .filter(|event| matches!(event, AgentSessionEvent::QueuePaused { .. }))
+                .count(),
+            2
+        );
     }
 
     #[tokio::test]
@@ -15454,11 +15532,6 @@ mod tests {
             SessionCreationAttributes::default(),
         )
         .unwrap();
-        let normal_before_recovery = session_store
-            .get_session_meta(tmp.path(), &normal_session.id)
-            .unwrap()
-            .unwrap()
-            .to_summary();
         usecase
             .start_session(
                 &session.id,

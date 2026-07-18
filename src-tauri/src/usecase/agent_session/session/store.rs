@@ -1185,7 +1185,11 @@ impl SessionStore {
             }
         }
         self.storage
-            .append_session_events(app_data_dir, session_id, events)
+            .append_session_events(app_data_dir, session_id, events)?;
+        if self.storage.take_event_log_recovered(session_id) {
+            self.notify_event_log_recovered(session_id);
+        }
+        Ok(())
     }
 
     pub fn load_previous_human_message_before_agent(
