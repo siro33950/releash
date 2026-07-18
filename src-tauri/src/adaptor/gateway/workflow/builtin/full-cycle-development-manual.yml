@@ -653,8 +653,7 @@ nodes:
   inputs:
   - write_requirements
   rules:
-  # TODO(#1489): reset_on: full_review_fanout の実装後は、各FullReviewでmax_iterations: 2に変更する。
-  - loop_guard: { max_iterations: 6, on_exhausted: create_fix_plan }
+  - loop_guard: { max_iterations: 2, on_exhausted: create_fix_plan, reset_on: full_review_fanout }
   - switch:
       on: verdict
       cases:
