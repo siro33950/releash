@@ -11,8 +11,8 @@ mod lifecycle_commands;
 mod resume_orchestration;
 
 use activation::{
-    rollback_active_interruption, run_runtime_activation, InterruptionRollback,
-    RuntimeActivationGate,
+    rollback_active_interruption, run_runtime_activation,
+    run_runtime_activation_with_cancel_cleanup, InterruptionRollback, RuntimeActivationGate,
 };
 use command_preparation::{command_execution_input_is_current, CommandExecutionInput};
 
@@ -3650,7 +3650,7 @@ impl WorkflowRuntimeService {
         };
         let permission_mode = PermissionMode::parse_canonical(&session.permission_mode)
             .map_err(|e| WorkflowEngineError::InvalidWorkflow(e.to_string()))?;
-        let _runtime_guard = agent_runtime.acquire_session_lock(session_id).await;
+        let runtime_guard = agent_runtime.acquire_session_lock(session_id).await;
         let start_result = agent_runtime
             .start_turn_locked(
                 session_id,
@@ -3660,6 +3660,7 @@ impl WorkflowRuntimeService {
                 Vec::new(),
             )
             .await;
+        drop(runtime_guard);
         if let Err(err) = start_result {
             let error = WorkflowEngineError::with_agent_runtime_context(
                 "contract output repair turn failed to start",
@@ -6000,7 +6001,10 @@ impl WorkflowRuntimeService {
             return Ok(());
         }
 
-        run_runtime_activation(
+        let fanout_activation_tasks =
+            Arc::new(workflow_runtime_session::FanoutActivationTaskTracker::default());
+        let cancel_fanout_activation_tasks = Arc::clone(&fanout_activation_tasks);
+        run_runtime_activation_with_cancel_cleanup(
             &activation_gate,
             &fanout_start.execution_id,
             "fanout",
@@ -6013,7 +6017,11 @@ impl WorkflowRuntimeService {
                 worktree_path,
                 &child_setups,
                 snapshot,
+                fanout_activation_tasks,
             ),
+            async move {
+                cancel_fanout_activation_tasks.abort_and_wait().await;
+            },
         )
         .await?;
 

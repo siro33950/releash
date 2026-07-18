@@ -1,5 +1,26 @@
 use super::*;
 
+enum AbortCommit {
+    Aborted { session_ids: Vec<String> },
+    NotFound,
+    AlreadyTerminal,
+}
+
+fn abort_outcome_to_command_result(
+    outcome: AbortOutcome,
+    execution_id: &str,
+) -> Result<(), WorkflowEngineError> {
+    match outcome {
+        AbortOutcome::Aborted => Ok(()),
+        AbortOutcome::NotFound => Err(WorkflowEngineError::ExecutionNotFound(
+            execution_id.to_string(),
+        )),
+        AbortOutcome::AlreadyTerminal => Err(WorkflowEngineError::InvalidState(format!(
+            "execution {execution_id} is already terminal"
+        ))),
+    }
+}
+
 /// abort / stop / resume の execution ライフサイクル typed command 群。
 impl WorkflowRuntimeService {
     pub(crate) async fn abort_workflow_execution<R: tauri::Runtime>(
@@ -141,21 +162,28 @@ impl WorkflowRuntimeService {
         // execution 全体の Abort: NotFound / AlreadyTerminal は非受理として typed error
         // に射影する（Spec [04] Rule「対象不在 / 既に終了した command は受理されない」）。
         let abort_result = self
-            .abort_workflow_by_execution_id(
+            .commit_abort_workflow_by_execution_id(
                 app,
                 session_store,
-                agent_runtime,
                 execution_id,
                 expected_node_name,
             )
             .await;
         match abort_result {
-            Ok(AbortOutcome::Aborted) => {
+            Ok(AbortCommit::Aborted { session_ids }) => {
                 if activation_was_paused {
                     activation_gate.commit_cancel();
                     activation_guard = Some(activation_gate.lock.lock().await);
                 }
                 let _activation_guard = activation_guard;
+                self.finish_committed_abort(
+                    app,
+                    session_store,
+                    agent_runtime,
+                    execution_id,
+                    &session_ids,
+                )
+                .await;
                 self.execution_store
                     .finish_active_interruption(interruption_reservation)
                     .await
@@ -164,9 +192,9 @@ impl WorkflowRuntimeService {
                             "ExecutionStore abort reservation cleanup failed: {error}"
                         ))
                     })?;
-                Ok(())
+                abort_outcome_to_command_result(AbortOutcome::Aborted, execution_id)
             }
-            Ok(outcome) => {
+            Ok(AbortCommit::NotFound) => {
                 self.execution_store
                     .finish_active_interruption(interruption_reservation)
                     .await
@@ -180,15 +208,23 @@ impl WorkflowRuntimeService {
                 } else {
                     activation_gate.reset_cancel();
                 }
-                match outcome {
-                    AbortOutcome::NotFound => Err(WorkflowEngineError::ExecutionNotFound(
-                        execution_id.to_string(),
-                    )),
-                    AbortOutcome::AlreadyTerminal => Err(WorkflowEngineError::InvalidState(
-                        format!("execution {execution_id} is already terminal"),
-                    )),
-                    AbortOutcome::Aborted => unreachable!(),
+                abort_outcome_to_command_result(AbortOutcome::NotFound, execution_id)
+            }
+            Ok(AbortCommit::AlreadyTerminal) => {
+                self.execution_store
+                    .finish_active_interruption(interruption_reservation)
+                    .await
+                    .map_err(|error| {
+                        WorkflowEngineError::SessionStore(format!(
+                            "ExecutionStore abort reservation rollback failed: {error}"
+                        ))
+                    })?;
+                if activation_was_paused {
+                    activation_gate.rollback_cancel();
+                } else {
+                    activation_gate.reset_cancel();
                 }
+                abort_outcome_to_command_result(AbortOutcome::AlreadyTerminal, execution_id)
             }
             Err(error) => {
                 let reservation_result = self
@@ -322,6 +358,7 @@ impl WorkflowRuntimeService {
     ///
     /// 外部から直接呼ばれることはなく、`abort_workflow_execution*` runtime primitive 経路のみが
     /// 利用する（Spec [04]: 内部呼び出し元も engine の private method を直接叩かない）。
+    #[cfg(test)]
     pub(super) async fn abort_workflow_by_execution_id<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
@@ -330,17 +367,57 @@ impl WorkflowRuntimeService {
         execution_id: &str,
         expected_node_name: Option<&str>,
     ) -> Result<AbortOutcome, WorkflowEngineError> {
+        let commit = self
+            .commit_abort_workflow_by_execution_id(
+                app,
+                session_store,
+                execution_id,
+                expected_node_name,
+            )
+            .await?;
+        match commit {
+            AbortCommit::Aborted { session_ids } => {
+                self.finish_committed_abort(
+                    app,
+                    session_store,
+                    agent_runtime,
+                    execution_id,
+                    &session_ids,
+                )
+                .await;
+                Ok(AbortOutcome::Aborted)
+            }
+            AbortCommit::NotFound => Ok(AbortOutcome::NotFound),
+            AbortCommit::AlreadyTerminal => Ok(AbortOutcome::AlreadyTerminal),
+        }
+    }
+
+    async fn commit_abort_workflow_by_execution_id<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        execution_id: &str,
+        expected_node_name: Option<&str>,
+    ) -> Result<AbortCommit, WorkflowEngineError> {
         // 1. 対象 execution の存在 + active 性を判定。
         //    非受理経路 (NotFound / AlreadyTerminal) ではどんな外部副作用も発生させない。
         let lookup = self.abort_target_lookup(execution_id).await;
         let (current_node_session_id, fanout_session_ids) = match lookup {
-            AbortTargetLookup::NotFound => return Ok(AbortOutcome::NotFound),
-            AbortTargetLookup::AlreadyTerminal => return Ok(AbortOutcome::AlreadyTerminal),
+            AbortTargetLookup::NotFound => {
+                return Ok(AbortCommit::NotFound);
+            }
+            AbortTargetLookup::AlreadyTerminal => {
+                return Ok(AbortCommit::AlreadyTerminal);
+            }
             AbortTargetLookup::Active {
                 current_node_session_id,
                 fanout_session_ids,
             } => (current_node_session_id, fanout_session_ids),
         };
+        let mut session_ids = current_node_session_id.into_iter().collect::<Vec<_>>();
+        session_ids.extend(fanout_session_ids.into_iter().flatten());
+        session_ids.sort();
+        session_ids.dedup();
         #[cfg(test)]
         self.wait_abort_after_lookup_for_test().await;
 
@@ -357,13 +434,13 @@ impl WorkflowRuntimeService {
             let Some(exec) = execs.get_mut(execution_id) else {
                 drop(execs);
                 return Ok(if self.has_terminal_execution_record(execution_id).await {
-                    AbortOutcome::AlreadyTerminal
+                    AbortCommit::AlreadyTerminal
                 } else {
-                    AbortOutcome::NotFound
+                    AbortCommit::NotFound
                 });
             };
             if !exec.is_active() {
-                return Ok(AbortOutcome::AlreadyTerminal);
+                return Ok(AbortCommit::AlreadyTerminal);
             }
             if let Some(expected_node_name) = expected_node_name {
                 let current_node = exec
@@ -474,18 +551,23 @@ impl WorkflowRuntimeService {
             None,
         );
 
-        // 4. [04] post-commit: interrupt_agent / cleanup / broadcast。
-        //    ExecutionAborted event は append 済み。Execution Store / ChatSession は event 後の
-        //    projection として同期済み、または warn として観測済み。
+        Ok(AbortCommit::Aborted { session_ids })
+    }
+
+    async fn finish_committed_abort<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_store: &Arc<SessionStore>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
+        execution_id: &str,
+        session_ids: &[String],
+    ) {
+        // ExecutionAborted is durable before this method is called. Runtime activation must be
+        // quiesced before entering this terminal cleanup so it cannot recreate a closed runtime.
         self.shutdown_active_commands_for_execution(execution_id)
             .await;
-        if let Some(ref node_session_id) = current_node_session_id {
-            workflow_runtime_session::interrupt_agent(agent_runtime, node_session_id).await;
-        }
-        if let Some(ref session_ids) = fanout_session_ids {
-            for sid in session_ids {
-                workflow_runtime_session::interrupt_agent(agent_runtime, sid).await;
-            }
+        for session_id in session_ids {
+            workflow_runtime_session::interrupt_agent(agent_runtime, session_id).await;
         }
         self.finalize_terminal_transition_after_required_append(
             app,
@@ -494,8 +576,6 @@ impl WorkflowRuntimeService {
             execution_id,
         )
         .await;
-
-        Ok(AbortOutcome::Aborted)
     }
 
     /// `abort_workflow_by_execution_id` の post-commit 区間。state は呼出し前に Aborted に
