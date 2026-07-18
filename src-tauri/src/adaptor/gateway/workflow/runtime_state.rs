@@ -37,6 +37,7 @@ pub(crate) struct WorkflowExecution {
     pub(crate) state: RuntimeExecutionState,
     pub(crate) current_node_index: usize,
     pub(crate) node_execution_counts: HashMap<String, u32>,
+    pub(crate) loop_guard_reset_baselines: workflow_routing::LoopGuardResetBaselines,
     pub(crate) node_history: Vec<NodeHistoryEntry>,
     /// node / 並列子 node 起動時の継承デフォルト（permission_mode / backend_id / selected_model）。
     /// `start_workflow` 時に capture し、以降は session_store を読み直さない（in-memory のみ）。
@@ -427,7 +428,15 @@ impl WorkflowExecution {
 
     /// ロック内で次ステップへの advance を適用する（純粋な状態変更）。
     pub(crate) fn apply_advance(&mut self) -> NodeOutcome {
-        let decision = self.decide_next_node();
+        let workflow = workflow_definition_to_domain(&self.workflow);
+        let completed_node_name = self.workflow.nodes[self.current_node_index].name.clone();
+        self.loop_guard_reset_baselines
+            .record_successful_completion(
+                &workflow,
+                &completed_node_name,
+                &self.node_execution_counts,
+            );
+        let decision = self.decide_next_node_with_workflow(&workflow);
         match decision {
             NextNodeDecision::Completed => {
                 self.state = RuntimeExecutionState::Completed;
@@ -500,13 +509,22 @@ impl WorkflowExecution {
     }
 
     /// 次のステップ遷移先を判定する（純粋関数）。
+    #[cfg(test)]
     pub(crate) fn decide_next_node(&self) -> NextNodeDecision {
         let workflow = workflow_definition_to_domain(&self.workflow);
-        match workflow_routing::route(
-            &workflow,
+        self.decide_next_node_with_workflow(&workflow)
+    }
+
+    fn decide_next_node_with_workflow(
+        &self,
+        workflow: &crate::domain::workflow::WorkflowDefinition,
+    ) -> NextNodeDecision {
+        match workflow_routing::route_with_reset_baselines(
+            workflow,
             self.current_node_index,
             self.current_node_artifact(),
             &self.node_execution_counts,
+            &self.loop_guard_reset_baselines,
         ) {
             Ok(workflow_routing::RouteDecision::Completed) => NextNodeDecision::Completed,
             Ok(workflow_routing::RouteDecision::TransitionTo(name)) => {
@@ -532,10 +550,11 @@ impl WorkflowExecution {
         target_node_name: &str,
     ) -> Result<LoopGuardResult, WorkflowEngineError> {
         let workflow = workflow_definition_to_domain(&self.workflow);
-        let decision = workflow_routing::guarded_target(
+        let decision = workflow_routing::guarded_target_with_reset_baselines(
             &workflow,
             target_node_name.to_string(),
             &self.node_execution_counts,
+            &self.loop_guard_reset_baselines,
         )
         .map_err(workflow_error_to_engine_error)?;
         if matches!(
@@ -553,14 +572,20 @@ impl WorkflowExecution {
                     "Node '{target_node_name}' not found in workflow"
                 ))
             })?;
-        let Some((max_iterations, on_exhausted)) = workflow_routing::loop_guard(node) else {
+        let Some((max_iterations, on_exhausted, reset_on)) = workflow_routing::loop_guard(node)
+        else {
             return Ok(LoopGuardResult::Allowed);
         };
-        let count = self
+        let cumulative_count = self
             .node_execution_counts
             .get(target_node_name)
             .copied()
             .unwrap_or(0);
+        let count = self.loop_guard_reset_baselines.execution_count(
+            target_node_name,
+            cumulative_count,
+            reset_on,
+        );
         Ok(LoopGuardResult::Exceeded {
             max_iterations,
             count,

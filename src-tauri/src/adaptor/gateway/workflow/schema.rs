@@ -416,6 +416,8 @@ pub struct SwitchRule {
 pub struct LoopGuardRule {
     pub max_iterations: u32,
     pub on_exhausted: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_on: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -433,6 +435,7 @@ pub enum Rule {
     LoopGuard {
         max_iterations: u32,
         on_exhausted: String,
+        reset_on: Option<String>,
     },
     Next(String),
 }
@@ -476,6 +479,7 @@ impl<'de> Deserialize<'de> for Rule {
             (None, None, Some(loop_guard), None) => Ok(Self::LoopGuard {
                 max_iterations: loop_guard.max_iterations,
                 on_exhausted: loop_guard.on_exhausted,
+                reset_on: loop_guard.reset_on,
             }),
             (None, None, None, Some(next)) => Ok(Self::Next(next)),
             (None, None, Some(_), Some(_)) => {
@@ -522,12 +526,14 @@ impl Serialize for Rule {
             Self::LoopGuard {
                 max_iterations,
                 on_exhausted,
+                reset_on,
             } => {
                 map.serialize_entry(
                     "loop_guard",
                     &LoopGuardRule {
                         max_iterations: *max_iterations,
                         on_exhausted: on_exhausted.clone(),
+                        reset_on: reset_on.clone(),
                     },
                 )?;
             }
@@ -842,7 +848,7 @@ nodes:
     rules:
       - when: { on: ok, then: done }
         next: fix
-      - loop_guard: { max_iterations: 3, on_exhausted: give_up }
+      - loop_guard: { max_iterations: 3, on_exhausted: give_up, reset_on: judge }
   - name: triage
     session:
       permission: edit
@@ -867,8 +873,9 @@ nodes:
             &wf.nodes[0].rules[1],
             Rule::LoopGuard {
                 max_iterations: 3,
-                on_exhausted
-            } if on_exhausted == "give_up"
+                on_exhausted,
+                reset_on: Some(reset_on),
+            } if on_exhausted == "give_up" && reset_on == "judge"
         ));
         assert!(matches!(
             &wf.nodes[1].rules[0],

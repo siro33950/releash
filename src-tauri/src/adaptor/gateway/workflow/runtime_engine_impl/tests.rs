@@ -638,6 +638,7 @@ fn make_minimal_approval_exec(
         state: RuntimeExecutionState::WaitingApproval,
         current_node_index: 0,
         node_execution_counts: HashMap::from([(node_name.to_string(), 1)]),
+        loop_guard_reset_baselines: Default::default(),
         node_history: Vec::new(),
         started_at: 1000.0,
         updated_at: 1000.0,
@@ -1337,6 +1338,7 @@ fn make_test_workflow() -> WorkflowDefinitionYaml {
                 Some(Rule::LoopGuard {
                     max_iterations: 3,
                     on_exhausted: "report".to_string(),
+                    reset_on: None,
                 }),
             ),
             make_test_node(
@@ -1359,6 +1361,7 @@ fn workflow_execution_to_commit_snapshot() {
         state: RuntimeExecutionState::Running,
         current_node_index: 0,
         node_execution_counts: HashMap::new(),
+        loop_guard_reset_baselines: Default::default(),
         node_history: Vec::new(),
         started_at: 1000.0,
         updated_at: 1000.0,
@@ -1398,6 +1401,7 @@ fn is_active_executionning() {
         state: RuntimeExecutionState::Running,
         current_node_index: 0,
         node_execution_counts: HashMap::new(),
+        loop_guard_reset_baselines: Default::default(),
         node_history: Vec::new(),
         started_at: 1000.0,
         updated_at: 1000.0,
@@ -1427,6 +1431,7 @@ fn is_active_waiting_approval() {
         state: RuntimeExecutionState::WaitingApproval,
         current_node_index: 0,
         node_execution_counts: HashMap::new(),
+        loop_guard_reset_baselines: Default::default(),
         node_history: Vec::new(),
         started_at: 1000.0,
         updated_at: 1000.0,
@@ -1456,6 +1461,7 @@ fn is_active_completed() {
         state: RuntimeExecutionState::Completed,
         current_node_index: 0,
         node_execution_counts: HashMap::new(),
+        loop_guard_reset_baselines: Default::default(),
         node_history: Vec::new(),
         started_at: 1000.0,
         updated_at: 1000.0,
@@ -1489,6 +1495,7 @@ fn is_active_failed() {
         },
         current_node_index: 0,
         node_execution_counts: HashMap::new(),
+        loop_guard_reset_baselines: Default::default(),
         node_history: Vec::new(),
         started_at: 1000.0,
         updated_at: 1000.0,
@@ -1518,6 +1525,7 @@ fn is_active_aborted() {
         state: RuntimeExecutionState::Aborted,
         current_node_index: 0,
         node_execution_counts: HashMap::new(),
+        loop_guard_reset_baselines: Default::default(),
         node_history: Vec::new(),
         started_at: 1000.0,
         updated_at: 1000.0,
@@ -1550,6 +1558,7 @@ fn to_commit_snapshot_waiting_approval() {
         state: RuntimeExecutionState::WaitingApproval,
         current_node_index: 3,
         node_execution_counts: HashMap::new(),
+        loop_guard_reset_baselines: Default::default(),
         node_history: Vec::new(),
         started_at: 1000.0,
         updated_at: 1001.0,
@@ -1587,6 +1596,7 @@ fn to_commit_snapshot_failed() {
         },
         current_node_index: 1,
         node_execution_counts: HashMap::new(),
+        loop_guard_reset_baselines: Default::default(),
         node_history: vec![NodeHistoryEntry {
             node_name: "plan".to_string(),
             completed_at: 1000.5,
@@ -1638,6 +1648,7 @@ fn to_commit_snapshot_aborted() {
         state: RuntimeExecutionState::Aborted,
         current_node_index: 0,
         node_execution_counts: HashMap::new(),
+        loop_guard_reset_baselines: Default::default(),
         node_history: Vec::new(),
         started_at: 1000.0,
         updated_at: 1001.0,
@@ -1669,6 +1680,7 @@ fn to_commit_snapshot_completed() {
         state: RuntimeExecutionState::Completed,
         current_node_index: 3,
         node_execution_counts: HashMap::new(),
+        loop_guard_reset_baselines: Default::default(),
         node_history: Vec::new(),
         started_at: 1000.0,
         updated_at: 1002.0,
@@ -1737,6 +1749,7 @@ fn make_exec(node_index: usize) -> WorkflowExecution {
         state: RuntimeExecutionState::Running,
         current_node_index: node_index,
         node_execution_counts: HashMap::new(),
+        loop_guard_reset_baselines: Default::default(),
         node_history: Vec::new(),
         artifacts: HashMap::new(),
         node_executions: Vec::new(),
@@ -1764,6 +1777,7 @@ fn workflow_exec(workflow: WorkflowDefinitionYaml, node_index: usize) -> Workflo
         state: RuntimeExecutionState::Running,
         current_node_index: node_index,
         node_execution_counts: HashMap::new(),
+        loop_guard_reset_baselines: Default::default(),
         node_history: Vec::new(),
         artifacts: HashMap::new(),
         node_executions: Vec::new(),
@@ -2354,6 +2368,68 @@ fn check_loop_guard_first_transition_no_count() {
         exec.check_loop_guard("review").unwrap(),
         LoopGuardResult::Allowed
     );
+}
+
+#[test]
+fn apply_advance_records_normal_node_reset_boundary_before_routing() {
+    let mut exec = make_exec(0);
+    let Rule::LoopGuard { reset_on, .. } = &mut exec.workflow.nodes[2].rules[1] else {
+        panic!("review must have loop_guard");
+    };
+    *reset_on = Some("plan".to_string());
+    exec.node_execution_counts.insert("review".to_string(), 3);
+    assert!(matches!(
+        exec.check_loop_guard("review").unwrap(),
+        LoopGuardResult::Exceeded { count: 3, .. }
+    ));
+
+    exec.apply_advance();
+
+    assert_eq!(
+        exec.check_loop_guard("review").unwrap(),
+        LoopGuardResult::Allowed
+    );
+}
+
+#[test]
+fn apply_advance_records_fanout_parent_reset_only_when_parent_completes() {
+    let workflow = WorkflowDefinitionYaml {
+        name: "fanout-reset".to_string(),
+        nodes: vec![
+            NodeDefinition {
+                name: "round".to_string(),
+                kind: NodeKind::Fanout(FanoutSpec {
+                    child: vec!["worker".to_string()],
+                    items: None,
+                }),
+                rules: vec![Rule::Next("fix".to_string())],
+                ..Default::default()
+            },
+            make_test_node("worker", TestKind::Session, "worker", vec![], None),
+            make_test_node(
+                "fix",
+                TestKind::Session,
+                "fix",
+                vec![],
+                Some(Rule::LoopGuard {
+                    max_iterations: 2,
+                    on_exhausted: "done".to_string(),
+                    reset_on: Some("round".to_string()),
+                }),
+            ),
+            make_test_node("done", TestKind::Session, "done", vec![], None),
+        ],
+        ..Default::default()
+    };
+    let mut exec = workflow_exec(workflow, 0);
+    exec.node_execution_counts.insert("round".to_string(), 1);
+    exec.node_execution_counts.insert("fix".to_string(), 2);
+
+    let outcome = exec.apply_advance();
+
+    assert!(matches!(outcome, NodeOutcome::TransitionAndStart(_)));
+    assert_eq!(exec.workflow.nodes[exec.current_node_index].name, "fix");
+    assert_eq!(exec.node_execution_counts["fix"], 3);
 }
 
 // ---- decide_turn_complete_action ----
@@ -3580,6 +3656,7 @@ fn insert_single_node_execution(
         state: RuntimeExecutionState::Running,
         current_node_index: 0,
         node_execution_counts: HashMap::from([(node_name.clone(), 1)]),
+        loop_guard_reset_baselines: Default::default(),
         node_history: Vec::new(),
         started_at: 1000.0,
         updated_at: 1000.0,
@@ -4052,6 +4129,7 @@ fn make_approval_exec(state: RuntimeExecutionState, rules: Vec<Rule>) -> Workflo
         state,
         current_node_index: 0,
         node_execution_counts: HashMap::new(),
+        loop_guard_reset_baselines: Default::default(),
         node_history: vec![],
         started_at: 1000.0,
         updated_at: 1000.0,
@@ -4469,6 +4547,7 @@ fn apply_approval_application_records_approved_policy_and_advances_once() {
             m.insert("fix_policy".to_string(), 1);
             m
         },
+        loop_guard_reset_baselines: Default::default(),
         node_history: vec![],
         started_at: 1000.0,
         updated_at: 1000.0,
@@ -4553,6 +4632,7 @@ fn auto_approve_persist_target_applies_latest_policy_and_advances_once() {
         state: RuntimeExecutionState::WaitingApproval,
         current_node_index: 0,
         node_execution_counts: HashMap::from([("implementation_fix_policy".to_string(), 1)]),
+        loop_guard_reset_baselines: Default::default(),
         node_history: Vec::new(),
         started_at: 1000.0,
         updated_at: 1000.0,
@@ -4662,6 +4742,7 @@ async fn execute_outcome_auto_approve_persist_adopts_policy_and_starts_fix_once(
         state: RuntimeExecutionState::WaitingApproval,
         current_node_index: 1,
         node_execution_counts: HashMap::from([("implementation_fix_policy".to_string(), 1)]),
+        loop_guard_reset_baselines: Default::default(),
         node_history: Vec::new(),
         started_at: 1000.0,
         updated_at: 1000.0,
@@ -4802,6 +4883,7 @@ fn make_normal_node_exec_with_stall_observation() -> WorkflowExecution {
         state: RuntimeExecutionState::Running,
         current_node_index: 0,
         node_execution_counts: HashMap::from([("plan".to_string(), 1)]),
+        loop_guard_reset_baselines: Default::default(),
         node_history: Vec::new(),
         started_at: 1000.0,
         updated_at: 1000.0,
@@ -4860,6 +4942,7 @@ fn make_node_history_entry_saves_contract_result_to_node_output() {
             m.insert("plan".to_string(), 1);
             m
         },
+        loop_guard_reset_baselines: Default::default(),
         node_history: vec![],
         started_at: 1000.0,
         updated_at: 1000.0,
@@ -4910,6 +4993,7 @@ fn make_node_history_entry_no_artifact_no_node_output() {
             m.insert("plan".to_string(), 1);
             m
         },
+        loop_guard_reset_baselines: Default::default(),
         node_history: vec![],
         started_at: 1000.0,
         updated_at: 1000.0,
@@ -4953,6 +5037,7 @@ fn make_on_exhausted_workflow() -> WorkflowDefinitionYaml {
                 Some(Rule::LoopGuard {
                     max_iterations: 2,
                     on_exhausted: "approval".to_string(),
+                    reset_on: None,
                 }),
             ),
             make_test_node(
@@ -4985,6 +5070,7 @@ fn on_exhausted_transitions_to_fallback_node() {
             m.insert("fix".to_string(), 2); // already at max
             m
         },
+        loop_guard_reset_baselines: Default::default(),
         node_history: vec![],
         artifacts: HashMap::new(),
         node_executions: Vec::new(),
@@ -5025,6 +5111,7 @@ fn check_loop_guard_exceeded_with_on_exhausted() {
             m.insert("fix".to_string(), 2);
             m
         },
+        loop_guard_reset_baselines: Default::default(),
         node_history: vec![],
         artifacts: HashMap::new(),
         node_executions: Vec::new(),
@@ -5080,6 +5167,7 @@ fn on_exhausted_chain_transitions() {
                 Some(Rule::LoopGuard {
                     max_iterations: 1,
                     on_exhausted: "node_b".to_string(),
+                    reset_on: None,
                 }),
             ),
             make_test_node(
@@ -5090,6 +5178,7 @@ fn on_exhausted_chain_transitions() {
                 Some(Rule::LoopGuard {
                     max_iterations: 1,
                     on_exhausted: "node_c".to_string(),
+                    reset_on: None,
                 }),
             ),
             make_test_node("node_c", TestKind::Session, "C", vec![], None),
@@ -5106,6 +5195,7 @@ fn on_exhausted_chain_transitions() {
             m.insert("node_b".to_string(), 1);
             m
         },
+        loop_guard_reset_baselines: Default::default(),
         node_history: vec![],
         artifacts: HashMap::new(),
         node_executions: Vec::new(),
@@ -5153,6 +5243,7 @@ fn make_on_exhausted_depth_exceeded_workflow() -> WorkflowDefinitionYaml {
                 Some(Rule::LoopGuard {
                     max_iterations: 1,
                     on_exhausted: "node_b".to_string(),
+                    reset_on: None,
                 }),
             ),
             make_test_node(
@@ -5163,6 +5254,7 @@ fn make_on_exhausted_depth_exceeded_workflow() -> WorkflowDefinitionYaml {
                 Some(Rule::LoopGuard {
                     max_iterations: 1,
                     on_exhausted: "node_a".to_string(),
+                    reset_on: None,
                 }),
             ),
         ],
@@ -5292,6 +5384,7 @@ fn apply_advance_to_fanout_clears_parent_output_without_child_map_entries() {
         state: RuntimeExecutionState::Running,
         current_node_index: 0,
         node_execution_counts: HashMap::new(),
+        loop_guard_reset_baselines: Default::default(),
         node_history: vec![],
         artifacts: {
             let mut m = HashMap::new();
@@ -5586,6 +5679,7 @@ async fn engine_execution_id_consistency_across_execution_and_execution_store_me
         state: RuntimeExecutionState::Running,
         current_node_index: 0,
         node_execution_counts: HashMap::new(),
+        loop_guard_reset_baselines: Default::default(),
         node_history: Vec::new(),
         started_at: 100.0,
         updated_at: 100.0,
@@ -5678,6 +5772,7 @@ async fn engine_validate_start_rejects_duplicate_active_execution_on_same_worktr
         state: RuntimeExecutionState::Running,
         current_node_index: 0,
         node_execution_counts: HashMap::new(),
+        loop_guard_reset_baselines: Default::default(),
         node_history: Vec::new(),
         started_at: 100.0,
         updated_at: 100.0,
@@ -5927,6 +6022,7 @@ async fn handle_auto_complete_fixture_uses_execution_id_as_executions_key() {
         state: RuntimeExecutionState::Running,
         current_node_index: 0,
         node_execution_counts: HashMap::new(),
+        loop_guard_reset_baselines: Default::default(),
         node_history: Vec::new(),
         started_at: 0.0,
         updated_at: 0.0,
@@ -5975,6 +6071,7 @@ fn make_exec_with(
         state,
         current_node_index: 0,
         node_execution_counts: HashMap::new(),
+        loop_guard_reset_baselines: Default::default(),
         node_history: Vec::new(),
         started_at: 100.0,
         updated_at: 110.0,
@@ -7131,6 +7228,7 @@ mod dispatch_boundary_tests {
             state: RuntimeExecutionState::WaitingApproval,
             current_node_index: 0,
             node_execution_counts: HashMap::from([(node_name.clone(), 1)]),
+            loop_guard_reset_baselines: Default::default(),
             node_history: Vec::new(),
             worktree_path: worktree_path.to_string(),
             created_from: ExecutionOrigin::Agent,
@@ -7834,6 +7932,7 @@ mod dispatch_boundary_tests {
                 ("prepare".to_string(), 1),
                 ("execute".to_string(), 1),
             ]),
+            loop_guard_reset_baselines: Default::default(),
             node_history: Vec::new(),
             worktree_path: worktree_path.to_string(),
             created_from: ExecutionOrigin::DesktopUi,
@@ -8082,6 +8181,226 @@ mod dispatch_boundary_tests {
             )
             .await;
         }
+    }
+
+    #[tokio::test]
+    async fn public_resume_preserves_reset_aware_routing_parity_with_uninterrupted_execution() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_execution_store_data_dir(data_dir.clone()).await;
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let worktree = TempDir::new().unwrap();
+        let workflow = WorkflowDefinitionYaml {
+            name: "reset-aware-public-resume".to_string(),
+            description: "resume with loop guard reset baseline".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![
+                make_test_node(
+                    "fix",
+                    TestKind::Session,
+                    "review-summary",
+                    vec![Rule::Next("round".to_string())],
+                    Some(Rule::LoopGuard {
+                        max_iterations: 2,
+                        on_exhausted: "done".to_string(),
+                        reset_on: Some("round".to_string()),
+                    }),
+                ),
+                make_test_node(
+                    "round",
+                    TestKind::Session,
+                    "review-summary",
+                    vec![Rule::Next("route".to_string())],
+                    None,
+                ),
+                make_test_node(
+                    "route",
+                    TestKind::Session,
+                    "review-summary",
+                    vec![Rule::Next("fix".to_string())],
+                    None,
+                ),
+                make_test_node("done", TestKind::Session, "review-summary", vec![], None),
+            ],
+        };
+        let mut counts_at_reset = HashMap::from([("fix".to_string(), 2), ("round".to_string(), 1)]);
+        let domain_workflow =
+            crate::adaptor::gateway::workflow::domain_mapping::workflow_definition_to_domain(
+                &workflow,
+            );
+        let mut reset_baselines =
+            crate::domain::workflow::services::routing::LoopGuardResetBaselines::default();
+        reset_baselines.record_successful_completion(&domain_workflow, "round", &counts_at_reset);
+        counts_at_reset.insert("fix".to_string(), 3);
+        counts_at_reset.insert("route".to_string(), 1);
+
+        let mut execution = WorkflowExecution {
+            id: execution_id.clone(),
+            workflow: workflow.clone(),
+            state: RuntimeExecutionState::Running,
+            current_node_index: 2,
+            node_execution_counts: counts_at_reset.clone(),
+            loop_guard_reset_baselines: reset_baselines.clone(),
+            node_history: Vec::new(),
+            worktree_path: worktree.path().to_string_lossy().into_owned(),
+            created_from: ExecutionOrigin::DesktopUi,
+            error_reason: None,
+            started_at: 1000.0,
+            updated_at: 1010.0,
+            current_session_id: Some("route-session-before-crash".to_string()),
+            current_node_token_usage: TokenUsage::default(),
+            artifacts: HashMap::new(),
+            node_executions: Vec::new(),
+            request: Some("continue reset-aware routing".to_string()),
+            fanout_runtime: None,
+            current_stall_observations: Vec::new(),
+            workflow_defaults: WorkflowDefaults {
+                backend_id: None,
+                permission_mode: PermissionMode::ASK.to_string(),
+            },
+        };
+        let mut events = vec![WorkflowEvent::ExecutionStarted {
+            execution_id: execution_id.clone(),
+            workflow_name: workflow.name.clone(),
+            worktree_path: execution.worktree_path.clone(),
+            created_from: execution.created_from,
+            request: execution.request.clone().unwrap(),
+            permission_mode: execution.workflow_defaults.permission_mode.clone(),
+            definition: workflow.clone(),
+            timestamp: 1000.0,
+        }];
+        for (node_name, attempt, started_at, completed_at) in [
+            ("fix", 1, 1001.0, 1002.0),
+            ("fix", 2, 1003.0, 1004.0),
+            ("round", 1, 1005.0, 1006.0),
+            ("fix", 3, 1007.0, 1008.0),
+        ] {
+            let node_execution_id = format!("{execution_id}-{node_name}-{attempt}");
+            let mut node_execution = node_execution_fixture(
+                &execution_id,
+                &node_execution_id,
+                node_name,
+                attempt,
+                NodeExecutionStatus::Succeeded,
+                None,
+                None,
+            );
+            node_execution.started_at = started_at;
+            node_execution.completed_at = Some(completed_at);
+            execution.node_executions.push(node_execution);
+            events.extend([
+                WorkflowEvent::NodeStarted {
+                    execution_id: execution_id.clone(),
+                    node_execution_id: node_execution_id.clone(),
+                    node_name: node_name.to_string(),
+                    kind: NodeKindName::Session,
+                    attempt,
+                    fanout_parent: None,
+                    timestamp: started_at,
+                },
+                WorkflowEvent::NodeCompleted {
+                    execution_id: execution_id.clone(),
+                    node_execution_id,
+                    node_name: node_name.to_string(),
+                    attempt,
+                    result_summary: None,
+                    token_usage: None,
+                    timestamp: completed_at,
+                },
+            ]);
+        }
+        let route_node_execution_id = format!("{execution_id}-route-1");
+        let mut route_execution = node_execution_fixture(
+            &execution_id,
+            &route_node_execution_id,
+            "route",
+            1,
+            NodeExecutionStatus::Running,
+            Some("route-session-before-crash"),
+            None,
+        );
+        route_execution.started_at = 1009.0;
+        execution.node_executions.push(route_execution);
+        events.extend([
+            WorkflowEvent::NodeStarted {
+                execution_id: execution_id.clone(),
+                node_execution_id: route_node_execution_id.clone(),
+                node_name: "route".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: None,
+                timestamp: 1009.0,
+            },
+            WorkflowEvent::SessionAttached {
+                execution_id: execution_id.clone(),
+                node_execution_id: route_node_execution_id,
+                session_id: "route-session-before-crash".to_string(),
+                timestamp: 1009.0,
+            },
+        ]);
+        WorkflowEventLog::new(&data_dir)
+            .append_batch(&events)
+            .unwrap();
+        insert_execution_and_register_active(&engine, execution, ExecutionOrigin::DesktopUi).await;
+
+        assert!(engine
+            .interrupt_active_execution(
+                app.handle(),
+                &agent_runtime,
+                &execution_id,
+                ExecutionInterruptionReason::Crash,
+            )
+            .await
+            .unwrap());
+        engine
+            .resume_workflow_execution(app.handle(), &session_store, &agent_runtime, &execution_id)
+            .await
+            .unwrap();
+        let resumed_session_id = engine
+            .executions
+            .lock()
+            .await
+            .get(&execution_id)
+            .and_then(|execution| execution.current_session_id.clone())
+            .expect("resumed route session");
+
+        let mut uninterrupted = workflow_exec(workflow, 2);
+        uninterrupted.node_execution_counts = counts_at_reset;
+        uninterrupted.loop_guard_reset_baselines = reset_baselines;
+        uninterrupted.apply_advance();
+        let expected_node = uninterrupted.workflow.nodes[uninterrupted.current_node_index]
+            .name
+            .clone();
+        let expected_fix_count = uninterrupted.node_execution_counts["fix"];
+
+        engine
+            .on_turn_complete(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                &resumed_session_id,
+                0,
+                None,
+                &[MessagePart::Text {
+                    content: "route after resume".to_string(),
+                    parent_tool_use_id: None,
+                }],
+                None,
+            )
+            .await
+            .unwrap();
+
+        let executions = engine.executions.lock().await;
+        let resumed = executions.get(&execution_id).expect("resumed execution");
+        assert_eq!(expected_node, "fix");
+        assert_eq!(
+            resumed.workflow.nodes[resumed.current_node_index].name,
+            expected_node
+        );
+        assert_eq!(resumed.node_execution_counts["fix"], expected_fix_count);
     }
 
     #[tokio::test]
@@ -13847,6 +14166,727 @@ mod dispatch_boundary_tests {
             completed_child.state,
             FanoutChildRuntimeState::Completed
         ));
+    }
+
+    async fn assert_fanout_reset_live_replay_parity(
+        reset_on: &str,
+        expected_count_after_first_child: u32,
+        expected_route_after_first_child: &str,
+    ) {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_execution_store_data_dir(data_dir.clone()).await;
+        let (session_store, handles) = make_dispatch_deps(data_dir.clone());
+
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let first_child_session_id = "fanout-reset-child-session-0";
+        let second_child_session_id = "fanout-reset-child-session-1";
+        let mut fanout = make_fanout_node("round", vec!["worker"]);
+        let NodeKind::Fanout(fanout_spec) = &mut fanout.kind else {
+            unreachable!("make_fanout_node must return a fanout")
+        };
+        fanout_spec.items = Some(ItemsSource::Literal(vec![
+            serde_json::json!({ "item": 0 }),
+            serde_json::json!({ "item": 1 }),
+        ]));
+        fanout.rules = vec![Rule::Next("fix".to_string())];
+        let workflow = WorkflowDefinitionYaml {
+            name: format!("fanout-{reset_on}-reset-parity"),
+            description: "test".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![
+                fanout,
+                make_fanout_child("worker"),
+                make_approval_gated_session(
+                    "fix",
+                    "review-summary",
+                    vec![Rule::LoopGuard {
+                        max_iterations: 2,
+                        on_exhausted: "done".to_string(),
+                        reset_on: Some(reset_on.to_string()),
+                    }],
+                ),
+                make_approval_gated_session("done", "review-summary", vec![]),
+            ],
+        };
+        let mut execution = make_waiting_approval_execution_with_workflow(
+            &execution_id,
+            "/wt/fanout-reset-parity",
+            workflow,
+        );
+        execution.state = RuntimeExecutionState::Running;
+        execution.current_session_id = None;
+        execution.node_execution_counts = HashMap::from([
+            ("round".to_string(), 1),
+            ("worker".to_string(), 2),
+            ("fix".to_string(), 2),
+        ]);
+        let first_child = test_fanout_child(
+            "worker",
+            first_child_session_id,
+            FanoutChildRuntimeState::Running,
+            0,
+        );
+        let mut second_child = test_fanout_child(
+            "worker",
+            second_child_session_id,
+            FanoutChildRuntimeState::Running,
+            1,
+        );
+        second_child.attempt = 2;
+        install_test_fanout(&mut execution, vec![first_child, second_child]);
+        for (item_index, node_execution) in execution
+            .node_executions
+            .iter_mut()
+            .filter(|node_execution| node_execution.node_name == "worker")
+            .enumerate()
+        {
+            let parent = node_execution
+                .fanout_parent
+                .as_mut()
+                .expect("fanout child reference");
+            parent.item_index = Some(item_index);
+            parent.child_index = 0;
+        }
+        let mut historical_fix_executions = Vec::new();
+        for attempt in 1..=2 {
+            let node_execution_id = format!("{execution_id}-fix-{attempt}");
+            let mut fix_execution = node_execution_fixture(
+                &execution_id,
+                &node_execution_id,
+                "fix",
+                attempt,
+                NodeExecutionStatus::Succeeded,
+                None,
+                None,
+            );
+            fix_execution.completed_at = Some(1000.0 + f64::from(attempt));
+            historical_fix_executions.push(fix_execution);
+        }
+        execution
+            .node_executions
+            .splice(0..0, historical_fix_executions);
+        append_started_events_for_execution(&data_dir, &execution);
+        WorkflowEventLog::new(&data_dir)
+            .append_batch(
+                &(1..=2)
+                    .map(|attempt| WorkflowEvent::NodeCompleted {
+                        execution_id: execution_id.clone(),
+                        node_execution_id: format!("{execution_id}-fix-{attempt}"),
+                        node_name: "fix".to_string(),
+                        attempt,
+                        result_summary: None,
+                        token_usage: None,
+                        timestamp: 1000.0 + f64::from(attempt),
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
+        insert_execution_and_register_active(&engine, execution, ExecutionOrigin::DesktopUi).await;
+        for session_id in [first_child_session_id, second_child_session_id] {
+            engine.session_workflow_refs.lock().await.insert(
+                session_id.to_string(),
+                SessionWorkflowRef {
+                    execution_id: execution_id.clone(),
+                },
+            );
+        }
+
+        engine
+            .on_turn_complete(
+                app.handle(),
+                &session_store,
+                &handles,
+                first_child_session_id,
+                0,
+                None,
+                &[MessagePart::Text {
+                    content: "first item complete".to_string(),
+                    parent_tool_use_id: None,
+                }],
+                None,
+            )
+            .await
+            .unwrap();
+
+        let (workflow, live_counts, live_baselines) = {
+            let executions = engine.executions.lock().await;
+            let execution = executions.get(&execution_id).expect("live execution");
+            assert_eq!(
+                execution.workflow.nodes[execution.current_node_index].name, "round",
+                "the fanout parent must remain active until every item completes"
+            );
+            (
+                execution.workflow.clone(),
+                execution.node_execution_counts.clone(),
+                execution.loop_guard_reset_baselines.clone(),
+            )
+        };
+        let mut interrupted_events = WorkflowEventLog::new(&data_dir)
+            .read_log(&execution_id)
+            .unwrap();
+        interrupted_events.push(WorkflowEvent::ExecutionInterrupted {
+            execution_id: execution_id.clone(),
+            reason: ExecutionInterruptionReason::Crash,
+            timestamp: current_timestamp() + 1.0,
+        });
+        let checkpoint = workflow_resume_projection::project_resume_checkpoint(
+            &execution_id,
+            &interrupted_events,
+        )
+        .unwrap();
+        let live_count = live_baselines.execution_count("fix", live_counts["fix"], Some(reset_on));
+        let replay_count = checkpoint.loop_guard_reset_baselines.execution_count(
+            "fix",
+            checkpoint.node_execution_counts["fix"],
+            Some(reset_on),
+        );
+        assert_eq!(live_count, expected_count_after_first_child);
+        assert_eq!(replay_count, live_count);
+        let domain_workflow =
+            crate::adaptor::gateway::workflow::domain_mapping::workflow_definition_to_domain(
+                &workflow,
+            );
+        let live_route = crate::domain::workflow::services::routing::route_with_reset_baselines(
+            &domain_workflow,
+            0,
+            None,
+            &live_counts,
+            &live_baselines,
+        )
+        .unwrap();
+        let replay_route = crate::domain::workflow::services::routing::route_with_reset_baselines(
+            &domain_workflow,
+            0,
+            None,
+            &checkpoint.node_execution_counts,
+            &checkpoint.loop_guard_reset_baselines,
+        )
+        .unwrap();
+        assert_eq!(live_route, replay_route);
+        assert_eq!(
+            live_route,
+            crate::domain::workflow::services::routing::RouteDecision::TransitionTo(
+                expected_route_after_first_child.to_string()
+            )
+        );
+
+        engine
+            .on_turn_complete(
+                app.handle(),
+                &session_store,
+                &handles,
+                second_child_session_id,
+                0,
+                None,
+                &[MessagePart::Text {
+                    content: "second item complete".to_string(),
+                    parent_tool_use_id: None,
+                }],
+                None,
+            )
+            .await
+            .unwrap();
+
+        let (live_counts, live_baselines) = {
+            let executions = engine.executions.lock().await;
+            let execution = executions.get(&execution_id).expect("live execution");
+            assert_eq!(
+                execution.workflow.nodes[execution.current_node_index].name, "fix",
+                "the completed fanout must route using the reset-aware count"
+            );
+            (
+                execution.node_execution_counts.clone(),
+                execution.loop_guard_reset_baselines.clone(),
+            )
+        };
+        let mut interrupted_events = WorkflowEventLog::new(&data_dir)
+            .read_log(&execution_id)
+            .unwrap();
+        interrupted_events.push(WorkflowEvent::ExecutionInterrupted {
+            execution_id: execution_id.clone(),
+            reason: ExecutionInterruptionReason::Crash,
+            timestamp: current_timestamp() + 1.0,
+        });
+        let checkpoint = workflow_resume_projection::project_resume_checkpoint(
+            &execution_id,
+            &interrupted_events,
+        )
+        .unwrap();
+        assert_eq!(checkpoint.resume_from_node, "fix");
+        assert_eq!(checkpoint.node_execution_counts, live_counts);
+        assert_eq!(
+            checkpoint.loop_guard_reset_baselines.execution_count(
+                "fix",
+                checkpoint.node_execution_counts["fix"],
+                Some(reset_on),
+            ),
+            live_baselines.execution_count("fix", live_counts["fix"], Some(reset_on))
+        );
+        assert_eq!(
+            live_baselines.execution_count("fix", live_counts["fix"], Some(reset_on)),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn fanout_child_reset_baseline_matches_replay_for_multiple_items() {
+        assert_fanout_reset_live_replay_parity("worker", 0, "fix").await;
+    }
+
+    #[tokio::test]
+    async fn fanout_parent_reset_waits_for_parent_completion_in_live_and_replay() {
+        assert_fanout_reset_live_replay_parity("round", 2, "done").await;
+    }
+
+    fn fanout_child_completion_reset_workflow(
+        workflow_name: &str,
+        child: NodeDefinition,
+    ) -> WorkflowDefinitionYaml {
+        let mut fanout = make_fanout_node("round", vec!["worker"]);
+        let NodeKind::Fanout(fanout_spec) = &mut fanout.kind else {
+            unreachable!("make_fanout_node must return a fanout")
+        };
+        fanout_spec.items = Some(ItemsSource::Literal(vec![
+            serde_json::json!({ "item": 0 }),
+            serde_json::json!({ "item": 1 }),
+        ]));
+        fanout.rules = vec![Rule::Next("fix".to_string())];
+        WorkflowDefinitionYaml {
+            name: workflow_name.to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![
+                fanout,
+                child,
+                make_approval_gated_session(
+                    "fix",
+                    "review-summary",
+                    vec![Rule::LoopGuard {
+                        max_iterations: 2,
+                        on_exhausted: "done".to_string(),
+                        reset_on: Some("worker".to_string()),
+                    }],
+                ),
+                make_approval_gated_session("done", "review-summary", vec![]),
+            ],
+        }
+    }
+
+    fn add_historical_guarded_node_completions(execution: &mut WorkflowExecution) {
+        let mut historical_fix_executions = Vec::new();
+        for attempt in 1..=2 {
+            let node_execution_id = format!("{}-fix-{attempt}", execution.id);
+            let mut fix_execution = node_execution_fixture(
+                &execution.id,
+                &node_execution_id,
+                "fix",
+                attempt,
+                NodeExecutionStatus::Succeeded,
+                None,
+                None,
+            );
+            fix_execution.completed_at = Some(1000.0 + f64::from(attempt));
+            historical_fix_executions.push(fix_execution);
+        }
+        execution
+            .node_executions
+            .splice(0..0, historical_fix_executions);
+    }
+
+    fn append_fanout_child_reset_seed_events(
+        data_dir: &std::path::Path,
+        execution: &WorkflowExecution,
+    ) {
+        append_started_events_for_execution(data_dir, execution);
+        WorkflowEventLog::new(data_dir)
+            .append_batch(
+                &(1..=2)
+                    .map(|attempt| WorkflowEvent::NodeCompleted {
+                        execution_id: execution.id.clone(),
+                        node_execution_id: format!("{}-fix-{attempt}", execution.id),
+                        node_name: "fix".to_string(),
+                        attempt,
+                        result_summary: None,
+                        token_usage: None,
+                        timestamp: 1000.0 + f64::from(attempt),
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
+    }
+
+    async fn assert_fanout_child_completion_live_replay_parity(
+        engine: &WorkflowRuntimeService,
+        data_dir: &std::path::Path,
+        execution_id: &str,
+        expected_current_node: &str,
+        expected_range_count: u32,
+    ) {
+        let (workflow, live_counts, live_baselines) = {
+            let executions = engine.executions.lock().await;
+            let execution = executions.get(execution_id).expect("live execution");
+            assert_eq!(
+                execution.workflow.nodes[execution.current_node_index].name,
+                expected_current_node
+            );
+            (
+                execution.workflow.clone(),
+                execution.node_execution_counts.clone(),
+                execution.loop_guard_reset_baselines.clone(),
+            )
+        };
+        let mut interrupted_events = WorkflowEventLog::new(data_dir)
+            .read_log(execution_id)
+            .unwrap();
+        interrupted_events.push(WorkflowEvent::ExecutionInterrupted {
+            execution_id: execution_id.to_string(),
+            reason: ExecutionInterruptionReason::Crash,
+            timestamp: current_timestamp() + 1.0,
+        });
+        let checkpoint = workflow_resume_projection::project_resume_checkpoint(
+            execution_id,
+            &interrupted_events,
+        )
+        .unwrap();
+
+        assert_eq!(checkpoint.node_execution_counts, live_counts);
+        assert_eq!(checkpoint.loop_guard_reset_baselines, live_baselines);
+        assert_eq!(
+            live_baselines.execution_count("fix", live_counts["fix"], Some("worker")),
+            expected_range_count
+        );
+        let domain_workflow =
+            crate::adaptor::gateway::workflow::domain_mapping::workflow_definition_to_domain(
+                &workflow,
+            );
+        let live_route = crate::domain::workflow::services::routing::route_with_reset_baselines(
+            &domain_workflow,
+            0,
+            None,
+            &live_counts,
+            &live_baselines,
+        )
+        .unwrap();
+        let replay_route = crate::domain::workflow::services::routing::route_with_reset_baselines(
+            &domain_workflow,
+            0,
+            None,
+            &checkpoint.node_execution_counts,
+            &checkpoint.loop_guard_reset_baselines,
+        )
+        .unwrap();
+        assert_eq!(live_route, replay_route);
+        assert_eq!(
+            live_route,
+            crate::domain::workflow::services::routing::RouteDecision::TransitionTo(
+                "fix".to_string()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn fanout_approval_child_reset_baseline_matches_replay_and_append_rollback() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_execution_store_data_dir(data_dir.clone()).await;
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/fanout-approval-reset-parity";
+        let first_session_id = "fanout-approval-reset-session-0";
+        let second_session_id = "fanout-approval-reset-session-1";
+        let workflow = fanout_child_completion_reset_workflow(
+            "fanout-approval-reset-parity",
+            make_approval_gated_session("worker", "review-summary", vec![]),
+        );
+        let mut execution =
+            make_waiting_approval_execution_with_workflow(&execution_id, worktree_path, workflow);
+        execution.state = RuntimeExecutionState::Running;
+        execution.current_session_id = None;
+        execution.node_execution_counts = HashMap::from([
+            ("round".to_string(), 1),
+            ("worker".to_string(), 2),
+            ("fix".to_string(), 2),
+        ]);
+        let first_child = test_fanout_child(
+            "worker",
+            first_session_id,
+            FanoutChildRuntimeState::Running,
+            0,
+        );
+        let mut second_child = test_fanout_child(
+            "worker",
+            second_session_id,
+            FanoutChildRuntimeState::Running,
+            1,
+        );
+        second_child.attempt = 2;
+        install_test_fanout(&mut execution, vec![first_child, second_child]);
+        for (item_index, node_execution) in execution
+            .node_executions
+            .iter_mut()
+            .filter(|node_execution| node_execution.node_name == "worker")
+            .enumerate()
+        {
+            node_execution
+                .fanout_parent
+                .as_mut()
+                .expect("fanout child reference")
+                .item_index = Some(item_index);
+        }
+        let first_node_execution_id = execution
+            .fanout_runtime
+            .as_ref()
+            .expect("fanout runtime")
+            .children[0]
+            .node_execution_id
+            .clone();
+        execution
+            .node_executions
+            .iter_mut()
+            .find(|node_execution| node_execution.id == first_node_execution_id)
+            .expect("first approval child")
+            .status = NodeExecutionStatus::WaitingApproval;
+        add_historical_guarded_node_completions(&mut execution);
+        append_fanout_child_reset_seed_events(&data_dir, &execution);
+        insert_execution_and_register_active(&engine, execution, ExecutionOrigin::DesktopUi).await;
+
+        engine.fail_next_required_event_append_for_test();
+        engine
+            .resolve_workflow_approval(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                &execution_id,
+                None,
+                "worker",
+                Some(&first_node_execution_id),
+            )
+            .await
+            .expect_err("approval completion append failure must roll back");
+        {
+            let executions = engine.executions.lock().await;
+            let execution = executions
+                .get(&execution_id)
+                .expect("rolled back execution");
+            assert_eq!(execution.loop_guard_reset_baselines, Default::default());
+            assert_eq!(
+                execution
+                    .node_executions
+                    .iter()
+                    .find(|node_execution| node_execution.id == first_node_execution_id)
+                    .expect("rolled back approval child")
+                    .status,
+                NodeExecutionStatus::WaitingApproval
+            );
+        }
+
+        engine
+            .resolve_workflow_approval(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                &execution_id,
+                None,
+                "worker",
+                Some(&first_node_execution_id),
+            )
+            .await
+            .unwrap();
+        assert_fanout_child_completion_live_replay_parity(
+            &engine,
+            &data_dir,
+            &execution_id,
+            "round",
+            0,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn fanout_command_child_reset_baseline_matches_replay_and_append_rollback() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_execution_store_data_dir(data_dir.clone()).await;
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let worktree_path = "/wt/fanout-command-reset-parity";
+        let workflow = fanout_child_completion_reset_workflow(
+            "fanout-command-reset-parity",
+            command_node("worker", "printf ok", vec![]),
+        );
+        let mut execution =
+            make_waiting_approval_execution_with_workflow(&execution_id, worktree_path, workflow);
+        execution.state = RuntimeExecutionState::Running;
+        execution.current_session_id = None;
+        execution.node_execution_counts = HashMap::from([
+            ("round".to_string(), 1),
+            ("worker".to_string(), 2),
+            ("fix".to_string(), 2),
+        ]);
+        let first_child = test_fanout_child("worker", "", FanoutChildRuntimeState::Running, 0);
+        let mut second_child = test_fanout_child("worker", "", FanoutChildRuntimeState::Running, 1);
+        second_child.attempt = 2;
+        install_test_fanout(&mut execution, vec![first_child, second_child]);
+        for (item_index, node_execution) in execution
+            .node_executions
+            .iter_mut()
+            .filter(|node_execution| node_execution.node_name == "worker")
+            .enumerate()
+        {
+            node_execution.kind = NodeKindName::Command;
+            node_execution
+                .fanout_parent
+                .as_mut()
+                .expect("fanout child reference")
+                .item_index = Some(item_index);
+        }
+        let first_child = &execution
+            .fanout_runtime
+            .as_ref()
+            .expect("fanout runtime")
+            .children[0];
+        let input = CommandExecutionInput {
+            execution_id: execution_id.clone(),
+            node_execution_id: first_child.node_execution_id.clone(),
+            node_name: first_child.node_name.clone(),
+            attempt: first_child.attempt,
+            worktree_path: worktree_path.to_string(),
+            raw_command: Some("printf ok".to_string()),
+            contract: None,
+            schemas: Default::default(),
+            fanout_parent: Some("round".to_string()),
+            session_id: None,
+        };
+        add_historical_guarded_node_completions(&mut execution);
+        append_fanout_child_reset_seed_events(&data_dir, &execution);
+        insert_execution_and_register_active(&engine, execution, ExecutionOrigin::DesktopUi).await;
+
+        engine.fail_next_required_event_append_for_test();
+        engine
+            .commit_fanout_command_output(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                input.clone(),
+                command_output_for_test(0, "ok".to_string(), String::new()),
+            )
+            .await
+            .expect_err("command completion append failure must roll back");
+        {
+            let executions = engine.executions.lock().await;
+            let execution = executions
+                .get(&execution_id)
+                .expect("rolled back execution");
+            assert_eq!(execution.loop_guard_reset_baselines, Default::default());
+            assert_eq!(
+                execution
+                    .node_executions
+                    .iter()
+                    .find(|node_execution| node_execution.id == input.node_execution_id)
+                    .expect("rolled back command child")
+                    .status,
+                NodeExecutionStatus::Running
+            );
+        }
+
+        engine
+            .commit_fanout_command_output(
+                app.handle(),
+                &session_store,
+                &agent_runtime,
+                input,
+                command_output_for_test(0, "ok".to_string(), String::new()),
+            )
+            .await
+            .unwrap();
+        assert_fanout_child_completion_live_replay_parity(
+            &engine,
+            &data_dir,
+            &execution_id,
+            "round",
+            0,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn reused_fanout_children_reset_baseline_matches_replay_routing_and_append_rollback() {
+        let app = make_dispatch_app();
+        let engine = WorkflowRuntimeService::new_for_test();
+        let data_dir = dispatch_data_dir(app.handle());
+        engine.set_execution_store_data_dir(data_dir.clone()).await;
+        let (session_store, agent_runtime) = make_dispatch_deps(data_dir.clone());
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        let worktree = TempDir::new().unwrap();
+        let worktree_path = worktree.path().to_string_lossy().into_owned();
+        let workflow = fanout_child_completion_reset_workflow(
+            "reused-fanout-child-reset-parity",
+            make_fanout_child("worker"),
+        );
+        let mut execution =
+            make_waiting_approval_execution_with_workflow(&execution_id, &worktree_path, workflow);
+        execution.state = RuntimeExecutionState::Running;
+        execution.current_session_id = None;
+        execution.node_execution_counts =
+            HashMap::from([("round".to_string(), 1), ("fix".to_string(), 2)]);
+        add_historical_guarded_node_completions(&mut execution);
+        append_fanout_child_reset_seed_events(&data_dir, &execution);
+        insert_execution_and_register_active(&engine, execution, ExecutionOrigin::DesktopUi).await;
+        engine.fanout_resume_checkpoints.lock().await.insert(
+            execution_id.clone(),
+            FanoutResumeCheckpoint {
+                parent_node_name: "round".to_string(),
+                children: (0..=1)
+                    .map(|item_index| FanoutResumeChild {
+                        node_name: "worker".to_string(),
+                        item_index: Some(item_index),
+                        child_index: 0,
+                        reusable: workflow_fanout_runtime::ReusableFanoutChild {
+                            result: Some(format!("reused item {item_index}")),
+                            display_command: None,
+                            artifact: None,
+                            contract: None,
+                            token_usage: None,
+                            completed_at: 1003.0 + item_index as f64,
+                        },
+                    })
+                    .collect(),
+            },
+        );
+
+        engine.fail_next_required_event_append_for_test();
+        engine
+            .start_fanout_children(app.handle(), &session_store, &agent_runtime, &worktree_path)
+            .await
+            .expect_err("reused child completion append failure must roll back");
+        {
+            let executions = engine.executions.lock().await;
+            let execution = executions
+                .get(&execution_id)
+                .expect("rolled back execution");
+            assert!(execution.fanout_runtime.is_none());
+            assert!(!execution.node_execution_counts.contains_key("worker"));
+            assert_eq!(execution.loop_guard_reset_baselines, Default::default());
+        }
+
+        engine
+            .start_fanout_children(app.handle(), &session_store, &agent_runtime, &worktree_path)
+            .await
+            .unwrap();
+        assert_fanout_child_completion_live_replay_parity(
+            &engine,
+            &data_dir,
+            &execution_id,
+            "fix",
+            1,
+        )
+        .await;
     }
 
     #[tokio::test]

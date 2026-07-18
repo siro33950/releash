@@ -603,6 +603,7 @@ describe("AutomationSection", () => {
 								type: "loop_guard",
 								max_iterations: 3,
 								on_exhausted: "fallback-step",
+								reset_on: "review-round",
 							},
 						],
 					},
@@ -621,7 +622,9 @@ describe("AutomationSection", () => {
 		expect(screen.getByText("json-schema")).toBeInTheDocument();
 		expect(screen.getByText("Transition Rules")).toBeInTheDocument();
 		expect(
-			screen.getByText("loop_guard max 3 -> fallback-step"),
+			screen.getByText(
+				"loop_guard max 3 -> fallback-step, reset on review-round",
+			),
 		).toBeInTheDocument();
 		expect(screen.getByText(/^Inputs:/)).toBeInTheDocument();
 		expect(screen.getByText("step-0")).toBeInTheDocument();
@@ -630,6 +633,39 @@ describe("AutomationSection", () => {
 		expect(screen.getByText(/child-2/)).toBeInTheDocument();
 		expect(screen.getByText(/^Items:/)).toBeInTheDocument();
 		expect(screen.getByText("scan.items")).toBeInTheDocument();
+	});
+
+	it("workflow detail omits the reset suffix when loop_guard has no reset_on", async () => {
+		const user = userEvent.setup();
+		const automation = createMockAutomation({
+			selectedWorkflow: {
+				name: "loop-guard-without-reset",
+				description: "Loop guard without a reset boundary",
+				builtin: false,
+				nodes: [
+					{
+						name: "review",
+						kind: "session" as const,
+						rules: [
+							{
+								type: "loop_guard",
+								max_iterations: 3,
+								on_exhausted: "fallback-step",
+							},
+						],
+					},
+				],
+			},
+		});
+
+		render(<AutomationSection automation={automation} />);
+
+		await user.click(screen.getByText("review"));
+
+		expect(
+			screen.getByText("loop_guard max 3 -> fallback-step"),
+		).toBeInTheDocument();
+		expect(screen.queryByText(/, reset on/)).not.toBeInTheDocument();
 	});
 
 	it("workflow detail shows diagnostics", () => {

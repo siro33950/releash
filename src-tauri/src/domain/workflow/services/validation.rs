@@ -88,6 +88,11 @@ pub enum ValidationError {
         node: String,
         target: String,
     },
+    /// loop_guard.reset_on が存在しない node を参照
+    UnknownLoopGuardResetNode {
+        node: String,
+        reset_on: String,
+    },
     /// rules の順序非依存性・網羅性・型付き参照・loop guard が不正
     InvalidRules {
         node: String,
@@ -233,6 +238,10 @@ impl fmt::Display for ValidationError {
             Self::UnknownRuleTarget { node, target } => write!(
                 f,
                 "node '{node}' のrulesが存在しないnode '{target}' を参照しています"
+            ),
+            Self::UnknownLoopGuardResetNode { node, reset_on } => write!(
+                f,
+                "node '{node}' のloop_guard.reset_onが存在しないnode '{reset_on}' を参照しています"
             ),
             Self::InvalidRules { node, reason, .. } => {
                 write!(f, "node '{node}' のrulesが不正です: {reason}")
@@ -422,6 +431,9 @@ fn routing_error_to_validation_error(error: routing::RoutingValidationError) -> 
     match error {
         routing::RoutingValidationError::UnknownRuleTarget { node, target } => {
             ValidationError::UnknownRuleTarget { node, target }
+        }
+        routing::RoutingValidationError::UnknownLoopGuardResetNode { node, reset_on } => {
+            ValidationError::UnknownLoopGuardResetNode { node, reset_on }
         }
         routing::RoutingValidationError::MultipleDiscriminators { node } => {
             ValidationError::InvalidRules {
@@ -1372,6 +1384,7 @@ mod tests {
                     Rule::LoopGuard {
                         max_iterations: 3,
                         on_exhausted: "plan".to_string(),
+                        reset_on: None,
                     },
                     Rule::Next("plan".to_string()),
                 ],
@@ -2038,6 +2051,7 @@ mod tests {
                     Rule::LoopGuard {
                         max_iterations: 2,
                         on_exhausted: "approval".to_string(),
+                        reset_on: None,
                     },
                     Rule::Next("approval".to_string()),
                 ],
@@ -2054,6 +2068,7 @@ mod tests {
             rules: vec![Rule::LoopGuard {
                 max_iterations: 2,
                 on_exhausted: "nonexistent".to_string(),
+                reset_on: None,
             }],
             ..make_node("fix", TestKind::Session, vec![])
         }]);
@@ -2062,6 +2077,32 @@ mod tests {
             err,
             ValidationError::UnknownRuleTarget { ref node, ref target }
                 if node == "fix" && target == "nonexistent"
+        ));
+    }
+
+    #[test]
+    fn loop_guard_unknown_reset_on_fails_with_referenced_node_name() {
+        let wf = make_workflow(vec![
+            NodeDefinition {
+                rules: vec![
+                    Rule::LoopGuard {
+                        max_iterations: 2,
+                        on_exhausted: "done".to_string(),
+                        reset_on: Some("missing-boundary".to_string()),
+                    },
+                    Rule::Next("done".to_string()),
+                ],
+                ..make_node("fix", TestKind::Session, vec![])
+            },
+            make_node("done", TestKind::Session, vec![]),
+        ]);
+
+        let err = validate(&wf).unwrap_err();
+
+        assert!(matches!(
+            err,
+            ValidationError::UnknownLoopGuardResetNode { ref node, ref reset_on }
+                if node == "fix" && reset_on == "missing-boundary"
         ));
     }
 
@@ -2101,6 +2142,7 @@ mod tests {
                     Rule::LoopGuard {
                         max_iterations: 2,
                         on_exhausted: "done".to_string(),
+                        reset_on: None,
                     },
                     Rule::Next("node_a".to_string()),
                 ],

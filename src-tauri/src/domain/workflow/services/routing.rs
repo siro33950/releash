@@ -14,11 +14,61 @@ pub enum RouteDecision {
     TransitionTo(String),
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LoopGuardResetBaselines {
+    by_guarded_node: HashMap<String, u32>,
+}
+
+impl LoopGuardResetBaselines {
+    pub fn record_successful_completion(
+        &mut self,
+        workflow: &WorkflowDefinition,
+        completed_node_name: &str,
+        node_execution_counts: &HashMap<String, u32>,
+    ) {
+        for guarded_node in &workflow.nodes {
+            let Some((_, _, Some(reset_on))) = loop_guard(guarded_node) else {
+                continue;
+            };
+            if reset_on == completed_node_name {
+                let cumulative_count = node_execution_counts
+                    .get(&guarded_node.name)
+                    .copied()
+                    .unwrap_or(0);
+                self.by_guarded_node
+                    .insert(guarded_node.name.clone(), cumulative_count);
+            }
+        }
+    }
+
+    pub fn execution_count(
+        &self,
+        guarded_node_name: &str,
+        cumulative_count: u32,
+        reset_on: Option<&str>,
+    ) -> u32 {
+        if reset_on.is_some() {
+            cumulative_count.saturating_sub(
+                self.by_guarded_node
+                    .get(guarded_node_name)
+                    .copied()
+                    .unwrap_or(0),
+            )
+        } else {
+            cumulative_count
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoutingValidationError {
     UnknownRuleTarget {
         node: String,
         target: String,
+    },
+    UnknownLoopGuardResetNode {
+        node: String,
+        reset_on: String,
     },
     MultipleDiscriminators {
         node: String,
@@ -97,11 +147,28 @@ pub fn validate_rules(workflow: &WorkflowDefinition) -> Vec<RoutingValidationErr
     errors
 }
 
+#[cfg(test)]
 pub fn route(
     workflow: &WorkflowDefinition,
     current_index: usize,
     artifact: Option<&Value>,
     node_execution_counts: &HashMap<String, u32>,
+) -> Result<RouteDecision, WorkflowError> {
+    route_with_reset_baselines(
+        workflow,
+        current_index,
+        artifact,
+        node_execution_counts,
+        &LoopGuardResetBaselines::default(),
+    )
+}
+
+pub fn route_with_reset_baselines(
+    workflow: &WorkflowDefinition,
+    current_index: usize,
+    artifact: Option<&Value>,
+    node_execution_counts: &HashMap<String, u32>,
+    loop_guard_reset_baselines: &LoopGuardResetBaselines,
 ) -> Result<RouteDecision, WorkflowError> {
     let node = workflow.nodes.get(current_index).ok_or_else(|| {
         WorkflowError::validation(format!("node index out of range: {current_index}"))
@@ -110,7 +177,12 @@ pub fn route(
     let Some(target) = raw_target(node, artifact)? else {
         return Ok(RouteDecision::Completed);
     };
-    guarded_target(workflow, target, node_execution_counts)
+    guarded_target_with_reset_baselines(
+        workflow,
+        target,
+        node_execution_counts,
+        loop_guard_reset_baselines,
+    )
 }
 
 pub fn rule_targets(rule: &Rule) -> Vec<&str> {
@@ -254,12 +326,13 @@ fn reachable_node_names(workflow: &WorkflowDefinition) -> BTreeSet<&str> {
     reachable_nodes_from_entry(workflow).into_iter().collect()
 }
 
-pub fn loop_guard(node: &NodeDefinition) -> Option<(u32, &str)> {
+pub fn loop_guard(node: &NodeDefinition) -> Option<(u32, &str, Option<&str>)> {
     node.rules.iter().find_map(|rule| match rule {
         Rule::LoopGuard {
             max_iterations,
             on_exhausted,
-        } => Some((*max_iterations, on_exhausted.as_str())),
+            reset_on,
+        } => Some((*max_iterations, on_exhausted.as_str(), reset_on.as_deref())),
         _ => None,
     })
 }
@@ -285,12 +358,24 @@ fn validate_node_rules(
         }
         match rule {
             Rule::When { .. } | Rule::Switch { .. } => discriminator_count += 1,
-            Rule::LoopGuard { max_iterations, .. } => {
+            Rule::LoopGuard {
+                max_iterations,
+                reset_on,
+                ..
+            } => {
                 loop_guard_count += 1;
                 if *max_iterations == 0 {
                     errors.push(RoutingValidationError::LoopGuardMaxIterations {
                         node: node.name.clone(),
                     });
+                }
+                if let Some(reset_on) = reset_on {
+                    if !node_names.contains(reset_on.as_str()) {
+                        errors.push(RoutingValidationError::UnknownLoopGuardResetNode {
+                            node: node.name.clone(),
+                            reset_on: reset_on.clone(),
+                        });
+                    }
                 }
             }
             Rule::Next(_) => next_count += 1,
@@ -489,10 +574,11 @@ fn raw_target(
     }
 }
 
-pub fn guarded_target(
+pub fn guarded_target_with_reset_baselines(
     workflow: &WorkflowDefinition,
     mut target: String,
     node_execution_counts: &HashMap<String, u32>,
+    loop_guard_reset_baselines: &LoopGuardResetBaselines,
 ) -> Result<RouteDecision, WorkflowError> {
     for _ in 0..workflow.nodes.len() {
         let target_node = workflow
@@ -500,10 +586,11 @@ pub fn guarded_target(
             .iter()
             .find(|node| node.name == target)
             .ok_or_else(|| WorkflowError::validation(format!("node not found: {target}")))?;
-        let Some((max_iterations, on_exhausted)) = loop_guard(target_node) else {
+        let Some((max_iterations, on_exhausted, reset_on)) = loop_guard(target_node) else {
             return Ok(RouteDecision::TransitionTo(target));
         };
-        let count = node_execution_counts.get(&target).copied().unwrap_or(0);
+        let cumulative_count = node_execution_counts.get(&target).copied().unwrap_or(0);
+        let count = loop_guard_reset_baselines.execution_count(&target, cumulative_count, reset_on);
         if count < max_iterations {
             return Ok(RouteDecision::TransitionTo(target));
         }
@@ -769,6 +856,7 @@ mod routing_tests {
             }
             RoutingValidationError::FanoutChildLeafViolation { reason, .. } => reason.clone(),
             RoutingValidationError::UnknownRuleTarget { .. }
+            | RoutingValidationError::UnknownLoopGuardResetNode { .. }
             | RoutingValidationError::UnreachableNode { .. } => String::new(),
         }
     }
@@ -1126,6 +1214,7 @@ mod routing_tests {
                         Rule::LoopGuard {
                             max_iterations: 2,
                             on_exhausted: "give_up".to_string(),
+                            reset_on: None,
                         },
                         Rule::Next("fix".to_string()),
                     ],
@@ -1139,6 +1228,89 @@ mod routing_tests {
             route(&wf, 0, None, &HashMap::from([("review".to_string(), 2)])).unwrap(),
             RouteDecision::TransitionTo("give_up".to_string())
         );
+    }
+
+    #[test]
+    fn test_loop_guard_reset_on正常完了ごとに新しいカウント範囲を開始する() {
+        let wf = workflow(
+            vec![
+                session_node("round", None, vec![Rule::Next("fix".to_string())]),
+                session_node(
+                    "fix",
+                    None,
+                    vec![
+                        Rule::LoopGuard {
+                            max_iterations: 2,
+                            on_exhausted: "give_up".to_string(),
+                            reset_on: Some("round".to_string()),
+                        },
+                        Rule::Next("round".to_string()),
+                    ],
+                ),
+                session_node("give_up", None, vec![]),
+            ],
+            BTreeMap::new(),
+        );
+        let mut counts = HashMap::from([("fix".to_string(), 2)]);
+        let mut baselines = LoopGuardResetBaselines::default();
+
+        assert_eq!(
+            guarded_target_with_reset_baselines(&wf, "fix".to_string(), &counts, &baselines,)
+                .unwrap(),
+            RouteDecision::TransitionTo("give_up".to_string()),
+            "reset_on が未到達なら Workflow 開始からの累計を使う"
+        );
+
+        baselines.record_successful_completion(&wf, "round", &counts);
+        assert_eq!(
+            guarded_target_with_reset_baselines(&wf, "fix".to_string(), &counts, &baselines,)
+                .unwrap(),
+            RouteDecision::TransitionTo("fix".to_string())
+        );
+
+        counts.insert("fix".to_string(), 3);
+        assert_eq!(
+            guarded_target_with_reset_baselines(&wf, "fix".to_string(), &counts, &baselines,)
+                .unwrap(),
+            RouteDecision::TransitionTo("fix".to_string())
+        );
+        counts.insert("fix".to_string(), 4);
+        assert_eq!(
+            guarded_target_with_reset_baselines(&wf, "fix".to_string(), &counts, &baselines,)
+                .unwrap(),
+            RouteDecision::TransitionTo("give_up".to_string())
+        );
+
+        baselines.record_successful_completion(&wf, "round", &counts);
+        assert_eq!(
+            guarded_target_with_reset_baselines(&wf, "fix".to_string(), &counts, &baselines,)
+                .unwrap(),
+            RouteDecision::TransitionTo("fix".to_string()),
+            "2 回目の正常完了でも新しい範囲を開始する"
+        );
+    }
+
+    #[test]
+    fn test_loop_guard_reset_onはcontrol_flow_edgeとして扱わない() {
+        let wf = workflow(
+            vec![
+                session_node("entry", None, vec![Rule::Next("fix".to_string())]),
+                session_node(
+                    "fix",
+                    None,
+                    vec![Rule::LoopGuard {
+                        max_iterations: 2,
+                        on_exhausted: "done".to_string(),
+                        reset_on: Some("boundary".to_string()),
+                    }],
+                ),
+                session_node("boundary", None, vec![]),
+                session_node("done", None, vec![]),
+            ],
+            BTreeMap::new(),
+        );
+
+        assert!(!reachable_node_names(&wf).contains("boundary"));
     }
 
     #[test]
@@ -1200,6 +1372,7 @@ mod routing_tests {
                 Rule::LoopGuard {
                     max_iterations: 3,
                     on_exhausted: "done".to_string(),
+                    reset_on: None,
                 },
             );
         }
@@ -1224,6 +1397,7 @@ mod routing_tests {
                     vec![Rule::LoopGuard {
                         max_iterations: 3,
                         on_exhausted: "done".to_string(),
+                        reset_on: None,
                     }],
                 ),
                 session_node("done", None, vec![]),

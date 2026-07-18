@@ -216,6 +216,7 @@ fn hydrate_resumed_execution(
             state: RuntimeExecutionState::Running,
             current_node_index,
             node_execution_counts,
+            loop_guard_reset_baselines: checkpoint.loop_guard_reset_baselines.clone(),
             node_history,
             workflow_defaults: WorkflowDefaults {
                 backend_id: None,

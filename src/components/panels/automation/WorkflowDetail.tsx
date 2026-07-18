@@ -465,7 +465,7 @@ function formatRule(rule: WorkflowRule): string {
 				: `switch ${rule.on}: ${cases}`;
 		}
 		case "loop_guard":
-			return `loop_guard max ${rule.max_iterations} -> ${rule.on_exhausted}`;
+			return `loop_guard max ${rule.max_iterations} -> ${rule.on_exhausted}${rule.reset_on ? `, reset on ${rule.reset_on}` : ""}`;
 		case "next":
 			return `next -> ${rule.next}`;
 	}
@@ -478,7 +478,7 @@ function ruleKey(rule: WorkflowRule): string {
 		case "switch":
 			return `switch:${rule.on}:${sortedCases(rule.cases)}:${rule.next ?? ""}`;
 		case "loop_guard":
-			return `loop_guard:${rule.max_iterations}:${rule.on_exhausted}`;
+			return `loop_guard:${rule.max_iterations}:${rule.on_exhausted}:${rule.reset_on ?? ""}`;
 		case "next":
 			return `next:${rule.next}`;
 	}
