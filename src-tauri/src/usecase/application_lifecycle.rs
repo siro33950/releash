@@ -1,6 +1,12 @@
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum ApplicationLifecycleError {
+    #[error("{0}")]
+    AgentSessionShutdown(String),
+}
+
 #[async_trait::async_trait]
 pub(crate) trait AgentSessionShutdownPort: Send + Sync {
-    async fn close_all(&self) -> Result<(), String>;
+    async fn close_all(&self) -> Result<(), ApplicationLifecycleError>;
 }
 
 #[async_trait::async_trait]
@@ -32,7 +38,7 @@ where
         }
     }
 
-    pub(crate) async fn shutdown(&self) -> Result<(), String> {
+    pub(crate) async fn shutdown(&self) -> Result<(), ApplicationLifecycleError> {
         self.agent_sessions.close_all().await?;
         self.workflow_commands.shutdown_active_commands().await;
         self.local_api.shutdown();
@@ -60,7 +66,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl AgentSessionShutdownPort for RecordingShutdown {
-        async fn close_all(&self) -> Result<(), String> {
+        async fn close_all(&self) -> Result<(), ApplicationLifecycleError> {
             self.calls.lock().unwrap().push("close_all");
             Ok(())
         }
@@ -78,9 +84,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl AgentSessionShutdownPort for FailingAgentShutdown {
-        async fn close_all(&self) -> Result<(), String> {
+        async fn close_all(&self) -> Result<(), ApplicationLifecycleError> {
             self.calls.lock().unwrap().push("close_all");
-            Err("injected close_all failure".to_string())
+            Err(ApplicationLifecycleError::AgentSessionShutdown(
+                "injected close_all failure".to_string(),
+            ))
         }
     }
 
@@ -118,7 +126,12 @@ mod tests {
 
         let error = usecase.shutdown().await.unwrap_err();
 
-        assert_eq!(error, "injected close_all failure");
+        assert_eq!(
+            error,
+            ApplicationLifecycleError::AgentSessionShutdown(
+                "injected close_all failure".to_string()
+            )
+        );
         assert_eq!(calls.lock().unwrap().as_slice(), ["close_all"]);
     }
 }

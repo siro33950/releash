@@ -2486,6 +2486,63 @@ fn committed_meta_event_transaction_recovers_all_participants_after_restart() {
 }
 
 #[test]
+fn committed_meta_event_transaction_replays_after_an_event_batch() {
+    let tmp = TempDir::new().unwrap();
+    let store = FileSessionStorage::default();
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .unwrap();
+    let base_event = AgentSessionEvent::BackendSessionRecoveryStarted {
+        recovery_id: "recovery-base".to_string(),
+        old_provider_session_generation: 0,
+        reason: BackendSessionRecoveryReason::BackendSessionLost,
+        at: 1001.0,
+    };
+    store
+        .append_session_events(tmp.path(), UUID1, std::slice::from_ref(&base_event))
+        .unwrap();
+    let committed_event = AgentSessionEvent::SessionConfigurationReactivated {
+        recovery_id: "recovery-base".to_string(),
+        provider_session_generation: 1,
+        consumed_observation_id: None,
+        at: 1002.0,
+    };
+    let mut committed_meta = store.get_session_meta(tmp.path(), UUID1).unwrap().unwrap();
+    committed_meta.provider_session_generation = 1;
+    let transaction = SessionMetaEventTransaction::new(
+        UUID1,
+        1,
+        committed_meta,
+        std::slice::from_ref(&committed_event),
+    );
+    let dir = session_dir(tmp.path(), UUID1).unwrap();
+    write_json_pretty_atomic(
+        &meta_event_transaction_file_in_dir(&dir),
+        &transaction,
+        "test session meta/event transaction",
+    )
+    .unwrap();
+    drop(store);
+
+    let reopened = FileSessionStorage::default();
+    assert_eq!(
+        reopened.load_session_events(tmp.path(), UUID1).unwrap(),
+        vec![base_event, committed_event]
+    );
+    assert_eq!(
+        reopened
+            .get_session_meta(tmp.path(), UUID1)
+            .unwrap()
+            .unwrap()
+            .provider_session_generation,
+        1
+    );
+    assert!(event_batches_dir_in_dir(&dir).exists());
+    assert!(event_tail_file_in_dir(&dir).exists());
+    assert!(!meta_event_transaction_file_in_dir(&dir).exists());
+}
+
+#[test]
 fn committed_meta_event_transaction_repairs_interrupted_event_append_after_restart() {
     for partial_trailing_event in [false, true] {
         let tmp = TempDir::new().unwrap();

@@ -288,7 +288,7 @@ impl Drop for ShutdownAdmissionGuard {
             state.active_operations == 0
         };
         if became_idle {
-            self.admission.idle.notify_one();
+            self.admission.idle.notify_waiters();
         }
     }
 }
@@ -3361,6 +3361,9 @@ fn ensure_backend_recovery_operation_allowed(
     ctx: &RuntimeContext,
     session_id: &str,
 ) -> Result<(), AgentRuntimeError> {
+    if !backend_recovery_may_be_incomplete(ctx, session_id)? {
+        return Ok(());
+    }
     match backend_recovery_projection(ctx, session_id)? {
         Some(BackendSessionRecoveryProjection::Recovering { .. }) => Err(AgentRuntimeError::Other(
             "backend session recovery is still in progress".to_string(),
@@ -3374,11 +3377,36 @@ fn ensure_backend_recovery_operation_allowed(
     }
 }
 
+fn backend_recovery_may_be_incomplete(
+    ctx: &RuntimeContext,
+    session_id: &str,
+) -> Result<bool, AgentRuntimeError> {
+    Ok(ctx
+        .session_store
+        .get_session_meta(&ctx.data_dir, session_id)
+        .map_err(AgentRuntimeError::Other)?
+        .is_some_and(|meta| {
+            meta.agent_session_id.is_none()
+                && meta.context_carry == Some(ContextCarryState::Failed)
+                && meta.context_reinjection_generation.is_none()
+        }))
+}
+
 async fn reconcile_incomplete_backend_recovery(ctx: &RuntimeContext, session_id: &str) {
     if let Err(error) = reconcile_pending_recovery_message(ctx, session_id).await {
         log::warn!(
             "failed to reconcile pending backend recovery message for {session_id}: {error}"
         );
+    }
+    let recovery_may_be_incomplete = match backend_recovery_may_be_incomplete(ctx, session_id) {
+        Ok(recovery_may_be_incomplete) => recovery_may_be_incomplete,
+        Err(error) => {
+            log::warn!("failed to load backend recovery metadata for {session_id}: {error}");
+            return;
+        }
+    };
+    if !recovery_may_be_incomplete {
+        return;
     }
     let projection = match backend_recovery_projection(ctx, session_id) {
         Ok(projection) => projection,
@@ -6419,6 +6447,27 @@ mod tests {
 
     fn test_session_runtime_locks() -> SessionRuntimeLocks {
         Arc::new(SessionRuntimeLockRegistry::default())
+    }
+
+    #[tokio::test]
+    async fn shutdown_admission_notifies_all_registered_idle_waiters() {
+        let admission = Arc::new(ShutdownAdmission::default());
+        let guard = admission.admit().unwrap();
+        let first_waiter = admission.idle.notified();
+        let second_waiter = admission.idle.notified();
+        tokio::pin!(first_waiter);
+        tokio::pin!(second_waiter);
+        first_waiter.as_mut().enable();
+        second_waiter.as_mut().enable();
+
+        drop(guard);
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            first_waiter.await;
+            second_waiter.await;
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]

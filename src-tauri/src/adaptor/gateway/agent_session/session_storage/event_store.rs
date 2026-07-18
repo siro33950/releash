@@ -63,7 +63,11 @@ impl FileSessionStorage {
         }
         let _lock = self.file_lock.lock();
         let dir = session_dir(app_data_dir, session_id)?;
-        self.append_session_events_to_dir(&dir, new_events)
+        let outcome = self.append_session_events_to_dir(&dir, new_events)?;
+        if outcome.recovered {
+            self.record_event_log_recovery(session_id);
+        }
+        Ok(())
     }
 
     pub fn append_session_event_without_projection(
@@ -201,8 +205,13 @@ impl FileSessionStorage {
         &self,
         dir: &Path,
         events: &[AgentSessionEvent],
-    ) -> Result<(), String> {
-        self.publish_event_batch_to_dir(dir, events)
+    ) -> Result<AppendOutcome, String> {
+        let legacy_outcome = self.repair_event_array_if_needed(&event_log_file_in_dir(dir))?;
+        let tail_outcome = self.repair_event_array_if_needed(&event_tail_file_in_dir(dir))?;
+        self.publish_event_batch_to_dir(dir, events)?;
+        Ok(AppendOutcome {
+            recovered: legacy_outcome.recovered || tail_outcome.recovered,
+        })
     }
 
     fn publish_event_batch_to_dir(
@@ -367,7 +376,7 @@ impl FileSessionStorage {
 }
 
 fn canonicalize_event_array(path: &Path) -> Result<Vec<AgentSessionEvent>, TransactionApplyError> {
-    let content = match std::fs::read_to_string(&path) {
+    let content = match std::fs::read_to_string(path) {
         Ok(content) => content,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => {
@@ -378,7 +387,7 @@ fn canonicalize_event_array(path: &Path) -> Result<Vec<AgentSessionEvent>, Trans
     };
     let events = parse_session_events_content(&content).map_err(TransactionApplyError::corrupt)?;
     if serde_json::from_str::<Vec<AgentSessionEvent>>(&content).is_err() {
-        write_json_pretty_atomic_durable(&path, &events, "session event log")
+        write_json_pretty_atomic_durable(path, &events, "session event log")
             .map_err(TransactionApplyError::retryable)?;
     }
     Ok(events)
@@ -548,7 +557,9 @@ fn last_non_whitespace_byte(
 mod tests {
     use super::*;
     use crate::usecase::agent_session::event_log::PromptInput;
-    use crate::usecase::agent_session::session::{ChatSession, MessagePart, SessionState};
+    use crate::usecase::agent_session::session::{
+        ChatSession, MessagePart, SessionEventLogRecoverySignal, SessionState,
+    };
     use std::io::BufReader;
 
     const SESSION_ID: &str = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
@@ -722,6 +733,55 @@ mod tests {
             vec![event(1), event(2), event(3), event(4)]
         );
         assert_eq!(committed_event_batch_paths(tmp.path()).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn batch_append_repairs_event_arrays_before_tail_rotation_and_records_recovery() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = storage_with_session(&tmp, SESSION_ID);
+        let dir = session_dir(tmp.path(), SESSION_ID).unwrap();
+        storage
+            .append_session_event_to_dir(&dir, &event(1))
+            .unwrap();
+        storage
+            .append_session_events_to_dir(&dir, &[event(2)])
+            .unwrap();
+        storage
+            .append_session_event_to_dir(&dir, &event(3))
+            .unwrap();
+        for path in [event_log_file_in_dir(&dir), event_tail_file_in_dir(&dir)] {
+            let content = std::fs::read_to_string(&path).unwrap();
+            let closing_pos = content.rfind(']').unwrap();
+            std::fs::write(path, &content[..closing_pos]).unwrap();
+        }
+
+        storage
+            .append_session_events(tmp.path(), SESSION_ID, &[event(4), event(5)])
+            .unwrap();
+
+        let legacy_content = std::fs::read_to_string(event_log_file_in_dir(&dir)).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Vec<AgentSessionEvent>>(&legacy_content).unwrap(),
+            vec![event(1)]
+        );
+        let batch_paths = committed_event_batch_paths(&dir).unwrap();
+        assert_eq!(batch_paths.len(), 3);
+        for path in &batch_paths {
+            let content = std::fs::read_to_string(path).unwrap();
+            serde_json::from_str::<Vec<AgentSessionEvent>>(&content).unwrap();
+        }
+        assert_eq!(
+            serde_json::from_str::<Vec<AgentSessionEvent>>(
+                &std::fs::read_to_string(&batch_paths[1]).unwrap()
+            )
+            .unwrap(),
+            vec![event(3)]
+        );
+        assert_eq!(
+            storage.read_session_events_from_dir(&dir).unwrap(),
+            (1..=5).map(event).collect::<Vec<_>>()
+        );
+        assert!(storage.take_event_log_recovered(SESSION_ID));
     }
 
     #[test]
