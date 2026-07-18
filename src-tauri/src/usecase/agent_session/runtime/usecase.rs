@@ -15521,6 +15521,11 @@ mod tests {
             .unwrap()
             .unwrap()
             .to_summary();
+        let normal_before_recovery = session_store
+            .get_session_meta(tmp.path(), &normal_session.id)
+            .unwrap()
+            .unwrap()
+            .to_summary();
 
         controller
             .emit(&session.id, AgentRuntimeEvent::BackendSessionCleared)
