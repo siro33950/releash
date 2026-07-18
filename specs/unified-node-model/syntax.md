@@ -130,7 +130,11 @@ fix_each:
 ## command / session
 
 - command: 現行のまま（シェルコマンド、標準結果、`artifact:` で stdout を Contract 検証）。
-- session ブロックの中は実行設定（model / permission / facets）のみ。`gate` という語は使わない（完了の定義と進行のトリガーの混同を招くため廃止。completion に改名・意味論は現行のまま・Node 共通フィールドとして kind の外へ）。
+- session ブロックの中は実行設定のみ: `model` / `permission` / `facets` に加え、**`goal`（省略可）** と **`effort`（省略可）**。`gate` という語は使わない（完了の定義と進行のトリガーの混同を招くため廃止。completion に改名・意味論は現行のまま・Node 共通フィールドとして kind の外へ）。
+- **session の実行設定の語彙は milestone 84 の AgentSessionConfiguration に従う**:
+  - `permission` … 値域は **AgentMode**（`ask` / `edit` / `plan` / `auto` / `bypass`）。現行3値（ask / edit / full）からの写像（full → bypass 等）は MS84 の確定形に合わせて W1 実施時に確定する（examples は当面現行語彙のまま）。
+  - `goal` … AgentGoal の objective（文字列）。テンプレート補間可（パラメータからタスクごとの goal を配線できる）。省略時は Goal 未設定（instruction facet が目的を担う現行の形）。
+  - `effort` … ReasoningEffort。値域は MS84 に従う。省略時は既定。
 - `worktree`: `shared`（既定）| `isolated`。Node 共通フィールド。単独の session / command なら自身の実行を、fanout なら子ごとの並走を隔離する。
 
 ## completion（完了の定義）

@@ -176,7 +176,7 @@ worktree は Node が親から継承する実行コンテキストであり、�
 | milestone 82（新モデル移行） | 前提。command / session / fanout、Contract 検証済み Artifact、typed command、イベントログ / resume の上に立つ。 |
 | [#1454](https://github.com/siro33950/releash/issues/1454)（Node 中心再帰ツリー UI） | UI 骨格の先行実装。単独 Session も Node、合成子は branch、中央表示は単一 NodeContentView。本モデルはその backend 正本化と一般化。Fanout 結果への承認の表示場所は #1454 が扱う。 |
 | milestone 85（delegate + worktree 隔離） | 相互依存なし・順序制約なし。`worktree: shared \| isolated` の意味論は #85 の確定判断を継承する。ただし Fanout での宣言場所は「child の node 定義」から「Fanout ブロック」へ改める（#85 の「fanout block 自体には不可」の改訂）。 |
-| milestone 84（Agent チャット安定化） | 独立。干渉しない。 |
+| milestone 84（Agent チャット安定化） | 制御フローは独立。ただし **session の実行設定の語彙は MS84 の AgentSessionConfiguration に従う**: permission の値域 = AgentMode（ask / edit / plan / auto / bypass）、goal = AgentGoal（省略可）、effort = ReasoningEffort（省略可）。node session 生成経路は MS84 の設定型を組み立てる。 |
 | `docs/workflow-engine-evolution-plan.md` | 「NodeDefinition 種別は command / session / fanout の3つ」「完了判定は session の gate」（gate → completion 改名・意味論維持）が改訂対象。改訂は実装マイルストーンの文法正本化 wave で行う。 |
 | `docs/workflow-yaml-syntax.md` | 改訂対象。改訂内容の確定分は [syntax.md](syntax.md) が正本（トップレベル = nodes カタログ + main 規約、sequence = entry + output + children、Interface とデータ配線の分離、completion、worktree、ref ほか）。改訂は同上。 |
 | `docs/architecture/GLOSSARY.md` | §語彙 の反映。同上。 |
