@@ -10,6 +10,7 @@ const EXTENDED_STALE_TEMPLATES: &[&str] = &[
     "full-cycle-development",
     "full-cycle-development-manual",
     "handle-pr-review",
+    "handle-pr-review-manual",
 ];
 
 pub(crate) fn workflow_runtime_timeout_policy() -> TimeoutPolicy {

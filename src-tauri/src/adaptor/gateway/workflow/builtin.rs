@@ -11,6 +11,7 @@ const BUILTIN_FULL_CYCLE_DEVELOPMENT: &str = include_str!("builtin/full-cycle-de
 const BUILTIN_FULL_CYCLE_DEVELOPMENT_MANUAL: &str =
     include_str!("builtin/full-cycle-development-manual.yml");
 const BUILTIN_HANDLE_PR_REVIEW: &str = include_str!("builtin/handle-pr-review.yml");
+const BUILTIN_HANDLE_PR_REVIEW_MANUAL: &str = include_str!("builtin/handle-pr-review-manual.yml");
 
 struct BuiltinEntry {
     filename: &'static str,
@@ -33,6 +34,11 @@ const BUILTINS: &[BuiltinEntry] = &[
         filename: "handle-pr-review.yml",
         content: BUILTIN_HANDLE_PR_REVIEW,
         description: "現在のブランチに紐づくPRの未解決review commentを取り込み、方針整合性を確認して修正し、人間の確認後にcommit、push、replyを行う。",
+    },
+    BuiltinEntry {
+        filename: "handle-pr-review-manual.yml",
+        content: BUILTIN_HANDLE_PR_REVIEW_MANUAL,
+        description: "現在のブランチに紐づくPRの未解決review commentを取り込み、修正・返信方針をThreadごとに人間と逐一合意して修正し、確認後にcommit、push、replyを行う。",
     },
 ];
 
@@ -418,6 +424,11 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
+        key: "decide_pr_review_fix_policy_manual",
+        content: include_str!("builtin_facets/instructions/decide_pr_review_fix_policy_manual.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
         key: "check_pr_review_fix_policy_consistency",
         content: include_str!(
             "builtin_facets/instructions/check_pr_review_fix_policy_consistency.md"
@@ -427,6 +438,11 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
         kind: FacetKind::Instruction,
         key: "correct_pr_review_fix_policy",
         content: include_str!("builtin_facets/instructions/correct_pr_review_fix_policy.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "correct_pr_review_fix_policy_manual",
+        content: include_str!("builtin_facets/instructions/correct_pr_review_fix_policy_manual.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
