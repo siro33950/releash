@@ -1,0 +1,8 @@
+{"type":"system","subtype":"init","session_id":"<SESSION_ID>","commands":[{"name":"/review","description":"<COMMAND_DESCRIPTION>","argument_hint":"<ARGUMENT_HINT>"}]}
+{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"<THINKING>"}}}
+{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"<ASSISTANT_TEXT>"}}}
+{"type":"assistant","parent_tool_use_id":null,"message":{"role":"assistant","content":[{"type":"tool_use","id":"<TOOL_USE_ID>","name":"Bash","input":{"command":"<COMMAND>"}}]}}
+{"type":"control_request","request_id":"<AUTO_PERMISSION_REQUEST_ID>","request":{"subtype":"can_use_tool","tool_name":"Bash","tool_use_id":"<TOOL_USE_ID>","input":{"command":"<COMMAND>"}}}
+{"type":"user","parent_tool_use_id":null,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"<TOOL_USE_ID>","content":"<TOOL_RESULT>","is_error":false}]}}
+{"type":"control_request","request_id":"<PERMISSION_REQUEST_ID>","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","tool_use_id":"<QUESTION_TOOL_USE_ID>","input":{"questions":[{"question":"<QUESTION>","header":"<HEADER>","options":[{"label":"<OPTION>","description":"<OPTION_DESCRIPTION>"}],"multiSelect":false}]}}}
+{"type":"result","subtype":"success","is_error":false,"result":"<RESULT>","modelUsage":{"<MODEL>":{"inputTokens":3,"outputTokens":5,"cacheReadInputTokens":2,"cacheCreationInputTokens":1,"contextWindow":200000}}}

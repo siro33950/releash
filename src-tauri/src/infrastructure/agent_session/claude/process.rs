@@ -11,6 +11,7 @@ use tokio::sync::Mutex;
 
 use crate::domain::agent_session::gateway::SessionSpec;
 use crate::infrastructure::agent_session::stdout_line_reader::StdoutLineReader;
+use crate::infrastructure::agent_session::wire_record::{WireBackend, WireRecorder};
 use crate::infrastructure::process::child_env::AgentChildEnv;
 use crate::infrastructure::process::child_process::{configure_process_group, staged_shutdown};
 use crate::infrastructure::process::child_stderr::drain_child_stderr;
@@ -142,7 +143,10 @@ impl ClaudeStdioProcess {
                 stdin: Arc::new(Mutex::new(Some(stdin))),
                 pid_registration,
             },
-            stdout: StdoutLineReader::new(BufReader::new(stdout)),
+            stdout: StdoutLineReader::with_wire_recorder(
+                BufReader::new(stdout),
+                WireRecorder::from_env(WireBackend::Claude),
+            ),
             _system_prompt_file: system_prompt_file,
         })
     }
@@ -153,6 +157,10 @@ impl ClaudeStdioProcess {
 
     pub(crate) fn stdout_mut(&mut self) -> &mut StdoutLineReader<BufReader<ChildStdout>> {
         &mut self.stdout
+    }
+
+    pub(crate) async fn shutdown_wire_recorder(&mut self) {
+        self.stdout.shutdown_wire_recorder().await;
     }
 }
 

@@ -47,6 +47,19 @@ pub(crate) struct ClaudeSessionRuntime {
 struct ClaudeRuntimeProcess {
     handle: ClaudeStdioHandle,
     closed: Arc<AtomicBool>,
+    read_task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl ClaudeRuntimeProcess {
+    async fn shutdown(&mut self) {
+        self.closed.store(true, Ordering::Relaxed);
+        self.handle.shutdown().await;
+        if let Some(read_task) = self.read_task.take() {
+            if let Err(error) = read_task.await {
+                log::warn!("failed to join Claude stdout reader: {error}");
+            }
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -130,8 +143,7 @@ impl ClaudeSessionRuntime {
         )
         .await?;
         let mut process = self.process.lock().await;
-        process.closed.store(true, Ordering::Relaxed);
-        process.handle.shutdown().await;
+        process.shutdown().await;
         *process = replacement;
         Ok(())
     }
@@ -303,9 +315,7 @@ impl AgentSessionRuntime for ClaudeSessionRuntime {
     }
 
     async fn close(&self) {
-        let process = self.process.lock().await;
-        process.closed.store(true, Ordering::Relaxed);
-        process.handle.shutdown().await;
+        self.process.lock().await.shutdown().await;
     }
 }
 
@@ -325,7 +335,7 @@ async fn spawn_runtime_process(
     let initial_wire_mode = claude_wire_mode(spec.permission_mode, spec.plan_mode);
     let read_state = Arc::clone(&state);
     let read_handle = handle.clone();
-    tokio::spawn(async move {
+    let read_task = tokio::spawn(async move {
         read_loop(
             process.stdout_mut(),
             read_handle,
@@ -336,6 +346,7 @@ async fn spawn_runtime_process(
             initial_wire_mode,
         )
         .await;
+        process.shutdown_wire_recorder().await;
     });
 
     if let Err(error) = handle
@@ -344,9 +355,16 @@ async fn spawn_runtime_process(
     {
         closed.store(true, Ordering::Relaxed);
         handle.shutdown().await;
+        if let Err(join_error) = read_task.await {
+            log::warn!("failed to join Claude stdout reader: {join_error}");
+        }
         return Err(AgentBackendError::Other(error));
     }
-    Ok(ClaudeRuntimeProcess { handle, closed })
+    Ok(ClaudeRuntimeProcess {
+        handle,
+        closed,
+        read_task: Some(read_task),
+    })
 }
 
 async fn read_loop<R, W>(

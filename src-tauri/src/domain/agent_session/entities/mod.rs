@@ -5,6 +5,8 @@ mod permission_request;
 mod session;
 mod turn;
 
+#[cfg(test)]
+pub(crate) use attachment::Attachment;
 pub use attachment::AttachmentPayload;
 pub use message_part::{
     decide_tool_result_merge, merge_part, MessagePart, ToolResultMergeDecision, ToolResultUpdate,

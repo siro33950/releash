@@ -1,6 +1,8 @@
 use serde_json::Value;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt};
 
+use super::wire_record::WireRecorder;
+
 /// Shared stdout line limit for agent backends. This preserves Claude's existing 8 MB limit.
 pub(crate) const MAX_STDOUT_LINE_BYTES: usize = 8 * 1024 * 1024;
 
@@ -73,13 +75,24 @@ pub(crate) enum StdoutItem {
 pub(crate) struct StdoutLineReader<R> {
     inner: R,
     max_line_bytes: usize,
+    wire_recorder: Option<WireRecorder>,
 }
 
 impl<R: AsyncBufRead + Unpin> StdoutLineReader<R> {
+    #[cfg(test)]
     pub(crate) fn new(inner: R) -> Self {
         Self {
             inner,
             max_line_bytes: MAX_STDOUT_LINE_BYTES,
+            wire_recorder: None,
+        }
+    }
+
+    pub(crate) fn with_wire_recorder(inner: R, wire_recorder: WireRecorder) -> Self {
+        Self {
+            inner,
+            max_line_bytes: MAX_STDOUT_LINE_BYTES,
+            wire_recorder: wire_recorder.is_active().then_some(wire_recorder),
         }
     }
 
@@ -88,6 +101,13 @@ impl<R: AsyncBufRead + Unpin> StdoutLineReader<R> {
         Self {
             inner,
             max_line_bytes,
+            wire_recorder: None,
+        }
+    }
+
+    pub(crate) async fn shutdown_wire_recorder(&mut self) {
+        if let Some(wire_recorder) = self.wire_recorder.as_mut() {
+            wire_recorder.shutdown().await;
         }
     }
 
@@ -107,6 +127,9 @@ impl<R: AsyncBufRead + Unpin> StdoutLineReader<R> {
             if available.is_empty() {
                 if bytes == 0 {
                     return Ok(None);
+                }
+                if !oversize {
+                    self.record_line(&line);
                 }
                 return Ok(Some(classify_line(
                     line,
@@ -134,6 +157,9 @@ impl<R: AsyncBufRead + Unpin> StdoutLineReader<R> {
             let consumed = content_bytes + usize::from(newline.is_some());
             self.inner.consume(consumed);
             if newline.is_some() {
+                if !oversize {
+                    self.record_line(&line);
+                }
                 return Ok(Some(classify_line(
                     line,
                     bytes,
@@ -141,6 +167,12 @@ impl<R: AsyncBufRead + Unpin> StdoutLineReader<R> {
                     oversize_kind_hint,
                 )));
             }
+        }
+    }
+
+    fn record_line(&self, line: &[u8]) {
+        if let Some(wire_recorder) = &self.wire_recorder {
+            wire_recorder.record(line.to_vec());
         }
     }
 }
@@ -229,6 +261,7 @@ mod tests {
     use tokio::io::{AsyncBufRead, AsyncRead, BufReader, ReadBuf};
 
     use super::*;
+    use crate::infrastructure::agent_session::wire_record::{WireBackend, WireRecorder};
 
     #[tokio::test]
     async fn test_stdout_line_reader_json行を分類する() {
@@ -255,6 +288,30 @@ mod tests {
             reader.next().await.unwrap(),
             Some(StdoutItem::Json(value)) if value["ok"] == serde_json::json!(true)
         ));
+    }
+
+    #[tokio::test]
+    async fn test_stdout_line_readerは正常行と非json生行を記録する() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = WireRecorder::for_test(dir.path().to_path_buf(), WireBackend::Claude);
+        let input = b"not-json\n{\"type\":\"result\"}\n";
+        let mut reader = StdoutLineReader::with_wire_recorder(BufReader::new(&input[..]), recorder);
+
+        assert!(matches!(
+            reader.next().await.unwrap(),
+            Some(StdoutItem::NonJson { .. })
+        ));
+        assert!(matches!(
+            reader.next().await.unwrap(),
+            Some(StdoutItem::Json(value)) if value == serde_json::json!({"type": "result"})
+        ));
+        assert!(reader.next().await.unwrap().is_none());
+
+        reader.shutdown_wire_recorder().await;
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("claude.jsonl")).unwrap(),
+            "not-json\n{\"type\":\"result\"}\n"
+        );
     }
 
     #[tokio::test]

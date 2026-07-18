@@ -14,12 +14,14 @@ use crate::usecase::agent_session::session::{
 use crate::usecase::agent_session::status::TurnPhase;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct ProjectedStatus {
     pub session_state: SessionState,
     pub turn_phase: TurnPhase,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct WorkflowTurnCompleteInput {
     pub turn_id: TurnId,
     pub exit_code: i64,
@@ -30,11 +32,13 @@ pub struct WorkflowTurnCompleteInput {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub enum AgentTurnFailureSignal {
     ModelRefusal,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct ToolRetryProjection {
     pub turn_id: TurnId,
     pub tool_use_id: String,
@@ -42,6 +46,7 @@ pub struct ToolRetryProjection {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct SessionReadModel {
     pub messages: Vec<ChatMessage>,
     pub status: ProjectedStatus,

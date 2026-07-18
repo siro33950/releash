@@ -1,0 +1,141 @@
+[
+  {
+    "line_index": 1,
+    "events": [
+      {
+        "SessionEstablished": {
+          "backend_session_id": "<THREAD_ID>",
+          "resume": "NotRequested"
+        }
+      }
+    ]
+  },
+  {
+    "line_index": 2,
+    "events": []
+  },
+  {
+    "line_index": 3,
+    "events": [
+      {
+        "PartsMerged": [
+          {
+            "Text": {
+              "content": "<ASSISTANT_TEXT>",
+              "parent_tool_use_id": null
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "line_index": 4,
+    "events": [
+      {
+        "PartsMerged": [
+          {
+            "ToolUse": {
+              "id": "<COMMAND_ITEM_ID>",
+              "tool": "Bash",
+              "input": "{\"command\":\"<COMMAND>\",\"cwd\":\"<WORKTREE>\",\"status\":\"inProgress\"}",
+              "parent_tool_use_id": null
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "line_index": 5,
+    "events": [
+      {
+        "PermissionRequested": {
+          "id": "42",
+          "tool_use_id": "<COMMAND_ITEM_ID>",
+          "parent_tool_use_id": null,
+          "tool_name": "CodexCommand",
+          "body": {
+            "ToolApproval": {
+              "input": "{\"command\":\"<COMMAND>\",\"cwd\":\"<WORKTREE>\",\"itemId\":\"<COMMAND_ITEM_ID>\",\"threadId\":\"<THREAD_ID>\",\"turnId\":\"<TURN_ID>\"}"
+            }
+          },
+          "title": "Codex approval requested",
+          "display_name": "CodexCommand",
+          "description": "Command approval",
+          "decision_reason": null,
+          "status": "Pending"
+        }
+      }
+    ]
+  },
+  {
+    "line_index": 6,
+    "events": [
+      {
+        "PartsMerged": [
+          {
+            "ToolResult": {
+              "content": "<COMMAND_OUTPUT>",
+              "is_error": false,
+              "tool_use_id": "<COMMAND_ITEM_ID>",
+              "parent_tool_use_id": null,
+              "content_ref": null,
+              "summary": null
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "line_index": 7,
+    "events": [
+      {
+        "PartsMerged": [
+          {
+            "ToolResult": {
+              "content": "<TOOL_RESULT>",
+              "is_error": false,
+              "tool_use_id": "<COMMAND_ITEM_ID>",
+              "parent_tool_use_id": null,
+              "content_ref": null,
+              "summary": null
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "line_index": 8,
+    "events": [
+      {
+        "TokenUsageUpdated": {
+          "input_tokens": 4,
+          "output_tokens": 6,
+          "total_tokens": 10,
+          "context_window_tokens": 128000
+        }
+      }
+    ]
+  },
+  {
+    "line_index": 9,
+    "events": [
+      {
+        "TurnCompleted": {
+          "Completed": {
+            "stop_reason": null,
+            "token_usage": {
+              "input_tokens": 4,
+              "output_tokens": 6,
+              "total_tokens": 10,
+              "context_window_tokens": 128000
+            }
+          }
+        }
+      }
+    ]
+  }
+]

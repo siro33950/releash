@@ -7,6 +7,7 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
 use crate::infrastructure::agent_session::stdout_line_reader::StdoutLineReader;
+use crate::infrastructure::agent_session::wire_record::{WireBackend, WireRecorder};
 use crate::infrastructure::process::child_env::AgentChildEnv;
 use crate::infrastructure::process::child_process::{configure_process_group, staged_shutdown};
 use crate::infrastructure::process::child_stderr::drain_child_stderr;
@@ -106,7 +107,10 @@ impl CodexAppServerProcess {
                 stdin: Arc::new(Mutex::new(Some(stdin))),
                 pid_registration,
             },
-            stdout: StdoutLineReader::new(BufReader::new(stdout)),
+            stdout: StdoutLineReader::with_wire_recorder(
+                BufReader::new(stdout),
+                WireRecorder::from_env(WireBackend::Codex),
+            ),
         })
     }
 
@@ -118,8 +122,9 @@ impl CodexAppServerProcess {
         &mut self.stdout
     }
 
-    pub(crate) async fn shutdown(self) {
+    pub(crate) async fn shutdown(mut self) {
         self.handle.shutdown().await;
+        self.stdout.shutdown_wire_recorder().await;
     }
 }
 
