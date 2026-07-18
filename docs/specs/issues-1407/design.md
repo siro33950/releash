@@ -39,7 +39,7 @@ backend session の resume 失敗を、Claude / Codex 双方で同一の回復�
 | `domain/agent_session/value_objects/system_notification_type.rs` | 通知用 `SessionRecovery` variant 追加（Notice 手段。詳細は「エラー処理／通知」）。 |
 | 各 `#[cfg(test)]` | 統合テスト追加（R8 / AC6）。 |
 
-**非変更**: `requirements.md` / `behavior.md`、backend CLI（Claude Code / Codex）側の resume 実装、回復通知の恒久 UI、MessagePart の domain/usecase 二重定義（G-1）。
+**非変更**: backend CLI（Claude Code / Codex）側の resume 実装、回復通知の恒久 UI、MessagePart の domain/usecase 二重定義（G-1）。
 
 ---
 
@@ -76,11 +76,11 @@ recover_backend_session(ctx, session_id, reason) -> RecoveryOutcome
      （configuration/Goal を「回復中」として block 開始）。
   2. 実行中 turn があれば editor_context を保持したまま pending queue 先頭へ requeue。
   3. 新規 establish（resume=None で open_runtime_for_session）。
-  4. [Reactivation] SessionConfigurationReactivated（新 generation・consumed observation）
-     + SessionGoalReactivated（GoalReactivationOutcome 網羅）を確定。
-  5. [Complete commit] BackendSessionRecoveryCompleted を確定 → Synced/公開。
-  6. 回復 Notice をチャットへ emit。
-  7. queue drain を再開（送信内容を新セッションで処理）。
+  4. [最終 commit] SessionConfigurationReactivated（新 generation・consumed observation）
+     + SessionGoalReactivated（GoalReactivationOutcome 網羅）
+     + BackendSessionRecoveryCompleted を同一 atomic batch で確定 → Synced/公開。
+  5. 回復 Notice をチャットへ emit。
+  6. queue drain を再開（送信内容を新セッションで処理）。
 ```
 
 - Claude 経路: `apply_runtime_event` の `SessionEstablished { Mismatch }` 分岐（`:2396-2400`）は `handle_resume_mismatch` の代わりに `recover_backend_session` を呼ぶ。`handle_resume_mismatch` の既存処理（runtime close・requeue・metadata clear・state Active 化・drain）は回復ルーチンのステップへ吸収する。
@@ -140,14 +140,14 @@ recover_backend_session(ctx, session_id, reason) -> RecoveryOutcome
 3. `open` 内 `open_once` が thread/resume を送信 → app-server error → `read_loop` が resume 拒否を検出し `startup_error`＋`resume_rejected` を設定。
 4. `wait_for_thread_id` が resume 起因 startup error を検出 → `open` が `AgentBackendError::BackendSessionLost { requested_resume_id }` を返す。
 5. usecase が捕捉 → `recover_backend_session(reason=BackendSessionLost)`。
-6. Start commit（metadata clear＋RecoveryStarted）→ resume=None で再 open → 新 thread 確立（`SessionEstablished { NotRequested }`, generation+1）→ Reactivation → Complete commit → Notice emit → queue drain。
+6. Start commit（metadata clear＋RecoveryStarted）→ resume=None で再 open → 新 thread 確立（`SessionEstablished { NotRequested }`, generation+1）→ 最終 commit（Reactivation＋Completed を同一 atomic batch）→ Notice emit → queue drain。
 7. 送信内容は新セッションで処理され、セッションは Error に留まらない。以後の送信は新 thread を使い、死んだ thread への resume を繰り返さない（behavior「後続送信は死んだ thread を再利用しない」）。
 
 ### Claude: resume mismatch →通知付き自動復旧（AC2 / R4）
 
 1. `open_session` 成功、pump が `SessionEstablished { Mismatch { actual } }` を受信（`:2396`）。
 2. `recover_backend_session(reason=ResumeMismatch)` を呼ぶ。
-3. runtime close・実行中 turn を editor_context 保持で requeue・metadata clear（Start commit）→新規 establish（NotRequested）→ Reactivation → Complete → Notice emit → drain。
+3. runtime close・実行中 turn を editor_context 保持で requeue・metadata clear（Start commit）→新規 establish（NotRequested）→ 最終 commit（Reactivation＋Completed を同一 atomic batch）→ Notice emit → drain。
 4. behavior「文脈が静かに消える（通知なし復旧）ことはない」を満たす。
 
 ### editor_context 保全（AC3 / R5）
@@ -157,13 +157,14 @@ recover_backend_session(ctx, session_id, reason) -> RecoveryOutcome
 3. `start_next_queued_turn` が `queued.editor_context`（= 元の `AgentEditorContext`）から `EditorContext` を復元し `runtime.start_turn` へ（`:3521`）。
 4. Codex は additionalContext としてワイヤ送信、Claude は system prompt 再構築へ反映。
 
-### 回復の相関・順序・部分適用非公開（AC4 / AC5 / R6）
+### 回復の相関・2 commit 境界・部分適用非公開（AC4 / AC5 / R6）
 
 - 全回復イベントは同一 `recovery_id` を持つ。
-- 公開順序は `BackendSessionRecoveryStarted → SessionConfigurationReactivated / SessionGoalReactivated → BackendSessionRecoveryCompleted`。
-- `BackendSessionRecoveryCompleted` 確定まで、途中状態（回復中の configuration / Goal / セッション状態）は Synced/公開しない。
+- commit 境界は Start commit と、Reactivation＋Completed を同一 atomic batch に含む最終 commit の 2 つとする。
+- event の論理順序は `BackendSessionRecoveryStarted → SessionConfigurationReactivated / SessionGoalReactivated → BackendSessionRecoveryCompleted` とする。この論理順序は Reactivation と Completed の間に別 commit 境界があることを意味しない。
+- 最終 commit が確定するまで、途中状態（回復中の configuration / Goal / セッション状態）は Synced/公開しない。
 - 回復中はそのセッションの configuration / Goal 変更要求を保留（block）し、回復確定後に通常操作へ戻す。
-- `BackendSessionCleared` は production 経路（上記 Codex 副経路・Claude mismatch・Codex `BackendSessionLost`）から到達可能となり dead code が解消（AC4）。
+- 共通の `recover_backend_session` は Claude mismatch・Codex `BackendSessionLost`・Codex `BackendSessionCleared` の各 production 経路から到達可能とする。このうち `BackendSessionCleared` 自体は Codex の確立済みセッションにおける副経路から受信され、dead code が解消される（AC4）。
 
 ### Goal reactivation の網羅（AC5 / R7）
 

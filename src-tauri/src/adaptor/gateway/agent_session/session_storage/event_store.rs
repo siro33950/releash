@@ -2,6 +2,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use super::layout::{event_log_file_in_dir, session_dir, write_json_pretty_atomic_durable};
+use super::transaction::TransactionApplyError;
 use super::FileSessionStorage;
 use crate::usecase::agent_session::event_log::AgentSessionEvent;
 
@@ -85,16 +86,22 @@ impl FileSessionStorage {
     pub(super) fn canonicalize_session_events_from_dir(
         &self,
         dir: &Path,
-    ) -> Result<Vec<AgentSessionEvent>, String> {
+    ) -> Result<Vec<AgentSessionEvent>, TransactionApplyError> {
         let path = event_log_file_in_dir(dir);
         let content = match std::fs::read_to_string(&path) {
             Ok(content) => content,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(format!("Failed to read session event log: {error}")),
+            Err(error) => {
+                return Err(TransactionApplyError::retryable(format!(
+                    "Failed to read session event log: {error}"
+                )))
+            }
         };
-        let events = parse_session_events_content(&content)?;
+        let events =
+            parse_session_events_content(&content).map_err(TransactionApplyError::corrupt)?;
         if serde_json::from_str::<Vec<AgentSessionEvent>>(&content).is_err() {
-            write_json_pretty_atomic_durable(&path, &events, "session event log")?;
+            write_json_pretty_atomic_durable(&path, &events, "session event log")
+                .map_err(TransactionApplyError::retryable)?;
         }
         Ok(events)
     }

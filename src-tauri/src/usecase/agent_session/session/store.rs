@@ -10,7 +10,8 @@ use crate::domain::agent_session::{
 use crate::domain::path::same_worktree_path;
 use crate::usecase::agent_session::context_meta::ContextEpochMeta;
 use crate::usecase::agent_session::event_log::{
-    AgentSessionEvent, BackendSessionRecoveryReason, GoalReactivationOutcome, TurnEventLog,
+    AgentSessionEvent, BackendSessionRecoveryProjection, BackendSessionRecoveryReason,
+    GoalReactivationOutcome, TurnEventLog,
 };
 
 use super::{
@@ -313,7 +314,7 @@ impl SessionStore {
         worktree_path: &str,
     ) -> Result<Vec<SessionSummary>, String> {
         let summaries = self.list_sessions(app_data_dir, worktree_path)?;
-        Ok(self.overlay_recovery_publication_snapshots(summaries))
+        self.overlay_recovery_publication_snapshots(app_data_dir, summaries)
     }
 
     pub fn list_published_closed_sessions(
@@ -322,27 +323,44 @@ impl SessionStore {
         worktree_path: &str,
     ) -> Result<Vec<SessionSummary>, String> {
         let summaries = self.list_closed_sessions(app_data_dir, worktree_path)?;
-        Ok(self.overlay_recovery_publication_snapshots(summaries))
+        self.overlay_recovery_publication_snapshots(app_data_dir, summaries)
     }
 
     fn overlay_recovery_publication_snapshots(
         &self,
-        mut summaries: Vec<SessionSummary>,
-    ) -> Vec<SessionSummary> {
-        let snapshots = self.recovery_publication_snapshots.read();
-        for summary in &mut summaries {
-            if let Some(snapshot) = snapshots.get(&summary.id) {
+        app_data_dir: &Path,
+        summaries: Vec<SessionSummary>,
+    ) -> Result<Vec<SessionSummary>, String> {
+        let mut published = Vec::with_capacity(summaries.len());
+        for mut summary in summaries {
+            let events = self
+                .storage
+                .load_session_events(app_data_dir, &summary.id)?;
+            let recovery = TurnEventLog::from_events(events).project().backend_recovery;
+            if matches!(
+                recovery,
+                Some(BackendSessionRecoveryProjection::Recovering { .. })
+            ) {
+                let snapshot = self
+                    .recovery_publication_snapshots
+                    .read()
+                    .get(&summary.id)
+                    .cloned();
+                let Some(snapshot) = snapshot else {
+                    continue;
+                };
                 let published_title = summary.first_message.clone();
-                *summary = snapshot.clone();
+                summary = snapshot;
                 summary.first_message = published_title;
             }
+            published.push(summary);
         }
-        summaries.sort_by(|a, b| {
+        published.sort_by(|a, b| {
             b.updated_at
                 .partial_cmp(&a.updated_at)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        summaries
+        Ok(published)
     }
 
     fn list_sessions_filtered(
@@ -1325,5 +1343,102 @@ mod tests {
                 .map(|session| session.id),),
             HashSet::from([other.id])
         );
+    }
+
+    #[test]
+    fn published_lists_restore_recovery_suppression_from_durable_events_after_restart() {
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let writer = crate::test_support::build_session_store();
+        let active = super::super::create_session_internal(
+            &writer,
+            app_data_dir.path(),
+            "/repo",
+            Some("codex".to_string()),
+        )
+        .unwrap();
+        let closed = super::super::create_session_internal(
+            &writer,
+            app_data_dir.path(),
+            "/repo",
+            Some("codex".to_string()),
+        )
+        .unwrap();
+        writer
+            .set_session_state(app_data_dir.path(), &closed.id, SessionState::Closed)
+            .unwrap();
+
+        for session_id in [&active.id, &closed.id] {
+            let published_snapshot = writer
+                .get_session_meta(app_data_dir.path(), session_id)
+                .unwrap()
+                .unwrap()
+                .to_summary();
+            writer.hold_recovery_publication_snapshot(published_snapshot);
+            writer
+                .begin_backend_session_recovery(
+                    app_data_dir.path(),
+                    session_id,
+                    &format!("recovery-{session_id}"),
+                    BackendSessionRecoveryReason::BackendSessionLost,
+                )
+                .unwrap();
+        }
+
+        assert_eq!(
+            ids(writer
+                .list_published_sessions(app_data_dir.path(), "/repo")
+                .unwrap()
+                .into_iter()
+                .map(|session| session.id)),
+            HashSet::from([active.id.clone()])
+        );
+        assert_eq!(
+            ids(writer
+                .list_published_closed_sessions(app_data_dir.path(), "/repo")
+                .unwrap()
+                .into_iter()
+                .map(|session| session.id)),
+            HashSet::from([closed.id.clone()])
+        );
+        drop(writer);
+
+        let reopened = crate::test_support::build_session_store();
+        assert_eq!(
+            ids(reopened
+                .list_sessions(app_data_dir.path(), "/repo")
+                .unwrap()
+                .into_iter()
+                .map(|session| session.id)),
+            HashSet::from([active.id.clone()])
+        );
+        assert_eq!(
+            ids(reopened
+                .list_closed_sessions(app_data_dir.path(), "/repo")
+                .unwrap()
+                .into_iter()
+                .map(|session| session.id)),
+            HashSet::from([closed.id.clone()])
+        );
+        for session_id in [&active.id, &closed.id] {
+            let recovery = TurnEventLog::from_events(
+                reopened
+                    .load_session_events(app_data_dir.path(), session_id)
+                    .unwrap(),
+            )
+            .project()
+            .backend_recovery;
+            assert!(matches!(
+                recovery,
+                Some(BackendSessionRecoveryProjection::Recovering { .. })
+            ));
+        }
+        assert!(reopened
+            .list_published_sessions(app_data_dir.path(), "/repo")
+            .unwrap()
+            .is_empty());
+        assert!(reopened
+            .list_published_closed_sessions(app_data_dir.path(), "/repo")
+            .unwrap()
+            .is_empty());
     }
 }

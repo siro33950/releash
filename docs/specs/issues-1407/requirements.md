@@ -33,7 +33,8 @@ agent session の backend resume 失敗に対する回復経路が backend 間�
 1. **統一回復経路（I9）: `BackendSessionCleared` の配線**
    - dead code の `AgentRuntimeEvent::BackendSessionCleared` を実際の回復経路に配線する。
    - Codex の thread 消失／resume 失敗検知（`codex/session.rs` の resume エラー経路）を、起動フェーズだけでなく確立済みセッションの送信経路でも `BackendSessionCleared` として runtime に到達させる。
-   - `BackendSessionCleared` 受信 → runtime が resume metadata をクリア → 新規 establish を再試行 → 成功後にユーザーへ回復通知を出す、という一連の流れを両 backend 共通経路として成立させる。
+   - Claude は `SessionEstablished { Mismatch }` から直接、Codex は `BackendSessionLost` または `BackendSessionCleared` の受信から、共通の `recover_backend_session` へ到達させる。
+   - 共通回復処理では runtime が resume metadata をクリア → 新規 establish を再試行 → 成功後にユーザーへ回復通知を出す一連の流れを成立させる。
 
 2. **Claude 側の通知追加**
    - 既存の無言 mismatch 復旧（`handle_resume_mismatch`）に、Codex と同じ回復通知を追加し、「文脈が静かに消える」を無くす。
@@ -64,7 +65,10 @@ agent session の backend resume 失敗に対する回復経路が backend 間�
 
 ## 要求事項
 
-- R1: `AgentRuntimeEvent::BackendSessionCleared` は dead code ではなく、Claude / Codex 双方の resume 失敗回復経路から emit・受信される配線を持つこと。
+- R1: Claude / Codex 双方の resume 失敗が、backend ごとの検知シグナルから共通の `recover_backend_session` へ到達する配線を持つこと。
+  - Claude は `SessionEstablished { Mismatch }` の受信から `recover_backend_session` を直接呼び出すこと。
+  - Codex は `BackendSessionLost` または `AgentRuntimeEvent::BackendSessionCleared` の受信から `recover_backend_session` を呼び出すこと。
+  - Codex の確立済みセッションに対する dead-thread エラーが `BackendSessionCleared` として受信される production 経路を持ち、同 event が dead code でないこと。
 - R2: Codex の backend thread が確立後に消失しても、次の送信でセッションが Error のまま恒久死せず、新規 backend セッションを再確立して会話を継続できること。
 - R3: backend セッションが作り直された場合、ユーザーへ「backend セッションを作り直したため文脈は引き継がれない」旨の通知を出すこと（Notice。通知経路が未成立なら暫定的に Error part で通知）。
 - R4: Claude の resume mismatch による無言復旧時にも R3 と同じ通知を出し、文脈が静かに消えないこと。
@@ -78,7 +82,7 @@ agent session の backend resume 失敗に対する回復経路が backend 間�
 - AC1: Codex の backend thread 消失後もセッションが恒久死しない（次送信で復活＋通知が出る）。
 - AC2: Claude の resume mismatch 時に回復通知が出る。
 - AC3: resume mismatch 直後の turn で `editor_context` が失われない。
-- AC4: `BackendSessionCleared` の `#[allow(dead_code)]` が解消され、production 経路から到達可能になっている。
+- AC4: Claude の `SessionEstablished { Mismatch }` 直接経路と Codex の `BackendSessionLost` / `BackendSessionCleared` 経路が共通の `recover_backend_session` へ到達し、`BackendSessionCleared` の `#[allow(dead_code)]` が解消されて Codex の production 経路から受信可能になっている。
 - AC5: 回復トランザクションが `recovery_id` により相関付けられ、`BackendSessionRecoveryStarted` → configuration/Goal reactivation → `BackendSessionRecoveryCompleted` の順で atomic に確定・公開される。
 - AC6: 追加した統合テストと既存テストが green（`cargo test`）、`cargo fmt --check` / `cargo clippy -- -D warnings` が通る。
 

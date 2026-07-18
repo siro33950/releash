@@ -15,7 +15,7 @@ use crate::usecase::agent_session::session::{
     SESSION_BODY_FORMAT_VERSION, TOOL_OUTPUT_PREVIEW_BYTES,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
 use tempfile::TempDir;
 
@@ -2368,6 +2368,110 @@ fn committed_recovery_materialization_failures_converge_for_every_accessor() {
             !meta_event_transaction_file_in_dir(&session_dir(tmp.path(), UUID1).unwrap()).exists()
         );
     }
+}
+
+#[test]
+fn startup_retryable_transaction_failure_stays_pending_until_a_later_list_reconciles_it() {
+    let tmp = TempDir::new().unwrap();
+    let storage = Arc::new(FileSessionStorage::default());
+    storage
+        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .unwrap();
+    let session_store = crate::usecase::agent_session::session::SessionStore::new(storage.clone());
+    session_store
+        .begin_backend_session_recovery(
+            tmp.path(),
+            UUID1,
+            "retryable-startup-recovery",
+            BackendSessionRecoveryReason::BackendSessionLost,
+        )
+        .unwrap();
+    storage.set_transaction_apply_hook_for_test(Some(Arc::new(|is_completion, step| {
+        if is_completion && step == TransactionApplyStep::Events {
+            return Err("injected temporary event-log I/O failure".to_string());
+        }
+        Ok(())
+    })));
+    session_store
+        .complete_backend_session_recovery(
+            tmp.path(),
+            UUID1,
+            "retryable-startup-recovery",
+            0,
+            "fresh-provider-session".to_string(),
+        )
+        .expect("the transaction marker is durable while materialization remains pending");
+    let transaction_path =
+        meta_event_transaction_file_in_dir(&session_dir(tmp.path(), UUID1).unwrap());
+    assert!(transaction_path.exists());
+    drop(session_store);
+    drop(storage);
+
+    let reopened = FileSessionStorage::default();
+    let failures_remaining = Arc::new(AtomicUsize::new(2));
+    reopened.set_transaction_apply_hook_for_test(Some(Arc::new({
+        let failures_remaining = failures_remaining.clone();
+        move |is_completion, step| {
+            if is_completion
+                && step == TransactionApplyStep::Events
+                && failures_remaining
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                        remaining.checked_sub(1)
+                    })
+                    .is_ok()
+            {
+                return Err("injected temporary startup I/O failure".to_string());
+            }
+            Ok(())
+        }
+    })));
+
+    let first_list = reopened.list_metas(tmp.path()).unwrap();
+    assert_eq!(first_list.len(), 1);
+    assert_eq!(first_list[0].provider_session_generation, 0);
+    assert!(reopened.invalid_sessions.read().is_empty());
+    assert!(reopened
+        .materialization_pending_sessions
+        .read()
+        .contains(UUID1));
+    assert!(transaction_path.exists());
+
+    reopened.set_transaction_apply_hook_for_test(None);
+    let reconciled = reopened.list_metas(tmp.path()).unwrap();
+    assert_eq!(reconciled.len(), 1);
+    assert_eq!(reconciled[0].provider_session_generation, 1);
+    assert_eq!(
+        reconciled[0].agent_session_id.as_deref(),
+        Some("fresh-provider-session")
+    );
+    assert!(reopened.invalid_sessions.read().is_empty());
+    assert!(reopened.materialization_pending_sessions.read().is_empty());
+    assert!(!transaction_path.exists());
+}
+
+#[test]
+fn startup_corrupt_transaction_is_isolated_and_reconcile_fails_early() {
+    let tmp = TempDir::new().unwrap();
+    let writer = FileSessionStorage::default();
+    writer
+        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .unwrap();
+    let transaction_path =
+        meta_event_transaction_file_in_dir(&session_dir(tmp.path(), UUID1).unwrap());
+    std::fs::write(&transaction_path, "{not-json").unwrap();
+    drop(writer);
+
+    let reopened = FileSessionStorage::default();
+    assert!(reopened.list_metas(tmp.path()).unwrap().is_empty());
+    assert!(reopened.invalid_sessions.read().contains_key(UUID1));
+    assert!(!reopened
+        .materialization_pending_sessions
+        .read()
+        .contains(UUID1));
+
+    let error = reopened.get_session_meta(tmp.path(), UUID1).unwrap_err();
+    assert!(error.contains("Failed to parse session meta/event transaction"));
+    assert!(transaction_path.exists());
 }
 
 #[test]

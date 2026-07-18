@@ -113,7 +113,8 @@ impl FileSessionStorage {
         std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create sessions dir: {e}"))?;
         let session_dir = session_dir(app_data_dir, &session.id)?;
         if session_dir.exists() {
-            self.apply_committed_meta_event_transaction(&session_dir, &session.id)?;
+            self.apply_committed_meta_event_transaction(&session_dir, &session.id)
+                .map_err(|error| error.into_message())?;
         }
         self.write_split_session_to_dir(&session_dir, session, true)?;
         if let Ok(file) = session_file(app_data_dir, &session.id) {

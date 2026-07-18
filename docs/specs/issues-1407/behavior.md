@@ -116,7 +116,7 @@ Scenario: mentions / images と editor_context の保全は対称である
 
 ### Rule: 回復は相関付けられ、部分適用状態が公開されない（R6 / AC4 / AC5）
 
-回復は同一の回復単位として相関付けられ、resume metadata の破棄・回復開始・configuration/Goal の復旧・回復完了が定義された境界で確定される。回復の途中経過（部分適用状態）は公開されず、確定して初めてセッションに反映・公開される。`BackendSessionCleared` は dead code ではなく、Claude / Codex 双方の回復経路から到達可能である。
+回復は同一の回復単位として相関付けられ、resume metadata の破棄・回復開始・configuration/Goal の復旧・回復完了が定義された境界で確定される。回復の途中経過（部分適用状態）は公開されず、確定して初めてセッションに反映・公開される。Claude は resume mismatch の検知から直接、Codex は backend session の消失イベントを受信する経路から、それぞれ共通の回復処理へ到達する。
 
 ```gherkin
 Scenario: 回復開始から完了までが一つの回復として相関付けられる
@@ -140,10 +140,10 @@ Scenario: 回復中は configuration / Goal 変更が保留される
   When configuration または Goal の変更が要求される
   Then その変更は回復の確定まで保留され、回復処理と競合しない
 
-Scenario: BackendSessionCleared が production 経路から到達可能である
-  Given backend session の消失が検知された
-  When 回復経路が実行される
-  Then backend session の消失イベントは受信者のいないチャネルで drop されず、回復処理に到達する
+Scenario: Codex の BackendSessionCleared が production 経路から到達可能である
+  Given 確立済み Codex セッションへの送信で backend thread の消失が検知された
+  When BackendSessionCleared が発火する
+  Then BackendSessionCleared は受信者のいないチャネルで drop されず、共通の回復処理に到達する
 ```
 
 ---

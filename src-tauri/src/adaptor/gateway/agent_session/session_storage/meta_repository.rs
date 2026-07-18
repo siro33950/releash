@@ -212,7 +212,8 @@ impl FileSessionStorage {
             return Ok(true);
         }
         let dir = session_dir(app_data_dir, session_id)?;
-        self.apply_committed_meta_event_transaction(&dir, session_id)?;
+        self.apply_committed_meta_event_transaction(&dir, session_id)
+            .map_err(|error| error.into_message())?;
         let meta = self.read_meta_from_dir(&dir, session_id)?;
         self.cache.write().insert(session_id.to_string(), meta);
         Ok(true)
@@ -228,7 +229,8 @@ impl FileSessionStorage {
             .read()
             .contains(session_id)
         {
-            self.apply_committed_meta_event_transaction(dir, session_id)?;
+            self.apply_committed_meta_event_transaction(dir, session_id)
+                .map_err(|error| error.into_message())?;
         }
         Ok(())
     }
@@ -273,13 +275,26 @@ impl FileSessionStorage {
                 else {
                     continue;
                 };
-                if let Err(err) = self.apply_committed_meta_event_transaction(&path, &session_id) {
-                    log::error!(
-                        "Failed to recover session transaction {:?}: {err}",
-                        path.display()
-                    );
-                    invalid_sessions.insert(session_id, err);
-                    continue;
+                match self.apply_committed_meta_event_transaction(&path, &session_id) {
+                    Ok(()) => {}
+                    Err(error) if error.is_corrupt() => {
+                        let error = error.into_message();
+                        log::error!(
+                            "Failed to recover corrupt session transaction {:?}: {error}",
+                            path.display()
+                        );
+                        invalid_sessions.insert(session_id, error);
+                        continue;
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            "Session transaction materialization remains pending after startup failure {:?}: {error}",
+                            path.display()
+                        );
+                        self.materialization_pending_sessions
+                            .write()
+                            .insert(session_id.clone());
+                    }
                 }
                 match self.read_meta_from_dir(&path, &session_id) {
                     Ok(meta) => {
