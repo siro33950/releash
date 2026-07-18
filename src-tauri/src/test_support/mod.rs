@@ -111,7 +111,7 @@ pub(crate) fn build_agent_runtime_usecase_with_controller_and_notifiers(
         controller: controller.clone(),
     }));
     let usecase = Arc::new(AgentSessionRuntimeUsecase::new(
-        session_store,
+        session_store.clone(),
         Arc::new(registry),
         Arc::new(AgentStatusCenter::new()),
         status_notifier,
@@ -121,6 +121,10 @@ pub(crate) fn build_agent_runtime_usecase_with_controller_and_notifiers(
         Arc::new(EmptyInstructionSource),
         data_dir.into(),
     ));
+    crate::adaptor::controller::event_log_recovery_wiring::register_event_log_recovery_listener(
+        session_store,
+        &usecase,
+    );
     (usecase, controller)
 }
 
@@ -129,6 +133,7 @@ pub(crate) struct TestAgentRuntimeController {
     senders: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<AgentRuntimeEvent>>>>,
     calls: Arc<Mutex<Vec<TestRuntimeCall>>>,
     start_turn_gate: Arc<Mutex<Option<Arc<Notify>>>>,
+    open_session_failures: Arc<Mutex<usize>>,
     start_turn_failures: Arc<Mutex<usize>>,
     respond_permission_failures: Arc<Mutex<usize>>,
     steer_failures: Arc<Mutex<usize>>,
@@ -194,6 +199,19 @@ impl TestAgentRuntimeController {
 
     pub(crate) fn fail_next_start_turn(&self) {
         *self.start_turn_failures.lock().unwrap() += 1;
+    }
+
+    pub(crate) fn fail_next_open_session(&self) {
+        *self.open_session_failures.lock().unwrap() += 1;
+    }
+
+    fn should_fail_open_session(&self) -> bool {
+        let mut failures = self.open_session_failures.lock().unwrap();
+        if *failures == 0 {
+            return false;
+        }
+        *failures -= 1;
+        true
     }
 
     fn should_fail_start_turn(&self) -> bool {
@@ -341,6 +359,11 @@ impl AgentBackend for TestAgentBackend {
                 stale_timeout_ms: spec.stale_timeout.map(|value| value.as_millis()),
             },
         );
+        if self.controller.should_fail_open_session() {
+            return Err(AgentBackendError::Other(
+                "injected test open session failure".to_string(),
+            ));
+        }
         self.controller.register(spec.session_id.clone(), sender);
         Ok(Box::new(TestAgentRuntime {
             session_id: spec.session_id,
@@ -534,6 +557,8 @@ impl AgentTaskSpawner for TokioTestAgentTaskSpawner {
 struct NoopAgentSessionEventNotifier;
 
 impl AgentSessionEventNotifier for NoopAgentSessionEventNotifier {
+    fn persist_notice(&self, _notice: crate::usecase::agent_session::status::SessionNotice) {}
+
     fn session_state_changed(&self, _payload: AgentSessionStateChangedPayload) {}
 
     fn stall_observed(&self, _payload: AgentStallObservedPayload) {}

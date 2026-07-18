@@ -7,6 +7,7 @@ import type {
 	ChatSession,
 	PermissionRequest,
 	QueuedAgentTurn,
+	SessionNotice,
 } from "@/types/session";
 import { ChatSessionView } from "./ChatSessionView";
 
@@ -111,6 +112,7 @@ interface RenderOptions {
 	}) => void;
 	pendingPermission?: PermissionRequest | null;
 	pendingQueue?: QueuedAgentTurn[];
+	notice?: SessionNotice | null;
 	onRespondPermission?: (
 		requestId: string,
 		allow: boolean,
@@ -126,6 +128,7 @@ function chatSessionViewElement({
 	onEvictOlderMessages,
 	pendingPermission = null,
 	pendingQueue = [],
+	notice = null,
 	onRespondPermission = vi.fn(),
 }: RenderOptions = {}) {
 	return createElement(ChatSessionView, {
@@ -142,6 +145,7 @@ function chatSessionViewElement({
 		pendingPermission,
 		pendingQueue,
 		stallObservation,
+		notice,
 		selectedBackendId: null,
 		canChangeBackend: false,
 		worktreePath: "/repo",
@@ -230,7 +234,6 @@ describe("ChatSessionView session-local controls", () => {
 			},
 		],
 	};
-
 	it("renders text and image-only pending queue entries", () => {
 		renderChatSessionView({
 			pendingQueue: [
@@ -255,6 +258,38 @@ describe("ChatSessionView session-local controls", () => {
 		expect(screen.getByText("Review the failing logs")).toBeInTheDocument();
 		expect(screen.getByText("Queued 2")).toBeInTheDocument();
 		expect(screen.getByText("[image]")).toBeInTheDocument();
+	});
+
+	it("renders the backend-owned persist notice as a session alert", () => {
+		renderChatSessionView({
+			notice: {
+				sessionId: session.id,
+				kind: "persist_failure",
+				message: "Failed to save the completed response.",
+				createdAt: 1_001,
+			},
+		});
+
+		expect(screen.getByTestId("session-notice-banner")).toHaveTextContent(
+			"Failed to save the completed response.",
+		);
+		expect(screen.getByRole("alert")).toBeInTheDocument();
+	});
+
+	it("renders an event log recovery notice as status without alert exposure", () => {
+		renderChatSessionView({
+			notice: {
+				sessionId: session.id,
+				kind: "event_log_recovered",
+				message: "Recovered the damaged event log.",
+				createdAt: 1_002,
+			},
+		});
+
+		const banner = screen.getByTestId("session-notice-banner");
+		expect(banner).toHaveTextContent("Recovered the damaged event log.");
+		expect(screen.getByRole("status")).toBe(banner);
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 	});
 
 	it("keeps find and raw scrollback available from the toolbar", async () => {

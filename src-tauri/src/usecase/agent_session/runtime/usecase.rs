@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -36,7 +37,8 @@ use crate::usecase::agent_session::session::{
     SessionStore, SessionSummary, INITIAL_SESSION_PAGE_LIMIT,
 };
 use crate::usecase::agent_session::status::{
-    AgentStatusCenter, AgentStatusNotifier, SessionStatus, TurnPhase, TurnPhaseRepr,
+    AgentStatusCenter, AgentStatusNotifier, SessionNotice, SessionNoticeKind, SessionStatus,
+    TurnPhase, TurnPhaseRepr,
 };
 use crate::usecase::agent_session::system_prompt::{
     build_session_system_prompt, persist_session_system_prompt_build,
@@ -248,6 +250,89 @@ struct RuntimeContext {
     workflow_stall_notifier: Arc<RwLock<Option<Arc<dyn WorkflowStallNotifier>>>>,
 }
 
+const PERSIST_MAX_ATTEMPTS: usize = 4;
+const PERSIST_RETRY_BACKOFFS: [Duration; PERSIST_MAX_ATTEMPTS - 1] = [
+    Duration::from_millis(50),
+    Duration::from_millis(100),
+    Duration::from_millis(200),
+];
+
+#[derive(Debug, Clone, Copy)]
+enum PersistFailureKind {
+    ReopenRuntime,
+    QueuedTurnInterrupt,
+    FinalPartsRecorded,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PersistenceLogRecord {
+    EventLogRecovered {
+        session_id: String,
+        kind: &'static str,
+    },
+    PersistFailure {
+        session_id: String,
+        kind: &'static str,
+        attempts: usize,
+        error: String,
+    },
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static PERSISTENCE_LOG_RECORDS: std::cell::RefCell<Vec<PersistenceLogRecord>> =
+        std::cell::RefCell::new(Vec::new());
+}
+
+fn emit_persistence_log_record(record: PersistenceLogRecord) {
+    match &record {
+        PersistenceLogRecord::EventLogRecovered { session_id, kind } => {
+            log::warn!("agent_session_persist_notice session_id={session_id} kind={kind}");
+        }
+        PersistenceLogRecord::PersistFailure {
+            session_id,
+            kind,
+            attempts,
+            error,
+        } => {
+            log::error!(
+                "agent_session_persist_failure session_id={session_id} kind={kind} attempts={attempts} error={error}"
+            );
+        }
+    }
+    #[cfg(test)]
+    PERSISTENCE_LOG_RECORDS.with(|records| records.borrow_mut().push(record));
+}
+
+#[cfg(test)]
+fn take_persistence_log_records() -> Vec<PersistenceLogRecord> {
+    PERSISTENCE_LOG_RECORDS.with(|records| std::mem::take(&mut *records.borrow_mut()))
+}
+
+impl PersistFailureKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ReopenRuntime => "reopen_runtime",
+            Self::QueuedTurnInterrupt => "queued_turn_interrupt",
+            Self::FinalPartsRecorded => "final_parts_recorded",
+        }
+    }
+
+    fn notice_message(self) -> &'static str {
+        match self {
+            Self::ReopenRuntime => {
+                "Failed to save the session error state after retrying."
+            }
+            Self::QueuedTurnInterrupt => {
+                "Failed to save the queued turn failure after retrying."
+            }
+            Self::FinalPartsRecorded => {
+                "Failed to save the completed response after retrying. The existing response body was preserved."
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 struct StalledActiveTurnTarget {
     runtime: Arc<dyn AgentSessionRuntime>,
@@ -287,6 +372,15 @@ impl AgentSessionRuntimeUsecase {
                 workflow_stall_notifier: Arc::new(RwLock::new(None)),
             },
         }
+    }
+
+    pub(crate) fn report_event_log_recovered(&self, session_id: &str) {
+        report_event_log_recovered(
+            &self.ctx.status_center,
+            &self.ctx.status_notifier,
+            &self.ctx.notifier,
+            session_id,
+        );
     }
 
     pub fn set_workflow_turn_complete_notifier(
@@ -1301,6 +1395,17 @@ impl AgentSessionRuntimeUsecase {
     }
 
     #[cfg(test)]
+    pub(crate) async fn prepare_queued_runtime_reopen_for_test(&self, session_id: &str) {
+        let mut sessions = self.ctx.sessions.lock().await;
+        let state = sessions
+            .get_mut(session_id)
+            .expect("queued runtime state must exist");
+        assert!(!state.pending_queue.is_empty());
+        state.runtime = None;
+        state.phase = RuntimeSessionPhase::Idle;
+    }
+
+    #[cfg(test)]
     pub(crate) async fn stream_emit_failure_state_for_test(
         &self,
         session_id: &str,
@@ -1809,6 +1914,127 @@ impl AgentSessionRuntimeUsecase {
         .map_err(AgentRuntimeError::Other)?;
         Ok(prompt)
     }
+}
+
+fn publish_session_notice(
+    status_center: &Arc<AgentStatusCenter>,
+    status_notifier: &Arc<dyn AgentStatusNotifier>,
+    notifier: &Arc<dyn AgentSessionEventNotifier>,
+    notice: SessionNotice,
+) {
+    status_notifier.status_changed(status_center.record_session_notice(notice.clone()));
+    notifier.persist_notice(notice);
+}
+
+fn report_event_log_recovered(
+    status_center: &Arc<AgentStatusCenter>,
+    status_notifier: &Arc<dyn AgentStatusNotifier>,
+    notifier: &Arc<dyn AgentSessionEventNotifier>,
+    session_id: &str,
+) {
+    emit_persistence_log_record(PersistenceLogRecord::EventLogRecovered {
+        session_id: session_id.to_string(),
+        kind: "event_log_recovered",
+    });
+    publish_session_notice(
+        status_center,
+        status_notifier,
+        notifier,
+        SessionNotice {
+            session_id: session_id.to_string(),
+            kind: SessionNoticeKind::EventLogRecovered,
+            message: "Recovered a damaged session event log. New messages can be saved again."
+                .to_string(),
+            created_at: crate::usecase::agent_session::session::now_timestamp(),
+        },
+    );
+}
+
+fn report_persist_failure(
+    ctx: &RuntimeContext,
+    session_id: &str,
+    kind: PersistFailureKind,
+    error: &str,
+) {
+    emit_persistence_log_record(PersistenceLogRecord::PersistFailure {
+        session_id: session_id.to_string(),
+        kind: kind.as_str(),
+        attempts: PERSIST_MAX_ATTEMPTS,
+        error: error.to_string(),
+    });
+    publish_session_notice(
+        &ctx.status_center,
+        &ctx.status_notifier,
+        &ctx.notifier,
+        SessionNotice {
+            session_id: session_id.to_string(),
+            kind: SessionNoticeKind::PersistFailure,
+            message: kind.notice_message().to_string(),
+            created_at: crate::usecase::agent_session::session::now_timestamp(),
+        },
+    );
+}
+
+fn clear_persist_failure(ctx: &RuntimeContext, session_id: &str) {
+    let changes = ctx
+        .status_center
+        .clear_session_notice(session_id, SessionNoticeKind::PersistFailure);
+    if !changes.is_empty() {
+        ctx.status_notifier.status_changed(changes);
+    }
+}
+
+async fn persist_with_retry<T>(
+    ctx: &RuntimeContext,
+    session_id: &str,
+    kind: PersistFailureKind,
+    mut operation: impl FnMut() -> Result<T, String>,
+) -> Result<T, String> {
+    let mut last_error = None;
+    for attempt in 1..=PERSIST_MAX_ATTEMPTS {
+        match operation() {
+            Ok(value) => {
+                clear_persist_failure(ctx, session_id);
+                return Ok(value);
+            }
+            Err(error) => {
+                log::warn!(
+                    "agent_session_persist_retry session_id={} kind={} attempt={} max_attempts={} error={}",
+                    session_id,
+                    kind.as_str(),
+                    attempt,
+                    PERSIST_MAX_ATTEMPTS,
+                    error
+                );
+                last_error = Some(error);
+                if let Some(backoff) = PERSIST_RETRY_BACKOFFS.get(attempt - 1) {
+                    tokio::time::sleep(*backoff).await;
+                }
+            }
+        }
+    }
+    let error = last_error.expect("persist retry must execute at least once");
+    report_persist_failure(ctx, session_id, kind, &error);
+    Err(error)
+}
+
+async fn append_session_event_and_project_state_with_retry(
+    ctx: &RuntimeContext,
+    session_id: &str,
+    kind: PersistFailureKind,
+    event: AgentSessionEvent,
+) -> Result<SessionState, String> {
+    let projected_state = persist_with_retry(ctx, session_id, kind, || {
+        ctx.session_store
+            .append_session_event_and_project(&ctx.data_dir, session_id, event.clone())
+    })
+    .await?;
+    persist_with_retry(ctx, session_id, kind, || {
+        ctx.session_store
+            .set_session_state(&ctx.data_dir, session_id, projected_state.clone())
+    })
+    .await?;
+    Ok(projected_state)
 }
 
 #[cfg(not(test))]
@@ -3285,17 +3511,14 @@ async fn complete_turn(
     };
     let mut projected = None;
     if let (Some(turn_id), Some(message_id)) = (turn_id, message_id.clone()) {
-        if let Err(error) = append_final_turn_events(
-            &ctx.session_store,
-            &ctx.data_dir,
-            session_id,
-            turn_id,
-            &message_id,
-            &parts,
-            &terminal,
-        ) {
+        let final_events_persisted = if let Err(error) =
+            append_final_turn_events(ctx, session_id, turn_id, &message_id, &parts, &terminal).await
+        {
             log::warn!("failed to record terminal turn events for {session_id}: {error}");
-        }
+            false
+        } else {
+            true
+        };
         projected = ctx
             .session_store
             .load_session_events(&ctx.data_dir, session_id)
@@ -3305,11 +3528,15 @@ async fn complete_turn(
                 error
             })
             .ok();
-        let parts_to_persist = projected
-            .as_ref()
-            .map(|model| model.agent_parts_for_message(&message_id))
-            .filter(|parts| !parts.is_empty())
-            .unwrap_or_else(|| parts.clone());
+        let parts_to_persist = if final_events_persisted {
+            projected
+                .as_ref()
+                .map(|model| model.agent_parts_for_message(&message_id))
+                .filter(|parts| !parts.is_empty())
+                .unwrap_or_else(|| parts.clone())
+        } else {
+            parts.clone()
+        };
         if let Err(error) = ctx.session_store.persist_message_parts(
             &ctx.data_dir,
             session_id,
@@ -3437,11 +3664,20 @@ async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &str) {
             Ok(runtime) => runtime,
             Err(error) => {
                 log::warn!("failed to reopen runtime for queued turn {session_id}: {error}");
-                let _ = ctx.session_store.set_session_state(
-                    &ctx.data_dir,
-                    session_id,
-                    SessionState::Error,
-                );
+                if let Err(persist_error) =
+                    persist_with_retry(ctx, session_id, PersistFailureKind::ReopenRuntime, || {
+                        ctx.session_store.set_session_state(
+                            &ctx.data_dir,
+                            session_id,
+                            SessionState::Error,
+                        )
+                    })
+                    .await
+                {
+                    log::error!(
+                        "failed to persist queued runtime reopen error for {session_id}: {persist_error}"
+                    );
+                }
                 emit_session_state_change(
                     &ctx.session_store,
                     &ctx.notifier,
@@ -3593,16 +3829,23 @@ async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &str) {
                 }
             }
         }
-        let _ = ctx.session_store.append_session_event_and_project_state(
-            &ctx.data_dir,
+        if let Err(persist_error) = append_session_event_and_project_state_with_retry(
+            ctx,
             session_id,
+            PersistFailureKind::QueuedTurnInterrupt,
             AgentSessionEvent::TurnInterrupted {
                 turn_id,
                 reason: EventInterruptReason::Crash,
                 exit_code: 1,
                 error: Some(error.to_string()),
             },
-        );
+        )
+        .await
+        {
+            log::error!(
+                "failed to persist queued turn interruption for {session_id}: {persist_error}"
+            );
+        }
         emit_session_state_change(
             &ctx.session_store,
             &ctx.notifier,
@@ -4123,42 +4366,47 @@ async fn resync_permission_mode(
     Some(saved_mode)
 }
 
-fn append_final_turn_events(
-    session_store: &Arc<SessionStore>,
-    data_dir: &Path,
+async fn append_final_turn_events(
+    ctx: &RuntimeContext,
     session_id: &str,
     turn_id: u64,
     message_id: &str,
     parts: &[MessagePart],
     terminal: &TerminalProjection,
 ) -> Result<(), String> {
-    session_store.append_session_event_and_project_state(
-        data_dir,
+    append_session_event_and_project_state_with_retry(
+        ctx,
         session_id,
+        PersistFailureKind::FinalPartsRecorded,
         AgentSessionEvent::FinalPartsRecorded {
             turn_id,
             message_id: message_id.to_string(),
             parts: parts.to_vec(),
         },
-    )?;
+    )
+    .await?;
     match &terminal.event {
         TerminalEventProjection::Completed {
             stop_reason,
             token_usage,
         } => {
-            session_store.append_session_event_and_project_state(
-                data_dir,
+            append_session_event_and_project_state_with_retry(
+                ctx,
                 session_id,
+                PersistFailureKind::FinalPartsRecorded,
                 AgentSessionEvent::TurnCompleted {
                     turn_id,
                     exit_code: terminal.exit_code,
                     stop_reason: *stop_reason,
                     token_usage: *token_usage,
                 },
-            )?;
+            )
+            .await?;
         }
         TerminalEventProjection::Interrupted { reason, error } => {
-            let mut events = session_store.load_session_events(data_dir, session_id)?;
+            let mut events = ctx
+                .session_store
+                .load_session_events(&ctx.data_dir, session_id)?;
             let before = events.len();
             finalize_turn(
                 &mut events,
@@ -4168,8 +4416,13 @@ fn append_final_turn_events(
                 terminal.exit_code,
             );
             for event in events.into_iter().skip(before) {
-                session_store
-                    .append_session_event_and_project_state(data_dir, session_id, event)?;
+                append_session_event_and_project_state_with_retry(
+                    ctx,
+                    session_id,
+                    PersistFailureKind::FinalPartsRecorded,
+                    event,
+                )
+                .await?;
             }
         }
     }
@@ -4364,6 +4617,7 @@ fn publish_status_change(
             .as_ref()
             .map(|context| context.node_execution_id.clone()),
         workflow_attempt: workflow_context.as_ref().map(|context| context.attempt),
+        notice: None,
         workflow_node_progress: None,
     };
     status_notifier.status_changed(status_center.update_session(status));
@@ -4695,6 +4949,7 @@ mod tests {
 
     #[derive(Default)]
     struct RecordingAgentNotifier {
+        notices: Mutex<Vec<SessionNotice>>,
         state_changes: Mutex<Vec<AgentSessionStateChangedPayload>>,
         stall_observations: Mutex<Vec<AgentStallObservedPayload>>,
         stall_clears: Mutex<Vec<String>>,
@@ -4706,6 +4961,10 @@ mod tests {
     }
 
     impl RecordingAgentNotifier {
+        fn notices(&self) -> Vec<SessionNotice> {
+            self.notices.lock().unwrap().clone()
+        }
+
         fn state_changes(&self) -> Vec<AgentSessionStateChangedPayload> {
             self.state_changes.lock().unwrap().clone()
         }
@@ -4740,6 +4999,10 @@ mod tests {
     }
 
     impl AgentSessionEventNotifier for RecordingAgentNotifier {
+        fn persist_notice(&self, notice: SessionNotice) {
+            self.notices.lock().unwrap().push(notice);
+        }
+
         fn session_state_changed(&self, payload: AgentSessionStateChangedPayload) {
             self.state_changes.lock().unwrap().push(payload);
         }
@@ -6079,6 +6342,412 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn damaged_event_log_is_recovered_and_next_message_send_succeeds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        let first = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = first.session.id;
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::TurnCompleted(TurnResult::Completed {
+                    stop_reason: None,
+                    token_usage: None,
+                }),
+            )
+            .unwrap();
+        wait_for_turn_phase(&usecase, &session_id, TurnPhase::Idle).await;
+        let event_log_path = tmp
+            .path()
+            .join("sessions")
+            .join(&session_id)
+            .join("events.json");
+        let content = std::fs::read_to_string(&event_log_path).unwrap();
+        let closing_pos = content.rfind(']').expect("event log closing bracket");
+        std::fs::write(&event_log_path, &content[..closing_pos]).unwrap();
+        take_persistence_log_records();
+
+        let second = usecase
+            .send_message(SendAgentMessageRequest {
+                chat_session_id: Some(session_id.clone()),
+                worktree_path: tmp.path().to_string_lossy().to_string(),
+                content: "continue after recovery".to_string(),
+                permission_mode: PermissionMode::Edit,
+                plan_mode: false,
+                backend_id: Some("claude".to_string()),
+                model_id: None,
+                images: None,
+                mentions: None,
+                editor_context: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(second.agent_message.is_some());
+        assert!(event_notifier.notices().iter().any(|notice| {
+            notice.session_id == session_id && notice.kind == SessionNoticeKind::EventLogRecovered
+        }));
+        let repaired_events = session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap();
+        assert!(repaired_events
+            .iter()
+            .any(|event| matches!(event, AgentSessionEvent::TurnStarted { turn_id: 2, .. })));
+        let records = take_persistence_log_records();
+        assert!(records.iter().any(|record| matches!(
+            record,
+            PersistenceLogRecord::EventLogRecovered {
+                session_id: logged_session_id,
+                kind: "event_log_recovered",
+            } if logged_session_id == &session_id
+        )));
+    }
+
+    #[tokio::test]
+    async fn reopen_runtime_persist_failure_retries_reports_and_returns_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, _controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        session_store.set_state_hook_for_test({
+            let attempts = attempts.clone();
+            Arc::new(move |_, _| {
+                attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err("injected session state failure".to_string())
+            })
+        });
+        take_persistence_log_records();
+
+        let result = persist_with_retry(
+            &usecase.ctx,
+            &session_id,
+            PersistFailureKind::ReopenRuntime,
+            || session_store.set_session_state(tmp.path(), &session_id, SessionState::Error),
+        )
+        .await;
+
+        assert_eq!(
+            attempts.load(std::sync::atomic::Ordering::SeqCst),
+            PERSIST_MAX_ATTEMPTS
+        );
+        assert_eq!(result.unwrap_err(), "injected session state failure");
+        assert!(event_notifier.notices().iter().any(|notice| {
+            notice.session_id == session_id && notice.kind == SessionNoticeKind::PersistFailure
+        }));
+        assert_eq!(
+            usecase
+                .ctx
+                .status_center
+                .get_session(&session_id)
+                .and_then(|status| status.notice)
+                .map(|notice| notice.kind),
+            Some(SessionNoticeKind::PersistFailure)
+        );
+        let records = take_persistence_log_records();
+        assert!(records.iter().any(|record| matches!(
+            record,
+            PersistenceLogRecord::PersistFailure {
+                session_id: logged_session_id,
+                kind: "reopen_runtime",
+                attempts: PERSIST_MAX_ATTEMPTS,
+                error,
+            } if logged_session_id == &session_id && error == "injected session state failure"
+        )));
+    }
+
+    #[tokio::test]
+    async fn queued_runtime_reopen_failure_retries_and_stays_visible() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier.clone(),
+        );
+        let session_id = enqueue_second_turn_for_test(
+            &usecase,
+            &controller,
+            tmp.path().to_string_lossy().to_string(),
+        )
+        .await;
+        usecase
+            .prepare_queued_runtime_reopen_for_test(&session_id)
+            .await;
+        controller.fail_next_open_session();
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        session_store.set_state_hook_for_test({
+            let attempts = attempts.clone();
+            Arc::new(move |_, state| {
+                if *state == SessionState::Error {
+                    attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    return Err("injected queued reopen state failure".to_string());
+                }
+                Ok(())
+            })
+        });
+        take_persistence_log_records();
+
+        usecase.drain_next_queued_turn_for_test(&session_id).await;
+
+        assert_eq!(
+            attempts.load(std::sync::atomic::Ordering::SeqCst),
+            PERSIST_MAX_ATTEMPTS
+        );
+        assert_eq!(usecase.pending_queue(&session_id).await.len(), 1);
+        assert_eq!(usecase.turn_phase(&session_id).await, Some(TurnPhase::Idle));
+        assert_eq!(
+            controller
+                .call_kinds_for(&session_id)
+                .iter()
+                .filter(|kind| matches!(kind, TestRuntimeCallKind::OpenSession { .. }))
+                .count(),
+            2
+        );
+        assert_eq!(
+            controller
+                .call_kinds_for(&session_id)
+                .iter()
+                .filter(|kind| matches!(kind, TestRuntimeCallKind::StartTurnPrompt { .. }))
+                .count(),
+            1
+        );
+        assert!(event_notifier.notices().iter().any(|notice| {
+            notice.session_id == session_id && notice.kind == SessionNoticeKind::PersistFailure
+        }));
+        assert!(event_notifier.state_changes().iter().any(|change| {
+            change.chat_session_id == session_id
+                && change.turn_phase == TurnPhase::Idle
+                && change.session_state == Some(SessionState::Error)
+        }));
+        let snapshot = usecase
+            .ctx
+            .status_center
+            .get_session(&session_id)
+            .expect("status snapshot");
+        assert_eq!(snapshot.session_state, SessionState::Error);
+        assert_eq!(
+            snapshot.notice.map(|notice| notice.kind),
+            Some(SessionNoticeKind::PersistFailure)
+        );
+        assert!(status_notifier.changes().iter().any(|changes| {
+            changes.session.as_ref().is_some_and(|status| {
+                status.chat_session_id == session_id
+                    && status
+                        .notice
+                        .as_ref()
+                        .is_some_and(|notice| notice.kind == SessionNoticeKind::PersistFailure)
+            })
+        }));
+        assert_eq!(
+            session_store
+                .get_session_shell(tmp.path(), &session_id)
+                .unwrap()
+                .expect("durable session")
+                .state,
+            SessionState::Active
+        );
+        let records = take_persistence_log_records();
+        assert!(records.iter().any(|record| matches!(
+            record,
+            PersistenceLogRecord::PersistFailure {
+                session_id: logged_session_id,
+                kind: "reopen_runtime",
+                attempts: PERSIST_MAX_ATTEMPTS,
+                error,
+            } if logged_session_id == &session_id
+                && error == "injected queued reopen state failure"
+        )));
+    }
+
+    #[tokio::test]
+    async fn transient_persist_failure_recovers_without_notice() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, _controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        session_store.set_state_hook_for_test({
+            let attempts = attempts.clone();
+            Arc::new(move |_, _| {
+                if attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    Err("transient session state failure".to_string())
+                } else {
+                    Ok(())
+                }
+            })
+        });
+
+        persist_with_retry(
+            &usecase.ctx,
+            &session_id,
+            PersistFailureKind::ReopenRuntime,
+            || session_store.set_session_state(tmp.path(), &session_id, SessionState::Error),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert!(event_notifier.notices().is_empty());
+    }
+
+    #[tokio::test]
+    async fn successful_persist_clears_previous_failure_notice() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, _controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier,
+            status_notifier.clone(),
+        );
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+        session_store.set_state_hook_for_test(Arc::new(|_, _| {
+            Err("injected session state failure".to_string())
+        }));
+        persist_with_retry(
+            &usecase.ctx,
+            &session_id,
+            PersistFailureKind::ReopenRuntime,
+            || session_store.set_session_state(tmp.path(), &session_id, SessionState::Error),
+        )
+        .await
+        .unwrap_err();
+        assert!(usecase
+            .ctx
+            .status_center
+            .get_session(&session_id)
+            .and_then(|status| status.notice)
+            .is_some());
+
+        session_store.set_state_hook_for_test(Arc::new(|_, _| Ok(())));
+        persist_with_retry(
+            &usecase.ctx,
+            &session_id,
+            PersistFailureKind::ReopenRuntime,
+            || session_store.set_session_state(tmp.path(), &session_id, SessionState::Error),
+        )
+        .await
+        .unwrap();
+
+        assert!(usecase
+            .ctx
+            .status_center
+            .get_session(&session_id)
+            .and_then(|status| status.notice)
+            .is_none());
+        assert!(status_notifier.changes().iter().any(|changes| {
+            changes.session.as_ref().is_some_and(|status| {
+                status.chat_session_id == session_id && status.notice.is_none()
+            })
+        }));
+    }
+
+    #[tokio::test]
+    async fn projection_retry_does_not_append_event_twice_after_partial_success() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, _controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier,
+            status_notifier,
+        );
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+        let state_attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        session_store.set_state_hook_for_test({
+            let state_attempts = state_attempts.clone();
+            Arc::new(move |_, _| {
+                state_attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err("injected post-append projection failure".to_string())
+            })
+        });
+        let event = AgentSessionEvent::FinalPartsRecorded {
+            turn_id: 1,
+            message_id: "agent-message".to_string(),
+            parts: vec![MessagePart::Text {
+                content: "durable once".to_string(),
+                parent_tool_use_id: None,
+            }],
+        };
+
+        let result = append_session_event_and_project_state_with_retry(
+            &usecase.ctx,
+            &session_id,
+            PersistFailureKind::FinalPartsRecorded,
+            event.clone(),
+        )
+        .await;
+
+        assert_eq!(
+            result.unwrap_err(),
+            "injected post-append projection failure"
+        );
+        assert_eq!(
+            state_attempts.load(std::sync::atomic::Ordering::SeqCst),
+            PERSIST_MAX_ATTEMPTS
+        );
+        let events = session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|candidate| **candidate == event)
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
     async fn queued_turn_append_message_failure_preserves_queue_and_retries() {
         let tmp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(build_session_store());
@@ -6209,6 +6878,267 @@ mod tests {
         usecase.drain_next_queued_turn_for_test(&session_id).await;
         wait_for_start_prompt_count(&controller, &session_id, 3).await;
         assert!(usecase.pending_queue(&session_id).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn queued_turn_interrupt_append_retries_then_reports() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        let session_id = enqueue_second_turn_for_test(
+            &usecase,
+            &controller,
+            tmp.path().to_string_lossy().to_string(),
+        )
+        .await;
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        session_store.set_append_event_hook_for_test({
+            let attempts = attempts.clone();
+            Arc::new(move |_, event| {
+                if matches!(event, AgentSessionEvent::TurnInterrupted { .. }) {
+                    attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    return Err("injected turn interruption failure".to_string());
+                }
+                Ok(())
+            })
+        });
+        controller.fail_next_start_turn();
+
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::TurnCompleted(TurnResult::Completed {
+                    stop_reason: None,
+                    token_usage: None,
+                }),
+            )
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if attempts.load(std::sync::atomic::Ordering::SeqCst) == PERSIST_MAX_ATTEMPTS
+                    && event_notifier.notices().iter().any(|notice| {
+                        notice.session_id == session_id
+                            && notice.kind == SessionNoticeKind::PersistFailure
+                    })
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("queued interruption persistence should exhaust retries");
+
+        assert_eq!(usecase.pending_queue(&session_id).await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn turn_completed_append_failure_retries_and_keeps_notice_visible() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier.clone(),
+        );
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        session_store.set_append_event_hook_for_test({
+            let attempts = attempts.clone();
+            Arc::new(move |_, event| {
+                if matches!(event, AgentSessionEvent::TurnCompleted { .. }) {
+                    attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    return Err("injected turn completed failure".to_string());
+                }
+                Ok(())
+            })
+        });
+
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::TurnCompleted(TurnResult::Completed {
+                    stop_reason: None,
+                    token_usage: None,
+                }),
+            )
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if attempts.load(std::sync::atomic::Ordering::SeqCst) == PERSIST_MAX_ATTEMPTS
+                    && event_notifier.notices().iter().any(|notice| {
+                        notice.session_id == session_id
+                            && notice.kind == SessionNoticeKind::PersistFailure
+                    })
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("turn completion persistence should exhaust retries");
+        wait_for_turn_phase(&usecase, &session_id, TurnPhase::Idle).await;
+
+        assert_eq!(
+            attempts.load(std::sync::atomic::Ordering::SeqCst),
+            PERSIST_MAX_ATTEMPTS
+        );
+        let events = session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap();
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, AgentSessionEvent::FinalPartsRecorded { .. })));
+        assert!(!events
+            .iter()
+            .any(|event| matches!(event, AgentSessionEvent::TurnCompleted { .. })));
+        assert_eq!(
+            usecase
+                .ctx
+                .status_center
+                .get_session(&session_id)
+                .and_then(|status| status.notice)
+                .map(|notice| notice.kind),
+            Some(SessionNoticeKind::PersistFailure)
+        );
+        assert!(status_notifier.changes().iter().any(|changes| {
+            changes.session.as_ref().is_some_and(|status| {
+                status.chat_session_id == session_id
+                    && status
+                        .notice
+                        .as_ref()
+                        .is_some_and(|notice| notice.kind == SessionNoticeKind::PersistFailure)
+            })
+        }));
+    }
+
+    #[tokio::test]
+    async fn final_parts_append_failure_keeps_body_not_tool_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::PartsMerged(vec![
+                    DomainMessagePart::Text {
+                        content: "persisted response body".to_string(),
+                        parent_tool_use_id: None,
+                    },
+                    DomainMessagePart::ToolUse {
+                        id: "tool-1".to_string(),
+                        tool: "Bash".to_string(),
+                        input:
+                            crate::domain::agent_session::value_objects::JsonPayload::new_unchecked(
+                                "{}".to_string(),
+                            ),
+                        parent_tool_use_id: None,
+                    },
+                ]),
+            )
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let parts = usecase.streaming_parts(&session_id).await;
+                if parts
+                    .iter()
+                    .any(|part| matches!(part, MessagePart::Text { .. }))
+                    && parts
+                        .iter()
+                        .any(|part| matches!(part, MessagePart::ToolUse { .. }))
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("streaming body and tool part should be applied");
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        session_store.set_append_event_hook_for_test({
+            let attempts = attempts.clone();
+            Arc::new(move |_, event| {
+                if matches!(event, AgentSessionEvent::FinalPartsRecorded { .. }) {
+                    attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    return Err("injected final parts failure".to_string());
+                }
+                Ok(())
+            })
+        });
+
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::TurnCompleted(TurnResult::Completed {
+                    stop_reason: None,
+                    token_usage: None,
+                }),
+            )
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if attempts.load(std::sync::atomic::Ordering::SeqCst) == PERSIST_MAX_ATTEMPTS
+                    && event_notifier.notices().iter().any(|notice| {
+                        notice.session_id == session_id
+                            && notice.kind == SessionNoticeKind::PersistFailure
+                    })
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("final parts persistence should exhaust retries");
+        wait_for_turn_phase(&usecase, &session_id, TurnPhase::Idle).await;
+
+        let fresh_store = build_session_store();
+        let reloaded = fresh_store
+            .load_full_session_for_restore(tmp.path(), &session_id)
+            .unwrap()
+            .expect("reloaded session");
+        let agent_parts = reloaded
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message.role == MessageRole::Agent)
+            .and_then(|message| message.parts.as_ref())
+            .expect("agent message parts");
+        assert!(agent_parts.iter().any(|part| matches!(
+            part,
+            MessagePart::Text { content, .. } if content == "persisted response body"
+        )));
+        assert!(agent_parts
+            .iter()
+            .any(|part| matches!(part, MessagePart::ToolUse { .. })));
     }
 
     #[tokio::test]

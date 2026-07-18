@@ -38,6 +38,22 @@ pub enum TurnPhase {
     WaitingPermission,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionNoticeKind {
+    PersistFailure,
+    EventLogRecovered,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionNotice {
+    pub session_id: String,
+    pub kind: SessionNoticeKind,
+    pub message: String,
+    pub created_at: f64,
+}
+
 /// 1 つの ChatSession に対する状態スナップショット。
 /// AgentState は turn_phase / session_state から算出した派生値。
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -57,6 +73,7 @@ pub struct SessionStatus {
     pub workflow_execution_id: Option<String>,
     pub node_execution_id: Option<String>,
     pub workflow_attempt: Option<u32>,
+    pub notice: Option<SessionNotice>,
     #[serde(skip_serializing)]
     pub workflow_node_progress: Option<NodeProgress>,
 }
@@ -221,6 +238,10 @@ pub struct AgentStateChange {
 /// Session / Workspace の状態を集中管理し、フロント・WS にブロードキャストする中央管理。
 pub struct AgentStatusCenter {
     sessions: RwLock<HashMap<String, SessionStatus>>,
+    notices: RwLock<HashMap<String, SessionNotice>>,
+    #[cfg(test)]
+    update_session_notice_sync_hook:
+        RwLock<Option<std::sync::Arc<dyn Fn() + Send + Sync + 'static>>>,
     workspaces: RwLock<HashMap<String, WorkspaceStatus>>,
     workflow_node_status: RwLock<WorkflowNodeStatusState>,
     pending_workflow_node_sessions: RwLock<HashMap<String, PendingWorkflowNodeSessionStatus>>,
@@ -233,6 +254,9 @@ impl AgentStatusCenter {
     pub fn new() -> Self {
         Self {
             sessions: RwLock::new(HashMap::new()),
+            notices: RwLock::new(HashMap::new()),
+            #[cfg(test)]
+            update_session_notice_sync_hook: RwLock::new(None),
             workspaces: RwLock::new(HashMap::new()),
             workflow_node_status: RwLock::new(WorkflowNodeStatusState::default()),
             pending_workflow_node_sessions: RwLock::new(HashMap::new()),
@@ -297,6 +321,7 @@ impl AgentStatusCenter {
             && a.workflow_execution_id == b.workflow_execution_id
             && a.node_execution_id == b.node_execution_id
             && a.workflow_attempt == b.workflow_attempt
+            && a.notice == b.notice
             && a.workflow_node_progress == b.workflow_node_progress
     }
 
@@ -815,16 +840,31 @@ impl AgentStatusCenter {
     /// 4. 呼び出し側が transport 層で通知できるよう変更結果を返す
     pub fn update_session(&self, mut status: SessionStatus) -> AgentStatusChanges {
         Self::normalize_session_paths(&mut status);
-        let prev = self.sessions.read().get(&status.chat_session_id).cloned();
-        if prev.is_none() {
-            self.apply_pending_workflow_node_session_status(&mut status);
-        }
-
-        // 1. dedup
-        if let Some(prev) = prev {
-            if Self::is_session_state_equivalent(&prev, &status) {
-                return AgentStatusChanges::default();
+        {
+            // notices is the source of truth. Hold its read lock through the session
+            // insert so record/clear always observes the same notices -> sessions order.
+            let notices = self.notices.read();
+            status.notice = notices.get(&status.chat_session_id).cloned();
+            let prev = self.sessions.read().get(&status.chat_session_id).cloned();
+            if prev.is_none() {
+                self.apply_pending_workflow_node_session_status(&mut status);
             }
+
+            // 1. dedup
+            if let Some(prev) = prev {
+                if Self::is_session_state_equivalent(&prev, &status) {
+                    return AgentStatusChanges::default();
+                }
+            }
+
+            #[cfg(test)]
+            if let Some(hook) = self.update_session_notice_sync_hook.read().clone() {
+                hook();
+            }
+
+            // 2. sessions マップ反映
+            let mut sessions = self.sessions.write();
+            sessions.insert(status.chat_session_id.clone(), status.clone());
         }
 
         let worktree_id = status.worktree_id.clone();
@@ -833,12 +873,6 @@ impl AgentStatusCenter {
         let chat_session_id = status.chat_session_id.clone();
         let pty_id = status.pty_id.clone();
         let agent_state = status.agent_state.clone();
-
-        // 2. sessions マップ反映
-        {
-            let mut sessions = self.sessions.write();
-            sessions.insert(chat_session_id.clone(), status.clone());
-        }
 
         // 3. workspace 再集約（aggregate 内で Closed は集約対象から除外される）
         let workflow_snapshot = self.workflow_agg_snapshot_for(&worktree_path);
@@ -1149,6 +1183,59 @@ impl AgentStatusCenter {
         self.sessions.read().get(chat_session_id).cloned()
     }
 
+    fn replace_session_notice(
+        &self,
+        session_id: &str,
+        notice: Option<SessionNotice>,
+        expected_kind: Option<SessionNoticeKind>,
+    ) -> AgentStatusChanges {
+        let mut notices = self.notices.write();
+        if expected_kind.is_some_and(|kind| {
+            !notices
+                .get(session_id)
+                .is_some_and(|notice| notice.kind == kind)
+        }) {
+            return AgentStatusChanges::default();
+        }
+        match &notice {
+            Some(notice) => {
+                notices.insert(session_id.to_string(), notice.clone());
+            }
+            None => {
+                notices.remove(session_id);
+            }
+        }
+        let session = self.sessions.write().get_mut(session_id).map(|status| {
+            status.notice = notice;
+            status.clone()
+        });
+        AgentStatusChanges {
+            session,
+            ..Default::default()
+        }
+    }
+
+    pub fn record_session_notice(&self, notice: SessionNotice) -> AgentStatusChanges {
+        let session_id = notice.session_id.clone();
+        self.replace_session_notice(&session_id, Some(notice), None)
+    }
+
+    pub fn clear_session_notice(
+        &self,
+        session_id: &str,
+        kind: SessionNoticeKind,
+    ) -> AgentStatusChanges {
+        self.replace_session_notice(session_id, None, Some(kind))
+    }
+
+    #[cfg(test)]
+    fn set_update_session_notice_sync_hook_for_test(
+        &self,
+        hook: std::sync::Arc<dyn Fn() + Send + Sync + 'static>,
+    ) {
+        *self.update_session_notice_sync_hook.write() = Some(hook);
+    }
+
     pub fn get_workspace(&self, worktree_id: &str) -> Option<WorkspaceStatus> {
         self.workspaces
             .read()
@@ -1200,6 +1287,7 @@ mod tests {
             workflow_execution_id: None,
             node_execution_id: None,
             workflow_attempt: None,
+            notice: None,
             workflow_node_progress: None,
         }
     }
@@ -1572,6 +1660,298 @@ mod tests {
         assert_eq!(value["workflow_attempt"], 3);
         assert!(value.get("workflow_node_execution_id").is_none());
         assert!(value.get("workflow_node_progress").is_none());
+    }
+
+    #[test]
+    fn session_notice_serialization_uses_frontend_wire_shape() {
+        for (kind, expected_kind) in [
+            (SessionNoticeKind::PersistFailure, "persist_failure"),
+            (SessionNoticeKind::EventLogRecovered, "event_log_recovered"),
+        ] {
+            let value = serde_json::to_value(SessionNotice {
+                session_id: "session-1".to_string(),
+                kind,
+                message: "Notice message".to_string(),
+                created_at: 42.0,
+            })
+            .expect("session notice serializes");
+
+            assert_eq!(
+                value,
+                serde_json::json!({
+                    "sessionId": "session-1",
+                    "kind": expected_kind,
+                    "message": "Notice message",
+                    "createdAt": 42.0,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn session_status_serialization_nests_notice_wire_shape() {
+        let mut status = mk_session("session-1", "/repo", TurnPhase::Idle, SessionState::Idle);
+        status.notice = Some(SessionNotice {
+            session_id: "session-1".to_string(),
+            kind: SessionNoticeKind::EventLogRecovered,
+            message: "Recovered".to_string(),
+            created_at: 7.0,
+        });
+
+        let value = serde_json::to_value(status).expect("session status serializes");
+
+        assert_eq!(
+            value["notice"],
+            serde_json::json!({
+                "sessionId": "session-1",
+                "kind": "event_log_recovered",
+                "message": "Recovered",
+                "createdAt": 7.0,
+            })
+        );
+    }
+
+    #[test]
+    fn session_notice_is_retained_in_status_snapshot() {
+        let center = mk_center();
+        center.update_session(mk_session(
+            "session-1",
+            "/repo",
+            TurnPhase::Idle,
+            SessionState::Idle,
+        ));
+        center.record_session_notice(SessionNotice {
+            session_id: "session-1".to_string(),
+            kind: SessionNoticeKind::PersistFailure,
+            message: "Persistence failed".to_string(),
+            created_at: 42.0,
+        });
+
+        let status = center.get_session("session-1").expect("session status");
+
+        assert_eq!(
+            status.notice,
+            Some(SessionNotice {
+                session_id: "session-1".to_string(),
+                kind: SessionNoticeKind::PersistFailure,
+                message: "Persistence failed".to_string(),
+                created_at: 42.0,
+            })
+        );
+    }
+
+    #[test]
+    fn session_notice_recorded_before_status_is_applied_to_first_snapshot() {
+        let center = mk_center();
+        center.record_session_notice(SessionNotice {
+            session_id: "session-1".to_string(),
+            kind: SessionNoticeKind::EventLogRecovered,
+            message: "Recovered".to_string(),
+            created_at: 7.0,
+        });
+
+        let changes = center.update_session(mk_session(
+            "session-1",
+            "/repo",
+            TurnPhase::Idle,
+            SessionState::Idle,
+        ));
+
+        assert_eq!(
+            changes
+                .session
+                .and_then(|status| status.notice)
+                .map(|notice| notice.kind),
+            Some(SessionNoticeKind::EventLogRecovered)
+        );
+    }
+
+    #[test]
+    fn session_notice_clear_updates_backend_snapshot() {
+        let center = mk_center();
+        center.update_session(mk_session(
+            "session-1",
+            "/repo",
+            TurnPhase::Idle,
+            SessionState::Idle,
+        ));
+        center.record_session_notice(SessionNotice {
+            session_id: "session-1".to_string(),
+            kind: SessionNoticeKind::PersistFailure,
+            message: "Persistence failed".to_string(),
+            created_at: 42.0,
+        });
+
+        let changes = center.clear_session_notice("session-1", SessionNoticeKind::PersistFailure);
+
+        assert_eq!(
+            changes
+                .session
+                .as_ref()
+                .and_then(|status| status.notice.as_ref()),
+            None
+        );
+        assert_eq!(
+            center
+                .get_session("session-1")
+                .and_then(|status| status.notice),
+            None
+        );
+    }
+
+    #[test]
+    fn session_notice_clear_keeps_a_different_notice_kind() {
+        let center = mk_center();
+        center.update_session(mk_session(
+            "session-1",
+            "/repo",
+            TurnPhase::Idle,
+            SessionState::Idle,
+        ));
+        let notice = SessionNotice {
+            session_id: "session-1".to_string(),
+            kind: SessionNoticeKind::EventLogRecovered,
+            message: "Recovered".to_string(),
+            created_at: 7.0,
+        };
+        center.record_session_notice(notice.clone());
+
+        let changes = center.clear_session_notice("session-1", SessionNoticeKind::PersistFailure);
+
+        assert_eq!(changes, AgentStatusChanges::default());
+        assert_eq!(
+            center
+                .get_session("session-1")
+                .and_then(|status| status.notice),
+            Some(notice)
+        );
+    }
+
+    #[test]
+    fn update_session_and_record_notice_keep_both_maps_consistent() {
+        let center = std::sync::Arc::new(mk_center());
+        center.update_session(mk_session(
+            "session-1",
+            "/repo",
+            TurnPhase::Idle,
+            SessionState::Idle,
+        ));
+        let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        center.set_update_session_notice_sync_hook_for_test({
+            let entered = entered.clone();
+            let release = release.clone();
+            std::sync::Arc::new(move || {
+                entered.wait();
+                release.wait();
+            })
+        });
+        let updater = {
+            let center = center.clone();
+            std::thread::spawn(move || {
+                let mut status =
+                    mk_session("session-1", "/repo", TurnPhase::Idle, SessionState::Idle);
+                status.pty_id = Some("pty-1".to_string());
+                center.update_session(status);
+            })
+        };
+        entered.wait();
+        let notice = SessionNotice {
+            session_id: "session-1".to_string(),
+            kind: SessionNoticeKind::PersistFailure,
+            message: "Persistence failed".to_string(),
+            created_at: 42.0,
+        };
+        let (completed_tx, completed_rx) = std::sync::mpsc::channel();
+        let recorder = {
+            let center = center.clone();
+            let notice = notice.clone();
+            std::thread::spawn(move || {
+                center.record_session_notice(notice);
+                completed_tx.send(()).unwrap();
+            })
+        };
+
+        let record_was_blocked = completed_rx
+            .recv_timeout(std::time::Duration::from_millis(50))
+            .is_err();
+        release.wait();
+        updater.join().unwrap();
+        recorder.join().unwrap();
+
+        assert!(record_was_blocked);
+        assert_eq!(center.notices.read().get("session-1"), Some(&notice));
+        assert_eq!(
+            center
+                .sessions
+                .read()
+                .get("session-1")
+                .and_then(|status| status.notice.as_ref()),
+            Some(&notice)
+        );
+    }
+
+    #[test]
+    fn update_session_and_clear_notice_keep_both_maps_consistent() {
+        let center = std::sync::Arc::new(mk_center());
+        center.update_session(mk_session(
+            "session-1",
+            "/repo",
+            TurnPhase::Idle,
+            SessionState::Idle,
+        ));
+        center.record_session_notice(SessionNotice {
+            session_id: "session-1".to_string(),
+            kind: SessionNoticeKind::PersistFailure,
+            message: "Persistence failed".to_string(),
+            created_at: 42.0,
+        });
+        let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        center.set_update_session_notice_sync_hook_for_test({
+            let entered = entered.clone();
+            let release = release.clone();
+            std::sync::Arc::new(move || {
+                entered.wait();
+                release.wait();
+            })
+        });
+        let updater = {
+            let center = center.clone();
+            std::thread::spawn(move || {
+                let mut status =
+                    mk_session("session-1", "/repo", TurnPhase::Idle, SessionState::Idle);
+                status.pty_id = Some("pty-1".to_string());
+                center.update_session(status);
+            })
+        };
+        entered.wait();
+        let (completed_tx, completed_rx) = std::sync::mpsc::channel();
+        let clearer = {
+            let center = center.clone();
+            std::thread::spawn(move || {
+                center.clear_session_notice("session-1", SessionNoticeKind::PersistFailure);
+                completed_tx.send(()).unwrap();
+            })
+        };
+
+        let clear_was_blocked = completed_rx
+            .recv_timeout(std::time::Duration::from_millis(50))
+            .is_err();
+        release.wait();
+        updater.join().unwrap();
+        clearer.join().unwrap();
+
+        assert!(clear_was_blocked);
+        assert!(!center.notices.read().contains_key("session-1"));
+        assert_eq!(
+            center
+                .sessions
+                .read()
+                .get("session-1")
+                .and_then(|status| status.notice.as_ref()),
+            None
+        );
     }
 
     #[test]
@@ -2248,6 +2628,7 @@ mod tests {
             workflow_execution_id: Some("exec-other".to_string()),
             node_execution_id: Some("deploy-1".to_string()),
             workflow_attempt: Some(1),
+            notice: None,
             workflow_node_progress: Some(NodeProgress::Running),
         });
 

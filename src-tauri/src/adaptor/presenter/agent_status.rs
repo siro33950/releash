@@ -155,6 +155,7 @@ mod tests {
             workflow_execution_id: Some("exec-1".to_string()),
             node_execution_id: Some(session_id.to_string()),
             workflow_attempt: Some(1),
+            notice: None,
             workflow_node_progress: Some(progress),
         }
     }

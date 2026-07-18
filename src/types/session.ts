@@ -343,6 +343,15 @@ export interface TokenUsage {
 	contextWindowTokens?: number;
 }
 
+export type SessionNoticeKind = "persist_failure" | "event_log_recovered";
+
+export interface SessionNotice {
+	sessionId: string;
+	kind: SessionNoticeKind;
+	message: string;
+	createdAt: number;
+}
+
 /**
  * Rust の `agent_status::SessionStatus` に対応するステータス。
  * ChatSession 単位で Rust が算出する派生ステータスをそのまま消費する。
@@ -363,6 +372,7 @@ export interface SessionStatus {
 	workflow_node?: string | null;
 	workflow_attempt?: number | null;
 	workflow_execution_status?: string | null;
+	notice?: SessionNotice | null;
 }
 
 /**

@@ -256,6 +256,40 @@ describe("useAgentChat", () => {
 		expect(typeof mod.useAgentChat).toBe("function");
 	});
 
+	it("returns the backend-owned notice for the requested session", async () => {
+		const { renderHook, waitFor } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const notice = {
+			sessionId: "session-with-notice",
+			kind: "persist_failure",
+			message: "Unable to save the session.",
+			createdAt: 2_000,
+		} as const;
+		mockInvoke.mockResolvedValueOnce([
+			{
+				chat_session_id: "session-with-notice",
+				worktree_id: "/repo",
+				worktree_path: "/repo",
+				pty_id: null,
+				agent_state: "error",
+				turn_phase: "idle",
+				session_state: "error",
+				pending_permission: false,
+				last_activity_at: 1_000,
+				notice,
+			},
+		]);
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		await waitFor(() => {
+			expect(result.current.getSessionNotice("session-with-notice")).toEqual(
+				notice,
+			);
+		});
+		expect(result.current.getSessionNotice("other-session")).toBeNull();
+	});
+
 	it("should not export buildClaudeCommand (removed)", async () => {
 		const mod = await import("./useAgentChat");
 		expect((mod as Record<string, unknown>).buildClaudeCommand).toBeUndefined();
