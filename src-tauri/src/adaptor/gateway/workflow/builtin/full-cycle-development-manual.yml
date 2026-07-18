@@ -1,0 +1,729 @@
+name: full-cycle-development-manual
+description: Requirements、Behavior、Designの全項目とFullReviewの修正方針を人間と逐一合意しながら、Spec作成から実装、Review修正までを一気通貫に実行する。
+
+schemas:
+  document-reference: string
+  request-text: string
+  collected-inputs:
+    type: object
+    properties:
+      documents:
+        type: array
+        items: document-reference
+      requests:
+        type: array
+        items: request-text
+    required:
+    - documents
+    - requests
+  behavior-authoring-result:
+    type: object
+    properties:
+      behavior_complete:
+        type: boolean
+    required:
+    - behavior_complete
+  design-authoring-result:
+    type: object
+    properties:
+      design_complete:
+        type: boolean
+    required:
+    - design_complete
+  spec-directory:
+    type: object
+    properties:
+      spec_dir: string
+    required:
+    - spec_dir
+  requirement-id: string
+  implement-task-id: string
+  implement-task-verification:
+    type: object
+    properties:
+      condition: string
+    required:
+    - condition
+  implement-task:
+    type: object
+    properties:
+      task_id: string
+      requirements:
+        type: array
+        items: requirement-id
+      depends_on:
+        type: array
+        items: implement-task-id
+      parallel:
+        type: boolean
+      files:
+        type: array
+        items: document-reference
+      outputs:
+        type: array
+        items: workflow-text
+      verify:
+        type: array
+        items: implement-task-verification
+    required:
+    - task_id
+    - requirements
+    - depends_on
+    - parallel
+    - files
+    - outputs
+    - verify
+  implement-tasks:
+    type: object
+    properties:
+      tasks:
+        type: array
+        items: implement-task
+    required:
+    - tasks
+  incomplete-implement-task:
+    type: object
+    properties:
+      task_id: string
+      reason: string
+    required:
+    - task_id
+    - reason
+  implement-task-check-result:
+    type: object
+    properties:
+      task_id: string
+      complete:
+        type: boolean
+      reason: string
+    required:
+    - task_id
+    - complete
+    - reason
+  implement-task-check:
+    type: object
+    properties:
+      complete:
+        type: boolean
+      incomplete_tasks:
+        type: array
+        items: incomplete-implement-task
+    required:
+    - complete
+    - incomplete_tasks
+  thread-id: string
+  thread-reference:
+    type: object
+    properties:
+      thread_id: string
+    required:
+    - thread_id
+  thread-scan:
+    type: object
+    properties:
+      threads:
+        type: array
+        items: thread-reference
+      has_open_threads:
+        type: boolean
+    required:
+    - threads
+    - has_open_threads
+  workflow-text: string
+  policy-correction-task:
+    type: object
+    properties:
+      task_id: string
+      thread_ids:
+        type: array
+        items: thread-id
+      problem: string
+      required_changes:
+        type: array
+        items: workflow-text
+    required:
+    - task_id
+    - thread_ids
+    - problem
+    - required_changes
+  policy-consistency-result:
+    type: object
+    properties:
+      verdict:
+        type: string
+        enum:
+        - CONSISTENT
+        - NEEDS_CORRECTION
+      tasks:
+        type: array
+        items: policy-correction-task
+      summary: string
+    required:
+    - verdict
+    - tasks
+    - summary
+  fix-plan-task:
+    type: object
+    properties:
+      task_id: string
+      thread_id: string
+      target_files:
+        type: array
+        items: document-reference
+      implementation_steps:
+        type: array
+        items: workflow-text
+      acceptance_criteria:
+        type: array
+        items: workflow-text
+      non_goals:
+        type: array
+        items: workflow-text
+      source_policy: string
+    required:
+    - task_id
+    - thread_id
+    - target_files
+    - implementation_steps
+    - acceptance_criteria
+    - non_goals
+    - source_policy
+  fix-plan:
+    type: object
+    properties:
+      tasks:
+        type: array
+        items: fix-plan-task
+      summary: string
+    required:
+    - tasks
+    - summary
+
+nodes:
+# 00: collect inputs
+- name: collect_inputs
+  session:
+    model: gpt-5.6-sol
+    permission: edit
+    gate: auto
+    facets:
+      policy: planning
+      instruction: collect_inputs
+  artifact: collected-inputs
+  rules:
+  - next: write_requirements
+
+# 01: authoring_spec
+- name: write_requirements
+  session:
+    model: claude-fable-5
+    permission: edit
+    gate: approval
+    facets:
+      policy: planning
+      knowledge: spec-requirements
+      instruction: write_requirements_manual
+  artifact: spec-directory
+  inputs:
+  - collect_inputs
+  rules:
+  - next: write_behavior
+- name: write_behavior
+  session:
+    model: claude-fable-5
+    permission: edit
+    gate: approval
+    facets:
+      policy: planning
+      knowledge:
+      - spec-requirements
+      - spec-behavior
+      - releash-thread-cli
+      instruction: write_behavior_manual
+  artifact: behavior-authoring-result
+  inputs:
+  - write_requirements
+  rules:
+  - when: { on: behavior_complete, then: write_design }
+    next: refine_requirements
+- name: refine_requirements
+  session:
+    model: claude-fable-5
+    permission: edit
+    gate: approval
+    facets:
+      policy: planning
+      knowledge:
+      - spec-requirements
+      - releash-thread-cli
+      instruction: refine_requirements_manual
+  inputs:
+  - write_requirements
+  rules:
+  - loop_guard: { max_iterations: 2, on_exhausted: write_design }
+  - next: delete_behavior
+- name: delete_behavior
+  command: "rm -f -- '{{ write_requirements.spec_dir }}/behavior.md'"
+  inputs:
+  - write_requirements
+  rules:
+  - next: write_behavior
+- name: write_design
+  session:
+    model: claude-fable-5
+    permission: edit
+    gate: approval
+    facets:
+      policy: planning
+      knowledge:
+      - spec-requirements
+      - spec-behavior
+      - spec-design
+      - releash-thread-cli
+      instruction: write_design_manual
+  artifact: design-authoring-result
+  inputs:
+  - write_requirements
+  - write_behavior
+  rules:
+  - when: { on: design_complete, then: spec_confirmation }
+    next: refine_behavior
+- name: refine_behavior
+  session:
+    model: claude-fable-5
+    permission: edit
+    gate: approval
+    facets:
+      policy: planning
+      knowledge:
+      - spec-requirements
+      - spec-behavior
+      - releash-thread-cli
+      instruction: refine_behavior_manual
+  inputs:
+  - write_requirements
+  - write_behavior
+  rules:
+  - loop_guard: { max_iterations: 2, on_exhausted: spec_confirmation }
+  - next: delete_design
+- name: delete_design
+  command: "rm -f -- '{{ write_requirements.spec_dir }}/design.md'"
+  inputs:
+  - write_requirements
+  rules:
+  - next: write_design
+- name: spec_confirmation
+  session:
+    model: claude-fable-5
+    permission: edit
+    gate: approval
+    facets:
+      policy: planning
+      knowledge:
+      - spec-requirements
+      - spec-behavior
+      - spec-design
+      - releash-thread-cli
+      instruction: spec_confirmation
+  inputs:
+  - write_requirements
+  rules:
+  - next: resolve_open_threads
+- name: resolve_open_threads
+  command: >-
+    set -o pipefail;
+    releash review list --session-id "$RELEASH_SESSION_ID" --state open --json |
+    jq -r '.[].id' |
+    while IFS= read -r thread_id; do
+    releash review resolve "$thread_id" --session-id "$RELEASH_SESSION_ID"
+    --outcome resolved --summary "実装開始前のThread整理" --json >/dev/null || exit $?;
+    done
+  rules:
+  - next: create_detailed_design
+
+# 02: implement_codex
+- name: create_detailed_design
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: planning
+      knowledge:
+      - spec-requirements
+      - spec-behavior
+      - spec-design
+      - implement-task
+      instruction: create_detailed_design
+  artifact: implement-tasks
+  inputs:
+  - write_requirements
+  rules:
+  - next: implement
+- name: implement
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: coding
+      knowledge: implement-task
+      instruction: implement
+  inputs:
+  - write_requirements
+  - create_detailed_design
+  rules:
+  - next: check_implementation_tasks_fanout
+- name: check_implementation_tasks_fanout
+  fanout:
+    child: check_implementation_task
+    items: create_detailed_design.tasks
+  rules:
+  - next: check_implementation_tasks
+- name: check_implementation_task
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: implement-task
+      instruction: check_implementation_task
+  input: implement-task
+  inputs:
+  - write_requirements
+  artifact: implement-task-check-result
+- name: check_implementation_tasks
+  command: >-
+    releash workflow status "$RELEASH_WORKFLOW_EXECUTION_ID" --json |
+    jq -er '.artifacts[] |
+    select(.nodeName == "check_implementation_tasks_fanout") |
+    .value |
+    {complete: all(.[]; .complete == true),
+    incomplete_tasks: [.[] | select(.complete != true) | {task_id, reason}]}'
+  artifact: implement-task-check
+  inputs:
+  - check_implementation_tasks_fanout
+  rules:
+  - when: { on: complete, then: full_review_fanout }
+    next: implement_incomplete_tasks
+- name: implement_incomplete_tasks
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: coding
+      knowledge: implement-task
+      instruction: implement_incomplete_tasks
+  inputs:
+  - write_requirements
+  - create_detailed_design
+  - check_implementation_tasks
+  rules:
+  - loop_guard: { max_iterations: 2, on_exhausted: full_review_fanout }
+  - next: check_implementation_tasks_fanout
+
+# 03: full-review
+- name: full_review_fanout
+  fanout:
+    child:
+    - full_review_acceptance_opus
+    - full_review_acceptance_codex
+    - full_review_structure_opus
+    - full_review_structure_codex
+    - full_review_quality_opus
+    - full_review_quality_codex
+    - full_review_test_opus
+    - full_review_test_codex
+    - full_review_security_opus
+    - full_review_security_codex
+    - full_review_architecture_opus
+    - full_review_architecture_codex
+  rules:
+  - next: verify_full_review_fanout
+- name: full_review_acceptance_opus
+  session:
+    model: claude-opus-4-8
+    permission: edit
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-acceptance
+  inputs:
+  - write_requirements
+- name: full_review_acceptance_codex
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-acceptance
+  inputs:
+  - write_requirements
+- name: full_review_structure_opus
+  session:
+    model: claude-opus-4-8
+    permission: edit
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-structure
+  inputs:
+  - write_requirements
+- name: full_review_structure_codex
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-structure
+  inputs:
+  - write_requirements
+- name: full_review_quality_opus
+  session:
+    model: claude-opus-4-8
+    permission: edit
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-quality
+  inputs:
+  - write_requirements
+- name: full_review_quality_codex
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-quality
+  inputs:
+  - write_requirements
+- name: full_review_test_opus
+  session:
+    model: claude-opus-4-8
+    permission: edit
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-test
+  inputs:
+  - write_requirements
+- name: full_review_test_codex
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-test
+  inputs:
+  - write_requirements
+- name: full_review_security_opus
+  session:
+    model: claude-opus-4-8
+    permission: edit
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-security
+  inputs:
+  - write_requirements
+- name: full_review_security_codex
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-security
+  inputs:
+  - write_requirements
+- name: full_review_architecture_opus
+  session:
+    model: claude-opus-4-8
+    permission: edit
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-architecture
+  inputs:
+  - write_requirements
+- name: full_review_architecture_codex
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-architecture
+  inputs:
+  - write_requirements
+- name: verify_full_review_fanout
+  fanout:
+    child:
+    - verify_full_review_opus
+    - verify_full_review_codex
+  rules:
+  - next: check_full_review_threads
+- name: verify_full_review_opus
+  session:
+    model: claude-opus-4-8
+    permission: edit
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: full-review-verify-and-classify
+  inputs:
+  - write_requirements
+- name: verify_full_review_codex
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: full-review-verify-and-classify
+  inputs:
+  - write_requirements
+- name: check_full_review_threads
+  command: >-
+    releash review list --session-id "$RELEASH_SESSION_ID" --state open --json |
+    jq '{threads: map({thread_id: .id}), has_open_threads: (length > 0)}'
+  artifact: thread-scan
+  rules:
+  - when: { on: has_open_threads, then: fix_policy_fanout }
+    next: implementation_confirmation
+
+# 04: review-fix-policy
+- name: fix_policy_fanout
+  fanout:
+    child: decide_fix_policy_manual
+    items: check_full_review_threads.threads
+  rules:
+  - loop_guard: { max_iterations: 2, on_exhausted: implementation_confirmation }
+  - next: check_fix_policy_consistency
+- name: decide_fix_policy_manual
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: approval
+    facets:
+      policy: triage
+      knowledge:
+      - spec-requirements
+      - spec-behavior
+      - spec-design
+      - releash-thread-cli
+      instruction: decide_fix_policy_manual
+  input: thread-reference
+  inputs:
+  - write_requirements
+- name: check_fix_policy_consistency
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge:
+      - spec-requirements
+      - spec-behavior
+      - spec-design
+      - releash-thread-cli
+      instruction: check_fix_policy_consistency
+  artifact: policy-consistency-result
+  inputs:
+  - write_requirements
+  rules:
+  # TODO(#1489): reset_on: full_review_fanout の実装後は、各FullReviewでmax_iterations: 2に変更する。
+  - loop_guard: { max_iterations: 6, on_exhausted: create_fix_plan }
+  - switch:
+      on: verdict
+      cases:
+        NEEDS_CORRECTION: fix_policy_conflict_fanout
+        CONSISTENT: create_fix_plan
+- name: fix_policy_conflict_fanout
+  fanout:
+    child: correct_fix_policy_manual
+    items: check_fix_policy_consistency.tasks
+  rules:
+  - next: check_fix_policy_consistency
+- name: correct_fix_policy_manual
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: approval
+    facets:
+      policy: triage
+      knowledge:
+      - spec-requirements
+      - spec-behavior
+      - spec-design
+      - releash-thread-cli
+      instruction: correct_fix_policy_manual
+  input: policy-correction-task
+  inputs:
+  - write_requirements
+
+# 05: review-fix
+- name: create_fix_plan
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge:
+      - spec-requirements
+      - spec-behavior
+      - spec-design
+      - releash-thread-cli
+      instruction: create_fix_plan
+  artifact: fix-plan
+  inputs:
+  - write_requirements
+  - check_fix_policy_consistency
+  rules:
+  - next: implement_fix_plan
+- name: implement_fix_plan
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: coding
+      knowledge: releash-thread-cli
+      instruction: implement_fix_plan
+  inputs:
+  - create_fix_plan
+  rules:
+  - next: full_review_fanout
+- name: implementation_confirmation
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: approval
+    facets:
+      policy: reporting
+      knowledge: releash-thread-cli
+      instruction: implementation_confirmation
+  inputs:
+  - write_requirements

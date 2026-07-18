@@ -8,6 +8,8 @@ use super::storage;
 use crate::domain::workflow::validation::{self, ValidationError};
 
 const BUILTIN_FULL_CYCLE_DEVELOPMENT: &str = include_str!("builtin/full-cycle-development.yml");
+const BUILTIN_FULL_CYCLE_DEVELOPMENT_MANUAL: &str =
+    include_str!("builtin/full-cycle-development-manual.yml");
 const BUILTIN_HANDLE_PR_REVIEW: &str = include_str!("builtin/handle-pr-review.yml");
 
 struct BuiltinEntry {
@@ -21,6 +23,11 @@ const BUILTINS: &[BuiltinEntry] = &[
         filename: "full-cycle-development.yml",
         content: BUILTIN_FULL_CYCLE_DEVELOPMENT,
         description: "authoring_draft → implement_codex → full-review → review-fix-policy → review-fix を Human checkpoint 付きで一気通貫に実行する。",
+    },
+    BuiltinEntry {
+        filename: "full-cycle-development-manual.yml",
+        content: BUILTIN_FULL_CYCLE_DEVELOPMENT_MANUAL,
+        description: "Requirements、Behavior、Designの全項目とFullReviewの修正方針を人間と逐一合意しながら、Spec作成から実装、Review修正までを一気通貫に実行する。",
     },
     BuiltinEntry {
         filename: "handle-pr-review.yml",
@@ -328,6 +335,41 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
         kind: FacetKind::Instruction,
         key: "write_requirements",
         content: include_str!("builtin_facets/instructions/write_requirements.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "write_requirements_manual",
+        content: include_str!("builtin_facets/instructions/write_requirements_manual.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "write_behavior_manual",
+        content: include_str!("builtin_facets/instructions/write_behavior_manual.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "refine_requirements_manual",
+        content: include_str!("builtin_facets/instructions/refine_requirements_manual.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "write_design_manual",
+        content: include_str!("builtin_facets/instructions/write_design_manual.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "refine_behavior_manual",
+        content: include_str!("builtin_facets/instructions/refine_behavior_manual.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "decide_fix_policy_manual",
+        content: include_str!("builtin_facets/instructions/decide_fix_policy_manual.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "correct_fix_policy_manual",
+        content: include_str!("builtin_facets/instructions/correct_fix_policy_manual.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
