@@ -84,6 +84,10 @@ impl TurnEventLog {
         project(&self.events)
     }
 
+    pub fn queue_paused_at(&self) -> Option<f64> {
+        self.project().queue_paused_at
+    }
+
     #[cfg(test)]
     #[allow(dead_code)] // issues-1301 G-3: retained for projector performance/regression tests.
     pub fn project_call_count(&self) -> usize {

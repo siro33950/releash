@@ -73,6 +73,7 @@ export function BoundSessionChat({
 		getSessionCanChangeBackend,
 		getSessionPendingPermission,
 		getSessionPendingQueue = () => [],
+		getSessionQueuePaused,
 		getSessionStallObservation = () => null,
 		getSessionNotice = () => null,
 		getSessionRuntimeSlashCommands = () => [],
@@ -83,6 +84,7 @@ export function BoundSessionChat({
 		sendMessage,
 		interrupt,
 		cancelQueuedTurn = async () => {},
+		resumeQueue,
 		setPermissionMode,
 		setPlanMode,
 		setModel,
@@ -257,6 +259,7 @@ export function BoundSessionChat({
 	const canChangeBackend = getSessionCanChangeBackend(session.id);
 	const pendingPermission = getSessionPendingPermission(session.id);
 	const pendingQueue = getSessionPendingQueue(session.id);
+	const queuePaused = getSessionQueuePaused(session.id);
 	const stallObservation = getSessionStallObservation(session.id);
 	const notice = getSessionNotice(session.id);
 	const runtimeSlashCommands = getSessionRuntimeSlashCommands(session.id);
@@ -278,6 +281,7 @@ export function BoundSessionChat({
 			selectedModel={selectedModel}
 			pendingPermission={pendingPermission}
 			pendingQueue={pendingQueue}
+			queuePaused={queuePaused}
 			stallObservation={stallObservation}
 			notice={notice}
 			runtimeSlashCommands={runtimeSlashCommands}
@@ -292,6 +296,7 @@ export function BoundSessionChat({
 			onCancelQueuedTurn={(queuedTurnId) =>
 				cancelQueuedTurn(session.id, queuedTurnId)
 			}
+			onResumeQueue={() => resumeQueue(session.id)}
 			onLoadOlderMessages={() => loadOlderMessages(session.id)}
 			onEvictOlderMessages={(request) =>
 				evictOlderMessages(session.id, request)

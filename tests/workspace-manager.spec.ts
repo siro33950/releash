@@ -527,6 +527,102 @@ test.describe("Workspace Manager", () => {
 			.toBe(true);
 	});
 
+	test("Codex send直後のStopは再押下できqueueとdraftを保持してpausedで終端する", async ({
+		page,
+	}) => {
+		const worktreePath = "/test/repo-worktrees/feat-wip";
+		const sessionId = "codex-stop-session";
+		const config = buildMockConfig({
+			list_branches_with_status: kanbanBranches.filter(
+				(branch) => branch.name === "feat/wip",
+			),
+			list_workspace_worktree_nodes: {
+				nodes: [
+					{
+						kind: "node",
+						id: "node-codex-stop",
+						title: "Codex stop",
+						status: "running",
+						contentKind: "session",
+						capabilities: { canApprove: false, canClose: false },
+						updatedAt: 1000,
+					},
+				],
+				preferredNodeId: null,
+			},
+			get_workspace_node_detail: {
+				id: "node-codex-stop",
+				title: "Codex stop",
+				status: "running",
+				capabilities: { canApprove: false, canClose: false },
+				updatedAt: 1000,
+				content: { kind: "session", sessionId },
+			},
+			get_session: {
+				...rawSession(sessionId, worktreePath, "Starting Codex turn"),
+				backendId: "codex",
+				turnPhase: "streaming",
+				pendingQueue: [
+					{
+						id: "queued-follow-up",
+						contentPreview: "queued follow-up",
+						createdAt: 1001,
+						permissionMode: "edit",
+						imageCount: 1,
+					},
+				],
+				pendingQueueCount: 1,
+				queuePaused: false,
+			},
+			interrupt_agent_query: null,
+			resume_agent_queue: null,
+		});
+		await setupTauriMock(page, config);
+		await waitForApp(page);
+		await page.getByRole("button", { name: "Codex stop, running" }).click();
+		const composer = page.getByPlaceholder("Send a message...");
+		await composer.fill("draft must survive stop");
+
+		await page.getByRole("button", { name: "Interrupt agent" }).click();
+		await page.getByRole("button", { name: "Stopping agent" }).click();
+		await expect
+			.poll(() =>
+				page.evaluate(
+					() =>
+						window.__TAURI_INTERNALS__?.invocations.filter(
+							(entry) => entry.cmd === "interrupt_agent_query",
+						).length ?? 0,
+				),
+			)
+			.toBe(2);
+
+		await emitTauriEvent(page, "agent-session-state-changed", {
+			chat_session_id: sessionId,
+			turn_phase: "idle",
+			exit_code: 1,
+			completed_at: 1010,
+			interrupted: true,
+			session_state: "error",
+			queue_paused: true,
+			pending_permission_request: null,
+			pending_permission_state_revision: 2,
+		});
+
+		await expect(composer).toHaveValue("draft must survive stop");
+		await expect(page.getByText("queued follow-up", { exact: true })).toBeVisible();
+		await expect(page.getByRole("button", { name: "Resume queue" })).toBeVisible();
+		await page.getByRole("button", { name: "Resume queue" }).click();
+		await expect
+			.poll(() =>
+				page.evaluate(() =>
+					window.__TAURI_INTERNALS__?.invocations.some(
+						(entry) => entry.cmd === "resume_agent_queue",
+					) ?? false,
+				),
+			)
+			.toBe(true);
+	});
+
 	test("Fanout branch nests child Nodes and only toggles expansion", async ({
 		page,
 	}) => {

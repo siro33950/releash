@@ -726,6 +726,31 @@ describe("agent-streaming-delta event", () => {
 });
 
 describe("agent-session-state-changed event", () => {
+	it("mirrors backend-owned queue pause changes", () => {
+		listenResolvers = [];
+		listenCallbacks.clear();
+		const refs = makeRefs();
+
+		renderHook(() => useAgentSdkListeners(refs));
+		for (const { resolve } of listenResolvers) resolve(vi.fn());
+
+		const cb = listenCallbacks.get("agent-session-state-changed");
+		cb?.({
+			payload: {
+				chat_session_id: "session-1",
+				turn_phase: "streaming",
+				exit_code: null,
+				queue_paused: true,
+			},
+		});
+
+		expect(refs.dispatch).toHaveBeenCalledWith({
+			type: "SET_QUEUE_PAUSED",
+			sessionId: "session-1",
+			value: true,
+		});
+	});
+
 	it("dispatches SET_TURN_PHASE when streaming phase is received", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();

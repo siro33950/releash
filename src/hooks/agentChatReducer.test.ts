@@ -50,6 +50,7 @@ describe("agentChatReducer", () => {
 			pendingPermissionStateRevisions: {},
 			clearedPendingPermissionIds: {},
 			pendingQueues: {},
+			queuePaused: {},
 			stallObservations: {},
 			latestTokenUsage: {},
 			runtimeSlashCommands: {},

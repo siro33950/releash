@@ -7,8 +7,8 @@ use parking_lot::RwLock;
 use crate::usecase::agent_session::event_log::AgentSessionEvent;
 use crate::usecase::agent_session::session::{
     ChatMessage, ChatSession, MessagePart, PageCursor, SessionAttachment,
-    SessionEventLogRecoverySignal, SessionMeta, SessionPage, SessionReviewContext,
-    SessionReviewContextReader, SessionToolOutput,
+    SessionEventLogRecoverySignal, SessionMeta, SessionPage, SessionQueuePauseReader,
+    SessionReviewContext, SessionReviewContextReader, SessionToolOutput,
 };
 
 mod attachment_blob;
@@ -200,6 +200,16 @@ impl SessionEventLogRecoverySignal for FileSessionStorage {
     }
 }
 
+impl SessionQueuePauseReader for FileSessionStorage {
+    fn load_queue_paused_at(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+    ) -> Result<Option<f64>, String> {
+        FileSessionStorage::load_queue_paused_at(self, app_data_dir, session_id)
+    }
+}
+
 impl crate::domain::agent_session::AgentSessionWriter for FileSessionStorage {
     fn write_session_title(
         &self,
@@ -327,5 +337,14 @@ impl crate::domain::agent_session::AgentSessionWriter for FileSessionStorage {
             events,
             prepare,
         )
+    }
+
+    fn append_session_events(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        events: &[Self::Event],
+    ) -> Result<(), String> {
+        FileSessionStorage::append_session_events(self, app_data_dir, session_id, events)
     }
 }

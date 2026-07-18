@@ -59,6 +59,9 @@ pub(crate) struct RuntimeSessionState {
     pub terminal_turn_id: Option<u64>,
     pub pending_permission_request: Option<PermissionRequestMsg>,
     pub pending_queue: VecDeque<QueuedTurnInput>,
+    pub queue_paused: bool,
+    pub queue_paused_at: Option<f64>,
+    pub interrupt_requested_generation: Option<u64>,
     pub current_turn_input: Option<QueuedTurnInput>,
     pub latest_token_usage: Option<TokenUsage>,
     pub last_progress_at: Option<Instant>,
@@ -116,6 +119,10 @@ impl PendingStreamDelta {
 
 impl RuntimeSessionState {
     pub(crate) fn new(backend_id: String) -> Self {
+        Self::with_queue_pause(backend_id, None)
+    }
+
+    pub(crate) fn with_queue_pause(backend_id: String, queue_paused_at: Option<f64>) -> Self {
         Self {
             backend_id,
             runtime: None,
@@ -144,6 +151,9 @@ impl RuntimeSessionState {
             terminal_turn_id: None,
             pending_permission_request: None,
             pending_queue: VecDeque::new(),
+            queue_paused: queue_paused_at.is_some(),
+            queue_paused_at,
+            interrupt_requested_generation: None,
             current_turn_input: None,
             latest_token_usage: None,
             last_progress_at: None,
@@ -169,7 +179,17 @@ impl RuntimeSessionState {
         self.runtime_epoch
     }
 
-    pub(crate) fn reset_for_turn(&mut self, turn_id: u64, message_id: String) {
+    pub(crate) fn register_turn_start_intent(&mut self, turn_id: u64, message_id: String) -> u64 {
+        self.phase = RuntimeSessionPhase::Streaming;
+        self.streaming_message_id = Some(message_id.clone());
+        self.current_turn_id = Some(turn_id);
+        self.last_turn_id = Some(turn_id);
+        self.terminal_turn_id = None;
+        self.generation = self.generation.saturating_add(1);
+        self.generation
+    }
+
+    pub(crate) fn commit_turn_start(&mut self, message_id: String) {
         self.phase = RuntimeSessionPhase::Streaming;
         self.streaming_message_id = Some(message_id.clone());
         self.last_agent_message_id = Some(message_id);
@@ -186,9 +206,6 @@ impl RuntimeSessionState {
         self.last_stream_persist_at = None;
         self.stream_flush_scheduled = false;
         self.pending_trailing_fatal_message = None;
-        self.current_turn_id = Some(turn_id);
-        self.last_turn_id = Some(turn_id);
-        self.terminal_turn_id = None;
         self.clear_pending_permission_request();
         self.current_turn_input = None;
         let now = Instant::now();
@@ -201,7 +218,11 @@ impl RuntimeSessionState {
         self.stall_signal_count = 0;
         self.stall_recovery_attempts = 0;
         self.stall_observation_active = false;
-        self.generation = self.generation.saturating_add(1);
+    }
+
+    pub(crate) fn reset_for_turn(&mut self, turn_id: u64, message_id: String) {
+        self.register_turn_start_intent(turn_id, message_id.clone());
+        self.commit_turn_start(message_id);
     }
 
     pub(crate) fn mark_progress(&mut self, at: Instant) -> bool {
@@ -265,3 +286,53 @@ impl RuntimeSessionState {
 }
 
 pub(crate) type RuntimeSessionMap = HashMap<String, RuntimeSessionState>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn queue_pause_is_initialized_false_and_survives_turn_state_changes() {
+        let mut state = RuntimeSessionState::new("codex".to_string());
+        assert!(!state.queue_paused);
+
+        state.queue_paused = true;
+        state.queue_paused_at = Some(1.0);
+        state.reset_for_turn(1, "message-1".to_string());
+        assert!(state.queue_paused);
+        assert_eq!(state.queue_paused_at, Some(1.0));
+
+        state.rollback_started_turn();
+        assert!(state.queue_paused);
+        assert_eq!(state.queue_paused_at, Some(1.0));
+    }
+
+    #[test]
+    fn durable_queue_pause_hydrates_runtime_state() {
+        let state = RuntimeSessionState::with_queue_pause("codex".to_string(), Some(42.0));
+
+        assert!(state.queue_paused);
+        assert_eq!(state.queue_paused_at, Some(42.0));
+    }
+
+    #[test]
+    fn turn_start_intent_registers_ownership_before_committing_turn_state() {
+        let mut state = RuntimeSessionState::new("codex".to_string());
+
+        let generation = state.register_turn_start_intent(7, "message-7".to_string());
+
+        assert_eq!(generation, 1);
+        assert_eq!(state.phase, RuntimeSessionPhase::Streaming);
+        assert_eq!(state.current_turn_id, Some(7));
+        assert_eq!(state.last_turn_id, Some(7));
+        assert_eq!(state.streaming_message_id.as_deref(), Some("message-7"));
+        assert!(state.turn_started_at.is_none());
+        assert!(state.last_progress_at.is_none());
+
+        state.commit_turn_start("message-7".to_string());
+
+        assert_eq!(state.generation, generation);
+        assert!(state.turn_started_at.is_some());
+        assert!(state.last_progress_at.is_some());
+    }
+}

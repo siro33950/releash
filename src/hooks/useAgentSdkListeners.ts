@@ -30,6 +30,7 @@ interface SessionStateChanged {
 	completed_at?: number | null;
 	interrupted?: boolean;
 	session_state?: SessionState | null;
+	queue_paused?: boolean;
 	pending_permission_request?: PermissionRequest | null;
 	pending_permission_state_revision?: number | null;
 }
@@ -459,6 +460,7 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 				completed_at,
 				interrupted,
 				session_state,
+				queue_paused,
 				pending_permission_request,
 				pending_permission_state_revision,
 			} = event.payload;
@@ -483,6 +485,14 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 				request: pending_permission_request ?? null,
 				...pendingPermissionStateRevision,
 			});
+
+			if (typeof queue_paused === "boolean") {
+				dispatch({
+					type: "SET_QUEUE_PAUSED",
+					sessionId: chat_session_id,
+					value: queue_paused,
+				});
+			}
 
 			if (turn_phase === "idle") {
 				dispatch({

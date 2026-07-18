@@ -199,6 +199,17 @@ pub enum AgentSessionEvent {
         prompt: PromptInput,
         at: f64,
     },
+    TurnInterruptRequested {
+        turn_id: TurnId,
+        at: f64,
+    },
+    QueuePaused {
+        at: f64,
+    },
+    QueueResumed {
+        expected_paused_at: f64,
+        at: f64,
+    },
     TextRecorded {
         turn_id: TurnId,
         message_id: String,

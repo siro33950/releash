@@ -38,6 +38,8 @@ struct AgentSessionStateChangedEventPayload {
     completed_at: Option<f64>,
     interrupted: bool,
     session_state: Option<SessionState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    queue_paused: Option<bool>,
     pending_permission_request: Option<PermissionRequestMsg>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pending_permission_state_revision: Option<u64>,
@@ -109,6 +111,7 @@ impl AgentSessionEventNotifier for TauriAgentSessionEventNotifier {
                 completed_at: payload.completed_at,
                 interrupted: payload.interrupted,
                 session_state: payload.session_state,
+                queue_paused: payload.queue_paused,
                 pending_permission_request: payload.pending_permission_request,
                 pending_permission_state_revision: payload.pending_permission_state_revision,
             },
@@ -333,6 +336,7 @@ mod tests {
             completed_at: Some(2.0),
             interrupted: true,
             session_state: Some(SessionState::Error),
+            queue_paused: Some(true),
             pending_permission_request: Some(PermissionRequestMsg {
                 id: "req-1".to_string(),
                 tool_use_id: None,
@@ -352,6 +356,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(value["chat_session_id"], "session-1");
+        assert_eq!(value["queue_paused"], true);
         assert_eq!(value["turn_phase"], "waiting_permission");
         assert_eq!(value["session_state"], "error");
         assert_eq!(value["pending_permission_request"]["kind"], "tool_approval");

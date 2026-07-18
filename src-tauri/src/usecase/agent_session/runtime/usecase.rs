@@ -1,13 +1,10 @@
-use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-#[cfg(test)]
-use std::sync::OnceLock;
-use std::sync::{Arc, Mutex as StdMutex, RwLock};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, OwnedMutexGuard};
+use tokio::sync::Mutex;
 
 use crate::domain::agent_session::entities::{
     AttachmentPayload, InterruptReason as DomainInterruptReason, MessagePart as DomainMessagePart,
@@ -81,124 +78,25 @@ use super::streaming::{
     should_persist_streaming_snapshot, streaming_flush_decision, streaming_parts_byte_size,
     StreamingFlushDecision,
 };
+#[cfg(test)]
+use super::transitions::{
+    force_finalize_interrupted_turn, spawn_interrupt_watchdog_task, INTERRUPT_FORCE_FINALIZE_DELAY,
+};
+use super::transitions::{
+    SessionCommandLockGuard, SessionCommandLocks, SessionLockGuard, SessionLockMap,
+    SessionTransitionCoordinator,
+};
 
-struct SessionTransitionOwner {
-    lock: Arc<Mutex<()>>,
-    durable_turn_start: parking_lot::Mutex<Option<DurableTurnStart>>,
-}
-
-impl Default for SessionTransitionOwner {
-    fn default() -> Self {
-        Self {
-            lock: Arc::new(Mutex::new(())),
-            durable_turn_start: parking_lot::Mutex::new(None),
-        }
-    }
-}
-
-#[derive(Clone)]
-struct DurableTurnStart {
-    backend_id: String,
-    turn_id: u64,
-    agent_message_id: String,
-    current_turn_input: QueuedTurnInput,
-}
-
-type SessionRuntimeLock = Arc<SessionTransitionOwner>;
-
-#[derive(Default)]
-struct SessionRuntimeLockRegistry {
-    // Acquired asynchronously and never held while waiting for a per-session lock.
-    map: Mutex<HashMap<String, SessionRuntimeLock>>,
-    // Synchronous so guard Drop can always enqueue cleanup without a Tokio runtime.
-    pending_prune: StdMutex<HashSet<String>>,
-}
-
-type SessionRuntimeLocks = Arc<SessionRuntimeLockRegistry>;
+pub type SessionRuntimeLockGuard = SessionCommandLockGuard;
 
 #[cfg(test)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum TestSessionRuntimeLockOwner {
-    Task(tokio::task::Id),
-    Thread(std::thread::ThreadId),
-}
+type SessionRuntimeLocks = Arc<SessionCommandLocks>;
 
-#[cfg(test)]
-impl TestSessionRuntimeLockOwner {
-    fn current() -> Self {
-        tokio::task::try_id()
-            .map(Self::Task)
-            .unwrap_or_else(|| Self::Thread(std::thread::current().id()))
-    }
-}
-
-#[cfg(test)]
-fn held_session_locks() -> &'static StdMutex<HashMap<TestSessionRuntimeLockOwner, String>> {
-    static HELD_SESSION_LOCKS: OnceLock<StdMutex<HashMap<TestSessionRuntimeLockOwner, String>>> =
-        OnceLock::new();
-    HELD_SESSION_LOCKS.get_or_init(|| StdMutex::new(HashMap::new()))
-}
-
-#[cfg(test)]
-struct TestSessionRuntimeLockOwnerReservation {
-    owner: TestSessionRuntimeLockOwner,
-    session_id: String,
-}
-
-#[cfg(test)]
-impl TestSessionRuntimeLockOwnerReservation {
-    fn reserve(session_id: &str) -> Self {
-        let owner = TestSessionRuntimeLockOwner::current();
-        let mut held = held_session_locks()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        assert!(
-            !held.contains_key(&owner),
-            "session runtime lock re-entry is forbidden: owner={owner:?}, held={held:?}, requested={session_id}"
-        );
-        held.insert(owner.clone(), session_id.to_string());
-        Self {
-            owner,
-            session_id: session_id.to_string(),
-        }
-    }
-
-    fn adopt_for_current_flow(&mut self) {
-        let current_owner = TestSessionRuntimeLockOwner::current();
-        if current_owner == self.owner {
-            return;
-        }
-        let mut held = held_session_locks()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        assert_eq!(
-            held.get(&self.owner),
-            Some(&self.session_id),
-            "transferred session runtime lock must retain its acquiring test owner"
-        );
-        assert!(
-            !held.contains_key(&current_owner),
-            "session runtime lock transfer target must not already hold a lock: owner={current_owner:?}, held={held:?}"
-        );
-        held.remove(&self.owner);
-        held.insert(current_owner.clone(), self.session_id.clone());
-        self.owner = current_owner;
-    }
-}
-
-#[cfg(test)]
-impl Drop for TestSessionRuntimeLockOwnerReservation {
-    fn drop(&mut self) {
-        let mut held = held_session_locks()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        assert_eq!(
-            held.get(&self.owner),
-            Some(&self.session_id),
-            "session runtime lock must be released by its acquiring test flow"
-        );
-        held.remove(&self.owner);
-    }
+async fn acquire_session_runtime_lock(
+    session_locks: &SessionCommandLocks,
+    session_id: &str,
+) -> SessionRuntimeLockGuard {
+    session_locks.acquire(session_id).await
 }
 
 const CLOSE_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(200);
@@ -464,21 +362,24 @@ pub struct InitSessionsResponse {
 }
 
 #[derive(Clone)]
-struct RuntimeContext {
-    session_store: Arc<SessionStore>,
-    registry: Arc<AgentBackendRegistry>,
-    status_center: Arc<AgentStatusCenter>,
-    status_notifier: Arc<dyn AgentStatusNotifier>,
-    notifier: Arc<dyn AgentSessionEventNotifier>,
-    spawner: Arc<dyn AgentTaskSpawner>,
-    branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
-    instruction_source: Arc<dyn InstructionSourcePort>,
-    data_dir: Arc<PathBuf>,
-    sessions: Arc<Mutex<RuntimeSessionMap>>,
-    session_locks: SessionRuntimeLocks,
+pub(super) struct RuntimeContext {
+    pub(super) session_store: Arc<SessionStore>,
+    pub(super) registry: Arc<AgentBackendRegistry>,
+    pub(super) status_center: Arc<AgentStatusCenter>,
+    pub(super) status_notifier: Arc<dyn AgentStatusNotifier>,
+    pub(super) notifier: Arc<dyn AgentSessionEventNotifier>,
+    pub(super) spawner: Arc<dyn AgentTaskSpawner>,
+    pub(super) branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
+    pub(super) instruction_source: Arc<dyn InstructionSourcePort>,
+    pub(super) data_dir: Arc<PathBuf>,
+    pub(super) sessions: Arc<Mutex<RuntimeSessionMap>>,
+    pub(super) session_locks: SessionCommandLocks,
+    pub(super) runtime_event_locks: SessionLockMap,
+    pub(super) transitions: SessionTransitionCoordinator,
     shutdown_admission: Arc<ShutdownAdmission>,
-    workflow_turn_complete_notifier: Arc<RwLock<Option<Arc<dyn WorkflowTurnCompleteNotifier>>>>,
-    workflow_stall_notifier: Arc<RwLock<Option<Arc<dyn WorkflowStallNotifier>>>>,
+    pub(super) workflow_turn_complete_notifier:
+        Arc<RwLock<Option<Arc<dyn WorkflowTurnCompleteNotifier>>>>,
+    pub(super) workflow_stall_notifier: Arc<RwLock<Option<Arc<dyn WorkflowStallNotifier>>>>,
 }
 
 const PERSIST_MAX_ATTEMPTS: usize = 4;
@@ -576,7 +477,7 @@ enum SessionCloseMode {
 }
 
 pub struct AgentSessionRuntimeUsecase {
-    ctx: RuntimeContext,
+    pub(super) ctx: RuntimeContext,
 }
 
 impl AgentSessionRuntimeUsecase {
@@ -604,7 +505,9 @@ impl AgentSessionRuntimeUsecase {
                 instruction_source,
                 data_dir: Arc::new(data_dir),
                 sessions: Arc::new(Mutex::new(RuntimeSessionMap::new())),
-                session_locks: Arc::new(SessionRuntimeLockRegistry::default()),
+                session_locks: SessionCommandLocks::default(),
+                runtime_event_locks: SessionLockMap::default(),
+                transitions: SessionTransitionCoordinator::default(),
                 shutdown_admission: Arc::new(ShutdownAdmission::default()),
                 workflow_turn_complete_notifier: Arc::new(RwLock::new(None)),
                 workflow_stall_notifier: Arc::new(RwLock::new(None)),
@@ -671,6 +574,7 @@ impl AgentSessionRuntimeUsecase {
         let mentions = req.mentions.unwrap_or_default();
         let session_id = session.id.clone();
         let backend_id = required_backend_id(&session)?;
+        self.hydrate_runtime_session_state(&session).await?;
         self.recover_queued_turn_if_idle_without_runtime(&session_id)
             .await;
         let stalled_active_turn = if self.backend_supports_steering(&backend_id) {
@@ -807,6 +711,7 @@ impl AgentSessionRuntimeUsecase {
                 editor_context: req.editor_context,
                 system_prompt,
             },
+            None,
         )
         .await?;
 
@@ -867,19 +772,6 @@ impl AgentSessionRuntimeUsecase {
             }
             Err(error) => Err(error),
         }
-    }
-
-    pub async fn interrupt(&self, session_id: &str) -> Result<(), AgentRuntimeError> {
-        let runtime = {
-            let sessions = self.ctx.sessions.lock().await;
-            sessions
-                .get(session_id)
-                .and_then(|state| state.runtime.clone())
-        };
-        if let Some(runtime) = runtime {
-            runtime.interrupt().await.map_err(AgentRuntimeError::from)?;
-        }
-        Ok(())
     }
 
     pub async fn respond_permission(
@@ -1022,6 +914,7 @@ impl AgentSessionRuntimeUsecase {
                 session_id,
                 StateChange {
                     turn_phase: TurnPhase::Streaming,
+                    queue_paused: None,
                     pending_permission_request: None,
                     pending_permission_state_revision,
                     exit_code: None,
@@ -1352,9 +1245,7 @@ impl AgentSessionRuntimeUsecase {
                 if should_drain {
                     self.drain_closing_turn(session_id).await;
                 }
-                let guard = acquire_session_runtime_lock(&self.ctx.session_locks, session_id).await;
-                publish_durable_turn_start(&self.ctx, session_id, &guard.owner).await;
-                guard
+                acquire_session_runtime_lock(&self.ctx.session_locks, session_id).await
             }
             SessionCloseMode::IfIdle => session_guard,
         };
@@ -1391,23 +1282,10 @@ impl AgentSessionRuntimeUsecase {
     pub async fn close_all(&self) -> Result<(), AgentRuntimeError> {
         self.ctx.shutdown_admission.begin_shutdown();
         self.ctx.shutdown_admission.wait_for_idle().await;
-        let mut session_ids = {
+        let session_ids = {
             let sessions = self.ctx.sessions.lock().await;
             sessions.keys().cloned().collect::<Vec<_>>()
         };
-        let pending_session_ids = {
-            let session_locks = self.ctx.session_locks.map.lock().await;
-            session_locks
-                .iter()
-                .filter(|(_, owner)| owner.durable_turn_start.lock().is_some())
-                .map(|(session_id, _)| session_id.clone())
-                .collect::<Vec<_>>()
-        };
-        for session_id in pending_session_ids {
-            if !session_ids.contains(&session_id) {
-                session_ids.push(session_id);
-            }
-        }
         let results = futures_util::future::join_all(
             session_ids
                 .iter()
@@ -1637,27 +1515,34 @@ impl AgentSessionRuntimeUsecase {
         else {
             return Ok(None);
         };
+        let backend_id = required_backend_id(&session)?;
+        let durable_queue_paused_at = self
+            .ctx
+            .session_store
+            .load_queue_paused_at(&self.ctx.data_dir, session_id)
+            .map_err(AgentRuntimeError::Other)?;
         let (
             mut turn_phase,
             pending_queue,
+            queue_paused,
             latest_token_usage,
             pending_permission_request,
             pending_permission_state_revision,
         ) = {
-            let sessions = self.ctx.sessions.lock().await;
-            match sessions.get(session_id) {
-                Some(state) => (
-                    TurnPhase::from(state.phase),
-                    pending_queue_view(state),
-                    state.latest_token_usage,
-                    (state.runtime.is_some()
-                        && state.phase == RuntimeSessionPhase::WaitingPermission)
-                        .then(|| state.pending_permission_request.clone())
-                        .flatten(),
-                    state.pending_permission_state_revision,
-                ),
-                None => (TurnPhase::Idle, Vec::new(), None, None, 0),
-            }
+            let mut sessions = self.ctx.sessions.lock().await;
+            let state = sessions.entry(session_id.to_string()).or_insert_with(|| {
+                RuntimeSessionState::with_queue_pause(backend_id, durable_queue_paused_at)
+            });
+            (
+                TurnPhase::from(state.phase),
+                pending_queue_view(state),
+                state.queue_paused,
+                state.latest_token_usage,
+                (state.runtime.is_some() && state.phase == RuntimeSessionPhase::WaitingPermission)
+                    .then(|| state.pending_permission_request.clone())
+                    .flatten(),
+                state.pending_permission_state_revision,
+            )
         };
         if pending_permission_request.is_some() {
             turn_phase = TurnPhase::WaitingPermission;
@@ -1674,6 +1559,7 @@ impl AgentSessionRuntimeUsecase {
             can_change_backend,
             pending_queue_count: pending_queue.len(),
             pending_queue,
+            queue_paused,
             pending_permission_request,
             pending_permission_state_revision,
             initial_page: Some(InitialSessionPage {
@@ -1772,10 +1658,8 @@ impl AgentSessionRuntimeUsecase {
     /// stdin writes must be limited to the smallest range required for per-session ordering.
     /// UI and event notifications, including session state-change emits, must run after the guard
     /// is dropped.
-    pub async fn acquire_session_lock(&self, session_id: &str) -> SessionRuntimeLockGuard {
-        let guard = acquire_session_runtime_lock(&self.ctx.session_locks, session_id).await;
-        publish_durable_turn_start(&self.ctx, session_id, &guard.owner).await;
-        guard
+    pub async fn acquire_session_lock(&self, session_id: &str) -> SessionCommandLockGuard {
+        self.ctx.session_locks.acquire(session_id).await
     }
 
     /// Waits for backend recovery and acquires exclusive session control.
@@ -1802,12 +1686,7 @@ impl AgentSessionRuntimeUsecase {
 
     #[cfg(test)]
     pub(crate) fn session_runtime_lock_is_held_for_test(&self, session_id: &str) -> bool {
-        let Ok(locks) = self.ctx.session_locks.map.try_lock() else {
-            return true;
-        };
-        locks
-            .get(session_id)
-            .is_some_and(|owner| owner.lock.try_lock().is_err())
+        self.ctx.session_locks.is_held_for_test(session_id)
     }
 
     pub async fn start_turn_locked(
@@ -1827,6 +1706,19 @@ impl AgentSessionRuntimeUsecase {
             .get_session_shell(&self.ctx.data_dir, session_id)
             .map_err(AgentRuntimeError::Other)?
             .ok_or_else(|| AgentRuntimeError::Other(format!("Session not found: {session_id}")))?;
+        let queue_transition_guard = self.ctx.transitions.acquire(session_id).await;
+        self.hydrate_runtime_session_state(&session).await?;
+        let queue_paused = {
+            let sessions = self.ctx.sessions.lock().await;
+            sessions
+                .get(session_id)
+                .is_some_and(|state| state.queue_paused)
+        };
+        if queue_paused {
+            return Err(AgentRuntimeError::Other(format!(
+                "Agent queue is paused for session {session_id}; resume it before starting a workflow turn"
+            )));
+        }
         if session.permission_mode != permission_mode.as_str() {
             self.ctx
                 .session_store
@@ -1880,6 +1772,7 @@ impl AgentSessionRuntimeUsecase {
                 editor_context: None,
                 system_prompt,
             },
+            Some(queue_transition_guard),
         )
         .await
     }
@@ -2110,6 +2003,7 @@ impl AgentSessionRuntimeUsecase {
         human_message: &ChatMessage,
         agent_message_id: String,
         mut payload: TurnStartPayload,
+        queue_transition_guard: Option<SessionLockGuard>,
     ) -> Result<(), AgentRuntimeError> {
         let had_runtime = self.live_runtime(&session.id).await.is_some();
         let restore_policy =
@@ -2154,7 +2048,15 @@ impl AgentSessionRuntimeUsecase {
             )
             .map_err(AgentRuntimeError::Other)?
             .unwrap_or_else(|| human_message.clone());
-        let transition_owner = session_transition_owner(&self.ctx.session_locks, &session.id).await;
+        let queue_paused_at = self
+            .ctx
+            .session_store
+            .load_queue_paused_at(&self.ctx.data_dir, &session.id)
+            .map_err(AgentRuntimeError::Other)?;
+        let queue_transition_guard = match queue_transition_guard {
+            Some(guard) => guard,
+            None => self.ctx.transitions.acquire(&session.id).await,
+        };
         let mut current_turn_input = QueuedTurnInput::new(
             payload.prompt.clone(),
             payload.permission_mode,
@@ -2167,7 +2069,24 @@ impl AgentSessionRuntimeUsecase {
         );
         current_turn_input.existing_human_message_id = Some(human_message.id.clone());
         current_turn_input.existing_agent_message_id = Some(agent_message_id.clone());
-        self.ctx
+        let generation = {
+            let mut sessions = self.ctx.sessions.lock().await;
+            let state = sessions.entry(session.id.clone()).or_insert_with(|| {
+                RuntimeSessionState::with_queue_pause(backend_id.clone(), queue_paused_at)
+            });
+            if state.queue_paused {
+                return Err(AgentRuntimeError::Other(format!(
+                    "Agent queue is paused for session {}; resume it before starting a turn",
+                    session.id
+                )));
+            }
+            let generation = state.register_turn_start_intent(turn_id, agent_message_id.clone());
+            state.current_turn_input = Some(current_turn_input.clone());
+            generation
+        };
+        drop(queue_transition_guard);
+        if let Err(error) = self
+            .ctx
             .session_store
             .append_turn_started_and_project_state(
                 &self.ctx.data_dir,
@@ -2180,21 +2099,71 @@ impl AgentSessionRuntimeUsecase {
                     at: prompt_message.timestamp,
                 },
             )
-            .map_err(AgentRuntimeError::Other)?;
-        *transition_owner.durable_turn_start.lock() = Some(DurableTurnStart {
-            backend_id,
-            turn_id,
-            agent_message_id: agent_message_id.clone(),
-            current_turn_input,
-        });
-        let generation = publish_durable_turn_start(&self.ctx, &session.id, &transition_owner)
-            .await
-            .expect("durable turn start must be published by its transition owner");
-        let runtime = match self
-            .ensure_runtime(session, payload.system_prompt.clone())
-            .await
         {
-            Ok(runtime) => runtime,
+            let rollback_guard = self.ctx.transitions.acquire(&session.id).await;
+            let mut sessions = self.ctx.sessions.lock().await;
+            if let Some(state) = sessions.get_mut(&session.id) {
+                if state.generation == generation
+                    && state.interrupt_requested_generation != Some(generation)
+                {
+                    state.rollback_started_turn();
+                }
+            }
+            drop(sessions);
+            drop(rollback_guard);
+            return Err(AgentRuntimeError::Other(error));
+        }
+        let commit_guard = self.ctx.transitions.acquire(&session.id).await;
+        let (start_committed, interrupt_was_accepted) = {
+            let mut sessions = self.ctx.sessions.lock().await;
+            match sessions.get_mut(&session.id) {
+                Some(state)
+                    if state.generation == generation
+                        && state.current_turn_id == Some(turn_id)
+                        && state.phase != RuntimeSessionPhase::Idle =>
+                {
+                    let interrupt_was_accepted =
+                        state.interrupt_requested_generation == Some(generation);
+                    if !interrupt_was_accepted && !state.queue_paused {
+                        state.commit_turn_start(agent_message_id.clone());
+                        state.current_turn_input = Some(current_turn_input);
+                        (true, false)
+                    } else {
+                        (false, interrupt_was_accepted)
+                    }
+                }
+                _ => (false, false),
+            }
+        };
+        drop(commit_guard);
+        if interrupt_was_accepted {
+            let (notification, _) = complete_turn_with_acceptance(
+                &self.ctx,
+                &session.id,
+                Some(generation),
+                TurnResult::Interrupted {
+                    reason: DomainInterruptReason::Abort,
+                    error: None,
+                },
+            )
+            .await
+            .map_err(AgentRuntimeError::Other)?;
+            if let Some(notification) = notification {
+                dispatch_workflow_turn_complete_notification(
+                    &self.ctx.workflow_turn_complete_notifier,
+                    notification,
+                )
+                .await;
+            }
+            return Ok(());
+        }
+        if !start_committed {
+            return Ok(());
+        }
+        let runtime_result = self
+            .ensure_runtime_for_turn(session, payload.system_prompt.clone(), generation)
+            .await;
+        let runtime_result = match runtime_result {
             Err(AgentRuntimeError::BackendSessionLost { .. }) => {
                 recover_backend_session(
                     &self.ctx,
@@ -2204,55 +2173,54 @@ impl AgentSessionRuntimeUsecase {
                 .await?;
                 return Ok(());
             }
-            Err(error) => {
-                {
-                    let mut sessions = self.ctx.sessions.lock().await;
-                    if let Some(state) = sessions.get_mut(&session.id) {
-                        if state.generation == generation {
-                            state.rollback_started_turn();
-                        }
+            result => result,
+        };
+        let runtime = {
+            let _runtime_event_guard = self.ctx.runtime_event_locks.acquire(&session.id).await;
+            let runtime = match runtime_result {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    let should_report_failure = {
+                        let sessions = self.ctx.sessions.lock().await;
+                        sessions.get(&session.id).is_some_and(|state| {
+                            state.generation == generation
+                                && state.phase != RuntimeSessionPhase::Idle
+                        })
+                    };
+                    if !should_report_failure {
+                        return Ok(());
                     }
-                }
-                let message = error.to_string();
-                if let Err(persist_error) = self
-                    .ctx
-                    .session_store
-                    .append_session_event_and_project_state(
-                        &self.ctx.data_dir,
+                    let message = error.to_string();
+                    let (notification, interrupt_was_accepted) = complete_turn_with_acceptance(
+                        &self.ctx,
                         &session.id,
-                        AgentSessionEvent::TurnInterrupted {
-                            turn_id,
-                            reason: EventInterruptReason::Crash,
-                            exit_code: 1,
-                            error: Some(message.clone()),
+                        Some(generation),
+                        TurnResult::Interrupted {
+                            reason: DomainInterruptReason::Crash,
+                            error: Some(message),
                         },
                     )
-                {
-                    log::warn!(
-                        "failed to record runtime open failure for {}: {}",
-                        session.id,
-                        persist_error
-                    );
+                    .await
+                    .map_err(AgentRuntimeError::Other)?;
+                    if let Some(notification) = notification {
+                        dispatch_workflow_turn_complete_notification(
+                            &self.ctx.workflow_turn_complete_notifier,
+                            notification,
+                        )
+                        .await;
+                    }
+                    return if interrupt_was_accepted {
+                        Ok(())
+                    } else {
+                        Err(error)
+                    };
                 }
-                emit_session_state_change(
-                    &self.ctx.session_store,
-                    &self.ctx.notifier,
-                    &self.ctx.status_center,
-                    &self.ctx.status_notifier,
-                    &self.ctx.data_dir,
-                    &session.id,
-                    StateChange {
-                        turn_phase: TurnPhase::Idle,
-                        pending_permission_request: None,
-                        pending_permission_state_revision: None,
-                        exit_code: Some(1),
-                        completed_at: Some(crate::usecase::agent_session::session::now_timestamp()),
-                        interrupted: true,
-                        session_state: Some(SessionState::Error),
-                    },
-                );
-                return Err(error);
+            };
+            if !turn_owns_runtime(&self.ctx, &session.id, generation, &runtime).await {
+                detach_runtime_if_current(&self.ctx, &session.id, &runtime).await;
+                return Ok(());
             }
+            runtime
         };
         let start_result = runtime
             .start_turn(TurnInput {
@@ -2272,8 +2240,12 @@ impl AgentSessionRuntimeUsecase {
                 editor_context: payload.editor_context.map(EditorContext::from),
             })
             .await;
+        let _runtime_event_guard = self.ctx.runtime_event_locks.acquire(&session.id).await;
         match start_result {
             Ok(()) => {
+                if !turn_owns_runtime(&self.ctx, &session.id, generation, &runtime).await {
+                    return Ok(());
+                }
                 if recovery_restore_required {
                     complete_context_reinjection_after_start(
                         &self.ctx,
@@ -2295,6 +2267,7 @@ impl AgentSessionRuntimeUsecase {
                     &session.id,
                     StateChange {
                         turn_phase: TurnPhase::Streaming,
+                        queue_paused: None,
                         pending_permission_request: None,
                         pending_permission_state_revision: None,
                         exit_code: None,
@@ -2306,53 +2279,33 @@ impl AgentSessionRuntimeUsecase {
                 Ok(())
             }
             Err(error) => {
-                {
-                    let mut sessions = self.ctx.sessions.lock().await;
-                    if let Some(state) = sessions.get_mut(&session.id) {
-                        if state.generation == generation {
-                            state.rollback_started_turn();
-                        }
-                    }
+                if !turn_runtime_is_current(&self.ctx, &session.id, generation, &runtime).await {
+                    return Ok(());
                 }
                 let message = error.to_string();
-                if let Err(persist_error) = self
-                    .ctx
-                    .session_store
-                    .append_session_event_and_project_state(
-                        &self.ctx.data_dir,
-                        &session.id,
-                        AgentSessionEvent::TurnInterrupted {
-                            turn_id,
-                            reason: EventInterruptReason::Crash,
-                            exit_code: 1,
-                            error: Some(message.clone()),
-                        },
-                    )
-                {
-                    log::warn!(
-                        "failed to record start_turn failure for {}: {}",
-                        session.id,
-                        persist_error
-                    );
-                }
-                emit_session_state_change(
-                    &self.ctx.session_store,
-                    &self.ctx.notifier,
-                    &self.ctx.status_center,
-                    &self.ctx.status_notifier,
-                    &self.ctx.data_dir,
+                let (notification, interrupt_was_accepted) = complete_turn_with_acceptance(
+                    &self.ctx,
                     &session.id,
-                    StateChange {
-                        turn_phase: TurnPhase::Idle,
-                        pending_permission_request: None,
-                        pending_permission_state_revision: None,
-                        exit_code: Some(1),
-                        completed_at: Some(crate::usecase::agent_session::session::now_timestamp()),
-                        interrupted: true,
-                        session_state: Some(SessionState::Error),
+                    Some(generation),
+                    TurnResult::Interrupted {
+                        reason: DomainInterruptReason::Crash,
+                        error: Some(message),
                     },
-                );
-                Err(AgentRuntimeError::from(error))
+                )
+                .await
+                .map_err(AgentRuntimeError::Other)?;
+                if let Some(notification) = notification {
+                    dispatch_workflow_turn_complete_notification(
+                        &self.ctx.workflow_turn_complete_notifier,
+                        notification,
+                    )
+                    .await;
+                }
+                if interrupt_was_accepted {
+                    Ok(())
+                } else {
+                    Err(AgentRuntimeError::from(error))
+                }
             }
         }
     }
@@ -2365,7 +2318,35 @@ impl AgentSessionRuntimeUsecase {
         if let Some(runtime) = self.live_runtime(&session.id).await {
             return Ok(runtime);
         }
-        open_runtime_for_session(&self.ctx, session, system_prompt).await
+        open_runtime_for_session(&self.ctx, session, system_prompt, None).await
+    }
+
+    async fn ensure_runtime_for_turn(
+        &self,
+        session: &ChatSession,
+        system_prompt: Option<String>,
+        generation: u64,
+    ) -> Result<Arc<dyn AgentSessionRuntime>, AgentRuntimeError> {
+        let runtime_open_epoch = {
+            let mut sessions = self.ctx.sessions.lock().await;
+            let state = sessions.get_mut(&session.id).ok_or_else(|| {
+                AgentRuntimeError::Other(format!(
+                    "Runtime state disappeared before opening session {}",
+                    session.id
+                ))
+            })?;
+            if let Some(runtime) = state.runtime.clone() {
+                return Ok(runtime);
+            }
+            if state.generation != generation || state.phase == RuntimeSessionPhase::Idle {
+                return Err(AgentRuntimeError::Other(format!(
+                    "Turn no longer owns runtime open for session {}",
+                    session.id
+                )));
+            }
+            state.bump_runtime_epoch()
+        };
+        open_runtime_for_session(&self.ctx, session, system_prompt, Some(runtime_open_epoch)).await
     }
 
     fn spawn_stale_watchdog(
@@ -2410,12 +2391,31 @@ impl AgentSessionRuntimeUsecase {
             .is_some_and(|backend| backend.capabilities().steering)
     }
 
+    async fn hydrate_runtime_session_state(
+        &self,
+        session: &ChatSession,
+    ) -> Result<(), AgentRuntimeError> {
+        let backend_id = required_backend_id(session)?;
+        let queue_paused_at = self
+            .ctx
+            .session_store
+            .load_queue_paused_at(&self.ctx.data_dir, &session.id)
+            .map_err(AgentRuntimeError::Other)?;
+        let mut sessions = self.ctx.sessions.lock().await;
+        sessions
+            .entry(session.id.clone())
+            .or_insert_with(|| RuntimeSessionState::with_queue_pause(backend_id, queue_paused_at));
+        Ok(())
+    }
+
     async fn is_turn_busy(&self, session_id: &str) -> bool {
         let sessions = self.ctx.sessions.lock().await;
         sessions
             .get(session_id)
             .map(|state| {
-                state.phase != RuntimeSessionPhase::Idle || !state.pending_queue.is_empty()
+                state.phase != RuntimeSessionPhase::Idle
+                    || state.queue_paused
+                    || !state.pending_queue.is_empty()
             })
             .unwrap_or(false)
     }
@@ -2616,6 +2616,7 @@ async fn persist_with_retry<T>(
     Err(error)
 }
 
+#[cfg(test)]
 async fn append_session_event_and_project_state_with_retry(
     ctx: &RuntimeContext,
     session_id: &str,
@@ -2708,8 +2709,7 @@ fn spawn_stale_watchdog_task(
     spawner.spawn(Box::pin(async move {
         loop {
             let next = {
-                let _session_guard =
-                    acquire_session_runtime_lock(&ctx.session_locks, &session_id).await;
+                let _session_guard = ctx.session_locks.acquire(&session_id).await;
                 let mut sessions = ctx.sessions.lock().await;
                 let Some(state) = sessions.get_mut(&session_id) else {
                     return;
@@ -2762,8 +2762,7 @@ fn spawn_stale_watchdog_task(
             }
 
             let observation = {
-                let _session_guard =
-                    acquire_session_runtime_lock(&ctx.session_locks, &session_id).await;
+                let _session_guard = ctx.session_locks.acquire(&session_id).await;
                 let observation = {
                     let mut sessions = ctx.sessions.lock().await;
                     let Some(state) = sessions.get_mut(&session_id) else {
@@ -2880,6 +2879,7 @@ async fn open_runtime_for_session(
     ctx: &RuntimeContext,
     session: &ChatSession,
     system_prompt: Option<String>,
+    expected_runtime_epoch: Option<u64>,
 ) -> Result<Arc<dyn AgentSessionRuntime>, AgentRuntimeError> {
     let backend_id = required_backend_id(session)?;
     let backend = ctx.registry.get(&backend_id).ok_or_else(|| {
@@ -2904,6 +2904,10 @@ async fn open_runtime_for_session(
             }
         }
     });
+    let queue_paused_at = ctx
+        .session_store
+        .load_queue_paused_at(&ctx.data_dir, &session.id)
+        .map_err(AgentRuntimeError::Other)?;
     let extra_env = workflow_execution_env(session.workflow_node_context.as_ref());
     let mut runtime = backend
         .open_session(SessionSpec {
@@ -2928,12 +2932,24 @@ async fn open_runtime_for_session(
     let runtime: Arc<dyn AgentSessionRuntime> = Arc::from(runtime);
     let runtime_epoch = {
         let mut sessions = ctx.sessions.lock().await;
-        let state = sessions
-            .entry(session.id.clone())
-            .or_insert_with(|| RuntimeSessionState::new(backend_id.clone()));
+        let state = sessions.entry(session.id.clone()).or_insert_with(|| {
+            RuntimeSessionState::with_queue_pause(backend_id.clone(), queue_paused_at)
+        });
+        if expected_runtime_epoch.is_some_and(|epoch| {
+            state.runtime_epoch != epoch
+                || state.queue_paused
+                || state.interrupt_requested_generation == Some(state.generation)
+        }) {
+            drop(sessions);
+            runtime.close().await;
+            return Err(AgentRuntimeError::Other(format!(
+                "Runtime open was superseded for session {}",
+                session.id
+            )));
+        }
         state.backend_id = backend_id;
         state.runtime = Some(Arc::clone(&runtime));
-        state.bump_runtime_epoch()
+        expected_runtime_epoch.unwrap_or_else(|| state.bump_runtime_epoch())
     };
     spawn_event_pump_task(ctx, session.id.clone(), runtime_epoch, events);
     Ok(runtime)
@@ -2969,8 +2985,8 @@ fn spawn_event_pump_task(
     spawner.spawn(Box::pin(async move {
         while let Some(event) = events.next().await {
             let actions = {
-                let _session_guard =
-                    acquire_session_runtime_lock(&ctx.session_locks, &session_id).await;
+                let _session_guard = ctx.session_locks.acquire(&session_id).await;
+                let _runtime_event_guard = ctx.runtime_event_locks.acquire(&session_id).await;
                 apply_runtime_event(&ctx, &session_id, runtime_epoch, event).await
             };
             run_runtime_event_post_actions(&ctx, &session_id, actions).await;
@@ -3168,7 +3184,7 @@ async fn recover_backend_session(
         }
     };
 
-    if let Err(error) = open_runtime_for_session(ctx, &session, system_prompt).await {
+    if let Err(error) = open_runtime_for_session(ctx, &session, system_prompt, None).await {
         fail_backend_session_recovery(ctx, session_id, &error.to_string()).await;
         return Err(error);
     }
@@ -3291,6 +3307,7 @@ async fn fail_backend_session_recovery(ctx: &RuntimeContext, session_id: &str, e
         session_id,
         StateChange {
             turn_phase: TurnPhase::Idle,
+            queue_paused: None,
             pending_permission_request: None,
             pending_permission_state_revision: None,
             exit_code: Some(1),
@@ -3330,7 +3347,7 @@ async fn acquire_session_control_after_recovery(
 ) -> SessionRuntimeLockGuard {
     loop {
         wait_for_backend_session_recovery(ctx, session_id).await;
-        let guard = acquire_session_runtime_lock(&ctx.session_locks, session_id).await;
+        let guard = ctx.session_locks.acquire(session_id).await;
         let recovery_started = {
             let sessions = ctx.sessions.lock().await;
             sessions
@@ -3338,7 +3355,6 @@ async fn acquire_session_control_after_recovery(
                 .is_some_and(|state| state.backend_recovery.is_some())
         };
         if !recovery_started {
-            publish_durable_turn_start(ctx, session_id, &guard.owner).await;
             reconcile_incomplete_backend_recovery(ctx, session_id).await;
             return guard;
         }
@@ -3437,111 +3453,6 @@ async fn reconcile_incomplete_backend_recovery(ctx: &RuntimeContext, session_id:
     }
 }
 
-pub struct SessionRuntimeLockGuard {
-    session_id: String,
-    guard: Option<OwnedMutexGuard<()>>,
-    owner: SessionRuntimeLock,
-    locks: SessionRuntimeLocks,
-    #[cfg(test)]
-    test_owner_reservation: TestSessionRuntimeLockOwnerReservation,
-}
-
-#[cfg(test)]
-impl SessionRuntimeLockGuard {
-    pub(crate) fn adopt_for_current_test_flow(&mut self) {
-        self.test_owner_reservation.adopt_for_current_flow();
-    }
-}
-
-/// Acquires the per-session runtime lock used to serialize runtime state transitions.
-///
-/// While the returned guard is held, callers must not acquire another session runtime lock,
-/// including the same session recursively. Backend I/O awaits such as process startup and stdin
-/// writes must be limited to the smallest range required for per-session ordering. UI and event
-/// notifications, including session state-change emits, must run after the guard is dropped.
-async fn session_transition_owner(
-    session_locks: &SessionRuntimeLocks,
-    session_id: &str,
-) -> SessionRuntimeLock {
-    let mut locks = session_locks.map.lock().await;
-    let pending_prune = {
-        let mut pending = session_locks
-            .pending_prune
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        std::mem::take(&mut *pending)
-    };
-    let mut still_referenced = HashSet::new();
-    for pending_session_id in pending_prune {
-        if locks.get(&pending_session_id).is_some_and(|owner| {
-            Arc::strong_count(owner) == 1 && owner.durable_turn_start.lock().is_none()
-        }) {
-            locks.remove(&pending_session_id);
-        } else if locks.contains_key(&pending_session_id) {
-            still_referenced.insert(pending_session_id);
-        }
-    }
-    if !still_referenced.is_empty() {
-        session_locks
-            .pending_prune
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .extend(still_referenced);
-    }
-    locks
-        .entry(session_id.to_string())
-        .or_insert_with(|| Arc::new(SessionTransitionOwner::default()))
-        .clone()
-}
-
-async fn acquire_session_runtime_lock(
-    session_locks: &SessionRuntimeLocks,
-    session_id: &str,
-) -> SessionRuntimeLockGuard {
-    #[cfg(test)]
-    let test_owner_reservation = TestSessionRuntimeLockOwnerReservation::reserve(session_id);
-
-    let owner = session_transition_owner(session_locks, session_id).await;
-    let guard = Arc::clone(&owner.lock).lock_owned().await;
-    SessionRuntimeLockGuard {
-        session_id: session_id.to_string(),
-        guard: Some(guard),
-        owner,
-        locks: Arc::clone(session_locks),
-        #[cfg(test)]
-        test_owner_reservation,
-    }
-}
-
-async fn publish_durable_turn_start(
-    ctx: &RuntimeContext,
-    session_id: &str,
-    owner: &SessionTransitionOwner,
-) -> Option<u64> {
-    if owner.durable_turn_start.lock().is_none() {
-        return None;
-    }
-    let mut sessions = ctx.sessions.lock().await;
-    let pending = owner.durable_turn_start.lock().take()?;
-    let state = sessions
-        .entry(session_id.to_string())
-        .or_insert_with(|| RuntimeSessionState::new(pending.backend_id));
-    state.reset_for_turn(pending.turn_id, pending.agent_message_id);
-    state.current_turn_input = Some(pending.current_turn_input);
-    Some(state.generation)
-}
-
-impl Drop for SessionRuntimeLockGuard {
-    fn drop(&mut self) {
-        self.guard.take();
-        self.locks
-            .pending_prune
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(self.session_id.clone());
-    }
-}
-
 struct TurnStartPayload {
     prompt: String,
     images: Vec<ImageAttachment>,
@@ -3554,7 +3465,7 @@ struct TurnStartPayload {
 }
 
 #[derive(Default)]
-struct RuntimeEventPostActions {
+pub(super) struct RuntimeEventPostActions {
     workflow_notification: Option<WorkflowTurnCompleteNotification>,
     runtime_shutdowns: Vec<RuntimeShutdown>,
     drain_next_queued_turn: bool,
@@ -3576,14 +3487,14 @@ impl RuntimeEventPostActions {
         self.drain_next_queued_turn = true;
     }
 
-    fn close_runtime(&mut self, runtime: Option<Arc<dyn AgentSessionRuntime>>) {
+    pub(super) fn close_runtime(&mut self, runtime: Option<Arc<dyn AgentSessionRuntime>>) {
         if let Some(runtime) = runtime {
             self.runtime_shutdowns.push(RuntimeShutdown::Close(runtime));
         }
     }
 }
 
-async fn run_runtime_event_post_actions(
+pub(super) async fn run_runtime_event_post_actions(
     ctx: &RuntimeContext,
     session_id: &str,
     actions: RuntimeEventPostActions,
@@ -3603,9 +3514,42 @@ async fn run_runtime_event_post_actions(
         }
     }
     if actions.drain_next_queued_turn {
-        let _session_guard = acquire_session_runtime_lock(&ctx.session_locks, session_id).await;
+        let _session_guard = ctx.session_locks.acquire(session_id).await;
         start_next_queued_turn(ctx, session_id).await;
     }
+}
+
+pub(super) async fn turn_completion_post_actions(
+    ctx: &RuntimeContext,
+    session_id: &str,
+    workflow_notification: Option<WorkflowTurnCompleteNotification>,
+) -> RuntimeEventPostActions {
+    let queue_paused = {
+        let sessions = ctx.sessions.lock().await;
+        sessions
+            .get(session_id)
+            .is_some_and(|state| state.queue_paused)
+    };
+    let mut actions = RuntimeEventPostActions::workflow(workflow_notification);
+    if !queue_paused {
+        actions.drain();
+    }
+    actions
+}
+
+pub(super) async fn append_session_events_blocking(
+    ctx: &RuntimeContext,
+    session_id: &str,
+    events: Vec<AgentSessionEvent>,
+) -> Result<(), String> {
+    let session_store = Arc::clone(&ctx.session_store);
+    let data_dir = Arc::clone(&ctx.data_dir);
+    let session_id = session_id.to_string();
+    tokio::task::spawn_blocking(move || {
+        session_store.append_session_events(&data_dir, &session_id, &events)
+    })
+    .await
+    .map_err(|error| format!("Failed to join session event append task: {error}"))?
 }
 
 async fn dispatch_workflow_turn_complete_notification(
@@ -3958,8 +3902,9 @@ async fn apply_runtime_event(
                 .await
             {
                 Ok(true) => {
-                    start_next_queued_turn(ctx, session_id).await;
-                    return RuntimeEventPostActions::default();
+                    let mut actions = RuntimeEventPostActions::default();
+                    actions.drain();
+                    return actions;
                 }
                 Ok(false) => {}
                 Err(error) => {
@@ -4043,6 +3988,7 @@ async fn apply_runtime_event(
                     session_id,
                     StateChange {
                         turn_phase: TurnPhase::WaitingPermission,
+                        queue_paused: None,
                         pending_permission_request: Some(pending),
                         pending_permission_state_revision,
                         exit_code: None,
@@ -4130,12 +4076,9 @@ async fn apply_runtime_event(
                 if let Some(state) = sessions.get_mut(session_id) {
                     state.pending_trailing_fatal_message = trailing_fatal_message;
                 }
+                return RuntimeEventPostActions::workflow(workflow_notification);
             }
-            let mut actions = RuntimeEventPostActions::workflow(workflow_notification);
-            if !wait_for_trailing_fatal {
-                actions.drain();
-            }
-            return actions;
+            return turn_completion_post_actions(ctx, session_id, workflow_notification).await;
         }
         AgentRuntimeEvent::Fatal { message } => {
             log::warn!("agent runtime fatal for {session_id}: {message}");
@@ -4259,6 +4202,7 @@ async fn apply_runtime_event(
                             session_id,
                             StateChange {
                                 turn_phase: TurnPhase::Idle,
+                                queue_paused: None,
                                 pending_permission_request: None,
                                 pending_permission_state_revision: None,
                                 exit_code: Some(1),
@@ -5028,12 +4972,71 @@ fn merge_persisted_message_part(parts: &mut Vec<MessagePart>, incoming: MessageP
     }
 }
 
-async fn complete_turn(
+pub(super) async fn complete_turn(
     ctx: &RuntimeContext,
     session_id: &str,
     expected_generation: Option<u64>,
     result: crate::domain::agent_session::entities::TurnResult,
 ) -> Result<Option<WorkflowTurnCompleteNotification>, String> {
+    complete_turn_with_acceptance_and_persist_kind(
+        ctx,
+        session_id,
+        expected_generation,
+        result,
+        PersistFailureKind::FinalPartsRecorded,
+    )
+    .await
+    .map(|(notification, _)| notification)
+}
+
+async fn complete_turn_with_acceptance(
+    ctx: &RuntimeContext,
+    session_id: &str,
+    expected_generation: Option<u64>,
+    result: crate::domain::agent_session::entities::TurnResult,
+) -> Result<(Option<WorkflowTurnCompleteNotification>, bool), String> {
+    complete_turn_with_acceptance_and_persist_kind(
+        ctx,
+        session_id,
+        expected_generation,
+        result,
+        PersistFailureKind::FinalPartsRecorded,
+    )
+    .await
+}
+
+async fn complete_turn_with_acceptance_and_persist_kind(
+    ctx: &RuntimeContext,
+    session_id: &str,
+    expected_generation: Option<u64>,
+    result: crate::domain::agent_session::entities::TurnResult,
+    persist_kind: PersistFailureKind,
+) -> Result<(Option<WorkflowTurnCompleteNotification>, bool), String> {
+    let _queue_transition_guard = ctx.transitions.acquire(session_id).await;
+    let interrupt_was_accepted = {
+        let sessions = ctx.sessions.lock().await;
+        sessions.get(session_id).is_some_and(|state| {
+            state.interrupt_requested_generation == Some(state.generation)
+                && expected_generation.is_none_or(|generation| state.generation == generation)
+        })
+    };
+    let result = if interrupt_was_accepted {
+        match result {
+            TurnResult::Interrupted {
+                reason: DomainInterruptReason::Timeout,
+                error,
+            } => TurnResult::Interrupted {
+                reason: DomainInterruptReason::Timeout,
+                error,
+            },
+            _ => TurnResult::Interrupted {
+                reason: DomainInterruptReason::Abort,
+                error: None,
+            },
+        }
+    } else {
+        result
+    };
     let emit_crash_snapshot = matches!(
         &result,
         TurnResult::Interrupted {
@@ -5052,33 +5055,31 @@ async fn complete_turn(
         log::debug!(
             "skipping turn completion for {session_id}: turn already completed or generation mismatch (expected={expected_generation:?})"
         );
-        return Ok(None);
+        return Ok((None, false));
     }
     flush_streaming_update(ctx, session_id, true).await?;
     let completed_at = crate::usecase::agent_session::session::now_timestamp();
     let terminal = terminal_projection(&result);
-    let (message_id, parts, seq, turn_id, started_at, telemetry_dims) = {
+    let (message_id, parts, seq, turn_id, started_at, telemetry_dims, queue_paused) = {
         let sessions = ctx.sessions.lock().await;
         let Some(state) = sessions.get(session_id) else {
-            return Ok(None);
+            return Ok((None, false));
         };
         if state.phase == RuntimeSessionPhase::Idle
             || expected_generation.is_some_and(|generation| state.generation != generation)
         {
-            return Ok(None);
+            return Ok((None, false));
         }
-        let message_id = state.streaming_message_id.clone();
-        let turn_id = state.current_turn_id.or(state.last_turn_id);
-        let started_at = state.turn_started_at;
         let telemetry_dims =
             session_telemetry_dimensions(&ctx.session_store, &ctx.data_dir, session_id);
         (
-            message_id,
+            state.streaming_message_id.clone(),
             state.streaming_parts.clone(),
             state.streaming_delta_seq,
-            turn_id,
-            started_at,
+            state.current_turn_id.or(state.last_turn_id),
+            state.turn_started_at,
             telemetry_dims,
+            state.queue_paused,
         )
     };
     let mut projected = None;
@@ -5098,21 +5099,16 @@ async fn complete_turn(
             &parts,
             &terminal,
         )?;
-        let (model, persisted_parts) = persist_with_retry(
-            ctx,
-            session_id,
-            PersistFailureKind::FinalPartsRecorded,
-            || {
-                ctx.session_store.append_terminal_events_and_materialize(
-                    &ctx.data_dir,
-                    session_id,
-                    &events,
-                    &message_id,
-                    final_seq,
-                    completed_at,
-                )
-            },
-        )
+        let (model, persisted_parts) = persist_with_retry(ctx, session_id, persist_kind, || {
+            ctx.session_store.append_terminal_events_and_materialize(
+                &ctx.data_dir,
+                session_id,
+                &events,
+                &message_id,
+                final_seq,
+                completed_at,
+            )
+        })
         .await?;
         {
             let mut sessions = ctx.sessions.lock().await;
@@ -5122,6 +5118,7 @@ async fn complete_turn(
                 }
             }
         }
+        projected = Some(model);
         if emit_crash_snapshot {
             crash_snapshot = Some(PendingStreamDelta {
                 message_id,
@@ -5132,7 +5129,6 @@ async fn complete_turn(
                 authoritative: true,
             });
         }
-        projected = Some(model);
     }
     if let Some(snapshot) = crash_snapshot {
         emit_streaming_delta_or_retry(ctx, session_id, snapshot).await;
@@ -5158,12 +5154,12 @@ async fn complete_turn(
     let pending_permission_state_revision = {
         let mut sessions = ctx.sessions.lock().await;
         let Some(state) = sessions.get_mut(session_id) else {
-            return Ok(None);
+            return Ok((None, false));
         };
         if state.phase == RuntimeSessionPhase::Idle
             || expected_generation.is_some_and(|generation| state.generation != generation)
         {
-            return Ok(None);
+            return Ok((None, false));
         }
         state.phase = RuntimeSessionPhase::Idle;
         let pending_permission_state_revision = state.clear_pending_permission_request();
@@ -5187,6 +5183,7 @@ async fn complete_turn(
         state.streaming_message_id = None;
         state.current_turn_id = None;
         state.current_turn_input = None;
+        state.interrupt_requested_generation = None;
         state.domain_streaming_parts.clear();
         state.streaming_parts.clear();
         state.streaming_delta_seq = 0;
@@ -5214,6 +5211,7 @@ async fn complete_turn(
         session_id,
         StateChange {
             turn_phase: TurnPhase::Idle,
+            queue_paused: Some(queue_paused),
             pending_permission_request: None,
             pending_permission_state_revision: Some(pending_permission_state_revision),
             exit_code: Some(terminal.exit_code),
@@ -5222,25 +5220,93 @@ async fn complete_turn(
             session_state,
         },
     );
-    Ok(workflow_notification)
+    Ok((workflow_notification, interrupt_was_accepted))
 }
 
-async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &str) {
-    let (queued, runtime, backend_id) = {
-        let sessions = ctx.sessions.lock().await;
-        let Some(state) = sessions.get(session_id) else {
+async fn turn_owns_runtime(
+    ctx: &RuntimeContext,
+    session_id: &str,
+    generation: u64,
+    runtime: &Arc<dyn AgentSessionRuntime>,
+) -> bool {
+    let sessions = ctx.sessions.lock().await;
+    sessions.get(session_id).is_some_and(|state| {
+        state.generation == generation
+            && state.phase != RuntimeSessionPhase::Idle
+            && !state.queue_paused
+            && state.interrupt_requested_generation != Some(generation)
+            && state
+                .runtime
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, runtime))
+    })
+}
+
+async fn turn_runtime_is_current(
+    ctx: &RuntimeContext,
+    session_id: &str,
+    generation: u64,
+    runtime: &Arc<dyn AgentSessionRuntime>,
+) -> bool {
+    let sessions = ctx.sessions.lock().await;
+    sessions.get(session_id).is_some_and(|state| {
+        state.generation == generation
+            && state.phase != RuntimeSessionPhase::Idle
+            && state
+                .runtime
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, runtime))
+    })
+}
+
+async fn detach_runtime_if_current(
+    ctx: &RuntimeContext,
+    session_id: &str,
+    runtime: &Arc<dyn AgentSessionRuntime>,
+) {
+    let detached = {
+        let mut sessions = ctx.sessions.lock().await;
+        let Some(state) = sessions.get_mut(session_id) else {
+            return;
+        };
+        if !state
+            .runtime
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, runtime))
+        {
+            return;
+        }
+        let detached = state.runtime.take();
+        state.bump_runtime_epoch();
+        detached
+    };
+    if let Some(runtime) = detached {
+        let spawner = Arc::clone(&ctx.spawner);
+        spawner.spawn(Box::pin(async move {
+            runtime.close().await;
+        }));
+    }
+}
+
+pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &str) {
+    let (queued, runtime, runtime_open_epoch) = {
+        let mut sessions = ctx.sessions.lock().await;
+        let Some(state) = sessions.get_mut(session_id) else {
             return;
         };
         if state.closing
             || state.backend_recovery.is_some()
             || state.phase != RuntimeSessionPhase::Idle
+            || state.queue_paused
         {
             return;
         }
         let Some(queued) = state.pending_queue.front().cloned() else {
             return;
         };
-        (queued, state.runtime.clone(), state.backend_id.clone())
+        let runtime = state.runtime.clone();
+        let runtime_open_epoch = runtime.is_none().then(|| state.bump_runtime_epoch());
+        (queued, runtime, runtime_open_epoch)
     };
 
     let Some(session) = (match ctx
@@ -5285,58 +5351,69 @@ async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &str) {
     };
     let runtime = match runtime {
         Some(runtime) => runtime,
-        None => match open_runtime_for_session(ctx, &session, system_prompt.clone()).await {
-            Ok(runtime) => runtime,
-            Err(AgentRuntimeError::BackendSessionLost { .. }) => {
-                if let Err(error) = recover_backend_session(
-                    ctx,
-                    session_id,
-                    BackendSessionRecoveryReason::BackendSessionLost,
-                )
+        None => {
+            match open_runtime_for_session(ctx, &session, system_prompt.clone(), runtime_open_epoch)
                 .await
-                {
-                    log::warn!(
+            {
+                Ok(runtime) => runtime,
+                Err(AgentRuntimeError::BackendSessionLost { .. }) => {
+                    if let Err(error) = recover_backend_session(
+                        ctx,
+                        session_id,
+                        BackendSessionRecoveryReason::BackendSessionLost,
+                    )
+                    .await
+                    {
+                        log::warn!(
                         "failed to recover backend session for queued turn {session_id}: {error}"
                     );
+                    }
+                    return;
                 }
-                return;
-            }
-            Err(error) => {
-                log::warn!("failed to reopen runtime for queued turn {session_id}: {error}");
-                if let Err(persist_error) =
-                    persist_with_retry(ctx, session_id, PersistFailureKind::ReopenRuntime, || {
-                        ctx.session_store.set_session_state(
-                            &ctx.data_dir,
-                            session_id,
-                            SessionState::Error,
-                        )
-                    })
+                Err(error) => {
+                    log::warn!("failed to reopen runtime for queued turn {session_id}: {error}");
+                    if let Err(persist_error) = persist_with_retry(
+                        ctx,
+                        session_id,
+                        PersistFailureKind::ReopenRuntime,
+                        || {
+                            ctx.session_store.set_session_state(
+                                &ctx.data_dir,
+                                session_id,
+                                SessionState::Error,
+                            )
+                        },
+                    )
                     .await
-                {
-                    log::error!(
+                    {
+                        log::error!(
                         "failed to persist queued runtime reopen error for {session_id}: {persist_error}"
                     );
+                    }
+                    emit_session_state_change(
+                        &ctx.session_store,
+                        &ctx.notifier,
+                        &ctx.status_center,
+                        &ctx.status_notifier,
+                        &ctx.data_dir,
+                        session_id,
+                        StateChange {
+                            turn_phase: TurnPhase::Idle,
+                            queue_paused: None,
+                            pending_permission_request: None,
+                            pending_permission_state_revision: None,
+                            exit_code: Some(1),
+                            completed_at: Some(
+                                crate::usecase::agent_session::session::now_timestamp(),
+                            ),
+                            interrupted: true,
+                            session_state: Some(SessionState::Error),
+                        },
+                    );
+                    return;
                 }
-                emit_session_state_change(
-                    &ctx.session_store,
-                    &ctx.notifier,
-                    &ctx.status_center,
-                    &ctx.status_notifier,
-                    &ctx.data_dir,
-                    session_id,
-                    StateChange {
-                        turn_phase: TurnPhase::Idle,
-                        pending_permission_request: None,
-                        pending_permission_state_revision: None,
-                        exit_code: Some(1),
-                        completed_at: Some(crate::usecase::agent_session::session::now_timestamp()),
-                        interrupted: true,
-                        session_state: Some(SessionState::Error),
-                    },
-                );
-                return;
             }
-        },
+        }
     };
     let turn_id = match next_turn_id(&ctx.session_store, &ctx.data_dir, session_id) {
         Ok(turn_id) => turn_id,
@@ -5416,7 +5493,6 @@ async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &str) {
         }
     }
     let prompt = apply_restore_prompt_prefix(queued.content.clone(), &restore_plan);
-    let transition_owner = session_transition_owner(&ctx.session_locks, session_id).await;
     if let Err(error) = ctx.session_store.append_turn_started_and_project_state(
         &ctx.data_dir,
         session_id,
@@ -5431,17 +5507,20 @@ async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &str) {
         log::warn!("failed to append queued TurnStarted for {session_id}: {error}");
         return;
     }
-    *transition_owner.durable_turn_start.lock() = Some(DurableTurnStart {
-        backend_id,
-        turn_id,
-        agent_message_id: agent_message.id.clone(),
-        current_turn_input: queued_for_turn.clone(),
-    });
-    let Some(generation) = publish_durable_turn_start(ctx, session_id, &transition_owner).await
-    else {
-        return;
+    let generation = {
+        let mut sessions = ctx.sessions.lock().await;
+        let Some(state) = sessions.get_mut(session_id) else {
+            return;
+        };
+        state.reset_for_turn(turn_id, agent_message.id.clone());
+        state.current_turn_input = Some(queued_for_turn.clone());
+        state.generation
     };
-    if let Err(error) = runtime
+    if !turn_owns_runtime(ctx, session_id, generation, &runtime).await {
+        detach_runtime_if_current(ctx, session_id, &runtime).await;
+        return;
+    }
+    let start_result = runtime
         .start_turn(TurnInput {
             prompt,
             images: queued
@@ -5459,52 +5538,43 @@ async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &str) {
             permission_profile_id: queued.permission_profile_id.clone(),
             editor_context: queued.editor_context.clone().map(EditorContext::from),
         })
-        .await
-    {
-        log::warn!("failed to start queued turn for {session_id}: {error}");
-        {
-            let mut sessions = ctx.sessions.lock().await;
-            if let Some(state) = sessions.get_mut(session_id) {
-                if state.generation == generation {
-                    state.rollback_started_turn();
-                }
-            }
+        .await;
+    let _runtime_event_guard = ctx.runtime_event_locks.acquire(session_id).await;
+    if let Err(error) = start_result {
+        if !turn_runtime_is_current(ctx, session_id, generation, &runtime).await {
+            return;
         }
-        if let Err(persist_error) = append_session_event_and_project_state_with_retry(
+        log::warn!("failed to start queued turn for {session_id}: {error}");
+        match complete_turn_with_acceptance_and_persist_kind(
             ctx,
             session_id,
-            PersistFailureKind::QueuedTurnInterrupt,
-            AgentSessionEvent::TurnInterrupted {
-                turn_id,
-                reason: EventInterruptReason::Crash,
-                exit_code: 1,
+            Some(generation),
+            TurnResult::Interrupted {
+                reason: DomainInterruptReason::Crash,
                 error: Some(error.to_string()),
             },
+            PersistFailureKind::QueuedTurnInterrupt,
         )
         .await
         {
-            log::error!(
-                "failed to persist queued turn interruption for {session_id}: {persist_error}"
-            );
+            Ok((Some(notification), _)) => {
+                dispatch_workflow_turn_complete_notification(
+                    &ctx.workflow_turn_complete_notifier,
+                    notification,
+                )
+                .await;
+            }
+            Ok((None, _)) => {}
+            Err(persist_error) => {
+                log::warn!(
+                    "failed to persist queued turn interruption for {session_id}: {persist_error}"
+                );
+            }
         }
-        emit_session_state_change(
-            &ctx.session_store,
-            &ctx.notifier,
-            &ctx.status_center,
-            &ctx.status_notifier,
-            &ctx.data_dir,
-            session_id,
-            StateChange {
-                turn_phase: TurnPhase::Idle,
-                pending_permission_request: None,
-                pending_permission_state_revision: None,
-                exit_code: Some(1),
-                completed_at: Some(crate::usecase::agent_session::session::now_timestamp()),
-                interrupted: true,
-                session_state: Some(SessionState::Error),
-            },
-        );
     } else {
+        if !turn_owns_runtime(ctx, session_id, generation, &runtime).await {
+            return;
+        }
         {
             let mut sessions = ctx.sessions.lock().await;
             if let Some(state) = sessions.get_mut(session_id) {
@@ -5541,6 +5611,7 @@ async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &str) {
             session_id,
             StateChange {
                 turn_phase: TurnPhase::Streaming,
+                queue_paused: None,
                 pending_permission_request: None,
                 pending_permission_state_revision: None,
                 exit_code: None,
@@ -5698,7 +5769,7 @@ fn human_parts(content: &str, images: &[ImageAttachment]) -> Vec<MessagePart> {
     parts
 }
 
-fn required_backend_id(session: &ChatSession) -> Result<String, AgentRuntimeError> {
+pub(super) fn required_backend_id(session: &ChatSession) -> Result<String, AgentRuntimeError> {
     session.backend_id.clone().ok_or_else(|| {
         AgentRuntimeError::Other(format!("Session {} is missing backend id", session.id))
     })
@@ -5771,14 +5842,15 @@ impl From<AgentEditorContext> for EditorContext {
 }
 
 #[derive(Debug, Clone)]
-struct StateChange {
-    turn_phase: TurnPhase,
-    pending_permission_request: Option<PermissionRequestMsg>,
-    pending_permission_state_revision: Option<u64>,
-    exit_code: Option<i64>,
-    completed_at: Option<f64>,
-    interrupted: bool,
-    session_state: Option<SessionState>,
+pub(super) struct StateChange {
+    pub(super) turn_phase: TurnPhase,
+    pub(super) queue_paused: Option<bool>,
+    pub(super) pending_permission_request: Option<PermissionRequestMsg>,
+    pub(super) pending_permission_state_revision: Option<u64>,
+    pub(super) exit_code: Option<i64>,
+    pub(super) completed_at: Option<f64>,
+    pub(super) interrupted: bool,
+    pub(super) session_state: Option<SessionState>,
 }
 
 #[derive(Debug, Clone)]
@@ -6169,7 +6241,7 @@ fn workflow_stall_cleared_notification(session_id: &str) -> WorkflowStallCleared
     }
 }
 
-fn emit_session_state_change(
+pub(super) fn emit_session_state_change(
     session_store: &Arc<SessionStore>,
     notifier: &Arc<dyn AgentSessionEventNotifier>,
     status_center: &Arc<AgentStatusCenter>,
@@ -6185,6 +6257,7 @@ fn emit_session_state_change(
         completed_at: change.completed_at,
         interrupted: change.interrupted,
         session_state: change.session_state.clone(),
+        queue_paused: change.queue_paused,
         pending_permission_request: change.pending_permission_request.clone(),
         pending_permission_state_revision: change.pending_permission_state_revision,
     });
@@ -6417,7 +6490,7 @@ mod tests {
     use std::path::Path;
     use std::pin::Pin;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Barrier, Mutex};
+    use std::sync::{Arc, Barrier, Condvar, Mutex};
     use std::time::Duration;
     use tokio::sync::Notify;
 
@@ -6446,7 +6519,7 @@ mod tests {
     }
 
     fn test_session_runtime_locks() -> SessionRuntimeLocks {
-        Arc::new(SessionRuntimeLockRegistry::default())
+        Arc::new(SessionCommandLocks::default())
     }
 
     #[tokio::test]
@@ -6474,15 +6547,13 @@ mod tests {
     async fn released_session_runtime_lock_is_pruned_on_the_next_acquire() {
         let locks = test_session_runtime_locks();
         let released = acquire_session_runtime_lock(&locks, "released").await;
-        assert!(locks.map.lock().await.contains_key("released"));
+        assert!(locks.contains_for_test("released").await);
 
         drop(released);
         let active = acquire_session_runtime_lock(&locks, "active").await;
 
-        let map = locks.map.lock().await;
-        assert!(!map.contains_key("released"));
-        assert!(map.contains_key("active"));
-        drop(map);
+        assert!(!locks.contains_for_test("released").await);
+        assert!(locks.contains_for_test("active").await);
         drop(active);
     }
 
@@ -6504,10 +6575,8 @@ mod tests {
             .unwrap();
         runtime.block_on(async {
             let active = acquire_session_runtime_lock(&locks, "active").await;
-            let map = locks.map.lock().await;
-            assert!(!map.contains_key("released"));
-            assert!(map.contains_key("active"));
-            drop(map);
+            assert!(!locks.contains_for_test("released").await);
+            assert!(locks.contains_for_test("active").await);
             drop(active);
         });
     }
@@ -6537,21 +6606,18 @@ mod tests {
         acquired_rx.recv_timeout(Duration::from_secs(1)).unwrap();
 
         let other = acquire_session_runtime_lock(&locks, "session-b").await;
-        let map = locks.map.lock().await;
         assert!(
-            map.get("session-a")
-                .is_some_and(|owner| owner.lock.try_lock().is_err()),
+            locks.is_held_for_test("session-a"),
             "an actively held session lock must remain in the registry"
         );
-        assert!(map.contains_key("session-b"));
-        drop(map);
+        assert!(locks.contains_for_test("session-b").await);
         drop(other);
 
         release_tx.send(()).unwrap();
         waiter.join().unwrap();
 
         let final_guard = acquire_session_runtime_lock(&locks, "final").await;
-        assert!(!locks.map.lock().await.contains_key("session-a"));
+        assert!(!locks.contains_for_test("session-a").await);
         drop(final_guard);
     }
 
@@ -6561,15 +6627,13 @@ mod tests {
 
         for index in 0..100 {
             let guard = acquire_session_runtime_lock(&locks, &format!("session-{index}")).await;
-            assert_eq!(locks.map.lock().await.len(), 1);
+            assert_eq!(locks.len_for_test().await, 1);
             drop(guard);
         }
 
         let final_guard = acquire_session_runtime_lock(&locks, "final").await;
-        let map = locks.map.lock().await;
-        assert_eq!(map.len(), 1);
-        assert!(map.contains_key("final"));
-        drop(map);
+        assert_eq!(locks.len_for_test().await, 1);
+        assert!(locks.contains_for_test("final").await);
         drop(final_guard);
     }
 
@@ -10031,6 +10095,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn batch_append_reports_event_log_recovery_through_blocking_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, _) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        let session = crate::usecase::agent_session::session::create_session_internal(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+        )
+        .unwrap();
+        session_store
+            .append_session_event_without_projection(
+                tmp.path(),
+                &session.id,
+                AgentSessionEvent::QueuePaused { at: 1.0 },
+            )
+            .unwrap();
+        let event_log_path = tmp
+            .path()
+            .join("sessions")
+            .join(&session.id)
+            .join("events.json");
+        let content = std::fs::read_to_string(&event_log_path).unwrap();
+        let closing_pos = content.rfind(']').expect("event log closing bracket");
+        std::fs::write(&event_log_path, &content[..closing_pos]).unwrap();
+
+        append_session_events_blocking(
+            &usecase.ctx,
+            &session.id,
+            vec![AgentSessionEvent::QueuePaused { at: 2.0 }],
+        )
+        .await
+        .unwrap();
+
+        assert!(event_notifier.notices().iter().any(|notice| {
+            notice.session_id == session.id && notice.kind == SessionNoticeKind::EventLogRecovered
+        }));
+        assert_eq!(
+            session_store
+                .load_session_events(tmp.path(), &session.id)
+                .unwrap()
+                .iter()
+                .filter(|event| matches!(event, AgentSessionEvent::QueuePaused { .. }))
+                .count(),
+            2
+        );
+    }
+
+    #[tokio::test]
     async fn reopen_runtime_persist_failure_retries_reports_and_returns_error() {
         let tmp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(build_session_store());
@@ -10761,6 +10882,1681 @@ mod tests {
         assert!(agent_parts
             .iter()
             .any(|part| matches!(part, MessagePart::ToolUse { .. })));
+    }
+
+    #[tokio::test]
+    async fn interrupt_durably_pauses_queue_and_resume_explicitly_starts_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                tmp.path(),
+            );
+        let session_id = enqueue_second_turn_for_test(
+            &usecase,
+            &controller,
+            tmp.path().to_string_lossy().to_string(),
+        )
+        .await;
+        let appended = Arc::new(Mutex::new(Vec::new()));
+        let appended_for_hook = Arc::clone(&appended);
+        let controller_for_hook = controller.clone();
+        session_store.set_append_event_hook_for_test(Arc::new(move |session_id, event| {
+            if matches!(
+                event,
+                AgentSessionEvent::TurnInterruptRequested { .. }
+                    | AgentSessionEvent::QueuePaused { .. }
+            ) {
+                assert!(!controller_for_hook
+                    .call_kinds_for(session_id)
+                    .contains(&TestRuntimeCallKind::Interrupt));
+                appended_for_hook.lock().unwrap().push(event.clone());
+            }
+            Ok(())
+        }));
+
+        usecase.interrupt(&session_id).await.unwrap();
+
+        let appended = appended.lock().unwrap();
+        assert_eq!(appended.len(), 2);
+        assert!(matches!(
+            &appended[0],
+            AgentSessionEvent::TurnInterruptRequested { turn_id: 1, .. }
+        ));
+        assert!(matches!(
+            &appended[1],
+            AgentSessionEvent::QueuePaused { .. }
+        ));
+        drop(appended);
+        assert!(controller
+            .call_kinds_for(&session_id)
+            .contains(&TestRuntimeCallKind::Interrupt));
+        assert!(
+            usecase
+                .get_session(&session_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .queue_paused
+        );
+
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::TurnCompleted(TurnResult::Interrupted {
+                    reason: DomainInterruptReason::Abort,
+                    error: None,
+                }),
+            )
+            .unwrap();
+        wait_for_turn_phase(&usecase, &session_id, TurnPhase::Idle).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(usecase.pending_queue(&session_id).await.len(), 1);
+        assert_eq!(
+            controller
+                .call_kinds_for(&session_id)
+                .iter()
+                .filter(|kind| matches!(kind, TestRuntimeCallKind::StartTurn))
+                .count(),
+            1
+        );
+
+        usecase.resume_queue(&session_id).await.unwrap();
+
+        wait_for_start_prompt_count(&controller, &session_id, 2).await;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if usecase.pending_queue(&session_id).await.is_empty() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            !usecase
+                .get_session(&session_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .queue_paused
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_append_failure_keeps_the_pending_queue_durably_paused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            Arc::new(RecordingStatusNotifier::default()),
+        );
+        let session_id = enqueue_second_turn_for_test(
+            &usecase,
+            &controller,
+            tmp.path().to_string_lossy().to_string(),
+        )
+        .await;
+        usecase.interrupt(&session_id).await.unwrap();
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::TurnCompleted(TurnResult::Interrupted {
+                    reason: DomainInterruptReason::Abort,
+                    error: None,
+                }),
+            )
+            .unwrap();
+        wait_for_turn_phase(&usecase, &session_id, TurnPhase::Idle).await;
+        let start_count_before_resume = controller
+            .call_kinds_for(&session_id)
+            .iter()
+            .filter(|kind| matches!(kind, TestRuntimeCallKind::StartTurn))
+            .count();
+        let state_change_count_before_resume = event_notifier.state_changes().len();
+        session_store.set_append_event_hook_for_test(Arc::new(|_, event| {
+            if matches!(event, AgentSessionEvent::QueueResumed { .. }) {
+                return Err("injected QueueResumed append failure".to_string());
+            }
+            Ok(())
+        }));
+
+        let error = usecase.resume_queue(&session_id).await.unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("injected QueueResumed append failure"));
+        assert!(
+            usecase
+                .get_session(&session_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .queue_paused
+        );
+        assert_eq!(
+            event_notifier.state_changes().len(),
+            state_change_count_before_resume
+        );
+        assert!(!event_notifier
+            .state_changes()
+            .iter()
+            .skip(state_change_count_before_resume)
+            .any(|change| change.queue_paused == Some(false)));
+        assert_eq!(
+            controller
+                .call_kinds_for(&session_id)
+                .iter()
+                .filter(|kind| matches!(kind, TestRuntimeCallKind::StartTurn))
+                .count(),
+            start_count_before_resume
+        );
+        assert!(session_store
+            .load_queue_paused_at(tmp.path(), &session_id)
+            .unwrap()
+            .is_some());
+
+        let restarted =
+            crate::test_support::build_agent_runtime_usecase(session_store.clone(), tmp.path());
+        assert!(
+            restarted
+                .get_session(&session_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .queue_paused
+        );
+    }
+
+    #[tokio::test]
+    async fn interrupt_after_active_turn_resume_reestablishes_the_durable_pause() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                tmp.path(),
+            );
+        let session_id = enqueue_second_turn_for_test(
+            &usecase,
+            &controller,
+            tmp.path().to_string_lossy().to_string(),
+        )
+        .await;
+
+        usecase.interrupt(&session_id).await.unwrap();
+        usecase.resume_queue(&session_id).await.unwrap();
+        assert!(session_store
+            .load_queue_paused_at(tmp.path(), &session_id)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            usecase.turn_phase(&session_id).await,
+            Some(TurnPhase::Streaming)
+        );
+
+        usecase.interrupt(&session_id).await.unwrap();
+
+        assert!(session_store
+            .load_queue_paused_at(tmp.path(), &session_id)
+            .unwrap()
+            .is_some());
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::TurnCompleted(TurnResult::Interrupted {
+                    reason: DomainInterruptReason::Abort,
+                    error: None,
+                }),
+            )
+            .unwrap();
+        wait_for_turn_phase(&usecase, &session_id, TurnPhase::Idle).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        assert_eq!(usecase.pending_queue(&session_id).await.len(), 1);
+        assert_eq!(
+            controller
+                .call_kinds_for(&session_id)
+                .iter()
+                .filter(|kind| matches!(kind, TestRuntimeCallKind::StartTurn))
+                .count(),
+            1
+        );
+        let events = session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, AgentSessionEvent::QueuePaused { .. }))
+                .count(),
+            2
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, AgentSessionEvent::QueueResumed { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_resume_is_persisted_after_the_inflight_pause() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                tmp.path(),
+            );
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+        let gate = Arc::new((Mutex::new((false, false)), Condvar::new()));
+        let hook_gate = Arc::clone(&gate);
+        session_store.set_append_event_hook_for_test(Arc::new(move |_, event| {
+            if matches!(event, AgentSessionEvent::QueuePaused { .. }) {
+                let (lock, condvar) = &*hook_gate;
+                let mut state = lock.lock().unwrap();
+                state.0 = true;
+                condvar.notify_all();
+                while !state.1 {
+                    state = condvar.wait(state).unwrap();
+                }
+            }
+            Ok(())
+        }));
+
+        let interrupt_usecase = Arc::clone(&usecase);
+        let interrupt_session_id = session_id.clone();
+        let interrupt = tokio::spawn(async move {
+            interrupt_usecase
+                .interrupt(&interrupt_session_id)
+                .await
+                .unwrap();
+        });
+        loop {
+            if gate.0.lock().unwrap().0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+
+        let resume_usecase = Arc::clone(&usecase);
+        let resume_session_id = session_id.clone();
+        let resume = tokio::spawn(async move {
+            resume_usecase
+                .resume_queue(&resume_session_id)
+                .await
+                .unwrap();
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!resume.is_finished());
+
+        {
+            let (lock, condvar) = &*gate;
+            let mut state = lock.lock().unwrap();
+            state.1 = true;
+            condvar.notify_all();
+        }
+        interrupt.await.unwrap();
+        resume.await.unwrap();
+
+        let events = session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap();
+        let pause_index = events
+            .iter()
+            .position(|event| matches!(event, AgentSessionEvent::QueuePaused { .. }))
+            .unwrap();
+        let resume_index = events
+            .iter()
+            .position(|event| matches!(event, AgentSessionEvent::QueueResumed { .. }))
+            .unwrap();
+        assert!(pause_index < resume_index);
+        assert!(session_store
+            .load_queue_paused_at(tmp.path(), &session_id)
+            .unwrap()
+            .is_none());
+        assert!(
+            !usecase
+                .get_session(&session_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .queue_paused
+        );
+        assert!(controller
+            .call_kinds_for(&session_id)
+            .contains(&TestRuntimeCallKind::Interrupt));
+    }
+
+    #[tokio::test]
+    async fn interrupt_watchdog_force_finalizes_an_unresponsive_backend_as_timeout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                tmp.path(),
+            );
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+        let generation = {
+            let sessions = usecase.ctx.sessions.lock().await;
+            sessions.get(&session_id).unwrap().generation
+        };
+
+        usecase.interrupt(&session_id).await.unwrap();
+        spawn_interrupt_watchdog_task(
+            &usecase.ctx,
+            session_id.clone(),
+            generation,
+            Duration::from_millis(10),
+        );
+        wait_for_turn_phase(&usecase, &session_id, TurnPhase::Idle).await;
+
+        let events = session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::TurnInterrupted {
+                reason: EventInterruptReason::Timeout,
+                ..
+            }
+        )));
+        let loaded = usecase.get_session(&session_id).await.unwrap().unwrap();
+        assert_eq!(loaded.session.state, SessionState::Error);
+        assert!(loaded.queue_paused);
+        assert_eq!(
+            controller
+                .call_kinds_for(&session_id)
+                .iter()
+                .filter(|kind| matches!(kind, TestRuntimeCallKind::Interrupt))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn production_interrupt_watchdog_finalizes_at_the_ten_second_boundary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                tmp.path(),
+            );
+        let mut request = send_request(tmp.path().to_string_lossy().to_string());
+        request.backend_id = Some("codex".to_string());
+        let response = usecase.send_message(request).await.unwrap();
+        let session_id = response.session.id;
+        let queued = usecase
+            .send_message(SendAgentMessageRequest {
+                chat_session_id: Some(session_id.clone()),
+                worktree_path: tmp.path().to_string_lossy().to_string(),
+                content: "queued input stays intact".to_string(),
+                permission_mode: PermissionMode::Edit,
+                plan_mode: false,
+                backend_id: Some("codex".to_string()),
+                model_id: None,
+                images: Some(vec![ImageAttachment {
+                    data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=".to_string(),
+                    media_type: "image/png".to_string(),
+                }]),
+                mentions: None,
+                editor_context: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(queued.pending_queue_count, 1);
+        assert_eq!(
+            queued.pending_queue[0].content_preview,
+            "queued input stays intact"
+        );
+        assert_eq!(queued.pending_queue[0].image_count, 1);
+
+        usecase.interrupt(&session_id).await.unwrap();
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(9)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            usecase.turn_phase(&session_id).await,
+            Some(TurnPhase::Streaming)
+        );
+
+        tokio::time::advance(Duration::from_secs(1)).await;
+        for _ in 0..20 {
+            if usecase.turn_phase(&session_id).await == Some(TurnPhase::Idle) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(usecase.turn_phase(&session_id).await, Some(TurnPhase::Idle));
+        let preserved_queue = usecase.pending_queue(&session_id).await;
+        assert_eq!(preserved_queue.len(), 1);
+        assert_eq!(
+            preserved_queue[0].content_preview,
+            "queued input stays intact"
+        );
+        assert_eq!(preserved_queue[0].image_count, 1);
+        assert!(
+            usecase
+                .get_session(&session_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .queue_paused
+        );
+        assert!(controller
+            .call_kinds_for(&session_id)
+            .contains(&TestRuntimeCallKind::Close));
+        assert!(session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap()
+            .iter()
+            .any(|event| matches!(
+                event,
+                AgentSessionEvent::TurnInterrupted {
+                    reason: EventInterruptReason::Timeout,
+                    ..
+                }
+            )));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn production_interrupt_from_waiting_permission_clears_permission_and_stays_paused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                tmp.path(),
+            );
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::PermissionRequested(permission_request("perm-stop")),
+            )
+            .unwrap();
+        wait_for_turn_phase(&usecase, &session_id, TurnPhase::WaitingPermission).await;
+
+        usecase.interrupt(&session_id).await.unwrap();
+
+        assert!(session_store
+            .load_queue_paused_at(tmp.path(), &session_id)
+            .unwrap()
+            .is_some());
+        tokio::task::yield_now().await;
+        tokio::time::advance(INTERRUPT_FORCE_FINALIZE_DELAY).await;
+        wait_for_turn_phase(&usecase, &session_id, TurnPhase::Idle).await;
+        let loaded = usecase.get_session(&session_id).await.unwrap().unwrap();
+        assert!(loaded.queue_paused);
+        assert!(loaded.pending_permission_request.is_none());
+        assert!(session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap()
+            .iter()
+            .any(|event| matches!(
+                event,
+                AgentSessionEvent::TurnInterrupted {
+                    reason: EventInterruptReason::Timeout,
+                    exit_code: 124,
+                    ..
+                }
+            )));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn backend_interrupt_failure_keeps_the_accepted_stop_until_timeout_terminal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                tmp.path(),
+            );
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+        controller.fail_next_interrupt();
+
+        usecase.interrupt(&session_id).await.unwrap();
+
+        assert!(session_store
+            .load_queue_paused_at(tmp.path(), &session_id)
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            controller
+                .call_kinds_for(&session_id)
+                .iter()
+                .filter(|kind| matches!(kind, TestRuntimeCallKind::Interrupt))
+                .count(),
+            1
+        );
+        tokio::task::yield_now().await;
+        tokio::time::advance(INTERRUPT_FORCE_FINALIZE_DELAY).await;
+        wait_for_turn_phase(&usecase, &session_id, TurnPhase::Idle).await;
+        let loaded = usecase.get_session(&session_id).await.unwrap().unwrap();
+        assert!(loaded.queue_paused);
+        assert!(session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap()
+            .iter()
+            .any(|event| matches!(
+                event,
+                AgentSessionEvent::TurnInterrupted {
+                    reason: EventInterruptReason::Timeout,
+                    exit_code: 124,
+                    ..
+                }
+            )));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn claude_synthetic_timeout_wins_the_timer_race_without_changing_the_terminal_reason() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                tmp.path(),
+            );
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+        let synthetic_controller = controller.clone();
+        let synthetic_session_id = session_id.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(INTERRUPT_FORCE_FINALIZE_DELAY).await;
+            synthetic_controller
+                .emit(
+                    &synthetic_session_id,
+                    AgentRuntimeEvent::TurnCompleted(TurnResult::Interrupted {
+                        reason: DomainInterruptReason::Timeout,
+                        error: None,
+                    }),
+                )
+                .unwrap();
+        });
+        tokio::task::yield_now().await;
+
+        usecase.interrupt(&session_id).await.unwrap();
+        tokio::time::advance(INTERRUPT_FORCE_FINALIZE_DELAY).await;
+        wait_for_turn_phase(&usecase, &session_id, TurnPhase::Idle).await;
+        tokio::task::yield_now().await;
+
+        let terminal_events = session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap()
+            .into_iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    AgentSessionEvent::TurnCompleted { .. }
+                        | AgentSessionEvent::TurnInterrupted { .. }
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(terminal_events.len(), 1);
+        assert!(matches!(
+            terminal_events[0],
+            AgentSessionEvent::TurnInterrupted {
+                reason: EventInterruptReason::Timeout,
+                exit_code: 124,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn terminal_results_after_stop_are_reconciled_as_interrupted() {
+        for result in [
+            TurnResult::Completed {
+                stop_reason: None,
+                token_usage: None,
+            },
+            TurnResult::Failed {
+                error: "late start failure".to_string(),
+                token_usage: None,
+            },
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let session_store = Arc::new(build_session_store());
+            let (usecase, controller) =
+                crate::test_support::build_agent_runtime_usecase_with_controller(
+                    session_store.clone(),
+                    tmp.path(),
+                );
+            let response = usecase
+                .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+                .await
+                .unwrap();
+            let session_id = response.session.id;
+
+            usecase.interrupt(&session_id).await.unwrap();
+            controller
+                .emit(&session_id, AgentRuntimeEvent::TurnCompleted(result))
+                .unwrap();
+            wait_for_turn_phase(&usecase, &session_id, TurnPhase::Idle).await;
+
+            let events = session_store
+                .load_session_events(tmp.path(), &session_id)
+                .unwrap();
+            assert!(events.iter().any(|event| matches!(
+                event,
+                AgentSessionEvent::TurnInterrupted {
+                    reason: EventInterruptReason::Abort,
+                    ..
+                }
+            )));
+            assert!(!events
+                .iter()
+                .any(|event| matches!(event, AgentSessionEvent::TurnCompleted { .. })));
+        }
+    }
+
+    #[tokio::test]
+    async fn queue_pause_and_explicit_resume_survive_runtime_state_restart() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, _controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                tmp.path(),
+            );
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+        usecase.interrupt(&session_id).await.unwrap();
+
+        let restarted =
+            crate::test_support::build_agent_runtime_usecase(session_store.clone(), tmp.path());
+        assert!(
+            restarted
+                .get_session(&session_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .queue_paused
+        );
+
+        restarted.resume_queue(&session_id).await.unwrap();
+        let restarted_again =
+            crate::test_support::build_agent_runtime_usecase(session_store.clone(), tmp.path());
+        assert!(
+            !restarted_again
+                .get_session(&session_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .queue_paused
+        );
+        assert!(session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event, AgentSessionEvent::QueueResumed { .. })));
+    }
+
+    #[tokio::test]
+    async fn durable_pause_is_hydrated_before_direct_send_after_restart() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, _controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                tmp.path(),
+            );
+        let mut first_request = send_request(tmp.path().to_string_lossy().to_string());
+        first_request.backend_id = Some("codex".to_string());
+        let response = usecase.send_message(first_request).await.unwrap();
+        let session_id = response.session.id;
+        usecase.interrupt(&session_id).await.unwrap();
+
+        let (restarted, restarted_controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store,
+                tmp.path(),
+            );
+        let queued = restarted
+            .send_message(SendAgentMessageRequest {
+                chat_session_id: Some(session_id.clone()),
+                worktree_path: tmp.path().to_string_lossy().to_string(),
+                content: "must remain queued until explicit resume".to_string(),
+                permission_mode: PermissionMode::Edit,
+                plan_mode: false,
+                backend_id: Some("codex".to_string()),
+                model_id: None,
+                images: None,
+                mentions: None,
+                editor_context: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(queued.pending_queue_count, 1);
+        assert!(!restarted_controller
+            .call_kinds_for(&session_id)
+            .iter()
+            .any(|kind| matches!(kind, TestRuntimeCallKind::StartTurn)));
+
+        restarted.resume_queue(&session_id).await.unwrap();
+        wait_for_start_prompt_count(&restarted_controller, &session_id, 1).await;
+    }
+
+    #[tokio::test]
+    async fn interrupt_while_runtime_open_is_pending_prevents_provider_turn_start() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store,
+                tmp.path(),
+            );
+        let session = create_session_internal_with_attributes(
+            &usecase.ctx.session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("codex".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("gpt-5.6-sol".to_string()),
+                plan_mode: false,
+                workflow_node_session: false,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        controller.pause_open_session();
+        let send_usecase = Arc::clone(&usecase);
+        let session_id = session.id.clone();
+        let worktree_path = tmp.path().to_string_lossy().to_string();
+        let send = tokio::spawn(async move {
+            send_usecase
+                .send_message(SendAgentMessageRequest {
+                    chat_session_id: Some(session_id),
+                    worktree_path,
+                    content: "stop during runtime open".to_string(),
+                    permission_mode: PermissionMode::Edit,
+                    plan_mode: false,
+                    backend_id: Some("codex".to_string()),
+                    model_id: None,
+                    images: None,
+                    mentions: None,
+                    editor_context: None,
+                })
+                .await
+        });
+        for _ in 0..100 {
+            if controller
+                .call_kinds_for(&session.id)
+                .iter()
+                .any(|kind| matches!(kind, TestRuntimeCallKind::OpenSession { .. }))
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(controller
+            .call_kinds_for(&session.id)
+            .iter()
+            .any(|kind| matches!(kind, TestRuntimeCallKind::OpenSession { .. })));
+        let generation = {
+            let sessions = usecase.ctx.sessions.lock().await;
+            sessions.get(&session.id).unwrap().generation
+        };
+
+        usecase.interrupt(&session.id).await.unwrap();
+        controller.release_open_session();
+        send.await.unwrap().unwrap();
+
+        assert!(!controller
+            .call_kinds_for(&session.id)
+            .iter()
+            .any(|kind| matches!(kind, TestRuntimeCallKind::StartTurn)));
+        force_finalize_interrupted_turn(&usecase.ctx, &session.id, generation).await;
+        assert_eq!(usecase.turn_phase(&session.id).await, Some(TurnPhase::Idle));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn runtime_open_failure_after_interrupt_timeout_does_not_replace_the_terminal_result() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            Arc::new(RecordingStatusNotifier::default()),
+        );
+        let session = create_session_internal_with_attributes(
+            &usecase.ctx.session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("codex".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("gpt-5.6-sol".to_string()),
+                plan_mode: false,
+                workflow_node_session: false,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        controller.pause_open_session();
+        controller.fail_next_open_session();
+        let send_usecase = Arc::clone(&usecase);
+        let session_id = session.id.clone();
+        let worktree_path = tmp.path().to_string_lossy().to_string();
+        let send = tokio::spawn(async move {
+            send_usecase
+                .send_message(SendAgentMessageRequest {
+                    chat_session_id: Some(session_id),
+                    worktree_path,
+                    content: "runtime open eventually fails".to_string(),
+                    permission_mode: PermissionMode::Edit,
+                    plan_mode: false,
+                    backend_id: Some("codex".to_string()),
+                    model_id: None,
+                    images: None,
+                    mentions: None,
+                    editor_context: None,
+                })
+                .await
+        });
+        for _ in 0..100 {
+            if controller
+                .call_kinds_for(&session.id)
+                .iter()
+                .any(|kind| matches!(kind, TestRuntimeCallKind::OpenSession { .. }))
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(controller
+            .call_kinds_for(&session.id)
+            .iter()
+            .any(|kind| matches!(kind, TestRuntimeCallKind::OpenSession { .. })));
+
+        usecase.interrupt(&session.id).await.unwrap();
+        tokio::task::yield_now().await;
+        tokio::time::advance(INTERRUPT_FORCE_FINALIZE_DELAY).await;
+        for _ in 0..20 {
+            if usecase.turn_phase(&session.id).await == Some(TurnPhase::Idle) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(usecase.turn_phase(&session.id).await, Some(TurnPhase::Idle));
+        let terminal_notification_count = event_notifier.state_changes().len();
+
+        controller.release_open_session();
+        send.await
+            .unwrap()
+            .expect("timeout terminal result owns the late runtime open failure");
+        tokio::task::yield_now().await;
+
+        assert_eq!(
+            event_notifier.state_changes().len(),
+            terminal_notification_count,
+            "late runtime open failure must not publish a second error state"
+        );
+        let events = session_store
+            .load_session_events(tmp.path(), &session.id)
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    AgentSessionEvent::TurnCompleted { .. }
+                        | AgentSessionEvent::TurnInterrupted { .. }
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    AgentSessionEvent::TurnInterrupted {
+                        reason: EventInterruptReason::Timeout,
+                        ..
+                    }
+                ))
+                .count(),
+            1
+        );
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::TurnInterrupted {
+                reason: EventInterruptReason::Crash,
+                ..
+            }
+        )));
+    }
+
+    #[tokio::test]
+    async fn runtime_state_hydration_rejects_a_missing_backend_without_claude_fallback() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let usecase = crate::test_support::build_agent_runtime_usecase(session_store, tmp.path());
+        let mut session = create_session_internal_with_attributes(
+            &usecase.ctx.session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("codex".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes::default(),
+        )
+        .unwrap();
+        session.backend_id = None;
+
+        let error = usecase
+            .hydrate_runtime_session_state(&session)
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("missing backend id"));
+        assert!(!usecase.ctx.sessions.lock().await.contains_key(&session.id));
+    }
+
+    #[tokio::test]
+    async fn timeout_resume_reopens_runtime_and_drops_the_old_runtime_late_terminal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store,
+                tmp.path(),
+            );
+        let session_id = enqueue_second_turn_for_test(
+            &usecase,
+            &controller,
+            tmp.path().to_string_lossy().to_string(),
+        )
+        .await;
+        let generation = {
+            let sessions = usecase.ctx.sessions.lock().await;
+            sessions.get(&session_id).unwrap().generation
+        };
+        usecase.interrupt(&session_id).await.unwrap();
+        force_finalize_interrupted_turn(&usecase.ctx, &session_id, generation).await;
+
+        usecase.resume_queue(&session_id).await.unwrap();
+        wait_for_start_prompt_count(&controller, &session_id, 2).await;
+        assert_eq!(
+            controller
+                .call_kinds_for(&session_id)
+                .iter()
+                .filter(|kind| matches!(kind, TestRuntimeCallKind::OpenSession { .. }))
+                .count(),
+            2
+        );
+        controller
+            .emit_for_runtime(
+                &session_id,
+                0,
+                AgentRuntimeEvent::TurnCompleted(TurnResult::Completed {
+                    stop_reason: None,
+                    token_usage: None,
+                }),
+            )
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        assert_eq!(
+            usecase.turn_phase(&session_id).await,
+            Some(TurnPhase::Streaming)
+        );
+    }
+
+    #[tokio::test]
+    async fn timeout_while_start_turn_is_pending_does_not_publish_late_streaming_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store,
+            tmp.path(),
+            event_notifier.clone(),
+            Arc::new(RecordingStatusNotifier::default()),
+        );
+        let session = create_session_internal_with_attributes(
+            &usecase.ctx.session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("codex".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("gpt-5.6-sol".to_string()),
+                plan_mode: false,
+                workflow_node_session: false,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        controller.pause_start_turn();
+        let send_usecase = Arc::clone(&usecase);
+        let session_id = session.id.clone();
+        let worktree_path = tmp.path().to_string_lossy().to_string();
+        let send = tokio::spawn(async move {
+            send_usecase
+                .send_message(SendAgentMessageRequest {
+                    chat_session_id: Some(session_id),
+                    worktree_path,
+                    content: "start then stop".to_string(),
+                    permission_mode: PermissionMode::Edit,
+                    plan_mode: false,
+                    backend_id: Some("codex".to_string()),
+                    model_id: None,
+                    images: None,
+                    mentions: None,
+                    editor_context: None,
+                })
+                .await
+        });
+        wait_for_start_prompt_count(&controller, &session.id, 1).await;
+        let generation = {
+            let sessions = usecase.ctx.sessions.lock().await;
+            sessions.get(&session.id).unwrap().generation
+        };
+
+        usecase.interrupt(&session.id).await.unwrap();
+        force_finalize_interrupted_turn(&usecase.ctx, &session.id, generation).await;
+        controller.release_start_turn();
+        send.await.unwrap().unwrap();
+        tokio::task::yield_now().await;
+
+        assert_eq!(usecase.turn_phase(&session.id).await, Some(TurnPhase::Idle));
+        let changes = event_notifier.state_changes();
+        let terminal_index = changes
+            .iter()
+            .rposition(|change| {
+                change.chat_session_id == session.id && change.turn_phase == TurnPhase::Idle
+            })
+            .expect("timeout terminal notification");
+        assert!(!changes.iter().skip(terminal_index + 1).any(|change| {
+            change.chat_session_id == session.id && change.turn_phase == TurnPhase::Streaming
+        }));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn interrupt_timeout_releases_command_waiters_while_old_start_turn_remains_pending() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store,
+                tmp.path(),
+            );
+        let session = create_session_internal_with_attributes(
+            &usecase.ctx.session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("codex".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("gpt-5.6-sol".to_string()),
+                plan_mode: false,
+                workflow_node_session: false,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        let first_start_gate = controller.pause_next_start_turn();
+        let first = {
+            let usecase = Arc::clone(&usecase);
+            let session_id = session.id.clone();
+            let worktree_path = tmp.path().to_string_lossy().to_string();
+            tokio::spawn(async move {
+                usecase
+                    .send_message(SendAgentMessageRequest {
+                        chat_session_id: Some(session_id),
+                        worktree_path,
+                        content: "provider start remains pending".to_string(),
+                        permission_mode: PermissionMode::Edit,
+                        plan_mode: false,
+                        backend_id: Some("codex".to_string()),
+                        model_id: None,
+                        images: None,
+                        mentions: None,
+                        editor_context: None,
+                    })
+                    .await
+            })
+        };
+        for _ in 0..100 {
+            if controller
+                .call_kinds_for(&session.id)
+                .iter()
+                .any(|kind| matches!(kind, TestRuntimeCallKind::StartTurn))
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(!first.is_finished());
+
+        let waiting_send = {
+            let usecase = Arc::clone(&usecase);
+            let session_id = session.id.clone();
+            let worktree_path = tmp.path().to_string_lossy().to_string();
+            tokio::spawn(async move {
+                usecase
+                    .send_message(SendAgentMessageRequest {
+                        chat_session_id: Some(session_id),
+                        worktree_path,
+                        content: "queue after timeout".to_string(),
+                        permission_mode: PermissionMode::Edit,
+                        plan_mode: false,
+                        backend_id: Some("codex".to_string()),
+                        model_id: None,
+                        images: None,
+                        mentions: None,
+                        editor_context: None,
+                    })
+                    .await
+            })
+        };
+        tokio::task::yield_now().await;
+        assert!(!waiting_send.is_finished());
+
+        usecase.interrupt(&session.id).await.unwrap();
+        tokio::task::yield_now().await;
+        tokio::time::advance(INTERRUPT_FORCE_FINALIZE_DELAY).await;
+        for _ in 0..100 {
+            if usecase.turn_phase(&session.id).await == Some(TurnPhase::Idle)
+                && waiting_send.is_finished()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(usecase.turn_phase(&session.id).await, Some(TurnPhase::Idle));
+        let queued = waiting_send.await.unwrap().unwrap();
+        assert_eq!(queued.pending_queue_count, 1);
+        assert!(!first.is_finished());
+
+        usecase.resume_queue(&session.id).await.unwrap();
+        for _ in 0..100 {
+            if controller
+                .call_kinds_for(&session.id)
+                .iter()
+                .filter(|kind| matches!(kind, TestRuntimeCallKind::StartTurn))
+                .count()
+                == 2
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            controller
+                .call_kinds_for(&session.id)
+                .iter()
+                .filter(|kind| matches!(kind, TestRuntimeCallKind::OpenSession { .. }))
+                .count(),
+            2
+        );
+        assert!(!first.is_finished());
+
+        first_start_gate.notify_waiters();
+        first.await.unwrap().unwrap();
+        assert_eq!(
+            usecase.turn_phase(&session.id).await,
+            Some(TurnPhase::Streaming)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn interrupt_timeout_waits_for_in_flight_permission_event_before_terminal_commit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store,
+            tmp.path(),
+            event_notifier.clone(),
+            Arc::new(RecordingStatusNotifier::default()),
+        );
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+        let generation = {
+            let sessions = usecase.ctx.sessions.lock().await;
+            sessions.get(&session_id).unwrap().generation
+        };
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release_rx = Arc::new(Mutex::new(release_rx));
+        let block_once = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        event_notifier.set_streaming_delta_hook({
+            let release_rx = Arc::clone(&release_rx);
+            let block_once = Arc::clone(&block_once);
+            Arc::new(move || {
+                if block_once.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    entered_tx.send(()).unwrap();
+                    release_rx.lock().unwrap().recv().unwrap();
+                }
+            })
+        });
+
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::PermissionRequested(permission_request("perm-racing-timeout")),
+            )
+            .unwrap();
+        tokio::task::spawn_blocking(move || {
+            entered_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("permission event reached its commit path")
+        })
+        .await
+        .unwrap();
+        let force_ctx = usecase.ctx.clone();
+        let force_session_id = session_id.clone();
+        let force = tokio::spawn(async move {
+            force_finalize_interrupted_turn(&force_ctx, &force_session_id, generation).await;
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            !force.is_finished(),
+            "timeout must serialize with the in-flight runtime event"
+        );
+
+        release_tx.send(()).unwrap();
+        force.await.unwrap();
+
+        let loaded = usecase.get_session(&session_id).await.unwrap().unwrap();
+        assert_eq!(loaded.turn_phase, TurnPhase::Idle);
+        assert!(loaded.pending_permission_request.is_none());
+        let changes = event_notifier.state_changes();
+        let terminal_index = changes
+            .iter()
+            .rposition(|change| {
+                change.chat_session_id == session_id && change.turn_phase == TurnPhase::Idle
+            })
+            .expect("timeout terminal notification");
+        assert!(!changes.iter().skip(terminal_index + 1).any(|change| {
+            change.chat_session_id == session_id
+                && (change.turn_phase != TurnPhase::Idle
+                    || change.pending_permission_request.is_some())
+        }));
+    }
+
+    #[tokio::test]
+    async fn interrupt_watchdog_is_a_noop_for_a_different_turn_generation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, _controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                tmp.path(),
+            );
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+        let stale_generation = {
+            let mut sessions = usecase.ctx.sessions.lock().await;
+            let state = sessions.get_mut(&session_id).unwrap();
+            let stale_generation = state.generation;
+            state.generation += 1;
+            stale_generation
+        };
+
+        force_finalize_interrupted_turn(&usecase.ctx, &session_id, stale_generation).await;
+
+        assert_eq!(
+            usecase.turn_phase(&session_id).await,
+            Some(TurnPhase::Streaming)
+        );
+        let events = session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap();
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::TurnInterrupted {
+                reason: EventInterruptReason::Timeout,
+                ..
+            }
+        )));
+    }
+
+    #[tokio::test]
+    async fn interrupt_fails_before_backend_io_when_durable_append_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            Arc::new(RecordingStatusNotifier::default()),
+        );
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+        session_store.set_append_event_hook_for_test(Arc::new(|_, event| {
+            if matches!(event, AgentSessionEvent::TurnInterruptRequested { .. }) {
+                return Err("injected interrupt acceptance append failure".to_string());
+            }
+            Ok(())
+        }));
+
+        let error = usecase.interrupt(&session_id).await.unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("injected interrupt acceptance append failure"));
+        let loaded = usecase.get_session(&session_id).await.unwrap().unwrap();
+        assert!(!loaded.queue_paused);
+        assert_eq!(
+            usecase.turn_phase(&session_id).await,
+            Some(TurnPhase::Streaming)
+        );
+        assert_eq!(
+            controller
+                .call_kinds_for(&session_id)
+                .iter()
+                .filter(|kind| matches!(kind, TestRuntimeCallKind::Interrupt))
+                .count(),
+            0
+        );
+        assert!(!event_notifier
+            .state_changes()
+            .iter()
+            .any(|change| change.queue_paused == Some(true)));
+        let events = session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap();
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::TurnInterruptRequested { .. }
+                | AgentSessionEvent::QueuePaused { .. }
+        )));
+
+        let restarted =
+            crate::test_support::build_agent_runtime_usecase(session_store.clone(), tmp.path());
+        assert!(
+            !restarted
+                .get_session(&session_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .queue_paused
+        );
+    }
+
+    #[tokio::test]
+    async fn interrupt_durable_io_does_not_hold_the_runtime_state_mutex() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, _controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                tmp.path(),
+            );
+        let first = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let second = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let blocked_session_id = first.session.id.clone();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release_rx = Arc::new(Mutex::new(release_rx));
+        session_store.set_append_event_hook_for_test({
+            let release_rx = Arc::clone(&release_rx);
+            Arc::new(move |session_id, event| {
+                if session_id == blocked_session_id
+                    && matches!(event, AgentSessionEvent::TurnInterruptRequested { .. })
+                {
+                    entered_tx.send(()).unwrap();
+                    release_rx.lock().unwrap().recv().unwrap();
+                }
+                Ok(())
+            })
+        });
+        let interrupt_usecase = Arc::clone(&usecase);
+        let first_session_id = first.session.id.clone();
+        let interrupt =
+            tokio::spawn(async move { interrupt_usecase.interrupt(&first_session_id).await });
+        tokio::task::spawn_blocking(move || {
+            entered_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("durable append hook")
+        })
+        .await
+        .unwrap();
+
+        let other_session = tokio::time::timeout(
+            Duration::from_millis(200),
+            usecase.get_session(&second.session.id),
+        )
+        .await
+        .expect("another session must remain readable during interrupt commit")
+        .unwrap()
+        .unwrap();
+        assert_eq!(other_session.turn_phase, TurnPhase::Streaming);
+        assert_eq!(
+            usecase.turn_phase(&first.session.id).await,
+            Some(TurnPhase::Streaming)
+        );
+
+        release_tx.send(()).unwrap();
+        interrupt.await.unwrap().unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn interrupt_commit_and_start_failure_share_one_terminal_transition() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            Arc::new(RecordingStatusNotifier::default()),
+        );
+        let session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("codex".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("gpt-5.6-sol".to_string()),
+                plan_mode: false,
+                workflow_node_session: false,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        let start_gate = controller.pause_next_start_turn();
+        controller.fail_next_start_turn();
+        let send = {
+            let usecase = Arc::clone(&usecase);
+            let session_id = session.id.clone();
+            let worktree_path = tmp.path().to_string_lossy().to_string();
+            tokio::spawn(async move {
+                usecase
+                    .send_message(SendAgentMessageRequest {
+                        chat_session_id: Some(session_id),
+                        worktree_path,
+                        content: "start fails during stop commit".to_string(),
+                        permission_mode: PermissionMode::Edit,
+                        plan_mode: false,
+                        backend_id: Some("codex".to_string()),
+                        model_id: None,
+                        images: None,
+                        mentions: None,
+                        editor_context: None,
+                    })
+                    .await
+            })
+        };
+        wait_for_start_prompt_count(&controller, &session.id, 1).await;
+
+        let (append_entered_tx, append_entered_rx) = std::sync::mpsc::channel();
+        let (release_append_tx, release_append_rx) = std::sync::mpsc::channel();
+        let release_append_rx = Arc::new(Mutex::new(release_append_rx));
+        let block_once = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        session_store.set_append_event_hook_for_test({
+            let release_append_rx = Arc::clone(&release_append_rx);
+            let block_once = Arc::clone(&block_once);
+            Arc::new(move |_, event| {
+                if matches!(event, AgentSessionEvent::TurnInterruptRequested { .. })
+                    && block_once.swap(false, std::sync::atomic::Ordering::SeqCst)
+                {
+                    append_entered_tx.send(()).unwrap();
+                    release_append_rx.lock().unwrap().recv().unwrap();
+                }
+                Ok(())
+            })
+        });
+        let interrupt = {
+            let usecase = Arc::clone(&usecase);
+            let session_id = session.id.clone();
+            tokio::spawn(async move { usecase.interrupt(&session_id).await })
+        };
+        tokio::task::spawn_blocking(move || {
+            append_entered_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("interrupt append should be blocked")
+        })
+        .await
+        .unwrap();
+
+        start_gate.notify_waiters();
+        tokio::task::yield_now().await;
+        assert_eq!(
+            usecase.turn_phase(&session.id).await,
+            Some(TurnPhase::Streaming),
+            "start failure must wait behind the durable Stop transition"
+        );
+        release_append_tx.send(()).unwrap();
+        interrupt.await.unwrap().unwrap();
+        send.await
+            .unwrap()
+            .expect("durably accepted Stop owns the concurrent start failure");
+
+        assert_eq!(usecase.turn_phase(&session.id).await, Some(TurnPhase::Idle));
+        let loaded = usecase.get_session(&session.id).await.unwrap().unwrap();
+        assert!(loaded.queue_paused);
+        let events = session_store
+            .load_session_events(tmp.path(), &session.id)
+            .unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::TurnInterrupted {
+                reason: EventInterruptReason::Abort,
+                ..
+            }
+        )));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::TurnInterrupted {
+                reason: EventInterruptReason::Crash,
+                ..
+            }
+        )));
+        assert!(event_notifier.state_changes().iter().any(|change| {
+            change.chat_session_id == session.id
+                && change.turn_phase == TurnPhase::Idle
+                && change.queue_paused == Some(true)
+        }));
+    }
+
+    #[tokio::test]
+    async fn repeated_interrupt_force_finalizes_immediately_and_remains_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                tmp.path(),
+            );
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+
+        usecase.interrupt(&session_id).await.unwrap();
+        usecase.interrupt(&session_id).await.unwrap();
+
+        assert_eq!(usecase.turn_phase(&session_id).await, Some(TurnPhase::Idle));
+        let events = session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, AgentSessionEvent::TurnInterruptRequested { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, AgentSessionEvent::QueuePaused { .. }))
+                .count(),
+            1
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::TurnInterrupted {
+                reason: EventInterruptReason::Timeout,
+                ..
+            }
+        )));
+        assert_eq!(
+            controller
+                .call_kinds_for(&session_id)
+                .iter()
+                .filter(|kind| matches!(kind, TestRuntimeCallKind::Interrupt))
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -13736,11 +15532,6 @@ mod tests {
             SessionCreationAttributes::default(),
         )
         .unwrap();
-        let normal_before_recovery = session_store
-            .get_session_meta(tmp.path(), &normal_session.id)
-            .unwrap()
-            .unwrap()
-            .to_summary();
         usecase
             .start_session(
                 &session.id,
@@ -13800,6 +15591,11 @@ mod tests {
             .unwrap();
         let before_recovery = session_store
             .get_session_meta(tmp.path(), &session.id)
+            .unwrap()
+            .unwrap()
+            .to_summary();
+        let normal_before_recovery = session_store
+            .get_session_meta(tmp.path(), &normal_session.id)
             .unwrap()
             .unwrap()
             .to_summary();
@@ -15349,6 +17145,207 @@ mod tests {
                         plan_mode: false,
                     }
         }));
+    }
+
+    #[tokio::test]
+    async fn start_turn_locked_rejects_a_durably_paused_workflow_session_until_resume() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("claude-4-sonnet".to_string()),
+                plan_mode: false,
+                workflow_node_session: true,
+                workflow_node_context: Some(workflow_node_context(None, None, None)),
+            },
+        )
+        .unwrap();
+        session_store
+            .append_session_event_and_project_state(
+                tmp.path(),
+                &session.id,
+                AgentSessionEvent::QueuePaused { at: 42.0 },
+            )
+            .unwrap();
+        let (usecase, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                tmp.path(),
+            );
+
+        let error = usecase
+            .start_turn_locked(
+                &session.id,
+                PermissionMode::Edit,
+                "must wait for resume".to_string(),
+                None,
+                Vec::new(),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("Agent queue is paused"));
+        assert_eq!(usecase.turn_phase(&session.id).await, Some(TurnPhase::Idle));
+        assert!(usecase
+            .get_session(&session.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .session
+            .messages
+            .is_empty());
+        let events = session_store
+            .load_session_events(tmp.path(), &session.id)
+            .unwrap();
+        assert!(!events
+            .iter()
+            .any(|event| matches!(event, AgentSessionEvent::TurnStarted { .. })));
+        assert!(!controller
+            .call_kinds_for(&session.id)
+            .iter()
+            .any(|kind| matches!(kind, TestRuntimeCallKind::StartTurn)));
+
+        usecase.resume_queue(&session.id).await.unwrap();
+        usecase
+            .start_turn_locked(
+                &session.id,
+                PermissionMode::Edit,
+                "run after resume".to_string(),
+                None,
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        wait_for_start_prompt_count(&controller, &session.id, 1).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn interrupt_before_turn_state_commit_prevents_provider_start_and_persists_pause() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                tmp.path(),
+            );
+        let session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("claude-4-sonnet".to_string()),
+                plan_mode: false,
+                workflow_node_session: true,
+                workflow_node_context: Some(workflow_node_context(None, None, None)),
+            },
+        )
+        .unwrap();
+        let gate = Arc::new((Mutex::new((false, false)), Condvar::new()));
+        session_store.set_append_event_hook_for_test({
+            let gate = Arc::clone(&gate);
+            Arc::new(move |_, event| {
+                if matches!(event, AgentSessionEvent::TurnStarted { .. }) {
+                    let (lock, condvar) = &*gate;
+                    let mut state = lock.lock().unwrap();
+                    state.0 = true;
+                    condvar.notify_all();
+                    while !state.1 {
+                        state = condvar.wait(state).unwrap();
+                    }
+                }
+                Ok(())
+            })
+        });
+        let start = {
+            let usecase = Arc::clone(&usecase);
+            let session_id = session.id.clone();
+            tokio::spawn(async move {
+                usecase
+                    .start_turn_locked(
+                        &session_id,
+                        PermissionMode::Edit,
+                        "run".to_string(),
+                        None,
+                        Vec::new(),
+                    )
+                    .await
+            })
+        };
+        {
+            let (lock, condvar) = &*gate;
+            let mut state = lock.lock().unwrap();
+            while !state.0 {
+                let (next, timeout) = condvar.wait_timeout(state, Duration::from_secs(1)).unwrap();
+                assert!(
+                    !timeout.timed_out(),
+                    "TurnStarted append hook was not reached"
+                );
+                state = next;
+            }
+        }
+        {
+            let sessions = usecase.ctx.sessions.lock().await;
+            let state = sessions
+                .get(&session.id)
+                .expect("turn start intent must be registered before durable append");
+            assert_eq!(state.phase, RuntimeSessionPhase::Streaming);
+            assert_eq!(state.current_turn_id, state.last_turn_id);
+            assert!(state.current_turn_id.is_some());
+            assert_eq!(state.generation, 1);
+            assert!(
+                state.turn_started_at.is_none(),
+                "reset_for_turn state must remain uncommitted at the TurnStarted append hook"
+            );
+            assert!(state.last_progress_at.is_none());
+        }
+
+        usecase.interrupt(&session.id).await.unwrap();
+
+        assert!(session_store
+            .load_queue_paused_at(tmp.path(), &session.id)
+            .unwrap()
+            .is_some());
+        assert!(session_store
+            .load_session_events(tmp.path(), &session.id)
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event, AgentSessionEvent::TurnInterruptRequested { .. })));
+        assert!(!controller
+            .call_kinds_for(&session.id)
+            .iter()
+            .any(|kind| matches!(kind, TestRuntimeCallKind::StartTurn)));
+        {
+            let (lock, condvar) = &*gate;
+            let mut state = lock.lock().unwrap();
+            state.1 = true;
+            condvar.notify_all();
+        }
+        start
+            .await
+            .unwrap()
+            .expect("accepted Stop owns the interrupted start");
+        assert!(!controller
+            .call_kinds_for(&session.id)
+            .iter()
+            .any(|kind| matches!(kind, TestRuntimeCallKind::StartTurn)));
+
+        let restarted =
+            crate::test_support::build_agent_runtime_usecase(session_store.clone(), tmp.path());
+        assert!(
+            restarted
+                .get_session(&session.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .queue_paused
+        );
     }
 
     #[tokio::test]

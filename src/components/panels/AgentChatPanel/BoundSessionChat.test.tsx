@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { UseAgentChatResult } from "@/hooks/useAgentChat";
 import type {
 	AgentStallObservation,
 	ChatSession,
@@ -18,6 +19,7 @@ const mocks = vi.hoisted(() => ({
 	sendMessage: vi.fn().mockResolvedValue(true),
 	interrupt: vi.fn(),
 	cancelQueuedTurn: vi.fn().mockResolvedValue(undefined),
+	resumeQueue: vi.fn().mockResolvedValue(undefined),
 	setPermissionMode: vi.fn(),
 	setPlanMode: vi.fn(),
 	setModel: vi.fn(),
@@ -42,6 +44,8 @@ vi.mock("./ChatSessionView", () => ({
 		notice,
 		error,
 		onDismissError,
+		queuePaused,
+		onResumeQueue,
 	}: {
 		session: ChatSession;
 		permissionMode: PermissionMode;
@@ -58,6 +62,8 @@ vi.mock("./ChatSessionView", () => ({
 		notice?: SessionNotice | null;
 		error: string | null;
 		onDismissError: () => void;
+		queuePaused: boolean;
+		onResumeQueue: () => Promise<void>;
 	}) => (
 		<div data-testid={`chat-${session.id}`}>
 			<span data-testid={`permission-${session.id}`}>{permissionMode}</span>
@@ -100,6 +106,12 @@ vi.mock("./ChatSessionView", () => ({
 					</button>
 				</div>
 			)}
+			<span data-testid={`queue-paused-${session.id}`}>
+				{String(queuePaused)}
+			</span>
+			<button type="button" onClick={() => void onResumeQueue()}>
+				Resume queue
+			</button>
 		</div>
 	),
 }));
@@ -139,8 +151,18 @@ function setContext(
 	stallObservations: Record<string, AgentStallObservation | null> = {},
 	notices: Record<string, SessionNotice | null> = {},
 	sessionErrors: Record<string, string | null> = {},
+	queuePausedBySession: Record<string, boolean> = {},
 ) {
-	mocks.useAgentChatContext.mockReturnValue({
+	const context: UseAgentChatResult = {
+		sessions: [],
+		orderedSessions: [],
+		closedSessions: [],
+		activeSession: null,
+		isStreaming: false,
+		activityStatus: null,
+		permissionMode: "edit",
+		planMode: false,
+		sessionAgentStates: new Map(),
 		getSessionById: (sessionId: string | null | undefined) =>
 			sessionId ? (sessionsById[sessionId] ?? null) : null,
 		loadSession: mocks.loadSession,
@@ -158,22 +180,43 @@ function setContext(
 		getSessionPendingPermission: (sessionId: string) =>
 			pendingPermissions[sessionId] ?? null,
 		getSessionPendingQueue: vi.fn().mockReturnValue([]),
+		getSessionQueuePaused: (sessionId: string) =>
+			queuePausedBySession[sessionId] ?? false,
 		getSessionStallObservation: (sessionId: string) =>
 			stallObservations[sessionId] ?? null,
 		getSessionNotice: (sessionId: string) => notices[sessionId] ?? null,
+		getSessionLatestTokenUsage: vi.fn().mockReturnValue(null),
 		getSessionRuntimeSlashCommands: vi.fn().mockReturnValue([]),
 		getSessionError: (sessionId: string) => sessionErrors[sessionId] ?? null,
 		dismissSessionError: mocks.dismissSessionError,
 		availableModels: [],
 		availableModelsByBackend: {},
+		selectedModel: null,
+		backends: [],
+		selectedBackendId: null,
 		sendMessage: mocks.sendMessage,
 		interrupt: mocks.interrupt,
+		selectSession: vi.fn().mockResolvedValue(undefined),
+		refreshSessions: vi.fn().mockResolvedValue(undefined),
+		refreshClosedSessions: vi.fn().mockResolvedValue(undefined),
+		closeSession: vi.fn().mockResolvedValue(undefined),
+		archiveSession: vi.fn().mockResolvedValue(undefined),
+		archiveOpenSession: vi.fn().mockResolvedValue(undefined),
+		restoreSession: vi.fn().mockResolvedValue(undefined),
+		forkSession: vi.fn().mockResolvedValue(undefined),
+		setSessionTitle: vi.fn().mockResolvedValue("title"),
+		createNewSession: vi.fn().mockResolvedValue(null),
+		createNewWorkspaceSession: vi.fn().mockResolvedValue("session"),
+		reorderSessions: vi.fn(),
 		cancelQueuedTurn: mocks.cancelQueuedTurn,
+		resumeQueue: mocks.resumeQueue,
 		setPermissionMode: mocks.setPermissionMode,
 		setPlanMode: mocks.setPlanMode,
 		setModel: mocks.setModel,
+		setBackend: vi.fn(),
 		respondPermission: mocks.respondPermission,
-	});
+	};
+	mocks.useAgentChatContext.mockReturnValue(context);
 }
 
 describe("BoundSessionChat", () => {
@@ -438,6 +481,33 @@ describe("BoundSessionChat", () => {
 		expect(screen.getByTestId("notice-session-a")).not.toHaveTextContent(
 			"Session B notice",
 		);
+	});
+
+	it("shows a paused queue and delegates resume for the selected session", () => {
+		setContext(
+			{
+				"session-a": makeSession("session-a", "edit", false),
+			},
+			{},
+			{},
+			{},
+			{},
+			{ "session-a": true },
+		);
+
+		render(
+			<BoundSessionChat
+				sessionId="session-a"
+				worktreePath="/repo"
+				skipInitialLoad
+			/>,
+		);
+
+		expect(screen.getByTestId("queue-paused-session-a")).toHaveTextContent(
+			"true",
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Resume queue" }));
+		expect(mocks.resumeQueue).toHaveBeenCalledWith("session-a");
 	});
 
 	it("loads and registers a selected Workflow Session for live updates and input", async () => {

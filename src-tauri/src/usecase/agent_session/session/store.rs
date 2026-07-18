@@ -55,6 +55,16 @@ pub(crate) trait SessionEventLogRecoverySignal: Send + Sync {
     fn take_event_log_recovered(&self, session_id: &str) -> bool;
 }
 
+/// queue pause の小さい durable projection を読む port。
+/// transcript 全体の read model を構築せず runtime/query を hydrate するために分離する。
+pub trait SessionQueuePauseReader: Send + Sync {
+    fn load_queue_paused_at(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+    ) -> Result<Option<f64>, String>;
+}
+
 pub trait SessionStoragePort:
     AgentSessionStorage<
         Session = ChatSession,
@@ -68,6 +78,7 @@ pub trait SessionStoragePort:
         Event = AgentSessionEvent,
     > + SessionReviewContextReader
     + SessionEventLogRecoverySignal
+    + SessionQueuePauseReader
     + Send
     + Sync
 {
@@ -86,6 +97,7 @@ impl<T> SessionStoragePort for T where
             Event = AgentSessionEvent,
         > + SessionReviewContextReader
         + SessionEventLogRecoverySignal
+        + SessionQueuePauseReader
         + Send
         + Sync
 {
@@ -613,6 +625,14 @@ impl SessionStore {
         self.storage.load_session_events(app_data_dir, session_id)
     }
 
+    pub fn load_queue_paused_at(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+    ) -> Result<Option<f64>, String> {
+        self.storage.load_queue_paused_at(app_data_dir, session_id)
+    }
+
     pub fn append_session_event_and_project_state(
         &self,
         app_data_dir: &Path,
@@ -623,6 +643,7 @@ impl SessionStore {
             .map(|projected| projected.status.session_state)
     }
 
+    #[cfg(test)]
     pub fn append_session_event_and_project(
         &self,
         app_data_dir: &Path,
@@ -1149,6 +1170,26 @@ impl SessionStore {
             meta.updated_at = now_timestamp();
             Ok(true)
         })
+    }
+
+    pub fn append_session_events(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        events: &[AgentSessionEvent],
+    ) -> Result<(), String> {
+        #[cfg(test)]
+        if let Some(hook) = self.append_event_hook.read().clone() {
+            for event in events {
+                hook(session_id, event)?;
+            }
+        }
+        self.storage
+            .append_session_events(app_data_dir, session_id, events)?;
+        if self.storage.take_event_log_recovered(session_id) {
+            self.notify_event_log_recovered(session_id);
+        }
+        Ok(())
     }
 
     pub fn load_previous_human_message_before_agent(

@@ -646,6 +646,7 @@ export interface ChatSessionViewProps {
 	selectedModel: string;
 	pendingPermission: PermissionRequest | null;
 	pendingQueue: QueuedAgentTurn[];
+	queuePaused: boolean;
 	stallObservation?: AgentStallObservation | null;
 	notice?: SessionNotice | null;
 	runtimeSlashCommands?: SlashCommand[];
@@ -668,6 +669,7 @@ export interface ChatSessionViewProps {
 	) => Promise<boolean>;
 	onInterrupt: () => void;
 	onCancelQueuedTurn: (queuedTurnId?: string | null) => Promise<void>;
+	onResumeQueue: () => Promise<void>;
 	onLoadOlderMessages?: () => Promise<void>;
 	onEvictOlderMessages?: (
 		options: OlderMessageEvictionOptions,
@@ -718,6 +720,7 @@ export function ChatSessionView({
 	selectedModel,
 	pendingPermission,
 	pendingQueue,
+	queuePaused,
 	stallObservation,
 	notice,
 	runtimeSlashCommands = [],
@@ -730,6 +733,7 @@ export function ChatSessionView({
 	onSend,
 	onInterrupt,
 	onCancelQueuedTurn,
+	onResumeQueue,
 	onLoadOlderMessages,
 	onEvictOlderMessages,
 	onPermissionModeChange,
@@ -1801,6 +1805,20 @@ export function ChatSessionView({
 				)}
 				{pendingQueue.length > 0 && (
 					<div className="px-3 pb-2 space-y-1">
+						{queuePaused && (
+							<div className="flex items-center justify-between rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-xs">
+								<span className="text-amber-700 dark:text-amber-300">
+									Queue paused
+								</span>
+								<button
+									type="button"
+									className="rounded px-2 py-1 font-medium hover:bg-amber-500/15"
+									onClick={() => void onResumeQueue()}
+								>
+									Resume queue
+								</button>
+							</div>
+						)}
 						{pendingQueue.map((turn, index) => (
 							<div
 								key={turn.id}

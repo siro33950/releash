@@ -132,12 +132,15 @@ pub(crate) fn build_agent_runtime_usecase_with_controller_and_notifiers(
 
 #[derive(Clone, Default)]
 pub(crate) struct TestAgentRuntimeController {
-    senders: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<AgentRuntimeEvent>>>>,
+    senders: Arc<Mutex<HashMap<String, Vec<mpsc::UnboundedSender<AgentRuntimeEvent>>>>>,
     calls: Arc<Mutex<Vec<TestRuntimeCall>>>,
-    start_turn_gate: Arc<Mutex<Option<Arc<Notify>>>>,
+    open_session_gate: Arc<Mutex<Option<Arc<Notify>>>>,
     open_session_failures: Arc<Mutex<usize>>,
     respond_permission_gate: Arc<Mutex<Option<Arc<Notify>>>>,
+    start_turn_gate: Arc<Mutex<Option<Arc<Notify>>>>,
+    next_start_turn_gate: Arc<Mutex<Option<Arc<Notify>>>>,
     start_turn_failures: Arc<Mutex<usize>>,
+    interrupt_failures: Arc<Mutex<usize>>,
     respond_permission_failures: Arc<Mutex<usize>>,
     steer_failures: Arc<Mutex<usize>>,
     steering_available: Arc<Mutex<bool>>,
@@ -148,8 +151,40 @@ pub(crate) struct TestAgentRuntimeController {
 }
 
 impl TestAgentRuntimeController {
+    pub(crate) fn pause_open_session(&self) {
+        *self.open_session_gate.lock().unwrap() = Some(Arc::new(Notify::new()));
+    }
+
+    pub(crate) fn release_open_session(&self) {
+        if let Some(gate) = self.open_session_gate.lock().unwrap().take() {
+            gate.notify_waiters();
+        }
+    }
+
+    fn open_session_gate(&self) -> Option<Arc<Notify>> {
+        self.open_session_gate.lock().unwrap().clone()
+    }
+
+    pub(crate) fn fail_next_open_session(&self) {
+        *self.open_session_failures.lock().unwrap() += 1;
+    }
+
+    fn should_fail_open_session(&self) -> bool {
+        let mut failures = self.open_session_failures.lock().unwrap();
+        if *failures == 0 {
+            return false;
+        }
+        *failures -= 1;
+        true
+    }
+
     fn register(&self, session_id: String, sender: mpsc::UnboundedSender<AgentRuntimeEvent>) {
-        self.senders.lock().unwrap().insert(session_id, sender);
+        self.senders
+            .lock()
+            .unwrap()
+            .entry(session_id)
+            .or_default()
+            .push(sender);
     }
 
     #[allow(dead_code)] // issues-1301 G-3: event injection is retained for runtime scenario tests beyond the focused usecase suite.
@@ -159,8 +194,30 @@ impl TestAgentRuntimeController {
             .lock()
             .unwrap()
             .get(session_id)
+            .and_then(|senders| senders.last())
             .cloned()
             .ok_or_else(|| format!("test runtime is not registered for session {session_id}"))?;
+        sender
+            .send(event)
+            .map_err(|_| format!("test runtime event stream is closed for session {session_id}"))
+    }
+
+    pub(crate) fn emit_for_runtime(
+        &self,
+        session_id: &str,
+        runtime_index: usize,
+        event: AgentRuntimeEvent,
+    ) -> Result<(), String> {
+        let sender = self
+            .senders
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .and_then(|senders| senders.get(runtime_index))
+            .cloned()
+            .ok_or_else(|| {
+                format!("test runtime {runtime_index} is not registered for session {session_id}")
+            })?;
         sender
             .send(event)
             .map_err(|_| format!("test runtime event stream is closed for session {session_id}"))
@@ -196,6 +253,12 @@ impl TestAgentRuntimeController {
         *self.start_turn_gate.lock().unwrap() = Some(Arc::new(Notify::new()));
     }
 
+    pub(crate) fn pause_next_start_turn(&self) -> Arc<Notify> {
+        let gate = Arc::new(Notify::new());
+        *self.next_start_turn_gate.lock().unwrap() = Some(Arc::clone(&gate));
+        gate
+    }
+
     pub(crate) fn release_start_turn(&self) {
         if let Some(gate) = self.start_turn_gate.lock().unwrap().take() {
             gate.notify_waiters();
@@ -204,19 +267,6 @@ impl TestAgentRuntimeController {
 
     pub(crate) fn fail_next_start_turn(&self) {
         *self.start_turn_failures.lock().unwrap() += 1;
-    }
-
-    pub(crate) fn fail_next_open_session(&self) {
-        *self.open_session_failures.lock().unwrap() += 1;
-    }
-
-    fn should_fail_open_session(&self) -> bool {
-        let mut failures = self.open_session_failures.lock().unwrap();
-        if *failures == 0 {
-            return false;
-        }
-        *failures -= 1;
-        true
     }
 
     fn should_fail_start_turn(&self) -> bool {
@@ -228,8 +278,25 @@ impl TestAgentRuntimeController {
         true
     }
 
+    pub(crate) fn fail_next_interrupt(&self) {
+        *self.interrupt_failures.lock().unwrap() += 1;
+    }
+
+    fn should_fail_interrupt(&self) -> bool {
+        let mut failures = self.interrupt_failures.lock().unwrap();
+        if *failures == 0 {
+            return false;
+        }
+        *failures -= 1;
+        true
+    }
+
     fn start_turn_gate(&self) -> Option<Arc<Notify>> {
-        self.start_turn_gate.lock().unwrap().clone()
+        self.next_start_turn_gate
+            .lock()
+            .unwrap()
+            .take()
+            .or_else(|| self.start_turn_gate.lock().unwrap().clone())
     }
 
     pub(crate) fn fail_next_respond_permission(&self) {
@@ -422,6 +489,9 @@ impl AgentBackend for TestAgentBackend {
                 plan_mode: spec.plan_mode,
             },
         );
+        if let Some(gate) = self.controller.open_session_gate() {
+            gate.notified().await;
+        }
         if self.controller.should_fail_open_session() {
             return Err(AgentBackendError::Other(
                 "injected test open session failure".to_string(),
@@ -551,6 +621,11 @@ impl AgentSessionRuntime for TestAgentRuntime {
     async fn interrupt(&self) -> Result<(), AgentBackendError> {
         self.controller
             .record(self.session_id.clone(), TestRuntimeCallKind::Interrupt);
+        if self.controller.should_fail_interrupt() {
+            return Err(AgentBackendError::Other(
+                "injected test interrupt failure".to_string(),
+            ));
+        }
         Ok(())
     }
 

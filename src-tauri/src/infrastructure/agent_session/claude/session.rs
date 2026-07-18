@@ -574,7 +574,7 @@ fn spawn_abort_synthesis_timer(
         };
         if should_emit {
             let _ = events_tx.send(AgentRuntimeEvent::TurnCompleted(TurnResult::Interrupted {
-                reason: InterruptReason::Abort,
+                reason: InterruptReason::Timeout,
                 error: None,
             }));
         }
@@ -1123,6 +1123,30 @@ exec sleep 30
         let state = state.lock().await;
         assert!(!state.aborting);
         assert!(!state.synthetic_abort_pending);
+    }
+
+    #[tokio::test]
+    async fn test_abort_synthesis_timer_unresponsive_turnを_timeoutとして合成する() {
+        let state = Arc::new(Mutex::new(test_state()));
+        {
+            let mut state = state.lock().await;
+            state.aborting = true;
+            state.turn_active = true;
+            state.abort_generation = 3;
+            state.turn_generation = 3;
+        }
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        spawn_abort_synthesis_timer(Arc::clone(&state), tx, 3);
+        tokio::time::sleep(ABORT_SYNTHESIS_DELAY + std::time::Duration::from_millis(10)).await;
+
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            AgentRuntimeEvent::TurnCompleted(TurnResult::Interrupted {
+                reason: InterruptReason::Timeout,
+                error: None,
+            })
+        );
     }
 
     #[cfg(unix)]

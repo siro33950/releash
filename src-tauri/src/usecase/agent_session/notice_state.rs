@@ -9,6 +9,7 @@ pub enum AgentSessionNoticeOperation {
     LoadSession,
     LoadOlder,
     CancelQueue,
+    ResumeQueue,
     CloseSession,
     RestoreSession,
     ArchiveSession,

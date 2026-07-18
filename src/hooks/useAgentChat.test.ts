@@ -136,6 +136,7 @@ vi.mock("./useSessionStore", () => ({
 		backends: [],
 		defaultId: null,
 	}),
+	resumeAgentQueue: vi.fn().mockResolvedValue(undefined),
 	convertLegacyMessage: vi.fn((message) => ({
 		...message,
 		parts:
@@ -1566,7 +1567,7 @@ describe("useAgentChat", () => {
 		);
 	});
 
-	it("interrupt invokes interrupt_agent_query with chatSessionId", async () => {
+	it("interrupt re-sends interrupt_agent_query while already interrupting", async () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
 
@@ -1583,11 +1584,30 @@ describe("useAgentChat", () => {
 
 		act(() => {
 			result.current.interrupt(result.current.activeSession?.id ?? "");
+			result.current.interrupt(result.current.activeSession?.id ?? "");
 		});
 
-		expect(mockInvoke).toHaveBeenCalledWith("interrupt_agent_query", {
+		expect(mockInvoke).toHaveBeenCalledTimes(2);
+		expect(mockInvoke).toHaveBeenNthCalledWith(1, "interrupt_agent_query", {
 			chatSessionId: "s1",
 		});
+		expect(mockInvoke).toHaveBeenNthCalledWith(2, "interrupt_agent_query", {
+			chatSessionId: "s1",
+		});
+	});
+
+	it("resumeQueue invokes resume_agent_queue with chatSessionId", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		const { result } = renderHook(() => useAgentChat("/repo"));
+		vi.mocked(sessionStore.resumeAgentQueue).mockClear();
+
+		await act(async () => {
+			await result.current.resumeQueue("s1");
+		});
+
+		expect(sessionStore.resumeAgentQueue).toHaveBeenCalledWith("s1");
 	});
 
 	it("selectSession calls getSession and updates activeSession", async () => {

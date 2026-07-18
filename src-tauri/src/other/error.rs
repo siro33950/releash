@@ -11,6 +11,10 @@ use serde::Serialize;
 pub enum AppError {
     #[error("{0}")]
     Internal(String),
+    #[error(
+        "Timed out waiting for agent session startup (retry_count={retry_count}, max_retries={max_retries})"
+    )]
+    AgentStartupTimeout { retry_count: u32, max_retries: u32 },
     #[error("{message}")]
     Coded { code: String, message: String },
 }
@@ -35,6 +39,7 @@ impl Serialize for AppError {
     {
         match self {
             Self::Internal(message) => serializer.serialize_str(message),
+            Self::AgentStartupTimeout { .. } => serializer.serialize_str(&self.to_string()),
             Self::Coded { code, message } => {
                 let mut state = serializer.serialize_struct("AppError", 2)?;
                 state.serialize_field("code", code)?;
