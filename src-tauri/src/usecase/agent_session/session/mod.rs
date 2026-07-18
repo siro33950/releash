@@ -45,6 +45,7 @@ pub(crate) use read_paths::{
     agent_read_paths_from_message, agent_read_paths_from_messages, agent_read_paths_from_parts,
     merge_agent_read_paths,
 };
+pub(crate) use store::ErrorEpisodeInput;
 pub(crate) use store::SessionEventLogRecoverySignal;
 pub use store::{SessionReaderPort, SessionReviewContextReader, SessionStore};
 pub(crate) use stored_lifecycle::{
@@ -485,6 +486,8 @@ pub struct ChatSession {
     pub worktree_path: String,
     pub messages: Vec<ChatMessage>,
     pub state: SessionState,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub error_reason: Option<String>,
     pub created_at: f64,
     pub updated_at: f64,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -602,6 +605,10 @@ pub struct SessionMeta {
     pub id: String,
     pub worktree_path: String,
     pub state: SessionState,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub error_reason: Option<String>,
+    #[serde(default)]
+    pub state_revision: u64,
     pub created_at: f64,
     pub updated_at: f64,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -1010,6 +1017,8 @@ pub struct SessionSummary {
     pub id: String,
     pub worktree_path: String,
     pub state: SessionState,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub error_reason: Option<String>,
     pub created_at: f64,
     pub updated_at: f64,
     pub first_message: String,
@@ -1077,6 +1086,8 @@ impl SessionMeta {
             id: session.id.clone(),
             worktree_path: normalize_repo_path(&session.worktree_path),
             state: session.state.clone(),
+            error_reason: error_reason_for_state(&session.state, &session.error_reason),
+            state_revision: 0,
             created_at: session.created_at,
             updated_at: session.updated_at,
             agent_session_id: session.agent_session_id.clone(),
@@ -1106,6 +1117,7 @@ impl SessionMeta {
             worktree_path: normalize_repo_path(&self.worktree_path),
             messages,
             state: self.state.clone(),
+            error_reason: error_reason_for_state(&self.state, &self.error_reason),
             created_at: self.created_at,
             updated_at: self.updated_at,
             agent_session_id: self.agent_session_id.clone(),
@@ -1126,6 +1138,7 @@ impl SessionMeta {
             id: self.id.clone(),
             worktree_path: normalize_repo_path(&self.worktree_path),
             state: self.state.clone(),
+            error_reason: error_reason_for_state(&self.state, &self.error_reason),
             created_at: self.created_at,
             updated_at: self.updated_at,
             first_message: self.first_message_preview.clone(),
@@ -1152,6 +1165,7 @@ impl ChatSession {
             id: self.id.clone(),
             worktree_path: normalize_repo_path(&self.worktree_path),
             state: self.state.clone(),
+            error_reason: error_reason_for_state(&self.state, &self.error_reason),
             created_at: self.created_at,
             updated_at: self.updated_at,
             first_message: first_message_preview(&self.messages),
@@ -1166,6 +1180,15 @@ impl ChatSession {
             workflow_node_context: self.workflow_node_context.clone(),
         }
     }
+}
+
+pub(super) fn error_reason_for_state(
+    state: &SessionState,
+    error_reason: &Option<String>,
+) -> Option<String> {
+    (state == &SessionState::Error)
+        .then(|| error_reason.clone())
+        .flatten()
 }
 
 impl SessionSummary {
@@ -1373,6 +1396,7 @@ fn build_new_session_with_id(
         worktree_path: normalize_repo_path(worktree_path),
         messages: Vec::new(),
         state: SessionState::Active,
+        error_reason: None,
         created_at: now,
         updated_at: now,
         agent_session_id: None,
@@ -1989,6 +2013,7 @@ mod tests {
                 worktree_path: "/repo".to_string(),
                 messages: vec![],
                 state: SessionState::Active,
+                error_reason: None,
                 created_at: 1000.0,
                 updated_at: 1000.0,
                 agent_session_id: None,
@@ -2027,6 +2052,7 @@ mod tests {
                 mentions: None,
             }],
             state: SessionState::Active,
+            error_reason: None,
             created_at: 1000.0,
             updated_at: 1000.0,
             agent_session_id: None,
@@ -2066,6 +2092,7 @@ mod tests {
                 mentions: None,
             }],
             state: SessionState::Idle,
+            error_reason: None,
             created_at: 1000.0,
             updated_at: 1000.0,
             agent_session_id: None,
@@ -2103,6 +2130,7 @@ mod tests {
                 mentions: None,
             }],
             state: SessionState::Idle,
+            error_reason: None,
             created_at: 1000.0,
             updated_at: 1000.0,
             agent_session_id: None,
@@ -2130,6 +2158,7 @@ mod tests {
             worktree_path: "/repo".to_string(),
             messages: Vec::new(),
             state: SessionState::Done,
+            error_reason: None,
             created_at: 1000.0,
             updated_at: 1000.0,
             agent_session_id: None,
@@ -2160,6 +2189,7 @@ mod tests {
             worktree_path: "/repo".to_string(),
             messages: Vec::new(),
             state: SessionState::Closed,
+            error_reason: None,
             created_at: 1000.0,
             updated_at: 1000.0,
             agent_session_id: Some("agent-session".to_string()),
@@ -2220,6 +2250,7 @@ mod tests {
                 mentions: None,
             }],
             state: SessionState::Active,
+            error_reason: None,
             created_at: 1000.0,
             updated_at: 1000.0,
             agent_session_id: None,
@@ -2288,6 +2319,7 @@ mod tests {
                 },
             ],
             state: SessionState::Active,
+            error_reason: None,
             created_at: 1000.0,
             updated_at: 1001.0,
             agent_session_id: None,
@@ -2443,6 +2475,7 @@ mod tests {
                 },
             ],
             state: SessionState::Active,
+            error_reason: None,
             created_at: 1000.0,
             updated_at: 1001.0,
             agent_session_id: None,
@@ -2465,6 +2498,32 @@ mod tests {
     }
 
     #[test]
+    fn error_reason_roundtrips_and_is_exposed_only_for_error_summaries() {
+        let mut session = build_new_session(
+            "/repo",
+            Some("claude".to_string()),
+            crate::domain::agent_session::PermissionMode::Edit,
+            Some("sonnet".to_string()),
+            false,
+            false,
+            None,
+        );
+        session.state = SessionState::Error;
+        session.error_reason = Some("app server stopped".to_string());
+
+        let json = serde_json::to_string(&session).unwrap();
+        let restored: ChatSession = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.error_reason.as_deref(), Some("app server stopped"));
+        assert_eq!(
+            restored.to_summary().error_reason.as_deref(),
+            Some("app server stopped")
+        );
+
+        session.state = SessionState::Idle;
+        assert_eq!(session.to_summary().error_reason, None);
+    }
+
+    #[test]
     fn chat_session_without_selected_model_deserializes() {
         let json = r#"{"id":"s1","worktreePath":"/repo","messages":[],"state":"active","createdAt":1000.0,"updatedAt":1000.0,"permissionMode":"edit"}"#;
         let session: ChatSession = serde_json::from_str(json).unwrap();
@@ -2479,6 +2538,7 @@ mod tests {
             worktree_path: "/repo".to_string(),
             messages: vec![],
             state: SessionState::Active,
+            error_reason: None,
             created_at: 1000.0,
             updated_at: 1001.0,
             agent_session_id: None,
@@ -3197,6 +3257,7 @@ mod tests {
             worktree_path: "/repo".to_string(),
             messages: vec![],
             state: SessionState::Active,
+            error_reason: None,
             created_at: 1000.0,
             updated_at: 1001.0,
             agent_session_id: None,
@@ -3233,6 +3294,7 @@ mod tests {
                 mentions: None,
             }],
             state: SessionState::Active,
+            error_reason: None,
             created_at: 1000.0,
             updated_at: 1000.0,
             agent_session_id: None,
@@ -3262,6 +3324,7 @@ mod tests {
                 worktree_path: "/repo".to_string(),
                 messages: vec![],
                 state: SessionState::Closed,
+                error_reason: None,
                 created_at: 1000.0,
                 updated_at: 1000.0,
                 agent_session_id: None,
@@ -3346,6 +3409,7 @@ mod workflow_node_context_meta_tests {
             worktree_path: "/repo".to_string(),
             messages: Vec::new(),
             state: SessionState::Active,
+            error_reason: None,
             created_at: 1.0,
             updated_at: 1.0,
             agent_session_id: None,

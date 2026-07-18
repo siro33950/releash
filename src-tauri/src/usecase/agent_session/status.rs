@@ -242,6 +242,7 @@ pub struct AgentStatusCenter {
     #[cfg(test)]
     update_session_notice_sync_hook:
         RwLock<Option<std::sync::Arc<dyn Fn() + Send + Sync + 'static>>>,
+    session_state_revisions: RwLock<HashMap<String, u64>>,
     workspaces: RwLock<HashMap<String, WorkspaceStatus>>,
     workflow_node_status: RwLock<WorkflowNodeStatusState>,
     pending_workflow_node_sessions: RwLock<HashMap<String, PendingWorkflowNodeSessionStatus>>,
@@ -257,6 +258,7 @@ impl AgentStatusCenter {
             notices: RwLock::new(HashMap::new()),
             #[cfg(test)]
             update_session_notice_sync_hook: RwLock::new(None),
+            session_state_revisions: RwLock::new(HashMap::new()),
             workspaces: RwLock::new(HashMap::new()),
             workflow_node_status: RwLock::new(WorkflowNodeStatusState::default()),
             pending_workflow_node_sessions: RwLock::new(HashMap::new()),
@@ -1118,19 +1120,35 @@ impl AgentStatusCenter {
         None
     }
 
-    /// SessionStore からの `SessionState` 変更通知を受け取り、保持している
+    /// SessionStore からの state projection 変更通知を受け取り、保持している
     /// `SessionStatus` の `session_state` を最新化した上で再集約する。
+    /// 同一 state の通知は backend read model 再取得用に session snapshot を再配信する。
     /// Closed/Archived への遷移は `aggregate` 段階で集約対象から外れ、
     /// 復帰時は再び集約対象に戻る。
     pub fn on_session_state_changed(
         &self,
         chat_session_id: &str,
         new_state: SessionState,
+        state_revision: u64,
     ) -> AgentStatusChanges {
+        let mut revisions = self.session_state_revisions.write();
+        if revisions
+            .get(chat_session_id)
+            .is_some_and(|current| state_revision < *current)
+        {
+            return AgentStatusChanges::default();
+        }
+        revisions.insert(chat_session_id.to_string(), state_revision);
         let existing = self.sessions.read().get(chat_session_id).cloned();
         let Some(existing) = existing else {
             return AgentStatusChanges::default();
         };
+        if existing.session_state == new_state {
+            return AgentStatusChanges {
+                session: Some(existing),
+                ..Default::default()
+            };
+        }
         if let Some(updated) =
             Self::build_state_transition(&existing, new_state, current_timestamp())
         {
@@ -1984,6 +2002,54 @@ mod tests {
     }
 
     #[test]
+    fn same_state_projection_notification_republishes_session_snapshot() {
+        let center = AgentStatusCenter::new();
+        center.update_session(mk_session(
+            "a",
+            "/repo",
+            TurnPhase::Idle,
+            SessionState::Error,
+        ));
+
+        let changes = center.on_session_state_changed("a", SessionState::Error, 1);
+
+        assert_eq!(
+            changes
+                .session
+                .as_ref()
+                .map(|session| session.chat_session_id.as_str()),
+            Some("a")
+        );
+        assert!(changes.workspace.is_none());
+        assert!(changes.agent_state.is_none());
+        assert!(changes.workflow_node_views.is_empty());
+    }
+
+    #[test]
+    fn stale_session_state_revision_cannot_overwrite_newer_state() {
+        let center = AgentStatusCenter::new();
+        center.update_session(mk_session(
+            "a",
+            "/repo",
+            TurnPhase::Idle,
+            SessionState::Active,
+        ));
+
+        let closed = center.on_session_state_changed("a", SessionState::Closed, 2);
+        let stale = center.on_session_state_changed("a", SessionState::Error, 1);
+
+        assert_eq!(
+            closed.session.as_ref().map(|status| &status.session_state),
+            Some(&SessionState::Closed)
+        );
+        assert!(stale.is_empty());
+        assert_eq!(
+            center.get_session("a").map(|status| status.session_state),
+            Some(SessionState::Closed)
+        );
+    }
+
+    #[test]
     fn build_state_transition_closes_streaming_session_with_idle_normalization() {
         // 閉じる前に Streaming だった SessionStatus を Closed に遷移させると
         // turn_phase / pending_permission を引きずらず正規化される
@@ -2111,7 +2177,7 @@ mod tests {
         assert_eq!(initial.session_count, 2);
 
         // Error Session を Closed に遷移させると Workspace は Done / session_count=1 に再集約される
-        center.on_session_state_changed("err", SessionState::Closed);
+        center.on_session_state_changed("err", SessionState::Closed, 1);
         let after_close = center
             .get_workspace("/repo")
             .expect("workspace still tracked");
@@ -2120,7 +2186,7 @@ mod tests {
         assert_eq!(after_close.error_count, 0);
 
         // Closed → Idle で復帰させると Waiting / session_count=2 として再寄与する
-        center.on_session_state_changed("err", SessionState::Idle);
+        center.on_session_state_changed("err", SessionState::Idle, 2);
         let after_restore = center
             .get_workspace("/repo")
             .expect("workspace still tracked");
@@ -2439,7 +2505,7 @@ mod tests {
             AgentState::Done,
         ));
 
-        let changes = center.on_session_state_changed("step-a", SessionState::Archived);
+        let changes = center.on_session_state_changed("step-a", SessionState::Archived, 1);
 
         assert_eq!(changes.workflow_node_views.len(), 1);
         assert!(changes.workflow_node_views[0].node_executions.is_empty());
@@ -2672,7 +2738,7 @@ mod tests {
         ));
         let initial_version = initial.workflow_node_views[0].version;
 
-        let removed = center.on_session_state_changed("step-a", SessionState::Archived);
+        let removed = center.on_session_state_changed("step-a", SessionState::Archived, 1);
 
         assert_eq!(removed.workflow_node_views.len(), 1);
         assert!(removed.workflow_node_views[0].node_executions.is_empty());
@@ -2868,7 +2934,7 @@ mod tests {
             AgentState::Running,
         ));
 
-        let changes = center.on_session_state_changed("step-live", SessionState::Archived);
+        let changes = center.on_session_state_changed("step-live", SessionState::Archived, 1);
 
         assert_eq!(changes.workflow_node_views.len(), 1);
         assert!(changes.workflow_node_views[0].node_executions.is_empty());

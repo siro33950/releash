@@ -281,6 +281,7 @@ export interface ChatSession {
 	worktreePath: string;
 	messages: ChatMessage[];
 	state: SessionState;
+	errorReason?: string | null;
 	createdAt: number;
 	updatedAt: number;
 	agentSessionId?: string | null;
@@ -304,6 +305,7 @@ export interface SessionSummary {
 	id: string;
 	worktreePath: string;
 	state: SessionState;
+	errorReason?: string | null;
 	createdAt: number;
 	updatedAt: number;
 	firstMessage: string;

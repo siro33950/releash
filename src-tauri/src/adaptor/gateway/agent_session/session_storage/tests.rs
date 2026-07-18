@@ -1,18 +1,21 @@
 use super::layout::{
-    attachment_file_in_dir, attachments_dir_in_dir, content_hash, index_file_in_dir,
-    legacy_meta_file, message_file_in_dir, meta_event_transaction_file_in_dir, meta_file_in_dir,
-    private_context_file_in_dir, session_dir, session_file, sessions_dir, tool_output_file_in_dir,
-    tool_outputs_dir_in_dir, write_json_pretty_atomic, write_json_pretty_atomic_durable,
+    attachment_file_in_dir, attachments_dir_in_dir, content_hash, event_log_file_in_dir,
+    index_file_in_dir, legacy_meta_file, message_file_in_dir, meta_event_transaction_file_in_dir,
+    meta_file_in_dir, private_context_file_in_dir, session_dir, session_file, sessions_dir,
+    tool_output_file_in_dir, tool_outputs_dir_in_dir, write_json_pretty_atomic,
+    write_json_pretty_atomic_durable,
 };
 use super::transaction::{SessionMetaEventTransaction, TransactionApplyStep};
 use super::*;
 use crate::domain::agent_session::services::MAX_IMAGE_BYTES;
 use crate::domain::agent_session::ContextSourceKind;
 use crate::usecase::agent_session::context_meta::{ContextEpochMeta, ContextSourceRevisionMeta};
-use crate::usecase::agent_session::event_log::{AgentSessionEvent, BackendSessionRecoveryReason};
+use crate::usecase::agent_session::event_log::{
+    AgentSessionEvent, BackendSessionRecoveryReason, PromptInput,
+};
 use crate::usecase::agent_session::session::{
-    AttachmentRef, ChatMessage, ContextCarryState, MessagePart, MessageRole, SessionState,
-    SESSION_BODY_FORMAT_VERSION, TOOL_OUTPUT_PREVIEW_BYTES,
+    AttachmentRef, ChatMessage, ContextCarryState, ErrorEpisodeInput, MessagePart, MessageRole,
+    SessionState, SessionStore, SESSION_BODY_FORMAT_VERSION, TOOL_OUTPUT_PREVIEW_BYTES,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -43,6 +46,7 @@ fn make_session(id: &str, worktree: &str) -> ChatSession {
             mentions: None,
         }],
         state: SessionState::Active,
+        error_reason: None,
         created_at: 1000.0,
         updated_at: 1000.0,
         agent_session_id: None,
@@ -107,6 +111,45 @@ fn tool_output_blob_count(dir: &std::path::Path) -> usize {
         return 0;
     }
     std::fs::read_dir(tool_outputs_dir).unwrap().count()
+}
+
+fn capture_projection_files(
+    dir: &std::path::Path,
+    message_path: std::path::PathBuf,
+) -> Vec<(std::path::PathBuf, Option<Vec<u8>>)> {
+    [
+        event_log_file_in_dir(dir),
+        message_path,
+        index_file_in_dir(dir),
+        meta_file_in_dir(dir),
+        private_context_file_in_dir(dir),
+    ]
+    .into_iter()
+    .map(|path| {
+        let contents = match std::fs::read(&path) {
+            Ok(contents) => Some(contents),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => panic!("failed to capture {}: {error}", path.display()),
+        };
+        (path, contents)
+    })
+    .collect()
+}
+
+fn assert_projection_files_unchanged(snapshots: &[(std::path::PathBuf, Option<Vec<u8>>)]) {
+    for (path, expected) in snapshots {
+        let actual = match std::fs::read(path) {
+            Ok(contents) => Some(contents),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => panic!("failed to read {}: {error}", path.display()),
+        };
+        assert_eq!(
+            &actual,
+            expected,
+            "projection file changed: {}",
+            path.display()
+        );
+    }
 }
 
 #[test]
@@ -2589,6 +2632,8 @@ fn list_sessions_ignores_legacy_flat_json_and_sidecar() {
         id: UUID1.to_string(),
         worktree_path: "/repo".to_string(),
         state: SessionState::Active,
+        error_reason: None,
+        state_revision: 0,
         created_at: 1000.0,
         updated_at: 1001.0,
         agent_session_id: Some("agent-session".to_string()),
@@ -3542,13 +3587,15 @@ fn state_change_listener_fires_on_close_and_restore() {
     let events: Arc<PlMutex<Vec<(String, String, SessionState)>>> =
         Arc::new(PlMutex::new(Vec::new()));
     let events_for_listener = events.clone();
-    store.register_state_change_listener(Arc::new(move |session_id, worktree_path, new_state| {
-        events_for_listener.lock().push((
-            session_id.to_string(),
-            worktree_path.to_string(),
-            new_state.clone(),
-        ));
-    }));
+    store.register_state_change_listener(Arc::new(
+        move |session_id, worktree_path, new_state, _| {
+            events_for_listener.lock().push((
+                session_id.to_string(),
+                worktree_path.to_string(),
+                new_state.clone(),
+            ));
+        },
+    ));
 
     // タブを閉じる: Active → Closed
     store
@@ -3580,7 +3627,7 @@ fn state_change_listener_does_not_fire_when_state_unchanged() {
 
     let count = Arc::new(PlMutex::new(0usize));
     let count_for_listener = count.clone();
-    store.register_state_change_listener(Arc::new(move |_, _, _| {
+    store.register_state_change_listener(Arc::new(move |_, _, _, _| {
         *count_for_listener.lock() += 1;
     }));
 
@@ -3619,4 +3666,584 @@ fn list_closed_sessions_returns_only_closed() {
     assert_eq!(closed.len(), 2);
     assert_eq!(closed[0].id, UUID3);
     assert_eq!(closed[1].id, UUID2);
+}
+
+#[test]
+fn terminal_projection_reads_only_the_target_message_for_long_transcript() {
+    let app_data_dir = tempfile::tempdir().unwrap();
+    let storage = Arc::new(FileSessionStorage::default());
+    let store = SessionStore::new(storage.clone());
+    let mut session = crate::usecase::agent_session::session::create_session_internal(
+        &store,
+        app_data_dir.path(),
+        "/repo",
+        Some("codex".to_string()),
+    )
+    .unwrap();
+    session.messages = (0..200)
+        .map(|index| ChatMessage {
+            id: format!("history-{index}"),
+            role: if index % 2 == 0 {
+                MessageRole::Human
+            } else {
+                MessageRole::Agent
+            },
+            content: format!("message {index}"),
+            thinking: None,
+            activities: None,
+            parts: None,
+            streaming_final_seq: 0,
+            timestamp: index as f64,
+            mentions: None,
+        })
+        .chain([
+            ChatMessage {
+                id: "current-human".to_string(),
+                role: MessageRole::Human,
+                content: "finish".to_string(),
+                thinking: None,
+                activities: None,
+                parts: None,
+                streaming_final_seq: 0,
+                timestamp: 201.0,
+                mentions: None,
+            },
+            ChatMessage {
+                id: "current-agent".to_string(),
+                role: MessageRole::Agent,
+                content: String::new(),
+                thinking: None,
+                activities: None,
+                parts: Some(Vec::new()),
+                streaming_final_seq: 0,
+                timestamp: 202.0,
+                mentions: None,
+            },
+        ])
+        .collect();
+    store
+        .save_full_session_for_migration_or_restore(app_data_dir.path(), &session)
+        .unwrap();
+    store
+        .append_session_event_without_projection(
+            app_data_dir.path(),
+            &session.id,
+            AgentSessionEvent::TurnStarted {
+                turn_id: 1,
+                message_id: "current-human".to_string(),
+                assistant_message_id: Some("current-agent".to_string()),
+                prompt: PromptInput {
+                    content: "finish".to_string(),
+                    ..PromptInput::default()
+                },
+                at: 201.0,
+            },
+        )
+        .unwrap();
+    storage.reset_message_read_count();
+
+    store
+        .append_terminal_events_and_materialize(
+            app_data_dir.path(),
+            &session.id,
+            &[
+                AgentSessionEvent::FinalPartsRecorded {
+                    turn_id: 1,
+                    message_id: "current-agent".to_string(),
+                    parts: vec![MessagePart::Text {
+                        content: "done".to_string(),
+                        parent_tool_use_id: None,
+                    }],
+                },
+                AgentSessionEvent::TurnCompleted {
+                    turn_id: 1,
+                    exit_code: 0,
+                    stop_reason: None,
+                    token_usage: None,
+                },
+            ],
+            "current-agent",
+            1,
+            203.0,
+        )
+        .unwrap();
+
+    assert_eq!(storage.message_read_count(), 1);
+    let meta = storage
+        .get_session_meta(app_data_dir.path(), &session.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(meta.updated_at, 203.0);
+}
+
+#[test]
+fn failed_projection_rolls_back_before_concurrent_meta_update_enters() {
+    let app_data_dir = tempfile::tempdir().unwrap();
+    let storage = Arc::new(FileSessionStorage::default());
+    let store = Arc::new(SessionStore::new(storage.clone()));
+    let session = crate::usecase::agent_session::session::create_session_internal(
+        &store,
+        app_data_dir.path(),
+        "/repo",
+        Some("codex".to_string()),
+    )
+    .unwrap();
+    let entered = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    storage.set_projection_commit_hook_for_test({
+        let entered = entered.clone();
+        let release = release.clone();
+        Arc::new(move |stage| {
+            if stage == ProjectionCommitStage::Events {
+                entered.wait();
+                release.wait();
+                return Err("injected failure after event write".to_string());
+            }
+            Ok(())
+        })
+    });
+    let data_dir = app_data_dir.path().to_path_buf();
+    let session_id = session.id.clone();
+    let error_store = store.clone();
+    let error_data_dir = data_dir.clone();
+    let error_session_id = session_id.clone();
+    let error_thread = std::thread::spawn(move || {
+        error_store.append_error_episode_and_materialize(
+            &error_data_dir,
+            &error_session_id,
+            ErrorEpisodeInput {
+                message_id: "fatal-message".to_string(),
+                reason: "app server stopped".to_string(),
+                at: 2.0,
+            },
+        )
+    });
+    entered.wait();
+    let meta_store = store.clone();
+    let meta_data_dir = data_dir.clone();
+    let meta_session_id = session_id.clone();
+    let meta_thread = std::thread::spawn(move || {
+        meta_store.set_session_state(&meta_data_dir, &meta_session_id, SessionState::Closed)
+    });
+    release.wait();
+
+    assert!(error_thread.join().unwrap().is_err());
+    meta_thread.join().unwrap().unwrap();
+    let meta = store
+        .get_session_meta(&data_dir, &session_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(meta.state, SessionState::Closed);
+    assert_eq!(meta.error_reason, None);
+    assert!(!store
+        .load_session_events(&data_dir, &session_id)
+        .unwrap()
+        .iter()
+        .any(|event| matches!(event, AgentSessionEvent::SessionErrored { .. })));
+}
+
+#[test]
+fn failed_projection_rolls_back_before_concurrent_event_append_enters() {
+    let app_data_dir = tempfile::tempdir().unwrap();
+    let storage = Arc::new(FileSessionStorage::default());
+    let store = Arc::new(SessionStore::new(storage.clone()));
+    let session = crate::usecase::agent_session::session::create_session_internal(
+        &store,
+        app_data_dir.path(),
+        "/repo",
+        Some("codex".to_string()),
+    )
+    .unwrap();
+    let entered = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    storage.set_projection_commit_hook_for_test({
+        let entered = entered.clone();
+        let release = release.clone();
+        Arc::new(move |stage| {
+            if stage == ProjectionCommitStage::Events {
+                entered.wait();
+                release.wait();
+                return Err("injected failure after event write".to_string());
+            }
+            Ok(())
+        })
+    });
+    let data_dir = app_data_dir.path().to_path_buf();
+    let session_id = session.id.clone();
+    let error_store = store.clone();
+    let error_data_dir = data_dir.clone();
+    let error_session_id = session_id.clone();
+    let error_thread = std::thread::spawn(move || {
+        error_store.append_error_episode_and_materialize(
+            &error_data_dir,
+            &error_session_id,
+            ErrorEpisodeInput {
+                message_id: "fatal-message".to_string(),
+                reason: "app server stopped".to_string(),
+                at: 2.0,
+            },
+        )
+    });
+    entered.wait();
+    let event_store = store.clone();
+    let event_data_dir = data_dir.clone();
+    let event_session_id = session_id.clone();
+    let event_thread = std::thread::spawn(move || {
+        event_store.append_session_event_without_projection(
+            &event_data_dir,
+            &event_session_id,
+            AgentSessionEvent::SessionClosed { at: 3.0 },
+        )
+    });
+    release.wait();
+
+    assert!(error_thread.join().unwrap().is_err());
+    event_thread.join().unwrap().unwrap();
+    let events = store.load_session_events(&data_dir, &session_id).unwrap();
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event, AgentSessionEvent::SessionErrored { .. })));
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, AgentSessionEvent::SessionClosed { .. })));
+}
+
+#[test]
+fn error_projection_repairs_unreadable_index_without_overwriting_existing_chunk() {
+    let tmp = TempDir::new().unwrap();
+    let storage = Arc::new(FileSessionStorage::default());
+    let store = SessionStore::new(storage.clone());
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .unwrap();
+    let dir = session_dir(tmp.path(), UUID1).unwrap();
+    let existing_chunk = message_file_in_dir(&dir, 1);
+    let existing_before = std::fs::read(&existing_chunk).unwrap();
+    std::fs::write(index_file_in_dir(&dir), b"{ unreadable index").unwrap();
+
+    let (_, error_message) = store
+        .append_error_episode_and_materialize(
+            tmp.path(),
+            UUID1,
+            ErrorEpisodeInput {
+                message_id: "fatal-message".to_string(),
+                reason: "app server stopped".to_string(),
+                at: 2000.0,
+            },
+        )
+        .unwrap();
+
+    assert_eq!(std::fs::read(existing_chunk).unwrap(), existing_before);
+    let index = storage.read_index_from_dir(&dir).unwrap();
+    assert_eq!(
+        index
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["m1", "fatal-message"]
+    );
+    assert_eq!(
+        std::fs::read_to_string(message_file_in_dir(&dir, 2)).unwrap(),
+        serde_json::to_string_pretty(&error_message).unwrap()
+    );
+    let meta = storage
+        .get_session_meta(tmp.path(), UUID1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(meta.updated_at, 2000.0);
+}
+
+#[test]
+fn terminal_projection_repairs_stale_index_and_finds_target_message() {
+    let tmp = TempDir::new().unwrap();
+    let storage = Arc::new(FileSessionStorage::default());
+    let store = SessionStore::new(storage.clone());
+    let mut session = make_session(UUID1, "/repo");
+    session.messages.push(ChatMessage {
+        id: "m2".to_string(),
+        role: MessageRole::Agent,
+        content: String::new(),
+        thinking: None,
+        activities: None,
+        parts: Some(Vec::new()),
+        streaming_final_seq: 0,
+        timestamp: 1001.0,
+        mentions: None,
+    });
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .unwrap();
+    store
+        .append_session_event_without_projection(
+            tmp.path(),
+            UUID1,
+            AgentSessionEvent::TurnStarted {
+                turn_id: 1,
+                message_id: "m1".to_string(),
+                assistant_message_id: Some("m2".to_string()),
+                prompt: PromptInput {
+                    content: "Hello".to_string(),
+                    ..PromptInput::default()
+                },
+                at: 1000.0,
+            },
+        )
+        .unwrap();
+    let dir = session_dir(tmp.path(), UUID1).unwrap();
+    let first_chunk = message_file_in_dir(&dir, 1);
+    let first_before = std::fs::read(&first_chunk).unwrap();
+    let mut stale_index = storage.read_index_from_dir(&dir).unwrap();
+    stale_index.pop();
+    write_json_pretty_atomic(&index_file_in_dir(&dir), &stale_index, "session index").unwrap();
+
+    let parts = vec![MessagePart::Text {
+        content: "done".to_string(),
+        parent_tool_use_id: None,
+    }];
+    let (_, persisted_parts) = store
+        .append_terminal_events_and_materialize(
+            tmp.path(),
+            UUID1,
+            &[
+                AgentSessionEvent::FinalPartsRecorded {
+                    turn_id: 1,
+                    message_id: "m2".to_string(),
+                    parts: parts.clone(),
+                },
+                AgentSessionEvent::TurnCompleted {
+                    turn_id: 1,
+                    exit_code: 0,
+                    stop_reason: None,
+                    token_usage: None,
+                },
+            ],
+            "m2",
+            7,
+            2001.0,
+        )
+        .unwrap();
+
+    assert_eq!(persisted_parts, parts);
+    assert_eq!(std::fs::read(first_chunk).unwrap(), first_before);
+    let index = storage.read_index_from_dir(&dir).unwrap();
+    assert_eq!(
+        index
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["m1", "m2"]
+    );
+    let updated: ChatMessage =
+        serde_json::from_slice(&std::fs::read(message_file_in_dir(&dir, 2)).unwrap()).unwrap();
+    assert_eq!(updated.parts, Some(persisted_parts));
+    assert_eq!(updated.streaming_final_seq, 7);
+    let meta = storage
+        .get_session_meta(tmp.path(), UUID1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(meta.updated_at, 2001.0);
+}
+
+fn assert_append_projection_rollback(stage: ProjectionCommitStage) {
+    let tmp = TempDir::new().unwrap();
+    let storage = Arc::new(FileSessionStorage::default());
+    let store = SessionStore::new(storage.clone());
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .unwrap();
+    let notifications = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    store.register_state_change_listener({
+        let notifications = notifications.clone();
+        Arc::new(move |_, _, state, _| notifications.lock().push(state.clone()))
+    });
+    let dir = session_dir(tmp.path(), UUID1).unwrap();
+    let snapshots = capture_projection_files(&dir, message_file_in_dir(&dir, 2));
+    let cache_before = serde_json::to_value(
+        storage
+            .get_session_meta(tmp.path(), UUID1)
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    let read_model_before = serde_json::to_value(
+        storage
+            .load_full_session_for_restore(tmp.path(), UUID1)
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    storage.set_projection_commit_hook_for_test(Arc::new(move |current| {
+        if current == stage {
+            Err(format!("injected {stage:?} failure"))
+        } else {
+            Ok(())
+        }
+    }));
+
+    let result = store.append_error_episode_and_materialize(
+        tmp.path(),
+        UUID1,
+        ErrorEpisodeInput {
+            message_id: "fatal-message".to_string(),
+            reason: "app server stopped".to_string(),
+            at: 2000.0,
+        },
+    );
+
+    assert!(result.is_err());
+    assert_projection_files_unchanged(&snapshots);
+    assert_eq!(
+        serde_json::to_value(
+            storage
+                .get_session_meta(tmp.path(), UUID1)
+                .unwrap()
+                .unwrap()
+        )
+        .unwrap(),
+        cache_before
+    );
+    assert_eq!(
+        serde_json::to_value(
+            storage
+                .load_full_session_for_restore(tmp.path(), UUID1)
+                .unwrap()
+                .unwrap()
+        )
+        .unwrap(),
+        read_model_before
+    );
+    assert!(notifications.lock().is_empty());
+}
+
+fn assert_persist_parts_projection_rollback(stage: ProjectionCommitStage) {
+    let tmp = TempDir::new().unwrap();
+    let storage = Arc::new(FileSessionStorage::default());
+    let store = SessionStore::new(storage.clone());
+    let mut session = make_session(UUID1, "/repo");
+    session.messages.push(ChatMessage {
+        id: "m2".to_string(),
+        role: MessageRole::Agent,
+        content: String::new(),
+        thinking: None,
+        activities: None,
+        parts: Some(Vec::new()),
+        streaming_final_seq: 0,
+        timestamp: 1001.0,
+        mentions: None,
+    });
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .unwrap();
+    store
+        .append_session_event_without_projection(
+            tmp.path(),
+            UUID1,
+            AgentSessionEvent::TurnStarted {
+                turn_id: 1,
+                message_id: "m1".to_string(),
+                assistant_message_id: Some("m2".to_string()),
+                prompt: PromptInput {
+                    content: "Hello".to_string(),
+                    ..PromptInput::default()
+                },
+                at: 1000.0,
+            },
+        )
+        .unwrap();
+    let notifications = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    store.register_state_change_listener({
+        let notifications = notifications.clone();
+        Arc::new(move |_, _, state, _| notifications.lock().push(state.clone()))
+    });
+    let dir = session_dir(tmp.path(), UUID1).unwrap();
+    let snapshots = capture_projection_files(&dir, message_file_in_dir(&dir, 2));
+    let cache_before = serde_json::to_value(
+        storage
+            .get_session_meta(tmp.path(), UUID1)
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    let read_model_before = serde_json::to_value(
+        storage
+            .load_full_session_for_restore(tmp.path(), UUID1)
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    storage.set_projection_commit_hook_for_test(Arc::new(move |current| {
+        if current == stage {
+            Err(format!("injected {stage:?} failure"))
+        } else {
+            Ok(())
+        }
+    }));
+
+    let result = store.append_terminal_events_and_materialize(
+        tmp.path(),
+        UUID1,
+        &[
+            AgentSessionEvent::FinalPartsRecorded {
+                turn_id: 1,
+                message_id: "m2".to_string(),
+                parts: vec![MessagePart::Text {
+                    content: "done".to_string(),
+                    parent_tool_use_id: None,
+                }],
+            },
+            AgentSessionEvent::TurnCompleted {
+                turn_id: 1,
+                exit_code: 0,
+                stop_reason: None,
+                token_usage: None,
+            },
+        ],
+        "m2",
+        7,
+        2001.0,
+    );
+
+    assert!(result.is_err());
+    assert_projection_files_unchanged(&snapshots);
+    assert_eq!(
+        serde_json::to_value(
+            storage
+                .get_session_meta(tmp.path(), UUID1)
+                .unwrap()
+                .unwrap()
+        )
+        .unwrap(),
+        cache_before
+    );
+    assert_eq!(
+        serde_json::to_value(
+            storage
+                .load_full_session_for_restore(tmp.path(), UUID1)
+                .unwrap()
+                .unwrap()
+        )
+        .unwrap(),
+        read_model_before
+    );
+    assert!(notifications.lock().is_empty());
+}
+
+#[test]
+fn append_projection_message_failure_restores_all_checkpoints() {
+    assert_append_projection_rollback(ProjectionCommitStage::Message);
+}
+
+#[test]
+fn append_projection_meta_failure_restores_all_checkpoints() {
+    assert_append_projection_rollback(ProjectionCommitStage::Meta);
+}
+
+#[test]
+fn persist_parts_projection_message_failure_restores_all_checkpoints() {
+    assert_persist_parts_projection_rollback(ProjectionCommitStage::Message);
+}
+
+#[test]
+fn persist_parts_projection_meta_failure_restores_all_checkpoints() {
+    assert_persist_parts_projection_rollback(ProjectionCommitStage::Meta);
 }

@@ -50,7 +50,7 @@ pub(crate) fn register_session_notice_cleanup_listener(
     session_store: &SessionStore,
     notice_usecase: Arc<AgentSessionNoticeUsecase>,
 ) {
-    session_store.register_state_change_listener(Arc::new(move |session_id, _, new_state| {
+    session_store.register_state_change_listener(Arc::new(move |session_id, _, new_state, _| {
         if matches!(new_state, SessionState::Closed | SessionState::Archived) {
             notice_usecase.update(session_id, AgentSessionNoticeUpdate::RemoveSession);
         }

@@ -508,6 +508,7 @@ mod tests {
             worktree_path: "/repo".to_string(),
             messages,
             state: SessionState::Idle,
+            error_reason: None,
             created_at: 1.0,
             updated_at: 2.0,
             agent_session_id: None,

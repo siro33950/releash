@@ -248,6 +248,22 @@ describe("WorkspaceList", () => {
 		);
 	});
 
+	it("shows the backend error reason on an errored session badge", () => {
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: [
+				{
+					...directNode,
+					status: "error",
+					errorReason: "app server stopped",
+				},
+			],
+		});
+
+		renderWorkspaceList();
+
+		expect(screen.getByTitle("app server stopped")).toBeInTheDocument();
+	});
+
 	it("toggles Workflow and Fanout branches without changing selection", async () => {
 		const user = userEvent.setup();
 		const { onSelectWorktree } = renderWorkspaceList();

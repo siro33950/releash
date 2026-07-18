@@ -226,6 +226,29 @@ const pendingPermission: PermissionRequest = {
 	title: "Run command",
 };
 
+describe("ChatSessionView error parts", () => {
+	it("renders the live or reloaded error part as an Error block", () => {
+		renderChatSessionView({
+			testSession: {
+				...session,
+				state: "error",
+				errorReason: "app server stopped",
+				messages: [
+					...session.messages,
+					{
+						id: "session-error",
+						role: "agent",
+						parts: [{ type: "error", content: "app server stopped" }],
+						timestamp: 1002,
+					},
+				],
+			},
+		});
+
+		expect(screen.getByText("app server stopped")).toBeInTheDocument();
+	});
+});
+
 describe("ChatSessionView session-local controls", () => {
 	it("renders a dismissible operation error banner", () => {
 		const onDismissError = vi.fn();

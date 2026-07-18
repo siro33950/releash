@@ -5,9 +5,12 @@ use std::time::Instant;
 use crate::domain::agent_session::entities::MessagePart as DomainMessagePart;
 use crate::domain::agent_session::gateway::AgentSessionRuntime;
 use crate::usecase::agent_session::event_log::BackendSessionRecoveryReason;
-use crate::usecase::agent_session::session::{MessagePart, PermissionRequestMsg, TokenUsage};
+use crate::usecase::agent_session::session::{
+    ChatMessage, MessagePart, PermissionRequestMsg, TokenUsage,
+};
 use crate::usecase::agent_session::status::TurnPhase;
 
+use super::ports::AgentStreamingDeltaPayload;
 use super::queue::QueuedTurnInput;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,11 +43,16 @@ pub(crate) struct RuntimeSessionState {
     pub pending_stream_bytes: usize,
     pub pending_stream_snapshot: bool,
     pub retry_stream_delta: Option<PendingStreamDelta>,
+    pub authoritative_stream_retries: VecDeque<PendingStreamDelta>,
+    pub authoritative_stream_emit_failure_count: u32,
+    pub authoritative_stream_flush_scheduled: bool,
     pub stream_emit_failure_count: u32,
     pub stream_emit_suppressed: bool,
     pub last_stream_emit_at: Option<Instant>,
     pub last_stream_persist_at: Option<Instant>,
     pub stream_flush_scheduled: bool,
+    /// A process-exit Fatal emitted immediately after an already completed crash turn.
+    pub pending_trailing_fatal_message: Option<String>,
     pub current_turn_id: Option<u64>,
     pub last_turn_id: Option<u64>,
     pub pending_permission_request: Option<PermissionRequestMsg>,
@@ -86,6 +94,22 @@ pub(crate) struct PendingStreamDelta {
     pub seq: u64,
     pub snapshot: bool,
     pub parts: Vec<MessagePart>,
+    pub message: Option<ChatMessage>,
+    /// Final/backend-owned snapshots replace an older retry payload when delivery fails.
+    pub authoritative: bool,
+}
+
+impl PendingStreamDelta {
+    pub(crate) fn to_delta_payload(&self, session_id: &str) -> AgentStreamingDeltaPayload {
+        AgentStreamingDeltaPayload {
+            chat_session_id: session_id.to_string(),
+            message_id: self.message_id.clone(),
+            seq: self.seq,
+            snapshot: self.snapshot,
+            parts: self.parts.clone(),
+            message: self.message.clone(),
+        }
+    }
 }
 
 impl RuntimeSessionState {
@@ -103,11 +127,15 @@ impl RuntimeSessionState {
             pending_stream_bytes: 0,
             pending_stream_snapshot: false,
             retry_stream_delta: None,
+            authoritative_stream_retries: VecDeque::new(),
+            authoritative_stream_emit_failure_count: 0,
+            authoritative_stream_flush_scheduled: false,
             stream_emit_failure_count: 0,
             stream_emit_suppressed: false,
             last_stream_emit_at: None,
             last_stream_persist_at: None,
             stream_flush_scheduled: false,
+            pending_trailing_fatal_message: None,
             current_turn_id: None,
             last_turn_id: None,
             pending_permission_request: None,
@@ -153,6 +181,7 @@ impl RuntimeSessionState {
         self.last_stream_emit_at = None;
         self.last_stream_persist_at = None;
         self.stream_flush_scheduled = false;
+        self.pending_trailing_fatal_message = None;
         self.current_turn_id = Some(turn_id);
         self.last_turn_id = Some(turn_id);
         self.clear_pending_permission_request();
@@ -199,6 +228,7 @@ impl RuntimeSessionState {
         self.last_stream_emit_at = None;
         self.last_stream_persist_at = None;
         self.stream_flush_scheduled = false;
+        self.pending_trailing_fatal_message = None;
         self.turn_started_at = None;
         self.first_backend_event_recorded = false;
         self.permission_wait_started_at = None;

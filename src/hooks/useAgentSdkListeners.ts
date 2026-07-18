@@ -40,6 +40,7 @@ interface StreamingMessageUpdated {
 	seq: number;
 	snapshot?: boolean;
 	parts: MessagePart[];
+	message?: (LegacyChatMessage & { parts?: MessagePart[] | null }) | null;
 }
 
 interface AgentStallObserved {
@@ -391,14 +392,14 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 		let cancelled = false;
 
 		listen<StreamingMessageUpdated>("agent-streaming-delta", (event) => {
-			const { chat_session_id, message_id, seq, snapshot, parts } =
+			const { chat_session_id, message_id, seq, snapshot, parts, message } =
 				event.payload;
 
 			const dropReason = getStreamingDeltaDropReason?.(
 				chat_session_id,
 				message_id,
 			);
-			if (dropReason) {
+			if (dropReason && !(dropReason === "missing_message" && message)) {
 				warnDroppedStreamingDelta(dropReason, chat_session_id, message_id, seq);
 			}
 
@@ -408,6 +409,13 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			});
 
 			if (snapshot) {
+				if (message) {
+					dispatch({
+						type: "ADD_MESSAGE",
+						sessionId: chat_session_id,
+						message: toPreparedChatMessage(message),
+					});
+				}
 				dispatch({
 					type: "SET_STREAMING_MESSAGE",
 					sessionId: chat_session_id,
@@ -486,7 +494,7 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			// Turn completed (idle with exit_code): mirror backend state and clear permissions
 			if (turn_phase === "idle" && exit_code != null) {
 				if (
-					!interrupted &&
+					(!interrupted || session_state === "error") &&
 					typeof completed_at === "number" &&
 					Number.isFinite(completed_at)
 				) {

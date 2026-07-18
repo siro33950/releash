@@ -1,6 +1,46 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+pub enum AgentSessionProjectedMessage<Message, MessagePart> {
+    Append(Message),
+    PersistParts {
+        message_id: String,
+        parts: Vec<MessagePart>,
+        streaming_final_seq: u64,
+        completed_at: f64,
+    },
+}
+
+pub struct AgentSessionProjectionCommit<Meta, Message, MessagePart> {
+    pub meta: Meta,
+    pub message: AgentSessionProjectedMessage<Message, MessagePart>,
+}
+
+pub trait AgentSessionProjectionPreparer<Event, Meta, Message, MessagePart> {
+    fn prepare(
+        &mut self,
+        events: &[Event],
+        meta: &Meta,
+    ) -> Result<AgentSessionProjectionCommit<Meta, Message, MessagePart>, String>;
+}
+
+impl<Event, Meta, Message, MessagePart, Prepare>
+    AgentSessionProjectionPreparer<Event, Meta, Message, MessagePart> for Prepare
+where
+    Prepare: FnMut(
+        &[Event],
+        &Meta,
+    ) -> Result<AgentSessionProjectionCommit<Meta, Message, MessagePart>, String>,
+{
+    fn prepare(
+        &mut self,
+        events: &[Event],
+        meta: &Meta,
+    ) -> Result<AgentSessionProjectionCommit<Meta, Message, MessagePart>, String> {
+        self(events, meta)
+    }
+}
+
 pub trait AgentSessionStorageTypes: Send + Sync {
     type Session;
     type Meta;
@@ -146,6 +186,21 @@ pub trait AgentSessionWriter: AgentSessionStorageTypes {
         session_id: &str,
         event: &Self::Event,
     ) -> Result<(), String>;
+
+    /// event log、対象 message、index/meta の投影更新を一つの storage transaction として行う。
+    /// `prepare` は storage lock 内で最新の event log/meta を受け取り、書き込む投影を返す。
+    fn commit_session_projection(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        events: &[Self::Event],
+        prepare: &mut dyn AgentSessionProjectionPreparer<
+            Self::Event,
+            Self::Meta,
+            Self::Message,
+            Self::MessagePart,
+        >,
+    ) -> Result<Vec<Self::MessagePart>, String>;
 }
 
 pub trait AgentSessionStorage: AgentSessionReader + AgentSessionWriter {}

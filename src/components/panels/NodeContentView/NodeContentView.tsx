@@ -137,7 +137,15 @@ function NodeHeader({
 
 	return (
 		<div className="flex min-w-0 items-center gap-2 pl-2">
-			<WorkflowNodeStatusIcon status={detail.status} />
+			<span
+				title={
+					detail.status === "error" && detail.errorReason
+						? detail.errorReason
+						: detail.status
+				}
+			>
+				<WorkflowNodeStatusIcon status={detail.status} />
+			</span>
 			<span className="min-w-0 flex-1 truncate text-sm font-medium">
 				{detail.title}
 			</span>

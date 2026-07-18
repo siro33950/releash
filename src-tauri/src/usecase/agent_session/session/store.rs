@@ -5,26 +5,40 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 
 use crate::domain::agent_session::{
-    AgentSessionReader, AgentSessionStorage, AgentSessionStorageTypes,
+    AgentSessionProjectedMessage, AgentSessionProjectionCommit, AgentSessionReader,
+    AgentSessionStorage, AgentSessionStorageTypes,
 };
 use crate::domain::path::same_worktree_path;
 use crate::usecase::agent_session::context_meta::ContextEpochMeta;
 use crate::usecase::agent_session::event_log::{
     AgentSessionEvent, BackendSessionRecoveryProjection, BackendSessionRecoveryReason,
-    GoalReactivationOutcome, TurnEventLog,
+    GoalReactivationOutcome, SessionReadModel, TurnEventLog,
 };
 
 use super::{
-    now_timestamp, ChatMessage, ChatSession, ContextCarryState, MessagePart, PageCursor,
-    PendingRecoveryMessage, SessionAttachment, SessionMeta, SessionPage, SessionReviewContext,
-    SessionState, SessionSummary, SessionToolOutput,
+    error_reason_for_state, now_timestamp, ChatMessage, ChatSession, ContextCarryState,
+    MessagePart, MessageRole, PageCursor, PendingRecoveryMessage, SessionAttachment, SessionMeta,
+    SessionPage, SessionReviewContext, SessionState, SessionSummary, SessionToolOutput,
 };
 
 /// `SessionState` の遷移を観測する購読者向けコールバック。
-/// 引数は `(session_id, worktree_path, new_state)`。
+/// 引数は `(session_id, worktree_path, new_state, state_revision)`。
 pub type SessionStateChangeListener =
-    Arc<dyn Fn(&str, &str, &SessionState) + Send + Sync + 'static>;
+    Arc<dyn Fn(&str, &str, &SessionState, u64) + Send + Sync + 'static>;
 pub type SessionEventLogRecoveryListener = Arc<dyn Fn(&str) + Send + Sync + 'static>;
+
+pub(crate) struct ErrorEpisodeInput {
+    pub message_id: String,
+    pub reason: String,
+    pub at: f64,
+}
+
+struct PreviousSessionProjection {
+    state: SessionState,
+    error_reason: Option<String>,
+    worktree_path: String,
+    state_revision: u64,
+}
 
 pub trait SessionReviewContextReader: Send + Sync {
     fn get_session_review_context(
@@ -106,6 +120,9 @@ pub(crate) type SessionAppendEventHook =
 #[cfg(test)]
 pub(crate) type SessionSetStateHook =
     Arc<dyn Fn(&str, &SessionState) -> Result<(), String> + Send + Sync>;
+#[cfg(test)]
+pub(crate) type SessionProjectionHook =
+    Arc<dyn Fn(&str, &SessionState, Option<&str>) -> Result<(), String> + Send + Sync>;
 
 pub struct SessionStore {
     storage: Arc<dyn SessionStoragePort>,
@@ -122,6 +139,8 @@ pub struct SessionStore {
     append_event_hook: RwLock<Option<SessionAppendEventHook>>,
     #[cfg(test)]
     set_state_hook: RwLock<Option<SessionSetStateHook>>,
+    #[cfg(test)]
+    projection_hook: RwLock<Option<SessionProjectionHook>>,
 }
 
 fn compact_session_title(title: &str) -> String {
@@ -248,6 +267,8 @@ impl SessionStore {
             append_event_hook: RwLock::new(None),
             #[cfg(test)]
             set_state_hook: RwLock::new(None),
+            #[cfg(test)]
+            projection_hook: RwLock::new(None),
         }
     }
 
@@ -274,6 +295,11 @@ impl SessionStore {
     #[cfg(test)]
     pub(crate) fn set_state_hook_for_test(&self, hook: SessionSetStateHook) {
         *self.set_state_hook.write() = Some(hook);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_projection_hook_for_test(&self, hook: SessionProjectionHook) {
+        *self.projection_hook.write() = Some(hook);
     }
 
     pub fn list_sessions(
@@ -459,6 +485,7 @@ impl SessionStore {
         let mut forked_meta = parent_meta.clone();
         forked_meta.id = uuid::Uuid::new_v4().to_string();
         forked_meta.state = SessionState::Idle;
+        forked_meta.error_reason = None;
         forked_meta.created_at = now;
         forked_meta.updated_at = now;
         forked_meta.agent_session_id = None;
@@ -566,10 +593,8 @@ impl SessionStore {
         session_id: &str,
         event: AgentSessionEvent,
     ) -> Result<SessionState, String> {
-        let projected_state =
-            self.append_session_event_and_project(app_data_dir, session_id, event)?;
-        self.set_session_state(app_data_dir, session_id, projected_state.clone())?;
-        Ok(projected_state)
+        self.append_session_event_and_project_read_model(app_data_dir, session_id, event)
+            .map(|projected| projected.status.session_state)
     }
 
     pub fn append_session_event_and_project(
@@ -588,11 +613,221 @@ impl SessionStore {
         if self.storage.take_event_log_recovered(session_id) {
             self.notify_event_log_recovered(session_id);
         }
-        let projected_state = TurnEventLog::from_events(events)
+        Ok(TurnEventLog::from_events(events)
             .project()
             .status
-            .session_state;
-        Ok(projected_state)
+            .session_state)
+    }
+
+    pub(crate) fn append_session_event_and_project_read_model(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        event: AgentSessionEvent,
+    ) -> Result<SessionReadModel, String> {
+        #[cfg(test)]
+        if let Some(hook) = self.append_event_hook.read().clone() {
+            hook(session_id, &event)?;
+        }
+        let events = self
+            .storage
+            .append_session_event(app_data_dir, session_id, &event)?;
+        if self.storage.take_event_log_recovered(session_id) {
+            self.notify_event_log_recovered(session_id);
+        }
+        let projected = TurnEventLog::from_events(events).project();
+        let projected_state = projected.status.session_state.clone();
+        self.set_session_projection(
+            app_data_dir,
+            session_id,
+            projected_state.clone(),
+            projected.error_reason.clone(),
+        )?;
+        Ok(projected)
+    }
+
+    pub(crate) fn append_error_episode_and_materialize(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        input: ErrorEpisodeInput,
+    ) -> Result<(SessionReadModel, ChatMessage), String> {
+        let message_id = input.message_id;
+        let event = AgentSessionEvent::SessionErrored {
+            message_id: message_id.clone(),
+            reason: input.reason,
+            at: input.at,
+        };
+        #[cfg(test)]
+        if let Some(hook) = self.append_event_hook.read().clone() {
+            hook(session_id, &event)?;
+        }
+        let (projected, message, _) = self.commit_projection_and_notify(
+            app_data_dir,
+            session_id,
+            std::slice::from_ref(&event),
+            |projected, projected_meta| {
+                let message = projected
+                    .message_for_id(&message_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        format!("Error projection omitted message {message_id} for {session_id}")
+                    })?;
+                #[cfg(test)]
+                if let Some(hook) = self.append_message_hook.read().clone() {
+                    hook(session_id, &message)?;
+                }
+                Ok((
+                    AgentSessionProjectionCommit {
+                        meta: projected_meta,
+                        message: AgentSessionProjectedMessage::Append(message.clone()),
+                    },
+                    message,
+                ))
+            },
+        )?;
+        Ok((projected, message))
+    }
+
+    pub(crate) fn append_terminal_events_and_materialize(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        events: &[AgentSessionEvent],
+        message_id: &str,
+        streaming_final_seq: u64,
+        completed_at: f64,
+    ) -> Result<(SessionReadModel, Vec<MessagePart>), String> {
+        #[cfg(test)]
+        if let Some(hook) = self.append_event_hook.read().clone() {
+            for event in events {
+                hook(session_id, event)?;
+            }
+        }
+        let (projected, (), persisted_parts) = self.commit_projection_and_notify(
+            app_data_dir,
+            session_id,
+            events,
+            |projected, projected_meta| {
+                projected
+                    .message_for_id(message_id)
+                    .filter(|message| message.role == MessageRole::Agent)
+                    .ok_or_else(|| {
+                        format!("Turn projection omitted message {message_id} for {session_id}")
+                    })?;
+                let parts = projected.agent_parts_for_message(message_id);
+                #[cfg(test)]
+                if let Some(hook) = self.persist_parts_hook.read().clone() {
+                    hook(session_id, message_id, &parts)?;
+                }
+                Ok((
+                    AgentSessionProjectionCommit {
+                        meta: projected_meta,
+                        message: AgentSessionProjectedMessage::PersistParts {
+                            message_id: message_id.to_string(),
+                            parts,
+                            streaming_final_seq,
+                            completed_at,
+                        },
+                    },
+                    (),
+                ))
+            },
+        )?;
+        Ok((projected, persisted_parts))
+    }
+
+    fn commit_projection_and_notify<Output>(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        events: &[AgentSessionEvent],
+        mut build_commit: impl FnMut(
+            &SessionReadModel,
+            SessionMeta,
+        ) -> Result<
+            (
+                AgentSessionProjectionCommit<SessionMeta, ChatMessage, MessagePart>,
+                Output,
+            ),
+            String,
+        >,
+    ) -> Result<(SessionReadModel, Output, Vec<MessagePart>), String> {
+        let mut projected_result = None;
+        let mut previous_projection = None;
+        let persisted_parts = {
+            let mut prepare = |all_events: &[AgentSessionEvent], meta: &SessionMeta| {
+                let projected = TurnEventLog::from_events(all_events.to_vec()).project();
+                let mut projected_meta =
+                    self.projected_meta_for_commit(session_id, meta, &projected)?;
+                projected_meta.state_revision = meta.state_revision.saturating_add(1);
+                previous_projection = Some(PreviousSessionProjection {
+                    state: meta.state.clone(),
+                    error_reason: meta.error_reason.clone(),
+                    worktree_path: meta.worktree_path.clone(),
+                    state_revision: projected_meta.state_revision,
+                });
+                let (commit, output) = build_commit(&projected, projected_meta)?;
+                projected_result = Some((projected, output));
+                Ok(commit)
+            };
+            self.storage.commit_session_projection(
+                app_data_dir,
+                session_id,
+                events,
+                &mut prepare,
+            )?
+        };
+        if self.storage.take_event_log_recovered(session_id) {
+            self.notify_event_log_recovered(session_id);
+        }
+        let (projected, output) = projected_result
+            .expect("commit_session_projection must invoke prepare before returning Ok");
+        self.notify_projected_commit(session_id, previous_projection, &projected);
+        Ok((projected, output, persisted_parts))
+    }
+
+    fn projected_meta_for_commit(
+        &self,
+        _session_id: &str,
+        meta: &SessionMeta,
+        projected: &SessionReadModel,
+    ) -> Result<SessionMeta, String> {
+        #[cfg(test)]
+        if let Some(hook) = self.projection_hook.read().clone() {
+            hook(
+                _session_id,
+                &projected.status.session_state,
+                projected.error_reason.as_deref(),
+            )?;
+        }
+        let mut projected_meta = meta.clone();
+        projected_meta.state = projected.status.session_state.clone();
+        projected_meta.error_reason =
+            error_reason_for_state(&projected_meta.state, &projected.error_reason);
+        Ok(projected_meta)
+    }
+
+    fn notify_projected_commit(
+        &self,
+        session_id: &str,
+        previous_projection: Option<PreviousSessionProjection>,
+        projected: &SessionReadModel,
+    ) {
+        let previous = previous_projection
+            .expect("commit_session_projection must invoke prepare before returning Ok");
+        let projected_reason =
+            error_reason_for_state(&projected.status.session_state, &projected.error_reason);
+        if previous.state != projected.status.session_state
+            || previous.error_reason != projected_reason
+        {
+            self.notify_state_change(
+                session_id,
+                &previous.worktree_path,
+                &projected.status.session_state,
+                previous.state_revision,
+            );
+        }
     }
 
     pub fn append_session_event_without_projection(
@@ -892,12 +1127,19 @@ impl SessionStore {
         self.storage
             .save_full_session_for_migration_or_restore(app_data_dir, session)?;
         if previous_state.as_ref() != Some(&session.state) {
-            self.notify_state_change(&session.id, &session.worktree_path, &session.state);
+            let revision = self.require_meta(app_data_dir, &session.id)?.state_revision;
+            self.notify_state_change(
+                &session.id,
+                &session.worktree_path,
+                &session.state,
+                revision,
+            );
         }
         Ok(())
     }
 
-    /// `SessionState` の遷移を購読するリスナーを登録する。
+    /// `SessionState` または Error 理由 projection の変更を購読するリスナーを登録する。
+    /// Error 理由だけが変わる場合は同じ `SessionState` で再通知される。
     /// 登録順に保存後に発火される。AgentStatusCenter のような中央管理が
     /// SessionStore からの状態変更を一方向に受け取るための入口。
     pub fn register_state_change_listener(&self, listener: SessionStateChangeListener) {
@@ -908,10 +1150,16 @@ impl SessionStore {
         self.event_log_recovery_listeners.write().push(listener);
     }
 
-    fn notify_state_change(&self, session_id: &str, worktree_path: &str, new_state: &SessionState) {
+    fn notify_state_change(
+        &self,
+        session_id: &str,
+        worktree_path: &str,
+        new_state: &SessionState,
+        state_revision: u64,
+    ) {
         let listeners = self.state_change_listeners.read().clone();
         for listener in listeners {
-            listener(session_id, worktree_path, new_state);
+            listener(session_id, worktree_path, new_state, state_revision);
         }
     }
 
@@ -933,7 +1181,7 @@ impl SessionStore {
         app_data_dir: &Path,
         session_id: &str,
         update: impl FnOnce(&mut SessionMeta) -> Result<(), String>,
-    ) -> Result<Option<(String, SessionState)>, String> {
+    ) -> Result<(SessionMeta, bool), String> {
         let mut update = Some(update);
         let mut previous_state: Option<SessionState> = None;
         let meta = self
@@ -943,15 +1191,14 @@ impl SessionStore {
                 let f = update
                     .take()
                     .expect("update closure must be invoked exactly once");
-                f(meta)
+                f(meta)?;
+                meta.state_revision = meta.state_revision.saturating_add(1);
+                Ok(())
             })?;
         let previous_state =
             previous_state.expect("update_session_meta must invoke closure before returning Ok");
-        if previous_state != meta.state {
-            Ok(Some((meta.worktree_path.clone(), meta.state.clone())))
-        } else {
-            Ok(None)
-        }
+        let state_changed = previous_state != meta.state;
+        Ok((meta, state_changed))
     }
 
     fn update_meta_if_changed(
@@ -992,13 +1239,65 @@ impl SessionStore {
             hook(session_id, &state)?;
         }
         let state_for_notify = state.clone();
-        let change = self.update_meta_only(app_data_dir, session_id, |meta| {
+        let (meta, state_changed) = self.update_meta_only(app_data_dir, session_id, |meta| {
+            if state != SessionState::Error {
+                meta.error_reason = None;
+            }
             meta.state = state;
             meta.updated_at = now_timestamp();
             Ok(())
         })?;
-        if let Some((worktree_path, _)) = change {
-            self.notify_state_change(session_id, &worktree_path, &state_for_notify);
+        if state_changed {
+            self.notify_state_change(
+                session_id,
+                &meta.worktree_path,
+                &state_for_notify,
+                meta.state_revision,
+            );
+        }
+        Ok(())
+    }
+
+    fn set_session_projection(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        state: SessionState,
+        error_reason: Option<String>,
+    ) -> Result<(), String> {
+        #[cfg(test)]
+        if let Some(hook) = self.projection_hook.read().clone() {
+            hook(session_id, &state, error_reason.as_deref())?;
+        }
+        let state_for_notify = state.clone();
+        let projected_error_reason = error_reason_for_state(&state, &error_reason);
+        let mut previous_error_reason = None;
+        let mut worktree_path = None;
+        let (meta, state_changed) = self.update_meta_only(app_data_dir, session_id, |meta| {
+            previous_error_reason = Some(meta.error_reason.clone());
+            worktree_path = Some(meta.worktree_path.clone());
+            meta.error_reason = projected_error_reason.clone();
+            meta.state = state;
+            meta.updated_at = now_timestamp();
+            Ok(())
+        })?;
+        if state_changed {
+            self.notify_state_change(
+                session_id,
+                &meta.worktree_path,
+                &state_for_notify,
+                meta.state_revision,
+            );
+        } else if previous_error_reason
+            .expect("update_session_meta must invoke closure before returning Ok")
+            != projected_error_reason
+        {
+            self.notify_state_change(
+                session_id,
+                &worktree_path.expect("session meta must include a worktree path"),
+                &state_for_notify,
+                meta.state_revision,
+            );
         }
         Ok(())
     }
@@ -1254,6 +1553,7 @@ impl SessionStore {
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
+    use std::sync::Arc;
 
     use super::*;
 
@@ -1440,5 +1740,104 @@ mod tests {
             .list_published_closed_sessions(app_data_dir.path(), "/repo")
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn projection_reason_change_notifies_listener_when_state_stays_error() {
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let store = crate::test_support::build_session_store();
+        let session = super::super::create_session_internal(
+            &store,
+            app_data_dir.path(),
+            "/repo",
+            Some("codex".to_string()),
+        )
+        .unwrap();
+        let notifications = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let notifications_for_listener = Arc::clone(&notifications);
+        store.register_state_change_listener(Arc::new(move |_, _, state, _| {
+            notifications_for_listener.lock().push(state.clone());
+        }));
+
+        store
+            .append_error_episode_and_materialize(
+                app_data_dir.path(),
+                &session.id,
+                ErrorEpisodeInput {
+                    message_id: "fatal-1".to_string(),
+                    reason: "first fatal".to_string(),
+                    at: 1.0,
+                },
+            )
+            .unwrap();
+        notifications.lock().clear();
+        store
+            .append_error_episode_and_materialize(
+                app_data_dir.path(),
+                &session.id,
+                ErrorEpisodeInput {
+                    message_id: "fatal-2".to_string(),
+                    reason: "latest fatal".to_string(),
+                    at: 2.0,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(*notifications.lock(), vec![SessionState::Error]);
+        let meta = store
+            .get_session_meta(app_data_dir.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(meta.error_reason.as_deref(), Some("latest fatal"));
+    }
+
+    #[test]
+    fn fork_session_clears_parent_error_reason_from_disk_and_later_error_state() {
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let store = crate::test_support::build_session_store();
+        let parent = super::super::create_session_internal(
+            &store,
+            app_data_dir.path(),
+            "/repo",
+            Some("codex".to_string()),
+        )
+        .unwrap();
+        store
+            .append_error_episode_and_materialize(
+                app_data_dir.path(),
+                &parent.id,
+                ErrorEpisodeInput {
+                    message_id: "fatal-parent".to_string(),
+                    reason: "parent fatal".to_string(),
+                    at: 1.0,
+                },
+            )
+            .unwrap();
+
+        let fork = store.fork_session(app_data_dir.path(), &parent.id).unwrap();
+        let cached_meta = store
+            .get_session_meta(app_data_dir.path(), &fork.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cached_meta.state, SessionState::Idle);
+        assert_eq!(cached_meta.error_reason, None);
+        drop(store);
+
+        let reloaded_store = crate::test_support::build_session_store();
+        let disk_meta = reloaded_store
+            .get_session_meta(app_data_dir.path(), &fork.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(disk_meta.error_reason, None);
+
+        reloaded_store
+            .set_session_state(app_data_dir.path(), &fork.id, SessionState::Error)
+            .unwrap();
+        let errored = reloaded_store
+            .get_session_shell(app_data_dir.path(), &fork.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(errored.state, SessionState::Error);
+        assert_eq!(errored.error_reason, None);
     }
 }

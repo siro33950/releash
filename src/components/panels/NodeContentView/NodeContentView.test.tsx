@@ -248,6 +248,30 @@ describe("NodeContentView", () => {
 		expect(screen.queryByText("checkpoint-internal")).not.toBeInTheDocument();
 	});
 
+	it("uses the Error reason as the Node status tooltip", () => {
+		mocks.detailState.detail = {
+			...sessionDetail("failed-session"),
+			status: "error",
+			errorReason: "Agent process exited unexpectedly",
+		};
+		renderView("failed-session");
+
+		expect(
+			screen.getByTitle("Agent process exited unexpectedly"),
+		).toBeVisible();
+	});
+
+	it("falls back to the status as the Node status tooltip", () => {
+		mocks.detailState.detail = {
+			...sessionDetail("running-session"),
+			status: "running",
+			errorReason: "stale reason",
+		};
+		renderView("running-session");
+
+		expect(screen.getByTitle("running")).toBeVisible();
+	});
+
 	it("shows and executes Approve only from backend capability", async () => {
 		const user = userEvent.setup();
 		mocks.detailState.detail = {

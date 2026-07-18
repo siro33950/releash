@@ -148,6 +148,7 @@ impl AgentSessionEventNotifier for TauriAgentSessionEventNotifier {
                     "seq": payload.seq,
                     "snapshot": payload.snapshot,
                     "parts": parts,
+                    "message": payload.message,
                 }),
             )
             .is_ok()
@@ -288,6 +289,7 @@ mod tests {
             worktree_path: "/worktree".to_string(),
             messages: Vec::new(),
             state: SessionState::Idle,
+            error_reason: None,
             created_at: 1.0,
             updated_at: 2.0,
             agent_session_id: None,

@@ -26,6 +26,7 @@ export interface LegacyChatSession {
 	worktreePath: string;
 	messages: (LegacyChatMessage & { parts?: MessagePart[] })[];
 	state: SessionState;
+	errorReason?: string | null;
 	createdAt: number;
 	updatedAt: number;
 	agentSessionId?: string | null;
@@ -241,6 +242,7 @@ interface RawGetSessionResponse {
 	worktreePath: string;
 	messages: (LegacyChatMessage & { parts?: MessagePart[] })[];
 	state: SessionState;
+	errorReason?: string | null;
 	createdAt: number;
 	updatedAt: number;
 	agentSessionId?: string | null;
@@ -275,6 +277,7 @@ function convertRawGetSessionResponse(
 			worktreePath: raw.worktreePath,
 			messages: raw.messages,
 			state: raw.state,
+			errorReason: raw.errorReason,
 			createdAt: raw.createdAt,
 			updatedAt: raw.updatedAt,
 			agentSessionId: raw.agentSessionId,

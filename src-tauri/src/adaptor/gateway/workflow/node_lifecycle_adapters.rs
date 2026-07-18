@@ -340,6 +340,7 @@ mod tests {
                 mentions: None,
             }],
             state: SessionState::Idle,
+            error_reason: None,
             created_at: 1.0,
             updated_at: 1.0,
             agent_session_id: Some("sdk-session".to_string()),
