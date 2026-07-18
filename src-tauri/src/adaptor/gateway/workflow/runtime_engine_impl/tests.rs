@@ -10394,6 +10394,9 @@ mod dispatch_boundary_tests {
         lgtm: bool,
     ) {
         let children = wait_for_active_fanout_children(engine, execution_id, "review", 2).await;
+        for (_, session_id, _) in &children {
+            wait_for_stub_session_turn_activation(agent_runtime, session_id).await;
+        }
         for (node_name, _, node_execution_id) in &children {
             engine
                 .submit_workflow_output(
@@ -10410,7 +10413,6 @@ mod dispatch_boundary_tests {
                 .unwrap();
         }
         for (node_name, session_id, _) in children {
-            wait_for_stub_session_turn_activation(agent_runtime, &session_id).await;
             engine
                 .on_turn_complete(
                     app.handle(),
