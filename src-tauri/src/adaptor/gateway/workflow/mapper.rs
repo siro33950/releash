@@ -395,6 +395,11 @@ mod tests {
                 name: "node".to_string(),
                 kind: NodeKind::Session(SessionSpec {
                     facets: FacetRefs {
+                        knowledge: vec![
+                            "knowledge-a".to_string(),
+                            "knowledge-b".to_string(),
+                            "knowledge-a".to_string(),
+                        ],
                         instruction: Some("inst".to_string()),
                         ..Default::default()
                     },
@@ -406,6 +411,10 @@ mod tests {
 
         let schema = domain_workflow_to_schema(&definition).unwrap();
         assert_eq!(
+            schema.nodes[0].session().unwrap().facets.knowledge,
+            vec!["knowledge-a", "knowledge-b", "knowledge-a"]
+        );
+        assert_eq!(
             schema.nodes[0]
                 .session()
                 .unwrap()
@@ -416,6 +425,7 @@ mod tests {
         );
 
         let mapped = schema_workflow_to_domain(schema).unwrap();
+        assert_eq!(mapped, definition);
         assert_eq!(
             mapped.nodes[0]
                 .session()

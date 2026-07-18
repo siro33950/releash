@@ -129,13 +129,13 @@ pub struct ComposedPrompt {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FacetContents {
     pub policy: Option<String>,
-    pub knowledge: Option<String>,
+    pub knowledge: Vec<String>,
     pub instruction: Option<String>,
 }
 
 impl FacetContents {
     pub fn is_empty(&self) -> bool {
-        self.policy.is_none() && self.knowledge.is_none() && self.instruction.is_none()
+        self.policy.is_none() && self.knowledge.is_empty() && self.instruction.is_none()
     }
 }
 
@@ -211,6 +211,19 @@ pub fn load_facet(kind: FacetKind, key: &str, base_dir: &Path) -> Result<String,
         kind,
         key: key.to_string(),
     })
+}
+
+pub(crate) fn facet_exists(
+    kind: FacetKind,
+    key: &str,
+    base_dir: &Path,
+) -> Result<bool, FacetError> {
+    validate_facet_key(key)?;
+    if builtin::is_builtin_facet(kind, key) {
+        return Ok(true);
+    }
+    let path = base_dir.join(kind.dir_name()).join(format!("{key}.md"));
+    Ok(path.try_exists()?)
 }
 
 pub fn save_facet(
@@ -372,12 +385,9 @@ fn compose_from_parts(resolved: &FacetContents) -> ComposedPrompt {
         Some(system_parts.join("\n\n"))
     };
 
-    let mut user_parts: Vec<String> = Vec::new();
-    if let Some(ref content) = resolved.knowledge {
-        user_parts.push(content.clone());
-    }
-    if let Some(ref content) = resolved.instruction {
-        user_parts.push(content.clone());
+    let mut user_parts: Vec<&str> = resolved.knowledge.iter().map(String::as_str).collect();
+    if let Some(content) = resolved.instruction.as_deref() {
+        user_parts.push(content);
     }
     ComposedPrompt {
         system_prompt,
@@ -420,10 +430,11 @@ fn resolve_refs(facets: &FacetRefs, base_dir: &Path) -> Result<FacetContents, Fa
         Some(k) => Some(load_facet(FacetKind::Policy, k, base_dir)?),
         None => None,
     };
-    let resolved_knowledge = match facets.knowledge.as_deref() {
-        Some(k) => Some(load_facet(FacetKind::Knowledge, k, base_dir)?),
-        None => None,
-    };
+    let resolved_knowledge = facets
+        .knowledge
+        .iter()
+        .map(|key| load_facet(FacetKind::Knowledge, key, base_dir))
+        .collect::<Result<Vec<_>, _>>()?;
     let resolved_instruction = match facets.instruction.as_deref() {
         Some(k) => Some(load_facet(FacetKind::Instruction, k, base_dir)?),
         None => None,
@@ -467,7 +478,7 @@ mod tests {
 
     fn make_facet_node(
         policy: Option<&str>,
-        knowledge: Option<&str>,
+        knowledge: &[&str],
         instruction: Option<&str>,
     ) -> NodeDefinition {
         NodeDefinition {
@@ -475,7 +486,7 @@ mod tests {
             kind: NodeKind::Session(SessionSpec {
                 facets: FacetRefs {
                     policy: policy.map(String::from),
-                    knowledge: knowledge.map(String::from),
+                    knowledge: knowledge.iter().map(|key| (*key).to_string()).collect(),
                     instruction: instruction.map(String::from),
                 },
                 ..Default::default()
@@ -642,7 +653,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
 
-        let node = make_facet_node(Some("coding"), Some("architecture"), Some("implement"));
+        let node = make_facet_node(Some("coding"), &["architecture"], Some("implement"));
         let resolved = resolve_node_facets(&node, tmp.path()).unwrap();
         let result = compose_facets(Some(&resolved));
 
@@ -658,7 +669,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
 
-        let node = make_facet_node(Some("coding"), None, None);
+        let node = make_facet_node(Some("coding"), &[], None);
         let resolved = resolve_node_facets(&node, tmp.path()).unwrap();
         let result = compose_facets(Some(&resolved));
 
@@ -748,7 +759,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
 
-        let node = make_facet_node(None, Some("architecture"), Some("implement"));
+        let node = make_facet_node(None, &["architecture"], Some("implement"));
         let resolved = resolve_node_facets(&node, tmp.path()).unwrap();
         let result = compose_facets(Some(&resolved));
 
@@ -761,7 +772,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
 
-        let node = make_facet_node(None, Some("architecture"), Some("implement"));
+        let node = make_facet_node(None, &["architecture"], Some("implement"));
         let resolved = resolve_node_facets(&node, tmp.path()).unwrap();
         let result = compose_facets(Some(&resolved));
 
@@ -779,7 +790,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
 
-        let node = make_facet_node(Some("coding"), None, None);
+        let node = make_facet_node(Some("coding"), &[], None);
         let resolved = resolve_node_facets(&node, tmp.path()).unwrap();
         let result = compose_facets(Some(&resolved));
 
@@ -791,7 +802,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         setup_facet_files(tmp.path());
 
-        let node = make_facet_node(Some("coding"), Some("architecture"), Some("implement"));
+        let node = make_facet_node(Some("coding"), &["architecture"], Some("implement"));
         let resolved = resolve_node_facets(&node, tmp.path()).unwrap();
         let result = compose_facets(Some(&resolved));
 
@@ -801,13 +812,63 @@ mod tests {
         assert!(result.user_message.contains("Implement the feature."));
     }
 
+    #[test]
+    fn compose_multiple_knowledge_in_declaration_order_before_instruction_once_each() {
+        let tmp = TempDir::new().unwrap();
+        let knowledge_dir = tmp.path().join("knowledge");
+        let instructions_dir = tmp.path().join("instructions");
+        fs::create_dir_all(&knowledge_dir).unwrap();
+        fs::create_dir_all(&instructions_dir).unwrap();
+        fs::write(knowledge_dir.join("knowledge-a.md"), "KNOWLEDGE_A").unwrap();
+        fs::write(knowledge_dir.join("knowledge-b.md"), "KNOWLEDGE_B").unwrap();
+        fs::write(instructions_dir.join("instruction.md"), "INSTRUCTION").unwrap();
+
+        let node = make_facet_node(None, &["knowledge-a", "knowledge-b"], Some("instruction"));
+        let resolved = resolve_node_facets(&node, tmp.path()).unwrap();
+        let result = compose_facets(Some(&resolved));
+
+        assert_eq!(
+            resolved.knowledge,
+            vec!["KNOWLEDGE_A".to_string(), "KNOWLEDGE_B".to_string()]
+        );
+        assert_eq!(
+            result.user_message,
+            "KNOWLEDGE_A\n\nKNOWLEDGE_B\n\nINSTRUCTION"
+        );
+        for sentinel in ["KNOWLEDGE_A", "KNOWLEDGE_B", "INSTRUCTION"] {
+            assert_eq!(
+                result.user_message.matches(sentinel).count(),
+                1,
+                "{sentinel} must be composed exactly once"
+            );
+        }
+    }
+
+    #[test]
+    fn compose_duplicate_knowledge_references_without_deduplication() {
+        let tmp = TempDir::new().unwrap();
+        let knowledge_dir = tmp.path().join("knowledge");
+        let instructions_dir = tmp.path().join("instructions");
+        fs::create_dir_all(&knowledge_dir).unwrap();
+        fs::create_dir_all(&instructions_dir).unwrap();
+        fs::write(knowledge_dir.join("repeated.md"), "KNOWLEDGE").unwrap();
+        fs::write(instructions_dir.join("instruction.md"), "INSTRUCTION").unwrap();
+
+        let node = make_facet_node(None, &["repeated", "repeated"], Some("instruction"));
+        let resolved = resolve_node_facets(&node, tmp.path()).unwrap();
+        let result = compose_facets(Some(&resolved));
+
+        assert_eq!(resolved.knowledge, vec!["KNOWLEDGE", "KNOWLEDGE"]);
+        assert_eq!(result.user_message, "KNOWLEDGE\n\nKNOWLEDGE\n\nINSTRUCTION");
+    }
+
     /// 解決経路における欠損 facet は load 時 (`resolve_refs`) で NotFound として
     /// 弾かれる。`compose_facets` 自体は I/O fallback を持たず、unresolved な node を
     /// 受け取った場合は空合成結果になる（実 production では load 経路で先に弾かれる）。
     #[test]
     fn resolve_with_missing_facet_returns_error() {
         let tmp = TempDir::new().unwrap();
-        let node = make_facet_node(Some("nonexistent"), None, None);
+        let node = make_facet_node(Some("nonexistent"), &[], None);
         let result = resolve_node_facets(&node, tmp.path());
         assert!(matches!(result.unwrap_err(), FacetError::NotFound { .. }));
     }
@@ -815,15 +876,42 @@ mod tests {
     #[test]
     fn resolve_with_missing_knowledge_returns_error() {
         let tmp = TempDir::new().unwrap();
-        let node = make_facet_node(None, Some("nonexistent"), None);
+        let node = make_facet_node(None, &["nonexistent"], None);
         let result = resolve_node_facets(&node, tmp.path());
         assert!(matches!(result.unwrap_err(), FacetError::NotFound { .. }));
     }
 
     #[test]
+    fn resolve_multiple_knowledge_reports_missing_second_key() {
+        let tmp = TempDir::new().unwrap();
+        setup_facet_files(tmp.path());
+        let node = make_facet_node(None, &["architecture", "missing-second"], None);
+
+        let error = resolve_node_facets(&node, tmp.path()).unwrap_err();
+
+        assert!(matches!(
+            error,
+            FacetError::NotFound {
+                kind: FacetKind::Knowledge,
+                key,
+            } if key == "missing-second"
+        ));
+    }
+
+    #[test]
+    fn facet_contents_with_knowledge_is_not_empty() {
+        assert!(FacetContents::default().is_empty());
+        assert!(!FacetContents {
+            knowledge: vec!["KNOWLEDGE".to_string()],
+            ..Default::default()
+        }
+        .is_empty());
+    }
+
+    #[test]
     fn resolve_with_missing_instruction_returns_error() {
         let tmp = TempDir::new().unwrap();
-        let node = make_facet_node(None, None, Some("nonexistent"));
+        let node = make_facet_node(None, &[], Some("nonexistent"));
         let result = resolve_node_facets(&node, tmp.path());
         assert!(matches!(result.unwrap_err(), FacetError::NotFound { .. }));
     }
@@ -846,7 +934,7 @@ mod tests {
         .unwrap();
         std::fs::write(instructions.join("impl.md"), "Task: {{ request }}").unwrap();
 
-        let node = make_facet_node(Some("coding"), None, Some("impl"));
+        let node = make_facet_node(Some("coding"), &[], Some("impl"));
         let resolved = resolve_node_facets(&node, tmp.path()).unwrap();
         let composed = compose_facets(Some(&resolved));
 

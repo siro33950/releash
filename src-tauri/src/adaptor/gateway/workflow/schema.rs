@@ -109,15 +109,20 @@ pub enum SessionGate {
 pub struct FacetRefs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub knowledge: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_one_or_many_strings",
+        serialize_with = "serialize_one_or_many_strings",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub knowledge: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instruction: Option<String>,
 }
 
 impl FacetRefs {
     pub fn is_empty(&self) -> bool {
-        self.policy.is_none() && self.knowledge.is_none() && self.instruction.is_none()
+        self.policy.is_none() && self.knowledge.is_empty() && self.instruction.is_none()
     }
 }
 
@@ -137,8 +142,8 @@ pub struct SessionSpec {
 #[serde(deny_unknown_fields)]
 pub struct FanoutSpec {
     #[serde(
-        deserialize_with = "deserialize_fanout_children",
-        serialize_with = "serialize_fanout_children"
+        deserialize_with = "deserialize_one_or_many_strings",
+        serialize_with = "serialize_one_or_many_strings"
     )]
     pub child: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -153,28 +158,28 @@ pub enum ItemsSource {
 
 #[derive(Deserialize)]
 #[serde(untagged)]
-enum RawFanoutChildren {
+enum RawOneOrManyStrings {
     One(String),
     Many(Vec<String>),
 }
 
-fn deserialize_fanout_children<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+fn deserialize_one_or_many_strings<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    match RawFanoutChildren::deserialize(deserializer)? {
-        RawFanoutChildren::One(child) => Ok(vec![child]),
-        RawFanoutChildren::Many(children) => Ok(children),
+    match RawOneOrManyStrings::deserialize(deserializer)? {
+        RawOneOrManyStrings::One(value) => Ok(vec![value]),
+        RawOneOrManyStrings::Many(values) => Ok(values),
     }
 }
 
-fn serialize_fanout_children<S>(children: &[String], serializer: S) -> Result<S::Ok, S::Error>
+fn serialize_one_or_many_strings<S>(values: &[String], serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
-    match children {
-        [child] => serializer.serialize_str(child),
-        children => children.serialize(serializer),
+    match values {
+        [value] => serializer.serialize_str(value),
+        values => values.serialize(serializer),
     }
 }
 
@@ -577,6 +582,104 @@ nodes:
         assert_eq!(session.facets.instruction.as_deref(), Some("implement"));
         assert_eq!(session.facets.policy.as_deref(), Some("coding"));
         assert_eq!(session.gate, SessionGate::Auto);
+    }
+
+    #[test]
+    fn session_knowledge_accepts_scalar_and_sequence_and_preserves_order() {
+        let yaml = r#"
+name: knowledge-shapes
+description: knowledge scalar and sequence
+nodes:
+  - name: scalar
+    session:
+      gate: auto
+      facets:
+        knowledge: releash-thread-cli
+  - name: sequence
+    session:
+      gate: auto
+      facets:
+        knowledge:
+          - releash-thread-cli
+          - requirements-design
+"#;
+
+        let workflow = serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).unwrap();
+
+        assert_eq!(
+            workflow.nodes[0].session().unwrap().facets.knowledge,
+            vec!["releash-thread-cli"]
+        );
+        assert_eq!(
+            workflow.nodes[1].session().unwrap().facets.knowledge,
+            vec!["releash-thread-cli", "requirements-design"]
+        );
+    }
+
+    #[test]
+    fn session_knowledge_serializes_one_as_scalar_and_many_as_sequence() {
+        let workflow = WorkflowDefinitionYaml {
+            name: "knowledge-shapes".to_string(),
+            description: String::new(),
+            nodes: vec![
+                NodeDefinition {
+                    name: "scalar".to_string(),
+                    kind: NodeKind::Session(SessionSpec {
+                        facets: FacetRefs {
+                            knowledge: vec!["releash-thread-cli".to_string()],
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                NodeDefinition {
+                    name: "sequence".to_string(),
+                    kind: NodeKind::Session(SessionSpec {
+                        facets: FacetRefs {
+                            knowledge: vec![
+                                "releash-thread-cli".to_string(),
+                                "requirements-design".to_string(),
+                            ],
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let serialized = serde_saphyr::to_string(&workflow).unwrap();
+        let value = serde_saphyr::from_str::<Value>(&serialized).unwrap();
+
+        assert_eq!(
+            value["nodes"][0]["session"]["facets"]["knowledge"],
+            Value::String("releash-thread-cli".to_string())
+        );
+        assert_eq!(
+            value["nodes"][1]["session"]["facets"]["knowledge"],
+            serde_json::json!(["releash-thread-cli", "requirements-design"])
+        );
+    }
+
+    #[test]
+    fn session_knowledge_rejects_non_string_sequence_elements() {
+        let yaml = r#"
+name: invalid-knowledge
+description: invalid knowledge element
+nodes:
+  - name: review
+    session:
+      gate: auto
+      facets:
+        knowledge:
+          - releash-thread-cli
+          - 42
+"#;
+
+        assert!(serde_saphyr::from_str::<WorkflowDefinitionYaml>(yaml).is_err());
     }
 
     #[test]

@@ -318,6 +318,8 @@ function NodeCard({ node, index }: { node: NodeDefinition; index: number }) {
 	const facets = session?.facets;
 	const fanout = node.fanout;
 	const childCount = fanout?.child.length ?? 0;
+	const knowledgeRefs = facets?.knowledge ?? [];
+	const hasKnowledgeRefs = knowledgeRefs.length > 0;
 
 	return (
 		<div className="rounded-md border border-border">
@@ -377,7 +379,7 @@ function NodeCard({ node, index }: { node: NodeDefinition; index: number }) {
 
 					{/* Facet refs */}
 					{(facets?.policy ||
-						facets?.knowledge ||
+						hasKnowledgeRefs ||
 						facets?.instruction ||
 						node.artifact ||
 						(node.inputs && node.inputs.length > 0) ||
@@ -389,8 +391,11 @@ function NodeCard({ node, index }: { node: NodeDefinition; index: number }) {
 							{facets?.policy && (
 								<FacetRefRow label="Policy" value={facets.policy} />
 							)}
-							{facets?.knowledge && (
-								<FacetRefRow label="Knowledge" value={facets.knowledge} />
+							{hasKnowledgeRefs && (
+								<FacetRefRow
+									label="Knowledge"
+									value={knowledgeRefs.join(", ")}
+								/>
 							)}
 							{facets?.instruction && (
 								<FacetRefRow label="Instruction" value={facets.instruction} />

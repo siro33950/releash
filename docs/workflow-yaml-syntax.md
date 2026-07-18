@@ -82,7 +82,9 @@ kind block が無い、または複数ある Node は parse / shape Diagnostic �
     gate: approval        # auto | approval
     facets:
       policy: reviewing
-      knowledge: releash-review
+      knowledge:
+        - releash-thread
+        - releash-review
       instruction: review-diff
   artifact: review_verdict
 ```
@@ -91,6 +93,8 @@ kind block が無い、または複数ある Node は parse / shape Diagnostic �
 - `permission`: 必須。許可値は `ask` / `edit` / `full` の三つ。
 - `gate`: 必須。`auto` または `approval`。
 - `facets`: `policy` / `knowledge` / `instruction` の名前参照。session は少なくとも一つの facet 参照を持つ。
+- `knowledge` は単一参照なら `knowledge: releash-review` の scalar、複数参照なら上の例のような配列で書ける。配列の宣言順は保持され、同じ参照を複数回書いた場合も重複排除しない。`policy` と `instruction` は単一の scalar 参照だけを受理する。
+- user message の facet 部分は、全 Knowledge 本文を宣言順に並べ、その後に Instruction 本文を置いて、それぞれを `\n\n` で連結する。つまり上の例は `releash-thread` の本文、`releash-review` の本文、`review-diff` の本文の順になる。
 - `artifact` がある session は、同じ Contract に対する検証済み Artifact の提出が完了するまで Node 完了にならない。提出と repair は共通の Contract 機構を使う。
 - `gate: auto` は Artifact 条件を満たした後に自動完了する。
 - `gate: approval` は Artifact 条件を満たした後も人間の承認まで `waiting_approval` に留まる。承認しない場合は同じ session に追加指示できる。別の却下・再実行操作は持たない。

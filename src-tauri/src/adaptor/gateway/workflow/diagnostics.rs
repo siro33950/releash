@@ -979,6 +979,84 @@ fn collect_all_facet_keys(base_dir: &Path) -> HashSet<String> {
     keys
 }
 
+fn collect_referenced_facet_keys(
+    workflow: &WorkflowDefinitionYaml,
+    base_dir: &Path,
+) -> Result<HashSet<String>, facet::FacetError> {
+    let mut checked = HashSet::new();
+    let mut existing = HashSet::new();
+    for node in &workflow.nodes {
+        let Some(session) = node.session() else {
+            continue;
+        };
+        if let Some(key) = session.facets.policy.as_deref() {
+            collect_existing_facet_key(
+                &mut checked,
+                &mut existing,
+                FacetKind::Policy,
+                key,
+                base_dir,
+            )?;
+        }
+        for key in &session.facets.knowledge {
+            collect_existing_facet_key(
+                &mut checked,
+                &mut existing,
+                FacetKind::Knowledge,
+                key,
+                base_dir,
+            )?;
+        }
+        if let Some(key) = session.facets.instruction.as_deref() {
+            collect_existing_facet_key(
+                &mut checked,
+                &mut existing,
+                FacetKind::Instruction,
+                key,
+                base_dir,
+            )?;
+        }
+    }
+    Ok(existing)
+}
+
+fn collect_existing_facet_key(
+    checked: &mut HashSet<String>,
+    existing: &mut HashSet<String>,
+    kind: FacetKind,
+    key: &str,
+    base_dir: &Path,
+) -> Result<(), facet::FacetError> {
+    let facet_id = format!("{}/{}", kind.canonical_name(), key);
+    if checked.insert(facet_id.clone()) && facet::facet_exists(kind, key, base_dir)? {
+        existing.insert(facet_id);
+    }
+    Ok(())
+}
+
+/// Load/save の解決前に、workflow が参照する facet の存在を構造化 Diagnostic として検査する。
+///
+/// `diagnose_all` と同じ FAC002 shape を返すことで、source editor と runtime loader の
+/// どちらでも欠損した参照名・node・slot を失わない。facet inventory 自体を読めない場合は
+/// I/O error を欠損参照へ誤分類せず、そのまま caller へ伝搬する。
+pub(crate) fn diagnose_workflow_facet_references(
+    workflow: &WorkflowDefinitionYaml,
+    facets_base_dir: &Path,
+) -> Result<Vec<DiagnosticItem>, facet::FacetError> {
+    let all_facet_keys = collect_referenced_facet_keys(workflow, facets_base_dir)?;
+    let mut items = Vec::new();
+    let mut workflow_summaries = HashMap::new();
+    let mut facet_usage = HashMap::new();
+    check_workflow_facet_references(
+        workflow,
+        &all_facet_keys,
+        &mut items,
+        &mut workflow_summaries,
+        &mut facet_usage,
+    );
+    Ok(items)
+}
+
 /// ディスク + builtin のワークフロー一覧を読み込み
 fn load_all_workflows(dir: &Path, facets_base_dir: &Path) -> Vec<NamedWorkflowDiagnostics> {
     let mut results = Vec::new();
@@ -1164,7 +1242,17 @@ fn diagnose_workflow(
         add_diagnostic(items, workflow_summaries, name, item);
     }
 
-    // 各nodeを診断
+    check_workflow_facet_references(wf, all_facet_keys, items, workflow_summaries, facet_usage);
+}
+
+fn check_workflow_facet_references(
+    wf: &WorkflowDefinitionYaml,
+    all_facet_keys: &HashSet<String>,
+    items: &mut Vec<DiagnosticItem>,
+    workflow_summaries: &mut HashMap<String, DiagnosticSummary>,
+    facet_usage: &mut HashMap<String, Vec<FacetUsageEntry>>,
+) {
+    let name = &wf.name;
     for node in &wf.nodes {
         // ファセット参照の存在チェック + usage 記録
         FacetRefCheckContext::new(name, all_facet_keys, items, workflow_summaries, facet_usage)
@@ -1176,7 +1264,8 @@ fn diagnose_workflow(
                         .and_then(|session| session.facets.policy.as_deref()),
                     knowledge: node
                         .session()
-                        .and_then(|session| session.facets.knowledge.as_deref()),
+                        .map(|session| session.facets.knowledge.as_slice())
+                        .unwrap_or_default(),
                     instruction: node
                         .session()
                         .and_then(|session| session.facets.instruction.as_deref()),
@@ -1187,7 +1276,7 @@ fn diagnose_workflow(
 
 struct FacetRefs<'a> {
     policy: Option<&'a str>,
-    knowledge: Option<&'a str>,
+    knowledge: &'a [String],
     instruction: Option<&'a str>,
 }
 
@@ -1263,19 +1352,14 @@ impl<'a> FacetRefCheckContext<'a> {
 
     /// 1 つの node が持つ全 facet ref を一括検査する。
     fn check_node(&mut self, node_name: &str, facet_refs: &FacetRefs<'_>) {
-        let singles: &[(&str, FacetKind, Option<&str>)] = &[
-            ("policy", FacetKind::Policy, facet_refs.policy),
-            ("knowledge", FacetKind::Knowledge, facet_refs.knowledge),
-            (
-                "instruction",
-                FacetKind::Instruction,
-                facet_refs.instruction,
-            ),
-        ];
-        for (slot, kind, key_opt) in singles {
-            if let Some(key) = key_opt {
-                self.check(node_name, slot, *kind, key);
-            }
+        if let Some(key) = facet_refs.policy {
+            self.check(node_name, "policy", FacetKind::Policy, key);
+        }
+        for key in facet_refs.knowledge {
+            self.check(node_name, "knowledge", FacetKind::Knowledge, key);
+        }
+        if let Some(key) = facet_refs.instruction {
+            self.check(node_name, "instruction", FacetKind::Instruction, key);
         }
     }
 }
@@ -1499,6 +1583,96 @@ mod tests {
         fs::create_dir_all(dir).unwrap();
         let content = serde_saphyr::to_string(wf).unwrap();
         fs::write(dir.join(format!("{}.yml", wf.name)), content).unwrap();
+    }
+
+    #[test]
+    fn collect_all_facet_keys_preserves_healthy_kinds_when_one_inventory_fails() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("policies"), "not a directory").unwrap();
+        setup_facet(tmp.path(), "knowledge", "known", "known content");
+
+        let keys = collect_all_facet_keys(tmp.path());
+
+        assert!(keys.contains("knowledge/known"));
+    }
+
+    #[test]
+    fn reference_diagnostics_ignore_unreferenced_broken_facet_inventory() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("policies"), "not a directory").unwrap();
+        setup_facet(tmp.path(), "knowledge", "known", "known content");
+        let workflow = WorkflowDefinitionYaml {
+            name: "knowledge-only".to_string(),
+            description: "knowledge-only diagnostic".to_string(),
+            nodes: vec![NodeDefinition {
+                name: "node".to_string(),
+                kind: NodeKind::Session(SessionSpec {
+                    facets: FacetRefs {
+                        knowledge: vec!["known".to_string()],
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let diagnostics = diagnose_workflow_facet_references(&workflow, tmp.path()).unwrap();
+
+        assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn reference_diagnostics_propagate_referenced_broken_facet_inventory_error() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("policies"), "not a directory").unwrap();
+        let workflow = WorkflowDefinitionYaml {
+            name: "custom-policy".to_string(),
+            description: "custom policy diagnostic".to_string(),
+            nodes: vec![NodeDefinition {
+                name: "node".to_string(),
+                kind: NodeKind::Session(SessionSpec {
+                    facets: FacetRefs {
+                        policy: Some("custom-policy".to_string()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let error = diagnose_workflow_facet_references(&workflow, tmp.path()).unwrap_err();
+
+        assert!(matches!(error, facet::FacetError::Io(_)));
+    }
+
+    #[test]
+    fn reference_diagnostics_short_circuit_broken_inventory_for_builtin_facet() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("knowledge"), "not a directory").unwrap();
+        let workflow = WorkflowDefinitionYaml {
+            name: "builtin-knowledge".to_string(),
+            description: "builtin knowledge diagnostic".to_string(),
+            nodes: vec![NodeDefinition {
+                name: "node".to_string(),
+                kind: NodeKind::Session(SessionSpec {
+                    facets: FacetRefs {
+                        knowledge: vec!["releash-thread-cli".to_string()],
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let diagnostics = diagnose_workflow_facet_references(&workflow, tmp.path()).unwrap();
+
+        assert!(diagnostics.is_empty());
     }
 
     fn fixture_dir(kind: &str) -> std::path::PathBuf {
@@ -2106,21 +2280,40 @@ nodes:
     fn diagnose_missing_facet_ref() {
         let tmp = TempDir::new().unwrap();
         let wf_dir = tmp.path();
+        setup_facet(wf_dir, "knowledge", "known", "known content");
 
         let wf = WorkflowDefinitionYaml {
             name: "test-wf".to_string(),
             description: "test".to_string(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![make_node("node1", Some("nonexistent-instruction"))],
+            nodes: vec![NodeDefinition {
+                name: "node1".to_string(),
+                kind: NodeKind::Session(SessionSpec {
+                    permission: Some("edit".to_string()),
+                    facets: FacetRefs {
+                        knowledge: vec!["known".to_string(), "missing-knowledge".to_string()],
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
         };
         save_workflow_yaml(wf_dir, &wf);
 
         let report = diagnose_all(wf_dir, wf_dir);
-        assert!(report
+        let missing = report
             .items
             .iter()
-            .any(|i| i.severity == Severity::Error && i.message.contains("存在しないファセット")));
+            .find(|item| item.code == "FAC002")
+            .expect("missing knowledge FAC002");
+        assert_eq!(missing.workflow_name.as_deref(), Some("test-wf"));
+        assert_eq!(missing.node_name.as_deref(), Some("node1"));
+        assert_eq!(missing.facet_key.as_deref(), Some("missing-knowledge"));
+        assert_eq!(missing.facet_kind.as_deref(), Some("knowledge"));
+        assert_eq!(missing.field.as_deref(), Some("knowledge"));
+        assert!(missing.message.contains("missing-knowledge"));
     }
 
     #[test]
@@ -2530,6 +2723,46 @@ nodes:
         assert!(usage.is_some());
         assert_eq!(usage.unwrap().len(), 1);
         assert_eq!(usage.unwrap()[0].workflow_name, "test-wf");
+    }
+
+    #[test]
+    fn diagnose_tracks_each_knowledge_reference_usage() {
+        let tmp = TempDir::new().unwrap();
+        let wf_dir = tmp.path();
+        setup_facet(wf_dir, "knowledge", "first", "first content");
+        setup_facet(wf_dir, "knowledge", "second", "second content");
+
+        let wf = WorkflowDefinitionYaml {
+            name: "knowledge-usage".to_string(),
+            description: "test".to_string(),
+            builtin: false,
+            schemas: Default::default(),
+            nodes: vec![NodeDefinition {
+                name: "node1".to_string(),
+                kind: NodeKind::Session(SessionSpec {
+                    permission: Some("edit".to_string()),
+                    facets: FacetRefs {
+                        knowledge: vec!["first".to_string(), "second".to_string()],
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+        };
+        save_workflow_yaml(wf_dir, &wf);
+
+        let report = diagnose_all(wf_dir, wf_dir);
+        for facet_id in ["knowledge/first", "knowledge/second"] {
+            let usages = report
+                .facet_usage
+                .get(facet_id)
+                .unwrap_or_else(|| panic!("missing usage for {facet_id}"));
+            assert_eq!(usages.len(), 1);
+            assert_eq!(usages[0].workflow_name, "knowledge-usage");
+            assert_eq!(usages[0].node_name, "node1");
+            assert_eq!(usages[0].slot, "knowledge");
+        }
     }
 
     #[test]

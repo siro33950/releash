@@ -32,7 +32,10 @@ const EMPTY_REPORT: DiagnosticReport = {
 	facet_usage: {},
 };
 
-function makeWorkflow(overrides?: { input?: string }): WorkflowDefinition {
+function makeWorkflow(overrides?: {
+	input?: string;
+	knowledge?: string[];
+}): WorkflowDefinition {
 	return {
 		name: "wf",
 		description: "test workflow",
@@ -46,7 +49,7 @@ function makeWorkflow(overrides?: { input?: string }): WorkflowDefinition {
 					permission: "edit",
 					facets: {
 						policy: "coding",
-						knowledge: "architecture",
+						knowledge: overrides?.knowledge ?? ["architecture"],
 						instruction: "implement",
 					},
 				},
@@ -102,6 +105,40 @@ describe("WorkflowDetail facet refs row", () => {
 
 		expect(screen.getByText(matchLabel("Input"))).toBeInTheDocument();
 		expect(screen.getByText("input-contract")).toBeInTheDocument();
+	});
+
+	it("displays multiple Knowledge refs in declaration order", async () => {
+		const user = userEvent.setup();
+		render(
+			<WorkflowDetail
+				workflow={makeWorkflow({
+					knowledge: ["architecture", "requirements-design"],
+				})}
+				report={EMPTY_REPORT}
+				onEdit={vi.fn()}
+			/>,
+		);
+
+		await user.click(screen.getByText("implement"));
+
+		expect(
+			screen.getByText(matchLabel("Knowledge")).parentElement,
+		).toHaveTextContent("Knowledge: architecture, requirements-design");
+	});
+
+	it("does not display Knowledge row for an empty ref list", async () => {
+		const user = userEvent.setup();
+		render(
+			<WorkflowDetail
+				workflow={makeWorkflow({ knowledge: [] })}
+				report={EMPTY_REPORT}
+				onEdit={vi.fn()}
+			/>,
+		);
+
+		await user.click(screen.getByText("implement"));
+
+		expect(screen.queryByText(matchLabel("Knowledge"))).not.toBeInTheDocument();
 	});
 
 	it("does not display Input row when input is undefined", async () => {
