@@ -254,9 +254,11 @@ pub(crate) fn rule_to_domain(rule: &schema::Rule) -> domain::Rule {
         schema::Rule::LoopGuard {
             max_iterations,
             on_exhausted,
+            reset_on,
         } => domain::Rule::LoopGuard {
             max_iterations: *max_iterations,
             on_exhausted: on_exhausted.clone(),
+            reset_on: reset_on.clone(),
         },
         schema::Rule::Next(next) => domain::Rule::Next(next.clone()),
     }

@@ -203,6 +203,7 @@ pub enum Rule {
     LoopGuard {
         max_iterations: u32,
         on_exhausted: String,
+        reset_on: Option<String>,
     },
     Next(String),
 }

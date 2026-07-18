@@ -332,6 +332,45 @@ mod tests {
     }
 
     #[test]
+    fn execution_started_round_trips_loop_guard_reset_on() {
+        let mut definition = minimal_workflow();
+        definition.nodes[0].rules =
+            vec![crate::adaptor::gateway::workflow::schema::Rule::LoopGuard {
+                max_iterations: 2,
+                on_exhausted: "review".to_string(),
+                reset_on: Some("review".to_string()),
+            }];
+        let event = WorkflowEvent::ExecutionStarted {
+            execution_id: "00000000-0000-4000-8000-000000000001".to_string(),
+            workflow_name: "wf".to_string(),
+            worktree_path: "/repo".to_string(),
+            created_from: ExecutionOrigin::Cli,
+            request: "review".to_string(),
+            permission_mode: crate::domain::agent_session::PermissionMode::EDIT.to_string(),
+            definition,
+            timestamp: 1.0,
+        };
+
+        let serialized = serde_json::to_value(event).unwrap();
+        assert_eq!(
+            serialized["definition"]["nodes"][0]["rules"][0]["loop_guard"]["reset_on"],
+            "review"
+        );
+
+        let restored = serde_json::from_value::<WorkflowEvent>(serialized).unwrap();
+        let WorkflowEvent::ExecutionStarted { definition, .. } = restored else {
+            panic!("expected execution_started event");
+        };
+        assert!(matches!(
+            &definition.nodes[0].rules[0],
+            crate::adaptor::gateway::workflow::schema::Rule::LoopGuard {
+                reset_on: Some(reset_on),
+                ..
+            } if reset_on == "review"
+        ));
+    }
+
+    #[test]
     fn execution_started_reads_legacy_scalar_knowledge_snapshot() {
         let event = WorkflowEvent::ExecutionStarted {
             execution_id: "00000000-0000-4000-8000-000000000001".to_string(),

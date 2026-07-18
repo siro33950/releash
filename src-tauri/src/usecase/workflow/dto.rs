@@ -105,6 +105,8 @@ pub(crate) enum RuleDto {
     LoopGuard {
         max_iterations: u32,
         on_exhausted: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reset_on: Option<String>,
     },
     Next {
         next: String,
@@ -326,9 +328,11 @@ fn rule_to_dto(rule: &domain::Rule) -> RuleDto {
         domain::Rule::LoopGuard {
             max_iterations,
             on_exhausted,
+            reset_on,
         } => RuleDto::LoopGuard {
             max_iterations: *max_iterations,
             on_exhausted: on_exhausted.clone(),
+            reset_on: reset_on.clone(),
         },
         domain::Rule::Next(next) => RuleDto::Next { next: next.clone() },
     }
@@ -463,6 +467,36 @@ mod tests {
         assert_eq!(
             serde_json::to_value(dto).unwrap()["nodes"][0]["session"]["facets"]["knowledge"],
             serde_json::json!(["knowledge-a", "knowledge-b"])
+        );
+    }
+
+    #[test]
+    fn workflow_to_dto_preserves_loop_guard_reset_on() {
+        let definition = domain::WorkflowDefinition {
+            name: "wf".to_string(),
+            description: String::new(),
+            nodes: vec![domain::NodeDefinition {
+                name: "fix".to_string(),
+                rules: vec![domain::Rule::LoopGuard {
+                    max_iterations: 2,
+                    on_exhausted: "done".to_string(),
+                    reset_on: Some("round".to_string()),
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let dto = workflow_to_dto(&definition);
+
+        assert_eq!(
+            serde_json::to_value(dto).unwrap()["nodes"][0]["rules"][0],
+            serde_json::json!({
+                "type": "loop_guard",
+                "max_iterations": 2,
+                "on_exhausted": "done",
+                "reset_on": "round"
+            })
         );
     }
 

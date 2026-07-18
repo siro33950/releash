@@ -595,6 +595,18 @@ fn finalize_child_terminal_state(
     )
 }
 
+fn record_fanout_child_successful_completion(
+    execution: &mut WorkflowExecution,
+    child_node_name: &str,
+) {
+    let workflow = crate::adaptor::gateway::workflow::domain_mapping::workflow_definition_to_domain(
+        &execution.workflow,
+    );
+    execution
+        .loop_guard_reset_baselines
+        .record_successful_completion(&workflow, child_node_name, &execution.node_execution_counts);
+}
+
 fn finalize_fanout_child_failure_state(
     exec: &mut WorkflowExecution,
     snapshot_before: WorkflowExecution,
@@ -976,6 +988,7 @@ impl WorkflowRuntimeService {
                 state,
                 current_node_index: 0,
                 node_execution_counts: HashMap::from([(current_node.clone(), 1)]),
+                loop_guard_reset_baselines: Default::default(),
                 node_history: Vec::new(),
                 workflow_defaults: WorkflowDefaults {
                     backend_id: None,
@@ -1156,6 +1169,7 @@ impl WorkflowRuntimeService {
             state: RuntimeExecutionState::Running,
             current_node_index: 0,
             node_execution_counts: HashMap::new(),
+            loop_guard_reset_baselines: Default::default(),
             node_history: Vec::new(),
             workflow_defaults,
             created_from,
@@ -2851,6 +2865,7 @@ impl WorkflowRuntimeService {
             node_execution.token_usage = Some(child_tokens.clone());
             node_execution.failure = None;
             node_execution.completed_at = Some(completed_at);
+            record_fanout_child_successful_completion(execution, expected_node_name);
             execution.updated_at = completed_at;
             let mut progress_events = vec![WorkflowEvent::ApprovalResolved {
                 execution_id: execution_id.to_string(),
@@ -3183,6 +3198,7 @@ impl WorkflowRuntimeService {
                 execution.failure = None;
                 execution.completed_at = Some(completed_at);
             }
+            record_fanout_child_successful_completion(exec, &child_name);
 
             // [08] child の RuntimeArtifact は CLI / Tauri 経由の SubmitOutput でのみ確定する。
             // ここでは artifacts slot に触れず、SubmitOutput 済みの値を保持したまま
@@ -4535,6 +4551,7 @@ impl WorkflowRuntimeService {
                 node_execution.failure = None;
                 node_execution.completed_at = Some(completed_at);
             }
+            record_fanout_child_successful_completion(execution, &input.node_name);
             let progress_events = vec![
                 WorkflowEvent::ArtifactProduced {
                     execution_id: input.execution_id.clone(),
@@ -5783,12 +5800,20 @@ impl WorkflowRuntimeService {
             let execution = find_by_worktree_mut(&mut executions, worktree_path)
                 .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(worktree_path.to_string()))?;
             let snapshot_before = execution.clone();
-            let snapshot = workflow_fanout_runtime::apply_fanout_runtime_state(
+            workflow_fanout_runtime::apply_fanout_runtime_state(
                 execution,
                 &fanout_start,
                 &child_setups,
                 timestamp,
             )?;
+            for child in fanout_start
+                .children
+                .iter()
+                .filter(|child| child.reused.is_some())
+            {
+                record_fanout_child_successful_completion(execution, &child.node.name);
+            }
+            let snapshot = execution.to_commit_snapshot();
             (snapshot_before, snapshot)
         };
 
@@ -5830,6 +5855,11 @@ impl WorkflowRuntimeService {
                         timestamp,
                     });
                 }
+            }
+            // The live expansion installs every child NodeExecution before reused children are
+            // completed. Keep the durable fact order identical so replay sees the same execution
+            // counts at each reused child completion boundary.
+            for child in &fanout_start.children {
                 if let Some(reused) = child.reused.as_ref() {
                     if let Some(display_command) = reused.display_command.clone() {
                         started_events.push(WorkflowEvent::CommandPrepared {
@@ -6244,6 +6274,7 @@ impl WorkflowRuntimeService {
             state,
             current_node_index: 0,
             node_execution_counts: HashMap::from([("implementation_fix_policy".to_string(), 1)]),
+            loop_guard_reset_baselines: Default::default(),
             node_history: Vec::new(),
             started_at: 1000.0,
             updated_at: 1000.0,

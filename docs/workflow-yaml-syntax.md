@@ -251,11 +251,18 @@ rules:
 
 ```yaml
 rules:
-  - loop_guard: { max_iterations: 3, on_exhausted: give_up }
+  - loop_guard:
+      max_iterations: 3
+      on_exhausted: give_up
+      reset_on: review_round
   - next: run_tests
 ```
 
-`max_iterations` は 1 以上。遷移先 Node に guard がある場合、既完了実行回数が上限に達していれば、その Node を再実行せず `on_exhausted` へ進む。cycle には、その cycle 上で到達可能な `loop_guard` が少なくとも一つ必要。
+`max_iterations` は 1 以上。遷移先 Node に guard がある場合、対象 Node の開始された実行回数（開始済み attempt 数）が上限に達していれば、その Node を再実行せず `on_exhausted` へ進む。cycle には、その cycle 上で到達可能な `loop_guard` が少なくとも一つ必要。
+
+`reset_on` は任意で、同じ Workflow 内の Node 名を指定する。指定 Node が正常完了するたびに新しいカウント範囲を開始し、guard 対象 Node への遷移可否は、直近の正常完了より後に開始された同 Node の実行回数だけで判定する。指定 Node がまだ正常完了していない場合は Workflow 開始以降を範囲とする。失敗、中断、abort、実行開始だけでは範囲をリセットしない。
+
+fanout Node を `reset_on` に指定した場合は、個々の child の完了ではなく、全 child の完了を含む fanout Node 自体の正常完了を境界とする。`reset_on` を省略した既存構文は、Workflow 実行全体の累計回数を使う従来の挙動を維持する。
 
 ### control-flow の制約
 

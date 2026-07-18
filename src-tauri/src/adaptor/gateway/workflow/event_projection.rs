@@ -6,10 +6,11 @@ use crate::adaptor::gateway::workflow::event::{
     FanoutParentRef as EventFanoutParentRef, TokenUsage as EventTokenUsage, WorkflowEvent,
 };
 use crate::adaptor::gateway::workflow::schema::NodeKindName as EventNodeKindName;
-use crate::domain::workflow::services::routing::{self, RouteDecision};
+use crate::domain::workflow::services::routing::{self, LoopGuardResetBaselines, RouteDecision};
 use crate::domain::workflow::{
     ApprovalTarget, Artifact, ExecutionStatus, Fanout, FanoutParentRef, NodeExecution,
-    NodeExecutionFailure, NodeExecutionStatus, NodeKindName, TokenUsage, WorkflowExecution,
+    NodeExecutionFailure, NodeExecutionStatus, NodeKindName, TokenUsage, WorkflowDefinition,
+    WorkflowExecution,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -21,6 +22,49 @@ pub(crate) struct DerivedWorkflowExecutionFields {
     pub(crate) fanouts: Vec<Fanout>,
 }
 
+#[derive(Debug)]
+pub(crate) struct RetainedWorkflowExecutionProjection {
+    pub(crate) execution: WorkflowExecution,
+    pub(crate) node_execution_counts: HashMap<String, u32>,
+    pub(crate) loop_guard_reset_baselines: LoopGuardResetBaselines,
+}
+
+struct RoutingReplayState {
+    workflow: WorkflowDefinition,
+    node_execution_counts: HashMap<String, u32>,
+    loop_guard_reset_baselines: LoopGuardResetBaselines,
+}
+
+impl RoutingReplayState {
+    fn new(definition: &crate::adaptor::gateway::workflow::schema::WorkflowDefinitionYaml) -> Self {
+        Self {
+            workflow:
+                crate::adaptor::gateway::workflow::domain_mapping::workflow_definition_to_domain(
+                    definition,
+                ),
+            node_execution_counts: HashMap::new(),
+            loop_guard_reset_baselines: LoopGuardResetBaselines::default(),
+        }
+    }
+
+    fn record_node_started(&mut self, node_name: &str, attempt: u32) {
+        self.node_execution_counts
+            .entry(node_name.to_string())
+            .and_modify(|current| *current = (*current).max(attempt))
+            .or_insert(attempt);
+    }
+
+    fn record_node_completed(&mut self, node_name: &str) {
+        self.loop_guard_reset_baselines
+            .record_successful_completion(&self.workflow, node_name, &self.node_execution_counts);
+    }
+}
+
+struct ProjectedWorkflowExecution {
+    execution: WorkflowExecution,
+    routing_replay: Option<RoutingReplayState>,
+}
+
 /// Projects one public workflow execution read model from its event stream.
 ///
 /// An empty stream (or an audit-only stream without `ExecutionStarted`) means the
@@ -29,11 +73,31 @@ pub fn project_workflow_execution(
     execution_id: &str,
     events: &[WorkflowEvent],
 ) -> Result<Option<WorkflowExecution>, String> {
+    project_retained_workflow_execution(execution_id, events)
+        .map(|projection| projection.map(|projection| projection.execution))
+}
+
+pub(crate) fn project_retained_workflow_execution(
+    execution_id: &str,
+    events: &[WorkflowEvent],
+) -> Result<Option<RetainedWorkflowExecutionProjection>, String> {
     project_workflow_execution_with_payload_policy(
         execution_id,
         events,
         ProjectionPayloadPolicy::Retained,
     )
+    .map(|projection| {
+        projection.map(|projection| {
+            let routing_replay = projection
+                .routing_replay
+                .expect("retained projection must construct routing replay state");
+            RetainedWorkflowExecutionProjection {
+                execution: projection.execution,
+                node_execution_counts: routing_replay.node_execution_counts,
+                loop_guard_reset_baselines: routing_replay.loop_guard_reset_baselines,
+            }
+        })
+    })
 }
 
 /// Projects the canonical execution state without requiring retained body
@@ -54,6 +118,7 @@ pub(crate) fn project_payload_stripped_workflow_execution(
         events,
         ProjectionPayloadPolicy::Stripped,
     )
+    .map(|projection| projection.map(|projection| projection.execution))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,7 +131,7 @@ fn project_workflow_execution_with_payload_policy(
     execution_id: &str,
     events: &[WorkflowEvent],
     payload_policy: ProjectionPayloadPolicy,
-) -> Result<Option<WorkflowExecution>, String> {
+) -> Result<Option<ProjectedWorkflowExecution>, String> {
     for event in events {
         if event.execution_id() != execution_id {
             return Err(format!(
@@ -134,6 +199,10 @@ fn project_workflow_execution_with_payload_policy(
         approval_target: None,
     };
     let mut authoritative_total_usage = None;
+    let mut routing_replay = match payload_policy {
+        ProjectionPayloadPolicy::Retained => Some(RoutingReplayState::new(definition)),
+        ProjectionPayloadPolicy::Stripped => None,
+    };
 
     for event in events {
         execution.updated_at = execution.updated_at.max(event.timestamp());
@@ -149,6 +218,9 @@ fn project_workflow_execution_with_payload_policy(
                 timestamp,
                 ..
             } => {
+                if let Some(routing_replay) = routing_replay.as_mut() {
+                    routing_replay.record_node_started(node_name, *attempt);
+                }
                 if execution
                     .node_executions
                     .iter()
@@ -231,6 +303,9 @@ fn project_workflow_execution_with_payload_policy(
                 node.token_usage = token_usage.as_ref().map(token_usage_to_domain);
                 node.failure = None;
                 node.completed_at = Some(*timestamp);
+                if let Some(routing_replay) = routing_replay.as_mut() {
+                    routing_replay.record_node_completed(node_name);
+                }
             }
             WorkflowEvent::NodeFailed {
                 node_execution_id,
@@ -330,7 +405,15 @@ fn project_workflow_execution_with_payload_policy(
                 }
                 let resume_from_node = match payload_policy {
                     ProjectionPayloadPolicy::Retained => {
-                        derive_resume_from_node(definition, &execution.node_executions)?
+                        let routing_replay = routing_replay
+                            .as_ref()
+                            .expect("retained projection must construct routing replay state");
+                        derive_resume_from_node(
+                            &routing_replay.workflow,
+                            &execution.node_executions,
+                            &routing_replay.node_execution_counts,
+                            &routing_replay.loop_guard_reset_baselines,
+                        )?
                     }
                     ProjectionPayloadPolicy::Stripped => None,
                 };
@@ -390,23 +473,25 @@ fn project_workflow_execution_with_payload_policy(
     execution.approval_target = derived.approval_target;
     execution.artifacts = derived.artifacts;
     execution.fanouts = derived.fanouts;
-    Ok(Some(execution))
+    Ok(Some(ProjectedWorkflowExecution {
+        execution,
+        routing_replay,
+    }))
 }
 
 fn derive_resume_from_node(
-    definition: &crate::adaptor::gateway::workflow::schema::WorkflowDefinitionYaml,
+    workflow: &WorkflowDefinition,
     nodes: &[NodeExecution],
+    node_execution_counts: &HashMap<String, u32>,
+    loop_guard_reset_baselines: &LoopGuardResetBaselines,
 ) -> Result<Option<String>, String> {
     let Some(latest) = nodes.iter().rev().find(|node| node.fanout_parent.is_none()) else {
-        return Ok(definition.nodes.first().map(|node| node.name.clone()));
+        return Ok(workflow.nodes.first().map(|node| node.name.clone()));
     };
     if latest.status != NodeExecutionStatus::Succeeded {
         return Ok(Some(latest.node_name.clone()));
     }
 
-    let workflow = crate::adaptor::gateway::workflow::domain_mapping::workflow_definition_to_domain(
-        definition,
-    );
     let current_index = workflow
         .nodes
         .iter()
@@ -417,20 +502,19 @@ fn derive_resume_from_node(
                 latest.node_name
             )
         })?;
-    let mut attempts = HashMap::new();
-    for node in nodes {
-        attempts
-            .entry(node.node_name.clone())
-            .and_modify(|attempt: &mut u32| *attempt = (*attempt).max(node.attempt))
-            .or_insert(node.attempt);
-    }
     let artifact = latest.artifact.as_ref().map(|artifact| &artifact.value);
-    routing::route(&workflow, current_index, artifact, &attempts)
-        .map_err(|error| error.to_string())
-        .map(|decision| match decision {
-            RouteDecision::TransitionTo(node) => Some(node),
-            RouteDecision::Completed => None,
-        })
+    routing::route_with_reset_baselines(
+        workflow,
+        current_index,
+        artifact,
+        node_execution_counts,
+        loop_guard_reset_baselines,
+    )
+    .map_err(|error| error.to_string())
+    .map(|decision| match decision {
+        RouteDecision::TransitionTo(node) => Some(node),
+        RouteDecision::Completed => None,
+    })
 }
 
 fn node_mut<'a>(
@@ -1191,6 +1275,294 @@ mod tests {
         assert_eq!(
             execution.node_executions[0].status,
             NodeExecutionStatus::Succeeded
+        );
+    }
+
+    #[test]
+    fn interrupted_projection_routes_with_replayed_loop_guard_reset_baseline() {
+        use crate::adaptor::gateway::workflow::schema::Rule;
+
+        let workflow = WorkflowDefinitionYaml {
+            name: "reset-replay".to_string(),
+            nodes: vec![
+                NodeDefinition {
+                    name: "round".to_string(),
+                    rules: vec![Rule::Next("fix".to_string())],
+                    ..Default::default()
+                },
+                NodeDefinition {
+                    name: "fix".to_string(),
+                    rules: vec![Rule::LoopGuard {
+                        max_iterations: 2,
+                        on_exhausted: "done".to_string(),
+                        reset_on: Some("round".to_string()),
+                    }],
+                    ..Default::default()
+                },
+                NodeDefinition {
+                    name: "done".to_string(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let mut fix_second_start = node_started("fix-2", "fix", EventNodeKindName::Session);
+        if let WorkflowEvent::NodeStarted {
+            attempt, timestamp, ..
+        } = &mut fix_second_start
+        {
+            *attempt = 2;
+            *timestamp = 4.0;
+        }
+        let events = vec![
+            WorkflowEvent::ExecutionStarted {
+                execution_id: EXECUTION_ID.to_string(),
+                workflow_name: "reset-replay".to_string(),
+                worktree_path: "/repo".to_string(),
+                created_from: ExecutionOrigin::Cli,
+                request: "review".to_string(),
+                permission_mode: "ask".to_string(),
+                definition: workflow,
+                timestamp: 1.0,
+            },
+            node_started("fix-1", "fix", EventNodeKindName::Session),
+            WorkflowEvent::NodeCompleted {
+                execution_id: EXECUTION_ID.to_string(),
+                node_execution_id: "fix-1".to_string(),
+                node_name: "fix".to_string(),
+                attempt: 1,
+                result_summary: None,
+                token_usage: None,
+                timestamp: 3.0,
+            },
+            fix_second_start,
+            WorkflowEvent::NodeCompleted {
+                execution_id: EXECUTION_ID.to_string(),
+                node_execution_id: "fix-2".to_string(),
+                node_name: "fix".to_string(),
+                attempt: 2,
+                result_summary: None,
+                token_usage: None,
+                timestamp: 5.0,
+            },
+            WorkflowEvent::NodeStarted {
+                execution_id: EXECUTION_ID.to_string(),
+                node_execution_id: "round-1".to_string(),
+                node_name: "round".to_string(),
+                kind: EventNodeKindName::Session,
+                attempt: 1,
+                fanout_parent: None,
+                timestamp: 6.0,
+            },
+            WorkflowEvent::NodeCompleted {
+                execution_id: EXECUTION_ID.to_string(),
+                node_execution_id: "round-1".to_string(),
+                node_name: "round".to_string(),
+                attempt: 1,
+                result_summary: None,
+                token_usage: None,
+                timestamp: 7.0,
+            },
+            WorkflowEvent::ExecutionInterrupted {
+                execution_id: EXECUTION_ID.to_string(),
+                reason: ExecutionInterruptionReason::Crash,
+                timestamp: 8.0,
+            },
+        ];
+
+        let retained = project_workflow_execution_with_payload_policy(
+            EXECUTION_ID,
+            &events,
+            ProjectionPayloadPolicy::Retained,
+        )
+        .unwrap()
+        .unwrap();
+        let execution = retained.execution;
+
+        assert_eq!(execution.resume_from_node.as_deref(), Some("fix"));
+        assert!(retained.routing_replay.is_some());
+
+        let stripped = project_workflow_execution_with_payload_policy(
+            EXECUTION_ID,
+            &events,
+            ProjectionPayloadPolicy::Stripped,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(stripped.execution.status, ExecutionStatus::Interrupted);
+        assert_eq!(stripped.execution.resume_from_node, None);
+        assert_eq!(
+            stripped.execution.node_executions[2].status,
+            NodeExecutionStatus::Succeeded
+        );
+        assert!(stripped.routing_replay.is_none());
+    }
+
+    #[test]
+    fn fanout_child_completion_does_not_reset_a_guard_bound_to_the_parent() {
+        use crate::adaptor::gateway::workflow::schema::{FanoutSpec, Rule};
+
+        let workflow = WorkflowDefinitionYaml {
+            name: "fanout-parent-reset-replay".to_string(),
+            nodes: vec![
+                NodeDefinition {
+                    name: "round".to_string(),
+                    kind: NodeKind::Fanout(FanoutSpec {
+                        child: vec!["worker".to_string()],
+                        items: None,
+                    }),
+                    rules: vec![Rule::Next("fix".to_string())],
+                    ..Default::default()
+                },
+                NodeDefinition {
+                    name: "worker".to_string(),
+                    ..Default::default()
+                },
+                NodeDefinition {
+                    name: "fix".to_string(),
+                    rules: vec![Rule::LoopGuard {
+                        max_iterations: 2,
+                        on_exhausted: "done".to_string(),
+                        reset_on: Some("round".to_string()),
+                    }],
+                    ..Default::default()
+                },
+                NodeDefinition {
+                    name: "done".to_string(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let start = WorkflowEvent::ExecutionStarted {
+            execution_id: EXECUTION_ID.to_string(),
+            workflow_name: workflow.name.clone(),
+            worktree_path: "/repo".to_string(),
+            created_from: ExecutionOrigin::Cli,
+            request: "review".to_string(),
+            permission_mode: "ask".to_string(),
+            definition: workflow.clone(),
+            timestamp: 1.0,
+        };
+        let mut events_before_child_completion = vec![start];
+        for (id, attempt, started_at, completed_at) in
+            [("fix-1", 1, 2.0, 3.0), ("fix-2", 2, 4.0, 5.0)]
+        {
+            events_before_child_completion.extend([
+                WorkflowEvent::NodeStarted {
+                    execution_id: EXECUTION_ID.to_string(),
+                    node_execution_id: id.to_string(),
+                    node_name: "fix".to_string(),
+                    kind: EventNodeKindName::Session,
+                    attempt,
+                    fanout_parent: None,
+                    timestamp: started_at,
+                },
+                WorkflowEvent::NodeCompleted {
+                    execution_id: EXECUTION_ID.to_string(),
+                    node_execution_id: id.to_string(),
+                    node_name: "fix".to_string(),
+                    attempt,
+                    result_summary: None,
+                    token_usage: None,
+                    timestamp: completed_at,
+                },
+            ]);
+        }
+        events_before_child_completion.extend([
+            WorkflowEvent::NodeStarted {
+                execution_id: EXECUTION_ID.to_string(),
+                node_execution_id: "round-1".to_string(),
+                node_name: "round".to_string(),
+                kind: EventNodeKindName::Fanout,
+                attempt: 1,
+                fanout_parent: None,
+                timestamp: 6.0,
+            },
+            WorkflowEvent::NodeStarted {
+                execution_id: EXECUTION_ID.to_string(),
+                node_execution_id: "worker-1".to_string(),
+                node_name: "worker".to_string(),
+                kind: EventNodeKindName::Session,
+                attempt: 1,
+                fanout_parent: Some(EventFanoutParentRef {
+                    parent_node: "round".to_string(),
+                    parent_attempt: 1,
+                    item_index: Some(0),
+                    child_index: 0,
+                }),
+                timestamp: 7.0,
+            },
+        ]);
+        let mut events_after_child_completion = events_before_child_completion.clone();
+        events_after_child_completion.push(WorkflowEvent::NodeCompleted {
+            execution_id: EXECUTION_ID.to_string(),
+            node_execution_id: "worker-1".to_string(),
+            node_name: "worker".to_string(),
+            attempt: 1,
+            result_summary: None,
+            token_usage: None,
+            timestamp: 8.0,
+        });
+        let mut events_after_parent_completion = events_after_child_completion.clone();
+        events_after_parent_completion.push(WorkflowEvent::NodeCompleted {
+            execution_id: EXECUTION_ID.to_string(),
+            node_execution_id: "round-1".to_string(),
+            node_name: "round".to_string(),
+            attempt: 1,
+            result_summary: None,
+            token_usage: None,
+            timestamp: 9.0,
+        });
+
+        let replay = |events: &[WorkflowEvent]| {
+            project_retained_workflow_execution(EXECUTION_ID, events)
+                .unwrap()
+                .unwrap()
+        };
+        let before_child = replay(&events_before_child_completion);
+        let after_child = replay(&events_after_child_completion);
+        let after_parent = replay(&events_after_parent_completion);
+        let domain_workflow =
+            crate::adaptor::gateway::workflow::domain_mapping::workflow_definition_to_domain(
+                &workflow,
+            );
+        let route = |projection: &RetainedWorkflowExecutionProjection| {
+            routing::route_with_reset_baselines(
+                &domain_workflow,
+                0,
+                None,
+                &projection.node_execution_counts,
+                &projection.loop_guard_reset_baselines,
+            )
+            .unwrap()
+        };
+        let in_range_count = |projection: &RetainedWorkflowExecutionProjection| {
+            projection.loop_guard_reset_baselines.execution_count(
+                "fix",
+                projection.node_execution_counts["fix"],
+                Some("round"),
+            )
+        };
+
+        assert_eq!(before_child.node_execution_counts["fix"], 2);
+        assert_eq!(after_child.node_execution_counts["fix"], 2);
+        assert_eq!(in_range_count(&before_child), 2);
+        assert_eq!(in_range_count(&after_child), 2);
+        assert_eq!(
+            route(&before_child),
+            RouteDecision::TransitionTo("done".into())
+        );
+        assert_eq!(
+            route(&after_child),
+            RouteDecision::TransitionTo("done".into())
+        );
+
+        assert_eq!(after_parent.node_execution_counts["fix"], 2);
+        assert_eq!(in_range_count(&after_parent), 0);
+        assert_eq!(
+            route(&after_parent),
+            RouteDecision::TransitionTo("fix".into())
         );
     }
 

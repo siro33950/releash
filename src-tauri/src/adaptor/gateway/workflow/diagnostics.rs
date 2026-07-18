@@ -659,9 +659,9 @@ fn validation_error_code_stage(
         | ValidationError::EmptyCommand { .. }
         | ValidationError::TooManyNodes { .. }
         | ValidationError::TooManyFanoutChildren { .. } => "WFS006",
-        ValidationError::UnknownRuleTarget { .. } | ValidationError::UnknownFanoutChild { .. } => {
-            "WFR001"
-        }
+        ValidationError::UnknownRuleTarget { .. }
+        | ValidationError::UnknownLoopGuardResetNode { .. }
+        | ValidationError::UnknownFanoutChild { .. } => "WFR001",
         ValidationError::InvalidFanoutItemsReference { .. } => "WFR003",
         ValidationError::FanoutInputMismatch { .. } => "WFT003",
         ValidationError::FanoutChildLeafViolation { .. } => "WFC006",
@@ -742,6 +742,14 @@ fn span_for_validation_error(
                 node_base_path(wf, node)
                     .and_then(|path| span_map.field_span(&format!("{path}.rules")))
             }),
+        ValidationError::UnknownLoopGuardResetNode { node, .. } => {
+            loop_guard_reset_on_path(wf, node)
+                .and_then(|path| span_map.field_span(&path))
+                .or_else(|| {
+                    node_base_path(wf, node)
+                        .and_then(|path| span_map.field_span(&format!("{path}.rules")))
+                })
+        }
         ValidationError::UnreachableNode { node } => {
             node_base_path(wf, node).and_then(|path| span_map.nearest_span(&path))
         }
@@ -812,6 +820,12 @@ fn invalid_rule_path(
         | InvalidRuleKind::CycleWithoutLoopGuard => Some("rules".to_string()),
     }?;
     Some(format!("{base}.{suffix}"))
+}
+
+fn loop_guard_reset_on_path(wf: &WorkflowDefinitionYaml, node_name: &str) -> Option<String> {
+    let (base, node) = node_base_path_with_node(wf, node_name)?;
+    rule_index(node, |rule| matches!(rule, Rule::LoopGuard { .. }))
+        .map(|index| format!("{base}.rules[{index}].loop_guard.reset_on"))
 }
 
 fn node_base_path_with_node<'a>(
@@ -1160,6 +1174,10 @@ fn validation_error_context(e: &validation::ValidationError) -> (Option<String>,
         ValidationError::UnknownRuleTarget { node, .. } => {
             (Some(node.clone()), Some("rules.next".to_string()))
         }
+        ValidationError::UnknownLoopGuardResetNode { node, .. } => (
+            Some(node.clone()),
+            Some("rules.loop_guard.reset_on".to_string()),
+        ),
         ValidationError::InvalidRules { node, kind, .. } => (
             Some(node.clone()),
             Some(invalid_rule_field_name(*kind).to_string()),
@@ -1861,6 +1879,29 @@ mod tests {
                 path.display()
             );
         }
+    }
+
+    #[test]
+    fn unknown_loop_guard_reset_node_diagnostic_identifies_reference() {
+        let source = fs::read_to_string(
+            fixture_dir("invalid").join("WFR001_unknown-loop-guard-reset-node.yml"),
+        )
+        .unwrap();
+
+        let diagnosis = diagnose_workflow_source(&source, Some("unknown-loop-guard-reset-node"));
+        let diagnostic = diagnosis
+            .diagnostics
+            .iter()
+            .find(|item| item.code == "WFR001")
+            .expect("unknown reset_on node must produce WFR001");
+
+        assert_eq!(diagnostic.node_name.as_deref(), Some("fix"));
+        assert_eq!(
+            diagnostic.field.as_deref(),
+            Some("rules.loop_guard.reset_on")
+        );
+        assert!(diagnostic.message.contains("missing-boundary"));
+        assert!(diagnostic.span.is_some());
     }
 
     #[test]

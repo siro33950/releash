@@ -7,8 +7,9 @@
 use std::collections::HashMap;
 
 use crate::adaptor::gateway::workflow::event::WorkflowEvent;
-use crate::adaptor::gateway::workflow::event_projection::project_workflow_execution;
+use crate::adaptor::gateway::workflow::event_projection::project_retained_workflow_execution;
 use crate::adaptor::gateway::workflow::schema::WorkflowDefinitionYaml;
+use crate::domain::workflow::services::routing::LoopGuardResetBaselines;
 use crate::domain::workflow::{
     ExecutionOrigin, ExecutionStatus, NodeExecution, NodeExecutionStatus, TokenUsage,
 };
@@ -37,6 +38,7 @@ pub(crate) struct ResumeProjection {
     pub(crate) started_at: f64,
     pub(crate) resume_from_node: String,
     pub(crate) node_execution_counts: HashMap<String, u32>,
+    pub(crate) loop_guard_reset_baselines: LoopGuardResetBaselines,
     pub(crate) projected_node_executions: Vec<NodeExecution>,
     pub(crate) confirmed_top_level_nodes: Vec<NodeExecution>,
     pub(crate) confirmed_fanout_children: Vec<ConfirmedFanoutChild>,
@@ -46,8 +48,9 @@ pub(crate) fn project_resume_checkpoint(
     execution_id: &str,
     events: &[WorkflowEvent],
 ) -> Result<ResumeProjection, String> {
-    let execution = project_workflow_execution(execution_id, events)?
+    let projection = project_retained_workflow_execution(execution_id, events)?
         .ok_or_else(|| format!("execution {execution_id} has no execution_started event"))?;
+    let execution = projection.execution;
     if execution.status != ExecutionStatus::Interrupted {
         return Err(format!(
             "execution {execution_id} cannot resume from status {}",
@@ -87,14 +90,6 @@ pub(crate) fn project_resume_checkpoint(
             "execution {execution_id} must contain exactly one execution_started event"
         ));
     };
-
-    let mut node_execution_counts = HashMap::new();
-    for node in &execution.node_executions {
-        node_execution_counts
-            .entry(node.node_name.clone())
-            .and_modify(|attempt: &mut u32| *attempt = (*attempt).max(node.attempt))
-            .or_insert(node.attempt);
-    }
 
     let mut confirmed_top_level_nodes = execution
         .node_executions
@@ -216,7 +211,8 @@ pub(crate) fn project_resume_checkpoint(
         created_from: *created_from,
         started_at: *started_at,
         resume_from_node,
-        node_execution_counts,
+        node_execution_counts: projection.node_execution_counts,
+        loop_guard_reset_baselines: projection.loop_guard_reset_baselines,
         projected_node_executions: execution.node_executions,
         confirmed_top_level_nodes,
         confirmed_fanout_children,
@@ -230,9 +226,9 @@ mod tests {
         FanoutParentRef, TokenUsage as EventTokenUsage,
     };
     use crate::adaptor::gateway::workflow::schema::{
-        FanoutSpec, NodeDefinition, NodeKind, NodeKindName, SessionSpec,
+        FanoutSpec, NodeDefinition, NodeKind, NodeKindName, Rule, SessionSpec,
     };
-    use crate::domain::workflow::ExecutionInterruptionReason;
+    use crate::domain::workflow::{ExecutionInterruptionReason, NodeExecutionFailureKind};
 
     const EXECUTION_ID: &str = "00000000-0000-4000-8000-000000000133";
 
@@ -356,6 +352,179 @@ mod tests {
         assert_eq!(checkpoint.confirmed_top_level_nodes.len(), 1);
         assert_eq!(checkpoint.confirmed_top_level_nodes[0].node_name, "prepare");
         assert_eq!(checkpoint.node_execution_counts["fanout"], 1);
+    }
+
+    #[test]
+    fn restores_loop_guard_reset_baseline_from_event_order() {
+        let mut events = base_events();
+        let WorkflowEvent::ExecutionStarted { definition, .. } = &mut events[0] else {
+            unreachable!("base event must be ExecutionStarted");
+        };
+        definition.nodes = vec![
+            NodeDefinition {
+                name: "fix".to_string(),
+                rules: vec![Rule::LoopGuard {
+                    max_iterations: 2,
+                    on_exhausted: "done".to_string(),
+                    reset_on: Some("round".to_string()),
+                }],
+                ..Default::default()
+            },
+            NodeDefinition {
+                name: "round".to_string(),
+                ..Default::default()
+            },
+            NodeDefinition {
+                name: "done".to_string(),
+                ..Default::default()
+            },
+        ];
+        for (id, node_name, attempt, started_at, completed_at) in [
+            ("fix-1", "fix", 1, 2.0, 3.0),
+            ("fix-2", "fix", 2, 4.0, 5.0),
+            ("round-1", "round", 1, 6.0, 7.0),
+        ] {
+            events.push(WorkflowEvent::NodeStarted {
+                execution_id: EXECUTION_ID.to_string(),
+                node_execution_id: id.to_string(),
+                node_name: node_name.to_string(),
+                kind: NodeKindName::Session,
+                attempt,
+                fanout_parent: None,
+                timestamp: started_at,
+            });
+            events.push(WorkflowEvent::NodeCompleted {
+                execution_id: EXECUTION_ID.to_string(),
+                node_execution_id: id.to_string(),
+                node_name: node_name.to_string(),
+                attempt,
+                result_summary: None,
+                token_usage: None,
+                timestamp: completed_at,
+            });
+        }
+        events.extend([
+            WorkflowEvent::NodeStarted {
+                execution_id: EXECUTION_ID.to_string(),
+                node_execution_id: "fix-3".to_string(),
+                node_name: "fix".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 3,
+                fanout_parent: None,
+                timestamp: 8.0,
+            },
+            WorkflowEvent::ExecutionInterrupted {
+                execution_id: EXECUTION_ID.to_string(),
+                reason: ExecutionInterruptionReason::Crash,
+                timestamp: 9.0,
+            },
+        ]);
+
+        let checkpoint = project_resume_checkpoint(EXECUTION_ID, &events).unwrap();
+
+        assert_eq!(checkpoint.resume_from_node, "fix");
+        assert_eq!(checkpoint.node_execution_counts["fix"], 3);
+        assert_eq!(
+            checkpoint.loop_guard_reset_baselines.execution_count(
+                "fix",
+                checkpoint.node_execution_counts["fix"],
+                Some("round"),
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn failed_reset_node_does_not_advance_loop_guard_baseline() {
+        let mut events = base_events();
+        let WorkflowEvent::ExecutionStarted { definition, .. } = &mut events[0] else {
+            unreachable!("base event must be ExecutionStarted");
+        };
+        definition.nodes = vec![
+            NodeDefinition {
+                name: "fix".to_string(),
+                rules: vec![Rule::LoopGuard {
+                    max_iterations: 2,
+                    on_exhausted: "done".to_string(),
+                    reset_on: Some("round".to_string()),
+                }],
+                ..Default::default()
+            },
+            NodeDefinition {
+                name: "round".to_string(),
+                ..Default::default()
+            },
+            NodeDefinition {
+                name: "done".to_string(),
+                ..Default::default()
+            },
+        ];
+        events.extend([
+            WorkflowEvent::NodeStarted {
+                execution_id: EXECUTION_ID.to_string(),
+                node_execution_id: "fix-1".to_string(),
+                node_name: "fix".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: None,
+                timestamp: 2.0,
+            },
+            WorkflowEvent::NodeCompleted {
+                execution_id: EXECUTION_ID.to_string(),
+                node_execution_id: "fix-1".to_string(),
+                node_name: "fix".to_string(),
+                attempt: 1,
+                result_summary: None,
+                token_usage: None,
+                timestamp: 3.0,
+            },
+            WorkflowEvent::NodeStarted {
+                execution_id: EXECUTION_ID.to_string(),
+                node_execution_id: "round-1".to_string(),
+                node_name: "round".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 1,
+                fanout_parent: None,
+                timestamp: 4.0,
+            },
+            WorkflowEvent::NodeFailed {
+                execution_id: EXECUTION_ID.to_string(),
+                node_execution_id: "round-1".to_string(),
+                node_name: "round".to_string(),
+                attempt: 1,
+                reason: "failed".to_string(),
+                failure_kind: NodeExecutionFailureKind::ValidationFailure,
+                retry_count: None,
+                timestamp: 5.0,
+            },
+            WorkflowEvent::NodeStarted {
+                execution_id: EXECUTION_ID.to_string(),
+                node_execution_id: "fix-2".to_string(),
+                node_name: "fix".to_string(),
+                kind: NodeKindName::Session,
+                attempt: 2,
+                fanout_parent: None,
+                timestamp: 6.0,
+            },
+            WorkflowEvent::ExecutionInterrupted {
+                execution_id: EXECUTION_ID.to_string(),
+                reason: ExecutionInterruptionReason::Crash,
+                timestamp: 7.0,
+            },
+        ]);
+
+        let checkpoint = project_resume_checkpoint(EXECUTION_ID, &events).unwrap();
+
+        assert_eq!(checkpoint.resume_from_node, "fix");
+        assert_eq!(checkpoint.node_execution_counts["fix"], 2);
+        assert_eq!(
+            checkpoint.loop_guard_reset_baselines.execution_count(
+                "fix",
+                checkpoint.node_execution_counts["fix"],
+                Some("round"),
+            ),
+            2
+        );
     }
 
     #[test]

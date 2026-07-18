@@ -148,9 +148,11 @@ fn domain_rule_to_schema(rule: domain::Rule) -> crate::adaptor::gateway::workflo
         domain::Rule::LoopGuard {
             max_iterations,
             on_exhausted,
+            reset_on,
         } => crate::adaptor::gateway::workflow::schema::Rule::LoopGuard {
             max_iterations,
             on_exhausted,
+            reset_on,
         },
         domain::Rule::Next(next) => crate::adaptor::gateway::workflow::schema::Rule::Next(next),
     }
@@ -435,6 +437,28 @@ mod tests {
                 .as_deref(),
             Some("inst")
         );
+    }
+
+    #[test]
+    fn workflow_mapping_round_trips_loop_guard_reset_on() {
+        let definition = domain::WorkflowDefinition {
+            name: "wf".to_string(),
+            nodes: vec![NodeDefinition {
+                name: "fix".to_string(),
+                rules: vec![domain::Rule::LoopGuard {
+                    max_iterations: 2,
+                    on_exhausted: "done".to_string(),
+                    reset_on: Some("round".to_string()),
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let schema = domain_workflow_to_schema(&definition).unwrap();
+        let mapped = schema_workflow_to_domain(schema).unwrap();
+
+        assert_eq!(mapped, definition);
     }
 
     #[test]

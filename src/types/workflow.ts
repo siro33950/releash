@@ -49,6 +49,7 @@ type Rule =
 			type: "loop_guard";
 			max_iterations: number;
 			on_exhausted: string;
+			reset_on?: string;
 	  }
 	| {
 			type: "next";
