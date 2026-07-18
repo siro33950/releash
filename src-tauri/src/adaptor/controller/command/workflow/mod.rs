@@ -1736,20 +1736,6 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_workflow_source_from_builtin() {
-        let builtin_names: Vec<String> = builtin::list_builtin_workflows()
-            .iter()
-            .map(|s| s.name.clone())
-            .collect();
-        if let Some(name) = builtin_names.first() {
-            let wf = builtin::load_builtin_workflow_resolved(name)
-                .expect("builtin load must succeed")
-                .expect("builtin must exist for known name");
-            assert!(wf.builtin);
-        }
-    }
-
-    #[test]
     fn duplicate_facet_normal_case() {
         let tmp = TempDir::new().unwrap();
         let base_dir = tmp.path();

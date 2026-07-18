@@ -704,40 +704,6 @@ mod tests {
     }
 
     #[test]
-    fn validate_submission_output_accepts_authoring_builtin_spec_directory_contract() {
-        for workflow_name in [
-            "01_authoring_draft",
-            "01_authoring_codex",
-            "01_authoring_claude",
-        ] {
-            let workflow =
-                crate::adaptor::gateway::workflow::builtin::load_builtin_workflow_resolved(
-                    workflow_name,
-                )
-                .unwrap()
-                .unwrap();
-            let validated = validate_submission_output_with_secrets(
-                &workflow,
-                "spec-directory",
-                serde_json::json!({
-                    "spec_dir": "docs/specs/issues-1327",
-                    "spec_id": "issues-1327",
-                    "files": ["docs/specs/issues-1327/requirements.md"],
-                    "related_issue": 1327,
-                    "open_questions_resolved": true
-                }),
-                &[],
-            )
-            .unwrap();
-
-            assert_eq!(
-                validated.artifact["spec_dir"], "docs/specs/issues-1327",
-                "{workflow_name} must accept spec-directory output"
-            );
-        }
-    }
-
-    #[test]
     fn artifact_produced_event_preserves_external_shape() {
         let event = artifact_produced_event(
             "execution-1",

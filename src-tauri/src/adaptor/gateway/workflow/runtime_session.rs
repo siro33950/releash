@@ -1050,7 +1050,7 @@ mod tests {
         let context = WorkflowNodeContext {
             execution_id: "execution-1".to_string(),
             node_execution_id: "node-execution-1".to_string(),
-            workflow_name: "05_review-fix_codex".to_string(),
+            workflow_name: "full-cycle-development".to_string(),
             node_name: "review".to_string(),
             attempt: 1,
             parent_node_name: None,
@@ -1082,7 +1082,7 @@ mod tests {
         let context = WorkflowNodeContext {
             execution_id: "execution-1".to_string(),
             node_execution_id: "node-execution-1".to_string(),
-            workflow_name: "05_review-fix_codex".to_string(),
+            workflow_name: "full-cycle-development".to_string(),
             node_name: "review".to_string(),
             attempt: 1,
             parent_node_name: None,

@@ -2166,86 +2166,6 @@ fn decide_next_node_routes_switch_from_artifact() {
 }
 
 #[test]
-fn apply_advance_routes_builtin_review_fix_switch_by_verdict() {
-    for workflow_name in [
-        "05_review-fix",
-        "05_review-fix_codex",
-        "05_review-fix_claude",
-    ] {
-        let workflow = crate::adaptor::gateway::workflow::builtin::load_builtin_workflow_resolved(
-            workflow_name,
-        )
-        .unwrap()
-        .unwrap();
-
-        for (verdict, expected_node) in [("NEEDS_FIX", "implement_tasks"), ("LGTM", "report")] {
-            let mut exec = workflow_exec(workflow.clone(), 0);
-            exec.artifacts.insert(
-                "check_and_make_tasks".to_string(),
-                structured_node_output(
-                    "check_and_make_tasks",
-                    serde_json::json!({
-                        "verdict": verdict,
-                        "tasks": [],
-                        "summary": "summary"
-                    }),
-                ),
-            );
-
-            let outcome = exec.apply_advance();
-
-            assert!(matches!(outcome, NodeOutcome::TransitionAndStart(_)));
-            assert_eq!(
-                exec.workflow.nodes[exec.current_node_index].name, expected_node,
-                "{workflow_name} verdict {verdict} must route to {expected_node}"
-            );
-        }
-    }
-}
-
-#[test]
-fn apply_advance_routes_builtin_implement_switch_by_verdict() {
-    for workflow_name in ["02_implement_codex", "02_implement_claude"] {
-        let workflow = crate::adaptor::gateway::workflow::builtin::load_builtin_workflow_resolved(
-            workflow_name,
-        )
-        .unwrap()
-        .unwrap();
-        let fix_index = workflow
-            .nodes
-            .iter()
-            .position(|node| node.name == "fix")
-            .expect("builtin implement workflow must have fix node");
-
-        for (verdict, expected_node) in [("fixed", "review_fanout"), ("completed", "report")] {
-            let mut exec = workflow_exec(workflow.clone(), fix_index);
-            exec.artifacts.insert(
-                "fix".to_string(),
-                structured_node_output(
-                    "fix",
-                    serde_json::json!({
-                        "verdict": verdict,
-                        "summary": "summary"
-                    }),
-                ),
-            );
-
-            let outcome = exec.apply_advance();
-
-            match expected_node {
-                "review_fanout" => assert!(matches!(outcome, NodeOutcome::StartFanout(_))),
-                "report" => assert!(matches!(outcome, NodeOutcome::TransitionAndStart(_))),
-                _ => unreachable!("unexpected fixture target"),
-            }
-            assert_eq!(
-                exec.workflow.nodes[exec.current_node_index].name, expected_node,
-                "{workflow_name} verdict {verdict} must route to {expected_node}"
-            );
-        }
-    }
-}
-
-#[test]
 fn apply_advance_fails_on_switch_no_match_without_next() {
     let workflow = WorkflowDefinitionYaml {
         name: "switch-no-match".to_string(),
@@ -16668,18 +16588,11 @@ mod dispatch_boundary_tests {
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         let (repo_parent, _worktree_parent, worktree_path) = make_managed_worktree();
         configure_managed_repo(&app, repo_parent.path().join("repo").as_path());
-        let stem = crate::adaptor::gateway::workflow::builtin::list_builtin_workflows()
-            .into_iter()
-            .next()
-            .expect("at least one builtin workflow must exist")
-            .name;
+        let workflow = make_running_session_workflow();
+        let stem = workflow.name.clone();
 
         let resolved_worktree = engine
             .resolve_start_execution_worktree(worktree_path.to_string_lossy().to_string())
-            .await
-            .unwrap();
-        let workflow = engine
-            .resolve_start_execution_workflow(&stem)
             .await
             .unwrap();
         let execution_id = engine
@@ -16717,155 +16630,6 @@ mod dispatch_boundary_tests {
             }));
     }
 
-    /// #1337 final gate: every bundled workflow must pass the production load/start path,
-    /// create its initial NodeExecution, and activate the stubbed session runtime.
-    #[tokio::test]
-    async fn all_twelve_builtin_workflows_activate_their_initial_node_execution() {
-        let app = make_dispatch_app();
-        let engine = WorkflowRuntimeService::new_for_test();
-        let data_dir = dispatch_data_dir(app.handle());
-        engine.set_execution_store_data_dir(data_dir.clone()).await;
-        let (session_store, agent_runtime) = make_dispatch_deps(data_dir);
-        let summaries = crate::adaptor::gateway::workflow::builtin::list_builtin_workflows();
-        assert_eq!(
-            summaries.len(),
-            12,
-            "the canonical builtin set must stay at 12"
-        );
-
-        for summary in summaries {
-            let (repo_parent, _worktree_parent, worktree_path) = make_managed_worktree();
-            configure_managed_repo(&app, repo_parent.path().join("repo").as_path());
-            let resolved_worktree = engine
-                .resolve_start_execution_worktree(worktree_path.to_string_lossy().to_string())
-                .await
-                .unwrap_or_else(|error| {
-                    panic!(
-                        "builtin '{}' worktree must resolve before start: {error}",
-                        summary.name
-                    )
-                });
-            let workflow = engine
-                .resolve_start_execution_workflow(&summary.name)
-                .await
-                .unwrap_or_else(|error| {
-                    panic!("builtin '{}' must load before start: {error}", summary.name)
-                });
-            let initial_node = workflow
-                .nodes
-                .first()
-                .unwrap_or_else(|| panic!("builtin '{}' must have a node", summary.name));
-            let initial_node_name = initial_node.name.clone();
-            let initial_node_kind = initial_node.kind_name();
-            let expected_fanout_children = initial_node.fanout().map(|fanout| {
-                let item_count = match fanout.items.as_ref() {
-                    None => 1,
-                    Some(ItemsSource::Literal(items)) => items.len(),
-                    Some(ItemsSource::ArtifactField { node, field }) => panic!(
-                        "builtin '{}' initial fanout cannot source items from {node}.{field}",
-                        summary.name
-                    ),
-                };
-                fanout.child.len() * item_count
-            });
-
-            let execution_id = engine
-                .start_resolved_workflow(
-                    app.handle(),
-                    &session_store,
-                    &agent_runtime,
-                    workflow,
-                    resolved_worktree,
-                    Some(format!("start builtin {}", summary.name)),
-                    ExecutionOrigin::DesktopUi,
-                    crate::domain::agent_session::PermissionMode::Edit,
-                )
-                .await
-                .unwrap_or_else(|error| panic!("builtin '{}' must start: {error}", summary.name));
-
-            match initial_node_kind {
-                NodeKindName::Session => {
-                    let (session_id, _) =
-                        wait_for_top_level_session(&engine, &execution_id, &initial_node_name)
-                            .await;
-                    wait_for_stub_session_turn_activation(&agent_runtime, &session_id).await;
-                }
-                NodeKindName::Fanout => {
-                    let children = wait_for_active_fanout_children(
-                        &engine,
-                        &execution_id,
-                        &initial_node_name,
-                        expected_fanout_children.expect("fanout child count must be available"),
-                    )
-                    .await;
-                    for (_, session_id, _) in children {
-                        wait_for_stub_session_turn_activation(&agent_runtime, &session_id).await;
-                    }
-                }
-                NodeKindName::Command => {
-                    for _ in 0..500 {
-                        if read_dispatch_events(&app, &execution_id)
-                            .iter()
-                            .any(|event| {
-                                matches!(
-                                    event,
-                                    WorkflowEvent::NodeStarted {
-                                        node_name,
-                                        kind: NodeKindName::Command,
-                                        ..
-                                    } if node_name == &initial_node_name
-                                )
-                            })
-                        {
-                            break;
-                        }
-                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                    }
-                }
-            }
-
-            assert!(
-                read_dispatch_events(&app, &execution_id)
-                    .iter()
-                    .any(|event| matches!(
-                        event,
-                        WorkflowEvent::NodeStarted {
-                            node_name,
-                            kind,
-                            attempt: 1,
-                            fanout_parent: None,
-                            ..
-                        } if node_name == &initial_node_name && *kind == initial_node_kind
-                    )),
-                "builtin '{}' must append its initial top-level NodeStarted event",
-                summary.name
-            );
-
-            if engine
-                .execution_store()
-                .get_execution(&execution_id)
-                .await
-                .is_some_and(|execution| !execution.status.is_terminal())
-            {
-                engine
-                    .abort_workflow_execution(
-                        app.handle(),
-                        &session_store,
-                        &agent_runtime,
-                        &execution_id,
-                        None,
-                    )
-                    .await
-                    .unwrap_or_else(|error| {
-                        panic!(
-                            "builtin '{}' cleanup abort must succeed: {error}",
-                            summary.name
-                        )
-                    });
-            }
-        }
-    }
-
     /// Task 1326 regression: reservation 後の validate_start 失敗 rollback で、
     /// runtime-local facet read model を残さない。
     #[tokio::test]
@@ -16891,15 +16655,7 @@ mod dispatch_boundary_tests {
             .await
             .insert(existing_execution_id.clone(), existing);
 
-        let stem = crate::adaptor::gateway::workflow::builtin::list_builtin_workflows()
-            .into_iter()
-            .next()
-            .expect("at least one builtin workflow must exist")
-            .name;
-        let workflow = engine
-            .resolve_start_execution_workflow(&stem)
-            .await
-            .unwrap();
+        let workflow = make_running_session_workflow();
         let result = engine
             .start_resolved_workflow(
                 app.handle(),
@@ -16950,15 +16706,7 @@ mod dispatch_boundary_tests {
             .to_string();
         engine.fail_next_required_event_append_for_test();
 
-        let stem = crate::adaptor::gateway::workflow::builtin::list_builtin_workflows()
-            .into_iter()
-            .next()
-            .expect("at least one builtin workflow must exist")
-            .name;
-        let workflow = engine
-            .resolve_start_execution_workflow(&stem)
-            .await
-            .unwrap();
+        let workflow = make_running_session_workflow();
         let result = engine
             .start_resolved_workflow(
                 app.handle(),
