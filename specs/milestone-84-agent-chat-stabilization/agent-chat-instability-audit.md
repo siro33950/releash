@@ -2,6 +2,7 @@
 
 - 調査日: 2026-07-07
 - 設計追補日: 2026-07-15
+- 追加監査日: 2026-07-19
 - 対象: main `b3f9f54c` 時点の working tree
 
 手法: 7 視点の並列監査（72 subagent）で候補を洗い出し、全指摘を独立の検証者が実コードで反証確認した。
@@ -20,6 +21,20 @@ milestone 84 のドキュメント群（本書が要求リスト、以下 3 書�
 - [agent-chat-ideal-vocabulary.md](agent-chat-ideal-vocabulary.md) — 正規化語彙・データ構造の理想形
 - [agent-chat-ideal-lifecycle.md](agent-chat-ideal-lifecycle.md) — ライフサイクルの理想形（不変条件）
 - [agent-chat-ideal-presentation.md](agent-chat-ideal-presentation.md) — UI 表示の理想形
+
+## 追加監査で確認した実装ギャップ（2026-07-19）
+
+基準commit `ce02bedc6599c25a7902b5af6417569647b41824`から`e0a0700b0efdd308b88c052251ae246c6d8fbba8`までのmilestone、Issue、正本、実装を照合し、次の未解決ギャップを確認した。これらは初回監査66件の件数・重大度集計には加算せず、対応Issueとのトレーサビリティを本節で管理する。
+
+| 追補所見 | 根因 / invariant | 追跡先 |
+|---|---|---|
+| active-turn steerがprovider I/O後にhuman inputを保存し、response喪失時に入力消失または二重適用となる | I6 / provider I/O前write-ahead不在 | [L15 #1498](https://github.com/siro33950/releash/issues/1498) |
+| terminal、session list、ToolUse lookupが必要範囲を超えてevent全履歴を読む | full-retention / full-recompute回避違反 | [F8 #1491](https://github.com/siro33950/releash/issues/1491) |
+| production appendが毎回の全JSON validationとbatch directory scanに依存する | commit workがhistory size依存 | [F9 #1494](https://github.com/siro33950/releash/issues/1494) |
+| queue pause checkpoint照合前にlegacy/tail/all batchをread/hashする | I4の小さなprojection queryが全履歴依存 | [F10 #1497](https://github.com/siro33950/releash/issues/1497) |
+| live recoveryで旧turnがdanglingになり、forkが親固有のrecovery stateを継承する | I2 / I9のterminal・fork isolation不完全 | [L5 #1406](https://github.com/siro33950/releash/issues/1406) |
+| Notice/operation feedbackをfrontendとRustが二重所有し、capacityで別sessionをevict、oversize/raw errorを無言dropまたは露出する | V-D4 / P2 / Rust authority違反 | [S5 #1393](https://github.com/siro33950/releash/issues/1393) |
+| `runtime/usecase.rs`が18,259行となりstate owner、commit point、I/O/lock/post-action境界が混在する | ST-3の構造要因が継続 | [L11 #1412](https://github.com/siro33950/releash/issues/1412) |
 
 既知・修正済みの問題（#1379 permission 復元、#1381 turn 終端明示化、#1352 信頼性修正一式）は本インベントリの対象外。
 

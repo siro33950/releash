@@ -1,7 +1,7 @@
 # Agent チャット表示（presentation）の理想形
 
 作成日: 2026-07-07
-更新日: 2026-07-15（Agent 実行設定 UI を追加）
+更新日: 2026-07-19
 
 milestone 84「Agentチャット安定化」のドキュメント群:
 
@@ -14,11 +14,11 @@ milestone 84「Agentチャット安定化」のドキュメント群:
 
 ## 表示原則
 
-- **P1 (live / reload 等価)**: 画面は read model のみから描画できる。transient event は read model 更新を早く届ける手段であり、live と reload 後で表示が変わってはならない。streaming delta は seq で順序・欠落を検出し、欠落時は snapshot 再取得で自己修復する（FE-3、seq 契約は語彙文書 §11）。唯一の例外は `Notice(PersistFailure)` — 永続化自体の故障を知らせるため transient 表示を許容する（lifecycle I8）。
+- **P1 (live / reload 等価)**: 画面は read model のみから描画できる。transient event は read model 更新を早く届ける手段であり、live と reload 後で表示が変わってはならない。streaming delta は seq で順序・欠落を検出し、欠落時は snapshot 再取得で自己修復する（FE-3、seq 契約は語彙文書 §11）。durable workflow/session stateの唯一の例外は `Notice(PersistFailure)` — 永続化自体の故障を知らせるため transient 表示を許容する（lifecycle I8）。state transition前のtyped `SessionOperationFeedback`は履歴/read modelではなくcommand feedbackであり、別のtransient契約として明示する。
 - **P2 (表示先の一意性)**: 各語彙要素に primary surface を 1 つ定める。同一情報の二重描画を禁止し、補助 surface は要約・導出値のみを表示する。
 - **P3 (無言遷移の禁止)**: ユーザーに観測可能な状態変化（turn 終了・失敗・中断・permission 失効・queue 変化・Agent 設定変更）は、必ず画面上の変化を伴う。「スピナーが消えただけ」「reload したら突然エラーが現れる」（FE-2）を許さない。
 - **P4 (スコープの一致)**: バナー・エラー表示は対象スコープ（session / turn / app）の surface にのみ表示する。session を跨いだグローバル状態での表示を禁止する（FE-5）。
-- **P5 (入力の保全)**: 送信失敗・queue 操作・stall のいずれでも、入力欄の内容と添付は消えない（lifecycle I6 の表示面）。
+- **P5 (入力の保全)**: 送信失敗・queue 操作・stall のいずれでも、入力欄の内容と添付は消えない（lifecycle I6 の表示面）。active-turn steerはdurable `TurnSteerRequested` receiptを受け取った後だけcomposerをclearし、ResultUnknownを再クリックで暗黙再送しない。
 - **P6 (監査可能性)**: 後からセッションを開いた読者が「何が実行され、どの mode / Goal / 推論レベルだったか、なぜ止まり、何が拒否され、いくら使ったか」を durable read model と履歴から読み取れる（RG-4 / FE-7 / CL-1 effective / RG-9 / #1445〜#1451）。
 
 ## Surface 定義
@@ -48,6 +48,7 @@ vocabulary 文書の語彙要素ごとに primary / 補助 surface と表示規�
 | `ToolCall` | S1 | S2 | kind 別アイコン、`status` バッジ（Running spinner / Succeeded / Failed / **Denied / TimedOut / Interrupted を色・文言で区別**（RG-4））、`exit_code` バッジ（RG-8）、output は text ＋ **image**（CL-6/RG-7）を描画。Running 中の出力は追記表示（SD-5）。WebSearch は query と結果要約を表示（CX-11） |
 | `TodoListSnapshot` | S3 | S1 | `in_progress` 項目をハイライト（スピナー付き）、priority 表示（RG-5）。Claude / Codex 共通（CX-5/RG-2） |
 | `Notice` | kind による（下表） | — | 下記「Notice 振り分け」 |
+| `SessionOperationFeedback` | S6 | — | Rustが返すoperation/outcome/safe bounded text/available actionsをsession単位でmirrorする。frontendでraw error分類・成功時clear規則・別session evictionを実装しない。durable transcriptへ自動変換しない |
 | `Error`（part） | S1 | S6 | `retryable=true` は「再試行中」表示にし、`resolved=true` へ更新されたら成功扱いに畳む（CX-8: 恒久の赤エラーにしない） |
 | `Permission` | S4 | S1 | 下記「permission UX」 |
 | `TaskStatus` / Task 配下 | S1 | S2 | Task 展開内に thinking / tool / 未 pair の tool result も描画。要約の 200 字切りは全文展開可能にする（FE-6） |
@@ -62,6 +63,7 @@ vocabulary 文書の語彙要素ごとに primary / 補助 surface と表示規�
 | `BackendProtocolIdentity` | S9b | S6 | 互換なら通常は詳細内。schema/binary/flag不一致はProtocolIncompatibleとしてerror表示しsendをdisable |
 | turn configuration revision | S1（turn 詳細） | — | TurnStartedのimmutable effective snapshotからprovider/model/mode/effective effort/unknown reason/Goal/protocol identityに加え、当時のprovider permission/effects/residual protections/context hashを展開し、後から監査可能にする |
 | turn_phase / stall | S1 末尾 ＋ S8 | S2 | StartingTurnは「開始を確定中」、Streamingはspinner、Interruptingは「停止中（最大10秒）」。stall診断で観測停止を表示し、turn-start reconciliation中はsendを止める |
+| `TurnSteerProjection` | S5 | S1 | Pending / Accepted / Rejected / ReconciliationRequiredを同じsteer idで表示。結果不明時はRustが返すavailable actionsだけを提示し、入力を自動再steer/queueしない |
 | queue | S5 | — | chips: Queued / AwaitingBypassConfirmation / Starting / Started / Paused / Failed / Cancelled / NeedsResolutionを可視化。snapshot/goal ref/current差とexecution idを表示し、Bypass確認の期限切れは再prepare、その他の解決不能差はCAS付きrebase/取消を提示 |
 | session 状態 | S8 | S6 | Error 時は理由（最後の Fatal / TurnError の要約）を tooltip で表示（RT-6）。reload 後も理由が残る（durable Notice 由来） |
 
@@ -119,6 +121,8 @@ vocabulary 文書の語彙要素ごとに primary / 補助 surface と表示規�
 
 - バナー state は session_id をキーに保持し、他 session のイベントで消える・混ざることを禁止する（FE-5）。
 - turn に紐づくエラーは S1 の part（durable）が正本。バナーは「操作の失敗（送信・切替等）」という session スコープの一時通知に限定する。
+- operation feedbackのoperation/failure kind、安全なlabel/detail、同種成功によるclear、session lifecycle cleanupはRust command/usecaseが所有する。frontendは`${error}`、`includes`等でraw errorを分類・整形せず、typed snapshotのmirrorと明示dismissだけを行う。
+- size/capacity上限で無言dropしたり、別sessionのactive entryをevictしない。RustがUTF-8安全なbounded summary、truncated marker、correlation id/digestとavailable actionsを返す。
 - app スコープの通知（更新通知等）は本書の対象外。
 
 ## frontend 実装規約（ST-8 の解消方針）
@@ -163,7 +167,7 @@ vocabulary 文書の語彙要素ごとに primary / 補助 surface と表示規�
 ## 設計判断
 
 - **P-D1**: usage indicator は入力エリア上部（`MessageInput` 上縁）に常設（compact: context 使用率バー＋残量、クリックで token 内訳 / cost）。「あとどれくらい送れるか」を送信操作の直前で判断できる。#1150 で削除された旧表示の復活ではなく、「常時は要約のみ・詳細はオンデマンド」に再設計する。
-- **P-D2**: Notice は transcript を正本とし、バナーは同一 Notice への参照表示（P2 の一意性を保つ）。
+- **P-D2（2026-07-19改訂）**: durable Noticeはtranscriptを正本とし、バナーは同一Notice idへの参照表示とする。`SessionOperationFeedback`はstate transition前のtyped command feedbackとして別型・別保存規則にし、durable Noticeへ偽装しない。どちらもRustがkind/operation/safe text/clear/capacityを所有する。
 - **P-D3**: 取り消した queue メッセージは transcript に「取り消し」マークで残す（lifecycle L-D4 と対応。非表示にしない）。
 - **P-D4**: mode / Goal / 工数のvisual componentは再利用するが、S9a launch draft/attempt、S9b configuration/Goal projection、S9c required/optional workflow templateを別surface/state/commandとする。
 - **P-D5**: mode は排他的 5 値 selector とし、Plan toggle は廃止する。Auto / Bypass の意味と危険性は provider capability と共に表示する。

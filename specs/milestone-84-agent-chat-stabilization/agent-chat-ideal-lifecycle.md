@@ -1,7 +1,7 @@
 # Agent セッションライフサイクルの理想形（不変条件）
 
 作成日: 2026-07-07
-更新日: 2026-07-15（Agent 実行設定 lifecycle を追加）
+更新日: 2026-07-19
 
 milestone 84「Agentチャット安定化」のドキュメント群:
 
@@ -36,6 +36,8 @@ milestone 84「Agentチャット安定化」のドキュメント群:
 
 - ギャップ: RT-2（回収経路が無く、スピナー・確認待ちが永久残留）
 - 要点: 回収は read model 投影時に lazy に行ってもよいが、結果は durable に書き戻す（reload の度に再判定しない）。
+- backend recovery開始時にactiveな旧`TurnStarted`があれば、最新durable partsのFinal化と`Interrupted(Crash)`、`BackendSessionRecoveryStarted`を同じlocal atomic batchで確定してからretryする。retry turnは新idにし、`retry_of_turn_id / recovery_id`で相関してhuman inputを複製しない。
+- Recovering/ReconciliationRequired中のforkはblockする。stable forkはcommitted historical stateのallowlistから構築し、親固有のpending recovery message、recovery id、未完了intent、delivery obligationを継承しない。
 
 ### I3: streaming flush 保証
 
@@ -59,6 +61,7 @@ pending queue は durable であり、アプリ再起動・session close・backe
   - non-Bypass drain、またはBypass confirmation後のstartは`QueueExecutionStartIntent { item_id, execution_id, snapshot_hash, bypass_confirmation }`を受け、`QueueExecutionRequested`をappendして`Starting`にする。Bypassはchallenge id / nonce・期限・guard・caller scopeを検証し、`BypassChallengeConsumed`を同じpre-I/O batchに含める。独立configuration activation済みproviderではさらに`QueueItemStarted + TurnStarted { queue_item_id, queue_execution_id }`を同じbatchでappendし、その後だけ送る。turn/start payloadでper-turn overrideを適用するproviderは`TurnStartRequested`を同じpre-I/O batchへ含め、ack後に`QueueItemStarted + TurnStarted`だけをatomic commitする。queue snapshotで`SessionConfigurationActivated`をappendせずSession effectiveを変更しない。restart時、TurnStartRequestedが無いStartingは`Failed(InterruptedBeforeStart)`へ決定的に回収し、未完TurnStartRequestedがある場合はprovider送信結果不明としてTurnStartReconciliationへ移す。どちらも暗黙再送しない。
   - queue item status は `Queued / AwaitingBypassConfirmation / Starting / Started / Failed / Cancelled / NeedsResolution` を型で持つ。起動失敗した item は `Failed` として残し、ユーザー操作（再試行・取り消し）を待つ。無言のまま次の送信で暗黙復活させない（RT-7 の解消）。
   - Failedの再試行は`item_id + expected item revision`をCASし、新revisionを持つ`QueueItemRequeued`をappendして同じimmutable input/snapshotを`Queued`へ戻す。以前のexecution/challengeを再利用しない。Bypassなら必ず新しい`prepare_queue_execution`とchallengeを通す。semantic snapshotを変更する場合はretryでなく明示rebaseを使う。
+  - queue pauseは`queue_paused_at + queue stream head/revision + applied_through_global_commit_seq`を持つ小さなprojectionとして、`QueuePaused / QueueResumed`と同じcommitから更新する。steady-state queryはlegacy event、tail、batch directoryをread/hashせず、`ProjectionBehind`時に通常pathで全履歴fallbackしない。legacy import時の一度きりのidempotent seedだけを例外とする（F10 #1497）。
 
 ### I5: interrupt 保証
 
@@ -76,6 +79,8 @@ Stop 操作は常に受理される。backend への interrupt 送出が不可�
 
 - ギャップ: OB-2（stalled turn 中の送信が即エラーになり入力ごと消える）
 - 要点: `steer` 未対応 backend への実行中送信は queue へ積む（現行仕様）。stalled 判定中も同じ経路に載せ、エラーにしない。送信 API が失敗した場合も入力欄の内容は保持する（presentation 側 P5）。
+- `steer`対応backendでは、immutable inputと`TurnSteerRequested { steer_id, target_turn_id, input_ref }`をprovider I/O前の同じlocal atomic batchでcommitする。成功は`TurnSteerAccepted`、未適用が確定したrejectは`TurnSteerRejected`、timeout/transport切断/ack後commit失敗はprovider observation付き`TurnSteerReconciliationRequired`へ分ける。結果不明を自動再steer/queueせず、同じsteer idでrestart/reconciliationする。
+- idempotencyまたはauthoritative readbackを持たないbackendはsteering capabilityを広告せず、queueへfallbackする。明示rejectをqueueへ移す場合は`TurnSteerRejected + QueueItemEnqueued`を同じbatchで確定する（L15 #1498）。
 
 ### I7: permission の有効性
 
@@ -259,7 +264,9 @@ queue はphaseと直交するevent-sourced sub-state: `items: [{ input_ref, conf
 | ユーザー Stop | 最悪 10s で Idle。queue は paused。入力欄・queue は無損失 |
 | streaming 中に tab close / backend 切替 / アプリ終了 | 再オープン時: 本文は flush 済みまで表示、turn は Interrupted{SessionClosed}、スピナー・permission 残骸なし |
 | クラッシュ → 再起動 | dangling turn が Crash で回収済み。損失は最大 1s の本文のみ（I2/I3） |
+| recovery中sessionをfork | typed reasonで拒否。stable forkでも親固有のpending recovery/delivery obligationを継承しない（I2/I9） |
 | resume 失敗 | 両 backend とも新規 establish ＋ Notice。以後のターンは正常。editor_context 保全（I9） |
+| active-turn steer | inputとTurnSteerRequestedをprovider I/O前にcommit。Accepted/Rejected/ResultUnknownを区別し、結果不明を暗黙再送しない（I6） |
 | queue に 2 件積んで再起動 | queue が復元され、明示操作で実行再開できる（I4） |
 | permission 待ち中に interrupt | ダイアログは即 Cancelled 表示。誤記録なし（I7） |
 | 5 mode の切替成功 | provider ackとcanonical selected/activated event後だけrevisionと表示が更新され、次turn/reload/resumeでも同じmode（I14） |
@@ -325,6 +332,10 @@ queue はphaseと直交するevent-sourced sub-state: `items: [{ input_ref, conf
 | #1449 | I15（Goal lifecycle / provider capability） |
 | #1450 | I4, I9, I14, I15, I16（workflow / queue / restart 継承） |
 | #1451 | I14, I15, I16（backend-owned projection / available actions / capability-driven UI の前提） |
+| #1491 | I2 / I4（bounded recovery/status/current-turn query） |
+| #1385, #1494 | L-P6（transaction / schema / history-independent commit） |
+| #1497 | I4（queue pause bounded projection） |
+| #1498 | I6（steer write-ahead / outcome / reconciliation） |
 
 ## 設計判断
 

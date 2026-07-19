@@ -1,7 +1,7 @@
 # Agent チャット正規化語彙・データ構造の理想形
 
 作成日: 2026-07-07
-更新日: 2026-07-15（Agent 実行設定を追加）
+更新日: 2026-07-19
 
 milestone 84「Agentチャット安定化」のドキュメント群:
 
@@ -150,11 +150,21 @@ pub enum TodoPriority { High, Medium, Low }
 
 ```rust
 pub struct Notice {
+    pub id: String,
     pub level: NoticeLevel,          // Info / Warning / Error
     pub kind: NoticeKind,
-    pub label: String,               // 一覧表示用の短文
-    pub detail: Option<String>,      // 展開表示用
+    pub label: BoundedNoticeText,    // 一覧表示用の安全な短文
+    pub detail: Option<BoundedNoticeText>, // 展開表示用
     pub status: Option<NoticeStatus>,   // InProgress / Completed / Failed（compaction 等の進行型）
+    pub evidence_ref: Option<ProviderEvidenceRef>,
+}
+
+pub struct BoundedNoticeText {
+    pub value: String,
+    pub truncated: bool,
+    pub original_bytes: Option<u64>,
+    pub digest: Option<String>,
+    pub correlation_id: Option<String>,
 }
 
 pub enum NoticeKind {
@@ -175,6 +185,42 @@ pub enum NoticeKind {
 
 - Notice は transcript 上の part として durable 化する（表示先の振り分け — inline / banner / badge — は presentation 文書で定義）。
 - **判断**: session-scoped な別ストリームではなく part として持つ。理由: read model 一本で live / reload 等価（P 原則）を保て、発生時点の文脈（どの turn で何の直後か）が残る。rate limit のような「最新値だけ意味がある」ものは read model 側で latest を導出する。
+- Noticeのkind、level、安全なlabel/detail、redaction、boundsはRust converter/usecaseが所有する。frontendからraw error/message付きのgeneric Notice mutationを受けない。
+- size上限超過はUTF-8安全な`BoundedNoticeText`へ縮約し、`truncated/original_bytes/digest/correlation_id`で欠落を明示する。無言dropやraw provider/storage errorの表示を禁止する。
+- retention/capacityはsession lifecycleに結合し、capacity pressureで別sessionのactive Noticeをevictしない。受理不能ならoriginating operationへtyped failureを返す。
+
+#### SessionOperationFeedback（transient command feedback）
+
+state transition前に失敗したsession操作のfeedbackは、履歴語彙であるdurable Noticeへ偽装しない。Rust-owned command/usecaseが次のtyped snapshotを生成し、frontendはsession単位のmirrorと明示dismissだけを行う。
+
+```rust
+pub struct SessionOperationFeedback {
+    pub id: String,
+    pub session_id: String,
+    pub operation: SessionOperationKind,
+    pub outcome: SessionOperationOutcome,
+    pub label: BoundedNoticeText,
+    pub detail: Option<BoundedNoticeText>,
+    pub available_actions: Vec<SessionOperationFeedbackAction>,
+}
+
+pub enum SessionOperationKind {
+    Load,
+    Send,
+    Stop,
+    Close,
+    Archive,
+    Restore,
+    Fork,
+}
+
+pub enum SessionOperationOutcome {
+    Succeeded,
+    Failed { kind: SessionOperationFailureKind, retryable: bool },
+}
+```
+
+`SessionOperationFeedback`はworkflow/session stateのmutation authorityでもtranscriptでもなく、reload同値を要求するdurable Noticeとは保存規則を分ける。同種成功時のclear、session close/archive時のcleanup、failure kind、安全な文面、capacity policyはRustが所有し、frontendがerror文字列を分類しない。永続化そのものの故障を知らせる`PersistFailure` transient bannerはlifecycle I8の例外規則に従う。
 
 #### ErrorKind / retry state
 
@@ -1698,6 +1744,18 @@ pub struct AgentBackendCapabilities {
     pub reasoning_efforts: Vec<ReasoningEffortCapability>,
     pub goal: GoalCapabilities,
     pub launch_recovery: LaunchRecoveryCapability,
+    pub turn_steer: TurnSteerCapability,
+}
+
+pub enum TurnSteerCapability {
+    Unsupported { reason: String },
+    Supported {
+        idempotency: bool,
+        authoritative_readback: bool,
+        cancel: bool,
+        source: CapabilitySource,
+        checked_at: String,
+    },
 }
 
 pub enum AutoOperationalState {
@@ -1892,7 +1950,7 @@ mode / model の欠損・未知値を `Edit` 等へ既定化せず、scope、fie
 
 ### 9.5 Local atomic event transaction
 
-launch / Session / Goal / workflow / queueを跨ぐ「同じlocal atomic batch」は説明上の比喩ではなく、domainの`LocalEventTransactionRepository` portの背後にあるRust-owned `LocalEventTransactionStore`の1 transactionを意味する。新しいexecution-affecting eventを独立JSON logへ順番にappendしてatomic扱いしてはならない。
+launch / Session / Goal / workflow / queueを跨ぐ「同じlocal atomic batch」は説明上の比喩ではなく、domainの`LocalEventTransactionRepository` portの背後にあるRust-owned `LocalEventTransactionStore`の1 transactionを意味する。新しいexecution-affecting eventを独立JSON logへ順番にappendしてatomic扱いしてはならない。transaction/schema coreはF3 #1385、history-independent commitはF9 #1494、bounded readはF8 #1491 / F10 #1497が所有する。
 
 ```rust
 pub enum AgentSessionStreamKind {
@@ -2149,6 +2207,12 @@ pub enum AgentSessionDomainEvent {
     TurnStartRequested,
     TurnStartReconciliationRequired,
     TurnStartReconciled,
+    TurnSteerRequested,
+    TurnSteerAccepted,
+    TurnSteerRejected,
+    ProviderTurnSteerStateObserved,
+    TurnSteerReconciliationRequired,
+    TurnSteerReconciled,
     TurnInterruptRequested,
     QueuePaused,
     QueueResumed,
@@ -2214,6 +2278,7 @@ pub enum AgentSessionDomainEvent {
 | `BackendSessionRecoveryStarted / SessionConfigurationReactivated / SessionGoalReactivated / BackendSessionRecoveryCompleted` 追加 | resume metadata clearとbarrier開始、observation相関付きconfiguration/Goal復旧、両aggregateの最終atomic完了を同じrecovery idで確定 | #1397/#1407/#1449 |
 | `ProviderConfigurationStateObserved / ConfigurationObservationAccepted / ConfigurationReconciliationRequired / Reconciled` 追加 | observation append時にblockし、同じobservation idをoutcomeがconsume。複合provider stateと解決をdurable化 | #1397/#1445〜#1448 |
 | `TurnStartRequested / TurnStartReconciliationRequired / Reconciled` 追加 | effective/activation-targetを分けたintent、correlation、early-stream境界、provider観測とqueue terminalまで含むaction別atomic終端を回復 | #1397/#1450 |
+| `TurnSteerRequested / Accepted / Rejected / ProviderTurnSteerStateObserved / ReconciliationRequired / Reconciled` 追加 | immutable inputとsteer idをpre-I/O commitし、明示ack/rejectと結果不明を分離。未適用確定時だけqueueへatomic移送しblind retryを禁止 | #1498 |
 | `TurnInterruptRequested / QueuePaused / QueueResumed` 追加 | Stop intentとpauseをpre-I/O atomic commitし、CAS付き明示resumeまで自動drainを禁止 | #1404/#1450 |
 | `QueueItemEnqueued / QueueItemCancelled / QueueExecutionPrepared / QueueExecutionRequested / QueueItemStarted / QueueItemFailed / QueueItemResolutionRequired / QueueItemRebased / QueueItemRequeued` 追加 | item revision、message marker、immutable semantic snapshot/hash、challenge guard、resolution/rebase/CAS retry、execution/turn相関をappend-onlyに確定 | #1404/#1450 |
 | `ReconciliationResolutionRequested` 追加 | resolution attempt/CAS/action/targetをprovider I/O前に記録し、configuration/Goal/launch/turn-start/permission解決を冪等回復 | #1397/#1445〜#1449 |
@@ -2227,6 +2292,7 @@ pub enum AgentSessionDomainEvent {
 | `ProviderGoalStateObserved / GoalObservationAccepted / GoalReconciliationRequired / Reconciled` 追加 | provider ref＋Matched/Unmatched/Ambiguousを保存し、observation append時block、同じidをoutcomeがconsume | #1449 |
 | `BackendProtocolIdentified / ProtocolIncompatible` 追加 | 実行 binary と compiled schema / flags / capabilities の一致を監査し、control-plane drift を fail-closed 化 | #1445/#1447〜#1449 |
 | `TurnStarted` に resolved effective configuration / `EffectiveModeSnapshot` / Goal ref / protocol identity 追加 | provider/model/mode/effort、当時のpermission/effects/residual protections/context、Goalを不変監査可能にする | #1450 |
+| recovery retryの`TurnStarted`に`retry_of_turn_id / recovery_id`相関を追加 | 旧turnを一度だけterminal化し、同じhuman inputを複製せず新turnへ相関する | #1406 |
 
 #### WorkflowDomainEvent / Workflow persistence schema
 
