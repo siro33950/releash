@@ -506,6 +506,28 @@ mod tests {
     use crate::adaptor::gateway::workflow::schema::SchemaDef;
 
     #[test]
+    fn context_collection_nodes_use_full_permission() {
+        for (source, node_name) in [
+            (BUILTIN_FULL_CYCLE_DEVELOPMENT, "collect_inputs"),
+            (BUILTIN_FULL_CYCLE_DEVELOPMENT_MANUAL, "collect_inputs"),
+            (BUILTIN_HANDLE_PR_REVIEW, "import_pr_review_comments"),
+            (BUILTIN_HANDLE_PR_REVIEW_MANUAL, "import_pr_review_comments"),
+        ] {
+            let workflow: WorkflowDefinitionYaml = serde_saphyr::from_str(source).unwrap();
+            let collection_node = workflow
+                .nodes
+                .iter()
+                .find(|node| node.name == node_name)
+                .unwrap();
+
+            assert_eq!(
+                collection_node.session().unwrap().permission.as_deref(),
+                Some("full")
+            );
+        }
+    }
+
+    #[test]
     fn full_cycle_implementation_check_requires_non_empty_results() {
         let workflow: WorkflowDefinitionYaml =
             serde_saphyr::from_str(BUILTIN_FULL_CYCLE_DEVELOPMENT).unwrap();

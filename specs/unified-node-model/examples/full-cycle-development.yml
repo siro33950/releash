@@ -45,7 +45,7 @@ nodes:
   collect_inputs:
     session:
       model: gpt-5.6-sol
-      permission: edit
+      permission: full
       facets:
         policy: planning
         instruction: collect_inputs
