@@ -2,11 +2,6 @@
 unmaintained = "workspace"
 unsound = "workspace"
 yanked = "deny"
-ignore = [
-    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile - migrate to rustls-pki-types later" },
-    { id = "RUSTSEC-2026-0194", reason = "quick-xml via plist/tauri; plist 1.9.0 is latest and has no patched quick-xml route yet" },
-    { id = "RUSTSEC-2026-0195", reason = "quick-xml via plist/tauri; plist 1.9.0 is latest and has no patched quick-xml route yet" },
-]
 
 [licenses]
 allow = [
@@ -19,7 +14,6 @@ allow = [
     "Unicode-3.0",
     "Zlib",
     "MPL-2.0",
-    "OpenSSL",
     "BSL-1.0",
     "CC0-1.0",
     "CDLA-Permissive-2.0",
