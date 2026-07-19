@@ -267,6 +267,7 @@ mod tests {
             "get_workspace_status",
             "get_workspace_node_detail",
             "get_workspace_session_node_id",
+            "get_workspace_tree_selection_reconciliation",
             "get_worktree_dirty_count",
             "git_create_branch",
             "git_stage",

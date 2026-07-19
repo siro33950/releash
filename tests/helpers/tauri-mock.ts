@@ -8,6 +8,10 @@ export interface MockConfig {
 	ipcHandler: Record<string, unknown>;
 }
 
+export function workspaceTreeReconciliation(snapshot: unknown): unknown {
+	return { __workspaceTreeReconciliationSnapshot: snapshot };
+}
+
 interface TauriMockInternals {
 	invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
 	transformCallback: (cb: (data: unknown) => void, once?: boolean) => number;
@@ -82,6 +86,19 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			args: Record<string, unknown>;
 		}> = [];
 
+		function workspaceTreeContainsNode(
+			nodes: unknown,
+			selectedNodeId: string,
+		): boolean {
+			if (!Array.isArray(nodes)) return false;
+			return nodes.some((item) => {
+				if (!item || typeof item !== "object") return false;
+				const record = item as Record<string, unknown>;
+				if (record.kind === "node") return record.id === selectedNodeId;
+				return workspaceTreeContainsNode(record.children, selectedNodeId);
+			});
+		}
+
 		async function invoke(
 			cmd: string,
 			args: Record<string, unknown> = {},
@@ -126,6 +143,27 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			// ユーザー定義コマンド
 			if (cmd in cfg.ipcHandler) {
 				let value = cfg.ipcHandler[cmd];
+				if (
+					cmd === "get_workspace_tree_selection_reconciliation" &&
+					value &&
+					typeof value === "object" &&
+					"__workspaceTreeReconciliationSnapshot" in
+						(value as Record<string, unknown>)
+				) {
+					const snapshot = (
+						value as { __workspaceTreeReconciliationSnapshot: unknown }
+					).__workspaceTreeReconciliationSnapshot as Record<string, unknown>;
+					const selectedNodeId = args.selectedNodeId as string;
+					return {
+						snapshot,
+						reconciliation: {
+							selectionInSnapshot: workspaceTreeContainsNode(
+								snapshot.nodes,
+								selectedNodeId,
+							),
+						},
+					};
+				}
 				if (
 					value &&
 					typeof value === "object" &&

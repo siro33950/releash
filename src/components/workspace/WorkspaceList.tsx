@@ -94,6 +94,10 @@ interface WorkspaceListProps {
 		branchName?: string,
 		repoName?: string,
 	) => void;
+	onWorkspaceSelectionInvalidated?: (
+		worktreePath: string,
+		nodeId: string,
+	) => void;
 	onAddRepo: () => void;
 	onShowSettings: () => void;
 }
@@ -420,6 +424,7 @@ function WorktreeTreeItem({
 	newSessionCreationStatus,
 	onSelectWorktree,
 	onCreateSession,
+	onWorkspaceSelectionInvalidated,
 	onDelete,
 }: {
 	branch: WorktreeBranch;
@@ -430,6 +435,7 @@ function WorktreeTreeItem({
 	newSessionCreationStatus?: NewSessionCreationStatus;
 	onSelectWorktree: WorkspaceListProps["onSelectWorktree"];
 	onCreateSession: WorkspaceListProps["onCreateSession"];
+	onWorkspaceSelectionInvalidated: WorkspaceListProps["onWorkspaceSelectionInvalidated"];
 	onDelete: (branch: WorktreeBranch) => void;
 }) {
 	const [expanded, setExpanded] = useState(true);
@@ -449,6 +455,7 @@ function WorktreeTreeItem({
 		Record<string, string>
 	>({});
 	const [workflowStarting, setWorkflowStarting] = useState(false);
+	const notifiedReconciliationSeqRef = useRef<number | null>(null);
 	const preferredSelectionRequestRef = useRef<{
 		worktreePath: string | null;
 		requested: boolean;
@@ -478,9 +485,13 @@ function WorktreeTreeItem({
 		preferredNodeId,
 		closedSessions,
 		workflowHistory,
+		reconciliationEvent,
 		loading: treeLoading,
 		error: treeError,
 		refresh: refreshTree,
+		beginArchiveReconciliation,
+		synchronizeSelectedNodeId,
+		isReconciliationEventCurrent,
 	} = useWorkspaceTreeNodes(branch.worktree_path);
 	const {
 		workflows,
@@ -501,7 +512,14 @@ function WorktreeTreeItem({
 	);
 
 	useEffect(() => {
-		if (!autoSelectPreferredNode) return;
+		synchronizeSelectedNodeId(scopedCenterSelection?.nodeId ?? null);
+	}, [scopedCenterSelection?.nodeId, synchronizeSelectedNodeId]);
+
+	useEffect(() => {
+		if (!autoSelectPreferredNode) {
+			preferredSelectionRequestRef.current.requested = false;
+			return;
+		}
 		if (preferredSelectionRequestRef.current.requested) return;
 		if (!branch.worktree_path) return;
 		if (branch.worktree_path !== selectedRootPath) return;
@@ -522,6 +540,29 @@ function WorktreeTreeItem({
 		selectedRootPath,
 		treeError,
 		treeLoading,
+	]);
+
+	useEffect(() => {
+		if (!reconciliationEvent || reconciliationEvent.selectionInSnapshot) return;
+		if (
+			notifiedReconciliationSeqRef.current === reconciliationEvent.refreshSeq ||
+			!isReconciliationEventCurrent(
+				reconciliationEvent,
+				scopedCenterSelection?.nodeId ?? null,
+			)
+		) {
+			return;
+		}
+		notifiedReconciliationSeqRef.current = reconciliationEvent.refreshSeq;
+		onWorkspaceSelectionInvalidated?.(
+			reconciliationEvent.requestContext.worktreePath,
+			reconciliationEvent.requestContext.selectedNodeId,
+		);
+	}, [
+		isReconciliationEventCurrent,
+		onWorkspaceSelectionInvalidated,
+		reconciliationEvent,
+		scopedCenterSelection?.nodeId,
 	]);
 
 	const handleSelectNode = useCallback(
@@ -557,12 +598,21 @@ function WorktreeTreeItem({
 					worktreePath: branch.worktree_path,
 					executionId: workflow.id,
 				});
-				await refreshTree();
+				if (scopedCenterSelection?.nodeId) {
+					await beginArchiveReconciliation(scopedCenterSelection.nodeId);
+				} else {
+					await refreshTree();
+				}
 			} catch (e) {
 				setWorkflowActionError(`Archive workflow failed: ${String(e)}`);
 			}
 		},
-		[branch.worktree_path, refreshTree],
+		[
+			beginArchiveReconciliation,
+			branch.worktree_path,
+			refreshTree,
+			scopedCenterSelection?.nodeId,
+		],
 	);
 
 	const handleWorkflowExecutionAction = useCallback(
@@ -1081,6 +1131,7 @@ function RepoTreeSectionView({
 	newSessionCreationStatusByWorktree,
 	onSelectWorktree,
 	onCreateSession,
+	onWorkspaceSelectionInvalidated,
 }: {
 	repoPath: string;
 	branches: WorktreeBranch[];
@@ -1092,6 +1143,7 @@ function RepoTreeSectionView({
 	newSessionCreationStatusByWorktree?: Record<string, NewSessionCreationStatus>;
 	onSelectWorktree: WorkspaceListProps["onSelectWorktree"];
 	onCreateSession: WorkspaceListProps["onCreateSession"];
+	onWorkspaceSelectionInvalidated: WorkspaceListProps["onWorkspaceSelectionInvalidated"];
 }) {
 	const [collapsed, setCollapsed] = useState(false);
 	const [refreshing, setRefreshing] = useState(false);
@@ -1189,6 +1241,9 @@ function RepoTreeSectionView({
 								}
 								onSelectWorktree={onSelectWorktree}
 								onCreateSession={onCreateSession}
+								onWorkspaceSelectionInvalidated={
+									onWorkspaceSelectionInvalidated
+								}
 								onDelete={setDeletingBranch}
 							/>
 						))
@@ -1213,6 +1268,7 @@ function RepoTreeSection({
 	newSessionCreationStatusByWorktree,
 	onSelectWorktree,
 	onCreateSession,
+	onWorkspaceSelectionInvalidated,
 }: {
 	repoPath: string;
 	selectedRootPath: string | null;
@@ -1221,6 +1277,7 @@ function RepoTreeSection({
 	newSessionCreationStatusByWorktree?: Record<string, NewSessionCreationStatus>;
 	onSelectWorktree: WorkspaceListProps["onSelectWorktree"];
 	onCreateSession: WorkspaceListProps["onCreateSession"];
+	onWorkspaceSelectionInvalidated: WorkspaceListProps["onWorkspaceSelectionInvalidated"];
 }) {
 	const { branches, loading, refresh } = useWorktreeList(repoPath);
 	return (
@@ -1235,6 +1292,7 @@ function RepoTreeSection({
 			newSessionCreationStatusByWorktree={newSessionCreationStatusByWorktree}
 			onSelectWorktree={onSelectWorktree}
 			onCreateSession={onCreateSession}
+			onWorkspaceSelectionInvalidated={onWorkspaceSelectionInvalidated}
 		/>
 	);
 }
@@ -1247,6 +1305,7 @@ export function WorkspaceList({
 	newSessionCreationStatusByWorktree,
 	onSelectWorktree,
 	onCreateSession,
+	onWorkspaceSelectionInvalidated,
 	onAddRepo,
 	onShowSettings,
 }: WorkspaceListProps) {
@@ -1285,6 +1344,7 @@ export function WorkspaceList({
 						}
 						onSelectWorktree={onSelectWorktree}
 						onCreateSession={onCreateSession}
+						onWorkspaceSelectionInvalidated={onWorkspaceSelectionInvalidated}
 					/>
 				))}
 				{repoPaths.length === 0 && (

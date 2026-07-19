@@ -4,7 +4,11 @@ import {
 	buildMockConfig,
 	kanbanBranches,
 } from "./helpers/fixtures";
-import { emitTauriEvent, setupTauriMock } from "./helpers/tauri-mock";
+import {
+	emitTauriEvent,
+	setupTauriMock,
+	workspaceTreeReconciliation,
+} from "./helpers/tauri-mock";
 import { waitForApp } from "./helpers/utils";
 
 async function waitForAnimations(locator: Locator) {
@@ -787,6 +791,110 @@ test.describe("Workspace Manager", () => {
 		await expect(page.getByText(/attempt 4/i)).not.toBeVisible();
 	});
 
+	test("Archive reconciliation derives membership from its opt-in response snapshot", async ({
+		page,
+	}) => {
+		const worktreePath = "/test/repo-worktrees/feat-wip";
+		const selectedNodeId = "archive-selected-node";
+		const fallbackNodeId = "archive-fallback-node";
+		const initialSnapshot = {
+			nodes: [
+				{
+					kind: "node",
+					id: fallbackNodeId,
+					title: "Archive fallback",
+					status: "running",
+					contentKind: "session",
+					capabilities: { canApprove: false, canClose: true },
+					updatedAt: 1000,
+				},
+				{
+					kind: "workflow",
+					id: "archivable-workflow",
+					title: "Archivable integration workflow",
+					status: "completed",
+					capabilities: {
+						canStop: false,
+						canResume: false,
+						canAbort: false,
+						canArchive: true,
+					},
+					updatedAt: 2000,
+					children: [
+						{
+							kind: "node",
+							id: selectedNodeId,
+							title: "Archive selected",
+							status: "completed",
+							contentKind: "session",
+							capabilities: { canApprove: false, canClose: false },
+							updatedAt: 2000,
+						},
+					],
+				},
+			],
+			preferredNodeId: null,
+		};
+		const reconciledSnapshot = {
+			nodes: [initialSnapshot.nodes[0]],
+			preferredNodeId: fallbackNodeId,
+		};
+		const config = buildMockConfig({
+			list_branches_with_status: kanbanBranches.filter(
+				(branch) => branch.name === "feat/wip",
+			),
+			list_workspace_worktree_nodes: initialSnapshot,
+			get_workspace_tree_selection_reconciliation:
+				workspaceTreeReconciliation(reconciledSnapshot),
+			archive_workspace_workflow_execution: null,
+			get_workspace_node_detail: {
+				id: selectedNodeId,
+				title: "Archive selected",
+				status: "completed",
+				capabilities: { canApprove: false, canClose: false },
+				updatedAt: 2000,
+				content: { kind: "session", sessionId: "archive-selected-session" },
+			},
+			get_session: rawSession(
+				"archive-selected-session",
+				worktreePath,
+				"Archive selected body",
+			),
+		});
+		await setupTauriMock(page, config);
+		await waitForApp(page);
+
+		await page
+			.getByRole("button", { name: "Archive selected, completed" })
+			.click();
+		await expect(
+			page.getByRole("button", { name: "Archive selected, completed" }),
+		).toHaveAttribute("aria-current", "page");
+		await page
+			.getByRole("button", { name: "Archivable integration workflow" })
+			.hover();
+		await page
+			.getByRole("button", { name: "Archive Archivable integration workflow" })
+			.click();
+
+		await expect(
+			page.getByRole("button", { name: "Archive fallback, running" }),
+		).toHaveAttribute("aria-current", "page");
+		const reconciliationInvocations = await page.evaluate(
+			() =>
+				window.__TAURI_INTERNALS__?.invocations.filter(
+					(entry) =>
+						entry.cmd === "get_workspace_tree_selection_reconciliation",
+				) ?? [],
+		);
+		expect(reconciliationInvocations).toEqual([
+			{
+				cmd: "get_workspace_tree_selection_reconciliation",
+				args: { worktreePath, selectedNodeId },
+			},
+		]);
+	});
+
 	test("a later occurrence appends without replacing the selected past occurrence", async ({
 		page,
 	}) => {
@@ -846,6 +954,15 @@ test.describe("Workspace Manager", () => {
 		await expect(
 			page.getByText("First occurrence body", { exact: true }),
 		).toBeVisible();
+		const refreshInvocations = await page.evaluate(
+			() => window.__TAURI_INTERNALS__?.invocations ?? [],
+		);
+		expect(
+			refreshInvocations.filter(
+				(entry) =>
+					entry.cmd === "get_workspace_tree_selection_reconciliation",
+			),
+		).toHaveLength(0);
 		await expect(firstRow).toHaveAttribute("aria-current", "page");
 
 		await page.evaluate(
@@ -903,6 +1020,15 @@ test.describe("Workspace Manager", () => {
 		await expect(
 			page.getByText("First occurrence body", { exact: true }),
 		).toBeVisible();
+		const updateInvocations = await page.evaluate(
+			() => window.__TAURI_INTERNALS__?.invocations ?? [],
+		);
+		expect(
+			updateInvocations.filter(
+				(entry) =>
+					entry.cmd === "get_workspace_tree_selection_reconciliation",
+			),
+		).toHaveLength(0);
 
 		await page.evaluate(
 			({ worktreePath }) => {

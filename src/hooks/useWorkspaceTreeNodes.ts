@@ -7,45 +7,95 @@ import type { WorkflowExecutionChangedPayload } from "@/types/workflow";
 import type {
 	WorkspaceSessionHistoryItem,
 	WorkspaceTreeItem,
+	WorkspaceTreeSelectionSnapshot,
 	WorkspaceTreeSnapshot,
 	WorkspaceWorkflowHistoryItem,
 } from "@/types/workspace-tree";
+
+export interface WorkspaceReconciliationRequestContext {
+	worktreePath: string;
+	selectedNodeId: string;
+	reconciliationGeneration: number;
+}
+
+export interface WorkspaceTreeReconciliationEvent {
+	refreshSeq: number;
+	requestContext: WorkspaceReconciliationRequestContext;
+	selectionInSnapshot: boolean;
+}
+
+export interface WorkspaceTreeRefreshResult {
+	snapshot: WorkspaceTreeSnapshot;
+	reconciliationEvent: WorkspaceTreeReconciliationEvent | null;
+}
+
+interface WorkspaceTreeState {
+	snapshot: WorkspaceTreeSnapshot;
+	closedSessions: WorkspaceSessionHistoryItem[];
+	workflowHistory: WorkspaceWorkflowHistoryItem[];
+	reconciliationEvent: WorkspaceTreeReconciliationEvent | null;
+}
 
 interface UseWorkspaceTreeNodesResult {
 	nodes: WorkspaceTreeItem[];
 	preferredNodeId: string | null;
 	closedSessions: WorkspaceSessionHistoryItem[];
 	workflowHistory: WorkspaceWorkflowHistoryItem[];
+	reconciliationEvent: WorkspaceTreeReconciliationEvent | null;
 	loading: boolean;
 	error: string | null;
-	refresh: () => Promise<void>;
+	refresh: () => Promise<WorkspaceTreeRefreshResult | null>;
+	beginArchiveReconciliation: (
+		selectedNodeId: string,
+	) => Promise<WorkspaceTreeRefreshResult | null>;
+	synchronizeSelectedNodeId: (selectedNodeId: string | null) => void;
+	isReconciliationEventCurrent: (
+		event: WorkspaceTreeReconciliationEvent,
+		selectedNodeId: string | null,
+	) => boolean;
 }
 
 interface WorkspaceTreeRefreshDetail {
 	worktreePath?: string;
 }
 
+const EMPTY_SNAPSHOT: WorkspaceTreeSnapshot = {
+	nodes: [],
+	preferredNodeId: null,
+};
+
+function sameReconciliationContext(
+	left: WorkspaceReconciliationRequestContext | null,
+	right: WorkspaceReconciliationRequestContext,
+): boolean {
+	return (
+		left?.worktreePath === right.worktreePath &&
+		left.selectedNodeId === right.selectedNodeId &&
+		left.reconciliationGeneration === right.reconciliationGeneration
+	);
+}
+
 export function useWorkspaceTreeNodes(
 	worktreePath: string | null | undefined,
 ): UseWorkspaceTreeNodesResult {
-	const [nodes, setNodes] = useState<WorkspaceTreeItem[]>([]);
-	const [preferredNodeId, setPreferredNodeId] = useState<string | null>(null);
-	const [closedSessions, setClosedSessions] = useState<
-		WorkspaceSessionHistoryItem[]
-	>([]);
-	const [workflowHistory, setWorkflowHistory] = useState<
-		WorkspaceWorkflowHistoryItem[]
-	>([]);
+	const [treeState, setTreeState] = useState<WorkspaceTreeState>({
+		snapshot: EMPTY_SNAPSHOT,
+		closedSessions: [],
+		workflowHistory: [],
+		reconciliationEvent: null,
+	});
 	const [loading, setLoading] = useState(() => Boolean(worktreePath));
 	const [error, setError] = useState<string | null>(null);
 	const refreshTimerRef = useRef<number | null>(null);
 	const refreshSeqRef = useRef(0);
 	const loadedWorktreePathRef = useRef<string | null>(null);
 	const errorWorktreePathRef = useRef<string | null>(null);
-
-	const updateNodes = useCallback((nextNodes: WorkspaceTreeItem[]) => {
-		setNodes(nextNodes);
-	}, []);
+	const worktreePathRef = useRef(worktreePath);
+	const reconciliationGenerationRef = useRef(0);
+	const reconciliationContextRef =
+		useRef<WorkspaceReconciliationRequestContext | null>(null);
+	const observedSelectedNodeIdRef = useRef<string | null>(null);
+	const acceptedReconciliationSeqRef = useRef<number | null>(null);
 
 	const hasLoadedCurrentWorktree = useCallback(
 		() => loadedWorktreePathRef.current === worktreePath,
@@ -57,55 +107,165 @@ export function useWorkspaceTreeNodes(
 			refreshSeqRef.current += 1;
 			loadedWorktreePathRef.current = null;
 			errorWorktreePathRef.current = null;
-			setNodes([]);
-			setPreferredNodeId(null);
-			setClosedSessions([]);
-			setWorkflowHistory([]);
+			reconciliationContextRef.current = null;
+			acceptedReconciliationSeqRef.current = null;
+			setTreeState({
+				snapshot: EMPTY_SNAPSHOT,
+				closedSessions: [],
+				workflowHistory: [],
+				reconciliationEvent: null,
+			});
 			setLoading(false);
 			setError(null);
-			return;
+			return null;
 		}
 		const seq = ++refreshSeqRef.current;
+		const requestContext = reconciliationContextRef.current;
+		const activeRequestContext =
+			requestContext?.worktreePath === worktreePath &&
+			requestContext.selectedNodeId === observedSelectedNodeIdRef.current
+				? requestContext
+				: null;
 		const showLoading = !hasLoadedCurrentWorktree();
 		if (showLoading) {
 			setLoading(true);
 		}
 		try {
-			const [snapshot, nextClosedSessions, nextWorkflowHistory] =
-				await Promise.all([
-					invoke<WorkspaceTreeSnapshot>("list_workspace_worktree_nodes", {
+			const snapshotRequest = activeRequestContext
+				? invoke<WorkspaceTreeSelectionSnapshot>(
+						"get_workspace_tree_selection_reconciliation",
+						{
+							worktreePath,
+							selectedNodeId: activeRequestContext.selectedNodeId,
+						},
+					)
+				: invoke<WorkspaceTreeSnapshot>("list_workspace_worktree_nodes", {
 						worktreePath,
-					}),
+					});
+			const [treeResult, nextClosedSessions, nextWorkflowHistory] =
+				await Promise.all([
+					snapshotRequest,
 					listClosedSessions(worktreePath),
 					invoke<WorkspaceWorkflowHistoryItem[]>(
 						"list_workspace_workflow_history",
 						{ worktreePath },
 					),
 				]);
-			if (seq !== refreshSeqRef.current) return;
+			if (seq !== refreshSeqRef.current) return null;
+
+			let snapshot: WorkspaceTreeSnapshot;
+			let reconciliationEvent: WorkspaceTreeReconciliationEvent | null = null;
+			if (activeRequestContext) {
+				if (
+					!sameReconciliationContext(
+						reconciliationContextRef.current,
+						activeRequestContext,
+					) ||
+					worktreePathRef.current !== activeRequestContext.worktreePath ||
+					observedSelectedNodeIdRef.current !==
+						activeRequestContext.selectedNodeId ||
+					reconciliationGenerationRef.current !==
+						activeRequestContext.reconciliationGeneration
+				) {
+					return null;
+				}
+				const selectionResult = treeResult as WorkspaceTreeSelectionSnapshot;
+				snapshot = selectionResult.snapshot;
+				reconciliationContextRef.current = null;
+				acceptedReconciliationSeqRef.current = seq;
+				reconciliationEvent = {
+					refreshSeq: seq,
+					requestContext: activeRequestContext,
+					selectionInSnapshot:
+						selectionResult.reconciliation.selectionInSnapshot,
+				};
+			} else {
+				snapshot = treeResult as WorkspaceTreeSnapshot;
+				acceptedReconciliationSeqRef.current = null;
+			}
+
 			loadedWorktreePathRef.current = worktreePath;
 			errorWorktreePathRef.current = null;
-			updateNodes(snapshot.nodes);
-			setPreferredNodeId(snapshot.preferredNodeId ?? null);
-			setClosedSessions(nextClosedSessions);
-			setWorkflowHistory(nextWorkflowHistory);
+			setTreeState({
+				snapshot,
+				closedSessions: nextClosedSessions,
+				workflowHistory: nextWorkflowHistory,
+				reconciliationEvent,
+			});
 			setError(null);
+			return { snapshot, reconciliationEvent };
 		} catch (e) {
-			if (seq !== refreshSeqRef.current) return;
+			if (seq !== refreshSeqRef.current) return null;
 			if (!hasLoadedCurrentWorktree()) {
-				updateNodes([]);
-				setPreferredNodeId(null);
-				setClosedSessions([]);
-				setWorkflowHistory([]);
+				setTreeState((current) => ({
+					...current,
+					snapshot: EMPTY_SNAPSHOT,
+					closedSessions: [],
+					workflowHistory: [],
+				}));
 			}
 			errorWorktreePathRef.current = worktreePath;
 			setError(String(e));
+			return null;
 		} finally {
 			if (seq === refreshSeqRef.current) {
 				setLoading(false);
 			}
 		}
-	}, [hasLoadedCurrentWorktree, updateNodes, worktreePath]);
+	}, [hasLoadedCurrentWorktree, worktreePath]);
+
+	const beginArchiveReconciliation = useCallback(
+		(selectedNodeId: string) => {
+			if (!worktreePath) return Promise.resolve(null);
+			if (observedSelectedNodeIdRef.current !== selectedNodeId) {
+				observedSelectedNodeIdRef.current = selectedNodeId;
+				reconciliationGenerationRef.current += 1;
+			}
+			const requestContext = {
+				worktreePath,
+				selectedNodeId,
+				reconciliationGeneration: ++reconciliationGenerationRef.current,
+			};
+			reconciliationContextRef.current = requestContext;
+			acceptedReconciliationSeqRef.current = null;
+			setTreeState((current) =>
+				current.reconciliationEvent
+					? { ...current, reconciliationEvent: null }
+					: current,
+			);
+			return refresh();
+		},
+		[refresh, worktreePath],
+	);
+
+	const synchronizeSelectedNodeId = useCallback(
+		(selectedNodeId: string | null) => {
+			if (observedSelectedNodeIdRef.current === selectedNodeId) return;
+			observedSelectedNodeIdRef.current = selectedNodeId;
+			reconciliationGenerationRef.current += 1;
+			reconciliationContextRef.current = null;
+			acceptedReconciliationSeqRef.current = null;
+			setTreeState((current) =>
+				current.reconciliationEvent
+					? { ...current, reconciliationEvent: null }
+					: current,
+			);
+		},
+		[],
+	);
+
+	const isReconciliationEventCurrent = useCallback(
+		(event: WorkspaceTreeReconciliationEvent, selectedNodeId: string | null) =>
+			event.refreshSeq === refreshSeqRef.current &&
+			event.refreshSeq === acceptedReconciliationSeqRef.current &&
+			event.requestContext.worktreePath === worktreePathRef.current &&
+			event.requestContext.selectedNodeId === selectedNodeId &&
+			event.requestContext.selectedNodeId ===
+				observedSelectedNodeIdRef.current &&
+			event.requestContext.reconciliationGeneration ===
+				reconciliationGenerationRef.current,
+		[],
+	);
 
 	const scheduleRefresh = useCallback(() => {
 		if (refreshTimerRef.current != null) {
@@ -116,6 +276,16 @@ export function useWorkspaceTreeNodes(
 			void refresh();
 		}, 80);
 	}, [refresh]);
+
+	useEffect(() => {
+		if (worktreePathRef.current === worktreePath) return;
+		worktreePathRef.current = worktreePath;
+		refreshSeqRef.current += 1;
+		reconciliationGenerationRef.current += 1;
+		reconciliationContextRef.current = null;
+		acceptedReconciliationSeqRef.current = null;
+		observedSelectedNodeIdRef.current = null;
+	}, [worktreePath]);
 
 	useEffect(() => {
 		void refresh();
@@ -197,12 +367,16 @@ export function useWorkspaceTreeNodes(
 		);
 
 	return {
-		nodes,
-		preferredNodeId,
-		closedSessions,
-		workflowHistory,
+		nodes: treeState.snapshot.nodes,
+		preferredNodeId: treeState.snapshot.preferredNodeId ?? null,
+		closedSessions: treeState.closedSessions,
+		workflowHistory: treeState.workflowHistory,
+		reconciliationEvent: treeState.reconciliationEvent,
 		loading: currentLoading,
 		error: currentError,
 		refresh,
+		beginArchiveReconciliation,
+		synchronizeSelectedNodeId,
+		isReconciliationEventCurrent,
 	};
 }

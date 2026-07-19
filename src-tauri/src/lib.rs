@@ -238,16 +238,17 @@ pub fn run() {
                     .state::<Arc<usecase::agent_session::session::SessionStore>>()
                     .inner()
                     .clone();
-                let workflow_usecase = Arc::new(
-                    adaptor::controller::wiring::build_workflow_usecase_with_repository_worktrees(
+                let (workflow_usecase, workspace_tree_query_service) =
+                    adaptor::controller::wiring::build_workflow_services_with_repository_worktrees(
                         data_dir.clone(),
                         repository_usecase.clone(),
                         config_repository.clone(),
                         config_secret_repository.clone(),
                         session_store_state,
                         app.handle().clone(),
-                    ),
-                );
+                    );
+                let workflow_usecase = Arc::new(workflow_usecase);
+                app.manage(Arc::new(workspace_tree_query_service));
                 let notion_usecase = Arc::new(usecase::notion::usecase::NotionUsecase::new(
                     notion_config_repository.clone(),
                     notion_api_gateway.clone(),
