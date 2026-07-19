@@ -1,0 +1,265 @@
+name: handle-pr-review
+description: 現在のブランチに紐づくPRの未解決review commentを取り込み、方針整合性を確認して修正し、人間の確認後にcommit、push、replyを行う。
+builtin: true
+
+schemas:
+  thread-id: string
+  workflow-text: string
+  document-reference: string
+  thread-reference:
+    type: object
+    properties:
+      thread_id: string
+    required:
+    - thread_id
+  thread-scan:
+    type: object
+    properties:
+      threads:
+        type: array
+        items: thread-reference
+      has_open_threads:
+        type: boolean
+      summary: string
+    required:
+    - threads
+    - has_open_threads
+    - summary
+  policy-correction-task:
+    type: object
+    properties:
+      task_id: string
+      thread_ids:
+        type: array
+        items: thread-id
+      problem: string
+      required_changes:
+        type: array
+        items: workflow-text
+    required:
+    - task_id
+    - thread_ids
+    - problem
+    - required_changes
+  policy-consistency-result:
+    type: object
+    properties:
+      verdict:
+        type: string
+        enum:
+        - CONSISTENT
+        - NEEDS_CORRECTION
+      tasks:
+        type: array
+        items: policy-correction-task
+      summary: string
+    required:
+    - verdict
+    - tasks
+    - summary
+  fix-plan-task:
+    type: object
+    properties:
+      task_id: string
+      thread_id: string
+      target_files:
+        type: array
+        items: document-reference
+      implementation_steps:
+        type: array
+        items: workflow-text
+      acceptance_criteria:
+        type: array
+        items: workflow-text
+      non_goals:
+        type: array
+        items: workflow-text
+      source_policy: string
+    required:
+    - task_id
+    - thread_id
+    - target_files
+    - implementation_steps
+    - acceptance_criteria
+    - non_goals
+    - source_policy
+  fix-plan:
+    type: object
+    properties:
+      tasks:
+        type: array
+        items: fix-plan-task
+      summary: string
+    required:
+    - tasks
+    - summary
+  pr-review-reply:
+    type: object
+    properties:
+      thread_id: string
+      database_id: string
+      reply: string
+      thread_outcome: string
+      thread_summary: string
+    required:
+    - thread_id
+    - database_id
+    - reply
+    - thread_outcome
+    - thread_summary
+  pr-review-finalization:
+    type: object
+    properties:
+      ready:
+        type: boolean
+      commit_required:
+        type: boolean
+      commit_message: string
+      replies:
+        type: array
+        items: pr-review-reply
+      summary: string
+    required:
+    - ready
+    - commit_required
+    - commit_message
+    - replies
+    - summary
+
+nodes:
+- name: import_pr_review_comments
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: import_pr_review_comments
+  artifact: thread-scan
+  rules:
+  - when: { on: has_open_threads, then: pr_review_fix_policy_fanout }
+    next: report_no_pr_review_comments
+
+- name: report_no_pr_review_comments
+  command: >-
+    printf '対象となる未解決PR review commentはありません。\n'
+
+- name: pr_review_fix_policy_fanout
+  fanout:
+    child: decide_pr_review_fix_policy
+    items: import_pr_review_comments.threads
+  rules:
+  - next: check_pr_review_fix_policy_consistency
+
+- name: decide_pr_review_fix_policy
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: triage
+      knowledge: releash-thread-cli
+      instruction: decide_pr_review_fix_policy
+  input: thread-reference
+
+- name: check_pr_review_fix_policy_consistency
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: check_pr_review_fix_policy_consistency
+  artifact: policy-consistency-result
+  inputs:
+  - import_pr_review_comments
+  rules:
+  - loop_guard: { max_iterations: 2, on_exhausted: create_pr_review_fix_plan }
+  - switch:
+      on: verdict
+      cases:
+        NEEDS_CORRECTION: pr_review_fix_policy_correction_fanout
+        CONSISTENT: create_pr_review_fix_plan
+
+- name: pr_review_fix_policy_correction_fanout
+  fanout:
+    child: correct_pr_review_fix_policy
+    items: check_pr_review_fix_policy_consistency.tasks
+  rules:
+  - next: check_pr_review_fix_policy_consistency
+
+- name: correct_pr_review_fix_policy
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: triage
+      knowledge: releash-thread-cli
+      instruction: correct_pr_review_fix_policy
+  input: policy-correction-task
+
+- name: create_pr_review_fix_plan
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: create_pr_review_fix_plan
+  artifact: fix-plan
+  inputs:
+  - import_pr_review_comments
+  - check_pr_review_fix_policy_consistency
+  rules:
+  - next: implement_pr_review_fix_plan
+
+- name: implement_pr_review_fix_plan
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: coding
+      knowledge: releash-thread-cli
+      instruction: implement_pr_review_fix_plan
+  inputs:
+  - create_pr_review_fix_plan
+  rules:
+  - next: pr_review_confirmation
+
+- name: pr_review_confirmation
+  session:
+    model: gpt-5.6-sol
+    permission: edit
+    gate: approval
+    facets:
+      policy: reporting
+      knowledge: releash-thread-cli
+      instruction: pr_review_confirmation
+  artifact: pr-review-finalization
+  inputs:
+  - import_pr_review_comments
+  - create_pr_review_fix_plan
+  rules:
+  - when: { on: ready, then: finalize_pr_review }
+    next: report_incomplete_pr_review
+
+- name: report_incomplete_pr_review
+  command: >-
+    printf '未解消のPR review commentが残っているため、commit、push、replyは実行しません。\n'
+
+- name: finalize_pr_review
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: coding
+      knowledge: releash-thread-cli
+      instruction: finalize_pr_review
+  inputs:
+  - pr_review_confirmation

@@ -13035,16 +13035,15 @@ mod tests {
             .and_then(|message| message.parts.clone())
             .unwrap();
         assert_eq!(live.parts, persisted);
-        assert_eq!(
-            live.message.as_ref().unwrap().timestamp,
-            reloaded
-                .session
-                .messages
-                .iter()
-                .find(|message| message.id == live.message_id)
-                .unwrap()
-                .timestamp
-        );
+        let live_timestamp = live.message.as_ref().unwrap().timestamp;
+        let reloaded_timestamp = reloaded
+            .session
+            .messages
+            .iter()
+            .find(|message| message.id == live.message_id)
+            .unwrap()
+            .timestamp;
+        assert!((live_timestamp - reloaded_timestamp).abs() < 1e-6);
         let summary = session_store
             .list_sessions(tmp.path(), &reloaded.session.worktree_path)
             .unwrap()

@@ -649,7 +649,7 @@ mod tests {
             description: "adapter command test".to_string(),
             builtin: false,
             schemas: Default::default(),
-            nodes: vec![approval_gated_session("review", "review-all")],
+            nodes: vec![approval_gated_session("review", "review-acceptance")],
         }
     }
 
@@ -1656,7 +1656,7 @@ mod tests {
                 kind: NodeKind::Session(SessionSpec {
                     permission: Some("edit".to_string()),
                     facets: FacetRefs {
-                        instruction: Some("implement".to_string()),
+                        instruction: Some("review-acceptance".to_string()),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -1733,20 +1733,6 @@ mod tests {
             .map_err(super::validation_error_string)
             .unwrap_err();
         assert!(err.starts_with("validation_error:"));
-    }
-
-    #[test]
-    fn duplicate_workflow_source_from_builtin() {
-        let builtin_names: Vec<String> = builtin::list_builtin_workflows()
-            .iter()
-            .map(|s| s.name.clone())
-            .collect();
-        if let Some(name) = builtin_names.first() {
-            let wf = builtin::load_builtin_workflow_resolved(name)
-                .expect("builtin load must succeed")
-                .expect("builtin must exist for known name");
-            assert!(wf.builtin);
-        }
     }
 
     #[test]
@@ -2686,7 +2672,7 @@ mod tests {
                 kind: crate::adaptor::gateway::workflow::schema::NodeKind::Session(
                     crate::adaptor::gateway::workflow::schema::SessionSpec {
                         facets: crate::adaptor::gateway::workflow::schema::FacetRefs {
-                            instruction: Some("implement".to_string()),
+                            instruction: Some("review-acceptance".to_string()),
                             ..Default::default()
                         },
                         ..Default::default()

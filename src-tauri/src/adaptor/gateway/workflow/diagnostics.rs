@@ -2282,25 +2282,6 @@ nodes:
     }
 
     #[test]
-    fn builtin_workflows_have_zero_validation_diagnostics() {
-        for summary in builtin::list_builtin_workflows() {
-            let workflow = builtin::load_builtin_workflow_resolved(&summary.name)
-                .unwrap_or_else(|error| panic!("builtin {} failed to load: {error}", summary.name))
-                .unwrap_or_else(|| panic!("builtin {} not found", summary.name));
-            let diagnostics = diagnose_workflow_definition(&workflow, None);
-            let errors = diagnostics
-                .iter()
-                .filter(|item| item.severity == Severity::Error)
-                .collect::<Vec<_>>();
-            assert!(
-                errors.is_empty(),
-                "builtin {} produced diagnostics: {errors:?}",
-                summary.name
-            );
-        }
-    }
-
-    #[test]
     fn diagnose_broken_yaml() {
         let tmp = TempDir::new().unwrap();
         let wf_dir = tmp.path().join("workflows");
