@@ -5,11 +5,13 @@ use tauri::State;
 use crate::adaptor::controller::state::AppState;
 use crate::usecase::workflow::{
     CloseWorkspaceNodeCommand, WorkflowRuntimeUsecase, WorkspaceNodeCommandUsecase,
-    WorkspaceNodeDetailDto, WorkspaceTreeSnapshotDto, WorkspaceWorkflowHistoryItemDto,
+    WorkspaceNodeDetailDto, WorkspaceTreeQueryService, WorkspaceTreeSelectionSnapshotDto,
+    WorkspaceTreeSnapshotDto, WorkspaceWorkflowHistoryItemDto,
 };
 
 pub(super) const COMMAND_NAMES: &[&str] = &[
     "list_workspace_worktree_nodes",
+    "get_workspace_tree_selection_reconciliation",
     "list_workspace_workflow_history",
     "get_workspace_node_detail",
     "get_workspace_session_node_id",
@@ -27,6 +29,7 @@ pub(crate) fn invoke_handler(
 ) -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
         list_workspace_worktree_nodes,
+        get_workspace_tree_selection_reconciliation,
         list_workspace_workflow_history,
         get_workspace_node_detail,
         get_workspace_session_node_id,
@@ -54,6 +57,22 @@ pub async fn list_workspace_worktree_nodes(
     .await
     .map_err(|e| format!("task join error: {e}"))??;
     Ok(nodes)
+}
+
+#[tauri::command]
+pub async fn get_workspace_tree_selection_reconciliation(
+    query_service: State<'_, Arc<WorkspaceTreeQueryService>>,
+    worktree_path: String,
+    selected_node_id: String,
+) -> Result<WorkspaceTreeSelectionSnapshotDto, String> {
+    let query_service = query_service.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        query_service
+            .get_workspace_tree_selection_reconciliation(&worktree_path, &selected_node_id)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
 }
 
 #[tauri::command]

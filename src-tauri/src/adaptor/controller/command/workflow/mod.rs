@@ -481,6 +481,7 @@ mod tests {
         "close_workspace_node",
         "get_workspace_node_detail",
         "get_workspace_session_node_id",
+        "get_workspace_tree_selection_reconciliation",
         "restore_workspace_workflow_execution",
     ];
 

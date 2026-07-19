@@ -7,6 +7,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { WorkspaceTreeReconciliationEvent } from "@/hooks/useWorkspaceTreeNodes";
 import type { WorktreeBranch } from "@/types/git";
 import type {
 	WorkspaceSessionHistoryItem,
@@ -20,6 +21,7 @@ type MockWorkspaceTreeState = {
 	preferredNodeId?: string | null;
 	closedSessions?: WorkspaceSessionHistoryItem[];
 	workflowHistory?: WorkspaceWorkflowHistoryItem[];
+	reconciliationEvent?: WorkspaceTreeReconciliationEvent | null;
 	loading?: boolean;
 	error?: string | null;
 };
@@ -36,8 +38,12 @@ const mocks = vi.hoisted(() => ({
 		notice: null,
 	}),
 	refreshTree: vi.fn().mockResolvedValue(undefined),
+	beginArchiveReconciliation: vi.fn().mockResolvedValue(undefined),
+	synchronizeSelectedNodeId: vi.fn(),
+	isReconciliationEventCurrent: vi.fn().mockReturnValue(true),
 	refreshWorktrees: vi.fn().mockResolvedValue(undefined),
 	treeStateOverrides: new Map<string, MockWorkspaceTreeState>(),
+	selectedNodeIds: new Map<string, string | null>(),
 	worktreeBranches: [] as WorktreeBranch[],
 }));
 
@@ -75,9 +81,16 @@ vi.mock("@/hooks/useWorkspaceTreeNodes", () => ({
 			preferredNodeId: state.preferredNodeId ?? null,
 			closedSessions: state.closedSessions ?? [],
 			workflowHistory: state.workflowHistory ?? [],
+			reconciliationEvent: state.reconciliationEvent ?? null,
 			loading: state.loading ?? false,
 			error: state.error ?? null,
 			refresh: mocks.refreshTree,
+			beginArchiveReconciliation: mocks.beginArchiveReconciliation,
+			synchronizeSelectedNodeId: (selectedNodeId: string | null) => {
+				mocks.selectedNodeIds.set(worktreePath, selectedNodeId);
+				mocks.synchronizeSelectedNodeId(selectedNodeId);
+			},
+			isReconciliationEventCurrent: mocks.isReconciliationEventCurrent,
 		};
 	},
 }));
@@ -187,7 +200,29 @@ function renderWorkspaceList(
 			{...overrides}
 		/>,
 	);
-	return { ...result, onSelectWorktree, onCreateSession };
+	const rerenderWorkspaceList = (
+		nextOverrides: Partial<React.ComponentProps<typeof WorkspaceList>> = {},
+	) => {
+		result.rerender(
+			<WorkspaceList
+				repoPaths={["/repo"]}
+				selectedRootPath="/repo/wt"
+				centerSelection={null}
+				onSelectWorktree={onSelectWorktree}
+				onCreateSession={onCreateSession}
+				onAddRepo={vi.fn()}
+				onShowSettings={vi.fn()}
+				{...overrides}
+				{...nextOverrides}
+			/>,
+		);
+	};
+	return {
+		...result,
+		onSelectWorktree,
+		onCreateSession,
+		rerenderWorkspaceList,
+	};
 }
 
 beforeEach(() => {
@@ -198,8 +233,16 @@ beforeEach(() => {
 	}
 	mocks.worktreeBranches = [makeBranch()];
 	mocks.treeStateOverrides.clear();
+	mocks.selectedNodeIds.clear();
 	mocks.treeStateOverrides.set("/repo/wt", { nodes: recursiveTree });
 	mocks.invoke.mockResolvedValue(null);
+	mocks.refreshTree.mockResolvedValue(undefined);
+	mocks.beginArchiveReconciliation.mockResolvedValue(undefined);
+	mocks.isReconciliationEventCurrent.mockImplementation(
+		(event: WorkspaceTreeReconciliationEvent, selectedNodeId: string | null) =>
+			event.requestContext.worktreePath === "/repo/wt" &&
+			event.requestContext.selectedNodeId === selectedNodeId,
+	);
 });
 
 describe("WorkspaceList", () => {
@@ -220,6 +263,37 @@ describe("WorkspaceList", () => {
 				.querySelector("svg.lucide-git-fork"),
 		).toBeInTheDocument();
 		expect(container.querySelectorAll("svg.lucide-git-fork")).toHaveLength(1);
+	});
+
+	it("renders an empty backend-owned Workflow branch without Node leaves", () => {
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: [
+				{
+					kind: "workflow",
+					id: "empty-workflow",
+					title: "Empty workflow",
+					status: "running",
+					capabilities: {
+						canStop: true,
+						canResume: false,
+						canAbort: true,
+						canArchive: false,
+					},
+					children: [],
+					updatedAt: 1,
+				},
+			],
+			preferredNodeId: null,
+		});
+
+		renderWorkspaceList();
+
+		expect(
+			screen.getByRole("button", { name: "Empty workflow" }),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: /Direct session/ }),
+		).not.toBeInTheDocument();
 	});
 
 	it("keeps one familiar content icon per Node and styles it from backend status", () => {
@@ -353,6 +427,66 @@ describe("WorkspaceList", () => {
 		expect(onSelectWorktree).toHaveBeenCalledTimes(1);
 	});
 
+	it("re-arms preferred selection after auto selection is disabled", async () => {
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: recursiveTree,
+			preferredNodeId: directNode.id,
+		});
+		const { onSelectWorktree, onCreateSession, rerender } = renderWorkspaceList(
+			{
+				autoSelectPreferredNode: true,
+			},
+		);
+		await waitFor(() => expect(onSelectWorktree).toHaveBeenCalledTimes(1));
+
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: recursiveTree,
+			preferredNodeId: "fanout-child-internal-uuid",
+		});
+		rerender(
+			<WorkspaceList
+				repoPaths={["/repo"]}
+				selectedRootPath="/repo/wt"
+				centerSelection={{
+					kind: "node",
+					worktreePath: "/repo/wt",
+					nodeId: directNode.id,
+				}}
+				autoSelectPreferredNode={false}
+				onSelectWorktree={onSelectWorktree}
+				onCreateSession={onCreateSession}
+				onAddRepo={vi.fn()}
+				onShowSettings={vi.fn()}
+			/>,
+		);
+		expect(onSelectWorktree).toHaveBeenCalledTimes(1);
+
+		rerender(
+			<WorkspaceList
+				repoPaths={["/repo"]}
+				selectedRootPath="/repo/wt"
+				centerSelection={null}
+				autoSelectPreferredNode={true}
+				onSelectWorktree={onSelectWorktree}
+				onCreateSession={onCreateSession}
+				onAddRepo={vi.fn()}
+				onShowSettings={vi.fn()}
+			/>,
+		);
+
+		await waitFor(() => expect(onSelectWorktree).toHaveBeenCalledTimes(2));
+		expect(onSelectWorktree).toHaveBeenLastCalledWith(
+			"/repo/wt",
+			"feature",
+			"repo",
+			{
+				kind: "node",
+				worktreePath: "/repo/wt",
+				nodeId: "fanout-child-internal-uuid",
+			},
+		);
+	});
+
 	it("keeps initial selection eligible while an empty snapshot has no preferred Node", async () => {
 		mocks.treeStateOverrides.set("/repo/wt", {
 			nodes: [],
@@ -451,7 +585,7 @@ describe("WorkspaceList", () => {
 		);
 	});
 
-	it("does not apply a later preferred Node after selection was resolved empty", async () => {
+	it("does not apply a preferred Node while auto selection is disabled", async () => {
 		mocks.treeStateOverrides.set("/repo/wt", {
 			nodes: recursiveTree,
 			preferredNodeId: directNode.id,
@@ -493,6 +627,18 @@ describe("WorkspaceList", () => {
 		expect(
 			screen.getByRole("button", { name: /Architecture review/ }),
 		).toHaveAttribute("aria-current", "page");
+	});
+
+	it("passes only the Worktree-scoped selected opaque ID to the tree read", () => {
+		renderWorkspaceList({
+			centerSelection: {
+				kind: "node",
+				worktreePath: "/other",
+				nodeId: "foreign-node",
+			},
+		});
+
+		expect(mocks.selectedNodeIds.get("/repo/wt")).toBeNull();
 	});
 
 	it("keeps occurrence order and the selected past occurrence when later executions append", async () => {
@@ -623,6 +769,159 @@ describe("WorkspaceList", () => {
 		expect(mocks.refreshTree).toHaveBeenCalledOnce();
 		expect(detailRefresh).toHaveBeenCalledOnce();
 		window.removeEventListener("workspace-tree-refresh", detailRefresh);
+	});
+
+	it("notifies App after Archive refresh says the current selection left the snapshot", async () => {
+		const user = userEvent.setup();
+		const selectedNodeId = "workflow-session-internal-uuid";
+		const archivableTree = recursiveTree.map((item) =>
+			item.kind === "workflow"
+				? {
+						...item,
+						status: "completed" as const,
+						capabilities: { ...item.capabilities, canArchive: true },
+					}
+				: item,
+		);
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: archivableTree,
+		});
+		const onWorkspaceSelectionInvalidated = vi.fn();
+		const { rerenderWorkspaceList } = renderWorkspaceList({
+			centerSelection: {
+				kind: "node",
+				worktreePath: "/repo/wt",
+				nodeId: selectedNodeId,
+			},
+			onWorkspaceSelectionInvalidated,
+		});
+
+		await user.click(
+			screen.getByRole("button", { name: "Archive Release workflow" }),
+		);
+		await waitFor(() =>
+			expect(mocks.beginArchiveReconciliation).toHaveBeenCalledWith(
+				selectedNodeId,
+			),
+		);
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: [directNode],
+			preferredNodeId: directNode.id,
+			reconciliationEvent: {
+				refreshSeq: 2,
+				requestContext: {
+					worktreePath: "/repo/wt",
+					selectedNodeId,
+					reconciliationGeneration: 2,
+				},
+				selectionInSnapshot: false,
+			},
+		});
+		rerenderWorkspaceList();
+
+		await waitFor(() =>
+			expect(onWorkspaceSelectionInvalidated).toHaveBeenCalledWith(
+				"/repo/wt",
+				selectedNodeId,
+			),
+		);
+		expect(mocks.invoke).toHaveBeenCalledWith(
+			"archive_workspace_workflow_execution",
+			{
+				worktreePath: "/repo/wt",
+				executionId: "workflow-internal-uuid",
+			},
+		);
+		rerenderWorkspaceList();
+		expect(onWorkspaceSelectionInvalidated).toHaveBeenCalledOnce();
+		expect(mocks.refreshTree).not.toHaveBeenCalled();
+		expect(mocks.selectedNodeIds.get("/repo/wt")).toBe(selectedNodeId);
+	});
+
+	it("keeps the current selection when Archive reconciliation says it remains displayed", async () => {
+		const user = userEvent.setup();
+		const selectedNodeId = "workflow-session-internal-uuid";
+		const archivableTree = recursiveTree.map((item) =>
+			item.kind === "workflow"
+				? {
+						...item,
+						status: "completed" as const,
+						capabilities: { ...item.capabilities, canArchive: true },
+					}
+				: item,
+		);
+		mocks.treeStateOverrides.set("/repo/wt", { nodes: archivableTree });
+		const onWorkspaceSelectionInvalidated = vi.fn();
+		const { rerenderWorkspaceList } = renderWorkspaceList({
+			centerSelection: {
+				kind: "node",
+				worktreePath: "/repo/wt",
+				nodeId: selectedNodeId,
+			},
+			onWorkspaceSelectionInvalidated,
+		});
+
+		await user.click(
+			screen.getByRole("button", { name: "Archive Release workflow" }),
+		);
+		await waitFor(() =>
+			expect(mocks.beginArchiveReconciliation).toHaveBeenCalledWith(
+				selectedNodeId,
+			),
+		);
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: archivableTree,
+			preferredNodeId: selectedNodeId,
+			reconciliationEvent: {
+				refreshSeq: 2,
+				requestContext: {
+					worktreePath: "/repo/wt",
+					selectedNodeId,
+					reconciliationGeneration: 2,
+				},
+				selectionInSnapshot: true,
+			},
+		});
+		rerenderWorkspaceList();
+
+		expect(onWorkspaceSelectionInvalidated).not.toHaveBeenCalled();
+	});
+
+	it("does not deliver an accepted invalidation after the selection moves", async () => {
+		const selectedNodeId = "workflow-session-internal-uuid";
+		const onWorkspaceSelectionInvalidated = vi.fn();
+		const { rerenderWorkspaceList } = renderWorkspaceList({
+			centerSelection: {
+				kind: "node",
+				worktreePath: "/repo/wt",
+				nodeId: selectedNodeId,
+			},
+			onWorkspaceSelectionInvalidated,
+		});
+		mocks.treeStateOverrides.set("/repo/wt", {
+			nodes: [directNode],
+			preferredNodeId: directNode.id,
+			reconciliationEvent: {
+				refreshSeq: 4,
+				requestContext: {
+					worktreePath: "/repo/wt",
+					selectedNodeId,
+					reconciliationGeneration: 3,
+				},
+				selectionInSnapshot: false,
+			},
+		});
+
+		rerenderWorkspaceList({
+			centerSelection: {
+				kind: "node",
+				worktreePath: "/repo/wt",
+				nodeId: directNode.id,
+			},
+		});
+
+		expect(onWorkspaceSelectionInvalidated).not.toHaveBeenCalled();
+		expect(mocks.selectedNodeIds.get("/repo/wt")).toBe(directNode.id);
 	});
 
 	it("routes SessionHistory restore and archive through stored lifecycle commands", async () => {

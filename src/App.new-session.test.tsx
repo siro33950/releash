@@ -10,6 +10,7 @@ interface TestRequest {
 const mocks = vi.hoisted(() => ({
 	openWorktreeTab: vi.fn(),
 	selectedWorktreeId: "wt-a",
+	preferredNodeId: "preferred-a" as string | null,
 	lastRequests: new Map<string, TestRequest>(),
 }));
 
@@ -109,10 +110,11 @@ vi.mock("@/components/workspace/WorkspaceList", () => ({
 				type="button"
 				onClick={() =>
 					autoSelectPreferredNode &&
+					mocks.preferredNodeId &&
 					onSelectWorktree("/wt-a", undefined, undefined, {
 						kind: "node",
 						worktreePath: "/wt-a",
-						nodeId: "preferred-a",
+						nodeId: mocks.preferredNodeId,
 					})
 				}
 			>
@@ -225,6 +227,7 @@ const { default: App } = await import("./App");
 beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.selectedWorktreeId = "wt-a";
+	mocks.preferredNodeId = "preferred-a";
 	mocks.lastRequests.clear();
 });
 
@@ -238,14 +241,30 @@ describe("App Workspace selection lifecycle", () => {
 		expect(screen.getByTestId("auto-select")).toHaveTextContent("settled");
 	});
 
-	it("shows empty after authoritative removal and does not auto-fallback", () => {
+	it("falls back to the new preferred Node after authoritative removal", () => {
 		render(<App />);
 		fireEvent.click(screen.getByRole("button", { name: "Select A" }));
 		expect(screen.getByTestId("center-node")).toHaveTextContent("node-a");
 
+		mocks.preferredNodeId = "replacement-a";
 		fireEvent.click(screen.getByRole("button", { name: "Invalidate center" }));
 		expect(screen.getByTestId("center-node")).toHaveTextContent("none");
+		expect(screen.getByTestId("auto-select")).toHaveTextContent("awaiting");
+		fireEvent.click(screen.getByRole("button", { name: "Apply preferred A" }));
+		expect(screen.getByTestId("center-node")).toHaveTextContent(
+			"replacement-a",
+		);
 		expect(screen.getByTestId("auto-select")).toHaveTextContent("settled");
+	});
+
+	it("stays unselected when authoritative removal has no preferred Node", () => {
+		render(<App />);
+		fireEvent.click(screen.getByRole("button", { name: "Select A" }));
+		mocks.preferredNodeId = null;
+
+		fireEvent.click(screen.getByRole("button", { name: "Invalidate center" }));
+		expect(screen.getByTestId("center-node")).toHaveTextContent("none");
+		expect(screen.getByTestId("auto-select")).toHaveTextContent("awaiting");
 		fireEvent.click(screen.getByRole("button", { name: "Apply preferred A" }));
 		expect(screen.getByTestId("center-node")).toHaveTextContent("none");
 	});

@@ -80,6 +80,15 @@ export interface WorkspaceTreeSnapshot {
 	preferredNodeId?: string | null;
 }
 
+export interface WorkspaceSelectionReconciliation {
+	selectionInSnapshot: boolean;
+}
+
+export interface WorkspaceTreeSelectionSnapshot {
+	snapshot: WorkspaceTreeSnapshot;
+	reconciliation: WorkspaceSelectionReconciliation;
+}
+
 export interface WorkspaceSessionNodeContent {
 	kind: "session";
 	sessionId?: string | null;

@@ -382,15 +382,15 @@ enum WorkspaceNodeContentDto {
 - `Node`は`id / title / status / content_kind / capabilities / updated_at`を持ち、childrenを持たない。
 - `Workflow`は`id / title / status / capabilities / children / updated_at`を持ち、contentを持たない。
 - `Fanout`は`id / title / status / children / updated_at`を持ち、contentと独自actionを持たない。
-- 実行済みNodeはevent projectionが復元した実行順を保つ。同じ定義Nodeが反復された場合も実行occurrenceごとに別行を作り、`A → B → A → C`をその順で表示する。未開始Nodeはqueuedで表示する。
+- Workspace treeにはdurableな`NodeStarted`に由来する実在の`NodeExecution`だけを表示し、未開始の定義Nodeやfanout expected slotから行を合成しない。実行開始済みNodeはevent projectionが復元した実行順を保ち、同じ定義Nodeが反復された場合も実行occurrenceごとに別行を作り、`A → B → A → C`をその順で表示する。これは[`specs/unified-node-model/decisions.md` §実行木](../../../specs/unified-node-model/decisions.md#実行木)の「実行木には展開結果（実際に起きたこと）だけが載る」という決定に従う。
 - fanout親の各実行occurrenceはFanout branch、対応するchildの各実行occurrenceはそのbranch配下のNodeとして実行順に投影する。fanout childをWorkflow直下へ重複表示しない。
 - `fanout_parent`は階層構築だけに使う。execution ID、NodeExecution ID、attempt、fanout parent attempt、item/child index、raw kindをheader/treeへ表示しない。
 - tree summaryにSession本文、Command output、Artifact本文を含めない。汎用`get_workspace_node_detail(worktree_path, node_id)`で選択Nodeだけを取得する。
 - 実行occurrenceごとに異なるopaque Node IDを返す。frontendはIDを解析せず、後続occurrenceの追加後も既存IDを維持する。detailは選択IDが指す実行occurrenceのSessionまたはCommandを返す。
 - `CenterSelection`は`{ kind: "node", worktreePath, nodeId }`へ統一する。NewSessionは選択variantではなく作成操作とし、作成後のNodeを表示する。
 - Workflow action（stop/resume/abort/archive）とNode action（approve、単独Sessionのclose）はRustが返すcapabilityに従う。
-- 初回表示用`preferred_node_id`はrunning/waiting Nodeを優先するが、更新時に表示中Nodeを勝手に切り替えない。retry/loopで新しいoccurrenceが追加されても、選択中の過去occurrenceを維持する。
-- frontendはWorktreeごとに`awaiting_initial | selected | resolved_empty`だけを保持する。空snapshotでは初回選択資格を維持し、backend detailが`None`になった選択だけをempty stateへ遷移させる。tree非表示でもdetailが残るarchive済みNodeは選択を維持する。
+- frontendはWorktreeごとに`awaiting_initial | selected`だけを保持する。`selected`のNode IDが新snapshotの表示対象に残る間は選択を維持するため、retry/loopで新しいoccurrenceが追加されても選択中の過去occurrenceを切り替えない。表示対象から消えた場合は`awaiting_initial`へ戻り、同じsnapshotの`preferred_node_id`を初回表示と同じ経路で適用する。
+- `preferred_node_id`はrunning/waiting Nodeを優先する。`awaiting_initial`で`preferred_node_id`が`null`の間は未選択のまま初回選択資格を維持し、後続snapshotで表示対象Nodeが現れたときに適用する。
 - 単独SessionのCloseはopaque Node IDを受けるRust commandで解決する。NewSessionはApp-owned request UUIDをRustへ渡し、同UUIDをSession IDとして永続化するcheck-and-saveによりWorktree切り替え、並行呼び出し、再起動後retryでも冪等にする。
 
 ## 14. 削除一覧（旧 → 処置）

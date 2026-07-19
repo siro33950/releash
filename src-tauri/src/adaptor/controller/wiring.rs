@@ -78,6 +78,7 @@ use crate::usecase::workflow::query_service::WorkflowQueryService;
 use crate::usecase::workflow::{
     NodeExecutionLifecycleUsecase, WorkflowReadUsecase, WorkflowRuntimeUsecase, WorkflowUsecase,
     WorkspaceNodeActionResolver, WorkspaceNodeCommandUsecase, WorkspaceSessionGateway,
+    WorkspaceTreeQueryService,
 };
 
 pub(crate) fn build_agent_backend_registry(
@@ -284,6 +285,7 @@ impl WorkspaceSessionGateway for EmptyWorkspaceSessionGateway {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn build_workflow_usecase_with_repository_worktrees<R: tauri::Runtime + 'static>(
     data_dir: impl Into<std::path::PathBuf>,
     repository_usecase: Arc<RepositoryUsecase>,
@@ -292,12 +294,31 @@ pub(crate) fn build_workflow_usecase_with_repository_worktrees<R: tauri::Runtime
     session_store: Arc<SessionStore>,
     app: tauri::AppHandle<R>,
 ) -> WorkflowUsecase {
+    build_workflow_services_with_repository_worktrees(
+        data_dir,
+        repository_usecase,
+        app_config,
+        config_secrets,
+        session_store,
+        app,
+    )
+    .0
+}
+
+pub(crate) fn build_workflow_services_with_repository_worktrees<R: tauri::Runtime + 'static>(
+    data_dir: impl Into<std::path::PathBuf>,
+    repository_usecase: Arc<RepositoryUsecase>,
+    app_config: Arc<dyn ConfigRepository>,
+    config_secrets: Arc<dyn ConfigSecretRepository>,
+    session_store: Arc<SessionStore>,
+    app: tauri::AppHandle<R>,
+) -> (WorkflowUsecase, WorkspaceTreeQueryService) {
     let data_dir = data_dir.into();
     let sessions = Arc::new(StoredWorkspaceSessionGateway::new(
         session_store,
         data_dir.clone(),
     ));
-    build_workflow_usecase_with_gateways(
+    build_workflow_services_with_gateways(
         data_dir,
         Arc::new(RepositoryManagedWorktreeGateway::new(
             repository_usecase,
@@ -353,6 +374,7 @@ pub(crate) fn build_file_direct_workflow_read_usecase(
     Ok(WorkflowReadUsecase::new(query, worktrees, secrets))
 }
 
+#[cfg(test)]
 fn build_workflow_usecase_with_gateways(
     data_dir: impl Into<std::path::PathBuf>,
     worktrees: Arc<dyn ManagedWorktreeGateway>,
@@ -360,6 +382,16 @@ fn build_workflow_usecase_with_gateways(
     secrets: Arc<dyn SecretSourceGateway>,
     sessions: Arc<dyn WorkspaceSessionGateway>,
 ) -> WorkflowUsecase {
+    build_workflow_services_with_gateways(data_dir, worktrees, editors, secrets, sessions).0
+}
+
+fn build_workflow_services_with_gateways(
+    data_dir: impl Into<std::path::PathBuf>,
+    worktrees: Arc<dyn ManagedWorktreeGateway>,
+    editors: Arc<dyn ExternalEditorGateway>,
+    secrets: Arc<dyn SecretSourceGateway>,
+    sessions: Arc<dyn WorkspaceSessionGateway>,
+) -> (WorkflowUsecase, WorkspaceTreeQueryService) {
     let data_dir = data_dir.into();
     let workflows_dir = WorkflowDefinitionFileRepository::default_workflows_dir();
     let facets_base_dir = workflows_dir.clone();
@@ -391,19 +423,22 @@ fn build_workflow_usecase_with_gateways(
         events,
         execution_projection,
     );
-    WorkflowUsecase::new(
-        query,
+    let workflow_usecase = WorkflowUsecase::new(
+        query.clone(),
         definitions,
         definition_sources,
         facets,
-        worktrees,
+        worktrees.clone(),
         editors,
         diagnostics,
         config_paths,
         secrets,
-        sessions,
-        execution_archives,
-    )
+        sessions.clone(),
+        execution_archives.clone(),
+    );
+    let workspace_tree_query_service =
+        WorkspaceTreeQueryService::new(query, worktrees, sessions, execution_archives);
+    (workflow_usecase, workspace_tree_query_service)
 }
 
 pub(crate) fn build_workflow_runtime_usecase(

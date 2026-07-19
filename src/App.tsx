@@ -20,8 +20,7 @@ import type {
 
 type WorktreeCenterState =
 	| { phase: "awaitingInitial" }
-	| { phase: "selected"; selection: CenterSelection }
-	| { phase: "resolvedEmpty" };
+	| { phase: "selected"; selection: CenterSelection };
 
 interface NewSessionCreationState {
 	request: NewSessionCreationRequest;
@@ -251,7 +250,25 @@ function App() {
 				}
 				return {
 					...current,
-					[worktreePath]: { phase: "resolvedEmpty" },
+					[worktreePath]: { phase: "awaitingInitial" },
+				};
+			});
+		},
+		[],
+	);
+	const handleWorkspaceSelectionInvalidated = useCallback(
+		(worktreePath: string, nodeId: string) => {
+			setCenterStateByWorktree((current) => {
+				const active = current[worktreePath];
+				if (
+					active?.phase !== "selected" ||
+					active.selection.nodeId !== nodeId
+				) {
+					return current;
+				}
+				return {
+					...current,
+					[worktreePath]: { phase: "awaitingInitial" },
 				};
 			});
 		},
@@ -288,6 +305,7 @@ function App() {
 				newSessionCreationStatusByWorktree={newSessionCreationStatusByWorktree}
 				onSelectWorktree={handleSelectWorktree}
 				onCreateSession={handleCreateSession}
+				onWorkspaceSelectionInvalidated={handleWorkspaceSelectionInvalidated}
 				onAddRepo={handleAddRepo}
 				onShowSettings={() => setShowAppSettings(true)}
 			/>
@@ -300,6 +318,7 @@ function App() {
 			newSessionCreationStatusByWorktree,
 			handleSelectWorktree,
 			handleCreateSession,
+			handleWorkspaceSelectionInvalidated,
 			handleAddRepo,
 		],
 	);

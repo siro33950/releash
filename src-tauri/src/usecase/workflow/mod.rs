@@ -47,7 +47,8 @@ pub(crate) use workspace_node_command::{
 };
 pub(crate) use workspace_tree::{
     WorkspaceNodeDetailDto, WorkspaceSessionGateway, WorkspaceSessionInput, WorkspaceSessionState,
-    WorkspaceTreeSnapshotDto, WorkspaceWorkflowHistoryItemDto,
+    WorkspaceTreeQueryService, WorkspaceTreeSelectionSnapshotDto, WorkspaceTreeSnapshotDto,
+    WorkspaceWorkflowHistoryItemDto,
 };
 
 #[derive(Clone)]
