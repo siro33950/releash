@@ -399,7 +399,7 @@ nodes:
     jq -er '.artifacts[] |
     select(.nodeName == "check_implementation_tasks_fanout") |
     .value |
-    {complete: all(.[]; .complete == true),
+    {complete: ((length > 0) and all(.[]; .complete == true)),
     incomplete_tasks: [.[] | select(.complete != true) | {task_id, reason}]}'
   artifact: implement-task-check
   inputs:

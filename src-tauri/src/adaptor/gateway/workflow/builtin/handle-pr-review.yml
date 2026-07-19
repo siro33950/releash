@@ -114,9 +114,6 @@ schemas:
         type: boolean
       commit_required:
         type: boolean
-      commit_files:
-        type: array
-        items: document-reference
       commit_message: string
       replies:
         type: array
@@ -125,7 +122,6 @@ schemas:
     required:
     - ready
     - commit_required
-    - commit_files
     - commit_message
     - replies
     - summary

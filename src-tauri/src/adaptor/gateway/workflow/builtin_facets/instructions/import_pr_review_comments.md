@@ -15,11 +15,13 @@
 1. `git branch --show-current`で現在のブランチを取得する。
 2. `gh pr list --head <branch> --state open`で対象PRを一意に特定する。
 3. `gh repo view`でownerとrepository名を取得する。
-4. GraphQL APIでPRの`reviewThreads`を取得する。REST APIで代替しない。
-5. `isResolved == false`のreview threadだけを対象にする。
-6. Releash Threadの本文と履歴を確認し、同じ`github_review_thread_id`または`database_id`を持つcommentを重複登録しない。
-7. 未登録のreview threadを一件ずつReleash Threadとして作成する。
-8. 新規作成したThreadと、既に取り込み済みでOpenのThreadを合わせて今回の対象一覧にする。
+4. GraphQL APIでPRの`reviewThreads(first:, after: endCursor)`を取得し、`pageInfo.hasNextPage`が`false`になるまで`pageInfo.endCursor`を使って全ページを反復取得する。REST APIで代替しない。
+5. 各review threadの`comments(first:, after: endCursor)`も、`pageInfo.hasNextPage`が`false`になるまで`pageInfo.endCursor`を使って返信を全件取得する。
+6. `reviewThreads`または各threadの`comments`を全件取得できない場合はArtifactを提出せず、Nodeを失敗扱いにする。
+7. `isResolved == false`のreview threadだけを対象にする。
+8. Releash Threadの本文と履歴を確認し、同じ`github_review_thread_id`または`database_id`を持つcommentを重複登録しない。
+9. 未登録のreview threadを一件ずつReleash Threadとして作成する。
+10. 新規作成したThreadと、既に取り込み済みでOpenのThreadを合わせて今回の対象一覧にする。
 
 取得する情報:
 

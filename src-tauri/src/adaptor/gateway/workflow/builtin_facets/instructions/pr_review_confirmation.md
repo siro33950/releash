@@ -1,6 +1,6 @@
 # 役割
 
-今回取り込んだ全PR review commentの対応結果、commit対象、検証結果、GitHub返信文を人間と確認し、合意済みの最終実行内容をArtifactにする。
+今回取り込んだ全PR review commentの対応結果、commit内容、検証結果、GitHub返信文を人間と確認し、合意済みの最終実行内容をArtifactにする。
 
 このNodeは確認だけを行う。コード、Thread、git、GitHubを変更しない。
 
@@ -29,7 +29,7 @@
 次を一つの一覧として提示する。
 
 - Threadごとの元commentと対応結果
-- commit対象ファイルとcommit message
+- 現在のgit差分とcommit message
 - 実行した検証と結果
 - GitHubへ投稿する正確な返信文
 - reply成功後のReleash Thread outcomeとsummary
@@ -42,7 +42,6 @@
 {
   "ready": true,
   "commit_required": true,
-  "commit_files": ["src/example.rs"],
   "commit_message": "fix: address PR review feedback",
   "replies": [{
     "thread_id": "<Releash Thread ID>",
@@ -55,7 +54,7 @@
 }
 ```
 
-コード変更がない場合は`commit_required: false`、`commit_files: []`、`commit_message: ""`とする。
+コード変更がない場合は`commit_required: false`、`commit_message: ""`とする。
 
 完了できない場合は`ready: false`とし、`replies: []`、`summary`へ理由を書く。
 

@@ -499,3 +499,105 @@ pub fn is_builtin_facet(kind: FacetKind, key: &str) -> bool {
         .iter()
         .any(|e| e.kind == kind && e.key == key)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adaptor::gateway::workflow::schema::SchemaDef;
+
+    #[test]
+    fn full_cycle_implementation_check_requires_non_empty_results() {
+        let workflow: WorkflowDefinitionYaml =
+            serde_saphyr::from_str(BUILTIN_FULL_CYCLE_DEVELOPMENT).unwrap();
+        let check_node = workflow
+            .nodes
+            .iter()
+            .find(|node| node.name == "check_implementation_tasks")
+            .unwrap();
+        let command = check_node.command().unwrap();
+
+        assert!(command.contains("{complete: ((length > 0) and all(.[]; .complete == true)),"));
+        assert!(command
+            .contains("incomplete_tasks: [.[] | select(.complete != true) | {task_id, reason}]"));
+
+        for source in [
+            BUILTIN_FULL_CYCLE_DEVELOPMENT,
+            BUILTIN_FULL_CYCLE_DEVELOPMENT_MANUAL,
+        ] {
+            let workflow: WorkflowDefinitionYaml = serde_saphyr::from_str(source).unwrap();
+            let implement_incomplete_tasks = workflow
+                .nodes
+                .iter()
+                .find(|node| node.name == "implement_incomplete_tasks")
+                .unwrap();
+            assert_eq!(
+                implement_incomplete_tasks.inputs,
+                [
+                    "write_requirements",
+                    "create_detailed_design",
+                    "check_implementation_tasks",
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn pr_review_finalization_does_not_manage_commit_files() {
+        for source in [BUILTIN_HANDLE_PR_REVIEW, BUILTIN_HANDLE_PR_REVIEW_MANUAL] {
+            let workflow: WorkflowDefinitionYaml = serde_saphyr::from_str(source).unwrap();
+            let SchemaDef::Object {
+                properties,
+                required,
+            } = &workflow.schemas["pr-review-finalization"]
+            else {
+                panic!("pr-review-finalization must be an object schema");
+            };
+
+            assert!(!properties.contains_key("commit_files"));
+            assert!(!required.contains("commit_files"));
+            assert!(properties.contains_key("commit_required"));
+            assert!(properties.contains_key("commit_message"));
+        }
+
+        for key in ["pr_review_confirmation", "finalize_pr_review"] {
+            let instruction = get_builtin_facet(FacetKind::Instruction, key).unwrap();
+            assert!(!instruction.contains("commit_files"));
+        }
+        let finalization = get_builtin_facet(FacetKind::Instruction, "finalize_pr_review").unwrap();
+        assert!(finalization.contains("現在の作業ツリーの変更をstage"));
+    }
+
+    #[test]
+    fn fix_policy_instructions_do_not_require_a_replacement_reason() {
+        for key in ["decide_fix_policy", "decide_fix_policy_manual"] {
+            let instruction = get_builtin_facet(FacetKind::Instruction, key).unwrap();
+            assert!(!instruction.contains("置き換える理由"));
+            assert!(!instruction.contains("置換理由"));
+            assert!(instruction.contains("変更不要なら重複投稿しない"));
+            assert!(instruction.contains("変更が必要な場合は、新しい`[FIX_POLICY]`を投稿する"));
+        }
+    }
+
+    #[test]
+    fn pr_review_import_requires_all_graphql_pages() {
+        let instruction =
+            get_builtin_facet(FacetKind::Instruction, "import_pr_review_comments").unwrap();
+
+        assert!(instruction.contains("reviewThreads(first:, after: endCursor)"));
+        assert!(instruction.contains("comments(first:, after: endCursor)"));
+        assert!(instruction.contains("pageInfo.hasNextPage"));
+        assert!(instruction.contains("pageInfo.endCursor"));
+        assert!(instruction.contains("全件取得できない場合はArtifactを提出せず"));
+        assert!(instruction.contains("Nodeを失敗扱いにする"));
+    }
+
+    #[test]
+    fn implement_task_parallel_uses_boolean_vocabulary() {
+        let knowledge = get_builtin_facet(FacetKind::Knowledge, "implement-task").unwrap();
+
+        assert!(!knowledge.contains("`yes`"));
+        assert!(!knowledge.contains("`no`"));
+        assert!(knowledge.contains("`true`"));
+        assert!(knowledge.contains("`false`"));
+    }
+}
