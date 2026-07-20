@@ -108,7 +108,8 @@ pub fn artifact_completion_action(
         "## 完了時の必須アクション\n\n\
 提出値が確定した時点で、次の assistant action は最終応答ではなく CLI 実行でなければならない。\n\
 チャット本文に JSON や要約を書いても提出とは扱われない。必ず次のコマンドで Artifact を提出すること。\n\
-このコマンドが成功するまで node は完了していない。\n\n\
+このコマンドが成功するまで node は完了していない。\n\
+成功したら追加の調査やtool実行を行わず、そのturnを終了すること。\n\n\
 ```sh\n\
 releash workflow output submit {execution_id} \\\n  --node {node_name} \\\n{node_execution_arg}  --type {key} \\\n  --json '{{...}}'\n\
 ```"
@@ -702,6 +703,7 @@ mod tests {
 
         assert!(action.contains("完了時の必須アクション"));
         assert!(action.contains("次の assistant action は最終応答ではなく CLI 実行"));
+        assert!(action.contains("成功したら追加の調査やtool実行を行わず"));
         assert!(action.contains("releash workflow output submit execution-1"));
         assert!(action.contains("--node plan"));
         assert!(action.contains("--type plan-doc"));
