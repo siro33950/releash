@@ -341,12 +341,12 @@ WHEN F1b golden suiteを実行する
 THEN ClaudeとCodexの全fixtureが既存CI内で完了する
 AND CLI、network、実provider processは起動されない
 
-## B-050: D3 design gate
+## B-050: 恒久SQLite transactionのatomicity
 
-GIVEN D3正本と#1499、F3、F8、F9、F10の参照関係がある
-WHEN D3正本の必須論点と上限値を機械検査し設計reviewを行う
-THEN storage / transaction、stream / order / index、CAS / idempotency、durability / crash atomicity、worker / error、envelope / raw preservation、projection / rebuild、bounded read / watch / replay、obligation / GC、legacy cutover / dual-write、crash-resumable migration、backup / restore、performanceの13論点に採用案、却下案、failure behavior、verification、具体上限がある
-AND Phase 0からF3へのauthority cutover契約に未決事項がなく、#1499の完了判定はPhase 0 closureのfault injectionとsurface parityまでで、F3 cutover runtimeの実装・実行はF3 #1385のgateである
+GIVEN agent session event、workflow event、operation binding、obligation、terminal、queue pause、shutdown planを同時に変更するbatchと、各streamのexpected head、idempotency keyがある
+WHEN bundled SQLite storeへbatchをcommitし、transaction開始前、各participant write後、commit応答前後でstorage errorまたはprocess crashを発生させ、同じidentityで再試行する
+THEN public queryは変更前または全participant確定後だけを返し、成功したbatchには連続したglobal sequenceとstream sequenceが一度だけ割り当てられ、同じidempotency key / payloadの再試行は同じcommit resultへ戻る
+AND expected head不一致はtyped conflict、queue admission前の上限超過はtyped capacity failure、commit結果確認不能は同じtransaction identityのOutcomeUnknownとなり、部分event、partial projection、legacy dual write、全履歴scanは発生しない
 
 ## B-051: Close / quit decision table
 
@@ -484,16 +484,16 @@ AND partial count、entry、pageを返さずstateとexternal effectを変更し�
 ## B-070: 既存dataの互換読込
 
 GIVEN 変更前のopen / closed / archived session、event、terminal、permission、queue-linked inputと未完了作業がある
-WHEN 明示migration操作なしでupgrade後にliveとreloadを読む
+WHEN 明示migration操作なしで自動migrationを完了し、SQLite authorityからliveとreloadを読む
 THEN 確定済み結果は変更前と一致し、未完了作業は元identityと既知observationを保ったPaused、Failed、またはReconciliationRequiredとして表示される
-AND 証明できないprovider effectは自動開始されず、legacy dataは自動書換えされない
+AND 証明できないprovider effectは自動開始されず、legacy dataは自動書換え、dual write、record単位fallbackの対象にならない
 
 ## B-071: Upgrade 中断と再開
 
-GIVEN upgrade途中の既存dataと、upgrade中に受理済みのquit operationがある
-WHEN upgrade処理の各中断点でprocessを終了して再起動し、同じcaller identityとoperation IDから進捗とquit resultを取得する
-THEN 完了確認済みのdataを重複させず同じ進捗identityからupgradeを再開し、既存message、turn、queue、terminal、permissionを重複させず、quit queryはnormal shutdown planへfallbackせず同じBootstrap projectionを返す
-AND 完了前のmutationはBootstrapInProgressとなり、quitはagentまたはworkflow終了commandを開始せず15秒以内にprocessを終了し、次bootで同じflightをExitedへ確定する
+GIVEN legacy inventoryからstaging SQLiteへのmigration途中dataと、migration中に受理済みのquit operationがある
+WHEN source batch commit、parity verification、authority pointer切替の各中断点でprocessを終了して再起動し、同じcaller identityとoperation IDから進捗とquit resultを取得する
+THEN 完了確認済みのdataを重複させず同じmigration identityとcheckpointから再開し、既存message、turn、queue、terminal、permissionを重複させず、quit queryはnormal shutdown planへfallbackせず同じMigration projectionを返す
+AND 完了前のmutationはMigrationInProgressとなり、quitはagentまたはworkflow終了commandを開始せず15秒以内にprocessを終了し、次bootで同じflightをExitedへ確定する。cutover後のauthorityはSQLiteだけでありlegacyへ戻らない
 
 ## B-072: Tauri とWebSocketのsurface一致
 
@@ -528,7 +528,7 @@ AND 最大値から次値を必要とするmutationはCapacityExceededとなりs
 GIVEN shutdownなし、same-bootの各phase、previous-boot nonterminal、previous-boot terminal、plan identityをanchorする最初のwriterの結果不明、冗長authorityだけのsemantic mismatch、storage / decode / integrity / required-reference failure、複数または一意にanchorできないidentityの各fixtureがある
 WHEN TauriとWebSocketからcurrent application shutdownを取得し、previous-boot terminalだけはexact history queryも行う
 THEN shutdownなしはCurrent(None)、same-bootは同じidentityのexact phase、previous-boot nonterminalは同じidentityのReconciliationRequired、previous-boot terminalはCurrent(None)かつhistory queryで同じterminal plan、最初のwriter結果不明はOutcomeUnknownを返す
-AND 冗長authorityだけのmismatchはShutdownAuthorityMismatch付きReconciliationRequired、storage / decode / integrity / required-reference / identity一意性failureはInternalとなり、いずれもCurrent(None)、別plan、bootstrap-safe quitへfallbackせずstateとexternal effectを変更しない
+AND 冗長authorityだけのmismatchはShutdownAuthorityMismatch付きReconciliationRequired、storage / decode / integrity / required-reference / identity一意性failureはInternalとなり、いずれもCurrent(None)、別plan、migration-safe quitへfallbackせずstateとexternal effectを変更しない
 
 ## B-077: Phase 0完了済み契約の非退行
 
@@ -539,7 +539,7 @@ AND #1499のoperation、terminal、recovery、shutdown stateは既存message、t
 
 | Gate | 正本 path / exact anchor | Check / test name | 最小入力 | Expected result |
 | --- | --- | --- | --- | --- |
-| D1 #1445 | `docs/specs/issues-1445/behavior.md` — `Feature: Agent 実行設定の新 domain 確定（configuration / Goal / Reasoning effort / launch / permission）`; design-only根拠は`docs/specs/issues-1445/design.md`冒頭 | 新規doc contract check `phase0_d1_contract_is_not_redefined_by_issue_1499`。既存runtime testはD1の明示Non-goal | #1499の公開型・decision tableをD1のconfiguration / Goal / capability境界と照合する | #1499がAgentMode、Goal authority、reasoning effort、provider capability、frontend action enablementを再定義しない |
+| D1 #1445 | `docs/specs/issues-1445/behavior.md` — `Feature: Agent 実行設定の新 domain 確定（configuration / Goal / Reasoning effort / launch / permission）`; design-only根拠は`docs/specs/issues-1445/design.md`冒頭 | 新規doc contract check `issue_1499_d1_contract_is_not_redefined`。既存runtime testはD1の明示Non-goal | #1499の公開型・decision tableをD1のconfiguration / Goal / capability境界と照合する | #1499がAgentMode、Goal authority、reasoning effort、provider capability、frontend action enablementを再定義しない |
 | F1 #1383 | `docs/specs/feat-issues-1383/behavior.md` — `Rule: replay golden（convert 層）は現状の変換出力を固定する`、`Rule: 統合 golden（read model 層）は projector までの現状挙動を固定する` | `src-tauri/src/infrastructure/agent_session/fixtures/mod.rs::{claude_fixtures_match_convert_golden,codex_fixtures_match_convert_golden}`、`src-tauri/src/test_support/agent_session_wire_replay.rs::{claude_fixture_matches_read_model_golden,codex_fixture_matches_read_model_golden}` | `fixtures/{claude,codex}/normal_turn/wire.jsonl` | convert outputとread modelが各`convert.golden` / `read_model.golden`に一致し、fixtureごとのterminalが1件 |
 | L1 #1402 | `docs/specs/issues-1402/behavior.md` — `Rule: 停止操作はどの phase でも常に受理される`、`Rule: Codex の turn_id 未取得ウィンドウでの停止予約`、`Rule: 停止後に pending queue を自動実行しない` | `runtime/usecase.rs::production_interrupt_watchdog_finalizes_at_the_ten_second_boundary`、`codex/session.rs::read_loop_writes_the_reserved_interrupt_exactly_once_after_turn_started`、`runtime/usecase.rs::queue_pause_and_explicit_resume_survive_runtime_state_restart` | unresponsive backend、turn ID通知前Stop、pending queue 1件、fake clock 10秒、restart | Timeout terminalが10秒、reserved interrupt 1回、queueはPausedで明示resumeまで開始0件 |
 | L2 #1403 | `docs/specs/issues-1403/behavior.md` — `Rule: 実行中 turn への送信は成功以外の結果を持たない`、`Rule: queue に積むメッセージは欠落なく永続化される`、`Rule: 入力欄は送信成功時にのみクリアされる` | `runtime/usecase.rs::test_stale_watchdog_無進捗turnをstall_signalに留めruntimeを閉じない`、`MessageInput.test.tsx::clears input only after sending succeeds`、`MessageInput.test.tsx::serializes submissions and preserves edited input and attachments added in flight` | steering非対応stall turnへ本文、image、mention、editor_contextをsendし、send pending中にdraftを追加 | exact payloadのqueue item 1件、raw steering errorなし、Accepted分だけclear、追加入力は残る |
@@ -624,10 +624,10 @@ AND 不正なidentityではStop受理、provider interrupt、shutdown identity�
 
 ## B-088: Known quit operation の読取境界
 
-GIVEN Availableなlive normal shutdown、Compactedなlive normal shutdown、compact shell削除後のarchive-only normal shutdown、liveとarchiveが一致または不一致のnormal shutdown、bootstrap-safe flight、未発行operation、known operation固有の読取authorityまたは参照先が欠損・decode不能・integrity不一致のcase、acceptance保存結果不明のcase、Accepted後の参照先transaction結果不明のcaseが各1件ある
+GIVEN Availableなlive normal shutdown、Compactedなlive normal shutdown、compact shell削除後のarchive-only normal shutdown、liveとarchiveが一致または不一致のnormal shutdown、migration-safe flight、未発行operation、known operation固有の読取authorityまたは参照先が欠損・decode不能・integrity不一致のcase、acceptance保存結果不明のcase、Accepted後の参照先transaction結果不明のcaseが各1件ある
 WHEN operation identityを指定してTauriとWebSocketからquit operationを取得する
-THEN 正常なlive / archive-only / live+archive一致は同じShutdown projection、bootstrapはBootstrap projection、未発行identityはNotFound、live+archive不一致を含むauthority破損はInternal、acceptance保存結果不明はtop-level OutcomeUnknown、Accepted後の参照先transaction結果不明はAccepted内のOutcomeUnknownを両surfaceで返す
-AND compact shellの存否でterminal result bytesを変えず、authority破損、結果不明、BootstrapをCurrent(None)、normal shutdown、別operationのprojectionへfallbackしない
+THEN 正常なlive / archive-only / live+archive一致は同じShutdown projection、migrationはMigration projection、未発行identityはNotFound、live+archive不一致を含むauthority破損はInternal、acceptance保存結果不明はtop-level OutcomeUnknown、Accepted後の参照先transaction結果不明はAccepted内のOutcomeUnknownを両surfaceで返す
+AND compact shellの存否でterminal result bytesを変えず、authority破損、結果不明、MigrationをCurrent(None)、normal shutdown、別operationのprojectionへfallbackしない
 
 ## B-089: Plan固定 recovery snapshot の照会境界
 
@@ -692,12 +692,12 @@ WHEN new quitを要求し、同時にold planをexact history queryする
 THEN new quitはRejectedBeforeAcceptanceのPreviousShutdownCompactionPendingとold planのblocking shutdown projectionを返し、新しいshutdown operation、admission変更、external effectを0件にする
 AND old planはAvailableまたはCompactedとして継続取得でき、Compactedへ確定した後のnew quitだけが通常の受理条件へ進み、old planは同じidentityのCompacted historyとして残る
 
-## B-098: D3 cutover と managed backup の公開保証
+## B-098: LegacyからSQLiteへのone-shot cutover
 
-GIVEN D3正本のPhase 0→F3 authority cutover、managed backup / restore、shutdown details compactionの各契約がある
-WHEN design lintとreviewでfailure、restart、backup、restore、cutover前後の公開resultを検査する
-THEN cutoverは一度だけauthorityを切り替え、未解決operationまたはshutdown detailを失う場合はauthorityを切り替えずMigrationBlockedとなり、backup / restore後はoperation identity、terminal result、shutdown Available / Compacted result、counts、deadline、failureを同じpublic queryから再取得できる
-AND managed backupを許す条件とF3 authority cutoverを許す条件が区別され、#1499 runtimeにmanaged backup / restoreまたはF3 cutoverのpublic command・実装・実行を完了条件として追加しない
+GIVEN 固定したlegacy source inventory、staging SQLite、migration checkpoint、authority pointerと、未解決operation / shutdown detailを含むfixtureがある
+WHEN bounded import、projection parity、known-result parity、owner relation検証を行い、pointer切替の前後でfailureまたはrestartを発生させる
+THEN parity未達または参照不整合ではauthorityを切り替えずMigrationBlockedを返し、成功時はpointerをLegacyからSqliteへ一度だけ切り替え、operation identity、terminal result、shutdown Available / Compacted result、counts、deadline、failureを同じpublic queryから再取得できる
+AND cutover後のmutationと再起動はSQLiteだけを使い、legacyへのrollback、dual write、record単位fallback、managed backup / restoreのpublic commandを追加しない
 
 ## B-099: 通常send operationのprincipal分離
 
@@ -734,6 +734,13 @@ WHEN command受理直後、10秒時点、restart後に同じoperation identity�
 THEN effect開始前にimmutable Accepted receiptを取得でき、10秒以内にCompletedまたはReconciliationRequiredへ進み、restart後も同じreceipt、state、outcomeを返す
 AND 受理前のBusy、PendingOperation、RevisionConflict、InvalidState、Failedではsession、queue、terminal、backend、external effectを変更しない
 
+## B-104: Canonical MessagePart と永続化互換
+
+GIVEN 変更前の既知message part JSON、Claude / Codex F1 fixture、SQLite persistence envelope、Tauri / WebSocket public DTO fixtureがある
+WHEN legacy JSONをdomainのcanonical MessagePartへdecodeし、SQLiteへ保存・reloadし、両public surfaceへpresentする
+THEN 既知variantのtag、field、順序、optionalityと公開結果は変更前と一致し、session usecase、runtime event、projectionは同じdomain typeを使う
+AND persistence DTOとpublic DTOはdomain typeから独立してversion管理され、unknown additive persistence payloadはraw bytesを保持し、unknown required variantはtyped incompatibilityとしてfail closedとなり、usecase layerに同義MessagePart enumを残さない
+
 ## 要件IDと検証方法の対応表
 
 | Requirement ID | Behavior ID | Verification Method |
@@ -750,12 +757,13 @@ AND 受理前のBusy、PendingOperation、RevisionConflict、InvalidState、Fail
 | R-010 | B-035, B-036, B-037, B-038, B-039, B-040, B-090 | 全未完了categoryとowner partitionを個別session未読込で列挙し、201件paging、途中更新、cursor改変 / restart、shutdown plan / epoch association、各crash境界、未解決shutdown、mutation抑止を入力してidentity保持、filter純度、page上限、typed cursor error、effect / message最大1を観測する |
 | R-011 | B-041, B-042, B-043, B-044, B-045, B-046, B-094 | data / meta双方を壊したsessionへfailureを発生させ、33件paging、identity別dismiss、512件capacity、stale revision、resolution retry再失敗、UTF-8 byte上限を入力し、embedded SafeOperationFailure、flat field重複0、failure / log correlation identity一致、exact error、同一identity更新、件数 / slot、effect境界を両surfaceで照合する |
 | R-012 | B-047, B-048, B-049 | Claude / Codex wire fixtureをproduction public interfaceへ入力し、wire変換とprojection変換を別々にmutation testし、期待golden、独立failure、既存F1維持、network / process起動0をCI記録で観測する |
-| R-013 | B-050, B-098 | D3正本をlintし、必須13論点、採用 / 却下 / failure behavior / migration verification / 具体上限、#1499・F3・F8・F9・F10のauthority境界、managed backup / restore後の公開identity / result再現、failure時のMigrationBlocked、#1499 runtimeへのfuture public route混入0件を確認する |
+| R-013 | B-050, B-098 | SQLite fault harnessでmulti-stream batchの各write / commit境界、same-key replay、expected-head conflict、queue件数 / byte上限、signed 64-bit境界、unknown additive / required payload、legacy cutover前後を検査する。変更前または全participant確定後だけ、sequence一回性、OutcomeUnknownのsame-identity解決、MigrationBlocked、cutover後legacy write / fallback 0件を確認する |
 | R-014 | B-051, B-052, B-053, B-054, B-055, B-056, B-095, B-101, B-102, B-103 | decision table全surfaceをschema検査し、active / Idle close、open / closed archive、backend switch、view closeへvalid / invalid request ID、same-key replay / conflict、別key join / PendingOperation、別principal query、response喪失、10秒hang、restart、close crashを入力する。同じoperation receipt / outcome、NotFound、terminal有無、queue pause、backend selection、effect最大1を公開command / queryで観測する |
-| R-015 | B-039, B-057, B-058, B-059, B-060, B-061, B-062, B-087, B-088, B-091, B-092, B-097, B-100 | 全graceful surfaceからsame / different request identityとintentでquitし、response喪失、root writer結果不明、same / previous boot nonterminal、terminal detail保持中、4096 / 4097 target、page / byte境界を入力する。同じbackend operation、first intent不変、blocking projection、Current / OutcomeUnknown / exact error、effect各最大1を観測する |
+| R-015 | B-039, B-057, B-058, B-059, B-060, B-061, B-062, B-087, B-088, B-091, B-092, B-097, B-100 | 全graceful surfaceからsame / different request identityとintentでquitし、response喪失、SQLite transaction結果不明、same / previous boot nonterminal、migration-safe flight、terminal detail保持中、4096 / 4097 target、page / byte境界を入力する。同じbackend operation、first intent不変、blocking projection、Current / OutcomeUnknown / exact error、effect各最大1を観測する |
 | R-016 | B-063, B-064, B-065, B-066, B-067, B-089, B-096, B-097 | fake clockで準備failure、activation結果不明、activation後hang、exit-coupled child、old-flight遅延result、Available→Compacted切替の各公開境界へcrashを投入する。15秒以内のabortまたはexit、開始前effect 0、同一identityのrestart recovery、Compacted後のsame summary / empty entries / DetailsCompacted、fallback 0、重複effect 0を観測する |
 | R-017 | B-068, B-069 | 10件 / 1000000件fixtureで各1000 sampleを同一release環境から測定してidentity / page / effect一致とp95 / p99上限を集計し、同時commitと2秒超過でQueryBusy / DeadlineExceeded、partial result 0を観測する |
-| R-018 | B-038, B-062, B-070, B-071, B-072, B-073, B-074, B-075, B-076, B-088, B-089 | legacy fixtureでupgrade中断 / restart、bootstrap-safe quit replay、Tauri / WebSocket parity、WebSocket認証 / resource上限、request ID競合 / reconnect、integer境界、same / previous boot shutdown、authority mismatch、storage / integrity failure、writer結果不明を入力する。重複0、BootstrapInProgress、lossless decimal string、Current(None) / exact phase / ReconciliationRequired / Internal / OutcomeUnknownの非混同を公開resultで観測する |
+| R-018 | B-038, B-062, B-070, B-071, B-072, B-073, B-074, B-075, B-076, B-088, B-089, B-098 | legacy fixtureでmigration各checkpoint / authority cutoverの中断・restart、migration-safe quit replay、Tauri / WebSocket parity、WebSocket認証 / resource上限、request ID競合 / reconnect、integer境界、same / previous boot shutdown、authority mismatch、storage / integrity failure、writer結果不明を入力する。重複0、MigrationInProgress、lossless decimal string、Current(None) / exact phase / ReconciliationRequired / Internal / OutcomeUnknownの非混同、cutover後legacy access 0を公開resultで観測する |
 | R-019 | B-077 | B-077 trace matrixのexact check / testを記載inputで実行し、各rowのexpected resultとmessage / terminal / queue / notice / external effectの重複0を観測する |
 | R-020 | B-026, B-034, B-078, B-079, B-080 | Stop winner / normal・Fatal・close winner、保存failure、restart / retryを組み合わせ、terminal全項目とSucceeded / Superseded resolutionの同時表示、各1件、capacity保持 / 解放を観測する |
 | R-021 | B-019, B-021, B-039, B-081, B-082, B-083, B-084, B-085, B-086, B-093 | five action kind、response喪失、restart、時間経過、resource revision更新、details compaction、current resolver failure、未発行 / 改変 / stale / unavailable / target競合、closed classification pair、shutdown全target解決、writer結果不明を入力し、same-action exact replay、exact typed error、effect増分0、plan terminal、ActionOutcomeUnknownを両surfaceで照合する |
+| R-022 | B-047, B-048, B-049, B-077, B-104 | compile-timeの単一定義check、legacy JSON / SQLite envelope round-trip、Claude / Codex F1 golden、Tauri / WebSocket presenter golden、unknown version fixtureを実行し、known public shape不変、domain型の単一所有、raw preservation、unknown required variantのfail-closed、usecase同義enum 0件を確認する |

@@ -1,7 +1,7 @@
 # Agent セッションライフサイクルの理想形（不変条件）
 
 作成日: 2026-07-07
-更新日: 2026-07-19
+更新日: 2026-07-21
 
 milestone 84「Agentチャット安定化」のドキュメント群:
 
@@ -9,10 +9,16 @@ milestone 84「Agentチャット安定化」のドキュメント群:
 - [agent-chat-ideal-vocabulary.md](agent-chat-ideal-vocabulary.md) — 正規化語彙・データ構造の理想形
 - **agent-chat-ideal-lifecycle.md（本書）** — ライフサイクルの理想形（不変条件）
 - [agent-chat-ideal-presentation.md](agent-chat-ideal-presentation.md) — UI 表示の理想形
-- [d3-durable-event-store-design.md](d3-durable-event-store-design.md) — local atomic event store の物理設計 gate
+- [d3-durable-event-store-design.md](d3-durable-event-store-design.md) — #1499 Primary Specへの恒久store設計統合記録
 - [close-quit-decision-table.md](close-quit-decision-table.md) — view close / Session lifecycle / configuration transition / application quit の surface 別正本
 
 本書は「セッション・turn・permission・queue が、どの経路を通っても何を保証するか」を不変条件（invariant）として定義する。監査で確定した lossy-lifecycle / divergent 問題群の解消先。語彙は vocabulary 文書の型を前提とする。
+
+## #1499恒久store統合による優先関係
+
+2026-07-21にF2 #1384とF3 #1385を#1499へ統合した。ライフサイクル不変条件は本書、実装する物理transaction / schema / migration /型名は[Issue #1499 Primary Design](../../docs/specs/issues-1499/design.md)を正本とする。
+
+本書に残る`Phase0*`、Phase 0 root / manifest / closure / materializer、`get_phase0_bootstrap`、`ApplicationQuitProjection::Bootstrap`、将来F3という物理記述は旧二段構成の履歴であり、実装しない。対応する現行語彙はSQLite transaction / row / bounded snapshot、`get_local_store_migration`、`ApplicationQuitProjection::Migration`である。L-D3 / L-D14 / L-D15の利用者可視不変条件とdeadlineは維持し、物理手順は後述L-D16とPrimary Designへ置き換える。
 
 ## 設計原則
 
@@ -450,6 +456,8 @@ queue はphaseと直交するevent-sourced sub-state: `items: [{ input_ref, conf
 - **L-D15**: Phase 0 bridge初回upgradeはexclusive writer lockとnormal mutation / effect admission閉鎖の下でautomatic bootstrapする。immutable legacy inventoryをread最大200 source logical records / decoded source 16 MiB、別physical K tier最大17 MiB、normal lane 64 MiBでcrash-resumableにstagingへnormalizationする。一sourceはdeterministic substep microcommitへ分割できるがcursor / imported countはfinalize後だけ進め、partialをpublicへ出さない。terminal / permission / unknown raw bytesを保持し、証明不能active turn / queueをReconciliationRequiredへ、局所破損を最小scope quarantineへ写す。quarantine exact raw bytesはprivate immutable blobへ1 MiB chunk / step 16 MiBでcrash-resumableに保存し、final size / hash検証後だけrecordをcommitしてordered raw hashをparityへ含める。legacy sourceのparity検証、Phase 0 activation、F3 one-shot importに必要なretentionが全て完了するまで保持し、Phase 0ではreset / purgeをGC triggerとして扱わない。source / staged parityとrequired sync後のauthority pointer CASだけがcutoverであり、stagingはそれ以前non-authority、切替後はlegacy read-only、dual write / fallback / rollbackなしとする。Tauri / WebSocketは同じread-only bootstrap projectionを返し、pointer / root / parity検証、reachable replay / pending inventory validation、normal admission open後だけNoneにする。bootstrap中のquitはnormal plan / target /明示commandを作らない13秒settle・15秒one-shot bounded exitで、OutcomeUnknownとimplicit process-exitをauthority resultへ推測変換しない。physical identity helperはu16 BE count / u32 BE length / u64 BE unsigned numericを含む最大16 component、各1024 bytes、canonical input 16 KiB、logical key 1024 bytesをhard limitにし、signed numeric / decimal ASCIIを禁止する。
 
 L-D15の`LegacyBootstrapCursorV1`は`source_entry_ordinal / source_entry_id / source_record_ordinal / substep_ordinal`を持つ次未commit unitのcursorである。ordinalは0..=9223372036854775807、source entry IDはraw UTF-8 1..=1024 bytesとし、enclosing source inventory hashとordinal位置のstable IDをbyte検証する。source finalize後だけ次record / entryへ進め、partial substepではsubstepだけを進める。Noneはfixed inventoryが空または全source finalize済みの場合だけである。bootstrap-safe quitはcaller binding、opaque backend operation ID、bootstrap flight locator / recordを保存し、operation queryをnormal shutdown plan lookupへfallbackさせない。
+
+- **L-D16（2026-07-21、L-D3 / L-D14 / L-D15の物理設計をsupersede）**: #1499の恒久authorityはbundled SQLite local event storeである。pending recoveryは`pending_obligations` index、identityはdirect operation table、terminalはunique `(session_id, turn_id)`、shutdownはplan / target / snapshot tableを同じSQLite transactionで更新する。L-D3のbounded discovery、L-D14の13秒cutoff / 15秒exit / Available→Compacted一方向切替、L-D15のread-only upgrade / crash resume / parity / migration-safe quitという利用者可視不変条件は維持するが、COW root、manifest、file materializer、Phase 0 generation、Phase 0→F3 importを使わない。legacyはstaging SQLiteへ直接取り込み、parity後だけauthority pointerをLegacyからSqliteへ一度CASし、cutover後はSQLite-onlyとする。shutdown compactionはarchive insertとdetails state CASを同じtransactionで行い、detail rowのbounded cleanup中もCompactedからAvailableへ戻さない。型、schema、上限、transaction順は[Issue #1499 Primary Design](../../docs/specs/issues-1499/design.md)を参照し、本書の旧physical helper / K tier / root名を実装名として採用しない。
 
 ## 確定事項（2026-07-07、2026-07-15 レビューで確定）
 

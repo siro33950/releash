@@ -141,7 +141,7 @@ same-boot current flightには後続quitをjoinさせる。process flightがな�
 | #1499 R-015 | Application quit ingress、Application shutdown contract、Shutdown readback |
 | #1499 R-016 | Deadline、Application shutdown contract、Shutdown readback、Failure policy |
 | #1499 R-017 | bounded target / pending recovery lookup |
-| #1499 R-018 | bootstrap中のgate、Tauri / WebSocket共通readback |
+| #1499 R-018 | local-store migration中のgate、migration-safe quit、Tauri / WebSocket共通readback |
 | #1499 R-020 | Session close / archiveとStop競合時のcanonical terminal closure |
 | #1499 R-021 | recovery / shutdown target action、last-target finalization |
 | lifecycle I1 / I4 / I7 / I17 | 本書全体 |

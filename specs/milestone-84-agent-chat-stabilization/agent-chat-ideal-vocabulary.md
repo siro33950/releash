@@ -1,7 +1,7 @@
 # Agent チャット正規化語彙・データ構造の理想形
 
 作成日: 2026-07-07
-更新日: 2026-07-19
+更新日: 2026-07-21
 
 milestone 84「Agentチャット安定化」のドキュメント群:
 
@@ -9,10 +9,18 @@ milestone 84「Agentチャット安定化」のドキュメント群:
 - **agent-chat-ideal-vocabulary.md（本書）** — 正規化語彙・データ構造の理想形
 - [agent-chat-ideal-lifecycle.md](agent-chat-ideal-lifecycle.md) — ライフサイクルの理想形（不変条件）
 - [agent-chat-ideal-presentation.md](agent-chat-ideal-presentation.md) — UI 表示の理想形
-- [d3-durable-event-store-design.md](d3-durable-event-store-design.md) — local atomic event store の物理設計 gate
+- [d3-durable-event-store-design.md](d3-durable-event-store-design.md) — #1499 Primary Specへの恒久store設計統合記録
 - [close-quit-decision-table.md](close-quit-decision-table.md) — close / quit surface の正本
 
 本書は「Claude / Codex から届く事象を、何という語彙に正規化するか」の正本を定義する。監査で確定した dropped / divergent 問題群の解消先であり、ライフサイクル・表示の 2 文書はこの語彙を前提とする。問題 ID（CL-x 等）は監査ドキュメントを参照。
+
+## #1499恒久store統合による語彙の優先関係
+
+2026-07-21にF2 #1384とF3 #1385を#1499へ統合した。`MessagePart`、domain event、`LocalEventTransactionRepository`、obligation / recovery / shutdownのsemantic語彙は本書を維持し、物理store / persistence DTO / migrationの型と配置は[Issue #1499 Primary Design](../../docs/specs/issues-1499/design.md)を正本とする。
+
+本書§9.5 / §10および既存例に残る`Phase0*`、COW root、manifest、file materializer、bootstrap、将来F3という名前は旧二段構成のphysical modelであり、実装名・schema名・runtime phaseとして使わない。対応する現行語彙は`LocalAtomicBatch`、SQLite transaction / row / bounded snapshot、`StoredEventEnvelopeV1`、`LocalStoreMigrationProjection`、`MigrationApplicationQuitProjection`である。`Phase0*` physical typeがsemantic typeのfieldや不変条件を補足している場合、その不変条件だけをPrimary DesignのSQLite schemaへ写し、旧physical containerを作らない。
+
+F2統合後は`domain/agent_session/entities/message_part.rs::MessagePart`が唯一のsemantic定義である。usecase側の同義enumは削除し、gatewayのlegacy / SQLite persistence DTOとadaptor protocolのpublic DTOはそれぞれ独立してversion管理し、domain typeへ明示変換する。
 
 ## 設計原則
 

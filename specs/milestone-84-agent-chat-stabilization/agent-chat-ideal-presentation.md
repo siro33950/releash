@@ -1,7 +1,7 @@
 # Agent チャット表示（presentation）の理想形
 
 作成日: 2026-07-07
-更新日: 2026-07-19
+更新日: 2026-07-21
 
 milestone 84「Agentチャット安定化」のドキュメント群:
 
@@ -9,10 +9,25 @@ milestone 84「Agentチャット安定化」のドキュメント群:
 - [agent-chat-ideal-vocabulary.md](agent-chat-ideal-vocabulary.md) — 正規化語彙・データ構造の理想形
 - [agent-chat-ideal-lifecycle.md](agent-chat-ideal-lifecycle.md) — ライフサイクルの理想形（不変条件）
 - **agent-chat-ideal-presentation.md（本書）** — UI 表示の理想形
-- [d3-durable-event-store-design.md](d3-durable-event-store-design.md) — durable event store の物理設計 gate
+- [d3-durable-event-store-design.md](d3-durable-event-store-design.md) — #1499 Primary Specへの恒久store設計統合記録
 - [close-quit-decision-table.md](close-quit-decision-table.md) — close / quit surface の表示結果正本
 
 本書は「backend が持つ情報を、どの surface に、どう表示するか」の正本を定義する。監査で確定した presentation 問題群（FE 群）と、語彙拡張で新たに表示対象になる要素（thinking / plan / notice / stop reason / usage 等）の表示先を確定する。frontend は Rust backend が所有する read model の mirror であり（CLAUDE.md 原則 / ST-8）、本書は「何を映すか」を決める文書であって frontend にロジックを置く根拠にはしない。
+
+## #1499恒久store統合による読み替え
+
+2026-07-21にF2 #1384とF3 #1385を#1499へ統合した。#1499の実装では[Primary Design](../../docs/specs/issues-1499/design.md)が物理store、型、migration、quit projectionの正本である。本書の既存記述に残る暫定storeの物理名は履歴上の表現であり、次のように読み替える。表示意味論がPrimary Specと衝突する場合はPrimary Specを優先する。
+
+| 旧表現 | #1499実装 |
+| --- | --- |
+| Phase 0 bridge / root / manifest / closure | 恒久SQLite local event store / transaction |
+| `get_phase0_bootstrap` / `GetPhase0Bootstrap` | `get_local_store_migration` / `GetLocalStoreMigration` |
+| `Phase0BootstrapProjection` | `LocalStoreMigrationProjection` |
+| `ApplicationQuitProjection::Bootstrap` | `ApplicationQuitProjection::Migration` |
+| `Phase0ReadSnapshotRef`等のphysical snapshot型 | SQLite read transaction内のbounded snapshot。public DTOへ露出しない |
+| D3 / F3で将来実装 | #1499で直接実装 |
+
+legacy migration中のbannerは`InspectingSource / Importing / Verifying / Activating / Failed`、count、`read_only=true`、Failed時だけsafe failureをbackend値のまま表示する。projectionが`Some`の間はnormal mutation / irreversible effectを無効化し、quitだけはnormal shutdown planを作らないmigration-safe 15秒exitへ渡す。`None`確定後はSQLite authorityだけを表示し、legacyとのmerge / fallbackを行わない。
 
 ## 表示原則
 
@@ -229,7 +244,7 @@ Phase 0の公開表示・操作にはresource-isolated input、operation / resou
 - **P-D5**: mode は排他的 5 値 selector とし、Plan toggle は廃止する。Auto / Bypass の意味と危険性は provider capability と共に表示する。
 - **P-D6**: 「工数（推論レベル）」を UI 名とし、S7 の TokenUsage / cost と視覚・状態・説明を分離する。
 - **P-D7**: GoalはS9bの独立`SessionGoalProjection`としてcurrent/pending/sync/evidenceを表示し、Rust評価済みavailable actionsからset/edit/pause/resume/clearを提供する。completion/failureはevidence付きoutcome、provider strategy/effectsは操作前表示とする。
-- **P-D8**: automatic Phase 0 bootstrap中はlegacy projectionをread-only表示し、application bannerへbackend-owned `InspectingSource / Importing / Verifying / Activating / Failed`、count、Failedだけのsafe failureを出す。pointer切替後のvalidationとnormal admission openまでActivatingを維持し、projectionがSomeの間はnormal mutation / irreversible effectをdisabled reason付きで止めるが、quitはnormal planを作らないbootstrap-safe 13秒settle・15秒one-shot exitへ渡す。None確定後はPhase0 authorityだけを表示してlegacyとのmerge / fallbackを行わない。quarantine raw bytes / blob refは公開しない。
+- **P-D8（2026-07-21改訂）**: automatic local-store migration中はlegacy projectionをread-only表示し、application bannerへbackend-owned `InspectingSource / Importing / Verifying / Activating / Failed`、count、Failedだけのsafe failureを出す。pointer切替後のSQLite parity validationとnormal admission openまでActivatingを維持し、projectionがSomeの間はnormal mutation / irreversible effectをdisabled reason付きで止めるが、quitはnormal planを作らないmigration-safe 15秒exitへ渡す。None確定後はSQLite authorityだけを表示してlegacyとのmerge / fallbackを行わない。raw-preserved bytes / private refは公開しない。
 
 ## 確定事項（2026-07-07、2026-07-15 レビューで確定）
 
@@ -243,4 +258,4 @@ Phase 0の公開表示・操作にはresource-isolated input、operation / resou
 8. **確定タイミング**: UIはconfigurationのrequested/selected/effectiveとGoalのcurrent/pending/syncを区別し、provider ack/canonical commit/activation前にeffectiveとして表示しない。reconciliation中は送信を止める。
 9. **Bypass / Auto**: BypassはRustのexecution-scoped one-time challengeとprovider launch gateを必須とし、Autoはprovider reviewerの全status/fallbackとsandbox非拡張を表示する。どちらもworkflow checkpointを越えない。
 10. **protocol compatibility**: compiled schemaと実行binary/flags/capabilitiesの不一致はS6のProtocolIncompatibleとして表示し、新規sendを止める。
-11. **P-D8**: 初回upgradeのbootstrapは既存履歴をread-only表示しながら同一backend projectionのphase / count / safe failureを示し、pointer切替後のvalidationを含めprojectionがSomeの間はsend / permission / close / workflow / recoveryを無効にする。quitだけはnormal shutdown plan / target /明示commandを作らないbootstrap-safe bounded exitへ渡す。scope quarantineは対象scopeだけへ表示し、private raw bytesは出さない。
+11. **P-D8**: 初回upgradeのlocal-store migrationは既存履歴をread-only表示しながら同一backend projectionのphase / count / safe failureを示し、pointer切替後のSQLite validationを含めprojectionがSomeの間はsend / permission / close / workflow / recoveryを無効にする。quitだけはnormal shutdown plan / target /明示commandを作らないmigration-safe bounded exitへ渡し、private raw bytesは出さない。
