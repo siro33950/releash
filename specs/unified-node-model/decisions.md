@@ -23,7 +23,7 @@ Node は好きなように組み合わせられる。Sequence の子に別の Wo
 
 ## プロダクト方針
 
-- workflow engine は制御フローの唯一の権威である。agent がフローに影響できる経路は、記録される typed command（delegate の task 提出・Artifact 提出）のみ。agent の暗黙の振る舞いでフローは変わらない。
+- workflow engine は制御フローの唯一の権威である。agent がフローに影響できる経路は、記録される typed command（Artifact 提出 — delegate の発火もこれに乗る）のみ。agent の暗黙の振る舞いでフローは変わらない。
 - human checkpoint は2箇所で担保する。Node の完了定義 `completion: approval`（承認主体は human のみ）と、Session への観測・介入（いつでも可能）。
 - 隔離環境の成果の統合（merge）はフローではなく作業状態への操作である。engine は機械的・無条件の merge を行わない。統合は判断主体（親 session の agent または human）が Artifact と diff を確認した上で、通常の Git 操作として行う。
 - 機械が勝手に回り続ける経路は静的に有界にする。非有界になれるのは agent の判断による反復だけであり、それはターン境界ごとに記録され、human が観測・中断できる。
@@ -90,7 +90,7 @@ Sequence  -> 終端 node への到達
 | --- | --- |
 | 定義の静的構造（サブワークフロー参照） | load 時の参照循環検出 + 最大深さ制限 |
 | 辺の後方参照ループ | loop_guard（オプショナル） |
-| 実行時の子展開（Fanout items / delegate） | 実行時に決まるのは幅のみ（items の件数 / task の数）。深さは定義の静的構造で固定され、展開された子が定義に無い子を生むことはない。delegate の子はさらに delegate できない |
+| 実行時の子展開（Fanout items / delegate） | 実行時に決まるのは幅のみ（items の件数 / delegate の発火回数）。深さは定義の静的構造で固定され、展開された子が定義に無い子を生むことはない。delegate の child はさらに delegate できない |
 | 反復 | agent の判断。ターン境界ごとに記録・観測・中断可能 |
 
 ### Fanout と delegate の境界
@@ -100,10 +100,10 @@ Sequence  -> 終端 node への到達
 | | Fanout | delegate |
 | --- | --- | --- |
 | 何者か | 定義に書かれる合成子 Node | Session の宣言的能力（Node 種別ではない） |
-| 動的さの出所 | データ由来。items（前 Node の Artifact 配列）で子の数が決まる。YAML に記載された決定的振る舞い | 判断由来。agent が実行中に task 配列を typed command で提出する |
-| 子の置き場所 | 実行木のノード | 親 Session の内部実行状態。実行木のノードではなく、親 Session の中央 UI で観測する |
+| 動的さの出所 | データ由来。items（前 Node の Artifact 配列）で子の数が決まる。YAML に記載された決定的振る舞い | 判断由来。親 session の Artifact 提出のたびに、宣言された child Node が起動する（発火回数は実行時に決まる） |
+| 子の置き場所 | 実行木のノード | 実行木のノード。親 Session Node の部分木として発火ごとにぶら下がり、Workspace の実行木ツリーで観測する |
 
-子展開・`worktree: shared | isolated` の機構は共有する。delegate の仕様は milestone #85 が正本であり、本モデルと #85 に相互依存はない。
+子展開・`worktree: shared | isolated` の機構は共有する。delegate の仕様は milestone #85 が正本であり、#85 は本モデルの構文（children / completion / 合成子の再帰解禁）に依存する（本モデル完了後に着手）。
 
 ### Worktree 実行コンテキスト
 
@@ -130,7 +130,7 @@ worktree は Node が親から継承する実行コンテキストであり、�
 
 ①/②の判定はディスク上の worktree からの推測ではなく、生成時に記録された所有情報と実体の突合で行う。
 
-- 台帳は永続化された実行状態そのもの: 実行木の状態（第一級 Node が生んだ②）と、各 Session の delegate 状態（delegate 子が生んだ②）。所有の実体と記録の場所が一致する。別台帳は新設しない。
+- 台帳は永続化された実行状態そのもの = 実行木の状態。delegate の child も実行木の Node であり、その②も同じ台帳に載る（親 Session の delegate 状態という第二の台帳は持たない）。所有の実体と記録の場所が一致する。別台帳は新設しない。
 - ②は専用パス + branch 命名規則で生成する（可読性と、台帳が読めない異常時のフォールバック判定）。
 - 起動時に台帳と `git worktree list` を突合する:
   - 台帳は②と言うが実体が無い → 該当 Node を「隔離環境喪失」としてマークし、resume 不可を明示する。
@@ -155,6 +155,7 @@ worktree は Node が親から継承する実行コンテキストであり、�
 | worktree 継承 | 実行コンテキストとして親から継承。隔離の宣言は関心の所有者に置く（単独 Node は自身の定義、並走の隔離は Fanout ブロック）。出自2種を分離。 |
 | 台帳突合 | 永続化された実行状態を台帳に、起動時に実体と突合。未統合成果は機械的に削除しない。 |
 | 木ごとイベントログ | per-execution ログの一般化。実行木は replay projection。 |
+| 実行木 UI の完全性 | 起きた実行はすべて行に出す。retry は attempt ごと、delegate は発火ごとに行が並ぶ。番号ラベルは表示しない（順序は並びでわかる）。決着済みの過去はデフォルト折り畳み。 |
 
 ## 採用しないもの
 
@@ -174,8 +175,8 @@ worktree は Node が親から継承する実行コンテキストであり、�
 | 資産 | 関係 |
 | --- | --- |
 | milestone 82（新モデル移行） | 前提。command / session / fanout、Contract 検証済み Artifact、typed command、イベントログ / resume の上に立つ。 |
-| [#1454](https://github.com/siro33950/releash/issues/1454)（Node 中心再帰ツリー UI） | UI 骨格の先行実装。単独 Session も Node、合成子は branch、中央表示は単一 NodeContentView。本モデルはその backend 正本化と一般化。Fanout 結果への承認の表示場所は #1454 が扱う。 |
-| milestone 85（delegate + worktree 隔離） | 相互依存なし・順序制約なし。`worktree: shared \| isolated` の意味論は #85 の確定判断を継承する。ただし Fanout での宣言場所は「child の node 定義」から「Fanout ブロック」へ改める（#85 の「fanout block 自体には不可」の改訂）。 |
+| [#1454](https://github.com/siro33950/releash/issues/1454)（Node 中心再帰ツリー UI） | UI 骨格の先行実装。単独 Session も Node、合成子は branch、中央表示は単一 NodeContentView。本モデルはその backend 正本化と一般化。ただし「retry で行を増やさない（最新 attempt のみ関連付け）」の既定は本モデルで改訂 — 起きた実行はすべて行に出す（§採用するもの）。Fanout 結果への承認の表示場所は #1454 が扱う。 |
+| milestone 85（delegate + worktree 隔離） | **#85 は本モデル完了後に着手する（依存: children 構文・completion・合成子の再帰解禁）**。delegate の発火は親 session の Artifact 提出、child は任意の Node、completion の条件合成（when / and / or）は #85 の文法追記。`worktree: shared \| isolated` の意味論は #85 の確定判断を継承する。 |
 | milestone 84（Agent チャット安定化） | 制御フローは独立。ただし **session の実行設定の語彙は MS84 の AgentSessionConfiguration に従う**: permission の値域 = AgentMode（ask / edit / plan / auto / bypass）、goal = AgentGoal（省略可）、effort = ReasoningEffort（省略可）。node session 生成経路は MS84 の設定型を組み立てる。 |
 | `docs/workflow-engine-evolution-plan.md` | 「NodeDefinition 種別は command / session / fanout の3つ」「完了判定は session の gate」（gate → completion 改名・意味論維持）が改訂対象。改訂は実装マイルストーンの文法正本化 wave で行う。 |
 | `docs/workflow-yaml-syntax.md` | 改訂対象。改訂内容の確定分は [syntax.md](syntax.md) が正本（トップレベル = nodes カタログ + main 規約、sequence = entry + output + children、Interface とデータ配線の分離、completion、worktree、ref ほか）。改訂は同上。 |
