@@ -1,0 +1,182 @@
+name: 04_review-fix-policy-manual
+description: open Review Threadごとに修正方針を人間と逐一合意して決定し、方針間の整合性を検証してHuman checkpointで承認する。
+
+schemas:
+  document-reference: string
+  directive-text: string
+  workflow-text: string
+  implementation-context:
+    type: object
+    properties:
+      spec_dir: string
+      spec_documents:
+        type: array
+        items: document-reference
+      reference_documents:
+        type: array
+        items: document-reference
+      directives:
+        type: array
+        items: directive-text
+    required:
+    - spec_dir
+    - spec_documents
+    - reference_documents
+    - directives
+  thread-id: string
+  thread-reference:
+    type: object
+    properties:
+      thread_id: string
+    required:
+    - thread_id
+  thread-scan:
+    type: object
+    properties:
+      threads:
+        type: array
+        items: thread-reference
+      has_open_threads:
+        type: boolean
+    required:
+    - threads
+    - has_open_threads
+  policy-correction-task:
+    type: object
+    properties:
+      task_id: string
+      thread_ids:
+        type: array
+        items: thread-id
+      problem: string
+      required_changes:
+        type: array
+        items: workflow-text
+    required:
+    - task_id
+    - thread_ids
+    - problem
+    - required_changes
+  policy-consistency-result:
+    type: object
+    properties:
+      verdict:
+        type: string
+        enum:
+        - CONSISTENT
+        - NEEDS_CORRECTION
+      tasks:
+        type: array
+        items: policy-correction-task
+      summary: string
+    required:
+    - verdict
+    - tasks
+    - summary
+
+nodes:
+
+- name: resolve_request
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: planning
+      instruction: existing-spec-resolve-request
+  artifact: implementation-context
+  inputs:
+  - request
+  rules:
+  - next: check_open_threads
+
+- name: check_open_threads
+  command: >-
+    releash review list --session-id "$RELEASH_SESSION_ID" --state open --json |
+    jq '{threads: map({thread_id: .id}), has_open_threads: (length > 0)}'
+  artifact: thread-scan
+  rules:
+  - when:
+      on: has_open_threads
+      then: fix_policy_fanout
+    next: policy_confirmation
+- name: fix_policy_fanout
+  fanout:
+    child: decide_fix_policy_manual
+    items: check_open_threads.threads
+  rules:
+  - next: check_fix_policy_consistency
+- name: decide_fix_policy_manual
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: approval
+    facets:
+      policy: triage
+      knowledge:
+      - spec-requirements
+      - spec-behavior
+      - spec-design
+      - releash-thread-cli
+      instruction: existing-spec-decide-fix-policy-manual
+  input: thread-reference
+  inputs:
+  - resolve_request
+- name: check_fix_policy_consistency
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge:
+      - spec-requirements
+      - spec-behavior
+      - spec-design
+      - releash-thread-cli
+      instruction: existing-spec-check-fix-policy-consistency
+  artifact: policy-consistency-result
+  inputs:
+  - resolve_request
+  rules:
+  - loop_guard:
+      max_iterations: 2
+      on_exhausted: policy_confirmation
+  - switch:
+      on: verdict
+      cases:
+        NEEDS_CORRECTION: fix_policy_conflict_fanout
+        CONSISTENT: policy_confirmation
+- name: fix_policy_conflict_fanout
+  fanout:
+    child: correct_fix_policy_manual
+    items: check_fix_policy_consistency.tasks
+  rules:
+  - next: check_fix_policy_consistency
+- name: correct_fix_policy_manual
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: approval
+    facets:
+      policy: triage
+      knowledge:
+      - spec-requirements
+      - spec-behavior
+      - spec-design
+      - releash-thread-cli
+      instruction: existing-spec-correct-fix-policy-manual
+  input: policy-correction-task
+  inputs:
+  - resolve_request
+- name: policy_confirmation
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: approval
+    facets:
+      policy: reporting
+      knowledge: releash-thread-cli
+      instruction: existing-spec-confirmation
+  inputs:
+  - resolve_request

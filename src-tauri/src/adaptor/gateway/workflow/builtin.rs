@@ -12,8 +12,12 @@ const BUILTIN_02_IMPLEMENT_EXISTING_SPEC: &str =
     include_str!("builtin/02_implement-existing-spec.yml");
 const BUILTIN_03_FULL_REVIEW: &str = include_str!("builtin/03_full-review.yml");
 const BUILTIN_04_REVIEW_FIX_POLICY: &str = include_str!("builtin/04_review-fix-policy.yml");
+const BUILTIN_04_REVIEW_FIX_POLICY_MANUAL: &str =
+    include_str!("builtin/04_review-fix-policy-manual.yml");
 const BUILTIN_05_REVIEW_FIX: &str = include_str!("builtin/05_review-fix.yml");
 const BUILTIN_06_HANDLE_PR_REVIEW: &str = include_str!("builtin/06_handle-pr-review.yml");
+const BUILTIN_06_HANDLE_PR_REVIEW_MANUAL: &str =
+    include_str!("builtin/06_handle-pr-review-manual.yml");
 
 struct BuiltinEntry {
     filename: &'static str,
@@ -43,6 +47,11 @@ const BUILTINS: &[BuiltinEntry] = &[
         description: "open Review Threadごとに修正方針を決定し、方針間の整合性を検証してHuman checkpointで承認する。",
     },
     BuiltinEntry {
+        filename: "04_review-fix-policy-manual.yml",
+        content: BUILTIN_04_REVIEW_FIX_POLICY_MANUAL,
+        description: "open Review Threadごとに修正方針を人間と逐一合意して決定し、方針間の整合性を検証してHuman checkpointで承認する。",
+    },
+    BuiltinEntry {
         filename: "05_review-fix.yml",
         content: BUILTIN_05_REVIEW_FIX,
         description: "決定済み方針に基づき修正計画の作成と実装を行い、open Threadが解消するまで最大5回繰り返してHuman checkpointで承認する。",
@@ -51,6 +60,11 @@ const BUILTINS: &[BuiltinEntry] = &[
         filename: "06_handle-pr-review.yml",
         content: BUILTIN_06_HANDLE_PR_REVIEW,
         description: "現在のブランチに紐づくPRの未解決review commentを取り込み、方針整合性を確認して修正し、人間の確認後にcommit、push、replyを行う。",
+    },
+    BuiltinEntry {
+        filename: "06_handle-pr-review-manual.yml",
+        content: BUILTIN_06_HANDLE_PR_REVIEW_MANUAL,
+        description: "現在のブランチに紐づくPRの未解決review commentを取り込み、修正・返信方針をThreadごとに人間と逐一合意して修正し、確認後にcommit、push、replyを行う。",
     },
 ];
 
@@ -388,8 +402,22 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
+        key: "existing-spec-correct-fix-policy-manual",
+        content: include_str!(
+            "builtin_facets/instructions/existing-spec-correct-fix-policy-manual.md"
+        ),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
         key: "existing-spec-decide-fix-policy",
         content: include_str!("builtin_facets/instructions/existing-spec-decide-fix-policy.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "existing-spec-decide-fix-policy-manual",
+        content: include_str!(
+            "builtin_facets/instructions/existing-spec-decide-fix-policy-manual.md"
+        ),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
@@ -458,6 +486,11 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
+        key: "decide_pr_review_fix_policy_manual",
+        content: include_str!("builtin_facets/instructions/decide_pr_review_fix_policy_manual.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
         key: "check_pr_review_fix_policy_consistency",
         content: include_str!(
             "builtin_facets/instructions/check_pr_review_fix_policy_consistency.md"
@@ -467,6 +500,11 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
         kind: FacetKind::Instruction,
         key: "correct_pr_review_fix_policy",
         content: include_str!("builtin_facets/instructions/correct_pr_review_fix_policy.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "correct_pr_review_fix_policy_manual",
+        content: include_str!("builtin_facets/instructions/correct_pr_review_fix_policy_manual.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
