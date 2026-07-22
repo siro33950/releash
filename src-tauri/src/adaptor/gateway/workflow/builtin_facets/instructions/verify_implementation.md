@@ -33,3 +33,4 @@ Taskの意味と各項目の扱いは`implement-task` Knowledgeに従う。
 - コード、Spec文書、Taskを変更すること。
 - 失敗した検証commandの結果を成功として報告すること。
 - Specにない完了条件を追加すること。
+- 同じ検証commandを一つのSessionで繰り返し実行すること。検証一式は一度だけ実行し、その結果で判定する。

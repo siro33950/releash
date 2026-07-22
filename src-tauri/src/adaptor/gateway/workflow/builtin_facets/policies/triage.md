@@ -16,6 +16,7 @@
 - 既存の議論や合意を無視して上書きしない
 - 根拠がないまま resolve / ignore / fix 方針を決めない
 - 複数Threadを一括りにして個別事情を消さない
+- test / lint / build等の検証commandを実行しない。実行検証はworkflowの検証ゲートNodeが担う
 
 ## 判断に迷う場合
 

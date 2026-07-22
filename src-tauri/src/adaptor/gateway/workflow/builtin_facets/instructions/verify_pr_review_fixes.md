@@ -26,3 +26,4 @@ PR review修正の実装後の一括検証ゲートとして、修正計画の�
 
 - コード、Threadを変更すること。GitHubへreply、commit、pushを行うこと。
 - 失敗した検証commandの結果を成功として報告すること。
+- 同じ検証commandを一つのSessionで繰り返し実行すること。検証一式は一度だけ実行し、その結果で判定する。
