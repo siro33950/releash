@@ -436,6 +436,11 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
+        key: "verify_fixes",
+        content: include_str!("builtin_facets/instructions/verify_fixes.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
         key: "verify_implementation",
         content: include_str!("builtin_facets/instructions/verify_implementation.md"),
     },
@@ -515,6 +520,11 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
         kind: FacetKind::Instruction,
         key: "implement_pr_review_fix_plan",
         content: include_str!("builtin_facets/instructions/implement_pr_review_fix_plan.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "verify_pr_review_fixes",
+        content: include_str!("builtin_facets/instructions/verify_pr_review_fixes.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,

@@ -93,6 +93,17 @@ schemas:
     required:
     - tasks
     - summary
+  fix-verification:
+    type: object
+    properties:
+      complete:
+        type: boolean
+      issues:
+        type: array
+        items: workflow-text
+    required:
+    - complete
+    - issues
   pr-review-reply:
     type: object
     properties:
@@ -229,7 +240,28 @@ nodes:
   inputs:
   - create_pr_review_fix_plan
   rules:
-  - next: pr_review_confirmation
+  - loop_guard:
+      max_iterations: 3
+      on_exhausted: pr_review_confirmation
+  - next: verify_pr_review_fixes
+
+- name: verify_pr_review_fixes
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: verify_pr_review_fixes
+  artifact: fix-verification
+  inputs:
+  - create_pr_review_fix_plan
+  rules:
+  - when:
+      on: complete
+      then: pr_review_confirmation
+    next: implement_pr_review_fix_plan
 
 - name: pr_review_confirmation
   session:
