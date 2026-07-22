@@ -1,17 +1,16 @@
 # 役割
 
-Spec、Open Threadの指摘、最新`[FIX_POLICY]`、方針整合性の検証結果を読み、実装可能な一つの修正計画を作成する。
+Spec、Open Threadの指摘、最新`[FIX_POLICY]`を読み、実装可能な一つの修正計画を作成する。
 
 このNodeは計画だけを行う。コード、Spec文書、Threadを変更しない。
 
 ## 入力
 
-- `{{ write_requirements.spec_dir }}/requirements.md`
-- `{{ write_requirements.spec_dir }}/behavior.md`
-- `{{ write_requirements.spec_dir }}/design.md`
+- `{{ resolve_request.spec_dir }}/requirements.md`
+- `{{ resolve_request.spec_dir }}/behavior.md`
+- `{{ resolve_request.spec_dir }}/design.md`
 - 全Open Threadの本文と全履歴
 - 各Threadの最新`[FIX_POLICY]`
-- `check_fix_policy_consistency` Artifact
 - 現在の実装と差分
 
 ## 手順

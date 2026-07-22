@@ -1,0 +1,168 @@
+name: 02_implement-existing-spec
+description: 既存Specを入力として、並列タスク分解・fanout実装・一括検証ゲートを全Task完了までループし、Human checkpointで承認する。
+
+schemas:
+  document-reference: string
+  directive-text: string
+  workflow-text: string
+  implementation-context:
+    type: object
+    properties:
+      spec_dir: string
+      spec_documents:
+        type: array
+        items: document-reference
+      reference_documents:
+        type: array
+        items: document-reference
+      directives:
+        type: array
+        items: directive-text
+    required:
+    - spec_dir
+    - spec_documents
+    - reference_documents
+    - directives
+  requirement-id: string
+  implement-task-id: string
+  implement-task-verification:
+    type: object
+    properties:
+      condition: string
+    required:
+    - condition
+  implement-task:
+    type: object
+    properties:
+      task_id: string
+      requirements:
+        type: array
+        items: requirement-id
+      depends_on:
+        type: array
+        items: implement-task-id
+      parallel:
+        type: boolean
+      files:
+        type: array
+        items: document-reference
+      outputs:
+        type: array
+        items: workflow-text
+      verify:
+        type: array
+        items: implement-task-verification
+    required:
+    - task_id
+    - requirements
+    - depends_on
+    - parallel
+    - files
+    - outputs
+    - verify
+  implement-tasks:
+    type: object
+    properties:
+      tasks:
+        type: array
+        items: implement-task
+    required:
+    - tasks
+  implementation-verification:
+    type: object
+    properties:
+      complete:
+        type: boolean
+      issues:
+        type: array
+        items: workflow-text
+    required:
+    - complete
+    - issues
+
+nodes:
+
+- name: resolve_request
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: planning
+      instruction: existing-spec-resolve-request
+  artifact: implementation-context
+  inputs:
+  - request
+  rules:
+  - next: create_detailed_design
+
+- name: create_detailed_design
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: planning
+      knowledge:
+      - spec-requirements
+      - spec-behavior
+      - spec-design
+      - implement-task
+      instruction: create_parallel_tasks
+  artifact: implement-tasks
+  inputs:
+  - resolve_request
+  - verify_implementation
+  rules:
+  - loop_guard:
+      max_iterations: 3
+      on_exhausted: implementation_confirmation
+      reset_on: verify_implementation
+  - next: implement_fanout
+- name: implement_fanout
+  fanout:
+    child: implement_task
+    items: create_detailed_design.tasks
+  rules:
+  - next: verify_implementation
+- name: implement_task
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: coding
+      knowledge: implement-task
+      instruction: implement_single_task
+  input: implement-task
+  inputs:
+  - resolve_request
+- name: verify_implementation
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: implement-task
+      instruction: verify_implementation
+  artifact: implementation-verification
+  inputs:
+  - resolve_request
+  - create_detailed_design
+  rules:
+  - when:
+      on: complete
+      then: implementation_confirmation
+    next: create_detailed_design
+- name: implementation_confirmation
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: approval
+    facets:
+      policy: reporting
+      knowledge: releash-thread-cli
+      instruction: existing-spec-confirmation
+  inputs:
+  - resolve_request

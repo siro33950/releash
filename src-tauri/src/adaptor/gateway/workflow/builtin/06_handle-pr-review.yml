@@ -1,4 +1,4 @@
-name: handle-pr-review
+name: 06_handle-pr-review
 description: 現在のブランチに紐づくPRの未解決review commentを取り込み、方針整合性を確認して修正し、人間の確認後にcommit、push、replyを行う。
 builtin: true
 

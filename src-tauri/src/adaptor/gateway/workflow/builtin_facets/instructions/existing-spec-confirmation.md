@@ -4,9 +4,9 @@
 
 ## 入力
 
-- `{{ write_requirements.spec_dir }}/requirements.md`
-- `{{ write_requirements.spec_dir }}/behavior.md`
-- `{{ write_requirements.spec_dir }}/design.md`
+- `{{ resolve_request.spec_dir }}/requirements.md`
+- `{{ resolve_request.spec_dir }}/behavior.md`
+- `{{ resolve_request.spec_dir }}/design.md`
 - 現在の実装差分
 - 全Open Threadの本文と履歴
 

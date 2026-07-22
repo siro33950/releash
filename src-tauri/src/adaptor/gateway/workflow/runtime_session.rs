@@ -1073,38 +1073,6 @@ mod tests {
     }
 
     #[test]
-    fn workflow_node_context_with_runtime_timeouts_injects_template_only_policy_values() {
-        let settings = NodeSessionCreationSettings {
-            backend_id: Some("codex".to_string()),
-            selected_model: Some("unknown-fast".to_string()),
-            permission_mode: PermissionMode::Edit,
-        };
-        let context = WorkflowNodeContext {
-            execution_id: "execution-1".to_string(),
-            node_execution_id: "node-execution-1".to_string(),
-            workflow_name: "full-cycle-development".to_string(),
-            node_name: "review".to_string(),
-            attempt: 1,
-            parent_node_name: None,
-            parent_attempt: None,
-            order: 0,
-            startup_timeout_secs: None,
-            startup_max_retries: None,
-            stale_timeout_secs: None,
-        };
-
-        let context = workflow_node_context_with_runtime_timeouts(
-            &settings,
-            context,
-            NodeRuntimeKindContext::session(),
-        );
-
-        assert_eq!(context.startup_timeout_secs, Some(30));
-        assert_eq!(context.startup_max_retries, Some(2));
-        assert_eq!(context.stale_timeout_secs, Some(600));
-    }
-
-    #[test]
     fn workflow_node_context_with_runtime_timeouts_injects_approval_gate_policy_values() {
         let settings = NodeSessionCreationSettings {
             backend_id: Some("codex".to_string()),

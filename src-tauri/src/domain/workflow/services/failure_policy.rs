@@ -81,6 +81,7 @@ impl TimeoutPolicy {
         self
     }
 
+    #[cfg(test)]
     pub fn with_stale_timeout_for_template(
         mut self,
         template: impl Into<String>,

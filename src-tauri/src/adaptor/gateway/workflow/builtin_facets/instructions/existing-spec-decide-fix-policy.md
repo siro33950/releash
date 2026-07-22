@@ -7,9 +7,9 @@
 ## 入力
 
 - 対象Thread ID: `{{ item.thread_id }}`
-- `{{ write_requirements.spec_dir }}/requirements.md`
-- `{{ write_requirements.spec_dir }}/behavior.md`
-- `{{ write_requirements.spec_dir }}/design.md`
+- `{{ resolve_request.spec_dir }}/requirements.md`
+- `{{ resolve_request.spec_dir }}/behavior.md`
+- `{{ resolve_request.spec_dir }}/design.md`
 - 対象Threadの本文と全履歴
 - 現在の実装と差分
 
