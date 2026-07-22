@@ -1,0 +1,256 @@
+name: 03_full-review
+description: 既存Specを入力として、FullReview（6観点×2モデル）と検証を実行し、open Threadを提示してHuman checkpointで承認する。
+
+schemas:
+  document-reference: string
+  directive-text: string
+  workflow-text: string
+  implementation-context:
+    type: object
+    properties:
+      spec_dir: string
+      spec_documents:
+        type: array
+        items: document-reference
+      reference_documents:
+        type: array
+        items: document-reference
+      directives:
+        type: array
+        items: directive-text
+    required:
+    - spec_dir
+    - spec_documents
+    - reference_documents
+    - directives
+  thread-id: string
+  thread-reference:
+    type: object
+    properties:
+      thread_id: string
+    required:
+    - thread_id
+  thread-scan:
+    type: object
+    properties:
+      threads:
+        type: array
+        items: thread-reference
+      has_open_threads:
+        type: boolean
+    required:
+    - threads
+    - has_open_threads
+
+nodes:
+
+- name: resolve_request
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: planning
+      instruction: existing-spec-resolve-request
+  artifact: implementation-context
+  inputs:
+  - request
+  rules:
+  - next: full_review_fanout
+
+- name: full_review_fanout
+  fanout:
+    child:
+    - full_review_acceptance_opus
+    - full_review_acceptance_codex
+    - full_review_structure_opus
+    - full_review_structure_codex
+    - full_review_quality_opus
+    - full_review_quality_codex
+    - full_review_test_opus
+    - full_review_test_codex
+    - full_review_security_opus
+    - full_review_security_codex
+    - full_review_architecture_opus
+    - full_review_architecture_codex
+  rules:
+  - next: verify_full_review_fanout
+- name: full_review_acceptance_opus
+  session:
+    model: claude-opus-4-8
+    permission: edit
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-acceptance
+  inputs:
+  - resolve_request
+- name: full_review_acceptance_codex
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-acceptance
+  inputs:
+  - resolve_request
+- name: full_review_structure_opus
+  session:
+    model: claude-opus-4-8
+    permission: edit
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-structure
+  inputs:
+  - resolve_request
+- name: full_review_structure_codex
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-structure
+  inputs:
+  - resolve_request
+- name: full_review_quality_opus
+  session:
+    model: claude-opus-4-8
+    permission: edit
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-quality
+  inputs:
+  - resolve_request
+- name: full_review_quality_codex
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-quality
+  inputs:
+  - resolve_request
+- name: full_review_test_opus
+  session:
+    model: claude-opus-4-8
+    permission: edit
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-test
+  inputs:
+  - resolve_request
+- name: full_review_test_codex
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-test
+  inputs:
+  - resolve_request
+- name: full_review_security_opus
+  session:
+    model: claude-opus-4-8
+    permission: edit
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-security
+  inputs:
+  - resolve_request
+- name: full_review_security_codex
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-security
+  inputs:
+  - resolve_request
+- name: full_review_architecture_opus
+  session:
+    model: claude-opus-4-8
+    permission: edit
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-architecture
+  inputs:
+  - resolve_request
+- name: full_review_architecture_codex
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: review-architecture
+  inputs:
+  - resolve_request
+- name: verify_full_review_fanout
+  fanout:
+    child:
+    - verify_full_review_opus
+    - verify_full_review_codex
+  rules:
+  - next: check_full_review_threads
+- name: verify_full_review_opus
+  session:
+    model: claude-opus-4-8
+    permission: edit
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: full-review-verify-and-classify
+  inputs:
+  - resolve_request
+- name: verify_full_review_codex
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: full-review-verify-and-classify
+  inputs:
+  - resolve_request
+- name: check_full_review_threads
+  command: >-
+    releash review list --session-id "$RELEASH_SESSION_ID" --state open --json |
+    jq '{threads: map({thread_id: .id}), has_open_threads: (length > 0)}'
+  artifact: thread-scan
+  rules:
+  - next: review_confirmation
+- name: review_confirmation
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: approval
+    facets:
+      policy: reporting
+      knowledge: releash-thread-cli
+      instruction: existing-spec-confirmation
+  inputs:
+  - resolve_request

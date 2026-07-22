@@ -1,0 +1,183 @@
+name: 05_review-fix
+description: 決定済み方針に基づき修正計画の作成と実装を行い、open Threadが解消するまで最大5回繰り返してHuman checkpointで承認する。
+
+schemas:
+  document-reference: string
+  directive-text: string
+  workflow-text: string
+  implementation-context:
+    type: object
+    properties:
+      spec_dir: string
+      spec_documents:
+        type: array
+        items: document-reference
+      reference_documents:
+        type: array
+        items: document-reference
+      directives:
+        type: array
+        items: directive-text
+    required:
+    - spec_dir
+    - spec_documents
+    - reference_documents
+    - directives
+  thread-id: string
+  thread-reference:
+    type: object
+    properties:
+      thread_id: string
+    required:
+    - thread_id
+  thread-scan:
+    type: object
+    properties:
+      threads:
+        type: array
+        items: thread-reference
+      has_open_threads:
+        type: boolean
+    required:
+    - threads
+    - has_open_threads
+  fix-plan-task:
+    type: object
+    properties:
+      task_id: string
+      thread_id: string
+      target_files:
+        type: array
+        items: document-reference
+      implementation_steps:
+        type: array
+        items: workflow-text
+      acceptance_criteria:
+        type: array
+        items: workflow-text
+      non_goals:
+        type: array
+        items: workflow-text
+      source_policy: string
+    required:
+    - task_id
+    - thread_id
+    - target_files
+    - implementation_steps
+    - acceptance_criteria
+    - non_goals
+    - source_policy
+  fix-plan:
+    type: object
+    properties:
+      tasks:
+        type: array
+        items: fix-plan-task
+      summary: string
+    required:
+    - tasks
+    - summary
+  fix-verification:
+    type: object
+    properties:
+      complete:
+        type: boolean
+      issues:
+        type: array
+        items: workflow-text
+    required:
+    - complete
+    - issues
+
+nodes:
+
+- name: resolve_request
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: planning
+      instruction: existing-spec-resolve-request
+  artifact: implementation-context
+  inputs:
+  - request
+  rules:
+  - next: check_open_threads
+
+- name: check_open_threads
+  command: >-
+    releash review list --session-id "$RELEASH_SESSION_ID" --state open --json |
+    jq '{threads: map({thread_id: .id}), has_open_threads: (length > 0)}'
+  artifact: thread-scan
+  rules:
+  - when:
+      on: has_open_threads
+      then: create_fix_plan
+    next: fix_confirmation
+- name: create_fix_plan
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge:
+      - spec-requirements
+      - spec-behavior
+      - spec-design
+      - releash-thread-cli
+      instruction: existing-spec-create-fix-plan
+  artifact: fix-plan
+  inputs:
+  - resolve_request
+  rules:
+  - loop_guard:
+      max_iterations: 5
+      on_exhausted: fix_confirmation
+  - next: implement_fix_plan
+- name: implement_fix_plan
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: coding
+      knowledge: releash-thread-cli
+      instruction: implement_fix_plan
+  inputs:
+  - create_fix_plan
+  rules:
+  - loop_guard:
+      max_iterations: 3
+      on_exhausted: fix_confirmation
+      reset_on: create_fix_plan
+  - next: verify_fixes
+- name: verify_fixes
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: auto
+    facets:
+      policy: reviewing
+      knowledge: releash-thread-cli
+      instruction: verify_fixes
+  artifact: fix-verification
+  inputs:
+  - create_fix_plan
+  rules:
+  - when:
+      on: complete
+      then: check_open_threads
+    next: implement_fix_plan
+- name: fix_confirmation
+  session:
+    model: gpt-5.6-sol
+    permission: full
+    gate: approval
+    facets:
+      policy: reporting
+      knowledge: releash-thread-cli
+      instruction: existing-spec-confirmation
+  inputs:
+  - resolve_request

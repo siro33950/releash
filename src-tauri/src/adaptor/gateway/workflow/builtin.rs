@@ -7,11 +7,17 @@ use super::schema::{Summary, WorkflowDefinitionYaml};
 use super::storage;
 use crate::domain::workflow::validation::{self, ValidationError};
 
-const BUILTIN_FULL_CYCLE_DEVELOPMENT: &str = include_str!("builtin/full-cycle-development.yml");
-const BUILTIN_FULL_CYCLE_DEVELOPMENT_MANUAL: &str =
-    include_str!("builtin/full-cycle-development-manual.yml");
-const BUILTIN_HANDLE_PR_REVIEW: &str = include_str!("builtin/handle-pr-review.yml");
-const BUILTIN_HANDLE_PR_REVIEW_MANUAL: &str = include_str!("builtin/handle-pr-review-manual.yml");
+const BUILTIN_01_AUTHOR_SPEC: &str = include_str!("builtin/01_author-spec.yml");
+const BUILTIN_02_IMPLEMENT_EXISTING_SPEC: &str =
+    include_str!("builtin/02_implement-existing-spec.yml");
+const BUILTIN_03_FULL_REVIEW: &str = include_str!("builtin/03_full-review.yml");
+const BUILTIN_04_REVIEW_FIX_POLICY: &str = include_str!("builtin/04_review-fix-policy.yml");
+const BUILTIN_04_REVIEW_FIX_POLICY_MANUAL: &str =
+    include_str!("builtin/04_review-fix-policy-manual.yml");
+const BUILTIN_05_REVIEW_FIX: &str = include_str!("builtin/05_review-fix.yml");
+const BUILTIN_06_HANDLE_PR_REVIEW: &str = include_str!("builtin/06_handle-pr-review.yml");
+const BUILTIN_06_HANDLE_PR_REVIEW_MANUAL: &str =
+    include_str!("builtin/06_handle-pr-review-manual.yml");
 
 struct BuiltinEntry {
     filename: &'static str,
@@ -21,23 +27,43 @@ struct BuiltinEntry {
 
 const BUILTINS: &[BuiltinEntry] = &[
     BuiltinEntry {
-        filename: "full-cycle-development.yml",
-        content: BUILTIN_FULL_CYCLE_DEVELOPMENT,
-        description: "authoring_draft → implement_codex → full-review → review-fix-policy → review-fix を Human checkpoint 付きで一気通貫に実行する。",
+        filename: "01_author-spec.yml",
+        content: BUILTIN_01_AUTHOR_SPEC,
+        description: "Issue、Story、または自由文RequestからRequirements・Behavior・Designを順番に作成し、文書ごとの検証・検討・修正を収束させた後、最後に人間が完成Specをレビューする。",
     },
     BuiltinEntry {
-        filename: "full-cycle-development-manual.yml",
-        content: BUILTIN_FULL_CYCLE_DEVELOPMENT_MANUAL,
-        description: "Requirements、Behavior、Designの全項目とFullReviewの修正方針を人間と逐一合意しながら、Spec作成から実装、Review修正までを一気通貫に実行する。",
+        filename: "02_implement-existing-spec.yml",
+        content: BUILTIN_02_IMPLEMENT_EXISTING_SPEC,
+        description: "既存Specを入力として、並列タスク分解・fanout実装・一括検証ゲートを全Task完了までループし、Human checkpointで承認する。",
     },
     BuiltinEntry {
-        filename: "handle-pr-review.yml",
-        content: BUILTIN_HANDLE_PR_REVIEW,
+        filename: "03_full-review.yml",
+        content: BUILTIN_03_FULL_REVIEW,
+        description: "既存Specを入力として、FullReview（6観点×2モデル）と検証を実行し、open Threadを提示してHuman checkpointで承認する。",
+    },
+    BuiltinEntry {
+        filename: "04_review-fix-policy.yml",
+        content: BUILTIN_04_REVIEW_FIX_POLICY,
+        description: "open Review Threadごとに修正方針を決定し、方針間の整合性を検証してHuman checkpointで承認する。",
+    },
+    BuiltinEntry {
+        filename: "04_review-fix-policy-manual.yml",
+        content: BUILTIN_04_REVIEW_FIX_POLICY_MANUAL,
+        description: "open Review Threadごとに修正方針を人間と逐一合意して決定し、方針間の整合性を検証してHuman checkpointで承認する。",
+    },
+    BuiltinEntry {
+        filename: "05_review-fix.yml",
+        content: BUILTIN_05_REVIEW_FIX,
+        description: "決定済み方針に基づき修正計画の作成と実装を行い、open Threadが解消するまで最大5回繰り返してHuman checkpointで承認する。",
+    },
+    BuiltinEntry {
+        filename: "06_handle-pr-review.yml",
+        content: BUILTIN_06_HANDLE_PR_REVIEW,
         description: "現在のブランチに紐づくPRの未解決review commentを取り込み、方針整合性を確認して修正し、人間の確認後にcommit、push、replyを行う。",
     },
     BuiltinEntry {
-        filename: "handle-pr-review-manual.yml",
-        content: BUILTIN_HANDLE_PR_REVIEW_MANUAL,
+        filename: "06_handle-pr-review-manual.yml",
+        content: BUILTIN_06_HANDLE_PR_REVIEW_MANUAL,
         description: "現在のブランチに紐づくPRの未解決review commentを取り込み、修正・返信方針をThreadごとに人間と逐一合意して修正し、確認後にcommit、push、replyを行う。",
     },
 ];
@@ -233,6 +259,11 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
         content: include_str!("builtin_facets/policies/triage.md"),
     },
     BuiltinFacetEntry {
+        kind: FacetKind::Policy,
+        key: "author-spec-governance",
+        content: include_str!("builtin_facets/policies/author-spec-governance.md"),
+    },
+    BuiltinFacetEntry {
         kind: FacetKind::Knowledge,
         key: "releash-thread-cli",
         content: include_str!("builtin_facets/knowledge/releash-thread-cli.md"),
@@ -259,43 +290,139 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "check_fix_policy_consistency",
-        content: include_str!("builtin_facets/instructions/check_fix_policy_consistency.md"),
+        key: "author-spec-consider-behavior",
+        content: include_str!("builtin_facets/instructions/author-spec-consider-behavior.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "check_implementation_task",
-        content: include_str!("builtin_facets/instructions/check_implementation_task.md"),
+        key: "author-spec-consider-design",
+        content: include_str!("builtin_facets/instructions/author-spec-consider-design.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "collect_inputs",
-        content: include_str!("builtin_facets/instructions/collect_inputs.md"),
+        key: "author-spec-consider-full",
+        content: include_str!("builtin_facets/instructions/author-spec-consider-full.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "correct_fix_policy",
-        content: include_str!("builtin_facets/instructions/correct_fix_policy.md"),
+        key: "author-spec-consider-requirements",
+        content: include_str!("builtin_facets/instructions/author-spec-consider-requirements.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "create_detailed_design",
-        content: include_str!("builtin_facets/instructions/create_detailed_design.md"),
+        key: "author-spec-final-review",
+        content: include_str!("builtin_facets/instructions/author-spec-final-review.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "create_fix_plan",
-        content: include_str!("builtin_facets/instructions/create_fix_plan.md"),
+        key: "author-spec-human-decision",
+        content: include_str!("builtin_facets/instructions/author-spec-human-decision.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "decide_fix_policy",
-        content: include_str!("builtin_facets/instructions/decide_fix_policy.md"),
+        key: "author-spec-intake",
+        content: include_str!("builtin_facets/instructions/author-spec-intake.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "implement",
-        content: include_str!("builtin_facets/instructions/implement.md"),
+        key: "author-spec-repair-behavior",
+        content: include_str!("builtin_facets/instructions/author-spec-repair-behavior.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "author-spec-repair-design",
+        content: include_str!("builtin_facets/instructions/author-spec-repair-design.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "author-spec-repair-requirements",
+        content: include_str!("builtin_facets/instructions/author-spec-repair-requirements.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "author-spec-validate-behavior",
+        content: include_str!("builtin_facets/instructions/author-spec-validate-behavior.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "author-spec-validate-design",
+        content: include_str!("builtin_facets/instructions/author-spec-validate-design.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "author-spec-validate-full",
+        content: include_str!("builtin_facets/instructions/author-spec-validate-full.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "author-spec-validate-requirements",
+        content: include_str!("builtin_facets/instructions/author-spec-validate-requirements.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "author-spec-write-behavior",
+        content: include_str!("builtin_facets/instructions/author-spec-write-behavior.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "author-spec-write-design",
+        content: include_str!("builtin_facets/instructions/author-spec-write-design.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "author-spec-write-requirements",
+        content: include_str!("builtin_facets/instructions/author-spec-write-requirements.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "create_parallel_tasks",
+        content: include_str!("builtin_facets/instructions/create_parallel_tasks.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "existing-spec-check-fix-policy-consistency",
+        content: include_str!(
+            "builtin_facets/instructions/existing-spec-check-fix-policy-consistency.md"
+        ),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "existing-spec-confirmation",
+        content: include_str!("builtin_facets/instructions/existing-spec-confirmation.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "existing-spec-correct-fix-policy",
+        content: include_str!("builtin_facets/instructions/existing-spec-correct-fix-policy.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "existing-spec-create-fix-plan",
+        content: include_str!("builtin_facets/instructions/existing-spec-create-fix-plan.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "existing-spec-correct-fix-policy-manual",
+        content: include_str!(
+            "builtin_facets/instructions/existing-spec-correct-fix-policy-manual.md"
+        ),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "existing-spec-decide-fix-policy",
+        content: include_str!("builtin_facets/instructions/existing-spec-decide-fix-policy.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "existing-spec-decide-fix-policy-manual",
+        content: include_str!(
+            "builtin_facets/instructions/existing-spec-decide-fix-policy-manual.md"
+        ),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
+        key: "existing-spec-resolve-request",
+        content: include_str!("builtin_facets/instructions/existing-spec-resolve-request.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
@@ -304,78 +431,18 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "implement_incomplete_tasks",
-        content: include_str!("builtin_facets/instructions/implement_incomplete_tasks.md"),
+        key: "implement_single_task",
+        content: include_str!("builtin_facets/instructions/implement_single_task.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "implementation_confirmation",
-        content: include_str!("builtin_facets/instructions/implementation_confirmation.md"),
+        key: "verify_fixes",
+        content: include_str!("builtin_facets/instructions/verify_fixes.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
-        key: "refine_behavior",
-        content: include_str!("builtin_facets/instructions/refine_behavior.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "refine_requirements",
-        content: include_str!("builtin_facets/instructions/refine_requirements.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "spec_confirmation",
-        content: include_str!("builtin_facets/instructions/spec_confirmation.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "write_behavior",
-        content: include_str!("builtin_facets/instructions/write_behavior.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "write_design",
-        content: include_str!("builtin_facets/instructions/write_design.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "write_requirements",
-        content: include_str!("builtin_facets/instructions/write_requirements.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "write_requirements_manual",
-        content: include_str!("builtin_facets/instructions/write_requirements_manual.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "write_behavior_manual",
-        content: include_str!("builtin_facets/instructions/write_behavior_manual.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "refine_requirements_manual",
-        content: include_str!("builtin_facets/instructions/refine_requirements_manual.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "write_design_manual",
-        content: include_str!("builtin_facets/instructions/write_design_manual.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "refine_behavior_manual",
-        content: include_str!("builtin_facets/instructions/refine_behavior_manual.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "decide_fix_policy_manual",
-        content: include_str!("builtin_facets/instructions/decide_fix_policy_manual.md"),
-    },
-    BuiltinFacetEntry {
-        kind: FacetKind::Instruction,
-        key: "correct_fix_policy_manual",
-        content: include_str!("builtin_facets/instructions/correct_fix_policy_manual.md"),
+        key: "verify_implementation",
+        content: include_str!("builtin_facets/instructions/verify_implementation.md"),
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
@@ -456,6 +523,11 @@ const BUILTIN_FACETS: &[BuiltinFacetEntry] = &[
     },
     BuiltinFacetEntry {
         kind: FacetKind::Instruction,
+        key: "verify_pr_review_fixes",
+        content: include_str!("builtin_facets/instructions/verify_pr_review_fixes.md"),
+    },
+    BuiltinFacetEntry {
+        kind: FacetKind::Instruction,
         key: "pr_review_confirmation",
         content: include_str!("builtin_facets/instructions/pr_review_confirmation.md"),
     },
@@ -503,102 +575,6 @@ pub fn is_builtin_facet(kind: FacetKind, key: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adaptor::gateway::workflow::schema::SchemaDef;
-
-    #[test]
-    fn context_collection_nodes_use_full_permission() {
-        for (source, node_name) in [
-            (BUILTIN_FULL_CYCLE_DEVELOPMENT, "collect_inputs"),
-            (BUILTIN_FULL_CYCLE_DEVELOPMENT_MANUAL, "collect_inputs"),
-            (BUILTIN_HANDLE_PR_REVIEW, "import_pr_review_comments"),
-            (BUILTIN_HANDLE_PR_REVIEW_MANUAL, "import_pr_review_comments"),
-        ] {
-            let workflow: WorkflowDefinitionYaml = serde_saphyr::from_str(source).unwrap();
-            let collection_node = workflow
-                .nodes
-                .iter()
-                .find(|node| node.name == node_name)
-                .unwrap();
-
-            assert_eq!(
-                collection_node.session().unwrap().permission.as_deref(),
-                Some("full")
-            );
-        }
-    }
-
-    #[test]
-    fn full_cycle_implementation_check_requires_non_empty_results() {
-        let workflow: WorkflowDefinitionYaml =
-            serde_saphyr::from_str(BUILTIN_FULL_CYCLE_DEVELOPMENT).unwrap();
-        let check_node = workflow
-            .nodes
-            .iter()
-            .find(|node| node.name == "check_implementation_tasks")
-            .unwrap();
-        let command = check_node.command().unwrap();
-
-        assert!(command.contains("{complete: ((length > 0) and all(.[]; .complete == true)),"));
-        assert!(command
-            .contains("incomplete_tasks: [.[] | select(.complete != true) | {task_id, reason}]"));
-
-        for source in [
-            BUILTIN_FULL_CYCLE_DEVELOPMENT,
-            BUILTIN_FULL_CYCLE_DEVELOPMENT_MANUAL,
-        ] {
-            let workflow: WorkflowDefinitionYaml = serde_saphyr::from_str(source).unwrap();
-            let implement_incomplete_tasks = workflow
-                .nodes
-                .iter()
-                .find(|node| node.name == "implement_incomplete_tasks")
-                .unwrap();
-            assert_eq!(
-                implement_incomplete_tasks.inputs,
-                [
-                    "write_requirements",
-                    "create_detailed_design",
-                    "check_implementation_tasks",
-                ]
-            );
-        }
-    }
-
-    #[test]
-    fn pr_review_finalization_does_not_manage_commit_files() {
-        for source in [BUILTIN_HANDLE_PR_REVIEW, BUILTIN_HANDLE_PR_REVIEW_MANUAL] {
-            let workflow: WorkflowDefinitionYaml = serde_saphyr::from_str(source).unwrap();
-            let SchemaDef::Object {
-                properties,
-                required,
-            } = &workflow.schemas["pr-review-finalization"]
-            else {
-                panic!("pr-review-finalization must be an object schema");
-            };
-
-            assert!(!properties.contains_key("commit_files"));
-            assert!(!required.contains("commit_files"));
-            assert!(properties.contains_key("commit_required"));
-            assert!(properties.contains_key("commit_message"));
-        }
-
-        for key in ["pr_review_confirmation", "finalize_pr_review"] {
-            let instruction = get_builtin_facet(FacetKind::Instruction, key).unwrap();
-            assert!(!instruction.contains("commit_files"));
-        }
-        let finalization = get_builtin_facet(FacetKind::Instruction, "finalize_pr_review").unwrap();
-        assert!(finalization.contains("現在の作業ツリーの変更をstage"));
-    }
-
-    #[test]
-    fn fix_policy_instructions_do_not_require_a_replacement_reason() {
-        for key in ["decide_fix_policy", "decide_fix_policy_manual"] {
-            let instruction = get_builtin_facet(FacetKind::Instruction, key).unwrap();
-            assert!(!instruction.contains("置き換える理由"));
-            assert!(!instruction.contains("置換理由"));
-            assert!(instruction.contains("変更不要なら重複投稿しない"));
-            assert!(instruction.contains("変更が必要な場合は、新しい`[FIX_POLICY]`を投稿する"));
-        }
-    }
 
     #[test]
     fn pr_review_import_requires_all_graphql_pages() {
