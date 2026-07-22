@@ -317,8 +317,8 @@ nodes:
       cases:
         PASS: behavior_author
         FIX_REQUIREMENTS: requirements_repair
-        FIX_BEHAVIOR: behavior_repair
-        FIX_DESIGN: design_repair
+        FIX_BEHAVIOR: human_decision
+        FIX_DESIGN: human_decision
         NEEDS_HUMAN: human_decision
 
 - name: requirements_repair
@@ -428,7 +428,7 @@ nodes:
         PASS: design_author
         FIX_REQUIREMENTS: requirements_repair
         FIX_BEHAVIOR: behavior_repair
-        FIX_DESIGN: design_repair
+        FIX_DESIGN: human_decision
         NEEDS_HUMAN: human_decision
 
 - name: behavior_repair

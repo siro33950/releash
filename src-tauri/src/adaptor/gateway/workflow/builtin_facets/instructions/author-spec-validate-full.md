@@ -11,4 +11,4 @@
 - Designが対象コードと規約に対して実装可能な粒度か確認する。
 - Findingは問題を修正すべき最上流文書のownerにする。
 
-Findingがなければ`CLEAR`、あれば`FINDINGS`にする。自動判断不能な問題だけ一つの質問を付けて`NEEDS_HUMAN`にする。`target: FULL_SPEC`と3文書のcombined digestを提出し、要求外の改善を追加しない。
+Findingがなければ`CLEAR`、あれば`FINDINGS`にする。自動判断不能な問題（正本の矛盾、必須資料・権限の不足を含む）だけ一つの質問を付けて`NEEDS_HUMAN`にする。`target: FULL_SPEC`と3文書のcombined digestを提出し、要求外の改善を追加しない。
