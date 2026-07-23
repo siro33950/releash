@@ -1,13 +1,27 @@
+#[cfg(test)]
 use std::collections::HashMap;
-use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::fs;
+#[cfg(test)]
+use std::fs::OpenOptions;
+#[cfg(test)]
+use std::io::Write;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
+#[cfg(test)]
+use std::sync::LazyLock;
+#[cfg(test)]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(test)]
 use parking_lot::Mutex;
+use sha2::{Digest, Sha256};
 
-use crate::adaptor::gateway::workflow::event::WorkflowEvent;
+use crate::adaptor::gateway::workflow::event::{
+    decode_stored_workflow_event_v1, encode_stored_workflow_event_v1, to_domain_event,
+    DecodedStoredWorkflowEventV1, IncompatibleStoredWorkflowEvent, StoredWorkflowPayloadSource,
+    WorkflowEvent,
+};
 
 /// NDJSON persistence adapter for workflow execution events.
 ///
@@ -15,11 +29,91 @@ use crate::adaptor::gateway::workflow::event::WorkflowEvent;
 /// decisions belong to the workflow query/use-case layer, not to persistence.
 pub struct WorkflowEventLog {
     log_dir: PathBuf,
+    authority: Option<WorkflowEventAuthority>,
 }
 
+#[derive(Clone)]
+struct WorkflowEventAuthority {
+    repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
+    generation_id: String,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum WorkflowEventLogReadError {
+    #[error("failed to read workflow execution log: {0}")]
+    Io(String),
+    #[error("workflow execution log line {line}: {source}")]
+    Incompatible {
+        line: usize,
+        #[source]
+        source: IncompatibleStoredWorkflowEvent,
+    },
+    #[error(
+        "workflow execution log line {line} contains execution_id {actual} instead of {expected}"
+    )]
+    ExecutionIdentity {
+        line: usize,
+        actual: String,
+        expected: String,
+    },
+}
+
+#[cfg(test)]
 static LOG_FILE_LOCKS: LazyLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+pub(crate) type LegacyWorkflowEventRecordV1 = (crate::domain::workflow::WorkflowDomainEvent, i64);
+
+pub(crate) fn legacy_workflow_event_source_identity_v1(
+    relative_path: &str,
+) -> Result<Option<String>, String> {
+    let components = relative_path.split('/').collect::<Vec<_>>();
+    if components.len() != 2
+        || !matches!(
+            components[0],
+            "workflow_execution_logs" | "workflow_event_logs"
+        )
+        || !components[1].ends_with(".ndjson")
+    {
+        return Ok(None);
+    }
+    let execution_id = components[1].trim_end_matches(".ndjson");
+    crate::domain::local_event::StreamId::workflow(execution_id)
+        .map_err(|_| "known legacy workflow event log execution_id is invalid".to_string())?;
+    Ok(Some(execution_id.to_string()))
+}
+
+pub(crate) fn decode_legacy_workflow_event_record_v1(
+    raw: &[u8],
+    relative_path: &str,
+    record_ordinal: u64,
+) -> Result<LegacyWorkflowEventRecordV1, String> {
+    let execution_id = legacy_workflow_event_source_identity_v1(relative_path)?
+        .ok_or_else(|| "known legacy workflow event source path is invalid".to_string())?;
+    let decoded = decode_stored_workflow_event_v1(
+        raw,
+        1,
+        StoredWorkflowPayloadSource {
+            source_id: relative_path.to_string(),
+            record_ordinal,
+        },
+    )
+    .map_err(|error| format!("known legacy workflow event is incompatible: {error}"))?;
+    if decoded.event.execution_id() != execution_id {
+        return Err("known legacy workflow event identity does not match its path".to_string());
+    }
+    let timestamp = decoded.event.timestamp();
+    if !timestamp.is_finite() || timestamp < 0.0 {
+        return Err("known legacy workflow event timestamp is invalid".to_string());
+    }
+    Ok((
+        to_domain_event(&decoded.event)
+            .map_err(|error| format!("known legacy workflow event is invalid: {error}"))?,
+        (timestamp * 1000.0).round() as i64,
+    ))
+}
+
+#[cfg(test)]
 fn log_file_lock(path: &Path) -> Arc<Mutex<()>> {
     let mut locks = LOG_FILE_LOCKS.lock();
     Arc::clone(
@@ -33,15 +127,26 @@ impl WorkflowEventLog {
     pub fn new(data_dir: &Path) -> Self {
         Self {
             log_dir: data_dir.join("workflow_execution_logs"),
+            authority: None,
+        }
+    }
+
+    pub(crate) fn with_authority(
+        data_dir: &Path,
+        repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
+        generation_id: String,
+    ) -> Self {
+        Self {
+            log_dir: data_dir.join("workflow_execution_logs"),
+            authority: Some(WorkflowEventAuthority {
+                repository,
+                generation_id,
+            }),
         }
     }
 
     fn log_path(&self, execution_id: &str) -> PathBuf {
         self.log_dir.join(format!("{execution_id}.ndjson"))
-    }
-
-    pub(crate) fn gc_delete_paths(&self, execution_id: &str) -> Vec<PathBuf> {
-        vec![self.log_path(execution_id)]
     }
 
     #[cfg(test)]
@@ -54,6 +159,7 @@ impl WorkflowEventLog {
     /// Every event in the batch must belong to the same execution. The current
     /// file and the serialized batch are written to a sibling temporary file,
     /// then committed with one rename so a partial batch is never observable.
+    #[cfg(test)]
     pub fn append_batch(&self, events: &[WorkflowEvent]) -> Result<(), String> {
         let Some(first) = events.first() else {
             return Ok(());
@@ -72,8 +178,13 @@ impl WorkflowEventLog {
 
         let mut appended = Vec::new();
         for event in events {
-            serde_json::to_writer(&mut appended, event)
-                .map_err(|error| format!("failed to serialize workflow event: {error}"))?;
+            let domain_event = to_domain_event(event)
+                .map_err(|error| format!("invalid workflow event semantics: {error}"))?;
+            debug_assert_eq!(domain_event.execution_id(), execution_id);
+            appended.extend_from_slice(
+                &encode_stored_workflow_event_v1(event)
+                    .map_err(|error| format!("failed to serialize workflow event: {error}"))?,
+            );
             appended.push(b'\n');
         }
 
@@ -115,37 +226,350 @@ impl WorkflowEventLog {
         write_result
     }
 
+    /// Canonically commit one workflow event batch to SQLite. The legacy
+    /// NDJSON source is immutable after cutover and is never refreshed here.
+    #[cfg(test)]
+    pub(crate) async fn append_batch_durable(
+        &self,
+        events: &[WorkflowEvent],
+    ) -> Result<(), String> {
+        self.append_batch_durable_with_mutations(events, Vec::new())
+            .await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn append_batch_durable_with_mutations(
+        &self,
+        events: &[WorkflowEvent],
+        state_mutations: Vec<crate::domain::local_event::LocalStateMutation>,
+    ) -> Result<(), String> {
+        self.append_batch_durable_with_mutations_as(
+            crate::domain::local_event::CommitOperationKind::Workflow,
+            events,
+            state_mutations,
+        )
+        .await
+    }
+
+    pub(crate) async fn append_batch_durable_with_mutations_as(
+        &self,
+        operation_kind: crate::domain::local_event::CommitOperationKind,
+        events: &[WorkflowEvent],
+        state_mutations: Vec<crate::domain::local_event::LocalStateMutation>,
+    ) -> Result<(), String> {
+        let Some(first) = events.first() else {
+            return if state_mutations.is_empty() {
+                Ok(())
+            } else {
+                Err(
+                    "workflow state mutations require an execution event or an explicit projection commit"
+                        .to_string(),
+                )
+            };
+        };
+        self.commit_execution_batch(
+            operation_kind,
+            first.execution_id(),
+            events,
+            state_mutations,
+        )
+        .await
+    }
+
+    /// Commit a workflow projection transition that has no additional domain
+    /// event. It still uses the execution stream head and one SQLite batch;
+    /// empty-event transitions must not fall back to ExecutionStore JSON.
+    pub(crate) async fn commit_projection_durable(
+        &self,
+        execution_id: &str,
+        state_mutations: Vec<crate::domain::local_event::LocalStateMutation>,
+    ) -> Result<(), String> {
+        self.commit_execution_batch(
+            crate::domain::local_event::CommitOperationKind::Workflow,
+            execution_id,
+            &[],
+            state_mutations,
+        )
+        .await
+    }
+
+    async fn commit_execution_batch(
+        &self,
+        operation_kind: crate::domain::local_event::CommitOperationKind,
+        execution_id: &str,
+        events: &[WorkflowEvent],
+        state_mutations: Vec<crate::domain::local_event::LocalStateMutation>,
+    ) -> Result<(), String> {
+        let Some(authority) = &self.authority else {
+            return Err("workflow SQLite event authority is not configured".to_string());
+        };
+        validate_execution_id(execution_id)?;
+        if events
+            .iter()
+            .any(|event| event.execution_id() != execution_id)
+        {
+            return Err("workflow event batch contains multiple executions".to_string());
+        }
+        let stream_id = crate::domain::local_event::StreamId::workflow(execution_id)
+            .map_err(|_| "workflow stream identity is invalid".to_string())?;
+        let page = authority
+            .repository
+            .load_stream(crate::domain::local_event::LoadStreamRequest {
+                stream_id: stream_id.clone(),
+                after: None,
+                limit: 1,
+            })
+            .await
+            .map_err(|error| format!("workflow SQLite head read failed: {error}"))?;
+        if !matches!(
+            operation_kind,
+            crate::domain::local_event::CommitOperationKind::Workflow
+                | crate::domain::local_event::CommitOperationKind::UserMutation
+        ) {
+            return Err("workflow commit operation kind is invalid".to_string());
+        }
+        let mut exact = b"workflow_commit_identity_v1".to_vec();
+        if operation_kind == crate::domain::local_event::CommitOperationKind::UserMutation {
+            // Keep the historic internal-workflow identity stable while giving caller
+            // admission commits a distinct, replayable idempotency lane.
+            exact.extend_from_slice(b"\0user_mutation");
+        }
+        exact.extend_from_slice(&(execution_id.len() as u64).to_be_bytes());
+        exact.extend_from_slice(execution_id.as_bytes());
+        let mut uncommitted = Vec::with_capacity(events.len());
+        for event in events {
+            let encoded = encode_stored_workflow_event_v1(event)
+                .map_err(|error| format!("failed to encode workflow event: {error}"))?;
+            exact.extend_from_slice(&(encoded.len() as u64).to_be_bytes());
+            exact.extend_from_slice(&encoded);
+            let domain = to_domain_event(event)
+                .map_err(|error| format!("invalid workflow event semantics: {error}"))?;
+            let occurred_at_ms = if event.timestamp().is_finite() && event.timestamp() >= 0.0 {
+                (event.timestamp() * 1000.0).round() as i64
+            } else {
+                return Err("workflow event timestamp is invalid".to_string());
+            };
+            uncommitted.push(crate::domain::local_event::UncommittedDomainEvent {
+                stream_id: stream_id.clone(),
+                event: crate::domain::local_event::LocalDomainEvent::Workflow(domain),
+                occurred_at_ms,
+            });
+        }
+        for mutation in &state_mutations {
+            let encoded = authority
+                .repository
+                .canonical_mutation_identity_v1(mutation)?;
+            exact.extend_from_slice(&(encoded.len() as u64).to_be_bytes());
+            exact.extend_from_slice(&encoded);
+        }
+        let payload_hash: [u8; 32] = Sha256::digest(&exact).into();
+        let identity = format!("workflow-{}", hex::encode(payload_hash));
+        let batch = crate::domain::local_event::LocalAtomicBatch {
+            commit_id: crate::domain::local_event::CommitIdentity::parse(&identity)
+                .map_err(|_| "workflow commit identity is invalid".to_string())?,
+            idempotency: crate::domain::local_event::IdempotencyBinding {
+                generation_id: authority.generation_id.clone(),
+                operation_kind,
+                idempotency_key: hex::encode(payload_hash),
+                payload_hash,
+            },
+            expected_heads: vec![crate::domain::local_event::ExpectedStreamHead {
+                stream_id,
+                expected: page.head,
+            }],
+            events: uncommitted,
+            state_mutations,
+        };
+        authority
+            .repository
+            .commit_batch(batch)
+            .await
+            .map(|_| ())
+            .map_err(|error| format!("workflow SQLite event commit failed: {error}"))
+    }
+
+    pub(crate) fn commit_projection_durable_blocking(
+        &self,
+        execution_id: &str,
+        state_mutations: Vec<crate::domain::local_event::LocalStateMutation>,
+    ) -> Result<(), String> {
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(|error| {
+                            format!("failed to create workflow commit runtime: {error}")
+                        })?
+                        .block_on(self.commit_projection_durable(execution_id, state_mutations))
+                })
+                .join()
+                .map_err(|_| "workflow SQLite projection commit worker panicked".to_string())?
+        })
+    }
+
+    pub(crate) fn append_batch_durable_with_mutations_blocking_as(
+        &self,
+        operation_kind: crate::domain::local_event::CommitOperationKind,
+        events: &[WorkflowEvent],
+        state_mutations: Vec<crate::domain::local_event::LocalStateMutation>,
+    ) -> Result<(), String> {
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(|error| {
+                            format!("failed to create workflow commit runtime: {error}")
+                        })?
+                        .block_on(self.append_batch_durable_with_mutations_as(
+                            operation_kind,
+                            events,
+                            state_mutations,
+                        ))
+                })
+                .join()
+                .map_err(|_| "workflow SQLite event commit worker panicked".to_string())?
+        })
+    }
+
+    pub(crate) async fn read_log_durable(
+        &self,
+        execution_id: &str,
+    ) -> Result<Vec<WorkflowEvent>, String> {
+        let Some(authority) = &self.authority else {
+            #[cfg(test)]
+            return self.read_log(execution_id);
+            #[cfg(not(test))]
+            return Err("workflow SQLite event authority is not configured".to_string());
+        };
+        validate_execution_id(execution_id)?;
+        let stream_id = crate::domain::local_event::StreamId::workflow(execution_id)
+            .map_err(|_| "workflow stream identity is invalid".to_string())?;
+        let mut after = None;
+        let mut result = Vec::new();
+        loop {
+            let page = authority
+                .repository
+                .load_stream(crate::domain::local_event::LoadStreamRequest {
+                    stream_id: stream_id.clone(),
+                    after,
+                    limit: 200,
+                })
+                .await
+                .map_err(|error| format!("workflow SQLite event read failed: {error}"))?;
+            for event in page.events {
+                match event.event {
+                    crate::domain::local_event::LoadedDomainEvent::Known(event) => match *event {
+                        crate::domain::local_event::LocalDomainEvent::Workflow(event) => result
+                            .push(
+                                crate::adaptor::gateway::workflow::event::from_domain_event(&event)
+                                    .map_err(|error| {
+                                        format!("workflow SQLite event conversion failed: {error}")
+                                    })?,
+                            ),
+                        _ => {
+                            return Err("workflow SQLite stream contains a foreign domain event"
+                                .to_string());
+                        }
+                    },
+                    crate::domain::local_event::LoadedDomainEvent::Unknown { .. } => {
+                        return Err(
+                            "workflow SQLite event has an unsupported required version".to_string()
+                        );
+                    }
+                }
+            }
+            let Some(next) = page.next_after else {
+                break;
+            };
+            after = Some(next);
+        }
+        Ok(result)
+    }
+
+    /// Synchronous query-port bridge for the canonical SQLite stream.
+    ///
+    /// Workflow query traits predate the async local-event authority. Run the
+    /// bounded replay on a dedicated current-thread runtime so callers never
+    /// fall back to the legacy NDJSON source merely because their port is
+    /// synchronous.
+    pub(crate) fn read_log_durable_blocking(
+        &self,
+        execution_id: &str,
+    ) -> Result<Vec<WorkflowEvent>, String> {
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(|error| {
+                            format!("failed to create workflow read runtime: {error}")
+                        })?
+                        .block_on(self.read_log_durable(execution_id))
+                })
+                .join()
+                .map_err(|_| "workflow SQLite read worker panicked".to_string())?
+        })
+    }
+
     /// Reads and validates one execution log on demand.
     pub fn read_log(&self, execution_id: &str) -> Result<Vec<WorkflowEvent>, String> {
-        validate_execution_id(execution_id)?;
+        self.read_log_records(execution_id)
+            .map(|records| {
+                records
+                    .into_iter()
+                    .map(|record| {
+                        let _preserved = record.preserved_additive_payload;
+                        record.event
+                    })
+                    .collect()
+            })
+            .map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn read_log_records(
+        &self,
+        execution_id: &str,
+    ) -> Result<Vec<DecodedStoredWorkflowEventV1>, WorkflowEventLogReadError> {
+        validate_execution_id(execution_id).map_err(WorkflowEventLogReadError::Io)?;
         let path = self.log_path(execution_id);
-        let content = match fs::read_to_string(&path) {
+        let content = match fs::read(&path) {
             Ok(content) => content,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => {
-                return Err(format!("failed to read workflow execution log: {error}"));
-            }
+            Err(error) => return Err(WorkflowEventLogReadError::Io(error.to_string())),
         };
-
-        content
-            .lines()
+        let source_id = path.to_string_lossy().into_owned();
+        let text = std::str::from_utf8(&content)
+            .map_err(|error| WorkflowEventLogReadError::Io(error.to_string()))?;
+        text.lines()
             .enumerate()
             .filter(|(_, line)| !line.trim().is_empty())
             .map(|(index, line)| {
-                let event: WorkflowEvent = serde_json::from_str(line).map_err(|error| {
-                    format!(
-                        "failed to parse workflow execution log line {}: {error}",
-                        index + 1
-                    )
+                let line_number = index + 1;
+                let record = decode_stored_workflow_event_v1(
+                    line.as_bytes(),
+                    1,
+                    StoredWorkflowPayloadSource {
+                        source_id: source_id.clone(),
+                        record_ordinal: u64::try_from(index).unwrap_or(u64::MAX),
+                    },
+                )
+                .map_err(|source| WorkflowEventLogReadError::Incompatible {
+                    line: line_number,
+                    source,
                 })?;
-                if event.execution_id() != execution_id {
-                    return Err(format!(
-                        "workflow execution log line {} contains execution_id {} instead of {execution_id}",
-                        index + 1,
-                        event.execution_id()
-                    ));
+                if record.event.execution_id() != execution_id {
+                    return Err(WorkflowEventLogReadError::ExecutionIdentity {
+                        line: line_number,
+                        actual: record.event.execution_id().to_string(),
+                        expected: execution_id.to_string(),
+                    });
                 }
-                Ok(event)
+                Ok(record)
             })
             .collect()
     }
@@ -204,6 +628,7 @@ impl WorkflowEventLog {
     }
 
     /// Reads only the requested event window without retaining the complete log.
+    #[cfg(test)]
     pub fn read_log_page(
         &self,
         execution_id: &str,
@@ -239,12 +664,21 @@ impl WorkflowEventLog {
             if events.len() == limit {
                 break;
             }
-            let event: WorkflowEvent = serde_json::from_str(&line).map_err(|error| {
+            let event = decode_stored_workflow_event_v1(
+                line.as_bytes(),
+                1,
+                StoredWorkflowPayloadSource {
+                    source_id: path.to_string_lossy().into_owned(),
+                    record_ordinal: u64::try_from(event_index).unwrap_or(u64::MAX),
+                },
+            )
+            .map_err(|error| {
                 format!(
                     "failed to parse workflow execution log line {}: {error}",
                     line_index + 1
                 )
-            })?;
+            })?
+            .event;
             if event.execution_id() != execution_id {
                 return Err(format!(
                     "workflow execution log line {} contains execution_id {} instead of {execution_id}",
@@ -265,6 +699,7 @@ fn validate_execution_id(execution_id: &str) -> Result<(), String> {
         .map_err(|_| "workflow execution log execution_id must be UUID".to_string())
 }
 
+#[cfg(test)]
 fn temporary_log_path(path: &Path) -> Result<PathBuf, String> {
     let file_name = path
         .file_name()
@@ -312,6 +747,55 @@ mod tests {
     }
 
     #[test]
+    fn production_read_append_reload_preserves_additive_raw_and_source_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let log = WorkflowEventLog::new(temp.path());
+        fs::create_dir_all(&log.log_dir).unwrap();
+        let path = log.log_path(EXECUTION_ID);
+        let raw = format!(
+            "{{\"event\":\"execution_completed\",\"execution_id\":\"{EXECUTION_ID}\",\"total_token_usage\":{{\"inputTokens\":1,\"outputTokens\":2,\"futureNested\":true}},\"timestamp\":1.0,\"futureTop\":{{\"x\":1}}}}\n"
+        );
+        fs::write(&path, raw.as_bytes()).unwrap();
+
+        let records = log.read_log_records(EXECUTION_ID).unwrap();
+        let preserved = records[0].preserved_additive_payload.as_ref().unwrap();
+        assert_eq!(preserved.raw_bytes, raw.trim_end().as_bytes());
+        assert_eq!(preserved.source.source_id, path.to_string_lossy());
+        assert_eq!(preserved.source.record_ordinal, 0);
+
+        log.append(&event(EXECUTION_ID, 2.0)).unwrap();
+        let rewritten = fs::read(&path).unwrap();
+        assert!(rewritten.starts_with(raw.as_bytes()));
+        let reloaded = WorkflowEventLog::new(temp.path())
+            .read_log_records(EXECUTION_ID)
+            .unwrap();
+        assert_eq!(
+            reloaded[0]
+                .preserved_additive_payload
+                .as_ref()
+                .unwrap()
+                .raw_bytes,
+            raw.trim_end().as_bytes()
+        );
+    }
+
+    #[test]
+    fn production_reader_returns_typed_incompatibility_for_unknown_required_event() {
+        let temp = tempfile::tempdir().unwrap();
+        let log = WorkflowEventLog::new(temp.path());
+        fs::create_dir_all(&log.log_dir).unwrap();
+        fs::write(
+            log.log_path(EXECUTION_ID),
+            format!("{{\"event\":\"future_required\",\"execution_id\":\"{EXECUTION_ID}\"}}\n"),
+        )
+        .unwrap();
+        assert!(matches!(
+            log.read_log_records(EXECUTION_ID),
+            Err(WorkflowEventLogReadError::Incompatible { .. })
+        ));
+    }
+
+    #[test]
     fn read_log_page_returns_only_the_requested_event_window() {
         let temp = tempfile::tempdir().unwrap();
         let log = WorkflowEventLog::new(temp.path());
@@ -336,6 +820,75 @@ mod tests {
             .append_batch(&[event(EXECUTION_ID, 1.0), event(OTHER_EXECUTION_ID, 2.0),])
             .is_err());
         assert!(log.read_log(EXECUTION_ID).unwrap().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canonical_append_never_mutates_the_legacy_ndjson_source() {
+        use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
+
+        let temp = tempfile::tempdir().unwrap();
+        let legacy = WorkflowEventLog::new(temp.path());
+        legacy.append_batch(&[event(EXECUTION_ID, 1.0)]).unwrap();
+        let legacy_path = legacy.log_path(EXECUTION_ID);
+        let legacy_before = fs::read(&legacy_path).unwrap();
+
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(temp.path().to_path_buf()))
+                .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !store.cutover_ready() {
+                assert!(!store.migration_blocked());
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("legacy workflow migration must reach verified cutover");
+        assert!(store.open_normal_admission_after_authority_install());
+
+        let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
+            store.clone();
+        let canonical = WorkflowEventLog::with_authority(
+            temp.path(),
+            repository,
+            store.generation_id().to_string(),
+        );
+        canonical
+            .append_batch_durable(&[event(EXECUTION_ID, 2.0)])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            canonical
+                .read_log_durable(EXECUTION_ID)
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            fs::read(&legacy_path).unwrap(),
+            legacy_before,
+            "post-cutover workflow commits must leave the migration source byte-for-byte unchanged",
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_event_batch_never_reports_uncommitted_state_mutations_as_success() {
+        let temp = tempfile::tempdir().unwrap();
+        let log = WorkflowEventLog::new(temp.path());
+        let mutation = crate::domain::local_event::LocalStateMutation::SessionProjectionRemoval(
+            crate::domain::local_event::SessionProjectionRemovalMutation {
+                session_id: "session-1".to_string(),
+                expected: crate::domain::local_event::RevisionGuard::Absent,
+            },
+        );
+
+        let error = log
+            .append_batch_durable_with_mutations(&[], vec![mutation])
+            .await
+            .unwrap_err();
+
+        assert!(error.contains("explicit projection commit"));
     }
 
     #[test]

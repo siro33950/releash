@@ -11,6 +11,25 @@ enum StartupVisibilityAction {
     Minimize,
 }
 
+fn apply_window_view_close(
+    action: StartupVisibilityAction,
+    hide: impl FnOnce(),
+    minimize: impl FnOnce(),
+) {
+    match action {
+        StartupVisibilityAction::Hide => hide(),
+        StartupVisibilityAction::Minimize => minimize(),
+    }
+}
+
+pub(crate) fn native_exit_intent(
+    code: Option<i32>,
+) -> crate::usecase::shutdown_coordinator::ApplicationQuitIntent {
+    crate::usecase::shutdown_coordinator::ApplicationQuitIntent::Exit {
+        code: code.unwrap_or(0),
+    }
+}
+
 pub fn handle_run_event(app_handle: &tauri::AppHandle, event: tauri::RunEvent) {
     match event {
         tauri::RunEvent::WindowEvent {
@@ -21,14 +40,39 @@ pub fn handle_run_event(app_handle: &tauri::AppHandle, event: tauri::RunEvent) {
             api.prevent_close();
             close_window_to_configured_destination(app_handle, &label);
         }
-        tauri::RunEvent::ExitRequested { api, .. } if should_prevent_exit() => {
+        tauri::RunEvent::ExitRequested { api, code, .. } if should_prevent_exit() => {
             api.prevent_exit();
+            if let Some(ingress) = app_handle.try_state::<Arc<
+                crate::adaptor::controller::application_lifecycle::ApplicationQuitIngress,
+            >>() {
+                ingress.request(native_exit_intent(code));
+            }
         }
         #[cfg(target_os = "macos")]
         tauri::RunEvent::Reopen { .. } => {
             show_and_focus_main_window(app_handle);
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod native_exit_tests {
+    use super::native_exit_intent;
+    use crate::usecase::shutdown_coordinator::ApplicationQuitIntent;
+
+    #[test]
+    fn native_exit_preserves_signed_code() {
+        for code in [i32::MIN, -1, 0, 1, i32::MAX] {
+            assert_eq!(
+                native_exit_intent(Some(code)),
+                ApplicationQuitIntent::Exit { code }
+            );
+        }
+        assert_eq!(
+            native_exit_intent(None),
+            ApplicationQuitIntent::Exit { code: 0 }
+        );
     }
 }
 
@@ -61,11 +105,15 @@ fn close_window_to_configured_destination(app_handle: &tauri::AppHandle, label: 
         .is_none_or(|c| c.app.close_to_tray);
 
     if let Some(window) = app_handle.get_webview_window(label) {
-        if close_to_tray {
-            let _ = window.hide();
-        } else {
-            let _ = window.minimize();
-        }
+        apply_window_view_close(
+            startup_visibility_action(close_to_tray),
+            || {
+                let _ = window.hide();
+            },
+            || {
+                let _ = window.minimize();
+            },
+        );
     }
 }
 
@@ -115,6 +163,8 @@ fn show_and_focus_main_window(app_handle: &tauri::AppHandle) {
 mod tests {
     use super::*;
 
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
     use crate::domain::app_config::repository::ConfigUpdate;
     use crate::domain::app_config::value_objects::{
         AppConfigDocument, AppSettings, ServerConfig, TelemetryConfig, TlsConfig, WorkflowConfig,
@@ -124,6 +174,33 @@ mod tests {
 
     struct StubConfigRepository {
         config: AppConfigDocument,
+    }
+
+    #[test]
+    fn close_quit_window_close_is_view_only() {
+        for (close_to_tray, expected_hidden, expected_minimized) in [(true, 1, 0), (false, 0, 1)] {
+            let hidden = AtomicUsize::new(0);
+            let minimized = AtomicUsize::new(0);
+            let application_quit_ingress = AtomicUsize::new(0);
+
+            apply_window_view_close(
+                startup_visibility_action(close_to_tray),
+                || {
+                    hidden.fetch_add(1, AtomicOrdering::SeqCst);
+                },
+                || {
+                    minimized.fetch_add(1, AtomicOrdering::SeqCst);
+                },
+            );
+
+            assert_eq!(hidden.load(AtomicOrdering::SeqCst), expected_hidden);
+            assert_eq!(minimized.load(AtomicOrdering::SeqCst), expected_minimized);
+            assert_eq!(
+                application_quit_ingress.load(AtomicOrdering::SeqCst),
+                0,
+                "CloseRequested is a view-only visibility effect and cannot enter quit"
+            );
+        }
     }
 
     impl ConfigRepository for StubConfigRepository {

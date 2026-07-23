@@ -37,11 +37,6 @@ pub(crate) const METHOD_INITIALIZE: &str = "initialize";
 pub(crate) const METHOD_INITIALIZED: &str = "initialized";
 pub(crate) const METHOD_THREAD_START: &str = "thread/start";
 pub(crate) const METHOD_THREAD_RESUME: &str = "thread/resume";
-pub(crate) const METHOD_THREAD_FORK: &str = "thread/fork";
-pub(crate) const METHOD_THREAD_ARCHIVE: &str = "thread/archive";
-pub(crate) const METHOD_THREAD_UNARCHIVE: &str = "thread/unarchive";
-pub(crate) const METHOD_THREAD_NAME_SET: &str = "thread/name/set";
-pub(crate) const METHOD_THREAD_SETTINGS_UPDATE: &str = "thread/settings/update";
 pub(crate) const METHOD_TURN_START: &str = "turn/start";
 #[allow(dead_code)] // issues-1301 D16/F-2: steering remains capability-gated and unused for current Codex backend behavior.
 pub(crate) const METHOD_TURN_STEER: &str = "turn/steer";

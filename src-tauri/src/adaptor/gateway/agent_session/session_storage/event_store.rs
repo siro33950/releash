@@ -1,23 +1,46 @@
+#[cfg(test)]
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 use sha2::{Digest, Sha256};
 
 use super::layout::{
     event_batches_dir_in_dir, event_log_file_in_dir, event_tail_file_in_dir,
-    queue_pause_checkpoint_file_in_dir, session_dir, write_json_pretty_atomic,
-    write_json_pretty_atomic_durable,
+    queue_pause_checkpoint_file_in_dir, session_dir,
 };
+#[cfg(test)]
+use super::layout::{sync_file_and_parent, write_binary_atomic, write_json_pretty_atomic};
+#[cfg(test)]
+use super::stored_event_v1::StoredAgentSessionEventV1;
+#[cfg(test)]
+use super::stored_event_v1::{decode_agent_session_events_v1, encode_agent_session_events_v1};
+use super::stored_event_v1::{
+    decode_stored_agent_session_event_v1, DecodedStoredAgentSessionEventV1,
+};
+use super::stored_message_part_v1::{IncompatibleStoredEvent, StoredPayloadSource};
+#[cfg(test)]
 use super::transaction::TransactionApplyError;
 use super::FileSessionStorage;
 #[cfg(test)]
 use crate::usecase::agent_session::event_log::apply_event_to_queue_pause;
 use crate::usecase::agent_session::event_log::{AgentSessionEvent, TurnEventLog};
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct AppendOutcome {
     pub(super) recovered: bool,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum SessionEventRecordReadError {
+    #[error("failed to read session event source: {0}")]
+    Io(String),
+    #[error(transparent)]
+    Incompatible(#[from] IncompatibleStoredEvent),
+    #[error("corrupt session event source: {0}")]
+    Corrupt(String),
 }
 
 impl FileSessionStorage {
@@ -31,7 +54,13 @@ impl FileSessionStorage {
         }
         let _lock = self.file_lock.lock();
         let dir = session_dir(app_data_dir, session_id)?;
-        load_queue_pause_projection_from_dir(&dir)
+        #[cfg(not(test))]
+        return load_queue_pause_projection_from_dir_with_checkpoint(&dir, false);
+        #[cfg(test)]
+        load_queue_pause_projection_from_dir_with_checkpoint(
+            &dir,
+            !self.legacy_mutation_admission_closed(),
+        )
     }
 
     pub fn load_session_events(
@@ -47,12 +76,14 @@ impl FileSessionStorage {
         self.read_session_events_from_dir(&dir)
     }
 
+    #[cfg(test)]
     pub fn append_session_event(
         &self,
         app_data_dir: &Path,
         session_id: &str,
         event: &AgentSessionEvent,
     ) -> Result<Vec<AgentSessionEvent>, String> {
+        self.ensure_legacy_mutation_admitted()?;
         if !self.reconcile_session_transaction(app_data_dir, session_id)? {
             return Err(format!("Session not found: {session_id}"));
         }
@@ -66,12 +97,14 @@ impl FileSessionStorage {
         self.read_session_events_from_dir(&dir)
     }
 
+    #[cfg(test)]
     pub fn append_session_event_without_projection(
         &self,
         app_data_dir: &Path,
         session_id: &str,
         event: &AgentSessionEvent,
     ) -> Result<(), String> {
+        self.ensure_legacy_mutation_admitted()?;
         if !self.reconcile_session_transaction(app_data_dir, session_id)? {
             return Err(format!("Session not found: {session_id}"));
         }
@@ -85,6 +118,7 @@ impl FileSessionStorage {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) fn record_event_log_recovery(&self, session_id: &str) {
         self.recovered_event_logs
             .write()
@@ -94,12 +128,14 @@ impl FileSessionStorage {
         );
     }
 
+    #[cfg(test)]
     pub fn append_session_events(
         &self,
         app_data_dir: &Path,
         session_id: &str,
         events: &[AgentSessionEvent],
     ) -> Result<(), String> {
+        self.ensure_legacy_mutation_admitted()?;
         if events.is_empty() {
             return Ok(());
         }
@@ -123,26 +159,40 @@ impl FileSessionStorage {
         #[cfg(test)]
         self.event_read_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let path = event_log_file_in_dir(dir);
-        let mut events = match std::fs::read_to_string(&path) {
-            Ok(content) => parse_session_events_content(&content),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-            Err(e) => Err(format!("Failed to read session event log: {e}")),
-        }?;
-        for batch_path in self.committed_event_batch_paths(dir)? {
-            let content = std::fs::read_to_string(&batch_path)
-                .map_err(|e| format!("Failed to read session event batch: {e}"))?;
-            let mut batch = serde_json::from_str::<Vec<AgentSessionEvent>>(&content)
-                .map_err(|e| format!("Failed to parse session event batch: {e}"))?;
-            events.append(&mut batch);
+        self.read_session_event_records_from_dir(dir)
+            .map(|records| records.into_iter().map(|record| record.event).collect())
+            .map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn read_session_event_records_from_dir(
+        &self,
+        dir: &Path,
+    ) -> Result<Vec<DecodedStoredAgentSessionEventV1>, SessionEventRecordReadError> {
+        let mut records = Vec::new();
+        let legacy_path = event_log_file_in_dir(dir);
+        match std::fs::read_to_string(&legacy_path) {
+            Ok(content) => records.extend(
+                decode_event_log_content(&content, &legacy_path.to_string_lossy())?.records,
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(SessionEventRecordReadError::Io(error.to_string())),
+        }
+        for path in self
+            .committed_event_batch_paths(dir)
+            .map_err(SessionEventRecordReadError::Io)?
+        {
+            let content = std::fs::read_to_string(&path)
+                .map_err(|error| SessionEventRecordReadError::Io(error.to_string()))?;
+            records.extend(decode_event_log_content(&content, &path.to_string_lossy())?.records);
         }
         let tail_path = event_tail_file_in_dir(dir);
         match std::fs::read_to_string(&tail_path) {
-            Ok(content) => events.extend(parse_session_events_content(&content)?),
+            Ok(content) => records
+                .extend(decode_event_log_content(&content, &tail_path.to_string_lossy())?.records),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("Failed to read session event tail: {error}")),
+            Err(error) => return Err(SessionEventRecordReadError::Io(error.to_string())),
         }
-        Ok(events)
+        Ok(records)
     }
 
     #[cfg(test)]
@@ -169,6 +219,7 @@ impl FileSessionStorage {
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    #[cfg(test)]
     pub(super) fn canonicalize_session_events_from_dir(
         &self,
         dir: &Path,
@@ -183,18 +234,15 @@ impl FileSessionStorage {
                     "Failed to read session event batch: {error}"
                 ))
             })?;
-            let mut batch =
-                serde_json::from_str::<Vec<AgentSessionEvent>>(&content).map_err(|error| {
-                    TransactionApplyError::corrupt(format!(
-                        "Failed to parse session event batch: {error}"
-                    ))
-                })?;
+            let mut batch = parse_session_events_content(&content, &batch_path.to_string_lossy())
+                .map_err(TransactionApplyError::corrupt)?;
             events.append(&mut batch);
         }
         events.extend(canonicalize_event_array(&event_tail_file_in_dir(dir))?);
         Ok(events)
     }
 
+    #[cfg(test)]
     pub(super) fn event_append_file_in_dir(dir: &Path) -> std::path::PathBuf {
         if event_batches_dir_in_dir(dir).exists() || event_tail_file_in_dir(dir).exists() {
             event_tail_file_in_dir(dir)
@@ -203,6 +251,7 @@ impl FileSessionStorage {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn append_session_event_to_dir(
         &self,
         dir: &Path,
@@ -220,6 +269,7 @@ impl FileSessionStorage {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn append_session_events_to_dir(
         &self,
         dir: &Path,
@@ -237,6 +287,7 @@ impl FileSessionStorage {
         })
     }
 
+    #[cfg(test)]
     fn publish_event_batch_to_dir(
         &self,
         dir: &Path,
@@ -270,9 +321,14 @@ impl FileSessionStorage {
                 .ok_or_else(|| "Failed to allocate session event batch sequence".to_string())?;
         }
         let path = batches_dir.join(format!("{next_sequence:020}.json"));
-        write_json_pretty_atomic(&path, &events, "session event batch")
+        let stored = events
+            .iter()
+            .map(StoredAgentSessionEventV1::from)
+            .collect::<Vec<_>>();
+        write_json_pretty_atomic(&path, &stored, "session event batch")
     }
 
+    #[cfg(test)]
     fn append_event_to_legacy_array(
         &self,
         dir: &Path,
@@ -281,6 +337,7 @@ impl FileSessionStorage {
         self.append_event_to_array(&event_log_file_in_dir(dir), event)
     }
 
+    #[cfg(test)]
     fn append_event_to_array(
         &self,
         path: &Path,
@@ -297,7 +354,7 @@ impl FileSessionStorage {
             .truncate(false)
             .open(path)
             .map_err(|e| format!("Failed to open session event log: {e}"))?;
-        let payload = serde_json::to_string_pretty(event)
+        let payload = serde_json::to_string_pretty(&StoredAgentSessionEventV1::from(event))
             .map(|payload| indent_json_payload(&payload))
             .map_err(|e| format!("Failed to serialize session event: {e}"))?;
         let len = file
@@ -319,8 +376,8 @@ impl FileSessionStorage {
             _ => true,
         };
         if needs_recovery {
-            let events = recover_session_events_from_file(&mut file)?;
-            rewrite_session_events(&mut file, &events)?;
+            let (_, recovered_content) = recover_session_events_from_file(&mut file, path)?;
+            rewrite_session_events(&mut file, &recovered_content)?;
             let repaired_len = file
                 .metadata()
                 .map_err(|e| format!("Failed to stat repaired session event log: {e}"))?
@@ -352,6 +409,7 @@ impl FileSessionStorage {
         Ok(AppendOutcome { recovered })
     }
 
+    #[cfg(test)]
     fn repair_event_array_if_needed(&self, path: &Path) -> Result<AppendOutcome, String> {
         let mut file = match std::fs::OpenOptions::new()
             .read(true)
@@ -377,12 +435,12 @@ impl FileSessionStorage {
         if valid {
             return Ok(AppendOutcome::default());
         }
-        let events = if len == 0 {
-            Vec::new()
+        let recovered_content = if len == 0 {
+            "[]".to_string()
         } else {
-            recover_session_events_from_file(&mut file)?
+            recover_session_events_from_file(&mut file, path)?.1
         };
-        rewrite_session_events(&mut file, &events)?;
+        rewrite_session_events(&mut file, &recovered_content)?;
         Ok(AppendOutcome { recovered: true })
     }
 
@@ -397,6 +455,7 @@ impl FileSessionStorage {
     }
 }
 
+#[cfg(test)]
 fn canonicalize_event_array(path: &Path) -> Result<Vec<AgentSessionEvent>, TransactionApplyError> {
     let content = match std::fs::read_to_string(path) {
         Ok(content) => content,
@@ -407,12 +466,30 @@ fn canonicalize_event_array(path: &Path) -> Result<Vec<AgentSessionEvent>, Trans
             )))
         }
     };
-    let events = parse_session_events_content(&content).map_err(TransactionApplyError::corrupt)?;
-    if serde_json::from_str::<Vec<AgentSessionEvent>>(&content).is_err() {
-        write_json_pretty_atomic_durable(path, &events, "session event log")
-            .map_err(TransactionApplyError::retryable)?;
+    match parse_event_log_records(&content, &path.to_string_lossy()) {
+        Ok((events, canonical)) => {
+            if let Some(canonical) = canonical {
+                write_raw_json_atomic_durable(path, &canonical, "session event log")
+                    .map_err(TransactionApplyError::retryable)?;
+            }
+            Ok(events)
+        }
+        Err(_) => {
+            let (events, recovered) = recover_unclosed_event_log(&content, &path.to_string_lossy())
+                .map_err(|_| {
+                    TransactionApplyError::corrupt("Failed to recover session event log")
+                })?;
+            write_raw_json_atomic_durable(path, &recovered, "session event log")
+                .map_err(TransactionApplyError::retryable)?;
+            Ok(events)
+        }
     }
-    Ok(events)
+}
+
+#[cfg(test)]
+fn write_raw_json_atomic_durable(path: &Path, raw: &str, label: &str) -> Result<(), String> {
+    write_binary_atomic(path, raw.as_bytes(), label)?;
+    sync_file_and_parent(path, label)
 }
 
 fn committed_event_batch_paths(dir: &Path) -> Result<Vec<std::path::PathBuf>, String> {
@@ -440,41 +517,41 @@ fn committed_event_batch_paths(dir: &Path) -> Result<Vec<std::path::PathBuf>, St
     Ok(paths)
 }
 
+#[cfg(test)]
 fn recover_session_events_from_file(
     file: &mut std::fs::File,
-) -> Result<Vec<AgentSessionEvent>, String> {
+    path: &Path,
+) -> Result<(Vec<AgentSessionEvent>, String), String> {
     file.seek(SeekFrom::Start(0))
         .map_err(|e| format!("Failed to seek damaged session event log: {e}"))?;
     let mut content = String::new();
     file.read_to_string(&mut content)
         .map_err(|e| format!("Failed to read damaged session event log: {e}"))?;
-    recover_unclosed_session_events(&content).map_err(|_| {
+    recover_unclosed_event_log(&content, &path.to_string_lossy()).map_err(|_| {
         "Failed to append session event: event log tail could not be recovered".to_string()
     })
 }
 
-fn rewrite_session_events(
-    file: &mut std::fs::File,
-    events: &[AgentSessionEvent],
-) -> Result<(), String> {
-    let payload = serde_json::to_string_pretty(events)
-        .map_err(|e| format!("Failed to serialize recovered session event log: {e}"))?;
+#[cfg(test)]
+fn rewrite_session_events(file: &mut std::fs::File, recovered_content: &str) -> Result<(), String> {
     file.set_len(0)
         .map_err(|e| format!("Failed to truncate damaged session event log: {e}"))?;
     file.seek(SeekFrom::Start(0))
         .map_err(|e| format!("Failed to seek repaired session event log: {e}"))?;
-    writeln!(file, "{payload}")
+    writeln!(file, "{recovered_content}")
         .map_err(|e| format!("Failed to rewrite recovered session event log: {e}"))?;
     file.flush()
         .map_err(|e| format!("Failed to flush recovered session event log: {e}"))
 }
 
+#[cfg(test)]
 fn event_log_is_valid_json(file: &mut std::fs::File) -> Result<bool, String> {
     file.seek(SeekFrom::Start(0))
         .map_err(|e| format!("Failed to seek session event log: {e}"))?;
     Ok(serde_json::from_reader::<_, serde::de::IgnoredAny>(file).is_ok())
 }
 
+#[cfg(test)]
 fn last_non_whitespace_byte(
     file: &mut std::fs::File,
     end_exclusive: u64,
@@ -495,18 +572,14 @@ fn last_non_whitespace_byte(
 }
 
 #[cfg(test)]
-#[derive(Serialize)]
-#[serde(untagged)]
 enum EventLogRecordRef<'a> {
     Event(&'a AgentSessionEvent),
     Batch { events: &'a [AgentSessionEvent] },
 }
 
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum EventLogRecord {
-    Event(Box<AgentSessionEvent>),
-    Batch { events: Vec<AgentSessionEvent> },
+enum RawEventLogRecord {
+    Batch { events: Vec<Box<RawValue>> },
+    Event(Box<RawValue>),
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -540,7 +613,7 @@ fn append_event_log_record_with_fault(
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create session event log dir: {e}"))?;
     }
-    let payload = serde_json::to_string_pretty(&record)
+    let payload = encode_event_log_record_pretty(&record)
         .map_err(|e| format!("Failed to serialize session {description}: {e}"))?;
     let mut content = match std::fs::read_to_string(&path) {
         Ok(content) => content,
@@ -557,16 +630,18 @@ fn append_event_log_record_with_fault(
         content = "[]".to_string();
         projection_is_current = true;
     } else if !projection_is_current {
-        match parse_event_log_records(&content) {
-            Ok(events) => {
+        match parse_event_log_records(&content, &path.to_string_lossy()) {
+            Ok((events, _)) => {
                 queue_paused_at = project_queue_pause(events.iter());
             }
             Err(_) => {
-                let (events, recovered_content) = recover_unclosed_event_log(&content).map_err(
-                    |_| {
+                let (events, recovered_content) = recover_unclosed_event_log(
+                    &content,
+                    &path.to_string_lossy(),
+                )
+                .map_err(|_| {
                         "Failed to append session event: event log does not end with a JSON array; tail could not be recovered".to_string()
-                    },
-                )?;
+                    })?;
                 queue_paused_at = project_queue_pause(events.iter());
                 invalidate_queue_pause_checkpoint(dir)?;
                 replace_recovered_event_log_atomic(&path, &recovered_content, fault)?;
@@ -679,7 +754,15 @@ fn replace_appended_event_log_atomic(
     result
 }
 
+#[cfg(test)]
 fn load_queue_pause_projection_from_dir(dir: &Path) -> Result<Option<f64>, String> {
+    load_queue_pause_projection_from_dir_with_checkpoint(dir, true)
+}
+
+fn load_queue_pause_projection_from_dir_with_checkpoint(
+    dir: &Path,
+    _persist_checkpoint: bool,
+) -> Result<Option<f64>, String> {
     let event_log_path = event_log_file_in_dir(dir);
     let legacy_content = match std::fs::read_to_string(&event_log_path) {
         Ok(content) => Some(content),
@@ -708,17 +791,17 @@ fn load_queue_pause_projection_from_dir(dir: &Path) -> Result<Option<f64>, Strin
         return Ok(checkpoint.queue_paused_at);
     }
     let mut events = Vec::new();
-    let mut projection_is_checkpointable =
+    let mut _projection_is_checkpointable =
         append_projection_event_array(legacy_content.as_deref(), "session event log", &mut events)?;
     for content in &batch_contents {
-        let mut batch = serde_json::from_str::<Vec<AgentSessionEvent>>(content)
-            .map_err(|error| format!("Failed to parse session event batch: {error}"))?;
+        let mut batch = parse_session_events_content(content, "session event batch")?;
         events.append(&mut batch);
     }
-    projection_is_checkpointable &=
+    _projection_is_checkpointable &=
         append_projection_event_array(tail_content.as_deref(), "session event tail", &mut events)?;
     let queue_paused_at = project_queue_pause(events.iter());
-    if projection_is_checkpointable {
+    #[cfg(test)]
+    if _projection_is_checkpointable && _persist_checkpoint {
         persist_queue_pause_checkpoint(dir, event_log_len, &fingerprint, queue_paused_at);
     }
     Ok(queue_paused_at)
@@ -732,13 +815,13 @@ fn append_projection_event_array(
     let Some(content) = content else {
         return Ok(true);
     };
-    match parse_event_log_records(content) {
-        Ok(mut parsed) => {
+    match parse_event_log_records(content, description) {
+        Ok((mut parsed, _)) => {
             events.append(&mut parsed);
             Ok(true)
         }
         Err(error) => {
-            let mut recovered = recover_unclosed_session_events(content)
+            let mut recovered = recover_unclosed_session_events(content, description)
                 .map_err(|_| format!("Failed to parse {description}: {error}"))?;
             events.append(&mut recovered);
             // A recovered in-memory projection must not attest that the damaged file is current.
@@ -767,6 +850,7 @@ fn matching_queue_pause_checkpoint(
         .then_some(checkpoint)
 }
 
+#[cfg(test)]
 fn persist_queue_pause_checkpoint(
     dir: &Path,
     event_log_len: u64,
@@ -789,6 +873,7 @@ fn persist_queue_pause_checkpoint(
     }
 }
 
+#[cfg(test)]
 fn invalidate_queue_pause_checkpoint(dir: &Path) -> Result<(), String> {
     match std::fs::remove_file(queue_pause_checkpoint_file_in_dir(dir)) {
         Ok(()) => Ok(()),
@@ -816,19 +901,29 @@ fn project_queue_pause<'a>(events: impl IntoIterator<Item = &'a AgentSessionEven
     TurnEventLog::from_events(events.into_iter().cloned().collect()).queue_paused_at()
 }
 
-fn parse_session_events_content(content: &str) -> Result<Vec<AgentSessionEvent>, String> {
-    match parse_event_log_records(content) {
-        Ok(events) => Ok(events),
-        Err(error) => recover_unclosed_session_events(content)
-            .map_err(|_| format!("Failed to parse session event log: {error}")),
-    }
+fn parse_session_events_content(
+    content: &str,
+    source_id: &str,
+) -> Result<Vec<AgentSessionEvent>, String> {
+    let events = match parse_event_log_records(content, source_id) {
+        Ok((events, _)) => events,
+        Err(error) => recover_unclosed_session_events(content, source_id)
+            .map_err(|_| format!("Failed to parse session event log: {error}"))?,
+    };
+    Ok(events)
 }
 
-fn recover_unclosed_session_events(content: &str) -> Result<Vec<AgentSessionEvent>, ()> {
-    recover_unclosed_event_log(content).map(|(events, _)| events)
+fn recover_unclosed_session_events(
+    content: &str,
+    source_id: &str,
+) -> Result<Vec<AgentSessionEvent>, ()> {
+    recover_unclosed_event_log(content, source_id).map(|(events, _)| events)
 }
 
-fn recover_unclosed_event_log(content: &str) -> Result<(Vec<AgentSessionEvent>, String), ()> {
+fn recover_unclosed_event_log(
+    content: &str,
+    source_id: &str,
+) -> Result<(Vec<AgentSessionEvent>, String), ()> {
     if !content.trim_start().starts_with('[') {
         return Err(());
     }
@@ -842,9 +937,11 @@ fn recover_unclosed_event_log(content: &str) -> Result<(Vec<AgentSessionEvent>, 
         if let Some((candidate, closed_nested_container)) = close_unclosed_json_containers(prefix) {
             if let Ok(records) = parse_event_log_record_envelopes(&candidate) {
                 let incomplete_batch = closed_nested_container
-                    && matches!(records.last(), Some(EventLogRecord::Batch { .. }));
+                    && matches!(records.last(), Some(RawEventLogRecord::Batch { .. }));
                 if !incomplete_batch {
-                    return Ok((flatten_event_log_records(records), candidate));
+                    if let Ok((events, canonical)) = flatten_event_log_records(records, source_id) {
+                        return Ok((events, canonical.unwrap_or(candidate)));
+                    }
                 }
             }
         }
@@ -892,22 +989,182 @@ fn close_unclosed_json_containers(prefix: &str) -> Option<(String, bool)> {
 
 fn parse_event_log_record_envelopes(
     content: &str,
-) -> Result<Vec<EventLogRecord>, serde_json::Error> {
-    serde_json::from_str(content)
-}
+) -> Result<Vec<RawEventLogRecord>, serde_json::Error> {
+    #[derive(Deserialize)]
+    struct RawBatch {
+        events: Vec<Box<RawValue>>,
+    }
 
-fn flatten_event_log_records(records: Vec<EventLogRecord>) -> Vec<AgentSessionEvent> {
-    records
+    serde_json::from_str::<Vec<Box<RawValue>>>(content)?
         .into_iter()
-        .flat_map(|record| match record {
-            EventLogRecord::Event(event) => vec![*event],
-            EventLogRecord::Batch { events } => events,
+        .map(|raw| {
+            let value: serde_json::Value = serde_json::from_str(raw.get())?;
+            if value.get("type").is_none() && value.get("events").is_some() {
+                let batch: RawBatch = serde_json::from_str(raw.get())?;
+                Ok(RawEventLogRecord::Batch {
+                    events: batch.events,
+                })
+            } else {
+                Ok(RawEventLogRecord::Event(raw))
+            }
         })
         .collect()
 }
 
-fn parse_event_log_records(content: &str) -> Result<Vec<AgentSessionEvent>, serde_json::Error> {
-    parse_event_log_record_envelopes(content).map(flatten_event_log_records)
+fn flatten_event_log_records(
+    records: Vec<RawEventLogRecord>,
+    source_id: &str,
+) -> Result<(Vec<AgentSessionEvent>, Option<String>), String> {
+    let decoded =
+        decode_event_log_records(records, source_id, 0).map_err(|error| error.to_string())?;
+    let events = decoded
+        .records
+        .iter()
+        .map(|record| record.event.clone())
+        .collect::<Vec<_>>();
+    // Historical transaction batches are flattened into the canonical array form,
+    // but each payload object is copied verbatim so additive fields are not erased.
+    let canonical = decoded.had_batch.then(|| {
+        let payloads = decoded
+            .raw_events
+            .iter()
+            .map(|raw| indent_json_payload(raw.get()))
+            .collect::<Vec<_>>()
+            .join(",\n");
+        format!("[\n{payloads}\n]")
+    });
+    Ok((events, canonical))
+}
+
+struct DecodedRawEventLog {
+    records: Vec<DecodedStoredAgentSessionEventV1>,
+    raw_events: Vec<Box<RawValue>>,
+    had_batch: bool,
+}
+
+fn decode_event_log_content(
+    content: &str,
+    source_id: &str,
+) -> Result<DecodedRawEventLog, SessionEventRecordReadError> {
+    let records = match parse_event_log_record_envelopes(content) {
+        Ok(records) => records,
+        Err(parse_error) => {
+            let (_, recovered) = recover_unclosed_event_log(content, source_id).map_err(|_| {
+                SessionEventRecordReadError::Corrupt(format!(
+                    "failed to parse session event log: {parse_error}"
+                ))
+            })?;
+            parse_event_log_record_envelopes(&recovered)
+                .map_err(|error| SessionEventRecordReadError::Corrupt(error.to_string()))?
+        }
+    };
+    decode_event_log_records(records, source_id, 0)
+}
+
+pub(super) fn decode_legacy_event_record_v1(
+    raw: &[u8],
+    source_id: &str,
+    record_ordinal: u64,
+) -> Result<Vec<AgentSessionEvent>, String> {
+    #[derive(Deserialize)]
+    struct RawBatch {
+        events: Vec<Box<RawValue>>,
+    }
+
+    let raw: Box<RawValue> = serde_json::from_slice(raw)
+        .map_err(|error| format!("invalid legacy event record: {error}"))?;
+    let value: serde_json::Value = serde_json::from_str(raw.get())
+        .map_err(|error| format!("invalid legacy event record: {error}"))?;
+    let records = if value.get("type").is_none() && value.get("events").is_some() {
+        let batch: RawBatch = serde_json::from_str(raw.get())
+            .map_err(|error| format!("invalid legacy event batch: {error}"))?;
+        vec![RawEventLogRecord::Batch {
+            events: batch.events,
+        }]
+    } else {
+        vec![RawEventLogRecord::Event(raw)]
+    };
+    let decoded = decode_event_log_records(records, source_id, record_ordinal)
+        .map_err(|error| error.to_string())?;
+    Ok(decoded
+        .records
+        .into_iter()
+        .map(|record| record.event)
+        .collect())
+}
+
+fn decode_event_log_records(
+    records: Vec<RawEventLogRecord>,
+    source_id: &str,
+    first_record_ordinal: u64,
+) -> Result<DecodedRawEventLog, SessionEventRecordReadError> {
+    let mut decoded_records = Vec::new();
+    let mut raw_events = Vec::new();
+    let mut had_batch = false;
+    for record in records {
+        let values = match record {
+            RawEventLogRecord::Event(event) => vec![event],
+            RawEventLogRecord::Batch { events } => {
+                had_batch = true;
+                events
+            }
+        };
+        for raw in values {
+            let ordinal = u64::try_from(decoded_records.len())
+                .ok()
+                .and_then(|offset| first_record_ordinal.checked_add(offset))
+                .ok_or_else(|| {
+                    SessionEventRecordReadError::Corrupt(
+                        "session event ordinal overflow".to_string(),
+                    )
+                })?;
+            let decoded = decode_stored_agent_session_event_v1(
+                raw.get().as_bytes(),
+                1,
+                StoredPayloadSource {
+                    source_id: source_id.to_string(),
+                    record_ordinal: Some(ordinal),
+                },
+            )?;
+            raw_events.push(raw);
+            decoded_records.push(decoded);
+        }
+    }
+    Ok(DecodedRawEventLog {
+        records: decoded_records,
+        raw_events,
+        had_batch,
+    })
+}
+
+fn parse_event_log_records(
+    content: &str,
+    source_id: &str,
+) -> Result<(Vec<AgentSessionEvent>, Option<String>), String> {
+    let records = parse_event_log_record_envelopes(content).map_err(|error| error.to_string())?;
+    flatten_event_log_records(records, source_id)
+}
+
+#[cfg(test)]
+fn encode_event_log_record_pretty(
+    record: &EventLogRecordRef<'_>,
+) -> Result<String, serde_json::Error> {
+    match record {
+        EventLogRecordRef::Event(event) => {
+            serde_json::to_string_pretty(&StoredAgentSessionEventV1::from(*event))
+        }
+        EventLogRecordRef::Batch { events } => {
+            #[derive(Serialize)]
+            struct Batch<'a> {
+                events: &'a [StoredAgentSessionEventV1],
+            }
+            let stored = events
+                .iter()
+                .map(StoredAgentSessionEventV1::from)
+                .collect::<Vec<_>>();
+            serde_json::to_string_pretty(&Batch { events: &stored })
+        }
+    }
 }
 
 fn previous_char_boundary(value: &str, end: usize) -> usize {
@@ -980,7 +1237,10 @@ mod tests {
     }
 
     fn torn_final_parts_fixture() -> String {
-        let content = serde_json::to_string_pretty(&vec![final_parts_event()]).unwrap();
+        let content = String::from_utf8(
+            encode_agent_session_events_v1(&[final_parts_event()], true).unwrap(),
+        )
+        .unwrap();
         let parts_start = content.find("\"parts\"").unwrap();
         let parts_closing = parts_start + content[parts_start..].find(']').unwrap();
         content[..=parts_closing].to_string()
@@ -1074,6 +1334,65 @@ mod tests {
     }
 
     #[test]
+    fn production_event_read_append_reload_preserves_additive_raw_and_source_metadata() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = event_log_file_in_dir(tmp.path());
+        let raw_event = r#"{"type":"turn_started","turn_id":1,"message_id":"m-1","prompt":{"content":"","futureNested":{"answer":42}},"at":1.0,"futureTop":["kept"]}"#;
+        std::fs::write(&path, format!("[{raw_event}]")).unwrap();
+        let storage = FileSessionStorage::default();
+
+        let first = storage
+            .read_session_event_records_from_dir(tmp.path())
+            .unwrap();
+        let preserved = first[0].preserved_additive_payload.as_ref().unwrap();
+        assert_eq!(preserved.raw_bytes, raw_event.as_bytes());
+        assert_eq!(preserved.payload_version, 1);
+        assert_eq!(preserved.type_tag, "turn_started");
+        assert_eq!(preserved.source.source_id, path.to_string_lossy());
+        assert_eq!(preserved.source.record_ordinal, Some(0));
+
+        storage
+            .append_session_event_to_dir(tmp.path(), &event(2))
+            .unwrap();
+        let rewritten = std::fs::read_to_string(&path).unwrap();
+        assert!(rewritten.contains(raw_event));
+
+        let reloaded = FileSessionStorage::default()
+            .read_session_event_records_from_dir(tmp.path())
+            .unwrap();
+        assert_eq!(
+            reloaded[0]
+                .preserved_additive_payload
+                .as_ref()
+                .unwrap()
+                .raw_bytes,
+            raw_event.as_bytes()
+        );
+        assert_eq!(reloaded[0].event, event(1));
+        assert_eq!(reloaded[1].event, event(2));
+    }
+
+    #[test]
+    fn production_event_reader_fails_closed_for_unknown_required_variant() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            event_log_file_in_dir(tmp.path()),
+            r#"[{"type":"future_required_event","at":1.0}]"#,
+        )
+        .unwrap();
+
+        let error = FileSessionStorage::default()
+            .read_session_event_records_from_dir(tmp.path())
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            SessionEventRecordReadError::Incompatible(ref source)
+                if source.type_tag == "future_required_event" && source.payload_version == 1
+        ));
+    }
+
+    #[test]
     fn incomplete_batch_segments_are_invisible_and_retry_commits_each_event_once() {
         let tmp = tempfile::tempdir().unwrap();
         let storage = FileSessionStorage::default();
@@ -1086,8 +1405,10 @@ mod tests {
         let temp_path = batches_dir.join("00000000000000000001.json.tmp");
 
         for completed_event_count in 0..batch.len() {
-            let mut partial =
-                serde_json::to_string_pretty(&batch[..completed_event_count]).unwrap();
+            let mut partial = String::from_utf8(
+                encode_agent_session_events_v1(&batch[..completed_event_count], true).unwrap(),
+            )
+            .unwrap();
             partial.truncate(partial.rfind(']').unwrap());
             std::fs::write(&temp_path, partial).unwrap();
 
@@ -1134,18 +1455,18 @@ mod tests {
 
         let legacy_content = std::fs::read_to_string(event_log_file_in_dir(&dir)).unwrap();
         assert_eq!(
-            serde_json::from_str::<Vec<AgentSessionEvent>>(&legacy_content).unwrap(),
+            decode_agent_session_events_v1(legacy_content.as_bytes()).unwrap(),
             vec![event(1)]
         );
         let batch_paths = committed_event_batch_paths(&dir).unwrap();
         assert_eq!(batch_paths.len(), 3);
         for path in &batch_paths {
             let content = std::fs::read_to_string(path).unwrap();
-            serde_json::from_str::<Vec<AgentSessionEvent>>(&content).unwrap();
+            decode_agent_session_events_v1(content.as_bytes()).unwrap();
         }
         assert_eq!(
-            serde_json::from_str::<Vec<AgentSessionEvent>>(
-                &std::fs::read_to_string(&batch_paths[1]).unwrap()
+            decode_agent_session_events_v1(
+                std::fs::read_to_string(&batch_paths[1]).unwrap().as_bytes(),
             )
             .unwrap(),
             vec![event(3)]
@@ -1237,7 +1558,7 @@ mod tests {
         );
         assert!(events.contains(&final_parts_event()));
         let content = std::fs::read_to_string(event_log_file_in_dir(&dir)).unwrap();
-        serde_json::from_str::<Vec<AgentSessionEvent>>(&content).unwrap();
+        decode_agent_session_events_v1(content.as_bytes()).unwrap();
     }
 
     #[test]
@@ -1266,7 +1587,7 @@ mod tests {
             .unwrap();
 
         let content = std::fs::read_to_string(event_log_file_in_dir(&dir)).unwrap();
-        let events = serde_json::from_str::<Vec<AgentSessionEvent>>(&content).unwrap();
+        let events = decode_agent_session_events_v1(content.as_bytes()).unwrap();
         assert_eq!(
             events
                 .iter()

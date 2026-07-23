@@ -9,6 +9,7 @@ use crate::domain::workflow::WorkflowError;
 use crate::usecase::workflow::command::WorkflowRuntimeCommandPreflight;
 use crate::usecase::workflow::ports::{
     WorkflowTurnCompleteCommand, WorkflowTurnCompleteGateway, WorkflowTurnCompleteNotification,
+    WorkflowTurnCompleteRecoveryCommand, WorkflowTurnCompleteRecoveryOutcome,
 };
 
 #[derive(Clone)]
@@ -54,6 +55,30 @@ impl WorkflowTurnCompleteUsecase {
                 token_usage: command.token_usage,
             })
             .await
+    }
+
+    pub async fn recover_turn_complete(
+        &self,
+        command: WorkflowTurnCompleteRecoveryCommand,
+    ) -> Result<WorkflowTurnCompleteRecoveryOutcome, WorkflowError> {
+        self.preflight
+            .validate_turn_complete(&command.notification)?;
+        if command.execution_id.trim().is_empty()
+            || command.node_execution_id.trim().is_empty()
+            || command.workflow_name.trim().is_empty()
+            || command.node_name.trim().is_empty()
+            || command.notification.chat_session_id.trim().is_empty()
+        {
+            return Err(WorkflowError::validation(
+                "workflow turn-completion recovery coordinates are incomplete",
+            ));
+        }
+        if command.parent_node_name.is_some() != command.parent_attempt.is_some() {
+            return Err(WorkflowError::validation(
+                "workflow turn-completion fanout coordinates are incomplete",
+            ));
+        }
+        self.runtime.recover_turn_complete(command).await
     }
 }
 

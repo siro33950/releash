@@ -2,11 +2,14 @@ use super::layout::{
     attachment_file_in_dir, attachments_dir_in_dir, content_hash, event_batches_dir_in_dir,
     event_log_file_in_dir, event_tail_file_in_dir, index_file_in_dir, legacy_meta_file,
     message_file_in_dir, meta_event_transaction_file_in_dir, meta_file_in_dir,
-    private_context_file_in_dir, session_dir, session_file, sessions_dir, tool_output_file_in_dir,
-    tool_outputs_dir_in_dir, write_json_pretty_atomic, write_json_pretty_atomic_durable,
+    private_context_file_in_dir, queue_pause_checkpoint_file_in_dir, session_dir, session_file,
+    sessions_dir, tool_output_file_in_dir, tool_outputs_dir_in_dir, write_json_pretty_atomic,
 };
-use super::transaction::{SessionMetaEventTransaction, TransactionApplyStep};
+use super::transaction::{
+    encode_transaction_v1, SessionMetaEventTransaction, TransactionApplyStep,
+};
 use super::*;
+use crate::adaptor::protocol::agent_session_v1::{ChatSessionDtoV1, SessionPageDtoV1};
 use crate::domain::agent_session::services::MAX_IMAGE_BYTES;
 use crate::domain::agent_session::ContextSourceKind;
 use crate::usecase::agent_session::context_meta::{ContextEpochMeta, ContextSourceRevisionMeta};
@@ -15,7 +18,8 @@ use crate::usecase::agent_session::event_log::{
 };
 use crate::usecase::agent_session::session::{
     AttachmentRef, ChatMessage, ContextCarryState, ErrorEpisodeInput, MessagePart, MessageRole,
-    SessionState, SessionStore, SESSION_BODY_FORMAT_VERSION, TOOL_OUTPUT_PREVIEW_BYTES,
+    NextTurnIdError, SessionState, SessionStore, SESSION_BODY_FORMAT_VERSION,
+    TOOL_OUTPUT_PREVIEW_BYTES,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -25,6 +29,42 @@ use tempfile::TempDir;
 const UUID1: &str = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
 const UUID2: &str = "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e";
 const UUID3: &str = "c3d4e5f6-a7b8-4c9d-ae0f-1a2b3c4d5e6f";
+
+fn stored_message_pretty(message: &ChatMessage) -> String {
+    String::from_utf8(encode_chat_message_pretty_v1(message, None).unwrap()).unwrap()
+}
+
+fn stored_session_pretty(session: &ChatSession) -> String {
+    let value: serde_json::Value =
+        serde_json::from_slice(&encode_chat_session_v1(session).unwrap()).unwrap();
+    serde_json::to_string_pretty(&value).unwrap()
+}
+
+fn public_session_value(session: &ChatSession) -> serde_json::Value {
+    serde_json::to_value(ChatSessionDtoV1::from(session)).unwrap()
+}
+
+fn public_page_json(page: SessionPage) -> String {
+    serde_json::to_string(&SessionPageDtoV1::from(page)).unwrap()
+}
+
+fn semantic_agent_session_projection(
+    raw: &str,
+) -> crate::domain::local_event::SessionProjectionRecord {
+    crate::domain::local_event::SessionProjectionRecord::AgentSession(Box::new(
+        decode_agent_session_projection_record_v1(raw).unwrap(),
+    ))
+}
+
+fn write_stored_message(path: &Path, message: &ChatMessage) {
+    FileSessionStorage::default()
+        .write_message_file(path, message, None)
+        .unwrap();
+}
+
+fn write_stored_transaction(path: &Path, transaction: &SessionMetaEventTransaction) {
+    std::fs::write(path, encode_transaction_v1(transaction).unwrap()).unwrap();
+}
 
 fn make_session_store() -> crate::usecase::agent_session::session::SessionStore {
     crate::test_support::build_session_store()
@@ -60,6 +100,212 @@ fn make_session(id: &str, worktree: &str) -> ChatSession {
         workflow_node_context: None,
         context_epoch: None,
     }
+}
+
+#[test]
+fn legacy_semantic_materialization_preserves_title_queue_token_terminal_and_pending_work() {
+    use crate::domain::agent_session::entities::{
+        PermissionRequest, PermissionRequestBody, PermissionRequestStatus,
+    };
+    use crate::domain::agent_session::events::{
+        SendDisposition, SessionLifecycleKind, StopResolution, TurnTokenUsage,
+    };
+    use crate::domain::agent_session::value_objects::JsonPayload;
+
+    let session = make_session(UUID1, "/repo");
+    let base = encode_sqlite_session_projection(SessionMeta::from_session(&session)).unwrap();
+    let events = vec![
+        AgentSessionEvent::TurnStarted {
+            turn_id: 1,
+            message_id: "human-1".to_string(),
+            assistant_message_id: Some("agent-1".to_string()),
+            prompt: PromptInput::default(),
+            at: 10.0,
+        },
+        AgentSessionEvent::TurnCompleted {
+            turn_id: 1,
+            exit_code: 0,
+            stop_reason: None,
+            token_usage: Some(TurnTokenUsage {
+                input_tokens: 10,
+                output_tokens: 20,
+            }),
+        },
+        AgentSessionEvent::TurnStarted {
+            turn_id: 2,
+            message_id: "human-2".to_string(),
+            assistant_message_id: Some("agent-2".to_string()),
+            prompt: PromptInput::default(),
+            at: 20.0,
+        },
+        AgentSessionEvent::PermissionRequested {
+            turn_id: 2,
+            tool_use_id: Some("tool-2".to_string()),
+            request: PermissionRequest {
+                id: "permission-2".to_string(),
+                tool_use_id: Some("tool-2".to_string()),
+                parent_tool_use_id: None,
+                tool_name: "Bash".to_string(),
+                body: PermissionRequestBody::ToolApproval {
+                    input: JsonPayload::new_unchecked("{\"command\":\"cargo test\"}".to_string()),
+                },
+                title: None,
+                display_name: None,
+                description: None,
+                decision_reason: None,
+                status: PermissionRequestStatus::Pending,
+            },
+        },
+        AgentSessionEvent::SendOperationAccepted {
+            operation_id: "send-queued-1".to_string(),
+            disposition: SendDisposition::Queued {
+                queue_item_id: "queue-1".to_string(),
+            },
+            human_message_id: Some("human-3".to_string()),
+            prompt: Some(PromptInput::default()),
+            reserved_turn_id: Some("3".to_string()),
+            at: 21.0,
+        },
+        AgentSessionEvent::QueuePaused { at: 22.0 },
+        AgentSessionEvent::StopOperationAccepted {
+            operation_id: "stop-2".to_string(),
+            target_turn_id: 2,
+            at: 23.0,
+        },
+        AgentSessionEvent::StopResolutionRecorded {
+            operation_id: "stop-2".to_string(),
+            turn_id: 2,
+            resolution: StopResolution::Superseded,
+            at: 24.0,
+        },
+        AgentSessionEvent::SessionLifecycleOperationAccepted {
+            operation_id: "lifecycle-2".to_string(),
+            kind: SessionLifecycleKind::Archive,
+            at: 25.0,
+        },
+    ];
+
+    let first = materialize_legacy_session_semantics_v1(
+        UUID1,
+        &base,
+        Some("Durable legacy title"),
+        &events,
+    )
+    .unwrap();
+    let decoded = AgentSessionProjectionCodecV1
+        .decode(&semantic_agent_session_projection(&first.projection))
+        .unwrap();
+    assert_eq!(decoded.title.as_deref(), Some("Durable legacy title"));
+    assert_eq!(decoded.queue_paused_at, Some(22.0));
+    assert_eq!(decoded.pending_send_queue.len(), 1);
+    assert_eq!(decoded.pending_send_queue[0].queue_item_id, "queue-1");
+    assert_eq!(decoded.meta.state, SessionState::Error);
+    assert_eq!(decoded.meta.last_turn_id, Some(2));
+    assert_eq!(
+        decoded.latest_token_usage,
+        Some(TokenUsage {
+            input_tokens: 10,
+            output_tokens: 20,
+            total_tokens: Some(30),
+            context_window_tokens: None,
+        })
+    );
+    assert_eq!(first.terminals.len(), 1);
+    assert!(first.terminals[0]
+        .result
+        .contains("\"terminal_kind\":\"completed\""));
+    assert_eq!(first.pending_queue_count, 1);
+    assert_eq!(first.pending_permission_count, 1);
+    assert_eq!(first.pending_obligations.len(), 6);
+    assert_eq!(first.stop_resolutions.len(), 1);
+    assert_eq!(first.stop_resolutions[0].stop_operation_id, "stop-2");
+    assert_eq!(first.stop_resolutions[0].resolution, "superseded");
+    let operation_quarantines = first
+        .pending_obligations
+        .iter()
+        .filter(|obligation| obligation.record.contains("\"kind\":\"operation_binding\""))
+        .count();
+    assert_eq!(operation_quarantines, 3);
+    assert!(first
+        .pending_obligations
+        .iter()
+        .all(|obligation| obligation.partition == "owner"));
+
+    let replay = materialize_legacy_session_semantics_v1(
+        UUID1,
+        &first.projection,
+        Some("Durable legacy title"),
+        &events,
+    )
+    .unwrap();
+    assert_eq!(replay, first);
+}
+
+#[test]
+fn legacy_semantic_materialization_keeps_archived_owner_partition_closed() {
+    let mut session = make_session(UUID2, "/repo");
+    session.state = SessionState::Archived;
+    let base = encode_sqlite_session_projection(SessionMeta::from_session(&session)).unwrap();
+    let events = vec![AgentSessionEvent::TurnStarted {
+        turn_id: 9,
+        message_id: "human-9".to_string(),
+        assistant_message_id: None,
+        prompt: PromptInput::default(),
+        at: 9.0,
+    }];
+    let materialized =
+        materialize_legacy_session_semantics_v1(UUID2, &base, None, &events).unwrap();
+    let decoded = AgentSessionProjectionCodecV1
+        .decode(&semantic_agent_session_projection(&materialized.projection))
+        .unwrap();
+    assert_eq!(decoded.meta.state, SessionState::Archived);
+    assert_eq!(materialized.pending_obligations.len(), 1);
+    assert_eq!(
+        materialized.pending_obligations[0].partition,
+        "archived_session"
+    );
+}
+
+#[test]
+fn legacy_semantic_accumulator_releases_completed_turn_identity_beyond_history_limit() {
+    const COMPLETED_TURNS: u64 = 4_097;
+
+    let session = make_session(UUID2, "/repo");
+    let base = encode_sqlite_session_projection(SessionMeta::from_session(&session)).unwrap();
+    let mut accumulator = LegacySessionSemanticAccumulatorV1::new(UUID2, &base, None).unwrap();
+    let mut terminal_count = 0_u64;
+    for turn_id in 1..=COMPLETED_TURNS {
+        assert!(accumulator
+            .push(AgentSessionEvent::TurnStarted {
+                turn_id,
+                message_id: format!("human-{turn_id}"),
+                assistant_message_id: Some(format!("agent-{turn_id}")),
+                prompt: PromptInput::default(),
+                at: turn_id as f64,
+            })
+            .unwrap()
+            .is_none());
+        let participant = accumulator
+            .push(AgentSessionEvent::TurnCompleted {
+                turn_id,
+                exit_code: 0,
+                stop_reason: None,
+                token_usage: None,
+            })
+            .unwrap();
+        assert!(matches!(
+            participant,
+            Some(LegacySessionSemanticParticipantV1::Terminal(_))
+        ));
+        terminal_count += 1;
+    }
+    let materialized = accumulator.finish().unwrap();
+    let decoded = AgentSessionProjectionCodecV1
+        .decode(&semantic_agent_session_projection(&materialized.projection))
+        .unwrap();
+    assert_eq!(terminal_count, COMPLETED_TURNS);
+    assert_eq!(decoded.meta.last_turn_id, Some(COMPLETED_TURNS));
+    assert_eq!(decoded.reducer_events.len(), 2);
 }
 
 fn context_epoch_meta_with_payload(payload: &str) -> ContextEpochMeta {
@@ -99,6 +345,88 @@ fn turn_started_event(turn_id: u64) -> AgentSessionEvent {
         prompt: PromptInput::default(),
         at: turn_id as f64,
     }
+}
+
+#[test]
+fn production_message_read_update_reload_preserves_additive_raw_and_source_metadata() {
+    let tmp = TempDir::new().unwrap();
+    let storage = FileSessionStorage::default();
+    let mut session = make_session(UUID1, "/repo");
+    session.messages[0].parts = Some(vec![MessagePart::Text {
+        content: "hello".to_string(),
+        parent_tool_use_id: None,
+    }]);
+    storage
+        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .unwrap();
+    let dir = session_dir(tmp.path(), UUID1).unwrap();
+    let path = message_file_in_dir(&dir, 1);
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    value["futureTop"] = serde_json::json!({"preserve": true});
+    value["parts"][0]["futureNested"] = serde_json::json!([1, 2, 3]);
+    let original_raw = serde_json::to_vec(&value).unwrap();
+    std::fs::write(&path, &original_raw).unwrap();
+
+    let decoded = storage.read_message_record_file(&path).unwrap();
+    let preserved = decoded.preserved_additive_payload.unwrap();
+    assert_eq!(preserved.raw_bytes, original_raw);
+    assert_eq!(preserved.source.source_id, path.to_string_lossy());
+    assert_eq!(preserved.source.record_ordinal, Some(1));
+
+    storage
+        .persist_message_parts(
+            tmp.path(),
+            UUID1,
+            "m1",
+            &[MessagePart::Text {
+                content: "updated".to_string(),
+                parent_tool_use_id: None,
+            }],
+            1,
+            Some(1001.0),
+        )
+        .unwrap();
+    let rewritten: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(rewritten["futureTop"]["preserve"], true);
+    assert_eq!(
+        rewritten["parts"][0]["futureNested"],
+        serde_json::json!([1, 2, 3])
+    );
+    let sidecar = super::stored_session_v1::decode_preservation_sidecar(
+        &std::fs::read(super::stored_session_v1::preservation_sidecar_path(&path)).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(sidecar.raw_bytes, original_raw);
+
+    let reloaded = FileSessionStorage::default()
+        .read_message_record_file(&path)
+        .unwrap()
+        .preserved_additive_payload
+        .unwrap();
+    assert_eq!(reloaded.raw_bytes, original_raw);
+    assert_eq!(reloaded.source.source_id, path.to_string_lossy());
+}
+
+#[test]
+fn production_message_reader_fails_closed_for_unknown_required_part() {
+    let tmp = TempDir::new().unwrap();
+    let storage = FileSessionStorage::default();
+    storage
+        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .unwrap();
+    let path = message_file_in_dir(&session_dir(tmp.path(), UUID1).unwrap(), 1);
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    value["parts"] = serde_json::json!([{"type":"future_required"}]);
+    std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+    let error = storage.read_message_record_file(&path).unwrap_err();
+    assert!(matches!(
+        error,
+        super::message_store::LegacyMessageReadError::Incompatible(ref source)
+            if source.type_tag == "future_required" && source.payload_version == 1
+    ));
 }
 
 fn png_bytes(payload: &[u8]) -> Vec<u8> {
@@ -160,6 +488,37 @@ fn assert_projection_files_unchanged(snapshots: &[(std::path::PathBuf, Option<Ve
             path.display()
         );
     }
+}
+
+fn capture_file_tree(root: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    fn visit(
+        root: &std::path::Path,
+        dir: &std::path::Path,
+        files: &mut std::collections::BTreeMap<String, Vec<u8>>,
+    ) {
+        let mut entries = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        entries.sort();
+        for path in entries {
+            if path.is_dir() {
+                visit(root, &path, files);
+            } else {
+                files.insert(
+                    path.strip_prefix(root)
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned(),
+                    std::fs::read(path).unwrap(),
+                );
+            }
+        }
+    }
+
+    let mut files = std::collections::BTreeMap::new();
+    visit(root, root, &mut files);
+    files
 }
 
 #[test]
@@ -333,6 +692,30 @@ fn legacy_meta_without_turn_id_projection_falls_back_to_event_history() {
 }
 
 #[test]
+fn next_turn_id_rejects_the_sqlite_integer_boundary_without_wrapping() {
+    let tmp = TempDir::new().unwrap();
+    let storage = Arc::new(FileSessionStorage::default());
+    let store = crate::usecase::agent_session::session::SessionStore::new(storage);
+    store
+        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .unwrap();
+    let meta_path = meta_file_in_dir(&session_dir(tmp.path(), UUID1).unwrap());
+    let mut meta: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&meta_path).unwrap()).unwrap();
+    meta["lastTurnId"] = serde_json::json!(i64::MAX);
+    std::fs::write(&meta_path, serde_json::to_vec_pretty(&meta).unwrap()).unwrap();
+    drop(store);
+
+    let store = crate::usecase::agent_session::session::SessionStore::new(Arc::new(
+        FileSessionStorage::default(),
+    ));
+    assert_eq!(
+        store.next_turn_id(tmp.path(), UUID1),
+        Err(NextTurnIdError::CapacityExceeded)
+    );
+}
+
+#[test]
 fn turn_start_projection_rejects_non_start_event_without_appending_it() {
     let tmp = TempDir::new().unwrap();
     let store = make_session_store();
@@ -434,7 +817,7 @@ fn save_session_writes_split_layout() {
     assert_eq!(meta.first_message_preview, "Hello");
 
     let saved_message = std::fs::read_to_string(message_file_in_dir(&dir, 1)).unwrap();
-    let expected = serde_json::to_string_pretty(&session.messages[0]).unwrap();
+    let expected = stored_message_pretty(&session.messages[0]);
     assert_eq!(saved_message, expected);
 }
 
@@ -558,7 +941,7 @@ fn append_agent_read_paths_updates_private_context_cache_not_meta() {
         activities: None,
         parts: Some(vec![MessagePart::ToolUse {
             tool: "Read".to_string(),
-            input: serde_json::json!({"file_path": "src/local/file.rs"}),
+            input: serde_json::json!({"file_path": "src/local/file.rs"}).into(),
             id: "tool-1".to_string(),
             parent_tool_use_id: None,
         }]),
@@ -802,7 +1185,7 @@ fn save_session_externalizes_large_tool_output_and_pages_preview_ref() {
         .get_session_page(tmp.path(), UUID1, None, 10)
         .unwrap()
         .unwrap();
-    let page_json = serde_json::to_string(&page).unwrap();
+    let page_json = public_page_json(page.clone());
     assert!(!page_json.contains("USER_SECRET_TAIL"));
     let page_part = &page.messages[0].parts.as_ref().unwrap()[0];
     let MessagePart::ToolResult {
@@ -866,7 +1249,7 @@ fn get_session_page_returns_preview_ref_after_tool_output_blob_removed() {
         .get_session_page(tmp.path(), UUID1, None, 10)
         .unwrap()
         .unwrap();
-    let page_json = serde_json::to_string(&page).unwrap();
+    let page_json = public_page_json(page.clone());
     assert!(!page_json.contains("USER_SECRET_TAIL"));
     let MessagePart::ToolResult {
         content: page_content,
@@ -913,7 +1296,7 @@ fn get_session_tool_output_returns_none_for_missing_index_ref_without_rebuild() 
     let mut index = store.read_index_from_dir(&dir).unwrap();
     let content_ref = index[0].tool_output_refs[0].clone();
     index[0].tool_output_refs.clear();
-    write_json_pretty_atomic(&index_file_in_dir(&dir), &index, "session index").unwrap();
+    write_message_index_v1(&index_file_in_dir(&dir), &index).unwrap();
 
     store.reset_message_read_count();
     let restored = store
@@ -965,12 +1348,7 @@ fn get_session_tool_output_returns_none_for_unreferenced_stale_blob() {
         content_ref: None,
         summary: None,
     }]);
-    write_json_pretty_atomic_durable(
-        &message_file_in_dir(&dir, index[0].seq),
-        &updated_message,
-        "message chunk",
-    )
-    .unwrap();
+    write_stored_message(&message_file_in_dir(&dir, index[0].seq), &updated_message);
 
     assert_eq!(tool_output_blob_count(&dir), 1);
     assert_eq!(
@@ -1649,12 +2027,10 @@ fn stale_index_hash_and_attachment_refs_are_repaired_from_message_chunks() {
     let (stored_message, attachment_refs) = store
         .externalize_message_attachments(&dir, &updated_message)
         .unwrap();
-    write_json_pretty_atomic(
+    write_stored_message(
         &message_file_in_dir(&dir, stale_index[0].seq),
         &stored_message,
-        "message chunk",
-    )
-    .unwrap();
+    );
 
     let attachment = attachment_refs
         .first()
@@ -2089,7 +2465,7 @@ fn get_session_page_repairs_orphan_message_chunks_missing_from_index() {
         timestamp: 1001.0,
         mentions: None,
     };
-    write_json_pretty_atomic(&message_file_in_dir(&dir, 2), &orphan, "message chunk").unwrap();
+    write_stored_message(&message_file_in_dir(&dir, 2), &orphan);
 
     let page = store
         .get_session_page(tmp.path(), UUID1, None, 10)
@@ -2132,7 +2508,7 @@ fn concurrent_append_and_page_repair_preserve_index_and_meta() {
     let dir = session_dir(&app_data_dir, UUID1).unwrap();
     let mut stale_index = store.read_index_from_dir(&dir).unwrap();
     stale_index.pop();
-    write_json_pretty_atomic(&index_file_in_dir(&dir), &stale_index, "session index").unwrap();
+    write_message_index_v1(&index_file_in_dir(&dir), &stale_index).unwrap();
 
     let barrier = Arc::new(Barrier::new(3));
     let page_store = Arc::clone(&store);
@@ -2208,7 +2584,7 @@ fn load_full_session_for_restore_repairs_orphan_message_chunks_missing_from_inde
         timestamp: 1001.0,
         mentions: None,
     };
-    write_json_pretty_atomic(&message_file_in_dir(&dir, 2), &orphan, "message chunk").unwrap();
+    write_stored_message(&message_file_in_dir(&dir, 2), &orphan);
 
     let loaded = store
         .load_full_session_for_restore(tmp.path(), UUID1)
@@ -2371,11 +2747,7 @@ fn fork_session_copies_tool_output_blobs() {
 fn get_session_page_and_restore_ignore_legacy_flat_json() {
     let tmp = TempDir::new().unwrap();
     let session = make_session(UUID1, "/repo");
-    write_session_json(
-        tmp.path(),
-        UUID1,
-        &serde_json::to_string_pretty(&session).unwrap(),
-    );
+    write_session_json(tmp.path(), UUID1, &stored_session_pretty(&session));
     let store = FileSessionStorage::default();
 
     let page = store.get_session_page(tmp.path(), UUID1, None, 10).unwrap();
@@ -2462,12 +2834,7 @@ fn committed_meta_event_transaction_recovers_all_participants_after_restart() {
 
     // Simulate a process exit immediately after the single durable commit point,
     // before meta.json or events.json have been materialized.
-    write_json_pretty_atomic(
-        &meta_event_transaction_file_in_dir(&dir),
-        &transaction,
-        "test session meta/event transaction",
-    )
-    .unwrap();
+    write_stored_transaction(&meta_event_transaction_file_in_dir(&dir), &transaction);
     drop(store);
 
     let reopened = FileSessionStorage::default();
@@ -2516,12 +2883,7 @@ fn committed_meta_event_transaction_replays_after_an_event_batch() {
         std::slice::from_ref(&committed_event),
     );
     let dir = session_dir(tmp.path(), UUID1).unwrap();
-    write_json_pretty_atomic(
-        &meta_event_transaction_file_in_dir(&dir),
-        &transaction,
-        "test session meta/event transaction",
-    )
-    .unwrap();
+    write_stored_transaction(&meta_event_transaction_file_in_dir(&dir), &transaction);
     drop(store);
 
     let reopened = FileSessionStorage::default();
@@ -2579,12 +2941,7 @@ fn committed_meta_event_transaction_repairs_interrupted_event_append_after_resta
             committed_meta,
             std::slice::from_ref(&committed_event),
         );
-        write_json_pretty_atomic(
-            &meta_event_transaction_file_in_dir(&dir),
-            &transaction,
-            "test session meta/event transaction",
-        )
-        .unwrap();
+        write_stored_transaction(&meta_event_transaction_file_in_dir(&dir), &transaction);
 
         let event_path = super::layout::event_log_file_in_dir(&dir);
         let content = std::fs::read_to_string(&event_path).unwrap();
@@ -2619,8 +2976,8 @@ fn committed_meta_event_transaction_repairs_interrupted_event_append_after_resta
         reopened
             .append_session_event_without_projection(tmp.path(), UUID1, &completed_event)
             .unwrap();
-        let physical_events: Vec<AgentSessionEvent> =
-            serde_json::from_slice(&std::fs::read(&event_path).unwrap()).unwrap();
+        let physical_events =
+            decode_agent_session_events_v1(&std::fs::read(&event_path).unwrap()).unwrap();
         assert_eq!(
             physical_events,
             vec![base_event, committed_event, completed_event]
@@ -2923,7 +3280,7 @@ fn list_sessions_ignores_legacy_flat_json_and_sidecar() {
     write_session_json(
         tmp.path(),
         UUID1,
-        &serde_json::to_string_pretty(&make_session(UUID1, "/repo")).unwrap(),
+        &stored_session_pretty(&make_session(UUID1, "/repo")),
     );
     let sidecar = SessionMeta {
         id: UUID1.to_string(),
@@ -2938,6 +3295,7 @@ fn list_sessions_ignores_legacy_flat_json_and_sidecar() {
         context_reinjection_generation: None,
         context_carry: Some(ContextCarryState::Resumed),
         pending_recovery_message: None,
+        recovery_publication_snapshot: None,
         permission_mode: "edit".to_string(),
         plan_mode: false,
         selected_model: Some("gpt-5".to_string()),
@@ -2975,7 +3333,7 @@ fn get_session_review_context_ignores_legacy_flat_json_and_sidecar() {
     write_session_json(
         tmp.path(),
         UUID1,
-        &serde_json::to_string_pretty(&make_session(UUID1, "/repo")).unwrap(),
+        &stored_session_pretty(&make_session(UUID1, "/repo")),
     );
     let sidecar = legacy_meta_file(tmp.path(), UUID1).unwrap();
     std::fs::write(&sidecar, "{not-json").unwrap();
@@ -3142,6 +3500,76 @@ fn save_overwrites_existing_session() {
         .unwrap()
         .unwrap();
     assert_eq!(loaded.messages.len(), 2);
+}
+
+#[test]
+fn sealed_legacy_source_reads_never_repair_or_mutate_migration_input() {
+    let tmp = TempDir::new().unwrap();
+    let writer = FileSessionStorage::default();
+    writer
+        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .unwrap();
+    writer
+        .append_session_events(
+            tmp.path(),
+            UUID1,
+            &[AgentSessionEvent::QueuePaused { at: 4.0 }],
+        )
+        .unwrap();
+
+    let dir = session_dir(tmp.path(), UUID1).unwrap();
+    std::fs::remove_file(index_file_in_dir(&dir)).unwrap();
+    let mut pending_meta = writer.get_session_meta(tmp.path(), UUID1).unwrap().unwrap();
+    pending_meta.state = SessionState::Closed;
+    write_stored_transaction(
+        &meta_event_transaction_file_in_dir(&dir),
+        &SessionMetaEventTransaction::new(
+            UUID1,
+            1,
+            pending_meta,
+            &[AgentSessionEvent::SessionClosed { at: 5.0 }],
+        ),
+    );
+    assert!(!queue_pause_checkpoint_file_in_dir(&dir).exists());
+    let before = capture_file_tree(tmp.path());
+
+    let reader = FileSessionStorage::default();
+    crate::domain::agent_session::AgentSessionWriter::close_mutation_admission(&reader);
+    let metas = reader.list_metas(tmp.path()).unwrap();
+    assert_eq!(metas.len(), 1);
+    assert_eq!(metas[0].state, SessionState::Active);
+    assert_eq!(
+        reader
+            .get_session_page(tmp.path(), UUID1, None, 20)
+            .unwrap()
+            .unwrap()
+            .messages
+            .len(),
+        1
+    );
+    assert_eq!(
+        reader.load_queue_paused_at(tmp.path(), UUID1).unwrap(),
+        Some(4.0)
+    );
+    assert_eq!(
+        reader.load_session_events(tmp.path(), UUID1).unwrap().len(),
+        1
+    );
+    assert!(reader
+        .append_session_events(
+            tmp.path(),
+            UUID1,
+            &[AgentSessionEvent::SessionClosed { at: 6.0 }],
+        )
+        .unwrap_err()
+        .contains("mutation admission is closed"));
+    assert!(reader
+        .write_session_title(tmp.path(), UUID1, Some("mutated"))
+        .unwrap_err()
+        .contains("mutation admission is closed"));
+    reader.remove_session(tmp.path(), UUID1);
+
+    assert_eq!(capture_file_tree(tmp.path()), before);
 }
 
 #[test]
@@ -4064,6 +4492,10 @@ fn terminal_projection_reads_only_the_target_message_for_long_transcript() {
             "current-agent",
             1,
             203.0,
+            &crate::domain::agent_session::entities::TurnResult::Completed {
+                stop_reason: None,
+                token_usage: None,
+            },
         )
         .unwrap();
 
@@ -4243,7 +4675,7 @@ fn error_projection_repairs_unreadable_index_without_overwriting_existing_chunk(
     );
     assert_eq!(
         std::fs::read_to_string(message_file_in_dir(&dir, 2)).unwrap(),
-        serde_json::to_string_pretty(&error_message).unwrap()
+        stored_message_pretty(&error_message)
     );
     let meta = storage
         .get_session_meta(tmp.path(), UUID1)
@@ -4293,7 +4725,7 @@ fn terminal_projection_repairs_stale_index_and_finds_target_message() {
     let first_before = std::fs::read(&first_chunk).unwrap();
     let mut stale_index = storage.read_index_from_dir(&dir).unwrap();
     stale_index.pop();
-    write_json_pretty_atomic(&index_file_in_dir(&dir), &stale_index, "session index").unwrap();
+    write_message_index_v1(&index_file_in_dir(&dir), &stale_index).unwrap();
 
     let parts = vec![MessagePart::Text {
         content: "done".to_string(),
@@ -4319,6 +4751,10 @@ fn terminal_projection_repairs_stale_index_and_finds_target_message() {
             "m2",
             7,
             2001.0,
+            &crate::domain::agent_session::entities::TurnResult::Completed {
+                stop_reason: None,
+                token_usage: None,
+            },
         )
         .unwrap();
 
@@ -4332,8 +4768,9 @@ fn terminal_projection_repairs_stale_index_and_finds_target_message() {
             .collect::<Vec<_>>(),
         vec!["m1", "m2"]
     );
-    let updated: ChatMessage =
-        serde_json::from_slice(&std::fs::read(message_file_in_dir(&dir, 2)).unwrap()).unwrap();
+    let updated = storage
+        .read_message_file(&message_file_in_dir(&dir, 2))
+        .unwrap();
     assert_eq!(updated.parts, Some(persisted_parts));
     assert_eq!(updated.streaming_final_seq, 7);
     let meta = storage
@@ -4364,13 +4801,12 @@ fn assert_append_projection_rollback(stage: ProjectionCommitStage) {
             .unwrap(),
     )
     .unwrap();
-    let read_model_before = serde_json::to_value(
-        storage
+    let read_model_before = public_session_value(
+        &storage
             .load_full_session_for_restore(tmp.path(), UUID1)
             .unwrap()
             .unwrap(),
-    )
-    .unwrap();
+    );
     storage.set_projection_commit_hook_for_test(Arc::new(move |current| {
         if current == stage {
             Err(format!("injected {stage:?} failure"))
@@ -4402,13 +4838,12 @@ fn assert_append_projection_rollback(stage: ProjectionCommitStage) {
         cache_before
     );
     assert_eq!(
-        serde_json::to_value(
-            storage
+        public_session_value(
+            &storage
                 .load_full_session_for_restore(tmp.path(), UUID1)
                 .unwrap()
-                .unwrap()
-        )
-        .unwrap(),
+                .unwrap(),
+        ),
         read_model_before
     );
     assert!(notifications.lock().is_empty());
@@ -4463,13 +4898,12 @@ fn assert_persist_parts_projection_rollback(stage: ProjectionCommitStage) {
             .unwrap(),
     )
     .unwrap();
-    let read_model_before = serde_json::to_value(
-        storage
+    let read_model_before = public_session_value(
+        &storage
             .load_full_session_for_restore(tmp.path(), UUID1)
             .unwrap()
             .unwrap(),
-    )
-    .unwrap();
+    );
     storage.set_projection_commit_hook_for_test(Arc::new(move |current| {
         if current == stage {
             Err(format!("injected {stage:?} failure"))
@@ -4500,6 +4934,10 @@ fn assert_persist_parts_projection_rollback(stage: ProjectionCommitStage) {
         "m2",
         7,
         2001.0,
+        &crate::domain::agent_session::entities::TurnResult::Completed {
+            stop_reason: None,
+            token_usage: None,
+        },
     );
 
     assert!(result.is_err());
@@ -4515,13 +4953,12 @@ fn assert_persist_parts_projection_rollback(stage: ProjectionCommitStage) {
         cache_before
     );
     assert_eq!(
-        serde_json::to_value(
-            storage
+        public_session_value(
+            &storage
                 .load_full_session_for_restore(tmp.path(), UUID1)
                 .unwrap()
-                .unwrap()
-        )
-        .unwrap(),
+                .unwrap(),
+        ),
         read_model_before
     );
     assert!(notifications.lock().is_empty());

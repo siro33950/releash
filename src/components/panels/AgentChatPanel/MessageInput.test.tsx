@@ -162,6 +162,41 @@ describe("MessageInput", () => {
 		consoleError.mockRestore();
 	});
 
+	it.each([
+		{
+			outcome: "RejectedBeforeCommit",
+			accepted: false,
+			expectedDraft: "Keep the exact snapshot",
+		},
+		{
+			outcome: "OutcomeUnknown",
+			accepted: false,
+			expectedDraft: "Keep the exact snapshot",
+		},
+		{
+			outcome: "Accepted/ReconciliationRequired",
+			accepted: true,
+			expectedDraft: "",
+		},
+	])(
+		"B013 applies the composer snapshot boundary for $outcome",
+		async ({ accepted, expectedDraft }) => {
+			const onSend = vi.fn().mockResolvedValue(accepted);
+			render(<MessageInput {...defaultProps} onSend={onSend} />);
+			const textarea = screen.getByPlaceholderText(
+				"Send a message...",
+			) as HTMLTextAreaElement;
+			fireEvent.change(textarea, {
+				target: { value: "Keep the exact snapshot" },
+			});
+
+			fireEvent.click(screen.getByLabelText("Send message"));
+
+			await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+			await waitFor(() => expect(textarea.value).toBe(expectedDraft));
+		},
+	);
+
 	it("serializes submissions and preserves edited input and attachments added in flight", async () => {
 		let resolveSend: ((value: boolean) => void) | undefined;
 		const onSend = vi.fn(

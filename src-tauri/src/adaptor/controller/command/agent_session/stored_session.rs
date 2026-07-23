@@ -2,13 +2,14 @@ use std::sync::Arc;
 
 use tauri::State;
 
+use crate::adaptor::protocol::agent_session_v1::{ChatSessionDtoV1, SessionSummaryDtoV1};
 use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
 use crate::usecase::agent_session::backend_registry::AgentBackendRegistry;
 use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
+#[cfg(test)]
+use crate::usecase::agent_session::session::{CloseSessionOutcome, StoredSessionClosePort};
 use crate::usecase::agent_session::session::{
-    add_message_internal, ChatMessage, ChatSession, CloseSessionOutcome, MessageRole,
-    RestoreSessionOutcome, RestoreSessionResponse, SessionStore, SessionSummary,
-    StoredSessionClosePort, StoredSessionLifecycleUsecase,
+    RestoreSessionOutcome, RestoreSessionResponse, SessionStore, StoredSessionLifecycleUsecase,
 };
 use crate::usecase::agent_session::workspace_session_creation::{
     SessionCreationRequest, WorkspaceSessionCreationRequest, WorkspaceSessionCreationUsecase,
@@ -19,15 +20,18 @@ use crate::usecase::agent_session::workspace_session_creation::{
 pub async fn list_sessions(
     runtime: State<'_, Arc<AgentSessionRuntimeUsecase>>,
     worktree_path: String,
-) -> Result<Vec<SessionSummary>, String> {
+) -> Result<Vec<SessionSummaryDtoV1>, String> {
     runtime
         .list_sessions(&worktree_path)
         .await
+        .map(|sessions| sessions.into_iter().map(Into::into).collect())
         .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-pub fn create_session(
+#[allow(clippy::too_many_arguments)] // Tauri exposes state handles and request fields as separate command arguments.
+pub async fn create_session(
+    local_store: State<'_, Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>>,
     creation: State<'_, Arc<WorkspaceSessionCreationUsecase>>,
     registry: State<'_, Arc<AgentBackendRegistry>>,
     app: tauri::AppHandle,
@@ -35,23 +39,28 @@ pub fn create_session(
     permission_mode: String,
     backend_id: Option<String>,
     model_id: Option<String>,
-) -> Result<ChatSession, String> {
+) -> Result<ChatSessionDtoV1, String> {
+    super::session::ensure_mutation_admission_message(local_store.inner().as_ref()).await?;
     let data_dir = resolve_data_dir(&app)?;
-    creation.create_session(
-        registry.inner().as_ref(),
-        &data_dir,
-        SessionCreationRequest {
-            worktree_path,
-            permission_mode,
-            backend_id,
-            model_id,
-        },
-    )
+    creation
+        .create_session(
+            registry.inner().as_ref(),
+            &data_dir,
+            SessionCreationRequest {
+                worktree_path,
+                permission_mode,
+                backend_id,
+                model_id,
+            },
+        )
+        .map(Into::into)
+        .map_err(super::session::normalize_mutation_error)
 }
 
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
-pub fn create_workspace_session(
+pub async fn create_workspace_session(
+    local_store: State<'_, Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>>,
     creation: State<'_, Arc<WorkspaceSessionCreationUsecase>>,
     registry: State<'_, Arc<AgentBackendRegistry>>,
     app: tauri::AppHandle,
@@ -61,32 +70,23 @@ pub fn create_workspace_session(
     backend_id: Option<String>,
     model_id: Option<String>,
 ) -> Result<String, String> {
+    super::session::ensure_mutation_admission_message(local_store.inner().as_ref()).await?;
     let data_dir = resolve_data_dir(&app)?;
-    creation.create_workspace_session(
-        registry.inner().as_ref(),
-        &data_dir,
-        WorkspaceSessionCreationRequest {
-            request_id,
-            session: SessionCreationRequest {
-                worktree_path,
-                permission_mode,
-                backend_id,
-                model_id,
+    creation
+        .create_workspace_session(
+            registry.inner().as_ref(),
+            &data_dir,
+            WorkspaceSessionCreationRequest {
+                request_id,
+                session: SessionCreationRequest {
+                    worktree_path,
+                    permission_mode,
+                    backend_id,
+                    model_id,
+                },
             },
-        },
-    )
-}
-
-#[tauri::command]
-pub fn add_message(
-    state: State<'_, Arc<SessionStore>>,
-    app: tauri::AppHandle,
-    session_id: String,
-    role: MessageRole,
-    content: String,
-) -> Result<ChatMessage, String> {
-    let data_dir = resolve_data_dir(&app)?;
-    add_message_internal(&state, &data_dir, &session_id, role, &content, None, None)
+        )
+        .map_err(super::session::normalize_mutation_error)
 }
 
 #[tauri::command]
@@ -94,110 +94,49 @@ pub async fn list_closed_sessions(
     state: State<'_, Arc<SessionStore>>,
     app: tauri::AppHandle,
     worktree_path: String,
-) -> Result<Vec<SessionSummary>, String> {
+) -> Result<Vec<SessionSummaryDtoV1>, String> {
     let data_dir = resolve_data_dir(&app)?;
-    state.list_closed_sessions(&data_dir, &worktree_path)
-}
-
-#[tauri::command]
-pub async fn archive_session(
-    lifecycle: State<'_, Arc<StoredSessionLifecycleUsecase>>,
-    app: tauri::AppHandle,
-    session_id: String,
-) -> Result<(), String> {
-    let data_dir = resolve_data_dir(&app)?;
-    lifecycle.archive_session(&data_dir, &session_id).await
-}
-
-#[tauri::command]
-pub async fn archive_open_session(
-    lifecycle: State<'_, Arc<StoredSessionLifecycleUsecase>>,
-    app: tauri::AppHandle,
-    session_id: String,
-) -> Result<(), String> {
-    let data_dir = resolve_data_dir(&app)?;
-    lifecycle.archive_open_session(&data_dir, &session_id).await
+    state
+        .list_closed_sessions(&data_dir, &worktree_path)
+        .map(|sessions| sessions.into_iter().map(Into::into).collect())
 }
 
 #[tauri::command]
 pub async fn fork_session(
+    local_store: State<'_, Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>>,
     lifecycle: State<'_, Arc<StoredSessionLifecycleUsecase>>,
     app: tauri::AppHandle,
     session_id: String,
-) -> Result<ChatSession, String> {
+) -> Result<ChatSessionDtoV1, String> {
+    super::session::ensure_mutation_admission_message(local_store.inner().as_ref()).await?;
     let data_dir = resolve_data_dir(&app)?;
-    lifecycle.fork_session(&data_dir, &session_id).await
+    lifecycle
+        .fork_session(&data_dir, &session_id)
+        .await
+        .map(Into::into)
+        .map_err(super::session::normalize_mutation_error)
 }
 
 #[tauri::command]
 pub async fn set_session_title(
+    local_store: State<'_, Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>>,
     state: State<'_, Arc<SessionStore>>,
-    runtime: State<'_, Arc<AgentSessionRuntimeUsecase>>,
     app: tauri::AppHandle,
     session_id: String,
     title: Option<String>,
-) -> Result<SessionSummary, String> {
+) -> Result<SessionSummaryDtoV1, String> {
+    super::session::ensure_mutation_admission_message(local_store.inner().as_ref()).await?;
     let data_dir = resolve_data_dir(&app)?;
     state
         .get_session_meta(&data_dir, &session_id)?
         .ok_or_else(|| format!("Session not found: {session_id}"))?;
-    let summary = state.set_session_title(&data_dir, &session_id, title.as_deref())?;
-    let has_custom_title = title
-        .as_deref()
-        .map(|value| value.split_whitespace().collect::<Vec<_>>().join(" "))
-        .is_some_and(|value| !value.is_empty());
-    if has_custom_title {
-        if let Err(err) = runtime
-            .set_session_title(&session_id, &summary.first_message)
-            .await
-        {
-            log::debug!("skipped runtime title sync for {session_id}: {err}");
-        }
-    }
-    Ok(summary)
+    let summary = state
+        .set_session_title(&data_dir, &session_id, title.as_deref())
+        .map_err(super::session::normalize_mutation_error)?;
+    Ok(summary.into())
 }
 
-#[tauri::command]
-pub fn update_session_agent_info(
-    state: State<'_, Arc<SessionStore>>,
-    app: tauri::AppHandle,
-    session_id: String,
-    agent_session_id: Option<String>,
-) -> Result<(), String> {
-    let data_dir = resolve_data_dir(&app)?;
-    update_session_agent_info_in_store(
-        state.inner().as_ref(),
-        &data_dir,
-        &session_id,
-        agent_session_id,
-    )
-}
-
-fn update_session_agent_info_in_store(
-    state: &SessionStore,
-    data_dir: &std::path::Path,
-    session_id: &str,
-    agent_session_id: Option<String>,
-) -> Result<(), String> {
-    state.update_agent_session_id(data_dir, session_id, agent_session_id)
-}
-
-#[tauri::command]
-pub async fn close_session(
-    lifecycle: State<'_, Arc<StoredSessionLifecycleUsecase>>,
-    app: tauri::AppHandle,
-    session_id: String,
-) -> Result<(), String> {
-    let data_dir = resolve_data_dir(&app)?;
-    let outcome =
-        close_session_with_usecase(lifecycle.inner().as_ref(), &data_dir, &session_id).await?;
-    if let CloseSessionOutcome::WorkflowNodeTabClosed { worktree_path } = outcome {
-        crate::adaptor::controller_support::emit_workflow_node_target_state(&app, &worktree_path)
-            .await;
-    }
-    Ok(())
-}
-
+#[cfg(test)]
 async fn close_session_with_usecase(
     lifecycle: &dyn StoredSessionClosePort,
     data_dir: &std::path::Path,
@@ -208,15 +147,18 @@ async fn close_session_with_usecase(
 
 #[tauri::command]
 pub async fn restore_session(
+    local_store: State<'_, Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>>,
     lifecycle: State<'_, Arc<StoredSessionLifecycleUsecase>>,
     registry: State<'_, Arc<AgentBackendRegistry>>,
     app: tauri::AppHandle,
     session_id: String,
 ) -> Result<RestoreSessionResponse, String> {
+    super::session::ensure_mutation_admission_message(local_store.inner().as_ref()).await?;
     let data_dir = resolve_data_dir(&app)?;
     let outcome = lifecycle
         .restore_session(&data_dir, &session_id, registry.inner().as_ref())
-        .await?;
+        .await
+        .map_err(super::session::normalize_mutation_error)?;
     let response = restore_session_response(&outcome);
     if let RestoreSessionOutcome::WorkflowNodeTabRestored { worktree_path } = outcome {
         crate::adaptor::controller_support::emit_workflow_node_target_state(&app, &worktree_path)
@@ -286,36 +228,5 @@ mod tests {
             })
             .restored_workflow_node
         );
-    }
-
-    #[test]
-    fn update_session_agent_info_does_not_infer_context_carry_from_manual_id() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let session_store = crate::test_support::build_session_store();
-        let session = crate::usecase::agent_session::session::create_session_internal(
-            &session_store,
-            tmp.path(),
-            "/repo",
-            Some("claude".to_string()),
-        )
-        .unwrap();
-
-        update_session_agent_info_in_store(
-            &session_store,
-            tmp.path(),
-            &session.id,
-            Some("manual-sdk-session".to_string()),
-        )
-        .unwrap();
-
-        let loaded = session_store
-            .load_full_session_for_restore(tmp.path(), &session.id)
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            loaded.agent_session_id.as_deref(),
-            Some("manual-sdk-session")
-        );
-        assert_eq!(loaded.context_carry, None);
     }
 }

@@ -9,23 +9,31 @@ mod test_fixtures;
 mod tests;
 
 pub(crate) use ports::gc_file_system_error;
+#[cfg(test)]
+pub(crate) use ports::{CurrentSessionState, CurrentWorkflowExecutionState, RevalidationRead};
 pub(crate) use ports::{
-    CurrentSessionState, CurrentWorkflowExecutionState, GcFileSystem, GcFileSystemError,
-    GcRevalidationReader, RevalidationRead, WorkflowArchivePruner,
+    GcFileSystem, GcFileSystemError, GcRevalidationReader, WorkflowArchivePruner,
 };
 pub(crate) use request::{
-    CacheGcRecord, GcWorktreePath, LiveWorktree, LiveWorktreeResolution, LiveWorktreeSet,
-    ProcessRecord, ProcessRecordStatus, ReviewCommentGcRecord, RuntimeProtection, SessionBlobStore,
-    SessionGcRecord, StartupGcRequest, WorkflowArchivePruneResult, WorkflowExecutionGcRecord,
-    WorkspaceStateGcRecord,
+    CacheGcRecord, LiveWorktree, LiveWorktreeResolution, LiveWorktreeSet, ProcessRecord,
+    ProcessRecordStatus, ReviewCommentGcRecord, RuntimeProtection, StartupGcRequest,
+    WorkflowArchivePruneResult, WorkspaceStateGcRecord,
+};
+#[cfg(test)]
+pub(crate) use request::{
+    GcWorktreePath, SessionBlobStore, SessionGcRecord, WorkflowExecutionGcRecord,
 };
 
 use crate::domain::app_data_gc::GcReport;
 
 use plan::{
-    collect_cache_deletions, collect_legacy_comment_deletions, collect_orphan_blob_deletions,
-    collect_session_deletions, collect_stale_process_deletions, collect_workflow_deletions,
-    collect_workspace_keyed_deletions, DeletionPlan, SessionDeletionContext,
+    collect_cache_deletions, collect_legacy_comment_deletions, collect_stale_process_deletions,
+    collect_workspace_keyed_deletions, DeletionPlan,
+};
+#[cfg(test)]
+use plan::{
+    collect_orphan_blob_deletions, collect_session_deletions, collect_workflow_deletions,
+    SessionDeletionContext,
 };
 use sweep::sweep;
 
@@ -38,22 +46,25 @@ pub(crate) fn run_startup_gc(
     let mut plan = DeletionPlan::new(request.app_data_dir.clone());
 
     if let Some(live_worktree_resolution) = request.live_worktrees.as_ref() {
-        let session_context = SessionDeletionContext {
-            live_worktrees: live_worktree_resolution,
-            session_records: &request.session_records,
-            active_session_ids: &request.runtime_protection.active_session_ids,
-            running_worktrees: &request.runtime_protection.running_worktrees,
-            now_secs: request.now_secs,
-            retention: request.retention,
-        };
-        collect_session_deletions(&session_context, &mut plan);
-        collect_workflow_deletions(
-            &request.workflow_executions,
-            live_worktree_resolution,
-            request.now_secs,
-            request.retention,
-            &mut plan,
-        );
+        #[cfg(test)]
+        {
+            let session_context = SessionDeletionContext {
+                live_worktrees: live_worktree_resolution,
+                session_records: &request.session_records,
+                active_session_ids: &request.runtime_protection.active_session_ids,
+                running_worktrees: &request.runtime_protection.running_worktrees,
+                now_secs: request.now_secs,
+                retention: request.retention,
+            };
+            collect_session_deletions(&session_context, &mut plan);
+            collect_workflow_deletions(
+                &request.workflow_executions,
+                live_worktree_resolution,
+                request.now_secs,
+                request.retention,
+                &mut plan,
+            );
+        }
         collect_workspace_keyed_deletions(
             &request.workspace_state_records,
             &request.review_comment_records,
@@ -75,6 +86,7 @@ pub(crate) fn run_startup_gc(
         &mut plan,
     );
     collect_legacy_comment_deletions(&request.legacy_comment_paths, &mut plan);
+    #[cfg(test)]
     collect_orphan_blob_deletions(&request.session_blob_stores, fs, &mut plan);
     collect_stale_process_deletions(&request.process_records, &mut plan);
 

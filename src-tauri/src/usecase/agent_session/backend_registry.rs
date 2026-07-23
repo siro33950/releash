@@ -220,6 +220,7 @@ impl SessionBackendResolver for AgentBackendRegistry {
         AgentBackendRegistry::resolve_backend_id(self, backend_id)
     }
 
+    #[cfg(test)]
     fn default_model_for(&self, backend_id: &str) -> Result<String, String> {
         AgentBackendRegistry::default_model_for(self, backend_id)
     }
@@ -251,7 +252,7 @@ mod tests {
     use async_trait::async_trait;
 
     use crate::domain::agent_session::gateway::{
-        AgentBackendError, AgentSessionRuntime, ForkSessionRequest, SessionSpec,
+        AgentBackendError, AgentSessionRuntime, SessionSpec,
     };
     use crate::domain::agent_session::value_objects::{BackendCapabilities, SkillEntry};
 
@@ -292,29 +293,6 @@ mod tests {
             _spec: SessionSpec,
         ) -> Result<Box<dyn AgentSessionRuntime>, AgentBackendError> {
             Err(AgentBackendError::Unavailable("test".to_string()))
-        }
-
-        async fn archive_session(
-            &self,
-            _backend_session_id: &str,
-            _cwd: &str,
-        ) -> Result<(), AgentBackendError> {
-            Ok(())
-        }
-
-        async fn unarchive_session(
-            &self,
-            _backend_session_id: &str,
-            _cwd: &str,
-        ) -> Result<(), AgentBackendError> {
-            Ok(())
-        }
-
-        async fn fork_session(
-            &self,
-            _req: ForkSessionRequest,
-        ) -> Result<Option<String>, AgentBackendError> {
-            Ok(None)
         }
 
         async fn skill_catalog(

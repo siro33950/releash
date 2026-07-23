@@ -35,11 +35,6 @@ pub(crate) trait WorkflowNodeSessionGateway: Send + Sync {
 
 #[async_trait::async_trait]
 pub(crate) trait NodeExecutionRuntimeGateway: Send + Sync {
-    async fn close_idle_runtime_on_tab_close(
-        &self,
-        session_id: &str,
-    ) -> Result<(), NodeExecutionLifecycleError>;
-
     async fn close_runtime_on_node_done(
         &self,
         session_id: &str,
@@ -48,27 +43,21 @@ pub(crate) trait NodeExecutionRuntimeGateway: Send + Sync {
 
 pub(crate) struct NodeExecutionLifecycle<'a> {
     pub(crate) sessions: &'a dyn WorkflowNodeSessionGateway,
-    pub(crate) runtime: &'a dyn NodeExecutionRuntimeGateway,
 }
 
 #[derive(Clone)]
 pub(crate) struct NodeExecutionLifecycleUsecase {
     sessions: Arc<dyn WorkflowNodeSessionGateway>,
-    runtime: Arc<dyn NodeExecutionRuntimeGateway>,
 }
 
 impl NodeExecutionLifecycleUsecase {
-    pub(crate) fn new(
-        sessions: Arc<dyn WorkflowNodeSessionGateway>,
-        runtime: Arc<dyn NodeExecutionRuntimeGateway>,
-    ) -> Self {
-        Self { sessions, runtime }
+    pub(crate) fn new(sessions: Arc<dyn WorkflowNodeSessionGateway>) -> Self {
+        Self { sessions }
     }
 
     fn lifecycle(&self) -> NodeExecutionLifecycle<'_> {
         NodeExecutionLifecycle {
             sessions: self.sessions.as_ref(),
-            runtime: self.runtime.as_ref(),
         }
     }
 
@@ -113,13 +102,7 @@ impl<'a> NodeExecutionLifecycle<'a> {
         let Some(target) = self.resolve_node_session(session_id)? else {
             return Ok(None);
         };
-        let runtime_result = self
-            .runtime
-            .close_idle_runtime_on_tab_close(&target.session_id)
-            .await;
-        let tab_result = self.sessions.close_node_tab(&target.session_id);
-        runtime_result?;
-        tab_result?;
+        self.sessions.close_node_tab(&target.session_id)?;
         Ok(Some(target))
     }
 }
@@ -150,10 +133,8 @@ mod tests {
         tab_open: bool,
         history_len: usize,
         runtime_done_close_calls: usize,
-        runtime_tab_close_calls: usize,
         tab_close_calls: usize,
         fail_done_runtime_close: bool,
-        fail_tab_runtime_close: bool,
     }
 
     impl FakeLifecycleState {
@@ -164,10 +145,8 @@ mod tests {
                 tab_open: true,
                 history_len: 1,
                 runtime_done_close_calls: 0,
-                runtime_tab_close_calls: 0,
                 tab_close_calls: 0,
                 fail_done_runtime_close: false,
-                fail_tab_runtime_close: false,
             }
         }
     }
@@ -210,21 +189,6 @@ mod tests {
 
     #[async_trait::async_trait]
     impl NodeExecutionRuntimeGateway for FakeNodeExecutionRuntimeGateway {
-        async fn close_idle_runtime_on_tab_close(
-            &self,
-            _session_id: &str,
-        ) -> Result<(), NodeExecutionLifecycleError> {
-            let mut state = self.state.lock().unwrap();
-            state.runtime_tab_close_calls += 1;
-            state.runtime_active = false;
-            if state.fail_tab_runtime_close {
-                return Err(NodeExecutionLifecycleError::AgentSession(
-                    "runtime close failed".to_string(),
-                ));
-            }
-            Ok(())
-        }
-
         async fn close_runtime_on_node_done(
             &self,
             _session_id: &str,
@@ -289,27 +253,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn close_tab_target_closes_tab_and_converges_state_after_runtime_error() {
-        let state = Arc::new(StdMutex::new(FakeLifecycleState {
-            fail_tab_runtime_close: true,
-            ..FakeLifecycleState::open_runtime_and_tab()
-        }));
-        let (sessions, runtime) = fake_lifecycle_gateways(Arc::clone(&state));
+    async fn close_quit_workflow_node_tab_close_is_view_only() {
+        let state = Arc::new(StdMutex::new(FakeLifecycleState::open_runtime_and_tab()));
+        let (sessions, _) = fake_lifecycle_gateways(Arc::clone(&state));
         let lifecycle = NodeExecutionLifecycle {
             sessions: &sessions,
-            runtime: &runtime,
         };
 
         let result = lifecycle.close_tab_target("node").await;
 
-        assert!(matches!(
-            result,
-            Err(NodeExecutionLifecycleError::AgentSession(_))
-        ));
+        assert!(result.is_ok());
         let state = state.lock().unwrap();
-        assert_eq!(state.runtime_tab_close_calls, 1);
         assert_eq!(state.tab_close_calls, 1);
-        assert!(!state.runtime_active);
+        assert!(state.runtime_active);
         assert!(!state.tab_open);
         assert_eq!(state.history_len, 1);
     }

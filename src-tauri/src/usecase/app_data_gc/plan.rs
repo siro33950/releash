@@ -1,16 +1,22 @@
 use std::collections::{BTreeMap, HashSet};
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::path::Path;
+use std::path::PathBuf;
 
 use crate::domain::app_data_gc::{is_expired, GcCategory, RetentionPolicy};
+#[cfg(test)]
 use crate::usecase::agent_session::session::{ChatMessage, MessagePart, SessionState};
 
+#[cfg(test)]
 use super::ports::GcFileSystem;
 use super::request::{
     CacheGcRecord, LiveWorktreeResolution, LiveWorktreeSet, ProcessRecord, ProcessRecordStatus,
-    ReviewCommentGcRecord, RuntimeProtection, SessionBlobStore, SessionGcRecord,
-    WorkflowExecutionGcRecord, WorkspaceStateGcRecord,
+    ReviewCommentGcRecord, RuntimeProtection, WorkspaceStateGcRecord,
 };
+#[cfg(test)]
+use super::request::{SessionBlobStore, SessionGcRecord, WorkflowExecutionGcRecord};
 
+#[cfg(test)]
 pub(super) struct SessionDeletionContext<'a> {
     pub(super) live_worktrees: &'a LiveWorktreeResolution,
     pub(super) session_records: &'a [SessionGcRecord],
@@ -23,10 +29,20 @@ pub(super) struct SessionDeletionContext<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum DeletionRevalidation {
     None,
-    Session { session_id: String },
-    WorkflowExecutionMetadata { execution_id: String },
-    WorkspaceState { key: String },
-    ReviewComment { key: String },
+    #[cfg(test)]
+    Session {
+        session_id: String,
+    },
+    #[cfg(test)]
+    WorkflowExecutionMetadata {
+        execution_id: String,
+    },
+    WorkspaceState {
+        key: String,
+    },
+    ReviewComment {
+        key: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +91,7 @@ impl DeletionPlan {
         }
     }
 
+    #[cfg(test)]
     fn add_workflow_path(&mut self, path: PathBuf, category: GcCategory, execution_id: &str) {
         if self.paths.insert(path.clone()) {
             self.candidates.push(DeletionCandidate {
@@ -88,6 +105,7 @@ impl DeletionPlan {
         }
     }
 
+    #[cfg(test)]
     fn add_workflow_archive_record(&mut self, execution_id: String, category: GcCategory) {
         self.workflow_archive_records
             .entry(category)
@@ -96,6 +114,7 @@ impl DeletionPlan {
     }
 }
 
+#[cfg(test)]
 pub(super) fn collect_session_deletions(
     context: &SessionDeletionContext<'_>,
     plan: &mut DeletionPlan,
@@ -130,6 +149,7 @@ pub(super) fn collect_session_deletions(
     }
 }
 
+#[cfg(test)]
 fn session_is_recoverable_expired(
     state: Option<&SessionState>,
     updated_at: Option<f64>,
@@ -145,6 +165,7 @@ fn session_is_recoverable_expired(
         })
 }
 
+#[cfg(test)]
 fn add_session_delete(plan: &mut DeletionPlan, record: &SessionGcRecord, category: GcCategory) {
     for path in &record.delete_paths {
         plan.add_with_revalidation(
@@ -157,6 +178,7 @@ fn add_session_delete(plan: &mut DeletionPlan, record: &SessionGcRecord, categor
     }
 }
 
+#[cfg(test)]
 pub(super) fn collect_workflow_deletions(
     workflow_executions: &[WorkflowExecutionGcRecord],
     live_worktrees: &LiveWorktreeResolution,
@@ -183,6 +205,7 @@ pub(super) fn collect_workflow_deletions(
     }
 }
 
+#[cfg(test)]
 fn add_workflow_execution_delete(
     execution: &WorkflowExecutionGcRecord,
     category: GcCategory,
@@ -310,6 +333,7 @@ pub(super) fn collect_legacy_comment_deletions(
     }
 }
 
+#[cfg(test)]
 pub(super) fn collect_orphan_blob_deletions(
     session_blob_stores: &[SessionBlobStore],
     fs: &dyn GcFileSystem,
@@ -326,6 +350,7 @@ pub(super) fn collect_orphan_blob_deletions(
     }
 }
 
+#[cfg(test)]
 fn collect_unreferenced_files(
     dir: &Path,
     referenced: &HashSet<String>,
@@ -359,6 +384,7 @@ pub(super) fn collect_stale_process_deletions(
     }
 }
 
+#[cfg(test)]
 fn read_message_blob_refs(
     messages_dir: &Path,
     fs: &dyn GcFileSystem,
@@ -390,7 +416,10 @@ fn read_message_blob_refs(
                 return None;
             }
         };
-        let message: ChatMessage = match serde_json::from_str(&content) {
+        let message: ChatMessage = match crate::adaptor::gateway::agent_session::session_storage::decode_legacy_chat_message_for_gc(
+            content.as_bytes(),
+            path.to_string_lossy().into_owned(),
+        ) {
             Ok(message) => message,
             Err(error) => {
                 log::warn!(
@@ -405,6 +434,7 @@ fn read_message_blob_refs(
     Some((tool_outputs, attachments))
 }
 
+#[cfg(test)]
 fn collect_blob_refs_from_message(
     message: &ChatMessage,
     tool_outputs: &mut HashSet<String>,

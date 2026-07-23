@@ -116,7 +116,7 @@ pub(crate) fn context_source_kind_key(kind: ContextSourceKind) -> &'static str {
     }
 }
 
-fn context_source_kind_from_key(key: &str) -> Option<ContextSourceKind> {
+pub(crate) fn context_source_kind_from_key(key: &str) -> Option<ContextSourceKind> {
     match key {
         "repo_summary" => Some(ContextSourceKind::RepoSummary),
         "diff_review_snapshot" => Some(ContextSourceKind::DiffReviewSnapshot),

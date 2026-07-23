@@ -426,7 +426,7 @@ mod tests {
 
     #[test]
     fn start_defaults_request_worktree_and_origin_at_the_cli_boundary() {
-        let _lock = TEST_ENV_LOCK.lock().unwrap();
+        let _lock = TEST_ENV_LOCK.lock();
         let _node_execution = EnvVarGuard::set_value("RELEASH_NODE_EXECUTION_ID", "");
         let request = build_start_request("review".to_string(), None, None, None, || {
             Ok(PathBuf::from("/current/worktree"))

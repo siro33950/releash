@@ -17,6 +17,134 @@ use domain::app_config::{
 };
 use tauri::Manager;
 
+type LocalApiShutdownTarget = Arc<parking_lot::RwLock<Option<Arc<dyn Fn() + Send + Sync>>>>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupMaintenanceAdmission {
+    AwaitCutover,
+    Admitted,
+    Abandoned,
+}
+
+fn startup_maintenance_admission(
+    normal_admission_ready: bool,
+    migration_blocked: bool,
+) -> StartupMaintenanceAdmission {
+    match (normal_admission_ready, migration_blocked) {
+        (true, false) => StartupMaintenanceAdmission::Admitted,
+        (false, false) => StartupMaintenanceAdmission::AwaitCutover,
+        (_, true) => StartupMaintenanceAdmission::Abandoned,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupRecoveryWorkerExit {
+    Quiescent,
+    AdmissionAbandoned,
+}
+
+/// Drives bounded recovery passes only under normal admission. Every pass
+/// starts with a fresh pending-index snapshot; two empty passes define
+/// quiescence, so work inserted while the first empty page was being observed
+/// is not lost. Transient failures retain the worker with capped backoff.
+async fn run_startup_recovery_after_normal_admission<Admission, Recover, Future, Error>(
+    worker_name: &'static str,
+    mut admission: Admission,
+    mut recover_pass: Recover,
+    admission_poll_delay: std::time::Duration,
+    initial_retry_delay: std::time::Duration,
+    maximum_retry_delay: std::time::Duration,
+) -> StartupRecoveryWorkerExit
+where
+    Admission: FnMut() -> StartupMaintenanceAdmission,
+    Recover: FnMut() -> Future,
+    Future: std::future::Future<Output = Result<usize, Error>>,
+    Error: std::fmt::Debug,
+{
+    let mut retry_delay = initial_retry_delay;
+    let mut consecutive_empty_passes = 0u8;
+    loop {
+        match admission() {
+            StartupMaintenanceAdmission::AwaitCutover => {
+                tokio::time::sleep(admission_poll_delay).await;
+            }
+            StartupMaintenanceAdmission::Abandoned => {
+                return StartupRecoveryWorkerExit::AdmissionAbandoned;
+            }
+            StartupMaintenanceAdmission::Admitted => match recover_pass().await {
+                Ok(0) => {
+                    consecutive_empty_passes = consecutive_empty_passes.saturating_add(1);
+                    if consecutive_empty_passes >= 2 {
+                        return StartupRecoveryWorkerExit::Quiescent;
+                    }
+                    tokio::task::yield_now().await;
+                }
+                Ok(_) => {
+                    consecutive_empty_passes = 0;
+                    retry_delay = initial_retry_delay;
+                    // A claimed/reconciliation row can remain indexed until
+                    // explicit readback. Keep supervising it, but do not spin
+                    // a hot loop while no new durable progress is visible.
+                    tokio::time::sleep(initial_retry_delay).await;
+                }
+                Err(error) => {
+                    consecutive_empty_passes = 0;
+                    log::warn!("{worker_name} startup recovery will retry: {error:?}");
+                    tokio::time::sleep(retry_delay).await;
+                    retry_delay = retry_delay.saturating_mul(2).min(maximum_retry_delay);
+                }
+            },
+        }
+    }
+}
+
+fn spawn_startup_maintenance_after_normal_admission(
+    data_dir: std::path::PathBuf,
+    shared_repo_paths: adaptor::gateway::repository::repo_paths::SharedRepoPaths,
+    local_event_store: Arc<adaptor::gateway::local_event_store::LocalEventStore>,
+) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            match startup_maintenance_admission(
+                local_event_store.normal_admission_ready(),
+                local_event_store.migration_blocked(),
+            ) {
+                StartupMaintenanceAdmission::AwaitCutover => {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                StartupMaintenanceAdmission::Abandoned => break,
+                StartupMaintenanceAdmission::Admitted => {
+                    let cleanup_data_dir = data_dir.clone();
+                    match tauri::async_runtime::spawn_blocking(move || {
+                        infrastructure::process::pid_registry::cleanup_orphan_processes(
+                            &cleanup_data_dir,
+                        )
+                    })
+                    .await
+                    {
+                        Ok(report) if report.scanned > 0 || report.failures > 0 => {
+                            log::info!(
+                                "agent orphan cleanup scanned={} processed={} skipped={} failures={}",
+                                report.scanned,
+                                report.processed,
+                                report.skipped,
+                                report.failures
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(error) => log::error!("agent orphan cleanup task failed: {error}"),
+                    }
+                    adaptor::controller::wiring::spawn_startup_app_data_gc(
+                        data_dir,
+                        shared_repo_paths,
+                    );
+                    break;
+                }
+            }
+        }
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let startup_started = Instant::now();
@@ -77,32 +205,109 @@ pub fn run() {
         .setup(move |app| {
             pty_gateway_for_setup.start_idle_sweeper(app.handle().clone());
             let data_dir = app.path().app_data_dir()?;
-            let session_store_state = app
+            let local_event_store =
+                adaptor::gateway::local_event_store::LocalEventStore::open(
+                    adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
+                        data_dir.clone(),
+                    ),
+                )
+                .map_err(|error| format!("failed to open permanent local event store: {error}"))?;
+            app.manage(local_event_store.clone());
+            let session_store = app
                 .state::<Arc<usecase::agent_session::session::SessionStore>>()
                 .inner()
                 .clone();
-            let agent_session_notice_usecase = Arc::new(
-                adaptor::controller::agent_session_notice_wiring::build_agent_session_notice_usecase(
-                    session_store_state.clone(),
-                    &data_dir,
+            let session_event_repository: Arc<
+                dyn domain::local_event::LocalEventTransactionRepository,
+            > = local_event_store.clone();
+            let canonical_generation = local_event_store.generation_id().to_string();
+            // Close every legacy session mutation/repair path immediately
+            // after SQLite opens. Until verified cutover, reads may use the
+            // immutable legacy source but commands fail migration-closed.
+            session_store.set_local_event_repository(
+                session_event_repository.clone(),
+                canonical_generation.clone(),
+            );
+            let install_canonical_session_authority = {
+                let session_store = session_store.clone();
+                move |repository: Arc<dyn domain::local_event::LocalEventTransactionRepository>| {
+                    session_store.set_local_event_repository_with_projection_codec(
+                        repository,
+                        canonical_generation.clone(),
+                        Arc::new(
+                            adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
+                        ),
+                    );
+                }
+            };
+            if local_event_store.normal_admission_ready() {
+                install_canonical_session_authority(session_event_repository);
+            } else {
+                let store = local_event_store.clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        if store.cutover_ready() {
+                            let repository: Arc<
+                                dyn domain::local_event::LocalEventTransactionRepository,
+                            > = store.clone();
+                            install_canonical_session_authority(repository);
+                            if !store.open_normal_admission_after_authority_install() {
+                                log::error!(
+                                    "local event store cutover admission acknowledgement was lost"
+                                );
+                            }
+                            break;
+                        }
+                        if store.migration_blocked() {
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    }
+                });
+            }
+            let session_feedback_usecase = Arc::new(
+                usecase::agent_session::feedback::SessionFeedbackUsecase::new(
+                    local_event_store.clone(),
+                    local_event_store.generation_id().to_string(),
                 ),
             );
-            adaptor::controller::agent_session_notice_wiring::register_session_notice_cleanup_listener(
-                session_store_state.as_ref(),
-                agent_session_notice_usecase.clone(),
+            let abandoned_feedback_recovery = session_feedback_usecase.clone();
+            let abandoned_feedback_store = local_event_store.clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    if abandoned_feedback_store.migration_blocked() {
+                        break;
+                    }
+                    if !abandoned_feedback_store.normal_admission_ready() {
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        continue;
+                    }
+                    match abandoned_feedback_recovery
+                        .recover_abandoned_reservations()
+                        .await
+                    {
+                        Ok(recovered) => {
+                            if recovered > 0 {
+                                log::warn!(
+                                    "recovered {recovered} abandoned session feedback reservations"
+                                );
+                            }
+                            break;
+                        }
+                        Err(error) => {
+                            log::warn!(
+                                "abandoned session feedback recovery will retry: {error:?}"
+                            );
+                            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                        }
+                    }
+                }
+            });
+            let agent_session_notice_usecase = Arc::new(
+                adaptor::controller::agent_session_notice_wiring::build_agent_session_notice_usecase(),
             );
+            app.manage(session_feedback_usecase.clone());
             app.manage(agent_session_notice_usecase);
-            let cleanup_report =
-                infrastructure::process::pid_registry::cleanup_orphan_processes(&data_dir);
-            if cleanup_report.scanned > 0 || cleanup_report.failures > 0 {
-                log::info!(
-                    "agent orphan cleanup scanned={} processed={} skipped={} failures={}",
-                    cleanup_report.scanned,
-                    cleanup_report.processed,
-                    cleanup_report.skipped,
-                    cleanup_report.failures
-                );
-            }
             app.manage(Arc::new(
                 adaptor::gateway::workspace_state::WorkspaceStateStore::new(data_dir.clone()),
             ));
@@ -154,9 +359,10 @@ pub fn run() {
                     *shared_repo_paths.write() = paths;
                 }
             }
-            adaptor::controller::wiring::spawn_startup_app_data_gc(
+            spawn_startup_maintenance_after_normal_admission(
                 data_dir.clone(),
                 shared_repo_paths.clone(),
+                local_event_store.clone(),
             );
 
             // repository ドメインの DI 配線（起動時に AppState を組み立てて manage）。
@@ -246,6 +452,7 @@ pub fn run() {
                         config_secret_repository.clone(),
                         session_store_state,
                         app.handle().clone(),
+                        local_event_store.clone(),
                     );
                 let workflow_usecase = Arc::new(workflow_usecase);
                 app.manage(Arc::new(workspace_tree_query_service));
@@ -437,10 +644,191 @@ pub fn run() {
                 .state::<Arc<usecase::agent_session::runtime::AgentSessionRuntimeUsecase>>()
                 .inner()
                 .clone();
-            let session_store = app
-                .state::<Arc<usecase::agent_session::session::SessionStore>>()
-                .inner()
-                .clone();
+            let session_feedback_load_usecase = Arc::new(
+                usecase::agent_session::session_feedback_load::SessionFeedbackLoadUsecase::new(
+                    agent_runtime.clone(),
+                    session_feedback_usecase.clone(),
+                ),
+            );
+            app.manage(session_feedback_load_usecase.clone());
+            let operation_gate = Arc::new(
+                adaptor::controller::agent_session_operation_wiring::RuntimeAgentSessionOperationGate::new(
+                    agent_runtime.clone(),
+                    session_store.clone(),
+                    data_dir.clone(),
+                ),
+            );
+            let operation_repository: Arc<
+                dyn domain::local_event::LocalEventTransactionRepository,
+            > = local_event_store.clone();
+            let operation_authority: Arc<
+                dyn usecase::agent_session::operation::OperationBindingAuthority,
+            > = local_event_store.clone();
+            let lifecycle_gate: Arc<
+                dyn usecase::agent_session::operation::SessionLifecycleGate,
+            > = operation_gate.clone();
+            let stop_gate: Arc<dyn usecase::agent_session::operation::StopAdmissionGate> =
+                operation_gate.clone();
+            let send_operation_gate = Arc::new(
+                adaptor::controller::agent_session_operation_wiring::RuntimeSendOperationGate::new(
+                    agent_runtime.clone(),
+                    session_store.clone(),
+                    data_dir.clone(),
+                ),
+            );
+            let send_gate: Arc<dyn usecase::agent_session::operation::SendAdmissionGate> =
+                send_operation_gate.clone();
+            let lifecycle_operation = Arc::new(
+                usecase::agent_session::operation::SessionLifecycleOperationUsecase::new(
+                    operation_repository.clone(),
+                    operation_authority.clone(),
+                    lifecycle_gate,
+                    local_event_store.generation_id().to_string(),
+                ),
+            );
+            app.manage(lifecycle_operation.clone());
+            let stop_operation = Arc::new(
+                usecase::agent_session::operation::StopOperationUsecase::new(
+                    operation_repository.clone(),
+                    operation_authority.clone(),
+                    stop_gate,
+                    local_event_store.generation_id().to_string(),
+                ),
+            );
+            operation_gate.bind_stop_operation(Arc::downgrade(&stop_operation));
+            adaptor::controller::agent_session_operation_wiring::bind_runtime_durable_stop_driver(
+                &agent_runtime,
+                stop_operation.clone(),
+            );
+            app.manage(stop_operation.clone());
+            let send_operation = Arc::new(
+                usecase::agent_session::operation::AgentSendOperationUsecase::new(
+                    local_event_store.clone(),
+                    local_event_store.clone(),
+                    send_gate,
+                    local_event_store.generation_id().to_string(),
+                ),
+            );
+            operation_gate.bind_send_operation(Arc::downgrade(&send_operation));
+            send_operation_gate.bind_status_sink(Arc::downgrade(&send_operation));
+            adaptor::controller::agent_session_operation_wiring::bind_runtime_durable_workflow_send_driver(
+                &agent_runtime,
+                send_operation.clone(),
+                session_store.clone(),
+                data_dir.clone(),
+            );
+            adaptor::controller::agent_session_operation_wiring::bind_runtime_terminal_operation_participant_provider(
+                &session_store,
+                stop_operation.clone(),
+                send_operation.clone(),
+            );
+            let pending_stop_recovery = stop_operation.clone();
+            let pending_stop_recovery_store = local_event_store.clone();
+            tauri::async_runtime::spawn(async move {
+                run_startup_recovery_after_normal_admission(
+                    "pending accepted Stop",
+                    || {
+                        startup_maintenance_admission(
+                            pending_stop_recovery_store.normal_admission_ready(),
+                            pending_stop_recovery_store.migration_blocked(),
+                        )
+                    },
+                    || {
+                        let recovery = pending_stop_recovery.clone();
+                        async move { recovery.recover_pending_stops_pass().await }
+                    },
+                    std::time::Duration::from_millis(100),
+                    std::time::Duration::from_millis(50),
+                    std::time::Duration::from_secs(1),
+                )
+                .await;
+            });
+            let pending_send_recovery = send_operation.clone();
+            let pending_send_recovery_store = local_event_store.clone();
+            tauri::async_runtime::spawn(async move {
+                run_startup_recovery_after_normal_admission(
+                    "pending accepted send",
+                    || {
+                        startup_maintenance_admission(
+                            pending_send_recovery_store.normal_admission_ready(),
+                            pending_send_recovery_store.migration_blocked(),
+                        )
+                    },
+                    || {
+                        let recovery = pending_send_recovery.clone();
+                        async move { recovery.recover_pending_provider_effects_pass().await }
+                    },
+                    std::time::Duration::from_millis(100),
+                    std::time::Duration::from_millis(50),
+                    std::time::Duration::from_secs(1),
+                )
+                .await;
+            });
+            app.manage(send_operation.clone());
+            let permission_response_gate: Arc<
+                dyn usecase::agent_session::operation::PermissionResponseGate,
+            > = Arc::new(
+                adaptor::controller::agent_session_operation_wiring::RuntimePermissionResponseOperationGate::new(
+                    agent_runtime.clone(),
+                    session_store.clone(),
+                ),
+            );
+            let permission_response_operation = Arc::new(
+                usecase::agent_session::operation::PermissionResponseOperationUsecase::new(
+                    operation_repository.clone(),
+                    operation_authority.clone(),
+                    permission_response_gate,
+                    local_event_store.generation_id().to_string(),
+                ),
+            );
+            let pending_permission_recovery = permission_response_operation.clone();
+            let pending_permission_recovery_store = local_event_store.clone();
+            tauri::async_runtime::spawn(async move {
+                run_startup_recovery_after_normal_admission(
+                    "pending permission response",
+                    || {
+                        startup_maintenance_admission(
+                            pending_permission_recovery_store.normal_admission_ready(),
+                            pending_permission_recovery_store.migration_blocked(),
+                        )
+                    },
+                    || {
+                        let recovery = pending_permission_recovery.clone();
+                        async move { recovery.recover_pending_permission_responses_pass().await }
+                    },
+                    std::time::Duration::from_millis(100),
+                    std::time::Duration::from_millis(50),
+                    std::time::Duration::from_secs(1),
+                )
+                .await;
+            });
+            app.manage(permission_response_operation.clone());
+            let recovery_operation = Arc::new(
+                usecase::agent_session::operation::RecoveryActionUsecase::new(
+                    local_event_store.clone(),
+                    local_event_store.clone(),
+                    Arc::new(
+                        adaptor::controller::agent_session_operation_wiring::ConservativeRecoveryExecutor::new(
+                            stop_operation.clone(),
+							lifecycle_operation.clone(),
+							operation_gate.clone(),
+							send_operation.clone(),
+                            permission_response_operation.clone(),
+                            local_event_store.clone(),
+                        ),
+                    ),
+                    local_event_store.generation_id().to_string(),
+                ),
+            );
+            app.manage(recovery_operation.clone());
+            let caller_journal = Arc::new(
+                usecase::agent_session::operation::CallerAttemptJournal::new(
+                    local_event_store.clone(),
+                    local_event_store.clone(),
+                    local_event_store.generation_id().to_string(),
+                ),
+            );
+            app.manage(caller_journal.clone());
             let open_tabs = app
                 .state::<Arc<usecase::agent_session::session::OpenTabRegistry>>()
                 .inner()
@@ -449,8 +837,8 @@ pub fn run() {
                 .state::<Arc<dyn usecase::agent_session::context::BranchDiffContextPort>>()
                 .inner()
                 .clone();
-            let workflow_runtime_usecase =
-                Arc::new(adaptor::controller::wiring::build_workflow_runtime_usecase(
+            let workflow_runtime_usecase = Arc::new(
+                adaptor::controller::wiring::build_workflow_runtime_usecase(
                     app.handle().clone(),
                     adaptor::gateway::workflow::TauriWorkflowRuntimeCommandGatewayDeps {
                         repository_usecase: repository_usecase.clone(),
@@ -460,22 +848,109 @@ pub fn run() {
                         open_tabs,
                         branch_diff_context: branch_diff_context.clone(),
                         data_dir: Some(data_dir.clone()),
+                        local_event_repository: local_event_store.clone(),
+                        local_event_generation_id: local_event_store
+                            .generation_id()
+                            .to_string(),
                     },
-                ));
+                )
+                .map_err(|error| format!("workflow recovery admission failed: {error}"))?,
+            );
+            send_operation_gate
+                .bind_workflow_runtime(Arc::downgrade(&workflow_runtime_usecase));
             let workflow_runtime_agent_notifier = Arc::new(
                 adaptor::gateway::agent_session::WorkflowRuntimeAgentSessionNotifier::new(
                     workflow_runtime_usecase.clone(),
+                    session_store.clone(),
                 ),
             );
             agent_runtime
                 .set_workflow_turn_complete_notifier(workflow_runtime_agent_notifier.clone());
-            agent_runtime.set_workflow_stall_notifier(workflow_runtime_agent_notifier);
+            agent_runtime
+                .set_workflow_stall_notifier(workflow_runtime_agent_notifier.clone());
+            let pending_workflow_recovery = workflow_runtime_usecase.clone();
+            let pending_workflow_recovery_store = local_event_store.clone();
+            let pending_turn_completion_recovery = workflow_runtime_agent_notifier.clone();
+            tauri::async_runtime::spawn(async move {
+                run_startup_recovery_after_normal_admission(
+                    "pending workflow turn-completion/orphan",
+                    || {
+                        startup_maintenance_admission(
+                            pending_workflow_recovery_store.normal_admission_ready(),
+                            pending_workflow_recovery_store.migration_blocked(),
+                        )
+                    },
+                    || {
+                        let workflow = pending_workflow_recovery.clone();
+                        let turn_completion = pending_turn_completion_recovery.clone();
+                        async move {
+                            // Never orphan-interrupt an execution while its
+                            // exact turn-completion handoff cannot be replayed.
+                            let recovered = turn_completion
+                                .recover_pending_turn_completions()
+                                .await?;
+                            workflow
+                                .recover_startup()
+                                .await
+                                .map_err(|error| error.to_string())?;
+                            Ok::<usize, String>(recovered)
+                        }
+                    },
+                    std::time::Duration::from_millis(100),
+                    std::time::Duration::from_millis(50),
+                    std::time::Duration::from_secs(1),
+                )
+                .await;
+            });
             app.manage(workflow_runtime_usecase.clone());
 
             let workflow_query_usecase = app
                 .state::<adaptor::controller::state::AppState>()
                 .workflow_usecase
                 .clone();
+            let local_api_shutdown_target: LocalApiShutdownTarget =
+                Arc::new(parking_lot::RwLock::new(None));
+            let shutdown_local_api: Arc<dyn Fn() + Send + Sync> = Arc::new({
+                let target = local_api_shutdown_target.clone();
+                move || {
+                    if let Some(shutdown) = target.read().clone() {
+                        shutdown();
+                    }
+                }
+            });
+            let shutdown_coordinator =
+                adaptor::controller::application_lifecycle::build_shutdown_coordinator(
+                    local_event_store.clone(),
+                    agent_runtime.clone(),
+                    workflow_runtime_usecase.clone(),
+                    lifecycle_operation,
+                    shutdown_local_api,
+                );
+            let process_actions = Arc::new(
+                adaptor::controller::application_lifecycle::ApplicationProcessActionDispatcher::default(),
+            );
+            app.manage(process_actions.clone());
+            let migration_quit_boot_settlement = shutdown_coordinator.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut retry_delay = std::time::Duration::from_millis(50);
+                loop {
+                    match migration_quit_boot_settlement
+                        .settle_previous_boot_migration_quit()
+                        .await
+                    {
+                        Ok(_) => break,
+                        Err(error) => {
+                            log::warn!(
+                                "previous-boot migration quit settlement will retry: {error:?}"
+                            );
+                            tokio::time::sleep(retry_delay).await;
+                            retry_delay = retry_delay
+                                .saturating_mul(2)
+                                .min(std::time::Duration::from_secs(1));
+                        }
+                    }
+                }
+            });
             let local_api_binding =
                 infrastructure::local_api::LocalApiServerBinding::bind(data_dir.clone())
                     .map_err(|error| format!("local API の起動に失敗しました: {error}"))?;
@@ -483,9 +958,26 @@ pub fn run() {
                 Arc::new(workflow_query_usecase.read_usecase()),
                 workflow_runtime_usecase.clone(),
                 local_api_binding.bearer_token(),
+                Some(adaptor::controller::api::AgentSessionApiDeps::new(
+                    send_operation,
+                    permission_response_operation,
+                    stop_operation,
+                    recovery_operation,
+                    session_feedback_usecase,
+                    session_feedback_load_usecase,
+                    shutdown_coordinator.clone(),
+                    process_actions.clone(),
+                    local_event_store.clone(),
+                    caller_journal.clone(),
+                    app.handle().clone(),
+                )),
             );
             let local_api =
                 local_api_binding.start(local_api_router, &tokio::runtime::Handle::current());
+            *local_api_shutdown_target.write() = Some(Arc::new({
+                let local_api = local_api.clone();
+                move || local_api.shutdown()
+            }));
             app.manage(local_api.clone());
 
             // CLI / Agent / 外部編集由来の review comment 変更を UI へ通知する。
@@ -495,18 +987,25 @@ pub fn run() {
             );
 
             infrastructure::platform::menu::setup_menu(app)?;
-            let tray_agent_runtime = agent_runtime.clone();
-            let tray_workflow_runtime = workflow_runtime_usecase.clone();
-            let tray_local_api = local_api.clone();
-            infrastructure::platform::tray::setup_tray(app, move |app| {
-                adaptor::controller::application_lifecycle::request_application_quit_with_runtime(
-                    app,
-                    tray_agent_runtime.clone(),
-                    tray_workflow_runtime.clone(),
-                    {
-                        let local_api = tray_local_api.clone();
-                        move || local_api.shutdown()
+            app.manage(shutdown_coordinator.clone());
+            let quit_app = app.handle().clone();
+            let quit_process_actions = process_actions.clone();
+            let quit_ingress = Arc::new(
+                adaptor::controller::application_lifecycle::ApplicationQuitIngress::new(
+                    move |intent| {
+                        adaptor::controller::application_lifecycle::request_application_quit(
+                            quit_app.clone(),
+                            shutdown_coordinator.clone(),
+                            quit_process_actions.clone(),
+                            intent,
+                        );
                     },
+                ),
+            );
+            app.manage(quit_ingress.clone());
+            infrastructure::platform::tray::setup_tray(app, move |_app| {
+                quit_ingress.request(
+                    usecase::shutdown_coordinator::ApplicationQuitIntent::Exit { code: 0 },
                 );
             })?;
             if let Some(window) = app.get_webview_window("main") {
@@ -536,6 +1035,171 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        run_startup_recovery_after_normal_admission, startup_maintenance_admission,
+        StartupMaintenanceAdmission, StartupRecoveryWorkerExit,
+    };
+    use std::sync::Arc;
+
+    #[test]
+    fn startup_effects_are_admitted_only_after_verified_normal_cutover() {
+        assert_eq!(
+            startup_maintenance_admission(false, false),
+            StartupMaintenanceAdmission::AwaitCutover
+        );
+        assert_eq!(
+            startup_maintenance_admission(false, true),
+            StartupMaintenanceAdmission::Abandoned
+        );
+        assert_eq!(
+            startup_maintenance_admission(true, true),
+            StartupMaintenanceAdmission::Abandoned,
+            "an inconsistent blocked authority must fail closed"
+        );
+        assert_eq!(
+            startup_maintenance_admission(true, false),
+            StartupMaintenanceAdmission::Admitted
+        );
+    }
+
+    #[tokio::test]
+    async fn f12_startup_recovery_retries_first_page_and_drive_failures_then_reaches_fresh_page_quiescence(
+    ) {
+        use std::collections::VecDeque;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let admission_calls = Arc::new(AtomicUsize::new(0));
+        let scripted = Arc::new(std::sync::Mutex::new(VecDeque::from([
+            Err("first pending page query failed"),
+            Ok(1),
+            Err("permission drive failed before effect reservation"),
+            // A pending identity inserted while the preceding page was being
+            // consumed appears only in this fresh pass.
+            Ok(1),
+            Ok(0),
+            Ok(0),
+        ])));
+        let recovery_calls = Arc::new(AtomicUsize::new(0));
+
+        let exit = run_startup_recovery_after_normal_admission(
+            "f12-scripted",
+            {
+                let admission_calls = admission_calls.clone();
+                move || {
+                    if admission_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                        StartupMaintenanceAdmission::AwaitCutover
+                    } else {
+                        StartupMaintenanceAdmission::Admitted
+                    }
+                }
+            },
+            {
+                let scripted = scripted.clone();
+                let recovery_calls = recovery_calls.clone();
+                move || {
+                    recovery_calls.fetch_add(1, Ordering::SeqCst);
+                    let outcome = scripted
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .pop_front()
+                        .expect("bounded scripted pass");
+                    async move { outcome }
+                }
+            },
+            std::time::Duration::ZERO,
+            std::time::Duration::ZERO,
+            std::time::Duration::ZERO,
+        )
+        .await;
+
+        assert_eq!(exit, StartupRecoveryWorkerExit::Quiescent);
+        assert_eq!(recovery_calls.load(Ordering::SeqCst), 6);
+        assert!(admission_calls.load(Ordering::SeqCst) > recovery_calls.load(Ordering::SeqCst));
+        assert!(
+            scripted
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_empty(),
+            "the worker must not stop after either transient failure or the first empty page"
+        );
+    }
+
+    #[tokio::test]
+    async fn f12_startup_and_manual_overlap_claim_the_same_effect_identity_once() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let claimed = Arc::new(AtomicBool::new(false));
+        let effects = Arc::new(AtomicUsize::new(0));
+        let passes = Arc::new(AtomicUsize::new(0));
+        let exit = run_startup_recovery_after_normal_admission(
+            "f12-manual-overlap",
+            || StartupMaintenanceAdmission::Admitted,
+            {
+                let claimed = claimed.clone();
+                let effects = effects.clone();
+                let passes = passes.clone();
+                move || {
+                    let pass = passes.fetch_add(1, Ordering::SeqCst);
+                    let claimed = claimed.clone();
+                    let effects = effects.clone();
+                    async move {
+                        if pass == 0 {
+                            // Manual action wins the same durable reservation;
+                            // startup observes the CAS loser and performs no
+                            // replacement effect.
+                            if claimed
+                                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                                .is_ok()
+                            {
+                                effects.fetch_add(1, Ordering::SeqCst);
+                            }
+                            if claimed
+                                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                                .is_ok()
+                            {
+                                effects.fetch_add(1, Ordering::SeqCst);
+                            }
+                            Ok::<usize, &'static str>(1)
+                        } else {
+                            Ok(0)
+                        }
+                    }
+                }
+            },
+            std::time::Duration::ZERO,
+            std::time::Duration::ZERO,
+            std::time::Duration::ZERO,
+        )
+        .await;
+
+        assert_eq!(exit, StartupRecoveryWorkerExit::Quiescent);
+        assert_eq!(effects.load(Ordering::SeqCst), 1);
+        assert_eq!(passes.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn f12_blocked_migration_never_enters_a_recovery_pass() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let exit = run_startup_recovery_after_normal_admission(
+            "f12-blocked",
+            || StartupMaintenanceAdmission::Abandoned,
+            {
+                let calls = calls.clone();
+                move || {
+                    calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    async { Ok::<usize, &'static str>(0) }
+                }
+            },
+            std::time::Duration::ZERO,
+            std::time::Duration::ZERO,
+            std::time::Duration::ZERO,
+        )
+        .await;
+
+        assert_eq!(exit, StartupRecoveryWorkerExit::AdmissionAbandoned);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
     #[test]
     fn tokio_runtime_context_is_available_after_setup() {
         let runtime = tokio::runtime::Runtime::new().unwrap();

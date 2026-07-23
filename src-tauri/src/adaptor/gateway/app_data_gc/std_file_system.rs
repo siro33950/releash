@@ -14,6 +14,7 @@ impl GcFileSystem for StdGcFileSystem {
         path.exists()
     }
 
+    #[cfg(test)]
     fn is_file(&self, path: &Path) -> bool {
         std::fs::symlink_metadata(path)
             .map(|metadata| metadata.file_type().is_file())
@@ -31,6 +32,7 @@ impl GcFileSystem for StdGcFileSystem {
             .collect()
     }
 
+    #[cfg(test)]
     fn read_to_string(&self, path: &Path) -> Result<String, GcFileSystemError> {
         std::fs::read_to_string(path).map_err(gc_file_system_error)
     }

@@ -213,7 +213,7 @@ mod tests {
 
     #[test]
     fn client_ignores_environment_proxy_and_connects_to_loopback() {
-        let _lock = TEST_ENV_LOCK.lock().unwrap();
+        let _lock = TEST_ENV_LOCK.lock();
         let target = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let proxy = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         proxy.set_nonblocking(true).unwrap();

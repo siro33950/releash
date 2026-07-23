@@ -15,9 +15,11 @@ use crate::usecase::workflow::command::{
 use crate::usecase::workflow::ports::{
     ApprovalChatTarget, WorkflowAbortExecutionGateway, WorkflowApprovalChatGateway,
     WorkflowApprovalGateway, WorkflowResumeExecutionGateway, WorkflowRuntimeShutdownGateway,
-    WorkflowRuntimeStateGateway, WorkflowStallObservedCommand, WorkflowStallObservedGateway,
-    WorkflowStartExecutionGateway, WorkflowStopExecutionGateway, WorkflowSubmitOutputGateway,
-    WorkflowTurnCompleteCommand, WorkflowTurnCompleteGateway, WorkflowTurnFailureSignal,
+    WorkflowRuntimeStateGateway, WorkflowShutdownEffectReadback, WorkflowStallObservedCommand,
+    WorkflowStallObservedGateway, WorkflowStartExecutionGateway, WorkflowStopExecutionGateway,
+    WorkflowSubmitOutputGateway, WorkflowTurnCompleteCommand, WorkflowTurnCompleteGateway,
+    WorkflowTurnCompleteRecoveryCommand, WorkflowTurnCompleteRecoveryOutcome,
+    WorkflowTurnFailureSignal,
 };
 
 use super::engine_error::WorkflowEngineError;
@@ -32,6 +34,9 @@ pub(crate) struct TauriWorkflowRuntimeCommandGateway {
     engine: Arc<dyn WorkflowRuntimeEngine>,
     session_store: Arc<SessionStore>,
     agent_runtime: Arc<AgentSessionRuntimeUsecase>,
+    local_event_repository:
+        Option<Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>>,
+    local_event_generation_id: Option<String>,
 }
 
 pub(crate) struct TauriWorkflowRuntimeCommandGatewayDeps {
@@ -42,27 +47,163 @@ pub(crate) struct TauriWorkflowRuntimeCommandGatewayDeps {
     pub(crate) open_tabs: Arc<OpenTabRegistry>,
     pub(crate) branch_diff_context: Arc<dyn BranchDiffContextPort>,
     pub(crate) data_dir: Option<PathBuf>,
+    pub(crate) local_event_repository:
+        Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
+    pub(crate) local_event_generation_id: String,
+}
+
+struct WorkflowShutdownRecord<'a> {
+    operation_id: &'a str,
+    effect_identity: &'a str,
+    owner_revision: i64,
+    execution_id: &'a str,
+    state: crate::domain::local_event::ObligationStateRecord,
+    expected: crate::domain::local_event::RevisionGuard,
+    revision: crate::domain::local_event::Revision,
 }
 
 impl TauriWorkflowRuntimeCommandGateway {
-    pub(crate) fn new(
-        app: tauri::AppHandle,
-        engine: Arc<dyn WorkflowRuntimeEngine>,
-        session_store: Arc<SessionStore>,
-        agent_runtime: Arc<AgentSessionRuntimeUsecase>,
-    ) -> Self {
-        Self {
-            app,
-            engine,
-            session_store,
-            agent_runtime,
+    fn shutdown_obligation_id(effect_identity: &str) -> String {
+        use sha2::Digest;
+        let digest = sha2::Sha256::digest(effect_identity.as_bytes());
+        format!("workflow-shutdown-{}", &hex::encode(digest)[..32])
+    }
+
+    async fn shutdown_effect_record(
+        &self,
+        effect_identity: &str,
+    ) -> Result<Option<crate::domain::local_event::ObligationView>, ()> {
+        let repository = self.local_event_repository.as_ref().ok_or(())?;
+        let result = repository
+            .query(
+                crate::domain::local_event::LocalEventQuery::ObligationByIdentity {
+                    obligation_id: Self::shutdown_obligation_id(effect_identity),
+                },
+            )
+            .await
+            .map_err(|_| ())?;
+        match result {
+            crate::domain::local_event::LocalEventQueryResult::ObligationByIdentity(value) => {
+                Ok(value)
+            }
+            _ => Err(()),
         }
+    }
+
+    fn shutdown_record_for_readback(
+        lookup: Result<Option<crate::domain::local_event::ObligationView>, ()>,
+    ) -> Result<crate::domain::local_event::ObligationView, WorkflowShutdownEffectReadback> {
+        match lookup {
+            Ok(Some(record)) => Ok(record),
+            Ok(None) => Err(WorkflowShutdownEffectReadback::ConfirmedNotStarted),
+            Err(()) => Err(WorkflowShutdownEffectReadback::Ambiguous),
+        }
+    }
+
+    fn workflow_shutdown_record_matches(
+        record: &crate::domain::local_event::ObligationView,
+        operation_id: &str,
+        effect_identity: &str,
+        owner_revision: i64,
+        execution_id: &str,
+    ) -> Option<crate::domain::local_event::ObligationStateRecord> {
+        let crate::domain::local_event::ObligationRecord::WorkflowShutdown {
+            operation_id: stored_operation_id,
+            effect_identity: stored_effect_identity,
+            owner_revision: stored_owner_revision,
+            execution_id: stored_execution_id,
+            state,
+        } = &record.record
+        else {
+            return None;
+        };
+        (stored_operation_id == operation_id
+            && stored_effect_identity == effect_identity
+            && *stored_owner_revision == owner_revision
+            && stored_execution_id == execution_id)
+            .then_some(*state)
+    }
+
+    async fn commit_workflow_shutdown_record(&self, record: WorkflowShutdownRecord<'_>) -> bool {
+        use sha2::Digest;
+        let WorkflowShutdownRecord {
+            operation_id,
+            effect_identity,
+            owner_revision,
+            execution_id,
+            state,
+            expected,
+            revision,
+        } = record;
+        let (Some(repository), Some(generation_id)) = (
+            self.local_event_repository.as_ref(),
+            self.local_event_generation_id.as_ref(),
+        ) else {
+            return false;
+        };
+        let obligation_id = Self::shutdown_obligation_id(effect_identity);
+        let record = crate::domain::local_event::ObligationRecord::WorkflowShutdown {
+            operation_id: operation_id.to_string(),
+            effect_identity: effect_identity.to_string(),
+            owner_revision,
+            execution_id: execution_id.to_string(),
+            state,
+        };
+        let digest = sha2::Sha256::digest(
+            format!("workflow-shutdown\0{effect_identity}\0{}", revision.value()).as_bytes(),
+        );
+        let Ok(commit_id) = crate::domain::local_event::CommitIdentity::parse(&hex::encode(digest))
+        else {
+            return false;
+        };
+        let pending =
+            (state != crate::domain::local_event::ObligationStateRecord::Completed).then(|| {
+                crate::domain::local_event::PendingIndexEntry {
+                    ordered_key: format!("workflow-shutdown-{effect_identity}"),
+                    owner: execution_id.to_string(),
+                    partition: crate::domain::local_event::PendingPartition::Owner,
+                    shutdown_plan: None,
+                }
+            });
+        let state_code = match state {
+            crate::domain::local_event::ObligationStateRecord::EffectReserved => "effect_reserved",
+            crate::domain::local_event::ObligationStateRecord::Completed => "completed",
+            _ => return false,
+        };
+        let payload_hash: [u8; 32] = sha2::Sha256::digest(
+			format!(
+				"workflow-shutdown-record/v1\0{operation_id}\0{effect_identity}\0{owner_revision}\0{execution_id}\0{state_code}"
+			)
+			.as_bytes(),
+		)
+		.into();
+        let batch = crate::domain::local_event::LocalAtomicBatch {
+            commit_id,
+            idempotency: crate::domain::local_event::IdempotencyBinding {
+                generation_id: generation_id.clone(),
+                operation_kind: crate::domain::local_event::OperationKind::ApplicationQuit.into(),
+                idempotency_key: format!("{obligation_id}.{}", revision.value()),
+                payload_hash,
+            },
+            expected_heads: Vec::new(),
+            events: Vec::new(),
+            state_mutations: vec![crate::domain::local_event::LocalStateMutation::Obligation(
+                crate::domain::local_event::ObligationMutation {
+                    obligation_id,
+                    record,
+                    pending,
+                    expected,
+                    revision,
+                },
+            )],
+        };
+        repository.commit_batch(batch).await.is_ok()
     }
 
     pub(crate) fn new_with_default_engine(
         app: tauri::AppHandle,
         deps: TauriWorkflowRuntimeCommandGatewayDeps,
-    ) -> Self {
+    ) -> Result<Self, WorkflowEngineError> {
         let TauriWorkflowRuntimeCommandGatewayDeps {
             repository_usecase,
             app_config,
@@ -71,7 +212,11 @@ impl TauriWorkflowRuntimeCommandGateway {
             open_tabs,
             branch_diff_context,
             data_dir,
+            local_event_repository,
+            local_event_generation_id,
         } = deps;
+        let authority_repository = local_event_repository.clone();
+        let authority_generation_id = local_event_generation_id.clone();
         let engine = new_workflow_runtime_engine(
             Arc::new(DefaultWorkflowDefinitionResolver),
             Arc::new(AppConfigManagedWorktreeResolver::new(
@@ -81,17 +226,24 @@ impl TauriWorkflowRuntimeCommandGateway {
             Some(branch_diff_context),
             open_tabs,
         );
-        if let Some(data_dir) = data_dir {
-            let engine_for_init = engine.clone();
-            let app_handle_for_init = app.clone();
-            tauri::async_runtime::block_on(async move {
+        let engine_for_init = engine.clone();
+        tauri::async_runtime::block_on(async move {
+            engine_for_init
+                .set_local_event_repository(local_event_repository, local_event_generation_id)
+                .await;
+            if let Some(data_dir) = data_dir {
                 engine_for_init.set_execution_store_data_dir(data_dir).await;
-                let _ = engine_for_init
-                    .recover_orphan_executions(&app_handle_for_init)
-                    .await;
-            });
-        }
-        Self::new(app, engine, session_store, agent_runtime)
+            }
+            Ok::<(), WorkflowEngineError>(())
+        })?;
+        Ok(Self {
+            app,
+            engine,
+            session_store,
+            agent_runtime,
+            local_event_repository: Some(authority_repository),
+            local_event_generation_id: Some(authority_generation_id),
+        })
     }
 }
 
@@ -283,6 +435,16 @@ impl WorkflowTurnCompleteGateway for TauriWorkflowRuntimeCommandGateway {
             .await
             .map_err(|err| WorkflowError::external(err.to_string()))
     }
+
+    async fn recover_turn_complete(
+        &self,
+        command: WorkflowTurnCompleteRecoveryCommand,
+    ) -> Result<WorkflowTurnCompleteRecoveryOutcome, WorkflowError> {
+        self.engine
+            .recover_turn_complete(&self.app, &self.session_store, &self.agent_runtime, command)
+            .await
+            .map_err(|err| WorkflowError::external(err.to_string()))
+    }
 }
 
 #[async_trait::async_trait]
@@ -317,6 +479,13 @@ impl WorkflowStallObservedGateway for TauriWorkflowRuntimeCommandGateway {
 
 #[async_trait::async_trait]
 impl WorkflowRuntimeStateGateway for TauriWorkflowRuntimeCommandGateway {
+    async fn recover_startup(&self) -> Result<(), WorkflowError> {
+        self.engine
+            .recover_orphan_executions(&self.app)
+            .await
+            .map_err(workflow_engine_error_to_workflow_error)
+    }
+
     #[cfg(test)]
     async fn get_state_by_execution_id(
         &self,
@@ -346,6 +515,121 @@ impl WorkflowRuntimeShutdownGateway for TauriWorkflowRuntimeCommandGateway {
     async fn shutdown_active_commands(&self) {
         self.engine.shutdown_all_active_commands().await;
     }
+
+    async fn shutdown_execution_commands(&self, execution_id: &str) {
+        self.engine
+            .shutdown_active_commands_for_execution(execution_id)
+            .await;
+    }
+
+    async fn application_shutdown_target_execution_ids(&self) -> Result<Vec<String>, String> {
+        self.engine
+            .application_shutdown_target_execution_ids()
+            .await
+    }
+
+    async fn execute_shutdown_effect(
+        &self,
+        operation_id: &str,
+        effect_identity: &str,
+        owner_revision: i64,
+        execution_id: &str,
+    ) -> WorkflowShutdownEffectReadback {
+        match self.shutdown_effect_record(effect_identity).await {
+            Ok(Some(record)) => {
+                return match Self::workflow_shutdown_record_matches(
+                    &record,
+                    operation_id,
+                    effect_identity,
+                    owner_revision,
+                    execution_id,
+                ) {
+                    Some(crate::domain::local_event::ObligationStateRecord::Completed) => {
+                        WorkflowShutdownEffectReadback::Completed
+                    }
+                    Some(crate::domain::local_event::ObligationStateRecord::EffectReserved) => {
+                        WorkflowShutdownEffectReadback::Ambiguous
+                    }
+                    _ => WorkflowShutdownEffectReadback::Ambiguous,
+                };
+            }
+            Ok(None) => {}
+            Err(()) => return WorkflowShutdownEffectReadback::Ambiguous,
+        }
+        let zero = crate::domain::local_event::Revision::new(0).expect("zero revision");
+        if !self
+            .commit_workflow_shutdown_record(WorkflowShutdownRecord {
+                operation_id,
+                effect_identity,
+                owner_revision,
+                execution_id,
+                state: crate::domain::local_event::ObligationStateRecord::EffectReserved,
+                expected: crate::domain::local_event::RevisionGuard::Absent,
+                revision: zero,
+            })
+            .await
+        {
+            return WorkflowShutdownEffectReadback::Ambiguous;
+        }
+        let observed_owned_command = self
+            .engine
+            .shutdown_active_commands_for_execution(execution_id)
+            .await;
+        if !observed_owned_command {
+            // The durable reservation proves the effect may have started, but
+            // absence of an owned command cannot prove this effect completed;
+            // an unrelated terminal transition must not be adopted as its
+            // result.
+            return WorkflowShutdownEffectReadback::Ambiguous;
+        }
+        let one = crate::domain::local_event::Revision::new(1).expect("one revision");
+        if self
+            .commit_workflow_shutdown_record(WorkflowShutdownRecord {
+                operation_id,
+                effect_identity,
+                owner_revision,
+                execution_id,
+                state: crate::domain::local_event::ObligationStateRecord::Completed,
+                expected: crate::domain::local_event::RevisionGuard::Expected(zero),
+                revision: one,
+            })
+            .await
+        {
+            WorkflowShutdownEffectReadback::Completed
+        } else {
+            WorkflowShutdownEffectReadback::Ambiguous
+        }
+    }
+
+    async fn read_shutdown_effect(
+        &self,
+        operation_id: &str,
+        effect_identity: &str,
+        owner_revision: i64,
+        execution_id: &str,
+    ) -> WorkflowShutdownEffectReadback {
+        let record = match Self::shutdown_record_for_readback(
+            self.shutdown_effect_record(effect_identity).await,
+        ) {
+            Ok(record) => record,
+            Err(readback) => return readback,
+        };
+        match Self::workflow_shutdown_record_matches(
+            &record,
+            operation_id,
+            effect_identity,
+            owner_revision,
+            execution_id,
+        ) {
+            Some(crate::domain::local_event::ObligationStateRecord::Completed) => {
+                WorkflowShutdownEffectReadback::Completed
+            }
+            Some(crate::domain::local_event::ObligationStateRecord::EffectReserved) => {
+                WorkflowShutdownEffectReadback::Ambiguous
+            }
+            _ => WorkflowShutdownEffectReadback::Ambiguous,
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -374,6 +658,73 @@ impl WorkflowApprovalChatGateway for TauriWorkflowRuntimeCommandGateway {
             .validate_approval_chat_instruction(chat_session_id, content)
             .await
             .map_err(|err| WorkflowError::external(err.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod shutdown_effect_contract_tests {
+    use super::TauriWorkflowRuntimeCommandGateway;
+
+    #[test]
+    fn workflow_shutdown_read_failure_is_ambiguous_not_confirmed_not_started() {
+        use crate::usecase::workflow::ports::WorkflowShutdownEffectReadback;
+
+        assert_eq!(
+            TauriWorkflowRuntimeCommandGateway::shutdown_record_for_readback(Err(())),
+            Err(WorkflowShutdownEffectReadback::Ambiguous)
+        );
+        assert_eq!(
+            TauriWorkflowRuntimeCommandGateway::shutdown_record_for_readback(Ok(None)),
+            Err(WorkflowShutdownEffectReadback::ConfirmedNotStarted)
+        );
+    }
+
+    #[test]
+    fn workflow_shutdown_readback_is_bound_to_exact_effect_and_owner_revision() {
+        let record_value = crate::domain::local_event::ObligationRecord::WorkflowShutdown {
+            operation_id: "quit-operation".to_string(),
+            effect_identity: "quit-operation:0:workflow-1".to_string(),
+            owner_revision: 7,
+            execution_id: "workflow-1".to_string(),
+            state: crate::domain::local_event::ObligationStateRecord::Completed,
+        };
+        let record = crate::domain::local_event::ObligationView {
+            obligation_id: "workflow-shutdown-record".to_string(),
+            record: record_value,
+            record_sha256: [0; 32],
+            pending: None,
+            revision: crate::domain::local_event::Revision::new(1).unwrap(),
+        };
+        assert_eq!(
+            TauriWorkflowRuntimeCommandGateway::workflow_shutdown_record_matches(
+                &record,
+                "quit-operation",
+                "quit-operation:0:workflow-1",
+                7,
+                "workflow-1",
+            ),
+            Some(crate::domain::local_event::ObligationStateRecord::Completed)
+        );
+        assert!(
+            TauriWorkflowRuntimeCommandGateway::workflow_shutdown_record_matches(
+                &record,
+                "unrelated-terminal-operation",
+                "quit-operation:0:workflow-1",
+                7,
+                "workflow-1",
+            )
+            .is_none()
+        );
+        assert!(
+            TauriWorkflowRuntimeCommandGateway::workflow_shutdown_record_matches(
+                &record,
+                "quit-operation",
+                "quit-operation:0:workflow-1",
+                8,
+                "workflow-1",
+            )
+            .is_none()
+        );
     }
 }
 

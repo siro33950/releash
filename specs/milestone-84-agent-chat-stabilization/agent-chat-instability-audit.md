@@ -4,6 +4,7 @@
 - 設計追補日: 2026-07-15
 - 追加監査日: 2026-07-19
 - 設計統合日: 2026-07-21
+- Phase配分再監査日: 2026-07-22
 - 対象: main `b3f9f54c` 時点の working tree
 
 手法: 7 視点の並列監査（72 subagent）で候補を洗い出し、全指摘を独立の検証者が実コードで反証確認した。
@@ -38,6 +39,9 @@ milestone 84 のドキュメント群（本書が要求リスト、以下5書が
 | live recoveryで旧turnがdanglingになり、forkが親固有のrecovery stateを継承する | I2 / I9のterminal・fork isolation不完全 | [L5 #1406](https://github.com/siro33950/releash/issues/1406) |
 | Notice/operation feedbackをfrontendとRustが二重所有し、capacityで別sessionをevict、oversize/raw errorを無言dropまたは露出する | V-D4 / P2 / Rust authority違反 | [S5 #1393](https://github.com/siro33950/releash/issues/1393) |
 | `runtime/usecase.rs`が18,259行となりstate owner、commit point、I/O/lock/post-action境界が混在する | ST-3の構造要因が継続 | [L11 #1412](https://github.com/siro33950/releash/issues/1412) |
+| provider Resultで親Turnが完了した後もbackground taskが継続し得るが、activityのdurable stateとWorkspace quiescenceが存在しないためWorkflowの後続処理が先行し得る | 親Turnの完了とbackground activityの完了を同一視している | [#1516](https://github.com/siro33950/releash/issues/1516) |
+
+2026-07-22の再監査では、#1516が扱う問題と独立Issue化は妥当と判定した。親Turnの完了をbackground task全件の完了まで遅らせる方針は採らず、親Turn、background activity、Workspace quiescenceを分離する。#1516は#1499、#1386、#1387を前提とするためPhase 3へ置き、診断と詳細表示は後続#1410、#1415へ残す。実装順序の正本は[phase-plan.md](phase-plan.md)とする。
 
 ### Phase 0 closure監査所見
 

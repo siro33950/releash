@@ -1,17 +1,21 @@
+#[cfg(test)]
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use super::request::{
-    GcWorktreePath, ProcessRecord, RuntimeProtection, WorkflowArchivePruneResult,
-};
+use super::request::{ProcessRecord, RuntimeProtection, WorkflowArchivePruneResult};
+#[cfg(test)]
+use super::GcWorktreePath;
+#[cfg(test)]
 use crate::usecase::agent_session::session::SessionState;
 
 pub(crate) trait GcFileSystem {
     fn exists(&self, path: &Path) -> bool;
+    #[cfg(test)]
     fn is_file(&self, path: &Path) -> bool;
     fn read_dir(&self, path: &Path) -> Result<Vec<PathBuf>, GcFileSystemError>;
+    #[cfg(test)]
     fn read_to_string(&self, path: &Path) -> Result<String, GcFileSystemError>;
     fn remove_path(&self, path: &Path) -> Result<bool, GcFileSystemError>;
     fn recursive_size(&self, path: &Path) -> Result<u64, GcFileSystemError>;
@@ -25,6 +29,7 @@ pub(crate) trait WorkflowArchivePruner {
     ) -> Result<WorkflowArchivePruneResult, GcFileSystemError>;
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct CurrentSessionState {
     pub(crate) worktree_path: Option<GcWorktreePath>,
@@ -32,6 +37,7 @@ pub(crate) struct CurrentSessionState {
     pub(crate) updated_at: Option<f64>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct CurrentWorkflowExecutionState {
     pub(crate) worktree_path: GcWorktreePath,
@@ -39,6 +45,7 @@ pub(crate) struct CurrentWorkflowExecutionState {
     pub(crate) manual_archived_at: Option<f64>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum RevalidationRead<T> {
     Present(T),
@@ -53,18 +60,21 @@ pub(crate) trait GcRevalidationReader {
         process_records: &[ProcessRecord],
     ) -> RuntimeProtection;
 
+    #[cfg(test)]
     fn session_state(
         &self,
         app_data_dir: &Path,
         session_id: &str,
     ) -> RevalidationRead<CurrentSessionState>;
 
+    #[cfg(test)]
     fn workflow_execution_state(
         &self,
         app_data_dir: &Path,
         execution_id: &str,
     ) -> RevalidationRead<CurrentWorkflowExecutionState>;
 
+    #[cfg(test)]
     fn workflow_execution_states(
         &self,
         app_data_dir: &Path,
@@ -109,6 +119,7 @@ impl GcFileSystemError {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn is_not_found(&self) -> bool {
         self.kind == GcFileSystemErrorKind::NotFound
     }

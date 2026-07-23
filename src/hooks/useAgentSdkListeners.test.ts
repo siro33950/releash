@@ -167,8 +167,8 @@ describe("agent-stall-observed event", () => {
 			payload: {
 				chat_session_id: "session-1",
 				turn_phase: "streaming",
-				idle_secs: 180,
-				signal_count: 2,
+				idle_secs: "180",
+				signal_count: "2",
 				cap_reached: false,
 			},
 		});
@@ -416,7 +416,7 @@ describe("agent-streaming-delta event", () => {
 			payload: {
 				chat_session_id: "session-1",
 				message_id: "msg-001",
-				seq: 1,
+				seq: "1",
 				snapshot: false,
 				parts,
 			},
@@ -426,7 +426,7 @@ describe("agent-streaming-delta event", () => {
 			type: "APPLY_STREAMING_DELTA",
 			sessionId: "session-1",
 			messageId: "msg-001",
-			seq: 1,
+			seq: "1",
 			parts,
 		});
 	});
@@ -450,7 +450,7 @@ describe("agent-streaming-delta event", () => {
 			payload: {
 				chat_session_id: "missing-session",
 				message_id: "msg-001",
-				seq: 1,
+				seq: "1",
 				snapshot: false,
 				parts: [{ type: "text", content: "Hello" }],
 			},
@@ -465,14 +465,14 @@ describe("agent-streaming-delta event", () => {
 			{
 				sessionId: "missing-session",
 				messageId: "msg-001",
-				seq: 1,
+				seq: "1",
 			},
 		);
 		expect(refs.dispatch).toHaveBeenCalledWith({
 			type: "APPLY_STREAMING_DELTA",
 			sessionId: "missing-session",
 			messageId: "msg-001",
-			seq: 1,
+			seq: "1",
 			parts: [{ type: "text", content: "Hello" }],
 		});
 		warn.mockRestore();
@@ -497,7 +497,7 @@ describe("agent-streaming-delta event", () => {
 			payload: {
 				chat_session_id: "session-1",
 				message_id: "missing-message",
-				seq: 2,
+				seq: "2",
 				snapshot: false,
 				parts: [{ type: "text", content: "Hello" }],
 			},
@@ -508,7 +508,7 @@ describe("agent-streaming-delta event", () => {
 			{
 				sessionId: "session-1",
 				messageId: "missing-message",
-				seq: 2,
+				seq: "2",
 			},
 		);
 		warn.mockRestore();
@@ -531,7 +531,7 @@ describe("agent-streaming-delta event", () => {
 			payload: {
 				chat_session_id: "session-1",
 				message_id: "msg-001",
-				seq: 2,
+				seq: "2",
 				snapshot: true,
 				parts,
 			},
@@ -566,7 +566,7 @@ describe("agent-streaming-delta event", () => {
 			payload: {
 				chat_session_id: "session-1",
 				message_id: "fatal-message-1",
-				seq: 1,
+				seq: "1",
 				snapshot: true,
 				parts,
 				message: {
@@ -620,7 +620,7 @@ describe("agent-streaming-delta event", () => {
 			payload: {
 				chat_session_id: "session-1",
 				message_id: "missing-message",
-				seq: 3,
+				seq: "3",
 				snapshot: true,
 				parts,
 			},
@@ -635,7 +635,7 @@ describe("agent-streaming-delta event", () => {
 			{
 				sessionId: "session-1",
 				messageId: "missing-message",
-				seq: 3,
+				seq: "3",
 			},
 		);
 		expect(refs.dispatch).toHaveBeenCalledWith({
@@ -663,7 +663,7 @@ describe("agent-streaming-delta event", () => {
 			payload: {
 				chat_session_id: "session-1",
 				message_id: "msg-001",
-				seq: 10,
+				seq: "10",
 				snapshot: false,
 				parts: [{ type: "text", content: "first" }],
 			},
@@ -672,7 +672,7 @@ describe("agent-streaming-delta event", () => {
 			payload: {
 				chat_session_id: "session-1",
 				message_id: "msg-001",
-				seq: 10,
+				seq: "10",
 				snapshot: false,
 				parts: [{ type: "text", content: "duplicate-looking" }],
 			},
@@ -682,14 +682,14 @@ describe("agent-streaming-delta event", () => {
 			type: "APPLY_STREAMING_DELTA",
 			sessionId: "session-1",
 			messageId: "msg-001",
-			seq: 10,
+			seq: "10",
 			parts: [{ type: "text", content: "first" }],
 		});
 		expect(refs.dispatch).toHaveBeenCalledWith({
 			type: "APPLY_STREAMING_DELTA",
 			sessionId: "session-1",
 			messageId: "msg-001",
-			seq: 10,
+			seq: "10",
 			parts: [{ type: "text", content: "duplicate-looking" }],
 		});
 	});
@@ -710,7 +710,7 @@ describe("agent-streaming-delta event", () => {
 			payload: {
 				chat_session_id: "session-hidden",
 				message_id: "msg-001",
-				seq: 1,
+				seq: "1",
 				snapshot: true,
 				parts: [{ type: "text", content: "noop" }],
 			},
@@ -950,7 +950,7 @@ describe("agent-session-state-changed event", () => {
 			payload: {
 				chat_session_id: "session-1",
 				message_id: "fatal-message-1",
-				seq: 1,
+				seq: "1",
 				snapshot: true,
 				parts,
 				message: {
@@ -1007,7 +1007,7 @@ describe("agent-session-state-changed event", () => {
 				turn_phase: "waiting_permission",
 				exit_code: null,
 				pending_permission_request: request,
-				pending_permission_state_revision: 5,
+				pending_permission_state_revision: "5",
 			},
 		});
 
@@ -1015,13 +1015,13 @@ describe("agent-session-state-changed event", () => {
 			type: "SET_TURN_PHASE",
 			sessionId: "session-1",
 			turnPhase: "waiting_permission",
-			pendingPermissionStateRevision: 5,
+			pendingPermissionStateRevision: "5",
 		});
 		expect(refs.dispatch).toHaveBeenCalledWith({
 			type: "SET_PENDING_PERMISSION",
 			sessionId: "session-1",
 			request,
-			pendingPermissionStateRevision: 5,
+			pendingPermissionStateRevision: "5",
 		});
 	});
 
@@ -1154,10 +1154,10 @@ describe("agent-turn-usage-updated event", () => {
 			payload: {
 				chatSessionId: "session-1",
 				tokenUsage: {
-					inputTokens: 15,
-					outputTokens: 38,
-					totalTokens: 53,
-					contextWindowTokens: 200000,
+					inputTokens: "15",
+					outputTokens: "38",
+					totalTokens: "53",
+					contextWindowTokens: "200000",
 				},
 			},
 		});

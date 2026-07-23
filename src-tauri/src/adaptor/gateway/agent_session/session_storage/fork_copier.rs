@@ -1,20 +1,28 @@
+#[cfg(test)]
 use std::path::Path;
 
+#[cfg(test)]
 use super::layout::{
     attachments_dir_in_dir, index_file_in_dir, messages_dir_in_dir, meta_file_in_dir, session_dir,
     sessions_dir, tool_outputs_dir_in_dir, validate_meta, write_json_pretty_atomic,
 };
+#[cfg(test)]
 use super::private_context::write_private_context_to_dir;
+#[cfg(test)]
+use super::stored_session_v1::write_message_index_v1;
 use super::FileSessionStorage;
+#[cfg(test)]
 use crate::usecase::agent_session::session::SessionMeta;
 
 impl FileSessionStorage {
+    #[cfg(test)]
     pub fn fork_session_layout(
         &self,
         app_data_dir: &Path,
         session_id: &str,
         forked_meta: &SessionMeta,
     ) -> Result<(), String> {
+        self.ensure_legacy_mutation_admitted()?;
         if !self.reconcile_session_transaction(app_data_dir, session_id)? {
             return Err(format!("Session not found: {session_id}"));
         }
@@ -35,7 +43,7 @@ impl FileSessionStorage {
             write_json_pretty_atomic(&meta_file_in_dir(&tmp_dir), &forked_meta, "session meta")?;
             write_private_context_to_dir(&tmp_dir, &forked_meta)?;
             let index = self.read_index_from_dir(&parent_dir)?;
-            write_json_pretty_atomic(&index_file_in_dir(&tmp_dir), &index, "session index")?;
+            write_message_index_v1(&index_file_in_dir(&tmp_dir), &index)?;
             self.link_or_copy_dir_entries(
                 &messages_dir_in_dir(&parent_dir),
                 &messages_dir_in_dir(&tmp_dir),
@@ -62,6 +70,7 @@ impl FileSessionStorage {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) fn link_or_copy_dir_entries(&self, src: &Path, dst: &Path) -> Result<(), String> {
         if !src.exists() {
             return Ok(());

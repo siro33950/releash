@@ -1,4 +1,5 @@
 pub(crate) mod agent_session_notice_wiring;
+pub(crate) mod agent_session_operation_wiring;
 pub(crate) mod agent_status_wiring;
 pub(crate) mod api;
 pub(crate) mod application_lifecycle;

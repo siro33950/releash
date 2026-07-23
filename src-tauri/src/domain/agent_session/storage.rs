@@ -1,21 +1,31 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+#[derive(Clone)]
 pub enum AgentSessionProjectedMessage<Message, MessagePart> {
     Append(Message),
     PersistParts {
+        #[cfg_attr(not(test), allow(dead_code))]
         message_id: String,
         parts: Vec<MessagePart>,
+        #[cfg_attr(not(test), allow(dead_code))]
         streaming_final_seq: u64,
+        #[cfg_attr(not(test), allow(dead_code))]
         completed_at: f64,
     },
 }
 
+#[derive(Clone)]
 pub struct AgentSessionProjectionCommit<Meta, Message, MessagePart> {
+    // The legacy file projection adapter is test-only. Production keeps this
+    // builder result long enough to extract its already-canonical message
+    // parts, but never materializes the legacy metadata payload.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub meta: Meta,
     pub message: AgentSessionProjectedMessage<Message, MessagePart>,
 }
 
+#[cfg(test)]
 pub trait AgentSessionProjectionPreparer<Event, Meta, Message, MessagePart> {
     fn prepare(
         &mut self,
@@ -24,6 +34,7 @@ pub trait AgentSessionProjectionPreparer<Event, Meta, Message, MessagePart> {
     ) -> Result<AgentSessionProjectionCommit<Meta, Message, MessagePart>, String>;
 }
 
+#[cfg(test)]
 impl<Event, Meta, Message, MessagePart, Prepare>
     AgentSessionProjectionPreparer<Event, Meta, Message, MessagePart> for Prepare
 where
@@ -113,6 +124,15 @@ pub trait AgentSessionReader: AgentSessionStorageTypes {
 }
 
 pub trait AgentSessionWriter: AgentSessionStorageTypes {
+    /// Permanently closes this legacy adapter's mutation paths.
+    ///
+    /// Production installs the SQLite authority before exposing session
+    /// commands.  The legacy adapter remains available only as a read model
+    /// while migration is in progress, so reads must not trigger repair writes
+    /// and direct legacy writer calls must fail closed after this latch is set.
+    fn close_mutation_admission(&self) {}
+
+    #[cfg(test)]
     fn write_session_title(
         &self,
         app_data_dir: &Path,
@@ -120,6 +140,7 @@ pub trait AgentSessionWriter: AgentSessionStorageTypes {
         title: Option<&str>,
     ) -> Result<(), String>;
 
+    #[cfg(test)]
     fn fork_session_layout(
         &self,
         app_data_dir: &Path,
@@ -127,12 +148,14 @@ pub trait AgentSessionWriter: AgentSessionStorageTypes {
         forked_meta: &Self::Meta,
     ) -> Result<(), String>;
 
+    #[cfg(test)]
     fn remove_session(&self, app_data_dir: &Path, session_id: &str);
 
     /// 原子的に session meta を read-modify-write する。
     /// ストレージ実装内で file lock を取得した状態で disk から meta を読み、
     /// クロージャを適用した結果を同じ lock 内で書き戻す。
     /// SessionStore 層からの並行 RMW で lost update が発生しないことを保証する。
+    #[cfg(test)]
     fn update_session_meta(
         &self,
         app_data_dir: &Path,
@@ -142,6 +165,7 @@ pub trait AgentSessionWriter: AgentSessionStorageTypes {
 
     /// Session meta の RMW と複数 event の追記を、同じ local storage lock の
     /// commit boundary で確定する。
+    #[cfg(test)]
     fn update_session_meta_and_append_session_events(
         &self,
         app_data_dir: &Path,
@@ -150,12 +174,14 @@ pub trait AgentSessionWriter: AgentSessionStorageTypes {
         events: &[Self::Event],
     ) -> Result<Self::Meta, String>;
 
+    #[cfg(test)]
     fn save_full_session_for_migration_or_restore(
         &self,
         app_data_dir: &Path,
         session: &Self::Session,
     ) -> Result<(), String>;
 
+    #[cfg(test)]
     fn append_message(
         &self,
         app_data_dir: &Path,
@@ -163,6 +189,7 @@ pub trait AgentSessionWriter: AgentSessionStorageTypes {
         message: &Self::Message,
     ) -> Result<Self::Meta, String>;
 
+    #[cfg(test)]
     fn persist_message_parts(
         &self,
         app_data_dir: &Path,
@@ -173,13 +200,7 @@ pub trait AgentSessionWriter: AgentSessionStorageTypes {
         completed_at: Option<f64>,
     ) -> Result<Vec<Self::MessagePart>, String>;
 
-    fn append_session_event(
-        &self,
-        app_data_dir: &Path,
-        session_id: &str,
-        event: &Self::Event,
-    ) -> Result<Vec<Self::Event>, String>;
-
+    #[cfg(test)]
     fn append_session_event_without_projection(
         &self,
         app_data_dir: &Path,
@@ -189,6 +210,7 @@ pub trait AgentSessionWriter: AgentSessionStorageTypes {
 
     /// event log、対象 message、index/meta の投影更新を一つの storage transaction として行う。
     /// `prepare` は storage lock 内で最新の event log/meta を受け取り、書き込む投影を返す。
+    #[cfg(test)]
     fn commit_session_projection(
         &self,
         app_data_dir: &Path,
@@ -202,6 +224,7 @@ pub trait AgentSessionWriter: AgentSessionStorageTypes {
         >,
     ) -> Result<Vec<Self::MessagePart>, String>;
 
+    #[cfg(test)]
     fn append_session_events(
         &self,
         app_data_dir: &Path,

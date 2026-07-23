@@ -1,6 +1,10 @@
 use super::finalization::{finalize_turn, latest_unresolved_permission_request};
 use super::projector::{project, ProjectedStatus};
 use super::*;
+use crate::adaptor::gateway::agent_session::session_storage::{
+    decode_agent_session_events_v1, encode_agent_session_events_v1, encode_stored_message_parts_v1,
+};
+use crate::domain::agent_session::entities::PermissionRequest;
 use crate::usecase::agent_session::event_log::AgentTurnFailureSignal;
 use crate::usecase::agent_session::session::{
     AttachmentRef, MessageMention, MessagePart, PermissionPartStatus, PermissionRequestKindMsg,
@@ -28,21 +32,24 @@ fn turn_started_event(turn_id: u64) -> AgentSessionEvent {
     }
 }
 
-fn permission_request_fixture() -> PermissionRequestMsg {
-    PermissionRequestMsg {
-        id: "req-1".to_string(),
-        tool_use_id: Some("tool-1".to_string()),
-        tool_name: "Edit".to_string(),
-        kind: PermissionRequestKindMsg::ToolApproval,
-        input: Some(serde_json::json!({})),
-        plan: None,
-        allowed_prompts: Vec::new(),
-        questions: Vec::new(),
-        title: None,
-        display_name: None,
-        description: None,
-        decision_reason: None,
-    }
+fn permission_request_fixture() -> PermissionRequest {
+    crate::usecase::agent_session::runtime::event_apply::pending_permission_request_from_msg(
+        &PermissionRequestMsg {
+            id: "req-1".to_string(),
+            tool_use_id: Some("tool-1".to_string()),
+            tool_name: "Edit".to_string(),
+            kind: PermissionRequestKindMsg::ToolApproval,
+            input: Some(serde_json::json!({})),
+            plan: None,
+            allowed_prompts: Vec::new(),
+            questions: Vec::new(),
+            title: None,
+            display_name: None,
+            description: None,
+            decision_reason: None,
+        },
+    )
+    .unwrap()
 }
 
 #[test]
@@ -72,6 +79,29 @@ fn workflow_input_preserves_model_refusal_signal_from_completed_stop_reason() {
             .and_then(|input| input.failure_signal),
         Some(AgentTurnFailureSignal::ModelRefusal)
     );
+}
+
+#[test]
+fn stored_event_converts_to_closed_domain_event_without_lossy_json_fallback() {
+    let event = AgentSessionEvent::ToolCallStarted {
+        turn_id: 7,
+        tool_use_id: "tool-7".to_string(),
+        tool: "Read".to_string(),
+        input: serde_json::json!({"path": "src/lib.rs"}).into(),
+        parent_tool_use_id: Some("parent-1".to_string()),
+    };
+
+    let encoded = encode_agent_session_events_v1(&[event], false).unwrap();
+    let domain = decode_agent_session_events_v1(&encoded).unwrap().remove(0);
+    assert!(matches!(
+        domain,
+        crate::domain::agent_session::events::AgentSessionDomainEvent::ToolCallStarted {
+            turn_id: 7,
+            ref tool_use_id,
+            ref input,
+            ..
+        } if tool_use_id == "tool-7" && input.as_str() == r#"{"path":"src/lib.rs"}"#
+    ));
 }
 
 #[test]
@@ -112,7 +142,7 @@ fn append_events_project_message_page_and_workflow_input() {
             turn_id: 1,
             tool_use_id: "tool-1".to_string(),
             tool: "Read".to_string(),
-            input: serde_json::json!({"file_path": "src/lib.rs"}),
+            input: serde_json::json!({"file_path": "src/lib.rs"}).into(),
             parent_tool_use_id: None,
         },
         AgentSessionEvent::ToolCallSucceeded {
@@ -184,14 +214,14 @@ fn projection_is_deterministic_and_reconnect_does_not_duplicate() {
             turn_id: 1,
             tool_use_id: "tool-1".to_string(),
             tool: "Read".to_string(),
-            input: serde_json::json!({}),
+            input: serde_json::json!({}).into(),
             parent_tool_use_id: None,
         },
         AgentSessionEvent::ToolCallStarted {
             turn_id: 1,
             tool_use_id: "tool-1".to_string(),
             tool: "Read".to_string(),
-            input: serde_json::json!({"path": "updated"}),
+            input: serde_json::json!({"path": "updated"}).into(),
             parent_tool_use_id: None,
         },
     ];
@@ -224,7 +254,7 @@ fn repeated_tool_use_appends_retry_event_and_projector_recovers_history() {
         "agent-1",
         &[MessagePart::ToolUse {
             tool: "Read".to_string(),
-            input: serde_json::json!({"file_path": "src/lib.rs"}),
+            input: serde_json::json!({"file_path": "src/lib.rs"}).into(),
             id: "tool-1".to_string(),
             parent_tool_use_id: None,
         }],
@@ -235,7 +265,7 @@ fn repeated_tool_use_appends_retry_event_and_projector_recovers_history() {
         "agent-1",
         &[MessagePart::ToolUse {
             tool: "Read".to_string(),
-            input: serde_json::json!({"file_path": "src/main.rs"}),
+            input: serde_json::json!({"file_path": "src/main.rs"}).into(),
             id: "tool-1".to_string(),
             parent_tool_use_id: None,
         }],
@@ -254,7 +284,7 @@ fn repeated_tool_use_appends_retry_event_and_projector_recovers_history() {
         .any(|part| matches!(
             part,
             MessagePart::ToolUse { id, input, .. }
-                if id == "tool-1" && input == &serde_json::json!({"file_path": "src/main.rs"})
+                if id == "tool-1" && serde_json::from_str::<serde_json::Value>(input.as_str()).unwrap() == serde_json::json!({"file_path": "src/main.rs"})
         )));
 }
 
@@ -342,7 +372,7 @@ fn later_tool_success_replaces_interrupted_failure_content() {
             turn_id: 1,
             tool_use_id: "tool-1".to_string(),
             tool: "Read".to_string(),
-            input: serde_json::json!({}),
+            input: serde_json::json!({}).into(),
             parent_tool_use_id: None,
         },
         AgentSessionEvent::ToolCallFailed {
@@ -382,7 +412,7 @@ fn later_tool_success_replaces_content_when_new_content_contains_existing() {
             turn_id: 1,
             tool_use_id: "tool-1".to_string(),
             tool: "Read".to_string(),
-            input: serde_json::json!({}),
+            input: serde_json::json!({}).into(),
             parent_tool_use_id: None,
         },
         AgentSessionEvent::ToolCallSucceeded {
@@ -422,7 +452,7 @@ fn later_tool_success_appends_content_when_new_content_does_not_contain_existing
             turn_id: 1,
             tool_use_id: "tool-1".to_string(),
             tool: "Read".to_string(),
-            input: serde_json::json!({}),
+            input: serde_json::json!({}).into(),
             parent_tool_use_id: None,
         },
         AgentSessionEvent::ToolCallSucceeded {
@@ -462,7 +492,7 @@ fn tool_result_restores_parent_from_tool_call_started() {
             turn_id: 1,
             tool_use_id: "tool-1".to_string(),
             tool: "Read".to_string(),
-            input: serde_json::json!({}),
+            input: serde_json::json!({}).into(),
             parent_tool_use_id: Some("parent-1".to_string()),
         },
         AgentSessionEvent::ToolCallSucceeded {
@@ -540,7 +570,7 @@ fn externalized_tool_result_round_trips_through_part_events() {
     };
     let tool_use = MessagePart::ToolUse {
         tool: "Bash".to_string(),
-        input: serde_json::json!({"command": "pnpm test"}),
+        input: serde_json::json!({"command": "pnpm test"}).into(),
         id: "tool-1".to_string(),
         parent_tool_use_id: Some("parent-1".to_string()),
     };
@@ -581,7 +611,7 @@ fn externalized_tool_result_keeps_ref_when_later_inline_delta_arrives() {
     };
     let tool_use = MessagePart::ToolUse {
         tool: "Bash".to_string(),
-        input: serde_json::json!({"command": "cargo test"}),
+        input: serde_json::json!({"command": "cargo test"}).into(),
         id: "tool-1".to_string(),
         parent_tool_use_id: Some("parent-1".to_string()),
     };
@@ -591,7 +621,7 @@ fn externalized_tool_result_keeps_ref_when_later_inline_delta_arrives() {
             turn_id: 1,
             tool_use_id: "tool-1".to_string(),
             tool: "Bash".to_string(),
-            input: serde_json::json!({"command": "cargo test"}),
+            input: serde_json::json!({"command": "cargo test"}).into(),
             parent_tool_use_id: Some("parent-1".to_string()),
         },
         AgentSessionEvent::ToolCallSucceeded {
@@ -701,7 +731,7 @@ fn inline_tool_result_is_replaced_by_later_externalized_preview_ref() {
             turn_id: 1,
             tool_use_id: "tool-1".to_string(),
             tool: "Bash".to_string(),
-            input: serde_json::json!({"command": "cargo test"}),
+            input: serde_json::json!({"command": "cargo test"}).into(),
             parent_tool_use_id: Some("parent-1".to_string()),
         },
         AgentSessionEvent::ToolCallSucceeded {
@@ -727,7 +757,7 @@ fn inline_tool_result_is_replaced_by_later_externalized_preview_ref() {
         vec![
             MessagePart::ToolUse {
                 tool: "Bash".to_string(),
-                input: serde_json::json!({"command": "cargo test"}),
+                input: serde_json::json!({"command": "cargo test"}).into(),
                 id: "tool-1".to_string(),
                 parent_tool_use_id: Some("parent-1".to_string()),
             },
@@ -741,7 +771,11 @@ fn inline_tool_result_is_replaced_by_later_externalized_preview_ref() {
             },
         ]
     );
-    assert!(!serde_json::to_string(&parts).unwrap().contains(sentinel));
+    assert!(
+        !String::from_utf8(encode_stored_message_parts_v1(&parts).unwrap())
+            .unwrap()
+            .contains(sentinel)
+    );
 }
 
 #[test]
@@ -814,7 +848,8 @@ fn turn_started_projects_prompt_mentions_and_parts() {
                 file_path: "src/main.rs".to_string(),
                 start_line: Some(3),
                 end_line: Some(5),
-            }],
+            }
+            .into_domain()],
             attachment_refs: vec![attachment],
             parts: prompt_parts.clone(),
         },
@@ -898,6 +933,17 @@ fn status_projection_covers_runtime_transition_states() {
     let closed = project(&[start_event(), AgentSessionEvent::SessionClosed { at: 11.0 }]);
     assert_eq!(closed.status.session_state, SessionState::Closed);
     assert_eq!(closed.status.turn_phase, TurnPhase::Idle);
+
+    let archived = project(&[
+        AgentSessionEvent::SessionClosed { at: 11.0 },
+        AgentSessionEvent::SessionLifecycleOperationAccepted {
+            operation_id: "archive-1".to_string(),
+            kind: crate::domain::agent_session::events::SessionLifecycleKind::Archive,
+            at: 12.0,
+        },
+    ]);
+    assert_eq!(archived.status.session_state, SessionState::Archived);
+    assert_eq!(archived.status.turn_phase, TurnPhase::Idle);
 }
 
 #[test]
@@ -1084,7 +1130,7 @@ fn finalization_closes_tools_permissions_and_turn() {
                 turn_id: 1,
                 tool_use_id: "tool-1".to_string(),
                 tool: "Edit".to_string(),
-                input: serde_json::json!({}),
+                input: serde_json::json!({}).into(),
                 parent_tool_use_id: None,
             },
             AgentSessionEvent::PermissionRequested {
@@ -1133,14 +1179,14 @@ fn finalization_closes_tools_permissions_and_turn() {
 }
 
 #[test]
-fn session_closed_finalization_stops_active_background_task_after_launch_result() {
+fn session_closed_finalization_preserves_background_task_launch_evidence() {
     let mut events = vec![
         start_event(),
         AgentSessionEvent::ToolCallStarted {
             turn_id: 1,
             tool_use_id: "background-task".to_string(),
             tool: "Task".to_string(),
-            input: serde_json::json!({ "run_in_background": true }),
+            input: serde_json::json!({ "run_in_background": true }).into(),
             parent_tool_use_id: None,
         },
         AgentSessionEvent::ToolCallSucceeded {
@@ -1154,25 +1200,26 @@ fn session_closed_finalization_stops_active_background_task_after_launch_result(
 
     finalize_turn(&mut events, 1, InterruptReason::SessionClosed, None, 0);
 
-    assert!(events.iter().any(|event| matches!(
+    assert!(!events.iter().any(|event| matches!(
         event,
         AgentSessionEvent::TaskStatusChanged {
-            task_tool_use_id,
-            status,
-            ..
-        } if task_tool_use_id == "background-task" && status == "stopped"
+            task_tool_use_id, ..
+        } if task_tool_use_id == "background-task"
     )));
-    assert!(project(&events)
+    assert!(!project(&events)
         .agent_parts_for_message("agent-1")
         .iter()
         .any(|part| matches!(
             part,
             MessagePart::TaskStatus {
-                task_tool_use_id,
-                status,
-                ..
-            } if task_tool_use_id == "background-task" && status == "stopped"
+                task_tool_use_id, ..
+            } if task_tool_use_id == "background-task"
         )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        AgentSessionEvent::ToolCallSucceeded { tool_use_id, .. }
+            if tool_use_id == "background-task"
+    )));
 }
 
 #[test]
@@ -1325,7 +1372,7 @@ fn finalization_uses_reason_label_when_error_is_none() {
                 turn_id: 1,
                 tool_use_id: "tool-1".to_string(),
                 tool: "Edit".to_string(),
-                input: serde_json::json!({}),
+                input: serde_json::json!({}).into(),
                 parent_tool_use_id: None,
             },
         ];
@@ -1354,7 +1401,7 @@ fn finalization_keeps_existing_interrupted_detail_without_double_suffix() {
                 turn_id: 1,
                 tool_use_id: "tool-1".to_string(),
                 tool: "Edit".to_string(),
-                input: serde_json::json!({}),
+                input: serde_json::json!({}).into(),
                 parent_tool_use_id: None,
             },
         ];
@@ -1388,7 +1435,7 @@ fn finalization_is_idempotent() {
             turn_id: 1,
             tool_use_id: "tool-1".to_string(),
             tool: "Edit".to_string(),
-            input: serde_json::json!({}),
+            input: serde_json::json!({}).into(),
             parent_tool_use_id: None,
         },
     ];
@@ -1456,9 +1503,13 @@ fn interrupt_reason_deserialization_remains_backward_compatible() {
         ("\"crash\"", InterruptReason::Crash),
         ("\"session_closed\"", InterruptReason::SessionClosed),
     ] {
-        assert_eq!(
-            serde_json::from_str::<InterruptReason>(serialized).unwrap(),
-            expected
+        let raw = format!(
+            r#"[{{"type":"turn_interrupted","turn_id":1,"reason":{serialized},"exit_code":1}}]"#
         );
+        let decoded = decode_agent_session_events_v1(raw.as_bytes()).unwrap();
+        assert!(matches!(
+            decoded.as_slice(),
+            [AgentSessionEvent::TurnInterrupted { reason, .. }] if *reason == expected
+        ));
     }
 }

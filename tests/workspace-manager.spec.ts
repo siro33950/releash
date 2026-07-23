@@ -29,41 +29,67 @@ function rawSession(
 ) {
 	return {
 		id,
-		worktreePath,
+		worktree_path: worktreePath,
 		messages: message
 			? [
 					{
 						id: `${id}-message`,
 						role: "agent",
 						content: message,
-						timestamp: 1000,
+						thinking: null,
+						activities: null,
+						parts: null,
+						streaming_final_seq: "0",
+						timestamp_ms: "1000000",
+						mentions: null,
 					},
 				]
 			: [],
 		state: "active",
-		createdAt: 1000,
-		updatedAt: 1000,
-		agentSessionId: `agent-${id}`,
-		permissionMode: "ask",
-		planMode: false,
-		permissionProfileId: null,
-		backendId: null,
-		selectedModel: "",
-		availableModels: [],
-		canChangeBackend: false,
-		pendingQueue: [],
-		pendingQueueCount: 0,
-		pendingPermissionRequest: options.pendingPermission
+		error_reason: null,
+		created_at_ms: "1000000",
+		updated_at_ms: "1000000",
+		agent_session_id: `agent-${id}`,
+		context_carry: null,
+		permission_mode: "ask",
+		plan_mode: false,
+		permission_profile_id: null,
+		backend_id: null,
+		selected_model: null,
+		available_models: [],
+		can_change_backend: false,
+		pending_queue: [],
+		pending_queue_count: "0",
+		queue_paused: false,
+		pending_permission_request: options.pendingPermission
 			? {
 					id: "permission-workflow",
-					toolName: "Bash",
+					tool_use_id: "tool-permission-workflow",
+					tool_name: "Bash",
 					kind: "tool_approval",
 					input: { command: "pnpm test" },
+					plan: null,
+					allowed_prompts: [],
+					questions: [],
+					title: null,
+					display_name: null,
+					description: null,
+					decision_reason: null,
 				}
 			: null,
-		pendingPermissionStateRevision: 1,
-		turnPhase: options.pendingPermission ? "waiting_permission" : "idle",
-		initialPage: { nextCursor: null, hasMore: false, totalCount: message ? 1 : 0 },
+		pending_permission_state_revision: "1",
+		latest_token_usage: null,
+		workflow_node_session: false,
+		workflow_node_context: null,
+		session_revision: "1",
+		active_turn_id: options.pendingPermission ? "1" : null,
+		turn_phase: options.pendingPermission ? "waiting_permission" : "idle",
+		last_turn_interruption: null,
+		initial_page: {
+			next_cursor: null,
+			has_more: false,
+			total_count: message ? "1" : "0",
+		},
 	};
 }
 
@@ -495,7 +521,10 @@ test.describe("Workspace Manager", () => {
 				{ pendingPermission: true },
 			),
 			present_agent_permission_request: null,
-			respond_agent_permission: null,
+			report_agent_permission_request_observed: null,
+			respond_agent_permission: {
+				__mockAcceptedPermissionResponse: true,
+			},
 		});
 		await setupTauriMock(page, config);
 		await waitForApp(page);
@@ -516,6 +545,19 @@ test.describe("Workspace Manager", () => {
 			parts: [{ type: "text", content: "Live workflow update" }],
 		});
 		await expect(page.getByText("Live workflow update", { exact: true })).toBeVisible();
+		await expect
+			.poll(async () =>
+				page.evaluate(() =>
+					window.__TAURI_INTERNALS__?.invocations.some(
+						(entry) =>
+							entry.cmd === "report_agent_permission_request_observed" &&
+							entry.args.chatSessionId === "workflow-session" &&
+							entry.args.requestId === "permission-workflow" &&
+							entry.args.visible === true,
+					),
+				),
+			)
+			.toBe(true);
 		await page.getByRole("button", { name: "Allow", exact: true }).click();
 		await expect
 			.poll(async () =>
@@ -564,21 +606,21 @@ test.describe("Workspace Manager", () => {
 			},
 			get_session: {
 				...rawSession(sessionId, worktreePath, "Starting Codex turn"),
-				backendId: "codex",
-				turnPhase: "streaming",
-				pendingQueue: [
+				backend_id: "codex",
+				active_turn_id: "1",
+				turn_phase: "streaming",
+				pending_queue: [
 					{
 						id: "queued-follow-up",
-						contentPreview: "queued follow-up",
-						createdAt: 1001,
-						permissionMode: "edit",
-						imageCount: 1,
+						content_preview: "queued follow-up",
+						created_at_ms: "1001000",
+						permission_mode: "edit",
+						image_count: "1",
 					},
 				],
-				pendingQueueCount: 1,
-				queuePaused: false,
+				pending_queue_count: "1",
+				queue_paused: false,
 			},
-			interrupt_agent_query: null,
 			resume_agent_queue: null,
 		});
 		await setupTauriMock(page, config);
@@ -591,14 +633,33 @@ test.describe("Workspace Manager", () => {
 		await page.getByRole("button", { name: "Stopping agent" }).click();
 		await expect
 			.poll(() =>
-				page.evaluate(
-					() =>
-						window.__TAURI_INTERNALS__?.invocations.filter(
-							(entry) => entry.cmd === "interrupt_agent_query",
-						).length ?? 0,
+				page.evaluate(() =>
+					(window.__TAURI_INTERNALS__?.invocations ?? [])
+						.filter((entry) => entry.cmd === "stop_agent_session")
+						.map((entry) => entry.args.request),
 				),
 			)
-			.toBe(2);
+			.toHaveLength(2);
+		const durableStopRequests = await page.evaluate(() =>
+			(window.__TAURI_INTERNALS__?.invocations ?? [])
+				.filter((entry) => entry.cmd === "stop_agent_session")
+				.map((entry) => entry.args.request),
+		);
+		expect(durableStopRequests[0]).toMatchObject({
+			request_id: expect.stringMatching(/^stop-/),
+			session_id: sessionId,
+			turn_id: "1",
+			expected_session_revision: "1",
+		});
+		expect(durableStopRequests[1]).toEqual(durableStopRequests[0]);
+		expect(
+			await page.evaluate(
+				() =>
+					window.__TAURI_INTERNALS__?.invocations.some(
+						(entry) => entry.cmd === "resume_agent_queue",
+					) ?? false,
+			),
+		).toBe(false);
 
 		await emitTauriEvent(page, "agent-session-state-changed", {
 			chat_session_id: sessionId,
@@ -615,16 +676,25 @@ test.describe("Workspace Manager", () => {
 		await expect(composer).toHaveValue("draft must survive stop");
 		await expect(page.getByText("queued follow-up", { exact: true })).toBeVisible();
 		await expect(page.getByRole("button", { name: "Resume queue" })).toBeVisible();
-		await page.getByRole("button", { name: "Resume queue" }).click();
-		await expect
-			.poll(() =>
-				page.evaluate(() =>
+		expect(
+			await page.evaluate(
+				() =>
 					window.__TAURI_INTERNALS__?.invocations.some(
 						(entry) => entry.cmd === "resume_agent_queue",
 					) ?? false,
+			),
+		).toBe(false);
+		await page.getByRole("button", { name: "Resume queue" }).click();
+		await expect
+			.poll(() =>
+				page.evaluate(
+					() =>
+						window.__TAURI_INTERNALS__?.invocations.filter(
+							(entry) => entry.cmd === "resume_agent_queue",
+						).length ?? 0,
 				),
 			)
-			.toBe(true);
+			.toBe(1);
 	});
 
 	test("Fanout branch nests child Nodes and only toggles expansion", async ({
@@ -1030,8 +1100,13 @@ test.describe("Workspace Manager", () => {
 			),
 		).toHaveLength(0);
 
+		const secondSession = rawSession(
+			"loop-session-a-2",
+			worktreePath,
+			"Second occurrence body",
+		);
 		await page.evaluate(
-			({ worktreePath }) => {
+			({ worktreePath, secondSession }) => {
 				const internals = window.__TAURI_INTERNALS__;
 				if (!internals) throw new Error("Tauri mock not initialized");
 				internals.setMockResponse("get_workspace_node_detail", {
@@ -1042,41 +1117,9 @@ test.describe("Workspace Manager", () => {
 					updatedAt: 3000,
 					content: { kind: "session", sessionId: "loop-session-a-2" },
 				});
-				internals.setMockResponse("get_session", {
-					id: "loop-session-a-2",
-					worktreePath,
-					messages: [
-						{
-							id: "loop-message-a-2",
-							role: "agent",
-							content: "Second occurrence body",
-							timestamp: 3000,
-						},
-					],
-					state: "active",
-					createdAt: 3000,
-					updatedAt: 3000,
-					agentSessionId: "agent-loop-a-2",
-					permissionMode: "ask",
-					planMode: false,
-					permissionProfileId: null,
-					backendId: null,
-					selectedModel: "",
-					availableModels: [],
-					canChangeBackend: false,
-					pendingQueue: [],
-					pendingQueueCount: 0,
-					pendingPermissionRequest: null,
-					pendingPermissionStateRevision: 1,
-					turnPhase: "idle",
-					initialPage: {
-						nextCursor: null,
-						hasMore: false,
-						totalCount: 1,
-					},
-				});
+				internals.setMockResponse("get_session", secondSession);
 			},
-			{ worktreePath },
+			{ worktreePath, secondSession },
 		);
 		await secondRow.click();
 

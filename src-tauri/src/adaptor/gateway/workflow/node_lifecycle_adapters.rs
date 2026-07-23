@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::infrastructure::platform::app_data_dir::resolve_data_dir;
 use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
-use crate::usecase::agent_session::session::{OpenTabRegistry, SessionState, SessionStore};
+use crate::usecase::agent_session::session::{OpenTabRegistry, SessionStore};
 use crate::usecase::workflow::node_lifecycle::{
     release_node_runtime_on_done_with_gateways, NodeExecutionLifecycleError,
     NodeExecutionRuntimeGateway, ResolvedWorkflowNodeSession, WorkflowNodeSessionGateway,
@@ -28,99 +28,20 @@ pub(crate) fn resolve_node_session_with_data_dir(
     }))
 }
 
-pub(crate) async fn close_idle_node_runtime_state(
-    runtime: &AgentSessionRuntimeUsecase,
-    session_id: &str,
-) -> Result<(), NodeExecutionLifecycleError> {
-    runtime
-        .close_session_if_idle(session_id)
-        .await
-        .map(|_| ())
-        .map_err(|e| NodeExecutionLifecycleError::AgentSession(e.to_string()))
-}
-
-async fn close_idle_node_runtime_with_session_lock(
-    runtime: &AgentSessionRuntimeUsecase,
-    session_id: &str,
-) -> Result<(), NodeExecutionLifecycleError> {
-    close_idle_node_runtime_state(runtime, session_id).await
-}
-
-pub(crate) fn open_node_session_tab_state(
-    session_store: &SessionStore,
-    data_dir: &std::path::Path,
-    open_tabs: &OpenTabRegistry,
-    session_id: &str,
-) -> Result<(), NodeExecutionLifecycleError> {
-    let session = session_store
-        .get_session_meta(data_dir, session_id)
-        .map_err(|e| NodeExecutionLifecycleError::SessionStore(format!("get_session_meta: {e}")))?
-        .ok_or_else(|| NodeExecutionLifecycleError::SessionNotFound(session_id.to_string()))?;
-    if open_tabs.contains(session_id) && session.state == SessionState::Idle {
-        return Ok(());
-    }
-    session_store
-        .set_session_state(data_dir, session_id, SessionState::Idle)
-        .map_err(|e| {
-            NodeExecutionLifecycleError::SessionStore(format!("set_session_state: {e}"))
-        })?;
+pub(crate) fn open_node_session_tab_state(open_tabs: &OpenTabRegistry, session_id: &str) {
     open_tabs.add(session_id);
-    Ok(())
-}
-
-fn set_node_session_tab_closed(
-    session_store: &SessionStore,
-    data_dir: &std::path::Path,
-    session_id: &str,
-) -> Result<(), NodeExecutionLifecycleError> {
-    session_store
-        .set_session_state(data_dir, session_id, SessionState::Closed)
-        .map_err(|e| NodeExecutionLifecycleError::SessionStore(format!("set_session_state: {e}")))
 }
 
 #[cfg(test)]
-pub(crate) fn close_node_session_tab_state(
-    session_store: &SessionStore,
-    data_dir: &std::path::Path,
-    open_tabs: Option<&OpenTabRegistry>,
-    session_id: &str,
-) {
-    if let Err(_e) =
-        try_close_node_session_tab_state(session_store, data_dir, open_tabs, session_id)
-    {
-        log::warn!(
-            "workflow_node_tab_cleanup_failed code=session_state_update_failed message=failed_to_close_node_tab"
-        );
-    }
+pub(crate) fn close_node_session_tab_state(open_tabs: Option<&OpenTabRegistry>, session_id: &str) {
+    try_close_node_session_tab_state(open_tabs, session_id);
 }
 
 pub(crate) fn try_close_node_session_tab_state(
-    session_store: &SessionStore,
-    data_dir: &std::path::Path,
     open_tabs: Option<&OpenTabRegistry>,
     session_id: &str,
-) -> Result<bool, NodeExecutionLifecycleError> {
-    let should_close_tab = open_tabs
-        .map(|open_tabs| open_tabs.contains(session_id))
-        .unwrap_or(true);
-    if !should_close_tab {
-        if let Some(session) = session_store
-            .get_session_meta(data_dir, session_id)
-            .map_err(|e| {
-                NodeExecutionLifecycleError::SessionStore(format!("get_session_meta: {e}"))
-            })?
-        {
-            if session.state != SessionState::Closed {
-                set_node_session_tab_closed(session_store, data_dir, session_id)?;
-            }
-        }
-        return Ok(false);
-    }
-    set_node_session_tab_closed(session_store, data_dir, session_id)?;
-    if let Some(open_tabs) = open_tabs {
-        open_tabs.remove(session_id);
-    }
-    Ok(true)
+) -> bool {
+    open_tabs.is_some_and(|open_tabs| open_tabs.remove(session_id))
 }
 
 struct TauriNodeExecutionRuntimeGateway<'a> {
@@ -129,13 +50,6 @@ struct TauriNodeExecutionRuntimeGateway<'a> {
 
 #[async_trait::async_trait]
 impl NodeExecutionRuntimeGateway for TauriNodeExecutionRuntimeGateway<'_> {
-    async fn close_idle_runtime_on_tab_close(
-        &self,
-        session_id: &str,
-    ) -> Result<(), NodeExecutionLifecycleError> {
-        close_idle_node_runtime_with_session_lock(self.runtime, session_id).await
-    }
-
     async fn close_runtime_on_node_done(
         &self,
         session_id: &str,
@@ -186,35 +100,20 @@ impl WorkflowNodeSessionGateway for TauriNodeExecutionLifecycleGateway {
     }
 
     fn open_node_tab(&self, session_id: &str) -> Result<(), NodeExecutionLifecycleError> {
-        let data_dir = self.data_dir()?;
-        open_node_session_tab_state(
-            self.session_store.as_ref(),
-            &data_dir,
-            self.open_tabs.as_ref(),
-            session_id,
-        )
+        open_node_session_tab_state(self.open_tabs.as_ref(), session_id);
+        Ok(())
     }
 
     fn close_node_tab(&self, session_id: &str) -> Result<bool, NodeExecutionLifecycleError> {
-        let data_dir = self.data_dir()?;
-        try_close_node_session_tab_state(
-            self.session_store.as_ref(),
-            &data_dir,
+        Ok(try_close_node_session_tab_state(
             Some(self.open_tabs.as_ref()),
             session_id,
-        )
+        ))
     }
 }
 
 #[async_trait::async_trait]
 impl NodeExecutionRuntimeGateway for TauriNodeExecutionLifecycleGateway {
-    async fn close_idle_runtime_on_tab_close(
-        &self,
-        session_id: &str,
-    ) -> Result<(), NodeExecutionLifecycleError> {
-        close_idle_node_runtime_with_session_lock(&self.runtime, session_id).await
-    }
-
     async fn close_runtime_on_node_done(
         &self,
         session_id: &str,
@@ -332,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn node_done_tab_cleanup_removes_tab_closes_session_and_preserves_history() {
+    fn workflow_node_tab_close_is_view_only_and_preserves_session_projection() {
         let tmp = tempfile::TempDir::new().unwrap();
         let session_store = crate::test_support::build_session_store();
         let open_tabs = OpenTabRegistry::default();
@@ -346,14 +245,14 @@ mod tests {
             .unwrap();
         open_tabs.add(&session_id);
 
-        close_node_session_tab_state(&session_store, tmp.path(), Some(&open_tabs), &session_id);
+        close_node_session_tab_state(Some(&open_tabs), &session_id);
 
         assert!(!open_tabs.contains(&session_id));
         let session = session_store
             .load_full_session_for_restore(tmp.path(), &session_id)
             .unwrap()
             .expect("session remains as history");
-        assert_eq!(session.state, SessionState::Closed);
+        assert_eq!(session.state, SessionState::Idle);
         assert_eq!(session.agent_session_id.as_deref(), Some("sdk-session"));
         assert_eq!(session.messages.len(), 1);
     }
@@ -375,7 +274,7 @@ mod tests {
             .set_session_state(tmp.path(), &session_id, SessionState::Closed)
             .unwrap();
 
-        close_node_session_tab_state(&session_store, tmp.path(), Some(&open_tabs), &session_id);
+        close_node_session_tab_state(Some(&open_tabs), &session_id);
 
         assert!(!open_tabs.contains(&session_id));
         let session = session_store
@@ -388,7 +287,7 @@ mod tests {
     }
 
     #[test]
-    fn close_node_tab_retries_closed_state_when_registry_entry_is_missing() {
+    fn close_node_tab_with_missing_registry_entry_does_not_mutate_projection() {
         let tmp = tempfile::TempDir::new().unwrap();
         let session_store = crate::test_support::build_session_store();
         let open_tabs = OpenTabRegistry::default();
@@ -401,13 +300,7 @@ mod tests {
             )
             .unwrap();
 
-        let changed = try_close_node_session_tab_state(
-            &session_store,
-            tmp.path(),
-            Some(&open_tabs),
-            &session_id,
-        )
-        .unwrap();
+        let changed = try_close_node_session_tab_state(Some(&open_tabs), &session_id);
 
         assert!(!changed);
         assert!(!open_tabs.contains(&session_id));
@@ -415,7 +308,7 @@ mod tests {
             .load_full_session_for_restore(tmp.path(), &session_id)
             .unwrap()
             .expect("session remains as history");
-        assert_eq!(session.state, SessionState::Closed);
+        assert_eq!(session.state, SessionState::Idle);
     }
 
     #[tokio::test]
@@ -432,7 +325,7 @@ mod tests {
             .save_full_session_for_migration_or_restore(tmp.path(), &session)
             .unwrap();
 
-        open_node_session_tab_state(&session_store, tmp.path(), &open_tabs, &session_id).unwrap();
+        open_node_session_tab_state(&open_tabs, &session_id);
 
         assert!(open_tabs.contains(&session_id));
         assert!(!handles.has_live_runtime(&session_id).await);
@@ -440,12 +333,12 @@ mod tests {
             .load_full_session_for_restore(tmp.path(), &session_id)
             .unwrap()
             .expect("session remains as history");
-        assert_eq!(session.state, SessionState::Idle);
+        assert_eq!(session.state, SessionState::Closed);
         assert_eq!(session.agent_session_id.as_deref(), Some("sdk-session"));
         assert_eq!(session.messages.len(), 1);
         let updated_at = session.updated_at;
 
-        open_node_session_tab_state(&session_store, tmp.path(), &open_tabs, &session_id).unwrap();
+        open_node_session_tab_state(&open_tabs, &session_id);
         assert_eq!(open_tabs.snapshot().len(), 1);
         assert!(!handles.has_live_runtime(&session_id).await);
         let session = session_store
@@ -453,58 +346,6 @@ mod tests {
             .unwrap()
             .expect("session remains as history");
         assert_eq!(session.updated_at, updated_at);
-    }
-
-    #[tokio::test]
-    async fn tab_close_runtime_policy_releases_ready_and_idle_runtime() {
-        let handles = runtime_for_test();
-        insert_runtime(&handles, "node", TurnPhase::Idle, false).await;
-
-        close_idle_node_runtime_state(&handles, "node")
-            .await
-            .unwrap();
-
-        assert!(!handles.has_live_runtime("node").await);
-    }
-
-    #[tokio::test]
-    async fn production_tab_close_releases_idle_runtime_without_relocking_session() {
-        let handles = runtime_for_test();
-        insert_runtime(&handles, "node", TurnPhase::Idle, false).await;
-
-        tokio::time::timeout(
-            std::time::Duration::from_millis(200),
-            close_idle_node_runtime_with_session_lock(&handles, "node"),
-        )
-        .await
-        .expect("idle runtime close must not deadlock on the session lock")
-        .unwrap();
-
-        assert!(!handles.has_live_runtime("node").await);
-    }
-
-    #[tokio::test]
-    async fn tab_close_runtime_policy_keeps_busy_runtime() {
-        let handles = runtime_for_test();
-        insert_runtime(&handles, "node", TurnPhase::Streaming, false).await;
-        close_idle_node_runtime_state(&handles, "node")
-            .await
-            .unwrap();
-        assert!(handles.has_live_runtime("node").await);
-
-        handles.force_close_session("node").await.unwrap();
-        insert_runtime(&handles, "node", TurnPhase::WaitingPermission, false).await;
-        close_idle_node_runtime_state(&handles, "node")
-            .await
-            .unwrap();
-        assert!(handles.has_live_runtime("node").await);
-
-        handles.force_close_session("node").await.unwrap();
-        insert_runtime(&handles, "node", TurnPhase::Idle, true).await;
-        close_idle_node_runtime_state(&handles, "node")
-            .await
-            .unwrap();
-        assert!(handles.has_live_runtime("node").await);
     }
 
     #[tokio::test]
@@ -611,8 +452,7 @@ mod tests {
         insert_runtime(&handles, &session_id, TurnPhase::Idle, false).await;
 
         release_on_node_done_for_test(&handles, &session_id).await;
-        try_close_node_session_tab_state(&session_store, tmp.path(), Some(&open_tabs), &session_id)
-            .unwrap();
+        try_close_node_session_tab_state(Some(&open_tabs), &session_id);
 
         assert!(!handles.has_live_runtime(&session_id).await);
         assert!(!open_tabs.contains(&session_id));
@@ -634,7 +474,7 @@ mod tests {
             .unwrap();
         insert_runtime(&handles, &session_id, TurnPhase::Idle, false).await;
 
-        open_node_session_tab_state(&session_store, tmp.path(), &open_tabs, &session_id).unwrap();
+        open_node_session_tab_state(&open_tabs, &session_id);
 
         assert!(open_tabs.contains(&session_id));
         assert!(handles.has_live_runtime(&session_id).await);
@@ -642,7 +482,7 @@ mod tests {
             .load_full_session_for_restore(tmp.path(), &session_id)
             .unwrap()
             .expect("session remains as history");
-        assert_eq!(session.state, SessionState::Idle);
+        assert_eq!(session.state, SessionState::Closed);
     }
 
     // R4-02: Spec「非 workflow session への tab 操作は workflow node の状態を変化させない」
@@ -683,9 +523,9 @@ mod tests {
         assert!(handles.has_live_runtime(&node_id).await);
     }
 
-    // R4-06: Spec「tab open / reopen 時の状態更新に失敗しても runtime 状態は変更されない」
+    // B-052 / R-014: projection が無くても view-local open は durable storage や runtime に触れない。
     #[tokio::test]
-    async fn tab_open_state_update_failure_preserves_runtime_state() {
+    async fn tab_open_without_session_projection_is_view_only() {
         let tmp = tempfile::TempDir::new().unwrap();
         let session_store = crate::test_support::build_session_store();
         let open_tabs = OpenTabRegistry::default();
@@ -701,19 +541,13 @@ mod tests {
             .unwrap();
         insert_runtime(&handles, &other_id, TurnPhase::Idle, false).await;
 
-        // Trigger failure: open_node_session_tab_state on a session that does not exist in store
+        // The view registry deliberately does not consult the durable session projection.
         let missing_id = uuid::Uuid::new_v4().to_string();
-        let result =
-            open_node_session_tab_state(&session_store, tmp.path(), &open_tabs, &missing_id);
-        assert!(matches!(
-            result,
-            Err(NodeExecutionLifecycleError::SessionNotFound(_))
-        ));
+        open_node_session_tab_state(&open_tabs, &missing_id);
 
         // Runtime state for unrelated session is preserved
         assert!(handles.has_live_runtime(&other_id).await);
-        // open_tabs is not modified for the failed session
-        assert!(!open_tabs.contains(&missing_id));
+        assert!(open_tabs.contains(&missing_id));
         assert!(!open_tabs.contains(&other_id));
     }
 

@@ -8,14 +8,16 @@ fn runtime_node_kind_name(kind: crate::domain::workflow::NodeKindName) -> NodeKi
     }
 }
 
-fn runtime_token_usage(usage: &crate::domain::workflow::TokenUsage) -> TokenUsage {
+pub(super) fn runtime_token_usage(usage: &crate::domain::workflow::TokenUsage) -> TokenUsage {
     TokenUsage {
         input_tokens: usage.input_tokens,
         output_tokens: usage.output_tokens,
     }
 }
 
-fn runtime_node_execution(node: &crate::domain::workflow::NodeExecution) -> NodeExecution {
+pub(super) fn runtime_node_execution(
+    node: &crate::domain::workflow::NodeExecution,
+) -> NodeExecution {
     NodeExecution {
         id: node.id.clone(),
         execution_id: node.execution_id.clone(),
@@ -262,8 +264,11 @@ pub(super) async fn resume_workflow_execution<R: tauri::Runtime + 'static>(
             |error| WorkflowEngineError::SessionStore(format!("resolve_data_dir: {error}")),
         )?,
     };
-    let events = WorkflowEventLog::new(&data_dir)
-        .read_log(execution_id)
+    let events = engine
+        .durable_workflow_event_log(&data_dir)
+        .await?
+        .read_log_durable(execution_id)
+        .await
         .map_err(WorkflowEngineError::SessionStore)?;
     let checkpoint = workflow_resume_projection::project_resume_checkpoint(execution_id, &events)
         .map_err(WorkflowEngineError::InvalidState)?;
@@ -273,6 +278,40 @@ pub(super) async fn resume_workflow_execution<R: tauri::Runtime + 'static>(
         return Err(WorkflowEngineError::UnauthorizedWorktree(format!(
             "execution {execution_id} metadata does not match its event-log checkpoint"
         )));
+    }
+    session_store
+        .ensure_no_unresolved_recovery(execution_id)
+        .await
+        .map_err(|failure| {
+            WorkflowEngineError::InvalidState(format!(
+                "execution {execution_id} cannot resume while recovery {} is unresolved: {failure}",
+                failure.correlation_id
+            ))
+        })?;
+    let mut owned_session_ids = checkpoint
+        .projected_node_executions
+        .iter()
+        .filter_map(|node| node.session_id.clone())
+        .collect::<Vec<_>>();
+    owned_session_ids.sort();
+    owned_session_ids.dedup();
+    for session_id in owned_session_ids {
+        session_store
+            .ensure_no_unresolved_recovery(&session_id)
+            .await
+            .map_err(|failure| {
+                WorkflowEngineError::InvalidState(format!(
+                    "execution {execution_id} cannot resume while owned session {session_id} has unresolved recovery {}: {failure}",
+                    failure.correlation_id
+                ))
+            })?;
+        agent_runtime
+            .ensure_recovery_operation_allowed(&session_id)
+            .map_err(|error| {
+                WorkflowEngineError::InvalidState(format!(
+                    "execution {execution_id} cannot resume while owned session {session_id} has unresolved recovery: {error}"
+                ))
+            })?;
     }
     workflow_engine_start_guard::validate_workflow_shape(&checkpoint.workflow)?;
     let registry = agent_runtime.backend_registry();
@@ -356,10 +395,20 @@ pub(super) async fn resume_workflow_execution<R: tauri::Runtime + 'static>(
         .swap(false, Ordering::AcqRel);
     #[cfg(not(test))]
     let injected_failure = false;
+    let resume_projection_mutations = engine
+        .execution_store
+        .prepare_atomic_existing_snapshot_mutations(&snapshot)
+        .await
+        .map_err(|error| WorkflowEngineError::SessionStore(error.to_string()))?;
     let append_result = if injected_failure {
         Err("injected required event append failure".to_string())
     } else {
-        WorkflowEventLog::new(&data_dir).append_batch(&resumed_events)
+        engine.write_log_required_batch_with_mutations_as(
+            app,
+            CommitOperationKind::UserMutation,
+            &resumed_events,
+            resume_projection_mutations,
+        )
     };
     if let Err(error) = append_result {
         engine.executions.lock().await.remove(execution_id);
@@ -388,49 +437,61 @@ pub(super) async fn resume_workflow_execution<R: tauri::Runtime + 'static>(
         .commit_resume_reservation(&reservation)
         .await
     {
-        let crash_timestamp = current_timestamp();
-        let checkpoint_result =
-            WorkflowEventLog::new(&data_dir).append_batch(&[WorkflowEvent::ExecutionInterrupted {
-                execution_id: execution_id.to_string(),
-                reason: ExecutionInterruptionReason::Crash,
-                timestamp: crash_timestamp,
-            }]);
-        engine.executions.lock().await.remove(execution_id);
-        engine
-            .fanout_resume_checkpoints
-            .lock()
+        #[cfg(test)]
+        if engine
+            .execution_store
+            .local_event_authority()
             .await
-            .remove(execution_id);
-        engine.release_execution_facet_contents(execution_id).await;
-        if let Err(checkpoint_error) = checkpoint_result {
-            let rollback_result = engine
+            .is_none()
+        {
+            let crash_timestamp = current_timestamp();
+            let checkpoint_result = WorkflowEventLog::new(&data_dir).append_batch(&[
+                WorkflowEvent::ExecutionInterrupted {
+                    execution_id: execution_id.to_string(),
+                    reason: ExecutionInterruptionReason::Crash,
+                    timestamp: crash_timestamp,
+                },
+            ]);
+            engine.executions.lock().await.remove(execution_id);
+            engine
+                .fanout_resume_checkpoints
+                .lock()
+                .await
+                .remove(execution_id);
+            engine.release_execution_facet_contents(execution_id).await;
+            if let Err(checkpoint_error) = checkpoint_result {
+                let rollback_result = engine
+                    .execution_store
+                    .rollback_resume_reservation(reservation)
+                    .await;
+                return Err(WorkflowEngineError::SessionStore(format!(
+                    "ExecutionResumed metadata commit failed: {error}; crash checkpoint failed: {checkpoint_error}; reservation rollback: {}",
+                    rollback_result
+                        .as_ref()
+                        .map(|_| "ok".to_string())
+                        .unwrap_or_else(|rollback_error| rollback_error.to_string())
+                )));
+            }
+            let projection_result = engine
                 .execution_store
-                .rollback_resume_reservation(reservation)
+                .checkpoint_failed_resume(
+                    reservation,
+                    ExecutionInterruptionReason::Crash,
+                    crash_timestamp,
+                )
                 .await;
-            return Err(WorkflowEngineError::SessionStore(format!(
-                "ExecutionResumed metadata commit failed: {error}; crash checkpoint failed: {checkpoint_error}; reservation rollback: {}",
-                rollback_result
+            log::warn!(
+                "workflow {execution_id}: accepted Resume metadata commit failed after durable event; crash checkpoint recorded: {error}; crash metadata projection: {}",
+                projection_result
                     .as_ref()
                     .map(|_| "ok".to_string())
-                .unwrap_or_else(|rollback_error| rollback_error.to_string())
-            )));
+                    .unwrap_or_else(|projection_error| projection_error.to_string())
+            );
+            return Ok(());
         }
-        let projection_result = engine
-            .execution_store
-            .checkpoint_failed_resume(
-                reservation,
-                ExecutionInterruptionReason::Crash,
-                crash_timestamp,
-            )
-            .await;
         log::warn!(
-            "workflow {execution_id}: accepted Resume metadata commit failed after durable event; crash checkpoint recorded: {error}; crash metadata projection: {}",
-            projection_result
-                .as_ref()
-                .map(|_| "ok".to_string())
-                .unwrap_or_else(|projection_error| projection_error.to_string())
+            "workflow {execution_id}: derived ExecutionStore projection refresh failed after the atomic SQLite resume commit: {error}"
         );
-        return Ok(());
     }
 
     workflow_runtime_session::broadcast_state(app, &checkpoint.worktree_path, snapshot.clone())

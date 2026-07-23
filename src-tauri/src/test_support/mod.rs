@@ -9,11 +9,10 @@ use tokio::sync::{mpsc, Notify};
 use crate::adaptor::gateway::agent_session::FileSessionStorage;
 use crate::domain::agent_session::entities::PermissionResponse;
 use crate::domain::agent_session::gateway::{
-    AgentBackend, AgentBackendError, AgentRuntimeEvent, AgentSessionRuntime, ForkSessionRequest,
-    SessionSpec, TurnInput,
+    AgentBackend, AgentBackendError, AgentRuntimeEvent, AgentSessionRuntime, SessionSpec, TurnInput,
 };
 use crate::domain::agent_session::value_objects::{
-    BackendCapabilities, ModelDescriptor, ModelId, PermissionMode, SkillEntry,
+    BackendCapabilities, JsonPayload, ModelDescriptor, ModelId, PermissionMode, SkillEntry,
 };
 use crate::usecase::agent_session::backend_registry::AgentBackendRegistry;
 use crate::usecase::agent_session::context::InstructionSourcePort;
@@ -31,7 +30,27 @@ pub(crate) mod git;
 
 mod agent_session_wire_replay;
 
-pub(crate) static TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
+/// Process-global environment tests must remain serialized even if one test
+/// panics. `parking_lot::Mutex` deliberately has no poison state, so a failed
+/// integration test cannot turn unrelated CLI/wire tests into lock failures.
+pub(crate) static TEST_ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+/// SQLite boundary and large migration fixtures deliberately saturate local
+/// disk/CPU resources. Keep them mutually exclusive so a capacity test's
+/// production 13-second cutoff measures its own work rather than unrelated
+/// test-harness contention.
+pub(crate) static LOCAL_EVENT_STORE_HEAVY_TEST_LOCK: parking_lot::Mutex<()> =
+    parking_lot::Mutex::new(());
+
+// Fixture construction stays ergonomic without giving the semantic value a
+// production serde contract. Serialization remains owned by adapter DTOs.
+impl From<serde_json::Value> for JsonPayload {
+    fn from(value: serde_json::Value) -> Self {
+        JsonPayload::new_unchecked(
+            serde_json::to_string(&value).expect("test JSON value must serialize"),
+        )
+    }
+}
 
 pub(crate) struct EnvVarGuard {
     key: &'static str,
@@ -249,6 +268,10 @@ impl TestAgentRuntimeController {
             .collect()
     }
 
+    pub(crate) fn close_event_streams_for_test(&self, session_id: &str) {
+        self.senders.lock().unwrap().remove(session_id);
+    }
+
     pub(crate) fn pause_start_turn(&self) {
         *self.start_turn_gate.lock().unwrap() = Some(Arc::new(Notify::new()));
     }
@@ -433,7 +456,6 @@ pub(crate) enum TestRuntimeCallKind {
     RespondPermission {
         request_id: String,
     },
-    SetPermissionMode,
     SetModel,
     Close,
 }
@@ -515,29 +537,6 @@ impl AgentBackend for TestAgentBackend {
             controller: self.controller.clone(),
             receiver: Some(receiver),
         }))
-    }
-
-    async fn archive_session(
-        &self,
-        _backend_session_id: &str,
-        _cwd: &str,
-    ) -> Result<(), AgentBackendError> {
-        Ok(())
-    }
-
-    async fn unarchive_session(
-        &self,
-        _backend_session_id: &str,
-        _cwd: &str,
-    ) -> Result<(), AgentBackendError> {
-        Ok(())
-    }
-
-    async fn fork_session(
-        &self,
-        _req: ForkSessionRequest,
-    ) -> Result<Option<String>, AgentBackendError> {
-        Ok(None)
     }
 
     async fn skill_catalog(
@@ -686,25 +685,9 @@ impl AgentSessionRuntime for TestAgentRuntime {
         Ok(())
     }
 
-    async fn set_permission_mode(
-        &self,
-        _mode: crate::domain::agent_session::PermissionMode,
-        _plan_mode: bool,
-    ) -> Result<(), AgentBackendError> {
-        self.controller.record(
-            self.session_id.clone(),
-            TestRuntimeCallKind::SetPermissionMode,
-        );
-        Ok(())
-    }
-
     async fn set_model(&self, _model: &ModelId) -> Result<(), AgentBackendError> {
         self.controller
             .record(self.session_id.clone(), TestRuntimeCallKind::SetModel);
-        Ok(())
-    }
-
-    async fn set_session_title(&self, _title: &str) -> Result<(), AgentBackendError> {
         Ok(())
     }
 

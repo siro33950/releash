@@ -19,6 +19,7 @@ impl FileSessionStorage {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn save_session_titles(
         &self,
         app_data_dir: &Path,
@@ -51,12 +52,14 @@ impl FileSessionStorage {
         self.load_session_titles(app_data_dir)
     }
 
+    #[cfg(test)]
     pub fn write_session_title(
         &self,
         app_data_dir: &Path,
         session_id: &str,
         title: Option<&str>,
     ) -> Result<(), String> {
+        self.ensure_legacy_mutation_admitted()?;
         let _lock = self.file_lock.lock();
         let mut titles = self.load_session_titles(app_data_dir)?;
         match title {

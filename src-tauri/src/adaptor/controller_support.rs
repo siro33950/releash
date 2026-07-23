@@ -2,13 +2,12 @@ use std::sync::Arc;
 
 use tauri::Manager;
 
-use crate::usecase::agent_session::runtime::{AgentSessionRuntimeUsecase, SendMessageResponse};
+use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
 use crate::usecase::agent_session::session::{ChatSession, ImageAttachment};
 use crate::usecase::workflow::WorkflowRuntimeUsecase;
 
 pub(crate) type AgentSessionRuntimeState = Arc<AgentSessionRuntimeUsecase>;
 pub(crate) type AgentImageAttachment = ImageAttachment;
-pub(crate) type AgentSendMessageResponse = SendMessageResponse;
 
 pub(crate) async fn emit_after_workflow_node_message<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,

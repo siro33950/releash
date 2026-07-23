@@ -884,17 +884,19 @@ pub(super) fn write_session(
 pub(super) fn write_message(session_dir: &Path, seq: u64, parts: Vec<MessagePart>) {
     fs::write(
         session_dir.join("messages").join(format!("{seq}.json")),
-        serde_json::to_string(&ChatMessage {
-            id: format!("m{seq}"),
-            role: MessageRole::Agent,
-            content: String::new(),
-            thinking: None,
-            activities: None,
-            parts: Some(parts),
-            streaming_final_seq: 0,
-            timestamp: NOW,
-            mentions: None,
-        })
+        crate::adaptor::gateway::agent_session::session_storage::encode_chat_message_v1(
+            &ChatMessage {
+                id: format!("m{seq}"),
+                role: MessageRole::Agent,
+                content: String::new(),
+                thinking: None,
+                activities: None,
+                parts: Some(parts),
+                streaming_final_seq: 0,
+                timestamp: NOW,
+                mentions: None,
+            },
+        )
         .unwrap(),
     )
     .unwrap();

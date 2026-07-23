@@ -4,9 +4,14 @@ import type { WorkspaceStatus } from "@/types/session";
 import { useWorkspaceNavigation } from "./useWorkspaceNavigation";
 
 const mockListen = vi.fn();
+const mockInvoke = vi.fn();
 
 vi.mock("@tauri-apps/api/event", () => ({
 	listen: (...args: unknown[]) => mockListen(...args),
+}));
+
+vi.mock("@tauri-apps/api/core", () => ({
+	invoke: (...args: unknown[]) => mockInvoke(...args),
 }));
 
 const makeStatus = (
@@ -55,6 +60,27 @@ describe("useWorkspaceNavigation", () => {
 			branchName: "feat/b",
 		});
 		expect(result.current.selectedWorktreeId).toBe("/repo/a");
+	});
+
+	it("close_quit_workspace_close_is_view_only", () => {
+		const { result } = renderHook(() => useWorkspaceNavigation());
+
+		act(() => {
+			result.current.openWorktreeTab("/repo/active", "main", "repo");
+		});
+		act(() => {
+			result.current.openWorktreeTab("/repo/other", "feature", "repo");
+		});
+		const retainedWorkspace = result.current.worktrees[0];
+
+		act(() => {
+			result.current.closeWorktreeTab("/repo/other");
+		});
+
+		expect(result.current.worktrees).toEqual([retainedWorkspace]);
+		expect(result.current.worktrees[0]).toBe(retainedWorkspace);
+		expect(result.current.selectedWorktreeId).toBe("/repo/active");
+		expect(mockInvoke).not.toHaveBeenCalled();
 	});
 
 	it("workspace-status-changed は一致するタブだけ agentState を更新する", async () => {

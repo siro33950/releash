@@ -6,7 +6,6 @@ mod facet;
 mod failure;
 mod ids;
 mod node_execution;
-mod outcome_commit_mode;
 mod runtime_projection;
 mod state;
 mod workflow_node_context;
@@ -36,7 +35,6 @@ pub use ids::{
 pub use node_execution::{
     FanoutParentRef, NodeExecution, NodeExecutionFailure, NodeExecutionStatus,
 };
-pub use outcome_commit_mode::OutcomeCommitMode;
 pub use runtime_projection::{
     default_node_history_status, FanoutChildSnapshot, NodeHistoryEntry, RuntimeArtifact,
     TokenUsage, NODE_STATUS_ABORTED, NODE_STATUS_COMPLETED, NODE_STATUS_FAILED,

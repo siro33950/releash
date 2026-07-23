@@ -3,12 +3,18 @@ use std::path::Path;
 use std::sync::atomic::Ordering;
 
 use super::layout::{
-    invalid_session_error_message_with_id, legacy_meta_file, meta_file_in_dir, session_dir,
-    session_file, sessions_dir, validate_meta, write_json_pretty_atomic, UUID_RE,
+    invalid_session_error_message_with_id, meta_file_in_dir, session_dir, sessions_dir,
+    validate_meta, UUID_RE,
 };
-use super::private_context::{hydrate_meta_private_context, write_private_context_to_dir};
+#[cfg(test)]
+use super::layout::{legacy_meta_file, session_file, write_json_pretty_atomic};
+use super::private_context::hydrate_meta_private_context;
+#[cfg(test)]
+use super::private_context::write_private_context_to_dir;
+#[cfg(test)]
 use super::transaction::SessionMetaEventTransaction;
 use super::FileSessionStorage;
+#[cfg(test)]
 use crate::usecase::agent_session::event_log::AgentSessionEvent;
 use crate::usecase::agent_session::session::{SessionMeta, SessionReviewContext};
 
@@ -29,6 +35,7 @@ impl FileSessionStorage {
         validate_meta(meta, expected_id)
     }
 
+    #[cfg(test)]
     pub(super) fn remove_session_file_and_cache(&self, app_data_dir: &Path, session_id: &str) {
         if let Ok(file) = session_file(app_data_dir, session_id) {
             let _ = std::fs::remove_file(file);
@@ -51,19 +58,22 @@ impl FileSessionStorage {
             crate::other::telemetry::HotPath::SessionList,
             || {
                 self.ensure_loaded(app_data_dir)?;
-                let session_ids = self
-                    .materialization_pending_sessions
-                    .read()
-                    .iter()
-                    .cloned()
-                    .collect::<Vec<_>>();
-                for session_id in session_ids {
-                    if let Err(error) =
-                        self.reconcile_session_transaction(app_data_dir, &session_id)
-                    {
-                        log::warn!(
+                #[cfg(test)]
+                {
+                    let session_ids = self
+                        .materialization_pending_sessions
+                        .read()
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    for session_id in session_ids {
+                        if let Err(error) =
+                            self.reconcile_session_transaction(app_data_dir, &session_id)
+                        {
+                            log::warn!(
                             "failed to reconcile pending session transaction while listing {session_id}: {error}"
                         );
+                        }
                     }
                 }
                 Ok(self.cache.read().values().cloned().collect())
@@ -71,7 +81,11 @@ impl FileSessionStorage {
         )
     }
 
+    #[cfg(test)]
     pub fn remove_session(&self, app_data_dir: &Path, session_id: &str) {
+        if self.ensure_legacy_mutation_admitted().is_err() {
+            return;
+        }
         self.remove_session_file_and_cache(app_data_dir, session_id);
     }
 
@@ -106,10 +120,12 @@ impl FileSessionStorage {
                     return Ok(None);
                 }
                 let dir = session_dir(app_data_dir, session_id)?;
+                #[cfg(test)]
                 if self
                     .materialization_pending_sessions
                     .read()
                     .contains(session_id)
+                    && !self.legacy_mutation_admission_closed()
                 {
                     let _lock = self.file_lock.lock();
                     self.apply_pending_session_transaction(&dir, session_id)?;
@@ -130,12 +146,14 @@ impl FileSessionStorage {
     /// SessionStore 側で読み込んだ meta を後から書き戻すと、間に走った
     /// `append_message` 等の更新が上書きされてしまうため、ストレージ層で
     /// ロック内 RMW を完結させる。
+    #[cfg(test)]
     pub fn update_session_meta(
         &self,
         app_data_dir: &Path,
         session_id: &str,
         update: &mut dyn FnMut(&mut SessionMeta) -> Result<(), String>,
     ) -> Result<SessionMeta, String> {
+        self.ensure_legacy_mutation_admitted()?;
         self.ensure_loaded(app_data_dir)?;
         if let Some(err) = self.invalid_sessions.read().get(session_id) {
             return Err(err.clone());
@@ -155,6 +173,7 @@ impl FileSessionStorage {
         Ok(meta)
     }
 
+    #[cfg(test)]
     pub fn update_session_meta_and_append_session_events(
         &self,
         app_data_dir: &Path,
@@ -162,6 +181,7 @@ impl FileSessionStorage {
         update: &mut dyn FnMut(&mut SessionMeta) -> Result<(), String>,
         events: &[AgentSessionEvent],
     ) -> Result<SessionMeta, String> {
+        self.ensure_legacy_mutation_admitted()?;
         self.ensure_loaded(app_data_dir)?;
         if let Some(err) = self.invalid_sessions.read().get(session_id) {
             return Err(err.clone());
@@ -196,34 +216,44 @@ impl FileSessionStorage {
         if !self.cache.read().contains_key(session_id) {
             return Ok(false);
         }
-        if !self
-            .materialization_pending_sessions
-            .read()
-            .contains(session_id)
+        #[cfg(not(test))]
+        return Ok(true);
+        #[cfg(test)]
         {
-            return Ok(true);
+            if self.legacy_mutation_admission_closed() {
+                return Ok(true);
+            }
+            if !self
+                .materialization_pending_sessions
+                .read()
+                .contains(session_id)
+            {
+                return Ok(true);
+            }
+            let _lock = self.file_lock.lock();
+            if !self
+                .materialization_pending_sessions
+                .read()
+                .contains(session_id)
+            {
+                return Ok(true);
+            }
+            let dir = session_dir(app_data_dir, session_id)?;
+            self.apply_committed_meta_event_transaction(&dir, session_id)
+                .map_err(|error| error.into_message())?;
+            let meta = self.read_meta_from_dir(&dir, session_id)?;
+            self.cache.write().insert(session_id.to_string(), meta);
+            Ok(true)
         }
-        let _lock = self.file_lock.lock();
-        if !self
-            .materialization_pending_sessions
-            .read()
-            .contains(session_id)
-        {
-            return Ok(true);
-        }
-        let dir = session_dir(app_data_dir, session_id)?;
-        self.apply_committed_meta_event_transaction(&dir, session_id)
-            .map_err(|error| error.into_message())?;
-        let meta = self.read_meta_from_dir(&dir, session_id)?;
-        self.cache.write().insert(session_id.to_string(), meta);
-        Ok(true)
     }
 
+    #[cfg(test)]
     pub(super) fn apply_pending_session_transaction(
         &self,
         dir: &Path,
         session_id: &str,
     ) -> Result<(), String> {
+        self.ensure_legacy_mutation_admitted()?;
         if self
             .materialization_pending_sessions
             .read()
@@ -275,25 +305,28 @@ impl FileSessionStorage {
                 else {
                     continue;
                 };
-                match self.apply_committed_meta_event_transaction(&path, &session_id) {
-                    Ok(()) => {}
-                    Err(error) if error.is_corrupt() => {
-                        let error = error.into_message();
-                        log::error!(
-                            "Failed to recover corrupt session transaction {:?}: {error}",
-                            path.display()
-                        );
-                        invalid_sessions.insert(session_id, error);
-                        continue;
-                    }
-                    Err(error) => {
-                        log::warn!(
-                            "Session transaction materialization remains pending after startup failure {:?}: {error}",
-                            path.display()
-                        );
-                        self.materialization_pending_sessions
-                            .write()
-                            .insert(session_id.clone());
+                #[cfg(test)]
+                if !self.legacy_mutation_admission_closed() {
+                    match self.apply_committed_meta_event_transaction(&path, &session_id) {
+                        Ok(()) => {}
+                        Err(error) if error.is_corrupt() => {
+                            let error = error.into_message();
+                            log::error!(
+                                "Failed to recover corrupt session transaction {:?}: {error}",
+                                path.display()
+                            );
+                            invalid_sessions.insert(session_id, error);
+                            continue;
+                        }
+                        Err(error) => {
+                            log::warn!(
+                                "Session transaction materialization remains pending after startup failure {:?}: {error}",
+                                path.display()
+                            );
+                            self.materialization_pending_sessions
+                                .write()
+                                .insert(session_id.clone());
+                        }
                     }
                 }
                 match self.read_meta_from_dir(&path, &session_id) {

@@ -247,9 +247,35 @@ pub(crate) async fn broadcast_state<R: tauri::Runtime>(
 }
 
 /// AgentSessionを中断する。
-pub(crate) async fn interrupt_agent(runtime: &Arc<AgentSessionRuntimeUsecase>, session_id: &str) {
-    if let Err(e) = runtime.interrupt(session_id).await {
-        log::warn!("Failed to interrupt agent session '{session_id}': {e}");
+pub(crate) async fn interrupt_agent(
+    runtime: &Arc<AgentSessionRuntimeUsecase>,
+    session_id: &str,
+) -> Result<(), WorkflowEngineError> {
+    runtime.interrupt(session_id).await.map_err(|error| {
+        WorkflowEngineError::with_agent_runtime_context(
+            format!("Failed to durably interrupt agent session '{session_id}'"),
+            error,
+        )
+    })
+}
+
+pub(crate) async fn interrupt_agents(
+    runtime: &Arc<AgentSessionRuntimeUsecase>,
+    session_ids: &[String],
+) -> Result<(), WorkflowEngineError> {
+    let mut failures = Vec::new();
+    for session_id in session_ids {
+        if let Err(error) = interrupt_agent(runtime, session_id).await {
+            failures.push(error.to_string());
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(WorkflowEngineError::AgentSession(format!(
+            "One or more durable workflow Stop operations failed: {}",
+            failures.join("; ")
+        )))
     }
 }
 
@@ -574,6 +600,7 @@ impl Drop for FanoutActivationTaskCompletion {
 }
 
 struct FanoutChildSessionActivation {
+    node_execution_id: String,
     session_id: String,
     node_name: String,
     permission_mode: PermissionMode,
@@ -634,6 +661,7 @@ async fn reserve_fanout_child_sessions(
         });
         activation_tasks.register(task.abort_handle(), completed_rx);
         activations.push(FanoutChildSessionActivation {
+            node_execution_id: setup.node_execution_id.clone(),
             session_id,
             node_name,
             permission_mode,
@@ -696,8 +724,10 @@ async fn start_fanout_child_sessions(
 
     for activation in &mut activations {
         if let Err(error) = start_single_fanout_child(runtime, activation).await {
-            for session_id in &created_session_ids {
-                interrupt_agent(runtime, session_id).await;
+            if let Err(interrupt_error) = interrupt_agents(runtime, &created_session_ids).await {
+                return Err(WorkflowEngineError::AgentSession(format!(
+                    "{error}; fanout cleanup failed: {interrupt_error}"
+                )));
             }
             return Err(error);
         }
@@ -746,12 +776,19 @@ async fn start_single_fanout_child(
     #[cfg(test)]
     runtime_guard.adopt_for_current_test_flow();
     let result = runtime
-        .start_turn_locked(
-            &activation.session_id,
-            activation.permission_mode,
-            std::mem::take(&mut activation.user_message),
-            activation.system_prompt.take(),
-            std::mem::take(&mut activation.workflow_instructions),
+        .start_workflow_turn_locked(
+            crate::usecase::agent_session::runtime::DurableWorkflowTurnRequest {
+                operation_id:
+                    crate::usecase::agent_session::runtime::durable_workflow_turn_operation_id(
+                        &activation.node_execution_id,
+                        "initial",
+                    ),
+                session_id: activation.session_id.clone(),
+                content: std::mem::take(&mut activation.user_message),
+                permission_mode: activation.permission_mode,
+                base_system_prompt: activation.system_prompt.take(),
+                workflow_instructions: std::mem::take(&mut activation.workflow_instructions),
+            },
         )
         .await;
     drop(runtime_guard);
@@ -776,7 +813,7 @@ mod tests {
         RuntimeArtifact, RuntimeExecutionState, TokenUsage,
     };
     use crate::domain::agent_session::gateway::{
-        AgentBackend, AgentBackendError, AgentSessionRuntime, ForkSessionRequest, SessionSpec,
+        AgentBackend, AgentBackendError, AgentSessionRuntime, SessionSpec,
     };
     use crate::domain::agent_session::value_objects::{
         BackendCapabilities, ModelDescriptor, ModelId, SkillEntry,
@@ -791,6 +828,23 @@ mod tests {
     struct RuntimeSessionMockBackend {
         id: &'static str,
         models: Vec<&'static str>,
+    }
+
+    struct RejectingDurableStopDriver {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl crate::usecase::agent_session::runtime::DurableStopDriver for RejectingDurableStopDriver {
+        async fn stop(
+            &self,
+            _session_id: &str,
+            _turn_id: u64,
+            _expected_session_revision: u64,
+        ) -> Result<(), String> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err("injected durable Stop failure".to_string())
+        }
     }
 
     #[async_trait]
@@ -822,29 +876,6 @@ mod tests {
             _spec: SessionSpec,
         ) -> Result<Box<dyn AgentSessionRuntime>, AgentBackendError> {
             Err(AgentBackendError::Unavailable("test".to_string()))
-        }
-
-        async fn archive_session(
-            &self,
-            _backend_session_id: &str,
-            _cwd: &str,
-        ) -> Result<(), AgentBackendError> {
-            Ok(())
-        }
-
-        async fn unarchive_session(
-            &self,
-            _backend_session_id: &str,
-            _cwd: &str,
-        ) -> Result<(), AgentBackendError> {
-            Ok(())
-        }
-
-        async fn fork_session(
-            &self,
-            _req: ForkSessionRequest,
-        ) -> Result<Option<String>, AgentBackendError> {
-            Ok(None)
         }
 
         async fn skill_catalog(
@@ -903,6 +934,7 @@ mod tests {
         reserved: Option<oneshot::Receiver<()>>,
     ) -> FanoutChildSessionActivation {
         FanoutChildSessionActivation {
+            node_execution_id: "node-execution-1".to_string(),
             session_id: session_id.to_string(),
             node_name: "child".to_string(),
             permission_mode: PermissionMode::Edit,
@@ -1271,6 +1303,56 @@ mod tests {
             other => panic!("unexpected error: {other:?}"),
         }
         assert!(!runtime.session_runtime_lock_is_held_for_test(held_session_id));
+    }
+
+    #[tokio::test]
+    async fn workflow_interrupt_propagates_durable_stop_failure_instead_of_reporting_success() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let (runtime, _) = crate::test_support::build_agent_runtime_usecase_with_controller(
+            Arc::clone(&session_store),
+            tmp.path(),
+        );
+        let worktree_path = tmp.path().to_string_lossy().to_string();
+        let session =
+            crate::usecase::agent_session::session::create_session_internal_with_attributes(
+                &session_store,
+                tmp.path(),
+                &worktree_path,
+                Some("codex".to_string()),
+                PermissionMode::Edit,
+                SessionCreationAttributes {
+                    selected_model: Some("gpt-5".to_string()),
+                    workflow_node_session: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        runtime
+            .start_turn_locked(
+                &session.id,
+                PermissionMode::Edit,
+                "workflow turn".to_string(),
+                None,
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        let driver = Arc::new(RejectingDurableStopDriver {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        runtime.set_durable_stop_driver(driver.clone());
+
+        let error = interrupt_agents(&runtime, std::slice::from_ref(&session.id))
+            .await
+            .expect_err("a failed durable Stop must remain observable");
+
+        assert!(error.to_string().contains("injected durable Stop failure"));
+        assert_eq!(driver.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_ne!(
+            runtime.turn_phase(&session.id).await,
+            Some(crate::usecase::agent_session::status::TurnPhase::Idle)
+        );
     }
 
     #[tokio::test]

@@ -1,5 +1,5 @@
 use crate::domain::agent_session::gateway::{
-    AgentBackend, AgentBackendError, AgentSessionRuntime, ForkSessionRequest, SessionSpec,
+    AgentBackend, AgentBackendError, AgentSessionRuntime, SessionSpec,
 };
 use crate::domain::agent_session::value_objects::{
     BackendCapabilities, ModelDescriptor, ModelId, SkillEntry,
@@ -63,29 +63,6 @@ impl AgentBackend for ClaudeBackend {
         let runtime =
             super::session::ClaudeSessionRuntime::open(self.cli_path().to_string(), spec).await?;
         Ok(Box::new(runtime))
-    }
-
-    async fn archive_session(
-        &self,
-        _backend_session_id: &str,
-        _cwd: &str,
-    ) -> Result<(), AgentBackendError> {
-        Ok(())
-    }
-
-    async fn unarchive_session(
-        &self,
-        _backend_session_id: &str,
-        _cwd: &str,
-    ) -> Result<(), AgentBackendError> {
-        Ok(())
-    }
-
-    async fn fork_session(
-        &self,
-        _req: ForkSessionRequest,
-    ) -> Result<Option<String>, AgentBackendError> {
-        Ok(None)
     }
 
     async fn skill_catalog(

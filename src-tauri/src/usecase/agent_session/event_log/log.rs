@@ -1,8 +1,6 @@
 #[cfg(test)]
 use std::cell::Cell;
 
-use serde::{Deserialize, Serialize};
-
 use super::events::AgentSessionEvent;
 #[cfg(test)]
 use super::events::{InterruptReason, PromptInput, TurnId};
@@ -14,11 +12,10 @@ use super::projector::{project, SessionReadModel};
 #[cfg(test)]
 use crate::usecase::agent_session::session::MessagePart;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default)]
 pub struct TurnEventLog {
     events: Vec<AgentSessionEvent>,
     #[cfg(test)]
-    #[serde(skip)]
     project_call_count: Cell<usize>,
 }
 

@@ -43,6 +43,28 @@ pub(crate) struct ReplayedFixture {
     convert_output: String,
 }
 
+/// Projection-only fixture decoded from a canonical runtime-event boundary.
+///
+/// This type deliberately has no wire input or converter output. Projection
+/// compatibility tests consume it without calling either provider converter.
+#[derive(Debug)]
+pub(crate) struct ProjectionFixture {
+    pub backend: FixtureBackend,
+    pub name: String,
+    pub events: Vec<AgentRuntimeEvent>,
+    directory: PathBuf,
+}
+
+impl ProjectionFixture {
+    pub(crate) fn read_model_golden_path(&self) -> PathBuf {
+        self.directory.join("read_model.golden")
+    }
+
+    fn canonical_events_path(&self) -> PathBuf {
+        self.directory.join("canonical_events.json")
+    }
+}
+
 impl ReplayedFixture {
     pub(crate) fn convert_golden_path(&self) -> PathBuf {
         self.directory.join("convert.golden")
@@ -78,6 +100,47 @@ pub(crate) fn replay_backend(backend: FixtureBackend) -> Vec<ReplayedFixture> {
         .collect()
 }
 
+/// Decode the projector input from a checked-in canonical event fixture.
+/// This path is intentionally disjoint from `replay_backend`: it neither
+/// reads `wire.jsonl` nor invokes a production provider converter.
+pub(crate) fn projection_backend(backend: FixtureBackend) -> Vec<ProjectionFixture> {
+    let directories = projection_fixture_directories(backend);
+    assert!(
+        !directories.is_empty(),
+        "no {} canonical event fixtures found under {FIXTURE_ROOT}",
+        backend.directory_name()
+    );
+    directories
+        .into_iter()
+        .map(|directory| {
+            let canonical_events_path = directory.join("canonical_events.json");
+            let raw = fs::read_to_string(&canonical_events_path).unwrap_or_else(|error| {
+                panic!(
+                    "failed to read canonical fixture {}: {error}",
+                    canonical_events_path.display()
+                )
+            });
+            let events = snapshot::decode_runtime_events(&raw).unwrap_or_else(|error| {
+                panic!(
+                    "failed to decode canonical fixture {}: {error}",
+                    canonical_events_path.display()
+                )
+            });
+            let name = directory
+                .file_name()
+                .and_then(OsStr::to_str)
+                .unwrap_or("fixture")
+                .to_string();
+            ProjectionFixture {
+                backend,
+                name,
+                events,
+                directory,
+            }
+        })
+        .collect()
+}
+
 fn fixture_directories(backend: FixtureBackend) -> Vec<PathBuf> {
     let backend_root = Path::new(FIXTURE_ROOT).join(backend.directory_name());
     let mut directories = fs::read_dir(&backend_root)
@@ -89,6 +152,22 @@ fn fixture_directories(backend: FixtureBackend) -> Vec<PathBuf> {
         })
         .map(|entry| entry.expect("failed to read fixture entry").path())
         .filter(|path| path.is_dir() && path.join("wire.jsonl").is_file())
+        .collect::<Vec<_>>();
+    directories.sort();
+    directories
+}
+
+fn projection_fixture_directories(backend: FixtureBackend) -> Vec<PathBuf> {
+    let backend_root = Path::new(FIXTURE_ROOT).join(backend.directory_name());
+    let mut directories = fs::read_dir(&backend_root)
+        .unwrap_or_else(|error| {
+            panic!(
+                "failed to read fixture directory {}: {error}",
+                backend_root.display()
+            )
+        })
+        .map(|entry| entry.expect("failed to read fixture entry").path())
+        .filter(|path| path.is_dir() && path.join("canonical_events.json").is_file())
         .collect::<Vec<_>>();
     directories.sort();
     directories
@@ -259,6 +338,22 @@ mod tests {
     fn codex_fixtures_match_convert_golden() {
         for fixture in replay_backend(FixtureBackend::Codex) {
             fixture.assert_convert_golden();
+        }
+    }
+
+    #[test]
+    fn b048_projection_only_fixtures_decode_canonical_events_without_wire_conversion() {
+        for backend in [FixtureBackend::Claude, FixtureBackend::Codex] {
+            for fixture in projection_backend(backend) {
+                assert!(!fixture.events.is_empty());
+                assert_eq!(
+                    fixture
+                        .canonical_events_path()
+                        .file_name()
+                        .and_then(OsStr::to_str),
+                    Some("canonical_events.json")
+                );
+            }
         }
     }
 

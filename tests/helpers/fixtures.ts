@@ -235,7 +235,8 @@ const baseIpcHandler: Record<string, unknown> = {
 	update_session_state: null,
 	update_message_parts: null,
 	update_session_agent_info: null,
-	interrupt_agent_query: null,
+	stop_agent_session: { __mockAcceptedStop: true },
+	get_stop_operation: null,
 	respond_agent_permission: null,
 	scan_slash_commands: [],
 

@@ -3,10 +3,13 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum GcCategory {
     DeletedWorkspace,
+    #[cfg(test)]
     UnrecoverableSession,
+    #[cfg(test)]
     RecoverableExpired,
     RegenerableCache,
     LegacyComments,
+    #[cfg(test)]
     OrphanBlob,
     StaleProcessRecord,
 }
@@ -15,10 +18,13 @@ impl GcCategory {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::DeletedWorkspace => "deleted_workspace",
+            #[cfg(test)]
             Self::UnrecoverableSession => "unrecoverable_session",
+            #[cfg(test)]
             Self::RecoverableExpired => "recoverable_expired",
             Self::RegenerableCache => "regenerable_cache",
             Self::LegacyComments => "legacy_comments",
+            #[cfg(test)]
             Self::OrphanBlob => "orphan_blob",
             Self::StaleProcessRecord => "stale_process_record",
         }

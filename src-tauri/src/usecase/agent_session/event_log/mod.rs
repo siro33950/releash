@@ -18,10 +18,13 @@ mod log;
 mod part_events;
 mod projector;
 
+pub(crate) use events::prompt_input_from_human_message;
 pub use events::{
     AgentSessionEvent, BackendSessionRecoveryReason, GoalReactivationOutcome, InterruptReason,
-    PermissionDecision, PromptInput, TurnStopReason, TurnTokenUsage,
+    TurnStopReason, TurnTokenUsage,
 };
+#[cfg(test)]
+pub use events::{PermissionDecision, PromptInput};
 pub(crate) use finalization::{
     finalize_turn, latest_unresolved_permission_request, UnresolvedPermissionRequest,
 };

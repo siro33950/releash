@@ -17,6 +17,24 @@ pub(crate) trait AgentTaskSpawner: Send + Sync {
     fn spawn(&self, future: Pin<Box<dyn Future<Output = ()> + Send + 'static>>);
 }
 
+#[async_trait::async_trait]
+pub(crate) trait AcceptedSendObligationDriver: Send + Sync {
+    async fn reserve_turn_execution(
+        &self,
+        operation_id: &str,
+        obligation_id: &str,
+    ) -> Result<(), ()>;
+
+    async fn mark_turn_running(
+        &self,
+        operation_id: &str,
+        obligation_id: &str,
+        turn_id: u64,
+    ) -> Result<(), ()>;
+
+    async fn reconcile_turn_execution(&self, operation_id: &str, obligation_id: &str);
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct AgentStreamingDeltaPayload {
     pub chat_session_id: String,

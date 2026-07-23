@@ -16,6 +16,13 @@ pub(crate) struct QueuedTurnInput {
     pub editor_context: Option<AgentEditorContext>,
     pub existing_human_message_id: Option<String>,
     pub existing_agent_message_id: Option<String>,
+    /// Turn identity reserved by the durable send acceptance. Normal legacy
+    /// callers leave this empty and allocate at dequeue time.
+    pub reserved_turn_id: Option<u64>,
+    /// Present only for a durable accepted send. The queue drain must claim
+    /// this exact obligation before opening a provider or starting a turn.
+    pub accepted_operation_id: Option<String>,
+    pub execution_obligation_id: Option<String>,
 }
 
 impl QueuedTurnInput {
@@ -43,6 +50,9 @@ impl QueuedTurnInput {
             editor_context,
             existing_human_message_id: None,
             existing_agent_message_id: None,
+            reserved_turn_id: None,
+            accepted_operation_id: None,
+            execution_obligation_id: None,
         }
     }
 }

@@ -144,6 +144,30 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 			if (cmd in cfg.ipcHandler) {
 				let value = cfg.ipcHandler[cmd];
 				if (
+					value &&
+					typeof value === "object" &&
+					"__mockAcceptedPermissionResponse" in
+						(value as Record<string, unknown>)
+				) {
+					const operationId = args.operationId as string;
+					const requestId = args.requestId as string;
+					return {
+						type: "accepted",
+						operation: {
+							receipt: {
+								operation_id: operationId,
+								session_id: args.chatSessionId as string,
+								request_id: requestId,
+								input_ref: `permission-response:${requestId}`,
+							},
+							latest_status: {
+								type: "completed",
+								decision: args.behavior === "allow" ? "allowed" : "denied",
+							},
+						},
+					};
+				}
+				if (
 					cmd === "get_workspace_tree_selection_reconciliation" &&
 					value &&
 					typeof value === "object" &&
@@ -162,6 +186,28 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 								selectedNodeId,
 							),
 						},
+					};
+				}
+				if (
+					value &&
+					typeof value === "object" &&
+					"__mockAcceptedStop" in (value as Record<string, unknown>)
+				) {
+					const request = args.request as {
+						request_id: string;
+						session_id: string;
+						turn_id: string;
+						expected_session_revision: string;
+					};
+					return {
+						type: "accepted",
+						receipt: {
+							operation_id: request.request_id,
+							session_id: request.session_id,
+							turn_id: request.turn_id,
+							accepted_revision: request.expected_session_revision,
+						},
+						state: { type: "accepted" },
 					};
 				}
 				if (

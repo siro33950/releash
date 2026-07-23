@@ -260,6 +260,7 @@ mod tests {
                 context_reinjection_generation: None,
                 context_carry: None::<ContextCarryState>,
                 pending_recovery_message: None,
+                recovery_publication_snapshot: None,
                 permission_mode: "edit".to_string(),
                 plan_mode: false,
                 selected_model: None,

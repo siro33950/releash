@@ -1,5 +1,10 @@
 use std::sync::Arc;
 
+use crate::adaptor::protocol::agent_session_v1::{
+    OperationApplicationErrorDtoV1, PermissionResponseCommandErrorDtoV1,
+    PermissionResponseCommandOutcomeDtoV1, PermissionResponseLookupErrorDtoV1,
+    PermissionResponseOperationViewDtoV1,
+};
 use crate::domain::agent_session::entities::{PermissionResponse, PermissionResponseDecision};
 use crate::domain::agent_session::value_objects::JsonPayload;
 use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
@@ -296,21 +301,205 @@ pub async fn report_agent_permission_request_observed(
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn respond_agent_permission(
-    runtime: tauri::State<'_, Arc<AgentSessionRuntimeUsecase>>,
+    store: tauri::State<'_, Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>>,
+    operation: tauri::State<
+        '_,
+        Arc<crate::usecase::agent_session::operation::PermissionResponseOperationUsecase>,
+    >,
+    journal: tauri::State<'_, Arc<crate::usecase::agent_session::operation::CallerAttemptJournal>>,
+    operation_id: String,
     chat_session_id: String,
     request_id: String,
     behavior: String,
     message: Option<String>,
     updated_input: Option<String>,
-) -> Result<(), String> {
-    let response = permission_response_from_command(request_id, behavior, message, updated_input)?;
-    runtime
-        .respond_permission(&chat_session_id, response)
-        .await
-        .map_err(|error| error.to_string())
+) -> Result<PermissionResponseCommandOutcomeDtoV1, PermissionResponseCommandErrorDtoV1> {
+    dispatch_durable_permission_response(
+        store.inner().as_ref(),
+        operation.inner().as_ref(),
+        journal.inner().as_ref(),
+        operation_id,
+        chat_session_id,
+        request_id,
+        behavior,
+        message,
+        updated_input,
+    )
+    .await
 }
 
-fn permission_response_from_command(
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn dispatch_durable_permission_response(
+    store: &crate::adaptor::gateway::local_event_store::LocalEventStore,
+    operation: &crate::usecase::agent_session::operation::PermissionResponseOperationUsecase,
+    journal: &crate::usecase::agent_session::operation::CallerAttemptJournal,
+    operation_id: String,
+    chat_session_id: String,
+    request_id: String,
+    behavior: String,
+    message: Option<String>,
+    updated_input: Option<String>,
+) -> Result<PermissionResponseCommandOutcomeDtoV1, PermissionResponseCommandErrorDtoV1> {
+    let response = permission_response_from_command(
+        request_id.clone(),
+        behavior.clone(),
+        message.clone(),
+        updated_input.clone(),
+    )
+    .map_err(|_| PermissionResponseCommandErrorDtoV1::InvalidRequest)?;
+    let journal_command = serde_json::json!({
+        "schema": "tauri_permission_response_attempt_v1",
+        "session_id": chat_session_id,
+        "request_id": request_id,
+        "behavior": behavior,
+        "message": message,
+        "updated_input": updated_input,
+    })
+    .to_string();
+
+    // Saved operations remain replayable after admission closes. The request
+    // call below still verifies the immutable exact payload binding.
+    let replaying_existing = match operation
+        .get_operation(super::session::TAURI_OPERATION_PRINCIPAL, &operation_id)
+        .await
+    {
+        Ok(_) => true,
+        Err(
+            crate::usecase::agent_session::operation::GetPermissionResponseOperationError::NotFound,
+        ) => {
+            super::session::ensure_mutation_admission(store)
+                .await
+                .map_err(permission_admission_error)?;
+            false
+        }
+        Err(
+            crate::usecase::agent_session::operation::GetPermissionResponseOperationError::InvalidRequest,
+        ) => return Err(PermissionResponseCommandErrorDtoV1::InvalidRequest),
+        Err(_) => {
+            return Ok(PermissionResponseCommandOutcomeDtoV1::OutcomeUnknown {
+                operation_id,
+            });
+        }
+    };
+    if !replaying_existing {
+        match journal
+            .record_attempt_scoped(
+                super::session::TAURI_OPERATION_PRINCIPAL,
+                crate::domain::local_event::OperationKind::PermissionResponse,
+                &operation_id,
+                journal_command.as_bytes(),
+                Some(&chat_session_id),
+            )
+            .await
+        {
+            Ok(_) => {}
+            Err(crate::usecase::agent_session::operation::CallerJournalError::OutcomeUnknown) => {
+                return Ok(PermissionResponseCommandOutcomeDtoV1::OutcomeUnknown { operation_id });
+            }
+            Err(
+                crate::usecase::agent_session::operation::CallerJournalError::RejectedBeforeCommit,
+            ) => {
+                return Ok(
+                    PermissionResponseCommandOutcomeDtoV1::RejectedBeforeCommit {
+                        failure: super::session::caller_journal_failure(
+                            "The local caller attempt could not be saved.",
+                        )
+                        .into(),
+                    },
+                );
+            }
+            Err(error) => {
+                return Err(permission_admission_error(
+                    super::session::caller_journal_application_error(error),
+                ));
+            }
+        }
+    }
+    let outcome = operation
+        .request(
+            crate::usecase::agent_session::operation::PermissionResponseOperationRequest {
+                principal: super::session::TAURI_OPERATION_PRINCIPAL.to_string(),
+                operation_id: operation_id.clone(),
+                session_id: chat_session_id,
+                response,
+            },
+        )
+        .await
+        .map_err(crate::adaptor::presenter::agent_session::permission_response_command_error)?;
+    match &outcome {
+        crate::usecase::agent_session::operation::PermissionResponseCommandOutcome::Accepted(_) => {
+            if let Err(error) = journal
+                    .resolve_attempt_if_present(
+                    super::session::TAURI_OPERATION_PRINCIPAL,
+                    crate::domain::local_event::OperationKind::PermissionResponse,
+                    &operation_id,
+                    journal_command.as_bytes(),
+                    true,
+                )
+                .await
+            {
+                log::warn!("permission response caller journal clear failed: {error:?}");
+            }
+        }
+        crate::usecase::agent_session::operation::PermissionResponseCommandOutcome::RejectedBeforeCommit { .. } => {
+            if let Err(error) = journal
+                    .resolve_attempt_if_present(
+                        super::session::TAURI_OPERATION_PRINCIPAL,
+                        crate::domain::local_event::OperationKind::PermissionResponse,
+                        &operation_id,
+                        journal_command.as_bytes(),
+                        false,
+                    )
+                    .await
+            {
+                log::warn!(
+                    "rejected permission response caller journal clear failed: {error:?}"
+                );
+            }
+        }
+        crate::usecase::agent_session::operation::PermissionResponseCommandOutcome::OutcomeUnknown { .. } => {}
+    }
+    Ok(crate::adaptor::presenter::agent_session::permission_response_outcome(outcome))
+}
+
+fn permission_admission_error(
+    error: OperationApplicationErrorDtoV1,
+) -> PermissionResponseCommandErrorDtoV1 {
+    match error {
+        OperationApplicationErrorDtoV1::MigrationInProgress => {
+            PermissionResponseCommandErrorDtoV1::MigrationInProgress
+        }
+        OperationApplicationErrorDtoV1::ShutdownInProgress => {
+            PermissionResponseCommandErrorDtoV1::ShutdownInProgress
+        }
+        OperationApplicationErrorDtoV1::FeedbackCapacityExceeded => {
+            PermissionResponseCommandErrorDtoV1::FeedbackCapacityExceeded
+        }
+        OperationApplicationErrorDtoV1::Internal { correlation_id } => {
+            PermissionResponseCommandErrorDtoV1::Internal { correlation_id }
+        }
+        other => PermissionResponseCommandErrorDtoV1::Internal {
+            correlation_id: format!("permission-admission-{other:?}"),
+        },
+    }
+}
+
+#[tauri::command]
+pub async fn get_agent_permission_response_operation(
+    operation: tauri::State<
+        '_,
+        Arc<crate::usecase::agent_session::operation::PermissionResponseOperationUsecase>,
+    >,
+    operation_id: String,
+) -> Result<PermissionResponseOperationViewDtoV1, PermissionResponseLookupErrorDtoV1> {
+    operation
+        .get_operation(super::session::TAURI_OPERATION_PRINCIPAL, &operation_id)
+        .await
+        .map(crate::adaptor::presenter::agent_session::permission_response_operation)
+        .map_err(crate::adaptor::presenter::agent_session::permission_response_lookup_error)
+}
+
+pub(crate) fn permission_response_from_command(
     request_id: String,
     behavior: String,
     message: Option<String>,
@@ -318,6 +507,9 @@ fn permission_response_from_command(
 ) -> Result<PermissionResponse, String> {
     match behavior.as_str() {
         "allow" => {
+            if message.is_some() {
+                return Err("Allow permission responses cannot include a deny message".to_string());
+            }
             let (updated_input, answers) = split_updated_input_and_answers(updated_input)?;
             Ok(PermissionResponse {
                 request_id,
@@ -327,10 +519,15 @@ fn permission_response_from_command(
                 },
             })
         }
-        "deny" => Ok(PermissionResponse {
-            request_id,
-            decision: PermissionResponseDecision::Deny { message },
-        }),
+        "deny" => {
+            if updated_input.is_some() {
+                return Err("Deny permission responses cannot include updated_input".to_string());
+            }
+            Ok(PermissionResponse {
+                request_id,
+                decision: PermissionResponseDecision::Deny { message },
+            })
+        }
         other => Err(format!("Unsupported permission behavior: {other}")),
     }
 }
@@ -484,6 +681,24 @@ mod tests {
                 .unwrap_err();
 
         assert!(error.contains("Unsupported permission behavior"));
+    }
+
+    #[test]
+    fn permission_response_rejects_fields_outside_the_selected_decision() {
+        assert!(permission_response_from_command(
+            "req-allow".to_string(),
+            "allow".to_string(),
+            Some("not an allow field".to_string()),
+            None,
+        )
+        .is_err());
+        assert!(permission_response_from_command(
+            "req-deny".to_string(),
+            "deny".to_string(),
+            Some("no".to_string()),
+            Some("{}".to_string()),
+        )
+        .is_err());
     }
 
     #[test]

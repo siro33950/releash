@@ -1,14 +1,18 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+#[cfg(test)]
+use std::collections::HashMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Component, Path};
 
-use crate::domain::app_data_gc::{is_expired, GcCategory, GcReport};
+#[cfg(test)]
+use crate::domain::app_data_gc::is_expired;
+use crate::domain::app_data_gc::{GcCategory, GcReport};
+#[cfg(test)]
 use crate::usecase::agent_session::session::SessionState;
 
 use super::plan::{DeletionCandidate, DeletionPlan, DeletionRevalidation};
-use super::ports::{
-    CurrentSessionState, CurrentWorkflowExecutionState, GcFileSystem, GcRevalidationReader,
-    RevalidationRead, WorkflowArchivePruner,
-};
+#[cfg(test)]
+use super::ports::{CurrentSessionState, CurrentWorkflowExecutionState, RevalidationRead};
+use super::ports::{GcFileSystem, GcRevalidationReader, WorkflowArchivePruner};
 use super::request::{LiveWorktreeResolution, RuntimeProtection, StartupGcRequest};
 
 pub(super) fn sweep(
@@ -21,9 +25,12 @@ pub(super) fn sweep(
     let mut report = GcReport::default();
     let mut failed_workflow_execution_deletions: BTreeMap<GcCategory, HashSet<String>> =
         BTreeMap::new();
-    let workflow_execution_ids = workflow_execution_revalidation_ids(&plan.candidates);
-    let mut workflow_revalidation = revalidation_reader
-        .workflow_execution_states(&request.app_data_dir, &workflow_execution_ids);
+    #[cfg(test)]
+    let mut workflow_revalidation = {
+        let workflow_execution_ids = workflow_execution_revalidation_ids(&plan.candidates);
+        revalidation_reader
+            .workflow_execution_states(&request.app_data_dir, &workflow_execution_ids)
+    };
     let runtime_protection =
         revalidation_reader.runtime_protection(&request.app_data_dir, &request.process_records);
     for candidate in plan.candidates {
@@ -35,13 +42,17 @@ pub(super) fn sweep(
             );
             continue;
         }
-        if !candidate_still_valid(
+        #[cfg(test)]
+        let still_valid = candidate_still_valid(
             &candidate,
             request,
             revalidation_reader,
             &runtime_protection,
             &mut workflow_revalidation,
-        ) {
+        );
+        #[cfg(not(test))]
+        let still_valid = candidate_still_valid(&candidate, request, &runtime_protection);
+        if !still_valid {
             mark_workflow_candidate_failed(&candidate, &mut failed_workflow_execution_deletions);
             log::info!(
                 "app data gc skipped {} because deletion candidate is no longer eligible",
@@ -114,6 +125,7 @@ pub(super) fn sweep(
     report
 }
 
+#[cfg(test)]
 fn workflow_execution_revalidation_ids(candidates: &[DeletionCandidate]) -> HashSet<String> {
     candidates
         .iter()
@@ -160,6 +172,7 @@ fn mark_workflow_candidate_failed(
     }
 }
 
+#[cfg(test)]
 fn candidate_still_valid(
     candidate: &DeletionCandidate,
     request: &StartupGcRequest,
@@ -195,6 +208,24 @@ fn candidate_still_valid(
     }
 }
 
+#[cfg(not(test))]
+fn candidate_still_valid(
+    candidate: &DeletionCandidate,
+    request: &StartupGcRequest,
+    runtime: &RuntimeProtection,
+) -> bool {
+    match &candidate.revalidation {
+        DeletionRevalidation::None => true,
+        DeletionRevalidation::WorkspaceState { key } => {
+            workspace_state_candidate_still_valid(key, request.live_worktrees.as_ref(), runtime)
+        }
+        DeletionRevalidation::ReviewComment { key } => {
+            review_comment_candidate_still_valid(key, request.live_worktrees.as_ref(), runtime)
+        }
+    }
+}
+
+#[cfg(test)]
 fn session_candidate_still_valid(
     category: GcCategory,
     session_id: &str,
@@ -220,6 +251,7 @@ fn session_candidate_still_valid(
     }
 }
 
+#[cfg(test)]
 fn session_state_matches_category(
     category: GcCategory,
     state: &CurrentSessionState,
@@ -251,6 +283,7 @@ fn session_state_matches_category(
         })
 }
 
+#[cfg(test)]
 fn workflow_candidate_still_valid(
     category: GcCategory,
     execution_id: &str,
@@ -275,6 +308,7 @@ fn workflow_candidate_still_valid(
     }
 }
 
+#[cfg(test)]
 fn workflow_state_matches_category(
     category: GcCategory,
     state: &CurrentWorkflowExecutionState,

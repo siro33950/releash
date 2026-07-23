@@ -477,7 +477,7 @@ mod tests {
                 },
                 MessagePart::ToolUse {
                     tool: "Bash".to_string(),
-                    input: serde_json::json!({"command": "cat foo"}),
+                    input: serde_json::json!({"command": "cat foo"}).into(),
                     id: "t1".to_string(),
                     parent_tool_use_id: None,
                 },

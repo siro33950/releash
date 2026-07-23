@@ -22,6 +22,8 @@ import React, {
 } from "react";
 import type { OlderMessageEvictionOptions } from "@/hooks/useAgentChat";
 import type { DropZoneType } from "@/hooks/useNativeFileDrop";
+import { useOperationSupervision } from "@/hooks/useOperationSupervision";
+import type { SessionFeedbackEntry } from "@/hooks/useSessionStore";
 import type {
 	AgentEditorContext,
 	AgentEditorSelection,
@@ -54,6 +56,7 @@ import type { MessageInputHandle } from "./MessageInput";
 import { MessageInput } from "./MessageInput";
 import { MODES } from "./ModeSelector";
 import { PermissionDialog } from "./PermissionDialog";
+import { SessionFeedbackBanners } from "./SessionFeedbackBanners";
 import { ShimmerPlaceholder } from "./ShimmerPlaceholder";
 import {
 	AgentMarkdown,
@@ -649,6 +652,11 @@ export interface ChatSessionViewProps {
 	queuePaused: boolean;
 	stallObservation?: AgentStallObservation | null;
 	notice?: SessionNotice | null;
+	feedback?: SessionFeedbackEntry[];
+	onDismissFeedback?: (entry: SessionFeedbackEntry) => void | Promise<void>;
+	onRetryFeedback?: (entry: SessionFeedbackEntry) => void | Promise<void>;
+	hasMoreFeedback?: boolean;
+	onLoadMoreFeedback?: () => void | Promise<void>;
 	runtimeSlashCommands?: SlashCommand[];
 	selectedBackendId: string | null;
 	canChangeBackend: boolean;
@@ -723,6 +731,11 @@ export function ChatSessionView({
 	queuePaused,
 	stallObservation,
 	notice,
+	feedback = [],
+	onDismissFeedback,
+	onRetryFeedback,
+	hasMoreFeedback = false,
+	onLoadMoreFeedback,
 	runtimeSlashCommands = [],
 	selectedBackendId,
 	canChangeBackend,
@@ -746,6 +759,7 @@ export function ChatSessionView({
 	sendMessageRef,
 }: ChatSessionViewProps) {
 	useActivityLogSessionScope(session.id);
+	const supervision = useOperationSupervision(session.id);
 	const messageInputRef = useRef<MessageInputHandle>(null);
 	const [isFileDragOver, setIsFileDragOver] = useState(false);
 	const [copyState, setCopyState] = useState<"idle" | "copied" | "error">(
@@ -1400,6 +1414,87 @@ export function ChatSessionView({
 			onDragOver={handleFileDragOver}
 			onDragLeave={handleFileDragLeave}
 		>
+			{(supervision.state.sendOperation?.latest_status.type ===
+				"reconciliation_required" ||
+				supervision.state.recovery.length > 0 ||
+				supervision.state.migration ||
+				supervision.state.shutdown ||
+				supervision.state.shutdownOutcomeUnknown) && (
+				<div className="border-b border-border bg-muted/40 px-3 py-2 text-xs">
+					{supervision.state.sendOperation?.latest_status.type ===
+						"reconciliation_required" && (
+						<div>
+							Accepted send requires reconciliation:{" "}
+							{supervision.state.sendOperation.receipt.operation_id}
+						</div>
+					)}
+					{supervision.state.migration && (
+						<div>
+							Local data migration: {supervision.state.migration.phase}
+							{supervision.state.migration.safe_failure
+								? ` — ${supervision.state.migration.safe_failure}`
+								: ""}
+						</div>
+					)}
+					{supervision.state.shutdown && (
+						<div className="flex items-center gap-2">
+							<span>
+								Application shutdown: {supervision.state.shutdown.phase}
+							</span>
+							{supervision.state.shutdown.actions.includes("retry_quit") && (
+								<button
+									type="button"
+									className="rounded border border-border px-1.5 py-0.5"
+									onClick={() => void supervision.retryQuit()}
+								>
+									Retry quit
+								</button>
+							)}
+						</div>
+					)}
+					{supervision.state.shutdownOutcomeUnknown && (
+						<div data-testid="shutdown-outcome-unknown">
+							Application shutdown outcome unknown:{" "}
+							{supervision.state.shutdownOutcomeUnknown.operation_id} —{" "}
+							{supervision.state.shutdownOutcomeUnknown.intent.type} (
+							{supervision.state.shutdownOutcomeUnknown.intent.code})
+						</div>
+					)}
+					{supervision.state.shutdownTargets
+						.filter((target) => target.actions.includes("retry_same_effect"))
+						.map((target) => (
+							<div key={target.ordinal} className="flex items-center gap-2">
+								<span>
+									Shutdown target {target.kind} requires reconciliation
+								</span>
+								<button
+									type="button"
+									className="rounded border border-border px-1.5 py-0.5"
+									onClick={() => void supervision.retryShutdownTarget(target)}
+								>
+									Retry same effect
+								</button>
+							</div>
+						))}
+					{supervision.state.recovery.map((entry) => (
+						<div key={entry.obligation_id} className="flex items-center gap-2">
+							<span>{entry.safe_label}</span>
+							{entry.actions.map((action) => (
+								<button
+									type="button"
+									key={action}
+									className="rounded border border-border px-1.5 py-0.5"
+									onClick={() =>
+										void supervision.requestRecovery(entry, action)
+									}
+								>
+									{action.replace(/_/g, " ")}
+								</button>
+							))}
+						</div>
+					))}
+				</div>
+			)}
 			{isFileDragOver && (
 				<div className="absolute inset-0 flex items-center justify-center bg-primary/10 border-2 border-dashed border-primary rounded pointer-events-none z-10">
 					<span className="text-sm font-medium text-primary bg-background/80 px-3 py-1.5 rounded">
@@ -1760,7 +1855,14 @@ export function ChatSessionView({
 						</div>
 					</div>
 				)}
-				{notice && (
+				<SessionFeedbackBanners
+					entries={feedback}
+					onDismiss={onDismissFeedback}
+					onRetry={onRetryFeedback}
+					hasMore={hasMoreFeedback}
+					onLoadMore={onLoadMoreFeedback}
+				/>
+				{feedback.length === 0 && notice && (
 					<div className="px-2 pb-2">
 						<div
 							className={

@@ -84,6 +84,11 @@ pub(crate) struct BackendSessionRecoveryState {
     pub recovery_id: String,
     pub old_provider_session_generation: u64,
     pub reason: BackendSessionRecoveryReason,
+    /// Once the provider-side recovery attempt has failed, retain the exact
+    /// failure until its terminal recovery batch is durably acknowledged.
+    /// The runtime event pump can then retry the same recovery identity
+    /// without reopening the provider or inventing a second failure.
+    pub pending_failure: Option<String>,
     pub completion: tokio::sync::watch::Sender<bool>,
 }
 

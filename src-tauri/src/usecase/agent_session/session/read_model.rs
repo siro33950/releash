@@ -4,7 +4,8 @@ use std::path::Path;
 use serde::Serialize;
 
 use super::{
-    ChatMessage, ChatSession, MessagePart, MessageRole, SessionState, SessionStore, SessionSummary,
+    ActivityEntry, ChatMessage, ChatSession, MessagePart, MessageRole, SessionState, SessionStore,
+    SessionSummary,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -62,23 +63,26 @@ pub(crate) fn build_agent_task_list_report_from_parts(
         match part {
             MessagePart::ToolUse {
                 tool, input, id, ..
-            } if is_background_task_tool(tool, input) => {
-                let background = input
-                    .get("run_in_background")
-                    .and_then(|value| value.as_bool())
-                    .unwrap_or(false);
-                if !tasks.contains_key(id) {
-                    order.push(id.clone());
-                    tasks.insert(
-                        id.clone(),
-                        TaskListBuilder {
-                            tool_use_id: id.clone(),
-                            label: build_task_label(tool, input),
-                            status: "running".to_string(),
-                            background,
-                            has_result: false,
-                        },
-                    );
+            } => {
+                let input = json_payload_value(input);
+                if is_background_task_tool(tool, &input) {
+                    let background = input
+                        .get("run_in_background")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(false);
+                    if !tasks.contains_key(id) {
+                        order.push(id.clone());
+                        tasks.insert(
+                            id.clone(),
+                            TaskListBuilder {
+                                tool_use_id: id.clone(),
+                                label: build_task_label(tool, &input),
+                                status: "running".to_string(),
+                                background,
+                                has_result: false,
+                            },
+                        );
+                    }
                 }
             }
             MessagePart::TaskStatus {
@@ -237,6 +241,13 @@ fn task_input_string(input: &serde_json::Value, key: &str) -> Option<String> {
         .map(truncate_task_label)
 }
 
+fn json_payload_value(
+    payload: &crate::domain::agent_session::value_objects::JsonPayload,
+) -> serde_json::Value {
+    serde_json::from_str(payload.as_str())
+        .expect("domain JsonPayload must be validated at its boundary")
+}
+
 fn is_background_task_tool(tool: &str, input: &serde_json::Value) -> bool {
     tool == "Task"
         || tool == "Agent"
@@ -281,7 +292,7 @@ fn message_search_text(message: &ChatMessage) -> String {
                     }
                     text.push_str(tool);
                     text.push(' ');
-                    text.push_str(&input.to_string());
+                    text.push_str(input.as_str());
                 }
                 MessagePart::Permission {
                     request, status, ..
@@ -291,10 +302,54 @@ fn message_search_text(message: &ChatMessage) -> String {
                     }
                     text.push_str(status.as_str());
                     text.push(' ');
-                    if let Ok(serialized) = serde_json::to_string(request) {
-                        text.push_str(&serialized);
-                    } else {
-                        text.push_str(&request.tool_name);
+                    text.push_str(&request.tool_name);
+                    text.push(' ');
+                    text.push_str(&request.id);
+                    if let Some(title) = &request.title {
+                        text.push(' ');
+                        text.push_str(title);
+                    }
+                    use crate::domain::agent_session::entities::PermissionRequestBody;
+                    match &request.body {
+                        PermissionRequestBody::ToolApproval { input } => {
+                            text.push(' ');
+                            text.push_str(input.as_str());
+                        }
+                        PermissionRequestBody::PlanApproval {
+                            plan,
+                            allowed_prompts,
+                        } => {
+                            text.push(' ');
+                            text.push_str(plan);
+                            for prompt in allowed_prompts {
+                                text.push(' ');
+                                text.push_str(&prompt.tool);
+                                text.push(' ');
+                                text.push_str(&prompt.prompt);
+                            }
+                        }
+                        PermissionRequestBody::Question { questions } => {
+                            for question in questions {
+                                text.push(' ');
+                                text.push_str(&question.question);
+                                if let Some(header) = &question.header {
+                                    text.push(' ');
+                                    text.push_str(header);
+                                }
+                                for option in &question.options {
+                                    text.push(' ');
+                                    text.push_str(&option.label);
+                                    if let Some(description) = &option.description {
+                                        text.push(' ');
+                                        text.push_str(description);
+                                    }
+                                }
+                            }
+                        }
+                        PermissionRequestBody::PermissionGrant { requested } => {
+                            text.push(' ');
+                            text.push_str(requested.as_str());
+                        }
                     }
                 }
                 MessagePart::TaskStatus {
@@ -355,7 +410,27 @@ fn message_search_text(message: &ChatMessage) -> String {
             if !text.is_empty() {
                 text.push('\n');
             }
-            text.push_str(&serde_json::to_string(activity).unwrap_or_default());
+            match activity {
+                ActivityEntry::ToolUse { tool, input, id } => {
+                    text.push_str(tool);
+                    text.push(' ');
+                    text.push_str(id);
+                    text.push(' ');
+                    text.push_str(&input.to_string());
+                }
+                ActivityEntry::ToolResult { content, .. } => text.push_str(content),
+                ActivityEntry::PermissionResult {
+                    tool_name,
+                    status,
+                    summary,
+                } => {
+                    text.push_str(tool_name);
+                    text.push(' ');
+                    text.push_str(status);
+                    text.push(' ');
+                    text.push_str(summary);
+                }
+            }
         }
     }
     text
@@ -532,7 +607,8 @@ mod tests {
                 input: serde_json::json!({
                     "description": "Explore parser",
                     "subagent_type": "Explore"
-                }),
+                })
+                .into(),
                 id: "task-1".to_string(),
                 parent_tool_use_id: None,
             },
@@ -547,7 +623,8 @@ mod tests {
                 input: serde_json::json!({
                     "command": "pnpm test",
                     "run_in_background": true
-                }),
+                })
+                .into(),
                 id: "task-2".to_string(),
                 parent_tool_use_id: None,
             },
@@ -748,7 +825,7 @@ mod tests {
             activities: None,
             parts: Some(vec![
                 MessagePart::Permission {
-                    request: super::super::PermissionRequestMsg {
+                    request: crate::usecase::agent_session::runtime::event_apply::pending_permission_request_from_msg(&super::super::PermissionRequestMsg {
                         id: "perm-1".to_string(),
                         tool_use_id: Some("tool-1".to_string()),
                         tool_name: "Bash".to_string(),
@@ -761,7 +838,8 @@ mod tests {
                         display_name: None,
                         description: None,
                         decision_reason: None,
-                    },
+                    })
+                    .unwrap(),
                     status: PermissionPartStatus::Pending,
                     answers: None,
                     parent_tool_use_id: None,

@@ -19,6 +19,25 @@ pub enum AgentSessionNoticeOperation {
     SetBackend,
 }
 
+impl AgentSessionNoticeOperation {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Send => "send",
+            Self::LoadSession => "load_session",
+            Self::LoadOlder => "load_older",
+            Self::CancelQueue => "cancel_queue",
+            Self::ResumeQueue => "resume_queue",
+            Self::CloseSession => "close_session",
+            Self::RestoreSession => "restore_session",
+            Self::ArchiveSession => "archive_session",
+            Self::ForkSession => "fork_session",
+            Self::SetTitle => "set_title",
+            Self::RespondPermission => "respond_permission",
+            Self::SetBackend => "set_backend",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AgentSessionNotice {
     pub message: String,

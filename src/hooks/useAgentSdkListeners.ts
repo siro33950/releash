@@ -1,6 +1,7 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { Dispatch } from "react";
 import { useEffect } from "react";
+import { canonicalDecimalToDisplayNumber } from "@/lib/canonicalDecimal";
 import type {
 	AgentSessionContextCarryUpdated,
 	AgentSupportedCommandsUpdated,
@@ -13,7 +14,6 @@ import {
 	normalizePermissionMode,
 	type PermissionRequest,
 	type SessionState,
-	type TokenUsage,
 	type TurnPhase,
 } from "@/types/session";
 import type { AgentChatAction } from "./agentChatReducer";
@@ -32,13 +32,13 @@ interface SessionStateChanged {
 	session_state?: SessionState | null;
 	queue_paused?: boolean;
 	pending_permission_request?: PermissionRequest | null;
-	pending_permission_state_revision?: number | null;
+	pending_permission_state_revision?: string | null;
 }
 
 interface StreamingMessageUpdated {
 	chat_session_id: string;
 	message_id: string;
-	seq: number;
+	seq: string;
 	snapshot?: boolean;
 	parts: MessagePart[];
 	message?: (LegacyChatMessage & { parts?: MessagePart[] | null }) | null;
@@ -47,8 +47,8 @@ interface StreamingMessageUpdated {
 interface AgentStallObserved {
 	chat_session_id: string;
 	turn_phase: TurnPhase;
-	idle_secs: number;
-	signal_count: number;
+	idle_secs: string;
+	signal_count: string;
 	cap_reached: boolean;
 }
 
@@ -93,7 +93,12 @@ interface ModelsUpdated {
 
 interface AgentTurnUsageUpdated {
 	chatSessionId: string;
-	tokenUsage: TokenUsage;
+	tokenUsage: {
+		inputTokens: string;
+		outputTokens: string;
+		totalTokens: string | null;
+		contextWindowTokens: string | null;
+	};
 }
 
 /**
@@ -139,7 +144,7 @@ function warnDroppedStreamingDelta(
 	reason: StreamingDeltaDropReason,
 	sessionId: string,
 	messageId: string,
-	seq: number,
+	seq: string,
 ): void {
 	console.warn(
 		reason === "missing_session"
@@ -172,7 +177,26 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 			dispatch({
 				type: "SET_LATEST_TOKEN_USAGE",
 				sessionId: chatSessionId,
-				usage: tokenUsage,
+				usage: {
+					inputTokens: canonicalDecimalToDisplayNumber(tokenUsage.inputTokens),
+					outputTokens: canonicalDecimalToDisplayNumber(
+						tokenUsage.outputTokens,
+					),
+					...(tokenUsage.totalTokens !== null
+						? {
+								totalTokens: canonicalDecimalToDisplayNumber(
+									tokenUsage.totalTokens,
+								),
+							}
+						: {}),
+					...(tokenUsage.contextWindowTokens !== null
+						? {
+								contextWindowTokens: canonicalDecimalToDisplayNumber(
+									tokenUsage.contextWindowTokens,
+								),
+							}
+						: {}),
+				},
 			});
 		}).then((fn) => {
 			if (cancelled) {
@@ -344,8 +368,8 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 				sessionId: chat_session_id,
 				observation: {
 					turnPhase: turn_phase,
-					idleSecs: idle_secs,
-					signalCount: signal_count,
+					idleSecs: canonicalDecimalToDisplayNumber(idle_secs),
+					signalCount: canonicalDecimalToDisplayNumber(signal_count),
 					capReached: cap_reached,
 				},
 			});
@@ -465,8 +489,7 @@ export function useAgentSdkListeners(refs: AgentSdkListenerRefs): void {
 				pending_permission_state_revision,
 			} = event.payload;
 			const pendingPermissionStateRevision =
-				typeof pending_permission_state_revision === "number" &&
-				Number.isFinite(pending_permission_state_revision)
+				typeof pending_permission_state_revision === "string"
 					? {
 							pendingPermissionStateRevision: pending_permission_state_revision,
 						}

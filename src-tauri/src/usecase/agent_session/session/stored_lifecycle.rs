@@ -12,38 +12,6 @@ use super::{
     validate_session_permission_mode, ChatSession, SessionBackendResolver, SessionStore,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct BackendSessionLifecycleRequest {
-    pub backend_id: Option<String>,
-    pub agent_session_id: Option<String>,
-    pub cwd: String,
-    pub model: Option<String>,
-    pub permission_mode: String,
-    pub plan_mode: bool,
-    pub permission_profile_id: Option<String>,
-}
-
-#[async_trait]
-pub(crate) trait AgentSessionBackendLifecycleGateway: Send + Sync {
-    async fn archive_backend_session(
-        &self,
-        request: BackendSessionLifecycleRequest,
-    ) -> Result<(), String>;
-    async fn unarchive_backend_session(
-        &self,
-        request: BackendSessionLifecycleRequest,
-    ) -> Result<(), String>;
-    async fn fork_backend_session(
-        &self,
-        request: BackendSessionLifecycleRequest,
-    ) -> Result<Option<String>, String>;
-}
-
-#[async_trait]
-pub(crate) trait AgentSessionRuntimeCloser: Send + Sync {
-    async fn close_agent_session(&self, session_id: &str) -> Result<(), String>;
-}
-
 #[async_trait]
 pub(crate) trait WorkflowNodeSessionRestorer: Send + Sync {
     async fn try_open_tab(&self, session_id: &str) -> Result<Option<String>, String>;
@@ -52,8 +20,11 @@ pub(crate) trait WorkflowNodeSessionRestorer: Send + Sync {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum CloseSessionOutcome {
+    #[cfg(test)]
     StoredSessionClosed,
-    WorkflowNodeTabClosed { worktree_path: String },
+    WorkflowNodeTabClosed {
+        worktree_path: String,
+    },
 }
 
 #[async_trait]
@@ -73,8 +44,6 @@ pub(crate) enum RestoreSessionOutcome {
 
 pub(crate) struct StoredSessionLifecycleUsecase {
     session_store: Arc<SessionStore>,
-    backend_lifecycle: Arc<dyn AgentSessionBackendLifecycleGateway>,
-    runtime_closer: Arc<dyn AgentSessionRuntimeCloser>,
     workflow_node_restorer: Arc<dyn WorkflowNodeSessionRestorer>,
     notice_usecase: Arc<AgentSessionNoticeUsecase>,
 }
@@ -82,20 +51,17 @@ pub(crate) struct StoredSessionLifecycleUsecase {
 impl StoredSessionLifecycleUsecase {
     pub(crate) fn new(
         session_store: Arc<SessionStore>,
-        backend_lifecycle: Arc<dyn AgentSessionBackendLifecycleGateway>,
-        runtime_closer: Arc<dyn AgentSessionRuntimeCloser>,
         workflow_node_restorer: Arc<dyn WorkflowNodeSessionRestorer>,
         notice_usecase: Arc<AgentSessionNoticeUsecase>,
     ) -> Self {
         Self {
             session_store,
-            backend_lifecycle,
-            runtime_closer,
             workflow_node_restorer,
             notice_usecase,
         }
     }
 
+    #[cfg(test)]
     pub(crate) async fn archive_session(
         &self,
         data_dir: &Path,
@@ -103,30 +69,6 @@ impl StoredSessionLifecycleUsecase {
     ) -> Result<(), String> {
         let result = async {
             self.session_store.archive_session(data_dir, session_id)?;
-            self.sync_archive(data_dir, session_id, "archive").await;
-            Ok(())
-        }
-        .await;
-        self.notice_usecase.record_operation_result(
-            session_id,
-            AgentSessionNoticeOperation::ArchiveSession,
-            &result,
-            "セッションアーカイブに失敗",
-        );
-        result
-    }
-
-    pub(crate) async fn archive_open_session(
-        &self,
-        data_dir: &Path,
-        session_id: &str,
-    ) -> Result<(), String> {
-        let result = async {
-            self.runtime_closer.close_agent_session(session_id).await?;
-            self.session_store
-                .archive_open_session(data_dir, session_id)?;
-            self.sync_archive(data_dir, session_id, "open-thread archive")
-                .await;
             Ok(())
         }
         .await;
@@ -141,33 +83,17 @@ impl StoredSessionLifecycleUsecase {
 
     pub(crate) async fn close_session(
         &self,
-        data_dir: &Path,
+        _data_dir: &Path,
         session_id: &str,
     ) -> Result<CloseSessionOutcome, String> {
-        let result = async {
-            if let Some(worktree_path) = self
-                .workflow_node_restorer
-                .try_close_tab(session_id)
-                .await?
-            {
-                return Ok(CloseSessionOutcome::WorkflowNodeTabClosed { worktree_path });
-            }
-            self.runtime_closer.close_agent_session(session_id).await?;
-            SessionLifecycleController {
-                session_store: &self.session_store,
-                data_dir,
-            }
-            .close_session_state(session_id)?;
-            Ok(CloseSessionOutcome::StoredSessionClosed)
+        if let Some(worktree_path) = self
+            .workflow_node_restorer
+            .try_close_tab(session_id)
+            .await?
+        {
+            return Ok(CloseSessionOutcome::WorkflowNodeTabClosed { worktree_path });
         }
-        .await;
-        self.notice_usecase.record_operation_result(
-            session_id,
-            AgentSessionNoticeOperation::CloseSession,
-            &result,
-            "セッションクローズに失敗",
-        );
-        result
+        Err("Normal sessions must be closed through the durable lifecycle operation".to_string())
     }
 
     pub(crate) async fn fork_session(
@@ -175,32 +101,7 @@ impl StoredSessionLifecycleUsecase {
         data_dir: &Path,
         session_id: &str,
     ) -> Result<ChatSession, String> {
-        let source_session = self
-            .session_store
-            .get_session_shell(data_dir, session_id)?
-            .ok_or_else(|| format!("Session not found: {session_id}"))?;
-        let mut forked = self.session_store.fork_session(data_dir, session_id)?;
-        match self
-            .backend_lifecycle
-            .fork_backend_session(BackendSessionLifecycleRequest::from_session(
-                &source_session,
-            ))
-            .await
-        {
-            Ok(Some(agent_session_id)) => {
-                forked.agent_session_id = Some(agent_session_id);
-                self.session_store.update_agent_session_id(
-                    data_dir,
-                    &forked.id,
-                    forked.agent_session_id.clone(),
-                )?;
-            }
-            Ok(None) => {}
-            Err(err) => {
-                log::debug!("skipped backend runtime fork sync for {session_id}: {err}");
-            }
-        }
-        Ok(forked)
+        self.session_store.fork_session(data_dir, session_id)
     }
 
     pub(crate) async fn restore_session(
@@ -209,13 +110,10 @@ impl StoredSessionLifecycleUsecase {
         session_id: &str,
         registry: &impl SessionBackendResolver,
     ) -> Result<RestoreSessionOutcome, String> {
+        if let Some(worktree_path) = self.workflow_node_restorer.try_open_tab(session_id).await? {
+            return Ok(RestoreSessionOutcome::WorkflowNodeTabRestored { worktree_path });
+        }
         let result = async {
-            if let Some(worktree_path) =
-                self.workflow_node_restorer.try_open_tab(session_id).await?
-            {
-                return Ok(RestoreSessionOutcome::WorkflowNodeTabRestored { worktree_path });
-            }
-
             let mut session = self
                 .session_store
                 .get_session_shell(data_dir, session_id)?
@@ -224,7 +122,7 @@ impl StoredSessionLifecycleUsecase {
             let original_backend_id = session.backend_id.clone();
             resolve_session_backend(&mut session, registry)?;
             if session.backend_id != original_backend_id {
-                self.session_store.update_backend_selection(
+                self.session_store.update_backend_selection_from_user(
                     data_dir,
                     session_id,
                     session
@@ -234,19 +132,11 @@ impl StoredSessionLifecycleUsecase {
                     session.selected_model.clone(),
                 )?;
             }
-            let backend_request = BackendSessionLifecycleRequest::from_session(&session);
             SessionLifecycleController {
                 session_store: &self.session_store,
                 data_dir,
             }
             .restore_session_state(session)?;
-            if let Err(err) = self
-                .backend_lifecycle
-                .unarchive_backend_session(backend_request)
-                .await
-            {
-                log::debug!("skipped backend runtime unarchive sync for {session_id}: {err}");
-            }
             Ok(RestoreSessionOutcome::StoredSessionRestored)
         }
         .await;
@@ -257,43 +147,6 @@ impl StoredSessionLifecycleUsecase {
             "セッション復元に失敗",
         );
         result
-    }
-
-    async fn sync_archive(&self, data_dir: &Path, session_id: &str, label: &str) {
-        let backend_request = self
-            .session_store
-            .get_session_shell(data_dir, session_id)
-            .ok()
-            .flatten()
-            .map(|session| BackendSessionLifecycleRequest::from_session(&session));
-        if let Some(request) = backend_request {
-            if let Err(err) = self
-                .backend_lifecycle
-                .archive_backend_session(request)
-                .await
-            {
-                log::debug!("skipped backend runtime {label} sync for {session_id}: {err}");
-            }
-        }
-    }
-}
-
-impl BackendSessionLifecycleRequest {
-    pub(crate) fn from_session(session: &ChatSession) -> Self {
-        Self {
-            backend_id: session.backend_id.clone(),
-            agent_session_id: session
-                .agent_session_id
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string),
-            cwd: session.worktree_path.clone(),
-            model: session.selected_model.clone(),
-            permission_mode: session.permission_mode.clone(),
-            plan_mode: session.plan_mode,
-            permission_profile_id: session.permission_profile_id.clone(),
-        }
     }
 }
 
@@ -312,7 +165,7 @@ impl StoredSessionClosePort for StoredSessionLifecycleUsecase {
 mod tests {
     use super::*;
     use crate::domain::agent_session::gateway::{
-        AgentBackend, AgentBackendError, AgentSessionRuntime, ForkSessionRequest, SessionSpec,
+        AgentBackend, AgentBackendError, AgentSessionRuntime, SessionSpec,
     };
     use crate::domain::agent_session::value_objects::{
         BackendCapabilities, ModelDescriptor, ModelId, SkillEntry,
@@ -357,29 +210,6 @@ mod tests {
             Err(AgentBackendError::Other("not used".to_string()))
         }
 
-        async fn archive_session(
-            &self,
-            _backend_session_id: &str,
-            _cwd: &str,
-        ) -> Result<(), AgentBackendError> {
-            Ok(())
-        }
-
-        async fn unarchive_session(
-            &self,
-            _backend_session_id: &str,
-            _cwd: &str,
-        ) -> Result<(), AgentBackendError> {
-            Ok(())
-        }
-
-        async fn fork_session(
-            &self,
-            _req: ForkSessionRequest,
-        ) -> Result<Option<String>, AgentBackendError> {
-            Ok(None)
-        }
-
         async fn skill_catalog(
             &self,
             _cwd: &Path,
@@ -397,57 +227,6 @@ mod tests {
         ) -> Result<Option<Vec<String>>, AgentBackendError> {
             Ok(None)
         }
-    }
-
-    struct FakeBackendLifecycle {
-        archived: Mutex<Vec<BackendSessionLifecycleRequest>>,
-        unarchived: Mutex<Vec<BackendSessionLifecycleRequest>>,
-        forked: Mutex<Vec<BackendSessionLifecycleRequest>>,
-        fork_result: Mutex<Result<Option<String>, String>>,
-    }
-
-    impl FakeBackendLifecycle {
-        fn new() -> Self {
-            Self {
-                archived: Mutex::new(Vec::new()),
-                unarchived: Mutex::new(Vec::new()),
-                forked: Mutex::new(Vec::new()),
-                fork_result: Mutex::new(Ok(Some("forked-thread".to_string()))),
-            }
-        }
-    }
-
-    #[async_trait]
-    impl AgentSessionBackendLifecycleGateway for FakeBackendLifecycle {
-        async fn archive_backend_session(
-            &self,
-            request: BackendSessionLifecycleRequest,
-        ) -> Result<(), String> {
-            self.archived.lock().push(request);
-            Ok(())
-        }
-
-        async fn unarchive_backend_session(
-            &self,
-            request: BackendSessionLifecycleRequest,
-        ) -> Result<(), String> {
-            self.unarchived.lock().push(request);
-            Ok(())
-        }
-
-        async fn fork_backend_session(
-            &self,
-            request: BackendSessionLifecycleRequest,
-        ) -> Result<Option<String>, String> {
-            self.forked.lock().push(request);
-            self.fork_result.lock().clone()
-        }
-    }
-
-    #[derive(Default)]
-    struct FakeRuntimeCloser {
-        closed: Mutex<Vec<String>>,
-        error: Mutex<Option<String>>,
     }
 
     #[derive(Default)]
@@ -473,17 +252,6 @@ mod tests {
         }
     }
 
-    #[async_trait]
-    impl AgentSessionRuntimeCloser for FakeRuntimeCloser {
-        async fn close_agent_session(&self, session_id: &str) -> Result<(), String> {
-            self.closed.lock().push(session_id.to_string());
-            match self.error.lock().clone() {
-                Some(error) => Err(error),
-                None => Ok(()),
-            }
-        }
-    }
-
     fn codex_session(id: &str, state: SessionState) -> ChatSession {
         ChatSession {
             id: id.to_string(),
@@ -506,15 +274,9 @@ mod tests {
         }
     }
 
-    fn usecase(
-        store: Arc<SessionStore>,
-        backend_lifecycle: Arc<FakeBackendLifecycle>,
-        runtime: Arc<FakeRuntimeCloser>,
-    ) -> StoredSessionLifecycleUsecase {
+    fn usecase(store: Arc<SessionStore>) -> StoredSessionLifecycleUsecase {
         usecase_with_notice(
             store,
-            backend_lifecycle,
-            runtime,
             Arc::new(FakeWorkflowNodeRestorer::default()),
             Arc::new(AgentSessionNoticeUsecase::default()),
         )
@@ -522,18 +284,10 @@ mod tests {
 
     fn usecase_with_notice(
         store: Arc<SessionStore>,
-        backend_lifecycle: Arc<FakeBackendLifecycle>,
-        runtime: Arc<FakeRuntimeCloser>,
         workflow_node_restorer: Arc<FakeWorkflowNodeRestorer>,
         notice_usecase: Arc<AgentSessionNoticeUsecase>,
     ) -> StoredSessionLifecycleUsecase {
-        StoredSessionLifecycleUsecase::new(
-            store,
-            backend_lifecycle,
-            runtime,
-            workflow_node_restorer,
-            notice_usecase,
-        )
+        StoredSessionLifecycleUsecase::new(store, workflow_node_restorer, notice_usecase)
     }
 
     fn notice_services() -> (
@@ -549,16 +303,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn archive_session_updates_store_before_thread_archive() {
-        use crate::adaptor::controller::agent_session_notice_wiring::register_session_notice_cleanup_listener;
+    async fn archive_session_preserves_transient_notice() {
         use crate::usecase::agent_session::notice::AgentSessionNoticeUpdate;
 
         let tmp = tempfile::tempdir().unwrap();
         let store = Arc::new(crate::test_support::build_session_store());
-        let backend_lifecycle = Arc::new(FakeBackendLifecycle::new());
-        let runtime = Arc::new(FakeRuntimeCloser::default());
         let (notice_usecase, notice_query) = notice_services();
-        register_session_notice_cleanup_listener(store.as_ref(), notice_usecase.clone());
         let session_id = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
         store
             .save_full_session_for_migration_or_restore(
@@ -576,8 +326,6 @@ mod tests {
 
         usecase_with_notice(
             store.clone(),
-            backend_lifecycle.clone(),
-            runtime,
             Arc::new(FakeWorkflowNodeRestorer::default()),
             notice_usecase.clone(),
         )
@@ -590,19 +338,16 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(saved.state, SessionState::Archived);
-        assert_eq!(notice_query.get(session_id).notice, None);
-        let archived = backend_lifecycle.archived.lock();
-        assert_eq!(archived.len(), 1);
-        assert_eq!(archived[0].backend_id.as_deref(), Some("codex"));
-        assert_eq!(archived[0].agent_session_id.as_deref(), Some("thread-1"));
+        assert_eq!(
+            notice_query.get(session_id).notice.unwrap().message,
+            "send failed"
+        );
     }
 
     #[tokio::test]
-    async fn close_session_stops_runtime_before_marking_session_closed() {
+    async fn normal_session_close_rejects_without_mutating_session_state() {
         let tmp = tempfile::tempdir().unwrap();
         let store = Arc::new(crate::test_support::build_session_store());
-        let backend_lifecycle = Arc::new(FakeBackendLifecycle::new());
-        let runtime = Arc::new(FakeRuntimeCloser::default());
         let session_id = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
         store
             .save_full_session_for_migration_or_restore(
@@ -611,32 +356,32 @@ mod tests {
             )
             .unwrap();
 
-        let outcome = usecase(store.clone(), backend_lifecycle, runtime.clone())
+        let error = usecase(store.clone())
             .close_session(tmp.path(), session_id)
             .await
-            .unwrap();
+            .unwrap_err();
 
-        assert_eq!(outcome, CloseSessionOutcome::StoredSessionClosed);
-        assert_eq!(runtime.closed.lock().as_slice(), [session_id]);
+        assert_eq!(
+            error,
+            "Normal sessions must be closed through the durable lifecycle operation"
+        );
         assert_eq!(
             store
                 .get_session_shell(tmp.path(), session_id)
                 .unwrap()
                 .unwrap()
                 .state,
-            SessionState::Closed
+            SessionState::Idle
         );
     }
 
     #[tokio::test]
-    async fn workspace_node_close_discards_notice_through_session_state_listener() {
-        use crate::adaptor::controller::agent_session_notice_wiring::register_session_notice_cleanup_listener;
+    async fn workspace_node_close_preserves_notice_and_session_projection() {
         use crate::usecase::agent_session::notice::AgentSessionNoticeUpdate;
 
         let tmp = tempfile::tempdir().unwrap();
         let store = Arc::new(crate::test_support::build_session_store());
         let (notice_usecase, notice_query) = notice_services();
-        register_session_notice_cleanup_listener(store.as_ref(), notice_usecase.clone());
         let session_id = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
         store
             .save_full_session_for_migration_or_restore(
@@ -652,41 +397,17 @@ mod tests {
             },
         );
 
-        usecase_with_notice(
-            store,
-            Arc::new(FakeBackendLifecycle::new()),
-            Arc::new(FakeRuntimeCloser::default()),
-            Arc::new(FakeWorkflowNodeRestorer::default()),
-            notice_usecase.clone(),
-        )
-        .close_session(tmp.path(), session_id)
-        .await
-        .unwrap();
-
-        assert_eq!(notice_query.get(session_id).notice, None);
-    }
-
-    #[tokio::test]
-    async fn close_session_keeps_session_open_when_runtime_close_fails() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = Arc::new(crate::test_support::build_session_store());
-        let backend_lifecycle = Arc::new(FakeBackendLifecycle::new());
-        let runtime = Arc::new(FakeRuntimeCloser::default());
-        *runtime.error.lock() = Some("runtime unavailable".to_string());
-        let session_id = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
-        store
-            .save_full_session_for_migration_or_restore(
-                tmp.path(),
-                &codex_session(session_id, SessionState::Idle),
-            )
-            .unwrap();
-
-        let error = usecase(store.clone(), backend_lifecycle, runtime)
+        let restorer = Arc::new(FakeWorkflowNodeRestorer::default());
+        *restorer.worktree_path.lock() = Some("/repo".to_string());
+        usecase_with_notice(store.clone(), restorer, notice_usecase.clone())
             .close_session(tmp.path(), session_id)
             .await
-            .unwrap_err();
+            .unwrap();
 
-        assert_eq!(error, "runtime unavailable");
+        assert_eq!(
+            notice_query.get(session_id).notice.unwrap().message,
+            "send failed"
+        );
         assert_eq!(
             store
                 .get_session_shell(tmp.path(), session_id)
@@ -698,7 +419,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn close_session_workflow_node_uses_same_notice_aware_lifecycle() {
+    async fn normal_session_close_rejection_keeps_session_open() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(crate::test_support::build_session_store());
+        let session_id = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
+        store
+            .save_full_session_for_migration_or_restore(
+                tmp.path(),
+                &codex_session(session_id, SessionState::Idle),
+            )
+            .unwrap();
+
+        let error = usecase(store.clone())
+            .close_session(tmp.path(), session_id)
+            .await
+            .unwrap_err();
+
+        assert!(error.contains("durable lifecycle operation"));
+        assert_eq!(
+            store
+                .get_session_shell(tmp.path(), session_id)
+                .unwrap()
+                .unwrap()
+                .state,
+            SessionState::Idle
+        );
+    }
+
+    #[tokio::test]
+    async fn close_session_workflow_node_does_not_mutate_existing_notice() {
         let (notice_usecase, notice_query) = notice_services();
         notice_usecase.update(
             "workflow-session",
@@ -709,12 +458,9 @@ mod tests {
         );
         let restorer = Arc::new(FakeWorkflowNodeRestorer::default());
         *restorer.worktree_path.lock() = Some("/repo".to_string());
-        let runtime = Arc::new(FakeRuntimeCloser::default());
 
         let outcome = usecase_with_notice(
             Arc::new(crate::test_support::build_session_store()),
-            Arc::new(FakeBackendLifecycle::new()),
-            runtime.clone(),
             restorer,
             notice_usecase,
         )
@@ -728,21 +474,19 @@ mod tests {
                 worktree_path: "/repo".to_string(),
             }
         );
-        assert!(runtime.closed.lock().is_empty());
-        assert!(notice_query.get("workflow-session").notice.is_none());
+        assert_eq!(
+            notice_query.get("workflow-session").notice.unwrap().message,
+            "previous close failed"
+        );
     }
 
     #[tokio::test]
-    async fn close_session_failure_records_close_notice_in_shared_lifecycle() {
+    async fn close_session_rejection_does_not_create_view_close_feedback() {
         let store = Arc::new(crate::test_support::build_session_store());
-        let runtime = Arc::new(FakeRuntimeCloser::default());
-        *runtime.error.lock() = Some("runtime unavailable".to_string());
         let (notice_usecase, notice_query) = notice_services();
 
         let error = usecase_with_notice(
             store,
-            Arc::new(FakeBackendLifecycle::new()),
-            runtime,
             Arc::new(FakeWorkflowNodeRestorer::default()),
             notice_usecase,
         )
@@ -750,11 +494,11 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert_eq!(error, "runtime unavailable");
         assert_eq!(
-            notice_query.get("session-a").notice.unwrap().message,
-            "セッションクローズに失敗: runtime unavailable"
+            error,
+            "Normal sessions must be closed through the durable lifecycle operation"
         );
+        assert!(notice_query.get("session-a").notice.is_none());
     }
 
     #[tokio::test]
@@ -774,8 +518,6 @@ mod tests {
 
         usecase_with_notice(
             store,
-            Arc::new(FakeBackendLifecycle::new()),
-            Arc::new(FakeRuntimeCloser::default()),
             Arc::new(FakeWorkflowNodeRestorer::default()),
             notice_usecase.clone(),
         )
@@ -793,11 +535,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fork_session_updates_forked_thread_id_after_local_fork() {
+    async fn fork_session_is_local_only_and_requires_fresh_provider_establishment() {
         let tmp = tempfile::tempdir().unwrap();
         let store = Arc::new(crate::test_support::build_session_store());
-        let backend_lifecycle = Arc::new(FakeBackendLifecycle::new());
-        let runtime = Arc::new(FakeRuntimeCloser::default());
         store
             .save_full_session_for_migration_or_restore(
                 tmp.path(),
@@ -805,31 +545,25 @@ mod tests {
             )
             .unwrap();
 
-        let forked = usecase(store.clone(), backend_lifecycle.clone(), runtime)
+        let forked = usecase(store.clone())
             .fork_session(tmp.path(), "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d")
             .await
             .unwrap();
 
-        assert_eq!(forked.agent_session_id.as_deref(), Some("forked-thread"));
+        assert_eq!(forked.agent_session_id, None);
+        assert_eq!(forked.context_carry, None);
         let saved = store
             .get_session_shell(tmp.path(), &forked.id)
             .unwrap()
             .unwrap();
-        assert_eq!(saved.agent_session_id.as_deref(), Some("forked-thread"));
-        let forked_requests = backend_lifecycle.forked.lock();
-        assert_eq!(forked_requests[0].backend_id.as_deref(), Some("codex"));
-        assert_eq!(
-            forked_requests[0].agent_session_id.as_deref(),
-            Some("thread-1")
-        );
+        assert_eq!(saved.agent_session_id, None);
+        assert_eq!(saved.context_carry, None);
     }
 
     #[tokio::test]
-    async fn restore_session_restores_idle_state_and_unarchives_selected_backend() {
+    async fn restore_session_restores_idle_state_without_eager_provider_effect() {
         let tmp = tempfile::tempdir().unwrap();
         let store = Arc::new(crate::test_support::build_session_store());
-        let backend_lifecycle = Arc::new(FakeBackendLifecycle::new());
-        let runtime = Arc::new(FakeRuntimeCloser::default());
         store
             .save_full_session_for_migration_or_restore(
                 tmp.path(),
@@ -847,7 +581,7 @@ mod tests {
         }));
         registry.set_default(Some("claude".to_string()));
 
-        let outcome = usecase(store.clone(), backend_lifecycle.clone(), runtime)
+        let outcome = usecase(store.clone())
             .restore_session(
                 tmp.path(),
                 "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
@@ -862,10 +596,6 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(saved.state, SessionState::Idle);
-        let unarchived = backend_lifecycle.unarchived.lock();
-        assert_eq!(unarchived.len(), 1);
-        assert_eq!(unarchived[0].backend_id.as_deref(), Some("codex"));
-        assert_eq!(unarchived[0].agent_session_id.as_deref(), Some("thread-1"));
     }
 
     #[tokio::test]
@@ -880,8 +610,6 @@ mod tests {
 
         usecase_with_notice(
             store,
-            Arc::new(FakeBackendLifecycle::new()),
-            Arc::new(FakeRuntimeCloser::default()),
             Arc::new(FakeWorkflowNodeRestorer::default()),
             notice_usecase.clone(),
         )
@@ -898,11 +626,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn restore_workflow_node_success_clears_restore_notice_in_usecase() {
+    async fn restore_workflow_node_is_view_only_and_preserves_notice() {
         use crate::usecase::agent_session::notice::AgentSessionNoticeUpdate;
 
         let store = Arc::new(crate::test_support::build_session_store());
-        let backend_lifecycle = Arc::new(FakeBackendLifecycle::new());
         let (notice_usecase, notice_query) = notice_services();
         let restorer = Arc::new(FakeWorkflowNodeRestorer::default());
         *restorer.worktree_path.lock() = Some("/repo".to_string());
@@ -914,20 +641,14 @@ mod tests {
             },
         );
 
-        let outcome = usecase_with_notice(
-            store,
-            backend_lifecycle.clone(),
-            Arc::new(FakeRuntimeCloser::default()),
-            restorer,
-            notice_usecase.clone(),
-        )
-        .restore_session(
-            Path::new("/unused"),
-            "workflow-session",
-            &AgentBackendRegistry::new(),
-        )
-        .await
-        .unwrap();
+        let outcome = usecase_with_notice(store, restorer, notice_usecase.clone())
+            .restore_session(
+                Path::new("/unused"),
+                "workflow-session",
+                &AgentBackendRegistry::new(),
+            )
+            .await
+            .unwrap();
 
         assert_eq!(
             outcome,
@@ -935,12 +656,14 @@ mod tests {
                 worktree_path: "/repo".to_string(),
             }
         );
-        assert!(notice_query.get("workflow-session").notice.is_none());
-        assert!(backend_lifecycle.unarchived.lock().is_empty());
+        assert_eq!(
+            notice_query.get("workflow-session").notice.unwrap().message,
+            "previous restore failed"
+        );
     }
 
     #[tokio::test]
-    async fn restore_workflow_node_failure_records_restore_notice_in_usecase() {
+    async fn restore_workflow_node_failure_does_not_create_feedback() {
         let (notice_usecase, notice_query) = notice_services();
         let restorer = Arc::new(FakeWorkflowNodeRestorer::default());
         *restorer.error.lock() = Some(
@@ -949,8 +672,6 @@ mod tests {
 
         let error = usecase_with_notice(
             Arc::new(crate::test_support::build_session_store()),
-            Arc::new(FakeBackendLifecycle::new()),
-            Arc::new(FakeRuntimeCloser::default()),
             restorer,
             notice_usecase.clone(),
         )
@@ -966,34 +687,6 @@ mod tests {
             error,
             "workflow_node_tab_operation_failed: workflow node tab operation failed"
         );
-        assert_eq!(
-            notice_query
-                .get("workflow-session")
-                .notice
-                .unwrap()
-                .message,
-            "セッション復元に失敗: workflow_node_tab_operation_failed: workflow node tab operation failed"
-        );
-    }
-
-    #[test]
-    fn backend_lifecycle_request_trims_non_empty_agent_session_id() {
-        let mut session = codex_session("session-1", SessionState::Closed);
-        session.agent_session_id = Some(" thread-1 ".to_string());
-        assert_eq!(
-            BackendSessionLifecycleRequest::from_session(&session).agent_session_id,
-            Some("thread-1".to_string())
-        );
-
-        session.backend_id = Some("claude".to_string());
-        let request = BackendSessionLifecycleRequest::from_session(&session);
-        assert_eq!(request.backend_id.as_deref(), Some("claude"));
-        assert_eq!(request.agent_session_id.as_deref(), Some("thread-1"));
-
-        session.agent_session_id = Some("   ".to_string());
-        assert_eq!(
-            BackendSessionLifecycleRequest::from_session(&session).agent_session_id,
-            None
-        );
+        assert!(notice_query.get("workflow-session").notice.is_none());
     }
 }

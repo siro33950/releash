@@ -75,7 +75,6 @@ fn handle_menu_event(
             }
         }
         ids::QUIT => {
-            mark_quit_requested();
             on_quit_requested(app.clone());
         }
         _ => {}

@@ -57,6 +57,8 @@ import {
 	listClosedSessions,
 	listSessions,
 	planAgentChatEviction,
+	requestAgentStop,
+	respondAgentPermission,
 	restoreSession as restoreSessionApi,
 	resumeAgentQueue,
 	sendAgentMessage,
@@ -202,22 +204,6 @@ export interface UseAgentChatResult {
 		queuedTurnId?: string | null,
 	) => Promise<void>;
 	resumeQueue: (sessionId: string) => Promise<void>;
-}
-
-function startAgentProcess(
-	chatSessionId: string,
-	cwd: string,
-	permissionMode: PermissionMode,
-	planMode: PlanMode,
-): void {
-	invoke("start_agent_session", {
-		chatSessionId,
-		cwd,
-		permissionMode,
-		planMode,
-	}).catch((e) => {
-		console.error(`Failed to start agent session ${chatSessionId}:`, e);
-	});
 }
 
 function loadedMessageCount(pages: LoadedMessagePage[]): number {
@@ -371,7 +357,7 @@ function dispatchSessionMeta(
 		pendingQueue?: QueuedAgentTurn[];
 		queuePaused?: boolean;
 		pendingPermissionRequest?: PermissionRequest | null;
-		pendingPermissionStateRevision?: number | null;
+		pendingPermissionStateRevision?: string | null;
 		latestTokenUsage?: TokenUsage | null;
 	},
 ) {
@@ -927,10 +913,21 @@ export function useAgentChat(
 
 	const interrupt = useCallback((sessionId: string) => {
 		if (!sessionId) return;
+		const session = sessionsByIdRef.current[sessionId];
+		if (!session?.sessionRevision || !session.activeTurnId) {
+			console.error(
+				"Cannot stop a session without a durable revision and turn identity",
+			);
+			return;
+		}
 		// 楽観的に interrupting 状態へ。turn が idle になった時点で reducer が
 		// 自動クリアする。これで停止押下が即座に UI へ反映される。
 		dispatch({ type: "SET_INTERRUPTING", sessionId, value: true });
-		invoke("interrupt_agent_query", { chatSessionId: sessionId }).catch((e) => {
+		requestAgentStop(
+			sessionId,
+			session.activeTurnId,
+			session.sessionRevision,
+		).catch((e) => {
 			console.error("Failed to interrupt agent query:", e);
 			// 送信自体に失敗したら楽観フラグを戻す。
 			dispatch({ type: "SET_INTERRUPTING", sessionId, value: false });
@@ -1045,7 +1042,8 @@ export function useAgentChat(
 										images,
 										mentions,
 									);
-				const responseSessionId = response.session.id;
+				if (response.type !== "accepted") return false;
+				const responseSessionId = response.operation.receipt.session_id;
 				await clearSessionError(
 					dispatch,
 					sessionNoticeRequestControllersRef,
@@ -1053,42 +1051,20 @@ export function useAgentChat(
 					"send",
 				);
 				touchSessionAccess(responseSessionId);
-				dispatch({ type: "UPSERT_SESSION", session: response.session });
-				if (!response.queuedTurn) {
-					dispatchWithMessageWindowTracking({
-						type: "ADD_MESSAGE",
-						sessionId: responseSessionId,
-						message: response.humanMessage,
-					});
-					if (response.agentMessage) {
-						dispatchWithMessageWindowTracking({
-							type: "ADD_MESSAGE",
-							sessionId: responseSessionId,
-							message: response.agentMessage,
-						});
-					}
-				}
-				dispatch({
-					type: "SET_PENDING_QUEUE",
-					sessionId: responseSessionId,
-					queue: response.pendingQueue,
+				// Accepted is the composer-clear boundary. Projection refresh is
+				// a readback only; failure never restores or automatically resends input.
+				void getSession(responseSessionId).then((readback) => {
+					if (!readback) return;
+					dispatch({ type: "UPSERT_SESSION", session: readback.session });
+					dispatchSessionMeta(dispatch, responseSessionId, readback);
+					dispatchWorkspaceTreeRefresh(readback.session.worktreePath);
 				});
-				dispatch({
-					type: "SET_CAN_CHANGE_BACKEND",
-					sessionId: responseSessionId,
-					value: response.canChangeBackend,
-				});
-				// 新規作成 session の場合、active を切り替える（既存 sessionId 指定で送った場合は
-				// active を変更しない — Workflow panel から node session に送ったときに Main の
-				// active を上書きしないため）。
 				if (sessionId === null && options?.activateNewSession !== false) {
 					dispatch({
 						type: "SET_ACTIVE_SESSION_ID",
 						sessionId: responseSessionId,
 					});
 				}
-				dispatch({ type: "SET_SESSIONS", sessions: response.sessions });
-				dispatchWorkspaceTreeRefresh(response.session.worktreePath);
 				return true;
 			} catch (e) {
 				await setSessionError(
@@ -1102,7 +1078,6 @@ export function useAgentChat(
 			}
 		},
 		[
-			dispatchWithMessageWindowTracking,
 			resolvePermissionModeForSessionRef,
 			resolvePlanModeForSessionRef,
 			touchSessionAccess,
@@ -1180,12 +1155,6 @@ export function useAgentChat(
 				return;
 			}
 
-			await syncSessionError(
-				dispatch,
-				sessionNoticeRequestControllersRef,
-				sessionId,
-				{ action: "remove_session" },
-			);
 			cleanupSessionMirror(
 				dispatch,
 				sessionsByIdRef,
@@ -1247,10 +1216,8 @@ export function useAgentChat(
 
 	const restoreSessionFn = useCallback(
 		async (sessionId: string) => {
-			let restoredWorkflowNode = false;
 			try {
-				const restoreResult = await restoreSessionApi(sessionId);
-				restoredWorkflowNode = restoreResult.restoredWorkflowNode === true;
+				await restoreSessionApi(sessionId);
 			} catch (e) {
 				await setSessionError(
 					dispatch,
@@ -1277,18 +1244,6 @@ export function useAgentChat(
 						sessionId: response.session.id,
 					});
 					dispatchSessionMeta(dispatch, sessionId, response);
-					if (
-						!restoredWorkflowNode &&
-						(response.session.messages.length > 0 ||
-							response.session.agentSessionId)
-					) {
-						startAgentProcess(
-							sessionId,
-							worktreePathRef.current,
-							response.session.permissionMode,
-							response.session.planMode ?? false,
-						);
-					}
 				} else {
 					dispatch({ type: "SET_ACTIVE_SESSION_ID", sessionId: null });
 				}
@@ -1311,12 +1266,6 @@ export function useAgentChat(
 		async (sessionId: string) => {
 			try {
 				await archiveSessionApi(sessionId);
-				await syncSessionError(
-					dispatch,
-					sessionNoticeRequestControllersRef,
-					sessionId,
-					{ action: "remove_session" },
-				);
 				await refreshClosedSessions();
 			} catch (e) {
 				await setSessionError(
@@ -1517,18 +1466,24 @@ export function useAgentChat(
 			// 以外の pane 操作で単一 session 表示用の mode を上書きしない。
 			const isViewable =
 				sessionId === null || viewableIdsRef.current.has(sessionId);
-			if (isViewable) {
-				dispatch({ type: "SET_PERMISSION_MODE", sessionId, mode });
+			if (!sessionId) {
+				if (isViewable) {
+					dispatch({ type: "SET_PERMISSION_MODE", sessionId, mode });
+				}
+				return;
 			}
-			// Persist to Rust and sync to Bridge
-			if (sessionId) {
-				invoke("set_agent_permission_mode", {
-					chatSessionId: sessionId,
-					permissionMode: mode,
-				}).catch((e) => {
+			invoke("set_agent_permission_mode", {
+				chatSessionId: sessionId,
+				permissionMode: mode,
+			})
+				.then(() => {
+					if (isViewable) {
+						dispatch({ type: "SET_PERMISSION_MODE", sessionId, mode });
+					}
+				})
+				.catch((e) => {
 					console.error("Failed to set agent permission mode:", e);
 				});
-			}
 		},
 		[],
 	);
@@ -1537,17 +1492,24 @@ export function useAgentChat(
 		(sessionId: string | null, enabled: PlanMode) => {
 			const isViewable =
 				sessionId === null || viewableIdsRef.current.has(sessionId);
-			if (isViewable) {
-				dispatch({ type: "SET_PLAN_MODE", sessionId, enabled });
+			if (!sessionId) {
+				if (isViewable) {
+					dispatch({ type: "SET_PLAN_MODE", sessionId, enabled });
+				}
+				return;
 			}
-			if (sessionId) {
-				invoke("set_agent_plan_mode", {
-					chatSessionId: sessionId,
-					planMode: enabled,
-				}).catch((e) => {
+			invoke("set_agent_plan_mode", {
+				chatSessionId: sessionId,
+				planMode: enabled,
+			})
+				.then(() => {
+					if (isViewable) {
+						dispatch({ type: "SET_PLAN_MODE", sessionId, enabled });
+					}
+				})
+				.catch((e) => {
 					console.error("Failed to set agent plan mode:", e);
 				});
-			}
 		},
 		[],
 	);
@@ -1560,14 +1522,19 @@ export function useAgentChat(
 			updatedInput?: Record<string, unknown>,
 		) => {
 			if (!sessionId) return;
-			invoke("respond_agent_permission", {
-				chatSessionId: sessionId,
-				requestId,
-				behavior: allow ? "allow" : "deny",
-				message: allow ? null : "User denied",
-				updatedInput: updatedInput ? JSON.stringify(updatedInput) : null,
-			})
-				.then(async () => {
+			respondAgentPermission(sessionId, requestId, allow, updatedInput)
+				.then(async (result) => {
+					const status = result.operation.latest_status.type;
+					if (status === "reconciliation_required" || status === "failed") {
+						await setSessionError(
+							dispatch,
+							sessionNoticeRequestControllersRef,
+							sessionId,
+							"respond_permission",
+							`パーミッション応答は ${status} です`,
+						);
+						return;
+					}
 					await clearSessionError(
 						dispatch,
 						sessionNoticeRequestControllersRef,
@@ -1613,8 +1580,15 @@ export function useAgentChat(
 			currentBackend &&
 			selectedBackend !== currentBackend
 		) {
-			void persistSelectedModel()
-				.then(async () => {
+			void setSessionBackend(sessionId, selectedBackend)
+				.then(async (response) => {
+					const switchedModel = normalizeModelSelectionId(
+						response.availableModels,
+						response.selectedModel,
+					);
+					if (switchedModel !== normalizedModelId) {
+						await persistSelectedModel();
+					}
 					await clearSessionError(
 						dispatch,
 						sessionNoticeRequestControllersRef,

@@ -100,10 +100,7 @@ fn review_actor_and_worktree(
             "--session-id must not be empty".to_string(),
         ));
     }
-    let session_store = crate::adaptor::controller::wiring::build_session_store();
-    let session = session_store
-        .get_session_review_context(data_dir, session_id)
-        .map_err(CliError::Other)?
+    let session = review_session_context(data_dir, session_id)?
         .ok_or_else(|| CliError::NotFound(format!("Session not found: {session_id}")))?;
     if session.state == SessionState::Closed {
         return Err(CliError::InvalidInput(format!(
@@ -140,12 +137,29 @@ fn review_worktree_from_session(data_dir: &Path, session_id: &str) -> Result<Str
             "--session-id must not be empty".to_string(),
         ));
     }
-    let session_store = crate::adaptor::controller::wiring::build_session_store();
-    let session = session_store
-        .get_session_review_context(data_dir, session_id)
-        .map_err(CliError::Other)?
+    let session = review_session_context(data_dir, session_id)?
         .ok_or_else(|| CliError::NotFound(format!("Session not found: {session_id}")))?;
     Ok(session.worktree_path)
+}
+
+fn review_session_context(
+    data_dir: &Path,
+    session_id: &str,
+) -> Result<Option<crate::usecase::agent_session::session::SessionReviewContext>, CliError> {
+    #[cfg(test)]
+    {
+        crate::adaptor::controller::wiring::build_session_store()
+            .get_session_review_context(data_dir, session_id)
+            .map_err(CliError::Other)
+    }
+    #[cfg(not(test))]
+    {
+        crate::adaptor::controller::wiring::build_file_direct_session_read_store(
+            data_dir.to_path_buf(),
+        )?
+        .get_session_review_context(data_dir, session_id)
+        .map_err(CliError::Other)
+    }
 }
 
 fn parse_review_state(value: Option<String>) -> Result<Option<ReviewThreadState>, CliError> {

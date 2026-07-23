@@ -93,8 +93,10 @@ fn truncate_to_char_boundary(content: &str, max_bytes: usize) -> &str {
 }
 
 pub trait AttachmentExternalizationPolicy {
+    #[cfg(test)]
     fn reject_oversized_base64_image(&self, data: &str) -> Result<(), String>;
     fn validate_image_bytes(&self, bytes: &[u8]) -> Result<&'static str, String>;
+    #[cfg(test)]
     fn validate_image_bytes_for_media_type(
         &self,
         bytes: &[u8],
@@ -106,6 +108,7 @@ pub trait AttachmentExternalizationPolicy {
 pub struct DefaultAttachmentExternalizationPolicy;
 
 impl AttachmentExternalizationPolicy for DefaultAttachmentExternalizationPolicy {
+    #[cfg(test)]
     fn reject_oversized_base64_image(&self, data: &str) -> Result<(), String> {
         let max_encoded_len = max_base64_image_len();
         if data.len() > max_encoded_len {
@@ -130,6 +133,7 @@ impl AttachmentExternalizationPolicy for DefaultAttachmentExternalizationPolicy 
         detect_image_mime(bytes).ok_or_else(|| "Unsupported image format".to_string())
     }
 
+    #[cfg(test)]
     fn validate_image_bytes_for_media_type(
         &self,
         bytes: &[u8],
@@ -145,6 +149,7 @@ impl AttachmentExternalizationPolicy for DefaultAttachmentExternalizationPolicy 
     }
 }
 
+#[cfg(test)]
 pub fn max_base64_image_len() -> usize {
     MAX_IMAGE_BYTES.div_ceil(3) * 4
 }

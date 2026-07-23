@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crate::domain::app_data_gc::RetentionPolicy;
+#[cfg(test)]
 use crate::usecase::agent_session::session::SessionState;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +31,7 @@ impl LiveWorktreeSet {
         set
     }
 
+    #[cfg(test)]
     pub(super) fn contains_worktree_path(&self, worktree_path: &str) -> bool {
         self.paths.contains(&worktree_path_key(worktree_path))
     }
@@ -43,6 +45,7 @@ impl LiveWorktreeSet {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum GcWorktreePath {
     Resolved(String),
@@ -50,6 +53,7 @@ pub(crate) enum GcWorktreePath {
     Unresolved(String),
 }
 
+#[cfg(test)]
 impl GcWorktreePath {
     pub(crate) fn resolved(path: impl Into<String>) -> Self {
         Self::Resolved(worktree_path_key(&path.into()))
@@ -98,6 +102,7 @@ impl LiveWorktreeResolution {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn contains_worktree_path(&self, worktree_path: &GcWorktreePath) -> bool {
         if worktree_path.is_unresolved() {
             return false;
@@ -114,6 +119,7 @@ impl LiveWorktreeResolution {
         self.live_worktrees.contains_review_comment_key(key)
     }
 
+    #[cfg(test)]
     pub(super) fn worktree_path_may_be_unresolved(&self, worktree_path: &GcWorktreePath) -> bool {
         let normalized = worktree_path.key();
         self.unresolved_repo_paths
@@ -174,6 +180,7 @@ impl RuntimeProtection {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SessionGcRecord {
     pub(crate) id: String,
@@ -184,6 +191,7 @@ pub(crate) struct SessionGcRecord {
     pub(crate) updated_at: Option<f64>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SessionBlobStore {
     pub(crate) session_dir: PathBuf,
@@ -192,6 +200,7 @@ pub(crate) struct SessionBlobStore {
     pub(crate) attachments_dir: PathBuf,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct WorkflowExecutionGcRecord {
     pub(crate) execution_id: String,
@@ -245,13 +254,16 @@ pub(crate) struct StartupGcRequest {
     /// None means the live worktree set could not be resolved reliably. In that
     /// mode, workspace-dependent whole-log deletion is skipped for safety.
     pub(crate) live_worktrees: Option<LiveWorktreeResolution>,
+    #[cfg(test)]
     pub(crate) session_records: Vec<SessionGcRecord>,
+    #[cfg(test)]
     pub(crate) workflow_executions: Vec<WorkflowExecutionGcRecord>,
     pub(crate) workspace_state_records: Vec<WorkspaceStateGcRecord>,
     pub(crate) review_comment_records: Vec<ReviewCommentGcRecord>,
     pub(crate) checkpoint_paths: Vec<PathBuf>,
     pub(crate) cache_records: Vec<CacheGcRecord>,
     pub(crate) legacy_comment_paths: Vec<PathBuf>,
+    #[cfg(test)]
     pub(crate) session_blob_stores: Vec<SessionBlobStore>,
     pub(crate) process_records: Vec<ProcessRecord>,
     pub(crate) runtime_protection: RuntimeProtection,

@@ -23,8 +23,8 @@ use super::convert::{convert_jsonrpc_message, CodexConvertState};
 use super::permission::{codex_permission_response, codex_permission_settings};
 use super::wire::{
     initialize_request, initialized_notification, message_kind, request, AppServerMessageKind,
-    PendingClientRequests, METHOD_INITIALIZE, METHOD_THREAD_NAME_SET, METHOD_THREAD_RESUME,
-    METHOD_THREAD_SETTINGS_UPDATE, METHOD_THREAD_START, METHOD_TURN_INTERRUPT, METHOD_TURN_START,
+    PendingClientRequests, METHOD_INITIALIZE, METHOD_THREAD_RESUME, METHOD_THREAD_START,
+    METHOD_TURN_INTERRUPT, METHOD_TURN_START,
 };
 
 const AGENT_PROCESS_EXITED_UNEXPECTEDLY: &str = "Agent process exited unexpectedly";
@@ -320,59 +320,9 @@ impl AgentSessionRuntime for CodexSessionRuntime {
             .map_err(AgentBackendError::Other)
     }
 
-    async fn set_permission_mode(
-        &self,
-        mode: PermissionMode,
-        plan_mode: bool,
-    ) -> Result<(), AgentBackendError> {
-        let (thread_id, cwd, permission_profile_id) = {
-            let state = self.state.lock().await;
-            (
-                state.thread_id.clone(),
-                state.cwd.clone(),
-                state.permission_profile_id.clone(),
-            )
-        };
-        let Some(thread_id) = thread_id else {
-            return Ok(());
-        };
-        let settings =
-            codex_permission_settings(mode, plan_mode, permission_profile_id.as_deref(), &cwd);
-        let mut params = json!({ "threadId": thread_id });
-        params["permissions"] = settings.permissions.unwrap_or(Value::Null);
-        if let Some(approval_policy) = settings.approval_policy {
-            params["approvalPolicy"] = Value::String(approval_policy.to_string());
-        }
-        if let Some(sandbox_policy) = settings.sandbox_policy {
-            params["sandboxPolicy"] = sandbox_policy;
-        }
-        let request_id = self.next_request_id();
-        let value = request(request_id, METHOD_THREAD_SETTINGS_UPDATE, params);
-        self.write_tracked_request(request_id, METHOD_THREAD_SETTINGS_UPDATE, &value)
-            .await
-    }
-
     async fn set_model(&self, model: &ModelId) -> Result<(), AgentBackendError> {
         self.state.lock().await.model = model.clone();
         Ok(())
-    }
-
-    async fn set_session_title(&self, title: &str) -> Result<(), AgentBackendError> {
-        let thread_id = { self.state.lock().await.thread_id.clone() };
-        let Some(thread_id) = thread_id else {
-            return Ok(());
-        };
-        let request_id = self.next_request_id();
-        let value = request(
-            request_id,
-            METHOD_THREAD_NAME_SET,
-            json!({
-                "threadId": thread_id,
-                "name": title,
-            }),
-        );
-        self.write_tracked_request(request_id, METHOD_THREAD_NAME_SET, &value)
-            .await
     }
 
     async fn close(&self) {
@@ -1543,7 +1493,7 @@ exec sleep 30
     // env 変数の直列化のため await 越しにロックを保持する必要がある（テスト用グローバルロック）
     #[allow(clippy::await_holding_lock)]
     async fn test_open_once_initialize_write失敗時にpid登録を削除する() {
-        let _env_lock = crate::test_support::TEST_ENV_LOCK.lock().unwrap();
+        let _env_lock = crate::test_support::TEST_ENV_LOCK.lock();
         let data_dir = tempfile::tempdir().unwrap();
         let _env_guard =
             crate::test_support::EnvVarGuard::set_path("RELEASH_DATA_DIR", data_dir.path());

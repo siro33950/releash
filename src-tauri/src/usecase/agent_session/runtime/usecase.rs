@@ -24,20 +24,25 @@ use crate::usecase::agent_session::backend_registry::{AgentBackendRegistry, Back
 use crate::usecase::agent_session::context::{
     BranchDiffContextPort, BuiltSystemContext, InstructionSourcePort, SystemContextEditorInput,
 };
+#[cfg(test)]
+use crate::usecase::agent_session::event_log::PromptInput;
 use crate::usecase::agent_session::event_log::{
     append_part_events, finalize_turn, latest_unresolved_permission_request, AgentSessionEvent,
     BackendSessionRecoveryProjection, BackendSessionRecoveryReason,
-    InterruptReason as EventInterruptReason, PartEventMode, PromptInput, TurnEventLog,
+    InterruptReason as EventInterruptReason, PartEventMode, TurnEventLog,
     TurnStopReason as EventTurnStopReason, TurnTokenUsage, UnresolvedPermissionRequest,
     WorkflowTurnCompleteInput,
 };
+#[cfg(test)]
 use crate::usecase::agent_session::session::{
-    add_message_internal, add_message_with_meta_internal, apply_tool_result_update,
-    create_session_with_model_and_plan_mode, ChatMessage, ChatSession, ContextCarryState,
-    ErrorEpisodeInput, GetSessionResponse, ImageAttachment, InitialSessionPage, MessagePart,
-    MessageRole, ModelInfo, OpenTabRegistry, PendingRecoveryMessage, PermissionRequestMsg,
-    QueuedAgentTurn, SessionMeta, SessionState, SessionStore, SessionSummary,
-    INITIAL_SESSION_PAGE_LIMIT,
+    add_message_internal, add_message_with_meta_internal, create_session_with_model_and_plan_mode,
+    SessionMeta,
+};
+use crate::usecase::agent_session::session::{
+    apply_tool_result_update, ChatMessage, ChatSession, ContextCarryState, ErrorEpisodeInput,
+    GetSessionResponse, ImageAttachment, InitialSessionPage, MessagePart, MessageRole, ModelInfo,
+    OpenTabRegistry, PendingRecoveryMessage, PermissionPartStatus, PermissionRequestMsg,
+    QueuedAgentTurn, SessionState, SessionStore, SessionSummary, INITIAL_SESSION_PAGE_LIMIT,
 };
 use crate::usecase::agent_session::status::{
     AgentStatusCenter, AgentStatusNotifier, SessionNotice, SessionNoticeKind, SessionStatus,
@@ -59,8 +64,8 @@ use super::event_apply::{
     parts_from_domain, pending_permission_request_msg, token_usage_from_domain,
 };
 use super::ports::{
-    AgentSessionEventNotifier, AgentSessionStateChangedPayload, AgentStallObservedPayload,
-    AgentStreamingDeltaPayload, AgentTaskSpawner, WorkflowStallNotifier,
+    AcceptedSendObligationDriver, AgentSessionEventNotifier, AgentSessionStateChangedPayload,
+    AgentStallObservedPayload, AgentStreamingDeltaPayload, AgentTaskSpawner, WorkflowStallNotifier,
     WorkflowTurnCompleteNotifier,
 };
 use super::queue::QueuedTurnInput;
@@ -74,9 +79,8 @@ use super::stale::{
     startup_max_retries_for_session, startup_timeout_for_session, turn_is_stale,
 };
 use super::streaming::{
-    merge_streaming_append_delta_parts, parts_can_stream_as_append_delta,
-    should_persist_streaming_snapshot, streaming_flush_decision, streaming_parts_byte_size,
-    StreamingFlushDecision,
+    parts_can_stream_as_append_delta, should_persist_streaming_snapshot, streaming_flush_decision,
+    streaming_parts_byte_size, StreamingFlushDecision,
 };
 #[cfg(test)]
 use super::transitions::{
@@ -101,6 +105,10 @@ async fn acquire_session_runtime_lock(
 
 const CLOSE_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(200);
 const CLOSE_DRAIN_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
+#[cfg(not(test))]
+const PROVIDER_ESTABLISH_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(test)]
+const PROVIDER_ESTABLISH_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Default)]
 struct ShutdownAdmissionState {
@@ -109,13 +117,13 @@ struct ShutdownAdmissionState {
 }
 
 #[derive(Default)]
-struct ShutdownAdmission {
+pub(super) struct ShutdownAdmission {
     state: std::sync::Mutex<ShutdownAdmissionState>,
     idle: tokio::sync::Notify,
 }
 
 impl ShutdownAdmission {
-    fn admit(self: &Arc<Self>) -> Result<ShutdownAdmissionGuard, AgentRuntimeError> {
+    pub(super) fn admit(self: &Arc<Self>) -> Result<ShutdownAdmissionGuard, AgentRuntimeError> {
         let mut state = self
             .state
             .lock()
@@ -131,6 +139,7 @@ impl ShutdownAdmission {
         })
     }
 
+    #[cfg(test)]
     fn begin_shutdown(&self) {
         self.state
             .lock()
@@ -138,6 +147,7 @@ impl ShutdownAdmission {
             .shutting_down = true;
     }
 
+    #[cfg(test)]
     fn cancel_shutdown(&self) {
         self.state
             .lock()
@@ -145,6 +155,7 @@ impl ShutdownAdmission {
             .shutting_down = false;
     }
 
+    #[cfg(test)]
     async fn wait_for_idle(&self) {
         loop {
             let notified = self.idle.notified();
@@ -170,7 +181,7 @@ impl ShutdownAdmission {
     }
 }
 
-struct ShutdownAdmissionGuard {
+pub(super) struct ShutdownAdmissionGuard {
     admission: Arc<ShutdownAdmission>,
 }
 
@@ -266,12 +277,57 @@ impl From<AgentBackendError> for AgentRuntimeError {
     }
 }
 
+#[async_trait::async_trait]
+pub(crate) trait DurableStopDriver: Send + Sync {
+    async fn stop(
+        &self,
+        session_id: &str,
+        turn_id: u64,
+        expected_session_revision: u64,
+    ) -> Result<(), String>;
+}
+
 #[derive(Debug, Clone)]
+pub(crate) struct DurableWorkflowTurnRequest {
+    pub operation_id: String,
+    pub session_id: String,
+    pub content: String,
+    pub permission_mode: PermissionMode,
+    pub base_system_prompt: Option<String>,
+    pub workflow_instructions: Vec<String>,
+}
+
+#[async_trait::async_trait]
+pub(crate) trait DurableWorkflowSendDriver: Send + Sync {
+    async fn send(&self, request: DurableWorkflowTurnRequest) -> Result<(), String>;
+}
+
+pub(crate) fn durable_workflow_turn_operation_id(
+    node_execution_id: &str,
+    turn_role: &str,
+) -> String {
+    use sha2::{Digest, Sha256};
+
+    fn append_field(bytes: &mut Vec<u8>, value: &str) {
+        bytes.extend_from_slice(&(value.len() as u64).to_be_bytes());
+        bytes.extend_from_slice(value.as_bytes());
+    }
+
+    let mut identity = b"durable-workflow-turn/v1".to_vec();
+    append_field(&mut identity, node_execution_id);
+    append_field(&mut identity, turn_role);
+    let digest = Sha256::digest(identity);
+    format!("workflow-send-{}", hex::encode(digest))
+}
+
+#[derive(Debug, Clone)]
+#[cfg(test)]
 pub struct StartSessionOptions {
     pub permission_mode: PermissionMode,
     pub plan_mode: bool,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct SendAgentMessageRequest {
     pub chat_session_id: Option<String>,
@@ -286,8 +342,37 @@ pub struct SendAgentMessageRequest {
     pub editor_context: Option<AgentEditorContext>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+/// Provider-facing input consumed only after the durable send operation has
+/// committed its immutable receipt, projections, and execution obligation.
+///
+/// Target resolution and provider configuration belong to the acceptance
+/// manifest; keeping them out of this type prevents the runtime effect driver
+/// from becoming a second send-admission authority.
+#[derive(Debug, Clone)]
+pub(crate) struct AcceptedRuntimeSendInput {
+    pub content: String,
+    pub permission_mode: PermissionMode,
+    pub plan_mode: bool,
+    pub images: Vec<ImageAttachment>,
+    pub mentions: Vec<crate::domain::code::MentionReference>,
+    pub editor_context: Option<AgentEditorContext>,
+    pub base_system_prompt: Option<String>,
+    pub workflow_instructions: Vec<String>,
+}
+
+pub(crate) struct AcceptedSendExecution<'a> {
+    pub request: AcceptedRuntimeSendInput,
+    pub operation_id: &'a str,
+    pub execution_obligation_id: &'a str,
+    pub session_id: &'a str,
+    pub human_message_id: &'a str,
+    pub assistant_message_id: Option<&'a str>,
+    pub disposition: crate::domain::agent_session::events::SendDisposition,
+    pub reserved_turn_id: Option<&'a str>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone)]
 pub struct SendMessageResponse {
     pub session: ChatSession,
     pub human_message: ChatMessage,
@@ -295,15 +380,16 @@ pub struct SendMessageResponse {
     pub queued_turn: Option<QueuedAgentTurn>,
     pub pending_queue: Vec<QueuedAgentTurn>,
     pub pending_queue_count: usize,
-    pub can_change_backend: bool,
     pub sessions: Vec<SessionSummary>,
 }
 
+#[cfg(test)]
 struct SendResponseProjection {
     session: ChatSession,
     sessions: Vec<SessionSummary>,
 }
 
+#[cfg(test)]
 impl SendResponseProjection {
     fn into_accepted_queue_response(
         mut self,
@@ -337,7 +423,6 @@ impl SendResponseProjection {
             queued_turn: Some(queued_turn),
             pending_queue_count: pending_queue.len(),
             pending_queue,
-            can_change_backend: false,
             sessions: self.sessions,
         }
     }
@@ -352,8 +437,7 @@ pub struct CancelQueuedTurnResponse {
     pub pending_queue_count: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub struct InitSessionsResponse {
     pub sessions: Vec<SessionSummary>,
     pub active_session: Option<GetSessionResponse>,
@@ -376,10 +460,15 @@ pub(super) struct RuntimeContext {
     pub(super) session_locks: SessionCommandLocks,
     pub(super) runtime_event_locks: SessionLockMap,
     pub(super) transitions: SessionTransitionCoordinator,
-    shutdown_admission: Arc<ShutdownAdmission>,
+    pub(super) shutdown_admission: Arc<ShutdownAdmission>,
     pub(super) workflow_turn_complete_notifier:
         Arc<RwLock<Option<Arc<dyn WorkflowTurnCompleteNotifier>>>>,
     pub(super) workflow_stall_notifier: Arc<RwLock<Option<Arc<dyn WorkflowStallNotifier>>>>,
+    pub(super) accepted_send_obligation_driver:
+        Arc<RwLock<Option<Arc<dyn AcceptedSendObligationDriver>>>>,
+    pub(super) durable_workflow_send_driver:
+        Arc<RwLock<Option<Arc<dyn DurableWorkflowSendDriver>>>>,
+    pub(super) durable_stop_driver: Arc<RwLock<Option<Arc<dyn DurableStopDriver>>>>,
 }
 
 const PERSIST_MAX_ATTEMPTS: usize = 4;
@@ -413,7 +502,7 @@ enum PersistenceLogRecord {
 #[cfg(test)]
 std::thread_local! {
     static PERSISTENCE_LOG_RECORDS: std::cell::RefCell<Vec<PersistenceLogRecord>> =
-        std::cell::RefCell::new(Vec::new());
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 fn emit_persistence_log_record(record: PersistenceLogRecord) {
@@ -465,15 +554,10 @@ impl PersistFailureKind {
     }
 }
 
+#[cfg(test)]
 #[derive(Clone)]
 struct StalledActiveTurnTarget {
     runtime: Arc<dyn AgentSessionRuntime>,
-}
-
-#[derive(Clone, Copy)]
-enum SessionCloseMode {
-    Always,
-    IfIdle,
 }
 
 pub struct AgentSessionRuntimeUsecase {
@@ -511,6 +595,9 @@ impl AgentSessionRuntimeUsecase {
                 shutdown_admission: Arc::new(ShutdownAdmission::default()),
                 workflow_turn_complete_notifier: Arc::new(RwLock::new(None)),
                 workflow_stall_notifier: Arc::new(RwLock::new(None)),
+                accepted_send_obligation_driver: Arc::new(RwLock::new(None)),
+                durable_workflow_send_driver: Arc::new(RwLock::new(None)),
+                durable_stop_driver: Arc::new(RwLock::new(None)),
             },
         }
     }
@@ -543,6 +630,36 @@ impl AgentSessionRuntimeUsecase {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(notifier);
     }
 
+    pub(crate) fn set_accepted_send_obligation_driver(
+        &self,
+        driver: Arc<dyn AcceptedSendObligationDriver>,
+    ) {
+        *self
+            .ctx
+            .accepted_send_obligation_driver
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(driver);
+    }
+
+    pub(crate) fn set_durable_workflow_send_driver(
+        &self,
+        driver: Arc<dyn DurableWorkflowSendDriver>,
+    ) {
+        *self
+            .ctx
+            .durable_workflow_send_driver
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(driver);
+    }
+
+    pub(crate) fn set_durable_stop_driver(&self, driver: Arc<dyn DurableStopDriver>) {
+        *self
+            .ctx
+            .durable_stop_driver
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(driver);
+    }
+
     pub fn list_backends(&self) -> BackendListResult {
         self.ctx.registry.list_result()
     }
@@ -551,9 +668,22 @@ impl AgentSessionRuntimeUsecase {
         self.ctx.registry.as_ref()
     }
 
+    #[cfg(test)]
     pub async fn send_message(
         &self,
         req: SendAgentMessageRequest,
+    ) -> Result<SendMessageResponse, AgentRuntimeError> {
+        self.send_message_with_reserved_session_id(req, None).await
+    }
+
+    /// Executes an already accepted send using the session identity fixed by
+    /// the durable receipt. `reserved_session_id` is used only for a new
+    /// session; regular callers keep using [`Self::send_message`].
+    #[cfg(test)]
+    pub async fn send_message_with_reserved_session_id(
+        &self,
+        req: SendAgentMessageRequest,
+        reserved_session_id: Option<String>,
     ) -> Result<SendMessageResponse, AgentRuntimeError> {
         let _admission_guard = self.ctx.shutdown_admission.admit()?;
         let mut session_guard = match req.chat_session_id.as_deref() {
@@ -565,7 +695,9 @@ impl AgentSessionRuntimeUsecase {
         if let Some(session_id) = req.chat_session_id.as_deref() {
             self.ensure_session_not_closing(session_id).await?;
         }
-        let session = self.resolve_or_create_session(&req).await?;
+        let session = self
+            .resolve_or_create_session(&req, reserved_session_id.as_deref())
+            .await?;
         if session_guard.is_none() {
             session_guard =
                 Some(acquire_session_control_after_recovery(&self.ctx, &session.id).await);
@@ -712,6 +844,7 @@ impl AgentSessionRuntimeUsecase {
                 system_prompt,
             },
             None,
+            None,
         )
         .await?;
 
@@ -727,6 +860,211 @@ impl AgentSessionRuntimeUsecase {
         response
     }
 
+    /// Consume the identities already committed by durable send acceptance.
+    /// This path never performs send admission, creates a second human
+    /// message, or appends another `TurnStarted` for an immediately-started
+    /// disposition.
+    pub(crate) async fn execute_accepted_send(
+        &self,
+        execution: AcceptedSendExecution<'_>,
+    ) -> Result<(), AgentRuntimeError> {
+        let AcceptedSendExecution {
+            request: req,
+            operation_id,
+            execution_obligation_id,
+            session_id,
+            human_message_id,
+            assistant_message_id,
+            disposition,
+            reserved_turn_id,
+        } = execution;
+        let _admission_guard = self.ctx.shutdown_admission.admit()?;
+        let _session_guard = acquire_session_control_after_recovery(&self.ctx, session_id).await;
+        self.ensure_session_not_closing(session_id).await?;
+        let session = self
+            .ctx
+            .session_store
+            .get_session_shell(&self.ctx.data_dir, session_id)
+            .map_err(AgentRuntimeError::Other)?
+            .ok_or_else(|| AgentRuntimeError::Other(format!("Session not found: {session_id}")))?;
+        let backend_id = required_backend_id(&session)?;
+        self.hydrate_runtime_session_state(&session).await?;
+
+        let base_system_prompt = req.base_system_prompt;
+        let workflow_instructions = req.workflow_instructions;
+        let mut accepted_input = QueuedTurnInput::new(
+            req.content,
+            req.permission_mode,
+            req.plan_mode,
+            session.permission_profile_id.clone(),
+            req.images,
+            session.worktree_path.clone(),
+            req.mentions,
+            req.editor_context,
+        );
+        accepted_input.existing_human_message_id = Some(human_message_id.to_string());
+        accepted_input.existing_agent_message_id = assistant_message_id.map(str::to_string);
+        accepted_input.reserved_turn_id = reserved_turn_id
+            .map(str::parse::<u64>)
+            .transpose()
+            .map_err(|_| AgentRuntimeError::Other("accepted turn identity is invalid".into()))?;
+        accepted_input.accepted_operation_id = Some(operation_id.to_string());
+        accepted_input.execution_obligation_id = Some(execution_obligation_id.to_string());
+
+        match disposition {
+            crate::domain::agent_session::events::SendDisposition::Queued { queue_item_id } => {
+                accepted_input.id = queue_item_id;
+                let mut sessions = self.ctx.sessions.lock().await;
+                let state = sessions
+                    .entry(session_id.to_string())
+                    .or_insert_with(|| RuntimeSessionState::new(backend_id));
+                if !state
+                    .pending_queue
+                    .iter()
+                    .any(|queued| queued.id == accepted_input.id)
+                {
+                    state.pending_queue.push_back(accepted_input);
+                }
+                Ok(())
+            }
+            crate::domain::agent_session::events::SendDisposition::StartedTurn { turn_id } => {
+                let committed_turn_id = turn_id.parse::<u64>().map_err(|_| {
+                    AgentRuntimeError::Other("accepted turn identity is invalid".into())
+                })?;
+                let human_message = queued_human_message(&accepted_input);
+                let assistant_message_id = assistant_message_id.ok_or_else(|| {
+                    AgentRuntimeError::Other(
+                        "accepted send is missing its committed assistant identity".into(),
+                    )
+                })?;
+                let agent_message = self
+                    .ctx
+                    .session_store
+                    .canonical_message_projection(session_id, assistant_message_id)
+                    .map_err(AgentRuntimeError::Other)?
+                    .ok_or_else(|| {
+                        AgentRuntimeError::Other(
+                            "accepted assistant projection is unavailable".into(),
+                        )
+                    })?;
+                self.ctx
+                    .notifier
+                    .turn_prepared(&session, &human_message, &agent_message);
+                let system_prompt = self.build_turn_system_prompt(
+                    &session,
+                    base_system_prompt,
+                    &accepted_input.mentions,
+                    accepted_input.editor_context.as_ref(),
+                    workflow_instructions,
+                )?;
+                self.start_turn_for_session(
+                    &session,
+                    &human_message,
+                    agent_message.id,
+                    TurnStartPayload {
+                        prompt: accepted_input.content,
+                        images: accepted_input.images,
+                        mentions: accepted_input.mentions,
+                        permission_mode: accepted_input.permission_mode,
+                        plan_mode: accepted_input.plan_mode,
+                        permission_profile_id: accepted_input.permission_profile_id,
+                        editor_context: accepted_input.editor_context,
+                        system_prompt,
+                    },
+                    None,
+                    Some(committed_turn_id),
+                )
+                .await
+            }
+        }
+    }
+
+    /// Perform only the provider create/resume dependency of an accepted
+    /// send. The caller owns the durable obligation reservation and result;
+    /// this method never starts a turn.
+    pub(crate) async fn establish_accepted_provider(
+        &self,
+        session_id: &str,
+    ) -> Result<(), AgentRuntimeError> {
+        let _admission_guard = self.ctx.shutdown_admission.admit()?;
+        let session_guard = acquire_session_control_after_recovery(&self.ctx, session_id).await;
+        self.ensure_session_not_closing(session_id).await?;
+        let session = self
+            .ctx
+            .session_store
+            .get_session_shell(&self.ctx.data_dir, session_id)
+            .map_err(AgentRuntimeError::Other)?
+            .ok_or_else(|| AgentRuntimeError::Other(format!("Session not found: {session_id}")))?;
+        let establish_meta = self
+            .ctx
+            .session_store
+            .get_session_meta(&self.ctx.data_dir, session_id)
+            .map_err(AgentRuntimeError::Other)?
+            .ok_or_else(|| AgentRuntimeError::Other(format!("Session not found: {session_id}")))?;
+        let establish_generation = establish_meta.provider_session_generation;
+        self.hydrate_runtime_session_state(&session).await?;
+        if self.provider_session_is_confirmed(session_id).await {
+            return Ok(());
+        }
+        self.ensure_runtime(&session, None).await?;
+        drop(session_guard);
+
+        tokio::time::timeout(PROVIDER_ESTABLISH_CONFIRMATION_TIMEOUT, async {
+            loop {
+                let observed = self
+                    .ctx
+                    .session_store
+                    .get_session_meta(&self.ctx.data_dir, session_id)
+                    .map_err(AgentRuntimeError::Other)?
+                    .is_some_and(|meta| {
+                        meta.provider_session_generation > establish_generation
+                            && meta.agent_session_id.is_some()
+                    });
+                if observed && self.provider_session_is_confirmed(session_id).await {
+                    return Ok(());
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .map_err(|_| {
+            AgentRuntimeError::Other(format!(
+                "Provider establishment for session {session_id} has no durable observation"
+            ))
+        })?
+    }
+
+    /// A stored provider id is only resume input. It does not prove the
+    /// current process has observed a successful create/resume handshake.
+    pub(crate) async fn provider_session_is_confirmed(&self, session_id: &str) -> bool {
+        let sessions = self.ctx.sessions.lock().await;
+        sessions
+            .get(session_id)
+            .is_some_and(|state| state.runtime.is_some() && state.provider_session_established)
+    }
+
+    /// Read the process-local send admission state without acquiring the
+    /// per-session command lock. Workflow activation already owns that lock
+    /// while it commits its durable Send operation.
+    pub(crate) async fn workflow_send_runtime_is_busy(&self, session_id: &str) -> bool {
+        let sessions = self.ctx.sessions.lock().await;
+        sessions.get(session_id).is_some_and(|state| {
+            state.phase != RuntimeSessionPhase::Idle
+                || state.queue_paused
+                || !state.pending_queue.is_empty()
+        })
+    }
+
+    /// Read-only recovery fence for workflow and other aggregate operations.
+    /// This deliberately does not open or hydrate a live provider session.
+    pub(crate) fn ensure_recovery_operation_allowed(
+        &self,
+        session_id: &str,
+    ) -> Result<(), AgentRuntimeError> {
+        ensure_backend_recovery_operation_allowed(&self.ctx, session_id)
+    }
+
+    #[cfg(test)]
     pub async fn start_session(
         &self,
         session_id: &str,
@@ -774,6 +1112,186 @@ impl AgentSessionRuntimeUsecase {
         }
     }
 
+    /// Read-only admission for the durable permission-response operation.
+    /// This verifies the exact pending request and live provider owner but
+    /// performs no provider I/O and no persistence mutation.
+    pub(crate) async fn prepare_permission_response_operation(
+        &self,
+        session_id: &str,
+        response: &PermissionResponse,
+    ) -> Result<(u64, bool), AgentRuntimeError> {
+        let _session_guard = self
+            .acquire_session_control_after_recovery(session_id)
+            .await;
+        ensure_backend_recovery_operation_allowed(&self.ctx, session_id)?;
+        self.ensure_session_not_closing(session_id).await?;
+        let pending = self
+            .pending_permission_for_response(session_id, response)
+            .await?;
+        let turn_id = pending.turn_id.ok_or_else(|| {
+            AgentRuntimeError::Other(format!(
+                "Permission response has no durable turn identity for session {session_id}"
+            ))
+        })?;
+        let has_runtime = self
+            .ctx
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .and_then(|state| state.runtime.as_ref())
+            .is_some();
+        if !has_runtime {
+            return Err(AgentRuntimeError::Other(format!(
+                "No active agent runtime for session {session_id}"
+            )));
+        }
+        Ok((turn_id, pending.from_runtime_state))
+    }
+
+    /// The only production provider handoff for a permission response. The
+    /// durable operation has already accepted and claimed the exact payload;
+    /// this method deliberately performs no reservation or completion write.
+    pub(crate) async fn execute_accepted_permission_response_effect(
+        &self,
+        session_id: &str,
+        turn_id: u64,
+        response: PermissionResponse,
+    ) -> Result<(), AgentRuntimeError> {
+        let _session_guard = self
+            .acquire_session_control_after_recovery(session_id)
+            .await;
+        ensure_backend_recovery_operation_allowed(&self.ctx, session_id)?;
+        self.ensure_session_not_closing(session_id).await?;
+        let pending = self
+            .pending_permission_for_response(session_id, &response)
+            .await?;
+        if pending.turn_id != Some(turn_id) {
+            return Err(AgentRuntimeError::Other(format!(
+                "Permission response turn identity changed for session {session_id}"
+            )));
+        }
+        let runtime = {
+            let sessions = self.ctx.sessions.lock().await;
+            sessions
+                .get(session_id)
+                .and_then(|state| state.runtime.clone())
+        }
+        .ok_or_else(|| {
+            AgentRuntimeError::Other(format!("No active agent runtime for session {session_id}"))
+        })?;
+        runtime
+            .respond_permission(response)
+            .await
+            .map_err(AgentRuntimeError::from)
+    }
+
+    /// Refresh process-local mirrors only after the operation completion
+    /// batch (operation state, obligation, event and projections) is durable.
+    pub(crate) async fn apply_permission_response_completion(
+        &self,
+        session_id: &str,
+        response: &PermissionResponse,
+        from_runtime_state: bool,
+    ) {
+        let (
+            patched,
+            did_resume_streaming,
+            permission_wait_measurement,
+            pending_permission_state_revision,
+            cleared_stall,
+        ) = {
+            let mut sessions = self.ctx.sessions.lock().await;
+            let Some(state) = sessions.get_mut(session_id) else {
+                return;
+            };
+            let pending_in_state_matches = state
+                .pending_permission_request
+                .as_ref()
+                .is_some_and(|pending| pending.id == response.request_id);
+            let patched = pending_in_state_matches
+                .then(|| patch_permission_response_in_state(state, response))
+                .flatten();
+            let did_resume_streaming = (state.phase == RuntimeSessionPhase::WaitingPermission
+                && pending_in_state_matches)
+                || !from_runtime_state;
+            let mut pending_permission_state_revision = None;
+            let mut cleared_stall = false;
+            if did_resume_streaming {
+                state.phase = RuntimeSessionPhase::Streaming;
+                pending_permission_state_revision = Some(state.clear_pending_permission_request());
+                cleared_stall = state.record_progress(std::time::Instant::now());
+                state.permission_wait_diagnostic_emitted = false;
+            }
+            let permission_wait_measurement = did_resume_streaming
+                .then(|| {
+                    let started_at = state.permission_wait_started_at.take()?;
+                    let dims = session_telemetry_dimensions(
+                        &self.ctx.session_store,
+                        &self.ctx.data_dir,
+                        session_id,
+                    )?;
+                    Some((started_at.elapsed(), dims))
+                })
+                .flatten();
+            (
+                patched,
+                did_resume_streaming,
+                permission_wait_measurement,
+                pending_permission_state_revision,
+                cleared_stall,
+            )
+        };
+        if cleared_stall {
+            if let Err(error) = dispatch_stall_cleared_notifications(&self.ctx, session_id).await {
+                log::warn!("workflow stall-cleared notification failed for {session_id}: {error}");
+            }
+        }
+        if let Some((elapsed, dims)) = permission_wait_measurement {
+            crate::other::telemetry::record_agent_turn_duration(
+                crate::other::telemetry::AgentTurn::PermissionWait,
+                &dims,
+                elapsed,
+            );
+        }
+        if let Some((message_id, seq, parts, _turn_id)) = patched {
+            emit_streaming_delta_or_retry(
+                &self.ctx,
+                session_id,
+                PendingStreamDelta {
+                    message_id,
+                    seq,
+                    snapshot: true,
+                    parts,
+                    message: None,
+                    authoritative: true,
+                },
+            )
+            .await;
+        }
+        if did_resume_streaming {
+            emit_session_state_change(
+                &self.ctx.session_store,
+                &self.ctx.notifier,
+                &self.ctx.status_center,
+                &self.ctx.status_notifier,
+                &self.ctx.data_dir,
+                session_id,
+                StateChange {
+                    turn_phase: TurnPhase::Streaming,
+                    queue_paused: None,
+                    pending_permission_request: None,
+                    pending_permission_state_revision,
+                    exit_code: None,
+                    completed_at: None,
+                    interrupted: false,
+                    session_state: Some(SessionState::Active),
+                },
+            );
+        }
+    }
+
+    #[cfg(test)]
     pub async fn respond_permission(
         &self,
         session_id: &str,
@@ -787,6 +1305,11 @@ impl AgentSessionRuntimeUsecase {
         let pending = self
             .pending_permission_for_response(session_id, &response)
             .await?;
+        let turn_id = pending.turn_id.ok_or_else(|| {
+            AgentRuntimeError::Other(format!(
+                "Permission response has no durable turn identity for session {session_id}"
+            ))
+        })?;
         let runtime = {
             let sessions = self.ctx.sessions.lock().await;
             sessions
@@ -796,15 +1319,57 @@ impl AgentSessionRuntimeUsecase {
         .ok_or_else(|| {
             AgentRuntimeError::Other(format!("No active agent runtime for session {session_id}"))
         })?;
+        let projected_message = {
+            let sessions = self.ctx.sessions.lock().await;
+            sessions.get(session_id).and_then(|state| {
+                let mut parts = state.domain_streaming_parts.clone();
+                if !patch_permission_response_in_domain_parts(&mut parts, &response) {
+                    return None;
+                }
+                state
+                    .streaming_message_id
+                    .clone()
+                    .or_else(|| state.last_agent_message_id.clone())
+                    .map(|message_id| (message_id, state.streaming_delta_seq.saturating_add(1)))
+            })
+        };
+        let obligation_id = self
+            .ctx
+            .session_store
+            .reserve_permission_response(
+                &self.ctx.data_dir,
+                session_id,
+                turn_id,
+                &response.request_id,
+                response.clone(),
+            )
+            .map_err(AgentRuntimeError::Other)?;
+        self.ctx
+            .session_store
+            .claim_permission_response_effect(session_id, &obligation_id)
+            .map_err(AgentRuntimeError::Other)?;
         runtime
             .respond_permission(response.clone())
             .await
             .map_err(AgentRuntimeError::from)?;
+        let resolved_event = permission_resolved_event(turn_id, &response);
+        self.ctx
+            .session_store
+            .complete_permission_response(
+                &self.ctx.data_dir,
+                session_id,
+                &obligation_id,
+                resolved_event,
+                projected_message
+                    .as_ref()
+                    .map(|(message_id, _)| message_id.as_str()),
+                projected_message.as_ref().map(|(_, seq)| *seq),
+            )
+            .map_err(AgentRuntimeError::Other)?;
         let (
             patched,
             did_resume_streaming,
             permission_wait_measurement,
-            resolved_turn_id,
             pending_permission_state_revision,
             cleared_stall,
         ) = {
@@ -813,10 +1378,6 @@ impl AgentSessionRuntimeUsecase {
                 return Ok(());
             };
             let patched = patch_permission_response_in_state(state, &response);
-            let resolved_turn_id = patched
-                .as_ref()
-                .map(|(_, _, _, turn_id)| *turn_id)
-                .or(pending.turn_id);
             let pending_in_state_matches = state
                 .pending_permission_request
                 .as_ref()
@@ -847,7 +1408,6 @@ impl AgentSessionRuntimeUsecase {
                 patched,
                 did_resume_streaming,
                 permission_wait_measurement,
-                resolved_turn_id,
                 pending_permission_state_revision,
                 cleared_stall,
             )
@@ -864,24 +1424,7 @@ impl AgentSessionRuntimeUsecase {
                 elapsed,
             );
         }
-        if let Some((message_id, seq, parts, turn_id)) = patched {
-            if let Err(error) = self.ctx.session_store.persist_message_parts(
-                &self.ctx.data_dir,
-                session_id,
-                &message_id,
-                &parts,
-                seq,
-                None,
-            ) {
-                log::warn!("failed to persist permission response patch for {session_id}: {error}");
-            }
-            append_permission_resolved_event(
-                &self.ctx.session_store,
-                &self.ctx.data_dir,
-                session_id,
-                turn_id,
-                &response,
-            );
+        if let Some((message_id, seq, parts, _turn_id)) = patched {
             emit_streaming_delta_or_retry(
                 &self.ctx,
                 session_id,
@@ -895,14 +1438,6 @@ impl AgentSessionRuntimeUsecase {
                 },
             )
             .await;
-        } else if let Some(turn_id) = resolved_turn_id {
-            append_permission_resolved_event(
-                &self.ctx.session_store,
-                &self.ctx.data_dir,
-                session_id,
-                turn_id,
-                &response,
-            );
         }
         if did_resume_streaming {
             emit_session_state_change(
@@ -968,12 +1503,10 @@ impl AgentSessionRuntimeUsecase {
         {
             let sessions = self.ctx.sessions.lock().await;
             if let Some((pending, turn_id)) = sessions.get(session_id).and_then(|state| {
-                state.pending_permission_request.as_ref().map(|pending| {
-                    (
-                        pending.clone(),
-                        state.current_turn_id.or(state.last_turn_id),
-                    )
-                })
+                state
+                    .pending_permission_request
+                    .as_ref()
+                    .map(|pending| (pending.clone(), state.current_turn_id))
             }) {
                 if pending.id != response.request_id {
                     return Err(AgentRuntimeError::Other(format!(
@@ -1005,6 +1538,7 @@ impl AgentSessionRuntimeUsecase {
         })
     }
 
+    #[cfg(test)]
     async fn recover_queued_turn_if_idle_without_runtime(&self, session_id: &str) {
         let should_drain = {
             let sessions = self.ctx.sessions.lock().await;
@@ -1022,27 +1556,16 @@ impl AgentSessionRuntimeUsecase {
         session_id: &str,
         mode: PermissionMode,
     ) -> Result<(), AgentRuntimeError> {
+        let _admission_guard = self.ctx.shutdown_admission.admit()?;
         let _session_guard = acquire_session_control_after_recovery(&self.ctx, session_id).await;
         ensure_backend_recovery_operation_allowed(&self.ctx, session_id)?;
         self.ctx
             .session_store
-            .update_permission_mode(&self.ctx.data_dir, session_id, mode.as_str())
+            .update_permission_mode_from_user(&self.ctx.data_dir, session_id, mode.as_str())
             .map_err(AgentRuntimeError::Other)?;
         self.ctx
             .notifier
             .permission_mode_changed(session_id, mode.as_str());
-        let plan_mode = self
-            .ctx
-            .session_store
-            .get_session_meta(&self.ctx.data_dir, session_id)
-            .map_err(AgentRuntimeError::Other)?
-            .map(|meta| meta.plan_mode)
-            .unwrap_or(false);
-        if let Some(runtime) = self.live_runtime(session_id).await {
-            if let Err(error) = runtime.set_permission_mode(mode, plan_mode).await {
-                log::warn!("runtime permission mode sync failed for {session_id}: {error}");
-            }
-        }
         Ok(())
     }
 
@@ -1051,26 +1574,13 @@ impl AgentSessionRuntimeUsecase {
         session_id: &str,
         plan_mode: bool,
     ) -> Result<(), AgentRuntimeError> {
+        let _admission_guard = self.ctx.shutdown_admission.admit()?;
         let _session_guard = acquire_session_control_after_recovery(&self.ctx, session_id).await;
         ensure_backend_recovery_operation_allowed(&self.ctx, session_id)?;
         self.ctx
             .session_store
-            .update_plan_mode(&self.ctx.data_dir, session_id, plan_mode)
+            .update_plan_mode_from_user(&self.ctx.data_dir, session_id, plan_mode)
             .map_err(AgentRuntimeError::Other)?;
-        let mode = self
-            .ctx
-            .session_store
-            .get_session_meta(&self.ctx.data_dir, session_id)
-            .map_err(AgentRuntimeError::Other)?
-            .map(|meta| PermissionMode::parse(&meta.permission_mode))
-            .transpose()
-            .map_err(|error| AgentRuntimeError::Other(error.to_string()))?
-            .unwrap_or(PermissionMode::Edit);
-        if let Some(runtime) = self.live_runtime(session_id).await {
-            if let Err(error) = runtime.set_permission_mode(mode, plan_mode).await {
-                log::warn!("runtime plan mode sync failed for {session_id}: {error}");
-            }
-        }
         Ok(())
     }
 
@@ -1079,6 +1589,7 @@ impl AgentSessionRuntimeUsecase {
         session_id: &str,
         entry_id: &str,
     ) -> Result<(), AgentRuntimeError> {
+        let _admission_guard = self.ctx.shutdown_admission.admit()?;
         let _session_guard = acquire_session_control_after_recovery(&self.ctx, session_id).await;
         ensure_backend_recovery_operation_allowed(&self.ctx, session_id)?;
         let entry = self
@@ -1086,31 +1597,33 @@ impl AgentSessionRuntimeUsecase {
             .registry
             .resolve_model_entry(entry_id)
             .map_err(AgentRuntimeError::Other)?;
-        let backend_changed = self
-            .apply_backend_selection_locked(
+        let session = self
+            .ctx
+            .session_store
+            .get_session_meta(&self.ctx.data_dir, session_id)
+            .map_err(AgentRuntimeError::Other)?
+            .ok_or_else(|| AgentRuntimeError::Other(format!("Session not found: {session_id}")))?;
+        if session.backend_id != entry.backend {
+            return Err(AgentRuntimeError::BackendSelectionLocked);
+        }
+        self.ctx
+            .session_store
+            .update_backend_selection_from_user(
+                &self.ctx.data_dir,
                 session_id,
                 entry.backend.clone(),
                 Some(entry.model_id.clone()),
-                false,
             )
-            .await?;
+            .map_err(AgentRuntimeError::Other)?;
         if let Ok(available_models) = self.ctx.registry.available_models(&entry.backend) {
             self.ctx
                 .notifier
                 .models_updated(session_id, available_models, entry.model_id.clone());
         }
-        if !backend_changed {
-            let Some(runtime) = self.live_runtime(session_id).await else {
-                return Ok(());
-            };
-            let model = ModelId::parse(&entry.model_id).map_err(AgentRuntimeError::Other)?;
-            if let Err(error) = runtime.set_model(&model).await {
-                log::warn!("runtime model sync failed for {session_id}: {error}");
-            }
-        }
         Ok(())
     }
 
+    #[cfg(test)]
     pub async fn set_session_backend(
         &self,
         session_id: &str,
@@ -1121,7 +1634,7 @@ impl AgentSessionRuntimeUsecase {
             .registry
             .default_model_for(backend_id)
             .map_err(AgentRuntimeError::Other)?;
-        self.run_session_close(session_id, SessionCloseMode::Always, || async {
+        self.run_session_close(session_id, || async {
             ensure_backend_recovery_operation_allowed(&self.ctx, session_id)?;
             self.ctx
                 .session_store
@@ -1139,116 +1652,33 @@ impl AgentSessionRuntimeUsecase {
             .ok_or_else(|| AgentRuntimeError::Other(format!("Session not found: {session_id}")))
     }
 
-    async fn apply_backend_selection_locked(
-        &self,
-        session_id: &str,
-        backend_id: String,
-        selected_model: Option<String>,
-        restart_same_backend: bool,
-    ) -> Result<bool, AgentRuntimeError> {
-        let session = self
-            .ctx
-            .session_store
-            .get_session_meta(&self.ctx.data_dir, session_id)
-            .map_err(AgentRuntimeError::Other)?
-            .ok_or_else(|| AgentRuntimeError::Other(format!("Session not found: {session_id}")))?;
-        let current_backend = session.backend_id.clone();
-        let backend_changed = current_backend != backend_id;
-        if backend_changed || restart_same_backend {
-            let turn_phase = {
-                let sessions = self.ctx.sessions.lock().await;
-                sessions
-                    .get(session_id)
-                    .map(|state| TurnPhase::from(state.phase))
-                    .unwrap_or(TurnPhase::Idle)
-            };
-            if session.message_count != 0
-                || session.agent_session_id.is_some()
-                || turn_phase != TurnPhase::Idle
-            {
-                return Err(AgentRuntimeError::BackendSelectionLocked);
-            }
-        }
-        self.ctx
-            .session_store
-            .update_backend_selection(&self.ctx.data_dir, session_id, backend_id, selected_model)
-            .map_err(AgentRuntimeError::Other)?;
-        if backend_changed || restart_same_backend {
-            self.begin_session_close_locked(session_id).await?;
-            self.close_session_runtime_locked(session_id).await;
-        }
-        Ok(backend_changed)
-    }
-
-    pub async fn set_session_title(
-        &self,
-        session_id: &str,
-        title: &str,
-    ) -> Result<(), AgentRuntimeError> {
-        if let Some(runtime) = self.live_runtime(session_id).await {
-            if let Err(error) = runtime.set_session_title(title).await {
-                log::warn!("runtime session title sync failed for {session_id}: {error}");
-            }
-        }
-        Ok(())
-    }
-
     /// Waits for an in-flight backend recovery and then closes the live runtime.
     ///
     /// This is the normal teardown entry point. It may also reconcile the durable
     /// event log before returning session control, including persisting an
     /// interrupted recovery failure and publishing its user-facing error part.
     pub async fn close_session(&self, session_id: &str) -> Result<(), AgentRuntimeError> {
-        self.run_session_close(session_id, SessionCloseMode::Always, || async { Ok(()) })
+        self.run_session_close(session_id, || async { Ok(()) })
             .await?;
         Ok(())
-    }
-
-    pub async fn close_session_if_idle(&self, session_id: &str) -> Result<bool, AgentRuntimeError> {
-        Ok(self
-            .run_session_close(session_id, SessionCloseMode::IfIdle, || async { Ok(()) })
-            .await?
-            .is_some())
     }
 
     async fn run_session_close<T, F, Fut>(
         &self,
         session_id: &str,
-        mode: SessionCloseMode,
         after_finish: F,
-    ) -> Result<Option<T>, AgentRuntimeError>
+    ) -> Result<T, AgentRuntimeError>
     where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<T, AgentRuntimeError>>,
     {
         let session_guard = acquire_session_control_after_recovery(&self.ctx, session_id).await;
-        let should_drain = match mode {
-            SessionCloseMode::Always => self.begin_session_close_locked(session_id).await?,
-            SessionCloseMode::IfIdle => {
-                let mut sessions = self.ctx.sessions.lock().await;
-                let Some(state) = sessions.get_mut(session_id) else {
-                    return Ok(None);
-                };
-                if state.runtime.is_none()
-                    || state.phase != RuntimeSessionPhase::Idle
-                    || !state.pending_queue.is_empty()
-                {
-                    return Ok(None);
-                }
-                state.closing = true;
-                false
-            }
-        };
-        let session_guard = match mode {
-            SessionCloseMode::Always => {
-                drop(session_guard);
-                if should_drain {
-                    self.drain_closing_turn(session_id).await;
-                }
-                acquire_session_runtime_lock(&self.ctx.session_locks, session_id).await
-            }
-            SessionCloseMode::IfIdle => session_guard,
-        };
+        let should_drain = self.begin_session_close_locked(session_id).await?;
+        drop(session_guard);
+        if should_drain {
+            self.drain_closing_turn(session_id).await;
+        }
+        let session_guard = acquire_session_runtime_lock(&self.ctx.session_locks, session_id).await;
         let workflow_notification = self.finalize_session_close_locked(session_id).await?;
         let output = match after_finish().await {
             Ok(output) => output,
@@ -1276,9 +1706,10 @@ impl AgentSessionRuntimeUsecase {
             )
             .await;
         }
-        Ok(Some(output))
+        Ok(output)
     }
 
+    #[cfg(test)]
     pub async fn close_all(&self) -> Result<(), AgentRuntimeError> {
         self.ctx.shutdown_admission.begin_shutdown();
         self.ctx.shutdown_admission.wait_for_idle().await;
@@ -1314,6 +1745,15 @@ impl AgentSessionRuntimeUsecase {
                 errors.join("; ")
             )))
         }
+    }
+
+    pub(crate) fn application_shutdown_target_session_ids(
+        &self,
+    ) -> Result<Vec<String>, AgentRuntimeError> {
+        self.ctx
+            .session_store
+            .application_shutdown_target_session_ids(&self.ctx.data_dir)
+            .map_err(AgentRuntimeError::Other)
     }
 
     async fn begin_session_close_locked(
@@ -1471,31 +1911,13 @@ impl AgentSessionRuntimeUsecase {
 
     pub async fn cancel_queued_turn(
         &self,
-        session_id: &str,
-        queued_turn_id: Option<&str>,
+        _session_id: &str,
+        _queued_turn_id: Option<&str>,
     ) -> Result<CancelQueuedTurnResponse, AgentRuntimeError> {
-        let mut sessions = self.ctx.sessions.lock().await;
-        let state = sessions.get_mut(session_id).ok_or_else(|| {
-            AgentRuntimeError::Other(format!("No active agent runtime for session {session_id}"))
-        })?;
-        let before = state.pending_queue.len();
-        match queued_turn_id {
-            Some(id) => state.pending_queue.retain(|turn| turn.id != id),
-            None => state.pending_queue.clear(),
-        }
-        let canceled_count = before.saturating_sub(state.pending_queue.len());
-        if queued_turn_id.is_some() && canceled_count == 0 {
-            return Err(AgentRuntimeError::Other(
-                "Queued turn not found".to_string(),
-            ));
-        }
-        let pending_queue = pending_queue_view(state);
-        Ok(CancelQueuedTurnResponse {
-            session_id: session_id.to_string(),
-            canceled_count,
-            pending_queue_count: pending_queue.len(),
-            pending_queue,
-        })
+        Err(AgentRuntimeError::Other(
+            "Queued turn cancellation is unavailable until it has an atomic durable queue operation"
+                .to_string(),
+        ))
     }
 
     pub async fn get_session(
@@ -1528,6 +1950,7 @@ impl AgentSessionRuntimeUsecase {
             latest_token_usage,
             pending_permission_request,
             pending_permission_state_revision,
+            active_turn_id,
         ) = {
             let mut sessions = self.ctx.sessions.lock().await;
             let state = sessions.entry(session_id.to_string()).or_insert_with(|| {
@@ -1542,6 +1965,9 @@ impl AgentSessionRuntimeUsecase {
                     .then(|| state.pending_permission_request.clone())
                     .flatten(),
                 state.pending_permission_state_revision,
+                (state.phase != RuntimeSessionPhase::Idle)
+                    .then_some(state.current_turn_id)
+                    .flatten(),
             )
         };
         if pending_permission_request.is_some() {
@@ -1552,8 +1978,16 @@ impl AgentSessionRuntimeUsecase {
         let can_change_backend = session.messages.is_empty()
             && session.agent_session_id.is_none()
             && turn_phase == TurnPhase::Idle;
+        let session_meta = self
+            .ctx
+            .session_store
+            .get_session_meta(&self.ctx.data_dir, session_id)
+            .map_err(AgentRuntimeError::Other)?
+            .ok_or_else(|| AgentRuntimeError::Other(format!("Session not found: {session_id}")))?;
         let response = GetSessionResponse {
             session,
+            session_revision: session_meta.state_revision,
+            active_turn_id,
             turn_phase,
             available_models,
             can_change_backend,
@@ -1636,7 +2070,6 @@ impl AgentSessionRuntimeUsecase {
         })
     }
 
-    #[cfg(test)]
     pub async fn has_live_runtime(&self, session_id: &str) -> bool {
         self.live_runtime(session_id).await.is_some()
     }
@@ -1689,6 +2122,38 @@ impl AgentSessionRuntimeUsecase {
         self.ctx.session_locks.is_held_for_test(session_id)
     }
 
+    pub(crate) async fn start_workflow_turn_locked(
+        &self,
+        request: DurableWorkflowTurnRequest,
+    ) -> Result<(), AgentRuntimeError> {
+        let driver = self
+            .ctx
+            .durable_workflow_send_driver
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        if let Some(driver) = driver {
+            return driver.send(request).await.map_err(AgentRuntimeError::Other);
+        }
+
+        #[cfg(test)]
+        return self
+            .start_turn_locked(
+                &request.session_id,
+                request.permission_mode,
+                request.content,
+                request.base_system_prompt,
+                request.workflow_instructions,
+            )
+            .await;
+
+        #[cfg(not(test))]
+        Err(AgentRuntimeError::Other(
+            "The durable workflow Send authority is unavailable.".to_string(),
+        ))
+    }
+
+    #[cfg(test)]
     pub async fn start_turn_locked(
         &self,
         session_id: &str,
@@ -1773,6 +2238,7 @@ impl AgentSessionRuntimeUsecase {
                 system_prompt,
             },
             Some(queue_transition_guard),
+            None,
         )
         .await
     }
@@ -1856,6 +2322,38 @@ impl AgentSessionRuntimeUsecase {
         state.phase = RuntimeSessionPhase::Idle;
     }
 
+    pub(crate) async fn drain_accepted_queue_if_idle(&self, session_id: &str) {
+        let _session_guard = self.ctx.session_locks.acquire(session_id).await;
+        let durable_turn_is_idle = self
+            .ctx
+            .session_store
+            .get_session_meta(&self.ctx.data_dir, session_id)
+            .ok()
+            .flatten()
+            .is_some_and(|meta| {
+                matches!(
+                    meta.state,
+                    SessionState::Idle | SessionState::Done | SessionState::Error
+                )
+            });
+        let should_drain = {
+            let sessions = self.ctx.sessions.lock().await;
+            sessions.get(session_id).is_some_and(|state| {
+                let front_requires_durable_idle = state
+                    .pending_queue
+                    .front()
+                    .is_some_and(queued_turn_has_accepted_identity);
+                (!front_requires_durable_idle || durable_turn_is_idle)
+                    && state.phase == RuntimeSessionPhase::Idle
+                    && !state.queue_paused
+                    && !state.pending_queue.is_empty()
+            })
+        };
+        if should_drain {
+            start_next_queued_turn(&self.ctx, session_id).await;
+        }
+    }
+
     #[cfg(test)]
     pub(crate) async fn drain_next_queued_turn_for_test(&self, session_id: &str) {
         start_next_queued_turn(&self.ctx, session_id).await;
@@ -1923,9 +2421,11 @@ impl AgentSessionRuntimeUsecase {
             .map_err(AgentRuntimeError::from)
     }
 
+    #[cfg(test)]
     async fn resolve_or_create_session(
         &self,
         req: &SendAgentMessageRequest,
+        reserved_session_id: Option<&str>,
     ) -> Result<ChatSession, AgentRuntimeError> {
         if let Some(session_id) = req.chat_session_id.as_deref() {
             ensure_backend_recovery_operation_allowed(&self.ctx, session_id)?;
@@ -1984,17 +2484,39 @@ impl AgentSessionRuntimeUsecase {
             .registry
             .resolve_backend_id(requested_backend)
             .map_err(AgentRuntimeError::Other)?;
-        create_session_with_model_and_plan_mode(
-            &self.ctx.session_store,
-            &self.ctx.registry,
-            &self.ctx.data_dir,
-            &req.worktree_path,
-            backend_id,
-            req.permission_mode,
-            resolved_model.map(|model| model.model_id),
-            req.plan_mode,
-        )
-        .map_err(AgentRuntimeError::Other)
+        if let Some(session_id) = reserved_session_id {
+            let selected_model = match resolved_model {
+                Some(model) => model.model_id,
+                None => self
+                    .ctx
+                    .registry
+                    .default_model_for(&backend_id)
+                    .map_err(AgentRuntimeError::Other)?,
+            };
+            crate::usecase::agent_session::session::create_session_with_resolved_options_and_id(
+                &self.ctx.session_store,
+                &self.ctx.data_dir,
+                session_id.to_string(),
+                &req.worktree_path,
+                backend_id,
+                req.permission_mode,
+                selected_model,
+                req.plan_mode,
+            )
+            .map_err(AgentRuntimeError::Other)
+        } else {
+            create_session_with_model_and_plan_mode(
+                &self.ctx.session_store,
+                &self.ctx.registry,
+                &self.ctx.data_dir,
+                &req.worktree_path,
+                backend_id,
+                req.permission_mode,
+                resolved_model.map(|model| model.model_id),
+                req.plan_mode,
+            )
+            .map_err(AgentRuntimeError::Other)
+        }
     }
 
     async fn start_turn_for_session(
@@ -2004,6 +2526,7 @@ impl AgentSessionRuntimeUsecase {
         agent_message_id: String,
         mut payload: TurnStartPayload,
         queue_transition_guard: Option<SessionLockGuard>,
+        committed_turn_id: Option<u64>,
     ) -> Result<(), AgentRuntimeError> {
         let had_runtime = self.live_runtime(&session.id).await.is_some();
         let restore_policy =
@@ -2014,29 +2537,30 @@ impl AgentSessionRuntimeUsecase {
         let recovery_restore_required = restore_policy.recovery_restore_required;
         let restore_plan = restore_policy.plan;
         if restore_plan.carry_state() == Some(ContextCarryState::Reinjected) {
-            match self.ctx.session_store.update_context_carry_if_changed(
-                &self.ctx.data_dir,
-                &session.id,
-                Some(ContextCarryState::Reinjected),
-            ) {
-                Ok(Some(meta)) => self.ctx.notifier.context_carry_updated(
+            if let Some(meta) = self
+                .ctx
+                .session_store
+                .update_context_carry_if_changed(
+                    &self.ctx.data_dir,
+                    &session.id,
+                    Some(ContextCarryState::Reinjected),
+                )
+                .map_err(AgentRuntimeError::Other)?
+            {
+                self.ctx.notifier.context_carry_updated(
                     &session.id,
                     meta.agent_session_id,
                     meta.context_carry,
                     meta.updated_at,
-                ),
-                Ok(None) => {}
-                Err(error) => {
-                    log::warn!(
-                        "failed to persist reinjected context carry for {}: {error}",
-                        session.id
-                    );
-                }
+                );
             }
         }
         payload.prompt = apply_restore_prompt_prefix(payload.prompt, &restore_plan);
-        let turn_id = next_turn_id(&self.ctx.session_store, &self.ctx.data_dir, &session.id)
-            .map_err(AgentRuntimeError::Other)?;
+        let turn_id = match committed_turn_id {
+            Some(turn_id) => turn_id,
+            None => next_turn_id(&self.ctx.session_store, &self.ctx.data_dir, &session.id)
+                .map_err(AgentRuntimeError::Other)?,
+        };
         let backend_id = required_backend_id(session)?;
         let prompt_message = self
             .ctx
@@ -2085,33 +2609,37 @@ impl AgentSessionRuntimeUsecase {
             generation
         };
         drop(queue_transition_guard);
-        if let Err(error) = self
-            .ctx
-            .session_store
-            .append_turn_started_and_project_state(
+        if committed_turn_id.is_none() {
+            if let Err(error) = self
+                .ctx
+                .session_store
+                .append_turn_started_and_project_state(
                 &self.ctx.data_dir,
                 &session.id,
                 AgentSessionEvent::TurnStarted {
                     turn_id,
                     message_id: prompt_message.id.clone(),
                     assistant_message_id: Some(agent_message_id.clone()),
-                    prompt: PromptInput::from_human_message(&prompt_message),
+                    prompt:
+                        crate::usecase::agent_session::event_log::prompt_input_from_human_message(
+                            &prompt_message,
+                        ),
                     at: prompt_message.timestamp,
                 },
-            )
-        {
-            let rollback_guard = self.ctx.transitions.acquire(&session.id).await;
-            let mut sessions = self.ctx.sessions.lock().await;
-            if let Some(state) = sessions.get_mut(&session.id) {
-                if state.generation == generation
-                    && state.interrupt_requested_generation != Some(generation)
-                {
-                    state.rollback_started_turn();
+            ) {
+                let rollback_guard = self.ctx.transitions.acquire(&session.id).await;
+                let mut sessions = self.ctx.sessions.lock().await;
+                if let Some(state) = sessions.get_mut(&session.id) {
+                    if state.generation == generation
+                        && state.interrupt_requested_generation != Some(generation)
+                    {
+                        state.rollback_started_turn();
+                    }
                 }
+                drop(sessions);
+                drop(rollback_guard);
+                return Err(AgentRuntimeError::Other(error));
             }
-            drop(sessions);
-            drop(rollback_guard);
-            return Err(AgentRuntimeError::Other(error));
         }
         let commit_guard = self.ctx.transitions.acquire(&session.id).await;
         let (start_committed, interrupt_was_accepted) = {
@@ -2222,24 +2750,33 @@ impl AgentSessionRuntimeUsecase {
             }
             runtime
         };
-        let start_result = runtime
-            .start_turn(TurnInput {
-                prompt: payload.prompt,
-                images: payload
-                    .images
-                    .into_iter()
-                    .map(|image| AttachmentPayload {
-                        data: image.data,
-                        media_type: image.media_type,
-                    })
-                    .collect(),
-                system_prompt: payload.system_prompt,
-                permission_mode: payload.permission_mode,
-                plan_mode: payload.plan_mode,
-                permission_profile_id: payload.permission_profile_id,
-                editor_context: payload.editor_context.map(EditorContext::from),
-            })
-            .await;
+        let selected_model = had_runtime
+            .then(|| selected_model_for_runtime(&self.ctx, session))
+            .transpose();
+        let start_result = async {
+            if let Some(model) = selected_model? {
+                runtime.set_model(&model).await?;
+            }
+            runtime
+                .start_turn(TurnInput {
+                    prompt: payload.prompt,
+                    images: payload
+                        .images
+                        .into_iter()
+                        .map(|image| AttachmentPayload {
+                            data: image.data,
+                            media_type: image.media_type,
+                        })
+                        .collect(),
+                    system_prompt: payload.system_prompt,
+                    permission_mode: payload.permission_mode,
+                    plan_mode: payload.plan_mode,
+                    permission_profile_id: payload.permission_profile_id,
+                    editor_context: payload.editor_context.map(EditorContext::from),
+                })
+                .await
+        }
+        .await;
         let _runtime_event_guard = self.ctx.runtime_event_locks.acquire(&session.id).await;
         match start_result {
             Ok(()) => {
@@ -2251,7 +2788,8 @@ impl AgentSessionRuntimeUsecase {
                         &self.ctx,
                         &session.id,
                         context_was_reinjected,
-                    );
+                    )
+                    .map_err(AgentRuntimeError::Other)?;
                 }
                 self.spawn_stale_watchdog(
                     session.id.clone(),
@@ -2365,6 +2903,11 @@ impl AgentSessionRuntimeUsecase {
             .and_then(|state| state.runtime.clone())
     }
 
+    pub(crate) fn default_model_for_backend(&self, backend_id: &str) -> Result<String, String> {
+        self.ctx.registry.default_model_for(backend_id)
+    }
+
+    #[cfg(test)]
     async fn stalled_active_turn_target(
         &self,
         session_id: &str,
@@ -2384,6 +2927,7 @@ impl AgentSessionRuntimeUsecase {
         Ok(Some(StalledActiveTurnTarget { runtime }))
     }
 
+    #[cfg(test)]
     fn backend_supports_steering(&self, backend_id: &str) -> bool {
         self.ctx
             .registry
@@ -2408,6 +2952,7 @@ impl AgentSessionRuntimeUsecase {
         Ok(())
     }
 
+    #[cfg(test)]
     async fn is_turn_busy(&self, session_id: &str) -> bool {
         let sessions = self.ctx.sessions.lock().await;
         sessions
@@ -2420,6 +2965,7 @@ impl AgentSessionRuntimeUsecase {
             .unwrap_or(false)
     }
 
+    #[cfg(test)]
     async fn pending_queue(&self, session_id: &str) -> Vec<QueuedAgentTurn> {
         let sessions = self.ctx.sessions.lock().await;
         sessions
@@ -2428,6 +2974,7 @@ impl AgentSessionRuntimeUsecase {
             .unwrap_or_default()
     }
 
+    #[cfg(test)]
     fn send_response(
         &self,
         session_id: &str,
@@ -2445,11 +2992,11 @@ impl AgentSessionRuntimeUsecase {
             queued_turn,
             pending_queue_count: pending_queue.len(),
             pending_queue,
-            can_change_backend: false,
             sessions: projection.sessions,
         })
     }
 
+    #[cfg(test)]
     fn prepare_send_response_projection(
         &self,
         session_id: &str,
@@ -2974,6 +3521,23 @@ fn workflow_execution_env(
         .unwrap_or_default()
 }
 
+fn selected_model_for_runtime(
+    ctx: &RuntimeContext,
+    session: &ChatSession,
+) -> Result<ModelId, AgentBackendError> {
+    let model_id = match session.selected_model.as_deref() {
+        Some(model_id) => model_id.to_string(),
+        None => ctx
+            .registry
+            .default_model_for(
+                &required_backend_id(session)
+                    .map_err(|error| AgentBackendError::Invalid(error.to_string()))?,
+            )
+            .map_err(AgentBackendError::Invalid)?,
+    };
+    ModelId::parse(&model_id).map_err(AgentBackendError::Invalid)
+}
+
 fn spawn_event_pump_task(
     ctx: &RuntimeContext,
     session_id: String,
@@ -2984,12 +3548,45 @@ fn spawn_event_pump_task(
     let spawner = Arc::clone(&ctx.spawner);
     spawner.spawn(Box::pin(async move {
         while let Some(event) = events.next().await {
-            let actions = {
-                let _session_guard = ctx.session_locks.acquire(&session_id).await;
-                let _runtime_event_guard = ctx.runtime_event_locks.acquire(&session_id).await;
-                apply_runtime_event(&ctx, &session_id, runtime_epoch, event).await
-            };
-            run_runtime_event_post_actions(&ctx, &session_id, actions).await;
+            let event_received_at = crate::usecase::agent_session::session::now_timestamp();
+            let mut failed_attempts = 0_u64;
+            loop {
+                let applied = {
+                    let _session_guard = ctx.session_locks.acquire(&session_id).await;
+                    let _runtime_event_guard = ctx.runtime_event_locks.acquire(&session_id).await;
+                    apply_runtime_event(
+                        &ctx,
+                        &session_id,
+                        runtime_epoch,
+                        event_received_at,
+                        event.clone(),
+                    )
+                    .await
+                };
+                match applied {
+                    Ok(actions) => {
+                        run_runtime_event_post_actions(&ctx, &session_id, actions).await;
+                        break;
+                    }
+                    Err(error) => {
+                        failed_attempts = failed_attempts.saturating_add(1);
+                        if failed_attempts == 1 {
+                            log::error!(
+                                "canonical runtime event persistence failed for {session_id}; retaining the exact event for same-identity retry: {error}"
+                            );
+                        } else {
+                            log::debug!(
+                                "canonical runtime event persistence retry {failed_attempts} remains pending for {session_id}: {error}"
+                            );
+                        }
+                        // Release both per-session locks between attempts so Stop, close,
+                        // and a winning terminal can make progress. A changed runtime epoch or
+                        // durable terminal is observed at the top of `apply_runtime_event` and
+                        // safely supersedes this retained event.
+                        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                    }
+                }
+            }
         }
     }));
 }
@@ -3045,7 +3642,7 @@ fn complete_context_reinjection_after_start(
     ctx: &RuntimeContext,
     session_id: &str,
     reinjected: bool,
-) {
+) -> Result<(), String> {
     match ctx.session_store.complete_context_reinjection_if_required(
         &ctx.data_dir,
         session_id,
@@ -3058,10 +3655,9 @@ fn complete_context_reinjection_after_start(
             meta.updated_at,
         ),
         Ok(None) => {}
-        Err(error) => {
-            log::warn!("failed to complete context reinjection for {session_id}: {error}")
-        }
+        Err(error) => return Err(error),
     }
+    Ok(())
 }
 
 async fn recover_backend_session(
@@ -3069,52 +3665,44 @@ async fn recover_backend_session(
     session_id: &str,
     reason: BackendSessionRecoveryReason,
 ) -> Result<(), AgentRuntimeError> {
-    let already_recovering = {
+    recover_backend_session_with_identity(ctx, session_id, reason, uuid::Uuid::new_v4().to_string())
+        .await
+}
+
+async fn recover_backend_session_with_identity(
+    ctx: &RuntimeContext,
+    session_id: &str,
+    reason: BackendSessionRecoveryReason,
+    recovery_id: String,
+) -> Result<(), AgentRuntimeError> {
+    let existing_recovery = {
         let sessions = ctx.sessions.lock().await;
         sessions
             .get(session_id)
-            .is_some_and(|state| state.backend_recovery.is_some())
+            .and_then(|state| state.backend_recovery.as_ref())
+            .map(|recovery| {
+                (
+                    recovery.recovery_id.clone(),
+                    recovery.pending_failure.clone(),
+                )
+            })
     };
-    if already_recovering {
+    if let Some((existing_recovery_id, pending_failure)) = existing_recovery {
+        if existing_recovery_id == recovery_id {
+            if let Some(error) = pending_failure {
+                return fail_backend_session_recovery(ctx, session_id, &error).await;
+            }
+        }
+        // A duplicate provider event must join the recovery already owning
+        // the session. Only a retained terminal persistence failure above
+        // needs another write attempt.
         return Ok(());
     }
 
-    let recovery_id = uuid::Uuid::new_v4().to_string();
-    let published_summary = ctx
+    let meta = ctx
         .session_store
-        .get_session_meta(&ctx.data_dir, session_id)
-        .map_err(AgentRuntimeError::Other)?
-        .ok_or_else(|| AgentRuntimeError::Other(format!("Session not found: {session_id}")))?
-        .to_summary();
-    ctx.session_store
-        .hold_recovery_publication_snapshot(published_summary);
-    let meta = match ctx.session_store.begin_backend_session_recovery(
-        &ctx.data_dir,
-        session_id,
-        &recovery_id,
-        reason,
-    ) {
-        Ok(meta) => meta,
-        Err(error) => {
-            let runtime = {
-                let mut sessions = ctx.sessions.lock().await;
-                sessions.get_mut(session_id).and_then(|state| {
-                    state.rollback_started_turn();
-                    state.runtime.take()
-                })
-            };
-            if let Some(runtime) = runtime {
-                if let Err(interrupt_error) = runtime.interrupt().await {
-                    log::warn!(
-                        "failed to interrupt runtime after recovery begin failure for {session_id}: {interrupt_error}"
-                    );
-                }
-                runtime.close().await;
-            }
-            fail_backend_session_recovery(ctx, session_id, &error).await;
-            return Err(AgentRuntimeError::Other(error));
-        }
-    };
+        .begin_backend_session_recovery(&ctx.data_dir, session_id, &recovery_id, reason)
+        .map_err(AgentRuntimeError::Other)?;
 
     let backend_id = meta.backend_id.clone();
     let (completion, _) = tokio::sync::watch::channel(false);
@@ -3133,6 +3721,7 @@ async fn recover_backend_session(
             recovery_id: recovery_id.clone(),
             old_provider_session_generation: meta.provider_session_generation,
             reason,
+            pending_failure: None,
             completion,
         });
         runtime
@@ -3151,8 +3740,8 @@ async fn recover_backend_session(
         }) {
         Ok(session) => session,
         Err(error) => {
-            fail_backend_session_recovery(ctx, session_id, &error.to_string()).await;
-            return Err(error);
+            return persist_backend_session_recovery_failure(ctx, session_id, error.to_string())
+                .await;
         }
     };
     let queued = {
@@ -3179,14 +3768,13 @@ async fn recover_backend_session(
     {
         Ok(system_prompt) => system_prompt,
         Err(error) => {
-            fail_backend_session_recovery(ctx, session_id, &error.to_string()).await;
-            return Err(error);
+            return persist_backend_session_recovery_failure(ctx, session_id, error.to_string())
+                .await;
         }
     };
 
     if let Err(error) = open_runtime_for_session(ctx, &session, system_prompt, None).await {
-        fail_backend_session_recovery(ctx, session_id, &error.to_string()).await;
-        return Err(error);
+        return persist_backend_session_recovery_failure(ctx, session_id, error.to_string()).await;
     }
     Ok(())
 }
@@ -3244,60 +3832,69 @@ async fn complete_backend_session_recovery(
     if let Some(completion) = completion {
         let _ = completion.send(true);
     }
-    ctx.session_store
-        .release_recovery_publication_snapshot(session_id);
     log::debug!(
         "completed backend session recovery for {session_id} ({reason:?}, recovery_id={recovery_id})"
     );
     Ok(true)
 }
 
-async fn fail_backend_session_recovery(ctx: &RuntimeContext, session_id: &str, error: &str) {
-    let (recovery_id, completion) = {
+async fn persist_backend_session_recovery_failure(
+    ctx: &RuntimeContext,
+    session_id: &str,
+    error: String,
+) -> Result<(), AgentRuntimeError> {
+    {
         let mut sessions = ctx.sessions.lock().await;
-        sessions
+        let Some(recovery) = sessions
             .get_mut(session_id)
-            .and_then(|state| {
-                state.phase = RuntimeSessionPhase::Idle;
-                state
-                    .backend_recovery
-                    .take()
-                    .map(|recovery| (recovery.recovery_id, recovery.completion))
-            })
-            .map(|(recovery_id, completion)| (Some(recovery_id), Some(completion)))
-            .unwrap_or((None, None))
+            .and_then(|state| state.backend_recovery.as_mut())
+        else {
+            return Err(AgentRuntimeError::Other(format!(
+                "cannot durably fail backend recovery without an active recovery identity for {session_id}"
+            )));
+        };
+        recovery.pending_failure = Some(error.clone());
+    }
+    fail_backend_session_recovery(ctx, session_id, &error).await
+}
+
+async fn fail_backend_session_recovery(
+    ctx: &RuntimeContext,
+    session_id: &str,
+    error: &str,
+) -> Result<(), AgentRuntimeError> {
+    let recovery_id = {
+        let sessions = ctx.sessions.lock().await;
+        sessions
+            .get(session_id)
+            .and_then(|state| state.backend_recovery.as_ref())
+            .map(|recovery| recovery.recovery_id.clone())
     };
-    let recovery_failure_committed = if let Some(recovery_id) = recovery_id {
-        if let Err(persist_error) = ctx.session_store.fail_backend_session_recovery(
-            &ctx.data_dir,
-            session_id,
-            &recovery_id,
-            error,
-        ) {
-            log::warn!(
-                "failed to persist backend recovery failure for {session_id}: {persist_error}"
-            );
-            let _ =
-                ctx.session_store
-                    .set_session_state(&ctx.data_dir, session_id, SessionState::Error);
-            false
-        } else {
-            true
-        }
-    } else {
-        let _ = ctx
-            .session_store
-            .set_session_state(&ctx.data_dir, session_id, SessionState::Error);
-        false
+    let Some(recovery_id) = recovery_id else {
+        return Err(AgentRuntimeError::Other(format!(
+            "cannot durably fail backend recovery without an active recovery identity for {session_id}"
+        )));
     };
-    let error_result = if recovery_failure_committed {
-        reconcile_pending_recovery_message(ctx, session_id).await
-    } else {
-        persist_and_publish_recovery_error(ctx, session_id, None, error).await
-    };
-    if let Err(persist_error) = error_result {
+    ctx.session_store
+        .fail_backend_session_recovery(&ctx.data_dir, session_id, &recovery_id, error)
+        .map_err(|persist_error| {
+            AgentRuntimeError::Other(format!(
+                "failed to atomically persist backend recovery failure for {session_id}: {persist_error}"
+            ))
+        })?;
+    if let Err(persist_error) = reconcile_pending_recovery_message(ctx, session_id).await {
         log::warn!("failed to persist backend recovery error for {session_id}: {persist_error}");
     }
+    let completion = {
+        let mut sessions = ctx.sessions.lock().await;
+        sessions.get_mut(session_id).and_then(|state| {
+            state.phase = RuntimeSessionPhase::Idle;
+            state
+                .backend_recovery
+                .take()
+                .map(|recovery| recovery.completion)
+        })
+    };
     emit_session_state_change(
         &ctx.session_store,
         &ctx.notifier,
@@ -3316,11 +3913,10 @@ async fn fail_backend_session_recovery(ctx: &RuntimeContext, session_id: &str, e
             session_state: Some(SessionState::Error),
         },
     );
-    ctx.session_store
-        .release_recovery_publication_snapshot(session_id);
     if let Some(completion) = completion {
         let _ = completion.send(true);
     }
+    Ok(())
 }
 
 async fn wait_for_backend_session_recovery(ctx: &RuntimeContext, session_id: &str) {
@@ -3341,7 +3937,7 @@ async fn wait_for_backend_session_recovery(ctx: &RuntimeContext, session_id: &st
     }
 }
 
-async fn acquire_session_control_after_recovery(
+pub(super) async fn acquire_session_control_after_recovery(
     ctx: &RuntimeContext,
     session_id: &str,
 ) -> SessionRuntimeLockGuard {
@@ -3373,20 +3969,42 @@ fn backend_recovery_projection(
     Ok(TurnEventLog::from_events(events).project().backend_recovery)
 }
 
-fn ensure_backend_recovery_operation_allowed(
+pub(super) fn ensure_backend_recovery_operation_allowed(
     ctx: &RuntimeContext,
     session_id: &str,
 ) -> Result<(), AgentRuntimeError> {
-    if !backend_recovery_may_be_incomplete(ctx, session_id)? {
+    let meta = ctx
+        .session_store
+        .get_session_meta(&ctx.data_dir, session_id)
+        .map_err(AgentRuntimeError::Other)?;
+    if let Some(pending) = meta
+        .as_ref()
+        .and_then(|meta| meta.pending_recovery_message.as_ref())
+    {
+        let recovery_id = match pending {
+            PendingRecoveryMessage::Notice { recovery_id, .. }
+            | PendingRecoveryMessage::Error { recovery_id, .. } => recovery_id,
+        };
+        return Err(AgentRuntimeError::Other(format!(
+            "backend session recovery publication {recovery_id} is still pending"
+        )));
+    }
+    if !meta.is_some_and(|meta| {
+        meta.agent_session_id.is_none()
+            && meta.context_carry == Some(ContextCarryState::Failed)
+            && meta.context_reinjection_generation.is_none()
+    }) {
         return Ok(());
     }
     match backend_recovery_projection(ctx, session_id)? {
-        Some(BackendSessionRecoveryProjection::Recovering { .. }) => Err(AgentRuntimeError::Other(
-            "backend session recovery is still in progress".to_string(),
-        )),
-        Some(BackendSessionRecoveryProjection::ReconciliationRequired { error, .. }) => {
+        Some(BackendSessionRecoveryProjection::Recovering { recovery_id, .. }) => {
             Err(AgentRuntimeError::Other(format!(
-                "backend session recovery requires reconciliation: {error}"
+                "backend session recovery {recovery_id} is still in progress"
+            )))
+        }
+        Some(BackendSessionRecoveryProjection::ReconciliationRequired { recovery_id, error }) => {
+            Err(AgentRuntimeError::Other(format!(
+                "backend session recovery {recovery_id} requires reconciliation: {error}"
             )))
         }
         None => Ok(()),
@@ -3537,6 +4155,7 @@ pub(super) async fn turn_completion_post_actions(
     actions
 }
 
+#[cfg(test)]
 pub(super) async fn append_session_events_blocking(
     ctx: &RuntimeContext,
     session_id: &str,
@@ -3550,6 +4169,21 @@ pub(super) async fn append_session_events_blocking(
     })
     .await
     .map_err(|error| format!("Failed to join session event append task: {error}"))?
+}
+
+pub(super) async fn append_user_session_events_blocking(
+    ctx: &RuntimeContext,
+    session_id: &str,
+    events: Vec<AgentSessionEvent>,
+) -> Result<(), String> {
+    let session_store = Arc::clone(&ctx.session_store);
+    let data_dir = Arc::clone(&ctx.data_dir);
+    let session_id = session_id.to_string();
+    tokio::task::spawn_blocking(move || {
+        session_store.append_session_events_from_user(&data_dir, &session_id, &events)
+    })
+    .await
+    .map_err(|error| format!("Failed to join user session event append task: {error}"))?
 }
 
 async fn dispatch_workflow_turn_complete_notification(
@@ -3673,21 +4307,22 @@ async fn reconcile_pending_recovery_message(
     };
     match &pending {
         PendingRecoveryMessage::Notice { message_id, .. } => {
-            persist_and_publish_recovery_notice(ctx, session_id, message_id)?;
+            persist_and_publish_recovery_notice(ctx, session_id, &pending, message_id)?;
         }
         PendingRecoveryMessage::Error {
             message_id, error, ..
         } => {
-            persist_and_publish_recovery_error(ctx, session_id, Some(message_id), error).await?;
+            persist_and_publish_recovery_error(ctx, session_id, &pending, message_id, error)
+                .await?;
         }
     }
-    ctx.session_store
-        .clear_pending_recovery_message(&ctx.data_dir, session_id, &pending)
+    Ok(())
 }
 
 fn persist_and_publish_recovery_notice(
     ctx: &RuntimeContext,
     session_id: &str,
+    pending: &PendingRecoveryMessage,
     message_id: &str,
 ) -> Result<(), String> {
     let parts = parts_from_domain(vec![DomainMessagePart::SystemNotification {
@@ -3697,18 +4332,6 @@ fn persist_and_publish_recovery_notice(
         detail: None,
         hook_id: None,
     }]);
-    if ctx
-        .session_store
-        .load_full_session_for_restore(&ctx.data_dir, session_id)?
-        .is_some_and(|session| {
-            session
-                .messages
-                .iter()
-                .any(|message| message.id == message_id)
-        })
-    {
-        return Ok(());
-    }
     let message = ChatMessage {
         id: message_id.to_string(),
         role: MessageRole::Agent,
@@ -3720,94 +4343,68 @@ fn persist_and_publish_recovery_notice(
         timestamp: crate::usecase::agent_session::session::now_timestamp(),
         mentions: None,
     };
-    ctx.session_store
-        .append_message(&ctx.data_dir, session_id, &message)?;
-    ctx.notifier
-        .pending_message_consumed(session_id, None, None, message.clone());
+    let inserted = ctx.session_store.publish_pending_recovery_message(
+        &ctx.data_dir,
+        session_id,
+        pending,
+        message.clone(),
+    )?;
+    if inserted {
+        ctx.notifier
+            .pending_message_consumed(session_id, None, None, message);
+    }
     Ok(())
 }
 
 async fn persist_and_publish_recovery_error(
     ctx: &RuntimeContext,
     session_id: &str,
-    pending_message_id: Option<&str>,
+    pending: &PendingRecoveryMessage,
+    message_id: &str,
     error: &str,
 ) -> Result<(), String> {
     let content = format!("backend session recovery failed: {error}");
-    let runtime_target = {
-        let sessions = ctx.sessions.lock().await;
-        sessions.get(session_id).and_then(|state| {
-            state.last_agent_message_id.clone().or_else(|| {
-                state
-                    .pending_queue
-                    .front()
-                    .and_then(|queued| queued.existing_agent_message_id.clone())
-            })
-        })
-    };
     let persisted = ctx
         .session_store
-        .load_full_session_for_restore(&ctx.data_dir, session_id)?;
-    let target = pending_message_id
-        .map(str::to_string)
-        .or(runtime_target)
-        .or_else(|| {
-            persisted.as_ref().and_then(|session| {
-                session
-                    .messages
-                    .iter()
-                    .rev()
-                    .find(|message| message.role == MessageRole::Agent)
-                    .map(|message| message.id.clone())
-            })
-        });
-    if let Some(message_id) = target {
-        let message = persisted.as_ref().and_then(|session| {
-            session
-                .messages
-                .iter()
-                .find(|message| message.id == message_id)
-        });
-        if let Some(message) = message {
-            let mut parts = message.parts.clone().unwrap_or_default();
-            let error_part = MessagePart::Error {
-                content,
-                parent_tool_use_id: None,
-            };
-            if parts.contains(&error_part) {
-                return Ok(());
-            }
+        .canonical_message_projection(session_id, message_id)?;
+    if let Some(mut message) = persisted {
+        let mut parts = message.parts.clone().unwrap_or_default();
+        let error_part = MessagePart::Error {
+            content,
+            parent_tool_use_id: None,
+        };
+        if !parts.contains(&error_part) {
             merge_persisted_message_part(&mut parts, error_part);
-            let seq = message.streaming_final_seq.saturating_add(1);
-            ctx.session_store.persist_message_parts(
+            message.streaming_final_seq = message.streaming_final_seq.saturating_add(1);
+            message.timestamp = crate::usecase::agent_session::session::now_timestamp();
+            message.parts = Some(parts.clone());
+            ctx.session_store.publish_pending_recovery_message(
                 &ctx.data_dir,
                 session_id,
-                &message_id,
-                &parts,
-                seq,
-                Some(crate::usecase::agent_session::session::now_timestamp()),
+                pending,
+                message.clone(),
             )?;
             let _ = ctx.notifier.streaming_delta(AgentStreamingDeltaPayload {
                 chat_session_id: session_id.to_string(),
-                message_id,
-                seq,
+                message_id: message.id,
+                seq: message.streaming_final_seq,
                 snapshot: true,
                 parts,
                 message: None,
             });
-            return Ok(());
+        } else {
+            ctx.session_store.publish_pending_recovery_message(
+                &ctx.data_dir,
+                session_id,
+                pending,
+                message,
+            )?;
         }
-        if pending_message_id.is_none() {
-            return Err(format!(
-                "Recovery target agent message not found: {message_id}"
-            ));
-        }
+        return Ok(());
     }
 
     let message = ChatMessage {
-        id: pending_message_id
-            .map(str::to_string)
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+        id: message_id.to_string(),
         role: MessageRole::Agent,
         content: String::new(),
         thinking: None,
@@ -3820,10 +4417,16 @@ async fn persist_and_publish_recovery_error(
         timestamp: crate::usecase::agent_session::session::now_timestamp(),
         mentions: None,
     };
-    ctx.session_store
-        .append_message(&ctx.data_dir, session_id, &message)?;
-    ctx.notifier
-        .pending_message_consumed(session_id, None, None, message.clone());
+    let inserted = ctx.session_store.publish_pending_recovery_message(
+        &ctx.data_dir,
+        session_id,
+        pending,
+        message.clone(),
+    )?;
+    if inserted {
+        ctx.notifier
+            .pending_message_consumed(session_id, None, None, message);
+    }
     Ok(())
 }
 
@@ -3831,8 +4434,9 @@ async fn apply_runtime_event(
     ctx: &RuntimeContext,
     session_id: &str,
     runtime_epoch: u64,
+    event_received_at: f64,
     event: AgentRuntimeEvent,
-) -> RuntimeEventPostActions {
+) -> Result<RuntimeEventPostActions, String> {
     let (is_current_runtime, terminal_committed) = {
         let sessions = ctx.sessions.lock().await;
         sessions.get(session_id).map_or((false, false), |state| {
@@ -3851,14 +4455,14 @@ async fn apply_runtime_event(
             "dropping {} from stale runtime epoch {runtime_epoch} for {session_id}",
             runtime_event_kind(&event)
         );
-        return RuntimeEventPostActions::default();
+        return Ok(RuntimeEventPostActions::default());
     }
     if terminal_committed && runtime_event_targets_current_turn(&event) {
         log::debug!(
             "dropping {} after durable terminal commit for {session_id}",
             runtime_event_kind(&event)
         );
-        return RuntimeEventPostActions::default();
+        return Ok(RuntimeEventPostActions::default());
     }
     record_first_backend_event_if_needed(ctx, session_id).await;
     ctx.notifier.runtime_event_debug(session_id, &event);
@@ -3871,48 +4475,57 @@ async fn apply_runtime_event(
                 resume,
                 crate::domain::agent_session::gateway::ResumeOutcome::Mismatch { .. }
             ) {
-                if let Err(error) = recover_backend_session(
+                let recovery_id = runtime_event_recovery_id(
+                    session_id,
+                    runtime_epoch,
+                    event_received_at,
+                    BackendSessionRecoveryReason::ResumeMismatch,
+                    &backend_session_id,
+                );
+                recover_backend_session_with_identity(
                     ctx,
                     session_id,
                     BackendSessionRecoveryReason::ResumeMismatch,
+                    recovery_id,
                 )
                 .await
-                {
-                    log::warn!(
-                        "failed to recover backend session after resume mismatch for {session_id}: {error}"
-                    );
-                }
-                return RuntimeEventPostActions::default();
+                .map_err(|error| {
+                    format!(
+                        "resume-mismatch recovery trigger could not be durably handled: {error}"
+                    )
+                })?;
+                return Ok(RuntimeEventPostActions::default());
             }
-            let is_first_established_event = {
-                let mut sessions = ctx.sessions.lock().await;
-                sessions.get_mut(session_id).is_some_and(|state| {
-                    if state.provider_session_established {
-                        false
-                    } else {
-                        state.provider_session_established = true;
-                        true
-                    }
-                })
+            let already_established = {
+                let sessions = ctx.sessions.lock().await;
+                sessions
+                    .get(session_id)
+                    .is_some_and(|state| state.provider_session_established)
             };
-            if !is_first_established_event {
-                return RuntimeEventPostActions::default();
+            if already_established {
+                return Ok(RuntimeEventPostActions::default());
             }
             match complete_backend_session_recovery(ctx, session_id, backend_session_id.clone())
                 .await
             {
                 Ok(true) => {
+                    if let Some(state) = ctx.sessions.lock().await.get_mut(session_id) {
+                        state.provider_session_established = true;
+                    }
                     let mut actions = RuntimeEventPostActions::default();
                     actions.drain();
-                    return actions;
+                    return Ok(actions);
                 }
                 Ok(false) => {}
                 Err(error) => {
-                    log::warn!(
-                        "failed to complete backend session recovery for {session_id}: {error}"
-                    );
-                    fail_backend_session_recovery(ctx, session_id, &error.to_string()).await;
-                    return RuntimeEventPostActions::default();
+                    // The provider establishment observation is the exact
+                    // completion trigger. Keep it in the pump until the same
+                    // recovery identity resolves; converting a transient
+                    // commit failure into Failed would discard acknowledged
+                    // provider state.
+                    return Err(format!(
+                        "backend recovery completion observation could not be committed: {error}"
+                    ));
                 }
             }
             let (agent_session_id, context_carry) = match resume {
@@ -3933,81 +4546,96 @@ async fn apply_runtime_event(
                 agent_session_id.expect("established session id is always present"),
                 context_carry.clone(),
             ) {
-                Ok(Some(meta)) => ctx.notifier.context_carry_updated(
-                    session_id,
-                    meta.agent_session_id,
-                    meta.context_carry,
-                    meta.updated_at,
-                ),
-                Ok(None) => {}
+                Ok(meta) => {
+                    if let Some(state) = ctx.sessions.lock().await.get_mut(session_id) {
+                        state.provider_session_established = true;
+                    }
+                    if let Some(meta) = meta {
+                        ctx.notifier.context_carry_updated(
+                            session_id,
+                            meta.agent_session_id,
+                            meta.context_carry,
+                            meta.updated_at,
+                        );
+                    }
+                }
                 Err(error) => {
-                    log::warn!("failed to persist backend session id for {session_id}: {error}");
+                    return Err(format!(
+                        "provider establishment observation could not be committed: {error}"
+                    ));
                 }
             }
         }
         AgentRuntimeEvent::BackendSessionCleared => {
-            if let Err(error) = recover_backend_session(
+            let recovery_id = runtime_event_recovery_id(
+                session_id,
+                runtime_epoch,
+                event_received_at,
+                BackendSessionRecoveryReason::BackendSessionLost,
+                "backend-session-cleared",
+            );
+            recover_backend_session_with_identity(
                 ctx,
                 session_id,
                 BackendSessionRecoveryReason::BackendSessionLost,
+                recovery_id,
             )
             .await
-            {
-                log::warn!("failed to recover cleared backend session for {session_id}: {error}");
-            }
+            .map_err(|error| {
+                format!("backend-session-cleared recovery trigger could not be durably handled: {error}")
+            })?;
         }
         AgentRuntimeEvent::PartsMerged(parts) => {
-            apply_parts(ctx, session_id, parts, StreamingApplyMode::Coalesced).await;
+            apply_parts(ctx, session_id, parts, StreamingApplyMode::Coalesced)
+                .await
+                .map_err(|error| format!("streaming parts commit failed: {error}"))?;
         }
         AgentRuntimeEvent::PermissionRequested(request) => {
             let pending = pending_permission_request_msg(&request);
-            apply_parts(
+            let persisted = apply_parts(
                 ctx,
                 session_id,
-                vec![DomainMessagePart::Permission { request }],
+                vec![DomainMessagePart::permission(request)],
                 StreamingApplyMode::Immediate,
             )
-            .await;
-            if let Some(pending) = pending {
-                let pending_permission_state_revision = {
-                    let mut sessions = ctx.sessions.lock().await;
-                    sessions.get_mut(session_id).map(|state| {
-                        state.phase = RuntimeSessionPhase::WaitingPermission;
-                        let revision = state.set_pending_permission_request(pending.clone());
-                        state.permission_wait_started_at = Some(std::time::Instant::now());
-                        state.permission_wait_diagnostic_emitted = false;
-                        revision
-                    })
-                };
-                emit_session_state_change(
-                    &ctx.session_store,
-                    &ctx.notifier,
-                    &ctx.status_center,
-                    &ctx.status_notifier,
-                    &ctx.data_dir,
-                    session_id,
-                    StateChange {
-                        turn_phase: TurnPhase::WaitingPermission,
-                        queue_paused: None,
-                        pending_permission_request: Some(pending),
-                        pending_permission_state_revision,
-                        exit_code: None,
-                        completed_at: None,
-                        interrupted: false,
-                        session_state: Some(SessionState::Active),
-                    },
-                );
+            .await
+            .map_err(|error| format!("permission request commit failed: {error}"))?;
+            if persisted {
+                if let Some(pending) = pending {
+                    let pending_permission_state_revision = {
+                        let mut sessions = ctx.sessions.lock().await;
+                        sessions.get_mut(session_id).map(|state| {
+                            state.phase = RuntimeSessionPhase::WaitingPermission;
+                            let revision = state.set_pending_permission_request(pending.clone());
+                            state.permission_wait_started_at = Some(std::time::Instant::now());
+                            state.permission_wait_diagnostic_emitted = false;
+                            revision
+                        })
+                    };
+                    emit_session_state_change(
+                        &ctx.session_store,
+                        &ctx.notifier,
+                        &ctx.status_center,
+                        &ctx.status_notifier,
+                        &ctx.data_dir,
+                        session_id,
+                        StateChange {
+                            turn_phase: TurnPhase::WaitingPermission,
+                            queue_paused: None,
+                            pending_permission_request: Some(pending),
+                            pending_permission_state_revision,
+                            exit_code: None,
+                            completed_at: None,
+                            interrupted: false,
+                            session_state: Some(SessionState::Active),
+                        },
+                    );
+                }
             }
         }
         AgentRuntimeEvent::PermissionModeChanged(mode) => {
-            if let Some(saved_mode) = resync_permission_mode(
-                &ctx.session_store,
-                &ctx.sessions,
-                &ctx.data_dir,
-                session_id,
-                mode,
-            )
-            .await
+            if let Some(saved_mode) =
+                resync_permission_mode(&ctx.session_store, &ctx.data_dir, session_id, mode)
             {
                 ctx.notifier
                     .permission_mode_changed(session_id, saved_mode.as_str());
@@ -4067,8 +4695,7 @@ async fn apply_runtime_event(
             let workflow_notification = match complete_turn(ctx, session_id, None, result).await {
                 Ok(notification) => notification,
                 Err(error) => {
-                    log::warn!("failed to durably complete turn for {session_id}: {error}");
-                    return RuntimeEventPostActions::default();
+                    return Err(format!("terminal commit failed: {error}"));
                 }
             };
             if wait_for_trailing_fatal {
@@ -4076,9 +4703,9 @@ async fn apply_runtime_event(
                 if let Some(state) = sessions.get_mut(session_id) {
                     state.pending_trailing_fatal_message = trailing_fatal_message;
                 }
-                return RuntimeEventPostActions::workflow(workflow_notification);
+                return Ok(RuntimeEventPostActions::workflow(workflow_notification));
             }
-            return turn_completion_post_actions(ctx, session_id, workflow_notification).await;
+            return Ok(turn_completion_post_actions(ctx, session_id, workflow_notification).await);
         }
         AgentRuntimeEvent::Fatal { message } => {
             log::warn!("agent runtime fatal for {session_id}: {message}");
@@ -4089,16 +4716,22 @@ async fn apply_runtime_event(
                     .is_some_and(|state| state.backend_recovery.is_some())
             };
             if recovery_in_progress {
+                fail_backend_session_recovery(ctx, session_id, &message)
+                    .await
+                    .map_err(|error| {
+                        format!(
+                            "backend recovery fatal observation could not be committed: {error}"
+                        )
+                    })?;
                 let runtime = {
                     let mut sessions = ctx.sessions.lock().await;
                     sessions
                         .get_mut(session_id)
                         .and_then(|state| state.runtime.take())
                 };
-                fail_backend_session_recovery(ctx, session_id, &message).await;
                 let mut actions = RuntimeEventPostActions::default();
                 actions.close_runtime(runtime);
-                return actions;
+                return Ok(actions);
             }
             let (should_complete_crash, trailing_completed_crash) = {
                 let mut sessions = ctx.sessions.lock().await;
@@ -4117,7 +4750,6 @@ async fn apply_runtime_event(
                     })
             };
             let mut actions = RuntimeEventPostActions::default();
-            let mut crash_persistence_failed = false;
             if should_complete_crash {
                 match complete_turn(
                     ctx,
@@ -4132,8 +4764,7 @@ async fn apply_runtime_event(
                 {
                     Ok(notification) => actions.workflow_notification = notification,
                     Err(error) => {
-                        log::warn!("failed to durably record fatal turn for {session_id}: {error}");
-                        crash_persistence_failed = true;
+                        return Err(format!("fatal terminal commit failed: {error}"));
                     }
                 }
             }
@@ -4147,17 +4778,18 @@ async fn apply_runtime_event(
             {
                 let mut sessions = ctx.sessions.lock().await;
                 if let Some(state) = sessions.get_mut(session_id) {
-                    if crash_persistence_failed {
-                        state.rollback_started_turn();
-                    } else {
-                        state.phase = RuntimeSessionPhase::Idle;
-                        state.stall_observation_active = false;
-                    }
+                    state.phase = RuntimeSessionPhase::Idle;
+                    state.stall_observation_active = false;
                 }
             }
             if !should_complete_crash && !trailing_completed_crash {
-                let completed_at = crate::usecase::agent_session::session::now_timestamp();
-                let message_id = uuid::Uuid::new_v4().to_string();
+                let completed_at = event_received_at;
+                let message_id = runtime_error_message_id(
+                    session_id,
+                    runtime_epoch,
+                    event_received_at,
+                    &message,
+                );
                 let projected_message = ctx
                     .session_store
                     .append_error_episode_and_materialize(
@@ -4215,9 +4847,14 @@ async fn apply_runtime_event(
                         );
                     }
                     Err(error) => {
-                        log::warn!(
-                            "failed to materialize idle fatal episode for {session_id}: {error}"
-                        );
+                        if let Some(RuntimeShutdown::Close(runtime)) =
+                            actions.runtime_shutdowns.pop()
+                        {
+                            if let Some(state) = ctx.sessions.lock().await.get_mut(session_id) {
+                                state.runtime = Some(runtime);
+                            }
+                        }
+                        return Err(format!("idle fatal projection commit failed: {error}"));
                     }
                 }
             } else if trailing_completed_crash {
@@ -4226,10 +4863,65 @@ async fn apply_runtime_event(
                 );
             }
             actions.drain();
-            return actions;
+            return Ok(actions);
         }
     };
-    RuntimeEventPostActions::default()
+    Ok(RuntimeEventPostActions::default())
+}
+
+fn runtime_error_message_id(
+    session_id: &str,
+    runtime_epoch: u64,
+    event_received_at: f64,
+    message: &str,
+) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut exact = Vec::with_capacity(session_id.len() + message.len() + 48);
+    exact.extend_from_slice(b"runtime_error_message_v1");
+    exact.extend_from_slice(&(session_id.len() as u64).to_be_bytes());
+    exact.extend_from_slice(session_id.as_bytes());
+    exact.extend_from_slice(&runtime_epoch.to_be_bytes());
+    exact.extend_from_slice(&event_received_at.to_bits().to_be_bytes());
+    exact.extend_from_slice(&(message.len() as u64).to_be_bytes());
+    exact.extend_from_slice(message.as_bytes());
+    let digest = Sha256::digest(exact);
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x50;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    uuid::Uuid::from_bytes(bytes).to_string()
+}
+
+fn runtime_event_recovery_id(
+    session_id: &str,
+    runtime_epoch: u64,
+    event_received_at: f64,
+    reason: BackendSessionRecoveryReason,
+    event_identity: &str,
+) -> String {
+    use sha2::{Digest, Sha256};
+
+    let reason_tag = match reason {
+        BackendSessionRecoveryReason::ResumeMismatch => b"resume_mismatch".as_slice(),
+        BackendSessionRecoveryReason::BackendSessionLost => b"backend_session_lost".as_slice(),
+    };
+    let mut exact = Vec::with_capacity(session_id.len() + event_identity.len() + 80);
+    exact.extend_from_slice(b"runtime_event_recovery_v1");
+    exact.extend_from_slice(&(session_id.len() as u64).to_be_bytes());
+    exact.extend_from_slice(session_id.as_bytes());
+    exact.extend_from_slice(&runtime_epoch.to_be_bytes());
+    exact.extend_from_slice(&event_received_at.to_bits().to_be_bytes());
+    exact.extend_from_slice(&(reason_tag.len() as u64).to_be_bytes());
+    exact.extend_from_slice(reason_tag);
+    exact.extend_from_slice(&(event_identity.len() as u64).to_be_bytes());
+    exact.extend_from_slice(event_identity.as_bytes());
+    let digest = Sha256::digest(exact);
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x50;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    uuid::Uuid::from_bytes(bytes).to_string()
 }
 
 fn runtime_event_targets_current_turn(event: &AgentRuntimeEvent) -> bool {
@@ -4255,64 +4947,95 @@ async fn apply_parts(
     session_id: &str,
     parts: Vec<DomainMessagePart>,
     mode: StreamingApplyMode,
-) {
+) -> Result<bool, String> {
     let domain_parts = parts;
     let delta_parts = parts_from_domain(domain_parts.clone());
     if delta_parts.is_empty() {
-        return;
+        return Ok(false);
     }
-    let post_turn_message_id = {
+    let (
+        turn_id,
+        message_id,
+        candidate_domain_parts,
+        candidate_parts,
+        next_streaming_seq,
+        requires_snapshot,
+    ) = {
         let sessions = ctx.sessions.lock().await;
         let Some(state) = sessions.get(session_id) else {
-            return;
+            return Ok(false);
         };
         if state.phase == RuntimeSessionPhase::Idle {
-            Some(state.last_agent_message_id.clone())
-        } else {
-            None
+            log::debug!("dropping late message parts after terminal commit for {session_id}");
+            return Ok(false);
         }
-    };
-    if let Some(message_id) = post_turn_message_id {
-        if let Some(message_id) = message_id {
-            apply_post_turn_parts(
-                &ctx.session_store,
-                &ctx.data_dir,
-                session_id,
-                &message_id,
-                delta_parts,
-            );
-        }
-        return;
-    }
-    let (turn_id, message_id, emit_now, schedule_delay, cleared_stall) = {
-        let mut sessions = ctx.sessions.lock().await;
-        let Some(state) = sessions.get_mut(session_id) else {
-            return;
-        };
         let message_id = state
             .streaming_message_id
             .clone()
             .or_else(|| state.last_agent_message_id.clone());
         let Some(message_id) = message_id else {
-            return;
+            return Ok(false);
         };
+        let Some(turn_id) = state.current_turn_id else {
+            return Ok(false);
+        };
+        let mut candidate_domain_parts = state.domain_streaming_parts.clone();
         for part in &domain_parts {
             crate::domain::agent_session::entities::merge_part(
-                &mut state.domain_streaming_parts,
+                &mut candidate_domain_parts,
                 part.clone(),
             );
         }
-        let cleared_stall = state.record_progress(std::time::Instant::now());
         let can_append_delta = parts_can_stream_as_append_delta(&delta_parts);
         let requires_snapshot = mode == StreamingApplyMode::Immediate
             || state.streaming_delta_seq == 0
             || state.streaming_parts.is_empty()
             || !can_append_delta;
-        if requires_snapshot {
-            state.streaming_parts = parts_from_domain(state.domain_streaming_parts.clone());
-        } else {
-            merge_streaming_append_delta_parts(&mut state.streaming_parts, &delta_parts);
+        (
+            turn_id,
+            message_id,
+            candidate_domain_parts.clone(),
+            parts_from_domain(candidate_domain_parts),
+            state.streaming_delta_seq.saturating_add(1),
+            requires_snapshot,
+        )
+    };
+    let durable_events = durable_part_events(
+        &ctx.session_store,
+        &ctx.data_dir,
+        session_id,
+        turn_id,
+        &message_id,
+        &delta_parts,
+    )?;
+    let persisted_parts = ctx.session_store.persist_streaming_parts_with_events(
+        &ctx.data_dir,
+        session_id,
+        &durable_events,
+        &message_id,
+        &candidate_parts,
+        next_streaming_seq,
+    )?;
+    let persisted_at = std::time::Instant::now();
+    let (emit_now, schedule_delay, cleared_stall) = {
+        let mut sessions = ctx.sessions.lock().await;
+        let Some(state) = sessions.get_mut(session_id) else {
+            return Ok(false);
+        };
+        let current_message_id = state
+            .streaming_message_id
+            .as_ref()
+            .or(state.last_agent_message_id.as_ref());
+        if state.phase == RuntimeSessionPhase::Idle
+            || state.current_turn_id != Some(turn_id)
+            || current_message_id.map(String::as_str) != Some(message_id.as_str())
+        {
+            return Ok(false);
         }
+        state.domain_streaming_parts = candidate_domain_parts;
+        state.streaming_parts = persisted_parts;
+        state.last_stream_persist_at = Some(persisted_at);
+        let cleared_stall = state.record_progress(persisted_at);
         if requires_snapshot {
             state.pending_stream_snapshot = true;
             state.pending_stream_parts.clear();
@@ -4323,7 +5046,6 @@ async fn apply_parts(
                 .saturating_add(streaming_parts_byte_size(&delta_parts));
             state.pending_stream_parts.extend(delta_parts.clone());
         }
-        let turn_id = state.current_turn_id.or(state.last_turn_id);
         let has_pending = state.pending_stream_snapshot || !state.pending_stream_parts.is_empty();
         let pending_part_count = if state.pending_stream_snapshot {
             state.streaming_parts.len()
@@ -4359,22 +5081,12 @@ async fn apply_parts(
             }
             StreamingFlushDecision::NotNeeded => false,
         };
-        (turn_id, message_id, emit_now, schedule_delay, cleared_stall)
+        (emit_now, schedule_delay, cleared_stall)
     };
     if cleared_stall {
         if let Err(error) = dispatch_stall_cleared_notifications(ctx, session_id).await {
             log::warn!("workflow stall-cleared notification failed for {session_id}: {error}");
         }
-    }
-    if let Some(turn_id) = turn_id {
-        append_durable_part_events(
-            &ctx.session_store,
-            &ctx.data_dir,
-            session_id,
-            turn_id,
-            &message_id,
-            &delta_parts,
-        );
     }
     if emit_now {
         if let Err(error) = flush_streaming_update(ctx, session_id, false).await {
@@ -4383,6 +5095,7 @@ async fn apply_parts(
     } else if let Some(delay) = schedule_delay {
         spawn_delayed_stream_flush(ctx, session_id.to_string(), delay);
     }
+    Ok(true)
 }
 
 fn spawn_delayed_stream_flush(
@@ -4477,12 +5190,29 @@ async fn flush_streaming_update(
         Ok(())
     };
 
+    if let Err(error) = persist_result {
+        if payload.is_some() {
+            let mut sessions = ctx.sessions.lock().await;
+            if let Some(state) = sessions.get_mut(session_id) {
+                // The attempted delta was removed from the pending fields above. Quarantine it
+                // as a full snapshot and force the next flush to cross persistence again before
+                // anything derived from it can become live.
+                state.pending_stream_snapshot = true;
+                state.pending_stream_parts.clear();
+                state.pending_stream_bytes = 0;
+                state.retry_stream_delta = None;
+                state.last_stream_persist_at = None;
+            }
+        }
+        return Err(error);
+    }
+
     let Some(payload) = payload else {
-        return persist_result;
+        return Ok(());
     };
 
     if emit_suppressed {
-        return persist_result;
+        return Ok(());
     }
 
     let emitted = ctx
@@ -4493,7 +5223,7 @@ async fn flush_streaming_update(
     {
         let mut sessions = ctx.sessions.lock().await;
         let Some(state) = sessions.get_mut(session_id) else {
-            return persist_result;
+            return Ok(());
         };
         if emitted {
             state.streaming_delta_seq = state.streaming_delta_seq.max(payload.seq);
@@ -4506,7 +5236,7 @@ async fn flush_streaming_update(
     if let Some(delay) = retry_delay {
         spawn_delayed_stream_flush(ctx, session_id.to_string(), delay);
     }
-    persist_result
+    Ok(())
 }
 
 async fn emit_streaming_delta_or_retry(
@@ -4774,52 +5504,6 @@ fn on_authoritative_stream_emit_failure(
     }
 }
 
-fn apply_post_turn_parts(
-    session_store: &Arc<SessionStore>,
-    data_dir: &Path,
-    session_id: &str,
-    message_id: &str,
-    incoming_parts: Vec<MessagePart>,
-) {
-    let Some(message) = (match session_store.load_full_session_for_restore(data_dir, session_id) {
-        Ok(session) => session.and_then(|session| {
-            session
-                .messages
-                .into_iter()
-                .find(|message| message.id == message_id)
-        }),
-        Err(error) => {
-            log::warn!("failed to load post-turn message base for {session_id}: {error}");
-            return;
-        }
-    }) else {
-        return;
-    };
-    let mut parts = message.parts.clone().unwrap_or_else(|| {
-        if message.content.is_empty() {
-            Vec::new()
-        } else {
-            vec![MessagePart::Text {
-                content: message.content.clone(),
-                parent_tool_use_id: None,
-            }]
-        }
-    });
-    for part in incoming_parts {
-        merge_persisted_message_part(&mut parts, part);
-    }
-    if let Err(error) = session_store.persist_message_parts(
-        data_dir,
-        session_id,
-        message_id,
-        &parts,
-        message.streaming_final_seq.saturating_add(1),
-        None,
-    ) {
-        log::warn!("failed to persist post-turn parts for {session_id}: {error}");
-    }
-}
-
 fn merge_persisted_message_part(parts: &mut Vec<MessagePart>, incoming: MessagePart) {
     match incoming {
         MessagePart::Text {
@@ -4884,8 +5568,8 @@ fn merge_persisted_message_part(parts: &mut Vec<MessagePart>, incoming: MessageP
                     is_error,
                     tool_use_id,
                     parent_tool_use_id,
-                    content_ref: content_ref.map(Into::into),
-                    summary: summary.map(Into::into),
+                    content_ref,
+                    summary,
                 },
             );
         }
@@ -5020,23 +5704,6 @@ async fn complete_turn_with_acceptance_and_persist_kind(
                 && expected_generation.is_none_or(|generation| state.generation == generation)
         })
     };
-    let result = if interrupt_was_accepted {
-        match result {
-            TurnResult::Interrupted {
-                reason: DomainInterruptReason::Timeout,
-                error,
-            } => TurnResult::Interrupted {
-                reason: DomainInterruptReason::Timeout,
-                error,
-            },
-            _ => TurnResult::Interrupted {
-                reason: DomainInterruptReason::Abort,
-                error: None,
-            },
-        }
-    } else {
-        result
-    };
     let emit_crash_snapshot = matches!(
         &result,
         TurnResult::Interrupted {
@@ -5076,12 +5743,17 @@ async fn complete_turn_with_acceptance_and_persist_kind(
             state.streaming_message_id.clone(),
             state.streaming_parts.clone(),
             state.streaming_delta_seq,
-            state.current_turn_id.or(state.last_turn_id),
+            state.current_turn_id,
             state.turn_started_at,
             telemetry_dims,
             state.queue_paused,
         )
     };
+    if turn_id.is_none() || message_id.is_none() {
+        return Err(format!(
+            "cannot commit a terminal result without the durable turn and assistant-message identity for {session_id}"
+        ));
+    }
     let mut projected = None;
     let mut crash_snapshot = None;
     if let (Some(turn_id), Some(message_id)) = (turn_id, message_id.clone()) {
@@ -5107,13 +5779,14 @@ async fn complete_turn_with_acceptance_and_persist_kind(
                 &message_id,
                 final_seq,
                 completed_at,
+                &result,
             )
         })
         .await?;
         {
             let mut sessions = ctx.sessions.lock().await;
             if let Some(state) = sessions.get_mut(session_id) {
-                if state.current_turn_id.or(state.last_turn_id) == Some(turn_id) {
+                if state.current_turn_id == Some(turn_id) {
                     state.terminal_turn_id = Some(turn_id);
                 }
             }
@@ -5137,20 +5810,6 @@ async fn complete_turn_with_acceptance_and_persist_kind(
         .as_ref()
         .map(|model| model.status.session_state.clone())
         .or_else(|| (!emit_crash_snapshot).then(|| terminal.session_state.clone()));
-    if let Some(projected_state) = session_state.as_ref() {
-        let (exit_code, interrupted) = match projected_state {
-            SessionState::Idle => (0, true),
-            SessionState::Done => (0, false),
-            SessionState::Error => (terminal.exit_code.max(1), terminal.interrupted),
-            _ => (terminal.exit_code, terminal.interrupted),
-        };
-        let lifecycle =
-            crate::usecase::agent_session::session::lifecycle_controller::SessionLifecycleController {
-                session_store: &ctx.session_store,
-                data_dir: &ctx.data_dir,
-            };
-        lifecycle.complete_turn_state(session_id, exit_code, interrupted)?;
-    }
     let pending_permission_state_revision = {
         let mut sessions = ctx.sessions.lock().await;
         let Some(state) = sessions.get_mut(session_id) else {
@@ -5288,7 +5947,24 @@ async fn detach_runtime_if_current(
     }
 }
 
+fn queued_turn_has_accepted_identity(queued: &QueuedTurnInput) -> bool {
+    // Treat a partial identity as durable too; the obligation match below will
+    // reject it, but it must never bypass the canonical idle fence first.
+    queued.accepted_operation_id.is_some() || queued.execution_obligation_id.is_some()
+}
+
 pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &str) {
+    if let Err(failure) = ctx
+        .session_store
+        .ensure_no_unresolved_recovery(session_id)
+        .await
+    {
+        log::warn!(
+            "queued turn drain blocked by unresolved recovery {} for {session_id}: {failure}",
+            failure.correlation_id
+        );
+        return;
+    }
     let (queued, runtime, runtime_open_epoch) = {
         let mut sessions = ctx.sessions.lock().await;
         let Some(state) = sessions.get_mut(session_id) else {
@@ -5322,17 +5998,67 @@ pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &st
         log::warn!("queued turn session not found: {session_id}");
         return;
     };
+    if queued_turn_has_accepted_identity(&queued)
+        && !matches!(
+            session.state,
+            SessionState::Idle | SessionState::Done | SessionState::Error
+        )
+    {
+        return;
+    }
+    let accepted_obligation = match (
+        queued.accepted_operation_id.as_deref(),
+        queued.execution_obligation_id.as_deref(),
+    ) {
+        (Some(operation_id), Some(obligation_id)) => {
+            let driver = ctx
+                .accepted_send_obligation_driver
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            let Some(driver) = driver else {
+                log::warn!("accepted queued send driver is unavailable [{operation_id}]");
+                return;
+            };
+            if driver
+                .reserve_turn_execution(operation_id, obligation_id)
+                .await
+                .is_err()
+            {
+                return;
+            }
+            Some((operation_id.to_string(), obligation_id.to_string(), driver))
+        }
+        (None, None) => {
+            #[cfg(test)]
+            {
+                None
+            }
+            #[cfg(not(test))]
+            {
+                log::error!(
+                    "queued turn has no durable accepted operation identity for {session_id}"
+                );
+                return;
+            }
+        }
+        _ => {
+            log::error!("accepted queued send has incomplete obligation identity");
+            return;
+        }
+    };
     if queued.worktree_path != session.worktree_path {
-        log::warn!(
+        if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
+            driver
+                .reconcile_turn_execution(operation_id, obligation_id)
+                .await;
+        }
+        log::error!(
             "queued turn worktree mismatch for {session_id}: queued={}, session={}",
             queued.worktree_path,
             session.worktree_path
         );
-    }
-    if let Some(existing_agent_message_id) = queued.existing_agent_message_id.as_deref() {
-        log::debug!(
-            "queued turn {session_id} carries existing agent message id {existing_agent_message_id}"
-        );
+        return;
     }
     let had_runtime = runtime.is_some();
     let system_prompt = match build_queued_system_prompt(
@@ -5345,8 +6071,13 @@ pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &st
     ) {
         Ok(system_prompt) => system_prompt,
         Err(error) => {
-            log::warn!("failed to build queued turn system prompt for {session_id}: {error}");
-            None
+            if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
+                driver
+                    .reconcile_turn_execution(operation_id, obligation_id)
+                    .await;
+            }
+            log::error!("queued turn system prompt remains unresolved for {session_id}: {error}");
+            return;
         }
     };
     let runtime = match runtime {
@@ -5357,6 +6088,11 @@ pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &st
             {
                 Ok(runtime) => runtime,
                 Err(AgentRuntimeError::BackendSessionLost { .. }) => {
+                    if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
+                        driver
+                            .reconcile_turn_execution(operation_id, obligation_id)
+                            .await;
+                    }
                     if let Err(error) = recover_backend_session(
                         ctx,
                         session_id,
@@ -5371,6 +6107,11 @@ pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &st
                     return;
                 }
                 Err(error) => {
+                    if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
+                        driver
+                            .reconcile_turn_execution(operation_id, obligation_id)
+                            .await;
+                    }
                     log::warn!("failed to reopen runtime for queued turn {session_id}: {error}");
                     if let Err(persist_error) = persist_with_retry(
                         ctx,
@@ -5387,8 +6128,12 @@ pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &st
                     .await
                     {
                         log::error!(
-                        "failed to persist queued runtime reopen error for {session_id}: {persist_error}"
-                    );
+                            "failed to persist queued runtime reopen error for {session_id}: {persist_error}"
+                        );
+                        // The durable queue/obligation remains authoritative.
+                        // Do not publish an Error projection that did not
+                        // cross the canonical commit boundary.
+                        return;
                     }
                     emit_session_state_change(
                         &ctx.session_store,
@@ -5415,35 +6160,160 @@ pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &st
             }
         }
     };
-    let turn_id = match next_turn_id(&ctx.session_store, &ctx.data_dir, session_id) {
-        Ok(turn_id) => turn_id,
+    let turn_id = match (queued.reserved_turn_id, accepted_obligation.is_some()) {
+        (Some(turn_id), _) => turn_id,
+        (None, true) => {
+            if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
+                driver
+                    .reconcile_turn_execution(operation_id, obligation_id)
+                    .await;
+            }
+            log::error!("accepted queued send has no reserved turn identity");
+            return;
+        }
+        (None, false) => match next_turn_id(&ctx.session_store, &ctx.data_dir, session_id) {
+            Ok(turn_id) => turn_id,
+            Err(error) => {
+                log::warn!("failed to allocate queued turn id for {session_id}: {error}");
+                return;
+            }
+        },
+    };
+    let queue_item_is_current = {
+        let sessions = ctx.sessions.lock().await;
+        sessions.get(session_id).is_some_and(|state| {
+            state.pending_queue.front().map(|front| front.id.as_str()) == Some(queued.id.as_str())
+        })
+    };
+    if !queue_item_is_current {
+        if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
+            driver
+                .reconcile_turn_execution(operation_id, obligation_id)
+                .await;
+        }
+        log::error!("accepted queued send lost its exact in-memory queue identity");
+        return;
+    }
+
+    let human_message_id = queued
+        .existing_human_message_id
+        .as_deref()
+        .unwrap_or(queued.id.as_str());
+    let human_message = match committed_queued_message(
+        &ctx.session_store,
+        &ctx.data_dir,
+        session_id,
+        human_message_id,
+        MessageRole::Human,
+    ) {
+        Ok(Some(message)) => message,
+        Ok(None) => {
+            #[cfg(test)]
+            if accepted_obligation.is_none() {
+                queued_human_message(&queued)
+            } else {
+                if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
+                    driver
+                        .reconcile_turn_execution(operation_id, obligation_id)
+                        .await;
+                }
+                log::error!(
+                    "accepted queued send has no committed human projection [{human_message_id}]"
+                );
+                return;
+            }
+            #[cfg(not(test))]
+            {
+                if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
+                    driver
+                        .reconcile_turn_execution(operation_id, obligation_id)
+                        .await;
+                }
+                log::error!(
+                    "accepted queued send has no committed human projection [{human_message_id}]"
+                );
+                return;
+            }
+        }
         Err(error) => {
-            log::warn!("failed to allocate queued turn id for {session_id}: {error}");
+            if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
+                driver
+                    .reconcile_turn_execution(operation_id, obligation_id)
+                    .await;
+            }
+            log::error!(
+                "accepted queued human projection remains unreadable for {session_id}: {error}"
+            );
             return;
         }
     };
-    {
-        let sessions = ctx.sessions.lock().await;
-        let Some(state) = sessions.get(session_id) else {
+    let durably_accepted = accepted_obligation.is_some();
+    let committed_prompt =
+        crate::usecase::agent_session::event_log::prompt_input_from_human_message(&human_message);
+    let accepted_payload_mismatch = durably_accepted
+        && committed_prompt
+            != crate::domain::agent_session::events::PromptInput {
+                content: queued.content.clone(),
+                mentions: queued.mentions.clone(),
+                attachment_refs: Vec::new(),
+                parts: queued
+                    .images
+                    .iter()
+                    .map(|image| MessagePart::Image {
+                        data: image.data.clone(),
+                        media_type: image.media_type.clone(),
+                    })
+                    .collect(),
+            };
+    if accepted_payload_mismatch {
+        if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
+            driver
+                .reconcile_turn_execution(operation_id, obligation_id)
+                .await;
+        }
+        log::error!("accepted queued human projection does not match its canonical payload");
+        return;
+    }
+    let (agent_message_id, legacy_agent_message) = if durably_accepted {
+        let Some(message_id) = queued.existing_agent_message_id.clone() else {
+            if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
+                driver
+                    .reconcile_turn_execution(operation_id, obligation_id)
+                    .await;
+            }
+            log::error!("accepted queued send has no reserved assistant identity");
             return;
         };
-        if state.pending_queue.front().map(|front| front.id.as_str()) != Some(queued.id.as_str()) {
+        (message_id, None)
+    } else {
+        #[cfg(test)]
+        {
+            // Legacy direct-send queues exist only in unit tests. Keep their
+            // assistant append as a separate fault boundary for retry oracles.
+            let agent_message = match queued_agent_message(
+                &ctx.session_store,
+                &ctx.data_dir,
+                session_id,
+                &queued,
+            ) {
+                Ok(message) => message,
+                Err(error) => {
+                    log::warn!("failed to append queued agent message for {session_id}: {error}");
+                    return;
+                }
+            };
+            (agent_message.id.clone(), Some(agent_message))
+        }
+        #[cfg(not(test))]
+        {
+            log::error!("queued turn reached the legacy test path in production");
             return;
         }
-    }
-    let agent_message =
-        match queued_agent_message(&ctx.session_store, &ctx.data_dir, session_id, &queued) {
-            Ok(message) => message,
-            Err(error) => {
-                log::warn!("failed to append queued agent message for {session_id}: {error}");
-                return;
-            }
-        };
-    let human_message = queued_human_message(&queued);
+    };
     let mut queued_for_turn = queued.clone();
     queued_for_turn.existing_human_message_id = Some(human_message.id.clone());
-    queued_for_turn.existing_agent_message_id = Some(agent_message.id.clone());
-    {
+    queued_for_turn.existing_agent_message_id = Some(agent_message_id.clone());
+    if !durably_accepted {
         let mut sessions = ctx.sessions.lock().await;
         let Some(state) = sessions.get_mut(session_id) else {
             return;
@@ -5457,17 +6327,108 @@ pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &st
         front.existing_human_message_id = queued_for_turn.existing_human_message_id.clone();
         front.existing_agent_message_id = queued_for_turn.existing_agent_message_id.clone();
     }
-    let restore_policy =
-        match context_restore_policy_for_turn(ctx, session_id, &agent_message.id, had_runtime) {
-            Ok(policy) => policy,
-            Err(error) => {
-                log::warn!("failed to load queued turn restore context for {session_id}: {error}");
-                TurnContextRestorePolicy {
-                    plan: ContextRestorePlan::NoContext,
-                    recovery_restore_required: false,
-                }
+    let mut generation = None;
+    let agent_message = if durably_accepted {
+        // The canonical projection owns assistant materialization and durable
+        // queue removal in the same TurnStarted commit.
+        if let Err(error) = ctx.session_store.append_turn_started_and_project_state(
+            &ctx.data_dir,
+            session_id,
+            AgentSessionEvent::TurnStarted {
+                turn_id,
+                message_id: human_message.id.clone(),
+                assistant_message_id: Some(agent_message_id.clone()),
+                prompt: committed_prompt.clone(),
+                at: human_message.timestamp,
+            },
+        ) {
+            if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
+                driver
+                    .reconcile_turn_execution(operation_id, obligation_id)
+                    .await;
             }
+            log::error!(
+                "accepted queued TurnStarted remains uncommitted for {session_id}: {error}"
+            );
+            return;
+        }
+        generation = {
+            let mut sessions = ctx.sessions.lock().await;
+            sessions.get_mut(session_id).and_then(|state| {
+                (state.pending_queue.front().map(|front| front.id.as_str())
+                    == Some(queued.id.as_str()))
+                .then(|| {
+                    state.pending_queue.pop_front();
+                    state.reset_for_turn(turn_id, agent_message_id.clone());
+                    state.current_turn_input = Some(queued_for_turn.clone());
+                    state.generation
+                })
+            })
         };
+        if generation.is_none() {
+            if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
+                driver
+                    .reconcile_turn_execution(operation_id, obligation_id)
+                    .await;
+            }
+            log::error!(
+                "accepted queued send committed TurnStarted but lost its in-memory queue identity"
+            );
+            return;
+        }
+        match committed_queued_message(
+            &ctx.session_store,
+            &ctx.data_dir,
+            session_id,
+            &agent_message_id,
+            MessageRole::Agent,
+        ) {
+            Ok(Some(message)) => message,
+            Ok(None) => {
+                if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
+                    driver
+                        .reconcile_turn_execution(operation_id, obligation_id)
+                        .await;
+                }
+                log::error!(
+                    "accepted queued TurnStarted omitted its assistant projection [{agent_message_id}]"
+                );
+                return;
+            }
+            Err(error) => {
+                if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
+                    driver
+                        .reconcile_turn_execution(operation_id, obligation_id)
+                        .await;
+                }
+                log::error!(
+                    "accepted queued assistant projection remains unreadable for {session_id}: {error}"
+                );
+                return;
+            }
+        }
+    } else {
+        legacy_agent_message.expect("legacy test queue path must materialize its assistant")
+    };
+    let restore_policy = match context_restore_policy_for_turn(
+        ctx,
+        session_id,
+        &agent_message_id,
+        had_runtime,
+    ) {
+        Ok(policy) => policy,
+        Err(error) => {
+            if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
+                driver
+                    .reconcile_turn_execution(operation_id, obligation_id)
+                    .await;
+            }
+            log::error!(
+                    "queued turn restore context remains pending for {session_id}; provider start was not attempted: {error}"
+                );
+            return;
+        }
+    };
     let context_was_reinjected =
         matches!(&restore_policy.plan, ContextRestorePlan::Reinject { .. });
     let recovery_restore_required = restore_policy.recovery_restore_required;
@@ -5486,61 +6447,101 @@ pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &st
             ),
             Ok(None) => {}
             Err(error) => {
-                log::warn!(
-                    "failed to persist queued reinjected context carry for {session_id}: {error}"
+                if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
+                    driver
+                        .reconcile_turn_execution(operation_id, obligation_id)
+                        .await;
+                }
+                log::error!(
+                    "queued reinjected context carry remains pending for {session_id}; provider start was not attempted: {error}"
                 );
+                return;
             }
         }
     }
-    let prompt = apply_restore_prompt_prefix(queued.content.clone(), &restore_plan);
-    if let Err(error) = ctx.session_store.append_turn_started_and_project_state(
-        &ctx.data_dir,
-        session_id,
-        AgentSessionEvent::TurnStarted {
-            turn_id,
-            message_id: human_message.id.clone(),
-            assistant_message_id: Some(agent_message.id.clone()),
-            prompt: PromptInput::from_human_message(&human_message),
-            at: human_message.timestamp,
-        },
-    ) {
-        log::warn!("failed to append queued TurnStarted for {session_id}: {error}");
-        return;
+    if !durably_accepted {
+        #[cfg(test)]
+        {
+            // Legacy tests retain the historical split boundary and keep the
+            // queue visible until the provider accepts start_turn below.
+            if let Err(error) = ctx.session_store.append_turn_started_and_project_state(
+                &ctx.data_dir,
+                session_id,
+                AgentSessionEvent::TurnStarted {
+                    turn_id,
+                    message_id: human_message.id.clone(),
+                    assistant_message_id: Some(agent_message_id.clone()),
+                    prompt: committed_prompt,
+                    at: human_message.timestamp,
+                },
+            ) {
+                log::warn!("failed to append queued TurnStarted for {session_id}: {error}");
+                return;
+            }
+            generation = {
+                let mut sessions = ctx.sessions.lock().await;
+                sessions.get_mut(session_id).and_then(|state| {
+                    (state.pending_queue.front().map(|front| front.id.as_str())
+                        == Some(queued.id.as_str()))
+                    .then(|| {
+                        state.reset_for_turn(turn_id, agent_message_id.clone());
+                        state.current_turn_input = Some(queued_for_turn.clone());
+                        state.generation
+                    })
+                })
+            };
+        }
+        #[cfg(not(test))]
+        unreachable!("production queues must have a durable accepted operation identity");
     }
-    let generation = {
-        let mut sessions = ctx.sessions.lock().await;
-        let Some(state) = sessions.get_mut(session_id) else {
-            return;
-        };
-        state.reset_for_turn(turn_id, agent_message.id.clone());
-        state.current_turn_input = Some(queued_for_turn.clone());
-        state.generation
+    let Some(generation) = generation else {
+        return;
     };
+    let prompt = apply_restore_prompt_prefix(queued.content.clone(), &restore_plan);
     if !turn_owns_runtime(ctx, session_id, generation, &runtime).await {
+        if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
+            driver
+                .reconcile_turn_execution(operation_id, obligation_id)
+                .await;
+        }
         detach_runtime_if_current(ctx, session_id, &runtime).await;
         return;
     }
-    let start_result = runtime
-        .start_turn(TurnInput {
-            prompt,
-            images: queued
-                .images
-                .iter()
-                .cloned()
-                .map(|image| AttachmentPayload {
-                    data: image.data,
-                    media_type: image.media_type,
-                })
-                .collect(),
-            system_prompt,
-            permission_mode: queued.permission_mode,
-            plan_mode: queued.plan_mode,
-            permission_profile_id: queued.permission_profile_id.clone(),
-            editor_context: queued.editor_context.clone().map(EditorContext::from),
-        })
-        .await;
+    let selected_model = had_runtime
+        .then(|| selected_model_for_runtime(ctx, &session))
+        .transpose();
+    let start_result = async {
+        if let Some(model) = selected_model? {
+            runtime.set_model(&model).await?;
+        }
+        runtime
+            .start_turn(TurnInput {
+                prompt,
+                images: queued
+                    .images
+                    .iter()
+                    .cloned()
+                    .map(|image| AttachmentPayload {
+                        data: image.data,
+                        media_type: image.media_type,
+                    })
+                    .collect(),
+                system_prompt,
+                permission_mode: queued.permission_mode,
+                plan_mode: queued.plan_mode,
+                permission_profile_id: queued.permission_profile_id.clone(),
+                editor_context: queued.editor_context.clone().map(EditorContext::from),
+            })
+            .await
+    }
+    .await;
     let _runtime_event_guard = ctx.runtime_event_locks.acquire(session_id).await;
     if let Err(error) = start_result {
+        if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
+            driver
+                .reconcile_turn_execution(operation_id, obligation_id)
+                .await;
+        }
         if !turn_runtime_is_current(ctx, session_id, generation, &runtime).await {
             return;
         }
@@ -5572,10 +6573,23 @@ pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &st
             }
         }
     } else {
+        if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
+            if driver
+                .mark_turn_running(operation_id, obligation_id, turn_id)
+                .await
+                .is_err()
+            {
+                driver
+                    .reconcile_turn_execution(operation_id, obligation_id)
+                    .await;
+                return;
+            }
+        }
         if !turn_owns_runtime(ctx, session_id, generation, &runtime).await {
             return;
         }
-        {
+        #[cfg(test)]
+        if !durably_accepted {
             let mut sessions = ctx.sessions.lock().await;
             if let Some(state) = sessions.get_mut(session_id) {
                 if state.pending_queue.front().map(|front| front.id.as_str())
@@ -5594,7 +6608,19 @@ pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &st
         ctx.notifier
             .turn_prepared(&session, &human_message, &agent_message);
         if recovery_restore_required {
-            complete_context_reinjection_after_start(ctx, session_id, context_was_reinjected);
+            if let Err(error) =
+                complete_context_reinjection_after_start(ctx, session_id, context_was_reinjected)
+            {
+                if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
+                    driver
+                        .reconcile_turn_execution(operation_id, obligation_id)
+                        .await;
+                }
+                log::error!(
+                    "queued turn context-reinjection completion remains pending for {session_id}: {error}"
+                );
+                return;
+            }
         }
         spawn_stale_watchdog_task(
             ctx,
@@ -5648,6 +6674,7 @@ fn queued_human_message(queued: &QueuedTurnInput) -> ChatMessage {
     }
 }
 
+#[cfg(test)]
 fn queued_agent_message(
     session_store: &Arc<SessionStore>,
     data_dir: &Path,
@@ -5676,6 +6703,34 @@ fn queued_agent_message(
         None,
         None,
     )
+}
+
+fn committed_queued_message(
+    session_store: &Arc<SessionStore>,
+    data_dir: &Path,
+    session_id: &str,
+    message_id: &str,
+    expected_role: MessageRole,
+) -> Result<Option<ChatMessage>, String> {
+    if let Some(message) = session_store.canonical_message_projection(session_id, message_id)? {
+        return (message.role == expected_role)
+            .then_some(message)
+            .ok_or_else(|| "committed queued message role is incompatible".to_string())
+            .map(Some);
+    }
+    let message = session_store
+        .load_full_session_for_restore(data_dir, session_id)?
+        .and_then(|session| {
+            session
+                .messages
+                .into_iter()
+                .find(|message| message.id == message_id)
+        });
+    match message {
+        Some(message) if message.role == expected_role => Ok(Some(message)),
+        Some(_) => Err("committed queued message role is incompatible".to_string()),
+        None => Ok(None),
+    }
 }
 
 fn build_queued_system_prompt(
@@ -5716,7 +6771,7 @@ fn permission_request_from_parts(
 ) -> Option<PermissionRequestMsg> {
     parts.iter().rev().find_map(|part| match part {
         MessagePart::Permission { request, .. } if request.id == request_id => {
-            Some(request.clone())
+            Some(super::event_apply::permission_request_msg(request))
         }
         _ => None,
     })
@@ -5730,6 +6785,7 @@ fn pending_queue_view(state: &RuntimeSessionState) -> Vec<QueuedAgentTurn> {
         .collect()
 }
 
+#[cfg(test)]
 fn add_human_message_internal(
     session_store: &SessionStore,
     data_dir: &Path,
@@ -5878,7 +6934,9 @@ fn next_turn_id(
     data_dir: &Path,
     session_id: &str,
 ) -> Result<u64, String> {
-    session_store.next_turn_id(data_dir, session_id)
+    session_store
+        .next_turn_id(data_dir, session_id)
+        .map_err(|error| error.to_string())
 }
 
 struct PendingPermissionForResponse {
@@ -5886,25 +6944,19 @@ struct PendingPermissionForResponse {
     from_runtime_state: bool,
 }
 
-fn append_durable_part_events(
+fn durable_part_events(
     session_store: &Arc<SessionStore>,
     data_dir: &Path,
     session_id: &str,
     turn_id: u64,
     message_id: &str,
     parts: &[MessagePart],
-) {
+) -> Result<Vec<AgentSessionEvent>, String> {
     if !parts.iter().any(part_records_durable_event) {
-        return;
+        return Ok(Vec::new());
     }
     let mut events = if parts.iter().any(part_needs_event_history) {
-        match session_store.load_session_events(data_dir, session_id) {
-            Ok(events) => events,
-            Err(error) => {
-                log::warn!("failed to load session events for {session_id}: {error}");
-                return;
-            }
-        }
+        session_store.load_session_events(data_dir, session_id)?
     } else {
         Vec::new()
     };
@@ -5916,14 +6968,7 @@ fn append_durable_part_events(
         parts,
         PartEventMode::DurableOnly,
     );
-    for event in events.into_iter().skip(before) {
-        if let Err(error) =
-            session_store.append_session_event_without_projection(data_dir, session_id, event)
-        {
-            log::warn!("failed to append session part event for {session_id}: {error}");
-            return;
-        }
-    }
+    Ok(events.into_iter().skip(before).collect())
 }
 
 fn part_records_durable_event(part: &MessagePart) -> bool {
@@ -5951,11 +6996,39 @@ fn patch_permission_response_in_state(
     state: &mut RuntimeSessionState,
     response: &PermissionResponse,
 ) -> Option<(String, u64, Vec<MessagePart>, u64)> {
+    if !patch_permission_response_in_domain_parts(&mut state.domain_streaming_parts, response) {
+        return None;
+    }
+    state.streaming_parts = parts_from_domain(state.domain_streaming_parts.clone());
+    state.streaming_delta_seq = state.streaming_delta_seq.saturating_add(1);
+    let message_id = state
+        .streaming_message_id
+        .clone()
+        .or_else(|| state.last_agent_message_id.clone())?;
+    let turn_id = state.current_turn_id?;
+    Some((
+        message_id,
+        state.streaming_delta_seq,
+        state.streaming_parts.clone(),
+        turn_id,
+    ))
+}
+
+fn patch_permission_response_in_domain_parts(
+    parts: &mut [DomainMessagePart],
+    response: &PermissionResponse,
+) -> bool {
     let decision = permission_decision_from_response(response);
     let answers = permission_answers_from_response(response);
     let mut patched = false;
-    for part in &mut state.domain_streaming_parts {
-        let DomainMessagePart::Permission { request } = part else {
+    for part in parts {
+        let DomainMessagePart::Permission {
+            request,
+            status,
+            answers: part_answers,
+            parent_tool_use_id,
+        } = part
+        else {
             continue;
         };
         if request.id != response.request_id {
@@ -5965,24 +7038,16 @@ fn patch_permission_response_in_state(
             decision,
             answers: answers.clone(),
         };
+        *status = match decision {
+            DomainPermissionDecision::Allowed => PermissionPartStatus::Allowed,
+            DomainPermissionDecision::Denied => PermissionPartStatus::Denied,
+            DomainPermissionDecision::Cancelled => PermissionPartStatus::Cancelled,
+        };
+        *part_answers = answers.clone();
+        request.parent_tool_use_id = parent_tool_use_id.clone();
         patched = true;
     }
-    if !patched {
-        return None;
-    }
-    state.streaming_parts = parts_from_domain(state.domain_streaming_parts.clone());
-    state.streaming_delta_seq = state.streaming_delta_seq.saturating_add(1);
-    let message_id = state
-        .streaming_message_id
-        .clone()
-        .or_else(|| state.last_agent_message_id.clone())?;
-    let turn_id = state.current_turn_id.or(state.last_turn_id)?;
-    Some((
-        message_id,
-        state.streaming_delta_seq,
-        state.streaming_parts.clone(),
-        turn_id,
-    ))
+    patched
 }
 
 fn permission_decision_from_response(response: &PermissionResponse) -> DomainPermissionDecision {
@@ -6001,13 +7066,8 @@ fn permission_answers_from_response(
     }
 }
 
-fn append_permission_resolved_event(
-    session_store: &Arc<SessionStore>,
-    data_dir: &Path,
-    session_id: &str,
-    turn_id: u64,
-    response: &PermissionResponse,
-) {
+#[cfg(test)]
+fn permission_resolved_event(turn_id: u64, response: &PermissionResponse) -> AgentSessionEvent {
     let decision = match &response.decision {
         PermissionResponseDecision::Allow { .. } => {
             crate::usecase::agent_session::event_log::PermissionDecision::Allowed
@@ -6016,30 +7076,18 @@ fn append_permission_resolved_event(
             crate::usecase::agent_session::event_log::PermissionDecision::Denied
         }
     };
-    let answers = match &response.decision {
-        PermissionResponseDecision::Allow { answers, .. } => answers
-            .as_ref()
-            .and_then(|payload| serde_json::from_str::<serde_json::Value>(payload.as_str()).ok()),
-        PermissionResponseDecision::Deny { .. } => None,
-    };
-    if let Err(error) = session_store.append_session_event_and_project_state(
-        data_dir,
-        session_id,
-        AgentSessionEvent::PermissionResolved {
-            turn_id,
-            tool_use_id: None,
-            request_id: Some(response.request_id.clone()),
-            decision,
-            answers,
-        },
-    ) {
-        log::warn!("failed to append permission resolved event for {session_id}: {error}");
+    let answers = permission_answers_from_response(response);
+    AgentSessionEvent::PermissionResolved {
+        turn_id,
+        tool_use_id: None,
+        request_id: Some(response.request_id.clone()),
+        decision,
+        answers,
     }
 }
 
-async fn resync_permission_mode(
+fn resync_permission_mode(
     session_store: &Arc<SessionStore>,
-    sessions: &Arc<Mutex<RuntimeSessionMap>>,
     data_dir: &Path,
     session_id: &str,
     reported_mode: PermissionMode,
@@ -6061,20 +7109,6 @@ async fn resync_permission_mode(
     if saved_mode == reported_mode {
         return None;
     }
-    let runtime = {
-        let sessions = sessions.lock().await;
-        sessions
-            .get(session_id)
-            .and_then(|state| state.runtime.clone())
-    };
-    if let Some(runtime) = runtime {
-        if let Err(error) = runtime
-            .set_permission_mode(saved_mode, meta.plan_mode)
-            .await
-        {
-            log::warn!("failed to resync permission mode for {session_id}: {error}");
-        }
-    }
     Some(saved_mode)
 }
 
@@ -6087,7 +7121,7 @@ fn final_turn_events(
     parts: &[MessagePart],
     terminal: &TerminalProjection,
 ) -> Result<Vec<AgentSessionEvent>, String> {
-    let existing_events = session_store.load_session_events(data_dir, session_id)?;
+    let existing_events = session_store.load_current_reducer_events(data_dir, session_id)?;
     if existing_events.iter().any(|event| {
         matches!(
             event,
@@ -6382,24 +7416,10 @@ impl AgentSessionRuntime for TestNoopAgentRuntime {
         ))
     }
 
-    async fn set_permission_mode(
-        &self,
-        _mode: PermissionMode,
-        _plan_mode: bool,
-    ) -> Result<(), AgentBackendError> {
-        Err(AgentBackendError::Other(
-            "injected test permission mode failure".to_string(),
-        ))
-    }
-
     async fn set_model(&self, _model: &ModelId) -> Result<(), AgentBackendError> {
         Err(AgentBackendError::Other(
             "injected test model failure".to_string(),
         ))
-    }
-
-    async fn set_session_title(&self, _title: &str) -> Result<(), AgentBackendError> {
-        Ok(())
     }
 
     async fn close(&self) {}
@@ -6434,19 +7454,7 @@ impl AgentSessionRuntime for TestFailingAgentRuntime {
         Ok(())
     }
 
-    async fn set_permission_mode(
-        &self,
-        _mode: PermissionMode,
-        _plan_mode: bool,
-    ) -> Result<(), AgentBackendError> {
-        Ok(())
-    }
-
     async fn set_model(&self, _model: &ModelId) -> Result<(), AgentBackendError> {
-        Ok(())
-    }
-
-    async fn set_session_title(&self, _title: &str) -> Result<(), AgentBackendError> {
         Ok(())
     }
 
@@ -6456,13 +7464,19 @@ impl AgentSessionRuntime for TestFailingAgentRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adaptor::gateway::agent_session::FileSessionStorage;
-    use crate::adaptor::gateway::workflow::StoredWorkspaceSessionGateway;
-    use crate::domain::agent_session::gateway::{
-        AgentBackend, AgentSessionRuntime, ForkSessionRequest,
+    use crate::adaptor::gateway::agent_session::session_storage::{
+        AgentSessionProjectionCodecV1, FileSessionStorage,
     };
+    use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
+    use crate::adaptor::gateway::workflow::StoredWorkspaceSessionGateway;
+    use crate::domain::agent_session::gateway::{AgentBackend, AgentSessionRuntime};
     use crate::domain::agent_session::value_objects::{
         BackendCapabilities, ModelDescriptor, SkillEntry,
+    };
+    use crate::domain::local_event::{
+        CommitIdentity, CommitOperationKind, IdempotencyBinding, LocalAtomicBatch,
+        LocalEventTransactionRepository, LocalStateMutation, ObligationMutation, PendingIndexEntry,
+        PendingPartition, Revision, RevisionGuard,
     };
     use crate::domain::workflow::WorkflowNodeContext;
     use crate::test_support::{
@@ -6917,29 +7931,6 @@ mod tests {
             _spec: SessionSpec,
         ) -> Result<Box<dyn AgentSessionRuntime>, AgentBackendError> {
             Err(AgentBackendError::Other("not used".to_string()))
-        }
-
-        async fn archive_session(
-            &self,
-            _backend_session_id: &str,
-            _cwd: &str,
-        ) -> Result<(), AgentBackendError> {
-            Ok(())
-        }
-
-        async fn unarchive_session(
-            &self,
-            _backend_session_id: &str,
-            _cwd: &str,
-        ) -> Result<(), AgentBackendError> {
-            Ok(())
-        }
-
-        async fn fork_session(
-            &self,
-            _req: ForkSessionRequest,
-        ) -> Result<Option<String>, AgentBackendError> {
-            Ok(None)
         }
 
         async fn skill_catalog(
@@ -7446,13 +8437,17 @@ mod tests {
             part,
             MessagePart::Text { content, .. } if content.contains("persisted prefix")
         )));
-        assert!(!before_close_parts.iter().any(|part| matches!(
+        assert!(before_close_parts.iter().any(|part| matches!(
             part,
             MessagePart::Text { content, .. } if content.contains("close tail")
         )));
-        assert!(!before_close_parts
-            .iter()
-            .any(|part| matches!(part, MessagePart::Permission { .. })));
+        assert!(before_close_parts.iter().any(|part| matches!(
+            part,
+            MessagePart::Permission {
+                status: PermissionPartStatus::Pending,
+                ..
+            }
+        )));
 
         usecase.close_session(&session_id).await.unwrap();
 
@@ -7471,13 +8466,12 @@ mod tests {
             event,
             AgentSessionEvent::ToolCallFailed { tool_use_id, .. } if tool_use_id == "toolu-2"
         )));
-        assert!(events.iter().any(|event| matches!(
+        assert!(!events.iter().any(|event| matches!(
             event,
             AgentSessionEvent::TaskStatusChanged {
                 task_tool_use_id,
-                status,
                 ..
-            } if task_tool_use_id == "toolu-1" && status == "stopped"
+            } if task_tool_use_id == "toolu-1"
         )));
         assert!(events.iter().any(|event| matches!(
             event,
@@ -7534,13 +8528,12 @@ mod tests {
                 ..
             } if tool_use_id == "toolu-1"
         )));
-        assert!(parts.iter().any(|part| matches!(
+        assert!(!parts.iter().any(|part| matches!(
             part,
             MessagePart::TaskStatus {
                 task_tool_use_id,
-                status,
                 ..
-            } if task_tool_use_id == "toolu-1" && status == "stopped"
+            } if task_tool_use_id == "toolu-1"
         )));
         assert!(parts.iter().any(|part| matches!(
             part,
@@ -8095,13 +9088,17 @@ mod tests {
             part,
             MessagePart::Text { content, .. } if content.contains("persisted prefix")
         )));
-        assert!(!before_shutdown_parts.iter().any(|part| matches!(
+        assert!(before_shutdown_parts.iter().any(|part| matches!(
             part,
             MessagePart::Text { content, .. } if content.contains("shutdown tail")
         )));
-        assert!(!before_shutdown_parts
-            .iter()
-            .any(|part| matches!(part, MessagePart::Permission { .. })));
+        assert!(before_shutdown_parts.iter().any(|part| matches!(
+            part,
+            MessagePart::Permission {
+                status: PermissionPartStatus::Pending,
+                ..
+            }
+        )));
 
         usecase.close_all().await.unwrap();
         drop(usecase);
@@ -8140,13 +9137,12 @@ mod tests {
             .find(|message| message.id == agent_message_id)
             .and_then(|message| message.parts.as_ref())
             .expect("persisted shutdown parts");
-        assert!(parts.iter().any(|part| matches!(
+        assert!(!parts.iter().any(|part| matches!(
             part,
             MessagePart::TaskStatus {
                 task_tool_use_id,
-                status,
                 ..
-            } if task_tool_use_id == "toolu-shutdown" && status == "stopped"
+            } if task_tool_use_id == "toolu-shutdown"
         )));
         assert!(parts.iter().any(|part| matches!(
             part,
@@ -8165,13 +9161,12 @@ mod tests {
                 ..
             }
         )));
-        assert!(events.iter().any(|event| matches!(
+        assert!(!events.iter().any(|event| matches!(
             event,
             AgentSessionEvent::TaskStatusChanged {
                 task_tool_use_id,
-                status,
                 ..
-            } if task_tool_use_id == "toolu-shutdown" && status == "stopped"
+            } if task_tool_use_id == "toolu-shutdown"
         )));
         assert!(events.iter().any(|event| matches!(
             event,
@@ -8420,90 +9415,6 @@ mod tests {
                 .count(),
             1
         );
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn conditional_idle_close_keeps_turn_that_wins_session_transition() {
-        let tmp = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(build_session_store());
-        let (usecase, controller) =
-            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
-        let session = create_session_internal_with_attributes(
-            &session_store,
-            tmp.path(),
-            tmp.path().to_string_lossy().as_ref(),
-            Some("claude".to_string()),
-            PermissionMode::Edit,
-            SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
-                plan_mode: false,
-                workflow_node_session: true,
-                workflow_node_context: None,
-            },
-        )
-        .unwrap();
-        usecase
-            .start_session(
-                &session.id,
-                StartSessionOptions {
-                    permission_mode: PermissionMode::Edit,
-                    plan_mode: false,
-                },
-            )
-            .await
-            .unwrap();
-        controller.pause_start_turn();
-        let send_task = tokio::spawn({
-            let usecase = Arc::clone(&usecase);
-            let session_id = session.id.clone();
-            let worktree_path = tmp.path().to_string_lossy().to_string();
-            async move {
-                usecase
-                    .send_message(SendAgentMessageRequest {
-                        chat_session_id: Some(session_id),
-                        worktree_path,
-                        content: "turn wins transition".to_string(),
-                        permission_mode: PermissionMode::Edit,
-                        plan_mode: false,
-                        backend_id: Some("claude".to_string()),
-                        model_id: None,
-                        images: None,
-                        mentions: None,
-                        editor_context: None,
-                    })
-                    .await
-            }
-        });
-        wait_for_call(&controller, &session.id, TestRuntimeCallKind::StartTurn).await;
-        let close_task = tokio::spawn({
-            let usecase = Arc::clone(&usecase);
-            let session_id = session.id.clone();
-            async move { usecase.close_session_if_idle(&session_id).await }
-        });
-        tokio::task::yield_now().await;
-        assert!(!close_task.is_finished());
-
-        controller.release_start_turn();
-        send_task.await.unwrap().unwrap();
-        assert!(!close_task.await.unwrap().unwrap());
-
-        assert!(usecase.has_live_runtime(&session.id).await);
-        assert_eq!(
-            usecase.turn_phase(&session.id).await,
-            Some(TurnPhase::Streaming)
-        );
-        assert!(!session_store
-            .load_session_events(tmp.path(), &session.id)
-            .unwrap()
-            .iter()
-            .any(|event| matches!(
-                event,
-                AgentSessionEvent::TurnInterrupted {
-                    reason: EventInterruptReason::SessionClosed,
-                    ..
-                }
-            )));
-        usecase.close_session(&session.id).await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -8914,7 +9825,10 @@ mod tests {
                 AgentSessionEvent::PermissionRequested {
                     turn_id: 1,
                     tool_use_id: Some("toolu-1".to_string()),
-                    request: permission_request_msg("perm-from-log"),
+                    request: crate::usecase::agent_session::runtime::event_apply::pending_permission_request_from_msg(
+                        &permission_request_msg("perm-from-log"),
+                    )
+                    .unwrap(),
                 },
             )
             .unwrap();
@@ -8990,7 +9904,10 @@ mod tests {
                 AgentSessionEvent::PermissionRequested {
                     turn_id: 1,
                     tool_use_id: Some("toolu-1".to_string()),
-                    request: permission_request_msg("perm-from-log"),
+                    request: crate::usecase::agent_session::runtime::event_apply::pending_permission_request_from_msg(
+                        &permission_request_msg("perm-from-log"),
+                    )
+                    .unwrap(),
                 },
             )
             .unwrap();
@@ -9053,7 +9970,10 @@ mod tests {
                 AgentSessionEvent::PermissionRequested {
                     turn_id: 1,
                     tool_use_id: Some("toolu-1".to_string()),
-                    request: permission_request_msg("perm-from-log"),
+                    request: crate::usecase::agent_session::runtime::event_apply::pending_permission_request_from_msg(
+                        &permission_request_msg("perm-from-log"),
+                    )
+                    .unwrap(),
                 },
             )
             .unwrap();
@@ -9522,6 +10442,38 @@ mod tests {
         .unwrap();
     }
 
+    fn provider_establish_test_session(
+        session_store: &SessionStore,
+        data_dir: &Path,
+        resume_id: Option<&str>,
+    ) -> ChatSession {
+        let session = create_session_internal_with_attributes(
+            session_store,
+            data_dir,
+            data_dir.to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("claude-4-sonnet".to_string()),
+                plan_mode: false,
+                workflow_node_session: false,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        if let Some(resume_id) = resume_id {
+            session_store
+                .record_backend_session_established(
+                    data_dir,
+                    &session.id,
+                    resume_id.to_string(),
+                    Some(ContextCarryState::Resumed),
+                )
+                .unwrap();
+        }
+        session
+    }
+
     async fn wait_for_turn_phase(
         usecase: &AgentSessionRuntimeUsecase,
         session_id: &str,
@@ -9781,6 +10733,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn queued_turn_cancel_is_rejected_without_live_or_restart_visible_mutation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let first = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = first.session.id;
+        wait_for_start_prompt_count(&controller, &session_id, 1).await;
+        let queued = usecase
+            .send_message(SendAgentMessageRequest {
+                chat_session_id: Some(session_id.clone()),
+                worktree_path: tmp.path().to_string_lossy().to_string(),
+                content: "must remain queued".to_string(),
+                permission_mode: PermissionMode::Edit,
+                plan_mode: false,
+                backend_id: Some("claude".to_string()),
+                model_id: None,
+                images: None,
+                mentions: None,
+                editor_context: None,
+            })
+            .await
+            .unwrap();
+        let queued_id = queued.queued_turn.unwrap().id;
+        let live_before = usecase.pending_queue(&session_id).await;
+        let persisted_before = session_store
+            .load_full_session_for_restore(tmp.path(), &session_id)
+            .unwrap()
+            .unwrap()
+            .messages
+            .into_iter()
+            .map(|message| (message.id, message.content))
+            .collect::<Vec<_>>();
+        let events_before = format!(
+            "{:?}",
+            session_store
+                .load_session_events(tmp.path(), &session_id)
+                .unwrap()
+        );
+
+        let error = usecase
+            .cancel_queued_turn(&session_id, Some(&queued_id))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("atomic durable queue operation"));
+        assert_eq!(usecase.pending_queue(&session_id).await, live_before);
+        assert_eq!(
+            format!(
+                "{:?}",
+                session_store
+                    .load_session_events(tmp.path(), &session_id)
+                    .unwrap()
+            ),
+            events_before
+        );
+        let restarted =
+            crate::test_support::build_agent_runtime_usecase(session_store.clone(), tmp.path());
+        let persisted_after_restart = restarted
+            .get_session(&session_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .session
+            .messages
+            .into_iter()
+            .map(|message| (message.id, message.content))
+            .collect::<Vec<_>>();
+        assert_eq!(persisted_after_restart, persisted_before);
+    }
+
+    #[tokio::test]
     async fn test_send_message_queue受理後のprojection障害でも成功応答を返す() {
         // Given: an active turn whose message index does not yet include an orphan chunk, and a
         // projection store that becomes unreadable while the queued human message is persisted.
@@ -9816,7 +10843,10 @@ mod tests {
             .join("3.json");
         std::fs::write(
             orphan_path,
-            serde_json::to_vec_pretty(&orphan).expect("orphan message must serialize"),
+            crate::adaptor::gateway::agent_session::session_storage::encode_chat_message_v1(
+                &orphan,
+            )
+            .expect("orphan message must serialize through legacy V1 DTO"),
         )
         .unwrap();
         let titles_path = tmp.path().join("session_titles.json");
@@ -10277,7 +11307,7 @@ mod tests {
         assert!(event_notifier.notices().iter().any(|notice| {
             notice.session_id == session_id && notice.kind == SessionNoticeKind::PersistFailure
         }));
-        assert!(event_notifier.state_changes().iter().any(|change| {
+        assert!(!event_notifier.state_changes().iter().any(|change| {
             change.chat_session_id == session_id
                 && change.turn_phase == TurnPhase::Idle
                 && change.session_state == Some(SessionState::Error)
@@ -10287,7 +11317,7 @@ mod tests {
             .status_center
             .get_session(&session_id)
             .expect("status snapshot");
-        assert_eq!(snapshot.session_state, SessionState::Error);
+        assert_eq!(snapshot.session_state, SessionState::Active);
         assert_eq!(
             snapshot.notice.map(|notice| notice.kind),
             Some(SessionNoticeKind::PersistFailure)
@@ -10485,6 +11515,144 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn b024_normal_completion_commits_one_terminal_then_drains_the_next_queue_item() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                tmp.path(),
+            );
+        let session_id = enqueue_second_turn_for_test(
+            &usecase,
+            &controller,
+            tmp.path().to_string_lossy().to_string(),
+        )
+        .await;
+        assert_eq!(usecase.pending_queue(&session_id).await.len(), 1);
+
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::TurnCompleted(TurnResult::Completed {
+                    stop_reason: None,
+                    token_usage: None,
+                }),
+            )
+            .unwrap();
+
+        wait_for_start_prompt_count(&controller, &session_id, 2).await;
+        assert!(usecase.pending_queue(&session_id).await.is_empty());
+        let events = session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    AgentSessionEvent::TurnCompleted { turn_id: 1, .. }
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, AgentSessionEvent::TurnStarted { .. }))
+                .count(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn b040_unresolved_recovery_blocks_automatic_queue_drain_without_provider_effect() {
+        let tmp = tempfile::tempdir().unwrap();
+        let local_store =
+            LocalEventStore::open(LocalEventStoreConfig::production(tmp.path().to_path_buf()))
+                .unwrap();
+        let session_store = Arc::new(SessionStore::new(Arc::new(FileSessionStorage::default())));
+        let repository: Arc<dyn LocalEventTransactionRepository> = local_store.clone();
+        session_store.set_local_event_repository_with_projection_codec(
+            repository,
+            local_store.generation_id().to_string(),
+            Arc::new(AgentSessionProjectionCodecV1),
+        );
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let session_id = enqueue_second_turn_for_test(
+            &usecase,
+            &controller,
+            tmp.path().to_string_lossy().to_string(),
+        )
+        .await;
+        let recovery_id = "recovery-blocks-queue-drain";
+        local_store
+            .commit_batch(LocalAtomicBatch {
+                commit_id: CommitIdentity::parse("b040-blocker-commit").unwrap(),
+                idempotency: IdempotencyBinding {
+                    generation_id: local_store.generation_id().to_string(),
+                    operation_kind: CommitOperationKind::Recovery,
+                    idempotency_key: "b040-blocker".to_string(),
+                    payload_hash: [40; 32],
+                },
+                expected_heads: Vec::new(),
+                events: Vec::new(),
+                state_mutations: vec![LocalStateMutation::Obligation(ObligationMutation {
+                    obligation_id: recovery_id.to_string(),
+					record: crate::domain::local_event::ObligationRecord::LegacyReconciliation {
+						detail: crate::domain::local_event::LegacyReconciliationRecord::BackendRecovery {
+							session_id: session_id.clone(),
+							recovery_id: recovery_id.to_string(),
+						},
+						safe_actions: vec![crate::domain::agent_session::events::RecoveryActionKind::KeepForManualResolution],
+						state: crate::domain::local_event::ObligationStateRecord::ReconciliationRequired,
+					},
+                    pending: Some(PendingIndexEntry {
+                        ordered_key: format!("{recovery_id}:0001"),
+                        owner: session_id.clone(),
+                        partition: PendingPartition::Owner,
+                        shutdown_plan: None,
+                    }),
+                    expected: RevisionGuard::Absent,
+                    revision: Revision::new(0).unwrap(),
+                })],
+            })
+            .await
+            .unwrap();
+
+        let failure = session_store
+            .ensure_no_unresolved_recovery(&session_id)
+            .await
+            .unwrap_err();
+        assert_eq!(failure.correlation_id, recovery_id);
+        assert_eq!(usecase.pending_queue(&session_id).await.len(), 1);
+
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::TurnCompleted(TurnResult::Completed {
+                    stop_reason: None,
+                    token_usage: None,
+                }),
+            )
+            .unwrap();
+        wait_for_turn_phase(&usecase, &session_id, TurnPhase::Idle).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        assert_eq!(usecase.pending_queue(&session_id).await.len(), 1);
+        assert_eq!(
+            controller
+                .call_kinds_for(&session_id)
+                .iter()
+                .filter(|kind| matches!(kind, TestRuntimeCallKind::StartTurnPrompt { .. }))
+                .count(),
+            1,
+            "the unresolved recovery fence must run before queue/provider dispatch"
+        );
+    }
+
+    #[tokio::test]
     async fn queued_turn_append_message_failure_preserves_queue_and_retries() {
         let tmp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(build_session_store());
@@ -10678,7 +11846,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn turn_completed_append_failure_retries_and_keeps_turn_retryable() {
+    async fn turn_completed_append_failure_is_retained_until_the_terminal_commit_succeeds() {
         let tmp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(build_session_store());
         let event_notifier = Arc::new(RecordingAgentNotifier::default());
@@ -10699,8 +11867,10 @@ mod tests {
             let attempts = attempts.clone();
             Arc::new(move |_, event| {
                 if matches!(event, AgentSessionEvent::TurnCompleted { .. }) {
-                    attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    return Err("injected turn completed failure".to_string());
+                    let attempt = attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if attempt < PERSIST_MAX_ATTEMPTS {
+                        return Err("injected turn completed failure".to_string());
+                    }
                 }
                 Ok(())
             })
@@ -10717,46 +11887,39 @@ mod tests {
             .unwrap();
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
-                if attempts.load(std::sync::atomic::Ordering::SeqCst) == PERSIST_MAX_ATTEMPTS
-                    && event_notifier.notices().iter().any(|notice| {
-                        notice.session_id == session_id
-                            && notice.kind == SessionNoticeKind::PersistFailure
-                    })
-                {
+                if usecase.turn_phase(&session_id).await == Some(TurnPhase::Idle) {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
         .await
-        .expect("turn completion persistence should exhaust retries");
-        assert_eq!(
-            usecase.turn_phase(&session_id).await,
-            Some(TurnPhase::Streaming)
-        );
+        .expect("the retained terminal event should commit after storage recovers");
+        assert_eq!(usecase.turn_phase(&session_id).await, Some(TurnPhase::Idle));
 
         assert_eq!(
             attempts.load(std::sync::atomic::Ordering::SeqCst),
-            PERSIST_MAX_ATTEMPTS
+            PERSIST_MAX_ATTEMPTS + 1
         );
         let events = session_store
             .load_session_events(tmp.path(), &session_id)
             .unwrap();
-        assert!(!events
+        assert!(events
             .iter()
             .any(|event| matches!(event, AgentSessionEvent::FinalPartsRecorded { .. })));
-        assert!(!events
+        assert!(events
             .iter()
             .any(|event| matches!(event, AgentSessionEvent::TurnCompleted { .. })));
         assert_eq!(
-            usecase
-                .ctx
-                .status_center
-                .get_session(&session_id)
-                .and_then(|status| status.notice)
-                .map(|notice| notice.kind),
-            Some(SessionNoticeKind::PersistFailure)
+            events
+                .iter()
+                .filter(|event| matches!(event, AgentSessionEvent::TurnCompleted { .. }))
+                .count(),
+            1
         );
+        assert!(event_notifier.notices().iter().any(|notice| {
+            notice.session_id == session_id && notice.kind == SessionNoticeKind::PersistFailure
+        }));
         assert!(status_notifier.changes().iter().any(|changes| {
             changes.session.as_ref().is_some_and(|status| {
                 status.chat_session_id == session_id
@@ -10918,17 +12081,18 @@ mod tests {
 
         usecase.interrupt(&session_id).await.unwrap();
 
-        let appended = appended.lock().unwrap();
-        assert_eq!(appended.len(), 2);
-        assert!(matches!(
-            &appended[0],
-            AgentSessionEvent::TurnInterruptRequested { turn_id: 1, .. }
-        ));
-        assert!(matches!(
-            &appended[1],
-            AgentSessionEvent::QueuePaused { .. }
-        ));
-        drop(appended);
+        {
+            let appended = appended.lock().unwrap();
+            assert_eq!(appended.len(), 2);
+            assert!(matches!(
+                &appended[0],
+                AgentSessionEvent::TurnInterruptRequested { turn_id: 1, .. }
+            ));
+            assert!(matches!(
+                &appended[1],
+                AgentSessionEvent::QueuePaused { .. }
+            ));
+        }
         assert!(controller
             .call_kinds_for(&session_id)
             .contains(&TestRuntimeCallKind::Interrupt));
@@ -11071,6 +12235,38 @@ mod tests {
                 .unwrap()
                 .queue_paused
         );
+    }
+
+    #[tokio::test]
+    async fn shutdown_admission_rejects_queue_resume_without_clearing_the_durable_pause() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                session_store.clone(),
+                tmp.path(),
+            );
+        let session_id = enqueue_second_turn_for_test(
+            &usecase,
+            &controller,
+            tmp.path().to_string_lossy().to_string(),
+        )
+        .await;
+        usecase.interrupt(&session_id).await.unwrap();
+        usecase.ctx.shutdown_admission.begin_shutdown();
+
+        let error = usecase.resume_queue(&session_id).await.unwrap_err();
+
+        assert!(error.to_string().contains("shutting down"));
+        assert!(session_store
+            .load_queue_paused_at(tmp.path(), &session_id)
+            .unwrap()
+            .is_some());
+        assert!(!session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event, AgentSessionEvent::QueueResumed { .. })));
     }
 
     #[tokio::test]
@@ -11533,7 +12729,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn terminal_results_after_stop_are_reconciled_as_interrupted() {
+    async fn provider_terminal_results_after_interrupt_are_preserved() {
         for result in [
             TurnResult::Completed {
                 stop_reason: None,
@@ -11566,16 +12762,16 @@ mod tests {
             let events = session_store
                 .load_session_events(tmp.path(), &session_id)
                 .unwrap();
-            assert!(events.iter().any(|event| matches!(
+            assert!(events
+                .iter()
+                .any(|event| matches!(event, AgentSessionEvent::TurnCompleted { .. })));
+            assert!(!events.iter().any(|event| matches!(
                 event,
                 AgentSessionEvent::TurnInterrupted {
                     reason: EventInterruptReason::Abort,
                     ..
                 }
             )));
-            assert!(!events
-                .iter()
-                .any(|event| matches!(event, AgentSessionEvent::TurnCompleted { .. })));
         }
     }
 
@@ -11622,6 +12818,65 @@ mod tests {
             .unwrap()
             .iter()
             .any(|event| matches!(event, AgentSessionEvent::QueueResumed { .. })));
+    }
+
+    #[tokio::test]
+    async fn queue_resume_after_restart_is_fenced_by_unfinished_backend_recovery() {
+        let tmp = tempfile::tempdir().unwrap();
+        let original_store = Arc::new(build_session_store());
+        let session = create_session_internal_with_attributes(
+            &original_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("codex".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("gpt-5.6-sol".to_string()),
+                plan_mode: false,
+                workflow_node_session: false,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        original_store
+            .append_session_events(
+                tmp.path(),
+                &session.id,
+                &[AgentSessionEvent::QueuePaused { at: 8.0 }],
+            )
+            .unwrap();
+        original_store
+            .begin_backend_session_recovery(
+                tmp.path(),
+                &session.id,
+                "resume-fence-recovery",
+                BackendSessionRecoveryReason::BackendSessionLost,
+            )
+            .unwrap();
+        drop(original_store);
+        let reopened_store = Arc::new(build_session_store());
+        let (restarted, controller) =
+            build_agent_runtime_usecase_with_controller(reopened_store.clone(), tmp.path());
+
+        let error = restarted.resume_queue(&session.id).await.unwrap_err();
+
+        assert!(
+            error.to_string().contains("requires reconciliation"),
+            "unexpected recovery fence error: {error}"
+        );
+        assert!(reopened_store
+            .load_queue_paused_at(tmp.path(), &session.id)
+            .unwrap()
+            .is_some());
+        assert!(!reopened_store
+            .load_session_events(tmp.path(), &session.id)
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event, AgentSessionEvent::QueueResumed { .. })));
+        assert!(!controller
+            .call_kinds_for(&session.id)
+            .iter()
+            .any(|kind| matches!(kind, TestRuntimeCallKind::StartTurn)));
     }
 
     #[tokio::test]
@@ -11890,7 +13145,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn timeout_resume_reopens_runtime_and_drops_the_old_runtime_late_terminal() {
+    async fn b027_past_turn_late_streaming_and_terminal_events_leave_new_turn_unchanged_live_and_reload(
+    ) {
         let tmp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(build_session_store());
         let (usecase, controller) =
@@ -11921,6 +13177,38 @@ mod tests {
                 .count(),
             2
         );
+        let before_session = usecase.get_session(&session_id).await.unwrap().unwrap();
+        let before_events = usecase
+            .ctx
+            .session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap();
+        let project_messages = |messages: &[ChatMessage]| {
+            messages
+                .iter()
+                .map(|message| {
+                    (
+                        message.id.clone(),
+                        message.role.clone(),
+                        message.content.clone(),
+                        message.parts.clone(),
+                        message.streaming_final_seq,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let before_messages = project_messages(&before_session.session.messages);
+        let before_state = before_session.session.state;
+        controller
+            .emit_for_runtime(
+                &session_id,
+                0,
+                AgentRuntimeEvent::PartsMerged(vec![DomainMessagePart::Text {
+                    content: "late t-1 output".to_string(),
+                    parent_tool_use_id: None,
+                }]),
+            )
+            .unwrap();
         controller
             .emit_for_runtime(
                 &session_id,
@@ -11937,6 +13225,33 @@ mod tests {
             usecase.turn_phase(&session_id).await,
             Some(TurnPhase::Streaming)
         );
+        let after_live = usecase.get_session(&session_id).await.unwrap().unwrap();
+        let after_reload = usecase
+            .ctx
+            .session_store
+            .load_full_session_for_restore(tmp.path(), &session_id)
+            .unwrap()
+            .unwrap();
+        let after_events = usecase
+            .ctx
+            .session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap();
+        assert_eq!(
+            project_messages(&after_live.session.messages),
+            before_messages
+        );
+        assert_eq!(project_messages(&after_reload.messages), before_messages);
+        assert_eq!(after_live.session.state, before_state);
+        assert_eq!(after_reload.state, before_state);
+        assert_eq!(after_events, before_events);
+        assert!(!after_live.session.messages.iter().any(|message| {
+            message.parts.as_deref().is_some_and(|parts| {
+                parts.iter().any(|part| {
+                    matches!(part, MessagePart::Text { content, .. } if content == "late t-1 output")
+                })
+            })
+        }));
     }
 
     #[tokio::test]
@@ -12387,7 +13702,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn interrupt_commit_and_start_failure_share_one_terminal_transition() {
+    async fn interrupt_acceptance_and_start_failure_preserve_the_crash_terminal_winner() {
         let tmp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(build_session_store());
         let event_notifier = Arc::new(RecordingAgentNotifier::default());
@@ -12485,20 +13800,28 @@ mod tests {
         let events = session_store
             .load_session_events(tmp.path(), &session.id)
             .unwrap();
-        assert!(events.iter().any(|event| matches!(
+        assert!(!events.iter().any(|event| matches!(
             event,
             AgentSessionEvent::TurnInterrupted {
                 reason: EventInterruptReason::Abort,
                 ..
             }
         )));
-        assert!(!events.iter().any(|event| matches!(
+        assert!(events.iter().any(|event| matches!(
             event,
             AgentSessionEvent::TurnInterrupted {
                 reason: EventInterruptReason::Crash,
                 ..
             }
         )));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, AgentSessionEvent::TurnInterrupted { .. }))
+                .count(),
+            1,
+            "the shared terminal arbiter must commit exactly one winner",
+        );
         assert!(event_notifier.state_changes().iter().any(|change| {
             change.chat_session_id == session.id
                 && change.turn_phase == TurnPhase::Idle
@@ -13244,7 +14567,7 @@ mod tests {
         ProjectMeta,
     }
 
-    async fn assert_idle_fatal_persistence_failure_rolls_back(
+    async fn assert_idle_fatal_persistence_failure_retries_exact_episode(
         failure: IdleFatalPersistenceFailure,
     ) {
         let tmp = tempfile::tempdir().unwrap();
@@ -13285,10 +14608,14 @@ mod tests {
         .await
         .unwrap();
 
+        let failed = Arc::new(AtomicBool::new(false));
         match failure {
             IdleFatalPersistenceFailure::AppendEvent => {
-                session_store.set_append_event_hook_for_test(Arc::new(|_, event| {
-                    if matches!(event, AgentSessionEvent::SessionErrored { .. }) {
+                let failed = Arc::clone(&failed);
+                session_store.set_append_event_hook_for_test(Arc::new(move |_, event| {
+                    if matches!(event, AgentSessionEvent::SessionErrored { .. })
+                        && !failed.swap(true, Ordering::SeqCst)
+                    {
                         Err("injected session error event failure".to_string())
                     } else {
                         Ok(())
@@ -13296,12 +14623,14 @@ mod tests {
                 }));
             }
             IdleFatalPersistenceFailure::AppendMessage => {
-                session_store.set_append_message_hook_for_test(Arc::new(|_, message| {
+                let failed = Arc::clone(&failed);
+                session_store.set_append_message_hook_for_test(Arc::new(move |_, message| {
                     if message.parts.as_ref().is_some_and(|parts| {
                         parts
                             .iter()
                             .any(|part| matches!(part, MessagePart::Error { .. }))
-                    }) {
+                    }) && !failed.swap(true, Ordering::SeqCst)
+                    {
                         Err("injected session error message failure".to_string())
                     } else {
                         Ok(())
@@ -13309,8 +14638,9 @@ mod tests {
                 }));
             }
             IdleFatalPersistenceFailure::ProjectMeta => {
-                session_store.set_projection_hook_for_test(Arc::new(|_, state, _| {
-                    if state == &SessionState::Error {
+                let failed = Arc::clone(&failed);
+                session_store.set_projection_hook_for_test(Arc::new(move |_, state, _| {
+                    if state == &SessionState::Error && !failed.swap(true, Ordering::SeqCst) {
                         Err("injected session error projection failure".to_string())
                     } else {
                         Ok(())
@@ -13332,48 +14662,56 @@ mod tests {
         wait_for_call(&controller, &session_id, TestRuntimeCallKind::Close).await;
 
         let reloaded = usecase.get_session(&session_id).await.unwrap().unwrap();
-        assert_eq!(reloaded.session.state, SessionState::Done);
-        assert_eq!(reloaded.session.error_reason, None);
-        assert!(!reloaded.session.messages.iter().any(|message| {
+        assert!(failed.load(Ordering::SeqCst));
+        assert_eq!(reloaded.session.state, SessionState::Error);
+        assert!(reloaded.session.messages.iter().any(|message| {
             message.parts.as_ref().is_some_and(|parts| {
                 parts.iter().any(|part| {
                     matches!(part, MessagePart::Error { content, .. } if content == "app server stopped")
                 })
             })
         }));
-        assert!(!session_store
-            .load_session_events(tmp.path(), &session_id)
-            .unwrap()
-            .iter()
-            .any(|event| matches!(event, AgentSessionEvent::SessionErrored { .. })));
-        assert!(!event_notifier.streaming_deltas()[delta_start..]
+        assert_eq!(
+            session_store
+                .load_session_events(tmp.path(), &session_id)
+                .unwrap()
+                .iter()
+                .filter(|event| matches!(event, AgentSessionEvent::SessionErrored { .. }))
+                .count(),
+            1
+        );
+        assert!(event_notifier.streaming_deltas()[delta_start..]
             .iter()
             .any(|delta| delta.parts.iter().any(|part| {
                 matches!(part, MessagePart::Error { content, .. } if content == "app server stopped")
             })));
-        assert!(!event_notifier.state_changes()[state_start..]
+        assert!(event_notifier.state_changes()[state_start..]
             .iter()
             .any(|change| change.session_state == Some(SessionState::Error)));
     }
 
     #[tokio::test]
-    async fn idle_fatal_append_event_failure_rolls_back_without_live_error() {
-        assert_idle_fatal_persistence_failure_rolls_back(IdleFatalPersistenceFailure::AppendEvent)
-            .await;
+    async fn idle_fatal_append_event_failure_retries_one_error_episode() {
+        assert_idle_fatal_persistence_failure_retries_exact_episode(
+            IdleFatalPersistenceFailure::AppendEvent,
+        )
+        .await;
     }
 
     #[tokio::test]
-    async fn idle_fatal_append_message_failure_rolls_back_without_live_error() {
-        assert_idle_fatal_persistence_failure_rolls_back(
+    async fn idle_fatal_append_message_failure_retries_one_error_episode() {
+        assert_idle_fatal_persistence_failure_retries_exact_episode(
             IdleFatalPersistenceFailure::AppendMessage,
         )
         .await;
     }
 
     #[tokio::test]
-    async fn idle_fatal_meta_projection_failure_rolls_back_without_live_error() {
-        assert_idle_fatal_persistence_failure_rolls_back(IdleFatalPersistenceFailure::ProjectMeta)
-            .await;
+    async fn idle_fatal_meta_projection_failure_retries_one_error_episode() {
+        assert_idle_fatal_persistence_failure_retries_exact_episode(
+            IdleFatalPersistenceFailure::ProjectMeta,
+        )
+        .await;
     }
 
     #[derive(Clone, Copy)]
@@ -13382,7 +14720,9 @@ mod tests {
         PersistParts,
     }
 
-    async fn assert_crash_persistence_failure_rolls_back(failure: CrashPersistenceFailure) {
+    async fn assert_crash_persistence_failure_retries_exact_terminal(
+        failure: CrashPersistenceFailure,
+    ) {
         let tmp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(build_session_store());
         let event_notifier = Arc::new(RecordingAgentNotifier::default());
@@ -13398,19 +14738,28 @@ mod tests {
             .await
             .unwrap();
         let session_id = response.session.id;
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         match failure {
             CrashPersistenceFailure::AppendEvent => {
-                session_store.set_append_event_hook_for_test(Arc::new(|_, event| {
+                let attempts = Arc::clone(&attempts);
+                session_store.set_append_event_hook_for_test(Arc::new(move |_, event| {
                     if matches!(event, AgentSessionEvent::FinalPartsRecorded { .. }) {
-                        Err("injected final event failure".to_string())
-                    } else {
-                        Ok(())
+                        let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                        if attempt < PERSIST_MAX_ATTEMPTS {
+                            return Err("injected final event failure".to_string());
+                        }
                     }
+                    Ok(())
                 }));
             }
             CrashPersistenceFailure::PersistParts => {
-                session_store.set_persist_parts_hook_for_test(Arc::new(|_, _, _| {
-                    Err("injected final parts failure".to_string())
+                let attempts = Arc::clone(&attempts);
+                session_store.set_persist_parts_hook_for_test(Arc::new(move |_, _, _| {
+                    let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                    if attempt < PERSIST_MAX_ATTEMPTS {
+                        return Err("injected final parts failure".to_string());
+                    }
+                    Ok(())
                 }));
             }
         }
@@ -13428,9 +14777,12 @@ mod tests {
         wait_for_call(&controller, &session_id, TestRuntimeCallKind::Close).await;
 
         let reloaded = usecase.get_session(&session_id).await.unwrap().unwrap();
-        assert_ne!(reloaded.session.state, SessionState::Error);
-        assert_eq!(reloaded.session.error_reason, None);
-        assert!(!reloaded.session.messages.iter().any(|message| {
+        assert_eq!(reloaded.session.state, SessionState::Error);
+        assert!(
+            attempts.load(Ordering::SeqCst) > PERSIST_MAX_ATTEMPTS,
+            "the retained event must be retried after the bounded terminal helper exhausts its attempts"
+        );
+        assert!(reloaded.session.messages.iter().any(|message| {
             message.parts.as_ref().is_some_and(|parts| {
                 parts.iter().any(|part| {
                     matches!(part, MessagePart::Error { content, .. } if content == "CLI process exited")
@@ -13440,29 +14792,43 @@ mod tests {
         let events = session_store
             .load_session_events(tmp.path(), &session_id)
             .unwrap();
-        assert!(!events.iter().any(|event| matches!(
-            event,
-            AgentSessionEvent::TurnInterrupted { .. }
-                | AgentSessionEvent::FinalPartsRecorded { .. }
-        )));
-        assert!(!event_notifier.streaming_deltas()[delta_start..]
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, AgentSessionEvent::TurnInterrupted { .. })));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, AgentSessionEvent::TurnInterrupted { .. }))
+                .count(),
+            1
+        );
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, AgentSessionEvent::FinalPartsRecorded { .. })));
+        assert!(event_notifier.streaming_deltas()[delta_start..]
             .iter()
             .any(|delta| delta.parts.iter().any(|part| {
                 matches!(part, MessagePart::Error { content, .. } if content == "CLI process exited")
             })));
-        assert!(!event_notifier.state_changes()[state_start..]
+        assert!(event_notifier.state_changes()[state_start..]
             .iter()
             .any(|change| change.session_state == Some(SessionState::Error)));
     }
 
     #[tokio::test]
-    async fn crash_append_event_failure_rolls_back_without_live_error() {
-        assert_crash_persistence_failure_rolls_back(CrashPersistenceFailure::AppendEvent).await;
+    async fn crash_append_event_failure_retries_one_terminal_without_loss() {
+        assert_crash_persistence_failure_retries_exact_terminal(
+            CrashPersistenceFailure::AppendEvent,
+        )
+        .await;
     }
 
     #[tokio::test]
-    async fn crash_persist_parts_failure_rolls_back_without_live_error() {
-        assert_crash_persistence_failure_rolls_back(CrashPersistenceFailure::PersistParts).await;
+    async fn crash_persist_parts_failure_retries_one_terminal_without_loss() {
+        assert_crash_persistence_failure_retries_exact_terminal(
+            CrashPersistenceFailure::PersistParts,
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -13634,52 +15000,182 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_permission_mode_persists_and_notifies_when_runtime_sync_fails() {
-        let tmp = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(build_session_store());
-        let event_notifier = Arc::new(RecordingAgentNotifier::default());
-        let status_notifier = Arc::new(RecordingStatusNotifier::default());
-        let (usecase, _controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
-            session_store.clone(),
-            tmp.path(),
-            event_notifier.clone(),
-            status_notifier,
-        );
-        let session = create_session_internal_with_attributes(
-            &session_store,
-            tmp.path(),
-            tmp.path().to_string_lossy().as_ref(),
-            Some("claude".to_string()),
-            PermissionMode::Edit,
-            SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
-                plan_mode: false,
-                workflow_node_session: false,
-                workflow_node_context: None,
-            },
-        )
-        .unwrap();
-        usecase
-            .insert_failing_runtime_state_for_test(&session.id)
-            .await;
+    async fn accepted_provider_create_and_resume_wait_for_durable_success_confirmation() {
+        for resume_id in [None, Some("stored-provider-session")] {
+            let tmp = tempfile::tempdir().unwrap();
+            let session_store = Arc::new(build_session_store());
+            let (usecase, controller) =
+                build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+            let session = provider_establish_test_session(&session_store, tmp.path(), resume_id);
+            let baseline = session_store
+                .get_session_meta(tmp.path(), &session.id)
+                .unwrap()
+                .unwrap()
+                .provider_session_generation;
+            let task = tokio::spawn({
+                let usecase = usecase.clone();
+                let session_id = session.id.clone();
+                async move { usecase.establish_accepted_provider(&session_id).await }
+            });
 
-        usecase
-            .set_permission_mode(&session.id, PermissionMode::Full)
-            .await
-            .unwrap();
+            wait_for_open_count(&controller, &session.id, 1).await;
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            assert!(
+                !task.is_finished(),
+                "provider open is not success confirmation for {resume_id:?}"
+            );
+            controller
+                .emit(
+                    &session.id,
+                    AgentRuntimeEvent::SessionEstablished {
+                        backend_session_id: resume_id
+                            .unwrap_or("created-provider-session")
+                            .to_string(),
+                        resume: if resume_id.is_some() {
+                            crate::domain::agent_session::gateway::ResumeOutcome::Resumed
+                        } else {
+                            crate::domain::agent_session::gateway::ResumeOutcome::NotRequested
+                        },
+                    },
+                )
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(3), task)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
 
-        let saved = session_store
-            .get_session_meta(tmp.path(), &session.id)
-            .unwrap()
-            .unwrap();
-        assert_eq!(saved.permission_mode, "full");
-        assert!(event_notifier
-            .permission_modes()
-            .contains(&(session.id.clone(), "full".to_string())));
+            let confirmed = session_store
+                .get_session_meta(tmp.path(), &session.id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(confirmed.provider_session_generation, baseline + 1);
+            assert_eq!(
+                confirmed.agent_session_id.as_deref(),
+                resume_id.or(Some("created-provider-session"))
+            );
+            assert!(usecase.provider_session_is_confirmed(&session.id).await);
+            assert_eq!(
+                controller
+                    .call_kinds_for(&session.id)
+                    .iter()
+                    .filter(|call| matches!(call, TestRuntimeCallKind::OpenSession { .. }))
+                    .count(),
+                1
+            );
+        }
     }
 
     #[tokio::test]
-    async fn cross_backend_set_model_changes_an_unstarted_session() {
+    async fn accepted_provider_create_and_resume_without_confirmation_do_not_blindly_retry() {
+        for resume_id in [None, Some("stored-provider-session")] {
+            let tmp = tempfile::tempdir().unwrap();
+            let session_store = Arc::new(build_session_store());
+            let (usecase, controller) =
+                build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+            let session = provider_establish_test_session(&session_store, tmp.path(), resume_id);
+
+            let error = usecase
+                .establish_accepted_provider(&session.id)
+                .await
+                .unwrap_err();
+
+            assert!(error.to_string().contains("no durable observation"));
+            assert!(!usecase.provider_session_is_confirmed(&session.id).await);
+            assert_eq!(
+                controller
+                    .call_kinds_for(&session.id)
+                    .iter()
+                    .filter(|call| matches!(call, TestRuntimeCallKind::OpenSession { .. }))
+                    .count(),
+                1,
+                "an unresolved {resume_id:?} effect must not be replayed in-place"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn accepted_provider_create_and_resume_open_failure_do_not_retry() {
+        for resume_id in [None, Some("stored-provider-session")] {
+            let tmp = tempfile::tempdir().unwrap();
+            let session_store = Arc::new(build_session_store());
+            let (usecase, controller) =
+                build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+            let session = provider_establish_test_session(&session_store, tmp.path(), resume_id);
+            controller.fail_next_open_session();
+
+            let error = usecase
+                .establish_accepted_provider(&session.id)
+                .await
+                .unwrap_err();
+
+            assert!(error
+                .to_string()
+                .contains("injected test open session failure"));
+            assert!(!usecase.provider_session_is_confirmed(&session.id).await);
+            assert_eq!(
+                controller
+                    .call_kinds_for(&session.id)
+                    .iter()
+                    .filter(|call| matches!(call, TestRuntimeCallKind::OpenSession { .. }))
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_metadata_failure_keeps_establish_unconfirmed_without_duplicate_effect() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let session = provider_establish_test_session(&session_store, tmp.path(), None);
+        session_store.set_backend_established_hook_for_test(Arc::new(|_, _| {
+            Err("injected provider metadata failure".to_string())
+        }));
+        let task = tokio::spawn({
+            let usecase = usecase.clone();
+            let session_id = session.id.clone();
+            async move { usecase.establish_accepted_provider(&session_id).await }
+        });
+        wait_for_open_count(&controller, &session.id, 1).await;
+
+        controller
+            .emit(
+                &session.id,
+                AgentRuntimeEvent::SessionEstablished {
+                    backend_session_id: "uncommitted-provider-session".to_string(),
+                    resume: crate::domain::agent_session::gateway::ResumeOutcome::NotRequested,
+                },
+            )
+            .unwrap();
+        let error = tokio::time::timeout(Duration::from_secs(3), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+
+        assert!(error.to_string().contains("no durable observation"));
+        let meta = session_store
+            .get_session_meta(tmp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(meta.provider_session_generation, 0);
+        assert!(meta.agent_session_id.is_none());
+        assert!(!usecase.provider_session_is_confirmed(&session.id).await);
+        assert_eq!(
+            controller
+                .call_kinds_for(&session.id)
+                .iter()
+                .filter(|call| matches!(call, TestRuntimeCallKind::OpenSession { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn config_modes_persist_without_provider_effect() {
         let tmp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(build_session_store());
         let event_notifier = Arc::new(RecordingAgentNotifier::default());
@@ -13704,23 +15200,78 @@ mod tests {
             },
         )
         .unwrap();
-        usecase.set_model(&session.id, "codex:gpt-5").await.unwrap();
+        usecase
+            .start_session(
+                &session.id,
+                StartSessionOptions {
+                    permission_mode: PermissionMode::Edit,
+                    plan_mode: false,
+                },
+            )
+            .await
+            .unwrap();
+        let provider_calls_before = controller.call_kinds_for(&session.id);
+
+        usecase
+            .set_permission_mode(&session.id, PermissionMode::Full)
+            .await
+            .unwrap();
+        usecase.set_plan_mode(&session.id, true).await.unwrap();
 
         let saved = session_store
             .get_session_meta(tmp.path(), &session.id)
             .unwrap()
             .unwrap();
-        assert_eq!(saved.backend_id, "codex");
-        assert_eq!(saved.selected_model.as_deref(), Some("gpt-5"));
-        let updates = event_notifier.model_updates();
-        let (_, available_models, selected_model) = updates
-            .iter()
-            .find(|(session_id, _, _)| session_id == &session.id)
-            .expect("model update notification");
-        assert_eq!(selected_model, "gpt-5");
-        assert!(available_models.iter().any(|model| {
-            model.id == "codex:gpt-5" && model.backend == "codex" && model.model_id == "gpt-5"
-        }));
+        assert_eq!(saved.permission_mode, "full");
+        assert!(saved.plan_mode);
+        assert!(event_notifier
+            .permission_modes()
+            .contains(&(session.id.clone(), "full".to_string())));
+        assert_eq!(
+            controller.call_kinds_for(&session.id),
+            provider_calls_before
+        );
+    }
+
+    #[tokio::test]
+    async fn cross_backend_set_model_requires_the_durable_lifecycle_operation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        let session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("claude-4-sonnet".to_string()),
+                plan_mode: false,
+                workflow_node_session: false,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        let error = usecase
+            .set_model(&session.id, "codex:gpt-5")
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, AgentRuntimeError::BackendSelectionLocked);
+        let saved = session_store
+            .get_session_meta(tmp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.backend_id, "claude");
+        assert_eq!(saved.selected_model.as_deref(), Some("claude-4-sonnet"));
+        assert!(event_notifier.model_updates().is_empty());
         assert_eq!(
             controller
                 .call_kinds_for(&session.id)
@@ -13729,6 +15280,87 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    #[tokio::test]
+    async fn same_backend_model_is_persisted_now_and_applied_only_inside_turn_execution() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            Arc::new(RecordingAgentNotifier::default()),
+            Arc::new(RecordingStatusNotifier::default()),
+        );
+        let session = create_session_internal_with_attributes(
+            &session_store,
+            tmp.path(),
+            tmp.path().to_string_lossy().as_ref(),
+            Some("claude".to_string()),
+            PermissionMode::Edit,
+            SessionCreationAttributes {
+                selected_model: Some("claude-4-sonnet".to_string()),
+                plan_mode: false,
+                workflow_node_session: false,
+                workflow_node_context: None,
+            },
+        )
+        .unwrap();
+        usecase
+            .start_session(
+                &session.id,
+                StartSessionOptions {
+                    permission_mode: PermissionMode::Edit,
+                    plan_mode: false,
+                },
+            )
+            .await
+            .unwrap();
+
+        usecase
+            .set_model(&session.id, "claude:claude-opus-4-8")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            session_store
+                .get_session_meta(tmp.path(), &session.id)
+                .unwrap()
+                .unwrap()
+                .selected_model
+                .as_deref(),
+            Some("claude-opus-4-8")
+        );
+        assert!(!controller
+            .call_kinds_for(&session.id)
+            .contains(&TestRuntimeCallKind::SetModel));
+
+        usecase
+            .send_message(SendAgentMessageRequest {
+                chat_session_id: Some(session.id.clone()),
+                worktree_path: tmp.path().to_string_lossy().to_string(),
+                content: "apply selected model".to_string(),
+                permission_mode: PermissionMode::Edit,
+                plan_mode: false,
+                backend_id: Some("claude".to_string()),
+                model_id: Some("claude-opus-4-8".to_string()),
+                images: None,
+                mentions: None,
+                editor_context: None,
+            })
+            .await
+            .unwrap();
+
+        let calls = controller.call_kinds_for(&session.id);
+        let model_index = calls
+            .iter()
+            .position(|call| call == &TestRuntimeCallKind::SetModel)
+            .expect("turn execution applies the persisted model");
+        let start_index = calls
+            .iter()
+            .position(|call| matches!(call, TestRuntimeCallKind::StartTurn))
+            .expect("turn starts");
+        assert!(model_index < start_index);
     }
 
     #[tokio::test]
@@ -13974,7 +15606,7 @@ mod tests {
             MessageRole::Agent,
             "",
             Some(vec![MessagePart::Permission {
-                request: PermissionRequestMsg {
+                request: crate::usecase::agent_session::runtime::event_apply::pending_permission_request_from_msg(&PermissionRequestMsg {
                     id: "perm-old".to_string(),
                     tool_use_id: Some("toolu-old".to_string()),
                     tool_name: "Bash".to_string(),
@@ -13987,7 +15619,8 @@ mod tests {
                     display_name: None,
                     description: None,
                     decision_reason: None,
-                },
+                })
+                .unwrap(),
                 status: PermissionPartStatus::Allowed,
                 answers: None,
                 parent_tool_use_id: None,
@@ -14135,7 +15768,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn respond_permission_runtime_failure_leaves_state_parts_and_event_log_unchanged() {
+    async fn respond_permission_runtime_failure_is_not_blindly_replayed_after_effect_claim() {
         let tmp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(build_session_store());
         let event_notifier = Arc::new(RecordingAgentNotifier::default());
@@ -14198,6 +15831,48 @@ mod tests {
         assert_eq!(
             usecase.turn_phase(&session_id).await,
             Some(TurnPhase::WaitingPermission)
+        );
+        let turn_id = session_store
+            .get_session_meta(tmp.path(), &session_id)
+            .unwrap()
+            .and_then(|meta| meta.last_turn_id)
+            .expect("active turn id");
+        let obligation_id = format!("permission-response:{session_id}:{turn_id}:perm-1");
+        let obligation = session_store
+            .load_permission_response_obligation(&obligation_id)
+            .unwrap()
+            .expect("effect reservation");
+        assert_eq!(
+            obligation,
+            crate::domain::local_event::ObligationStateRecord::EffectReserved
+        );
+        let provider_calls_before = controller
+            .call_kinds_for(&session_id)
+            .into_iter()
+            .filter(|kind| matches!(kind, TestRuntimeCallKind::RespondPermission { .. }))
+            .count();
+
+        let retry_error = usecase
+            .respond_permission(
+                &session_id,
+                PermissionResponse {
+                    request_id: "perm-1".to_string(),
+                    decision: PermissionResponseDecision::Allow {
+                        updated_input: None,
+                        answers: None,
+                    },
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(retry_error.to_string().contains("requires reconciliation"));
+        assert_eq!(
+            controller
+                .call_kinds_for(&session_id)
+                .into_iter()
+                .filter(|kind| matches!(kind, TestRuntimeCallKind::RespondPermission { .. }))
+                .count(),
+            provider_calls_before
         );
     }
 
@@ -14510,6 +16185,321 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn b020_streaming_part_persistence_failure_hides_uncommitted_delta_everywhere() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+        let agent_message_id = response.agent_message.unwrap().id;
+        let failed = Arc::new(AtomicBool::new(false));
+        let allow_persist = Arc::new(AtomicBool::new(false));
+        session_store.set_persist_parts_hook_for_test({
+            let failed = Arc::clone(&failed);
+            let allow_persist = Arc::clone(&allow_persist);
+            Arc::new(move |_, _, parts| {
+                if parts.iter().any(|part| {
+                    matches!(part, MessagePart::Text { content, .. } if content == "unsaved")
+                }) && !allow_persist.load(Ordering::SeqCst)
+                {
+                    failed.store(true, Ordering::SeqCst);
+                    return Err("injected streaming snapshot failure".to_string());
+                }
+                Ok(())
+            })
+        });
+        let delta_start = event_notifier.streaming_deltas().len();
+
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::PartsMerged(vec![DomainMessagePart::Text {
+                    content: "unsaved".to_string(),
+                    parent_tool_use_id: None,
+                }]),
+            )
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !failed.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the injected commit failure must be observed");
+
+        assert!(
+            !usecase
+                .streaming_parts(&session_id)
+                .await
+                .iter()
+                .any(|part| {
+                    matches!(part, MessagePart::Text { content, .. } if content.contains("unsaved"))
+                }),
+            "an uncommitted part must not enter the live runtime projection"
+        );
+        let public_during_failure = usecase
+            .get_session(&session_id)
+            .await
+            .unwrap()
+            .expect("the session remains readable while its exact event is retained for retry");
+        assert!(
+            !public_during_failure
+                .session
+                .messages
+                .iter()
+                .any(|message| {
+                    message.parts.as_deref().unwrap_or_default().iter().any(|part| {
+                    matches!(part, MessagePart::Text { content, .. } if content.contains("unsaved"))
+                })
+                }),
+            "the public read model must not expose an uncommitted part"
+        );
+        let reloaded_during_failure = session_store
+            .load_full_session_for_restore(tmp.path(), &session_id)
+            .unwrap()
+            .unwrap();
+        assert!(
+            !reloaded_during_failure.messages.iter().any(|message| {
+                message.parts.as_deref().unwrap_or_default().iter().any(|part| {
+                    matches!(part, MessagePart::Text { content, .. } if content.contains("unsaved"))
+                })
+            }),
+            "a fresh durable reload must not expose an uncommitted part"
+        );
+        assert!(
+            !event_notifier.streaming_deltas()[delta_start..]
+                .iter()
+                .flat_map(|delta| delta.parts.iter())
+                .any(|part| {
+                    matches!(part, MessagePart::Text { content, .. } if content.contains("unsaved"))
+                }),
+            "publication must wait for the durable commit"
+        );
+
+        allow_persist.store(true, Ordering::SeqCst);
+        wait_for_streaming_text(&usecase, &session_id, "unsaved").await;
+        assert!(failed.load(Ordering::SeqCst));
+        assert!(event_notifier.streaming_deltas()[delta_start..]
+            .iter()
+            .flat_map(|delta| delta.parts.iter())
+            .any(|part| {
+                matches!(part, MessagePart::Text { content, .. } if content == "unsaved")
+            }));
+        let reloaded = session_store
+            .load_full_session_for_restore(tmp.path(), &session_id)
+            .unwrap()
+            .unwrap();
+        assert!(reloaded
+            .messages
+            .iter()
+            .find(|message| message.id == agent_message_id)
+            .and_then(|message| message.parts.as_deref())
+            .unwrap_or_default()
+            .iter()
+            .any(|part| {
+                matches!(part, MessagePart::Text { content, .. } if content == "unsaved")
+            }));
+
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::PartsMerged(vec![DomainMessagePart::Text {
+                    content: "saved".to_string(),
+                    parent_tool_use_id: None,
+                }]),
+            )
+            .unwrap();
+        wait_for_streaming_text(&usecase, &session_id, "saved").await;
+        let reloaded = session_store
+            .load_full_session_for_restore(tmp.path(), &session_id)
+            .unwrap()
+            .unwrap();
+        let persisted_parts = reloaded
+            .messages
+            .iter()
+            .find(|message| message.id == agent_message_id)
+            .and_then(|message| message.parts.as_deref())
+            .unwrap_or_default();
+        assert!(persisted_parts.iter().any(|part| {
+            matches!(part, MessagePart::Text { content, .. } if content.contains("saved"))
+        }));
+        assert!(persisted_parts.iter().any(|part| {
+            matches!(part, MessagePart::Text { content, .. } if content.contains("unsaved"))
+        }));
+    }
+
+    #[derive(Clone, Copy)]
+    enum PermissionPartPersistenceFailure {
+        Event,
+        MessageProjection,
+    }
+
+    async fn assert_permission_part_persistence_failure_retries_before_publication(
+        failure: PermissionPartPersistenceFailure,
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let event_notifier = Arc::new(RecordingAgentNotifier::default());
+        let status_notifier = Arc::new(RecordingStatusNotifier::default());
+        let (usecase, controller) = build_agent_runtime_usecase_with_controller_and_notifiers(
+            session_store.clone(),
+            tmp.path(),
+            event_notifier.clone(),
+            status_notifier,
+        );
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+        let session_id = response.session.id;
+        let agent_message_id = response.agent_message.unwrap().id;
+        let failed = Arc::new(AtomicBool::new(false));
+        match failure {
+            PermissionPartPersistenceFailure::Event => {
+                session_store.set_append_event_hook_for_test({
+                    let failed = Arc::clone(&failed);
+                    Arc::new(move |_, event| {
+                        if matches!(event, AgentSessionEvent::PermissionRequested { .. })
+                            && !failed.swap(true, Ordering::SeqCst)
+                        {
+                            return Err("injected permission event failure".to_string());
+                        }
+                        Ok(())
+                    })
+                });
+            }
+            PermissionPartPersistenceFailure::MessageProjection => {
+                session_store.set_persist_parts_hook_for_test({
+                    let failed = Arc::clone(&failed);
+                    Arc::new(move |_, _, parts| {
+                        if parts.iter().any(|part| {
+                            matches!(
+                                part,
+                                MessagePart::Permission {
+                                    status: PermissionPartStatus::Pending,
+                                    ..
+                                }
+                            )
+                        }) && !failed.swap(true, Ordering::SeqCst)
+                        {
+                            return Err("injected permission projection failure".to_string());
+                        }
+                        Ok(())
+                    })
+                });
+            }
+        }
+        let delta_start = event_notifier.streaming_deltas().len();
+        let state_start = event_notifier.state_changes().len();
+
+        controller
+            .emit(
+                &session_id,
+                AgentRuntimeEvent::PermissionRequested(permission_request("perm-unsaved")),
+            )
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let live = usecase.get_session(&session_id).await.unwrap().unwrap();
+                if failed.load(Ordering::SeqCst)
+                    && live.turn_phase == TurnPhase::WaitingPermission
+                    && live
+                        .pending_permission_request
+                        .as_ref()
+                        .map(|request| request.id.as_str())
+                        == Some("perm-unsaved")
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the exact permission request should be retried and published");
+
+        assert_eq!(
+            usecase.turn_phase(&session_id).await,
+            Some(TurnPhase::WaitingPermission)
+        );
+        let live = usecase.get_session(&session_id).await.unwrap().unwrap();
+        assert_eq!(live.turn_phase, TurnPhase::WaitingPermission);
+        assert_eq!(
+            live.pending_permission_request
+                .as_ref()
+                .map(|request| request.id.as_str()),
+            Some("perm-unsaved")
+        );
+        assert!(usecase.streaming_parts(&session_id).await.iter().any(|part| {
+            matches!(part, MessagePart::Permission { request, .. } if request.id == "perm-unsaved")
+        }));
+        assert!(event_notifier.streaming_deltas()[delta_start..]
+            .iter()
+            .flat_map(|delta| delta.parts.iter())
+            .any(|part| {
+                matches!(part, MessagePart::Permission { request, .. } if request.id == "perm-unsaved")
+            }));
+        assert!(event_notifier.state_changes()[state_start..]
+            .iter()
+            .any(|change| {
+                change.turn_phase == TurnPhase::WaitingPermission
+                    && change
+                        .pending_permission_request
+                        .as_ref()
+                        .map(|request| request.id.as_str())
+                        == Some("perm-unsaved")
+            }));
+        assert!(session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap()
+            .iter()
+            .any(|event| matches!(
+                event,
+                AgentSessionEvent::PermissionRequested { request, .. }
+                    if request.id == "perm-unsaved"
+            )));
+        let reloaded = session_store
+            .load_full_session_for_restore(tmp.path(), &session_id)
+            .unwrap()
+            .unwrap();
+        assert!(reloaded
+            .messages
+            .iter()
+            .find(|message| message.id == agent_message_id)
+            .and_then(|message| message.parts.as_deref())
+            .unwrap_or_default()
+            .iter()
+            .any(|part| {
+                matches!(part, MessagePart::Permission { request, .. } if request.id == "perm-unsaved")
+            }));
+    }
+
+    #[tokio::test]
+    async fn permission_event_failure_retries_before_publishing_pending_permission() {
+        assert_permission_part_persistence_failure_retries_before_publication(
+            PermissionPartPersistenceFailure::Event,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn permission_projection_failure_retries_before_publishing_pending_permission() {
+        assert_permission_part_persistence_failure_retries_before_publication(
+            PermissionPartPersistenceFailure::MessageProjection,
+        )
+        .await;
+    }
+
+    #[tokio::test]
     async fn test_streaming_delta_文字deltaを三三msでcoalesceする() {
         // Given: a started turn with a recording notifier.
         let tmp = tempfile::tempdir().unwrap();
@@ -14728,10 +16718,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_streaming_delta_emit完全停止後もturnは完了し確定messageが保存される() {
+    async fn b023_terminal_notification_failure_keeps_complete_terminal_live_and_reload_once() {
         // Given: streaming emits that fail until the emit stop threshold is reached.
         let tmp = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(build_session_store());
+        let local_store =
+            LocalEventStore::open(LocalEventStoreConfig::production(tmp.path().to_path_buf()))
+                .unwrap();
+        let session_store = Arc::new(SessionStore::new(Arc::new(FileSessionStorage::default())));
+        let repository: Arc<dyn LocalEventTransactionRepository> = local_store.clone();
+        session_store.set_local_event_repository_with_projection_codec(
+            repository,
+            local_store.generation_id().to_string(),
+            Arc::new(AgentSessionProjectionCodecV1),
+        );
         let event_notifier = Arc::new(RecordingAgentNotifier::default());
         event_notifier.set_streaming_delta_failure(true);
         let status_notifier = Arc::new(RecordingStatusNotifier::default());
@@ -14784,6 +16783,7 @@ mod tests {
         // Then: no further emit attempts happen, the turn completes, and the final message is
         // persisted with every accumulated part.
         assert_eq!(event_notifier.streaming_deltas().len(), attempts_after_stop);
+        let live = usecase.get_session(&session_id).await.unwrap().unwrap();
         let restored = session_store
             .load_full_session_for_restore(tmp.path(), &session_id)
             .unwrap()
@@ -14799,6 +16799,38 @@ mod tests {
                 content: "hello world".to_string(),
                 parent_tool_use_id: None,
             }]
+        );
+        assert_eq!(live.session.state, SessionState::Done);
+        assert_eq!(restored.state, live.session.state);
+        assert!(!live.queue_paused);
+        assert!(live.pending_queue.is_empty());
+        assert!(live.pending_permission_request.is_none());
+        let events = session_store
+            .load_session_events(tmp.path(), &session_id)
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    AgentSessionEvent::TurnCompleted {
+                        turn_id: 1,
+                        stop_reason: None,
+                        ..
+                    }
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    AgentSessionEvent::FinalPartsRecorded { turn_id: 1, .. }
+                ))
+                .count(),
+            1
         );
         assert_eq!(
             usecase
@@ -14925,7 +16957,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_turn終端後の_trailing_deltaはsnapshot_emitせず確定messageへ即時保存する() {
+    async fn test_turn終端後の_trailing_deltaはsnapshot_emitせず確定partsを変更しない() {
         // Given: a completed turn with persisted final parts.
         let tmp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(build_session_store());
@@ -14976,7 +17008,7 @@ mod tests {
             .unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        // Then: no standalone snapshot is emitted and the saved agent message is merged in place.
+        // Then: no standalone snapshot is emitted and the terminal winner's parts stay immutable.
         assert_eq!(
             event_notifier.streaming_deltas().len(),
             emitted_before_trailing
@@ -14993,7 +17025,7 @@ mod tests {
         assert_eq!(
             agent_message.parts.as_ref().unwrap(),
             &vec![MessagePart::Text {
-                content: "hello world".to_string(),
+                content: "hello".to_string(),
                 parent_tool_use_id: None,
             }]
         );
@@ -15078,6 +17110,384 @@ mod tests {
         assert_eq!(
             loaded.session.context_carry,
             Some(ContextCarryState::Reinjected)
+        );
+    }
+
+    async fn assert_recovery_start_commit_failure_retries_exact_trigger(resume_mismatch: bool) {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let session = provider_establish_test_session(
+            &session_store,
+            tmp.path(),
+            resume_mismatch.then_some("stored-provider-session"),
+        );
+        usecase
+            .start_session(
+                &session.id,
+                StartSessionOptions {
+                    permission_mode: PermissionMode::Edit,
+                    plan_mode: false,
+                },
+            )
+            .await
+            .unwrap();
+        wait_for_open_count(&controller, &session.id, 1).await;
+
+        if !resume_mismatch {
+            controller
+                .emit(
+                    &session.id,
+                    AgentRuntimeEvent::SessionEstablished {
+                        backend_session_id: "initial-provider-session".to_string(),
+                        resume: crate::domain::agent_session::gateway::ResumeOutcome::NotRequested,
+                    },
+                )
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while !usecase.provider_session_is_confirmed(&session.id).await {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+
+        let fail_once = Arc::new(AtomicBool::new(true));
+        let attempted_recovery_ids = Arc::new(Mutex::new(Vec::new()));
+        session_store.set_append_event_hook_for_test(Arc::new({
+            let fail_once = Arc::clone(&fail_once);
+            let attempted_recovery_ids = Arc::clone(&attempted_recovery_ids);
+            move |_, event| {
+                if let AgentSessionEvent::BackendSessionRecoveryStarted { recovery_id, .. } = event
+                {
+                    attempted_recovery_ids
+                        .lock()
+                        .unwrap()
+                        .push(recovery_id.clone());
+                    if fail_once.swap(false, Ordering::SeqCst) {
+                        return Err("injected recovery start commit failure".to_string());
+                    }
+                }
+                Ok(())
+            }
+        }));
+
+        let trigger = if resume_mismatch {
+            AgentRuntimeEvent::SessionEstablished {
+                backend_session_id: "mismatched-provider-session".to_string(),
+                resume: crate::domain::agent_session::gateway::ResumeOutcome::Mismatch {
+                    actual: "mismatched-provider-session".to_string(),
+                },
+            }
+        } else {
+            AgentRuntimeEvent::BackendSessionCleared
+        };
+        controller.emit(&session.id, trigger).unwrap();
+        wait_for_open_count(&controller, &session.id, 2).await;
+
+        let attempted_recovery_ids = attempted_recovery_ids.lock().unwrap().clone();
+        assert!(attempted_recovery_ids.len() >= 2);
+        assert!(attempted_recovery_ids
+            .iter()
+            .all(|recovery_id| recovery_id == &attempted_recovery_ids[0]));
+        let recovery_events = session_store
+            .load_session_events(tmp.path(), &session.id)
+            .unwrap()
+            .into_iter()
+            .filter_map(|event| match event {
+                AgentSessionEvent::BackendSessionRecoveryStarted { recovery_id, .. } => {
+                    Some(recovery_id)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(recovery_events, vec![attempted_recovery_ids[0].clone()]);
+        assert_eq!(
+            controller
+                .call_kinds_for(&session.id)
+                .iter()
+                .filter(|call| matches!(call, TestRuntimeCallKind::OpenSession { .. }))
+                .count(),
+            2,
+            "the retained trigger must not duplicate the provider recovery effect"
+        );
+    }
+
+    #[tokio::test]
+    async fn backend_session_cleared_retries_exact_recovery_trigger_after_begin_commit_failure() {
+        assert_recovery_start_commit_failure_retries_exact_trigger(false).await;
+    }
+
+    #[tokio::test]
+    async fn resume_mismatch_retries_exact_recovery_trigger_after_begin_commit_failure() {
+        assert_recovery_start_commit_failure_retries_exact_trigger(true).await;
+    }
+
+    #[tokio::test]
+    async fn provider_established_retries_same_recovery_completion_after_commit_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let session = provider_establish_test_session(&session_store, tmp.path(), None);
+        usecase
+            .start_session(
+                &session.id,
+                StartSessionOptions {
+                    permission_mode: PermissionMode::Edit,
+                    plan_mode: false,
+                },
+            )
+            .await
+            .unwrap();
+        wait_for_open_count(&controller, &session.id, 1).await;
+        controller
+            .emit(
+                &session.id,
+                AgentRuntimeEvent::SessionEstablished {
+                    backend_session_id: "initial-provider-session".to_string(),
+                    resume: crate::domain::agent_session::gateway::ResumeOutcome::NotRequested,
+                },
+            )
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !usecase.provider_session_is_confirmed(&session.id).await {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        controller
+            .emit(&session.id, AgentRuntimeEvent::BackendSessionCleared)
+            .unwrap();
+        wait_for_open_count(&controller, &session.id, 2).await;
+        let recovery_id = session_store
+            .load_session_events(tmp.path(), &session.id)
+            .unwrap()
+            .into_iter()
+            .find_map(|event| match event {
+                AgentSessionEvent::BackendSessionRecoveryStarted { recovery_id, .. } => {
+                    Some(recovery_id)
+                }
+                _ => None,
+            })
+            .expect("backend-session-cleared must reserve one recovery identity");
+
+        let completion_attempts = Arc::new(Mutex::new(0_usize));
+        session_store.set_append_event_hook_for_test(Arc::new({
+            let completion_attempts = Arc::clone(&completion_attempts);
+            move |_, event| {
+                if matches!(
+                    event,
+                    AgentSessionEvent::BackendSessionRecoveryCompleted { .. }
+                ) {
+                    let mut attempts = completion_attempts.lock().unwrap();
+                    *attempts += 1;
+                    if *attempts == 1 {
+                        return Err("injected recovery completion commit failure".to_string());
+                    }
+                }
+                Ok(())
+            }
+        }));
+        controller
+            .emit(
+                &session.id,
+                AgentRuntimeEvent::SessionEstablished {
+                    backend_session_id: "replacement-provider-session".to_string(),
+                    resume: crate::domain::agent_session::gateway::ResumeOutcome::NotRequested,
+                },
+            )
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let meta = session_store
+                    .get_session_meta(tmp.path(), &session.id)
+                    .unwrap()
+                    .unwrap();
+                if meta.provider_session_generation == 2
+                    && meta.agent_session_id.as_deref() == Some("replacement-provider-session")
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(*completion_attempts.lock().unwrap(), 2);
+        let events = session_store
+            .load_session_events(tmp.path(), &session.id)
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    AgentSessionEvent::BackendSessionRecoveryCompleted {
+                        recovery_id: actual,
+                        ..
+                    } if actual == &recovery_id
+                ))
+                .count(),
+            1
+        );
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::BackendSessionRecoveryFailed {
+                recovery_id: actual,
+                ..
+            } if actual == &recovery_id
+        )));
+        assert!(usecase.provider_session_is_confirmed(&session.id).await);
+        assert_eq!(
+            controller
+                .call_kinds_for(&session.id)
+                .iter()
+                .filter(|call| matches!(call, TestRuntimeCallKind::OpenSession { .. }))
+                .count(),
+            2,
+            "retrying the completion commit must not reopen the provider"
+        );
+    }
+
+    #[tokio::test]
+    async fn recovery_failure_commit_retries_same_identity_without_reopening_provider() {
+        let tmp = tempfile::tempdir().unwrap();
+        let local_store =
+            LocalEventStore::open(LocalEventStoreConfig::production(tmp.path().to_path_buf()))
+                .unwrap();
+        let session_store = Arc::new(SessionStore::new(Arc::new(FileSessionStorage::default())));
+        let repository: Arc<dyn LocalEventTransactionRepository> = local_store.clone();
+        session_store.set_local_event_repository_with_projection_codec(
+            repository,
+            local_store.generation_id().to_string(),
+            Arc::new(AgentSessionProjectionCodecV1),
+        );
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let session = provider_establish_test_session(&session_store, tmp.path(), None);
+        usecase
+            .start_session(
+                &session.id,
+                StartSessionOptions {
+                    permission_mode: PermissionMode::Edit,
+                    plan_mode: false,
+                },
+            )
+            .await
+            .unwrap();
+        wait_for_open_count(&controller, &session.id, 1).await;
+        controller
+            .emit(
+                &session.id,
+                AgentRuntimeEvent::SessionEstablished {
+                    backend_session_id: "initial-provider-session".to_string(),
+                    resume: crate::domain::agent_session::gateway::ResumeOutcome::NotRequested,
+                },
+            )
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !usecase.provider_session_is_confirmed(&session.id).await {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        controller.fail_next_open_session();
+        let failure_attempt_ids = Arc::new(Mutex::new(Vec::new()));
+        session_store.set_append_event_hook_for_test(Arc::new({
+            let failure_attempt_ids = Arc::clone(&failure_attempt_ids);
+            move |_, event| {
+                if let AgentSessionEvent::BackendSessionRecoveryFailed { recovery_id, .. } = event {
+                    let mut ids = failure_attempt_ids.lock().unwrap();
+                    ids.push(recovery_id.clone());
+                    if ids.len() == 1 {
+                        return Err("injected recovery failure commit failure".to_string());
+                    }
+                }
+                Ok(())
+            }
+        }));
+        controller
+            .emit(&session.id, AgentRuntimeEvent::BackendSessionCleared)
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if session_store
+                    .load_session_events(tmp.path(), &session.id)
+                    .unwrap()
+                    .iter()
+                    .any(|event| {
+                        matches!(
+                            event,
+                            AgentSessionEvent::BackendSessionRecoveryFailed { .. }
+                        )
+                    })
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let failure_attempt_ids = failure_attempt_ids.lock().unwrap().clone();
+        assert_eq!(failure_attempt_ids.len(), 2);
+        assert_eq!(failure_attempt_ids[0], failure_attempt_ids[1]);
+        let events = session_store
+            .load_session_events(tmp.path(), &session.id)
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    AgentSessionEvent::BackendSessionRecoveryStarted {
+                        recovery_id: actual,
+                        ..
+                    } if actual == &failure_attempt_ids[0]
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    AgentSessionEvent::BackendSessionRecoveryFailed {
+                        recovery_id: actual,
+                        ..
+                    } if actual == &failure_attempt_ids[0]
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            controller
+                .call_kinds_for(&session.id)
+                .iter()
+                .filter(|call| matches!(call, TestRuntimeCallKind::OpenSession { .. }))
+                .count(),
+            2,
+            "the recovery provider effect must run exactly once"
+        );
+        assert_eq!(
+            session_store
+                .get_session_meta(tmp.path(), &session.id)
+                .unwrap()
+                .unwrap()
+                .state,
+            SessionState::Error
         );
     }
 
@@ -15295,10 +17705,7 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        let expected_mentions = mentions
-            .into_iter()
-            .map(crate::usecase::agent_session::session::MessageMention::from_domain)
-            .collect::<Vec<_>>();
+        let expected_mentions = mentions;
         assert_eq!(
             retried_mentions,
             vec![expected_mentions.clone(), expected_mentions]
@@ -16017,6 +18424,265 @@ mod tests {
             .any(|kind| matches!(kind, TestRuntimeCallKind::StartTurn)));
     }
 
+    #[derive(Clone, Copy, Debug)]
+    enum B036CrashBoundary {
+        AfterRecoveryStart,
+        AfterExternalEffect,
+        AfterCompletion,
+        BeforeMessagePublication,
+    }
+
+    #[tokio::test]
+    async fn b036_recovery_crash_boundaries_preserve_identity_and_limit_effect_and_message_to_one()
+    {
+        for boundary in [
+            B036CrashBoundary::AfterRecoveryStart,
+            B036CrashBoundary::AfterExternalEffect,
+            B036CrashBoundary::AfterCompletion,
+            B036CrashBoundary::BeforeMessagePublication,
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let local_store =
+                LocalEventStore::open(LocalEventStoreConfig::production(tmp.path().to_path_buf()))
+                    .unwrap();
+            let session_store =
+                Arc::new(SessionStore::new(Arc::new(FileSessionStorage::default())));
+            let repository: Arc<dyn LocalEventTransactionRepository> = local_store.clone();
+            session_store.set_local_event_repository_with_projection_codec(
+                repository,
+                local_store.generation_id().to_string(),
+                Arc::new(AgentSessionProjectionCodecV1),
+            );
+            let session =
+                provider_establish_test_session(&session_store, tmp.path(), Some("dead-provider"));
+            let recovery_id = format!("b036-recovery-{boundary:?}");
+            let old_generation = session_store
+                .get_session_meta(tmp.path(), &session.id)
+                .unwrap()
+                .unwrap()
+                .provider_session_generation;
+
+            let external_effect_count = match boundary {
+                B036CrashBoundary::AfterRecoveryStart => {
+                    session_store
+                        .begin_backend_session_recovery(
+                            tmp.path(),
+                            &session.id,
+                            &recovery_id,
+                            BackendSessionRecoveryReason::BackendSessionLost,
+                        )
+                        .unwrap();
+                    0
+                }
+                B036CrashBoundary::AfterExternalEffect => {
+                    let (usecase, controller) = build_agent_runtime_usecase_with_controller(
+                        session_store.clone(),
+                        tmp.path(),
+                    );
+                    controller.fail_next_open_session();
+                    session_store.set_append_event_hook_for_test(Arc::new(|_, event| {
+                        if matches!(
+                            event,
+                            AgentSessionEvent::BackendSessionRecoveryFailed { .. }
+                        ) {
+                            return Err(
+                                "injected process exit after backend recovery effect".to_string()
+                            );
+                        }
+                        Ok(())
+                    }));
+                    assert!(recover_backend_session_with_identity(
+                        &usecase.ctx,
+                        &session.id,
+                        BackendSessionRecoveryReason::BackendSessionLost,
+                        recovery_id.clone(),
+                    )
+                    .await
+                    .is_err());
+                    let count = controller
+                        .call_kinds_for(&session.id)
+                        .iter()
+                        .filter(|call| matches!(call, TestRuntimeCallKind::OpenSession { .. }))
+                        .count();
+                    assert_eq!(count, 1, "{boundary:?} must cross the effect port once");
+                    count
+                }
+                B036CrashBoundary::AfterCompletion
+                | B036CrashBoundary::BeforeMessagePublication => {
+                    let (usecase, controller) = build_agent_runtime_usecase_with_controller(
+                        session_store.clone(),
+                        tmp.path(),
+                    );
+                    recover_backend_session_with_identity(
+                        &usecase.ctx,
+                        &session.id,
+                        BackendSessionRecoveryReason::BackendSessionLost,
+                        recovery_id.clone(),
+                    )
+                    .await
+                    .unwrap();
+                    let count = controller
+                        .call_kinds_for(&session.id)
+                        .iter()
+                        .filter(|call| matches!(call, TestRuntimeCallKind::OpenSession { .. }))
+                        .count();
+                    assert_eq!(count, 1, "{boundary:?} must cross the effect port once");
+                    session_store
+                        .complete_backend_session_recovery(
+                            tmp.path(),
+                            &session.id,
+                            &recovery_id,
+                            old_generation,
+                            "replacement-provider".to_string(),
+                        )
+                        .unwrap();
+                    if matches!(boundary, B036CrashBoundary::BeforeMessagePublication) {
+                        local_store.fault_injector().arm_fail_before_begin();
+                        assert!(
+                            reconcile_pending_recovery_message(&usecase.ctx, &session.id)
+                                .await
+                                .is_err()
+                        );
+                        assert!(session_store
+                            .get_session_meta(tmp.path(), &session.id)
+                            .unwrap()
+                            .unwrap()
+                            .pending_recovery_message
+                            .is_some());
+                    }
+                    controller.close_event_streams_for_test(&session.id);
+                    count
+                }
+            };
+
+            let before_restart_events = session_store
+                .load_session_events(tmp.path(), &session.id)
+                .unwrap();
+            assert_eq!(
+                before_restart_events
+                    .iter()
+                    .filter(|event| matches!(
+                        event,
+                        AgentSessionEvent::BackendSessionRecoveryStarted {
+                            recovery_id: actual,
+                            ..
+                        } if actual == &recovery_id
+                    ))
+                    .count(),
+                1,
+                "{boundary:?} must retain exactly one recovery identity"
+            );
+            let completed_before_restart = matches!(
+                boundary,
+                B036CrashBoundary::AfterCompletion | B036CrashBoundary::BeforeMessagePublication
+            );
+            assert_eq!(
+                before_restart_events.iter().any(|event| matches!(
+                    event,
+                    AgentSessionEvent::BackendSessionRecoveryCompleted {
+                        recovery_id: actual,
+                        ..
+                    } if actual == &recovery_id
+                )),
+                completed_before_restart
+            );
+            drop(session_store);
+            drop(local_store);
+            tokio::task::yield_now().await;
+
+            let reopened_store =
+                LocalEventStore::open(LocalEventStoreConfig::production(tmp.path().to_path_buf()))
+                    .unwrap();
+            let reopened_session_store =
+                Arc::new(SessionStore::new(Arc::new(FileSessionStorage::default())));
+            let repository: Arc<dyn LocalEventTransactionRepository> = reopened_store.clone();
+            reopened_session_store.set_local_event_repository_with_projection_codec(
+                repository,
+                reopened_store.generation_id().to_string(),
+                Arc::new(AgentSessionProjectionCodecV1),
+            );
+            let (restarted, restart_controller) = build_agent_runtime_usecase_with_controller(
+                reopened_session_store.clone(),
+                tmp.path(),
+            );
+            let first = restarted.get_session(&session.id).await.unwrap().unwrap();
+            let second = restarted.get_session(&session.id).await.unwrap().unwrap();
+            let recovery_message_count = |response: &GetSessionResponse| {
+                response
+                    .session
+                    .messages
+                    .iter()
+                    .filter(|message| {
+                        message.parts.as_deref().is_some_and(|parts| {
+                            parts.iter().any(|part| {
+                                matches!(
+                                    part,
+                                    MessagePart::SystemNotification {
+                                        notification_type: SystemNotificationType::SessionRecovery,
+                                        ..
+                                    }
+                                ) || matches!(
+                                    part,
+                                    MessagePart::Error { content, .. }
+                                        if content.starts_with("backend session recovery failed:")
+                                )
+                            })
+                        })
+                    })
+                    .count()
+            };
+            assert_eq!(recovery_message_count(&first), 1, "{boundary:?}");
+            assert_eq!(recovery_message_count(&second), 1, "{boundary:?}");
+            assert_eq!(
+                external_effect_count
+                    + restart_controller
+                        .call_kinds_for(&session.id)
+                        .iter()
+                        .filter(|call| matches!(call, TestRuntimeCallKind::OpenSession { .. }))
+                        .count(),
+                external_effect_count,
+                "restart must not repeat the recovery provider effect at {boundary:?}"
+            );
+            assert!(external_effect_count <= 1);
+
+            let after_restart_events = reopened_session_store
+                .load_session_events(tmp.path(), &session.id)
+                .unwrap();
+            let completed = after_restart_events
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event,
+                        AgentSessionEvent::BackendSessionRecoveryCompleted {
+                            recovery_id: actual,
+                            ..
+                        } if actual == &recovery_id
+                    )
+                })
+                .count();
+            let failed = after_restart_events
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event,
+                        AgentSessionEvent::BackendSessionRecoveryFailed {
+                            recovery_id: actual,
+                            ..
+                        } if actual == &recovery_id
+                    )
+                })
+                .count();
+            assert_eq!(completed + failed, 1, "{boundary:?} must be fully resolved");
+            assert_eq!(completed, usize::from(completed_before_restart));
+            assert!(reopened_session_store
+                .get_session_meta(tmp.path(), &session.id)
+                .unwrap()
+                .unwrap()
+                .pending_recovery_message
+                .is_none());
+        }
+    }
+
     #[tokio::test]
     async fn completed_recovery_notice_is_restored_once_before_the_next_turn_after_restart() {
         let tmp = tempfile::tempdir().unwrap();
@@ -16273,7 +18939,10 @@ mod tests {
                 editor_context: None,
             })
             .await;
-        assert!(result.is_err());
+        assert!(
+            result.is_ok(),
+            "the send was durably accepted before backend recovery failed"
+        );
         let before_reconcile = session_store
             .load_full_session_for_restore(tmp.path(), &session.id)
             .unwrap()
@@ -16328,7 +18997,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn startup_recovery_begin_failure_rolls_back_the_turn_and_publishes_error() {
+    async fn startup_recovery_begin_failure_does_not_start_cleanup_effects() {
         let tmp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(build_session_store());
         session_store.set_append_event_hook_for_test(Arc::new(|_, event| {
@@ -16382,47 +19051,25 @@ mod tests {
             })
             .await;
         assert!(result.is_err());
-        let loaded = usecase.get_session(&session.id).await.unwrap().unwrap();
-        assert_eq!(loaded.turn_phase, TurnPhase::Idle);
-        assert_eq!(loaded.session.state, SessionState::Error);
-        let agent_messages = loaded
-            .session
-            .messages
+        assert!(!controller
+            .call_kinds_for(&session.id)
+            .contains(&TestRuntimeCallKind::Interrupt));
+        assert!(!controller
+            .call_kinds_for(&session.id)
+            .contains(&TestRuntimeCallKind::Close));
+        assert!(event_notifier.streaming_deltas().is_empty());
+        assert!(!session_store
+            .load_session_events(tmp.path(), &session.id)
+            .unwrap()
             .iter()
-            .filter(|message| message.role == MessageRole::Agent)
-            .collect::<Vec<_>>();
-        assert!(!agent_messages.is_empty());
-        assert!(agent_messages.iter().all(|message| {
-            message.parts.as_deref().is_some_and(|parts| {
-                parts.iter().any(|part| {
-                    matches!(
-                        part,
-                        MessagePart::Error { content, .. }
-                            if content.contains("injected recovery begin failure")
-                    )
-                })
-            })
-        }));
-        assert!(usecase
-            .ctx
-            .sessions
-            .lock()
-            .await
-            .get(&session.id)
-            .is_none_or(|state| state.phase != RuntimeSessionPhase::Streaming));
-        assert!(event_notifier.streaming_deltas().iter().any(|delta| {
-            delta.parts.iter().any(|part| {
-                matches!(
-                    part,
-                    MessagePart::Error { content, .. }
-                        if content.contains("injected recovery begin failure")
-                )
-            })
-        }));
+            .any(|event| matches!(
+                event,
+                AgentSessionEvent::BackendSessionRecoveryFailed { .. }
+            )));
     }
 
     #[tokio::test]
-    async fn live_recovery_begin_failure_closes_runtime_and_publishes_error() {
+    async fn live_recovery_begin_failure_preserves_runtime_and_state_without_provider_effect() {
         let tmp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(build_session_store());
         let event_notifier = Arc::new(RecordingAgentNotifier::default());
@@ -16479,68 +19126,22 @@ mod tests {
         controller
             .emit(&session.id, AgentRuntimeEvent::BackendSessionCleared)
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(1), async {
-            loop {
-                let meta = session_store
-                    .get_session_meta(tmp.path(), &session.id)
-                    .unwrap()
-                    .unwrap();
-                if meta.state == SessionState::Error {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
 
         let loaded = usecase.get_session(&session.id).await.unwrap().unwrap();
-        assert_eq!(loaded.turn_phase, TurnPhase::Idle);
-        assert_eq!(loaded.session.state, SessionState::Error);
-        let agent_messages = loaded
-            .session
-            .messages
-            .iter()
-            .filter(|message| message.role == MessageRole::Agent)
-            .collect::<Vec<_>>();
-        assert!(!agent_messages.is_empty());
-        assert!(agent_messages.iter().all(|message| {
-            message.parts.as_deref().is_some_and(|parts| {
-                parts.iter().any(|part| {
-                    matches!(
-                        part,
-                        MessagePart::Error { content, .. }
-                            if content.contains("injected recovery begin failure")
-                    )
-                })
-            })
-        }));
-        assert!(controller
+        assert_eq!(loaded.turn_phase, TurnPhase::Streaming);
+        assert_eq!(loaded.session.state, SessionState::Active);
+        assert!(!controller
             .call_kinds_for(&session.id)
             .contains(&TestRuntimeCallKind::Interrupt));
-        assert!(controller
+        assert!(!controller
             .call_kinds_for(&session.id)
             .contains(&TestRuntimeCallKind::Close));
-        assert!(usecase
-            .ctx
-            .sessions
-            .lock()
-            .await
-            .get(&session.id)
-            .is_none_or(|state| state.phase != RuntimeSessionPhase::Streaming));
-        assert!(event_notifier.streaming_deltas().iter().any(|delta| {
-            delta.parts.iter().any(|part| {
-                matches!(
-                    part,
-                    MessagePart::Error { content, .. }
-                        if content.contains("injected recovery begin failure")
-                )
-            })
-        }));
+        assert!(event_notifier.streaming_deltas().is_empty());
     }
 
     #[tokio::test]
-    async fn recovery_completion_commit_failure_persists_error_part() {
+    async fn recovery_completion_commit_failure_does_not_publish_a_false_error() {
         let tmp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(build_session_store());
         session_store.set_append_event_hook_for_test(Arc::new(|_, event| {
@@ -16604,19 +19205,31 @@ mod tests {
             .load_full_session_for_restore(tmp.path(), &session.id)
             .unwrap()
             .unwrap();
-        assert_eq!(loaded.state, SessionState::Error);
-        assert!(loaded.messages.iter().any(|message| {
+        assert_eq!(loaded.state, SessionState::Active);
+        assert_eq!(loaded.context_carry, Some(ContextCarryState::Failed));
+        assert!(loaded.agent_session_id.is_none());
+        assert!(!loaded.messages.iter().any(|message| {
             message.role == MessageRole::Agent
                 && message.parts.as_deref().is_some_and(|parts| {
-                    parts.iter().any(|part| {
-                        matches!(
-                            part,
-                            MessagePart::Error { content, .. }
-                                if content.contains("injected completion commit failure")
-                        )
-                    })
+                    parts
+                        .iter()
+                        .any(|part| matches!(part, MessagePart::Error { .. }))
                 })
         }));
+        let events = session_store
+            .load_session_events(tmp.path(), &session.id)
+            .unwrap();
+        assert!(matches!(
+            TurnEventLog::from_events(events.clone())
+                .project()
+                .backend_recovery,
+            Some(BackendSessionRecoveryProjection::Recovering { .. })
+        ));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::BackendSessionRecoveryCompleted { .. }
+                | AgentSessionEvent::BackendSessionRecoveryFailed { .. }
+        )));
     }
 
     #[tokio::test]

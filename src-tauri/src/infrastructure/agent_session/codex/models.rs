@@ -1,5 +1,5 @@
 use crate::domain::agent_session::gateway::{
-    AgentBackend, AgentBackendError, AgentSessionRuntime, ForkSessionRequest, SessionSpec,
+    AgentBackend, AgentBackendError, AgentSessionRuntime, SessionSpec,
 };
 use crate::domain::agent_session::services::filter_agent_skills_for_query;
 use crate::domain::agent_session::value_objects::{
@@ -14,8 +14,7 @@ use tokio::io::AsyncBufRead;
 use super::app_server::CodexAppServerProcess;
 use super::wire::{
     initialize_request, initialized_notification, request, PendingClientRequests,
-    METHOD_FUZZY_FILE_SEARCH, METHOD_INITIALIZE, METHOD_SKILLS_LIST, METHOD_THREAD_ARCHIVE,
-    METHOD_THREAD_FORK, METHOD_THREAD_UNARCHIVE,
+    METHOD_FUZZY_FILE_SEARCH, METHOD_INITIALIZE, METHOD_SKILLS_LIST,
 };
 
 pub(crate) const CODEX_BACKEND_ID: &str = "codex";
@@ -76,54 +75,6 @@ impl AgentBackend for CodexBackend {
         let runtime =
             super::session::CodexSessionRuntime::open(self.cli_path().to_string(), spec).await?;
         Ok(Box::new(runtime))
-    }
-
-    async fn archive_session(
-        &self,
-        backend_session_id: &str,
-        cwd: &str,
-    ) -> Result<(), AgentBackendError> {
-        self.app_server_request(
-            "codex-archive",
-            Some(cwd),
-            METHOD_THREAD_ARCHIVE,
-            json!({ "threadId": backend_session_id }),
-        )
-        .await?;
-        Ok(())
-    }
-
-    async fn unarchive_session(
-        &self,
-        backend_session_id: &str,
-        cwd: &str,
-    ) -> Result<(), AgentBackendError> {
-        self.app_server_request(
-            "codex-unarchive",
-            Some(cwd),
-            METHOD_THREAD_UNARCHIVE,
-            json!({ "threadId": backend_session_id }),
-        )
-        .await?;
-        Ok(())
-    }
-
-    async fn fork_session(
-        &self,
-        req: ForkSessionRequest,
-    ) -> Result<Option<String>, AgentBackendError> {
-        let mut params = json!({
-            "threadId": req.backend_session_id,
-            "cwd": req.cwd,
-            "runtimeWorkspaceRoots": [req.cwd],
-        });
-        if let Some(model) = req.model {
-            params["model"] = Value::String(model);
-        }
-        let result = self
-            .app_server_request("codex-fork", Some(&req.cwd), METHOD_THREAD_FORK, params)
-            .await?;
-        Ok(thread_id_from_result(&result).map(str::to_string))
     }
 
     async fn skill_catalog(
@@ -261,15 +212,6 @@ where
             .cloned()
             .expect("validated JSON-RPC response must contain result or error"));
     }
-}
-
-fn thread_id_from_result(result: &Value) -> Option<&str> {
-    result
-        .get("thread")
-        .and_then(|thread| thread.get("id"))
-        .and_then(Value::as_str)
-        .or_else(|| result.get("threadId").and_then(Value::as_str))
-        .or_else(|| result.get("id").and_then(Value::as_str))
 }
 
 fn skill_entries_from_result(result: &Value) -> Vec<SkillEntry> {

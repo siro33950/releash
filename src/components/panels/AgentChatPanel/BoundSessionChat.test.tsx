@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { UseAgentChatResult } from "@/hooks/useAgentChat";
+import type { SessionFeedbackEntry } from "@/hooks/useSessionStore";
 import type {
 	AgentStallObservation,
 	ChatSession,
@@ -24,11 +25,32 @@ const mocks = vi.hoisted(() => ({
 	setPlanMode: vi.fn(),
 	setModel: vi.fn(),
 	respondPermission: vi.fn(),
+	closeSession: vi.fn().mockResolvedValue(undefined),
+	archiveSession: vi.fn().mockResolvedValue(undefined),
+	archiveOpenSession: vi.fn().mockResolvedValue(undefined),
 	dismissSessionError: vi.fn(),
+	dismissFeedback: vi.fn().mockResolvedValue(undefined),
+	retryFeedback: vi.fn().mockResolvedValue(undefined),
+	loadNextFeedback: vi.fn().mockResolvedValue(undefined),
+	sessionFeedback: {
+		entries: [] as SessionFeedbackEntry[],
+		hasMore: false,
+	},
 }));
 
 vi.mock("@/contexts/AgentChatContext", () => ({
 	useAgentChatContext: () => mocks.useAgentChatContext(),
+}));
+
+vi.mock("@/hooks/useSessionFeedback", () => ({
+	useSessionFeedback: () => ({
+		entries: mocks.sessionFeedback.entries,
+		hasMore: mocks.sessionFeedback.hasMore,
+		dismiss: mocks.dismissFeedback,
+		retry: mocks.retryFeedback,
+		loadNextPage: mocks.loadNextFeedback,
+		refresh: vi.fn(),
+	}),
 }));
 
 vi.mock("./ChatSessionView", () => ({
@@ -199,9 +221,9 @@ function setContext(
 		selectSession: vi.fn().mockResolvedValue(undefined),
 		refreshSessions: vi.fn().mockResolvedValue(undefined),
 		refreshClosedSessions: vi.fn().mockResolvedValue(undefined),
-		closeSession: vi.fn().mockResolvedValue(undefined),
-		archiveSession: vi.fn().mockResolvedValue(undefined),
-		archiveOpenSession: vi.fn().mockResolvedValue(undefined),
+		closeSession: mocks.closeSession,
+		archiveSession: mocks.archiveSession,
+		archiveOpenSession: mocks.archiveOpenSession,
 		restoreSession: vi.fn().mockResolvedValue(undefined),
 		forkSession: vi.fn().mockResolvedValue(undefined),
 		setSessionTitle: vi.fn().mockResolvedValue("title"),
@@ -222,8 +244,59 @@ function setContext(
 describe("BoundSessionChat", () => {
 	beforeEach(() => {
 		for (const mock of Object.values(mocks)) {
-			mock.mockClear();
+			if (typeof mock === "function" && "mockClear" in mock) {
+				mock.mockClear();
+			}
 		}
+		mocks.sessionFeedback.entries = [];
+		mocks.sessionFeedback.hasMore = false;
+	});
+
+	it("close_quit_chat_panel_close_is_view_only", () => {
+		const cleanupViewRegistration = vi.fn();
+		mocks.registerViewableSession.mockReturnValueOnce(cleanupViewRegistration);
+		const session = makeSession("session-active", "ask", false);
+		session.messages = [
+			{
+				id: "agent-1",
+				role: "agent",
+				parts: [{ type: "text", content: "durable and retained" }],
+				timestamp: 1,
+			},
+		];
+		const permission = makePendingPermission("permission-retained");
+		setContext(
+			{ [session.id]: session },
+			{ [session.id]: permission },
+			{},
+			{},
+			{},
+			{ [session.id]: true },
+		);
+
+		const { unmount } = render(
+			<BoundSessionChat
+				sessionId={session.id}
+				worktreePath="/repo"
+				skipInitialLoad
+			/>,
+		);
+		expect(screen.getByTestId(`chat-${session.id}`)).toBeInTheDocument();
+
+		unmount();
+
+		expect(cleanupViewRegistration).toHaveBeenCalledOnce();
+		expect(session.state).toBe("active");
+		expect(session.messages[0].parts).toEqual([
+			{ type: "text", content: "durable and retained" },
+		]);
+		expect(permission.id).toBe("permission-retained");
+		expect(mocks.closeSession).not.toHaveBeenCalled();
+		expect(mocks.archiveSession).not.toHaveBeenCalled();
+		expect(mocks.archiveOpenSession).not.toHaveBeenCalled();
+		expect(mocks.interrupt).not.toHaveBeenCalled();
+		expect(mocks.respondPermission).not.toHaveBeenCalled();
+		expect(mocks.resumeQueue).not.toHaveBeenCalled();
 	});
 
 	it("passes each pane its own session permission and plan mode", () => {
@@ -572,6 +645,57 @@ describe("BoundSessionChat", () => {
 		expect(await screen.findByRole("alert")).toHaveTextContent(
 			"Session unavailable.",
 		);
+	});
+
+	it("keeps canonical feedback visible and controllable when session loading fails", async () => {
+		const feedback: SessionFeedbackEntry = {
+			feedback_id: "feedback-load-1",
+			attempt_id: "load-attempt-1",
+			session_id: "missing-session",
+			operation: "load_session",
+			revision: "1",
+			actions: ["dismiss"],
+			action_identities: [
+				{
+					action: "dismiss",
+					action_id: "dismiss-load-1",
+					origin_revision: "1",
+				},
+			],
+			failure: {
+				kind: "persist_failure",
+				retryable: true,
+				label: "The session could not be loaded.",
+				detail: "Retry loading the session or dismiss this feedback.",
+				correlation_id: "load-failure-1",
+			},
+		};
+		mocks.sessionFeedback.entries = [feedback];
+		mocks.sessionFeedback.hasMore = true;
+		mocks.loadSession.mockRejectedValueOnce(new Error("unavailable"));
+		setContext(
+			{},
+			{},
+			{},
+			{},
+			{
+				"missing-session": "legacy duplicate",
+			},
+		);
+
+		render(
+			<BoundSessionChat sessionId="missing-session" worktreePath="/repo" />,
+		);
+
+		expect(
+			await screen.findByText("The session could not be loaded."),
+		).toBeVisible();
+		expect(screen.getByText("Session unavailable.")).toBeVisible();
+		expect(screen.queryByText("legacy duplicate")).not.toBeInTheDocument();
+		fireEvent.click(screen.getByRole("button", { name: "Dismiss feedback" }));
+		expect(mocks.dismissFeedback).toHaveBeenCalledWith(feedback);
+		fireEvent.click(screen.getByRole("button", { name: "Load more feedback" }));
+		expect(mocks.loadNextFeedback).toHaveBeenCalledTimes(1);
 	});
 
 	it("shows and dismisses a load failure notice before the session is hydrated", async () => {

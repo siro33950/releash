@@ -1,10 +1,12 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde::Deserialize;
 
 use crate::adaptor::gateway::workflow::event::{FanoutParentRef, TokenUsage, WorkflowEvent};
 use crate::adaptor::gateway::workflow::log::WorkflowEventLog;
 use crate::adaptor::gateway::workflow::schema::{NodeKindName, WorkflowDefinitionYaml};
+use crate::domain::local_event::LocalEventTransactionRepository;
 use crate::domain::workflow::{
     ExecutionInterruptionReason, ExecutionOrigin, NodeExecutionFailureKind, WorkflowError,
     WorkflowExecution, WorkflowExecutionId,
@@ -336,15 +338,141 @@ impl WorkspaceSummaryEvent {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct WorkflowExecutionProjectionLogRepository {
-    data_dir: PathBuf,
+    source: WorkflowProjectionReadSource,
+}
+
+#[derive(Clone)]
+enum WorkflowProjectionReadSource {
+    #[cfg(test)]
+    Legacy(PathBuf),
+    Canonical {
+        data_dir: PathBuf,
+        repository: Arc<dyn LocalEventTransactionRepository>,
+        generation_id: String,
+    },
+    PhaseAware {
+        data_dir: PathBuf,
+        repository: Arc<dyn LocalEventTransactionRepository>,
+        generation_id: String,
+        canonical_reads_active: Arc<dyn Fn() -> bool + Send + Sync>,
+    },
 }
 
 impl WorkflowExecutionProjectionLogRepository {
+    #[cfg(test)]
     pub(crate) fn new(data_dir: impl Into<PathBuf>) -> Self {
         Self {
-            data_dir: data_dir.into(),
+            source: WorkflowProjectionReadSource::Legacy(data_dir.into()),
+        }
+    }
+
+    pub(crate) fn with_authority(
+        data_dir: impl Into<PathBuf>,
+        repository: Arc<dyn LocalEventTransactionRepository>,
+        generation_id: String,
+    ) -> Self {
+        Self {
+            source: WorkflowProjectionReadSource::Canonical {
+                data_dir: data_dir.into(),
+                repository,
+                generation_id,
+            },
+        }
+    }
+
+    pub(crate) fn with_phase_aware_authority(
+        data_dir: impl Into<PathBuf>,
+        repository: Arc<dyn LocalEventTransactionRepository>,
+        generation_id: String,
+        canonical_reads_active: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> Self {
+        Self {
+            source: WorkflowProjectionReadSource::PhaseAware {
+                data_dir: data_dir.into(),
+                repository,
+                generation_id,
+                canonical_reads_active,
+            },
+        }
+    }
+
+    fn log(&self) -> WorkflowEventLog {
+        match &self.source {
+            #[cfg(test)]
+            WorkflowProjectionReadSource::Legacy(data_dir) => WorkflowEventLog::new(data_dir),
+            WorkflowProjectionReadSource::Canonical {
+                data_dir,
+                repository,
+                generation_id,
+            } => WorkflowEventLog::with_authority(
+                data_dir,
+                repository.clone(),
+                generation_id.clone(),
+            ),
+            WorkflowProjectionReadSource::PhaseAware {
+                data_dir,
+                repository,
+                generation_id,
+                canonical_reads_active,
+            } => {
+                if canonical_reads_active() {
+                    WorkflowEventLog::with_authority(
+                        data_dir,
+                        repository.clone(),
+                        generation_id.clone(),
+                    )
+                } else {
+                    WorkflowEventLog::new(data_dir)
+                }
+            }
+        }
+    }
+
+    fn read_events(
+        &self,
+        execution_id: &WorkflowExecutionId,
+    ) -> Result<Vec<WorkflowEvent>, String> {
+        match &self.source {
+            WorkflowProjectionReadSource::PhaseAware {
+                canonical_reads_active,
+                ..
+            } if !canonical_reads_active() => self.log().read_log(execution_id.as_str()),
+            #[cfg(test)]
+            WorkflowProjectionReadSource::Legacy(_) => self.log().read_log(execution_id.as_str()),
+            _ => self.log().read_log_durable_blocking(execution_id.as_str()),
+        }
+    }
+
+    fn read_workspace_events(
+        &self,
+        execution_id: &WorkflowExecutionId,
+    ) -> Result<Vec<WorkflowEvent>, String> {
+        match &self.source {
+            WorkflowProjectionReadSource::PhaseAware {
+                canonical_reads_active,
+                ..
+            } if !canonical_reads_active() => self.log().read_log_mapped(
+                execution_id.as_str(),
+                |line| {
+                    serde_json::from_str::<WorkspaceSummaryEvent>(line)
+                        .map_err(|error| error.to_string())?
+                        .into_canonical()
+                },
+                WorkflowEvent::execution_id,
+            ),
+            #[cfg(test)]
+            WorkflowProjectionReadSource::Legacy(_) => self.log().read_log_mapped(
+                execution_id.as_str(),
+                |line| {
+                    serde_json::from_str::<WorkspaceSummaryEvent>(line)
+                        .map_err(|error| error.to_string())?
+                        .into_canonical()
+                },
+                WorkflowEvent::execution_id,
+            ),
+            _ => self.log().read_log_durable_blocking(execution_id.as_str()),
         }
     }
 }
@@ -362,8 +490,8 @@ impl WorkflowExecutionProjectionRepository for WorkflowExecutionProjectionLogRep
         &self,
         execution_id: &WorkflowExecutionId,
     ) -> Result<Option<WorkflowExecutionProjection>, WorkflowError> {
-        let events = WorkflowEventLog::new(&self.data_dir)
-            .read_log(execution_id.as_str())
+        let events = self
+            .read_events(execution_id)
             .map_err(WorkflowError::external)?;
         let definition = events.iter().find_map(|event| match event {
             WorkflowEvent::ExecutionStarted { definition, .. } => Some(
@@ -385,16 +513,8 @@ impl WorkflowExecutionProjectionRepository for WorkflowExecutionProjectionLogRep
         &self,
         execution_id: &WorkflowExecutionId,
     ) -> Result<Option<WorkflowExecutionProjection>, WorkflowError> {
-        let events = WorkflowEventLog::new(&self.data_dir)
-            .read_log_mapped(
-                execution_id.as_str(),
-                |line| {
-                    serde_json::from_str::<WorkspaceSummaryEvent>(line)
-                        .map_err(|error| error.to_string())?
-                        .into_canonical()
-                },
-                WorkflowEvent::execution_id,
-            )
+        let events = self
+            .read_workspace_events(execution_id)
             .map_err(WorkflowError::external)?;
         let definition = events.iter().find_map(|event| match event {
             WorkflowEvent::ExecutionStarted { definition, .. } => Some(
@@ -419,11 +539,55 @@ impl WorkflowExecutionProjectionRepository for WorkflowExecutionProjectionLogRep
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
     use crate::adaptor::gateway::workflow::event::WorkflowEvent;
     use crate::adaptor::gateway::workflow::schema::{
         CommandSpec, NodeDefinition, NodeKind, Rule, WorkflowDefinitionYaml,
     };
     use crate::domain::workflow::{ExecutionOrigin, ExecutionStatus};
+
+    fn started_event(
+        execution_id: &WorkflowExecutionId,
+        workflow_name: &str,
+        timestamp: f64,
+    ) -> WorkflowEvent {
+        WorkflowEvent::ExecutionStarted {
+            execution_id: execution_id.to_string(),
+            workflow_name: workflow_name.to_string(),
+            worktree_path: "/repo".to_string(),
+            created_from: ExecutionOrigin::Cli,
+            request: String::new(),
+            permission_mode: "ask".to_string(),
+            definition: WorkflowDefinitionYaml {
+                name: workflow_name.to_string(),
+                description: String::new(),
+                builtin: false,
+                schemas: Default::default(),
+                nodes: Vec::new(),
+            },
+            timestamp,
+        }
+    }
+
+    async fn open_ready_store(data_dir: &std::path::Path) -> Arc<LocalEventStore> {
+        let store =
+            LocalEventStore::open(LocalEventStoreConfig::production(data_dir.to_path_buf()))
+                .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !store.normal_admission_ready() && !store.cutover_ready() {
+                assert!(!store.migration_blocked());
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("fresh SQLite authority must become ready");
+        if store.cutover_ready() {
+            assert!(store.open_normal_admission_after_authority_install());
+        }
+        store
+    }
 
     #[test]
     fn projects_persisted_events_to_the_canonical_read_model() {
@@ -460,6 +624,73 @@ mod tests {
         assert_eq!(execution.started_at, 10.0);
         assert_eq!(execution.artifacts[0].node_name, "request");
         assert_eq!(projection.definition.unwrap().name, "review");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn phase_switch_projects_sqlite_without_legacy_access_or_fallback() {
+        let sqlite = tempfile::tempdir().unwrap();
+        let legacy = tempfile::tempdir().unwrap();
+        let store = open_ready_store(sqlite.path()).await;
+        let authority: Arc<dyn LocalEventTransactionRepository> = store.clone();
+        let generation_id = store.generation_id().to_string();
+        let execution_id =
+            WorkflowExecutionId::new("00000000-0000-4000-8000-000000000308").unwrap();
+
+        WorkflowEventLog::with_authority(legacy.path(), authority.clone(), generation_id.clone())
+            .append_batch_durable(&[started_event(&execution_id, "canonical", 2.0)])
+            .await
+            .unwrap();
+        WorkflowEventLog::new(legacy.path())
+            .append(&started_event(&execution_id, "legacy", 1.0))
+            .unwrap();
+
+        let canonical_reads_active = Arc::new(AtomicBool::new(false));
+        let phase_flag = canonical_reads_active.clone();
+        let phase_aware = WorkflowExecutionProjectionLogRepository::with_phase_aware_authority(
+            legacy.path(),
+            authority.clone(),
+            generation_id.clone(),
+            Arc::new(move || phase_flag.load(Ordering::Acquire)),
+        );
+        assert_eq!(
+            phase_aware
+                .get_execution(&execution_id)
+                .unwrap()
+                .unwrap()
+                .workflow_name,
+            "legacy"
+        );
+
+        canonical_reads_active.store(true, Ordering::Release);
+        let legacy_path = legacy
+            .path()
+            .join("workflow_execution_logs")
+            .join(format!("{execution_id}.ndjson"));
+        std::fs::write(&legacy_path, b"malformed legacy projection\n").unwrap();
+
+        let projection = phase_aware
+            .get_workspace_execution_with_definition(&execution_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(projection.execution.workflow_name, "canonical");
+
+        let canonical = WorkflowExecutionProjectionLogRepository::with_authority(
+            legacy.path(),
+            authority,
+            generation_id,
+        );
+        assert_eq!(
+            canonical
+                .get_execution(&execution_id)
+                .unwrap()
+                .unwrap()
+                .workflow_name,
+            "canonical"
+        );
+        assert_eq!(
+            std::fs::read(&legacy_path).unwrap(),
+            b"malformed legacy projection\n"
+        );
     }
 
     #[test]

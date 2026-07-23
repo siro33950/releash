@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createElement } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { SessionFeedbackEntry } from "@/hooks/useSessionStore";
 import type {
 	AgentStallObservation,
 	ChatSession,
@@ -113,6 +114,9 @@ interface RenderOptions {
 	pendingPermission?: PermissionRequest | null;
 	pendingQueue?: QueuedAgentTurn[];
 	notice?: SessionNotice | null;
+	feedback?: SessionFeedbackEntry[];
+	onDismissFeedback?: (entry: SessionFeedbackEntry) => void;
+	onRetryFeedback?: (entry: SessionFeedbackEntry) => void;
 	error?: string | null;
 	onDismissError?: () => void;
 	queuePaused?: boolean;
@@ -133,6 +137,9 @@ function chatSessionViewElement({
 	pendingPermission = null,
 	pendingQueue = [],
 	notice = null,
+	feedback = [],
+	onDismissFeedback,
+	onRetryFeedback,
 	error = null,
 	onDismissError = vi.fn(),
 	queuePaused = false,
@@ -156,6 +163,9 @@ function chatSessionViewElement({
 		queuePaused,
 		stallObservation,
 		notice,
+		feedback,
+		onDismissFeedback,
+		onRetryFeedback,
 		selectedBackendId: null,
 		canChangeBackend: false,
 		worktreePath: "/repo",
@@ -255,6 +265,35 @@ describe("ChatSessionView error parts", () => {
 	});
 });
 
+describe("ChatSessionView operation supervision", () => {
+	it("renders the durable quit identity and intent when shutdown outcome is unknown", async () => {
+		mockInvoke.mockImplementation((command: string) => {
+			switch (command) {
+				case "list_pending_agent_attempts":
+				case "list_pending_agent_recovery":
+					return Promise.resolve({ entries: [], next_cursor: null });
+				case "get_local_store_migration":
+					return Promise.resolve({ type: "current", migration: null });
+				case "get_application_shutdown":
+					return Promise.resolve({
+						type: "outcome_unknown",
+						operation_id: "quit-unknown-42",
+						intent: { type: "restart", code: 42 },
+					});
+				default:
+					return Promise.resolve(null);
+			}
+		});
+
+		renderChatSessionView();
+
+		const warning = await screen.findByTestId("shutdown-outcome-unknown");
+		expect(warning).toHaveTextContent("Application shutdown outcome unknown");
+		expect(warning).toHaveTextContent("quit-unknown-42");
+		expect(warning).toHaveTextContent("restart (42)");
+	});
+});
+
 describe("ChatSessionView session-local controls", () => {
 	it("renders a dismissible operation error banner", () => {
 		const onDismissError = vi.fn();
@@ -336,6 +375,74 @@ describe("ChatSessionView session-local controls", () => {
 		expect(banner).toHaveTextContent("Recovered the damaged event log.");
 		expect(screen.getByRole("status")).toBe(banner);
 		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+	});
+
+	it("renders canonical feedback fields and dismisses the exact identity", () => {
+		const onDismissFeedback = vi.fn();
+		const feedback: SessionFeedbackEntry = {
+			feedback_id: "feedback-1",
+			attempt_id: "attempt-1",
+			session_id: session.id,
+			operation: "send",
+			revision: "2",
+			actions: ["dismiss"],
+			action_identities: [
+				{
+					action: "dismiss",
+					action_id: "dismiss-feedback-1",
+					origin_revision: "2",
+				},
+			],
+			failure: {
+				kind: "persist_failure",
+				retryable: true,
+				label: "Send could not be saved",
+				detail: "Retry after storage recovers.",
+				correlation_id: "correlation-1",
+			},
+		};
+		renderChatSessionView({ feedback: [feedback], onDismissFeedback });
+
+		expect(screen.getByTestId("session-feedback-banner")).toHaveTextContent(
+			"Send could not be saved",
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Dismiss feedback" }));
+		expect(onDismissFeedback).toHaveBeenCalledWith(feedback);
+	});
+
+	it("offers retry only when the backend feedback projection allows it", () => {
+		const onRetryFeedback = vi.fn();
+		const feedback: SessionFeedbackEntry = {
+			feedback_id: "feedback-retry",
+			attempt_id: "attempt-retry",
+			session_id: session.id,
+			operation: "send",
+			revision: "4",
+			actions: ["dismiss", "retry_resolution"],
+			action_identities: [
+				{
+					action: "dismiss",
+					action_id: "dismiss-feedback-retry",
+					origin_revision: "4",
+				},
+				{
+					action: "retry_resolution",
+					action_id: "retry-feedback-retry",
+					origin_revision: "4",
+				},
+			],
+			failure: {
+				kind: "storage_unavailable",
+				retryable: true,
+				label: "Storage unavailable",
+				detail: null,
+				correlation_id: "correlation-retry",
+			},
+		};
+		renderChatSessionView({ feedback: [feedback], onRetryFeedback });
+
+		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+		expect(onRetryFeedback).toHaveBeenCalledWith(feedback);
 	});
 
 	it("shows the durable SessionClosed interruption on the reopened agent turn", () => {

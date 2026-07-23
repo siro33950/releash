@@ -1,5 +1,8 @@
 use std::time::{Duration, Instant};
 
+use crate::domain::agent_session::entities::{
+    PermissionDecision, PermissionRequest, PermissionRequestBody, PermissionRequestStatus,
+};
 use crate::usecase::agent_session::session::MessagePart;
 
 pub(crate) const STREAMING_EMIT_INTERVAL: Duration = Duration::from_millis(33);
@@ -22,19 +25,17 @@ pub(crate) fn streaming_part_byte_size(part: &MessagePart) -> usize {
         | MessagePart::ToolResult { content, .. } => content.len(),
         MessagePart::ToolUse {
             tool, input, id, ..
-        } => tool.len() + id.len() + serde_json::to_string(input).map_or(0, |body| body.len()),
+        } => tool.len() + id.len() + input.as_str().len(),
         MessagePart::Permission {
             request,
             status,
             answers,
-            ..
+            parent_tool_use_id,
         } => {
-            serde_json::to_string(request).map_or(0, |body| body.len())
-                + serde_json::to_string(status).map_or(0, |body| body.len())
-                + answers
-                    .as_ref()
-                    .and_then(|answers| serde_json::to_string(answers).ok())
-                    .map_or(0, |body| body.len())
+            permission_request_byte_size(request)
+                + status.as_str().len()
+                + answers.as_ref().map_or(0, |value| value.as_str().len())
+                + parent_tool_use_id.as_ref().map_or(0, String::len)
         }
         MessagePart::TaskStatus {
             task_tool_use_id,
@@ -70,6 +71,59 @@ pub(crate) fn streaming_part_byte_size(part: &MessagePart) -> usize {
     }
 }
 
+fn permission_request_byte_size(request: &PermissionRequest) -> usize {
+    let body = match &request.body {
+        PermissionRequestBody::ToolApproval { input } => input.as_str().len(),
+        PermissionRequestBody::PlanApproval {
+            plan,
+            allowed_prompts,
+        } => {
+            plan.len()
+                + allowed_prompts
+                    .iter()
+                    .map(|prompt| prompt.tool.len() + prompt.prompt.len())
+                    .sum::<usize>()
+        }
+        PermissionRequestBody::Question { questions } => questions
+            .iter()
+            .map(|question| {
+                question.question.len()
+                    + question.header.as_ref().map_or(0, String::len)
+                    + question
+                        .options
+                        .iter()
+                        .map(|option| {
+                            option.label.len() + option.description.as_ref().map_or(0, String::len)
+                        })
+                        .sum::<usize>()
+                    + usize::from(question.multi_select)
+            })
+            .sum(),
+        PermissionRequestBody::PermissionGrant { requested } => requested.as_str().len(),
+    };
+    let request_status = match &request.status {
+        PermissionRequestStatus::Pending => "pending".len(),
+        PermissionRequestStatus::Resolved { decision, answers } => {
+            let decision = match decision {
+                PermissionDecision::Allowed => "allowed",
+                PermissionDecision::Denied => "denied",
+                PermissionDecision::Cancelled => "cancelled",
+            };
+            decision.len() + answers.as_ref().map_or(0, |value| value.as_str().len())
+        }
+    };
+    request.id.len()
+        + request.tool_use_id.as_ref().map_or(0, String::len)
+        + request.parent_tool_use_id.as_ref().map_or(0, String::len)
+        + request.tool_name.len()
+        + body
+        + request.title.as_ref().map_or(0, String::len)
+        + request.display_name.as_ref().map_or(0, String::len)
+        + request.description.as_ref().map_or(0, String::len)
+        + request.decision_reason.as_ref().map_or(0, String::len)
+        + request_status
+}
+
 pub(crate) fn streaming_parts_byte_size(parts: &[MessagePart]) -> usize {
     parts.iter().map(streaming_part_byte_size).sum()
 }
@@ -85,6 +139,7 @@ pub(crate) fn parts_can_stream_as_append_delta(parts: &[MessagePart]) -> bool {
     parts.iter().all(part_can_stream_as_append_delta)
 }
 
+#[cfg(test)]
 pub(crate) fn merge_streaming_append_delta_parts(
     streaming_parts: &mut Vec<MessagePart>,
     delta_parts: &[MessagePart],
@@ -177,6 +232,7 @@ pub(crate) fn should_persist_streaming_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::agent_session::entities::PermissionPartStatus;
 
     #[test]
     fn test_streaming_flush_decision_初回pendingは即時flushする() {
@@ -297,5 +353,31 @@ mod tests {
             now,
             false,
         ));
+    }
+
+    #[test]
+    fn permission_body_bytes_are_counted_without_serializing_domain_types() {
+        let part = MessagePart::Permission {
+            request: PermissionRequest {
+                id: "permission-1".into(),
+                tool_use_id: Some("tool-1".into()),
+                parent_tool_use_id: None,
+                tool_name: "Plan".into(),
+                body: PermissionRequestBody::PlanApproval {
+                    plan: "x".repeat(STREAMING_PENDING_BYTE_LIMIT),
+                    allowed_prompts: Vec::new(),
+                },
+                title: None,
+                display_name: None,
+                description: None,
+                decision_reason: None,
+                status: PermissionRequestStatus::Pending,
+            },
+            status: PermissionPartStatus::Pending,
+            answers: None,
+            parent_tool_use_id: None,
+        };
+
+        assert!(streaming_part_byte_size(&part) >= STREAMING_PENDING_BYTE_LIMIT);
     }
 }

@@ -16,10 +16,19 @@ use crate::domain::workflow::ExecutionOrigin;
 use crate::usecase::agent_session::context::BranchDiffContextPort;
 use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
 use crate::usecase::agent_session::session::{MessagePart, OpenTabRegistry, SessionStore};
+use crate::usecase::workflow::ports::{
+    WorkflowTurnCompleteRecoveryCommand, WorkflowTurnCompleteRecoveryOutcome,
+};
 
 #[allow(clippy::too_many_arguments)]
 #[async_trait]
 pub(crate) trait WorkflowRuntimeEngine: Send + Sync {
+    async fn set_local_event_repository(
+        &self,
+        repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
+        generation_id: String,
+    );
+
     async fn set_execution_store_data_dir(&self, dir: PathBuf);
 
     async fn recover_orphan_executions(
@@ -110,6 +119,14 @@ pub(crate) trait WorkflowRuntimeEngine: Send + Sync {
         token_usage: Option<(u64, u64)>,
     ) -> Result<(), WorkflowEngineError>;
 
+    async fn recover_turn_complete(
+        &self,
+        app: &tauri::AppHandle,
+        session_store: &Arc<SessionStore>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
+        command: WorkflowTurnCompleteRecoveryCommand,
+    ) -> Result<WorkflowTurnCompleteRecoveryOutcome, WorkflowEngineError>;
+
     async fn on_agent_stall_observed(
         &self,
         app: &tauri::AppHandle,
@@ -143,6 +160,12 @@ pub(crate) trait WorkflowRuntimeEngine: Send + Sync {
     ) -> Result<(), WorkflowEngineError>;
 
     async fn shutdown_all_active_commands(&self);
+
+    /// Returns true only when at least one command owned by this exact
+    /// execution was observed and quiesced by this call.
+    async fn shutdown_active_commands_for_execution(&self, execution_id: &str) -> bool;
+
+    async fn application_shutdown_target_execution_ids(&self) -> Result<Vec<String>, String>;
 }
 
 pub(crate) fn new_workflow_runtime_engine(
@@ -161,6 +184,14 @@ pub(crate) fn new_workflow_runtime_engine(
 
 #[async_trait]
 impl WorkflowRuntimeEngine for WorkflowRuntimeService {
+    async fn set_local_event_repository(
+        &self,
+        repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
+        generation_id: String,
+    ) {
+        WorkflowRuntimeService::set_local_event_repository(self, repository, generation_id).await;
+    }
+
     async fn set_execution_store_data_dir(&self, dir: PathBuf) {
         WorkflowRuntimeService::set_execution_store_data_dir(self, dir).await;
     }
@@ -169,8 +200,7 @@ impl WorkflowRuntimeEngine for WorkflowRuntimeService {
         &self,
         app: &tauri::AppHandle,
     ) -> Result<(), WorkflowEngineError> {
-        WorkflowRuntimeService::recover_orphan_executions(self, app).await;
-        Ok(())
+        WorkflowRuntimeService::recover_orphan_executions(self, app).await
     }
 
     async fn resolve_start_execution_worktree(
@@ -335,6 +365,23 @@ impl WorkflowRuntimeEngine for WorkflowRuntimeService {
         .await
     }
 
+    async fn recover_turn_complete(
+        &self,
+        app: &tauri::AppHandle,
+        session_store: &Arc<SessionStore>,
+        agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
+        command: WorkflowTurnCompleteRecoveryCommand,
+    ) -> Result<WorkflowTurnCompleteRecoveryOutcome, WorkflowEngineError> {
+        WorkflowRuntimeService::recover_turn_complete(
+            self,
+            app,
+            session_store,
+            agent_runtime,
+            command,
+        )
+        .await
+    }
+
     async fn on_agent_stall_observed(
         &self,
         app: &tauri::AppHandle,
@@ -391,5 +438,13 @@ impl WorkflowRuntimeEngine for WorkflowRuntimeService {
 
     async fn shutdown_all_active_commands(&self) {
         WorkflowRuntimeService::shutdown_all_active_commands(self).await;
+    }
+
+    async fn shutdown_active_commands_for_execution(&self, execution_id: &str) -> bool {
+        WorkflowRuntimeService::shutdown_active_commands_for_execution(self, execution_id).await
+    }
+
+    async fn application_shutdown_target_execution_ids(&self) -> Result<Vec<String>, String> {
+        WorkflowRuntimeService::application_shutdown_target_execution_ids(self).await
     }
 }
