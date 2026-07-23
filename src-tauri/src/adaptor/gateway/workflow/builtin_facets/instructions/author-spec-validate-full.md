@@ -4,7 +4,7 @@
 
 ## 検証
 
-- Requestの確定要求からR-ID、R-IDからB-IDとVerification Method、R/B-IDからDesign判断まで追跡できるか確認する。
+- Requestの確定要求からR-ID、R-IDからB-ID、R/B-IDからDesign判断まで追跡できるか確認する。
 - Scope、Non-goals、用語、状態、error、互換性、制約が3文書で矛盾していないか確認する。
 - BehaviorがRequirementsを、DesignがRequirements／Behaviorを勝手に拡張していないか確認する。
 - 実装を止める未決定事項、placeholder、存在しない参照、重複・欠番IDがないか確認する。

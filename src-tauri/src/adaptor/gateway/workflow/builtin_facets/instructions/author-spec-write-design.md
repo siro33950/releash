@@ -4,7 +4,7 @@
 
 ## 実行
 
-- Requirements、Behavior、全R/B-IDとVerification Methodを読む。
+- Requirements、Behavior、全R/B-IDを読む。
 - リポジトリ規約、architecture文書、関連コード、型、state owner、永続化、failure、retry、restart、concurrency、既存テストを必要な範囲で調査する。
 - 有効なHumanDecisionと、Designを対象とするFinalReview feedbackがあれば反映する。
 - Design Knowledgeを正本として、書くべき内容、書かない内容、固定見出し、完成条件を守る。

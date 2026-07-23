@@ -6,7 +6,7 @@
 
 - Knowledgeが定める構造、形式、B-ID、対応表、必須観点、禁止内容を全て確認する。
 - 全R-IDが受入条件へ対応し、各B-IDがRequirementsから導出できるか確認する。
-- 入力、事前状態、操作、観測点、期待結果、Verification Methodが実行可能な粒度か確認する。
+- 各受入条件が外部から観測可能なビジネスルールとして記述され、テスト手順、検証コマンド、実装詳細を含んでいないか確認する。
 - Requirementsにない挙動や内部実装が混入していないか確認する。
 - 根本がRequirements不足なら`owner: REQUIREMENTS`、Behaviorの不備なら`owner: BEHAVIOR`としてFindingを作る。
 

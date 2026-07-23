@@ -5,10 +5,10 @@
 ## 実行
 
 - `requirements.md`を全文読み、全R-ID、Scope、Non-goalsを確認する。
-- 受入条件と検証方法に必要なコード、既存テスト、外部interfaceを読み取り専用で確認する。
+- 受入条件の記述に必要なコード、既存テスト、外部interfaceを読み取り専用で確認する。
 - 有効なHumanDecisionと、Behaviorを対象とするFinalReview feedbackがあれば反映する。
 - Behavior Knowledgeを正本として、書くべき内容、書かない内容、形式、B-ID、対応表、完成条件を守る。
-- 各Requirementから一意に導出できる入力、事前状態、操作、期待結果、Verification Methodを書く。
+- 各Requirementから一意に導出できる、外部から観測可能なビジネスルールを受入条件として書く。テスト手順、検証コマンド、具体的な再現値を書かない。
 - Requirementsにない挙動、内部実装方式、偶発的な現行値を仕様化しない。
 - `spec_dir/behavior.md`以外を変更しない。
 
