@@ -148,6 +148,10 @@ pub enum CommitBatchError {
     PayloadConflict,
     /// An expected stream head or mutation revision guard did not match.
     StreamHeadConflict { current: StreamVersion },
+    /// A durable owner-level recovery fence won before a new external effect
+    /// reservation. The caller may retry the same accepted work after that
+    /// recovery identity is resolved.
+    EffectAdmissionBlocked,
     /// Batch or queue bounds exceeded before writer admission.
     CapacityExceeded,
     /// A sequence / revision would pass `i64::MAX`.
@@ -170,6 +174,12 @@ impl fmt::Display for CommitBatchError {
                     f,
                     "expected head/revision mismatch (current={})",
                     current.value()
+                )
+            }
+            Self::EffectAdmissionBlocked => {
+                write!(
+                    f,
+                    "external effect admission is blocked by pending recovery"
                 )
             }
             Self::CapacityExceeded => write!(f, "batch or queue capacity exceeded"),

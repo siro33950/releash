@@ -554,7 +554,7 @@ impl StopOperationUsecase {
             Err(CommitBatchError::StorageUnavailable { failure }) => {
                 Ok(StopJoinBindingDisposition::Rejected(failure))
             }
-            Err(CommitBatchError::PayloadConflict) => {
+            Err(CommitBatchError::PayloadConflict | CommitBatchError::EffectAdmissionBlocked) => {
                 let saved = self
                     .lookup_binding(&self.caller_key(request))
                     .await
@@ -1078,7 +1078,8 @@ impl StopOperationUsecase {
             Ok(CommitBatchResult::Replayed(_))
             | Err(CommitBatchError::OutcomeUnknown { .. })
             | Err(CommitBatchError::StreamHeadConflict { .. })
-            | Err(CommitBatchError::PayloadConflict) => Ok(false),
+            | Err(CommitBatchError::PayloadConflict)
+            | Err(CommitBatchError::EffectAdmissionBlocked) => Ok(false),
             Err(CommitBatchError::StorageUnavailable { failure })
                 if failure.is_shutdown_in_progress() =>
             {
@@ -1260,11 +1261,18 @@ impl StopOperationUsecase {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        let mut state_mutations = self
+        let Some(mut state_mutations) = self
             .gate
-            .acceptance_state_mutations(&request.session_id, &acceptance_events)
+            .acceptance_state_mutations(
+                &request.session_id,
+                request.expected_session_revision,
+                &acceptance_events,
+            )
             .await
-            .map_err(|failure| StopOperationError::StorageUnavailable { failure })?;
+            .map_err(|failure| StopOperationError::StorageUnavailable { failure })?
+        else {
+            return Err(StopOperationError::StaleTarget);
+        };
         state_mutations.extend([
             LocalStateMutation::OperationBinding(OperationBindingMutation {
                 key: CallerOperationKey {
@@ -1338,7 +1346,9 @@ impl StopOperationUsecase {
                 }
             }
             Err(
-                CommitBatchError::PayloadConflict | CommitBatchError::StreamHeadConflict { .. },
+                CommitBatchError::PayloadConflict
+                | CommitBatchError::EffectAdmissionBlocked
+                | CommitBatchError::StreamHeadConflict { .. },
             ) => {
                 if let Some(joined) = self
                     .pending_stop_for_target(&request.session_id, &request.turn_id)
@@ -1354,7 +1364,16 @@ impl StopOperationUsecase {
                             .await;
                     }
                 }
-                return Err(StopOperationError::PayloadConflict);
+                return match self.gate.target_snapshot(&request.session_id).await {
+                    Ok(latest)
+                        if latest.session_revision != request.expected_session_revision
+                            || latest.active_turn_id != request.turn_id =>
+                    {
+                        Err(StopOperationError::StaleTarget)
+                    }
+                    Ok(_) => Err(StopOperationError::PayloadConflict),
+                    Err(failure) => Err(StopOperationError::StorageUnavailable { failure }),
+                };
             }
             Err(CommitBatchError::CapacityExceeded | CommitBatchError::SequenceExhausted) => {
                 return Err(StopOperationError::CapacityExceeded)

@@ -51,6 +51,10 @@ pub struct SendPlan {
     /// sends leave this empty. It is projected in the acceptance batch and is
     /// never pre-written to another store.
     pub initial_session: Option<crate::usecase::agent_session::session::ChatSession>,
+    /// Exact canonical projection revision from which disposition and turn
+    /// identity were allocated. The acceptance projection must commit with
+    /// this guard rather than rebasing the allocation onto newer queue state.
+    pub session_projection_guard: crate::domain::local_event::RevisionGuard,
     /// One-shot disposition decided at acceptance time; immutable afterwards.
     pub disposition: SendDisposition,
     /// Opaque reference to the durably saved exact input.
@@ -61,10 +65,6 @@ pub struct SendPlan {
     pub prompt: crate::domain::agent_session::events::PromptInput,
     /// Reserved turn identity for a queued disposition.
     pub reserved_turn_id: Option<String>,
-    /// Whether the provider session is already established. When false the
-    /// acceptance batch records a ProviderEstablish obligation and the
-    /// latest status starts as `AwaitingProviderStart`.
-    pub provider_established: bool,
 }
 
 /// Identity of the provider effect an accepted send is allowed to start.
@@ -78,14 +78,32 @@ pub struct AcceptedSendEffect {
     pub assistant_message_id: Option<String>,
     pub disposition: SendDisposition,
     pub reserved_turn_id: Option<String>,
-    /// ProviderEstablish obligation this effect depends on, when present.
-    pub establish_obligation_id: Option<String>,
     /// TurnExecution obligation identifying the turn / queued execution.
     pub execution_obligation_id: String,
     /// Exact accepted input copied into the immutable obligation. Workers
     /// reconstruct provider input from this value after process restart;
     /// no process-local request journal is authoritative.
     pub canonical_payload: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendEffectDispatch {
+    /// This call installed the process-local worker that owns the handoff.
+    Scheduled,
+    /// The exact queued effect already has a process-local handoff owner.
+    AlreadyScheduled,
+}
+
+/// Adapter-owned classification for ProviderEstablish obligations written by
+/// the superseded two-flight send protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegacyProviderEstablishRecovery {
+    /// The old establish reservation cannot have submitted this turn's input,
+    /// and the turn may continue without replaying that reservation.
+    ContinueTurnExecution,
+    /// Repeating provider establishment could create another remote identity;
+    /// keep the old reservation available for explicit reconciliation.
+    RequiresManualResolution,
 }
 
 /// Runtime-side admission gate for normal sends.
@@ -96,6 +114,7 @@ pub trait SendAdmissionGate: Send + Sync {
     async fn plan_send(
         &self,
         principal: &str,
+        operation_id: &str,
         canonical_payload: &str,
     ) -> Result<SendPlan, SafeOperationFailure>;
 
@@ -109,10 +128,49 @@ pub trait SendAdmissionGate: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Classify a legacy, already-reserved ProviderEstablish dependency.
+    ///
+    /// The default is deliberately conservative. Production adapters may
+    /// continue only when backend-specific durable state proves that doing so
+    /// cannot duplicate a remote provider identity or the accepted turn.
+    async fn classify_legacy_provider_establish(
+        &self,
+        _session_id: &str,
+    ) -> Result<LegacyProviderEstablishRecovery, SafeOperationFailure> {
+        Ok(LegacyProviderEstablishRecovery::RequiresManualResolution)
+    }
+
+    /// Verify that an immediately accepted turn still owns the canonical
+    /// active-turn slot immediately before its TurnExecution claim.
+    ///
+    /// Implementations must read backend-owned durable state. Process-local
+    /// runtime phase is not sufficient after restart.
+    async fn canonical_immediate_turn_is_current(
+        &self,
+        session_id: &str,
+        turn_id: u64,
+    ) -> Result<bool, SafeOperationFailure>;
+
+    /// Whether the exact execution is currently owned by this process. This
+    /// closes the interval in which startup recovery and a live handoff can
+    /// observe the same durable reservation.
+    async fn owns_current_process_turn_execution(
+        &self,
+        _session_id: &str,
+        _operation_id: &str,
+        _obligation_id: &str,
+    ) -> bool {
+        false
+    }
+
     /// Hand the provider effect to a background worker for a freshly
     /// committed acceptance. This method must return after scheduling and
-    /// must not await provider completion.
-    async fn start_provider_effect(&self, effect: &AcceptedSendEffect);
+    /// must not await provider completion. An error means no worker was
+    /// scheduled and no provider I/O was attempted.
+    async fn start_provider_effect(
+        &self,
+        effect: &AcceptedSendEffect,
+    ) -> Result<SendEffectDispatch, SafeOperationFailure>;
 }
 
 /// Immutable plan fixed before a permission-response acceptance commit.
@@ -278,9 +336,11 @@ pub trait StopAdmissionGate: Send + Sync {
     async fn acceptance_state_mutations(
         &self,
         _session_id: &str,
+        _expected_session_revision: u64,
         _events: &[crate::domain::agent_session::events::AgentSessionDomainEvent],
-    ) -> Result<Vec<crate::domain::local_event::LocalStateMutation>, SafeOperationFailure> {
-        Ok(Vec::new())
+    ) -> Result<Option<Vec<crate::domain::local_event::LocalStateMutation>>, SafeOperationFailure>
+    {
+        Ok(Some(Vec::new()))
     }
 
     /// Build the final message/session/permission/queue projection
@@ -480,6 +540,17 @@ pub enum RecoveryEffectHandoff {
 
 #[async_trait::async_trait]
 pub trait RecoveryEffectExecutor: Send + Sync {
+    /// Whether this exact obligation is owned by a live effect in the current
+    /// process. Recovery discovery uses this only for the mutable live index;
+    /// frozen shutdown snapshots never consult process-local ownership.
+    async fn owns_current_process_effect(
+        &self,
+        _obligation_id: &str,
+        _immutable_obligation: &crate::domain::local_event::ObligationRecord,
+    ) -> bool {
+        false
+    }
+
     /// Whether this production composition can decode and read back the exact
     /// obligation family.  Capability discovery calls this before advertising
     /// `ReadAgain`; the conservative default is deliberately unsupported.

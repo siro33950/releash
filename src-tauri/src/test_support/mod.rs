@@ -97,11 +97,26 @@ pub(crate) fn build_agent_runtime_usecase_with_controller(
     session_store: Arc<SessionStore>,
     data_dir: impl Into<std::path::PathBuf>,
 ) -> (Arc<AgentSessionRuntimeUsecase>, TestAgentRuntimeController) {
-    build_agent_runtime_usecase_with_controller_and_notifiers(
+    build_agent_runtime_usecase_with_controller_and_notifiers_and_spawner(
         session_store,
         data_dir,
         Arc::new(NoopAgentSessionEventNotifier),
         Arc::new(NoopAgentStatusNotifier),
+        Arc::new(TokioTestAgentTaskSpawner),
+    )
+}
+
+pub(crate) fn build_agent_runtime_usecase_with_controller_and_spawner(
+    session_store: Arc<SessionStore>,
+    data_dir: impl Into<std::path::PathBuf>,
+    spawner: Arc<dyn AgentTaskSpawner>,
+) -> (Arc<AgentSessionRuntimeUsecase>, TestAgentRuntimeController) {
+    build_agent_runtime_usecase_with_controller_and_notifiers_and_spawner(
+        session_store,
+        data_dir,
+        Arc::new(NoopAgentSessionEventNotifier),
+        Arc::new(NoopAgentStatusNotifier),
+        spawner,
     )
 }
 
@@ -111,12 +126,28 @@ pub(crate) fn build_agent_runtime_usecase_with_controller_and_notifiers(
     event_notifier: Arc<dyn AgentSessionEventNotifier>,
     status_notifier: Arc<dyn AgentStatusNotifier>,
 ) -> (Arc<AgentSessionRuntimeUsecase>, TestAgentRuntimeController) {
+    build_agent_runtime_usecase_with_controller_and_notifiers_and_spawner(
+        session_store,
+        data_dir,
+        event_notifier,
+        status_notifier,
+        Arc::new(TokioTestAgentTaskSpawner),
+    )
+}
+
+fn build_agent_runtime_usecase_with_controller_and_notifiers_and_spawner(
+    session_store: Arc<SessionStore>,
+    data_dir: impl Into<std::path::PathBuf>,
+    event_notifier: Arc<dyn AgentSessionEventNotifier>,
+    status_notifier: Arc<dyn AgentStatusNotifier>,
+    spawner: Arc<dyn AgentTaskSpawner>,
+) -> (Arc<AgentSessionRuntimeUsecase>, TestAgentRuntimeController) {
     let controller = TestAgentRuntimeController::default();
     let mut registry = AgentBackendRegistry::new();
     registry.register(Arc::new(TestAgentBackend {
         id: "claude",
         name: "Claude",
-        models: vec!["claude-4-sonnet", "claude-opus-5"],
+        models: vec!["claude-4-sonnet", "claude-opus-4-8", "claude-opus-5"],
         controller: controller.clone(),
     }));
     registry.register(Arc::new(TestAgentBackend {
@@ -137,7 +168,7 @@ pub(crate) fn build_agent_runtime_usecase_with_controller_and_notifiers(
         Arc::new(AgentStatusCenter::new()),
         status_notifier,
         event_notifier,
-        Arc::new(TokioTestAgentTaskSpawner),
+        spawner,
         None,
         Arc::new(EmptyInstructionSource),
         data_dir.into(),

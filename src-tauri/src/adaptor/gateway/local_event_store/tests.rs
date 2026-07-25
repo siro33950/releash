@@ -338,6 +338,7 @@ fn agent_session_projection(session_id: &str) -> SessionProjectionRecord {
             updated_at_bits: 1.0_f64.to_bits(),
             agent_session_id: None,
             provider_session_generation: 0,
+            provider_session_observation_id: None,
             context_reinjection_generation: None,
             context_carry: None,
             pending_recovery_message: None,
@@ -496,7 +497,7 @@ fn obligation_mutation(obligation_id: &str, pending: bool) -> LocalStateMutation
                 "operation_id": format!("operation-{obligation_id}"),
                 "session_id": "session-1",
                 "kind": "turn_execution",
-                "state": "effect_reserved",
+                "state": "prepared",
             })
             .to_string(),
         ),
@@ -3739,7 +3740,7 @@ async fn b038_current_recovery_cursor_holds_first_page_snapshot_across_update_an
     assert!(matches!(
         &second.entries[0].record,
         ObligationRecord::Send {
-            state: crate::domain::local_event::ObligationStateRecord::EffectReserved,
+            state: crate::domain::local_event::ObligationStateRecord::Prepared,
             ..
         }
     ));
@@ -4684,17 +4685,23 @@ impl crate::usecase::agent_session::operation::SendAdmissionGate for Performance
     async fn plan_send(
         &self,
         _principal: &str,
+        _operation_id: &str,
         _canonical_payload: &str,
     ) -> Result<crate::usecase::agent_session::operation::SendPlan, SafeOperationFailure> {
         let ordinal = self
             .planned
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
             + 1;
+        let allocation = self
+            .session_store
+            .send_acceptance_allocation(&self.session_id)
+            .expect("performance send allocation must be readable");
         Ok(crate::usecase::agent_session::operation::SendPlan {
             session_id: self.session_id.clone(),
             initial_session: None,
+            session_projection_guard: allocation.session_projection_guard,
             disposition: crate::domain::agent_session::events::SendDisposition::StartedTurn {
-                turn_id: ordinal.to_string(),
+                turn_id: allocation.next_turn_id.to_string(),
             },
             input_ref: format!("performance-input-{ordinal}"),
             human_message_id: format!("performance-human-{ordinal}"),
@@ -4703,7 +4710,6 @@ impl crate::usecase::agent_session::operation::SendAdmissionGate for Performance
                 ..Default::default()
             },
             reserved_turn_id: None,
-            provider_established: true,
         })
     }
 
@@ -4717,6 +4723,7 @@ impl crate::usecase::agent_session::operation::SendAdmissionGate for Performance
                 crate::usecase::agent_session::session::SendAcceptanceProjectionInput {
                     session_id: &plan.session_id,
                     initial_session: None,
+                    session_projection_guard: plan.session_projection_guard,
                     human_message_id: &plan.human_message_id,
                     prompt: &plan.prompt,
                     disposition: &plan.disposition,
@@ -4735,12 +4742,22 @@ impl crate::usecase::agent_session::operation::SendAdmissionGate for Performance
             })
     }
 
+    async fn canonical_immediate_turn_is_current(
+        &self,
+        _session_id: &str,
+        _turn_id: u64,
+    ) -> Result<bool, SafeOperationFailure> {
+        Ok(true)
+    }
+
     async fn start_provider_effect(
         &self,
         _effect: &crate::usecase::agent_session::operation::AcceptedSendEffect,
-    ) {
+    ) -> Result<crate::usecase::agent_session::operation::SendEffectDispatch, SafeOperationFailure>
+    {
         self.effects
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(crate::usecase::agent_session::operation::SendEffectDispatch::Scheduled)
     }
 }
 
@@ -5779,6 +5796,9 @@ async fn clean_workflow_interruption_does_not_create_an_impossible_completion_ha
                     reason: crate::domain::agent_session::events::InterruptReason::Abort,
                     exit_code: 0,
                     error: None,
+                },
+                crate::usecase::agent_session::event_log::AgentSessionEvent::QueuePaused {
+                    at: 2.0,
                 },
             ],
             message_id,
@@ -13675,4 +13695,496 @@ async fn b098_supported_schema_evolution_is_atomic_and_preserves_identity_keys_a
             assert_eq!(count, 0, "obsolete schema object remained: {removed}");
         }
     }
+}
+
+fn send_effect_admission_projection(
+    session_id: &str,
+    state: AgentSessionStateRecord,
+    queue_paused: bool,
+) -> SessionProjectionRecord {
+    let SessionProjectionRecord::AgentSession(mut projection) =
+        agent_session_projection(session_id)
+    else {
+        unreachable!("agent-session fixture has the closed agent-session variant");
+    };
+    projection.meta.state = state;
+    projection.meta.last_turn_id = Some(1);
+    projection.queue_paused_at_bits = queue_paused.then_some(1.0_f64.to_bits());
+    SessionProjectionRecord::AgentSession(projection)
+}
+
+fn send_effect_admission_obligation(
+    session_id: &str,
+    obligation_id: &str,
+    state: ObligationStateRecord,
+    expected: RevisionGuard,
+    revision: Revision,
+) -> LocalStateMutation {
+    LocalStateMutation::Obligation(ObligationMutation {
+        obligation_id: obligation_id.to_string(),
+        record: ObligationRecord::Send {
+            obligation_id: obligation_id.to_string(),
+            operation_id: format!("operation-{obligation_id}"),
+            session_id: session_id.to_string(),
+            kind: crate::domain::local_event::SendObligationKindRecord::TurnExecution,
+            disposition: crate::domain::local_event::SendObligationDispositionRecord::StartedTurn,
+            human_message_id: Some(format!("human-{obligation_id}")),
+            assistant_message_id: Some(format!("assistant-{obligation_id}")),
+            reserved_turn_id: None,
+            turn_id: Some("1".to_string()),
+            dependency_obligation_ids: Vec::new(),
+            canonical_payload: format!("payload-{obligation_id}"),
+            state,
+        },
+        pending: Some(PendingIndexEntry {
+            ordered_key: format!("send-effect-admission:{obligation_id}"),
+            owner: session_id.to_string(),
+            partition: PendingPartition::Owner,
+            shutdown_plan: None,
+        }),
+        expected,
+        revision,
+    })
+}
+
+async fn seed_send_effect_admission(
+    harness: &Harness,
+    fixture_id: &str,
+    session_id: &str,
+    obligation_id: &str,
+    state: AgentSessionStateRecord,
+    queue_paused: bool,
+) {
+    harness
+        .store
+        .commit_batch(batch(
+            &format!("{fixture_id}-seed"),
+            &format!("{fixture_id}-seed"),
+            [101; 32],
+            Vec::new(),
+            Vec::new(),
+            vec![
+                LocalStateMutation::SessionProjection(SessionProjectionMutation {
+                    session_id: session_id.to_string(),
+                    projection: send_effect_admission_projection(session_id, state, queue_paused),
+                    expected: RevisionGuard::Absent,
+                    revision: Revision::new(0).unwrap(),
+                }),
+                send_effect_admission_obligation(
+                    session_id,
+                    obligation_id,
+                    ObligationStateRecord::Pending,
+                    RevisionGuard::Absent,
+                    Revision::new(0).unwrap(),
+                ),
+            ],
+        ))
+        .await
+        .expect("seed send effect admission fixture");
+}
+
+fn send_effect_admission_claim(
+    fixture_id: &str,
+    session_id: &str,
+    obligation_id: &str,
+) -> LocalAtomicBatch {
+    batch(
+        &format!("{fixture_id}-claim"),
+        &format!("{fixture_id}-claim"),
+        [102; 32],
+        Vec::new(),
+        Vec::new(),
+        vec![send_effect_admission_obligation(
+            session_id,
+            obligation_id,
+            ObligationStateRecord::EffectReserved,
+            RevisionGuard::Expected(Revision::new(0).unwrap()),
+            Revision::new(1).unwrap(),
+        )],
+    )
+}
+
+async fn send_effect_admission_obligation_snapshot(
+    store: &Arc<LocalEventStore>,
+    obligation_id: &str,
+) -> (ObligationRecord, Revision, bool) {
+    let result = store
+        .query(LocalEventQuery::ObligationByIdentity {
+            obligation_id: obligation_id.to_string(),
+        })
+        .await
+        .expect("read send effect admission obligation");
+    let LocalEventQueryResult::ObligationByIdentity(Some(obligation)) = result else {
+        panic!("send effect admission obligation is missing");
+    };
+    (
+        obligation.record,
+        obligation.revision,
+        obligation.pending.is_some(),
+    )
+}
+
+#[tokio::test]
+async fn send_effect_admission_unpaused_pending_claim_commits() {
+    let harness = Harness::open();
+    let session_id = "send-effect-admission-open-session";
+    let obligation_id = "send-effect-admission-open.exec";
+    seed_send_effect_admission(
+        &harness,
+        "send-effect-admission-open",
+        session_id,
+        obligation_id,
+        AgentSessionStateRecord::Active,
+        false,
+    )
+    .await;
+
+    let result = harness
+        .store
+        .commit_batch(send_effect_admission_claim(
+            "send-effect-admission-open",
+            session_id,
+            obligation_id,
+        ))
+        .await
+        .expect("unpaused send effect claim must commit");
+    assert!(matches!(result, CommitBatchResult::Committed(_)));
+
+    let (record, revision, pending) =
+        send_effect_admission_obligation_snapshot(&harness.store, obligation_id).await;
+    assert!(matches!(
+        record,
+        ObligationRecord::Send {
+            state: ObligationStateRecord::EffectReserved,
+            ..
+        }
+    ));
+    assert_eq!(revision, Revision::new(1).unwrap());
+    assert!(pending);
+}
+
+#[tokio::test]
+async fn send_effect_admission_paused_closed_or_archived_rejects_without_mutation() {
+    for (fixture_id, state, queue_paused) in [
+        (
+            "send-effect-admission-paused",
+            AgentSessionStateRecord::Active,
+            true,
+        ),
+        (
+            "send-effect-admission-closed",
+            AgentSessionStateRecord::Closed,
+            false,
+        ),
+        (
+            "send-effect-admission-archived",
+            AgentSessionStateRecord::Archived,
+            false,
+        ),
+    ] {
+        let harness = Harness::open();
+        let session_id = format!("{fixture_id}-session");
+        let obligation_id = format!("{fixture_id}.exec");
+        seed_send_effect_admission(
+            &harness,
+            fixture_id,
+            &session_id,
+            &obligation_id,
+            state,
+            queue_paused,
+        )
+        .await;
+        let before =
+            send_effect_admission_obligation_snapshot(&harness.store, &obligation_id).await;
+        let claim = send_effect_admission_claim(fixture_id, &session_id, &obligation_id);
+        let claim_identity = claim.commit_id.clone();
+
+        assert!(matches!(
+            harness.store.commit_batch(claim).await,
+            Err(CommitBatchError::EffectAdmissionBlocked)
+        ));
+        assert_eq!(
+            send_effect_admission_obligation_snapshot(&harness.store, &obligation_id).await,
+            before,
+            "{fixture_id} changed the guarded obligation"
+        );
+        assert!(matches!(
+            harness.store.resolve_commit(claim_identity).await.unwrap(),
+            CommitResolution::NotCommitted
+        ));
+    }
+}
+
+#[tokio::test]
+async fn send_effect_admission_rejects_a_superseded_immediate_turn_without_mutation() {
+    let harness = Harness::open();
+    let fixture_id = "send-effect-admission-stale-turn";
+    let session_id = "send-effect-admission-stale-turn-session";
+    let obligation_id = "send-effect-admission-stale-turn.exec";
+    seed_send_effect_admission(
+        &harness,
+        fixture_id,
+        session_id,
+        obligation_id,
+        AgentSessionStateRecord::Active,
+        false,
+    )
+    .await;
+
+    let SessionProjectionRecord::AgentSession(mut newer_projection) =
+        send_effect_admission_projection(session_id, AgentSessionStateRecord::Active, false)
+    else {
+        unreachable!("agent-session fixture has the closed agent-session variant");
+    };
+    newer_projection.meta.last_turn_id = Some(2);
+    harness
+        .store
+        .commit_batch(batch(
+            "send-effect-admission-stale-turn-projection",
+            "send-effect-admission-stale-turn-projection",
+            [105; 32],
+            Vec::new(),
+            Vec::new(),
+            vec![LocalStateMutation::SessionProjection(
+                SessionProjectionMutation {
+                    session_id: session_id.to_string(),
+                    projection: SessionProjectionRecord::AgentSession(newer_projection),
+                    expected: RevisionGuard::Expected(Revision::new(0).unwrap()),
+                    revision: Revision::new(1).unwrap(),
+                },
+            )],
+        ))
+        .await
+        .expect("advance canonical active turn");
+
+    let before = send_effect_admission_obligation_snapshot(&harness.store, obligation_id).await;
+    assert!(matches!(
+        harness
+            .store
+            .commit_batch(send_effect_admission_claim(
+                fixture_id,
+                session_id,
+                obligation_id,
+            ))
+            .await,
+        Err(CommitBatchError::EffectAdmissionBlocked)
+    ));
+    assert_eq!(
+        send_effect_admission_obligation_snapshot(&harness.store, obligation_id).await,
+        before
+    );
+}
+
+#[tokio::test]
+async fn send_effect_admission_is_blocked_by_reserved_legacy_provider_establish() {
+    let harness = Harness::open();
+    let fixture_id = "send-effect-admission-legacy-establish";
+    let session_id = "send-effect-admission-legacy-establish-session";
+    let obligation_id = "send-effect-admission-legacy-establish-current.exec";
+    let legacy_id = "send-effect-admission-legacy-establish.establish";
+    seed_send_effect_admission(
+        &harness,
+        fixture_id,
+        session_id,
+        obligation_id,
+        AgentSessionStateRecord::Active,
+        false,
+    )
+    .await;
+
+    harness
+        .store
+        .commit_batch(batch(
+            "send-effect-admission-legacy-provider-seed",
+            "send-effect-admission-legacy-provider-seed",
+            [106; 32],
+            Vec::new(),
+            Vec::new(),
+            vec![LocalStateMutation::Obligation(ObligationMutation {
+                obligation_id: legacy_id.to_string(),
+                record: ObligationRecord::Send {
+                    obligation_id: legacy_id.to_string(),
+                    operation_id: "send-effect-admission-legacy-operation".to_string(),
+                    session_id: session_id.to_string(),
+                    kind: crate::domain::local_event::SendObligationKindRecord::ProviderEstablish,
+                    disposition:
+                        crate::domain::local_event::SendObligationDispositionRecord::StartedTurn,
+                    human_message_id: Some("legacy-human".to_string()),
+                    assistant_message_id: Some("legacy-assistant".to_string()),
+                    reserved_turn_id: None,
+                    turn_id: Some("0".to_string()),
+                    dependency_obligation_ids: Vec::new(),
+                    canonical_payload: "legacy-payload".to_string(),
+                    state: ObligationStateRecord::EffectReserved,
+                },
+                pending: Some(PendingIndexEntry {
+                    ordered_key: format!("send-effect-admission:{legacy_id}"),
+                    owner: session_id.to_string(),
+                    partition: PendingPartition::Owner,
+                    shutdown_plan: None,
+                }),
+                expected: RevisionGuard::Absent,
+                revision: Revision::new(0).unwrap(),
+            })],
+        ))
+        .await
+        .expect("seed reserved legacy ProviderEstablish");
+
+    let before = send_effect_admission_obligation_snapshot(&harness.store, obligation_id).await;
+    assert!(matches!(
+        harness
+            .store
+            .commit_batch(send_effect_admission_claim(
+                fixture_id,
+                session_id,
+                obligation_id,
+            ))
+            .await,
+        Err(CommitBatchError::EffectAdmissionBlocked)
+    ));
+    assert_eq!(
+        send_effect_admission_obligation_snapshot(&harness.store, obligation_id).await,
+        before
+    );
+}
+
+#[tokio::test]
+async fn send_effect_admission_owner_recovery_blocks_then_same_claim_identity_commits() {
+    let harness = Harness::open();
+    let fixture_id = "send-effect-admission-owner-recovery";
+    let session_id = "send-effect-admission-owner-recovery-session";
+    let obligation_id = "send-effect-admission-owner-recovery.exec";
+    let blocker_id = "backend-recovery:send-effect-admission-owner-recovery";
+    seed_send_effect_admission(
+        &harness,
+        fixture_id,
+        session_id,
+        obligation_id,
+        AgentSessionStateRecord::Active,
+        false,
+    )
+    .await;
+
+    let blocker = LocalStateMutation::Obligation(ObligationMutation {
+        obligation_id: blocker_id.to_string(),
+        record: ObligationRecord::BackendSessionRecovery {
+            session_id: session_id.to_string(),
+            recovery_id: "send-effect-admission-recovery".to_string(),
+            detail:
+                crate::domain::local_event::BackendSessionRecoveryObligationRecord::EffectReserved {
+                    old_provider_session_generation: 0,
+                    reason: BackendSessionRecoveryReason::BackendSessionLost,
+                    reserved_at_bits: 1.0_f64.to_bits(),
+                },
+            state: ObligationStateRecord::EffectReserved,
+        },
+        pending: Some(PendingIndexEntry {
+            ordered_key: format!("send-effect-admission:{blocker_id}"),
+            owner: session_id.to_string(),
+            partition: PendingPartition::Owner,
+            shutdown_plan: None,
+        }),
+        expected: RevisionGuard::Absent,
+        revision: Revision::new(0).unwrap(),
+    });
+    let mut blocker_seed = batch(
+        "send-effect-admission-owner-recovery-blocker",
+        "send-effect-admission-owner-recovery-blocker",
+        [103; 32],
+        Vec::new(),
+        Vec::new(),
+        vec![blocker],
+    );
+    blocker_seed.idempotency.operation_kind = CommitOperationKind::Recovery;
+    harness
+        .store
+        .commit_batch(blocker_seed)
+        .await
+        .expect("seed owner recovery blocker");
+
+    let claim = send_effect_admission_claim(fixture_id, session_id, obligation_id);
+    let claim_identity = claim.commit_id.clone();
+    assert!(matches!(
+        harness.store.commit_batch(claim.clone()).await,
+        Err(CommitBatchError::EffectAdmissionBlocked)
+    ));
+    assert_eq!(
+        send_effect_admission_obligation_snapshot(&harness.store, obligation_id).await,
+        (
+            match send_effect_admission_obligation(
+                session_id,
+                obligation_id,
+                ObligationStateRecord::Pending,
+                RevisionGuard::Absent,
+                Revision::new(0).unwrap(),
+            ) {
+                LocalStateMutation::Obligation(obligation) => obligation.record,
+                _ => unreachable!(),
+            },
+            Revision::new(0).unwrap(),
+            true,
+        )
+    );
+    assert!(matches!(
+        harness
+            .store
+            .resolve_commit(claim_identity.clone())
+            .await
+            .unwrap(),
+        CommitResolution::NotCommitted
+    ));
+
+    let resolved_blocker = LocalStateMutation::Obligation(ObligationMutation {
+        obligation_id: blocker_id.to_string(),
+        record: ObligationRecord::BackendSessionRecovery {
+            session_id: session_id.to_string(),
+            recovery_id: "send-effect-admission-recovery".to_string(),
+            detail: crate::domain::local_event::BackendSessionRecoveryObligationRecord::Completed {
+                old_provider_session_generation: 0,
+                provider_session_generation: 1,
+                backend_session_id: "backend-session-1".to_string(),
+                completed_at_bits: 2.0_f64.to_bits(),
+            },
+            state: ObligationStateRecord::Completed,
+        },
+        pending: None,
+        expected: RevisionGuard::Expected(Revision::new(0).unwrap()),
+        revision: Revision::new(1).unwrap(),
+    });
+    let mut blocker_resolution = batch(
+        "send-effect-admission-owner-recovery-resolved",
+        "send-effect-admission-owner-recovery-resolved",
+        [104; 32],
+        Vec::new(),
+        Vec::new(),
+        vec![resolved_blocker],
+    );
+    blocker_resolution.idempotency.operation_kind = CommitOperationKind::Recovery;
+    harness
+        .store
+        .commit_batch(blocker_resolution)
+        .await
+        .expect("resolve owner recovery blocker");
+
+    let result = harness
+        .store
+        .commit_batch(claim)
+        .await
+        .expect("the exact rejected claim identity must commit after recovery resolution");
+    assert!(matches!(result, CommitBatchResult::Committed(_)));
+    assert!(matches!(
+        harness.store.resolve_commit(claim_identity).await.unwrap(),
+        CommitResolution::Committed(_)
+    ));
+    let (record, revision, pending) =
+        send_effect_admission_obligation_snapshot(&harness.store, obligation_id).await;
+    assert!(matches!(
+        record,
+        ObligationRecord::Send {
+            state: ObligationStateRecord::EffectReserved,
+            ..
+        }
+    ));
+    assert_eq!(revision, Revision::new(1).unwrap());
+    assert!(pending);
 }

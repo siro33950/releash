@@ -3041,6 +3041,7 @@ fn list_sessions_ignores_legacy_flat_json_and_sidecar() {
         updated_at: 1001.0,
         agent_session_id: Some("agent-session".to_string()),
         provider_session_generation: 1,
+        provider_session_observation_id: None,
         context_reinjection_generation: None,
         context_carry: Some(ContextCarryState::Resumed),
         pending_recovery_message: None,

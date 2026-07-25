@@ -97,6 +97,9 @@ impl WorkflowEngineError {
             error @ AgentRuntimeError::BackendSessionLost { .. } => {
                 Self::AgentSession(format!("{context}: {error}"))
             }
+            error @ AgentRuntimeError::AcceptedEffectAdmissionDeferred => {
+                Self::AgentSession(format!("{context}: {error}"))
+            }
             AgentRuntimeError::Other(message) => {
                 Self::AgentSession(format!("{context}: {message}"))
             }
@@ -120,6 +123,9 @@ impl From<AgentRuntimeError> for WorkflowEngineError {
                 Self::AgentSession(AgentRuntimeError::BackendSelectionLocked.to_string())
             }
             error @ AgentRuntimeError::BackendSessionLost { .. } => {
+                Self::AgentSession(error.to_string())
+            }
+            error @ AgentRuntimeError::AcceptedEffectAdmissionDeferred => {
                 Self::AgentSession(error.to_string())
             }
             AgentRuntimeError::Other(message) => Self::AgentSession(message),

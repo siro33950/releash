@@ -135,6 +135,7 @@ pub struct AgentSessionMetadataRecord {
     pub updated_at_bits: u64,
     pub agent_session_id: Option<String>,
     pub provider_session_generation: u64,
+    pub provider_session_observation_id: Option<String>,
     pub context_reinjection_generation: Option<u64>,
     pub context_carry: Option<AgentContextCarryStateRecord>,
     pub pending_recovery_message: Option<AgentPendingRecoveryMessageRecord>,
@@ -1699,6 +1700,121 @@ impl TerminalResultRecord {
 }
 
 impl ObligationRecord {
+    pub(crate) fn original(&self) -> &Self {
+        match self {
+            Self::RecoveryTransition { original, .. } | Self::Observed { original, .. } => {
+                original.original()
+            }
+            _ => self,
+        }
+    }
+
+    pub(crate) fn state(&self) -> Option<ObligationStateRecord> {
+        match self.original() {
+            Self::Send { state, .. }
+            | Self::PermissionResponse { state, .. }
+            | Self::StopInterrupt { state, .. }
+            | Self::SessionClose { state, .. }
+            | Self::BackendSessionRecovery { state, .. }
+            | Self::WorkflowShutdown { state, .. }
+            | Self::WorkflowTurnCompletion { state, .. }
+            | Self::RecoveryPublication { state, .. }
+            | Self::ProviderEstablish { state, .. }
+            | Self::TurnExecution { state, .. }
+            | Self::TerminalCommit { state, .. }
+            | Self::RecoveryReserved { state, .. }
+            | Self::RecoveryCompleted { state, .. } => Some(*state),
+            Self::FeedbackReservation { .. }
+            | Self::Feedback { .. }
+            | Self::WorkflowExecution { .. }
+            | Self::RecoveryTransition { .. }
+            | Self::Observed { .. } => None,
+        }
+    }
+
+    fn recovery_action(&self) -> Option<&ObligationRecoveryActionRecord> {
+        match self {
+            Self::RecoveryTransition {
+                recovery_action, ..
+            } => Some(recovery_action),
+            Self::Observed { original, .. } => original.recovery_action(),
+            _ => None,
+        }
+    }
+
+    /// Canonical owner-level fence for starting a new external effect.
+    ///
+    /// Ordinary live work remains queueable. Explicitly ambiguous work,
+    /// recovery-owned handoffs, and lifecycle closure remain blockers until
+    /// their exact durable identity is resolved.
+    pub(crate) fn blocks_effect_admission(&self) -> bool {
+        let original = self.original();
+        if matches!(original, Self::FeedbackReservation { .. }) {
+            return false;
+        }
+        let state = self.state();
+        let action_unresolved = self.recovery_action().is_some_and(|action| {
+            matches!(
+                action.state,
+                ObligationStateRecord::Prepared
+                    | ObligationStateRecord::EffectReserved
+                    | ObligationStateRecord::OutcomeUnknown
+                    | ObligationStateRecord::ReconciliationRequired
+            )
+        });
+        let explicitly_unresolved = matches!(
+            state,
+            Some(
+                ObligationStateRecord::ReconciliationRequired
+                    | ObligationStateRecord::Failed
+                    | ObligationStateRecord::OutcomeUnknown
+            )
+        );
+        let recovery_owned = matches!(
+            original,
+            Self::BackendSessionRecovery { .. }
+                | Self::WorkflowShutdown { .. }
+                | Self::WorkflowTurnCompletion { .. }
+                | Self::RecoveryPublication { .. }
+                | Self::RecoveryReserved { .. }
+                | Self::RecoveryCompleted { .. }
+        );
+        let closing = matches!(original, Self::SessionClose { .. })
+            && state != Some(ObligationStateRecord::Completed);
+        // ProviderEstablish belongs to the superseded two-flight Send
+        // protocol. An EffectReserved row proves that an older process
+        // crossed that protocol's external-effect boundary, so no other send
+        // effect may be claimed until startup normalization either retires it
+        // with backend-specific proof or leaves it for reconciliation.
+        let legacy_provider_establish_reserved = matches!(
+            original,
+            Self::Send {
+                kind: SendObligationKindRecord::ProviderEstablish,
+                state: ObligationStateRecord::EffectReserved,
+                ..
+            } | Self::ProviderEstablish {
+                state: ObligationStateRecord::EffectReserved,
+                ..
+            }
+        );
+        let known_live = matches!(
+            original,
+            Self::Send { .. }
+                | Self::ProviderEstablish { .. }
+                | Self::TurnExecution { .. }
+                | Self::PermissionResponse { .. }
+                | Self::StopInterrupt { .. }
+                | Self::TerminalCommit { .. }
+                | Self::SessionClose { .. }
+        );
+        let blocks = action_unresolved
+            || explicitly_unresolved
+            || recovery_owned
+            || closing
+            || legacy_provider_establish_reserved;
+        blocks || !known_live
+    }
+
     pub(crate) fn write_canonical_identity_v1(
         &self,
         bytes: &mut Vec<u8>,

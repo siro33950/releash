@@ -448,6 +448,44 @@ impl RecoveryActionUsecase {
         })
     }
 
+    fn is_internal_pending_send_execution(obligation_id: &str, record: &ObligationRecord) -> bool {
+        if matches!(
+            record,
+            ObligationRecord::RecoveryTransition { .. } | ObligationRecord::Observed { .. }
+        ) {
+            return false;
+        }
+        if unresolved_recovery_original_identity(obligation_id, record).is_some() {
+            return false;
+        }
+        let ObligationRecord::Send {
+            obligation_id: recorded_obligation_id,
+            operation_id,
+            session_id,
+            kind,
+            state,
+            dependency_obligation_ids,
+            ..
+        } = original_obligation(record)
+        else {
+            return false;
+        };
+        let canonical_execution_id = format!("{operation_id}.exec");
+        let canonical_establish_id = format!("{operation_id}.establish");
+        let dependencies_are_internal = dependency_obligation_ids.is_empty()
+            || matches!(
+                dependency_obligation_ids.as_slice(),
+                [dependency_id] if dependency_id == &canonical_establish_id
+            );
+        recorded_obligation_id == obligation_id
+            && recorded_obligation_id == &canonical_execution_id
+            && !operation_id.is_empty()
+            && !session_id.is_empty()
+            && *kind == SendObligationKindRecord::TurnExecution
+            && *state == ObligationStateRecord::Pending
+            && dependencies_are_internal
+    }
+
     pub async fn pending(
         &self,
         query: PendingRecoveryQuery,
@@ -475,6 +513,14 @@ impl RecoveryActionUsecase {
         for (entry, continuation_cursor) in page.entries.into_iter().zip(page.continuation_cursors)
         {
             if is_internal_feedback_reservation(&entry.record) {
+                continue;
+            }
+            if Self::is_internal_pending_send_execution(&entry.obligation_id, &entry.record)
+                || self
+                    .executor
+                    .owns_current_process_effect(&entry.obligation_id, &entry.record)
+                    .await
+            {
                 continue;
             }
             let descriptor = pending_recovery_descriptor(&entry.obligation_id, &entry.record);
@@ -576,6 +622,9 @@ impl RecoveryActionUsecase {
                 return Err(internal("pending-snapshot-detail"));
             };
             if is_internal_feedback_reservation(&record) {
+                continue;
+            }
+            if Self::is_internal_pending_send_execution(&obligation_id, &record) {
                 continue;
             }
             let descriptor = pending_recovery_descriptor(&obligation_id, &record);
@@ -1522,6 +1571,17 @@ impl RecoveryActionUsecase {
                 rejection: RecoveryActionRejection::ActionUnavailable,
             });
         }
+        if Self::is_internal_pending_send_execution(&request.obligation_id, &obligation.record)
+            || self
+                .executor
+                .owns_current_process_effect(&request.obligation_id, &obligation.record)
+                .await
+        {
+            return Ok(RecoveryActionOutcome::Rejected {
+                action_id: request.action_id,
+                rejection: RecoveryActionRejection::ActionUnavailable,
+            });
+        }
         let observation = authoritative_observation(
             &obligation.record,
             request.origin_revision,
@@ -1645,7 +1705,9 @@ impl RecoveryActionUsecase {
                     rejection: RecoveryActionRejection::TargetRevisionChanged,
                 });
             }
-            Err(CommitBatchError::PayloadConflict) => return Err(RecoveryActionError::NotFound),
+            Err(CommitBatchError::PayloadConflict | CommitBatchError::EffectAdmissionBlocked) => {
+                return Err(RecoveryActionError::NotFound)
+            }
             Err(error) => return map_commit_error(error, &request.action_id),
         }
 
@@ -3360,53 +3422,7 @@ pub(crate) fn unresolved_recovery_original_identity(
     obligation_id: &str,
     record: &ObligationRecord,
 ) -> Option<String> {
-    if is_internal_feedback_reservation(record) {
-        return None;
-    }
-    let state = obligation_state(record);
-    let action_unresolved = recovery_action(record).is_some_and(|action| {
-        matches!(
-            action.state,
-            ObligationStateRecord::Prepared
-                | ObligationStateRecord::EffectReserved
-                | ObligationStateRecord::OutcomeUnknown
-                | ObligationStateRecord::ReconciliationRequired
-        )
-    });
-    let explicitly_unresolved = matches!(
-        state,
-        Some(
-            ObligationStateRecord::ReconciliationRequired
-                | ObligationStateRecord::Failed
-                | ObligationStateRecord::OutcomeUnknown
-        )
-    );
-    let original = original_obligation(record);
-    let recovery_owned = matches!(
-        original,
-        ObligationRecord::BackendSessionRecovery { .. }
-            | ObligationRecord::WorkflowShutdown { .. }
-            | ObligationRecord::WorkflowTurnCompletion { .. }
-            | ObligationRecord::RecoveryPublication { .. }
-            | ObligationRecord::RecoveryReserved { .. }
-            | ObligationRecord::RecoveryCompleted { .. }
-    );
-    let closing = matches!(original, ObligationRecord::SessionClose { .. })
-        && state != Some(ObligationStateRecord::Completed);
-    let known_live = matches!(
-        original,
-        ObligationRecord::Send { .. }
-            | ObligationRecord::ProviderEstablish { .. }
-            | ObligationRecord::TurnExecution { .. }
-            | ObligationRecord::PermissionResponse { .. }
-            | ObligationRecord::StopInterrupt { .. }
-            | ObligationRecord::TerminalCommit { .. }
-            | ObligationRecord::SessionClose { .. }
-    );
-    let blocks = action_unresolved || explicitly_unresolved || recovery_owned || closing;
-    if !blocks && known_live {
-        // A live send TurnExecution remains effect_reserved until its
-        // terminal closure. That alone must not disable normal queueing.
+    if !record.blocks_effect_admission() {
         return None;
     }
     Some(pending_recovery_descriptor(obligation_id, record).original_identity)
@@ -3925,15 +3941,17 @@ mod observation_tests {
     use super::{
         authoritative_observation, canonical_result_sha256, send_terminal_operation_is_bound,
         stop_completion_operation_is_bound, valid_recovery_operation, RecoveryActionResultOutcome,
+        RecoveryActionUsecase,
     };
     use crate::domain::agent_session::entities::TurnResult;
     use crate::domain::agent_session::events::{
-        RecoveryResultClassification, SendDisposition, StopResolution,
+        RecoveryActionKind, RecoveryResultClassification, SendDisposition, StopResolution,
     };
     use crate::domain::local_event::{
         AuthoritativeEffectObservationRecord, LocalStateMutation, ObligationRecord,
-        ObligationStateRecord, OperationKind, OperationReceiptRecord, OperationRecordMutation,
-        OperationStatusRecord, OperationStatusValue, RecordAuthentication, Revision, RevisionGuard,
+        ObligationRecoveryActionRecord, ObligationStateRecord, OperationKind,
+        OperationReceiptRecord, OperationRecordMutation, OperationStatusRecord,
+        OperationStatusValue, RecordAuthentication, Revision, RevisionGuard,
         SendObligationDispositionRecord, SendObligationKindRecord,
     };
     use crate::usecase::agent_session::operation::OperationBindingAuthority;
@@ -3958,6 +3976,51 @@ mod observation_tests {
         fn open_command(&self, _context: &[u8], envelope: &[u8]) -> Result<Vec<u8>, ()> {
             Ok(envelope.to_vec())
         }
+    }
+
+    fn pending_send_execution() -> ObligationRecord {
+        ObligationRecord::Send {
+            obligation_id: "send-op.exec".to_string(),
+            operation_id: "send-op".to_string(),
+            session_id: "session".to_string(),
+            kind: SendObligationKindRecord::TurnExecution,
+            disposition: SendObligationDispositionRecord::StartedTurn,
+            human_message_id: Some("human".to_string()),
+            assistant_message_id: Some("assistant".to_string()),
+            turn_id: Some("7".to_string()),
+            reserved_turn_id: Some("7".to_string()),
+            dependency_obligation_ids: Vec::new(),
+            canonical_payload: "{}".to_string(),
+            state: ObligationStateRecord::Pending,
+        }
+    }
+
+    #[test]
+    fn only_unwrapped_pending_send_execution_is_hidden_from_manual_recovery() {
+        let pending = pending_send_execution();
+        assert!(RecoveryActionUsecase::is_internal_pending_send_execution(
+            "send-op.exec",
+            &pending
+        ));
+
+        let completed_manual_action = ObligationRecord::RecoveryTransition {
+            original: Box::new(pending),
+            recovery_action: ObligationRecoveryActionRecord {
+                action_id: "manual-action".to_string(),
+                origin_revision: 0,
+                action: RecoveryActionKind::KeepForManualResolution,
+                effect_identity: "send-op.exec".to_string(),
+                state: ObligationStateRecord::Completed,
+                classification: Some(RecoveryResultClassification::Pending),
+            },
+        };
+        assert!(
+            !RecoveryActionUsecase::is_internal_pending_send_execution(
+                "send-op.exec",
+                &completed_manual_action,
+            ),
+            "a completed recovery wrapper remains publicly addressable"
+        );
     }
 
     #[test]
@@ -4187,11 +4250,11 @@ fn map_query_error(error: LocalEventQueryError) -> RecoveryActionError {
 
 fn map_commit_error<T>(error: CommitBatchError, action_id: &str) -> Result<T, RecoveryActionError> {
     match error {
-        CommitBatchError::PayloadConflict | CommitBatchError::StreamHeadConflict { .. } => {
-            Err(RecoveryActionError::Internal {
-                correlation_id: format!("recovery-action-conflict-{action_id}"),
-            })
-        }
+        CommitBatchError::PayloadConflict
+        | CommitBatchError::EffectAdmissionBlocked
+        | CommitBatchError::StreamHeadConflict { .. } => Err(RecoveryActionError::Internal {
+            correlation_id: format!("recovery-action-conflict-{action_id}"),
+        }),
         CommitBatchError::OutcomeUnknown { .. } => Err(RecoveryActionError::Internal {
             correlation_id: format!("outcome-unknown-{action_id}"),
         }),

@@ -5,6 +5,8 @@
 //! start of COMMIT and the completed fresh readback is `OutcomeUnknown` for
 //! the same commit identity.
 
+use std::collections::HashSet;
+
 use base64::Engine;
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
@@ -12,7 +14,8 @@ use subtle::ConstantTimeEq;
 
 use crate::adaptor::gateway::local_event_store::fault::FaultInjector;
 use crate::adaptor::gateway::local_event_store::projection_record_codec::{
-    encode_message_projection_update_v1, encode_session_projection_update_v1,
+    decode_session_projection_record_v1, encode_message_projection_update_v1,
+    encode_session_projection_update_v1,
 };
 use crate::adaptor::gateway::local_event_store::state_record_codec::{
     StoredObligationV1, StoredOperationReceiptV1, StoredOperationStatusV1, StoredRecoveryActionV1,
@@ -28,9 +31,9 @@ use crate::domain::local_event::{
     OperationRecordMutation, RecoveryActionMutation, RecoveryAttemptRecord,
     RecoveryResourceViewRecord, RecoveryResultRecord, Revision, RevisionGuard,
     SafeOperationFailure, SessionOperationFailureKind, SessionProjectionMutation,
-    ShutdownDetailsCompactionMutation, ShutdownLatestPointerMutation, ShutdownPlanMutation,
-    ShutdownRecoverySnapshotMutation, ShutdownTargetMutation, ShutdownTargetRecord,
-    StopResolutionMutation, StreamId, StreamVersion, TerminalRecordMutation,
+    SessionProjectionRecord, ShutdownDetailsCompactionMutation, ShutdownLatestPointerMutation,
+    ShutdownPlanMutation, ShutdownRecoverySnapshotMutation, ShutdownTargetMutation,
+    ShutdownTargetRecord, StopResolutionMutation, StreamId, StreamVersion, TerminalRecordMutation,
 };
 
 use crate::adaptor::gateway::local_event_store::envelope::shutdown_phase_to_label;
@@ -2350,8 +2353,175 @@ fn validate_mutation_guards(
 ) -> Result<(), CommitBatchError> {
     validate_pending_capacity(connection, mutations, "feedback-", 512)?;
     validate_pending_capacity(connection, mutations, "stop-target-", 32)?;
+    validate_send_effect_admission(connection, mutations)?;
     for mutation in mutations {
         validate_one_guard(connection, mutation)?;
+    }
+    Ok(())
+}
+
+fn validate_send_effect_admission(
+    connection: &Connection,
+    mutations: &[LocalStateMutation],
+) -> Result<(), CommitBatchError> {
+    let overridden_obligations = mutations
+        .iter()
+        .filter_map(|mutation| match mutation {
+            LocalStateMutation::Obligation(obligation) => Some(obligation.obligation_id.as_str()),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+
+    for mutation in mutations {
+        let LocalStateMutation::Obligation(effect) = mutation else {
+            continue;
+        };
+        let ObligationRecord::Send {
+            session_id,
+            kind: crate::domain::local_event::SendObligationKindRecord::TurnExecution,
+            state: ObligationStateRecord::EffectReserved,
+            ..
+        } = &effect.record
+        else {
+            continue;
+        };
+        if effect.pending.as_ref().is_none_or(|pending| {
+            pending.owner != *session_id
+                || pending.partition != crate::domain::local_event::PendingPartition::Owner
+                || pending.shutdown_plan.is_some()
+        }) {
+            return Err(CommitBatchError::PayloadConflict);
+        }
+        validate_send_effect_session_admission(connection, mutations, effect, session_id)?;
+
+        if mutations.iter().any(|candidate| {
+            matches!(
+                candidate,
+                LocalStateMutation::Obligation(candidate)
+                    if candidate.obligation_id != effect.obligation_id
+                        && candidate.pending.as_ref().is_some_and(|pending| {
+                            pending.owner == *session_id
+                                && pending.partition
+                                    == crate::domain::local_event::PendingPartition::Owner
+                                && pending.shutdown_plan.is_none()
+                        })
+                        && candidate.record.blocks_effect_admission()
+            )
+        }) {
+            return Err(CommitBatchError::EffectAdmissionBlocked);
+        }
+
+        let mut statement = connection
+            .prepare(
+                "SELECT po.obligation_id, o.record
+                 FROM pending_obligations po
+                 JOIN obligations o ON o.obligation_id = po.obligation_id
+                 WHERE po.owner = ?1
+                 ORDER BY po.ordered_key",
+            )
+            .map_err(|error| storage_unavailable(&error))?;
+        let rows = statement
+            .query_map(params![session_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|error| storage_unavailable(&error))?;
+        for row in rows {
+            let (obligation_id, raw) = row.map_err(|error| storage_unavailable(&error))?;
+            if obligation_id == effect.obligation_id
+                || overridden_obligations.contains(obligation_id.as_str())
+            {
+                continue;
+            }
+            let record = encoded_record(StoredObligationV1::decode(&raw))?.into_value();
+            if record.blocks_effect_admission() {
+                return Err(CommitBatchError::EffectAdmissionBlocked);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_send_effect_session_admission(
+    connection: &Connection,
+    mutations: &[LocalStateMutation],
+    effect: &ObligationMutation,
+    session_id: &str,
+) -> Result<(), CommitBatchError> {
+    let canonical_immediate_turn_id = match effect.record.original() {
+        ObligationRecord::Send {
+            kind: crate::domain::local_event::SendObligationKindRecord::TurnExecution,
+            disposition: crate::domain::local_event::SendObligationDispositionRecord::StartedTurn,
+            turn_id,
+            ..
+        } => Some(
+            turn_id
+                .as_deref()
+                .ok_or(CommitBatchError::PayloadConflict)?
+                .parse::<u64>()
+                .map_err(|_| CommitBatchError::PayloadConflict)?,
+        ),
+        ObligationRecord::TurnExecution { turn_id, .. } => Some(
+            turn_id
+                .parse::<u64>()
+                .map_err(|_| CommitBatchError::PayloadConflict)?,
+        ),
+        _ => None,
+    };
+    let raw = connection
+        .query_row(
+            "SELECT projection FROM session_projection WHERE session_id = ?1",
+            params![session_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| storage_unavailable(&error))?
+        .ok_or(CommitBatchError::PayloadConflict)?;
+    let projection = decode_session_projection_record_v1(&raw, session_id)
+        .map_err(|_| CommitBatchError::PayloadConflict)?;
+    let SessionProjectionRecord::AgentSession(projection) = projection else {
+        return Err(CommitBatchError::PayloadConflict);
+    };
+    if projection.queue_paused_at_bits.is_some()
+        || matches!(
+            projection.meta.state,
+            crate::domain::local_event::AgentSessionStateRecord::Closed
+                | crate::domain::local_event::AgentSessionStateRecord::Archived
+        )
+    {
+        return Err(CommitBatchError::EffectAdmissionBlocked);
+    }
+    if canonical_immediate_turn_id.is_some_and(|turn_id| {
+        projection.meta.state != crate::domain::local_event::AgentSessionStateRecord::Active
+            || projection.meta.last_turn_id != Some(turn_id)
+    }) {
+        return Err(CommitBatchError::EffectAdmissionBlocked);
+    }
+
+    for mutation in mutations {
+        let LocalStateMutation::SessionProjection(candidate) = mutation else {
+            continue;
+        };
+        if candidate.session_id != session_id {
+            continue;
+        }
+        let SessionProjectionRecord::AgentSession(candidate) = &candidate.projection else {
+            return Err(CommitBatchError::PayloadConflict);
+        };
+        if candidate.queue_paused_at_bits.is_some()
+            || matches!(
+                candidate.meta.state,
+                crate::domain::local_event::AgentSessionStateRecord::Closed
+                    | crate::domain::local_event::AgentSessionStateRecord::Archived
+            )
+        {
+            return Err(CommitBatchError::EffectAdmissionBlocked);
+        }
+        if canonical_immediate_turn_id.is_some_and(|turn_id| {
+            candidate.meta.state != crate::domain::local_event::AgentSessionStateRecord::Active
+                || candidate.meta.last_turn_id != Some(turn_id)
+        }) {
+            return Err(CommitBatchError::EffectAdmissionBlocked);
+        }
     }
     Ok(())
 }

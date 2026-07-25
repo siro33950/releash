@@ -434,6 +434,7 @@ fn metadata_record_from_session_meta(
         updated_at_bits: finite_bits(meta.updated_at, "updated timestamp")?,
         agent_session_id: meta.agent_session_id.clone(),
         provider_session_generation: meta.provider_session_generation,
+        provider_session_observation_id: meta.provider_session_observation_id.clone(),
         context_reinjection_generation: meta.context_reinjection_generation,
         context_carry: meta.context_carry.as_ref().map(context_carry_record),
         pending_recovery_message: meta
@@ -489,6 +490,7 @@ fn session_meta_from_metadata_record(
         updated_at,
         agent_session_id: meta.agent_session_id.clone(),
         provider_session_generation: meta.provider_session_generation,
+        provider_session_observation_id: meta.provider_session_observation_id.clone(),
         context_reinjection_generation: meta.context_reinjection_generation,
         context_carry: meta.context_carry.as_ref().map(context_carry),
         pending_recovery_message: meta

@@ -41,15 +41,16 @@ pub(crate) use permission::{
 };
 pub(crate) use ports::{
     AcceptedPermissionResponseEffect, AcceptedSendEffect, AcceptedStopEffect,
-    BackendRecoveryReadbackPort, BackendRecoveryReadbackRequest, OperationBindingAuthority,
-    PermissionResponseGate, PermissionResponsePlan, RecoveryEffectExecutor, RecoveryEffectHandoff,
-    RecoveryEffectRequest, RecoveryEffectResult, RecoveryOwnerBatch, RecoveryResultCanonicalizer,
-    SendAdmissionGate, SendPlan, SendRecoveryReadbackKind, SendRecoveryReadbackPort,
-    SendRecoveryReadbackRequest, SessionCloseRecoveryReadbackPort,
-    SessionCloseRecoveryReadbackRequest, SessionLifecycleEffect, SessionLifecycleGate,
-    SessionLifecycleSnapshot, SessionLifecycleState, StableRecoveryEffectIdentity,
-    StopAdmissionGate, StopEffectObservation, StopRecoveryReadbackPort,
-    StopRecoveryReadbackRequest, StopTargetSnapshot, TerminalParticipants,
+    BackendRecoveryReadbackPort, BackendRecoveryReadbackRequest, LegacyProviderEstablishRecovery,
+    OperationBindingAuthority, PermissionResponseGate, PermissionResponsePlan,
+    RecoveryEffectExecutor, RecoveryEffectHandoff, RecoveryEffectRequest, RecoveryEffectResult,
+    RecoveryOwnerBatch, RecoveryResultCanonicalizer, SendAdmissionGate, SendEffectDispatch,
+    SendPlan, SendRecoveryReadbackKind, SendRecoveryReadbackPort, SendRecoveryReadbackRequest,
+    SessionCloseRecoveryReadbackPort, SessionCloseRecoveryReadbackRequest, SessionLifecycleEffect,
+    SessionLifecycleGate, SessionLifecycleSnapshot, SessionLifecycleState,
+    StableRecoveryEffectIdentity, StopAdmissionGate, StopEffectObservation,
+    StopRecoveryReadbackPort, StopRecoveryReadbackRequest, StopTargetSnapshot,
+    TerminalParticipants,
 };
 pub(crate) use recovery::{
     decode_recovery_completed_result, derive_recovery_action_id, PendingRecoveryCategory,
@@ -59,8 +60,9 @@ pub(crate) use recovery::{
     RecoveryActionResultOutcome, RecoveryActionStatus, RecoveryActionUsecase,
 };
 pub(crate) use send::{
-    AcceptedSendOperation, AgentSendOperationUsecase, GetSendOperationError, ObligationTransition,
-    SendAgentMessageError, SendCommandOutcome, SendExecutionStatus, SendOperationRequest,
+    AcceptedSendOperation, AgentSendOperationUsecase, GetSendOperationError,
+    ObligationTransitionOutcome, SendAgentMessageError, SendCommandOutcome, SendExecutionStatus,
+    SendOperationRequest,
 };
 pub(crate) use stop::{
     StopCommandOutcome, StopOperationError, StopOperationReceipt, StopOperationRequest,

@@ -739,7 +739,7 @@ impl SessionLifecycleOperationUsecase {
             Err(CommitBatchError::StorageUnavailable { failure }) => {
                 Ok(JoinBindingDisposition::Rejected(failure))
             }
-            Err(CommitBatchError::PayloadConflict) => {
+            Err(CommitBatchError::PayloadConflict | CommitBatchError::EffectAdmissionBlocked) => {
                 let key = self.caller_key(request);
                 let saved = self.lookup_binding(&key).await.map_err(|_| {
                     SessionLifecycleOperationError::Internal {
@@ -1363,7 +1363,7 @@ impl SessionLifecycleOperationUsecase {
         let committed_fresh = match self.repository.commit_batch(batch).await {
             Ok(CommitBatchResult::Committed(_)) => true,
             Ok(CommitBatchResult::Replayed(_)) => false,
-            Err(CommitBatchError::PayloadConflict) => {
+            Err(CommitBatchError::PayloadConflict | CommitBatchError::EffectAdmissionBlocked) => {
                 if let Some(result) = self.join_pending_operation(&request).await? {
                     return Ok(result);
                 }

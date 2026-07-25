@@ -257,6 +257,7 @@ mod tests {
                 updated_at: 1.0,
                 agent_session_id: None,
                 provider_session_generation: 0,
+                provider_session_observation_id: None,
                 context_reinjection_generation: None,
                 context_carry: None::<ContextCarryState>,
                 pending_recovery_message: None,

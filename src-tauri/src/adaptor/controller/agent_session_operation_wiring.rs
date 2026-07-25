@@ -2,32 +2,39 @@
 //! agent-session runtime. They only snapshot or execute after acceptance;
 //! operation decisions remain in Rust usecases.
 
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::domain::local_event::{
     LocalEventQuery, LocalEventQueryResult, LocalEventTransactionRepository, ObligationRecord,
-    SafeOperationFailure, SendObligationKindRecord, SessionLifecycleRecordAction,
-    SessionOperationFailureKind,
+    ObligationStateRecord, SafeOperationFailure, SendObligationKindRecord,
+    SessionLifecycleRecordAction, SessionOperationFailureKind,
 };
 use crate::usecase::agent_session::operation::{
     validate_operation_identity, AcceptedPermissionResponseEffect, AcceptedSendEffect,
     AcceptedStopEffect, AgentSendOperationUsecase, BackendRecoveryReadbackPort,
-    BackendRecoveryReadbackRequest, PermissionResponseExecutionStatus, PermissionResponseGate,
-    PermissionResponseOperationUsecase, PermissionResponsePlan, RecoveryEffectExecutor,
-    RecoveryEffectRequest, RecoveryEffectResult, RecoveryOwnerBatch, SendAdmissionGate, SendPlan,
-    SendRecoveryReadbackKind, SendRecoveryReadbackPort, SendRecoveryReadbackRequest,
-    SessionCloseRecoveryReadbackPort, SessionCloseRecoveryReadbackRequest, SessionLifecycleAction,
-    SessionLifecycleEffect, SessionLifecycleGate, SessionLifecycleOperationUsecase,
-    SessionLifecycleSnapshot, SessionLifecycleState, StableRecoveryEffectIdentity,
-    StopAdmissionGate, StopCommandOutcome, StopEffectObservation, StopOperationError,
-    StopOperationRequest, StopOperationState, StopOperationUsecase, StopRecoveryReadbackPort,
-    StopRecoveryReadbackRequest, StopTargetSnapshot,
+    BackendRecoveryReadbackRequest, LegacyProviderEstablishRecovery, ObligationTransitionOutcome,
+    PermissionResponseExecutionStatus, PermissionResponseGate, PermissionResponseOperationUsecase,
+    PermissionResponsePlan, RecoveryEffectExecutor, RecoveryEffectRequest, RecoveryEffectResult,
+    RecoveryOwnerBatch, SendAdmissionGate, SendEffectDispatch, SendPlan, SendRecoveryReadbackKind,
+    SendRecoveryReadbackPort, SendRecoveryReadbackRequest, SessionCloseRecoveryReadbackPort,
+    SessionCloseRecoveryReadbackRequest, SessionLifecycleAction, SessionLifecycleEffect,
+    SessionLifecycleGate, SessionLifecycleOperationUsecase, SessionLifecycleSnapshot,
+    SessionLifecycleState, StableRecoveryEffectIdentity, StopAdmissionGate, StopCommandOutcome,
+    StopEffectObservation, StopOperationError, StopOperationRequest, StopOperationState,
+    StopOperationUsecase, StopRecoveryReadbackPort, StopRecoveryReadbackRequest,
+    StopTargetSnapshot,
 };
-use crate::usecase::agent_session::session::{NextTurnIdError, SessionState, SessionStore};
+use crate::usecase::agent_session::runtime::ports::{
+    AcceptedQueuedTurnExecutionClaimOutcome, AcceptedSendExecutionClaim, AcceptedSendRecoveryWake,
+};
+use crate::usecase::agent_session::session::{
+    AcceptedQueuedTurnStartCommitOutcome, NextTurnIdError, SessionState, SessionStore,
+};
 
 /// All local transports operate under the same installation authority. The
 /// renderer caller journal remains Tauri-owned, but its operation binding must
@@ -375,10 +382,350 @@ impl CanonicalSendCommandV1 {
     }
 }
 
+fn accepted_send_artifact_digest(
+    principal: &str,
+    operation_id: &str,
+    canonical_payload: &str,
+) -> [u8; 32] {
+    let mut identity = Sha256::new();
+    identity.update(b"accepted-send-artifact/v1\0");
+    for value in [
+        principal.as_bytes(),
+        operation_id.as_bytes(),
+        canonical_payload.as_bytes(),
+    ] {
+        identity.update((value.len() as u64).to_be_bytes());
+        identity.update(value);
+    }
+    identity.finalize().into()
+}
+
+#[derive(Default)]
+pub(crate) struct CurrentProcessSendClaims {
+    obligation_ids: Mutex<HashMap<String, usize>>,
+}
+
+impl CurrentProcessSendClaims {
+    fn insert(&self, obligation_id: &str) {
+        let mut obligation_ids = self
+            .obligation_ids
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let count = obligation_ids.entry(obligation_id.to_string()).or_default();
+        *count = count.saturating_add(1);
+    }
+
+    fn remove(&self, obligation_id: &str) {
+        let mut obligation_ids = self
+            .obligation_ids
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let should_remove = obligation_ids.get_mut(obligation_id).is_some_and(|count| {
+            *count = count.saturating_sub(1);
+            *count == 0
+        });
+        if should_remove {
+            obligation_ids.remove(obligation_id);
+        }
+    }
+
+    fn contains(&self, obligation_id: &str) -> bool {
+        self.obligation_ids
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains_key(obligation_id)
+    }
+
+    fn claim(
+        self: &Arc<Self>,
+        obligation_id: &str,
+    ) -> crate::usecase::agent_session::runtime::ports::AcceptedSendExecutionClaim {
+        self.insert(obligation_id);
+        let claims = self.clone();
+        let obligation_id = obligation_id.to_string();
+        crate::usecase::agent_session::runtime::ports::AcceptedSendExecutionClaim::new(move || {
+            claims.remove(&obligation_id);
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CurrentProcessSendDispatchState {
+    Active { redrive_requested: bool },
+    Parked,
+}
+
+enum CurrentProcessSendDispatchAdmission {
+    Acquired(CurrentProcessSendDispatchLease),
+    RedriveParked,
+    AlreadyActive,
+}
+
+#[derive(Default)]
+struct CurrentProcessSendDispatches {
+    obligation_ids: Mutex<HashMap<String, CurrentProcessSendDispatchState>>,
+}
+
+impl CurrentProcessSendDispatches {
+    #[cfg(test)]
+    fn try_claim(self: &Arc<Self>, obligation_id: &str) -> Option<CurrentProcessSendDispatchLease> {
+        let mut obligation_ids = self
+            .obligation_ids
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if obligation_ids.contains_key(obligation_id) {
+            return None;
+        }
+        obligation_ids.insert(
+            obligation_id.to_string(),
+            CurrentProcessSendDispatchState::Active {
+                redrive_requested: false,
+            },
+        );
+        Some(CurrentProcessSendDispatchLease {
+            dispatches: self.clone(),
+            obligation_id: obligation_id.to_string(),
+            retain: false,
+        })
+    }
+
+    fn admit(
+        self: &Arc<Self>,
+        obligation_id: &str,
+        queued_effect: bool,
+    ) -> CurrentProcessSendDispatchAdmission {
+        let mut obligation_ids = self
+            .obligation_ids
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match obligation_ids.get_mut(obligation_id) {
+            None => {
+                obligation_ids.insert(
+                    obligation_id.to_string(),
+                    CurrentProcessSendDispatchState::Active {
+                        redrive_requested: false,
+                    },
+                );
+                CurrentProcessSendDispatchAdmission::Acquired(CurrentProcessSendDispatchLease {
+                    dispatches: self.clone(),
+                    obligation_id: obligation_id.to_string(),
+                    retain: false,
+                })
+            }
+            Some(CurrentProcessSendDispatchState::Active { redrive_requested }) => {
+                if queued_effect {
+                    // A recovery scan can race the redriver just before it parks
+                    // a blocked item. Preserve that scan as a one-shot retry
+                    // request instead of losing the state-change notification.
+                    *redrive_requested = true;
+                }
+                CurrentProcessSendDispatchAdmission::AlreadyActive
+            }
+            Some(state @ CurrentProcessSendDispatchState::Parked) if queued_effect => {
+                *state = CurrentProcessSendDispatchState::Active {
+                    redrive_requested: false,
+                };
+                CurrentProcessSendDispatchAdmission::RedriveParked
+            }
+            Some(CurrentProcessSendDispatchState::Parked) => {
+                CurrentProcessSendDispatchAdmission::AlreadyActive
+            }
+        }
+    }
+
+    /// Retire a redriver request that found no local queue item. A concurrent
+    /// recovery scan is a one-shot request to check again before removing the
+    /// marker; otherwise the marker is no longer owned by any worker.
+    fn finish_no_work(&self, obligation_id: &str) -> bool {
+        let mut obligation_ids = self
+            .obligation_ids
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match obligation_ids.get_mut(obligation_id) {
+            Some(CurrentProcessSendDispatchState::Active { redrive_requested })
+                if *redrive_requested =>
+            {
+                *redrive_requested = false;
+                true
+            }
+            _ => {
+                obligation_ids.remove(obligation_id);
+                false
+            }
+        }
+    }
+
+    /// Park a canonically accepted queue item while its session is not
+    /// runnable. The retained marker suppresses duplicate restoration, but no
+    /// timer remains live. A later durable recovery scan atomically activates
+    /// the marker and enqueues one fresh drain request.
+    fn finish_blocked(&self, obligation_id: &str) -> bool {
+        let mut obligation_ids = self
+            .obligation_ids
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match obligation_ids.get_mut(obligation_id) {
+            Some(CurrentProcessSendDispatchState::Active { redrive_requested })
+                if *redrive_requested =>
+            {
+                *redrive_requested = false;
+                true
+            }
+            Some(state @ CurrentProcessSendDispatchState::Active { .. }) => {
+                *state = CurrentProcessSendDispatchState::Parked;
+                false
+            }
+            Some(CurrentProcessSendDispatchState::Parked) | None => false,
+        }
+    }
+
+    fn remove(&self, obligation_id: &str) {
+        self.obligation_ids
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(obligation_id);
+    }
+
+    fn contains(&self, obligation_id: &str) -> bool {
+        self.obligation_ids
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains_key(obligation_id)
+    }
+
+    fn is_parked(&self, obligation_id: &str) -> bool {
+        matches!(
+            self.obligation_ids
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(obligation_id),
+            Some(CurrentProcessSendDispatchState::Parked)
+        )
+    }
+
+    fn remove_if_parked(&self, obligation_id: &str) {
+        let mut obligation_ids = self
+            .obligation_ids
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if matches!(
+            obligation_ids.get(obligation_id),
+            Some(CurrentProcessSendDispatchState::Parked)
+        ) {
+            obligation_ids.remove(obligation_id);
+        }
+    }
+}
+
+struct CurrentProcessSendDispatchLease {
+    dispatches: Arc<CurrentProcessSendDispatches>,
+    obligation_id: String,
+    retain: bool,
+}
+
+impl CurrentProcessSendDispatchLease {
+    fn retain(&mut self) {
+        self.retain = true;
+    }
+}
+
+impl Drop for CurrentProcessSendDispatchLease {
+    fn drop(&mut self) {
+        if !self.retain {
+            self.dispatches.remove(&self.obligation_id);
+        }
+    }
+}
+
+struct QueuedSendRedrive {
+    session_id: String,
+    obligation_id: String,
+}
+
+async fn run_queued_send_redriver(
+    runtime: Weak<crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase>,
+    dispatches: Arc<CurrentProcessSendDispatches>,
+    mut requests: tokio::sync::mpsc::UnboundedReceiver<QueuedSendRedrive>,
+) {
+    let mut pending = HashMap::<String, String>::new();
+    let mut retry_delay = std::time::Duration::from_millis(25);
+    loop {
+        if pending.is_empty() {
+            let Some(request) = requests.recv().await else {
+                return;
+            };
+            pending.insert(request.obligation_id, request.session_id);
+            retry_delay = std::time::Duration::from_millis(25);
+        }
+        while let Ok(request) = requests.try_recv() {
+            pending.insert(request.obligation_id, request.session_id);
+        }
+
+        let sessions = pending.values().cloned().collect::<HashSet<_>>();
+        let Some(runtime) = runtime.upgrade() else {
+            return;
+        };
+        for session_id in sessions {
+            use crate::usecase::agent_session::runtime::AcceptedQueueDrainOutcome;
+            let obligation_ids = pending
+                .iter()
+                .filter_map(|(obligation_id, owner)| {
+                    (owner == &session_id).then_some(obligation_id.clone())
+                })
+                .collect::<Vec<_>>();
+            match runtime.drain_accepted_queue_if_idle(&session_id).await {
+                Ok(AcceptedQueueDrainOutcome::NoWork) => {
+                    for obligation_id in obligation_ids {
+                        if !dispatches.finish_no_work(&obligation_id) {
+                            pending.remove(&obligation_id);
+                        }
+                    }
+                }
+                Ok(AcceptedQueueDrainOutcome::Attempted) => {
+                    for obligation_id in obligation_ids {
+                        if !dispatches.contains(&obligation_id) {
+                            pending.remove(&obligation_id);
+                        }
+                    }
+                }
+                Ok(AcceptedQueueDrainOutcome::Blocked) => {
+                    for obligation_id in obligation_ids {
+                        if !dispatches.finish_blocked(&obligation_id) {
+                            pending.remove(&obligation_id);
+                        }
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+        if pending.is_empty() {
+            continue;
+        }
+
+        tokio::select! {
+            request = requests.recv() => {
+                let Some(request) = request else {
+                    return;
+                };
+                pending.insert(request.obligation_id, request.session_id);
+                retry_delay = std::time::Duration::from_millis(25);
+            }
+            () = tokio::time::sleep(retry_delay) => {
+                retry_delay = retry_delay
+                    .saturating_mul(2)
+                    .min(std::time::Duration::from_secs(1));
+            }
+        }
+    }
+}
+
 pub(crate) struct RuntimeSendOperationGate {
     runtime: Arc<crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase>,
     session_store: Arc<SessionStore>,
     data_dir: PathBuf,
+    current_process_claims: Arc<CurrentProcessSendClaims>,
+    current_process_send_dispatches: Arc<CurrentProcessSendDispatches>,
+    queued_send_redrive: tokio::sync::mpsc::UnboundedSender<QueuedSendRedrive>,
     status_sink:
         OnceLock<Weak<crate::usecase::agent_session::operation::AgentSendOperationUsecase>>,
     workflow_runtime: OnceLock<Weak<crate::usecase::workflow::WorkflowRuntimeUsecase>>,
@@ -390,10 +737,21 @@ impl RuntimeSendOperationGate {
         session_store: Arc<SessionStore>,
         data_dir: PathBuf,
     ) -> Self {
+        let current_process_send_dispatches = Arc::new(CurrentProcessSendDispatches::default());
+        let (queued_send_redrive, queued_send_redrive_requests) =
+            tokio::sync::mpsc::unbounded_channel();
+        tauri::async_runtime::spawn(run_queued_send_redriver(
+            Arc::downgrade(&runtime),
+            current_process_send_dispatches.clone(),
+            queued_send_redrive_requests,
+        ));
         Self {
             runtime,
             session_store,
             data_dir,
+            current_process_claims: Arc::new(CurrentProcessSendClaims::default()),
+            current_process_send_dispatches,
+            queued_send_redrive,
             status_sink: OnceLock::new(),
             workflow_runtime: OnceLock::new(),
         }
@@ -412,8 +770,18 @@ impl RuntimeSendOperationGate {
     ) {
         let _ = self.status_sink.set(sink.clone());
         self.runtime.set_accepted_send_obligation_driver(Arc::new(
-            RuntimeAcceptedSendObligationDriver { sink },
+            RuntimeAcceptedSendObligationDriver {
+                sink,
+                session_store: self.session_store.clone(),
+                data_dir: self.data_dir.clone(),
+                current_process_claims: self.current_process_claims.clone(),
+                current_process_send_dispatches: self.current_process_send_dispatches.clone(),
+            },
         ));
+    }
+
+    pub(crate) fn current_process_claims(&self) -> Arc<CurrentProcessSendClaims> {
+        self.current_process_claims.clone()
     }
 
     fn failure(label: &str) -> SafeOperationFailure {
@@ -442,55 +810,227 @@ impl RuntimeSendOperationGate {
 
 struct RuntimeAcceptedSendObligationDriver {
     sink: Weak<crate::usecase::agent_session::operation::AgentSendOperationUsecase>,
+    session_store: Arc<SessionStore>,
+    data_dir: PathBuf,
+    current_process_claims: Arc<CurrentProcessSendClaims>,
+    current_process_send_dispatches: Arc<CurrentProcessSendDispatches>,
 }
 
-async fn persist_accepted_send_status(
+fn accepted_send_recovery_wake(
+    recovery_wakeup: Arc<tokio::sync::Notify>,
+) -> AcceptedSendRecoveryWake {
+    AcceptedSendRecoveryWake::new(move || {
+        recovery_wakeup.notify_one();
+    })
+}
+
+async fn retry_accepted_turn_reconciliation<Persist, PersistFuture, PersistError>(
+    operation_id: &str,
+    obligation_id: &str,
+    mut persist: Persist,
+    recovery_wakeup: Arc<tokio::sync::Notify>,
+) -> Option<AcceptedSendRecoveryWake>
+where
+    Persist: FnMut() -> PersistFuture,
+    PersistFuture: std::future::Future<Output = Result<(), PersistError>>,
+{
+    for attempt in 0..ACCEPTED_SEND_RETRY_ATTEMPTS {
+        if persist().await.is_ok() {
+            return None;
+        }
+        if attempt + 1 < ACCEPTED_SEND_RETRY_ATTEMPTS {
+            tokio::time::sleep(accepted_send_retry_delay(attempt)).await;
+        }
+    }
+    log::error!(
+        "accepted send reconciliation retry budget exhausted [{operation_id}/{obligation_id}]"
+    );
+    Some(accepted_send_recovery_wake(recovery_wakeup))
+}
+
+async fn persist_accepted_turn_reconciliation(
     sink: &crate::usecase::agent_session::operation::AgentSendOperationUsecase,
     operation_id: &str,
-    status: crate::usecase::agent_session::operation::SendExecutionStatus,
+    obligation_id: &str,
+    failure: SafeOperationFailure,
+) -> Option<AcceptedSendRecoveryWake> {
+    retry_accepted_turn_reconciliation(
+        operation_id,
+        obligation_id,
+        || sink.mark_turn_reconciliation_required(operation_id, obligation_id, failure.clone()),
+        sink.pending_recovery_wakeup(),
+    )
+    .await
+}
+
+const ACCEPTED_SEND_RETRY_ATTEMPTS: usize = 8;
+
+fn accepted_send_retry_delay(attempt: usize) -> std::time::Duration {
+    let shift = u32::try_from(attempt.min(5)).unwrap_or(5);
+    std::time::Duration::from_millis(25_u64.saturating_mul(1_u64 << shift))
+}
+
+fn release_send_worker_to_recovery(
+    current_claim: &mut Option<AcceptedSendExecutionClaim>,
+    dispatch_lease: CurrentProcessSendDispatchLease,
+    recovery_wake: AcceptedSendRecoveryWake,
 ) {
-    loop {
-        if sink
-            .record_execution_status(operation_id, status.clone())
-            .await
-            .is_ok()
-        {
-            return;
-        }
-        // The accepted operation and pending obligation remain the durable
-        // retry identity. Do not let an external-effect task finish while its
-        // canonical outcome is still absent.
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    // The dispatch marker is independent from the immediate-turn claim, so
+    // release it explicitly before arming the wake behind the claim. For a
+    // queued worker there is no claim yet and the wake can be published as
+    // soon as the dispatch marker is gone.
+    drop(dispatch_lease);
+    match current_claim.take() {
+        Some(claim) => drop(claim.wake_after_release(recovery_wake)),
+        None => recovery_wake.publish(),
     }
+}
+
+async fn reserve_accepted_turn_execution(
+    sink: &crate::usecase::agent_session::operation::AgentSendOperationUsecase,
+    current_process_claims: &Arc<CurrentProcessSendClaims>,
+    operation_id: &str,
+    obligation_id: &str,
+) -> Result<AcceptedSendExecutionClaim, ()> {
+    // One worker keeps one exact owner across every retry. Its durable claim
+    // commit is keyed by this identity, so a response-loss readback can prove
+    // that this worker (rather than a concurrent loser) won the CAS.
+    let exact_owner_identity = uuid::Uuid::new_v4().to_string();
+    let claim = current_process_claims.claim(obligation_id);
+    for attempt in 0..ACCEPTED_SEND_RETRY_ATTEMPTS {
+        // Publish temporary process ownership before the durable CAS becomes
+        // visible and retain it while an unknown commit outcome is resolved.
+        // Ref-counting keeps concurrent preclaims from clearing the winning
+        // worker's lease when a loser drops.
+        match sink
+            .claim_turn_execution(operation_id, obligation_id, &exact_owner_identity)
+            .await
+        {
+            Ok(ObligationTransitionOutcome::Applied) => return Ok(claim),
+            Ok(ObligationTransitionOutcome::AlreadyAtTarget) => return Err(()),
+            Err(_) if attempt + 1 < ACCEPTED_SEND_RETRY_ATTEMPTS => {
+                tokio::time::sleep(accepted_send_retry_delay(attempt)).await;
+            }
+            Err(_) => {
+                // Without proof that this exact owner committed, provider I/O
+                // remains forbidden. Releasing the process lease lets the
+                // app-lifetime recovery owner resolve any durable reservation.
+                return Err(());
+            }
+        }
+    }
+    unreachable!("accepted send retry loop has at least one attempt")
 }
 
 #[async_trait::async_trait]
 impl crate::usecase::agent_session::runtime::ports::AcceptedSendObligationDriver
     for RuntimeAcceptedSendObligationDriver
 {
-    async fn reserve_turn_execution(
+    async fn claim_immediate_turn_execution(
         &self,
         operation_id: &str,
         obligation_id: &str,
-    ) -> Result<(), ()> {
+    ) -> Result<AcceptedSendExecutionClaim, ()> {
         let sink = self.sink.upgrade().ok_or(())?;
-        sink.transition_obligation(
-            crate::usecase::agent_session::operation::ObligationTransition {
-                operation_id,
-                obligation_id,
-                expected_kind: "turn_execution",
-                expected_state: "pending",
-                next_state: "effect_reserved",
-                keep_pending: true,
-                status: Some(
-                crate::usecase::agent_session::operation::SendExecutionStatus::ProviderStartReserved {
-                    obligation_id: obligation_id.to_string(),
-                },
-                ),
-            },
+        reserve_accepted_turn_execution(
+            &sink,
+            &self.current_process_claims,
+            operation_id,
+            obligation_id,
         )
         .await
-        .map_err(|_| ())
+    }
+
+    async fn claim_queued_turn_execution(
+        &self,
+        operation_id: &str,
+        obligation_id: &str,
+        session_id: &str,
+        queue_item_id: &str,
+        event: crate::usecase::agent_session::event_log::AgentSessionEvent,
+    ) -> Result<AcceptedQueuedTurnExecutionClaimOutcome, ()> {
+        // The process preclaim closes the interval before the operation and
+        // session participant snapshots are read. A committed claim retains
+        // this owner until runtime state takes over.
+        let claim = self.current_process_claims.claim(obligation_id);
+        let Some(sink) = self.sink.upgrade() else {
+            drop(claim);
+            self.current_process_send_dispatches.remove(obligation_id);
+            return Err(());
+        };
+        for attempt in 0..ACCEPTED_SEND_RETRY_ATTEMPTS {
+            let mutations = match sink
+                .prepare_queued_turn_start_participant_mutations(
+                    operation_id,
+                    obligation_id,
+                    session_id,
+                    queue_item_id,
+                    &event,
+                )
+                .await
+            {
+                Ok(mutations) => mutations,
+                Err(error) if attempt + 1 < ACCEPTED_SEND_RETRY_ATTEMPTS => {
+                    log::warn!(
+                        "accepted queued start participant snapshot retry {}/{} [{operation_id}/{obligation_id}]: {error:?}",
+                        attempt + 1,
+                        ACCEPTED_SEND_RETRY_ATTEMPTS
+                    );
+                    tokio::time::sleep(accepted_send_retry_delay(attempt)).await;
+                    continue;
+                }
+                Err(error) => {
+                    log::error!(
+                        "accepted queued start participant retry budget exhausted [{operation_id}/{obligation_id}]: {error:?}"
+                    );
+                    drop(claim);
+                    self.current_process_send_dispatches.remove(obligation_id);
+                    sink.wake_pending_recovery();
+                    return Err(());
+                }
+            };
+            match self
+                .session_store
+                .commit_accepted_queued_turn_start_with_participants(
+                    &self.data_dir,
+                    session_id,
+                    queue_item_id,
+                    event.clone(),
+                    mutations,
+                ) {
+                Ok(AcceptedQueuedTurnStartCommitOutcome::Committed) => {
+                    let dispatches = self.current_process_send_dispatches.clone();
+                    let obligation_id = obligation_id.to_string();
+                    return Ok(AcceptedQueuedTurnExecutionClaimOutcome::Claimed(
+                        claim.release_then(move || dispatches.remove(&obligation_id)),
+                    ));
+                }
+                Ok(AcceptedQueuedTurnStartCommitOutcome::Blocked) => {
+                    // The redriver owns the retained marker. It parks that
+                    // marker after this process preclaim is released.
+                    drop(claim);
+                    return Ok(AcceptedQueuedTurnExecutionClaimOutcome::Blocked);
+                }
+                Err(error) if attempt + 1 < ACCEPTED_SEND_RETRY_ATTEMPTS => {
+                    log::warn!(
+                        "accepted queued start atomic commit retry {}/{} [{operation_id}/{obligation_id}]: {error}",
+                        attempt + 1,
+                        ACCEPTED_SEND_RETRY_ATTEMPTS
+                    );
+                    tokio::time::sleep(accepted_send_retry_delay(attempt)).await;
+                }
+                Err(error) => {
+                    log::error!(
+                        "accepted queued start atomic commit retry budget exhausted [{operation_id}/{obligation_id}]: {error}"
+                    );
+                    drop(claim);
+                    self.current_process_send_dispatches.remove(obligation_id);
+                    sink.wake_pending_recovery();
+                    return Err(());
+                }
+            }
+        }
+        unreachable!("accepted queued start retry loop has at least one attempt")
     }
 
     async fn mark_turn_running(
@@ -500,28 +1040,31 @@ impl crate::usecase::agent_session::runtime::ports::AcceptedSendObligationDriver
         turn_id: u64,
     ) -> Result<(), ()> {
         let sink = self.sink.upgrade().ok_or(())?;
-        sink.mark_turn_running(operation_id, obligation_id, turn_id)
+        let result = sink
+            .mark_turn_running(operation_id, obligation_id, turn_id)
             .await
-            .map_err(|_| ())
+            .map_err(|_| ());
+        result
     }
 
-    async fn reconcile_turn_execution(&self, operation_id: &str, _obligation_id: &str) {
-        let Some(sink) = self.sink.upgrade() else {
-            return;
-        };
-        persist_accepted_send_status(
+    async fn reconcile_turn_execution(
+        &self,
+        operation_id: &str,
+        obligation_id: &str,
+    ) -> Option<AcceptedSendRecoveryWake> {
+        let sink = self.sink.upgrade()?;
+        persist_accepted_turn_reconciliation(
             &sink,
             operation_id,
-            crate::usecase::agent_session::operation::SendExecutionStatus::ReconciliationRequired {
-                failure: SafeOperationFailure::new(
-                    SessionOperationFailureKind::OutcomeUnknown,
-                    true,
-                    "Queued turn execution requires same-effect readback.",
-                    uuid::Uuid::new_v4().to_string(),
-                ),
-            },
+            obligation_id,
+            SafeOperationFailure::new(
+                SessionOperationFailureKind::OutcomeUnknown,
+                true,
+                "Queued turn execution requires same-effect readback.",
+                uuid::Uuid::new_v4().to_string(),
+            ),
         )
-        .await;
+        .await
     }
 }
 
@@ -530,11 +1073,12 @@ impl SendAdmissionGate for RuntimeSendOperationGate {
     async fn plan_send(
         &self,
         principal: &str,
+        operation_id: &str,
         canonical_payload: &str,
     ) -> Result<SendPlan, SafeOperationFailure> {
         let command: CanonicalSendCommandV1 = serde_json::from_str(canonical_payload)
             .map_err(|_| Self::failure("The exact send payload is incompatible."))?;
-        let digest = Sha256::digest(canonical_payload.as_bytes());
+        let digest = accepted_send_artifact_digest(principal, operation_id, canonical_payload);
         let input_ref = format!("send-input-v1:{}", hex::encode(digest));
         // Workflow targets are deliberately resolved only from this gate. The
         // send usecase performs its existing-operation lookup before invoking
@@ -597,20 +1141,26 @@ impl SendAdmissionGate for RuntimeSendOperationGate {
         self.session_store
             .ensure_no_unresolved_recovery(&session_id)
             .await?;
-        let (busy, provider_established, next_turn_id) = if workflow_turn {
-            (
-                workflow_projection_busy
-                    || self
-                        .runtime
-                        .workflow_send_runtime_is_busy(&session_id)
-                        .await,
-                self.runtime
-                    .provider_session_is_confirmed(&session_id)
-                    .await,
-                self.session_store
-                    .next_turn_id(&self.data_dir, &session_id)
-                    .map_err(Self::turn_identity_failure)?,
-            )
+        let allocation = if chat_session_id.is_some() {
+            self.session_store
+                .send_acceptance_allocation(&session_id)
+                .map_err(Self::turn_identity_failure)?
+        } else {
+            crate::usecase::agent_session::session::SendAcceptanceAllocation {
+                next_turn_id: 1,
+                has_active_turn: false,
+                has_pending_queue: false,
+                session_projection_guard: crate::domain::local_event::RevisionGuard::Absent,
+            }
+        };
+        let busy = if workflow_turn {
+            workflow_projection_busy
+                || allocation.has_active_turn
+                || allocation.has_pending_queue
+                || self
+                    .runtime
+                    .workflow_send_runtime_is_busy(&session_id)
+                    .await
         } else if chat_session_id.is_some() {
             let response = self
                 .runtime
@@ -618,21 +1168,13 @@ impl SendAdmissionGate for RuntimeSendOperationGate {
                 .await
                 .map_err(|_| Self::failure("The send target is unavailable."))?
                 .ok_or_else(|| Self::failure("The send target does not exist."))?;
-            let provider_established = self
-                .runtime
-                .provider_session_is_confirmed(&session_id)
-                .await;
-            (
-                response.turn_phase != crate::usecase::agent_session::status::TurnPhase::Idle
-                    || response.queue_paused
-                    || response.pending_queue_count > 0,
-                provider_established,
-                self.session_store
-                    .next_turn_id(&self.data_dir, &session_id)
-                    .map_err(Self::turn_identity_failure)?,
-            )
+            response.turn_phase != crate::usecase::agent_session::status::TurnPhase::Idle
+                || response.queue_paused
+                || response.pending_queue_count > 0
+                || allocation.has_active_turn
+                || allocation.has_pending_queue
         } else {
-            (false, false, 1)
+            false
         };
         if workflow_turn && busy {
             return Err(Self::failure(
@@ -677,20 +1219,20 @@ impl SendAdmissionGate for RuntimeSendOperationGate {
         Ok(SendPlan {
             session_id,
             initial_session,
+            session_projection_guard: allocation.session_projection_guard,
             disposition: if busy {
                 crate::domain::agent_session::events::SendDisposition::Queued {
                     queue_item_id: queue_item_id.clone(),
                 }
             } else {
                 crate::domain::agent_session::events::SendDisposition::StartedTurn {
-                    turn_id: next_turn_id.to_string(),
+                    turn_id: allocation.next_turn_id.to_string(),
                 }
             },
             input_ref,
             human_message_id: format!("human-{}", &hex::encode(digest)[..32]),
             prompt,
-            reserved_turn_id: busy.then(|| next_turn_id.to_string()),
-            provider_established,
+            reserved_turn_id: busy.then(|| allocation.next_turn_id.to_string()),
         })
     }
 
@@ -704,6 +1246,7 @@ impl SendAdmissionGate for RuntimeSendOperationGate {
                 crate::usecase::agent_session::session::SendAcceptanceProjectionInput {
                     session_id: &plan.session_id,
                     initial_session: plan.initial_session.as_ref(),
+                    session_projection_guard: plan.session_projection_guard,
                     human_message_id: &plan.human_message_id,
                     prompt: &plan.prompt,
                     disposition: &plan.disposition,
@@ -715,15 +1258,87 @@ impl SendAdmissionGate for RuntimeSendOperationGate {
             .map_err(|_| Self::failure("The send projection could not be prepared."))
     }
 
-    async fn start_provider_effect(&self, effect: &AcceptedSendEffect) {
-        let Ok(command) = serde_json::from_str::<CanonicalSendCommandV1>(&effect.canonical_payload)
-        else {
-            log::error!(
-                "accepted send payload is incompatible [{}]",
-                effect.operation_id
-            );
-            return;
-        };
+    async fn classify_legacy_provider_establish(
+        &self,
+        session_id: &str,
+    ) -> Result<LegacyProviderEstablishRecovery, SafeOperationFailure> {
+        let meta = self
+            .session_store
+            .get_session_meta(&self.data_dir, session_id)
+            .map_err(|_| Self::failure("The legacy send target is unavailable."))?
+            .ok_or_else(|| Self::failure("The legacy send target does not exist."))?;
+        if meta.agent_session_id.is_some() || meta.backend_id == "claude" {
+            // The old worker never submitted turn input while owning only the
+            // ProviderEstablish reservation. A durable identity can be
+            // resumed by any backend; Claude without one is also safe because
+            // it reports identity only after the first input.
+            Ok(LegacyProviderEstablishRecovery::ContinueTurnExecution)
+        } else {
+            // Codex and unknown backends may have created a remote identity
+            // before its durable observation reached this process.
+            Ok(LegacyProviderEstablishRecovery::RequiresManualResolution)
+        }
+    }
+
+    async fn canonical_immediate_turn_is_current(
+        &self,
+        session_id: &str,
+        turn_id: u64,
+    ) -> Result<bool, SafeOperationFailure> {
+        self.session_store
+            .canonical_active_turn_matches(session_id, turn_id)
+            .map_err(|_| Self::failure("The canonical active turn is unavailable."))
+    }
+
+    async fn owns_current_process_turn_execution(
+        &self,
+        session_id: &str,
+        operation_id: &str,
+        obligation_id: &str,
+    ) -> bool {
+        if self.current_process_claims.contains(obligation_id)
+            || self
+                .runtime
+                .owns_accepted_turn_execution(session_id, operation_id, obligation_id)
+                .await
+        {
+            return true;
+        }
+        if !self
+            .current_process_send_dispatches
+            .is_parked(obligation_id)
+        {
+            return false;
+        }
+        match self
+            .runtime
+            .accepted_queue_redrive_readiness(session_id, operation_id, obligation_id)
+            .await
+        {
+            crate::usecase::agent_session::runtime::AcceptedQueueRedriveReadiness::Blocked => true,
+            crate::usecase::agent_session::runtime::AcceptedQueueRedriveReadiness::Ready => false,
+            crate::usecase::agent_session::runtime::AcceptedQueueRedriveReadiness::Missing => {
+                // A parked marker has no worker lease. Remove only that exact
+                // state so the same recovery pass can restore the queue item
+                // through the full accepted-effect path.
+                self.current_process_send_dispatches
+                    .remove_if_parked(obligation_id);
+                false
+            }
+        }
+    }
+
+    async fn start_provider_effect(
+        &self,
+        effect: &AcceptedSendEffect,
+    ) -> Result<SendEffectDispatch, SafeOperationFailure> {
+        let command = serde_json::from_str::<CanonicalSendCommandV1>(&effect.canonical_payload)
+            .map_err(|_| Self::failure("The accepted send payload is incompatible."))?;
+        let status_sink = self
+            .status_sink
+            .get()
+            .and_then(Weak::upgrade)
+            .ok_or_else(|| Self::failure("The accepted send status authority is unavailable."))?;
         // The accepted obligation owns the resolved session identity. For a
         // workflow send, recover its worktree from the durable session shell
         // rather than resolving mutable workflow state for a second time.
@@ -732,115 +1347,122 @@ impl SendAdmissionGate for RuntimeSendOperationGate {
             .get_session_meta(&self.data_dir, &effect.session_id)
         {
             Ok(Some(meta)) => meta.worktree_path,
-            _ => {
-                log::error!(
-                    "accepted send target is unavailable [{}]",
-                    effect.operation_id
-                );
-                return;
+            Ok(None) => {
+                return Err(Self::failure("The accepted send target does not exist."));
+            }
+            Err(_) => {
+                status_sink.wake_pending_recovery();
+                return Ok(SendEffectDispatch::AlreadyScheduled);
             }
         };
-        let Ok(request) = command
+        let request = command
             .clone()
-            .into_runtime_request(&effect.session_id, &accepted_worktree_path)
-        else {
-            return;
-        };
+            .into_runtime_request(&effect.session_id, &accepted_worktree_path)?;
         let runtime = self.runtime.clone();
-        let status_sink = self.status_sink.get().cloned();
         let operation_id = effect.operation_id.clone();
         let obligation_id = effect.execution_obligation_id.clone();
-        let establish_obligation_id = effect.establish_obligation_id.clone();
         let disposition = effect.disposition.clone();
         let reserved_turn_id = effect.reserved_turn_id.clone();
         let session_id = effect.session_id.clone();
         let human_message_id = effect.human_message_id.clone();
         let assistant_message_id = effect.assistant_message_id.clone();
-        tokio::spawn(async move {
-            let Some(sink) = status_sink.as_ref().and_then(Weak::upgrade) else {
-                log::error!("accepted send status authority is unavailable [{operation_id}]");
-                return;
-            };
-            if let Some(establish_obligation_id) = establish_obligation_id.as_deref() {
-                if sink
-                    .transition_obligation(
-                        crate::usecase::agent_session::operation::ObligationTransition {
-                            operation_id: &operation_id,
-                            obligation_id: establish_obligation_id,
-                            expected_kind: "provider_establish",
-                            expected_state: "pending",
-                            next_state: "effect_reserved",
-                            keep_pending: true,
-                            status: None,
-                        },
-                    )
-                    .await
+        let queued_effect = matches!(
+            &effect.disposition,
+            crate::domain::agent_session::events::SendDisposition::Queued { .. }
+        );
+        let mut dispatch_lease = match self
+            .current_process_send_dispatches
+            .admit(&obligation_id, queued_effect)
+        {
+            CurrentProcessSendDispatchAdmission::Acquired(lease) => lease,
+            CurrentProcessSendDispatchAdmission::RedriveParked => {
+                if self
+                    .queued_send_redrive
+                    .send(QueuedSendRedrive {
+                        session_id: session_id.clone(),
+                        obligation_id: obligation_id.clone(),
+                    })
                     .is_err()
                 {
-                    return;
+                    // The parked marker has no worker-owned lease. Release it
+                    // before publishing the central recovery permit.
+                    self.current_process_send_dispatches.remove(&obligation_id);
+                    status_sink.wake_pending_recovery();
                 }
-                if runtime
-                    .establish_accepted_provider(&session_id)
-                    .await
-                    .is_err()
-                    || sink
-                        .transition_obligation(
-                            crate::usecase::agent_session::operation::ObligationTransition {
-                                operation_id: &operation_id,
-                                obligation_id: establish_obligation_id,
-                                expected_kind: "provider_establish",
-                                expected_state: "effect_reserved",
-                                next_state: "completed",
-                                keep_pending: false,
-                                status: None,
-                            },
-                        )
-                        .await
-                        .is_err()
-                {
-                    persist_accepted_send_status(
-                        &sink,
-                        &operation_id,
-                        crate::usecase::agent_session::operation::SendExecutionStatus::ReconciliationRequired {
-                            failure: SafeOperationFailure::new(
-                                SessionOperationFailureKind::OutcomeUnknown,
-                                true,
-                                "Provider establishment requires same-effect readback.",
-                                uuid::Uuid::new_v4().to_string(),
-                            ),
-                        },
-                    )
-                    .await;
-                    return;
+                return Ok(SendEffectDispatch::AlreadyScheduled);
+            }
+            CurrentProcessSendDispatchAdmission::AlreadyActive => {
+                return Ok(SendEffectDispatch::AlreadyScheduled);
+            }
+        };
+        match status_sink.accepted_effect_is_dispatchable(effect).await {
+            Ok(true) => {}
+            Ok(false) => return Ok(SendEffectDispatch::AlreadyScheduled),
+            Err(_) => {
+                drop(dispatch_lease);
+                status_sink.wake_pending_recovery();
+                return Ok(SendEffectDispatch::AlreadyScheduled);
+            }
+        }
+        if let crate::domain::agent_session::events::SendDisposition::Queued { queue_item_id } =
+            &effect.disposition
+        {
+            let Some(reserved_turn_id) = effect.reserved_turn_id.as_deref() else {
+                return Err(Self::failure(
+                    "The accepted queued turn identity is unavailable.",
+                ));
+            };
+            match self.session_store.canonical_queue_contains_exact(
+                &effect.session_id,
+                queue_item_id,
+                &effect.human_message_id,
+                reserved_turn_id,
+                None,
+            ) {
+                Ok(true) => {}
+                Ok(false) => return Ok(SendEffectDispatch::AlreadyScheduled),
+                Err(_) => {
+                    drop(dispatch_lease);
+                    status_sink.wake_pending_recovery();
+                    return Ok(SendEffectDispatch::AlreadyScheduled);
                 }
             }
+        }
+        let queued_send_redrive = self.queued_send_redrive.clone();
+        let session_store = self.session_store.clone();
+        tokio::spawn(async move {
+            let sink = status_sink;
             let immediate_turn = matches!(
                 &disposition,
                 crate::domain::agent_session::events::SendDisposition::StartedTurn { .. }
             );
-            if immediate_turn
-                && sink
-                    .transition_obligation(
-                        crate::usecase::agent_session::operation::ObligationTransition {
-                            operation_id: &operation_id,
-                            obligation_id: &obligation_id,
-                            expected_kind: "turn_execution",
-                            expected_state: "pending",
-                            next_state: "effect_reserved",
-                            keep_pending: true,
-                            status: Some(
-                            crate::usecase::agent_session::operation::SendExecutionStatus::ProviderStartReserved {
-                                obligation_id: obligation_id.clone(),
-                            },
-                            ),
-                        },
-                    )
-                    .await
-                    .is_err()
-            {
-                return;
+            let mut _claim = None;
+            if !immediate_turn {
+                let crate::domain::agent_session::events::SendDisposition::Queued { queue_item_id } =
+                    &disposition
+                else {
+                    unreachable!("accepted send disposition is exhaustive")
+                };
+                let Some(reserved_turn_id) = reserved_turn_id.as_deref() else {
+                    return;
+                };
+                match session_store.canonical_queue_contains_exact(
+                    &session_id,
+                    queue_item_id,
+                    &human_message_id,
+                    reserved_turn_id,
+                    None,
+                ) {
+                    Ok(true) => {}
+                    Ok(false) => return,
+                    Err(_) => {
+                        drop(dispatch_lease);
+                        sink.wake_pending_recovery();
+                        return;
+                    }
+                }
             }
-            if runtime
+            let execution_result = runtime
                 .execute_accepted_send(
                     crate::usecase::agent_session::runtime::AcceptedSendExecution {
                         request,
@@ -853,102 +1475,64 @@ impl SendAdmissionGate for RuntimeSendOperationGate {
                         reserved_turn_id: reserved_turn_id.as_deref(),
                     },
                 )
-                .await
-                .is_err()
-            {
-                persist_accepted_send_status(
+                .await;
+            if matches!(
+                &execution_result,
+                Err(crate::usecase::agent_session::runtime::usecase::AgentRuntimeError::AcceptedEffectAdmissionDeferred)
+            ) {
+                drop(dispatch_lease);
+                sink.wake_pending_recovery();
+                return;
+            }
+            if execution_result.is_err() {
+                if let Some(recovery_wake) = persist_accepted_turn_reconciliation(
                     &sink,
                     &operation_id,
-                    crate::usecase::agent_session::operation::SendExecutionStatus::ReconciliationRequired {
-                        failure: SafeOperationFailure::new(
-                            SessionOperationFailureKind::ExternalEffectFailed,
-                            true,
-                            "The accepted send requires reconciliation.",
-                            uuid::Uuid::new_v4().to_string(),
-                        ),
-                    },
+                    &obligation_id,
+                    SafeOperationFailure::new(
+                        SessionOperationFailureKind::ExternalEffectFailed,
+                        true,
+                        "The accepted send requires reconciliation.",
+                        uuid::Uuid::new_v4().to_string(),
+                    ),
                 )
-                .await;
+                .await
+                {
+                    release_send_worker_to_recovery(&mut _claim, dispatch_lease, recovery_wake);
+                    return;
+                }
                 log::warn!(
                     "accepted send effect requires reconciliation [{}]",
                     operation_id
                 );
             } else {
-                let status = match disposition {
+                match disposition {
                     crate::domain::agent_session::events::SendDisposition::StartedTurn {
-                        turn_id,
-                    } => crate::usecase::agent_session::operation::SendExecutionStatus::Running {
-                        turn_id,
-                    },
-                    crate::domain::agent_session::events::SendDisposition::Queued {
-                        queue_item_id,
-                    } => crate::usecase::agent_session::operation::SendExecutionStatus::Queued {
-                        queue_item_id,
-                        reserved_turn_id: reserved_turn_id.unwrap_or_default(),
-                    },
-                };
-                match status {
-                    crate::usecase::agent_session::operation::SendExecutionStatus::Running {
-                        turn_id,
-                    } => match turn_id.parse::<u64>() {
-                        Ok(turn_id) => {
-                            if sink
-                                .mark_turn_running(&operation_id, &obligation_id, turn_id)
-                                .await
-                                .is_err()
-                            {
-                                persist_accepted_send_status(
-                                    &sink,
-                                    &operation_id,
-                                    crate::usecase::agent_session::operation::SendExecutionStatus::ReconciliationRequired {
-                                        failure: SafeOperationFailure::new(
-                                            SessionOperationFailureKind::OutcomeUnknown,
-                                            true,
-                                            "The accepted turn start requires same-effect readback.",
-                                            uuid::Uuid::new_v4().to_string(),
-                                        ),
-                                    },
-                                )
-                                .await;
-                            }
+                        ..
+                    } => {}
+                    crate::domain::agent_session::events::SendDisposition::Queued { .. } => {
+                        if queued_send_redrive
+                            .send(QueuedSendRedrive {
+                                session_id,
+                                obligation_id,
+                            })
+                            .is_ok()
+                        {
+                            dispatch_lease.retain();
+                        } else {
+                            let recovery_wake =
+                                accepted_send_recovery_wake(sink.pending_recovery_wakeup());
+                            release_send_worker_to_recovery(
+                                &mut _claim,
+                                dispatch_lease,
+                                recovery_wake,
+                            );
                         }
-                        Err(_) => {
-                            persist_accepted_send_status(
-                                &sink,
-                                &operation_id,
-                                crate::usecase::agent_session::operation::SendExecutionStatus::ReconciliationRequired {
-                                    failure: SafeOperationFailure::new(
-                                        SessionOperationFailureKind::InvalidEffectIntent,
-                                        false,
-                                        "The accepted turn identity is incompatible.",
-                                        uuid::Uuid::new_v4().to_string(),
-                                    ),
-                                },
-                            )
-                            .await;
-                        }
-                    },
-                    crate::usecase::agent_session::operation::SendExecutionStatus::Queued {
-                        queue_item_id,
-                        reserved_turn_id,
-                    } => {
-                        persist_accepted_send_status(
-                            &sink,
-                            &operation_id,
-                            crate::usecase::agent_session::operation::SendExecutionStatus::Queued {
-                                queue_item_id,
-                                reserved_turn_id,
-                            },
-                        )
-                        .await;
-                        runtime.drain_accepted_queue_if_idle(&session_id).await;
-                    }
-                    status => {
-                        persist_accepted_send_status(&sink, &operation_id, status).await;
                     }
                 }
             }
         });
+        Ok(SendEffectDispatch::Scheduled)
     }
 }
 
@@ -1534,10 +2118,16 @@ impl StopAdmissionGate for RuntimeAgentSessionOperationGate {
     async fn acceptance_state_mutations(
         &self,
         session_id: &str,
+        expected_session_revision: u64,
         events: &[crate::domain::agent_session::events::AgentSessionDomainEvent],
-    ) -> Result<Vec<crate::domain::local_event::LocalStateMutation>, SafeOperationFailure> {
+    ) -> Result<Option<Vec<crate::domain::local_event::LocalStateMutation>>, SafeOperationFailure>
+    {
         self.session_store
-            .prepare_event_projection_mutations(session_id, events)
+            .prepare_event_projection_mutations_if_current_revision(
+                session_id,
+                expected_session_revision,
+                events,
+            )
             .map_err(|_| Self::failure("The Stop acceptance projection could not be prepared."))
     }
 
@@ -1582,23 +2172,12 @@ impl StopAdmissionGate for RuntimeAgentSessionOperationGate {
         &self,
         effect: &AcceptedStopEffect,
     ) -> Result<StopEffectObservation, SafeOperationFailure> {
-        let before = self
-            .runtime
-            .get_session(&effect.session_id)
-            .await
-            .map_err(|_| Self::failure("The Stop target could not be revalidated."))?;
-        if before.as_ref().is_none_or(|session| {
-            session.turn_phase == crate::usecase::agent_session::status::TurnPhase::Idle
-                || session
-                    .active_turn_id
-                    .is_none_or(|turn_id| turn_id.to_string() != effect.turn_id)
-        }) {
-            return Ok(StopEffectObservation {
-                terminal_reason: None,
-            });
-        }
+        let turn_id = effect
+            .turn_id
+            .parse::<u64>()
+            .map_err(|_| Self::failure("The Stop turn identity is invalid."))?;
         self.runtime
-            .interrupt_provider_effect(&effect.session_id)
+            .interrupt_provider_effect_after_stop_acceptance(&effect.session_id, turn_id)
             .await
             .map_err(|_| Self::failure("The provider interrupt could not be confirmed."))?;
         Ok(StopEffectObservation {
@@ -1722,11 +2301,32 @@ impl PermissionResponseGate for RuntimePermissionResponseOperationGate {
 /// Production recovery stays conservative unless an effect-specific adapter
 /// can prove readback or safe cancellation. It never turns an opaque pending
 /// record into a blind provider retry.
+pub(crate) struct ActiveSendRecoveryContext {
+    send_operation: Arc<AgentSendOperationUsecase>,
+    runtime: Arc<crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase>,
+    current_process_claims: Arc<CurrentProcessSendClaims>,
+}
+
+impl ActiveSendRecoveryContext {
+    pub(crate) fn new(
+        send_operation: Arc<AgentSendOperationUsecase>,
+        runtime: Arc<crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase>,
+        current_process_claims: Arc<CurrentProcessSendClaims>,
+    ) -> Self {
+        Self {
+            send_operation,
+            runtime,
+            current_process_claims,
+        }
+    }
+}
+
 pub(crate) struct ConservativeRecoveryExecutor {
     stop_readback: Arc<dyn StopRecoveryReadbackPort>,
     session_close_readback: Arc<dyn SessionCloseRecoveryReadbackPort>,
     backend_recovery_readback: Arc<dyn BackendRecoveryReadbackPort>,
     send_readback: Arc<dyn SendRecoveryReadbackPort>,
+    active_send: Option<ActiveSendRecoveryContext>,
     permission_response: Arc<PermissionResponseOperationUsecase>,
     repository: Arc<dyn LocalEventTransactionRepository>,
 }
@@ -1736,15 +2336,17 @@ impl ConservativeRecoveryExecutor {
         stop_operation: Arc<StopOperationUsecase>,
         session_lifecycle_operation: Arc<SessionLifecycleOperationUsecase>,
         backend_recovery_readback: Arc<dyn BackendRecoveryReadbackPort>,
-        send_operation: Arc<AgentSendOperationUsecase>,
+        active_send: ActiveSendRecoveryContext,
         permission_response: Arc<PermissionResponseOperationUsecase>,
         repository: Arc<dyn LocalEventTransactionRepository>,
     ) -> Self {
+        let send_readback = active_send.send_operation.clone();
         Self {
             stop_readback: stop_operation,
             session_close_readback: session_lifecycle_operation,
             backend_recovery_readback,
-            send_readback: send_operation,
+            send_readback,
+            active_send: Some(active_send),
             permission_response,
             repository,
         }
@@ -1764,6 +2366,7 @@ impl ConservativeRecoveryExecutor {
             session_close_readback,
             backend_recovery_readback,
             send_readback,
+            active_send: None,
             permission_response,
             repository,
         }
@@ -1936,6 +2539,38 @@ fn recovery_handoff_target_matches(
 
 #[async_trait::async_trait]
 impl RecoveryEffectExecutor for ConservativeRecoveryExecutor {
+    async fn owns_current_process_effect(
+        &self,
+        obligation_id: &str,
+        immutable_obligation: &ObligationRecord,
+    ) -> bool {
+        let ObligationRecord::Send {
+            obligation_id: stored_obligation_id,
+            operation_id,
+            session_id,
+            kind: SendObligationKindRecord::TurnExecution,
+            state: ObligationStateRecord::EffectReserved | ObligationStateRecord::Running,
+            ..
+        } = original_recovery_obligation(immutable_obligation)
+        else {
+            return false;
+        };
+        if stored_obligation_id != obligation_id || obligation_id != format!("{operation_id}.exec")
+        {
+            return false;
+        }
+        let Some(active_send) = &self.active_send else {
+            return false;
+        };
+        if active_send.current_process_claims.contains(obligation_id) {
+            return true;
+        }
+        active_send
+            .runtime
+            .owns_accepted_turn_execution(session_id, operation_id, obligation_id)
+            .await
+    }
+
     fn supports_read_again(
         &self,
         obligation_id: &str,
@@ -2164,11 +2799,17 @@ fn permission_response_retry_material(
 
 #[cfg(test)]
 mod send_execution_tests {
-    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier};
     use std::time::Duration;
 
+    use futures_util::FutureExt as _;
+
     use super::{
-        CanonicalSendCommandV1, CanonicalSendTargetV1, RuntimeSendOperationGate,
+        accepted_send_artifact_digest, release_send_worker_to_recovery,
+        retry_accepted_turn_reconciliation, CanonicalSendCommandV1, CanonicalSendTargetV1,
+        CurrentProcessSendClaims, CurrentProcessSendDispatchAdmission,
+        CurrentProcessSendDispatches, RuntimeSendOperationGate, ACCEPTED_SEND_RETRY_ATTEMPTS,
         LOCAL_INSTALLATION_OPERATION_PRINCIPAL,
     };
     use crate::adaptor::protocol::agent_session_v1::{
@@ -2177,6 +2818,657 @@ mod send_execution_tests {
     use crate::domain::local_event::LocalEventTransactionRepository as _;
     use crate::test_support::TestRuntimeCallKind;
     use crate::usecase::agent_session::session::AgentSessionProjectionCodec as _;
+
+    struct FailFirstTurnClaimRepository {
+        inner: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
+        failures_remaining: AtomicUsize,
+        failure_count: AtomicUsize,
+        reply_losses_remaining: AtomicUsize,
+        reply_loss_count: AtomicUsize,
+        reply_loss_store: Option<Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>>,
+    }
+
+    impl FailFirstTurnClaimRepository {
+        fn with_failures(
+            inner: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
+            failures: usize,
+        ) -> Self {
+            Self {
+                inner,
+                failures_remaining: AtomicUsize::new(failures),
+                failure_count: AtomicUsize::new(0),
+                reply_losses_remaining: AtomicUsize::new(0),
+                reply_loss_count: AtomicUsize::new(0),
+                reply_loss_store: None,
+            }
+        }
+
+        fn with_claim_reply_loss(
+            store: Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
+        ) -> Self {
+            Self {
+                inner: store.clone(),
+                failures_remaining: AtomicUsize::new(0),
+                failure_count: AtomicUsize::new(0),
+                reply_losses_remaining: AtomicUsize::new(1),
+                reply_loss_count: AtomicUsize::new(0),
+                reply_loss_store: Some(store),
+            }
+        }
+
+        fn failure_count(&self) -> usize {
+            self.failure_count.load(Ordering::SeqCst)
+        }
+
+        fn reply_loss_count(&self) -> usize {
+            self.reply_loss_count.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::domain::local_event::LocalEventTransactionRepository for FailFirstTurnClaimRepository {
+        fn canonical_mutation_identity_v1(
+            &self,
+            mutation: &crate::domain::local_event::LocalStateMutation,
+        ) -> Result<Vec<u8>, String> {
+            self.inner.canonical_mutation_identity_v1(mutation)
+        }
+
+        fn canonical_event_batch_identity_v1(
+            &self,
+            events: &[crate::domain::local_event::UncommittedDomainEvent],
+        ) -> Result<Vec<u8>, String> {
+            self.inner.canonical_event_batch_identity_v1(events)
+        }
+
+        async fn commit_batch(
+            &self,
+            batch: crate::domain::local_event::LocalAtomicBatch,
+        ) -> Result<
+            crate::domain::local_event::CommitBatchResult,
+            crate::domain::local_event::CommitBatchError,
+        > {
+            let is_turn_claim = batch.state_mutations.iter().any(|mutation| {
+                matches!(
+                    mutation,
+                    crate::domain::local_event::LocalStateMutation::Obligation(obligation)
+                        if matches!(
+                            &obligation.record,
+                            crate::domain::local_event::ObligationRecord::Send {
+                                kind: crate::domain::local_event::SendObligationKindRecord::TurnExecution,
+                                state: crate::domain::local_event::ObligationStateRecord::EffectReserved,
+                                ..
+                            }
+                        )
+                )
+            });
+            if is_turn_claim
+                && self
+                    .failures_remaining
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                        remaining.checked_sub(1)
+                    })
+                    .is_ok()
+            {
+                self.failure_count.fetch_add(1, Ordering::SeqCst);
+                return Err(
+                    crate::domain::local_event::CommitBatchError::StorageUnavailable {
+                        failure: crate::domain::local_event::SafeOperationFailure::new(
+                            crate::domain::local_event::SessionOperationFailureKind::StorageUnavailable,
+                            true,
+                            "injected transient turn claim failure",
+                            "transient-turn-claim".to_string(),
+                        ),
+                    },
+                );
+            }
+            if is_turn_claim
+                && self
+                    .reply_losses_remaining
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                        remaining.checked_sub(1)
+                    })
+                    .is_ok()
+            {
+                self.reply_loss_count.fetch_add(1, Ordering::SeqCst);
+                self.reply_loss_store
+                    .as_ref()
+                    .expect("claim reply-loss store")
+                    .fault_injector()
+                    .arm_drop_reply();
+            }
+            self.inner.commit_batch(batch).await
+        }
+
+        async fn resolve_commit(
+            &self,
+            identity: crate::domain::local_event::CommitIdentity,
+        ) -> Result<
+            crate::domain::local_event::CommitResolution,
+            crate::domain::local_event::LocalEventQueryError,
+        > {
+            self.inner.resolve_commit(identity).await
+        }
+
+        async fn load_stream(
+            &self,
+            request: crate::domain::local_event::LoadStreamRequest,
+        ) -> Result<
+            crate::domain::local_event::DomainEventPage,
+            crate::domain::local_event::LocalEventQueryError,
+        > {
+            self.inner.load_stream(request).await
+        }
+
+        async fn query(
+            &self,
+            request: crate::domain::local_event::LocalEventQuery,
+        ) -> Result<
+            crate::domain::local_event::LocalEventQueryResult,
+            crate::domain::local_event::LocalEventQueryError,
+        > {
+            self.inner.query(request).await
+        }
+
+        fn subscribe(
+            &self,
+            after: crate::domain::local_event::GlobalSequence,
+        ) -> crate::domain::local_event::LocalEventSubscription {
+            self.inner.subscribe(after)
+        }
+    }
+
+    #[test]
+    fn current_process_claim_lease_releases_ownership_on_drop() {
+        let claims = Arc::new(CurrentProcessSendClaims::default());
+        {
+            let _claim = claims.claim("send-op.exec");
+            assert!(claims.contains("send-op.exec"));
+        }
+        assert!(!claims.contains("send-op.exec"));
+    }
+
+    #[test]
+    fn current_process_dispatch_lease_is_single_flight_and_queue_retention_is_explicit() {
+        let dispatches = Arc::new(CurrentProcessSendDispatches::default());
+        {
+            let _lease = dispatches.try_claim("send-op.exec").unwrap();
+            assert!(dispatches.try_claim("send-op.exec").is_none());
+        }
+        assert!(dispatches.try_claim("send-op.exec").is_some());
+
+        let mut retained = dispatches.try_claim("queued-op.exec").unwrap();
+        retained.retain();
+        drop(retained);
+        assert!(dispatches.try_claim("queued-op.exec").is_none());
+        dispatches.remove("queued-op.exec");
+        assert!(dispatches.try_claim("queued-op.exec").is_some());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reconciliation_retry_exhaustion_defers_wake_until_send_worker_release() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let recovery_wakeup = Arc::new(tokio::sync::Notify::new());
+        let recovery_wake = retry_accepted_turn_reconciliation(
+            "retry-exhausted-send",
+            "retry-exhausted-send.exec",
+            {
+                let attempts = Arc::clone(&attempts);
+                move || {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    std::future::ready(Err::<(), ()>(()))
+                }
+            },
+            Arc::clone(&recovery_wakeup),
+        )
+        .await
+        .expect("retry exhaustion must hand its wake to the worker owner");
+
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            ACCEPTED_SEND_RETRY_ATTEMPTS
+        );
+        assert!(
+            recovery_wakeup.notified().now_or_never().is_none(),
+            "persist retry exhaustion must not wake recovery while worker ownership is live"
+        );
+
+        let obligation_id = "retry-exhausted-send.exec";
+        let claims = Arc::new(CurrentProcessSendClaims::default());
+        let dispatches = Arc::new(CurrentProcessSendDispatches::default());
+        let mut claim = Some(claims.claim(obligation_id));
+        let dispatch_lease = dispatches
+            .try_claim(obligation_id)
+            .expect("worker owns its dispatch marker");
+        release_send_worker_to_recovery(&mut claim, dispatch_lease, recovery_wake);
+
+        assert!(!claims.contains(obligation_id));
+        assert!(!dispatches.contains(obligation_id));
+        assert!(
+            recovery_wakeup.notified().now_or_never().is_some(),
+            "recovery receives exactly the permit handed off after worker release"
+        );
+    }
+
+    #[test]
+    fn redriver_channel_failure_releases_dispatch_before_recovery_wake() {
+        let obligation_id = "closed-redriver.exec";
+        let dispatches = Arc::new(CurrentProcessSendDispatches::default());
+        let dispatch_lease = dispatches
+            .try_claim(obligation_id)
+            .expect("queued handoff owns its dispatch marker");
+        let wake_observed = Arc::new(AtomicBool::new(false));
+        let recovery_wake =
+            crate::usecase::agent_session::runtime::ports::AcceptedSendRecoveryWake::new({
+                let dispatches = Arc::clone(&dispatches);
+                let wake_observed = Arc::clone(&wake_observed);
+                move || {
+                    assert!(
+                        !dispatches.contains(obligation_id),
+                        "closed-channel recovery must not observe the dying dispatch owner"
+                    );
+                    wake_observed.store(true, Ordering::SeqCst);
+                }
+            });
+
+        release_send_worker_to_recovery(&mut None, dispatch_lease, recovery_wake);
+
+        assert!(wake_observed.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn blocked_queued_dispatch_parks_until_a_fresh_recovery_request() {
+        let dispatches = Arc::new(CurrentProcessSendDispatches::default());
+        let obligation_id = "blocked-queued-op.exec";
+        let mut initial = match dispatches.admit(obligation_id, true) {
+            CurrentProcessSendDispatchAdmission::Acquired(lease) => lease,
+            _ => panic!("the first dispatch must own the marker"),
+        };
+        initial.retain();
+        drop(initial);
+
+        assert!(
+            !dispatches.finish_blocked(obligation_id),
+            "Blocked must retire the timer-owned redriver request"
+        );
+        assert!(
+            dispatches.contains(obligation_id),
+            "Blocked retains only the duplicate-suppression marker"
+        );
+        assert!(matches!(
+            dispatches.admit(obligation_id, true),
+            CurrentProcessSendDispatchAdmission::RedriveParked
+        ));
+
+        // A recovery scan racing the next Blocked decision must survive that
+        // decision as one more bounded drain attempt, then park again.
+        assert!(matches!(
+            dispatches.admit(obligation_id, true),
+            CurrentProcessSendDispatchAdmission::AlreadyActive
+        ));
+        assert!(dispatches.finish_blocked(obligation_id));
+        assert!(!dispatches.finish_blocked(obligation_id));
+        assert!(matches!(
+            dispatches.admit(obligation_id, true),
+            CurrentProcessSendDispatchAdmission::RedriveParked
+        ));
+        dispatches.remove(obligation_id);
+    }
+
+    #[test]
+    fn no_work_does_not_drop_a_concurrent_queued_recovery_request() {
+        let dispatches = Arc::new(CurrentProcessSendDispatches::default());
+        let obligation_id = "no-work-queued-op.exec";
+        let mut initial = match dispatches.admit(obligation_id, true) {
+            CurrentProcessSendDispatchAdmission::Acquired(lease) => lease,
+            _ => panic!("the first dispatch must own the marker"),
+        };
+        initial.retain();
+        drop(initial);
+
+        assert!(matches!(
+            dispatches.admit(obligation_id, true),
+            CurrentProcessSendDispatchAdmission::AlreadyActive
+        ));
+        assert!(
+            dispatches.finish_no_work(obligation_id),
+            "the racing recovery scan must receive one bounded recheck"
+        );
+        assert!(
+            !dispatches.finish_no_work(obligation_id),
+            "a second NoWork retires the marker instead of polling"
+        );
+        assert!(!dispatches.contains(obligation_id));
+    }
+
+    #[test]
+    fn runtime_send_gate_constructor_is_safe_without_an_entered_tokio_runtime() {
+        let data = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let runtime =
+            crate::test_support::build_agent_runtime_usecase(session_store.clone(), data.path());
+
+        let _gate =
+            RuntimeSendOperationGate::new(runtime, session_store, data.path().to_path_buf());
+    }
+
+    #[test]
+    fn accepted_send_artifact_identity_binds_principal_operation_and_payload() {
+        let first = accepted_send_artifact_digest("principal", "send-1", "{\"content\":\"same\"}");
+        assert_eq!(
+            first,
+            accepted_send_artifact_digest("principal", "send-1", "{\"content\":\"same\"}")
+        );
+        assert_ne!(
+            first,
+            accepted_send_artifact_digest("principal", "send-2", "{\"content\":\"same\"}")
+        );
+        assert_ne!(
+            first,
+            accepted_send_artifact_digest("other-principal", "send-1", "{\"content\":\"same\"}")
+        );
+        assert_ne!(
+            first,
+            accepted_send_artifact_digest("principal", "send-1", "{\"content\":\"different\"}")
+        );
+    }
+
+    #[tokio::test]
+    async fn accepted_send_retries_a_transient_turn_claim_before_one_provider_handoff() {
+        run_accepted_send_claim_failure_recovery(1, false).await;
+    }
+
+    #[tokio::test]
+    async fn accepted_send_claim_reply_loss_preserves_the_exact_winner_without_manual_recovery() {
+        let data = tempfile::tempdir().unwrap();
+        let data_path = data.path().to_path_buf();
+        let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
+            crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
+                data_path.clone(),
+            ),
+        )
+        .unwrap();
+        let repository = Arc::new(FailFirstTurnClaimRepository::with_claim_reply_loss(
+            store.clone(),
+        ));
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        session_store.set_local_event_repository(
+            repository.clone(),
+            store.installation_id().to_string(),
+            Arc::new(
+                crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
+            ),
+        );
+        let (runtime, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                Arc::clone(&session_store),
+                &data_path,
+            );
+        let gate = Arc::new(RuntimeSendOperationGate::new(
+            Arc::clone(&runtime),
+            Arc::clone(&session_store),
+            data_path.clone(),
+        ));
+        let send = Arc::new(
+            crate::usecase::agent_session::operation::AgentSendOperationUsecase::new(
+                repository.clone(),
+                store.clone(),
+                gate.clone(),
+                store.installation_id().to_string(),
+            ),
+        );
+        gate.bind_status_sink(Arc::downgrade(&send));
+
+        let operation_id = "turn-claim-commit-reply-loss";
+        let command = CanonicalSendCommandV1 {
+            target: CanonicalSendTargetV1::Direct {
+                chat_session_id: None,
+                worktree_path: data_path.to_string_lossy().to_string(),
+            },
+            content: "execute after exact claim reply loss".to_string(),
+            permission_mode: "ask".to_string(),
+            plan_mode: false,
+            backend_id: Some("claude".to_string()),
+            model_id: Some("claude-4-sonnet".to_string()),
+            images: Vec::new(),
+            mentions: Vec::new(),
+            editor_context: None,
+        };
+        let accepted = send
+            .send(
+                crate::usecase::agent_session::operation::SendOperationRequest {
+                    principal: LOCAL_INSTALLATION_OPERATION_PRINCIPAL.to_string(),
+                    operation_id: operation_id.to_string(),
+                    canonical_payload: serde_json::to_string(&command).unwrap(),
+                },
+            )
+            .await
+            .unwrap();
+        let crate::usecase::agent_session::operation::SendCommandOutcome::Accepted(accepted) =
+            accepted
+        else {
+            panic!("the response-loss fault belongs to the post-accept claim")
+        };
+        let session_id = accepted.receipt.session_id;
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let operation = send
+                    .get_operation(LOCAL_INSTALLATION_OPERATION_PRINCIPAL, operation_id)
+                    .await
+                    .unwrap();
+                let starts = controller
+                    .call_kinds_for(&session_id)
+                    .into_iter()
+                    .filter(|kind| *kind == TestRuntimeCallKind::StartTurn)
+                    .count();
+                if starts == 1
+                    && matches!(
+                        operation.latest_status,
+                        crate::usecase::agent_session::operation::SendExecutionStatus::Running { .. }
+                    )
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the exact claim winner must continue to provider handoff");
+
+        assert_eq!(repository.reply_loss_count(), 1);
+        assert_eq!(
+            controller
+                .call_kinds_for(&session_id)
+                .into_iter()
+                .filter(|kind| *kind == TestRuntimeCallKind::StartTurn)
+                .count(),
+            1,
+            "the committed exact owner may hand the input to the provider only once"
+        );
+        let operation = send
+            .get_operation(LOCAL_INSTALLATION_OPERATION_PRINCIPAL, operation_id)
+            .await
+            .unwrap();
+        let manual_recovery_count = usize::from(matches!(
+            operation.latest_status,
+            crate::usecase::agent_session::operation::SendExecutionStatus::ReconciliationRequired { .. }
+        ));
+        assert_eq!(
+            manual_recovery_count, 0,
+            "a proven exact claim winner must not be sent to manual recovery"
+        );
+        let execution_obligation_id = format!("{operation_id}.exec");
+        let execution = store
+            .query(
+                crate::domain::local_event::LocalEventQuery::ObligationByIdentity {
+                    obligation_id: execution_obligation_id.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            execution,
+            crate::domain::local_event::LocalEventQueryResult::ObligationByIdentity(Some(
+                crate::domain::local_event::ObligationView {
+                    record: crate::domain::local_event::ObligationRecord::Send {
+                        state: crate::domain::local_event::ObligationStateRecord::EffectReserved,
+                        ..
+                    },
+                    ..
+                }
+            ))
+        ));
+        assert!(
+            crate::usecase::agent_session::operation::SendAdmissionGate::owns_current_process_turn_execution(
+                gate.as_ref(),
+                &session_id,
+                operation_id,
+                &execution_obligation_id,
+            )
+            .await,
+            "the EffectReserved participant must have a live runtime owner"
+        );
+        assert_eq!(
+            send.recover_pending_provider_effects_pass().await.unwrap(),
+            0,
+            "the live runtime remains the sole owner after the recovered claim"
+        );
+    }
+
+    #[tokio::test]
+    async fn accepted_send_recovery_continues_after_local_claim_retry_budget() {
+        run_accepted_send_claim_failure_recovery(ACCEPTED_SEND_RETRY_ATTEMPTS, true).await;
+    }
+
+    async fn run_accepted_send_claim_failure_recovery(
+        injected_failures: usize,
+        require_central_recovery: bool,
+    ) {
+        let data = tempfile::tempdir().unwrap();
+        let data_path = data.path().to_path_buf();
+        let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
+            crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
+                data_path.clone(),
+            ),
+        )
+        .unwrap();
+        let inner: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
+            store.clone();
+        let repository = Arc::new(FailFirstTurnClaimRepository::with_failures(
+            inner,
+            injected_failures,
+        ));
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        session_store.set_local_event_repository(
+            repository.clone(),
+            store.installation_id().to_string(),
+            Arc::new(
+                crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
+            ),
+        );
+        let (runtime, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                Arc::clone(&session_store),
+                &data_path,
+            );
+        let gate = Arc::new(RuntimeSendOperationGate::new(
+            Arc::clone(&runtime),
+            Arc::clone(&session_store),
+            data_path.clone(),
+        ));
+        let send = Arc::new(
+            crate::usecase::agent_session::operation::AgentSendOperationUsecase::new(
+                repository.clone(),
+                store.clone(),
+                gate.clone(),
+                store.installation_id().to_string(),
+            ),
+        );
+        gate.bind_status_sink(Arc::downgrade(&send));
+        let recovery_wakeup = send.pending_recovery_wakeup();
+
+        let operation_id = format!("transient-turn-claim-{injected_failures}");
+        let command = CanonicalSendCommandV1 {
+            target: CanonicalSendTargetV1::Direct {
+                chat_session_id: None,
+                worktree_path: data_path.to_string_lossy().to_string(),
+            },
+            content: "retry the durable claim".to_string(),
+            permission_mode: "ask".to_string(),
+            plan_mode: false,
+            backend_id: Some("claude".to_string()),
+            model_id: Some("claude-4-sonnet".to_string()),
+            images: Vec::new(),
+            mentions: Vec::new(),
+            editor_context: None,
+        };
+        let accepted = send
+            .send(
+                crate::usecase::agent_session::operation::SendOperationRequest {
+                    principal: LOCAL_INSTALLATION_OPERATION_PRINCIPAL.to_string(),
+                    operation_id: operation_id.clone(),
+                    canonical_payload: serde_json::to_string(&command).unwrap(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            accepted,
+            crate::usecase::agent_session::operation::SendCommandOutcome::Accepted(_)
+        ));
+
+        if require_central_recovery {
+            tokio::time::timeout(Duration::from_secs(5), recovery_wakeup.notified())
+                .await
+                .expect("claim exhaustion must wake the app-lifetime recovery owner");
+            assert_eq!(
+                send.recover_pending_provider_effects_pass().await.unwrap(),
+                1,
+                "a fresh central scan must reclaim the still-pending accepted send"
+            );
+        }
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let operation = send
+                    .get_operation(LOCAL_INSTALLATION_OPERATION_PRINCIPAL, &operation_id)
+                    .await
+                    .unwrap();
+                let starts = controller
+                    .call_kinds_for(&operation.receipt.session_id)
+                    .into_iter()
+                    .filter(|kind| *kind == TestRuntimeCallKind::StartTurn)
+                    .count();
+                if starts == 1
+                    && matches!(
+                        operation.latest_status,
+                        crate::usecase::agent_session::operation::SendExecutionStatus::Running { .. }
+                    )
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the same accepted input must be handed off after storage recovers");
+        assert_eq!(repository.failure_count(), injected_failures);
+
+        let operation = send
+            .get_operation(LOCAL_INSTALLATION_OPERATION_PRINCIPAL, &operation_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            controller
+                .call_kinds_for(&operation.receipt.session_id)
+                .into_iter()
+                .filter(|kind| *kind == TestRuntimeCallKind::StartTurn)
+                .count(),
+            1,
+            "claim retry must not duplicate provider input"
+        );
+    }
 
     fn commit_b006_first_turn_terminal(
         session_store: &crate::usecase::agent_session::session::SessionStore,
@@ -2215,17 +3507,176 @@ mod send_execution_tests {
     }
 
     #[tokio::test]
+    async fn b017_cold_send_starts_before_provider_identity_is_observed() {
+        let data = tempfile::tempdir().unwrap();
+        let data_path = data.path().to_path_buf();
+        let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
+            crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
+                data_path.clone(),
+            ),
+        )
+        .unwrap();
+        let session_store = Arc::new(crate::test_support::build_session_store());
+        let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
+            store.clone();
+        session_store.set_local_event_repository(
+            repository.clone(),
+            store.installation_id().to_string(),
+            Arc::new(
+                crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
+            ),
+        );
+        let (runtime, controller) =
+            crate::test_support::build_agent_runtime_usecase_with_controller(
+                Arc::clone(&session_store),
+                &data_path,
+            );
+        let gate = Arc::new(RuntimeSendOperationGate::new(
+            Arc::clone(&runtime),
+            Arc::clone(&session_store),
+            data_path.clone(),
+        ));
+        let send = Arc::new(
+            crate::usecase::agent_session::operation::AgentSendOperationUsecase::new(
+                repository,
+                store.clone(),
+                gate.clone(),
+                store.installation_id().to_string(),
+            ),
+        );
+        gate.bind_status_sink(Arc::downgrade(&send));
+
+        let operation_id = "b017-cold-send".to_string();
+        let command = CanonicalSendCommandV1 {
+            target: CanonicalSendTargetV1::Direct {
+                chat_session_id: None,
+                worktree_path: data_path.to_string_lossy().to_string(),
+            },
+            content: "start before provider identity".to_string(),
+            permission_mode: "ask".to_string(),
+            plan_mode: false,
+            backend_id: Some("claude".to_string()),
+            model_id: Some("claude-4-sonnet".to_string()),
+            images: Vec::new(),
+            mentions: Vec::new(),
+            editor_context: None,
+        };
+        let outcome = send
+            .send(
+                crate::usecase::agent_session::operation::SendOperationRequest {
+                    principal: LOCAL_INSTALLATION_OPERATION_PRINCIPAL.to_string(),
+                    operation_id: operation_id.clone(),
+                    canonical_payload: serde_json::to_string(&command).unwrap(),
+                },
+            )
+            .await
+            .unwrap();
+        let crate::usecase::agent_session::operation::SendCommandOutcome::Accepted(accepted) =
+            outcome
+        else {
+            panic!("cold send must be durably accepted")
+        };
+        let session_id = accepted.receipt.session_id;
+
+        tokio::time::timeout(Duration::from_millis(500), async {
+            loop {
+                let operation = send
+                    .get_operation(LOCAL_INSTALLATION_OPERATION_PRINCIPAL, &operation_id)
+                    .await
+                    .unwrap();
+                let starts = controller
+                    .call_kinds_for(&session_id)
+                    .into_iter()
+                    .filter(|kind| *kind == TestRuntimeCallKind::StartTurn)
+                    .count();
+                if starts == 1
+                    && matches!(
+                        operation.latest_status,
+                        crate::usecase::agent_session::operation::SendExecutionStatus::Running { .. }
+                    )
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("turn input must be handed off without waiting for provider identity");
+        assert!(
+            !runtime.provider_session_is_confirmed(&session_id).await,
+            "the regression requires provider identity to remain unobserved at handoff"
+        );
+        assert!(matches!(
+            store
+                .query(
+                    crate::domain::local_event::LocalEventQuery::ObligationByIdentity {
+                        obligation_id: format!("{operation_id}.establish"),
+                    },
+                )
+                .await
+                .unwrap(),
+            crate::domain::local_event::LocalEventQueryResult::ObligationByIdentity(None)
+        ));
+
+        controller
+            .emit(
+                &session_id,
+                crate::domain::agent_session::gateway::AgentRuntimeEvent::SessionEstablished {
+                    backend_session_id: "b017-late-provider".to_string(),
+                    resume: crate::domain::agent_session::gateway::ResumeOutcome::NotRequested,
+                },
+            )
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !runtime.provider_session_is_confirmed(&session_id).await {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("late provider identity must converge on the original live turn");
+        assert_eq!(
+            controller
+                .call_kinds_for(&session_id)
+                .into_iter()
+                .filter(|kind| *kind == TestRuntimeCallKind::StartTurn)
+                .count(),
+            1,
+            "late identity observation must not repeat the turn input"
+        );
+    }
+
+    #[tokio::test]
     async fn b006_production_queued_send_replays_after_response_loss_and_restart_before_one_start()
     {
-        run_b006_production_queued_restart(false).await;
+        run_b006_production_queued_restart(false, false, false, false).await;
     }
 
     #[tokio::test]
     async fn b006_recovery_into_already_idle_session_auto_drains_exact_queue_item_once() {
-        run_b006_production_queued_restart(true).await;
+        run_b006_production_queued_restart(true, false, false, false).await;
     }
 
-    async fn run_b006_production_queued_restart(terminal_before_recovery: bool) {
+    #[tokio::test]
+    async fn same_payload_with_distinct_operation_ids_reserves_distinct_queued_artifacts() {
+        run_b006_production_queued_restart(false, true, false, false).await;
+    }
+
+    #[tokio::test]
+    async fn queued_send_retries_a_transient_turn_claim_before_one_provider_handoff() {
+        run_b006_production_queued_restart(false, false, true, false).await;
+    }
+
+    #[tokio::test]
+    async fn queued_start_loses_atomically_to_pause_after_its_idle_snapshot() {
+        run_b006_production_queued_restart(true, false, false, true).await;
+    }
+
+    async fn run_b006_production_queued_restart(
+        terminal_before_recovery: bool,
+        verify_distinct_duplicate: bool,
+        fail_queued_claim_once: bool,
+        pause_after_idle_snapshot: bool,
+    ) {
         let data = tempfile::tempdir().unwrap();
         let data_path = data.path().to_path_buf();
         let session_id = "b006-queued-restart-session".to_string();
@@ -2394,9 +3845,10 @@ mod send_execution_tests {
         let expected_queue_item_id = queue_item_id.clone();
         assert!(matches!(
             &accepted_before_restart.latest_status,
-            crate::usecase::agent_session::operation::SendExecutionStatus::AwaitingProviderStart {
-                dependency_obligation_ids
-            } if dependency_obligation_ids.is_empty()
+            crate::usecase::agent_session::operation::SendExecutionStatus::Queued {
+                queue_item_id,
+                ..
+            } if queue_item_id == &expected_queue_item_id
         ));
         assert_eq!(
             controller
@@ -2460,6 +3912,68 @@ mod send_execution_tests {
             crate::usecase::agent_session::session::SessionState::Active,
             "turn one must still be durably active at the response-loss boundary"
         );
+
+        if verify_distinct_duplicate {
+            let mut second_request = request.clone();
+            second_request.operation_id = format!("{operation_id}-second");
+            let second = send
+                .send(second_request)
+                .await
+                .expect("the second operation identity must be accepted");
+            let crate::usecase::agent_session::operation::SendCommandOutcome::Accepted(second) =
+                second
+            else {
+                panic!("the second operation identity must return Accepted")
+            };
+            let crate::domain::agent_session::events::SendDisposition::Queued {
+                queue_item_id: second_queue_item_id,
+            } = &second.receipt.disposition
+            else {
+                panic!("the active predecessor must keep the second send queued")
+            };
+            assert_ne!(
+                second.receipt.input_ref,
+                accepted_before_restart.receipt.input_ref
+            );
+            assert_ne!(second_queue_item_id, &expected_queue_item_id);
+
+            let projection = match store
+                .query(
+                    crate::domain::local_event::LocalEventQuery::SessionProjectionByIdentity {
+                        session_id: session_id.clone(),
+                    },
+                )
+                .await
+                .unwrap()
+            {
+                crate::domain::local_event::LocalEventQueryResult::SessionProjectionByIdentity(
+                    Some(projection),
+                ) => projection,
+                other => panic!("two-send projection missing: {other:?}"),
+            };
+            let projection = codec.decode(&projection.projection).unwrap();
+            assert_eq!(projection.pending_send_queue.len(), 2);
+            let second_queue = &projection.pending_send_queue[1];
+            assert_eq!(&second_queue.queue_item_id, second_queue_item_id);
+            assert_eq!(second_queue.input_ref, second.receipt.input_ref);
+            assert_ne!(second_queue.human_message_id, expected_human_message_id);
+            assert_eq!(
+                second_queue.reserved_turn_id.parse::<u64>().unwrap(),
+                expected_reserved_turn_id + 1,
+                "each accepted queued send must own a distinct terminal turn identity"
+            );
+            assert_eq!(
+                controller
+                    .call_kinds_for(&session_id)
+                    .into_iter()
+                    .filter(|kind| *kind == TestRuntimeCallKind::StartTurn)
+                    .count(),
+                1,
+                "neither queued acceptance may hand input to the provider early"
+            );
+            controller.close_event_streams_for_test(&session_id);
+            return;
+        }
 
         // End the first process completely, including its provider event
         // stream, before reopening the SQLite authority and the full runtime
@@ -2586,10 +4100,186 @@ mod send_execution_tests {
             );
         }
 
+        let atomic_claim_race = pause_after_idle_snapshot.then(|| {
+            let first_send_commit = Arc::new(AtomicBool::new(true));
+            let projection_read = Arc::new(Barrier::new(2));
+            let release_claim = Arc::new(Barrier::new(2));
+            restarted_session_store.set_atomic_event_commit_hook_for_test(Arc::new({
+                let first_send_commit = first_send_commit.clone();
+                let projection_read = projection_read.clone();
+                let release_claim = release_claim.clone();
+                move |operation_kind| {
+                    if operation_kind == crate::domain::local_event::CommitOperationKind::Send
+                        && first_send_commit.swap(false, Ordering::SeqCst)
+                    {
+                        projection_read.wait();
+                        release_claim.wait();
+                    }
+                    Ok(())
+                }
+            }));
+            (projection_read, release_claim)
+        });
+        let open_sessions_before_claim = restarted_controller
+            .call_kinds_for(&session_id)
+            .into_iter()
+            .filter(|kind| matches!(kind, TestRuntimeCallKind::OpenSession { .. }))
+            .count();
         restarted_send
             .recover_pending_provider_effects()
             .await
             .expect("startup recovery must restore the accepted queue item");
+        if let Some((projection_read, release_claim)) = atomic_claim_race {
+            tokio::task::spawn_blocking(move || projection_read.wait())
+                .await
+                .unwrap();
+            restarted_session_store
+                .append_session_events(
+                    &data_path,
+                    &session_id,
+                    &[
+                        crate::domain::agent_session::events::AgentSessionDomainEvent::QueuePaused {
+                            at: 20.0,
+                        },
+                    ],
+                )
+                .unwrap();
+            tokio::task::spawn_blocking(move || release_claim.wait())
+                .await
+                .unwrap();
+
+            let execution_obligation_id = format!("{operation_id}.exec");
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while !restarted_gate
+                    .current_process_send_dispatches
+                    .is_parked(&execution_obligation_id)
+                {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("the pause winner must park the exact queued dispatch");
+
+            let blocked_operation = restarted_send
+                .get_operation(LOCAL_INSTALLATION_OPERATION_PRINCIPAL, &operation_id)
+                .await
+                .unwrap();
+            assert!(matches!(
+                &blocked_operation.latest_status,
+                crate::usecase::agent_session::operation::SendExecutionStatus::Queued {
+                    queue_item_id,
+                    reserved_turn_id,
+                } if queue_item_id == &expected_queue_item_id
+                    && reserved_turn_id.parse::<u64>().ok() == Some(expected_reserved_turn_id)
+            ));
+            let blocked_obligation = reopened
+                .query(
+                    crate::domain::local_event::LocalEventQuery::ObligationByIdentity {
+                        obligation_id: execution_obligation_id.clone(),
+                    },
+                )
+                .await
+                .unwrap();
+            let crate::domain::local_event::LocalEventQueryResult::ObligationByIdentity(Some(
+                blocked_obligation,
+            )) = blocked_obligation
+            else {
+                panic!("paused queued obligation missing")
+            };
+            assert!(matches!(
+                &blocked_obligation.record,
+                crate::domain::local_event::ObligationRecord::Send {
+                    state: crate::domain::local_event::ObligationStateRecord::Pending,
+                    ..
+                }
+            ));
+            assert!(
+                blocked_obligation.pending.is_some(),
+                "the blocked execution obligation must retain its recovery index"
+            );
+            let blocked_projection = match reopened
+                .query(
+                    crate::domain::local_event::LocalEventQuery::SessionProjectionByIdentity {
+                        session_id: session_id.clone(),
+                    },
+                )
+                .await
+                .unwrap()
+            {
+                crate::domain::local_event::LocalEventQueryResult::SessionProjectionByIdentity(
+                    Some(projection),
+                ) => codec.decode(&projection.projection).unwrap(),
+                other => panic!("paused queued projection missing: {other:?}"),
+            };
+            assert_eq!(blocked_projection.queue_paused_at, Some(20.0));
+            assert_eq!(blocked_projection.pending_send_queue.len(), 1);
+            assert_eq!(
+                blocked_projection.pending_send_queue[0].queue_item_id,
+                expected_queue_item_id
+            );
+            assert!(blocked_projection.reducer_events.iter().all(|event| {
+                !matches!(
+                    event,
+                    crate::domain::agent_session::events::AgentSessionDomainEvent::TurnStarted {
+                        turn_id,
+                        ..
+                    } if *turn_id == expected_reserved_turn_id
+                )
+            }));
+            assert!(matches!(
+                reopened
+                    .query(
+                        crate::domain::local_event::LocalEventQuery::MessageProjectionByIdentity {
+                            session_id: session_id.clone(),
+                            message_id: expected_assistant_message_id.clone(),
+                        },
+                    )
+                    .await
+                    .unwrap(),
+                crate::domain::local_event::LocalEventQueryResult::MessageProjectionByIdentity(
+                    None
+                )
+            ));
+            assert_eq!(
+                restarted_controller
+                    .call_kinds_for(&session_id)
+                    .into_iter()
+                    .filter(|kind| *kind == TestRuntimeCallKind::StartTurn)
+                    .count(),
+                0,
+                "a pause winner must prevent provider input"
+            );
+            assert_eq!(
+                restarted_controller
+                    .call_kinds_for(&session_id)
+                    .into_iter()
+                    .filter(|kind| matches!(kind, TestRuntimeCallKind::OpenSession { .. }))
+                    .count(),
+                open_sessions_before_claim,
+                "a pause winner must not open another provider runtime"
+            );
+
+            restarted_session_store
+                .append_session_events(
+                    &data_path,
+                    &session_id,
+                    &[
+                        crate::domain::agent_session::events::AgentSessionDomainEvent::QueueResumed {
+                            expected_paused_at: 20.0,
+                            at: 21.0,
+                        },
+                    ],
+                )
+                .unwrap();
+            assert_eq!(
+                restarted_send
+                    .recover_pending_provider_effects_pass()
+                    .await
+                    .unwrap(),
+                0,
+                "the explicit resume must redrive the retained dispatch without a second owner"
+            );
+        }
         if !terminal_before_recovery {
             let queued_after_restart = tokio::time::timeout(Duration::from_secs(2), async {
                 loop {
@@ -2629,6 +4319,41 @@ mod send_execution_tests {
                     .count(),
                 0,
                 "startup recovery may restore the queue but cannot start it before turn one is terminal"
+            );
+            let execution_obligation_id = format!("{operation_id}.exec");
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while !restarted_gate
+                    .current_process_send_dispatches
+                    .is_parked(&execution_obligation_id)
+                {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("the blocked accepted queue must retire its timer and park");
+            assert!(
+                crate::usecase::agent_session::operation::SendAdmissionGate::owns_current_process_turn_execution(
+                    restarted_gate.as_ref(),
+                    &session_id,
+                    &operation_id,
+                    &execution_obligation_id,
+                )
+                .await,
+                "an unrelated recovery scan must treat a still-blocked parked item as process-owned"
+            );
+            assert_eq!(
+                restarted_send
+                    .recover_pending_provider_effects_pass()
+                    .await
+                    .unwrap(),
+                0,
+                "a generic store wake must not reactivate a still-blocked parked item"
+            );
+            assert!(
+                restarted_gate
+                    .current_process_send_dispatches
+                    .is_parked(&execution_obligation_id),
+                "the generic recovery pass must leave the blocked marker parked"
             );
 
             let after_restart_session = restarted_session_store
@@ -2687,9 +4412,27 @@ mod send_execution_tests {
                     .state,
                 crate::usecase::agent_session::session::SessionState::Done
             );
-            restarted_runtime
-                .drain_next_queued_turn_for_test(&session_id)
-                .await;
+            if fail_queued_claim_once {
+                reopened.fault_injector().arm_fail_before_commit();
+            }
+            assert!(
+                !crate::usecase::agent_session::operation::SendAdmissionGate::owns_current_process_turn_execution(
+                    restarted_gate.as_ref(),
+                    &session_id,
+                    &operation_id,
+                    &execution_obligation_id,
+                )
+                .await,
+                "the terminal projection must make the parked front eligible for one fresh redrive"
+            );
+            assert_eq!(
+                restarted_send
+                    .recover_pending_provider_effects_pass()
+                    .await
+                    .unwrap(),
+                0,
+                "reactivating an existing parked marker schedules work without claiming a second owner"
+            );
         }
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
@@ -3830,7 +5573,7 @@ mod recovery_executor_tests {
     use super::{
         bind_runtime_terminal_operation_participant_provider, permission_response_retry_material,
         recovery_handoff_target_matches, session_close_readback_obligation_id,
-        stop_readback_obligation_id, ConservativeRecoveryExecutor,
+        stop_readback_obligation_id, ActiveSendRecoveryContext, ConservativeRecoveryExecutor,
         RuntimeAgentSessionOperationGate, RuntimePermissionResponseOperationGate,
         RuntimeSendOperationGate,
     };
@@ -4401,7 +6144,7 @@ mod recovery_executor_tests {
             repository,
             authority,
             Arc::new(RuntimePermissionResponseOperationGate::new(
-                runtime,
+                runtime.clone(),
                 session_store,
             )),
             store.installation_id().to_string(),
@@ -4410,7 +6153,7 @@ mod recovery_executor_tests {
             stop.clone(),
             lifecycle,
             operation_gate,
-            send,
+            ActiveSendRecoveryContext::new(send, runtime, send_gate.current_process_claims()),
             permission,
             store.clone(),
         ));
@@ -5537,7 +7280,7 @@ mod recovery_executor_tests {
                     turn_id: Some("7".to_string()),
                     dependency_obligation_ids: Vec::new(),
                     canonical_payload: "payload".to_string(),
-                    state: ObligationStateRecord::EffectReserved,
+                    state: ObligationStateRecord::ReconciliationRequired,
                 },
             ),
         ];

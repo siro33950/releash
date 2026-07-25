@@ -21,6 +21,8 @@ use crate::domain::local_event::{
     SessionProjectionRecord, WorkflowExecutionProjectionRecord,
 };
 
+use super::state_record_codec::{StoredOperationReceiptV1, StoredOperationStatusV1};
+
 pub(crate) const PROJECTION_RECORD_MAX_BYTES: usize = 16 * 1024 * 1024;
 
 pub(crate) fn canonical_mutation_identity_v1(
@@ -63,6 +65,24 @@ pub(crate) fn canonical_mutation_identity_v1(
             text(
                 &mut bytes,
                 &encode_message_projection_record_v1(&mutation.projection)?,
+            );
+            revision_guard(&mut bytes, mutation.expected);
+            bytes.extend_from_slice(&mutation.revision.value().to_be_bytes());
+            Ok(bytes)
+        }
+        LocalStateMutation::OperationRecord(mutation) => {
+            text(&mut bytes, "operation_record");
+            text(&mut bytes, mutation.kind.label());
+            text(&mut bytes, &mutation.operation_id);
+            text(
+                &mut bytes,
+                &StoredOperationReceiptV1::encode_new(&mutation.receipt)
+                    .map_err(|error| format!("operation receipt identity failed: {error:?}"))?,
+            );
+            text(
+                &mut bytes,
+                &StoredOperationStatusV1::encode_new(&mutation.latest_status)
+                    .map_err(|error| format!("operation status identity failed: {error:?}"))?,
             );
             revision_guard(&mut bytes, mutation.expected);
             bytes.extend_from_slice(&mutation.revision.value().to_be_bytes());
@@ -357,15 +377,18 @@ fn semantic_array_key(value: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_message_projection_record_v1, decode_session_projection_record_v1,
-        encode_message_projection_record_v1, encode_session_projection_record_v1,
-        encode_session_projection_update_v1, merge_additive_payload,
+        canonical_mutation_identity_v1, decode_message_projection_record_v1,
+        decode_session_projection_record_v1, encode_message_projection_record_v1,
+        encode_session_projection_record_v1, encode_session_projection_update_v1,
+        merge_additive_payload,
     };
     use crate::adaptor::gateway::agent_session::session_storage::{
         encode_agent_message_projection_record_v1, AgentSessionProjectionCodecV1,
     };
     use crate::domain::local_event::{
-        AgentMessageProjectionRecord, AgentMessageRoleRecord, MessageProjectionRecord,
+        AgentMessageProjectionRecord, AgentMessageRoleRecord, LocalStateMutation,
+        MessageProjectionRecord, OperationKind, OperationReceiptRecord, OperationRecordMutation,
+        OperationStatusRecord, OperationStatusValue, RecordAuthentication, Revision, RevisionGuard,
         SessionProjectionRecord,
     };
     use crate::usecase::agent_session::session::{
@@ -415,6 +438,61 @@ mod tests {
             timestamp_bits: 1.5_f64.to_bits(),
             mentions: None,
         })
+    }
+
+    #[test]
+    fn operation_record_mutation_has_gateway_owned_canonical_identity() {
+        let mutation = LocalStateMutation::OperationRecord(OperationRecordMutation {
+            kind: OperationKind::Send,
+            operation_id: "send-atomic-queue".to_string(),
+            receipt: OperationReceiptRecord::Send {
+                operation_id: "send-atomic-queue".to_string(),
+                session_id: "session-1".to_string(),
+                input_ref: "input-1".to_string(),
+                disposition: crate::domain::agent_session::events::SendDisposition::Queued {
+                    queue_item_id: "queue-1".to_string(),
+                },
+                authentication: RecordAuthentication {
+                    principal_mac: [1; 32],
+                    binding_hmac: [2; 32],
+                },
+            },
+            latest_status: OperationStatusRecord {
+                kind: OperationKind::Send,
+                value: OperationStatusValue::ProviderStartReserved {
+                    obligation_id: "send-atomic-queue.exec".to_string(),
+                },
+            },
+            expected: RevisionGuard::Expected(Revision::new(0).unwrap()),
+            revision: Revision::new(1).unwrap(),
+        });
+
+        let identity =
+            canonical_mutation_identity_v1(&mutation).expect("operation mutation identity");
+        assert_eq!(
+            canonical_mutation_identity_v1(&mutation).unwrap(),
+            identity,
+            "the same guarded semantic mutation must be deterministic"
+        );
+        assert_ne!(
+            canonical_mutation_identity_v1(&LocalStateMutation::OperationRecord(
+                OperationRecordMutation {
+                    latest_status: OperationStatusRecord {
+                        kind: OperationKind::Send,
+                        value: OperationStatusValue::Running {
+                            turn_id: "1".to_string(),
+                        },
+                    },
+                    ..match mutation {
+                        LocalStateMutation::OperationRecord(operation) => operation,
+                        _ => unreachable!(),
+                    }
+                }
+            ))
+            .unwrap(),
+            identity,
+            "status changes must change the atomic batch identity"
+        );
     }
 
     #[test]

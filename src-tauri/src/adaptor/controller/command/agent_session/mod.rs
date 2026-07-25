@@ -29,6 +29,9 @@ impl From<AgentRuntimeError> for AppError {
                 Self::Internal(locked.to_string())
             }
             lost @ AgentRuntimeError::BackendSessionLost { .. } => Self::Internal(lost.to_string()),
+            deferred @ AgentRuntimeError::AcceptedEffectAdmissionDeferred => {
+                Self::Internal(deferred.to_string())
+            }
             AgentRuntimeError::Other(message) => Self::Internal(message),
         }
     }

@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::hash::Hasher;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use crate::domain::agent_session::entities::{
     InterruptReason as TurnInterruptReason, PermissionResponse, PermissionResponseDecision,
@@ -43,19 +43,20 @@ use super::permission::{
 };
 use super::ports::{
     AcceptedPermissionResponseEffect, AcceptedSendEffect, AcceptedStopEffect,
-    OperationBindingAuthority, PermissionResponseGate, PermissionResponsePlan,
-    RecoveryEffectExecutor, RecoveryEffectHandoff, RecoveryEffectRequest, RecoveryEffectResult,
-    SendAdmissionGate, SendPlan, SessionLifecycleEffect, SessionLifecycleGate,
-    SessionLifecycleSnapshot, SessionLifecycleState, StopAdmissionGate, StopEffectObservation,
-    StopTargetSnapshot,
+    LegacyProviderEstablishRecovery, OperationBindingAuthority, PermissionResponseGate,
+    PermissionResponsePlan, RecoveryEffectExecutor, RecoveryEffectHandoff, RecoveryEffectRequest,
+    RecoveryEffectResult, SendAdmissionGate, SendEffectDispatch, SendPlan, SessionLifecycleEffect,
+    SessionLifecycleGate, SessionLifecycleSnapshot, SessionLifecycleState, StopAdmissionGate,
+    StopEffectObservation, StopTargetSnapshot,
 };
 use super::recovery::{
     PendingRecoveryCategory, PendingRecoveryKnownStatus, RecoveryActionOutcome,
     RecoveryActionRejection, RecoveryActionRequest, RecoveryActionUsecase, RecoveryResourceState,
 };
 use super::send::{
-    AgentSendOperationUsecase, GetSendOperationError, ObligationTransition, SendAgentMessageError,
-    SendCommandOutcome, SendExecutionStatus, SendOperationRequest,
+    AgentSendOperationUsecase, GetSendOperationError, ObligationTransition,
+    ObligationTransitionOutcome, SendAgentMessageError, SendCommandOutcome, SendExecutionStatus,
+    SendOperationRequest,
 };
 use super::stop::{
     StopCommandOutcome, StopOperationError, StopOperationRequest, StopOperationState,
@@ -153,6 +154,7 @@ struct FakeState {
     outcome_unknown_after_commit_on_call: Option<usize>,
     fail_resolve_commit_once: bool,
     fail_query: bool,
+    fail_operation_query_once_after_commit_call: Option<usize>,
     fail_terminal_query_after_commit_call: Option<usize>,
     fail_obligation_query: Option<String>,
     pending_insert_after_page: Option<(String, (ObligationRecord, bool, i64))>,
@@ -160,6 +162,7 @@ struct FakeState {
 
 struct FakeRepo {
     state: Mutex<FakeState>,
+    commit_barrier: Mutex<Option<Arc<tokio::sync::Barrier>>>,
 }
 
 fn obligation_session_id(record: &ObligationRecord) -> Option<&str> {
@@ -189,6 +192,7 @@ impl FakeRepo {
     fn new() -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(FakeState::default()),
+            commit_barrier: Mutex::new(None),
         })
     }
 
@@ -224,6 +228,10 @@ impl LocalEventTransactionRepository for FakeRepo {
         &self,
         batch: LocalAtomicBatch,
     ) -> Result<CommitBatchResult, CommitBatchError> {
+        let commit_barrier = self.commit_barrier.lock().unwrap().clone();
+        if let Some(commit_barrier) = commit_barrier {
+            commit_barrier.wait().await;
+        }
         let mut state = self.state.lock().unwrap();
         state.commit_calls += 1;
         if state
@@ -577,6 +585,20 @@ impl LocalEventTransactionRepository for FakeRepo {
                 Ok(LocalEventQueryResult::OperationBindingByIdentity(binding))
             }
             LocalEventQuery::OperationByIdentity { kind, operation_id } => {
+                if state
+                    .fail_operation_query_once_after_commit_call
+                    .is_some_and(|call| state.commit_calls >= call)
+                {
+                    state.fail_operation_query_once_after_commit_call = None;
+                    return Err(LocalEventQueryError::StorageUnavailable {
+                        failure: SafeOperationFailure::new(
+                            SessionOperationFailureKind::StorageUnavailable,
+                            true,
+                            "fake operation query outage",
+                            "fake-operation-query",
+                        ),
+                    });
+                }
                 let view = state
                     .records
                     .get(&(kind.label().to_string(), operation_id.clone()))
@@ -740,7 +762,9 @@ impl LocalEventTransactionRepository for FakeRepo {
                                 pending: pending.then(|| {
                                     crate::domain::local_event::PendingIndexEntryView {
                                         ordered_key: format!("test:{obligation_id}"),
-                                        owner: "test".to_string(),
+                                        owner: obligation_session_id(record)
+                                            .unwrap_or("test")
+                                            .to_string(),
                                         partition:
                                             crate::domain::local_event::PendingPartition::Owner,
                                         shutdown_plan: None,
@@ -850,6 +874,11 @@ impl LocalEventTransactionRepository for FakeRepo {
 struct FakeSendGate {
     plan: Mutex<Result<SendPlan, SafeOperationFailure>>,
     effects: Mutex<Vec<AcceptedSendEffect>>,
+    legacy_provider_recovery: Mutex<LegacyProviderEstablishRecovery>,
+    canonical_current_turn: Mutex<Option<u64>>,
+    claim_sink: Mutex<Option<Weak<AgentSendOperationUsecase>>>,
+    dispatch_failure: Mutex<Option<SafeOperationFailure>>,
+    scheduled_queue_effects: Mutex<std::collections::HashSet<String>>,
 }
 
 impl FakeSendGate {
@@ -858,6 +887,7 @@ impl FakeSendGate {
             plan: Mutex::new(Ok(SendPlan {
                 session_id: session_id.to_string(),
                 initial_session: None,
+                session_projection_guard: RevisionGuard::Absent,
                 disposition: SendDisposition::StartedTurn {
                     turn_id: "1".to_string(),
                 },
@@ -868,9 +898,15 @@ impl FakeSendGate {
                     ..Default::default()
                 },
                 reserved_turn_id: None,
-                provider_established: true,
             })),
             effects: Mutex::new(Vec::new()),
+            legacy_provider_recovery: Mutex::new(
+                LegacyProviderEstablishRecovery::RequiresManualResolution,
+            ),
+            canonical_current_turn: Mutex::new(None),
+            claim_sink: Mutex::new(None),
+            dispatch_failure: Mutex::new(None),
+            scheduled_queue_effects: Mutex::new(std::collections::HashSet::new()),
         })
     }
 
@@ -885,6 +921,23 @@ impl FakeSendGate {
     fn effects(&self) -> Vec<AcceptedSendEffect> {
         self.effects.lock().unwrap().clone()
     }
+
+    fn allow_legacy_provider_turn_continuation(&self) {
+        *self.legacy_provider_recovery.lock().unwrap() =
+            LegacyProviderEstablishRecovery::ContinueTurnExecution;
+    }
+
+    fn set_canonical_current_turn(&self, turn_id: u64) {
+        *self.canonical_current_turn.lock().unwrap() = Some(turn_id);
+    }
+
+    fn bind_claim_sink(&self, sink: Weak<AgentSendOperationUsecase>) {
+        *self.claim_sink.lock().unwrap() = Some(sink);
+    }
+
+    fn fail_dispatch(&self, failure: SafeOperationFailure) {
+        *self.dispatch_failure.lock().unwrap() = Some(failure);
+    }
 }
 
 #[async_trait::async_trait]
@@ -892,13 +945,81 @@ impl SendAdmissionGate for FakeSendGate {
     async fn plan_send(
         &self,
         _principal: &str,
+        _operation_id: &str,
         _canonical_payload: &str,
     ) -> Result<SendPlan, SafeOperationFailure> {
         self.plan.lock().unwrap().clone()
     }
 
-    async fn start_provider_effect(&self, effect: &AcceptedSendEffect) {
+    async fn classify_legacy_provider_establish(
+        &self,
+        _session_id: &str,
+    ) -> Result<LegacyProviderEstablishRecovery, SafeOperationFailure> {
+        Ok(*self.legacy_provider_recovery.lock().unwrap())
+    }
+
+    async fn canonical_immediate_turn_is_current(
+        &self,
+        _session_id: &str,
+        turn_id: u64,
+    ) -> Result<bool, SafeOperationFailure> {
+        Ok(self
+            .canonical_current_turn
+            .lock()
+            .unwrap()
+            .is_none_or(|current| current == turn_id))
+    }
+
+    async fn start_provider_effect(
+        &self,
+        effect: &AcceptedSendEffect,
+    ) -> Result<SendEffectDispatch, SafeOperationFailure> {
+        if let Some(failure) = self.dispatch_failure.lock().unwrap().clone() {
+            return Err(failure);
+        }
+        if matches!(effect.disposition, SendDisposition::Queued { .. })
+            && !self
+                .scheduled_queue_effects
+                .lock()
+                .unwrap()
+                .insert(effect.execution_obligation_id.clone())
+        {
+            return Ok(SendEffectDispatch::AlreadyScheduled);
+        }
+        let claim_sink = self.claim_sink.lock().unwrap().clone();
+        if let Some(claim_sink) = claim_sink {
+            let Some(claim_sink) = claim_sink.upgrade() else {
+                return Err(SafeOperationFailure::new(
+                    SessionOperationFailureKind::PersistFailure,
+                    true,
+                    "The fake claim authority is unavailable.",
+                    "fake-send-claim-authority",
+                ));
+            };
+            let claim = claim_sink
+                .transition_obligation(ObligationTransition {
+                    operation_id: &effect.operation_id,
+                    obligation_id: &effect.execution_obligation_id,
+                    expected_kind: "turn_execution",
+                    expected_state: "pending",
+                    next_state: "effect_reserved",
+                    keep_pending: true,
+                    status: Some(SendExecutionStatus::ProviderStartReserved {
+                        obligation_id: effect.execution_obligation_id.clone(),
+                    }),
+                })
+                .await;
+            if claim != Ok(ObligationTransitionOutcome::Applied) {
+                return Err(SafeOperationFailure::new(
+                    SessionOperationFailureKind::OutcomeUnknown,
+                    true,
+                    "The fake execution claim did not win.",
+                    "fake-send-claim",
+                ));
+            }
+        }
         self.effects.lock().unwrap().push(effect.clone());
+        Ok(SendEffectDispatch::Scheduled)
     }
 }
 
@@ -927,6 +1048,7 @@ impl SendAdmissionGate for RacingSendGate {
     async fn plan_send(
         &self,
         _principal: &str,
+        _operation_id: &str,
         _canonical_payload: &str,
     ) -> Result<SendPlan, SafeOperationFailure> {
         let call = self
@@ -945,8 +1067,20 @@ impl SendAdmissionGate for RacingSendGate {
         Ok(self.plan.clone())
     }
 
-    async fn start_provider_effect(&self, effect: &AcceptedSendEffect) {
+    async fn canonical_immediate_turn_is_current(
+        &self,
+        _session_id: &str,
+        _turn_id: u64,
+    ) -> Result<bool, SafeOperationFailure> {
+        Ok(true)
+    }
+
+    async fn start_provider_effect(
+        &self,
+        effect: &AcceptedSendEffect,
+    ) -> Result<SendEffectDispatch, SafeOperationFailure> {
         self.effects.lock().unwrap().push(effect.clone());
+        Ok(SendEffectDispatch::Scheduled)
     }
 }
 
@@ -1275,6 +1409,10 @@ enum StopInterruptMode {
 
 struct FakeStopGate {
     snapshot: Mutex<StopTargetSnapshot>,
+    snapshot_failure: Mutex<Option<SafeOperationFailure>>,
+    stale_on_acceptance: Mutex<bool>,
+    revision_after_acceptance: Mutex<Option<u64>>,
+    failure_after_acceptance: Mutex<Option<SafeOperationFailure>>,
     mode: Mutex<StopInterruptMode>,
     interrupts: Mutex<Vec<AcceptedStopEffect>>,
     timeout_terminal_commits: Mutex<Vec<AcceptedStopEffect>>,
@@ -1288,10 +1426,26 @@ impl FakeStopGate {
                 active_turn_id: turn_id.to_string(),
                 queue_paused: false,
             }),
+            snapshot_failure: Mutex::new(None),
+            stale_on_acceptance: Mutex::new(false),
+            revision_after_acceptance: Mutex::new(None),
+            failure_after_acceptance: Mutex::new(None),
             mode: Mutex::new(StopInterruptMode::Complete),
             interrupts: Mutex::new(Vec::new()),
             timeout_terminal_commits: Mutex::new(Vec::new()),
         })
+    }
+
+    fn set_stale_on_acceptance(&self) {
+        *self.stale_on_acceptance.lock().unwrap() = true;
+    }
+
+    fn set_revision_after_acceptance(&self, revision: u64) {
+        *self.revision_after_acceptance.lock().unwrap() = Some(revision);
+    }
+
+    fn set_failure_after_acceptance(&self, failure: SafeOperationFailure) {
+        *self.failure_after_acceptance.lock().unwrap() = Some(failure);
     }
 
     fn set_mode(&self, mode: StopInterruptMode) {
@@ -1313,7 +1467,28 @@ impl StopAdmissionGate for FakeStopGate {
         &self,
         _session_id: &str,
     ) -> Result<StopTargetSnapshot, SafeOperationFailure> {
+        if let Some(failure) = self.snapshot_failure.lock().unwrap().as_ref() {
+            return Err(failure.clone());
+        }
         Ok(self.snapshot.lock().unwrap().clone())
+    }
+
+    async fn acceptance_state_mutations(
+        &self,
+        _session_id: &str,
+        _expected_session_revision: u64,
+        _events: &[AgentSessionDomainEvent],
+    ) -> Result<Option<Vec<LocalStateMutation>>, SafeOperationFailure> {
+        if *self.stale_on_acceptance.lock().unwrap() {
+            return Ok(None);
+        }
+        if let Some(revision) = self.revision_after_acceptance.lock().unwrap().take() {
+            self.snapshot.lock().unwrap().session_revision = revision;
+        }
+        if let Some(failure) = self.failure_after_acceptance.lock().unwrap().take() {
+            *self.snapshot_failure.lock().unwrap() = Some(failure);
+        }
+        Ok(Some(Vec::new()))
     }
 
     async fn interrupt(
@@ -1351,6 +1526,7 @@ struct FakeRecoveryExecutor {
     result: Mutex<Result<RecoveryEffectResult, SafeOperationFailure>>,
     handoff: Mutex<RecoveryEffectHandoff>,
     effects: Mutex<Vec<RecoveryEffectRequest>>,
+    owned_effects: Mutex<std::collections::HashSet<String>>,
 }
 
 impl FakeRecoveryExecutor {
@@ -1364,6 +1540,7 @@ impl FakeRecoveryExecutor {
             })),
             handoff: Mutex::new(RecoveryEffectHandoff::Ready),
             effects: Mutex::new(Vec::new()),
+            owned_effects: Mutex::new(std::collections::HashSet::new()),
         })
     }
 
@@ -1374,10 +1551,25 @@ impl FakeRecoveryExecutor {
     fn effect_count(&self) -> usize {
         self.effects.lock().unwrap().len()
     }
+
+    fn own_current_process_effect(&self, obligation_id: &str) {
+        self.owned_effects
+            .lock()
+            .unwrap()
+            .insert(obligation_id.to_string());
+    }
 }
 
 #[async_trait::async_trait]
 impl RecoveryEffectExecutor for FakeRecoveryExecutor {
+    async fn owns_current_process_effect(
+        &self,
+        obligation_id: &str,
+        _immutable_obligation: &ObligationRecord,
+    ) -> bool {
+        self.owned_effects.lock().unwrap().contains(obligation_id)
+    }
+
     fn supports_read_again(
         &self,
         _obligation_id: &str,
@@ -1407,6 +1599,41 @@ fn seed_pending_obligation(repo: &Arc<FakeRepo>, obligation_id: &str, record: Ob
         state
             .obligations
             .insert(obligation_id.to_string(), (record, true, 0));
+    });
+}
+
+fn seed_send_operation_status(
+    repo: &Arc<FakeRepo>,
+    operation_id: &str,
+    session_id: &str,
+    status: OperationStatusValue,
+) {
+    repo.with_state(|state| {
+        state.records.insert(
+            (
+                OperationKind::Send.label().to_string(),
+                operation_id.to_string(),
+            ),
+            (
+                OperationReceiptRecord::Send {
+                    operation_id: operation_id.to_string(),
+                    session_id: session_id.to_string(),
+                    input_ref: format!("input-{operation_id}"),
+                    disposition: SendDisposition::StartedTurn {
+                        turn_id: "1".to_string(),
+                    },
+                    authentication: RecordAuthentication {
+                        principal_mac: [1; 32],
+                        binding_hmac: [2; 32],
+                    },
+                },
+                OperationStatusRecord {
+                    kind: OperationKind::Send,
+                    value: status,
+                },
+                0,
+            ),
+        );
     });
 }
 
@@ -1454,6 +1681,74 @@ fn pending_send_obligation(
         canonical_payload: "payload".to_string(),
         state: ObligationStateRecord::Pending,
     }
+}
+
+fn send_obligation_in_state(
+    obligation_id: &str,
+    operation_id: &str,
+    kind: SendObligationKindRecord,
+    state: ObligationStateRecord,
+) -> ObligationRecord {
+    let mut record = pending_send_obligation(obligation_id, operation_id, kind);
+    let ObligationRecord::Send {
+        state: saved_state, ..
+    } = &mut record
+    else {
+        unreachable!("pending send helper returns a send obligation");
+    };
+    *saved_state = state;
+    record
+}
+
+/// Recreate the two-obligation shape written before ProviderEstablish was
+/// folded into TurnExecution. Recovery must continue to understand shipped
+/// databases even though new acceptance never writes this shape.
+fn seed_legacy_provider_dependency(repo: &Arc<FakeRepo>, operation_id: &str) {
+    let execution_id = format!("{operation_id}.exec");
+    let establish_id = format!("{operation_id}.establish");
+    repo.with_state(|state| {
+        let (execution, _, _) = state
+            .obligations
+            .get_mut(&execution_id)
+            .expect("new execution obligation");
+        let mut establishment = execution.clone();
+        let ObligationRecord::Send {
+            dependency_obligation_ids,
+            ..
+        } = execution
+        else {
+            panic!("expected send execution obligation");
+        };
+        *dependency_obligation_ids = vec![establish_id.clone()];
+        let ObligationRecord::Send {
+            obligation_id,
+            kind,
+            dependency_obligation_ids,
+            state: obligation_state,
+            ..
+        } = &mut establishment
+        else {
+            unreachable!("cloned send obligation");
+        };
+        *obligation_id = establish_id.clone();
+        *kind = SendObligationKindRecord::ProviderEstablish;
+        dependency_obligation_ids.clear();
+        *obligation_state = ObligationStateRecord::Pending;
+        state
+            .obligations
+            .insert(establish_id.clone(), (establishment, true, 0));
+
+        let (_, status, _) = state
+            .records
+            .get_mut(&("send".to_string(), operation_id.to_string()))
+            .expect("accepted send operation");
+        *status = OperationStatusRecord {
+            kind: OperationKind::Send,
+            value: OperationStatusValue::AwaitingProviderStart {
+                dependency_obligation_ids: vec![establish_id],
+            },
+        };
+    });
 }
 
 fn test_stop_obligation(
@@ -1781,6 +2076,7 @@ async fn b005_new_session_response_loss_and_restart_replay_the_chosen_session() 
                 None,
             ),
         ),
+        session_projection_guard: RevisionGuard::Absent,
         disposition: SendDisposition::StartedTurn {
             turn_id: "1".to_string(),
         },
@@ -1791,7 +2087,6 @@ async fn b005_new_session_response_loss_and_restart_replay_the_chosen_session() 
             ..Default::default()
         },
         reserved_turn_id: None,
-        provider_established: true,
     }));
     let first = expect_accepted(
         send_usecase(&repo, &gate)
@@ -1840,6 +2135,7 @@ async fn b006_queued_disposition_is_fixed_at_acceptance() {
     gate.set_plan(Ok(SendPlan {
         session_id: "s-1".to_string(),
         initial_session: None,
+        session_projection_guard: RevisionGuard::Absent,
         disposition: SendDisposition::Queued {
             queue_item_id: "q-1".to_string(),
         },
@@ -1850,7 +2146,6 @@ async fn b006_queued_disposition_is_fixed_at_acceptance() {
             ..Default::default()
         },
         reserved_turn_id: Some("t-9".to_string()),
-        provider_established: true,
     }));
     let usecase = send_usecase(&repo, &gate);
     let first = expect_accepted(usecase.send(send_request("op-q", "queued")).await.unwrap());
@@ -1864,6 +2159,7 @@ async fn b006_queued_disposition_is_fixed_at_acceptance() {
     gate.set_plan(Ok(SendPlan {
         session_id: "s-1".to_string(),
         initial_session: None,
+        session_projection_guard: RevisionGuard::Absent,
         disposition: SendDisposition::StartedTurn {
             turn_id: "2".to_string(),
         },
@@ -1874,11 +2170,168 @@ async fn b006_queued_disposition_is_fixed_at_acceptance() {
             ..Default::default()
         },
         reserved_turn_id: None,
-        provider_established: true,
     }));
     let second = expect_accepted(usecase.send(send_request("op-q", "queued")).await.unwrap());
     assert_eq!(first.receipt, second.receipt);
     assert_eq!(gate.effect_count(), 1);
+}
+
+#[tokio::test]
+async fn queued_turn_start_prepares_exact_guarded_operation_and_obligation_participants() {
+    let repo = FakeRepo::new();
+    let gate = FakeSendGate::started_turn("s-1");
+    gate.set_plan(Ok(SendPlan {
+        session_id: "s-1".to_string(),
+        initial_session: None,
+        session_projection_guard: RevisionGuard::Absent,
+        disposition: SendDisposition::Queued {
+            queue_item_id: "q-atomic".to_string(),
+        },
+        input_ref: "input-q-atomic".to_string(),
+        human_message_id: "human-q-atomic".to_string(),
+        prompt: crate::domain::agent_session::events::PromptInput {
+            content: "atomic queued start".to_string(),
+            ..Default::default()
+        },
+        reserved_turn_id: Some("9".to_string()),
+    }));
+    let usecase = send_usecase(&repo, &gate);
+    expect_accepted(
+        usecase
+            .send(send_request("op-q-atomic", "queued-payload"))
+            .await
+            .unwrap(),
+    );
+    let commits_before = repo.with_state(|state| state.commit_calls);
+
+    let mutations = usecase
+        .prepare_queued_turn_start_participant_mutations(
+            "op-q-atomic",
+            "op-q-atomic.exec",
+            "s-1",
+            "q-atomic",
+            &AgentSessionDomainEvent::TurnStarted {
+                turn_id: 9,
+                message_id: "human-q-atomic".to_string(),
+                assistant_message_id: Some("human-q-atomic:agent".to_string()),
+                prompt: crate::domain::agent_session::events::PromptInput {
+                    content: "atomic queued start".to_string(),
+                    ..Default::default()
+                },
+                at: 1.0,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(mutations.len(), 2);
+    assert!(mutations.iter().any(|mutation| matches!(
+        mutation,
+        LocalStateMutation::Obligation(obligation)
+            if obligation.obligation_id == "op-q-atomic.exec"
+                && obligation.pending.as_ref().is_some_and(|pending| {
+                    pending.owner == "s-1"
+                        && pending.partition == crate::domain::local_event::PendingPartition::Owner
+                })
+                && obligation.expected == RevisionGuard::Expected(
+                    crate::domain::local_event::Revision::new(0).unwrap()
+                )
+                && matches!(
+                    &obligation.record,
+                    ObligationRecord::Send {
+                        operation_id,
+                        session_id,
+                        kind: SendObligationKindRecord::TurnExecution,
+                        disposition: SendObligationDispositionRecord::Queued,
+                        state: ObligationStateRecord::EffectReserved,
+                        ..
+                    } if operation_id == "op-q-atomic" && session_id == "s-1"
+                )
+    )));
+    assert!(mutations.iter().any(|mutation| matches!(
+        mutation,
+        LocalStateMutation::OperationRecord(operation)
+            if operation.operation_id == "op-q-atomic"
+                && operation.expected == RevisionGuard::Expected(
+                    crate::domain::local_event::Revision::new(0).unwrap()
+                )
+                && matches!(
+                    &operation.latest_status.value,
+                    OperationStatusValue::ProviderStartReserved { obligation_id }
+                        if obligation_id == "op-q-atomic.exec"
+                )
+    )));
+    assert_eq!(
+        repo.with_state(|state| state.commit_calls),
+        commits_before,
+        "participant preparation must not commit outside the session transaction"
+    );
+}
+
+#[tokio::test]
+async fn queued_turn_start_rejects_an_unfinished_legacy_provider_dependency() {
+    let repo = FakeRepo::new();
+    let gate = FakeSendGate::started_turn("s-1");
+    gate.set_plan(Ok(SendPlan {
+        session_id: "s-1".to_string(),
+        initial_session: None,
+        session_projection_guard: RevisionGuard::Absent,
+        disposition: SendDisposition::Queued {
+            queue_item_id: "q-dependent".to_string(),
+        },
+        input_ref: "input-q-dependent".to_string(),
+        human_message_id: "human-q-dependent".to_string(),
+        prompt: crate::domain::agent_session::events::PromptInput {
+            content: "queued with legacy dependency".to_string(),
+            ..Default::default()
+        },
+        reserved_turn_id: Some("12".to_string()),
+    }));
+    let usecase = send_usecase(&repo, &gate);
+    expect_accepted(
+        usecase
+            .send(send_request("op-q-dependent", "queued-payload"))
+            .await
+            .unwrap(),
+    );
+    seed_legacy_provider_dependency(&repo, "op-q-dependent");
+    repo.with_state(|state| {
+        let (_, status, _) = state
+            .records
+            .get_mut(&("send".to_string(), "op-q-dependent".to_string()))
+            .expect("accepted queued operation");
+        *status = OperationStatusRecord {
+            kind: OperationKind::Send,
+            value: OperationStatusValue::Queued {
+                queue_item_id: "q-dependent".to_string(),
+                reserved_turn_id: "12".to_string(),
+            },
+        };
+    });
+
+    let result = usecase
+        .prepare_queued_turn_start_participant_mutations(
+            "op-q-dependent",
+            "op-q-dependent.exec",
+            "s-1",
+            "q-dependent",
+            &AgentSessionDomainEvent::TurnStarted {
+                turn_id: 12,
+                message_id: "human-q-dependent".to_string(),
+                assistant_message_id: Some("human-q-dependent:agent".to_string()),
+                prompt: crate::domain::agent_session::events::PromptInput {
+                    content: "queued with legacy dependency".to_string(),
+                    ..Default::default()
+                },
+                at: 1.0,
+            },
+        )
+        .await;
+
+    assert!(matches!(
+        result,
+        Err(SendAgentMessageError::Internal { .. })
+    ));
 }
 
 #[tokio::test]
@@ -1888,6 +2341,7 @@ async fn b006_restart_restores_exact_queued_item_without_claiming_provider_effec
     gate.set_plan(Ok(SendPlan {
         session_id: "s-1".to_string(),
         initial_session: None,
+        session_projection_guard: RevisionGuard::Absent,
         disposition: SendDisposition::Queued {
             queue_item_id: "q-restart".to_string(),
         },
@@ -1898,7 +2352,6 @@ async fn b006_restart_restores_exact_queued_item_without_claiming_provider_effec
             ..Default::default()
         },
         reserved_turn_id: Some("9".to_string()),
-        provider_established: true,
     }));
     let usecase = send_usecase(&repo, &gate);
     let accepted = expect_accepted(
@@ -1918,16 +2371,38 @@ async fn b006_restart_restores_exact_queued_item_without_claiming_provider_effec
         .await
         .unwrap();
 
-    let restarted = send_usecase(&repo, &gate);
+    let restart_gate = FakeSendGate::started_turn("s-1");
+    let restarted = send_usecase(&repo, &restart_gate);
     assert_eq!(
         restarted
             .recover_pending_provider_effects_pass()
             .await
             .unwrap(),
-        1
+        1,
+        "the first pass installs one process-local queue-restore owner"
     );
-    let effects = gate.effects();
-    assert_eq!(effects.len(), 2);
+    assert_eq!(
+        restarted
+            .recover_pending_provider_effects_pass()
+            .await
+            .unwrap(),
+        0,
+        "the installed owner suppresses another queue-restore worker"
+    );
+    assert_eq!(
+        restarted
+            .recover_pending_provider_effects_pass()
+            .await
+            .unwrap(),
+        0,
+        "a second zero pass lets the bounded startup worker quiesce"
+    );
+    let effects = restart_gate.effects();
+    assert_eq!(
+        effects.len(),
+        1,
+        "startup recovery schedules the exact queued restore once"
+    );
     assert_eq!(
         effects.last().unwrap(),
         &AcceptedSendEffect {
@@ -1939,7 +2414,6 @@ async fn b006_restart_restores_exact_queued_item_without_claiming_provider_effec
                 queue_item_id: "q-restart".to_string(),
             },
             reserved_turn_id: Some("9".to_string()),
-            establish_obligation_id: None,
             execution_obligation_id: "op-q-restart.exec".to_string(),
             canonical_payload: "queued-payload".to_string(),
         }
@@ -1962,12 +2436,13 @@ async fn b006_restart_restores_exact_queued_item_without_claiming_provider_effec
 }
 
 #[tokio::test]
-async fn queued_restart_before_post_accept_handoff_converges_without_reserving_turn() {
+async fn legacy_queued_restart_retires_establishment_and_restores_the_exact_queue_item() {
     let repo = FakeRepo::new();
     let gate = FakeSendGate::started_turn("s-1");
     gate.set_plan(Ok(SendPlan {
         session_id: "s-1".to_string(),
         initial_session: None,
+        session_projection_guard: RevisionGuard::Absent,
         disposition: SendDisposition::Queued {
             queue_item_id: "q-before-handoff".to_string(),
         },
@@ -1978,7 +2453,6 @@ async fn queued_restart_before_post_accept_handoff_converges_without_reserving_t
             ..Default::default()
         },
         reserved_turn_id: Some("11".to_string()),
-        provider_established: true,
     }));
     let usecase = send_usecase(&repo, &gate);
     let accepted = expect_accepted(
@@ -1987,12 +2461,18 @@ async fn queued_restart_before_post_accept_handoff_converges_without_reserving_t
             .await
             .unwrap(),
     );
-    assert!(matches!(
+    assert_eq!(
         accepted.latest_status,
-        SendExecutionStatus::AwaitingProviderStart { .. }
-    ));
+        SendExecutionStatus::Queued {
+            queue_item_id: "q-before-handoff".to_string(),
+            reserved_turn_id: "11".to_string(),
+        }
+    );
+    gate.effects.lock().unwrap().clear();
+    seed_legacy_provider_dependency(&repo, "op-before-handoff");
 
-    let restarted = send_usecase(&repo, &gate);
+    let restart_gate = FakeSendGate::started_turn("s-1");
+    let restarted = send_usecase(&repo, &restart_gate);
     assert_eq!(
         restarted
             .recover_pending_provider_effects_pass()
@@ -2011,10 +2491,21 @@ async fn queued_restart_before_post_accept_handoff_converges_without_reserving_t
             reserved_turn_id: "11".to_string(),
         }
     );
-    let effects = gate.effects();
-    assert_eq!(effects.len(), 2);
-    assert_eq!(effects.last().unwrap().establish_obligation_id, None);
+    let effects = restart_gate.effects();
+    assert_eq!(effects.len(), 1);
     repo.with_state(|state| {
+        let (establishment, establishment_pending, _) = state
+            .obligations
+            .get("op-before-handoff.establish")
+            .expect("legacy establishment obligation");
+        assert!(!establishment_pending);
+        assert!(matches!(
+            establishment,
+            ObligationRecord::Send {
+                state: ObligationStateRecord::Cancelled,
+                ..
+            }
+        ));
         let (obligation, pending, revision) = state
             .obligations
             .get("op-before-handoff.exec")
@@ -2381,12 +2872,358 @@ async fn session_closed_terminal_winner_atomically_finishes_send_and_execution_o
 }
 
 #[tokio::test]
+async fn provider_terminal_wins_after_running_status_persist_failure_requires_reconciliation() {
+    let repo = FakeRepo::new();
+    let gate = FakeSendGate::started_turn("s-terminal-after-reconciliation");
+    let usecase = send_usecase(&repo, &gate);
+    expect_accepted(
+        usecase
+            .send(send_request("send-terminal-after-reconciliation", "hello"))
+            .await
+            .unwrap(),
+    );
+    usecase
+        .transition_obligation(ObligationTransition {
+            operation_id: "send-terminal-after-reconciliation",
+            obligation_id: "send-terminal-after-reconciliation.exec",
+            expected_kind: "turn_execution",
+            expected_state: "pending",
+            next_state: "effect_reserved",
+            keep_pending: true,
+            status: Some(SendExecutionStatus::ProviderStartReserved {
+                obligation_id: "send-terminal-after-reconciliation.exec".to_string(),
+            }),
+        })
+        .await
+        .unwrap();
+
+    // The provider has accepted the turn, but persisting Running fails. The
+    // worker must publish the ambiguous handoff as reconciliation work while
+    // retaining the exact turn identity for a later authoritative terminal.
+    repo.with_state(|state| {
+        state.fail_commit_once = Some(CommitBatchError::StorageUnavailable {
+            failure: SafeOperationFailure::new(
+                SessionOperationFailureKind::StorageUnavailable,
+                true,
+                "running status unavailable",
+                "running-status-unavailable",
+            ),
+        });
+    });
+    assert!(usecase
+        .mark_turn_running(
+            "send-terminal-after-reconciliation",
+            "send-terminal-after-reconciliation.exec",
+            1,
+        )
+        .await
+        .is_err());
+    usecase
+        .mark_turn_reconciliation_required(
+            "send-terminal-after-reconciliation",
+            "send-terminal-after-reconciliation.exec",
+            SafeOperationFailure::new(
+                SessionOperationFailureKind::OutcomeUnknown,
+                true,
+                "The accepted turn start requires same-effect readback.",
+                "running-status-reconciliation",
+            ),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        usecase
+            .get_operation("p-1", "send-terminal-after-reconciliation")
+            .await
+            .unwrap()
+            .latest_status,
+        SendExecutionStatus::ReconciliationRequired { .. }
+    ));
+    repo.with_state(|state| {
+        let (record, pending, _) = state
+            .obligations
+            .get("send-terminal-after-reconciliation.exec")
+            .unwrap();
+        assert!(*pending);
+        assert!(matches!(
+            record,
+            ObligationRecord::Send {
+                state: ObligationStateRecord::ReconciliationRequired,
+                turn_id: Some(turn_id),
+                ..
+            } if turn_id == "1"
+        ));
+    });
+
+    let terminal_result = TurnResult::Completed {
+        stop_reason: None,
+        token_usage: None,
+    };
+    let terminal = TerminalRecordMutation {
+        session_id: "s-terminal-after-reconciliation".to_string(),
+        turn_id: "1".to_string(),
+        terminal_identity: "terminal-after-reconciliation-winner".to_string(),
+        result: agent_turn_terminal_result(
+            "s-terminal-after-reconciliation",
+            "1",
+            terminal_result.clone(),
+        ),
+        participant_digest: [6; 32],
+    };
+    let participants = usecase
+        .prepare_runtime_terminal_participants(&terminal)
+        .await
+        .unwrap();
+    assert_eq!(participants.mutations.len(), 2);
+    let mut state_mutations = vec![LocalStateMutation::TerminalRecord(terminal)];
+    state_mutations.extend(participants.mutations);
+    repo.commit_batch(LocalAtomicBatch {
+        commit_id: CommitIdentity::parse("send-terminal-after-reconciliation-commit").unwrap(),
+        idempotency: IdempotencyBinding {
+            installation_id: GENERATION.to_string(),
+            operation_kind: OperationKind::Send.into(),
+            idempotency_key: "send-terminal-after-reconciliation-final".to_string(),
+            payload_hash: fake_hash(2, b"send-terminal-after-reconciliation-final"),
+        },
+        expected_heads: Vec::new(),
+        events: Vec::new(),
+        state_mutations,
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        usecase
+            .get_operation("p-1", "send-terminal-after-reconciliation")
+            .await
+            .unwrap()
+            .latest_status,
+        SendExecutionStatus::Terminal {
+            result: terminal_result,
+        }
+    );
+    repo.with_state(|state| {
+        let (record, pending, _) = state
+            .obligations
+            .get("send-terminal-after-reconciliation.exec")
+            .unwrap();
+        assert!(!pending);
+        assert!(matches!(
+            record,
+            ObligationRecord::Send {
+                state: ObligationStateRecord::Completed,
+                ..
+            }
+        ));
+    });
+}
+
+#[tokio::test]
+async fn f05_runtime_terminal_participant_replaces_recovery_wrapper_with_plain_completed_send() {
+    let repo = FakeRepo::new();
+    let gate = FakeSendGate::started_turn("s-terminal-wrapper");
+    let usecase = send_usecase(&repo, &gate);
+    expect_accepted(
+        usecase
+            .send(send_request("send-terminal-wrapper", "hello"))
+            .await
+            .unwrap(),
+    );
+    usecase
+        .transition_obligation(ObligationTransition {
+            operation_id: "send-terminal-wrapper",
+            obligation_id: "send-terminal-wrapper.exec",
+            expected_kind: "turn_execution",
+            expected_state: "pending",
+            next_state: "effect_reserved",
+            keep_pending: true,
+            status: Some(SendExecutionStatus::ProviderStartReserved {
+                obligation_id: "send-terminal-wrapper.exec".to_string(),
+            }),
+        })
+        .await
+        .unwrap();
+    repo.with_state(|state| {
+        let (record, _, revision) = state
+            .obligations
+            .get_mut("send-terminal-wrapper.exec")
+            .unwrap();
+        let original = record.clone();
+        *record = ObligationRecord::RecoveryTransition {
+            original: Box::new(original),
+            recovery_action: ObligationRecoveryActionRecord {
+                action_id: "terminal-wrapper-readback".to_string(),
+                origin_revision: *revision as u64,
+                action: RecoveryActionKind::ReadAgain,
+                effect_identity: "send-terminal-wrapper.exec".to_string(),
+                state: ObligationStateRecord::EffectReserved,
+                classification: None,
+            },
+        };
+    });
+
+    let participants = usecase
+        .prepare_runtime_terminal_participants(&TerminalRecordMutation {
+            session_id: "s-terminal-wrapper".to_string(),
+            turn_id: "1".to_string(),
+            terminal_identity: "terminal-wrapper-winner".to_string(),
+            result: agent_turn_terminal_result(
+                "s-terminal-wrapper",
+                "1",
+                TurnResult::Completed {
+                    stop_reason: None,
+                    token_usage: None,
+                },
+            ),
+            participant_digest: [5; 32],
+        })
+        .await
+        .unwrap();
+
+    let completed = participants
+        .mutations
+        .iter()
+        .find_map(|mutation| match mutation {
+            LocalStateMutation::Obligation(mutation) => Some(&mutation.record),
+            _ => None,
+        })
+        .expect("terminal execution obligation participant");
+    assert!(matches!(
+        completed,
+        ObligationRecord::Send {
+            obligation_id,
+            operation_id,
+            state: ObligationStateRecord::Completed,
+            ..
+        } if obligation_id == "send-terminal-wrapper.exec"
+            && operation_id == "send-terminal-wrapper"
+    ));
+}
+
+#[tokio::test]
+async fn terminal_operation_converges_nonterminal_execution_without_status_regression() {
+    for reserved in [false, true] {
+        let boundary = if reserved { "reserved" } else { "pending" };
+        let operation_id = format!("terminal-mismatch-{boundary}");
+        let obligation_id = format!("{operation_id}.exec");
+        let session_id = format!("terminal-session-{boundary}");
+        let repo = FakeRepo::new();
+        let gate = FakeSendGate::started_turn(&session_id);
+        let usecase = send_usecase(&repo, &gate);
+        expect_accepted(
+            usecase
+                .send(send_request(&operation_id, "hello"))
+                .await
+                .unwrap(),
+        );
+        gate.effects.lock().unwrap().clear();
+        if reserved {
+            usecase
+                .transition_obligation(ObligationTransition {
+                    operation_id: &operation_id,
+                    obligation_id: &obligation_id,
+                    expected_kind: "turn_execution",
+                    expected_state: "pending",
+                    next_state: "effect_reserved",
+                    keep_pending: true,
+                    status: Some(SendExecutionStatus::ProviderStartReserved {
+                        obligation_id: obligation_id.clone(),
+                    }),
+                })
+                .await
+                .unwrap();
+        }
+        let terminal_result = TurnResult::Completed {
+            stop_reason: None,
+            token_usage: None,
+        };
+        usecase
+            .record_execution_status(
+                &operation_id,
+                SendExecutionStatus::Terminal {
+                    result: terminal_result.clone(),
+                },
+            )
+            .await
+            .unwrap();
+
+        if !reserved {
+            usecase
+                .mark_turn_reconciliation_required(
+                    &operation_id,
+                    &obligation_id,
+                    SafeOperationFailure::new(
+                        SessionOperationFailureKind::OutcomeUnknown,
+                        true,
+                        "A late mismatch must not replace Terminal.",
+                        format!("terminal-mismatch-{boundary}"),
+                    ),
+                )
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            usecase
+                .get_operation("p-1", &operation_id)
+                .await
+                .unwrap()
+                .latest_status,
+            SendExecutionStatus::Terminal {
+                result: terminal_result.clone(),
+            },
+            "{boundary}"
+        );
+
+        assert_eq!(
+            usecase
+                .recover_pending_provider_effects_pass()
+                .await
+                .unwrap(),
+            usize::from(reserved),
+            "{boundary}"
+        );
+        assert_eq!(
+            usecase
+                .recover_pending_provider_effects_pass()
+                .await
+                .unwrap(),
+            0,
+            "{boundary}"
+        );
+        assert_eq!(gate.effect_count(), 0, "{boundary}");
+        assert_eq!(
+            usecase
+                .get_operation("p-1", &operation_id)
+                .await
+                .unwrap()
+                .latest_status,
+            SendExecutionStatus::Terminal {
+                result: terminal_result,
+            },
+            "{boundary}"
+        );
+        repo.with_state(|state| {
+            let (obligation, pending, _) = &state.obligations[&obligation_id];
+            assert!(!*pending, "{boundary}");
+            assert!(matches!(
+                obligation,
+                ObligationRecord::Send {
+                    state: ObligationStateRecord::Completed,
+                    ..
+                }
+            ));
+        });
+    }
+}
+
+#[tokio::test]
 async fn queued_send_carries_reserved_turn_identity_into_terminal_participation() {
     let repo = FakeRepo::new();
     let gate = FakeSendGate::started_turn("s-queued-terminal");
     gate.set_plan(Ok(SendPlan {
         session_id: "s-queued-terminal".to_string(),
         initial_session: None,
+        session_projection_guard: RevisionGuard::Absent,
         disposition: SendDisposition::Queued {
             queue_item_id: "queue-terminal".to_string(),
         },
@@ -2397,7 +3234,6 @@ async fn queued_send_carries_reserved_turn_identity_into_terminal_participation(
             ..Default::default()
         },
         reserved_turn_id: Some("7".to_string()),
-        provider_established: true,
     }));
     let usecase = send_usecase(&repo, &gate);
     expect_accepted(
@@ -2487,6 +3323,170 @@ async fn b014_rejected_before_commit_has_zero_effects() {
 }
 
 #[tokio::test]
+async fn accepted_dispatch_refusal_atomically_exposes_reconciliation_without_provider_io() {
+    let repo = FakeRepo::new();
+    let gate = FakeSendGate::started_turn("s-1");
+    gate.fail_dispatch(SafeOperationFailure::new(
+        SessionOperationFailureKind::InvalidEffectIntent,
+        false,
+        "The accepted provider effect could not be scheduled.",
+        "dispatch-refused",
+    ));
+    let usecase = send_usecase(&repo, &gate);
+
+    let accepted = expect_accepted(
+        usecase
+            .send(send_request("op-dispatch-refused", "hello"))
+            .await
+            .unwrap(),
+    );
+
+    assert!(matches!(
+        accepted.latest_status,
+        SendExecutionStatus::ReconciliationRequired { .. }
+    ));
+    assert_eq!(gate.effect_count(), 0);
+    repo.with_state(|state| {
+        assert!(matches!(
+            &state.obligations["op-dispatch-refused.exec"].0,
+            ObligationRecord::Send {
+                state: ObligationStateRecord::ReconciliationRequired,
+                ..
+            }
+        ));
+        assert!(state.obligations["op-dispatch-refused.exec"].1);
+    });
+}
+
+#[tokio::test]
+async fn accepted_dispatch_reconciliation_keeps_a_background_retry_owner_after_first_commit_failure(
+) {
+    let repo = FakeRepo::new();
+    let gate = FakeSendGate::started_turn("s-dispatch-retry");
+    let dispatch_failure = SafeOperationFailure::new(
+        SessionOperationFailureKind::InvalidEffectIntent,
+        false,
+        "The accepted provider effect could not be scheduled.",
+        "dispatch-retry-owner",
+    );
+    gate.fail_dispatch(dispatch_failure.clone());
+    repo.with_state(|state| {
+        state.fail_commit_on_call = Some((
+            2,
+            CommitBatchError::StorageUnavailable {
+                failure: SafeOperationFailure::new(
+                    SessionOperationFailureKind::StorageUnavailable,
+                    true,
+                    "The first reconciliation commit is unavailable.",
+                    "dispatch-reconciliation-first-commit",
+                ),
+            },
+        ));
+    });
+    let usecase = send_usecase(&repo, &gate);
+
+    let accepted = expect_accepted(
+        usecase
+            .send(send_request("op-dispatch-retry", "hello"))
+            .await
+            .unwrap(),
+    );
+    assert!(matches!(
+        accepted.latest_status,
+        SendExecutionStatus::ReconciliationRequired { .. }
+    ));
+
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let converged = repo.with_state(|state| {
+                let (_, status, _) =
+                    &state.records[&("send".to_string(), "op-dispatch-retry".to_string())];
+                let (obligation, pending, _) = &state.obligations["op-dispatch-retry.exec"];
+                matches!(
+                    &status.value,
+                    OperationStatusValue::ReconciliationRequired { failure }
+                        if failure == &dispatch_failure
+                ) && *pending
+                    && matches!(
+                        obligation,
+                        ObligationRecord::Send {
+                            state: ObligationStateRecord::ReconciliationRequired,
+                            ..
+                        }
+                    )
+            });
+            if converged {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the background owner must durably converge reconciliation");
+    assert_eq!(gate.effect_count(), 0);
+    repo.with_state(|state| assert!(state.commit_calls >= 3));
+}
+
+#[tokio::test]
+async fn accepted_readback_failure_wakes_central_recovery_for_the_same_effect() {
+    let repo = FakeRepo::new();
+    let gate = FakeSendGate::started_turn("s-readback-retry");
+    repo.with_state(|state| {
+        state.fail_operation_query_once_after_commit_call = Some(1);
+    });
+    let usecase = send_usecase(&repo, &gate);
+    let recovery_wakeup = usecase.pending_recovery_wakeup();
+
+    let accepted = expect_accepted(
+        usecase
+            .send(send_request("op-readback-retry", "hello"))
+            .await
+            .unwrap(),
+    );
+    assert!(matches!(
+        accepted.latest_status,
+        SendExecutionStatus::AwaitingProviderStart { .. }
+    ));
+    assert_eq!(
+        gate.effect_count(),
+        0,
+        "an unreadable acceptance must not dispatch provider I/O"
+    );
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        recovery_wakeup.notified(),
+    )
+    .await
+    .expect("the acceptance readback failure must wake the central recovery owner");
+    assert_eq!(
+        usecase
+            .recover_pending_provider_effects_pass()
+            .await
+            .unwrap(),
+        1,
+        "the central owner must reconstruct the effect from durable state"
+    );
+    assert_eq!(gate.effect_count(), 1);
+    repo.with_state(|state| {
+        let (_, status, _) = &state.records[&("send".to_string(), "op-readback-retry".to_string())];
+        let (obligation, pending, _) = &state.obligations["op-readback-retry.exec"];
+        assert!(matches!(
+            status.value,
+            OperationStatusValue::AwaitingProviderStart { .. }
+        ));
+        assert!(*pending);
+        assert!(matches!(
+            obligation,
+            ObligationRecord::Send {
+                state: ObligationStateRecord::Pending,
+                ..
+            }
+        ));
+    });
+}
+
+#[tokio::test]
 async fn b014_gate_plan_failure_rejects_before_commit() {
     let repo = FakeRepo::new();
     let gate = FakeSendGate::started_turn("s-1");
@@ -2532,12 +3532,13 @@ async fn b075_turn_identity_capacity_is_typed_and_changes_nothing() {
 }
 
 #[tokio::test]
-async fn b017_awaiting_provider_start_until_establish_confirmed() {
+async fn b017_new_send_uses_only_turn_execution_obligation() {
     let repo = FakeRepo::new();
     let gate = FakeSendGate::started_turn("s-1");
     gate.set_plan(Ok(SendPlan {
         session_id: "s-1".to_string(),
         initial_session: None,
+        session_projection_guard: RevisionGuard::Absent,
         disposition: SendDisposition::StartedTurn {
             turn_id: "1".to_string(),
         },
@@ -2548,39 +3549,45 @@ async fn b017_awaiting_provider_start_until_establish_confirmed() {
             ..Default::default()
         },
         reserved_turn_id: None,
-        provider_established: false,
     }));
     let usecase = send_usecase(&repo, &gate);
     let accepted = expect_accepted(usecase.send(send_request("op-1", "hello")).await.unwrap());
     match &accepted.latest_status {
         SendExecutionStatus::AwaitingProviderStart {
             dependency_obligation_ids,
-        } => assert_eq!(
-            dependency_obligation_ids,
-            &vec!["op-1.establish".to_string()]
-        ),
+        } => assert!(dependency_obligation_ids.is_empty()),
         other => panic!("expected AwaitingProviderStart, got {other:?}"),
     }
     repo.with_state(|state| {
-        assert!(state.obligations.contains_key("op-1.establish"));
-        assert!(state.obligations.contains_key("op-1.exec"));
+        assert_eq!(state.obligations.len(), 1);
+        let (record, pending, revision) = state
+            .obligations
+            .get("op-1.exec")
+            .expect("single turn execution obligation");
+        assert!(*pending);
+        assert_eq!(*revision, 0);
+        assert!(matches!(
+            record,
+            ObligationRecord::Send {
+                kind: SendObligationKindRecord::TurnExecution,
+                dependency_obligation_ids,
+                state: ObligationStateRecord::Pending,
+                ..
+            } if dependency_obligation_ids.is_empty()
+        ));
     });
-    // The effect carries the establish dependency so the provider start
-    // waits for the establish result.
     let effect = gate.effects.lock().unwrap()[0].clone();
-    assert_eq!(
-        effect.establish_obligation_id,
-        Some("op-1.establish".to_string())
-    );
+    assert_eq!(effect.execution_obligation_id, "op-1.exec");
 }
 
 #[tokio::test]
-async fn b017_turn_execution_cannot_reserve_before_provider_establish_completes() {
+async fn b017_unestablished_provider_does_not_block_turn_execution_reservation() {
     let repo = FakeRepo::new();
     let gate = FakeSendGate::started_turn("s-1");
     gate.set_plan(Ok(SendPlan {
         session_id: "s-1".to_string(),
         initial_session: None,
+        session_projection_guard: RevisionGuard::Absent,
         disposition: SendDisposition::StartedTurn {
             turn_id: "1".to_string(),
         },
@@ -2591,12 +3598,11 @@ async fn b017_turn_execution_cannot_reserve_before_provider_establish_completes(
             ..Default::default()
         },
         reserved_turn_id: None,
-        provider_established: false,
     }));
     let usecase = send_usecase(&repo, &gate);
     expect_accepted(usecase.send(send_request("op-1", "hello")).await.unwrap());
 
-    assert!(usecase
+    usecase
         .transition_obligation(ObligationTransition {
             operation_id: "op-1",
             obligation_id: "op-1.exec",
@@ -2606,32 +3612,136 @@ async fn b017_turn_execution_cannot_reserve_before_provider_establish_completes(
             keep_pending: true,
             status: None,
         })
+        .await
+        .unwrap();
+    repo.with_state(|state| {
+        assert!(!state.obligations.contains_key("op-1.establish"));
+        assert!(state.obligations["op-1.exec"].1);
+        assert!(matches!(
+            &state.obligations["op-1.exec"].0,
+            ObligationRecord::Send {
+                dependency_obligation_ids,
+                state: ObligationStateRecord::EffectReserved,
+                ..
+            } if dependency_obligation_ids.is_empty()
+        ));
+    });
+}
+
+#[tokio::test]
+async fn exact_turn_claim_owner_recovers_its_lost_reply_but_rejects_a_concurrent_loser() {
+    let repo = FakeRepo::new();
+    let gate = FakeSendGate::started_turn("s-1");
+    let usecase = send_usecase(&repo, &gate);
+    expect_accepted(
+        usecase
+            .send(send_request("op-exact-claim", "hello"))
+            .await
+            .unwrap(),
+    );
+    repo.with_state(|state| {
+        state.outcome_unknown_after_commit_on_call = Some(state.commit_calls + 1);
+    });
+
+    assert!(usecase
+        .claim_turn_execution("op-exact-claim", "op-exact-claim.exec", "exact-owner-a",)
         .await
         .is_err());
-    usecase
-        .transition_obligation(ObligationTransition {
-            operation_id: "op-1",
-            obligation_id: "op-1.establish",
-            expected_kind: "provider_establish",
-            expected_state: "pending",
-            next_state: "effect_reserved",
-            keep_pending: true,
-            status: None,
-        })
-        .await
-        .unwrap();
-    usecase
-        .transition_obligation(ObligationTransition {
-            operation_id: "op-1",
-            obligation_id: "op-1.establish",
-            expected_kind: "provider_establish",
-            expected_state: "effect_reserved",
-            next_state: "completed",
-            keep_pending: false,
-            status: None,
-        })
-        .await
-        .unwrap();
+    assert_eq!(
+        usecase
+            .claim_turn_execution("op-exact-claim", "op-exact-claim.exec", "exact-owner-a",)
+            .await
+            .unwrap(),
+        ObligationTransitionOutcome::Applied,
+        "the exact owner must resolve its committed claim after losing the reply"
+    );
+    assert_eq!(
+        usecase
+            .claim_turn_execution(
+                "op-exact-claim",
+                "op-exact-claim.exec",
+                "concurrent-owner-b",
+            )
+            .await
+            .unwrap(),
+        ObligationTransitionOutcome::AlreadyAtTarget,
+        "a different owner must not inherit the winner's provider authority"
+    );
+}
+
+#[tokio::test]
+async fn concurrent_turn_claim_allows_only_the_commit_winner_to_handoff() {
+    let repo = FakeRepo::new();
+    let gate = FakeSendGate::started_turn("s-1");
+    let usecase = Arc::new(send_usecase(&repo, &gate));
+    expect_accepted(
+        usecase
+            .send(send_request("op-claim-race", "hello"))
+            .await
+            .unwrap(),
+    );
+    gate.effects.lock().unwrap().clear();
+    *repo.commit_barrier.lock().unwrap() = Some(Arc::new(tokio::sync::Barrier::new(2)));
+
+    let claim = || ObligationTransition {
+        operation_id: "op-claim-race",
+        obligation_id: "op-claim-race.exec",
+        expected_kind: "turn_execution",
+        expected_state: "pending",
+        next_state: "effect_reserved",
+        keep_pending: true,
+        status: Some(SendExecutionStatus::ProviderStartReserved {
+            obligation_id: "op-claim-race.exec".to_string(),
+        }),
+    };
+    let (first, second) = tokio::join!(
+        usecase.transition_obligation(claim()),
+        usecase.transition_obligation(claim())
+    );
+    *repo.commit_barrier.lock().unwrap() = None;
+    let outcomes = [first.unwrap(), second.unwrap()];
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| **outcome == ObligationTransitionOutcome::Applied)
+            .count(),
+        1
+    );
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| **outcome == ObligationTransitionOutcome::AlreadyAtTarget)
+            .count(),
+        1
+    );
+
+    for outcome in outcomes {
+        if outcome == ObligationTransitionOutcome::Applied {
+            gate.start_provider_effect(&AcceptedSendEffect {
+                operation_id: "op-claim-race".to_string(),
+                session_id: "s-1".to_string(),
+                human_message_id: "human-1".to_string(),
+                assistant_message_id: Some("human-1:agent".to_string()),
+                disposition: SendDisposition::StartedTurn {
+                    turn_id: "1".to_string(),
+                },
+                reserved_turn_id: None,
+                execution_obligation_id: "op-claim-race.exec".to_string(),
+                canonical_payload: "{}".to_string(),
+            })
+            .await
+            .unwrap();
+        }
+    }
+    assert_eq!(gate.effect_count(), 1);
+}
+
+#[tokio::test]
+async fn turn_reconciliation_updates_operation_and_obligation_atomically() {
+    let repo = FakeRepo::new();
+    let gate = FakeSendGate::started_turn("s-1");
+    let usecase = send_usecase(&repo, &gate);
+    expect_accepted(usecase.send(send_request("op-1", "hello")).await.unwrap());
     usecase
         .transition_obligation(ObligationTransition {
             operation_id: "op-1",
@@ -2640,27 +3750,282 @@ async fn b017_turn_execution_cannot_reserve_before_provider_establish_completes(
             expected_state: "pending",
             next_state: "effect_reserved",
             keep_pending: true,
-            status: None,
+            status: Some(SendExecutionStatus::ProviderStartReserved {
+                obligation_id: "op-1.exec".to_string(),
+            }),
         })
         .await
         .unwrap();
+
+    let failure = SafeOperationFailure::new(
+        SessionOperationFailureKind::OutcomeUnknown,
+        true,
+        "turn result requires readback",
+        "turn-reconciliation-1",
+    );
+    repo.with_state(|state| {
+        state.outcome_unknown_after_commit_on_call = Some(state.commit_calls + 1);
+    });
+    usecase
+        .mark_turn_reconciliation_required("op-1", "op-1.exec", failure.clone())
+        .await
+        .unwrap();
+
+    let commits_after_first = repo.with_state(|state| {
+        assert_eq!(
+            state
+                .committed_batches
+                .last()
+                .expect("reconciliation batch")
+                .state_mutations
+                .len(),
+            2
+        );
+        let (_, status, operation_revision) =
+            &state.records[&("send".to_string(), "op-1".to_string())];
+        assert_eq!(*operation_revision, 2);
+        assert!(matches!(
+            &status.value,
+            OperationStatusValue::ReconciliationRequired {
+                failure: stored_failure,
+            } if stored_failure == &failure
+        ));
+        let (obligation, pending, obligation_revision) = &state.obligations["op-1.exec"];
+        assert!(*pending);
+        assert_eq!(*obligation_revision, 2);
+        assert!(matches!(
+            obligation,
+            ObligationRecord::Send {
+                state: ObligationStateRecord::ReconciliationRequired,
+                ..
+            }
+        ));
+        state.commit_calls
+    });
+
+    usecase
+        .mark_turn_reconciliation_required("op-1", "op-1.exec", failure)
+        .await
+        .unwrap();
+    repo.with_state(|state| assert_eq!(state.commit_calls, commits_after_first));
+}
+
+#[tokio::test]
+async fn turn_reconciliation_preserves_completed_recovery_history() {
+    let repo = FakeRepo::new();
+    let gate = FakeSendGate::started_turn("s-1");
+    let usecase = send_usecase(&repo, &gate);
+    expect_accepted(
+        usecase
+            .send(send_request("op-recovery-history", "hello"))
+            .await
+            .unwrap(),
+    );
     usecase
         .transition_obligation(ObligationTransition {
-            operation_id: "op-1",
-            obligation_id: "op-1.exec",
+            operation_id: "op-recovery-history",
+            obligation_id: "op-recovery-history.exec",
             expected_kind: "turn_execution",
-            expected_state: "effect_reserved",
-            next_state: "completed",
-            keep_pending: false,
-            status: Some(SendExecutionStatus::Running {
-                turn_id: "1".to_string(),
+            expected_state: "pending",
+            next_state: "effect_reserved",
+            keep_pending: true,
+            status: Some(SendExecutionStatus::ProviderStartReserved {
+                obligation_id: "op-recovery-history.exec".to_string(),
             }),
         })
         .await
         .unwrap();
     repo.with_state(|state| {
-        assert!(!state.obligations["op-1.establish"].1);
-        assert!(!state.obligations["op-1.exec"].1);
+        let (record, _, revision) = state
+            .obligations
+            .get_mut("op-recovery-history.exec")
+            .unwrap();
+        let original = record.clone();
+        *record = ObligationRecord::RecoveryTransition {
+            original: Box::new(original),
+            recovery_action: ObligationRecoveryActionRecord {
+                action_id: "completed-readback".to_string(),
+                origin_revision: *revision as u64,
+                action: RecoveryActionKind::ReadAgain,
+                effect_identity: "op-recovery-history.exec".to_string(),
+                state: ObligationStateRecord::Completed,
+                classification: Some(RecoveryResultClassification::Unchanged),
+            },
+        };
+    });
+
+    usecase
+        .mark_turn_reconciliation_required(
+            "op-recovery-history",
+            "op-recovery-history.exec",
+            SafeOperationFailure::new(
+                SessionOperationFailureKind::OutcomeUnknown,
+                true,
+                "turn requires readback",
+                "preserve-recovery-history",
+            ),
+        )
+        .await
+        .unwrap();
+
+    repo.with_state(|state| {
+        assert!(matches!(
+            &state.obligations["op-recovery-history.exec"].0,
+            ObligationRecord::RecoveryTransition {
+                original,
+                recovery_action: ObligationRecoveryActionRecord {
+                    action_id,
+                    state: ObligationStateRecord::Completed,
+                    ..
+                },
+            } if action_id == "completed-readback"
+                && matches!(
+                    original.as_ref(),
+                    ObligationRecord::Send {
+                        state: ObligationStateRecord::ReconciliationRequired,
+                        ..
+                    }
+                )
+        ));
+    });
+}
+
+#[tokio::test]
+async fn turn_reconciliation_repairs_legacy_operation_only_split_brain() {
+    let repo = FakeRepo::new();
+    let gate = FakeSendGate::started_turn("s-1");
+    let usecase = send_usecase(&repo, &gate);
+    expect_accepted(usecase.send(send_request("op-1", "hello")).await.unwrap());
+    usecase
+        .transition_obligation(ObligationTransition {
+            operation_id: "op-1",
+            obligation_id: "op-1.exec",
+            expected_kind: "turn_execution",
+            expected_state: "pending",
+            next_state: "effect_reserved",
+            keep_pending: true,
+            status: None,
+        })
+        .await
+        .unwrap();
+    let original_failure = SafeOperationFailure::new(
+        SessionOperationFailureKind::OutcomeUnknown,
+        true,
+        "legacy operation-only reconciliation",
+        "legacy-reconciliation",
+    );
+    usecase
+        .record_execution_status(
+            "op-1",
+            SendExecutionStatus::ReconciliationRequired {
+                failure: original_failure.clone(),
+            },
+        )
+        .await
+        .unwrap();
+
+    usecase
+        .mark_turn_reconciliation_required(
+            "op-1",
+            "op-1.exec",
+            SafeOperationFailure::new(
+                SessionOperationFailureKind::ExternalEffectFailed,
+                true,
+                "new failure must not replace the canonical one",
+                "new-reconciliation",
+            ),
+        )
+        .await
+        .unwrap();
+
+    repo.with_state(|state| {
+        let (_, status, operation_revision) =
+            &state.records[&("send".to_string(), "op-1".to_string())];
+        assert_eq!(*operation_revision, 1);
+        assert!(matches!(
+            &status.value,
+            OperationStatusValue::ReconciliationRequired { failure }
+                if failure == &original_failure
+        ));
+        let (obligation, pending, obligation_revision) = &state.obligations["op-1.exec"];
+        assert!(*pending);
+        assert_eq!(*obligation_revision, 2);
+        assert!(matches!(
+            obligation,
+            ObligationRecord::Send {
+                state: ObligationStateRecord::ReconciliationRequired,
+                ..
+            }
+        ));
+        assert_eq!(
+            state
+                .committed_batches
+                .last()
+                .expect("split-brain repair batch")
+                .state_mutations
+                .len(),
+            1
+        );
+    });
+}
+
+#[tokio::test]
+async fn turn_reconciliation_cannot_regress_a_terminal_winner() {
+    let repo = FakeRepo::new();
+    let gate = FakeSendGate::started_turn("s-1");
+    let usecase = send_usecase(&repo, &gate);
+    expect_accepted(usecase.send(send_request("op-1", "hello")).await.unwrap());
+    usecase
+        .transition_obligation(ObligationTransition {
+            operation_id: "op-1",
+            obligation_id: "op-1.exec",
+            expected_kind: "turn_execution",
+            expected_state: "pending",
+            next_state: "effect_reserved",
+            keep_pending: true,
+            status: None,
+        })
+        .await
+        .unwrap();
+    let terminal = TurnResult::Failed {
+        error: "terminal winner".to_string(),
+        token_usage: None,
+    };
+    usecase
+        .record_execution_status(
+            "op-1",
+            SendExecutionStatus::Terminal {
+                result: terminal.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    let commits_before = repo.with_state(|state| state.commit_calls);
+
+    usecase
+        .mark_turn_reconciliation_required(
+            "op-1",
+            "op-1.exec",
+            SafeOperationFailure::new(
+                SessionOperationFailureKind::OutcomeUnknown,
+                true,
+                "late reconciliation",
+                "late-reconciliation",
+            ),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        usecase
+            .get_operation("p-1", "op-1")
+            .await
+            .unwrap()
+            .latest_status,
+        SendExecutionStatus::Terminal { result: terminal }
+    );
+    repo.with_state(|state| {
+        assert_eq!(state.commit_calls, commits_before + 1);
         assert!(matches!(
             &state.obligations["op-1.exec"].0,
             ObligationRecord::Send {
@@ -2668,6 +4033,7 @@ async fn b017_turn_execution_cannot_reserve_before_provider_establish_completes(
                 ..
             }
         ));
+        assert!(!state.obligations["op-1.exec"].1);
     });
 }
 
@@ -2728,6 +4094,14 @@ async fn accepted_reserved_provider_effect_is_not_blindly_retried_after_restart(
         current.latest_status,
         SendExecutionStatus::ReconciliationRequired { .. }
     ));
+    assert_eq!(
+        restarted
+            .recover_pending_provider_effects_pass()
+            .await
+            .unwrap(),
+        0,
+        "durable reconciliation is a quiescent supervision state"
+    );
 }
 
 #[tokio::test]
@@ -2873,6 +4247,7 @@ async fn b017_b019_ambiguous_establish_is_reconciled_without_replay_for_create_a
                         None,
                     )
                 }),
+                session_projection_guard: RevisionGuard::Absent,
                 disposition: SendDisposition::StartedTurn {
                     turn_id: "1".to_string(),
                 },
@@ -2883,10 +4258,10 @@ async fn b017_b019_ambiguous_establish_is_reconciled_without_replay_for_create_a
                     ..Default::default()
                 },
                 reserved_turn_id: None,
-                provider_established: false,
             }));
             let first = send_usecase(&repo, &first_gate);
             expect_accepted(first.send(send_request(&operation_id, mode)).await.unwrap());
+            seed_legacy_provider_dependency(&repo, &operation_id);
             let establish_id = format!("{operation_id}.establish");
             first
                 .transition_obligation(ObligationTransition {
@@ -2944,7 +4319,7 @@ async fn b017_b019_ambiguous_establish_is_reconciled_without_replay_for_create_a
                 assert!(matches!(
                     obligation,
                     ObligationRecord::Send {
-                        state: ObligationStateRecord::EffectReserved,
+                        state: ObligationStateRecord::ReconciliationRequired,
                         ..
                     }
                 ));
@@ -2977,7 +4352,7 @@ async fn b017_b019_ambiguous_establish_is_reconciled_without_replay_for_create_a
             assert_eq!(entry.original_identity, operation_id, "{mode}/{crash}");
             assert_eq!(
                 entry.known_status,
-                PendingRecoveryKnownStatus::EffectReserved,
+                PendingRecoveryKnownStatus::ReconciliationRequired,
                 "{mode}/{crash}"
             );
             assert!(
@@ -3002,6 +4377,400 @@ async fn b017_b019_ambiguous_establish_is_reconciled_without_replay_for_create_a
             assert_eq!(restart_gate.effect_count(), 0);
         }
     }
+}
+
+#[tokio::test]
+async fn legacy_overlapping_immediate_sends_dispatch_only_the_canonical_current_turn() {
+    let stale_operation_id = "op-legacy-overlap-1";
+    let current_operation_id = "op-legacy-overlap-2";
+    let session_id = "session-legacy-overlap";
+    let repo = FakeRepo::new();
+    let accepting_gate = FakeSendGate::started_turn(session_id);
+    let accepting = send_usecase(&repo, &accepting_gate);
+
+    expect_accepted(
+        accepting
+            .send(send_request(stale_operation_id, "TEST"))
+            .await
+            .unwrap(),
+    );
+    let mut current_plan = accepting_gate
+        .plan
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("first legacy send plan");
+    current_plan.disposition = SendDisposition::StartedTurn {
+        turn_id: "2".to_string(),
+    };
+    // The shipped collision reused the same human and assistant identities.
+    // Preserve that exact shape while changing only the canonical turn.
+    accepting_gate.set_plan(Ok(current_plan));
+    expect_accepted(
+        accepting
+            .send(send_request(current_operation_id, "TEST"))
+            .await
+            .unwrap(),
+    );
+
+    for operation_id in [stale_operation_id, current_operation_id] {
+        seed_legacy_provider_dependency(&repo, operation_id);
+        let establish_id = format!("{operation_id}.establish");
+        accepting
+            .transition_obligation(ObligationTransition {
+                operation_id,
+                obligation_id: &establish_id,
+                expected_kind: "provider_establish",
+                expected_state: "pending",
+                next_state: "effect_reserved",
+                keep_pending: true,
+                status: None,
+            })
+            .await
+            .unwrap();
+        accepting
+            .record_execution_status(
+                operation_id,
+                SendExecutionStatus::ReconciliationRequired {
+                    failure: SafeOperationFailure::new(
+                        SessionOperationFailureKind::OutcomeUnknown,
+                        true,
+                        "legacy provider establishment timed out",
+                        format!("{operation_id}-provider-timeout"),
+                    ),
+                },
+            )
+            .await
+            .unwrap();
+    }
+
+    let restart_gate = FakeSendGate::started_turn(session_id);
+    restart_gate.allow_legacy_provider_turn_continuation();
+    restart_gate.set_canonical_current_turn(2);
+    let restarted = Arc::new(send_usecase(&repo, &restart_gate));
+    restart_gate.bind_claim_sink(Arc::downgrade(&restarted));
+    restarted.recover_pending_provider_effects().await.unwrap();
+
+    let effects = restart_gate.effects();
+    assert_eq!(
+        effects.len(),
+        1,
+        "restart recovery must hand off exactly one of the overlapping accepted inputs"
+    );
+    assert_eq!(effects[0].operation_id, current_operation_id);
+    assert_eq!(
+        effects[0].disposition,
+        SendDisposition::StartedTurn {
+            turn_id: "2".to_string()
+        }
+    );
+    assert_eq!(effects[0].human_message_id, "human-1");
+    assert_eq!(
+        effects[0].assistant_message_id.as_deref(),
+        Some("human-1:agent")
+    );
+
+    assert!(matches!(
+        restarted
+            .get_operation("p-1", stale_operation_id)
+            .await
+            .unwrap()
+            .latest_status,
+        SendExecutionStatus::Failed { ref failure }
+            if failure.kind == SessionOperationFailureKind::InvalidEffectIntent
+    ));
+    assert!(matches!(
+        restarted
+            .get_operation("p-1", current_operation_id)
+            .await
+            .unwrap()
+            .latest_status,
+        SendExecutionStatus::ProviderStartReserved { .. }
+    ));
+    repo.with_state(|state| {
+        for operation_id in [stale_operation_id, current_operation_id] {
+            let (establish, establish_pending, _) =
+                &state.obligations[&format!("{operation_id}.establish")];
+            assert!(!establish_pending);
+            assert!(matches!(
+                establish,
+                ObligationRecord::Send {
+                    state: ObligationStateRecord::Cancelled,
+                    ..
+                }
+            ));
+        }
+        let (stale_execution, stale_pending, _) =
+            &state.obligations[&format!("{stale_operation_id}.exec")];
+        assert!(!stale_pending);
+        assert!(matches!(
+            stale_execution,
+            ObligationRecord::Send {
+                state: ObligationStateRecord::Cancelled,
+                ..
+            }
+        ));
+        let (current_execution, current_pending, _) =
+            &state.obligations[&format!("{current_operation_id}.exec")];
+        assert!(*current_pending);
+        assert!(matches!(
+            current_execution,
+            ObligationRecord::Send {
+                state: ObligationStateRecord::EffectReserved,
+                ..
+            }
+        ));
+    });
+}
+
+#[tokio::test]
+async fn b017_legacy_claude_shape_resumes_the_original_turn_without_manual_recovery() {
+    let operation_id = "op-legacy-claude";
+    let session_id = "session-legacy-claude";
+    let establish_id = format!("{operation_id}.establish");
+    let execution_id = format!("{operation_id}.exec");
+    let repo = FakeRepo::new();
+    let first_gate = FakeSendGate::started_turn(session_id);
+    let first = send_usecase(&repo, &first_gate);
+    expect_accepted(
+        first
+            .send(send_request(operation_id, "accepted input"))
+            .await
+            .unwrap(),
+    );
+    seed_legacy_provider_dependency(&repo, operation_id);
+    first
+        .transition_obligation(ObligationTransition {
+            operation_id,
+            obligation_id: &establish_id,
+            expected_kind: "provider_establish",
+            expected_state: "pending",
+            next_state: "effect_reserved",
+            keep_pending: true,
+            status: None,
+        })
+        .await
+        .unwrap();
+    first
+        .record_execution_status(
+            operation_id,
+            SendExecutionStatus::ReconciliationRequired {
+                failure: SafeOperationFailure::new(
+                    SessionOperationFailureKind::OutcomeUnknown,
+                    true,
+                    "legacy provider establishment timed out",
+                    "legacy-provider-timeout",
+                ),
+            },
+        )
+        .await
+        .unwrap();
+
+    let restart_gate = FakeSendGate::started_turn(session_id);
+    restart_gate.allow_legacy_provider_turn_continuation();
+    let restarted = Arc::new(send_usecase(&repo, &restart_gate));
+    restart_gate.bind_claim_sink(Arc::downgrade(&restarted));
+    restarted.recover_pending_provider_effects().await.unwrap();
+
+    let effects = restart_gate.effects();
+    assert_eq!(effects.len(), 1);
+    assert_eq!(effects[0].operation_id, operation_id);
+    assert_eq!(effects[0].execution_obligation_id, execution_id);
+    repo.with_state(|state| {
+        let (establish, establish_pending, _) = &state.obligations[&establish_id];
+        assert!(!establish_pending);
+        assert!(matches!(
+            establish,
+            ObligationRecord::Send {
+                state: ObligationStateRecord::Cancelled,
+                ..
+            }
+        ));
+        let (execution, execution_pending, _) = &state.obligations[&execution_id];
+        assert!(*execution_pending);
+        assert!(matches!(
+            execution,
+            ObligationRecord::Send {
+                state: ObligationStateRecord::EffectReserved,
+                ..
+            }
+        ));
+    });
+    assert!(matches!(
+        restarted
+            .get_operation("p-1", operation_id)
+            .await
+            .unwrap()
+            .latest_status,
+        SendExecutionStatus::ProviderStartReserved { .. }
+    ));
+
+    let recovery_executor =
+        FakeRecoveryExecutor::returning(RecoveryResultClassification::Pending, "unused");
+    recovery_executor.own_current_process_effect(&execution_id);
+    let pending = recovery_usecase(&repo, &recovery_executor)
+        .pending(super::recovery::PendingRecoveryQuery {
+            limit: 32,
+            partition: None,
+            owner: None,
+            shutdown_plan: None,
+            cursor: None,
+        })
+        .await
+        .unwrap();
+    assert!(
+        pending.entries.is_empty(),
+        "resumed legacy progress must not remain as manual recovery"
+    );
+}
+
+#[tokio::test]
+async fn b017_reserved_legacy_turn_is_reconciled_without_a_second_handoff() {
+    let operation_id = "op-legacy-reserved-turn";
+    let establish_id = format!("{operation_id}.establish");
+    let execution_id = format!("{operation_id}.exec");
+    let repo = FakeRepo::new();
+    let first_gate = FakeSendGate::started_turn("session-legacy-reserved-turn");
+    let first = send_usecase(&repo, &first_gate);
+    expect_accepted(
+        first
+            .send(send_request(operation_id, "accepted input"))
+            .await
+            .unwrap(),
+    );
+    seed_legacy_provider_dependency(&repo, operation_id);
+    first
+        .transition_obligation(ObligationTransition {
+            operation_id,
+            obligation_id: &establish_id,
+            expected_kind: "provider_establish",
+            expected_state: "pending",
+            next_state: "effect_reserved",
+            keep_pending: true,
+            status: None,
+        })
+        .await
+        .unwrap();
+    first
+        .transition_obligation(ObligationTransition {
+            operation_id,
+            obligation_id: &establish_id,
+            expected_kind: "provider_establish",
+            expected_state: "effect_reserved",
+            next_state: "completed",
+            keep_pending: false,
+            status: None,
+        })
+        .await
+        .unwrap();
+    first
+        .transition_obligation(ObligationTransition {
+            operation_id,
+            obligation_id: &execution_id,
+            expected_kind: "turn_execution",
+            expected_state: "pending",
+            next_state: "effect_reserved",
+            keep_pending: true,
+            status: Some(SendExecutionStatus::ProviderStartReserved {
+                obligation_id: execution_id.clone(),
+            }),
+        })
+        .await
+        .unwrap();
+
+    let restart_gate = FakeSendGate::started_turn("session-legacy-reserved-turn");
+    restart_gate.allow_legacy_provider_turn_continuation();
+    let restarted = send_usecase(&repo, &restart_gate);
+    restarted.recover_pending_provider_effects().await.unwrap();
+
+    assert_eq!(restart_gate.effect_count(), 0);
+    assert!(matches!(
+        restarted
+            .get_operation("p-1", operation_id)
+            .await
+            .unwrap()
+            .latest_status,
+        SendExecutionStatus::ReconciliationRequired { .. }
+    ));
+    repo.with_state(|state| {
+        assert!(matches!(
+            &state.obligations[&execution_id].0,
+            ObligationRecord::Send {
+                state: ObligationStateRecord::ReconciliationRequired,
+                ..
+            }
+        ));
+    });
+}
+
+#[tokio::test]
+async fn b017_legacy_auto_recovery_never_overrides_a_manual_recovery_claim() {
+    let operation_id = "op-legacy-manual-owner";
+    let establish_id = format!("{operation_id}.establish");
+    let repo = FakeRepo::new();
+    let first_gate = FakeSendGate::started_turn("session-legacy-manual-owner");
+    let first = send_usecase(&repo, &first_gate);
+    expect_accepted(
+        first
+            .send(send_request(operation_id, "accepted input"))
+            .await
+            .unwrap(),
+    );
+    seed_legacy_provider_dependency(&repo, operation_id);
+    first
+        .transition_obligation(ObligationTransition {
+            operation_id,
+            obligation_id: &establish_id,
+            expected_kind: "provider_establish",
+            expected_state: "pending",
+            next_state: "effect_reserved",
+            keep_pending: true,
+            status: Some(SendExecutionStatus::ReconciliationRequired {
+                failure: SafeOperationFailure::new(
+                    SessionOperationFailureKind::OutcomeUnknown,
+                    true,
+                    "legacy provider establishment requires manual recovery",
+                    "legacy-manual-owner",
+                ),
+            }),
+        })
+        .await
+        .unwrap();
+    repo.with_state(|state| {
+        let (record, _, revision) = state.obligations.get_mut(&establish_id).unwrap();
+        let original = record.clone();
+        *record = ObligationRecord::RecoveryTransition {
+            original: Box::new(original),
+            recovery_action: ObligationRecoveryActionRecord {
+                action_id: "manual-recovery-action".to_string(),
+                origin_revision: *revision as u64,
+                action: RecoveryActionKind::KeepForManualResolution,
+                effect_identity: establish_id.clone(),
+                state: ObligationStateRecord::EffectReserved,
+                classification: None,
+            },
+        };
+    });
+
+    let restart_gate = FakeSendGate::started_turn("session-legacy-manual-owner");
+    restart_gate.allow_legacy_provider_turn_continuation();
+    let restarted = send_usecase(&repo, &restart_gate);
+    restarted.recover_pending_provider_effects().await.unwrap();
+
+    assert_eq!(restart_gate.effect_count(), 0);
+    repo.with_state(|state| {
+        assert!(matches!(
+            &state.obligations[&establish_id].0,
+            ObligationRecord::RecoveryTransition {
+                recovery_action: ObligationRecoveryActionRecord {
+                    action_id,
+                    state: ObligationStateRecord::EffectReserved,
+                    ..
+                },
+                ..
+            } if action_id == "manual-recovery-action"
+        ));
+    });
 }
 
 #[tokio::test]
@@ -3032,6 +4801,7 @@ async fn b017_pending_or_completed_establish_resumes_at_the_safe_boundary() {
                         None,
                     )
                 }),
+                session_projection_guard: RevisionGuard::Absent,
                 disposition: SendDisposition::StartedTurn {
                     turn_id: "1".to_string(),
                 },
@@ -3042,10 +4812,10 @@ async fn b017_pending_or_completed_establish_resumes_at_the_safe_boundary() {
                     ..Default::default()
                 },
                 reserved_turn_id: None,
-                provider_established: false,
             }));
             let first = send_usecase(&repo, &first_gate);
             expect_accepted(first.send(send_request(&operation_id, mode)).await.unwrap());
+            seed_legacy_provider_dependency(&repo, &operation_id);
             let establish_id = format!("{operation_id}.establish");
             if establish_completed {
                 first
@@ -3079,11 +4849,17 @@ async fn b017_pending_or_completed_establish_resumes_at_the_safe_boundary() {
             restarted.recover_pending_provider_effects().await.unwrap();
             let effects = restart_gate.effects.lock().unwrap();
             assert_eq!(effects.len(), 1, "{mode}/{boundary}");
-            assert_eq!(
-                effects[0].establish_obligation_id,
-                (!establish_completed).then_some(establish_id),
-                "completed establishment must resume directly at turn reservation"
-            );
+            repo.with_state(|state| {
+                let (establish, pending, _) = &state.obligations[&establish_id];
+                assert!(!*pending);
+                assert!(matches!(
+                    establish,
+                    ObligationRecord::Send {
+                        state: ObligationStateRecord::Completed | ObligationStateRecord::Cancelled,
+                        ..
+                    }
+                ));
+            });
         }
     }
 }
@@ -3095,6 +4871,7 @@ async fn b017_reconciliation_establish_state_never_replays_provider_io() {
     first_gate.set_plan(Ok(SendPlan {
         session_id: "s-reconcile".to_string(),
         initial_session: None,
+        session_projection_guard: RevisionGuard::Absent,
         disposition: SendDisposition::StartedTurn {
             turn_id: "1".to_string(),
         },
@@ -3105,7 +4882,6 @@ async fn b017_reconciliation_establish_state_never_replays_provider_io() {
             ..Default::default()
         },
         reserved_turn_id: None,
-        provider_established: false,
     }));
     let first = send_usecase(&repo, &first_gate);
     expect_accepted(
@@ -3114,6 +4890,7 @@ async fn b017_reconciliation_establish_state_never_replays_provider_io() {
             .await
             .unwrap(),
     );
+    seed_legacy_provider_dependency(&repo, "op-reconcile");
     first
         .transition_obligation(ObligationTransition {
             operation_id: "op-reconcile",
@@ -3205,6 +4982,7 @@ async fn b021_dependency_query_failure_surfaces_without_provider_handoff() {
     first_gate.set_plan(Ok(SendPlan {
         session_id: "s-dependency-query".to_string(),
         initial_session: None,
+        session_projection_guard: RevisionGuard::Absent,
         disposition: SendDisposition::StartedTurn {
             turn_id: "1".to_string(),
         },
@@ -3215,7 +4993,6 @@ async fn b021_dependency_query_failure_surfaces_without_provider_handoff() {
             ..Default::default()
         },
         reserved_turn_id: None,
-        provider_established: false,
     }));
     let first = send_usecase(&repo, &first_gate);
     expect_accepted(
@@ -3224,6 +5001,7 @@ async fn b021_dependency_query_failure_surfaces_without_provider_handoff() {
             .await
             .unwrap(),
     );
+    seed_legacy_provider_dependency(&repo, "op-dependency-query");
     repo.with_state(|state| {
         state.fail_obligation_query = Some("op-dependency-query.establish".to_string());
     });
@@ -4724,6 +6502,106 @@ async fn b030_stop_replay_join_and_payload_conflict_preserve_one_effect() {
 }
 
 #[tokio::test]
+async fn stop_rejects_when_target_revision_changes_after_snapshot_before_acceptance() {
+    let repo = FakeRepo::new();
+    let gate = FakeStopGate::active(4, "1");
+    gate.set_stale_on_acceptance();
+    let usecase = stop_usecase(&repo, &gate);
+
+    assert_eq!(
+        usecase
+            .request(stop_request(
+                "stop-stale-during-acceptance",
+                "s-stale-during-acceptance",
+                "1",
+                4,
+            ))
+            .await,
+        Err(StopOperationError::StaleTarget)
+    );
+    assert_eq!(gate.interrupt_count(), 0);
+    repo.with_state(|state| {
+        assert_eq!(state.commit_calls, 0);
+        assert!(state.events.is_empty());
+        assert!(state.records.is_empty());
+        assert!(state.obligations.is_empty());
+    });
+}
+
+#[tokio::test]
+async fn stop_classifies_post_preparation_target_drift_as_stale_without_effect() {
+    for conflict in [
+        CommitBatchError::PayloadConflict,
+        CommitBatchError::StreamHeadConflict {
+            current: StreamVersion::new(1).unwrap(),
+        },
+    ] {
+        let repo = FakeRepo::new();
+        let gate = FakeStopGate::active(4, "1");
+        gate.set_revision_after_acceptance(5);
+        let usecase = stop_usecase(&repo, &gate);
+        repo.with_state(|state| state.fail_commit_once = Some(conflict));
+
+        assert_eq!(
+            usecase
+                .request(stop_request(
+                    "stop-stale-after-preparation",
+                    "s-stale-after-preparation",
+                    "1",
+                    4,
+                ))
+                .await,
+            Err(StopOperationError::StaleTarget)
+        );
+        assert_eq!(gate.interrupt_count(), 0);
+        repo.with_state(|state| {
+            assert_eq!(state.commit_calls, 1);
+            assert!(state.events.is_empty());
+            assert!(state.records.is_empty());
+            assert!(state.obligations.is_empty());
+        });
+    }
+}
+
+#[tokio::test]
+async fn stop_preserves_snapshot_failure_when_classifying_acceptance_conflict() {
+    let repo = FakeRepo::new();
+    let gate = FakeStopGate::active(4, "1");
+    gate.set_failure_after_acceptance(SafeOperationFailure::new(
+        SessionOperationFailureKind::StorageUnavailable,
+        true,
+        "target snapshot read failed",
+        "stop-conflict-snapshot",
+    ));
+    let usecase = stop_usecase(&repo, &gate);
+    repo.with_state(|state| {
+        state.fail_commit_once = Some(CommitBatchError::StreamHeadConflict {
+            current: StreamVersion::new(1).unwrap(),
+        });
+    });
+
+    assert!(matches!(
+        usecase
+            .request(stop_request(
+                "stop-conflict-read-failure",
+                "s-conflict-read-failure",
+                "1",
+                4,
+            ))
+            .await,
+        Err(StopOperationError::StorageUnavailable { failure })
+            if failure.correlation_id == "stop-conflict-snapshot"
+    ));
+    assert_eq!(gate.interrupt_count(), 0);
+    repo.with_state(|state| {
+        assert_eq!(state.commit_calls, 1);
+        assert!(state.events.is_empty());
+        assert!(state.records.is_empty());
+        assert!(state.obligations.is_empty());
+    });
+}
+
+#[tokio::test]
 async fn b031_stop_capacity_rejects_the_thirty_third_distinct_target() {
     let repo = FakeRepo::new();
     let gate = FakeStopGate::active(0, "1");
@@ -5493,6 +7371,176 @@ async fn b035_first_pending_page_describes_every_recovery_category_without_sessi
         assert_eq!(state.pending_page_queries, vec![(None, None)]);
         assert_eq!(state.commit_calls, 0);
     });
+}
+
+#[tokio::test]
+async fn pending_send_handoff_is_internal_but_claimed_effects_remain_recoverable() {
+    let repo = FakeRepo::new();
+    let live = [
+        (
+            "live-turn-operation.exec",
+            "live-turn-operation",
+            SendObligationKindRecord::TurnExecution,
+            ObligationStateRecord::Pending,
+            OperationStatusValue::AwaitingProviderStart {
+                dependency_obligation_ids: Vec::new(),
+            },
+        ),
+        (
+            "reserved-turn-operation.exec",
+            "reserved-turn-operation",
+            SendObligationKindRecord::TurnExecution,
+            ObligationStateRecord::EffectReserved,
+            OperationStatusValue::Running {
+                turn_id: "1".to_string(),
+            },
+        ),
+    ];
+    for (obligation_id, operation_id, kind, state, status) in &live {
+        seed_pending_obligation(
+            &repo,
+            obligation_id,
+            send_obligation_in_state(obligation_id, operation_id, *kind, *state),
+        );
+        seed_send_operation_status(&repo, operation_id, "s-1", status.clone());
+    }
+
+    let unresolved = [
+        (
+            "send-reconciliation-required",
+            ObligationStateRecord::ReconciliationRequired,
+        ),
+        ("send-failed", ObligationStateRecord::Failed),
+        (
+            "send-outcome-unknown",
+            ObligationStateRecord::OutcomeUnknown,
+        ),
+    ];
+    for (obligation_id, state) in unresolved {
+        seed_pending_obligation(
+            &repo,
+            obligation_id,
+            send_obligation_in_state(
+                obligation_id,
+                &format!("{obligation_id}-operation"),
+                SendObligationKindRecord::TurnExecution,
+                state,
+            ),
+        );
+    }
+
+    let effect_reserved_operation = "effect-reserved-reconciliation-operation";
+    let effect_reserved_reconciliation = format!("{effect_reserved_operation}.establish");
+    let blocked_turn_execution = format!("{effect_reserved_operation}.exec");
+    seed_pending_obligation(
+        &repo,
+        &effect_reserved_reconciliation,
+        send_obligation_in_state(
+            &effect_reserved_reconciliation,
+            effect_reserved_operation,
+            SendObligationKindRecord::ProviderEstablish,
+            ObligationStateRecord::EffectReserved,
+        ),
+    );
+    let mut blocked_execution = send_obligation_in_state(
+        &blocked_turn_execution,
+        effect_reserved_operation,
+        SendObligationKindRecord::TurnExecution,
+        ObligationStateRecord::Pending,
+    );
+    let ObligationRecord::Send {
+        dependency_obligation_ids,
+        ..
+    } = &mut blocked_execution
+    else {
+        unreachable!("send helper must return a send obligation");
+    };
+    *dependency_obligation_ids = vec![effect_reserved_reconciliation.clone()];
+    seed_pending_obligation(&repo, &blocked_turn_execution, blocked_execution);
+    seed_send_operation_status(
+        &repo,
+        effect_reserved_operation,
+        "s-1",
+        OperationStatusValue::ReconciliationRequired {
+            failure: SafeOperationFailure::new(
+                SessionOperationFailureKind::OutcomeUnknown,
+                true,
+                "provider establishment requires readback",
+                "effect-reserved-reconciliation",
+            ),
+        },
+    );
+
+    let executor =
+        FakeRecoveryExecutor::returning(RecoveryResultClassification::Pending, "must not execute");
+    let usecase = recovery_usecase(&repo, &executor);
+    let page = usecase
+        .pending(super::recovery::PendingRecoveryQuery {
+            limit: 32,
+            partition: None,
+            owner: None,
+            shutdown_plan: None,
+            cursor: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        page.entries
+            .iter()
+            .all(|entry| entry.obligation_id != live[0].0),
+        "a canonical unclaimed turn handoff is internal send progress"
+    );
+    assert!(
+        page.entries
+            .iter()
+            .all(|entry| entry.obligation_id != blocked_turn_execution),
+        "the pending turn blocked behind an ambiguous establish is internal progress"
+    );
+    for obligation_id in [
+        "send-reconciliation-required",
+        "send-failed",
+        "send-outcome-unknown",
+        live[1].0,
+        effect_reserved_reconciliation.as_str(),
+    ] {
+        let entry = page
+            .entries
+            .iter()
+            .find(|entry| entry.obligation_id == obligation_id)
+            .expect("genuine unresolved send remains publicly recoverable");
+        assert!(entry.actions.contains(&RecoveryActionKind::ReadAgain));
+        assert!(entry
+            .actions
+            .contains(&RecoveryActionKind::KeepForManualResolution));
+    }
+
+    for obligation_id in [live[0].0, blocked_turn_execution.as_str()] {
+        let action_id = super::recovery::derive_recovery_action_id(
+            &FakeAuthority,
+            GENERATION,
+            obligation_id,
+            0,
+            RecoveryActionKind::KeepForManualResolution,
+        );
+        assert_eq!(
+            usecase
+                .request(RecoveryActionRequest {
+                    action_id: action_id.clone(),
+                    obligation_id: obligation_id.to_string(),
+                    origin_revision: 0,
+                    action: RecoveryActionKind::KeepForManualResolution,
+                })
+                .await
+                .unwrap(),
+            RecoveryActionOutcome::Rejected {
+                action_id,
+                rejection: RecoveryActionRejection::ActionUnavailable,
+            }
+        );
+    }
+    assert_eq!(executor.effect_count(), 0);
+    repo.with_state(|state| assert_eq!(state.commit_calls, 0));
 }
 
 #[tokio::test]

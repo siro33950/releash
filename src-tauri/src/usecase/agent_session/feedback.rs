@@ -1152,9 +1152,9 @@ fn map_commit_error(error: CommitBatchError, feedback_id: &str) -> FeedbackError
             FeedbackError::StorageUnavailable { failure }
         }
         CommitBatchError::Corrupt { correlation_id } => FeedbackError::Internal { correlation_id },
-        CommitBatchError::PayloadConflict | CommitBatchError::StreamHeadConflict { .. } => {
-            FeedbackError::InvalidRequest
-        }
+        CommitBatchError::PayloadConflict
+        | CommitBatchError::EffectAdmissionBlocked
+        | CommitBatchError::StreamHeadConflict { .. } => FeedbackError::InvalidRequest,
         CommitBatchError::SequenceExhausted => FeedbackError::CapacityExceeded,
     }
 }

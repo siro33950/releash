@@ -307,12 +307,41 @@ pub(crate) struct CanonicalQueuedSend {
 pub(crate) struct SendAcceptanceProjectionInput<'a> {
     pub session_id: &'a str,
     pub initial_session: Option<&'a ChatSession>,
+    /// The exact canonical session projection revision from which the turn
+    /// identity and queue disposition were allocated. Acceptance must use
+    /// this same guard instead of rebasing a stale allocation onto a newer
+    /// queue projection.
+    pub session_projection_guard: crate::domain::local_event::RevisionGuard,
     pub human_message_id: &'a str,
     pub prompt: &'a crate::domain::agent_session::events::PromptInput,
     pub disposition: &'a crate::domain::agent_session::events::SendDisposition,
     pub reserved_turn_id: Option<&'a str>,
     pub input_ref: &'a str,
     pub events: &'a [AgentSessionEvent],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SendAcceptanceAllocation {
+    pub next_turn_id: u64,
+    /// The canonical projection already owns an active turn. This must travel
+    /// with the same revision guard as `next_turn_id`; process-local runtime
+    /// hydration is deliberately not an admission authority after restart.
+    pub has_active_turn: bool,
+    pub has_pending_queue: bool,
+    pub session_projection_guard: crate::domain::local_event::RevisionGuard,
+}
+
+#[derive(Debug, Clone)]
+struct ExpectedAcceptedQueueFront {
+    queue_item_id: String,
+}
+
+const ACCEPTED_QUEUE_START_BLOCKED: &str = "accepted queued turn is currently blocked";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AcceptedQueuedTurnStartCommitOutcome {
+    Committed,
+    Blocked,
 }
 
 fn bounded_reducer_events(
@@ -424,6 +453,30 @@ struct TerminalMessageProjectionPatch {
     parts: Option<Vec<MessagePart>>,
 }
 
+fn drop_redundant_terminal_queue_pause(
+    previous: &[AgentSessionEvent],
+    mut candidate: Vec<AgentSessionEvent>,
+) -> Vec<AgentSessionEvent> {
+    if TurnEventLog::from_events(previous.to_vec())
+        .project()
+        .queue_paused_at
+        .is_some()
+    {
+        candidate.retain(|event| !matches!(event, AgentSessionEvent::QueuePaused { .. }));
+    }
+    candidate
+}
+
+fn terminal_requires_queue_pause(events: &[AgentSessionEvent]) -> bool {
+    events.iter().any(|event| {
+        matches!(event, AgentSessionEvent::TurnInterrupted { .. })
+            || matches!(
+                event,
+                AgentSessionEvent::TurnCompleted { exit_code, .. } if *exit_code != 0
+            )
+    })
+}
+
 fn complete_terminal_projection_events(
     previous: &[AgentSessionEvent],
     supplied: &[AgentSessionEvent],
@@ -477,7 +530,7 @@ fn complete_terminal_projection_events(
         ..
     } = &supplied[terminal_index]
     else {
-        return supplied.to_vec();
+        return drop_redundant_terminal_queue_pause(previous, supplied.to_vec());
     };
 
     let mut full = previous.to_vec();
@@ -515,7 +568,7 @@ fn complete_terminal_projection_events(
     finalize_turn(&mut full, turn_id, *reason, error.clone(), *exit_code);
     let mut completed = full.into_iter().skip(delta_start).collect::<Vec<_>>();
     completed.extend_from_slice(&supplied[terminal_index.saturating_add(1)..]);
-    completed
+    drop_redundant_terminal_queue_pause(previous, completed)
 }
 
 fn recovery_publication_snapshot(
@@ -569,6 +622,51 @@ fn recovery_publication_owner_matches(snapshot: &RecoveryPublicationSnapshot) ->
     }
 }
 
+pub(crate) enum BackendSessionRecoveryStartOutcome {
+    Started(Box<SessionMeta>),
+    SuppressedByQueuePause,
+}
+
+pub(crate) enum ProviderSessionEstablishmentOutcome {
+    Settled(Box<SessionMeta>),
+    Missing,
+    Fenced,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ContextRestoreCompletionRequest {
+    expected_provider_session_generation: u64,
+    expected_turn_id: Option<u64>,
+    reinjected: bool,
+    clear_context_carry: bool,
+    recovery_restore_required: bool,
+}
+
+impl ContextRestoreCompletionRequest {
+    pub(crate) fn after_started_turn(
+        expected_provider_session_generation: u64,
+        expected_turn_id: u64,
+        reinjected: bool,
+        clear_context_carry: bool,
+        recovery_restore_required: bool,
+    ) -> Self {
+        Self {
+            expected_provider_session_generation,
+            expected_turn_id: Some(expected_turn_id),
+            reinjected,
+            clear_context_carry,
+            recovery_restore_required,
+        }
+    }
+}
+
+const BACKEND_RECOVERY_START_SUPPRESSED_BY_QUEUE_PAUSE: &str =
+    "backend recovery start was suppressed by a durable queue pause";
+const CONTEXT_RESTORE_COMPLETION_FENCED: &str =
+    "context restore completion was fenced by newer durable session state";
+const CONTEXT_RESTORE_COMPLETION_UNCHANGED: &str =
+    "context restore completion is already reflected in durable session state";
+
 #[derive(Debug, Clone)]
 enum EventProjectionMetaPatch {
     Started {
@@ -594,11 +692,83 @@ enum EventProjectionMetaPatch {
         pending_recovery_message: PendingRecoveryMessage,
         at: f64,
     },
+    ContextRestoreCompleted {
+        expected_provider_session_generation: u64,
+        expected_turn_id: Option<u64>,
+        reinjected: bool,
+        clear_context_carry: bool,
+        recovery_restore_required: bool,
+        at: f64,
+    },
 }
 
 fn hash_identity_field(hasher: &mut Sha256, value: &[u8]) {
     hasher.update((value.len() as u64).to_be_bytes());
     hasher.update(value);
+}
+
+fn apply_context_restore_completion_to_meta(
+    meta: &mut SessionMeta,
+    expected_provider_session_generation: u64,
+    expected_turn_id: Option<u64>,
+    reinjected: bool,
+    clear_context_carry: bool,
+    recovery_restore_required: bool,
+    at: f64,
+) -> Result<bool, String> {
+    let lifecycle_fenced = matches!(
+        meta.state,
+        SessionState::Error | SessionState::Closed | SessionState::Archived
+    );
+    if recovery_restore_required {
+        let pending_failure = matches!(
+            meta.pending_recovery_message,
+            Some(PendingRecoveryMessage::Error { .. })
+        );
+        if lifecycle_fenced
+            || pending_failure
+            || meta.recovery_publication_snapshot.is_some()
+            || meta.provider_session_generation != expected_provider_session_generation
+            || meta.context_reinjection_generation != Some(expected_provider_session_generation)
+        {
+            return Err(CONTEXT_RESTORE_COMPLETION_FENCED.to_string());
+        }
+        meta.context_reinjection_generation = None;
+        if reinjected {
+            meta.context_carry = Some(ContextCarryState::Reinjected);
+        }
+    } else {
+        let next_generation = expected_provider_session_generation.checked_add(1);
+        let generation_matches = meta.provider_session_generation
+            == expected_provider_session_generation
+            || next_generation == Some(meta.provider_session_generation);
+        let backend_recovery_observation = meta
+            .provider_session_observation_id
+            .as_deref()
+            .is_some_and(|identity| identity.starts_with("backend-recovery/v1:"));
+        if lifecycle_fenced
+            || !generation_matches
+            || expected_turn_id.is_none()
+            || meta.last_turn_id != expected_turn_id
+            || backend_recovery_observation
+            || meta.recovery_publication_snapshot.is_some()
+            || meta.pending_recovery_message.is_some()
+            || meta.context_reinjection_generation.is_some()
+            || meta.context_carry == Some(ContextCarryState::Failed)
+        {
+            return Err(CONTEXT_RESTORE_COMPLETION_FENCED.to_string());
+        }
+        if !reinjected && !clear_context_carry {
+            return Err(CONTEXT_RESTORE_COMPLETION_UNCHANGED.to_string());
+        }
+        let context_carry = reinjected.then_some(ContextCarryState::Reinjected);
+        if meta.context_carry == context_carry {
+            return Err(CONTEXT_RESTORE_COMPLETION_UNCHANGED.to_string());
+        }
+        meta.context_carry = context_carry;
+    }
+    meta.updated_at = at;
+    Ok(true)
 }
 
 fn hash_pending_recovery_message(hasher: &mut Sha256, pending: &PendingRecoveryMessage) {
@@ -704,6 +874,30 @@ fn hash_projection_meta_patch(
             hash_pending_recovery_message(hasher, pending_recovery_message);
             hasher.update(at.to_bits().to_be_bytes());
         }
+        EventProjectionMetaPatch::ContextRestoreCompleted {
+            expected_provider_session_generation,
+            expected_turn_id,
+            reinjected,
+            clear_context_carry,
+            recovery_restore_required,
+            at,
+        } => {
+            hash_identity_field(hasher, b"context_restore_completed");
+            hasher.update(expected_provider_session_generation.to_be_bytes());
+            match expected_turn_id {
+                Some(turn_id) => {
+                    hasher.update([1]);
+                    hasher.update(turn_id.to_be_bytes());
+                }
+                None => hasher.update([0]),
+            }
+            hasher.update([
+                u8::from(*reinjected),
+                u8::from(*clear_context_carry),
+                u8::from(*recovery_restore_required),
+            ]);
+            hasher.update(at.to_bits().to_be_bytes());
+        }
     }
     Ok(())
 }
@@ -729,6 +923,9 @@ fn patch_event_projection_meta(
             publication_snapshot,
             at,
         } => {
+            if decoded.queue_paused_at.is_some() {
+                return Err(BACKEND_RECOVERY_START_SUPPRESSED_BY_QUEUE_PAUSE.to_string());
+            }
             if decoded.meta.provider_session_generation != *expected_generation {
                 return Err(format!(
                     "Backend session generation changed while starting recovery: expected {expected_generation}, actual {}",
@@ -736,6 +933,7 @@ fn patch_event_projection_meta(
                 ));
             }
             decoded.meta.agent_session_id = None;
+            decoded.meta.provider_session_observation_id = None;
             decoded.meta.context_reinjection_generation = None;
             decoded.meta.context_carry = Some(ContextCarryState::Failed);
             if matches!(
@@ -768,6 +966,9 @@ fn patch_event_projection_meta(
             }
             decoded.meta.agent_session_id = Some(backend_session_id.clone());
             decoded.meta.provider_session_generation = *provider_session_generation;
+            let (recovery_id, _) = pending_recovery_message_identity(pending_recovery_message);
+            decoded.meta.provider_session_observation_id =
+                Some(backend_recovery_provider_observation_id(recovery_id));
             decoded.meta.context_reinjection_generation = Some(*provider_session_generation);
             decoded.meta.pending_recovery_message = Some(pending_recovery_message.clone());
             decoded.meta.recovery_publication_snapshot = None;
@@ -793,6 +994,9 @@ fn patch_event_projection_meta(
                         .to_string(),
                 );
             }
+            let (recovery_id, _) = pending_recovery_message_identity(pending_recovery_message);
+            decoded.meta.provider_session_observation_id =
+                Some(backend_recovery_provider_observation_id(recovery_id));
             decoded.meta.pending_recovery_message = Some(pending_recovery_message.clone());
             decoded.meta.recovery_publication_snapshot = None;
             decoded.meta.updated_at = *at;
@@ -802,6 +1006,7 @@ fn patch_event_projection_meta(
             at,
         } => {
             decoded.meta.state = SessionState::Error;
+            decoded.meta.provider_session_observation_id = None;
             decoded.meta.error_reason = match pending_recovery_message {
                 PendingRecoveryMessage::Error { error, .. } => Some(error.clone()),
                 PendingRecoveryMessage::Notice { .. } => decoded.meta.error_reason,
@@ -810,6 +1015,23 @@ fn patch_event_projection_meta(
             decoded.meta.recovery_publication_snapshot = None;
             decoded.meta.updated_at = *at;
         }
+        EventProjectionMetaPatch::ContextRestoreCompleted {
+            expected_provider_session_generation,
+            expected_turn_id,
+            reinjected,
+            clear_context_carry,
+            recovery_restore_required,
+            at,
+        } => apply_context_restore_completion_to_meta(
+            &mut decoded.meta,
+            *expected_provider_session_generation,
+            *expected_turn_id,
+            *reinjected,
+            *clear_context_carry,
+            *recovery_restore_required,
+            *at,
+        )
+        .map(|_| ())?,
     }
     projection.projection = codec.encode(&decoded)?;
     Ok(())
@@ -821,6 +1043,7 @@ async fn prepare_canonical_event_projection_mutations(
     events: &[AgentSessionEvent],
     fallback_meta: Option<SessionMeta>,
     terminal_message_patch: Option<&TerminalMessageProjectionPatch>,
+    expected_terminal_queue_paused: Option<bool>,
 ) -> Result<Vec<crate::domain::local_event::LocalStateMutation>, String> {
     let codec = authority.projection_codec.as_ref();
     let stored = match authority
@@ -838,8 +1061,15 @@ async fn prepare_canonical_event_projection_mutations(
         }
         _ => return Err("agent SQLite projection query returned the wrong shape".to_string()),
     };
-    let (mut meta, title, reducer_events, mut pending_send_queue, expected, revision) = match stored
-    {
+    let (
+        mut meta,
+        title,
+        reducer_events,
+        mut pending_send_queue,
+        queue_paused_at,
+        expected,
+        revision,
+    ) = match stored {
         Some(stored) => {
             let decoded = codec.decode(&stored.projection)?;
             let next = stored
@@ -851,6 +1081,7 @@ async fn prepare_canonical_event_projection_mutations(
                 decoded.title,
                 decoded.reducer_events,
                 decoded.pending_send_queue,
+                decoded.queue_paused_at,
                 crate::domain::local_event::RevisionGuard::Expected(stored.revision),
                 next,
             )
@@ -861,10 +1092,18 @@ async fn prepare_canonical_event_projection_mutations(
             None,
             Vec::new(),
             Vec::new(),
+            None,
             crate::domain::local_event::RevisionGuard::Absent,
             crate::domain::local_event::Revision::new(0).expect("zero revision"),
         ),
     };
+    if expected_terminal_queue_paused.is_some_and(|expected| expected != queue_paused_at.is_some())
+    {
+        return Err(
+            "terminal queue-pause authority changed before projection preparation; retry"
+                .to_string(),
+        );
+    }
     let reducer_events = bounded_reducer_events(reducer_events, events);
     if let Some(terminal_turn_id) = events.iter().rev().find_map(|event| match event {
         AgentSessionEvent::TurnCompleted { turn_id, .. }
@@ -1046,36 +1285,39 @@ fn runtime_terminal_record_mutation(
     turn_result: &crate::domain::agent_session::entities::TurnResult,
     encoded_events: &[u8],
 ) -> Result<crate::domain::local_event::LocalStateMutation, String> {
-    let (turn_id, terminal_kind) = events
+    let turn_id = events
         .iter()
         .rev()
         .find_map(|event| match event {
-            AgentSessionEvent::TurnCompleted { turn_id, .. } => Some((
-                *turn_id,
-                crate::domain::local_event::AgentTerminalKind::Completed,
-            )),
-            AgentSessionEvent::TurnInterrupted {
-                turn_id, reason, ..
-            } => Some((
-                *turn_id,
-                match reason {
-                    crate::domain::agent_session::events::InterruptReason::Abort => {
-                        crate::domain::local_event::AgentTerminalKind::Abort
-                    }
-                    crate::domain::agent_session::events::InterruptReason::Timeout => {
-                        crate::domain::local_event::AgentTerminalKind::Timeout
-                    }
-                    crate::domain::agent_session::events::InterruptReason::Crash => {
-                        crate::domain::local_event::AgentTerminalKind::Crash
-                    }
-                    crate::domain::agent_session::events::InterruptReason::SessionClosed => {
-                        crate::domain::local_event::AgentTerminalKind::SessionClosed
-                    }
-                },
-            )),
+            AgentSessionEvent::TurnCompleted { turn_id, .. }
+            | AgentSessionEvent::TurnInterrupted { turn_id, .. } => Some(*turn_id),
             _ => None,
         })
         .ok_or_else(|| "terminal event batch is missing its terminal fact".to_string())?;
+    let terminal_kind = match turn_result {
+        crate::domain::agent_session::entities::TurnResult::Completed { .. } => {
+            crate::domain::local_event::AgentTerminalKind::Completed
+        }
+        crate::domain::agent_session::entities::TurnResult::Failed { .. } => {
+            crate::domain::local_event::AgentTerminalKind::Crash
+        }
+        crate::domain::agent_session::entities::TurnResult::Interrupted { reason, .. } => {
+            match reason {
+                crate::domain::agent_session::entities::InterruptReason::Abort => {
+                    crate::domain::local_event::AgentTerminalKind::Abort
+                }
+                crate::domain::agent_session::entities::InterruptReason::Timeout => {
+                    crate::domain::local_event::AgentTerminalKind::Timeout
+                }
+                crate::domain::agent_session::entities::InterruptReason::Crash => {
+                    crate::domain::local_event::AgentTerminalKind::Crash
+                }
+                crate::domain::agent_session::entities::InterruptReason::SessionClosed => {
+                    crate::domain::local_event::AgentTerminalKind::SessionClosed
+                }
+            }
+        }
+    };
     let mut participant = Sha256::new();
     participant.update(session_id.as_bytes());
     participant.update(turn_id.to_be_bytes());
@@ -1110,6 +1352,10 @@ fn runtime_terminal_record_mutation(
 
 fn backend_recovery_obligation_id(session_id: &str, recovery_id: &str) -> String {
     format!("backend-recovery:{session_id}:{recovery_id}")
+}
+
+fn backend_recovery_provider_observation_id(recovery_id: &str) -> String {
+    format!("backend-recovery/v1:{recovery_id}")
 }
 
 fn pending_recovery_message_identity(pending: &PendingRecoveryMessage) -> (&str, &str) {
@@ -1539,6 +1785,10 @@ pub(crate) type SessionAppendedEventHook = Arc<dyn Fn(&str, &AgentSessionEvent) 
 pub(crate) type SessionEventProjectionHook =
     Arc<dyn Fn(&str, Option<u64>) -> Result<(), String> + Send + Sync>;
 #[cfg(test)]
+pub(crate) type SessionAtomicEventCommitHook = Arc<
+    dyn Fn(crate::domain::local_event::CommitOperationKind) -> Result<(), String> + Send + Sync,
+>;
+#[cfg(test)]
 pub(crate) type SessionBackendEstablishedHook =
     Arc<dyn Fn(&str, &str) -> Result<(), String> + Send + Sync>;
 #[cfg(test)]
@@ -1571,6 +1821,8 @@ pub struct SessionStore {
     appended_event_hook: RwLock<Option<SessionAppendedEventHook>>,
     #[cfg(test)]
     event_projection_hook: RwLock<Option<SessionEventProjectionHook>>,
+    #[cfg(test)]
+    atomic_event_commit_hook: RwLock<Option<SessionAtomicEventCommitHook>>,
     #[cfg(test)]
     backend_established_hook: RwLock<Option<SessionBackendEstablishedHook>>,
     #[cfg(test)]
@@ -1736,6 +1988,8 @@ impl SessionStore {
             #[cfg(test)]
             event_projection_hook: RwLock::new(None),
             #[cfg(test)]
+            atomic_event_commit_hook: RwLock::new(None),
+            #[cfg(test)]
             backend_established_hook: RwLock::new(None),
             #[cfg(test)]
             projected_read_model_hook: RwLock::new(None),
@@ -1776,6 +2030,8 @@ impl SessionStore {
             appended_event_hook: RwLock::new(None),
             #[cfg(test)]
             event_projection_hook: RwLock::new(None),
+            #[cfg(test)]
+            atomic_event_commit_hook: RwLock::new(None),
             #[cfg(test)]
             backend_established_hook: RwLock::new(None),
             #[cfg(test)]
@@ -1849,9 +2105,7 @@ impl SessionStore {
         };
         let owner = owner.to_string();
         const PAGE_LIMIT: usize = 200;
-        const OWNER_SCAN_LIMIT: usize = 4096;
         let mut cursor = None;
-        let mut observed = 0usize;
         loop {
             let result = authority
                 .repository
@@ -1880,7 +2134,6 @@ impl SessionStore {
                     format!("recovery-inventory-{owner}"),
                 ));
             };
-            observed = observed.saturating_add(page.entries.len());
             for entry in page.entries {
                 if entry.owner != owner {
                     return Err(crate::domain::local_event::SafeOperationFailure::new(
@@ -1903,14 +2156,6 @@ impl SessionStore {
                     .with_detail(&format!("Pending recovery identity: {identity}")));
                 }
             }
-            if observed > OWNER_SCAN_LIMIT {
-                return Err(crate::domain::local_event::SafeOperationFailure::new(
-                    SessionOperationFailureKind::CapacityExceeded,
-                    true,
-                    "The pending recovery owner inventory exceeds its safe bound.",
-                    format!("recovery-inventory-{owner}"),
-                ));
-            }
             cursor = page.next_cursor;
             if cursor.is_none() {
                 return Ok(());
@@ -1922,6 +2167,20 @@ impl SessionStore {
         &self,
         session_id: &str,
     ) -> Result<Option<CanonicalAgentSessionProjection>, String> {
+        self.canonical_session_projection_with_revision(session_id)
+            .map(|projection| projection.map(|(projection, _)| projection))
+    }
+
+    fn canonical_session_projection_with_revision(
+        &self,
+        session_id: &str,
+    ) -> Result<
+        Option<(
+            CanonicalAgentSessionProjection,
+            crate::domain::local_event::Revision,
+        )>,
+        String,
+    > {
         let Some(authority) = self.event_authority.read().clone() else {
             return Ok(None);
         };
@@ -1953,13 +2212,51 @@ impl SessionStore {
                                 return Err("agent SQLite projection query returned the wrong shape".to_string());
                             };
                             projection
-                                .map(|projection| codec.decode(&projection.projection))
+                                .map(|projection| {
+                                    codec
+                                        .decode(&projection.projection)
+                                        .map(|decoded| (decoded, projection.revision))
+                                })
                                 .transpose()
                         })
                 })
                 .join()
                 .map_err(|_| "agent SQLite projection read worker panicked".to_string())?
         })
+    }
+
+    /// Read the bounded durable queue identity projection in its canonical
+    /// execution order. Retry payloads remain obligation-owned and are not
+    /// retained here.
+    pub(crate) fn canonical_pending_send_queue(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<CanonicalQueuedSend>, String> {
+        self.canonical_session_projection(session_id)?
+            .map(|projection| projection.pending_send_queue)
+            .ok_or_else(|| format!("Session projection not found: {session_id}"))
+    }
+
+    /// Check that a queued effect still names one exact durable queue entry.
+    /// `input_ref` is optional because older accepted-effect DTOs do not carry
+    /// it; callers that have the receipt should supply it for the full match.
+    pub(crate) fn canonical_queue_contains_exact(
+        &self,
+        session_id: &str,
+        queue_item_id: &str,
+        human_message_id: &str,
+        reserved_turn_id: &str,
+        input_ref: Option<&str>,
+    ) -> Result<bool, String> {
+        Ok(self
+            .canonical_pending_send_queue(session_id)?
+            .iter()
+            .any(|entry| {
+                entry.queue_item_id == queue_item_id
+                    && entry.human_message_id == human_message_id
+                    && entry.reserved_turn_id == reserved_turn_id
+                    && input_ref.is_none_or(|input_ref| entry.input_ref == input_ref)
+            }))
     }
 
     fn canonical_obligation(
@@ -2808,11 +3105,32 @@ impl SessionStore {
         session_id: &str,
         events: &[AgentSessionEvent],
     ) -> Result<(), String> {
-        self.commit_agent_events_with_kind(
+        self.commit_agent_events_with_kind_and_queue_front(
             app_data_dir,
             session_id,
             events,
             crate::domain::local_event::CommitOperationKind::Projection,
+            None,
+            Vec::new(),
+            None,
+        )
+    }
+
+    fn commit_agent_events_with_queue_pause_guard(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        events: &[AgentSessionEvent],
+        expected_queue_paused: bool,
+    ) -> Result<(), String> {
+        self.commit_agent_events_with_kind_and_queue_front(
+            app_data_dir,
+            session_id,
+            events,
+            crate::domain::local_event::CommitOperationKind::Projection,
+            None,
+            Vec::new(),
+            Some(expected_queue_paused),
         )
     }
 
@@ -2822,6 +3140,28 @@ impl SessionStore {
         session_id: &str,
         events: &[AgentSessionEvent],
         operation_kind: crate::domain::local_event::CommitOperationKind,
+    ) -> Result<(), String> {
+        self.commit_agent_events_with_kind_and_queue_front(
+            _app_data_dir,
+            session_id,
+            events,
+            operation_kind,
+            None,
+            Vec::new(),
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // One atomic projection boundary receives each guard and participant explicitly.
+    fn commit_agent_events_with_kind_and_queue_front(
+        &self,
+        _app_data_dir: &Path,
+        session_id: &str,
+        events: &[AgentSessionEvent],
+        operation_kind: crate::domain::local_event::CommitOperationKind,
+        expected_queue_front: Option<ExpectedAcceptedQueueFront>,
+        additional_mutations: Vec<crate::domain::local_event::LocalStateMutation>,
+        expected_queue_paused: Option<bool>,
     ) -> Result<(), String> {
         if events.is_empty() {
             return Ok(());
@@ -2837,8 +3177,12 @@ impl SessionStore {
                 .ok_or_else(|| format!("Session projection not found: {session_id}"))?
                 .meta,
         );
+        #[cfg(test)]
+        let atomic_event_commit_hook = self.atomic_event_commit_hook.read().clone();
         let session_id = session_id.to_string();
         let events = events.to_vec();
+        let expected_queue_front = expected_queue_front.clone();
+        let additional_mutations = additional_mutations.clone();
         std::thread::scope(|scope| {
             scope
                 .spawn(move || {
@@ -2859,6 +3203,12 @@ impl SessionStore {
                             let codec = authority.projection_codec.as_ref();
                             let encoded_events = codec.encode_events_for_identity(&events)?;
                             hash_identity_field(&mut exact, &encoded_events);
+                            for mutation in &additional_mutations {
+                                let encoded = authority
+                                    .repository
+                                    .canonical_mutation_identity_v1(mutation)?;
+                                hash_identity_field(&mut exact, &encoded);
+                            }
                             let payload_hash: [u8; 32] = exact.finalize().into();
                             for _ in 0..4 {
                                 // Stream head metadata is returned with every page. A one-row
@@ -2898,6 +3248,7 @@ impl SessionStore {
                                         mut meta,
                                         title,
                                         mut reducer_events,
+                                        queue_paused_at,
                                         mut pending_send_queue,
                                         expected,
                                         revision,
@@ -2912,6 +3263,7 @@ impl SessionStore {
                                                 decoded.meta,
                                                 decoded.title,
                                                 decoded.reducer_events,
+                                                decoded.queue_paused_at,
                                                 decoded.pending_send_queue,
                                                 crate::domain::local_event::RevisionGuard::Expected(stored.revision),
                                                 next,
@@ -2923,14 +3275,54 @@ impl SessionStore {
                                             })?,
                                             None,
                                             Vec::new(),
+                                            None,
                                             Vec::new(),
                                             crate::domain::local_event::RevisionGuard::Absent,
                                             crate::domain::local_event::Revision::new(0)
                                                 .expect("zero revision"),
                                         ),
                                     };
-                                    reducer_events =
-                                        bounded_reducer_events(reducer_events, &events);
+                                    if expected_queue_paused.is_some_and(|expected| {
+                                        expected != queue_paused_at.is_some()
+                                    }) {
+                                        return Err(
+                                            "queue-pause authority changed before guarded event commit; retry"
+                                                .to_string(),
+                                        );
+                                    }
+                                    if expected_queue_front.is_some() {
+                                        if queue_paused_at.is_some() {
+                                            return Err(
+                                                format!(
+                                                    "{ACCEPTED_QUEUE_START_BLOCKED}: canonical queue is paused"
+                                                ),
+                                            );
+                                        }
+                                        if !matches!(
+                                            &meta.state,
+                                            SessionState::Idle
+                                                | SessionState::Done
+                                                | SessionState::Error
+                                        ) {
+                                            return Err(format!(
+                                                "{ACCEPTED_QUEUE_START_BLOCKED}: canonical session state is {:?}",
+                                                meta.state
+                                            ));
+                                        }
+                                        if TurnEventLog::from_events(reducer_events.clone())
+                                            .project()
+                                            .backend_recovery
+                                            .is_some()
+                                        {
+                                            return Err(
+                                                format!(
+                                                    "{ACCEPTED_QUEUE_START_BLOCKED}: canonical backend recovery is active"
+                                                ),
+                                            );
+                                        }
+                                    }
+                                    let mut previous_turn_id = meta.last_turn_id.unwrap_or(0);
+                                    let mut consumed_expected_queue_front = false;
                                     for event in &events {
                                         if let AgentSessionEvent::TurnStarted {
                                             turn_id,
@@ -2938,16 +3330,72 @@ impl SessionStore {
                                             ..
                                         } = event
                                         {
-                                            pending_send_queue.retain(|entry| {
-                                                entry.human_message_id != *message_id
-                                                    || entry
+                                            if *turn_id <= previous_turn_id {
+                                                return Err(format!(
+                                                    "turn identity {turn_id} does not advance durable turn {previous_turn_id}"
+                                                ));
+                                            }
+                                            match expected_queue_front.as_ref() {
+                                                Some(expected_front) => {
+                                                    if pending_send_queue
+                                                        .iter()
+                                                        .position(|entry| {
+                                                            entry.queue_item_id
+                                                                == expected_front.queue_item_id
+                                                        })
+                                                        .is_some_and(|position| position != 0)
+                                                    {
+                                                        return Err(format!(
+                                                            "{ACCEPTED_QUEUE_START_BLOCKED}: another canonical queue item is first"
+                                                        ));
+                                                    }
+                                                    let front = pending_send_queue.first().ok_or_else(
+                                                        || {
+                                                            "accepted queued turn has no canonical queue front"
+                                                                .to_string()
+                                                        },
+                                                    )?;
+                                                    let front_turn_id = front
                                                         .reserved_turn_id
                                                         .parse::<u64>()
-                                                        .ok()
-                                                        != Some(*turn_id)
-                                            });
+                                                        .map_err(|_| {
+                                                            "canonical queue front has an invalid turn identity"
+                                                                .to_string()
+                                                        })?;
+                                                    if front.queue_item_id
+                                                        != expected_front.queue_item_id
+                                                        || front.human_message_id != *message_id
+                                                        || front_turn_id != *turn_id
+                                                    {
+                                                        return Err(
+                                                            "accepted queued turn does not match the canonical queue front"
+                                                                .to_string(),
+                                                        );
+                                                    }
+                                                    pending_send_queue.remove(0);
+                                                    consumed_expected_queue_front = true;
+                                                }
+                                                None if !pending_send_queue.is_empty() => {
+                                                    return Err(
+                                                        "turn start cannot bypass the canonical queue front"
+                                                            .to_string(),
+                                                    );
+                                                }
+                                                None => {}
+                                            }
+                                            previous_turn_id = *turn_id;
                                         }
                                     }
+                                    if expected_queue_front.is_some()
+                                        && !consumed_expected_queue_front
+                                    {
+                                        return Err(
+                                            "accepted queued turn commit omitted TurnStarted"
+                                                .to_string(),
+                                        );
+                                    }
+                                    reducer_events =
+                                        bounded_reducer_events(reducer_events, &events);
                                     let last_turn_interruption =
                                         latest_turn_interruption(&reducer_events);
                                     let last_turn_id = reducer_events.iter().rev().find_map(
@@ -3099,11 +3547,16 @@ impl SessionStore {
                                         ),
                                     );
                                 }
+                                state_mutations.extend(additional_mutations.clone());
                                 let identity = format!(
                                     "session-event-{}",
                                     hex::encode(payload_hash)
                                 );
                                 let occurred_at_ms = (now_timestamp() * 1000.0).round() as i64;
+                                #[cfg(test)]
+                                if let Some(hook) = &atomic_event_commit_hook {
+                                    hook(operation_kind)?;
+                                }
                                 let batch = crate::domain::local_event::LocalAtomicBatch {
                                     commit_id: crate::domain::local_event::CommitIdentity::parse(
                                         &identity,
@@ -3138,7 +3591,43 @@ impl SessionStore {
                                 };
                                 match authority.repository.commit_batch(batch).await {
                                     Ok(_) => return Ok(()),
+                                    Err(crate::domain::local_event::CommitBatchError::EffectAdmissionBlocked)
+                                        if expected_queue_front.is_some() =>
+                                    {
+                                        return Err(format!(
+                                            "{ACCEPTED_QUEUE_START_BLOCKED}: unresolved owner recovery is active"
+                                        ));
+                                    }
+                                    Err(crate::domain::local_event::CommitBatchError::StreamHeadConflict { .. })
+                                        if expected_queue_paused.is_some() =>
+                                    {
+                                        return Err(
+                                            "queue-pause authority changed during guarded event commit; retry"
+                                                .to_string(),
+                                        );
+                                    }
                                     Err(crate::domain::local_event::CommitBatchError::StreamHeadConflict { .. }) => continue,
+                                    Err(crate::domain::local_event::CommitBatchError::PayloadConflict)
+                                        if expected_queue_paused.is_some() =>
+                                    {
+                                        return Err(
+                                            "queue-pause authority changed during guarded event commit; retry"
+                                                .to_string(),
+                                        );
+                                    }
+                                    Err(crate::domain::local_event::CommitBatchError::PayloadConflict)
+                                        if expected_queue_front.is_some() => continue,
+                                    Err(crate::domain::local_event::CommitBatchError::OutcomeUnknown { identity }) => {
+                                        match authority.repository.resolve_commit(identity).await {
+                                            Ok(crate::domain::local_event::CommitResolution::Committed(_)) => return Ok(()),
+                                            Ok(crate::domain::local_event::CommitResolution::NotCommitted) => continue,
+                                            Err(error) => {
+                                                return Err(format!(
+                                                    "accepted queued turn commit outcome could not be resolved: {error}"
+                                                ));
+                                            }
+                                        }
+                                    }
                                     Err(error) => {
                                         return Err(format!(
                                             "agent SQLite event commit failed: {error}"
@@ -3185,14 +3674,27 @@ impl SessionStore {
         let fallback_meta = current_projection
             .as_ref()
             .map(|projection| projection.meta.clone());
-        let session_id = session_id.to_string();
-        let events = complete_terminal_projection_events(
-            current_projection
+        let terminal_pause_retry_required = terminal_requires_queue_pause(events);
+        let supplies_queue_pause = events
+            .iter()
+            .any(|event| matches!(event, AgentSessionEvent::QueuePaused { .. }));
+        let expected_terminal_queue_paused =
+            terminal_pause_retry_required.then_some(!supplies_queue_pause);
+        if let Some(expected_queue_paused) = expected_terminal_queue_paused {
+            let queue_is_paused = current_projection
                 .as_ref()
-                .map(|projection| projection.reducer_events.as_slice())
-                .unwrap_or_default(),
-            events,
-        );
+                .is_some_and(|projection| projection.queue_paused_at.is_some());
+            if expected_queue_paused != queue_is_paused {
+                return Err(
+                    "terminal queue-pause authority changed before atomic commit; retry"
+                        .to_string(),
+                );
+            }
+        }
+        #[cfg(test)]
+        let atomic_event_commit_hook = self.atomic_event_commit_hook.read().clone();
+        let session_id = session_id.to_string();
+        let events = events.to_vec();
         std::thread::scope(|scope| {
             scope
                 .spawn(move || {
@@ -3263,6 +3765,7 @@ impl SessionStore {
                                         &events,
                                         fallback_meta.clone(),
                                         terminal_message_patch.as_ref(),
+                                        expected_terminal_queue_paused,
                                     )
                                     .await?;
                                 if let Some(patch) = &projection_meta_patch {
@@ -3286,6 +3789,10 @@ impl SessionStore {
                                     } else {
                                         Vec::new()
                                     };
+                                #[cfg(test)]
+                                if let Some(hook) = &atomic_event_commit_hook {
+                                    hook(operation_kind)?;
+                                }
                                 let batch = crate::domain::local_event::LocalAtomicBatch {
                                     commit_id: commit_id.clone(),
                                     idempotency: crate::domain::local_event::IdempotencyBinding {
@@ -3316,9 +3823,27 @@ impl SessionStore {
                                 };
                                 match authority.repository.commit_batch(batch).await {
                                     Ok(_) => return Ok(()),
+                                    Err(crate::domain::local_event::CommitBatchError::StreamHeadConflict { .. })
+                                        if terminal_pause_retry_required =>
+                                    {
+                                        return Err(
+                                            "terminal queue-pause authority changed during atomic commit; retry"
+                                                .to_string(),
+                                        );
+                                    }
                                     Err(crate::domain::local_event::CommitBatchError::StreamHeadConflict { .. }) => continue,
                                     Err(crate::domain::local_event::CommitBatchError::PayloadConflict)
+                                        if terminal_pause_retry_required =>
+                                    {
+                                        return Err(
+                                            "terminal queue-pause authority changed during atomic commit; retry"
+                                                .to_string(),
+                                        );
+                                    }
+                                    Err(crate::domain::local_event::CommitBatchError::PayloadConflict)
                                         if terminal_participant.is_some() => continue,
+                                    Err(crate::domain::local_event::CommitBatchError::PayloadConflict)
+                                        if projection_meta_patch.is_some() => continue,
                                     Err(crate::domain::local_event::CommitBatchError::OutcomeUnknown { identity }) => {
                                         match authority.repository.resolve_commit(identity).await {
                                             Ok(crate::domain::local_event::CommitResolution::Committed(_)) => return Ok(()),
@@ -3607,11 +4132,46 @@ impl SessionStore {
                             &events,
                             fallback_meta,
                             None,
+                            None,
                         ))
                 })
                 .join()
                 .map_err(|_| "event projection worker panicked".to_string())?
         })
+    }
+
+    /// Prepare an event projection only when the mutation was derived from
+    /// the caller's exact public session revision. The returned projection
+    /// retains its own SQLite revision guard, so a change after preparation
+    /// still conflicts at commit.
+    pub(crate) fn prepare_event_projection_mutations_if_current_revision(
+        &self,
+        session_id: &str,
+        expected_state_revision: u64,
+        events: &[AgentSessionEvent],
+    ) -> Result<Option<Vec<crate::domain::local_event::LocalStateMutation>>, String> {
+        let mutations = self.prepare_event_projection_mutations(session_id, events)?;
+        let authority = self
+            .event_authority
+            .read()
+            .clone()
+            .ok_or_else(|| "agent-session SQLite authority is unavailable".to_string())?;
+        let projection = mutations
+            .iter()
+            .find_map(|mutation| match mutation {
+                crate::domain::local_event::LocalStateMutation::SessionProjection(projection) => {
+                    Some(projection)
+                }
+                _ => None,
+            })
+            .ok_or_else(|| "agent event batch omitted its session projection".to_string())?;
+        let projected = authority.projection_codec.decode(&projection.projection)?;
+        let expected_projected_revision =
+            next_sqlite_counter(expected_state_revision, "guarded session state revision")?;
+        if projected.meta.state_revision != expected_projected_revision {
+            return Ok(None);
+        }
+        Ok(Some(mutations))
     }
 
     /// Prepare the owner-side closure for a backend recovery whose provider
@@ -3819,6 +4379,7 @@ impl SessionStore {
                                 &events,
                                 fallback_meta,
                                 None,
+                                None,
                             )
                             .await?;
                             patch_event_projection_meta(
@@ -3940,6 +4501,7 @@ impl SessionStore {
         let SendAcceptanceProjectionInput {
             session_id,
             initial_session,
+            session_projection_guard,
             human_message_id,
             prompt,
             disposition,
@@ -3992,31 +4554,66 @@ impl SessionStore {
                                     if initial_meta.is_some() {
                                         return Err("new send target already exists".to_string());
                                     }
+                                    if session_projection_guard
+                                        != crate::domain::local_event::RevisionGuard::Expected(
+                                            stored.revision,
+                                        )
+                                    {
+                                        return Err(
+                                            "send allocation projection changed before acceptance"
+                                                .to_string(),
+                                        );
+                                    }
                                     let decoded = codec.decode(&stored.projection)?;
                                     (
                                         decoded.meta,
                                         decoded.title,
                                         decoded.reducer_events,
                                         decoded.pending_send_queue,
-                                        crate::domain::local_event::RevisionGuard::Expected(stored.revision),
+                                        session_projection_guard,
                                         stored.revision.next().ok_or_else(|| "send projection revision exhausted".to_string())?,
                                     )
                                 }
-                                None => (
-                                    initial_meta.ok_or_else(|| "send target projection is missing".to_string())?,
-                                    None,
-                                    Vec::new(),
-                                    Vec::new(),
-                                    crate::domain::local_event::RevisionGuard::Absent,
-                                    crate::domain::local_event::Revision::new(0).expect("zero revision"),
-                                ),
+                                None => {
+                                    if session_projection_guard
+                                        != crate::domain::local_event::RevisionGuard::Absent
+                                    {
+                                        return Err(
+                                            "send allocation projection changed before acceptance"
+                                                .to_string(),
+                                        );
+                                    }
+                                    (
+                                        initial_meta.ok_or_else(|| "send target projection is missing".to_string())?,
+                                        None,
+                                        Vec::new(),
+                                        Vec::new(),
+                                        session_projection_guard,
+                                        crate::domain::local_event::Revision::new(0).expect("zero revision"),
+                                    )
+                                }
                             };
                             let reducer_events = bounded_reducer_events(reducer_events, &events);
                             let projected = TurnEventLog::from_events(reducer_events.clone()).project();
-                            let started_turn = events.iter().any(|event| {
-                                matches!(event, AgentSessionEvent::TurnStarted { .. })
+                            let started_turn_id = events.iter().find_map(|event| match event {
+                                AgentSessionEvent::TurnStarted { turn_id, .. } => Some(*turn_id),
+                                _ => None,
                             });
-                            if started_turn {
+                            if let Some(turn_id) = started_turn_id {
+                                if !pending_send_queue.is_empty() {
+                                    return Err(
+                                        "started send cannot bypass the canonical queue front"
+                                            .to_string(),
+                                    );
+                                }
+                                if meta
+                                    .last_turn_id
+                                    .is_some_and(|last_turn_id| turn_id <= last_turn_id)
+                                {
+                                    return Err(
+                                        "started send turn identity does not advance".to_string()
+                                    );
+                                }
                                 meta.state = projected.status.session_state.clone();
                                 meta.error_reason = error_reason_for_state(
                                     &meta.state,
@@ -4029,6 +4626,7 @@ impl SessionStore {
                                     }
                                 });
                             }
+                            let started_turn = started_turn_id.is_some();
                             meta.state_revision = next_sqlite_counter(
                                 meta.state_revision,
                                 "session state revision",
@@ -4354,6 +4952,11 @@ impl SessionStore {
     }
 
     #[cfg(test)]
+    pub(crate) fn set_atomic_event_commit_hook_for_test(&self, hook: SessionAtomicEventCommitHook) {
+        *self.atomic_event_commit_hook.write() = Some(hook);
+    }
+
+    #[cfg(test)]
     pub(crate) fn set_backend_established_hook_for_test(
         &self,
         hook: SessionBackendEstablishedHook,
@@ -4645,6 +5248,7 @@ impl SessionStore {
         forked_meta.updated_at = now;
         forked_meta.agent_session_id = None;
         forked_meta.provider_session_generation = 0;
+        forked_meta.provider_session_observation_id = None;
         forked_meta.context_reinjection_generation = None;
         forked_meta.context_carry = None;
         forked_meta.recovery_publication_snapshot = None;
@@ -4935,11 +5539,41 @@ impl SessionStore {
         Ok(projected)
     }
 
+    #[cfg(test)]
     pub(crate) fn append_error_episode_and_materialize(
         &self,
         app_data_dir: &Path,
         session_id: &str,
         input: ErrorEpisodeInput,
+    ) -> Result<(SessionReadModel, ChatMessage), String> {
+        self.append_error_episode_with_queue_policy_and_materialize(
+            app_data_dir,
+            session_id,
+            input,
+            false,
+        )
+    }
+
+    pub(crate) fn append_error_episode_and_pause_queue(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        input: ErrorEpisodeInput,
+    ) -> Result<(SessionReadModel, ChatMessage), String> {
+        self.append_error_episode_with_queue_policy_and_materialize(
+            app_data_dir,
+            session_id,
+            input,
+            true,
+        )
+    }
+
+    fn append_error_episode_with_queue_policy_and_materialize(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        input: ErrorEpisodeInput,
+        pause_queue: bool,
     ) -> Result<(SessionReadModel, ChatMessage), String> {
         let message_id = input.message_id;
         let event = AgentSessionEvent::SessionErrored {
@@ -4947,14 +5581,23 @@ impl SessionStore {
             reason: input.reason,
             at: input.at,
         };
+        let queue_was_paused = pause_queue
+            && self
+                .load_queue_paused_at(app_data_dir, session_id)?
+                .is_some();
         #[cfg(test)]
         if let Some(hook) = self.append_event_hook.read().clone() {
             hook(session_id, &event)?;
         }
-        let (projected, message, _) = self.commit_projection_and_notify(
+        let mut events = vec![event];
+        if pause_queue && !queue_was_paused {
+            events.push(AgentSessionEvent::QueuePaused { at: input.at });
+        }
+        let (projected, message, _) = self.commit_projection_and_notify_with_queue_guard(
             app_data_dir,
             session_id,
-            std::slice::from_ref(&event),
+            &events,
+            pause_queue.then_some(queue_was_paused),
             |projected, projected_meta| {
                 let message = projected
                     .message_for_id(&message_id)
@@ -5034,11 +5677,12 @@ impl SessionStore {
                     .unwrap_or_else(|| projected.agent_parts_for_message(message_id));
                 return Ok((projected, persisted_parts));
             }
+            let events = complete_terminal_projection_events(&previous.reducer_events, events);
             if !events.is_empty() {
-                let encoded_events = codec.encode_events_for_identity(events)?;
+                let encoded_events = codec.encode_events_for_identity(&events)?;
                 let terminal_mutation = runtime_terminal_record_mutation(
                     session_id,
-                    events,
+                    &events,
                     message_id,
                     streaming_final_seq,
                     completed_at,
@@ -5053,10 +5697,8 @@ impl SessionStore {
                     _ => unreachable!("runtime terminal builder always returns a terminal row"),
                 };
                 if let Some(workflow_context) = previous.meta.workflow_node_context.as_ref() {
-                    let completed_events =
-                        complete_terminal_projection_events(&previous.reducer_events, events);
                     let mut candidate_events = previous.reducer_events.clone();
-                    candidate_events.extend(completed_events);
+                    candidate_events.extend(events.iter().cloned());
                     let workflow_input = TurnEventLog::from_events(candidate_events)
                         .project()
                         .workflow_turn_complete
@@ -5099,7 +5741,7 @@ impl SessionStore {
                     participant_provider.map(|provider| (provider, terminal_record));
                 if let Err(error) = self.commit_agent_events_with_additional_mutations(
                     session_id,
-                    events,
+                    &events,
                     additional_mutations,
                     Some(TerminalMessageProjectionPatch {
                         message_id: message_id.to_string(),
@@ -5192,6 +5834,32 @@ impl SessionStore {
         app_data_dir: &Path,
         session_id: &str,
         events: &[AgentSessionEvent],
+        build_commit: impl FnMut(
+            &SessionReadModel,
+            SessionMeta,
+        ) -> Result<
+            (
+                AgentSessionProjectionCommit<SessionMeta, ChatMessage, MessagePart>,
+                Output,
+            ),
+            String,
+        >,
+    ) -> Result<(SessionReadModel, Output, Vec<MessagePart>), String> {
+        self.commit_projection_and_notify_with_queue_guard(
+            app_data_dir,
+            session_id,
+            events,
+            None,
+            build_commit,
+        )
+    }
+
+    fn commit_projection_and_notify_with_queue_guard<Output>(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        events: &[AgentSessionEvent],
+        expected_queue_paused: Option<bool>,
         mut build_commit: impl FnMut(
             &SessionReadModel,
             SessionMeta,
@@ -5254,7 +5922,15 @@ impl SessionStore {
             worktree_path: previous_canonical.meta.worktree_path.clone(),
             state_revision: previous_canonical.meta.state_revision,
         });
-        self.commit_agent_events(app_data_dir, session_id, events)?;
+        match expected_queue_paused {
+            Some(expected_queue_paused) => self.commit_agent_events_with_queue_pause_guard(
+                app_data_dir,
+                session_id,
+                events,
+                expected_queue_paused,
+            )?,
+            None => self.commit_agent_events(app_data_dir, session_id, events)?,
+        }
         let canonical = self
             .canonical_session_projection(session_id)?
             .ok_or_else(|| format!("Session projection not found: {session_id}"))?;
@@ -5374,6 +6050,86 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Commit the dequeue boundary for a durably accepted queued send. The
+    /// transaction verifies and removes only the exact canonical queue front;
+    /// a recovery worker restoring a later item cannot advance it first.
+    #[cfg(test)]
+    pub(crate) fn append_accepted_queued_turn_started_and_project_state(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        queue_item_id: &str,
+        event: AgentSessionEvent,
+    ) -> Result<(), String> {
+        if !matches!(&event, AgentSessionEvent::TurnStarted { .. }) {
+            return Err("Accepted queue projection requires a TurnStarted event".to_string());
+        }
+        if self.canonical_authority_active() {
+            return self.commit_agent_events_with_kind_and_queue_front(
+                app_data_dir,
+                session_id,
+                std::slice::from_ref(&event),
+                crate::domain::local_event::CommitOperationKind::Projection,
+                Some(ExpectedAcceptedQueueFront {
+                    queue_item_id: queue_item_id.to_string(),
+                }),
+                Vec::new(),
+                None,
+            );
+        }
+        #[cfg(test)]
+        {
+            self.append_turn_started_and_project_state(app_data_dir, session_id, event)
+        }
+        #[cfg(not(test))]
+        {
+            Err("agent-session SQLite event authority is not configured".to_string())
+        }
+    }
+
+    /// Atomically claim a queued send and materialize its canonical
+    /// `TurnStarted` boundary. Lifecycle/recovery winners leave every supplied
+    /// operation participant untouched and retain the exact queue item.
+    pub(crate) fn commit_accepted_queued_turn_start_with_participants(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        queue_item_id: &str,
+        event: AgentSessionEvent,
+        additional_mutations: Vec<crate::domain::local_event::LocalStateMutation>,
+    ) -> Result<AcceptedQueuedTurnStartCommitOutcome, String> {
+        if !matches!(&event, AgentSessionEvent::TurnStarted { .. }) {
+            return Err("Accepted queue projection requires a TurnStarted event".to_string());
+        }
+        if !self.canonical_authority_active() {
+            return Err("agent-session SQLite event authority is not configured".to_string());
+        }
+        let result = self.commit_agent_events_with_kind_and_queue_front(
+            app_data_dir,
+            session_id,
+            std::slice::from_ref(&event),
+            crate::domain::local_event::CommitOperationKind::Send,
+            Some(ExpectedAcceptedQueueFront {
+                queue_item_id: queue_item_id.to_string(),
+            }),
+            additional_mutations,
+            None,
+        );
+        match result {
+            Ok(()) => {
+                #[cfg(test)]
+                if let Some(hook) = self.appended_event_hook.read().clone() {
+                    hook(session_id, &event);
+                }
+                Ok(AcceptedQueuedTurnStartCommitOutcome::Committed)
+            }
+            Err(error) if error.starts_with(ACCEPTED_QUEUE_START_BLOCKED) => {
+                Ok(AcceptedQueuedTurnStartCommitOutcome::Blocked)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     #[cfg(test)]
     pub fn project_session_events(
         &self,
@@ -5404,39 +6160,104 @@ impl SessionStore {
         app_data_dir: &Path,
         session_id: &str,
     ) -> Result<u64, NextTurnIdError> {
+        if self.canonical_authority_active() {
+            return self
+                .send_acceptance_allocation(session_id)
+                .map(|allocation| allocation.next_turn_id);
+        }
+
         let meta = self.require_meta(app_data_dir, session_id)?;
+        #[cfg(test)]
         let last_turn_id = match meta.last_turn_id {
             Some(turn_id) => turn_id,
-            None => {
-                let events = if self.canonical_authority_active() {
-                    self.canonical_session_projection(session_id)?
-                        .map(|projection| projection.reducer_events)
-                        .unwrap_or_default()
-                } else {
-                    #[cfg(test)]
-                    {
-                        self.test_storage()
-                            .load_session_events(app_data_dir, session_id)?
-                    }
-                    #[cfg(not(test))]
-                    unreachable!("production always has a SQLite event authority")
-                };
-                events
-                    .iter()
-                    .rev()
-                    .find_map(|event| match event {
-                        AgentSessionEvent::TurnStarted { turn_id, .. } => Some(*turn_id),
-                        _ => None,
-                    })
-                    .unwrap_or(0)
-            }
+            None => self
+                .test_storage()
+                .load_session_events(app_data_dir, session_id)?
+                .iter()
+                .rev()
+                .find_map(|event| match event {
+                    AgentSessionEvent::TurnStarted { turn_id, .. } => Some(*turn_id),
+                    _ => None,
+                })
+                .unwrap_or(0),
         };
+        #[cfg(not(test))]
+        let last_turn_id = meta.last_turn_id.unwrap_or(0);
         if last_turn_id >= i64::MAX as u64 {
             return Err(NextTurnIdError::CapacityExceeded);
         }
         last_turn_id
             .checked_add(1)
             .ok_or(NextTurnIdError::CapacityExceeded)
+    }
+
+    /// Allocate from one canonical projection snapshot and return the exact
+    /// revision that must guard the later acceptance mutation. Queue identity
+    /// is strictly increasing in canonical order; accepting new work on a
+    /// malformed queue would otherwise make turn reuse permanent.
+    pub(crate) fn send_acceptance_allocation(
+        &self,
+        session_id: &str,
+    ) -> Result<SendAcceptanceAllocation, NextTurnIdError> {
+        let (projection, revision) = self
+            .canonical_session_projection_with_revision(session_id)?
+            .ok_or_else(|| format!("Session projection not found: {session_id}"))?;
+        let mut last_turn_id = projection.meta.last_turn_id.unwrap_or_else(|| {
+            projection
+                .reducer_events
+                .iter()
+                .rev()
+                .find_map(|event| match event {
+                    AgentSessionEvent::TurnStarted { turn_id, .. } => Some(*turn_id),
+                    _ => None,
+                })
+                .unwrap_or(0)
+        });
+        for pending in &projection.pending_send_queue {
+            let reserved_turn_id = pending.reserved_turn_id.parse::<u64>().map_err(|_| {
+                format!(
+                    "queued send {} has an invalid reserved turn identity",
+                    pending.queue_item_id
+                )
+            })?;
+            if reserved_turn_id <= last_turn_id {
+                return Err(format!(
+                    "queued send {} does not advance the canonical turn identity",
+                    pending.queue_item_id
+                )
+                .into());
+            }
+            last_turn_id = reserved_turn_id;
+        }
+        if last_turn_id >= i64::MAX as u64 {
+            return Err(NextTurnIdError::CapacityExceeded);
+        }
+        Ok(SendAcceptanceAllocation {
+            next_turn_id: last_turn_id
+                .checked_add(1)
+                .ok_or(NextTurnIdError::CapacityExceeded)?,
+            has_active_turn: projection.meta.state == SessionState::Active,
+            has_pending_queue: !projection.pending_send_queue.is_empty(),
+            session_projection_guard: crate::domain::local_event::RevisionGuard::Expected(revision),
+        })
+    }
+
+    /// Read the canonical owner of an immediately accepted provider turn.
+    ///
+    /// This is a preflight optimization for the runtime adapter. The SQLite
+    /// writer repeats the same check in the claim transaction, which closes
+    /// the read/claim race.
+    pub(crate) fn canonical_active_turn_matches(
+        &self,
+        session_id: &str,
+        turn_id: u64,
+    ) -> Result<bool, String> {
+        Ok(self
+            .canonical_session_projection(session_id)?
+            .is_some_and(|projection| {
+                projection.meta.state == SessionState::Active
+                    && projection.meta.last_turn_id == Some(turn_id)
+            }))
     }
 
     pub fn append_session_event_without_projection(
@@ -5844,7 +6665,7 @@ impl SessionStore {
         session_id: &str,
         recovery_id: &str,
         reason: BackendSessionRecoveryReason,
-    ) -> Result<SessionMeta, String> {
+    ) -> Result<BackendSessionRecoveryStartOutcome, String> {
         self.ensure_canonical_mutation_admission()?;
         let current_meta = self.require_meta(app_data_dir, session_id)?;
         let old_provider_session_generation = current_meta.provider_session_generation;
@@ -5876,6 +6697,7 @@ impl SessionStore {
                         ));
                     }
                     meta.agent_session_id = None;
+                    meta.provider_session_observation_id = None;
                     meta.context_reinjection_generation = None;
                     meta.context_carry = Some(ContextCarryState::Failed);
                     meta.recovery_publication_snapshot = Some(publication_snapshot.clone());
@@ -5885,7 +6707,10 @@ impl SessionStore {
                 },
                 std::slice::from_ref(&event),
             )?;
-                return updated.ok_or_else(|| format!("Session not found: {session_id}"));
+                return updated
+                    .map(Box::new)
+                    .map(BackendSessionRecoveryStartOutcome::Started)
+                    .ok_or_else(|| format!("Session not found: {session_id}"));
             }
             #[cfg(not(test))]
             unreachable!("production mutation admission rejects a missing SQLite authority");
@@ -5905,6 +6730,8 @@ impl SessionStore {
                 } if stored_session_id == session_id && stored_recovery_id == recovery_id => {
                     return self
                         .get_session_meta(app_data_dir, session_id)?
+                        .map(Box::new)
+                        .map(BackendSessionRecoveryStartOutcome::Started)
                         .ok_or_else(|| format!("Session not found: {session_id}"));
                 }
                 crate::domain::local_event::ObligationRecord::BackendSessionRecovery {
@@ -5950,7 +6777,7 @@ impl SessionStore {
             }),
             None,
         )?;
-        self.commit_agent_events_with_additional_mutations(
+        match self.commit_agent_events_with_additional_mutations(
             session_id,
             std::slice::from_ref(&event),
             vec![obligation],
@@ -5962,8 +6789,16 @@ impl SessionStore {
             }),
             None,
             crate::domain::local_event::CommitOperationKind::Recovery,
-        )?;
+        ) {
+            Ok(()) => {}
+            Err(error) if error == BACKEND_RECOVERY_START_SUPPRESSED_BY_QUEUE_PAUSE => {
+                return Ok(BackendSessionRecoveryStartOutcome::SuppressedByQueuePause);
+            }
+            Err(error) => return Err(error),
+        }
         self.get_session_meta(app_data_dir, session_id)?
+            .map(Box::new)
+            .map(BackendSessionRecoveryStartOutcome::Started)
             .ok_or_else(|| format!("Session not found: {session_id}"))
     }
 
@@ -6029,6 +6864,8 @@ impl SessionStore {
                     }
                     meta.agent_session_id = Some(backend_session_id.clone());
                     meta.provider_session_generation = provider_session_generation;
+                    meta.provider_session_observation_id =
+                        Some(backend_recovery_provider_observation_id(recovery_id));
                     meta.context_reinjection_generation = Some(provider_session_generation);
                     meta.pending_recovery_message = Some(pending_recovery_message.clone());
                     meta.recovery_publication_snapshot = None;
@@ -6503,24 +7340,84 @@ impl SessionStore {
         &self,
         app_data_dir: &Path,
         session_id: &str,
+        expected_provider_session_generation: u64,
+        observation_id: &str,
         backend_session_id: String,
         context_carry: Option<ContextCarryState>,
-    ) -> Result<Option<SessionMeta>, String> {
+    ) -> Result<ProviderSessionEstablishmentOutcome, String> {
+        if observation_id.is_empty() {
+            return Err("provider session observation identity is empty".to_string());
+        }
         #[cfg(test)]
         if let Some(hook) = self.backend_established_hook.read().clone() {
             hook(session_id, &backend_session_id)?;
         }
-        self.update_meta_if_changed(app_data_dir, session_id, |meta| {
-            meta.agent_session_id = Some(backend_session_id.clone());
-            meta.context_carry = context_carry.clone();
-            meta.provider_session_generation = next_sqlite_counter(
-                meta.provider_session_generation,
+        let mut fenced = false;
+        let updated = self.update_meta_if_changed(app_data_dir, session_id, |meta| {
+            if meta.provider_session_observation_id.as_deref() == Some(observation_id) {
+                if meta.agent_session_id.as_deref() != Some(backend_session_id.as_str()) {
+                    return Err(
+                        "provider session observation identity has conflicting backend identity"
+                            .to_string(),
+                    );
+                }
+                return Ok(false);
+            }
+            if meta.recovery_publication_snapshot.is_some()
+                || matches!(
+                    meta.pending_recovery_message.as_ref(),
+                    Some(PendingRecoveryMessage::Error { .. })
+                )
+                || matches!(
+                    &meta.state,
+                    SessionState::Error | SessionState::Closed | SessionState::Archived
+                )
+            {
+                fenced = true;
+                return Ok(false);
+            }
+            if meta.provider_session_generation != expected_provider_session_generation {
+                return Err(format!(
+                    "Provider session generation changed while recording establishment: expected {expected_provider_session_generation}, actual {}",
+                    meta.provider_session_generation
+                ));
+            }
+            let provider_session_generation = next_sqlite_counter(
+                expected_provider_session_generation,
                 "provider session generation",
             )?;
-            meta.context_reinjection_generation = None;
+            let reinjection_pending =
+                meta.context_reinjection_generation == Some(meta.provider_session_generation);
+            meta.agent_session_id = Some(backend_session_id.clone());
+            meta.provider_session_generation = provider_session_generation;
+            meta.provider_session_observation_id = Some(observation_id.to_string());
+            if let Some(context_carry) = context_carry.clone() {
+                meta.context_carry = Some(context_carry);
+                meta.context_reinjection_generation = None;
+            } else if reinjection_pending {
+                meta.context_reinjection_generation = Some(meta.provider_session_generation);
+            }
             meta.updated_at = now_timestamp();
             Ok(true)
-        })
+        })?;
+        if let Some(meta) = updated {
+            return Ok(ProviderSessionEstablishmentOutcome::Settled(Box::new(meta)));
+        }
+        if fenced {
+            return Ok(ProviderSessionEstablishmentOutcome::Fenced);
+        }
+        let Some(meta) = self.get_session_meta(app_data_dir, session_id)? else {
+            return Ok(ProviderSessionEstablishmentOutcome::Missing);
+        };
+        if meta.provider_session_observation_id.as_deref() != Some(observation_id)
+            || meta.agent_session_id.as_deref() != Some(backend_session_id.as_str())
+        {
+            return Err(
+                "provider session observation replay no longer owns the durable generation"
+                    .to_string(),
+            );
+        }
+        Ok(ProviderSessionEstablishmentOutcome::Settled(Box::new(meta)))
     }
 
     #[cfg(test)]
@@ -6895,6 +7792,7 @@ impl SessionStore {
         Ok(Some(meta))
     }
 
+    #[cfg(test)]
     pub fn set_session_state(
         &self,
         app_data_dir: &Path,
@@ -7195,6 +8093,7 @@ impl SessionStore {
         })
     }
 
+    #[cfg(test)]
     pub fn update_context_carry_if_changed(
         &self,
         app_data_dir: &Path,
@@ -7215,19 +8114,129 @@ impl SessionStore {
         &self,
         app_data_dir: &Path,
         session_id: &str,
+        expected_provider_session_generation: u64,
         reinjected: bool,
     ) -> Result<Option<SessionMeta>, String> {
-        self.update_meta_if_changed(app_data_dir, session_id, |meta| {
-            if meta.context_reinjection_generation != Some(meta.provider_session_generation) {
-                return Ok(false);
+        self.complete_context_restore_after_start_if_current(
+            app_data_dir,
+            session_id,
+            ContextRestoreCompletionRequest {
+                expected_provider_session_generation,
+                expected_turn_id: None,
+                reinjected,
+                clear_context_carry: false,
+                recovery_restore_required: true,
+            },
+        )
+    }
+
+    pub fn complete_context_restore_after_start_if_current(
+        &self,
+        app_data_dir: &Path,
+        session_id: &str,
+        request: ContextRestoreCompletionRequest,
+    ) -> Result<Option<SessionMeta>, String> {
+        let ContextRestoreCompletionRequest {
+            expected_provider_session_generation,
+            expected_turn_id,
+            reinjected,
+            clear_context_carry,
+            recovery_restore_required,
+        } = request;
+        if !reinjected && !clear_context_carry && !recovery_restore_required {
+            return Ok(None);
+        }
+        let at = now_timestamp();
+        if !self.canonical_authority_active() {
+            #[cfg(test)]
+            {
+                return match self.update_meta_if_changed(app_data_dir, session_id, |meta| {
+                    apply_context_restore_completion_to_meta(
+                        meta,
+                        expected_provider_session_generation,
+                        expected_turn_id,
+                        reinjected,
+                        clear_context_carry,
+                        recovery_restore_required,
+                        at,
+                    )
+                }) {
+                    Err(error)
+                        if error == CONTEXT_RESTORE_COMPLETION_FENCED
+                            || error == CONTEXT_RESTORE_COMPLETION_UNCHANGED =>
+                    {
+                        Ok(None)
+                    }
+                    result => result,
+                };
             }
-            meta.context_reinjection_generation = None;
-            if reinjected {
-                meta.context_carry = Some(ContextCarryState::Reinjected);
+            #[cfg(not(test))]
+            unreachable!("production mutation admission rejects a missing SQLite authority");
+        }
+        let patch = EventProjectionMetaPatch::ContextRestoreCompleted {
+            expected_provider_session_generation,
+            expected_turn_id,
+            reinjected,
+            clear_context_carry,
+            recovery_restore_required,
+            at,
+        };
+        match self.commit_agent_events_with_additional_mutations(
+            session_id,
+            &[],
+            Vec::new(),
+            None,
+            Some(patch),
+            None,
+            crate::domain::local_event::CommitOperationKind::Projection,
+        ) {
+            Ok(()) => {}
+            Err(error)
+                if error == CONTEXT_RESTORE_COMPLETION_FENCED
+                    || error == CONTEXT_RESTORE_COMPLETION_UNCHANGED =>
+            {
+                return Ok(None);
             }
-            meta.updated_at = now_timestamp();
-            Ok(true)
-        })
+            Err(error) => return Err(error),
+        }
+        let meta = self
+            .get_session_meta(app_data_dir, session_id)?
+            .ok_or_else(|| format!("Session not found: {session_id}"))?;
+        let lifecycle_fenced = matches!(
+            meta.state,
+            SessionState::Error | SessionState::Closed | SessionState::Archived
+        );
+        let settled = if recovery_restore_required {
+            meta.provider_session_generation == expected_provider_session_generation
+                && meta.context_reinjection_generation.is_none()
+                && meta.recovery_publication_snapshot.is_none()
+                && !matches!(
+                    meta.pending_recovery_message,
+                    Some(PendingRecoveryMessage::Error { .. })
+                )
+                && !lifecycle_fenced
+                && (!reinjected || meta.context_carry == Some(ContextCarryState::Reinjected))
+        } else {
+            let next_generation = expected_provider_session_generation.checked_add(1);
+            let generation_matches = meta.provider_session_generation
+                == expected_provider_session_generation
+                || next_generation == Some(meta.provider_session_generation);
+            let desired_carry = reinjected.then_some(ContextCarryState::Reinjected);
+            let backend_recovery_observation = meta
+                .provider_session_observation_id
+                .as_deref()
+                .is_some_and(|identity| identity.starts_with("backend-recovery/v1:"));
+            generation_matches
+                && expected_turn_id.is_some()
+                && meta.last_turn_id == expected_turn_id
+                && !backend_recovery_observation
+                && meta.context_carry == desired_carry
+                && meta.recovery_publication_snapshot.is_none()
+                && meta.pending_recovery_message.is_none()
+                && meta.context_reinjection_generation.is_none()
+                && !lifecycle_fenced
+        };
+        Ok(settled.then_some(meta))
     }
 
     pub fn update_system_context_private_meta_if_changed(
@@ -7568,7 +8577,8 @@ impl SessionStore {
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
-    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Barrier};
 
     use super::*;
 
@@ -7672,6 +8682,29 @@ mod tests {
     }
 
     #[test]
+    fn failed_terminal_adds_pause_only_when_latest_projection_is_unpaused() {
+        let terminal = AgentSessionEvent::TurnCompleted {
+            turn_id: 4,
+            exit_code: 1,
+            stop_reason: None,
+            token_usage: None,
+        };
+        let supplied = vec![terminal.clone(), AgentSessionEvent::QueuePaused { at: 9.0 }];
+
+        assert_eq!(
+            complete_terminal_projection_events(&[turn_started(4)], &supplied),
+            supplied
+        );
+        assert_eq!(
+            complete_terminal_projection_events(
+                &[turn_started(4), AgentSessionEvent::QueuePaused { at: 8.0 },],
+                &supplied,
+            ),
+            vec![terminal]
+        );
+    }
+
+    #[test]
     fn permission_response_pending_replays_before_claim_but_effect_reserved_does_not() {
         let store = crate::test_support::build_session_store();
         let response = crate::domain::agent_session::entities::PermissionResponse {
@@ -7732,7 +8765,7 @@ mod tests {
     #[test]
     fn worktree_session_queries_match_legacy_trailing_slash_without_prefix_collision() {
         let app_data_dir = tempfile::tempdir().unwrap();
-        let writer = crate::test_support::build_session_store();
+        let writer = Arc::new(crate::test_support::build_session_store());
         let legacy = super::super::create_session_internal(
             &writer,
             app_data_dir.path(),
@@ -8051,6 +9084,1115 @@ mod tests {
     }
 
     #[test]
+    fn recovery_start_atomically_loses_to_queue_pause_after_its_projection_read() {
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let local_store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
+            crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
+                app_data_dir.path().to_path_buf(),
+            ),
+        )
+        .unwrap();
+        let writer = Arc::new(crate::test_support::build_session_store());
+        let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
+            local_store.clone();
+        writer.set_local_event_repository(
+            repository,
+            local_store.installation_id().to_string(),
+            Arc::new(
+                crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
+            ),
+        );
+        let session = super::super::create_session_internal(
+            &writer,
+            app_data_dir.path(),
+            "/repo",
+            Some("codex".to_string()),
+        )
+        .unwrap();
+
+        let first_recovery_commit = Arc::new(AtomicBool::new(true));
+        let projection_read = Arc::new(Barrier::new(2));
+        let release_recovery = Arc::new(Barrier::new(2));
+        writer.set_atomic_event_commit_hook_for_test(Arc::new({
+            let first_recovery_commit = first_recovery_commit.clone();
+            let projection_read = projection_read.clone();
+            let release_recovery = release_recovery.clone();
+            move |operation_kind| {
+                if operation_kind == crate::domain::local_event::CommitOperationKind::Recovery
+                    && first_recovery_commit.swap(false, Ordering::SeqCst)
+                {
+                    projection_read.wait();
+                    release_recovery.wait();
+                }
+                Ok(())
+            }
+        }));
+
+        let recovery_writer = writer.clone();
+        let recovery_data_dir = app_data_dir.path().to_path_buf();
+        let recovery_session_id = session.id.clone();
+        let recovery = std::thread::spawn(move || {
+            recovery_writer.begin_backend_session_recovery(
+                &recovery_data_dir,
+                &recovery_session_id,
+                "stop-race-recovery",
+                BackendSessionRecoveryReason::BackendSessionLost,
+            )
+        });
+        projection_read.wait();
+        writer
+            .append_session_events(
+                app_data_dir.path(),
+                &session.id,
+                &[AgentSessionEvent::QueuePaused { at: 8.0 }],
+            )
+            .unwrap();
+        release_recovery.wait();
+
+        let outcome = recovery.join().unwrap().unwrap();
+        assert!(matches!(
+            outcome,
+            BackendSessionRecoveryStartOutcome::SuppressedByQueuePause
+        ));
+        let projection = writer
+            .canonical_session_projection(&session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(projection.queue_paused_at, Some(8.0));
+        assert!(projection.reducer_events.iter().all(|event| !matches!(
+            event,
+            AgentSessionEvent::BackendSessionRecoveryStarted { .. }
+        )));
+        assert!(writer
+            .canonical_obligation(&backend_recovery_obligation_id(
+                &session.id,
+                "stop-race-recovery"
+            ))
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn stop_acceptance_prepared_from_stale_revision_loses_to_recovery_start() {
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let local_store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
+            crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
+                app_data_dir.path().to_path_buf(),
+            ),
+        )
+        .unwrap();
+        let writer = crate::test_support::build_session_store();
+        let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
+            local_store.clone();
+        writer.set_local_event_repository(
+            repository,
+            local_store.installation_id().to_string(),
+            Arc::new(
+                crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
+            ),
+        );
+        let session = super::super::create_session_internal(
+            &writer,
+            app_data_dir.path(),
+            "/repo",
+            Some("codex".to_string()),
+        )
+        .unwrap();
+        writer
+            .append_session_events(app_data_dir.path(), &session.id, &[turn_started(1)])
+            .unwrap();
+        let expected_stop_revision = writer
+            .canonical_session_projection(&session.id)
+            .unwrap()
+            .unwrap()
+            .meta
+            .state_revision;
+
+        let recovery = writer
+            .begin_backend_session_recovery(
+                app_data_dir.path(),
+                &session.id,
+                "recovery-wins-before-stop-acceptance",
+                BackendSessionRecoveryReason::BackendSessionLost,
+            )
+            .unwrap();
+        assert!(matches!(
+            recovery,
+            BackendSessionRecoveryStartOutcome::Started(_)
+        ));
+
+        let stop_events = [
+            AgentSessionEvent::StopOperationAccepted {
+                operation_id: "stop-after-stale-snapshot".to_string(),
+                target_turn_id: 1,
+                at: 9.0,
+            },
+            AgentSessionEvent::TurnInterruptRequested {
+                turn_id: 1,
+                at: 9.0,
+            },
+            AgentSessionEvent::ObligationRecorded {
+                obligation_id: "stop-interrupt:session:1".to_string(),
+                kind: crate::domain::agent_session::events::ObligationKind::ProviderInterrupt,
+                state: crate::domain::agent_session::events::ObligationState::EffectReserved,
+                at: 9.0,
+            },
+            AgentSessionEvent::QueuePaused { at: 9.0 },
+        ];
+        assert!(writer
+            .prepare_event_projection_mutations_if_current_revision(
+                &session.id,
+                expected_stop_revision,
+                &stop_events,
+            )
+            .unwrap()
+            .is_none());
+
+        let projection = writer
+            .canonical_session_projection(&session.id)
+            .unwrap()
+            .unwrap();
+        assert!(projection.reducer_events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::BackendSessionRecoveryStarted { .. }
+        )));
+        assert!(projection.reducer_events.iter().all(|event| !matches!(
+            event,
+            AgentSessionEvent::StopOperationAccepted { .. }
+                | AgentSessionEvent::TurnInterruptRequested { .. }
+                | AgentSessionEvent::QueuePaused { .. }
+        )));
+    }
+
+    #[test]
+    fn next_turn_id_advances_past_every_durable_queue_reservation() {
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let local_store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
+            crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
+                app_data_dir.path().to_path_buf(),
+            ),
+        )
+        .unwrap();
+        let writer = crate::test_support::build_session_store();
+        let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
+            local_store.clone();
+        writer.set_local_event_repository(
+            repository,
+            local_store.installation_id().to_string(),
+            Arc::new(
+                crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
+            ),
+        );
+        let session = super::super::create_session_internal(
+            &writer,
+            app_data_dir.path(),
+            "/repo",
+            Some("codex".to_string()),
+        )
+        .unwrap();
+        writer
+            .append_session_events(app_data_dir.path(), &session.id, &[turn_started(1)])
+            .unwrap();
+        let mut projection = writer
+            .canonical_session_projection(&session.id)
+            .unwrap()
+            .unwrap();
+        projection.pending_send_queue.extend([
+            CanonicalQueuedSend {
+                queue_item_id: "queue-2".to_string(),
+                human_message_id: "human-2".to_string(),
+                reserved_turn_id: "2".to_string(),
+                input_ref: "input-2".to_string(),
+            },
+            CanonicalQueuedSend {
+                queue_item_id: "queue-4".to_string(),
+                human_message_id: "human-4".to_string(),
+                reserved_turn_id: "4".to_string(),
+                input_ref: "input-4".to_string(),
+            },
+        ]);
+        writer
+            .commit_session_projection_snapshot(projection)
+            .unwrap();
+
+        assert_eq!(
+            writer
+                .next_turn_id(app_data_dir.path(), &session.id)
+                .unwrap(),
+            5
+        );
+    }
+
+    #[test]
+    fn send_acceptance_rejects_an_allocation_from_an_older_queue_projection() {
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let local_store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
+            crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
+                app_data_dir.path().to_path_buf(),
+            ),
+        )
+        .unwrap();
+        let writer = crate::test_support::build_session_store();
+        let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
+            local_store.clone();
+        writer.set_local_event_repository(
+            repository,
+            local_store.installation_id().to_string(),
+            Arc::new(
+                crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
+            ),
+        );
+        let session = super::super::create_session_internal(
+            &writer,
+            app_data_dir.path(),
+            "/repo",
+            Some("codex".to_string()),
+        )
+        .unwrap();
+        writer
+            .append_session_events(app_data_dir.path(), &session.id, &[turn_started(1)])
+            .unwrap();
+
+        let stale = writer.send_acceptance_allocation(&session.id).unwrap();
+        assert_eq!(stale.next_turn_id, 2);
+        assert!(stale.has_active_turn);
+        let mut projection = writer
+            .canonical_session_projection(&session.id)
+            .unwrap()
+            .unwrap();
+        projection.pending_send_queue.push(CanonicalQueuedSend {
+            queue_item_id: "queue-winner".to_string(),
+            human_message_id: "human-winner".to_string(),
+            reserved_turn_id: "2".to_string(),
+            input_ref: "input-winner".to_string(),
+        });
+        writer
+            .commit_session_projection_snapshot(projection)
+            .unwrap();
+        assert!(writer
+            .canonical_queue_contains_exact(
+                &session.id,
+                "queue-winner",
+                "human-winner",
+                "2",
+                Some("input-winner"),
+            )
+            .unwrap());
+        assert!(!writer
+            .canonical_queue_contains_exact(
+                &session.id,
+                "queue-winner",
+                "human-winner",
+                "2",
+                Some("different-input"),
+            )
+            .unwrap());
+
+        let prompt = crate::domain::agent_session::events::PromptInput {
+            content: "stale queued input".to_string(),
+            ..Default::default()
+        };
+        let disposition = crate::domain::agent_session::events::SendDisposition::Queued {
+            queue_item_id: "queue-stale".to_string(),
+        };
+        let error = writer
+            .prepare_send_acceptance_mutations(SendAcceptanceProjectionInput {
+                session_id: &session.id,
+                initial_session: None,
+                session_projection_guard: stale.session_projection_guard,
+                human_message_id: "human-stale",
+                prompt: &prompt,
+                disposition: &disposition,
+                reserved_turn_id: Some("2"),
+                input_ref: "input-stale",
+                events: &[],
+            })
+            .unwrap_err();
+        assert!(error.contains("allocation projection changed"));
+
+        let fresh = writer.send_acceptance_allocation(&session.id).unwrap();
+        assert_eq!(fresh.next_turn_id, 3);
+        assert!(fresh.has_active_turn);
+        assert!(fresh.has_pending_queue);
+        assert_ne!(
+            fresh.session_projection_guard,
+            stale.session_projection_guard
+        );
+    }
+
+    #[test]
+    fn accepted_queued_turn_can_commit_only_the_canonical_front_without_regression() {
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let local_store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
+            crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
+                app_data_dir.path().to_path_buf(),
+            ),
+        )
+        .unwrap();
+        let writer = crate::test_support::build_session_store();
+        let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
+            local_store.clone();
+        writer.set_local_event_repository(
+            repository,
+            local_store.installation_id().to_string(),
+            Arc::new(
+                crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
+            ),
+        );
+        let session = super::super::create_session_internal(
+            &writer,
+            app_data_dir.path(),
+            "/repo",
+            Some("codex".to_string()),
+        )
+        .unwrap();
+        writer
+            .append_session_events(
+                app_data_dir.path(),
+                &session.id,
+                &[turn_started(1), interrupted(1)],
+            )
+            .unwrap();
+        let mut projection = writer
+            .canonical_session_projection(&session.id)
+            .unwrap()
+            .unwrap();
+        projection.pending_send_queue.extend([
+            CanonicalQueuedSend {
+                queue_item_id: "queue-2".to_string(),
+                human_message_id: "human-2".to_string(),
+                reserved_turn_id: "2".to_string(),
+                input_ref: "input-2".to_string(),
+            },
+            CanonicalQueuedSend {
+                queue_item_id: "queue-3".to_string(),
+                human_message_id: "human-3".to_string(),
+                reserved_turn_id: "3".to_string(),
+                input_ref: "input-3".to_string(),
+            },
+        ]);
+        writer
+            .commit_session_projection_snapshot(projection)
+            .unwrap();
+
+        assert!(writer
+            .append_accepted_queued_turn_started_and_project_state(
+                app_data_dir.path(),
+                &session.id,
+                "queue-3",
+                turn_started(3),
+            )
+            .is_err());
+        let unchanged = writer
+            .canonical_session_projection(&session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(unchanged.meta.last_turn_id, Some(1));
+        assert_eq!(
+            unchanged
+                .pending_send_queue
+                .iter()
+                .map(|entry| entry.queue_item_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["queue-2", "queue-3"]
+        );
+
+        writer
+            .append_session_events(
+                app_data_dir.path(),
+                &session.id,
+                &[AgentSessionEvent::QueuePaused { at: 8.0 }],
+            )
+            .unwrap();
+        let paused = writer
+            .canonical_session_projection(&session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(paused.queue_paused_at, Some(8.0));
+        assert!(writer
+            .append_accepted_queued_turn_started_and_project_state(
+                app_data_dir.path(),
+                &session.id,
+                "queue-2",
+                turn_started(2),
+            )
+            .is_err());
+        let still_paused = writer
+            .canonical_session_projection(&session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(still_paused.meta.state, paused.meta.state);
+        assert_eq!(still_paused.queue_paused_at, paused.queue_paused_at);
+        assert_eq!(still_paused.reducer_events, paused.reducer_events);
+        assert_eq!(still_paused.pending_send_queue, paused.pending_send_queue);
+
+        writer
+            .append_session_events(
+                app_data_dir.path(),
+                &session.id,
+                &[AgentSessionEvent::QueueResumed {
+                    expected_paused_at: 8.0,
+                    at: 9.0,
+                }],
+            )
+            .unwrap();
+        writer
+            .append_accepted_queued_turn_started_and_project_state(
+                app_data_dir.path(),
+                &session.id,
+                "queue-2",
+                turn_started(2),
+            )
+            .unwrap();
+        let after_front = writer
+            .canonical_session_projection(&session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(after_front.meta.last_turn_id, Some(2));
+        assert_eq!(after_front.pending_send_queue.len(), 1);
+        assert_eq!(after_front.pending_send_queue[0].queue_item_id, "queue-3");
+
+        assert!(writer
+            .append_accepted_queued_turn_started_and_project_state(
+                app_data_dir.path(),
+                &session.id,
+                "queue-3",
+                turn_started(2),
+            )
+            .is_err());
+        assert_eq!(
+            writer
+                .canonical_session_projection(&session.id)
+                .unwrap()
+                .unwrap()
+                .meta
+                .last_turn_id,
+            Some(2)
+        );
+
+        writer
+            .append_session_events(
+                app_data_dir.path(),
+                &session.id,
+                &[
+                    interrupted(2),
+                    AgentSessionEvent::SessionClosed { at: 12.0 },
+                ],
+            )
+            .unwrap();
+        let closed = writer
+            .canonical_session_projection(&session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(closed.meta.state, SessionState::Closed);
+        assert!(writer
+            .append_accepted_queued_turn_started_and_project_state(
+                app_data_dir.path(),
+                &session.id,
+                "queue-3",
+                turn_started(3),
+            )
+            .is_err());
+        let still_closed = writer
+            .canonical_session_projection(&session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(still_closed.meta.state, SessionState::Closed);
+        assert_eq!(still_closed.reducer_events, closed.reducer_events);
+        assert_eq!(still_closed.pending_send_queue, closed.pending_send_queue);
+        assert!(still_closed
+            .reducer_events
+            .iter()
+            .all(|event| !matches!(event, AgentSessionEvent::TurnStarted { turn_id: 3, .. })));
+    }
+
+    #[test]
+    fn accepted_queued_turn_cannot_cross_canonical_backend_recovery() {
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let local_store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
+            crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
+                app_data_dir.path().to_path_buf(),
+            ),
+        )
+        .unwrap();
+        let writer = crate::test_support::build_session_store();
+        let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
+            local_store.clone();
+        writer.set_local_event_repository(
+            repository,
+            local_store.installation_id().to_string(),
+            Arc::new(
+                crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
+            ),
+        );
+        let session = super::super::create_session_internal(
+            &writer,
+            app_data_dir.path(),
+            "/repo",
+            Some("codex".to_string()),
+        )
+        .unwrap();
+        let mut projection = writer
+            .canonical_session_projection(&session.id)
+            .unwrap()
+            .unwrap();
+        projection.pending_send_queue.push(CanonicalQueuedSend {
+            queue_item_id: "queue-1".to_string(),
+            human_message_id: "human-1".to_string(),
+            reserved_turn_id: "1".to_string(),
+            input_ref: "input-1".to_string(),
+        });
+        writer
+            .commit_session_projection_snapshot(projection)
+            .unwrap();
+        let recovery = writer
+            .begin_backend_session_recovery(
+                app_data_dir.path(),
+                &session.id,
+                "recovery-wins-before-queued-start",
+                BackendSessionRecoveryReason::BackendSessionLost,
+            )
+            .unwrap();
+        assert!(matches!(
+            recovery,
+            BackendSessionRecoveryStartOutcome::Started(_)
+        ));
+        let recovering = writer
+            .canonical_session_projection(&session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovering.meta.state, SessionState::Idle);
+
+        assert!(writer
+            .append_accepted_queued_turn_started_and_project_state(
+                app_data_dir.path(),
+                &session.id,
+                "queue-1",
+                turn_started(1),
+            )
+            .is_err());
+        let unchanged = writer
+            .canonical_session_projection(&session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(unchanged.meta.state, recovering.meta.state);
+        assert_eq!(unchanged.reducer_events, recovering.reducer_events);
+        assert_eq!(unchanged.pending_send_queue, recovering.pending_send_queue);
+        assert!(unchanged
+            .reducer_events
+            .iter()
+            .all(|event| !matches!(event, AgentSessionEvent::TurnStarted { turn_id: 1, .. })));
+    }
+
+    #[test]
+    fn stale_provider_establishment_cannot_cross_canonical_backend_recovery() {
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let local_store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
+            crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
+                app_data_dir.path().to_path_buf(),
+            ),
+        )
+        .unwrap();
+        let writer = crate::test_support::build_session_store();
+        let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
+            local_store.clone();
+        writer.set_local_event_repository(
+            repository,
+            local_store.installation_id().to_string(),
+            Arc::new(
+                crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
+            ),
+        );
+        let session = super::super::create_session_internal(
+            &writer,
+            app_data_dir.path(),
+            "/repo",
+            Some("codex".to_string()),
+        )
+        .unwrap();
+        let recovery_id = "recovery-wins-before-stale-provider-observation";
+
+        let recovery = writer
+            .begin_backend_session_recovery(
+                app_data_dir.path(),
+                &session.id,
+                recovery_id,
+                BackendSessionRecoveryReason::BackendSessionLost,
+            )
+            .unwrap();
+        assert!(matches!(
+            recovery,
+            BackendSessionRecoveryStartOutcome::Started(_)
+        ));
+        let recovering = writer
+            .get_session_meta(app_data_dir.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovering.provider_session_generation, 0);
+        assert!(recovering.agent_session_id.is_none());
+        assert!(recovering.provider_session_observation_id.is_none());
+
+        let outcome = writer
+            .record_backend_session_established(
+                app_data_dir.path(),
+                &session.id,
+                0,
+                "stale-normal-provider-observation",
+                "stale-provider".to_string(),
+                None,
+            )
+            .unwrap();
+        assert!(matches!(
+            outcome,
+            ProviderSessionEstablishmentOutcome::Fenced
+        ));
+        let unchanged = writer
+            .get_session_meta(app_data_dir.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(unchanged.provider_session_generation, 0);
+        assert!(unchanged.agent_session_id.is_none());
+        assert!(unchanged.provider_session_observation_id.is_none());
+
+        let completed = writer
+            .complete_backend_session_recovery(
+                app_data_dir.path(),
+                &session.id,
+                recovery_id,
+                0,
+                "replacement-provider".to_string(),
+            )
+            .unwrap();
+        assert_eq!(completed.provider_session_generation, 1);
+        assert_eq!(
+            completed.agent_session_id.as_deref(),
+            Some("replacement-provider")
+        );
+        assert_eq!(
+            completed.provider_session_observation_id,
+            Some(backend_recovery_provider_observation_id(recovery_id))
+        );
+    }
+
+    #[test]
+    fn ordinary_context_restore_completion_cannot_cross_active_backend_recovery() {
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let local_store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
+            crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
+                app_data_dir.path().to_path_buf(),
+            ),
+        )
+        .unwrap();
+        let writer = Arc::new(crate::test_support::build_session_store());
+        let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
+            local_store.clone();
+        writer.set_local_event_repository(
+            repository,
+            local_store.installation_id().to_string(),
+            Arc::new(
+                crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
+            ),
+        );
+        let session = super::super::create_session_internal(
+            &writer,
+            app_data_dir.path(),
+            "/repo",
+            Some("codex".to_string()),
+        )
+        .unwrap();
+        writer
+            .append_session_events(app_data_dir.path(), &session.id, &[turn_started(1)])
+            .unwrap();
+        let established = writer
+            .record_backend_session_established(
+                app_data_dir.path(),
+                &session.id,
+                0,
+                "ordinary-context-restore-provider",
+                "ordinary-provider".to_string(),
+                None,
+            )
+            .unwrap();
+        assert!(matches!(
+            established,
+            ProviderSessionEstablishmentOutcome::Settled(_)
+        ));
+
+        let first_context_completion_commit = Arc::new(AtomicBool::new(true));
+        let projection_read = Arc::new(Barrier::new(2));
+        let release_context_completion = Arc::new(Barrier::new(2));
+        writer.set_atomic_event_commit_hook_for_test(Arc::new({
+            let first_context_completion_commit = first_context_completion_commit.clone();
+            let projection_read = projection_read.clone();
+            let release_context_completion = release_context_completion.clone();
+            move |operation_kind| {
+                if operation_kind == crate::domain::local_event::CommitOperationKind::Projection
+                    && first_context_completion_commit.swap(false, Ordering::SeqCst)
+                {
+                    projection_read.wait();
+                    release_context_completion.wait();
+                }
+                Ok(())
+            }
+        }));
+
+        let context_writer = writer.clone();
+        let context_data_dir = app_data_dir.path().to_path_buf();
+        let context_session_id = session.id.clone();
+        let context_completion = std::thread::spawn(move || {
+            context_writer.complete_context_restore_after_start_if_current(
+                &context_data_dir,
+                &context_session_id,
+                ContextRestoreCompletionRequest::after_started_turn(0, 1, true, false, false),
+            )
+        });
+        projection_read.wait();
+
+        let recovery_id = "recovery-wins-before-ordinary-context-completion";
+        let recovery = writer.begin_backend_session_recovery(
+            app_data_dir.path(),
+            &session.id,
+            recovery_id,
+            BackendSessionRecoveryReason::BackendSessionLost,
+        );
+        release_context_completion.wait();
+        let recovery = recovery.unwrap();
+        assert!(matches!(
+            recovery,
+            BackendSessionRecoveryStartOutcome::Started(_)
+        ));
+
+        let outcome = context_completion.join().unwrap().unwrap();
+        assert!(outcome.is_none());
+
+        let projection = writer
+            .canonical_session_projection(&session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(projection.meta.provider_session_generation, 1);
+        assert!(projection.meta.agent_session_id.is_none());
+        assert!(projection.meta.provider_session_observation_id.is_none());
+        assert_eq!(projection.meta.context_reinjection_generation, None);
+        assert_eq!(
+            projection.meta.context_carry,
+            Some(ContextCarryState::Failed)
+        );
+        assert_eq!(
+            projection
+                .meta
+                .recovery_publication_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.recovery_id.as_str()),
+            Some(recovery_id)
+        );
+        assert_eq!(
+            projection
+                .reducer_events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    AgentSessionEvent::BackendSessionRecoveryStarted {
+                        recovery_id: stored_recovery_id,
+                        ..
+                    } if stored_recovery_id == recovery_id
+                ))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn ordinary_context_restore_completion_cannot_cross_a_newer_turn() {
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let local_store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
+            crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
+                app_data_dir.path().to_path_buf(),
+            ),
+        )
+        .unwrap();
+        let writer = Arc::new(crate::test_support::build_session_store());
+        let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
+            local_store.clone();
+        writer.set_local_event_repository(
+            repository,
+            local_store.installation_id().to_string(),
+            Arc::new(
+                crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
+            ),
+        );
+        let session = super::super::create_session_internal(
+            &writer,
+            app_data_dir.path(),
+            "/repo",
+            Some("codex".to_string()),
+        )
+        .unwrap();
+        writer
+            .append_session_events(app_data_dir.path(), &session.id, &[turn_started(1)])
+            .unwrap();
+
+        let first_context_completion_commit = Arc::new(AtomicBool::new(true));
+        let projection_read = Arc::new(Barrier::new(2));
+        let release_context_completion = Arc::new(Barrier::new(2));
+        writer.set_atomic_event_commit_hook_for_test(Arc::new({
+            let first_context_completion_commit = first_context_completion_commit.clone();
+            let projection_read = projection_read.clone();
+            let release_context_completion = release_context_completion.clone();
+            move |operation_kind| {
+                if operation_kind == crate::domain::local_event::CommitOperationKind::Projection
+                    && first_context_completion_commit.swap(false, Ordering::SeqCst)
+                {
+                    projection_read.wait();
+                    release_context_completion.wait();
+                }
+                Ok(())
+            }
+        }));
+
+        let context_writer = writer.clone();
+        let context_data_dir = app_data_dir.path().to_path_buf();
+        let context_session_id = session.id.clone();
+        let context_completion = std::thread::spawn(move || {
+            context_writer.complete_context_restore_after_start_if_current(
+                &context_data_dir,
+                &context_session_id,
+                ContextRestoreCompletionRequest::after_started_turn(0, 1, true, false, false),
+            )
+        });
+        projection_read.wait();
+        writer
+            .append_session_events(app_data_dir.path(), &session.id, &[turn_started(2)])
+            .unwrap();
+        release_context_completion.wait();
+
+        assert!(context_completion.join().unwrap().unwrap().is_none());
+        let projection = writer
+            .canonical_session_projection(&session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(projection.meta.last_turn_id, Some(2));
+        assert_eq!(projection.meta.context_carry, None);
+    }
+
+    #[test]
+    fn stale_recovery_context_completion_cannot_clear_newer_generation_marker() {
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let local_store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
+            crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
+                app_data_dir.path().to_path_buf(),
+            ),
+        )
+        .unwrap();
+        let writer = crate::test_support::build_session_store();
+        let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
+            local_store.clone();
+        writer.set_local_event_repository(
+            repository,
+            local_store.installation_id().to_string(),
+            Arc::new(
+                crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
+            ),
+        );
+        let session = super::super::create_session_internal(
+            &writer,
+            app_data_dir.path(),
+            "/repo",
+            Some("codex".to_string()),
+        )
+        .unwrap();
+
+        let first_recovery_id = "first-context-recovery-generation";
+        let first_recovery = writer
+            .begin_backend_session_recovery(
+                app_data_dir.path(),
+                &session.id,
+                first_recovery_id,
+                BackendSessionRecoveryReason::BackendSessionLost,
+            )
+            .unwrap();
+        assert!(matches!(
+            first_recovery,
+            BackendSessionRecoveryStartOutcome::Started(_)
+        ));
+        let first_completed = writer
+            .complete_backend_session_recovery(
+                app_data_dir.path(),
+                &session.id,
+                first_recovery_id,
+                0,
+                "first-recovery-provider".to_string(),
+            )
+            .unwrap();
+        assert_eq!(first_completed.provider_session_generation, 1);
+        assert_eq!(first_completed.context_reinjection_generation, Some(1));
+
+        let second_recovery_id = "second-context-recovery-generation";
+        let second_recovery = writer
+            .begin_backend_session_recovery(
+                app_data_dir.path(),
+                &session.id,
+                second_recovery_id,
+                BackendSessionRecoveryReason::BackendSessionLost,
+            )
+            .unwrap();
+        assert!(matches!(
+            second_recovery,
+            BackendSessionRecoveryStartOutcome::Started(_)
+        ));
+        let second_completed = writer
+            .complete_backend_session_recovery(
+                app_data_dir.path(),
+                &session.id,
+                second_recovery_id,
+                1,
+                "second-recovery-provider".to_string(),
+            )
+            .unwrap();
+        assert_eq!(second_completed.provider_session_generation, 2);
+        assert_eq!(second_completed.context_reinjection_generation, Some(2));
+
+        let outcome = writer
+            .complete_context_reinjection_if_required(app_data_dir.path(), &session.id, 1, true)
+            .unwrap();
+        assert!(outcome.is_none());
+
+        let projection = writer
+            .canonical_session_projection(&session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(projection.meta.provider_session_generation, 2);
+        assert_eq!(
+            projection.meta.agent_session_id.as_deref(),
+            Some("second-recovery-provider")
+        );
+        assert_eq!(
+            projection.meta.provider_session_observation_id,
+            Some(backend_recovery_provider_observation_id(second_recovery_id))
+        );
+        assert_eq!(projection.meta.context_reinjection_generation, Some(2));
+        assert_eq!(
+            projection.meta.context_carry,
+            Some(ContextCarryState::Failed)
+        );
+        assert!(projection.meta.recovery_publication_snapshot.is_none());
+        assert!(matches!(
+            projection.meta.pending_recovery_message,
+            Some(PendingRecoveryMessage::Notice {
+                ref recovery_id,
+                ..
+            }) if recovery_id == second_recovery_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn prepared_stop_acceptance_loses_when_recovery_commits_before_stop() {
+        let app_data_dir = tempfile::tempdir().unwrap();
+        let local_store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
+            crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
+                app_data_dir.path().to_path_buf(),
+            ),
+        )
+        .unwrap();
+        let writer = crate::test_support::build_session_store();
+        let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
+            local_store.clone();
+        writer.set_local_event_repository(
+            repository.clone(),
+            local_store.installation_id().to_string(),
+            Arc::new(
+                crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
+            ),
+        );
+        let session = super::super::create_session_internal(
+            &writer,
+            app_data_dir.path(),
+            "/repo",
+            Some("codex".to_string()),
+        )
+        .unwrap();
+        writer
+            .append_session_events(app_data_dir.path(), &session.id, &[turn_started(1)])
+            .unwrap();
+        let expected_stop_revision = writer
+            .canonical_session_projection(&session.id)
+            .unwrap()
+            .unwrap()
+            .meta
+            .state_revision;
+        let stop_events = [
+            AgentSessionEvent::StopOperationAccepted {
+                operation_id: "prepared-stop".to_string(),
+                target_turn_id: 1,
+                at: 9.0,
+            },
+            AgentSessionEvent::TurnInterruptRequested {
+                turn_id: 1,
+                at: 9.0,
+            },
+            AgentSessionEvent::QueuePaused { at: 9.0 },
+        ];
+        let stop_mutations = writer
+            .prepare_event_projection_mutations_if_current_revision(
+                &session.id,
+                expected_stop_revision,
+                &stop_events,
+            )
+            .unwrap()
+            .expect("Stop preparation starts from the exact snapshot revision");
+
+        let recovery = writer
+            .begin_backend_session_recovery(
+                app_data_dir.path(),
+                &session.id,
+                "recovery-commits-after-stop-preparation",
+                BackendSessionRecoveryReason::BackendSessionLost,
+            )
+            .unwrap();
+        assert!(matches!(
+            recovery,
+            BackendSessionRecoveryStartOutcome::Started(_)
+        ));
+
+        let error = repository
+            .commit_batch(crate::domain::local_event::LocalAtomicBatch {
+                commit_id: crate::domain::local_event::CommitIdentity::parse(
+                    "prepared-stop-projection-cas",
+                )
+                .unwrap(),
+                idempotency: crate::domain::local_event::IdempotencyBinding {
+                    installation_id: local_store.installation_id().to_string(),
+                    operation_kind: crate::domain::local_event::CommitOperationKind::Projection,
+                    idempotency_key: "prepared-stop-projection-cas".to_string(),
+                    payload_hash: [29; 32],
+                },
+                expected_heads: Vec::new(),
+                events: Vec::new(),
+                state_mutations: stop_mutations,
+            })
+            .await
+            .expect_err("the Stop projection CAS must lose to the recovery commit");
+        assert!(matches!(
+            error,
+            crate::domain::local_event::CommitBatchError::PayloadConflict
+                | crate::domain::local_event::CommitBatchError::StreamHeadConflict { .. }
+        ));
+        let projection = writer
+            .canonical_session_projection(&session.id)
+            .unwrap()
+            .unwrap();
+        assert!(projection.reducer_events.iter().any(|event| matches!(
+            event,
+            AgentSessionEvent::BackendSessionRecoveryStarted { .. }
+        )));
+        assert!(projection.reducer_events.iter().all(|event| !matches!(
+            event,
+            AgentSessionEvent::StopOperationAccepted { .. }
+                | AgentSessionEvent::TurnInterruptRequested { .. }
+                | AgentSessionEvent::QueuePaused { .. }
+        )));
+    }
+
+    #[test]
     fn recovering_publication_survives_sqlite_authority_restart_without_provider_resume() {
         let app_data_dir = tempfile::tempdir().unwrap();
         let local_store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
@@ -8123,11 +10265,12 @@ mod tests {
                 .record_backend_session_established(
                     app_data_dir.path(),
                     session_id,
+                    0,
+                    &format!("provider-establishment-{session_id}"),
                     format!("provider-{session_id}"),
                     None,
                 )
-                .unwrap()
-                .expect("canonical session exists");
+                .unwrap();
         }
         writer
             .set_session_state(app_data_dir.path(), &closed.id, SessionState::Closed)

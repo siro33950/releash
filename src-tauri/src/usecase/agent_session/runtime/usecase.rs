@@ -39,10 +39,12 @@ use crate::usecase::agent_session::session::{
     SessionMeta,
 };
 use crate::usecase::agent_session::session::{
-    apply_tool_result_update, ChatMessage, ChatSession, ContextCarryState, ErrorEpisodeInput,
-    GetSessionResponse, ImageAttachment, InitialSessionPage, MessagePart, MessageRole, ModelInfo,
-    OpenTabRegistry, PendingRecoveryMessage, PermissionPartStatus, PermissionRequestMsg,
-    QueuedAgentTurn, SessionState, SessionStore, SessionSummary, INITIAL_SESSION_PAGE_LIMIT,
+    apply_tool_result_update, CanonicalQueuedSend, ChatMessage, ChatSession, ContextCarryState,
+    ContextRestoreCompletionRequest, ErrorEpisodeInput, GetSessionResponse, ImageAttachment,
+    InitialSessionPage, MessagePart, MessageRole, ModelInfo, OpenTabRegistry,
+    PendingRecoveryMessage, PermissionPartStatus, PermissionRequestMsg,
+    ProviderSessionEstablishmentOutcome, QueuedAgentTurn, SessionState, SessionStore,
+    SessionSummary, INITIAL_SESSION_PAGE_LIMIT,
 };
 use crate::usecase::agent_session::status::{
     AgentStatusCenter, AgentStatusNotifier, SessionNotice, SessionNoticeKind, SessionStatus,
@@ -58,20 +60,25 @@ use crate::usecase::workflow::ports::{
 };
 
 use super::context_restore::{
-    apply_restore_prompt_prefix, context_restore_plan_for_session_before_turn, ContextRestorePlan,
+    apply_restore_prompt_prefix, context_restore_plan_for_session,
+    context_restore_plan_for_session_before_turn, ContextRestorePlan,
 };
 use super::event_apply::{
     parts_from_domain, pending_permission_request_msg, token_usage_from_domain,
 };
+#[cfg(test)]
+use super::ports::AcceptedSendRecoveryWake;
 use super::ports::{
+    AcceptedQueuedTurnExecutionClaimOutcome, AcceptedSendExecutionClaim,
     AcceptedSendObligationDriver, AgentSessionEventNotifier, AgentSessionStateChangedPayload,
     AgentStallObservedPayload, AgentStreamingDeltaPayload, AgentTaskSpawner, WorkflowStallNotifier,
     WorkflowTurnCompleteNotifier,
 };
 use super::queue::QueuedTurnInput;
 use super::session_state::{
-    BackendSessionRecoveryState, PendingStreamDelta, PermissionRequestVisibility,
-    RuntimeSessionMap, RuntimeSessionPhase, RuntimeSessionState,
+    BackendSessionRecoveryState, BackendSessionRecoveryTurnResume, PendingStreamDelta,
+    PermissionRequestVisibility, ProviderSessionEstablishmentState, RuntimeSessionMap,
+    RuntimeSessionPhase, RuntimeSessionState,
 };
 use super::stale::{
     effective_stale_timeout, has_in_flight_tool_use, recovery_cap_reached, remaining_until_stale,
@@ -105,10 +112,6 @@ async fn acquire_session_runtime_lock(
 
 const CLOSE_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(200);
 const CLOSE_DRAIN_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
-#[cfg(not(test))]
-const PROVIDER_ESTABLISH_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(10);
-#[cfg(test)]
-const PROVIDER_ESTABLISH_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Default)]
 struct ShutdownAdmissionState {
@@ -226,6 +229,7 @@ pub enum AgentRuntimeError {
     StartupTimeout { retry_count: u32, max_retries: u32 },
     BackendSelectionLocked,
     BackendSessionLost { requested_resume_id: String },
+    AcceptedEffectAdmissionDeferred,
     Other(String),
 }
 
@@ -248,12 +252,35 @@ impl std::fmt::Display for AgentRuntimeError {
                 f,
                 "Backend session is no longer available: {requested_resume_id}"
             ),
+            Self::AcceptedEffectAdmissionDeferred => {
+                f.write_str("Accepted effect admission was deferred for durable redrive")
+            }
             Self::Other(message) => f.write_str(message),
         }
     }
 }
 
 impl std::error::Error for AgentRuntimeError {}
+
+fn defer_accepted_effect_preflight(
+    stage: &str,
+    error: impl std::fmt::Display,
+) -> AgentRuntimeError {
+    log::warn!("accepted send preflight deferred before durable effect claim [{stage}]: {error}");
+    AgentRuntimeError::AcceptedEffectAdmissionDeferred
+}
+
+fn classify_turn_preclaim_error(
+    accepted_execution: bool,
+    stage: &str,
+    error: AgentRuntimeError,
+) -> AgentRuntimeError {
+    if accepted_execution {
+        defer_accepted_effect_preflight(stage, error)
+    } else {
+        error
+    }
+}
 
 impl From<AgentBackendError> for AgentRuntimeError {
     fn from(value: AgentBackendError) -> Self {
@@ -369,6 +396,30 @@ pub(crate) struct AcceptedSendExecution<'a> {
     pub assistant_message_id: Option<&'a str>,
     pub disposition: crate::domain::agent_session::events::SendDisposition,
     pub reserved_turn_id: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AcceptedQueueDrainOutcome {
+    NoWork,
+    Blocked,
+    Attempted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AcceptedQueueRedriveReadiness {
+    /// The exact local queue item still has a process-owned reason not to run.
+    Blocked,
+    /// The exact local front can be retried, including transient store errors
+    /// that need the redriver's capped retry ownership.
+    Ready,
+    /// The retained process marker no longer has its exact local queue item.
+    Missing,
+}
+
+#[derive(Debug, Clone)]
+struct AcceptedTurnExecutionIdentity {
+    operation_id: String,
+    execution_obligation_id: String,
 }
 
 #[cfg(test)]
@@ -842,6 +893,7 @@ impl AgentSessionRuntimeUsecase {
                 permission_profile_id: session.permission_profile_id.clone(),
                 editor_context: req.editor_context,
                 system_prompt,
+                accepted_execution_identity: None,
             },
             None,
             None,
@@ -878,17 +930,25 @@ impl AgentSessionRuntimeUsecase {
             disposition,
             reserved_turn_id,
         } = execution;
-        let _admission_guard = self.ctx.shutdown_admission.admit()?;
+        let _admission_guard = self
+            .ctx
+            .shutdown_admission
+            .admit()
+            .map_err(|error| defer_accepted_effect_preflight("shutdown-admission", error))?;
         let _session_guard = acquire_session_control_after_recovery(&self.ctx, session_id).await;
-        self.ensure_session_not_closing(session_id).await?;
+        self.ensure_session_not_closing(session_id)
+            .await
+            .map_err(|error| defer_accepted_effect_preflight("session-closing", error))?;
         let session = self
             .ctx
             .session_store
             .get_session_shell(&self.ctx.data_dir, session_id)
-            .map_err(AgentRuntimeError::Other)?
+            .map_err(|error| defer_accepted_effect_preflight("session-shell", error))?
             .ok_or_else(|| AgentRuntimeError::Other(format!("Session not found: {session_id}")))?;
         let backend_id = required_backend_id(&session)?;
-        self.hydrate_runtime_session_state(&session).await?;
+        self.hydrate_runtime_session_state(&session)
+            .await
+            .map_err(|error| defer_accepted_effect_preflight("runtime-hydration", error))?;
 
         let base_system_prompt = req.base_system_prompt;
         let workflow_instructions = req.workflow_instructions;
@@ -914,17 +974,44 @@ impl AgentSessionRuntimeUsecase {
         match disposition {
             crate::domain::agent_session::events::SendDisposition::Queued { queue_item_id } => {
                 accepted_input.id = queue_item_id;
+                let reserved_turn_id = accepted_input.reserved_turn_id.ok_or_else(|| {
+                    AgentRuntimeError::Other(
+                        "accepted queued send is missing its reserved turn identity".into(),
+                    )
+                })?;
+                let canonical_queue = self
+                    .ctx
+                    .session_store
+                    .canonical_pending_send_queue(session_id)
+                    .map_err(|error| defer_accepted_effect_preflight("canonical-queue", error))?;
                 let mut sessions = self.ctx.sessions.lock().await;
                 let state = sessions
                     .entry(session_id.to_string())
                     .or_insert_with(|| RuntimeSessionState::new(backend_id));
-                if !state
-                    .pending_queue
-                    .iter()
-                    .any(|queued| queued.id == accepted_input.id)
-                {
-                    state.pending_queue.push_back(accepted_input);
+                if state.current_turn_input.as_ref().is_some_and(|current| {
+                    current.accepted_operation_id.as_deref() == Some(operation_id)
+                        && current.execution_obligation_id.as_deref()
+                            == Some(execution_obligation_id)
+                }) {
+                    return Ok(());
                 }
+                if state.pending_queue.iter().any(|queued| {
+                    queued.id != accepted_input.id
+                        && queued.reserved_turn_id == Some(reserved_turn_id)
+                        && (queued.accepted_operation_id.as_deref() != Some(operation_id)
+                            || queued.execution_obligation_id.as_deref()
+                                != Some(execution_obligation_id))
+                }) {
+                    return Err(AgentRuntimeError::Other(format!(
+                        "accepted queued turn identity {reserved_turn_id} is already owned"
+                    )));
+                }
+                insert_accepted_queue_in_canonical_order(
+                    &mut state.pending_queue,
+                    accepted_input,
+                    &canonical_queue,
+                )
+                .map_err(AgentRuntimeError::Other)?;
                 Ok(())
             }
             crate::domain::agent_session::events::SendDisposition::StartedTurn { turn_id } => {
@@ -941,7 +1028,9 @@ impl AgentSessionRuntimeUsecase {
                     .ctx
                     .session_store
                     .canonical_message_projection(session_id, assistant_message_id)
-                    .map_err(AgentRuntimeError::Other)?
+                    .map_err(|error| {
+                        defer_accepted_effect_preflight("assistant-projection", error)
+                    })?
                     .ok_or_else(|| {
                         AgentRuntimeError::Other(
                             "accepted assistant projection is unavailable".into(),
@@ -950,13 +1039,15 @@ impl AgentSessionRuntimeUsecase {
                 self.ctx
                     .notifier
                     .turn_prepared(&session, &human_message, &agent_message);
-                let system_prompt = self.build_turn_system_prompt(
-                    &session,
-                    base_system_prompt,
-                    &accepted_input.mentions,
-                    accepted_input.editor_context.as_ref(),
-                    workflow_instructions,
-                )?;
+                let system_prompt = self
+                    .build_turn_system_prompt(
+                        &session,
+                        base_system_prompt,
+                        &accepted_input.mentions,
+                        accepted_input.editor_context.as_ref(),
+                        workflow_instructions,
+                    )
+                    .map_err(|error| defer_accepted_effect_preflight("system-prompt", error))?;
                 self.start_turn_for_session(
                     &session,
                     &human_message,
@@ -970,6 +1061,10 @@ impl AgentSessionRuntimeUsecase {
                         permission_profile_id: accepted_input.permission_profile_id,
                         editor_context: accepted_input.editor_context,
                         system_prompt,
+                        accepted_execution_identity: Some(AcceptedTurnExecutionIdentity {
+                            operation_id: operation_id.to_string(),
+                            execution_obligation_id: execution_obligation_id.to_string(),
+                        }),
                     },
                     None,
                     Some(committed_turn_id),
@@ -979,63 +1074,9 @@ impl AgentSessionRuntimeUsecase {
         }
     }
 
-    /// Perform only the provider create/resume dependency of an accepted
-    /// send. The caller owns the durable obligation reservation and result;
-    /// this method never starts a turn.
-    pub(crate) async fn establish_accepted_provider(
-        &self,
-        session_id: &str,
-    ) -> Result<(), AgentRuntimeError> {
-        let _admission_guard = self.ctx.shutdown_admission.admit()?;
-        let session_guard = acquire_session_control_after_recovery(&self.ctx, session_id).await;
-        self.ensure_session_not_closing(session_id).await?;
-        let session = self
-            .ctx
-            .session_store
-            .get_session_shell(&self.ctx.data_dir, session_id)
-            .map_err(AgentRuntimeError::Other)?
-            .ok_or_else(|| AgentRuntimeError::Other(format!("Session not found: {session_id}")))?;
-        let establish_meta = self
-            .ctx
-            .session_store
-            .get_session_meta(&self.ctx.data_dir, session_id)
-            .map_err(AgentRuntimeError::Other)?
-            .ok_or_else(|| AgentRuntimeError::Other(format!("Session not found: {session_id}")))?;
-        let establish_generation = establish_meta.provider_session_generation;
-        self.hydrate_runtime_session_state(&session).await?;
-        if self.provider_session_is_confirmed(session_id).await {
-            return Ok(());
-        }
-        self.ensure_runtime(&session, None).await?;
-        drop(session_guard);
-
-        tokio::time::timeout(PROVIDER_ESTABLISH_CONFIRMATION_TIMEOUT, async {
-            loop {
-                let observed = self
-                    .ctx
-                    .session_store
-                    .get_session_meta(&self.ctx.data_dir, session_id)
-                    .map_err(AgentRuntimeError::Other)?
-                    .is_some_and(|meta| {
-                        meta.provider_session_generation > establish_generation
-                            && meta.agent_session_id.is_some()
-                    });
-                if observed && self.provider_session_is_confirmed(session_id).await {
-                    return Ok(());
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .map_err(|_| {
-            AgentRuntimeError::Other(format!(
-                "Provider establishment for session {session_id} has no durable observation"
-            ))
-        })?
-    }
-
     /// A stored provider id is only resume input. It does not prove the
     /// current process has observed a successful create/resume handshake.
+    #[cfg(test)]
     pub(crate) async fn provider_session_is_confirmed(&self, session_id: &str) -> bool {
         let sessions = self.ctx.sessions.lock().await;
         sessions
@@ -1052,6 +1093,25 @@ impl AgentSessionRuntimeUsecase {
             state.phase != RuntimeSessionPhase::Idle
                 || state.queue_paused
                 || !state.pending_queue.is_empty()
+        })
+    }
+
+    /// Process-local ownership proof for hiding only the exact accepted turn
+    /// currently driven by this runtime. Durable status alone cannot
+    /// distinguish a live reservation from one left by a crashed process.
+    pub(crate) async fn owns_accepted_turn_execution(
+        &self,
+        session_id: &str,
+        operation_id: &str,
+        obligation_id: &str,
+    ) -> bool {
+        let sessions = self.ctx.sessions.lock().await;
+        sessions.get(session_id).is_some_and(|state| {
+            state.phase != RuntimeSessionPhase::Idle
+                && state.current_turn_input.as_ref().is_some_and(|input| {
+                    input.accepted_operation_id.as_deref() == Some(operation_id)
+                        && input.execution_obligation_id.as_deref() == Some(obligation_id)
+                })
         })
     }
 
@@ -1225,13 +1285,10 @@ impl AgentSessionRuntimeUsecase {
             }
             let permission_wait_measurement = did_resume_streaming
                 .then(|| {
-                    let started_at = state.permission_wait_started_at.take()?;
-                    let dims = session_telemetry_dimensions(
-                        &self.ctx.session_store,
-                        &self.ctx.data_dir,
-                        session_id,
-                    )?;
-                    Some((started_at.elapsed(), dims))
+                    state
+                        .permission_wait_started_at
+                        .take()
+                        .map(|started_at| started_at.elapsed())
                 })
                 .flatten();
             (
@@ -1247,10 +1304,11 @@ impl AgentSessionRuntimeUsecase {
                 log::warn!("workflow stall-cleared notification failed for {session_id}: {error}");
             }
         }
-        if let Some((elapsed, dims)) = permission_wait_measurement {
-            crate::other::telemetry::record_agent_turn_duration(
+        if let Some(elapsed) = permission_wait_measurement {
+            record_agent_turn_duration_detached(
+                &self.ctx,
+                session_id.to_string(),
                 crate::other::telemetry::AgentTurn::PermissionWait,
-                &dims,
                 elapsed,
             );
         }
@@ -1395,13 +1453,10 @@ impl AgentSessionRuntimeUsecase {
             }
             let permission_wait_measurement = did_resume_streaming
                 .then(|| {
-                    let started_at = state.permission_wait_started_at.take()?;
-                    let dims = session_telemetry_dimensions(
-                        &self.ctx.session_store,
-                        &self.ctx.data_dir,
-                        session_id,
-                    )?;
-                    Some((started_at.elapsed(), dims))
+                    state
+                        .permission_wait_started_at
+                        .take()
+                        .map(|started_at| started_at.elapsed())
                 })
                 .flatten();
             (
@@ -1417,10 +1472,11 @@ impl AgentSessionRuntimeUsecase {
                 log::warn!("workflow stall-cleared notification failed for {session_id}: {error}");
             }
         }
-        if let Some((elapsed, dims)) = permission_wait_measurement {
-            crate::other::telemetry::record_agent_turn_duration(
+        if let Some(elapsed) = permission_wait_measurement {
+            record_agent_turn_duration_detached(
+                &self.ctx,
+                session_id.to_string(),
                 crate::other::telemetry::AgentTurn::PermissionWait,
-                &dims,
                 elapsed,
             );
         }
@@ -2236,6 +2292,7 @@ impl AgentSessionRuntimeUsecase {
                 permission_profile_id: session.permission_profile_id.clone(),
                 editor_context: None,
                 system_prompt,
+                accepted_execution_identity: None,
             },
             Some(queue_transition_guard),
             None,
@@ -2322,40 +2379,199 @@ impl AgentSessionRuntimeUsecase {
         state.phase = RuntimeSessionPhase::Idle;
     }
 
-    pub(crate) async fn drain_accepted_queue_if_idle(&self, session_id: &str) {
+    pub(crate) async fn drain_accepted_queue_if_idle(
+        &self,
+        session_id: &str,
+    ) -> Result<AcceptedQueueDrainOutcome, AgentRuntimeError> {
         let _session_guard = self.ctx.session_locks.acquire(session_id).await;
-        let durable_turn_is_idle = self
+        let (front_requires_durable_idle, runtime_ready, accepted_identity, queue_item_id) = {
+            let sessions = self.ctx.sessions.lock().await;
+            let Some(state) = sessions.get(session_id) else {
+                return Ok(AcceptedQueueDrainOutcome::NoWork);
+            };
+            let Some(front) = state.pending_queue.front() else {
+                return Ok(AcceptedQueueDrainOutcome::NoWork);
+            };
+            if state.closing {
+                return Ok(AcceptedQueueDrainOutcome::NoWork);
+            }
+            (
+                queued_turn_has_accepted_identity(front),
+                state.phase == RuntimeSessionPhase::Idle
+                    && !state.queue_paused
+                    && state.backend_recovery.is_none(),
+                front
+                    .accepted_operation_id
+                    .as_ref()
+                    .zip(front.execution_obligation_id.as_ref())
+                    .map(|(operation_id, obligation_id)| {
+                        (operation_id.clone(), obligation_id.clone())
+                    }),
+                front.id.clone(),
+            )
+        };
+        if !runtime_ready {
+            let Some((operation_id, obligation_id)) = accepted_identity else {
+                return Ok(AcceptedQueueDrainOutcome::Blocked);
+            };
+            return Ok(
+                match self
+                    .accepted_queue_redrive_readiness(session_id, &operation_id, &obligation_id)
+                    .await
+                {
+                    AcceptedQueueRedriveReadiness::Blocked => AcceptedQueueDrainOutcome::Blocked,
+                    // The canonical state already unblocked, but its local
+                    // mirror has not caught up. Keep one bounded redriver alive
+                    // across that projection-to-memory handoff.
+                    AcceptedQueueRedriveReadiness::Ready => AcceptedQueueDrainOutcome::Attempted,
+                    AcceptedQueueRedriveReadiness::Missing => AcceptedQueueDrainOutcome::NoWork,
+                },
+            );
+        }
+        match self
+            .ctx
+            .session_store
+            .load_queue_paused_at(&self.ctx.data_dir, session_id)
+        {
+            Ok(Some(_)) => return Ok(AcceptedQueueDrainOutcome::Blocked),
+            Ok(None) => {}
+            Err(error) => return Err(AgentRuntimeError::Other(error)),
+        }
+        if let Err(failure) = self
+            .ctx
+            .session_store
+            .ensure_no_unresolved_recovery(session_id)
+            .await
+        {
+            if failure.kind
+                == crate::domain::local_event::SessionOperationFailureKind::StorageUnavailable
+            {
+                return Err(AgentRuntimeError::Other(failure.to_string()));
+            }
+            return Ok(AcceptedQueueDrainOutcome::Blocked);
+        }
+        if front_requires_durable_idle {
+            let meta = self
+                .ctx
+                .session_store
+                .get_session_meta(&self.ctx.data_dir, session_id)
+                .map_err(AgentRuntimeError::Other)?
+                .ok_or_else(|| {
+                    AgentRuntimeError::Other(format!("Session not found: {session_id}"))
+                })?;
+            if !matches!(
+                meta.state,
+                SessionState::Idle | SessionState::Done | SessionState::Error
+            ) {
+                return Ok(AcceptedQueueDrainOutcome::Blocked);
+            }
+        }
+        start_next_queued_turn(&self.ctx, session_id).await;
+        let queue_item_remains = {
+            let sessions = self.ctx.sessions.lock().await;
+            sessions.get(session_id).is_some_and(|state| {
+                state.phase == RuntimeSessionPhase::Idle
+                    && state
+                        .pending_queue
+                        .front()
+                        .is_some_and(|front| front.id == queue_item_id)
+            })
+        };
+        if !queue_item_remains {
+            return Ok(AcceptedQueueDrainOutcome::Attempted);
+        }
+        let Some((operation_id, obligation_id)) = accepted_identity else {
+            return Ok(AcceptedQueueDrainOutcome::Blocked);
+        };
+        Ok(
+            match self
+                .accepted_queue_redrive_readiness(session_id, &operation_id, &obligation_id)
+                .await
+            {
+                AcceptedQueueRedriveReadiness::Ready => AcceptedQueueDrainOutcome::Attempted,
+                AcceptedQueueRedriveReadiness::Blocked => AcceptedQueueDrainOutcome::Blocked,
+                AcceptedQueueRedriveReadiness::Missing => AcceptedQueueDrainOutcome::NoWork,
+            },
+        )
+    }
+
+    pub(crate) async fn accepted_queue_redrive_readiness(
+        &self,
+        session_id: &str,
+        operation_id: &str,
+        obligation_id: &str,
+    ) -> AcceptedQueueRedriveReadiness {
+        let requires_durable_idle = {
+            let sessions = self.ctx.sessions.lock().await;
+            let Some(state) = sessions.get(session_id) else {
+                return AcceptedQueueRedriveReadiness::Missing;
+            };
+            let Some(position) = state.pending_queue.iter().position(|queued| {
+                queued.accepted_operation_id.as_deref() == Some(operation_id)
+                    && queued.execution_obligation_id.as_deref() == Some(obligation_id)
+            }) else {
+                return AcceptedQueueRedriveReadiness::Missing;
+            };
+            if state.closing || state.backend_recovery.is_some() || position != 0 {
+                return AcceptedQueueRedriveReadiness::Blocked;
+            }
+            state
+                .pending_queue
+                .front()
+                .is_some_and(queued_turn_has_accepted_identity)
+        };
+        if !requires_durable_idle {
+            return AcceptedQueueRedriveReadiness::Ready;
+        }
+        match self
+            .ctx
+            .session_store
+            .load_queue_paused_at(&self.ctx.data_dir, session_id)
+        {
+            Ok(Some(_)) => return AcceptedQueueRedriveReadiness::Blocked,
+            Ok(None) => {}
+            Err(_) => return AcceptedQueueRedriveReadiness::Ready,
+        }
+        match self
             .ctx
             .session_store
             .get_session_meta(&self.ctx.data_dir, session_id)
-            .ok()
-            .flatten()
-            .is_some_and(|meta| {
-                matches!(
+        {
+            Ok(Some(meta))
+                if !matches!(
                     meta.state,
                     SessionState::Idle | SessionState::Done | SessionState::Error
-                )
-            });
-        let should_drain = {
-            let sessions = self.ctx.sessions.lock().await;
-            sessions.get(session_id).is_some_and(|state| {
-                let front_requires_durable_idle = state
-                    .pending_queue
-                    .front()
-                    .is_some_and(queued_turn_has_accepted_identity);
-                (!front_requires_durable_idle || durable_turn_is_idle)
-                    && state.phase == RuntimeSessionPhase::Idle
-                    && !state.queue_paused
-                    && !state.pending_queue.is_empty()
-            })
-        };
-        if should_drain {
-            start_next_queued_turn(&self.ctx, session_id).await;
+                ) =>
+            {
+                return AcceptedQueueRedriveReadiness::Blocked;
+            }
+            // A missing or temporarily unreadable projection must enter the
+            // bounded redriver. It will either recover the exact local item or
+            // retire/reconcile it; treating the read error as owned forever
+            // would strand the accepted obligation without another signal.
+            Ok(None) | Err(_) => return AcceptedQueueRedriveReadiness::Ready,
+            Ok(Some(_)) => {}
         }
+        if let Err(failure) = self
+            .ctx
+            .session_store
+            .ensure_no_unresolved_recovery(session_id)
+            .await
+        {
+            return if failure.kind
+                == crate::domain::local_event::SessionOperationFailureKind::StorageUnavailable
+            {
+                AcceptedQueueRedriveReadiness::Ready
+            } else {
+                AcceptedQueueRedriveReadiness::Blocked
+            };
+        }
+        AcceptedQueueRedriveReadiness::Ready
     }
 
     #[cfg(test)]
     pub(crate) async fn drain_next_queued_turn_for_test(&self, session_id: &str) {
+        let _session_guard = self.ctx.session_locks.acquire(session_id).await;
         start_next_queued_turn(&self.ctx, session_id).await;
     }
 
@@ -2528,40 +2744,51 @@ impl AgentSessionRuntimeUsecase {
         queue_transition_guard: Option<SessionLockGuard>,
         committed_turn_id: Option<u64>,
     ) -> Result<(), AgentRuntimeError> {
+        let accepted_execution = payload.accepted_execution_identity.is_some();
+        let accepted_running_identity = payload.accepted_execution_identity.clone();
         let had_runtime = self.live_runtime(&session.id).await.is_some();
         let restore_policy =
             context_restore_policy_for_turn(&self.ctx, &session.id, &agent_message_id, had_runtime)
-                .map_err(AgentRuntimeError::Other)?;
+                .map_err(|error| {
+                    classify_turn_preclaim_error(
+                        accepted_execution,
+                        "context-restore",
+                        AgentRuntimeError::Other(error),
+                    )
+                })?;
         let context_was_reinjected =
             matches!(&restore_policy.plan, ContextRestorePlan::Reinject { .. });
+        let clear_context_carry_after_start =
+            !had_runtime && matches!(&restore_policy.plan, ContextRestorePlan::NoContext);
         let recovery_restore_required = restore_policy.recovery_restore_required;
+        let expected_provider_session_generation =
+            restore_policy.expected_provider_session_generation;
         let restore_plan = restore_policy.plan;
-        if restore_plan.carry_state() == Some(ContextCarryState::Reinjected) {
-            if let Some(meta) = self
-                .ctx
-                .session_store
-                .update_context_carry_if_changed(
-                    &self.ctx.data_dir,
-                    &session.id,
-                    Some(ContextCarryState::Reinjected),
-                )
-                .map_err(AgentRuntimeError::Other)?
-            {
-                self.ctx.notifier.context_carry_updated(
-                    &session.id,
-                    meta.agent_session_id,
-                    meta.context_carry,
-                    meta.updated_at,
-                );
-            }
-        }
+        let original_prompt = payload.prompt.clone();
         payload.prompt = apply_restore_prompt_prefix(payload.prompt, &restore_plan);
+        let selected_model = had_runtime
+            .then(|| selected_model_for_runtime(&self.ctx, session))
+            .transpose()
+            .map_err(|error| {
+                classify_turn_preclaim_error(
+                    accepted_execution,
+                    "selected-model",
+                    AgentRuntimeError::from(error),
+                )
+            })?;
         let turn_id = match committed_turn_id {
             Some(turn_id) => turn_id,
             None => next_turn_id(&self.ctx.session_store, &self.ctx.data_dir, &session.id)
-                .map_err(AgentRuntimeError::Other)?,
+                .map_err(|error| {
+                    classify_turn_preclaim_error(
+                        accepted_execution,
+                        "turn-identity",
+                        AgentRuntimeError::Other(error),
+                    )
+                })?,
         };
-        let backend_id = required_backend_id(session)?;
+        let backend_id = required_backend_id(session)
+            .map_err(|error| classify_turn_preclaim_error(accepted_execution, "backend", error))?;
         let prompt_message = self
             .ctx
             .session_store
@@ -2570,19 +2797,73 @@ impl AgentSessionRuntimeUsecase {
                 &session.id,
                 &agent_message_id,
             )
-            .map_err(AgentRuntimeError::Other)?
+            .map_err(|error| {
+                classify_turn_preclaim_error(
+                    accepted_execution,
+                    "prompt-message",
+                    AgentRuntimeError::Other(error),
+                )
+            })?
             .unwrap_or_else(|| human_message.clone());
-        let queue_paused_at = self
-            .ctx
-            .session_store
-            .load_queue_paused_at(&self.ctx.data_dir, &session.id)
-            .map_err(AgentRuntimeError::Other)?;
         let queue_transition_guard = match queue_transition_guard {
             Some(guard) => guard,
             None => self.ctx.transitions.acquire(&session.id).await,
         };
+        let queue_paused_at = self
+            .ctx
+            .session_store
+            .load_queue_paused_at(&self.ctx.data_dir, &session.id)
+            .map_err(|error| {
+                classify_turn_preclaim_error(
+                    accepted_execution,
+                    "queue-pause",
+                    AgentRuntimeError::Other(error),
+                )
+            })?;
+        let queue_is_blocked = queue_paused_at.is_some()
+            || self
+                .ctx
+                .sessions
+                .lock()
+                .await
+                .get(&session.id)
+                .is_some_and(|state| state.queue_paused);
+        if queue_is_blocked && payload.accepted_execution_identity.is_some() {
+            return Err(AgentRuntimeError::AcceptedEffectAdmissionDeferred);
+        }
+        let accepted_claim = if let Some(identity) = payload.accepted_execution_identity.as_ref() {
+            let driver = self
+                .ctx
+                .accepted_send_obligation_driver
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            match driver {
+                Some(driver) => Some(
+                    driver
+                        .claim_immediate_turn_execution(
+                            &identity.operation_id,
+                            &identity.execution_obligation_id,
+                        )
+                        .await
+                        .map_err(|()| AgentRuntimeError::AcceptedEffectAdmissionDeferred)?,
+                ),
+                None => {
+                    #[cfg(test)]
+                    {
+                        Some(AcceptedSendExecutionClaim::new(|| {}))
+                    }
+                    #[cfg(not(test))]
+                    {
+                        return Err(AgentRuntimeError::AcceptedEffectAdmissionDeferred);
+                    }
+                }
+            }
+        } else {
+            None
+        };
         let mut current_turn_input = QueuedTurnInput::new(
-            payload.prompt.clone(),
+            original_prompt,
             payload.permission_mode,
             payload.plan_mode,
             payload.permission_profile_id.clone(),
@@ -2593,6 +2874,10 @@ impl AgentSessionRuntimeUsecase {
         );
         current_turn_input.existing_human_message_id = Some(human_message.id.clone());
         current_turn_input.existing_agent_message_id = Some(agent_message_id.clone());
+        if let Some(identity) = payload.accepted_execution_identity.take() {
+            current_turn_input.accepted_operation_id = Some(identity.operation_id);
+            current_turn_input.execution_obligation_id = Some(identity.execution_obligation_id);
+        }
         let generation = {
             let mut sessions = self.ctx.sessions.lock().await;
             let state = sessions.entry(session.id.clone()).or_insert_with(|| {
@@ -2609,6 +2894,7 @@ impl AgentSessionRuntimeUsecase {
             generation
         };
         drop(queue_transition_guard);
+        let _accepted_claim = accepted_claim;
         if committed_turn_id.is_none() {
             if let Err(error) = self
                 .ctx
@@ -2686,7 +2972,14 @@ impl AgentSessionRuntimeUsecase {
             return Ok(());
         }
         if !start_committed {
-            return Ok(());
+            return if accepted_execution {
+                Err(AgentRuntimeError::Other(format!(
+                    "accepted turn lost its live start ownership for session {}",
+                    session.id
+                )))
+            } else {
+                Ok(())
+            };
         }
         let runtime_result = self
             .ensure_runtime_for_turn(session, payload.system_prompt.clone(), generation)
@@ -2699,6 +2992,24 @@ impl AgentSessionRuntimeUsecase {
                     BackendSessionRecoveryReason::BackendSessionLost,
                 )
                 .await?;
+                if accepted_execution {
+                    let retained = {
+                        let sessions = self.ctx.sessions.lock().await;
+                        sessions.get(&session.id).is_some_and(|state| {
+                            state.phase != RuntimeSessionPhase::Idle
+                                && state.current_turn_input.as_ref().is_some_and(|input| {
+                                    input.accepted_operation_id.is_some()
+                                        && input.execution_obligation_id.is_some()
+                                })
+                        })
+                    };
+                    if !retained {
+                        return Err(AgentRuntimeError::Other(format!(
+                            "accepted backend recovery failed for session {}",
+                            session.id
+                        )));
+                    }
+                }
                 return Ok(());
             }
             result => result,
@@ -2716,7 +3027,14 @@ impl AgentSessionRuntimeUsecase {
                         })
                     };
                     if !should_report_failure {
-                        return Ok(());
+                        return if accepted_execution {
+                            Err(AgentRuntimeError::Other(format!(
+                                "accepted turn lost its runtime-open outcome for session {}",
+                                session.id
+                            )))
+                        } else {
+                            Ok(())
+                        };
                     }
                     let message = error.to_string();
                     let (notification, interrupt_was_accepted) = complete_turn_with_acceptance(
@@ -2746,15 +3064,19 @@ impl AgentSessionRuntimeUsecase {
             };
             if !turn_owns_runtime(&self.ctx, &session.id, generation, &runtime).await {
                 detach_runtime_if_current(&self.ctx, &session.id, &runtime).await;
-                return Ok(());
+                return if accepted_execution {
+                    Err(AgentRuntimeError::Other(format!(
+                        "accepted turn lost provider ownership before input for session {}",
+                        session.id
+                    )))
+                } else {
+                    Ok(())
+                };
             }
             runtime
         };
-        let selected_model = had_runtime
-            .then(|| selected_model_for_runtime(&self.ctx, session))
-            .transpose();
         let start_result = async {
-            if let Some(model) = selected_model? {
+            if let Some(model) = selected_model {
                 runtime.set_model(&model).await?;
             }
             runtime
@@ -2783,26 +3105,46 @@ impl AgentSessionRuntimeUsecase {
                 if !turn_owns_runtime(&self.ctx, &session.id, generation, &runtime).await {
                     return Ok(());
                 }
-                if recovery_restore_required {
-                    complete_context_reinjection_after_start(
-                        &self.ctx,
-                        &session.id,
-                        context_was_reinjected,
-                    )
-                    .map_err(AgentRuntimeError::Other)?;
-                }
                 self.spawn_stale_watchdog(
                     session.id.clone(),
                     generation,
                     stale_timeout_for_session(session),
                 );
-                emit_session_state_change(
-                    &self.ctx.session_store,
+                let runtime_epoch = {
+                    let sessions = self.ctx.sessions.lock().await;
+                    sessions
+                        .get(&session.id)
+                        .filter(|state| state.generation == generation)
+                        .map(|state| state.runtime_epoch)
+                };
+                if let Some(identity) = accepted_running_identity {
+                    mark_accepted_turn_running_or_retry(
+                        &self.ctx,
+                        &session.id,
+                        generation,
+                        identity.operation_id,
+                        identity.execution_obligation_id,
+                        turn_id,
+                    );
+                }
+                drop(_runtime_event_guard);
+                complete_context_restore_after_start_or_retry(
+                    &self.ctx,
+                    session.id.clone(),
+                    runtime_epoch.unwrap_or_default(),
+                    ContextRestoreCompletionRequest::after_started_turn(
+                        expected_provider_session_generation,
+                        turn_id,
+                        context_was_reinjected,
+                        clear_context_carry_after_start,
+                        recovery_restore_required,
+                    ),
+                );
+                emit_session_state_change_from_session(
+                    session,
                     &self.ctx.notifier,
                     &self.ctx.status_center,
                     &self.ctx.status_notifier,
-                    &self.ctx.data_dir,
-                    &session.id,
                     StateChange {
                         turn_phase: TurnPhase::Streaming,
                         queue_paused: None,
@@ -2818,7 +3160,14 @@ impl AgentSessionRuntimeUsecase {
             }
             Err(error) => {
                 if !turn_runtime_is_current(&self.ctx, &session.id, generation, &runtime).await {
-                    return Ok(());
+                    return if accepted_execution {
+                        Err(AgentRuntimeError::Other(format!(
+                            "accepted turn lost its provider failure outcome for session {}",
+                            session.id
+                        )))
+                    } else {
+                        Ok(())
+                    };
                 }
                 let message = error.to_string();
                 let (notification, interrupt_was_accepted) = complete_turn_with_acceptance(
@@ -2848,6 +3197,7 @@ impl AgentSessionRuntimeUsecase {
         }
     }
 
+    #[cfg(test)]
     async fn ensure_runtime(
         &self,
         session: &ChatSession,
@@ -3594,6 +3944,7 @@ fn spawn_event_pump_task(
 struct TurnContextRestorePolicy {
     plan: ContextRestorePlan,
     recovery_restore_required: bool,
+    expected_provider_session_generation: u64,
 }
 
 fn context_restore_policy_for_turn(
@@ -3609,6 +3960,7 @@ fn context_restore_policy_for_turn(
         return Ok(TurnContextRestorePolicy {
             plan: ContextRestorePlan::NoContext,
             recovery_restore_required: false,
+            expected_provider_session_generation: 0,
         });
     };
     let reinjection_required =
@@ -3617,6 +3969,7 @@ fn context_restore_policy_for_turn(
         return Ok(TurnContextRestorePolicy {
             plan: ContextRestorePlan::NoContext,
             recovery_restore_required: false,
+            expected_provider_session_generation: meta.provider_session_generation,
         });
     }
 
@@ -3635,29 +3988,202 @@ fn context_restore_policy_for_turn(
             streaming_agent_message_id,
         ),
         recovery_restore_required: reinjection_required,
+        expected_provider_session_generation: meta.provider_session_generation,
     })
 }
 
-fn complete_context_reinjection_after_start(
+fn context_restore_policy_before_human_message(
     ctx: &RuntimeContext,
     session_id: &str,
-    reinjected: bool,
+    human_message_id: &str,
+    had_runtime: bool,
+) -> Result<TurnContextRestorePolicy, String> {
+    let Some(meta) = ctx
+        .session_store
+        .get_session_meta(&ctx.data_dir, session_id)?
+    else {
+        return Ok(TurnContextRestorePolicy {
+            plan: ContextRestorePlan::NoContext,
+            recovery_restore_required: false,
+            expected_provider_session_generation: 0,
+        });
+    };
+    let reinjection_required =
+        meta.context_reinjection_generation == Some(meta.provider_session_generation);
+    if had_runtime && !reinjection_required {
+        return Ok(TurnContextRestorePolicy {
+            plan: ContextRestorePlan::NoContext,
+            recovery_restore_required: false,
+            expected_provider_session_generation: meta.provider_session_generation,
+        });
+    }
+
+    let mut persisted = ctx
+        .session_store
+        .load_full_session_for_restore(&ctx.data_dir, session_id)?;
+    if let Some(session) = persisted.as_mut() {
+        let boundary = session
+            .messages
+            .iter()
+            .position(|message| message.id == human_message_id)
+            .ok_or_else(|| {
+                format!(
+                    "accepted queued human message is absent from restore history: {human_message_id}"
+                )
+            })?;
+        session.messages.truncate(boundary);
+        if reinjection_required {
+            session.agent_session_id = None;
+            session.context_carry = None;
+        }
+    }
+    Ok(TurnContextRestorePolicy {
+        plan: context_restore_plan_for_session(persisted.as_ref()),
+        recovery_restore_required: reinjection_required,
+        expected_provider_session_generation: meta.provider_session_generation,
+    })
+}
+
+fn context_restore_plan_for_backend_recovery(
+    ctx: &RuntimeContext,
+    session_id: &str,
+    streaming_agent_message_id: &str,
+) -> Result<ContextRestorePlan, String> {
+    let mut persisted = ctx
+        .session_store
+        .load_full_session_for_restore(&ctx.data_dir, session_id)?;
+    if let Some(session) = persisted.as_mut() {
+        // `begin_backend_session_recovery` deliberately clears the dead
+        // provider identity and marks carry Failed. That durable marker fences
+        // ordinary turns, but the already-accepted current turn must rebuild
+        // the history that preceded its exact human input on the replacement
+        // runtime.
+        session.agent_session_id = None;
+        session.context_carry = None;
+    }
+    Ok(context_restore_plan_for_session_before_turn(
+        persisted.as_ref(),
+        streaming_agent_message_id,
+    ))
+}
+
+fn complete_context_restore_after_start(
+    ctx: &RuntimeContext,
+    session_id: &str,
+    request: ContextRestoreCompletionRequest,
 ) -> Result<(), String> {
-    match ctx.session_store.complete_context_reinjection_if_required(
-        &ctx.data_dir,
-        session_id,
-        reinjected,
-    ) {
-        Ok(Some(meta)) => ctx.notifier.context_carry_updated(
+    if let Some(meta) = ctx
+        .session_store
+        .complete_context_restore_after_start_if_current(&ctx.data_dir, session_id, request)?
+    {
+        ctx.notifier.context_carry_updated(
             session_id,
             meta.agent_session_id,
             meta.context_carry,
             meta.updated_at,
-        ),
-        Ok(None) => {}
-        Err(error) => return Err(error),
+        );
     }
     Ok(())
+}
+
+fn complete_context_restore_after_start_or_retry(
+    ctx: &RuntimeContext,
+    session_id: String,
+    runtime_epoch: u64,
+    request: ContextRestoreCompletionRequest,
+) {
+    if let Err(error) = complete_context_restore_after_start(ctx, &session_id, request) {
+        log::warn!("context restore completion will retry for {session_id}: {error}");
+        retry_context_restore_completion(ctx, session_id, runtime_epoch, request);
+    }
+}
+
+fn retry_context_restore_completion(
+    ctx: &RuntimeContext,
+    session_id: String,
+    runtime_epoch: u64,
+    request: ContextRestoreCompletionRequest,
+) {
+    let ctx = ctx.clone();
+    let spawner = Arc::clone(&ctx.spawner);
+    spawner.spawn(Box::pin(async move {
+        let mut retry_delay = Duration::from_millis(25);
+        loop {
+            let still_current = {
+                let sessions = ctx.sessions.lock().await;
+                sessions
+                    .get(&session_id)
+                    .is_some_and(|state| state.runtime_epoch == runtime_epoch)
+            };
+            if !still_current {
+                return;
+            }
+            match complete_context_restore_after_start(&ctx, &session_id, request) {
+                Ok(()) => return,
+                Err(error) => {
+                    if matches!(
+                        ctx.session_store
+                            .get_session_meta(&ctx.data_dir, &session_id),
+                        Ok(None)
+                    ) {
+                        return;
+                    }
+                    log::warn!(
+                        "context restore completion remains pending for {session_id}: {error}"
+                    );
+                }
+            }
+            tokio::time::sleep(retry_delay).await;
+            retry_delay = retry_delay.saturating_mul(2).min(Duration::from_secs(1));
+        }
+    }));
+}
+
+fn mark_accepted_turn_running_or_retry(
+    ctx: &RuntimeContext,
+    session_id: &str,
+    generation: u64,
+    operation_id: String,
+    obligation_id: String,
+    turn_id: u64,
+) {
+    let driver = ctx
+        .accepted_send_obligation_driver
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    let Some(driver) = driver else {
+        log::error!("accepted turn has no running-status driver [{operation_id}/{obligation_id}]");
+        return;
+    };
+    let ctx = ctx.clone();
+    let session_id = session_id.to_string();
+    let spawner = Arc::clone(&ctx.spawner);
+    spawner.spawn(Box::pin(async move {
+        let mut retry_delay = Duration::from_millis(25);
+        loop {
+            let still_owned = {
+                let sessions = ctx.sessions.lock().await;
+                sessions.get(&session_id).is_some_and(|state| {
+                    state.generation == generation
+                        && state.current_turn_id == Some(turn_id)
+                        && state.phase != RuntimeSessionPhase::Idle
+                })
+            };
+            if !still_owned {
+                return;
+            }
+            if driver
+                .mark_turn_running(&operation_id, &obligation_id, turn_id)
+                .await
+                .is_ok()
+            {
+                return;
+            }
+            retry_delay = retry_delay.saturating_mul(2).min(Duration::from_secs(1));
+            tokio::time::sleep(retry_delay).await;
+        }
+    }));
 }
 
 async fn recover_backend_session(
@@ -3675,6 +4201,39 @@ async fn recover_backend_session_with_identity(
     reason: BackendSessionRecoveryReason,
     recovery_id: String,
 ) -> Result<(), AgentRuntimeError> {
+    recover_backend_session_with_identity_lock_state(ctx, session_id, reason, recovery_id, false)
+        .await
+}
+
+async fn recover_backend_session_with_identity_lock_state(
+    ctx: &RuntimeContext,
+    session_id: &str,
+    reason: BackendSessionRecoveryReason,
+    recovery_id: String,
+    runtime_event_lock_held: bool,
+) -> Result<(), AgentRuntimeError> {
+    // Stop acceptance is the terminal owner for the active turn. Its durable
+    // QueuePaused projection closes the small interval before the production
+    // gate installs the matching process-generation fence; the in-memory
+    // fence covers all later provider events. Reopening here would resubmit an
+    // input that Stop already owns and make the old runtime's terminal stale.
+    let durable_queue_paused = ctx
+        .session_store
+        .load_queue_paused_at(&ctx.data_dir, session_id)
+        .map_err(AgentRuntimeError::Other)?
+        .is_some();
+    let stop_owns_current_turn = {
+        let sessions = ctx.sessions.lock().await;
+        sessions.get(session_id).is_some_and(|state| {
+            state.phase != RuntimeSessionPhase::Idle
+                && (durable_queue_paused
+                    || state.interrupt_requested_generation == Some(state.generation))
+        })
+    };
+    if stop_owns_current_turn {
+        return Ok(());
+    }
+
     let existing_recovery = {
         let sessions = ctx.sessions.lock().await;
         sessions
@@ -3690,7 +4249,13 @@ async fn recover_backend_session_with_identity(
     if let Some((existing_recovery_id, pending_failure)) = existing_recovery {
         if existing_recovery_id == recovery_id {
             if let Some(error) = pending_failure {
-                return fail_backend_session_recovery(ctx, session_id, &error).await;
+                return if schedule_backend_session_recovery_failure(ctx, session_id, error).await? {
+                    Ok(())
+                } else {
+                    Err(AgentRuntimeError::Other(format!(
+                        "backend recovery completion is already settling for {session_id}"
+                    )))
+                };
             }
         }
         // A duplicate provider event must join the recovery already owning
@@ -3699,32 +4264,84 @@ async fn recover_backend_session_with_identity(
         return Ok(());
     }
 
-    let meta = ctx
+    let recovery_start = ctx
         .session_store
         .begin_backend_session_recovery(&ctx.data_dir, session_id, &recovery_id, reason)
         .map_err(AgentRuntimeError::Other)?;
+    let meta = match recovery_start {
+        crate::usecase::agent_session::session::BackendSessionRecoveryStartOutcome::Started(
+            meta,
+        ) => *meta,
+        crate::usecase::agent_session::session::BackendSessionRecoveryStartOutcome::SuppressedByQueuePause => {
+            return Ok(());
+        }
+    };
 
     let backend_id = meta.backend_id.clone();
     let (completion, _) = tokio::sync::watch::channel(false);
-    let old_runtime = {
+    let (old_runtime, accepted_turn) = {
         let mut sessions = ctx.sessions.lock().await;
         let state = sessions
             .entry(session_id.to_string())
             .or_insert_with(|| RuntimeSessionState::new(backend_id));
         let runtime = state.runtime.take();
-        if let Some(mut current_turn) = state.current_turn_input.take() {
-            current_turn.id = uuid::Uuid::new_v4().to_string();
-            state.pending_queue.push_front(current_turn);
-        }
-        state.rollback_started_turn();
+        let current_turn_id = state.current_turn_id;
+        let current_turn = state.current_turn_input.take();
+        let accepted_turn = match current_turn {
+            Some(current_turn)
+                if current_turn.accepted_operation_id.is_some()
+                    && current_turn.execution_obligation_id.is_some()
+                    && current_turn_id.is_some()
+                    && current_turn.existing_agent_message_id.is_some() =>
+            {
+                let turn_id = current_turn_id.expect("accepted turn identity was checked");
+                let agent_message_id = current_turn
+                    .existing_agent_message_id
+                    .clone()
+                    .expect("accepted assistant identity was checked");
+                // The durable TurnExecution is already claimed. Retain that
+                // exact input as the current process owner and start a new
+                // process generation for the replacement runtime; never route
+                // it through the normal queued Pending -> EffectReserved claim
+                // again.
+                state.rollback_started_turn();
+                let generation =
+                    state.register_turn_start_intent(turn_id, agent_message_id.clone());
+                state.commit_turn_start(agent_message_id);
+                state.current_turn_input = Some(current_turn.clone());
+                Some((current_turn, generation))
+            }
+            Some(mut current_turn) => {
+                // Legacy turns, and any incomplete process-local accepted
+                // identity, remain explicitly queued instead of disappearing
+                // during recovery. The accepted queue fence will reject a
+                // partial identity without provider I/O.
+                current_turn.id = uuid::Uuid::new_v4().to_string();
+                state.rollback_started_turn();
+                state.pending_queue.push_front(current_turn);
+                None
+            }
+            None => {
+                state.rollback_started_turn();
+                None
+            }
+        };
         state.backend_recovery = Some(BackendSessionRecoveryState {
             recovery_id: recovery_id.clone(),
             old_provider_session_generation: meta.provider_session_generation,
             reason,
             pending_failure: None,
+            turn_resume: if accepted_turn.is_some() {
+                BackendSessionRecoveryTurnResume::AwaitingAcceptedTurnStart
+            } else {
+                BackendSessionRecoveryTurnResume::NoStartedTurn
+            },
+            observed_backend_session_id: None,
+            completion_in_flight: false,
+            failure_in_flight: false,
             completion,
         });
-        runtime
+        (runtime, accepted_turn)
     };
     if let Some(runtime) = old_runtime {
         runtime.close().await;
@@ -3740,11 +4357,18 @@ async fn recover_backend_session_with_identity(
         }) {
         Ok(session) => session,
         Err(error) => {
-            return persist_backend_session_recovery_failure(ctx, session_id, error.to_string())
-                .await;
+            return fail_backend_recovery_before_claimed_turn_resume(
+                ctx,
+                session_id,
+                accepted_turn.as_ref(),
+                error.to_string(),
+            )
+            .await;
         }
     };
-    let queued = {
+    let queued = if let Some((accepted_turn, _)) = &accepted_turn {
+        Some(accepted_turn.clone())
+    } else {
         let sessions = ctx.sessions.lock().await;
         sessions
             .get(session_id)
@@ -3768,74 +4392,445 @@ async fn recover_backend_session_with_identity(
     {
         Ok(system_prompt) => system_prompt,
         Err(error) => {
-            return persist_backend_session_recovery_failure(ctx, session_id, error.to_string())
-                .await;
+            return fail_backend_recovery_before_claimed_turn_resume(
+                ctx,
+                session_id,
+                accepted_turn.as_ref(),
+                error.to_string(),
+            )
+            .await;
         }
     };
 
-    if let Err(error) = open_runtime_for_session(ctx, &session, system_prompt, None).await {
-        return persist_backend_session_recovery_failure(ctx, session_id, error.to_string()).await;
+    let runtime = match open_runtime_for_session(ctx, &session, system_prompt.clone(), None).await {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            return fail_backend_recovery_before_claimed_turn_resume(
+                ctx,
+                session_id,
+                accepted_turn.as_ref(),
+                error.to_string(),
+            )
+            .await;
+        }
+    };
+    if let Some((accepted_turn, generation)) = accepted_turn {
+        resume_claimed_turn_during_backend_recovery(
+            ctx,
+            &session,
+            runtime,
+            accepted_turn,
+            generation,
+            system_prompt,
+            runtime_event_lock_held,
+        )
+        .await?;
     }
     Ok(())
 }
 
-async fn complete_backend_session_recovery(
+fn reconcile_claimed_turn_after_backend_recovery_failure(
+    ctx: &RuntimeContext,
+    input: &QueuedTurnInput,
+) {
+    let (Some(operation_id), Some(obligation_id)) = (
+        input.accepted_operation_id.clone(),
+        input.execution_obligation_id.clone(),
+    ) else {
+        return;
+    };
+    let driver = ctx
+        .accepted_send_obligation_driver
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    let Some(driver) = driver else {
+        log::error!(
+            "accepted backend recovery lost its obligation driver [{operation_id}/{obligation_id}]"
+        );
+        return;
+    };
+    let spawner = Arc::clone(&ctx.spawner);
+    spawner.spawn(Box::pin(async move {
+        if let Some(recovery_wake) = driver
+            .reconcile_turn_execution(&operation_id, &obligation_id)
+            .await
+        {
+            recovery_wake.publish();
+        }
+    }));
+}
+
+async fn fail_claimed_turn_backend_recovery(
     ctx: &RuntimeContext,
     session_id: &str,
-    backend_session_id: String,
-) -> Result<bool, AgentRuntimeError> {
-    let recovery = {
+    generation: u64,
+    _input: &QueuedTurnInput,
+    error: String,
+) -> Result<(), AgentRuntimeError> {
+    let still_current = {
         let sessions = ctx.sessions.lock().await;
-        sessions.get(session_id).and_then(|state| {
-            state.backend_recovery.as_ref().map(|recovery| {
-                (
-                    recovery.recovery_id.clone(),
-                    recovery.old_provider_session_generation,
-                    recovery.reason,
+        sessions
+            .get(session_id)
+            .is_some_and(|state| state.generation == generation)
+    };
+    if !still_current {
+        return Ok(());
+    }
+    persist_backend_session_recovery_failure(ctx, session_id, error).await
+}
+
+async fn fail_backend_recovery_before_claimed_turn_resume(
+    ctx: &RuntimeContext,
+    session_id: &str,
+    accepted_turn: Option<&(QueuedTurnInput, u64)>,
+    error: String,
+) -> Result<(), AgentRuntimeError> {
+    if let Some((input, generation)) = accepted_turn {
+        return fail_claimed_turn_backend_recovery(ctx, session_id, *generation, input, error)
+            .await;
+    }
+    persist_backend_session_recovery_failure(ctx, session_id, error).await
+}
+
+/// Continue the exact accepted execution on a replacement provider runtime.
+///
+/// `TurnExecution` was already claimed before the original runtime open, so
+/// this path must neither enqueue the input nor repeat the durable claim. In
+/// particular it submits the first input before waiting for
+/// `SessionEstablished`; Claude reports that identity only after receiving
+/// the input.
+async fn resume_claimed_turn_during_backend_recovery(
+    ctx: &RuntimeContext,
+    session: &ChatSession,
+    runtime: Arc<dyn AgentSessionRuntime>,
+    input: QueuedTurnInput,
+    generation: u64,
+    system_prompt: Option<String>,
+    runtime_event_lock_held: bool,
+) -> Result<(), AgentRuntimeError> {
+    let agent_message_id = match input.existing_agent_message_id.as_deref() {
+        Some(agent_message_id) => agent_message_id,
+        None => {
+            return fail_claimed_turn_backend_recovery(
+                ctx,
+                &session.id,
+                generation,
+                &input,
+                "accepted backend recovery has no assistant identity".to_string(),
+            )
+            .await;
+        }
+    };
+    let restore_plan =
+        match context_restore_plan_for_backend_recovery(ctx, &session.id, agent_message_id) {
+            Ok(plan) => plan,
+            Err(error) => {
+                return fail_claimed_turn_backend_recovery(
+                    ctx,
+                    &session.id,
+                    generation,
+                    &input,
+                    error,
                 )
-            })
+                .await;
+            }
+        };
+    let context_was_reinjected = matches!(&restore_plan, ContextRestorePlan::Reinject { .. });
+    if !turn_owns_runtime(ctx, &session.id, generation, &runtime).await {
+        detach_runtime_if_current(ctx, &session.id, &runtime).await;
+        return Ok(());
+    }
+    let prompt = apply_restore_prompt_prefix(input.content.clone(), &restore_plan);
+    let start_result = runtime
+        .start_turn(TurnInput {
+            prompt,
+            images: input
+                .images
+                .iter()
+                .cloned()
+                .map(|image| AttachmentPayload {
+                    data: image.data,
+                    media_type: image.media_type,
+                })
+                .collect(),
+            system_prompt,
+            permission_mode: input.permission_mode,
+            plan_mode: input.plan_mode,
+            permission_profile_id: input.permission_profile_id.clone(),
+            editor_context: input.editor_context.clone().map(EditorContext::from),
         })
+        .await;
+    let _runtime_event_guard = if runtime_event_lock_held {
+        None
+    } else {
+        Some(ctx.runtime_event_locks.acquire(&session.id).await)
     };
-    let Some((recovery_id, old_provider_session_generation, reason)) = recovery else {
-        return Ok(false);
+    if let Err(error) = start_result {
+        if !turn_runtime_is_current(ctx, &session.id, generation, &runtime).await {
+            return Ok(());
+        }
+        return fail_claimed_turn_backend_recovery(
+            ctx,
+            &session.id,
+            generation,
+            &input,
+            error.to_string(),
+        )
+        .await;
+    }
+    if !turn_owns_runtime(ctx, &session.id, generation, &runtime).await {
+        return Ok(());
+    }
+    spawn_stale_watchdog_task(
+        ctx,
+        session.id.clone(),
+        generation,
+        stale_timeout_for_session(session),
+    );
+    let recovery_id = {
+        let mut sessions = ctx.sessions.lock().await;
+        let Some(state) = sessions.get_mut(&session.id) else {
+            return Ok(());
+        };
+        if state.generation != generation {
+            return Ok(());
+        }
+        let Some(recovery) = state.backend_recovery.as_mut() else {
+            return Ok(());
+        };
+        recovery.turn_resume = BackendSessionRecoveryTurnResume::AcceptedTurnStarted {
+            context_was_reinjected,
+        };
+        recovery.recovery_id.clone()
     };
-    let meta = ctx
+    retry_backend_session_recovery_completion(ctx, session.id.clone(), generation, recovery_id);
+    let turn_id = {
+        let sessions = ctx.sessions.lock().await;
+        sessions
+            .get(&session.id)
+            .filter(|state| state.generation == generation)
+            .and_then(|state| state.current_turn_id)
+    }
+    .ok_or_else(|| {
+        AgentRuntimeError::Other(format!(
+            "accepted backend recovery lost its turn identity for {}",
+            session.id
+        ))
+    })?;
+    let (operation_id, obligation_id) = match (
+        input.accepted_operation_id.clone(),
+        input.execution_obligation_id.clone(),
+    ) {
+        (Some(operation_id), Some(obligation_id)) => (operation_id, obligation_id),
+        _ => {
+            return Err(AgentRuntimeError::Other(format!(
+                "accepted backend recovery lost its operation identity for {}",
+                session.id
+            )));
+        }
+    };
+    mark_accepted_turn_running_or_retry(
+        ctx,
+        &session.id,
+        generation,
+        operation_id,
+        obligation_id,
+        turn_id,
+    );
+    emit_session_state_change_from_session(
+        session,
+        &ctx.notifier,
+        &ctx.status_center,
+        &ctx.status_notifier,
+        StateChange {
+            turn_phase: TurnPhase::Streaming,
+            queue_paused: None,
+            pending_permission_request: None,
+            pending_permission_state_revision: None,
+            exit_code: None,
+            completed_at: None,
+            interrupted: false,
+            session_state: Some(SessionState::Active),
+        },
+    );
+    Ok(())
+}
+
+struct BackendSessionRecoveryCompletion {
+    recovery_id: String,
+    old_provider_session_generation: u64,
+    reason: BackendSessionRecoveryReason,
+    backend_session_id: String,
+    context_was_reinjected: Option<bool>,
+}
+
+async fn claim_backend_session_recovery_completion(
+    ctx: &RuntimeContext,
+    session_id: &str,
+    generation: u64,
+    recovery_id: &str,
+) -> Option<BackendSessionRecoveryCompletion> {
+    let mut sessions = ctx.sessions.lock().await;
+    let state = sessions
+        .get_mut(session_id)
+        .filter(|state| state.generation == generation)?;
+    let recovery = state
+        .backend_recovery
+        .as_mut()
+        .filter(|recovery| recovery.recovery_id == recovery_id)?;
+    if recovery.pending_failure.is_some() || recovery.completion_in_flight {
+        return None;
+    }
+    let backend_session_id = recovery.observed_backend_session_id.clone()?;
+    let context_was_reinjected = match recovery.turn_resume {
+        BackendSessionRecoveryTurnResume::NoStartedTurn => None,
+        BackendSessionRecoveryTurnResume::AwaitingAcceptedTurnStart => return None,
+        BackendSessionRecoveryTurnResume::AcceptedTurnStarted {
+            context_was_reinjected,
+        } => Some(context_was_reinjected),
+    };
+    recovery.completion_in_flight = true;
+    Some(BackendSessionRecoveryCompletion {
+        recovery_id: recovery.recovery_id.clone(),
+        old_provider_session_generation: recovery.old_provider_session_generation,
+        reason: recovery.reason,
+        backend_session_id,
+        context_was_reinjected,
+    })
+}
+
+async fn persist_backend_session_recovery_completion(
+    ctx: &RuntimeContext,
+    session_id: &str,
+    generation: u64,
+    completion_input: &BackendSessionRecoveryCompletion,
+) -> Result<bool, AgentRuntimeError> {
+    let mut meta = ctx
         .session_store
         .complete_backend_session_recovery(
             &ctx.data_dir,
             session_id,
-            &recovery_id,
-            old_provider_session_generation,
-            backend_session_id,
+            &completion_input.recovery_id,
+            completion_input.old_provider_session_generation,
+            completion_input.backend_session_id.clone(),
         )
         .map_err(AgentRuntimeError::Other)?;
-    ctx.notifier.context_carry_updated(
-        session_id,
-        meta.agent_session_id,
-        meta.context_carry,
-        meta.updated_at,
-    );
-    if let Err(error) = reconcile_pending_recovery_message(ctx, session_id).await {
-        log::warn!(
-            "failed to persist backend recovery notice for {session_id}; it remains pending: {error}"
-        );
+    if let Some(context_was_reinjected) = completion_input.context_was_reinjected {
+        if let Some(updated) = ctx
+            .session_store
+            .complete_context_reinjection_if_required(
+                &ctx.data_dir,
+                session_id,
+                meta.provider_session_generation,
+                context_was_reinjected,
+            )
+            .map_err(AgentRuntimeError::Other)?
+        {
+            meta = updated;
+        }
     }
     let completion = {
+        let _runtime_event_guard = ctx.runtime_event_locks.acquire(session_id).await;
         let mut sessions = ctx.sessions.lock().await;
-        sessions.get_mut(session_id).and_then(|state| {
-            state
-                .backend_recovery
-                .take()
+        let state = sessions
+            .get_mut(session_id)
+            .filter(|state| state.generation == generation);
+        state.and_then(|state| {
+            let owns_exact_recovery = state.backend_recovery.as_ref().is_some_and(|recovery| {
+                recovery.recovery_id == completion_input.recovery_id
+                    && recovery.completion_in_flight
+                    && recovery.pending_failure.is_none()
+            });
+            owns_exact_recovery
+                .then(|| state.backend_recovery.take())
+                .flatten()
                 .map(|recovery| recovery.completion)
         })
     };
-    if let Some(completion) = completion {
-        let _ = completion.send(true);
-    }
+    let Some(completion) = completion else {
+        return Ok(false);
+    };
+    let _ = completion.send(true);
+    let notifier = Arc::clone(&ctx.notifier);
+    let notification_session_id = session_id.to_string();
+    let notification_spawner = Arc::clone(&ctx.spawner);
+    notification_spawner.spawn(Box::pin(async move {
+        notifier.context_carry_updated(
+            &notification_session_id,
+            meta.agent_session_id,
+            meta.context_carry,
+            meta.updated_at,
+        );
+    }));
     log::debug!(
-        "completed backend session recovery for {session_id} ({reason:?}, recovery_id={recovery_id})"
+        "completed backend session recovery for {session_id} ({:?}, recovery_id={})",
+        completion_input.reason,
+        completion_input.recovery_id
+    );
+    reconcile_pending_recovery_message_detached(
+        ctx,
+        session_id.to_string(),
+        "backend recovery notice",
     );
     Ok(true)
+}
+
+fn retry_backend_session_recovery_completion(
+    ctx: &RuntimeContext,
+    session_id: String,
+    generation: u64,
+    recovery_id: String,
+) {
+    let ctx = ctx.clone();
+    let spawner = Arc::clone(&ctx.spawner);
+    spawner.spawn(Box::pin(async move {
+        let Some(completion_input) =
+            claim_backend_session_recovery_completion(&ctx, &session_id, generation, &recovery_id)
+                .await
+        else {
+            return;
+        };
+        let mut retry_delay = Duration::from_millis(25);
+        loop {
+            let still_current = {
+                let sessions = ctx.sessions.lock().await;
+                sessions.get(&session_id).is_some_and(|state| {
+                    state.generation == generation
+                        && state.backend_recovery.as_ref().is_some_and(|recovery| {
+                            recovery.recovery_id == recovery_id
+                                && recovery.completion_in_flight
+                                && recovery.pending_failure.is_none()
+                        })
+                })
+            };
+            if !still_current {
+                return;
+            }
+            match persist_backend_session_recovery_completion(
+                &ctx,
+                &session_id,
+                generation,
+                &completion_input,
+            )
+            .await
+            {
+                Ok(true) => {
+                    let _session_guard = ctx.session_locks.acquire(&session_id).await;
+                    start_next_queued_turn(&ctx, &session_id).await;
+                    return;
+                }
+                Ok(false) => return,
+                Err(error) => {
+                    log::warn!(
+                        "backend recovery completion remains pending for {session_id}: {error}"
+                    );
+                }
+            }
+            tokio::time::sleep(retry_delay).await;
+            retry_delay = retry_delay.saturating_mul(2).min(Duration::from_secs(1));
+        }
+    }));
 }
 
 async fn persist_backend_session_recovery_failure(
@@ -3843,7 +4838,21 @@ async fn persist_backend_session_recovery_failure(
     session_id: &str,
     error: String,
 ) -> Result<(), AgentRuntimeError> {
-    {
+    if schedule_backend_session_recovery_failure(ctx, session_id, error).await? {
+        Ok(())
+    } else {
+        Err(AgentRuntimeError::Other(format!(
+            "backend recovery completion is already settling for {session_id}"
+        )))
+    }
+}
+
+async fn schedule_backend_session_recovery_failure(
+    ctx: &RuntimeContext,
+    session_id: &str,
+    error: String,
+) -> Result<bool, AgentRuntimeError> {
+    let recovery_id = {
         let mut sessions = ctx.sessions.lock().await;
         let Some(recovery) = sessions
             .get_mut(session_id)
@@ -3853,70 +4862,121 @@ async fn persist_backend_session_recovery_failure(
                 "cannot durably fail backend recovery without an active recovery identity for {session_id}"
             )));
         };
+        if recovery.completion_in_flight {
+            return Ok(false);
+        }
+        if recovery.failure_in_flight {
+            return Ok(recovery.pending_failure.as_deref() == Some(error.as_str()));
+        }
         recovery.pending_failure = Some(error.clone());
-    }
-    fail_backend_session_recovery(ctx, session_id, &error).await
+        recovery.failure_in_flight = true;
+        recovery.recovery_id.clone()
+    };
+    retry_backend_session_recovery_failure(ctx, session_id.to_string(), recovery_id, error);
+    Ok(true)
 }
 
-async fn fail_backend_session_recovery(
+fn retry_backend_session_recovery_failure(
     ctx: &RuntimeContext,
-    session_id: &str,
-    error: &str,
-) -> Result<(), AgentRuntimeError> {
-    let recovery_id = {
-        let sessions = ctx.sessions.lock().await;
-        sessions
-            .get(session_id)
-            .and_then(|state| state.backend_recovery.as_ref())
-            .map(|recovery| recovery.recovery_id.clone())
-    };
-    let Some(recovery_id) = recovery_id else {
-        return Err(AgentRuntimeError::Other(format!(
-            "cannot durably fail backend recovery without an active recovery identity for {session_id}"
-        )));
-    };
-    ctx.session_store
-        .fail_backend_session_recovery(&ctx.data_dir, session_id, &recovery_id, error)
-        .map_err(|persist_error| {
-            AgentRuntimeError::Other(format!(
-                "failed to atomically persist backend recovery failure for {session_id}: {persist_error}"
-            ))
-        })?;
-    if let Err(persist_error) = reconcile_pending_recovery_message(ctx, session_id).await {
-        log::warn!("failed to persist backend recovery error for {session_id}: {persist_error}");
-    }
-    let completion = {
-        let mut sessions = ctx.sessions.lock().await;
-        sessions.get_mut(session_id).and_then(|state| {
-            state.phase = RuntimeSessionPhase::Idle;
-            state
-                .backend_recovery
-                .take()
-                .map(|recovery| recovery.completion)
-        })
-    };
-    emit_session_state_change(
-        &ctx.session_store,
-        &ctx.notifier,
-        &ctx.status_center,
-        &ctx.status_notifier,
-        &ctx.data_dir,
-        session_id,
-        StateChange {
-            turn_phase: TurnPhase::Idle,
-            queue_paused: None,
-            pending_permission_request: None,
-            pending_permission_state_revision: None,
-            exit_code: Some(1),
-            completed_at: Some(crate::usecase::agent_session::session::now_timestamp()),
-            interrupted: true,
-            session_state: Some(SessionState::Error),
-        },
-    );
-    if let Some(completion) = completion {
+    session_id: String,
+    recovery_id: String,
+    error: String,
+) {
+    let ctx = ctx.clone();
+    let spawner = Arc::clone(&ctx.spawner);
+    spawner.spawn(Box::pin(async move {
+        let mut retry_delay = Duration::from_millis(25);
+        loop {
+            let still_current = {
+                let sessions = ctx.sessions.lock().await;
+                sessions.get(&session_id).is_some_and(|state| {
+                    state.backend_recovery.as_ref().is_some_and(|recovery| {
+                        recovery.recovery_id == recovery_id
+                            && recovery.failure_in_flight
+                            && !recovery.completion_in_flight
+                            && recovery.pending_failure.as_deref() == Some(error.as_str())
+                    })
+                })
+            };
+            if !still_current {
+                return;
+            }
+            match ctx.session_store.fail_backend_session_recovery(
+                &ctx.data_dir,
+                &session_id,
+                &recovery_id,
+                &error,
+            ) {
+                Ok(_) => break,
+                Err(persist_error) => {
+                    log::warn!(
+                        "backend recovery failure remains pending for {session_id}: {persist_error}"
+                    );
+                }
+            }
+            tokio::time::sleep(retry_delay).await;
+            retry_delay = retry_delay.saturating_mul(2).min(Duration::from_secs(1));
+        }
+
+        let settled = {
+            let _runtime_event_guard = ctx.runtime_event_locks.acquire(&session_id).await;
+            let mut sessions = ctx.sessions.lock().await;
+            sessions.get_mut(&session_id).and_then(|state| {
+                let owns_exact_recovery = state.backend_recovery.as_ref().is_some_and(|recovery| {
+                    recovery.recovery_id == recovery_id
+                        && recovery.failure_in_flight
+                        && !recovery.completion_in_flight
+                        && recovery.pending_failure.as_deref() == Some(error.as_str())
+                });
+                if !owns_exact_recovery {
+                    return None;
+                }
+                let accepted_turn = state.current_turn_input.clone().filter(|input| {
+                    input.accepted_operation_id.is_some() && input.execution_obligation_id.is_some()
+                });
+                state.rollback_started_turn();
+                state.bump_runtime_epoch();
+                let runtime = state.runtime.take();
+                let completion = state
+                    .backend_recovery
+                    .take()
+                    .map(|recovery| recovery.completion)?;
+                Some((runtime, completion, accepted_turn))
+            })
+        };
+        let Some((runtime, completion, accepted_turn)) = settled else {
+            return;
+        };
         let _ = completion.send(true);
-    }
-    Ok(())
+        if let Some(runtime) = runtime {
+            let close_spawner = Arc::clone(&ctx.spawner);
+            close_spawner.spawn(Box::pin(async move {
+                runtime.close().await;
+            }));
+        }
+        if let Some(input) = accepted_turn.as_ref() {
+            reconcile_claimed_turn_after_backend_recovery_failure(&ctx, input);
+        }
+        emit_session_state_change(
+            &ctx.session_store,
+            &ctx.notifier,
+            &ctx.status_center,
+            &ctx.status_notifier,
+            &ctx.data_dir,
+            &session_id,
+            StateChange {
+                turn_phase: TurnPhase::Idle,
+                queue_paused: None,
+                pending_permission_request: None,
+                pending_permission_state_revision: None,
+                exit_code: Some(1),
+                completed_at: Some(crate::usecase::agent_session::session::now_timestamp()),
+                interrupted: true,
+                session_state: Some(SessionState::Error),
+            },
+        );
+        reconcile_pending_recovery_message_detached(&ctx, session_id, "backend recovery error");
+    }));
 }
 
 async fn wait_for_backend_session_recovery(ctx: &RuntimeContext, session_id: &str) {
@@ -4080,6 +5140,7 @@ struct TurnStartPayload {
     permission_profile_id: Option<String>,
     editor_context: Option<AgentEditorContext>,
     system_prompt: Option<String>,
+    accepted_execution_identity: Option<AcceptedTurnExecutionIdentity>,
 }
 
 #[derive(Default)]
@@ -4249,7 +5310,7 @@ async fn dispatch_stall_cleared_notifications(
 }
 
 async fn record_first_backend_event_if_needed(ctx: &RuntimeContext, session_id: &str) {
-    let measurement = {
+    let elapsed = {
         let mut sessions = ctx.sessions.lock().await;
         let Some(state) = sessions.get_mut(session_id) else {
             return;
@@ -4260,21 +5321,35 @@ async fn record_first_backend_event_if_needed(ctx: &RuntimeContext, session_id: 
         let Some(started_at) = state.turn_started_at else {
             return;
         };
-        let Some(dims) =
-            session_telemetry_dimensions(&ctx.session_store, &ctx.data_dir, session_id)
-        else {
-            return;
-        };
         state.first_backend_event_recorded = true;
-        Some((started_at.elapsed(), dims))
+        Some(started_at.elapsed())
     };
-    if let Some((elapsed, dims)) = measurement {
-        crate::other::telemetry::record_agent_turn_duration(
+    if let Some(elapsed) = elapsed {
+        record_agent_turn_duration_detached(
+            ctx,
+            session_id.to_string(),
             crate::other::telemetry::AgentTurn::FirstBackendEvent,
-            &dims,
             elapsed,
         );
     }
+}
+
+fn record_agent_turn_duration_detached(
+    ctx: &RuntimeContext,
+    session_id: String,
+    metric: crate::other::telemetry::AgentTurn,
+    elapsed: Duration,
+) {
+    let session_store = Arc::clone(&ctx.session_store);
+    let data_dir = ctx.data_dir.clone();
+    let spawner = Arc::clone(&ctx.spawner);
+    spawner.spawn(Box::pin(async move {
+        let Some(dims) = session_telemetry_dimensions(&session_store, &data_dir, &session_id)
+        else {
+            return;
+        };
+        crate::other::telemetry::record_agent_turn_duration(metric, &dims, elapsed);
+    }));
 }
 
 fn runtime_event_kind(event: &AgentRuntimeEvent) -> &'static str {
@@ -4317,6 +5392,167 @@ async fn reconcile_pending_recovery_message(
         }
     }
     Ok(())
+}
+
+fn reconcile_pending_recovery_message_detached(
+    ctx: &RuntimeContext,
+    session_id: String,
+    publication_kind: &'static str,
+) {
+    let ctx = ctx.clone();
+    let spawner = Arc::clone(&ctx.spawner);
+    spawner.spawn(Box::pin(async move {
+        if let Err(error) = reconcile_pending_recovery_message(&ctx, &session_id).await {
+            log::warn!(
+                "failed to persist {publication_kind} for {session_id}; it remains pending: {error}"
+            );
+        }
+    }));
+}
+
+async fn clear_provider_session_establishment_if_current(
+    ctx: &RuntimeContext,
+    session_id: &str,
+    runtime_epoch: u64,
+    observation_id: &str,
+) {
+    let _runtime_event_guard = ctx.runtime_event_locks.acquire(session_id).await;
+    let mut sessions = ctx.sessions.lock().await;
+    if let Some(state) = sessions.get_mut(session_id) {
+        let owns_exact_observation = state.runtime_epoch == runtime_epoch
+            && state
+                .provider_session_establishment
+                .as_ref()
+                .is_some_and(|establishment| establishment.observation_id == observation_id);
+        if owns_exact_observation {
+            state.provider_session_establishment = None;
+        }
+    }
+}
+
+fn retry_provider_session_establishment(
+    ctx: &RuntimeContext,
+    session_id: String,
+    runtime_epoch: u64,
+    observation_id: String,
+    backend_session_id: String,
+    context_carry: Option<ContextCarryState>,
+) {
+    let ctx = ctx.clone();
+    let spawner = Arc::clone(&ctx.spawner);
+    spawner.spawn(Box::pin(async move {
+        let mut retry_delay = Duration::from_millis(25);
+        loop {
+            let still_current = {
+                let sessions = ctx.sessions.lock().await;
+                sessions.get(&session_id).is_some_and(|state| {
+                    state.runtime_epoch == runtime_epoch
+                        && state.provider_session_establishment.as_ref().is_some_and(
+                            |establishment| {
+                                establishment.observation_id == observation_id
+                            },
+                        )
+                })
+            };
+            if !still_current {
+                return;
+            }
+
+            let expected_provider_session_generation = match ctx
+                .session_store
+                .get_session_meta(&ctx.data_dir, &session_id)
+            {
+                Ok(Some(meta)) => meta.provider_session_generation,
+                Ok(None) => {
+                    clear_provider_session_establishment_if_current(
+                        &ctx,
+                        &session_id,
+                        runtime_epoch,
+                        &observation_id,
+                    )
+                    .await;
+                    return;
+                }
+                Err(error) => {
+                    log::warn!(
+                        "provider establishment generation read remains pending for {session_id}: {error}"
+                    );
+                    tokio::time::sleep(retry_delay).await;
+                    retry_delay = retry_delay
+                        .saturating_mul(2)
+                        .min(Duration::from_secs(1));
+                    continue;
+                }
+            };
+
+            match ctx.session_store.record_backend_session_established(
+                &ctx.data_dir,
+                &session_id,
+                expected_provider_session_generation,
+                &observation_id,
+                backend_session_id.clone(),
+                context_carry.clone(),
+            ) {
+                Ok(ProviderSessionEstablishmentOutcome::Settled(meta)) => {
+                    let settled = {
+                        let _runtime_event_guard =
+                            ctx.runtime_event_locks.acquire(&session_id).await;
+                        let mut sessions = ctx.sessions.lock().await;
+                        sessions.get_mut(&session_id).is_some_and(|state| {
+                            let owns_exact_observation = state.runtime_epoch == runtime_epoch
+                                && state.provider_session_establishment.as_ref().is_some_and(
+                                    |establishment| {
+                                        establishment.observation_id == observation_id
+                                    },
+                                );
+                            if owns_exact_observation {
+                                state.provider_session_establishment = None;
+                                state.provider_session_established = true;
+                            }
+                            owns_exact_observation
+                        })
+                    };
+                    if !settled {
+                        return;
+                    }
+                    let notifier = Arc::clone(&ctx.notifier);
+                    let notification_session_id = session_id.clone();
+                    let notification_spawner = Arc::clone(&ctx.spawner);
+                    notification_spawner.spawn(Box::pin(async move {
+                        notifier.context_carry_updated(
+                            &notification_session_id,
+                            meta.agent_session_id,
+                            meta.context_carry,
+                            meta.updated_at,
+                        );
+                    }));
+                    return;
+                }
+                Ok(
+                    ProviderSessionEstablishmentOutcome::Missing
+                    | ProviderSessionEstablishmentOutcome::Fenced,
+                ) => {
+                    clear_provider_session_establishment_if_current(
+                        &ctx,
+                        &session_id,
+                        runtime_epoch,
+                        &observation_id,
+                    )
+                    .await;
+                    return;
+                }
+                Err(error) => {
+                    log::warn!(
+                        "provider establishment observation remains pending for {session_id}: {error}"
+                    );
+                }
+            }
+            tokio::time::sleep(retry_delay).await;
+            retry_delay = retry_delay
+                .saturating_mul(2)
+                .min(Duration::from_secs(1));
+        }
+    }));
 }
 
 fn persist_and_publish_recovery_notice(
@@ -4437,18 +5673,35 @@ async fn apply_runtime_event(
     event_received_at: f64,
     event: AgentRuntimeEvent,
 ) -> Result<RuntimeEventPostActions, String> {
-    let (is_current_runtime, terminal_committed) = {
+    let (
+        is_current_runtime,
+        terminal_committed,
+        provider_establishment_in_flight,
+        recovery_completion_in_flight,
+        recovery_failure_in_flight,
+    ) = {
         let sessions = ctx.sessions.lock().await;
-        sessions.get(session_id).map_or((false, false), |state| {
-            (
-                state.runtime_epoch == runtime_epoch,
-                state.phase != RuntimeSessionPhase::Idle
-                    && state
-                        .current_turn_id
-                        .or(state.last_turn_id)
-                        .is_some_and(|turn_id| state.terminal_turn_id == Some(turn_id)),
-            )
-        })
+        sessions
+            .get(session_id)
+            .map_or((false, false, false, false, false), |state| {
+                (
+                    state.runtime_epoch == runtime_epoch,
+                    state.phase != RuntimeSessionPhase::Idle
+                        && state
+                            .current_turn_id
+                            .or(state.last_turn_id)
+                            .is_some_and(|turn_id| state.terminal_turn_id == Some(turn_id)),
+                    state.provider_session_establishment.is_some(),
+                    state
+                        .backend_recovery
+                        .as_ref()
+                        .is_some_and(|recovery| recovery.completion_in_flight),
+                    state
+                        .backend_recovery
+                        .as_ref()
+                        .is_some_and(|recovery| recovery.failure_in_flight),
+                )
+            })
     };
     if !is_current_runtime {
         log::debug!(
@@ -4463,6 +5716,26 @@ async fn apply_runtime_event(
             runtime_event_kind(&event)
         );
         return Ok(RuntimeEventPostActions::default());
+    }
+    if recovery_failure_in_flight {
+        return Err("backend recovery failure is still settling".to_string());
+    }
+    let event_must_follow_provider_identity = matches!(
+        &event,
+        AgentRuntimeEvent::TurnCompleted(_)
+            | AgentRuntimeEvent::Fatal { .. }
+            | AgentRuntimeEvent::BackendSessionCleared
+            | AgentRuntimeEvent::SessionEstablished {
+                resume: crate::domain::agent_session::gateway::ResumeOutcome::Mismatch { .. },
+                ..
+            }
+    );
+    if provider_establishment_in_flight && event_must_follow_provider_identity {
+        return Err("provider establishment observation is still settling".to_string());
+    }
+    let event_must_follow_recovery_completion = event_must_follow_provider_identity;
+    if recovery_completion_in_flight && event_must_follow_recovery_completion {
+        return Err("backend recovery completion is still settling".to_string());
     }
     record_first_backend_event_if_needed(ctx, session_id).await;
     ctx.notifier.runtime_event_debug(session_id, &event);
@@ -4482,11 +5755,12 @@ async fn apply_runtime_event(
                     BackendSessionRecoveryReason::ResumeMismatch,
                     &backend_session_id,
                 );
-                recover_backend_session_with_identity(
+                recover_backend_session_with_identity_lock_state(
                     ctx,
                     session_id,
                     BackendSessionRecoveryReason::ResumeMismatch,
                     recovery_id,
+                    true,
                 )
                 .await
                 .map_err(|error| {
@@ -4496,75 +5770,105 @@ async fn apply_runtime_event(
                 })?;
                 return Ok(RuntimeEventPostActions::default());
             }
-            let already_established = {
+            let (already_established, recovery_active) = {
                 let sessions = ctx.sessions.lock().await;
                 sessions
                     .get(session_id)
-                    .is_some_and(|state| state.provider_session_established)
+                    .map(|state| {
+                        (
+                            state.provider_session_established,
+                            state.backend_recovery.is_some(),
+                        )
+                    })
+                    .unwrap_or((false, false))
             };
-            if already_established {
+            if already_established && !recovery_active {
                 return Ok(RuntimeEventPostActions::default());
             }
-            match complete_backend_session_recovery(ctx, session_id, backend_session_id.clone())
-                .await
-            {
-                Ok(true) => {
-                    if let Some(state) = ctx.sessions.lock().await.get_mut(session_id) {
+            let recovery_identity = {
+                let mut sessions = ctx.sessions.lock().await;
+                let Some(state) = sessions.get_mut(session_id) else {
+                    return Ok(RuntimeEventPostActions::default());
+                };
+                if state.runtime_epoch != runtime_epoch {
+                    return Ok(RuntimeEventPostActions::default());
+                }
+                match state.backend_recovery.as_mut() {
+                    Some(recovery) => {
+                        if recovery
+                            .observed_backend_session_id
+                            .as_deref()
+                            .is_some_and(|observed| observed != backend_session_id)
+                        {
+                            return Err(
+                                "backend recovery observed conflicting provider identities"
+                                    .to_string(),
+                            );
+                        }
+                        recovery.observed_backend_session_id = Some(backend_session_id.clone());
                         state.provider_session_established = true;
+                        Some((state.generation, recovery.recovery_id.clone()))
                     }
-                    let mut actions = RuntimeEventPostActions::default();
-                    actions.drain();
-                    return Ok(actions);
+                    None => None,
                 }
-                Ok(false) => {}
-                Err(error) => {
-                    // The provider establishment observation is the exact
-                    // completion trigger. Keep it in the pump until the same
-                    // recovery identity resolves; converting a transient
-                    // commit failure into Failed would discard acknowledged
-                    // provider state.
-                    return Err(format!(
-                        "backend recovery completion observation could not be committed: {error}"
-                    ));
-                }
+            };
+            if let Some((generation, recovery_id)) = recovery_identity {
+                retry_backend_session_recovery_completion(
+                    ctx,
+                    session_id.to_string(),
+                    generation,
+                    recovery_id,
+                );
+                return Ok(RuntimeEventPostActions::default());
             }
-            let (agent_session_id, context_carry) = match resume {
-                crate::domain::agent_session::gateway::ResumeOutcome::Resumed => (
-                    Some(backend_session_id.clone()),
-                    Some(ContextCarryState::Resumed),
-                ),
-                crate::domain::agent_session::gateway::ResumeOutcome::NotRequested => {
-                    (Some(backend_session_id.clone()), None)
+            let context_carry = match resume {
+                crate::domain::agent_session::gateway::ResumeOutcome::Resumed => {
+                    Some(ContextCarryState::Resumed)
                 }
+                crate::domain::agent_session::gateway::ResumeOutcome::NotRequested => None,
                 crate::domain::agent_session::gateway::ResumeOutcome::Mismatch { .. } => {
                     unreachable!("resume mismatch is handled before metadata update")
                 }
             };
-            match ctx.session_store.record_backend_session_established(
-                &ctx.data_dir,
+            let observation_id = runtime_provider_session_observation_id(
                 session_id,
-                agent_session_id.expect("established session id is always present"),
-                context_carry.clone(),
-            ) {
-                Ok(meta) => {
-                    if let Some(state) = ctx.sessions.lock().await.get_mut(session_id) {
-                        state.provider_session_established = true;
-                    }
-                    if let Some(meta) = meta {
-                        ctx.notifier.context_carry_updated(
-                            session_id,
-                            meta.agent_session_id,
-                            meta.context_carry,
-                            meta.updated_at,
-                        );
-                    }
+                runtime_epoch,
+                event_received_at,
+                &backend_session_id,
+                context_carry.as_ref(),
+            );
+            {
+                let mut sessions = ctx.sessions.lock().await;
+                let Some(state) = sessions.get_mut(session_id) else {
+                    return Ok(RuntimeEventPostActions::default());
+                };
+                if state.runtime_epoch != runtime_epoch {
+                    return Ok(RuntimeEventPostActions::default());
                 }
-                Err(error) => {
-                    return Err(format!(
-                        "provider establishment observation could not be committed: {error}"
-                    ));
+                if state.provider_session_established {
+                    return Ok(RuntimeEventPostActions::default());
                 }
+                if let Some(establishment) = state.provider_session_establishment.as_ref() {
+                    if establishment.observation_id == observation_id {
+                        return Ok(RuntimeEventPostActions::default());
+                    }
+                    return Err(
+                        "runtime observed conflicting provider establishment identities"
+                            .to_string(),
+                    );
+                }
+                state.provider_session_establishment = Some(ProviderSessionEstablishmentState {
+                    observation_id: observation_id.clone(),
+                });
             }
+            retry_provider_session_establishment(
+                ctx,
+                session_id.to_string(),
+                runtime_epoch,
+                observation_id,
+                backend_session_id,
+                context_carry,
+            );
         }
         AgentRuntimeEvent::BackendSessionCleared => {
             let recovery_id = runtime_event_recovery_id(
@@ -4574,11 +5878,12 @@ async fn apply_runtime_event(
                 BackendSessionRecoveryReason::BackendSessionLost,
                 "backend-session-cleared",
             );
-            recover_backend_session_with_identity(
+            recover_backend_session_with_identity_lock_state(
                 ctx,
                 session_id,
                 BackendSessionRecoveryReason::BackendSessionLost,
                 recovery_id,
+                true,
             )
             .await
             .map_err(|error| {
@@ -4716,22 +6021,19 @@ async fn apply_runtime_event(
                     .is_some_and(|state| state.backend_recovery.is_some())
             };
             if recovery_in_progress {
-                fail_backend_session_recovery(ctx, session_id, &message)
-                    .await
-                    .map_err(|error| {
-                        format!(
-                            "backend recovery fatal observation could not be committed: {error}"
+                let failure_owned =
+                    schedule_backend_session_recovery_failure(ctx, session_id, message.clone())
+                        .await
+                        .map_err(|error| {
+                            format!(
+                            "backend recovery fatal observation could not be handed off: {error}"
                         )
-                    })?;
-                let runtime = {
-                    let mut sessions = ctx.sessions.lock().await;
-                    sessions
-                        .get_mut(session_id)
-                        .and_then(|state| state.runtime.take())
+                        })?;
+                return if failure_owned {
+                    Ok(RuntimeEventPostActions::default())
+                } else {
+                    Err("backend recovery completion is still settling".to_string())
                 };
-                let mut actions = RuntimeEventPostActions::default();
-                actions.close_runtime(runtime);
-                return Ok(actions);
             }
             let (should_complete_crash, trailing_completed_crash) = {
                 let mut sessions = ctx.sessions.lock().await;
@@ -4792,7 +6094,7 @@ async fn apply_runtime_event(
                 );
                 let projected_message = ctx
                     .session_store
-                    .append_error_episode_and_materialize(
+                    .append_error_episode_and_pause_queue(
                         &ctx.data_dir,
                         session_id,
                         ErrorEpisodeInput {
@@ -4810,6 +6112,8 @@ async fn apply_runtime_event(
                             if let Some(state) = sessions.get_mut(session_id) {
                                 state.last_agent_message_id = Some(message_id.clone());
                                 state.streaming_delta_seq = 1;
+                                state.queue_paused = true;
+                                state.queue_paused_at = Some(completed_at);
                             }
                         }
                         emit_streaming_delta_or_retry(
@@ -4834,7 +6138,7 @@ async fn apply_runtime_event(
                             session_id,
                             StateChange {
                                 turn_phase: TurnPhase::Idle,
-                                queue_paused: None,
+                                queue_paused: Some(true),
                                 pending_permission_request: None,
                                 pending_permission_state_revision: None,
                                 exit_code: Some(1),
@@ -4862,7 +6166,6 @@ async fn apply_runtime_event(
                     "suppressed trailing fatal projection for completed crash in {session_id}"
                 );
             }
-            actions.drain();
             return Ok(actions);
         }
     };
@@ -4916,6 +6219,39 @@ fn runtime_event_recovery_id(
     exact.extend_from_slice(reason_tag);
     exact.extend_from_slice(&(event_identity.len() as u64).to_be_bytes());
     exact.extend_from_slice(event_identity.as_bytes());
+    let digest = Sha256::digest(exact);
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x50;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    uuid::Uuid::from_bytes(bytes).to_string()
+}
+
+fn runtime_provider_session_observation_id(
+    session_id: &str,
+    runtime_epoch: u64,
+    event_received_at: f64,
+    backend_session_id: &str,
+    context_carry: Option<&ContextCarryState>,
+) -> String {
+    use sha2::{Digest, Sha256};
+
+    let context_carry_tag = match context_carry {
+        None => b"not_requested".as_slice(),
+        Some(ContextCarryState::Resumed) => b"resumed".as_slice(),
+        Some(ContextCarryState::Reinjected) => b"reinjected".as_slice(),
+        Some(ContextCarryState::Failed) => b"failed".as_slice(),
+    };
+    let mut exact = Vec::with_capacity(session_id.len() + backend_session_id.len() + 80);
+    exact.extend_from_slice(b"runtime_provider_session_observation_v1");
+    exact.extend_from_slice(&(session_id.len() as u64).to_be_bytes());
+    exact.extend_from_slice(session_id.as_bytes());
+    exact.extend_from_slice(&runtime_epoch.to_be_bytes());
+    exact.extend_from_slice(&event_received_at.to_bits().to_be_bytes());
+    exact.extend_from_slice(&(backend_session_id.len() as u64).to_be_bytes());
+    exact.extend_from_slice(backend_session_id.as_bytes());
+    exact.extend_from_slice(&(context_carry_tag.len() as u64).to_be_bytes());
+    exact.extend_from_slice(context_carry_tag);
     let digest = Sha256::digest(exact);
     let mut bytes = [0_u8; 16];
     bytes.copy_from_slice(&digest[..16]);
@@ -5727,7 +7063,7 @@ async fn complete_turn_with_acceptance_and_persist_kind(
     flush_streaming_update(ctx, session_id, true).await?;
     let completed_at = crate::usecase::agent_session::session::now_timestamp();
     let terminal = terminal_projection(&result);
-    let (message_id, parts, seq, turn_id, started_at, telemetry_dims, queue_paused) = {
+    let (message_id, parts, seq, turn_id, started_at, queue_was_paused_at) = {
         let sessions = ctx.sessions.lock().await;
         let Some(state) = sessions.get(session_id) else {
             return Ok((None, false));
@@ -5737,16 +7073,13 @@ async fn complete_turn_with_acceptance_and_persist_kind(
         {
             return Ok((None, false));
         }
-        let telemetry_dims =
-            session_telemetry_dimensions(&ctx.session_store, &ctx.data_dir, session_id);
         (
             state.streaming_message_id.clone(),
             state.streaming_parts.clone(),
             state.streaming_delta_seq,
             state.current_turn_id,
             state.turn_started_at,
-            telemetry_dims,
-            state.queue_paused,
+            state.queue_paused_at,
         )
     };
     if turn_id.is_none() || message_id.is_none() {
@@ -5763,13 +7096,13 @@ async fn complete_turn_with_acceptance_and_persist_kind(
             seq
         };
         let events = final_turn_events(
-            &ctx.session_store,
-            &ctx.data_dir,
+            ctx,
             session_id,
             turn_id,
             &message_id,
             &parts,
             &terminal,
+            completed_at,
         )?;
         let (model, persisted_parts) = persist_with_retry(ctx, session_id, persist_kind, || {
             ctx.session_store.append_terminal_events_and_materialize(
@@ -5810,6 +7143,12 @@ async fn complete_turn_with_acceptance_and_persist_kind(
         .as_ref()
         .map(|model| model.status.session_state.clone())
         .or_else(|| (!emit_crash_snapshot).then(|| terminal.session_state.clone()));
+    let queue_paused_at = projected
+        .as_ref()
+        .and_then(|model| model.queue_paused_at)
+        .or(queue_was_paused_at)
+        .or_else(|| terminal.pause_queue.then_some(completed_at));
+    let queue_paused = queue_paused_at.is_some();
     let pending_permission_state_revision = {
         let mut sessions = ctx.sessions.lock().await;
         let Some(state) = sessions.get_mut(session_id) else {
@@ -5821,6 +7160,8 @@ async fn complete_turn_with_acceptance_and_persist_kind(
             return Ok((None, false));
         }
         state.phase = RuntimeSessionPhase::Idle;
+        state.queue_paused = queue_paused;
+        state.queue_paused_at = queue_paused_at;
         let pending_permission_state_revision = state.clear_pending_permission_request();
         state.permission_wait_started_at = None;
         state.permission_wait_diagnostic_emitted = false;
@@ -5850,10 +7191,11 @@ async fn complete_turn_with_acceptance_and_persist_kind(
         state.stream_emit_suppressed = false;
         pending_permission_state_revision
     };
-    if let (Some(started_at), Some(dims)) = (started_at, telemetry_dims) {
-        crate::other::telemetry::record_agent_turn_duration(
+    if let Some(started_at) = started_at {
+        record_agent_turn_duration_detached(
+            ctx,
+            session_id.to_string(),
             crate::other::telemetry::AgentTurn::Complete,
-            &dims,
             started_at.elapsed(),
         );
     }
@@ -5953,6 +7295,96 @@ fn queued_turn_has_accepted_identity(queued: &QueuedTurnInput) -> bool {
     queued.accepted_operation_id.is_some() || queued.execution_obligation_id.is_some()
 }
 
+fn queued_input_matches_canonical_entry(
+    queued: &QueuedTurnInput,
+    canonical: &CanonicalQueuedSend,
+) -> bool {
+    queued.id == canonical.queue_item_id
+        && queued.existing_human_message_id.as_deref() == Some(canonical.human_message_id.as_str())
+        && queued.reserved_turn_id == canonical.reserved_turn_id.parse::<u64>().ok()
+}
+
+fn insert_accepted_queue_in_canonical_order(
+    pending_queue: &mut std::collections::VecDeque<QueuedTurnInput>,
+    accepted_input: QueuedTurnInput,
+    canonical_queue: &[CanonicalQueuedSend],
+) -> Result<(), String> {
+    let canonical_rank = canonical_queue
+        .iter()
+        .position(|entry| queued_input_matches_canonical_entry(&accepted_input, entry))
+        .ok_or_else(|| {
+            "accepted queued send is absent from the canonical queue projection".to_string()
+        })?;
+
+    if let Some(existing_index) = pending_queue
+        .iter()
+        .position(|queued| queued.id == accepted_input.id)
+    {
+        let existing = &pending_queue[existing_index];
+        if existing.accepted_operation_id != accepted_input.accepted_operation_id
+            || existing.execution_obligation_id != accepted_input.execution_obligation_id
+            || existing.existing_human_message_id != accepted_input.existing_human_message_id
+            || existing.reserved_turn_id != accepted_input.reserved_turn_id
+        {
+            return Err("accepted queue identity changed during restoration".to_string());
+        }
+        pending_queue.remove(existing_index);
+    }
+
+    pending_queue.retain(|queued| {
+        !queued_turn_has_accepted_identity(queued)
+            || canonical_queue
+                .iter()
+                .any(|entry| queued_input_matches_canonical_entry(queued, entry))
+    });
+    let insertion_index = pending_queue
+        .iter()
+        .position(|queued| {
+            queued_turn_has_accepted_identity(queued)
+                && canonical_queue
+                    .iter()
+                    .position(|entry| queued_input_matches_canonical_entry(queued, entry))
+                    .is_some_and(|rank| rank > canonical_rank)
+        })
+        .unwrap_or(pending_queue.len());
+    pending_queue.insert(insertion_index, accepted_input);
+    Ok(())
+}
+
+async fn remove_local_queue_front_if_matches(
+    ctx: &RuntimeContext,
+    session_id: &str,
+    queue_item_id: &str,
+) {
+    let mut sessions = ctx.sessions.lock().await;
+    let Some(state) = sessions.get_mut(session_id) else {
+        return;
+    };
+    if state.pending_queue.front().map(|front| front.id.as_str()) == Some(queue_item_id) {
+        state.pending_queue.pop_front();
+    }
+}
+
+async fn arm_accepted_send_recovery_after_claim_release(
+    driver: &dyn AcceptedSendObligationDriver,
+    operation_id: &str,
+    obligation_id: &str,
+    accepted_claim: &mut Option<AcceptedSendExecutionClaim>,
+) {
+    let Some(recovery_wake) = driver
+        .reconcile_turn_execution(operation_id, obligation_id)
+        .await
+    else {
+        return;
+    };
+    match accepted_claim.take() {
+        Some(claim) => {
+            *accepted_claim = Some(claim.wake_after_release(recovery_wake));
+        }
+        None => recovery_wake.publish(),
+    }
+}
+
 pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &str) {
     if let Err(failure) = ctx
         .session_store
@@ -5965,9 +7397,9 @@ pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &st
         );
         return;
     }
-    let (queued, runtime, runtime_open_epoch) = {
-        let mut sessions = ctx.sessions.lock().await;
-        let Some(state) = sessions.get_mut(session_id) else {
+    let (queued, runtime) = {
+        let sessions = ctx.sessions.lock().await;
+        let Some(state) = sessions.get(session_id) else {
             return;
         };
         if state.closing
@@ -5981,9 +7413,30 @@ pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &st
             return;
         };
         let runtime = state.runtime.clone();
-        let runtime_open_epoch = runtime.is_none().then(|| state.bump_runtime_epoch());
-        (queued, runtime, runtime_open_epoch)
+        (queued, runtime)
     };
+
+    if queued_turn_has_accepted_identity(&queued) {
+        let canonical_queue = match ctx.session_store.canonical_pending_send_queue(session_id) {
+            Ok(queue) => queue,
+            Err(error) => {
+                log::warn!("accepted queue authority is unavailable for {session_id}: {error}");
+                return;
+            }
+        };
+        let is_canonical_front = canonical_queue
+            .first()
+            .is_some_and(|front| queued_input_matches_canonical_entry(&queued, front));
+        if !is_canonical_front {
+            let remains_canonically_pending = canonical_queue
+                .iter()
+                .any(|entry| queued_input_matches_canonical_entry(&queued, entry));
+            if !remains_canonically_pending {
+                remove_local_queue_front_if_matches(ctx, session_id, &queued.id).await;
+            }
+            return;
+        }
+    }
 
     let Some(session) = (match ctx
         .session_store
@@ -6006,6 +7459,7 @@ pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &st
     {
         return;
     }
+    let mut accepted_claim;
     let accepted_obligation = match (
         queued.accepted_operation_id.as_deref(),
         queued.execution_obligation_id.as_deref(),
@@ -6020,18 +7474,13 @@ pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &st
                 log::warn!("accepted queued send driver is unavailable [{operation_id}]");
                 return;
             };
-            if driver
-                .reserve_turn_execution(operation_id, obligation_id)
-                .await
-                .is_err()
-            {
-                return;
-            }
+            accepted_claim = None;
             Some((operation_id.to_string(), obligation_id.to_string(), driver))
         }
         (None, None) => {
             #[cfg(test)]
             {
+                accepted_claim = None;
                 None
             }
             #[cfg(not(test))]
@@ -6049,9 +7498,13 @@ pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &st
     };
     if queued.worktree_path != session.worktree_path {
         if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
-            driver
-                .reconcile_turn_execution(operation_id, obligation_id)
-                .await;
+            arm_accepted_send_recovery_after_claim_release(
+                driver.as_ref(),
+                operation_id,
+                obligation_id,
+                &mut accepted_claim,
+            )
+            .await;
         }
         log::error!(
             "queued turn worktree mismatch for {session_id}: queued={}, session={}",
@@ -6071,102 +7524,102 @@ pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &st
     ) {
         Ok(system_prompt) => system_prompt,
         Err(error) => {
-            if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
-                driver
-                    .reconcile_turn_execution(operation_id, obligation_id)
-                    .await;
-            }
-            log::error!("queued turn system prompt remains unresolved for {session_id}: {error}");
+            log::warn!(
+                "queued turn system prompt preflight remains pending for {session_id}: {error}"
+            );
             return;
         }
     };
-    let runtime = match runtime {
-        Some(runtime) => runtime,
-        None => {
-            match open_runtime_for_session(ctx, &session, system_prompt.clone(), runtime_open_epoch)
+    #[cfg(test)]
+    let mut runtime = runtime;
+    #[cfg(not(test))]
+    let runtime = runtime;
+    #[cfg(test)]
+    if accepted_obligation.is_none() && runtime.is_none() {
+        // Legacy direct-send queues exist only in unit tests. Preserve their
+        // historical pre-TurnStarted reopen boundary so the fault-injection
+        // tests continue to exercise a retryable queue item. Production
+        // accepted queues must cross the combined durable claim first.
+        let runtime_open_epoch = {
+            let mut sessions = ctx.sessions.lock().await;
+            let Some(state) = sessions.get_mut(session_id) else {
+                return;
+            };
+            state.bump_runtime_epoch()
+        };
+        runtime = match open_runtime_for_session(
+            ctx,
+            &session,
+            system_prompt.clone(),
+            Some(runtime_open_epoch),
+        )
+        .await
+        {
+            Ok(runtime) => Some(runtime),
+            Err(AgentRuntimeError::BackendSessionLost { .. }) => {
+                if let Err(error) = recover_backend_session(
+                    ctx,
+                    session_id,
+                    BackendSessionRecoveryReason::BackendSessionLost,
+                )
                 .await
-            {
-                Ok(runtime) => runtime,
-                Err(AgentRuntimeError::BackendSessionLost { .. }) => {
-                    if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
-                        driver
-                            .reconcile_turn_execution(operation_id, obligation_id)
-                            .await;
-                    }
-                    if let Err(error) = recover_backend_session(
-                        ctx,
-                        session_id,
-                        BackendSessionRecoveryReason::BackendSessionLost,
-                    )
-                    .await
-                    {
-                        log::warn!(
+                {
+                    log::warn!(
                         "failed to recover backend session for queued turn {session_id}: {error}"
                     );
-                    }
-                    return;
                 }
-                Err(error) => {
-                    if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
-                        driver
-                            .reconcile_turn_execution(operation_id, obligation_id)
-                            .await;
-                    }
-                    log::warn!("failed to reopen runtime for queued turn {session_id}: {error}");
-                    if let Err(persist_error) = persist_with_retry(
-                        ctx,
-                        session_id,
-                        PersistFailureKind::ReopenRuntime,
-                        || {
-                            ctx.session_store.set_session_state(
-                                &ctx.data_dir,
-                                session_id,
-                                SessionState::Error,
-                            )
-                        },
-                    )
+                return;
+            }
+            Err(error) => {
+                log::warn!("failed to reopen runtime for queued turn {session_id}: {error}");
+                if let Err(persist_error) =
+                    persist_with_retry(ctx, session_id, PersistFailureKind::ReopenRuntime, || {
+                        ctx.session_store.set_session_state(
+                            &ctx.data_dir,
+                            session_id,
+                            SessionState::Error,
+                        )
+                    })
                     .await
-                    {
-                        log::error!(
-                            "failed to persist queued runtime reopen error for {session_id}: {persist_error}"
-                        );
-                        // The durable queue/obligation remains authoritative.
-                        // Do not publish an Error projection that did not
-                        // cross the canonical commit boundary.
-                        return;
-                    }
-                    emit_session_state_change(
-                        &ctx.session_store,
-                        &ctx.notifier,
-                        &ctx.status_center,
-                        &ctx.status_notifier,
-                        &ctx.data_dir,
-                        session_id,
-                        StateChange {
-                            turn_phase: TurnPhase::Idle,
-                            queue_paused: None,
-                            pending_permission_request: None,
-                            pending_permission_state_revision: None,
-                            exit_code: Some(1),
-                            completed_at: Some(
-                                crate::usecase::agent_session::session::now_timestamp(),
-                            ),
-                            interrupted: true,
-                            session_state: Some(SessionState::Error),
-                        },
+                {
+                    log::error!(
+                        "failed to persist queued runtime reopen error for {session_id}: {persist_error}"
                     );
                     return;
                 }
+                emit_session_state_change(
+                    &ctx.session_store,
+                    &ctx.notifier,
+                    &ctx.status_center,
+                    &ctx.status_notifier,
+                    &ctx.data_dir,
+                    session_id,
+                    StateChange {
+                        turn_phase: TurnPhase::Idle,
+                        queue_paused: None,
+                        pending_permission_request: None,
+                        pending_permission_state_revision: None,
+                        exit_code: Some(1),
+                        completed_at: Some(crate::usecase::agent_session::session::now_timestamp()),
+                        interrupted: true,
+                        session_state: Some(SessionState::Error),
+                    },
+                );
+                return;
             }
-        }
-    };
+        };
+    }
     let turn_id = match (queued.reserved_turn_id, accepted_obligation.is_some()) {
         (Some(turn_id), _) => turn_id,
         (None, true) => {
             if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
-                driver
-                    .reconcile_turn_execution(operation_id, obligation_id)
-                    .await;
+                arm_accepted_send_recovery_after_claim_release(
+                    driver.as_ref(),
+                    operation_id,
+                    obligation_id,
+                    &mut accepted_claim,
+                )
+                .await;
             }
             log::error!("accepted queued send has no reserved turn identity");
             return;
@@ -6186,12 +7639,7 @@ pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &st
         })
     };
     if !queue_item_is_current {
-        if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
-            driver
-                .reconcile_turn_execution(operation_id, obligation_id)
-                .await;
-        }
-        log::error!("accepted queued send lost its exact in-memory queue identity");
+        log::warn!("accepted queued send preflight lost its exact in-memory queue identity");
         return;
     }
 
@@ -6213,9 +7661,13 @@ pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &st
                 queued_human_message(&queued)
             } else {
                 if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
-                    driver
-                        .reconcile_turn_execution(operation_id, obligation_id)
-                        .await;
+                    arm_accepted_send_recovery_after_claim_release(
+                        driver.as_ref(),
+                        operation_id,
+                        obligation_id,
+                        &mut accepted_claim,
+                    )
+                    .await;
                 }
                 log::error!(
                     "accepted queued send has no committed human projection [{human_message_id}]"
@@ -6225,9 +7677,13 @@ pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &st
             #[cfg(not(test))]
             {
                 if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
-                    driver
-                        .reconcile_turn_execution(operation_id, obligation_id)
-                        .await;
+                    arm_accepted_send_recovery_after_claim_release(
+                        driver.as_ref(),
+                        operation_id,
+                        obligation_id,
+                        &mut accepted_claim,
+                    )
+                    .await;
                 }
                 log::error!(
                     "accepted queued send has no committed human projection [{human_message_id}]"
@@ -6236,12 +7692,7 @@ pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &st
             }
         }
         Err(error) => {
-            if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
-                driver
-                    .reconcile_turn_execution(operation_id, obligation_id)
-                    .await;
-            }
-            log::error!(
+            log::warn!(
                 "accepted queued human projection remains unreadable for {session_id}: {error}"
             );
             return;
@@ -6267,9 +7718,13 @@ pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &st
             };
     if accepted_payload_mismatch {
         if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
-            driver
-                .reconcile_turn_execution(operation_id, obligation_id)
-                .await;
+            arm_accepted_send_recovery_after_claim_release(
+                driver.as_ref(),
+                operation_id,
+                obligation_id,
+                &mut accepted_claim,
+            )
+            .await;
         }
         log::error!("accepted queued human projection does not match its canonical payload");
         return;
@@ -6277,9 +7732,13 @@ pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &st
     let (agent_message_id, legacy_agent_message) = if durably_accepted {
         let Some(message_id) = queued.existing_agent_message_id.clone() else {
             if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
-                driver
-                    .reconcile_turn_execution(operation_id, obligation_id)
-                    .await;
+                arm_accepted_send_recovery_after_claim_release(
+                    driver.as_ref(),
+                    operation_id,
+                    obligation_id,
+                    &mut accepted_claim,
+                )
+                .await;
             }
             log::error!("accepted queued send has no reserved assistant identity");
             return;
@@ -6310,6 +7769,45 @@ pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &st
             return;
         }
     };
+    let agent_message = if durably_accepted {
+        queued_agent_projection(agent_message_id.clone(), human_message.timestamp)
+    } else {
+        legacy_agent_message.expect("legacy test queue path must materialize its assistant")
+    };
+    let restore_policy = match context_restore_policy_before_human_message(
+        ctx,
+        session_id,
+        &human_message.id,
+        had_runtime,
+    ) {
+        Ok(policy) => policy,
+        Err(error) => {
+            log::warn!(
+                "queued turn restore preflight remains pending for {session_id}; provider start was not claimed: {error}"
+            );
+            return;
+        }
+    };
+    let context_was_reinjected =
+        matches!(&restore_policy.plan, ContextRestorePlan::Reinject { .. });
+    let clear_context_carry_after_start =
+        !had_runtime && matches!(&restore_policy.plan, ContextRestorePlan::NoContext);
+    let recovery_restore_required = restore_policy.recovery_restore_required;
+    let expected_provider_session_generation = restore_policy.expected_provider_session_generation;
+    let restore_plan = restore_policy.plan;
+    let prompt = apply_restore_prompt_prefix(queued.content.clone(), &restore_plan);
+    let selected_model = match had_runtime
+        .then(|| selected_model_for_runtime(ctx, &session))
+        .transpose()
+    {
+        Ok(model) => model,
+        Err(error) => {
+            log::warn!(
+                "queued turn model preflight remains pending for {session_id}; provider start was not claimed: {error}"
+            );
+            return;
+        }
+    };
     let mut queued_for_turn = queued.clone();
     queued_for_turn.existing_human_message_id = Some(human_message.id.clone());
     queued_for_turn.existing_agent_message_id = Some(agent_message_id.clone());
@@ -6328,29 +7826,42 @@ pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &st
         front.existing_agent_message_id = queued_for_turn.existing_agent_message_id.clone();
     }
     let mut generation = None;
-    let agent_message = if durably_accepted {
-        // The canonical projection owns assistant materialization and durable
-        // queue removal in the same TurnStarted commit.
-        if let Err(error) = ctx.session_store.append_turn_started_and_project_state(
-            &ctx.data_dir,
-            session_id,
-            AgentSessionEvent::TurnStarted {
-                turn_id,
-                message_id: human_message.id.clone(),
-                assistant_message_id: Some(agent_message_id.clone()),
-                prompt: committed_prompt.clone(),
-                at: human_message.timestamp,
-            },
-        ) {
-            if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
-                driver
-                    .reconcile_turn_execution(operation_id, obligation_id)
-                    .await;
+    if durably_accepted {
+        let (operation_id, obligation_id, driver) = accepted_obligation
+            .as_ref()
+            .expect("durably accepted queue has an obligation driver");
+        let turn_started = AgentSessionEvent::TurnStarted {
+            turn_id,
+            message_id: human_message.id.clone(),
+            assistant_message_id: Some(agent_message_id.clone()),
+            prompt: committed_prompt.clone(),
+            at: human_message.timestamp,
+        };
+        match driver
+            .claim_queued_turn_execution(
+                operation_id,
+                obligation_id,
+                session_id,
+                &queued.id,
+                turn_started,
+            )
+            .await
+        {
+            Ok(AcceptedQueuedTurnExecutionClaimOutcome::Claimed(claim)) => {
+                accepted_claim = Some(claim);
             }
-            log::error!(
-                "accepted queued TurnStarted remains uncommitted for {session_id}: {error}"
-            );
-            return;
+            Ok(AcceptedQueuedTurnExecutionClaimOutcome::Blocked) => {
+                log::debug!(
+                    "accepted queued turn remains blocked by canonical lifecycle state for {session_id}"
+                );
+                return;
+            }
+            Err(()) => {
+                log::warn!(
+                    "accepted queued turn atomic claim remains pending for {session_id}; recovery was notified"
+                );
+                return;
+            }
         }
         generation = {
             let mut sessions = ctx.sessions.lock().await;
@@ -6367,96 +7878,18 @@ pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &st
         };
         if generation.is_none() {
             if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
-                driver
-                    .reconcile_turn_execution(operation_id, obligation_id)
-                    .await;
+                arm_accepted_send_recovery_after_claim_release(
+                    driver.as_ref(),
+                    operation_id,
+                    obligation_id,
+                    &mut accepted_claim,
+                )
+                .await;
             }
             log::error!(
                 "accepted queued send committed TurnStarted but lost its in-memory queue identity"
             );
             return;
-        }
-        match committed_queued_message(
-            &ctx.session_store,
-            &ctx.data_dir,
-            session_id,
-            &agent_message_id,
-            MessageRole::Agent,
-        ) {
-            Ok(Some(message)) => message,
-            Ok(None) => {
-                if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
-                    driver
-                        .reconcile_turn_execution(operation_id, obligation_id)
-                        .await;
-                }
-                log::error!(
-                    "accepted queued TurnStarted omitted its assistant projection [{agent_message_id}]"
-                );
-                return;
-            }
-            Err(error) => {
-                if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
-                    driver
-                        .reconcile_turn_execution(operation_id, obligation_id)
-                        .await;
-                }
-                log::error!(
-                    "accepted queued assistant projection remains unreadable for {session_id}: {error}"
-                );
-                return;
-            }
-        }
-    } else {
-        legacy_agent_message.expect("legacy test queue path must materialize its assistant")
-    };
-    let restore_policy = match context_restore_policy_for_turn(
-        ctx,
-        session_id,
-        &agent_message_id,
-        had_runtime,
-    ) {
-        Ok(policy) => policy,
-        Err(error) => {
-            if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
-                driver
-                    .reconcile_turn_execution(operation_id, obligation_id)
-                    .await;
-            }
-            log::error!(
-                    "queued turn restore context remains pending for {session_id}; provider start was not attempted: {error}"
-                );
-            return;
-        }
-    };
-    let context_was_reinjected =
-        matches!(&restore_policy.plan, ContextRestorePlan::Reinject { .. });
-    let recovery_restore_required = restore_policy.recovery_restore_required;
-    let restore_plan = restore_policy.plan;
-    if restore_plan.carry_state() == Some(ContextCarryState::Reinjected) {
-        match ctx.session_store.update_context_carry_if_changed(
-            &ctx.data_dir,
-            session_id,
-            Some(ContextCarryState::Reinjected),
-        ) {
-            Ok(Some(meta)) => ctx.notifier.context_carry_updated(
-                session_id,
-                meta.agent_session_id,
-                meta.context_carry,
-                meta.updated_at,
-            ),
-            Ok(None) => {}
-            Err(error) => {
-                if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
-                    driver
-                        .reconcile_turn_execution(operation_id, obligation_id)
-                        .await;
-                }
-                log::error!(
-                    "queued reinjected context carry remains pending for {session_id}; provider start was not attempted: {error}"
-                );
-                return;
-            }
         }
     }
     if !durably_accepted {
@@ -6497,21 +7930,110 @@ pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &st
     let Some(generation) = generation else {
         return;
     };
-    let prompt = apply_restore_prompt_prefix(queued.content.clone(), &restore_plan);
+    let runtime = match runtime {
+        Some(runtime) => runtime,
+        None => {
+            let runtime_open_epoch = {
+                let mut sessions = ctx.sessions.lock().await;
+                let Some(state) = sessions.get_mut(session_id) else {
+                    return;
+                };
+                if state.generation != generation {
+                    return;
+                }
+                state.bump_runtime_epoch()
+            };
+            match open_runtime_for_session(
+                ctx,
+                &session,
+                system_prompt.clone(),
+                Some(runtime_open_epoch),
+            )
+            .await
+            {
+                Ok(runtime) => runtime,
+                Err(AgentRuntimeError::BackendSessionLost { .. }) => {
+                    if let Err(error) = recover_backend_session(
+                        ctx,
+                        session_id,
+                        BackendSessionRecoveryReason::BackendSessionLost,
+                    )
+                    .await
+                    {
+                        if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
+                            arm_accepted_send_recovery_after_claim_release(
+                                driver.as_ref(),
+                                operation_id,
+                                obligation_id,
+                                &mut accepted_claim,
+                            )
+                            .await;
+                        }
+                        log::warn!(
+                            "failed to recover backend session for queued turn {session_id}: {error}"
+                        );
+                    }
+                    return;
+                }
+                Err(error) => {
+                    log::warn!("failed to reopen runtime for queued turn {session_id}: {error}");
+                    let terminal = complete_turn_with_acceptance_and_persist_kind(
+                        ctx,
+                        session_id,
+                        Some(generation),
+                        TurnResult::Interrupted {
+                            reason: DomainInterruptReason::Crash,
+                            error: Some(error.to_string()),
+                        },
+                        PersistFailureKind::ReopenRuntime,
+                    )
+                    .await;
+                    match terminal {
+                        Ok((Some(notification), _)) => {
+                            dispatch_workflow_turn_complete_notification(
+                                &ctx.workflow_turn_complete_notifier,
+                                notification,
+                            )
+                            .await;
+                        }
+                        Ok((None, _)) => {}
+                        Err(persist_error) => {
+                            if let Some((operation_id, obligation_id, driver)) =
+                                &accepted_obligation
+                            {
+                                arm_accepted_send_recovery_after_claim_release(
+                                    driver.as_ref(),
+                                    operation_id,
+                                    obligation_id,
+                                    &mut accepted_claim,
+                                )
+                                .await;
+                            }
+                            log::error!(
+                                "failed to persist queued runtime reopen error for {session_id}: {persist_error}"
+                            );
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+    };
     if !turn_owns_runtime(ctx, session_id, generation, &runtime).await {
         if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
-            driver
-                .reconcile_turn_execution(operation_id, obligation_id)
-                .await;
+            arm_accepted_send_recovery_after_claim_release(
+                driver.as_ref(),
+                operation_id,
+                obligation_id,
+                &mut accepted_claim,
+            )
+            .await;
         }
         detach_runtime_if_current(ctx, session_id, &runtime).await;
         return;
     }
-    let selected_model = had_runtime
-        .then(|| selected_model_for_runtime(ctx, &session))
-        .transpose();
     let start_result = async {
-        if let Some(model) = selected_model? {
+        if let Some(model) = selected_model {
             runtime.set_model(&model).await?;
         }
         runtime
@@ -6538,9 +8060,13 @@ pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &st
     let _runtime_event_guard = ctx.runtime_event_locks.acquire(session_id).await;
     if let Err(error) = start_result {
         if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
-            driver
-                .reconcile_turn_execution(operation_id, obligation_id)
-                .await;
+            arm_accepted_send_recovery_after_claim_release(
+                driver.as_ref(),
+                operation_id,
+                obligation_id,
+                &mut accepted_claim,
+            )
+            .await;
         }
         if !turn_runtime_is_current(ctx, session_id, generation, &runtime).await {
             return;
@@ -6573,17 +8099,29 @@ pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &st
             }
         }
     } else {
-        if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
-            if driver
-                .mark_turn_running(operation_id, obligation_id, turn_id)
-                .await
-                .is_err()
-            {
-                driver
-                    .reconcile_turn_execution(operation_id, obligation_id)
-                    .await;
-                return;
-            }
+        spawn_stale_watchdog_task(
+            ctx,
+            session_id.to_string(),
+            generation,
+            stale_timeout_for_session(&session),
+        );
+        let runtime_epoch = {
+            let sessions = ctx.sessions.lock().await;
+            sessions
+                .get(session_id)
+                .filter(|state| state.generation == generation)
+                .map(|state| state.runtime_epoch)
+                .unwrap_or_default()
+        };
+        if let Some((operation_id, obligation_id, _)) = &accepted_obligation {
+            mark_accepted_turn_running_or_retry(
+                ctx,
+                session_id,
+                generation,
+                operation_id.clone(),
+                obligation_id.clone(),
+                turn_id,
+            );
         }
         if !turn_owns_runtime(ctx, session_id, generation, &runtime).await {
             return;
@@ -6607,34 +8145,24 @@ pub(super) async fn start_next_queued_turn(ctx: &RuntimeContext, session_id: &st
         );
         ctx.notifier
             .turn_prepared(&session, &human_message, &agent_message);
-        if recovery_restore_required {
-            if let Err(error) =
-                complete_context_reinjection_after_start(ctx, session_id, context_was_reinjected)
-            {
-                if let Some((operation_id, obligation_id, driver)) = &accepted_obligation {
-                    driver
-                        .reconcile_turn_execution(operation_id, obligation_id)
-                        .await;
-                }
-                log::error!(
-                    "queued turn context-reinjection completion remains pending for {session_id}: {error}"
-                );
-                return;
-            }
-        }
-        spawn_stale_watchdog_task(
+        drop(_runtime_event_guard);
+        complete_context_restore_after_start_or_retry(
             ctx,
             session_id.to_string(),
-            generation,
-            stale_timeout_for_session(&session),
+            runtime_epoch,
+            ContextRestoreCompletionRequest::after_started_turn(
+                expected_provider_session_generation,
+                turn_id,
+                context_was_reinjected,
+                clear_context_carry_after_start,
+                recovery_restore_required,
+            ),
         );
-        emit_session_state_change(
-            &ctx.session_store,
+        emit_session_state_change_from_session(
+            &session,
             &ctx.notifier,
             &ctx.status_center,
             &ctx.status_notifier,
-            &ctx.data_dir,
-            session_id,
             StateChange {
                 turn_phase: TurnPhase::Streaming,
                 queue_paused: None,
@@ -6671,6 +8199,20 @@ fn queued_human_message(queued: &QueuedTurnInput) -> ChatMessage {
                 .map(crate::usecase::agent_session::session::MessageMention::from_domain)
                 .collect()
         }),
+    }
+}
+
+fn queued_agent_projection(message_id: String, timestamp: f64) -> ChatMessage {
+    ChatMessage {
+        id: message_id,
+        role: MessageRole::Agent,
+        content: String::new(),
+        thinking: None,
+        activities: None,
+        parts: None,
+        streaming_final_seq: 0,
+        timestamp,
+        mentions: None,
     }
 }
 
@@ -6913,6 +8455,7 @@ pub(super) struct StateChange {
 struct TerminalProjection {
     exit_code: i64,
     interrupted: bool,
+    pause_queue: bool,
     session_state: SessionState,
     event: TerminalEventProjection,
 }
@@ -7113,15 +8656,17 @@ fn resync_permission_mode(
 }
 
 fn final_turn_events(
-    session_store: &Arc<SessionStore>,
-    data_dir: &Path,
+    ctx: &RuntimeContext,
     session_id: &str,
     turn_id: u64,
     message_id: &str,
     parts: &[MessagePart],
     terminal: &TerminalProjection,
+    completed_at: f64,
 ) -> Result<Vec<AgentSessionEvent>, String> {
-    let existing_events = session_store.load_current_reducer_events(data_dir, session_id)?;
+    let existing_events = ctx
+        .session_store
+        .load_current_reducer_events(&ctx.data_dir, session_id)?;
     if existing_events.iter().any(|event| {
         matches!(
             event,
@@ -7131,6 +8676,10 @@ fn final_turn_events(
     }) {
         return Ok(Vec::new());
     }
+    let queue_was_paused = TurnEventLog::from_events(existing_events.clone())
+        .project()
+        .queue_paused_at
+        .is_some();
     let mut appended = vec![AgentSessionEvent::FinalPartsRecorded {
         turn_id,
         message_id: message_id.to_string(),
@@ -7162,6 +8711,9 @@ fn final_turn_events(
             appended.extend(events.into_iter().skip(before));
         }
     }
+    if terminal.pause_queue && !queue_was_paused {
+        appended.push(AgentSessionEvent::QueuePaused { at: completed_at });
+    }
     Ok(appended)
 }
 
@@ -7173,6 +8725,7 @@ fn terminal_projection(result: &TurnResult) -> TerminalProjection {
         } => TerminalProjection {
             exit_code: 0,
             interrupted: false,
+            pause_queue: false,
             session_state: SessionState::Done,
             event: TerminalEventProjection::Completed {
                 stop_reason: stop_reason.map(map_turn_stop_reason),
@@ -7182,6 +8735,7 @@ fn terminal_projection(result: &TurnResult) -> TerminalProjection {
         TurnResult::Failed { token_usage, .. } => TerminalProjection {
             exit_code: 1,
             interrupted: false,
+            pause_queue: true,
             session_state: SessionState::Error,
             event: TerminalEventProjection::Completed {
                 stop_reason: None,
@@ -7206,6 +8760,7 @@ fn terminal_projection(result: &TurnResult) -> TerminalProjection {
             TerminalProjection {
                 exit_code,
                 interrupted: true,
+                pause_queue: true,
                 session_state,
                 event: TerminalEventProjection::Interrupted {
                     reason: event_reason,
@@ -7305,6 +8860,27 @@ pub(super) fn emit_session_state_change(
     );
 }
 
+fn emit_session_state_change_from_session(
+    session: &ChatSession,
+    notifier: &Arc<dyn AgentSessionEventNotifier>,
+    status_center: &Arc<AgentStatusCenter>,
+    status_notifier: &Arc<dyn AgentStatusNotifier>,
+    change: StateChange,
+) {
+    notifier.session_state_changed(AgentSessionStateChangedPayload {
+        chat_session_id: session.id.clone(),
+        turn_phase: change.turn_phase,
+        exit_code: change.exit_code,
+        completed_at: change.completed_at,
+        interrupted: change.interrupted,
+        session_state: change.session_state.clone(),
+        queue_paused: change.queue_paused,
+        pending_permission_request: change.pending_permission_request.clone(),
+        pending_permission_state_revision: change.pending_permission_state_revision,
+    });
+    publish_status_change_from_session(session, status_center, status_notifier, change);
+}
+
 fn publish_status_change(
     session_store: &Arc<SessionStore>,
     status_center: &Arc<AgentStatusCenter>,
@@ -7321,6 +8897,15 @@ fn publish_status_change(
             return;
         }
     };
+    publish_status_change_from_session(&session, status_center, status_notifier, change);
+}
+
+fn publish_status_change_from_session(
+    session: &ChatSession,
+    status_center: &Arc<AgentStatusCenter>,
+    status_notifier: &Arc<dyn AgentStatusNotifier>,
+    change: StateChange,
+) {
     let session_state = change
         .session_state
         .unwrap_or_else(|| session.state.clone());
@@ -7481,7 +9066,8 @@ mod tests {
     use crate::domain::workflow::WorkflowNodeContext;
     use crate::test_support::{
         build_agent_runtime_usecase_with_controller,
-        build_agent_runtime_usecase_with_controller_and_notifiers, build_session_store,
+        build_agent_runtime_usecase_with_controller_and_notifiers,
+        build_agent_runtime_usecase_with_controller_and_spawner, build_session_store,
         TestRuntimeCallKind,
     };
     use crate::usecase::agent_session::runtime::ports::{
@@ -7503,7 +9089,7 @@ mod tests {
     use std::future::Future;
     use std::path::Path;
     use std::pin::Pin;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier, Condvar, Mutex};
     use std::time::Duration;
     use tokio::sync::Notify;
@@ -7514,6 +9100,12 @@ mod tests {
         fn spawn(&self, future: Pin<Box<dyn Future<Output = ()> + Send + 'static>>) {
             tokio::spawn(future);
         }
+    }
+
+    struct DroppingSpawner;
+
+    impl AgentTaskSpawner for DroppingSpawner {
+        fn spawn(&self, _future: Pin<Box<dyn Future<Output = ()> + Send + 'static>>) {}
     }
 
     struct EmptyInstructionSource;
@@ -7534,6 +9126,88 @@ mod tests {
 
     fn test_session_runtime_locks() -> SessionRuntimeLocks {
         Arc::new(SessionCommandLocks::default())
+    }
+
+    fn accepted_queued_input(
+        queue_item_id: &str,
+        human_message_id: &str,
+        turn_id: u64,
+    ) -> QueuedTurnInput {
+        let mut queued = QueuedTurnInput::new(
+            queue_item_id.to_string(),
+            PermissionMode::Edit,
+            false,
+            None,
+            Vec::new(),
+            "/repo".to_string(),
+            Vec::new(),
+            None,
+        );
+        queued.id = queue_item_id.to_string();
+        queued.existing_human_message_id = Some(human_message_id.to_string());
+        queued.existing_agent_message_id = Some(format!("{human_message_id}:agent"));
+        queued.reserved_turn_id = Some(turn_id);
+        queued.accepted_operation_id = Some(format!("operation-{turn_id}"));
+        queued.execution_obligation_id = Some(format!("operation-{turn_id}.exec"));
+        queued
+    }
+
+    #[test]
+    fn accepted_queue_restoration_uses_canonical_order_not_arrival_order() {
+        let canonical = vec![
+            CanonicalQueuedSend {
+                queue_item_id: "queue-2".to_string(),
+                human_message_id: "human-2".to_string(),
+                reserved_turn_id: "2".to_string(),
+                input_ref: "input-2".to_string(),
+            },
+            CanonicalQueuedSend {
+                queue_item_id: "queue-3".to_string(),
+                human_message_id: "human-3".to_string(),
+                reserved_turn_id: "3".to_string(),
+                input_ref: "input-3".to_string(),
+            },
+        ];
+        let mut pending = std::collections::VecDeque::new();
+        let later = accepted_queued_input("queue-3", "human-3", 3);
+        insert_accepted_queue_in_canonical_order(&mut pending, later.clone(), &canonical).unwrap();
+        assert!(
+            !queued_input_matches_canonical_entry(
+                pending.front().unwrap(),
+                canonical.first().unwrap()
+            ),
+            "a later item restored alone must not satisfy the canonical front fence"
+        );
+
+        insert_accepted_queue_in_canonical_order(
+            &mut pending,
+            accepted_queued_input("queue-2", "human-2", 2),
+            &canonical,
+        )
+        .unwrap();
+        assert_eq!(
+            pending
+                .iter()
+                .map(|queued| queued.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["queue-2", "queue-3"]
+        );
+
+        insert_accepted_queue_in_canonical_order(&mut pending, later, &canonical).unwrap();
+        assert_eq!(
+            pending
+                .iter()
+                .map(|queued| queued.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["queue-2", "queue-3"],
+            "same-effect restoration must remain idempotent"
+        );
+        assert!(insert_accepted_queue_in_canonical_order(
+            &mut pending,
+            accepted_queued_input("queue-4", "human-4", 4),
+            &canonical,
+        )
+        .is_err());
     }
 
     #[tokio::test]
@@ -9743,7 +11417,7 @@ mod tests {
         let session_store = Arc::new(build_session_store());
         let (usecase, controller) =
             crate::test_support::build_agent_runtime_usecase_with_controller(
-                session_store,
+                session_store.clone(),
                 tmp.path(),
             );
         let response = usecase
@@ -10466,6 +12140,8 @@ mod tests {
                 .record_backend_session_established(
                     data_dir,
                     &session.id,
+                    0,
+                    "provider-establish-test-observation",
                     resume_id.to_string(),
                     Some(ContextCarryState::Resumed),
                 )
@@ -10957,7 +12633,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_failed終端したturnの後も同一sessionへの次sendは新turnを開始できる() {
+    async fn failed_terminal_pauses_queued_work_until_explicit_resume() {
         // Given: a session whose turn ends as Failed (e.g. Codex remote compact failure).
         let tmp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(build_session_store());
@@ -10994,6 +12670,23 @@ mod tests {
             .unwrap();
         wait_for_turn_phase(&usecase, &session_id, TurnPhase::Idle).await;
 
+        assert!(
+            session_store
+                .load_queue_paused_at(tmp.path(), &session_id)
+                .unwrap()
+                .is_some(),
+            "a provider failure must durably pause the queue"
+        );
+        assert!(
+            usecase
+                .get_session(&session_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .queue_paused,
+            "the live read model must agree with the durable pause"
+        );
+
         // When: the user sends the next message to the same session.
         let second = usecase
             .send_message(SendAgentMessageRequest {
@@ -11011,9 +12704,21 @@ mod tests {
             .await
             .unwrap();
 
-        // Then: a new turn starts immediately instead of being queued.
-        assert!(second.agent_message.is_some());
-        assert!(second.queued_turn.is_none());
+        // Then: the follow-up remains queued until the user explicitly resumes it.
+        assert!(second.agent_message.is_none());
+        assert!(second.queued_turn.is_some());
+        assert_eq!(second.pending_queue_count, 1);
+        assert_eq!(
+            controller
+                .call_kinds_for(&session_id)
+                .into_iter()
+                .filter(|kind| *kind == TestRuntimeCallKind::StartTurn)
+                .count(),
+            1,
+            "failure must not hand the queued input to the provider"
+        );
+
+        usecase.resume_queue(&session_id).await.unwrap();
         wait_for_start_prompt_count(&controller, &session_id, 2).await;
         assert_eq!(
             usecase.turn_phase(&session_id).await,
@@ -11758,7 +13463,7 @@ mod tests {
         let session_store = Arc::new(build_session_store());
         let (usecase, controller) =
             crate::test_support::build_agent_runtime_usecase_with_controller(
-                session_store,
+                session_store.clone(),
                 tmp.path(),
             );
         let session_id = enqueue_second_turn_for_test(
@@ -11782,7 +13487,11 @@ mod tests {
 
         assert_eq!(usecase.pending_queue(&session_id).await.len(), 1);
         wait_for_start_prompt_count(&controller, &session_id, 2).await;
-        usecase.drain_next_queued_turn_for_test(&session_id).await;
+        assert!(session_store
+            .load_queue_paused_at(tmp.path(), &session_id)
+            .unwrap()
+            .is_some());
+        usecase.resume_queue(&session_id).await.unwrap();
         wait_for_start_prompt_count(&controller, &session_id, 3).await;
         assert!(usecase.pending_queue(&session_id).await.is_empty());
     }
@@ -12841,18 +14550,18 @@ mod tests {
         )
         .unwrap();
         original_store
-            .append_session_events(
-                tmp.path(),
-                &session.id,
-                &[AgentSessionEvent::QueuePaused { at: 8.0 }],
-            )
-            .unwrap();
-        original_store
             .begin_backend_session_recovery(
                 tmp.path(),
                 &session.id,
                 "resume-fence-recovery",
                 BackendSessionRecoveryReason::BackendSessionLost,
+            )
+            .unwrap();
+        original_store
+            .append_session_events(
+                tmp.path(),
+                &session.id,
+                &[AgentSessionEvent::QueuePaused { at: 8.0 }],
             )
             .unwrap();
         drop(original_store);
@@ -14224,6 +15933,18 @@ mod tests {
             )
             .unwrap();
         wait_for_error_state_change(&event_notifier, &session_id).await;
+        assert_eq!(
+            controller
+                .call_kinds_for(&session_id)
+                .into_iter()
+                .filter(|kind| *kind == TestRuntimeCallKind::StartTurn)
+                .count(),
+            1,
+            "Fatal must keep the queued turn paused until explicit resume"
+        );
+        assert_eq!(usecase.turn_phase(&session_id).await, Some(TurnPhase::Idle));
+
+        usecase.resume_queue(&session_id).await.unwrap();
         wait_for_start_prompt_count(&controller, &session_id, 2).await;
         assert_eq!(
             usecase.turn_phase(&session_id).await,
@@ -14834,7 +16555,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fatal_closes_runtime_preserves_queued_turn_and_drain_restarts_it() {
+    async fn fatal_closes_runtime_and_pauses_queued_turn_until_explicit_resume() {
         let tmp = tempfile::tempdir().unwrap();
         let session_store = Arc::new(build_session_store());
         let event_notifier = Arc::new(RecordingAgentNotifier::default());
@@ -14880,15 +16601,26 @@ mod tests {
             .unwrap();
 
         wait_for_call(&controller, &session_id, TestRuntimeCallKind::Close).await;
-        wait_for_start_prompt_count(&controller, &session_id, 2).await;
         assert!(event_notifier.state_changes().iter().any(|change| {
             change.chat_session_id == session_id
                 && change.turn_phase == TurnPhase::Idle
+                && change.queue_paused == Some(true)
                 && change.session_state == Some(SessionState::Error)
         }));
         assert_eq!(usecase.pending_queue(&session_id).await.len(), 1);
+        assert_eq!(
+            controller
+                .call_kinds_for(&session_id)
+                .iter()
+                .filter(|call| matches!(call, TestRuntimeCallKind::StartTurn))
+                .count(),
+            1,
+            "fatal must not automatically submit the queued turn"
+        );
 
         controller.release_start_turn();
+        usecase.resume_queue(&session_id).await.unwrap();
+        wait_for_start_prompt_count(&controller, &session_id, 2).await;
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 if usecase.pending_queue(&session_id).await.is_empty() {
@@ -15001,171 +16733,845 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn accepted_provider_create_and_resume_wait_for_durable_success_confirmation() {
-        for resume_id in [None, Some("stored-provider-session")] {
-            let tmp = tempfile::tempdir().unwrap();
-            let session_store = Arc::new(build_session_store());
-            let (usecase, controller) =
-                build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
-            let session = provider_establish_test_session(&session_store, tmp.path(), resume_id);
-            let baseline = session_store
-                .get_session_meta(tmp.path(), &session.id)
-                .unwrap()
-                .unwrap()
-                .provider_session_generation;
-            let task = tokio::spawn({
-                let usecase = usecase.clone();
-                let session_id = session.id.clone();
-                async move { usecase.establish_accepted_provider(&session_id).await }
-            });
+    #[derive(Default)]
+    struct RecordingAcceptedSendObligationDriver {
+        reconciliations: Mutex<Vec<(String, String)>>,
+        running: Mutex<Vec<(String, String, u64)>>,
+        recovery_wake: Mutex<Option<AcceptedSendRecoveryWake>>,
+    }
 
-            wait_for_open_count(&controller, &session.id, 1).await;
-            tokio::time::sleep(Duration::from_millis(20)).await;
-            assert!(
-                !task.is_finished(),
-                "provider open is not success confirmation for {resume_id:?}"
-            );
-            controller
-                .emit(
-                    &session.id,
-                    AgentRuntimeEvent::SessionEstablished {
-                        backend_session_id: resume_id
-                            .unwrap_or("created-provider-session")
-                            .to_string(),
-                        resume: if resume_id.is_some() {
-                            crate::domain::agent_session::gateway::ResumeOutcome::Resumed
-                        } else {
-                            crate::domain::agent_session::gateway::ResumeOutcome::NotRequested
-                        },
-                    },
-                )
-                .unwrap();
-            tokio::time::timeout(Duration::from_secs(3), task)
-                .await
-                .unwrap()
-                .unwrap()
-                .unwrap();
+    #[async_trait::async_trait]
+    impl AcceptedSendObligationDriver for RecordingAcceptedSendObligationDriver {
+        async fn claim_immediate_turn_execution(
+            &self,
+            _operation_id: &str,
+            _obligation_id: &str,
+        ) -> Result<AcceptedSendExecutionClaim, ()> {
+            Ok(AcceptedSendExecutionClaim::new(|| {}))
+        }
 
-            let confirmed = session_store
-                .get_session_meta(tmp.path(), &session.id)
+        async fn claim_queued_turn_execution(
+            &self,
+            _operation_id: &str,
+            _obligation_id: &str,
+            _session_id: &str,
+            _queue_item_id: &str,
+            _event: AgentSessionEvent,
+        ) -> Result<super::super::ports::AcceptedQueuedTurnExecutionClaimOutcome, ()> {
+            Ok(
+                super::super::ports::AcceptedQueuedTurnExecutionClaimOutcome::Claimed(
+                    super::super::ports::AcceptedSendExecutionClaim::new(|| {}),
+                ),
+            )
+        }
+
+        async fn mark_turn_running(
+            &self,
+            operation_id: &str,
+            obligation_id: &str,
+            turn_id: u64,
+        ) -> Result<(), ()> {
+            self.running.lock().unwrap().push((
+                operation_id.to_string(),
+                obligation_id.to_string(),
+                turn_id,
+            ));
+            Ok(())
+        }
+
+        async fn reconcile_turn_execution(
+            &self,
+            operation_id: &str,
+            obligation_id: &str,
+        ) -> Option<super::super::ports::AcceptedSendRecoveryWake> {
+            self.reconciliations
+                .lock()
                 .unwrap()
-                .unwrap();
-            assert_eq!(confirmed.provider_session_generation, baseline + 1);
-            assert_eq!(
-                confirmed.agent_session_id.as_deref(),
-                resume_id.or(Some("created-provider-session"))
-            );
-            assert!(usecase.provider_session_is_confirmed(&session.id).await);
-            assert_eq!(
-                controller
-                    .call_kinds_for(&session.id)
-                    .iter()
-                    .filter(|call| matches!(call, TestRuntimeCallKind::OpenSession { .. }))
-                    .count(),
-                1
-            );
+                .push((operation_id.to_string(), obligation_id.to_string()));
+            self.recovery_wake.lock().unwrap().take()
         }
     }
 
     #[tokio::test]
-    async fn accepted_provider_create_and_resume_without_confirmation_do_not_blindly_retry() {
-        for resume_id in [None, Some("stored-provider-session")] {
-            let tmp = tempfile::tempdir().unwrap();
-            let session_store = Arc::new(build_session_store());
-            let (usecase, controller) =
-                build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
-            let session = provider_establish_test_session(&session_store, tmp.path(), resume_id);
+    async fn queued_driver_reconciliation_wakes_after_the_complete_claim_release_chain() {
+        let first_release_observed = Arc::new(AtomicBool::new(false));
+        let final_release_observed = Arc::new(AtomicBool::new(false));
+        let wake_observed = Arc::new(AtomicBool::new(false));
+        let claim = AcceptedSendExecutionClaim::new({
+            let first_release_observed = Arc::clone(&first_release_observed);
+            move || first_release_observed.store(true, Ordering::SeqCst)
+        })
+        .release_then({
+            let first_release_observed = Arc::clone(&first_release_observed);
+            let final_release_observed = Arc::clone(&final_release_observed);
+            move || {
+                assert!(
+                    first_release_observed.load(Ordering::SeqCst),
+                    "the driver's original claim release must run first"
+                );
+                final_release_observed.store(true, Ordering::SeqCst);
+            }
+        });
+        let driver = RecordingAcceptedSendObligationDriver {
+            recovery_wake: Mutex::new(Some(AcceptedSendRecoveryWake::new({
+                let first_release_observed = Arc::clone(&first_release_observed);
+                let final_release_observed = Arc::clone(&final_release_observed);
+                let wake_observed = Arc::clone(&wake_observed);
+                move || {
+                    assert!(first_release_observed.load(Ordering::SeqCst));
+                    assert!(
+                        final_release_observed.load(Ordering::SeqCst),
+                        "queued dispatch release must precede the recovery wake"
+                    );
+                    wake_observed.store(true, Ordering::SeqCst);
+                }
+            }))),
+            ..Default::default()
+        };
+        let mut accepted_claim = Some(claim);
 
-            let error = usecase
-                .establish_accepted_provider(&session.id)
-                .await
-                .unwrap_err();
+        arm_accepted_send_recovery_after_claim_release(
+            &driver,
+            "queued-reconcile",
+            "queued-reconcile.exec",
+            &mut accepted_claim,
+        )
+        .await;
 
-            assert!(error.to_string().contains("no durable observation"));
-            assert!(!usecase.provider_session_is_confirmed(&session.id).await);
-            assert_eq!(
-                controller
-                    .call_kinds_for(&session.id)
-                    .iter()
-                    .filter(|call| matches!(call, TestRuntimeCallKind::OpenSession { .. }))
-                    .count(),
-                1,
-                "an unresolved {resume_id:?} effect must not be replayed in-place"
-            );
-        }
+        assert!(!first_release_observed.load(Ordering::SeqCst));
+        assert!(!final_release_observed.load(Ordering::SeqCst));
+        assert!(!wake_observed.load(Ordering::SeqCst));
+        drop(accepted_claim.take());
+        assert!(first_release_observed.load(Ordering::SeqCst));
+        assert!(final_release_observed.load(Ordering::SeqCst));
+        assert!(wake_observed.load(Ordering::SeqCst));
     }
 
     #[tokio::test]
-    async fn accepted_provider_create_and_resume_open_failure_do_not_retry() {
-        for resume_id in [None, Some("stored-provider-session")] {
-            let tmp = tempfile::tempdir().unwrap();
-            let session_store = Arc::new(build_session_store());
-            let (usecase, controller) =
-                build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
-            let session = provider_establish_test_session(&session_store, tmp.path(), resume_id);
-            controller.fail_next_open_session();
-
-            let error = usecase
-                .establish_accepted_provider(&session.id)
-                .await
-                .unwrap_err();
-
-            assert!(error
-                .to_string()
-                .contains("injected test open session failure"));
-            assert!(!usecase.provider_session_is_confirmed(&session.id).await);
-            assert_eq!(
-                controller
-                    .call_kinds_for(&session.id)
-                    .iter()
-                    .filter(|call| matches!(call, TestRuntimeCallKind::OpenSession { .. }))
-                    .count(),
-                1
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn provider_metadata_failure_keeps_establish_unconfirmed_without_duplicate_effect() {
+    async fn accepted_immediate_send_keeps_execution_identity_on_current_turn() {
         let tmp = tempfile::tempdir().unwrap();
-        let session_store = Arc::new(build_session_store());
+        let local_store =
+            LocalEventStore::open(LocalEventStoreConfig::production(tmp.path().to_path_buf()))
+                .unwrap();
+        let session_store = Arc::new(SessionStore::new(Arc::new(FileSessionStorage::default())));
+        let repository: Arc<dyn LocalEventTransactionRepository> = local_store.clone();
+        session_store.set_local_event_repository(
+            repository,
+            local_store.installation_id().to_string(),
+            Arc::new(AgentSessionProjectionCodecV1),
+        );
         let (usecase, controller) =
             build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
         let session = provider_establish_test_session(&session_store, tmp.path(), None);
-        session_store.set_backend_established_hook_for_test(Arc::new(|_, _| {
-            Err("injected provider metadata failure".to_string())
-        }));
-        let task = tokio::spawn({
-            let usecase = usecase.clone();
-            let session_id = session.id.clone();
-            async move { usecase.establish_accepted_provider(&session_id).await }
-        });
-        wait_for_open_count(&controller, &session.id, 1).await;
+        let human_message = add_message_internal(
+            &session_store,
+            tmp.path(),
+            &session.id,
+            MessageRole::Human,
+            "accepted prompt",
+            None,
+            None,
+        )
+        .unwrap();
+        let agent_message = add_message_internal(
+            &session_store,
+            tmp.path(),
+            &session.id,
+            MessageRole::Agent,
+            "",
+            None,
+            None,
+        )
+        .unwrap();
+
+        usecase
+            .execute_accepted_send(AcceptedSendExecution {
+                request: AcceptedRuntimeSendInput {
+                    content: "accepted prompt".to_string(),
+                    permission_mode: PermissionMode::Edit,
+                    plan_mode: false,
+                    images: Vec::new(),
+                    mentions: Vec::new(),
+                    editor_context: None,
+                    base_system_prompt: None,
+                    workflow_instructions: Vec::new(),
+                },
+                operation_id: "send-operation-1",
+                execution_obligation_id: "send-operation-1.execute",
+                session_id: &session.id,
+                human_message_id: &human_message.id,
+                assistant_message_id: Some(&agent_message.id),
+                disposition: crate::domain::agent_session::events::SendDisposition::StartedTurn {
+                    turn_id: "1".to_string(),
+                },
+                reserved_turn_id: None,
+            })
+            .await
+            .unwrap();
+
+        let (operation_id, execution_obligation_id) = {
+            let sessions = usecase.ctx.sessions.lock().await;
+            let current_turn = sessions
+                .get(&session.id)
+                .and_then(|state| state.current_turn_input.as_ref())
+                .expect("accepted turn input remains recoverable");
+            (
+                current_turn.accepted_operation_id.clone(),
+                current_turn.execution_obligation_id.clone(),
+            )
+        };
+        assert_eq!(operation_id.as_deref(), Some("send-operation-1"));
+        assert_eq!(
+            execution_obligation_id.as_deref(),
+            Some("send-operation-1.execute")
+        );
+        assert!(controller.call_kinds_for(&session.id).contains(
+            &TestRuntimeCallKind::StartTurnPrompt {
+                prompt: "accepted prompt".to_string(),
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn accepted_turn_backend_recovery_submits_input_before_provider_identity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let local_store =
+            LocalEventStore::open(LocalEventStoreConfig::production(tmp.path().to_path_buf()))
+                .unwrap();
+        let session_store = Arc::new(SessionStore::new(Arc::new(FileSessionStorage::default())));
+        let repository: Arc<dyn LocalEventTransactionRepository> = local_store.clone();
+        session_store.set_local_event_repository(
+            repository,
+            local_store.installation_id().to_string(),
+            Arc::new(AgentSessionProjectionCodecV1),
+        );
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let obligation_driver = Arc::new(RecordingAcceptedSendObligationDriver::default());
+        usecase.set_accepted_send_obligation_driver(obligation_driver.clone());
+        let session =
+            provider_establish_test_session(&session_store, tmp.path(), Some("dead-provider"));
+        add_message_internal(
+            &session_store,
+            tmp.path(),
+            &session.id,
+            MessageRole::Human,
+            "previous context",
+            None,
+            None,
+        )
+        .unwrap();
+        add_message_internal(
+            &session_store,
+            tmp.path(),
+            &session.id,
+            MessageRole::Agent,
+            "previous answer",
+            None,
+            None,
+        )
+        .unwrap();
+        let human_message = add_message_internal(
+            &session_store,
+            tmp.path(),
+            &session.id,
+            MessageRole::Human,
+            "recover accepted prompt",
+            None,
+            None,
+        )
+        .unwrap();
+        let agent_message = add_message_internal(
+            &session_store,
+            tmp.path(),
+            &session.id,
+            MessageRole::Agent,
+            "",
+            None,
+            None,
+        )
+        .unwrap();
+        controller.fail_next_resume_open();
+
+        usecase
+            .execute_accepted_send(AcceptedSendExecution {
+                request: AcceptedRuntimeSendInput {
+                    content: "recover accepted prompt".to_string(),
+                    permission_mode: PermissionMode::Edit,
+                    plan_mode: false,
+                    images: Vec::new(),
+                    mentions: Vec::new(),
+                    editor_context: None,
+                    base_system_prompt: None,
+                    workflow_instructions: Vec::new(),
+                },
+                operation_id: "send-recovery-operation",
+                execution_obligation_id: "send-recovery-operation.exec",
+                session_id: &session.id,
+                human_message_id: &human_message.id,
+                assistant_message_id: Some(&agent_message.id),
+                disposition: crate::domain::agent_session::events::SendDisposition::StartedTurn {
+                    turn_id: "1".to_string(),
+                },
+                reserved_turn_id: None,
+            })
+            .await
+            .unwrap();
+
+        let calls_before_identity = controller.call_kinds_for(&session.id);
+        assert_eq!(
+            calls_before_identity
+                .iter()
+                .filter(|call| matches!(call, TestRuntimeCallKind::OpenSession { .. }))
+                .count(),
+            2,
+            "the dead resume is replaced exactly once"
+        );
+        let replacement_prompts = calls_before_identity
+            .iter()
+            .filter_map(|call| match call {
+                TestRuntimeCallKind::StartTurnPrompt { prompt } => Some(prompt),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(replacement_prompts.len(), 1);
+        assert!(replacement_prompts[0].contains("previous context"));
+        assert!(replacement_prompts[0].contains("previous answer"));
+        assert!(replacement_prompts[0].ends_with("recover accepted prompt"));
+        assert!(!usecase.provider_session_is_confirmed(&session.id).await);
+        assert!(
+            usecase
+                .owns_accepted_turn_execution(
+                    &session.id,
+                    "send-recovery-operation",
+                    "send-recovery-operation.exec",
+                )
+                .await
+        );
+        assert!(usecase.pending_queue(&session.id).await.is_empty());
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while obligation_driver.running.lock().unwrap().is_empty() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            obligation_driver.running.lock().unwrap().as_slice(),
+            &[(
+                "send-recovery-operation".to_string(),
+                "send-recovery-operation.exec".to_string(),
+                1,
+            )]
+        );
 
         controller
             .emit(
                 &session.id,
                 AgentRuntimeEvent::SessionEstablished {
-                    backend_session_id: "uncommitted-provider-session".to_string(),
+                    backend_session_id: "replacement-provider".to_string(),
                     resume: crate::domain::agent_session::gateway::ResumeOutcome::NotRequested,
                 },
             )
             .unwrap();
-        let error = tokio::time::timeout(Duration::from_secs(3), task)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap_err();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !usecase.provider_session_is_confirmed(&session.id).await {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
 
-        assert!(error.to_string().contains("no durable observation"));
+        assert_eq!(
+            controller
+                .call_kinds_for(&session.id)
+                .iter()
+                .filter(|call| matches!(call, TestRuntimeCallKind::StartTurn))
+                .count(),
+            1,
+            "provider identity completion must not enqueue or submit the turn again"
+        );
+        let recovered_meta = session_store
+            .get_session_meta(tmp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            recovered_meta.agent_session_id.as_deref(),
+            Some("replacement-provider")
+        );
+        assert_eq!(
+            recovered_meta.context_carry,
+            Some(ContextCarryState::Reinjected)
+        );
+        assert_eq!(recovered_meta.context_reinjection_generation, None);
+    }
+
+    #[tokio::test]
+    async fn accepted_turn_backend_lost_event_restarts_without_lock_reentry_or_second_claim() {
+        let tmp = tempfile::tempdir().unwrap();
+        let local_store =
+            LocalEventStore::open(LocalEventStoreConfig::production(tmp.path().to_path_buf()))
+                .unwrap();
+        let session_store = Arc::new(SessionStore::new(Arc::new(FileSessionStorage::default())));
+        let repository: Arc<dyn LocalEventTransactionRepository> = local_store.clone();
+        session_store.set_local_event_repository(
+            repository,
+            local_store.installation_id().to_string(),
+            Arc::new(AgentSessionProjectionCodecV1),
+        );
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let obligation_driver = Arc::new(RecordingAcceptedSendObligationDriver::default());
+        usecase.set_accepted_send_obligation_driver(obligation_driver.clone());
+        let session = provider_establish_test_session(&session_store, tmp.path(), None);
+        let human_message = add_message_internal(
+            &session_store,
+            tmp.path(),
+            &session.id,
+            MessageRole::Human,
+            "continue exact accepted turn",
+            None,
+            None,
+        )
+        .unwrap();
+        let agent_message = add_message_internal(
+            &session_store,
+            tmp.path(),
+            &session.id,
+            MessageRole::Agent,
+            "",
+            None,
+            None,
+        )
+        .unwrap();
+
+        usecase
+            .execute_accepted_send(AcceptedSendExecution {
+                request: AcceptedRuntimeSendInput {
+                    content: "continue exact accepted turn".to_string(),
+                    permission_mode: PermissionMode::Edit,
+                    plan_mode: false,
+                    images: Vec::new(),
+                    mentions: Vec::new(),
+                    editor_context: None,
+                    base_system_prompt: None,
+                    workflow_instructions: Vec::new(),
+                },
+                operation_id: "send-backend-lost-operation",
+                execution_obligation_id: "send-backend-lost-operation.exec",
+                session_id: &session.id,
+                human_message_id: &human_message.id,
+                assistant_message_id: Some(&agent_message.id),
+                disposition: crate::domain::agent_session::events::SendDisposition::StartedTurn {
+                    turn_id: "1".to_string(),
+                },
+                reserved_turn_id: None,
+            })
+            .await
+            .unwrap();
+        wait_for_start_prompt_count(&controller, &session.id, 1).await;
+
+        controller
+            .emit(&session.id, AgentRuntimeEvent::BackendSessionCleared)
+            .unwrap();
+        wait_for_open_count(&controller, &session.id, 2).await;
+        wait_for_start_prompt_count(&controller, &session.id, 2).await;
+
+        assert!(
+            usecase
+                .owns_accepted_turn_execution(
+                    &session.id,
+                    "send-backend-lost-operation",
+                    "send-backend-lost-operation.exec",
+                )
+                .await
+        );
+        assert!(usecase.pending_queue(&session.id).await.is_empty());
+        assert_eq!(
+            obligation_driver.running.lock().unwrap().as_slice(),
+            &[(
+                "send-backend-lost-operation".to_string(),
+                "send-backend-lost-operation.exec".to_string(),
+                1,
+            )]
+        );
+        assert_eq!(
+            controller
+                .call_kinds_for(&session.id)
+                .iter()
+                .filter(|call| matches!(
+                    call,
+                    TestRuntimeCallKind::StartTurnPrompt { prompt }
+                        if prompt == "continue exact accepted turn"
+                ))
+                .count(),
+            2,
+            "one original submission and one replacement-runtime continuation are expected"
+        );
+
+        controller
+            .emit(
+                &session.id,
+                AgentRuntimeEvent::SessionEstablished {
+                    backend_session_id: "replacement-after-loss".to_string(),
+                    resume: crate::domain::agent_session::gateway::ResumeOutcome::NotRequested,
+                },
+            )
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !usecase.provider_session_is_confirmed(&session.id).await {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            controller
+                .call_kinds_for(&session.id)
+                .iter()
+                .filter(|call| matches!(call, TestRuntimeCallKind::StartTurn))
+                .count(),
+            2,
+            "identity completion must not submit a third input"
+        );
+        assert_eq!(
+            session_store
+                .get_session_meta(tmp.path(), &session.id)
+                .unwrap()
+                .unwrap()
+                .context_reinjection_generation,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn accepted_stop_fences_late_backend_loss_without_reopening_the_turn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let local_store =
+            LocalEventStore::open(LocalEventStoreConfig::production(tmp.path().to_path_buf()))
+                .unwrap();
+        let session_store = Arc::new(SessionStore::new(Arc::new(FileSessionStorage::default())));
+        let repository: Arc<dyn LocalEventTransactionRepository> = local_store.clone();
+        session_store.set_local_event_repository(
+            repository,
+            local_store.installation_id().to_string(),
+            Arc::new(AgentSessionProjectionCodecV1),
+        );
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let session = provider_establish_test_session(&session_store, tmp.path(), None);
+        let human_message = add_message_internal(
+            &session_store,
+            tmp.path(),
+            &session.id,
+            MessageRole::Human,
+            "stop this accepted turn",
+            None,
+            None,
+        )
+        .unwrap();
+        let agent_message = add_message_internal(
+            &session_store,
+            tmp.path(),
+            &session.id,
+            MessageRole::Agent,
+            "",
+            None,
+            None,
+        )
+        .unwrap();
+
+        usecase
+            .execute_accepted_send(AcceptedSendExecution {
+                request: AcceptedRuntimeSendInput {
+                    content: "stop this accepted turn".to_string(),
+                    permission_mode: PermissionMode::Edit,
+                    plan_mode: false,
+                    images: Vec::new(),
+                    mentions: Vec::new(),
+                    editor_context: None,
+                    base_system_prompt: None,
+                    workflow_instructions: Vec::new(),
+                },
+                operation_id: "send-stop-race-operation",
+                execution_obligation_id: "send-stop-race-operation.exec",
+                session_id: &session.id,
+                human_message_id: &human_message.id,
+                assistant_message_id: Some(&agent_message.id),
+                disposition: crate::domain::agent_session::events::SendDisposition::StartedTurn {
+                    turn_id: "1".to_string(),
+                },
+                reserved_turn_id: None,
+            })
+            .await
+            .unwrap();
+        wait_for_start_prompt_count(&controller, &session.id, 1).await;
+
+        let runtime_epoch = {
+            let sessions = usecase.ctx.sessions.lock().await;
+            let state = sessions.get(&session.id).expect("active runtime state");
+            assert!(!state.queue_paused);
+            assert_eq!(state.interrupt_requested_generation, None);
+            state.runtime_epoch
+        };
+        let accepted_at = crate::usecase::agent_session::session::now_timestamp();
+        append_session_events_blocking(
+            &usecase.ctx,
+            &session.id,
+            vec![
+                AgentSessionEvent::TurnInterruptRequested {
+                    turn_id: 1,
+                    at: accepted_at,
+                },
+                AgentSessionEvent::QueuePaused { at: accepted_at },
+            ],
+        )
+        .await
+        .unwrap();
+
+        // The durable acceptance closes the interval before the production
+        // gate can install its process-local fence.
+        apply_runtime_event(
+            &usecase.ctx,
+            &session.id,
+            runtime_epoch,
+            crate::usecase::agent_session::session::now_timestamp(),
+            AgentRuntimeEvent::BackendSessionCleared,
+        )
+        .await
+        .unwrap();
+
+        usecase
+            .interrupt_provider_effect_after_stop_acceptance(&session.id, 1)
+            .await
+            .unwrap();
+        {
+            let sessions = usecase.ctx.sessions.lock().await;
+            let state = sessions.get(&session.id).expect("active runtime state");
+            assert!(state.queue_paused);
+            assert_eq!(state.queue_paused_at, Some(accepted_at));
+            assert_eq!(
+                state.interrupt_requested_generation,
+                Some(state.generation),
+                "durable Stop must fence the exact active process generation"
+            );
+        }
+        apply_runtime_event(
+            &usecase.ctx,
+            &session.id,
+            runtime_epoch,
+            crate::usecase::agent_session::session::now_timestamp(),
+            AgentRuntimeEvent::BackendSessionCleared,
+        )
+        .await
+        .unwrap();
+
+        let calls = controller.call_kinds_for(&session.id);
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| matches!(call, TestRuntimeCallKind::OpenSession { .. }))
+                .count(),
+            1,
+            "a provider-loss event after Stop acceptance must not open a replacement runtime"
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| matches!(call, TestRuntimeCallKind::StartTurn))
+                .count(),
+            1,
+            "a provider-loss event after Stop acceptance must not resubmit the input"
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| matches!(call, TestRuntimeCallKind::Interrupt))
+                .count(),
+            1
+        );
+        assert!(!session_store
+            .load_session_events(tmp.path(), &session.id)
+            .unwrap()
+            .iter()
+            .any(|event| matches!(
+                event,
+                AgentSessionEvent::BackendSessionRecoveryStarted { .. }
+            )));
+    }
+
+    #[tokio::test]
+    async fn accepted_turn_event_recovery_open_failure_reconciles_the_exact_execution() {
+        let tmp = tempfile::tempdir().unwrap();
+        let local_store =
+            LocalEventStore::open(LocalEventStoreConfig::production(tmp.path().to_path_buf()))
+                .unwrap();
+        let session_store = Arc::new(SessionStore::new(Arc::new(FileSessionStorage::default())));
+        let repository: Arc<dyn LocalEventTransactionRepository> = local_store.clone();
+        session_store.set_local_event_repository(
+            repository,
+            local_store.installation_id().to_string(),
+            Arc::new(AgentSessionProjectionCodecV1),
+        );
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let driver = Arc::new(RecordingAcceptedSendObligationDriver::default());
+        usecase.set_accepted_send_obligation_driver(driver.clone());
+        let session = provider_establish_test_session(&session_store, tmp.path(), None);
+        let human_message = add_message_internal(
+            &session_store,
+            tmp.path(),
+            &session.id,
+            MessageRole::Human,
+            "accepted turn whose replacement fails",
+            None,
+            None,
+        )
+        .unwrap();
+        let agent_message = add_message_internal(
+            &session_store,
+            tmp.path(),
+            &session.id,
+            MessageRole::Agent,
+            "",
+            None,
+            None,
+        )
+        .unwrap();
+
+        usecase
+            .execute_accepted_send(AcceptedSendExecution {
+                request: AcceptedRuntimeSendInput {
+                    content: "accepted turn whose replacement fails".to_string(),
+                    permission_mode: PermissionMode::Edit,
+                    plan_mode: false,
+                    images: Vec::new(),
+                    mentions: Vec::new(),
+                    editor_context: None,
+                    base_system_prompt: None,
+                    workflow_instructions: Vec::new(),
+                },
+                operation_id: "send-replacement-open-failure",
+                execution_obligation_id: "send-replacement-open-failure.exec",
+                session_id: &session.id,
+                human_message_id: &human_message.id,
+                assistant_message_id: Some(&agent_message.id),
+                disposition: crate::domain::agent_session::events::SendDisposition::StartedTurn {
+                    turn_id: "1".to_string(),
+                },
+                reserved_turn_id: None,
+            })
+            .await
+            .unwrap();
+        controller.fail_next_open();
+        controller
+            .emit(&session.id, AgentRuntimeEvent::BackendSessionCleared)
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let reconciled = !driver.reconciliations.lock().unwrap().is_empty();
+                if reconciled && usecase.turn_phase(&session.id).await == Some(TurnPhase::Idle) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            *driver.reconciliations.lock().unwrap(),
+            vec![(
+                "send-replacement-open-failure".to_string(),
+                "send-replacement-open-failure.exec".to_string(),
+            )]
+        );
+        assert_eq!(
+            controller
+                .call_kinds_for(&session.id)
+                .iter()
+                .filter(|call| matches!(call, TestRuntimeCallKind::StartTurn))
+                .count(),
+            1,
+            "a failed replacement open must not submit the input again"
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_send_leaves_current_turn_without_accepted_execution_identity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, _controller) =
+            build_agent_runtime_usecase_with_controller(session_store, tmp.path());
+
+        let response = usecase
+            .send_message(send_request(tmp.path().to_string_lossy().to_string()))
+            .await
+            .unwrap();
+
+        let sessions = usecase.ctx.sessions.lock().await;
+        let current_turn = sessions
+            .get(&response.session.id)
+            .and_then(|state| state.current_turn_input.as_ref())
+            .expect("legacy turn input remains available");
+        assert!(current_turn.accepted_operation_id.is_none());
+        assert!(current_turn.execution_obligation_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn provider_establishment_observation_retries_metadata_commit_without_reopening() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let session = provider_establish_test_session(&session_store, tmp.path(), None);
+        let commit_attempts = Arc::new(AtomicUsize::new(0));
+        session_store.set_backend_established_hook_for_test(Arc::new({
+            let commit_attempts = Arc::clone(&commit_attempts);
+            move |_, _| {
+                if commit_attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    return Err("injected provider metadata failure".to_string());
+                }
+                Ok(())
+            }
+        }));
+
+        usecase
+            .start_session(
+                &session.id,
+                StartSessionOptions {
+                    permission_mode: PermissionMode::Edit,
+                    plan_mode: false,
+                },
+            )
+            .await
+            .unwrap();
+        wait_for_open_count(&controller, &session.id, 1).await;
+        controller
+            .emit(
+                &session.id,
+                AgentRuntimeEvent::SessionEstablished {
+                    backend_session_id: "provider-session-1".to_string(),
+                    resume: crate::domain::agent_session::gateway::ResumeOutcome::NotRequested,
+                },
+            )
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !usecase.provider_session_is_confirmed(&session.id).await {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+
         let meta = session_store
             .get_session_meta(tmp.path(), &session.id)
             .unwrap()
             .unwrap();
-        assert_eq!(meta.provider_session_generation, 0);
-        assert!(meta.agent_session_id.is_none());
-        assert!(!usecase.provider_session_is_confirmed(&session.id).await);
+        assert_eq!(meta.agent_session_id.as_deref(), Some("provider-session-1"));
+        assert_eq!(meta.provider_session_generation, 1);
+        assert_eq!(commit_attempts.load(Ordering::SeqCst), 2);
         assert_eq!(
             controller
                 .call_kinds_for(&session.id)
@@ -15174,6 +17580,223 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn provider_establishment_commit_reply_loss_replays_exact_observation_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let local_store =
+            LocalEventStore::open(LocalEventStoreConfig::production(tmp.path().to_path_buf()))
+                .unwrap();
+        let session_store = Arc::new(SessionStore::new(Arc::new(FileSessionStorage::default())));
+        let repository: Arc<dyn LocalEventTransactionRepository> = local_store.clone();
+        session_store.set_local_event_repository(
+            repository,
+            local_store.installation_id().to_string(),
+            Arc::new(AgentSessionProjectionCodecV1),
+        );
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let session = provider_establish_test_session(&session_store, tmp.path(), None);
+
+        usecase
+            .start_session(
+                &session.id,
+                StartSessionOptions {
+                    permission_mode: PermissionMode::Edit,
+                    plan_mode: false,
+                },
+            )
+            .await
+            .unwrap();
+        wait_for_open_count(&controller, &session.id, 1).await;
+        local_store
+            .fault_injector()
+            .arm_crash_after_commit_before_readback();
+        controller
+            .emit(
+                &session.id,
+                AgentRuntimeEvent::SessionEstablished {
+                    backend_session_id: "provider-after-reply-loss".to_string(),
+                    resume: crate::domain::agent_session::gateway::ResumeOutcome::NotRequested,
+                },
+            )
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !usecase.provider_session_is_confirmed(&session.id).await {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let meta = session_store
+            .get_session_meta(tmp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            meta.agent_session_id.as_deref(),
+            Some("provider-after-reply-loss")
+        );
+        assert_eq!(meta.provider_session_generation, 1);
+        assert!(
+            meta.provider_session_observation_id.is_some(),
+            "the durable generation must retain the exact replay identity"
+        );
+        assert_eq!(
+            controller
+                .call_kinds_for(&session.id)
+                .iter()
+                .filter(|call| matches!(call, TestRuntimeCallKind::OpenSession { .. }))
+                .count(),
+            1,
+            "metadata reply loss must not reopen the provider"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn provider_establishment_persistence_does_not_hold_runtime_event_locks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let session = provider_establish_test_session(&session_store, tmp.path(), None);
+        let persistence_started = Arc::new(AtomicBool::new(false));
+        let release_persistence = Arc::new(AtomicBool::new(false));
+        session_store.set_backend_established_hook_for_test(Arc::new({
+            let persistence_started = Arc::clone(&persistence_started);
+            let release_persistence = Arc::clone(&release_persistence);
+            move |_, _| {
+                persistence_started.store(true, Ordering::SeqCst);
+                while !release_persistence.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Ok(())
+            }
+        }));
+
+        usecase
+            .start_session(
+                &session.id,
+                StartSessionOptions {
+                    permission_mode: PermissionMode::Edit,
+                    plan_mode: false,
+                },
+            )
+            .await
+            .unwrap();
+        wait_for_open_count(&controller, &session.id, 1).await;
+        controller
+            .emit(
+                &session.id,
+                AgentRuntimeEvent::SessionEstablished {
+                    backend_session_id: "provider-blocked-persistence".to_string(),
+                    resume: crate::domain::agent_session::gateway::ResumeOutcome::NotRequested,
+                },
+            )
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !persistence_started.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let lock_result = tokio::time::timeout(Duration::from_millis(250), async {
+            let _session_guard = usecase.ctx.session_locks.acquire(&session.id).await;
+            let _runtime_event_guard = usecase.ctx.runtime_event_locks.acquire(&session.id).await;
+        })
+        .await;
+        release_persistence.store(true, Ordering::SeqCst);
+        assert!(
+            lock_result.is_ok(),
+            "provider metadata I/O must not retain either runtime-event serialization lock"
+        );
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !usecase.provider_session_is_confirmed(&session.id).await {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn provider_establishment_lifecycle_fence_clears_exact_pending_observation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_store = Arc::new(build_session_store());
+        let (usecase, controller) =
+            build_agent_runtime_usecase_with_controller(session_store.clone(), tmp.path());
+        let session = provider_establish_test_session(&session_store, tmp.path(), None);
+        let commit_attempts = Arc::new(AtomicUsize::new(0));
+        session_store.set_backend_established_hook_for_test(Arc::new({
+            let commit_attempts = Arc::clone(&commit_attempts);
+            move |_, _| {
+                commit_attempts.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }));
+
+        usecase
+            .start_session(
+                &session.id,
+                StartSessionOptions {
+                    permission_mode: PermissionMode::Edit,
+                    plan_mode: false,
+                },
+            )
+            .await
+            .unwrap();
+        wait_for_open_count(&controller, &session.id, 1).await;
+        session_store
+            .set_session_state(tmp.path(), &session.id, SessionState::Error)
+            .unwrap();
+        controller
+            .emit(
+                &session.id,
+                AgentRuntimeEvent::SessionEstablished {
+                    backend_session_id: "late-provider-after-terminal".to_string(),
+                    resume: crate::domain::agent_session::gateway::ResumeOutcome::NotRequested,
+                },
+            )
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let pending = usecase
+                    .ctx
+                    .sessions
+                    .lock()
+                    .await
+                    .get(&session.id)
+                    .is_some_and(|state| state.provider_session_establishment.is_some());
+                if commit_attempts.load(Ordering::SeqCst) >= 1 && !pending {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        assert_eq!(
+            commit_attempts.load(Ordering::SeqCst),
+            1,
+            "a deterministic lifecycle fence must not enter the transient retry loop"
+        );
+        assert!(!usecase.provider_session_is_confirmed(&session.id).await);
+        let meta = session_store
+            .get_session_meta(tmp.path(), &session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(meta.state, SessionState::Error);
+        assert_eq!(meta.provider_session_generation, 0);
+        assert!(meta.agent_session_id.is_none());
+        assert!(meta.provider_session_observation_id.is_none());
     }
 
     #[tokio::test]
@@ -18477,22 +21100,13 @@ mod tests {
                     0
                 }
                 B036CrashBoundary::AfterExternalEffect => {
-                    let (usecase, controller) = build_agent_runtime_usecase_with_controller(
-                        session_store.clone(),
-                        tmp.path(),
-                    );
+                    let (usecase, controller) =
+                        build_agent_runtime_usecase_with_controller_and_spawner(
+                            session_store.clone(),
+                            tmp.path(),
+                            Arc::new(DroppingSpawner),
+                        );
                     controller.fail_next_open_session();
-                    session_store.set_append_event_hook_for_test(Arc::new(|_, event| {
-                        if matches!(
-                            event,
-                            AgentSessionEvent::BackendSessionRecoveryFailed { .. }
-                        ) {
-                            return Err(
-                                "injected process exit after backend recovery effect".to_string()
-                            );
-                        }
-                        Ok(())
-                    }));
                     assert!(recover_backend_session_with_identity(
                         &usecase.ctx,
                         &session.id,
@@ -18500,7 +21114,7 @@ mod tests {
                         recovery_id.clone(),
                     )
                     .await
-                    .is_err());
+                    .is_ok());
                     let count = controller
                         .call_kinds_for(&session.id)
                         .iter()
@@ -18945,6 +21559,23 @@ mod tests {
             result.is_ok(),
             "the send was durably accepted before backend recovery failed"
         );
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let meta = session_store
+                    .get_session_meta(tmp.path(), &session.id)
+                    .unwrap()
+                    .unwrap();
+                if !fail_error_once.load(Ordering::SeqCst)
+                    && meta.state == SessionState::Error
+                    && meta.pending_recovery_message.is_some()
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the detached recovery failure must settle before reconciliation");
         let before_reconcile = session_store
             .load_full_session_for_restore(tmp.path(), &session.id)
             .unwrap()

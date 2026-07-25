@@ -98,11 +98,11 @@ GIVEN provider が正確な permission response を必要とするが、安全�
 WHEN recovery を行う。
 THEN response を推測せず、再入力または手動解決が必要な状態を表示する。
 
-## B-017: Provider establish と send の依存
+## B-017: Provider identity と send の進行
 
-GIVEN send に provider session の確立が必要である。
-WHEN send が Accepted になる。
-THEN establish と send を同じ operation の回復可能な進行として表示し、確立前に provider start 完了を表示しない。
+GIVEN provider session が未確立の send である。
+WHEN Accepted 後に provider identity の確認と turn input の受理が前後いずれの順で発生する。
+THEN 両方を同じ send operation の進行として収束させ、一方を他方の不可能な事前条件にせず、同じ入力を重複送信しない。
 
 ## B-018: Readback できる外部作用直後の crash
 

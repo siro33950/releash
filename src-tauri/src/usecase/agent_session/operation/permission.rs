@@ -879,7 +879,7 @@ impl PermissionResponseOperationUsecase {
                     }),
                 }
             }
-            Err(CommitBatchError::PayloadConflict) => {
+            Err(CommitBatchError::PayloadConflict | CommitBatchError::EffectAdmissionBlocked) => {
                 match self.lookup_record(&request.operation_id).await {
                     Ok(Some(saved)) => {
                         if !constant_time_eq_32(&saved.principal_mac, &principal_mac) {
@@ -1218,7 +1218,8 @@ impl PermissionResponseOperationUsecase {
             Ok(CommitBatchResult::Replayed(_))
             | Err(CommitBatchError::OutcomeUnknown { .. })
             | Err(CommitBatchError::StreamHeadConflict { .. })
-            | Err(CommitBatchError::PayloadConflict) => {
+            | Err(CommitBatchError::PayloadConflict)
+            | Err(CommitBatchError::EffectAdmissionBlocked) => {
                 return AcceptedPermissionResponseOperation {
                     receipt: record.receipt,
                     latest_status: claim_status,

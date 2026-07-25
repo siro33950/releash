@@ -356,19 +356,41 @@ impl Drop for TestSessionRuntimeLockOwnerReservation {
 }
 
 impl AgentSessionRuntimeUsecase {
-    /// Execute only the provider-side interrupt effect. Durable Stop
-    /// admission owns all acceptance/terminal mutations and calls this after
-    /// its CAS commit; provider failures are returned for reconciliation.
-    pub(crate) async fn interrupt_provider_effect(
+    /// Fence the accepted turn in process memory, then execute only the
+    /// provider-side interrupt effect. Durable Stop admission owns all
+    /// acceptance/terminal mutations and calls this after its CAS commit.
+    ///
+    /// The fence must be installed before provider I/O: a late
+    /// `BackendSessionCleared` from the old runtime must not reopen and submit
+    /// the accepted turn after Stop owns it.
+    pub(crate) async fn interrupt_provider_effect_after_stop_acceptance(
         &self,
         session_id: &str,
+        turn_id: u64,
     ) -> Result<(), AgentRuntimeError> {
+        let durable_queue_paused_at = self
+            .ctx
+            .session_store
+            .load_queue_paused_at(&self.ctx.data_dir, session_id);
+        let projected_queue_paused_at = durable_queue_paused_at.as_ref().ok().copied().flatten();
         let runtime = {
-            let sessions = self.ctx.sessions.lock().await;
-            sessions
-                .get(session_id)
-                .and_then(|state| state.runtime.clone())
+            let _runtime_event_guard = self.ctx.runtime_event_locks.acquire(session_id).await;
+            let _transition_guard = self.ctx.transitions.acquire(session_id).await;
+            let mut sessions = self.ctx.sessions.lock().await;
+            let Some(state) = sessions.get_mut(session_id) else {
+                return Ok(());
+            };
+            if state.phase == RuntimeSessionPhase::Idle || state.current_turn_id != Some(turn_id) {
+                return Ok(());
+            }
+            state.queue_paused = true;
+            state.queue_paused_at = projected_queue_paused_at
+                .or(state.queue_paused_at)
+                .or_else(|| Some(crate::usecase::agent_session::session::now_timestamp()));
+            state.interrupt_requested_generation = Some(state.generation);
+            state.runtime.clone()
         };
+        durable_queue_paused_at.map_err(AgentRuntimeError::Other)?;
         if let Some(runtime) = runtime {
             runtime.interrupt().await?;
         }

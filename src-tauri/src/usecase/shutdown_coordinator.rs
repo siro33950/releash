@@ -978,7 +978,7 @@ impl ShutdownCoordinator {
                     }),
                 }
             }
-            Err(CommitBatchError::PayloadConflict) => {
+            Err(CommitBatchError::PayloadConflict | CommitBatchError::EffectAdmissionBlocked) => {
                 let stored = self.get_binding(&key).await?;
                 if stored.as_ref().is_some_and(|stored| {
                     stored.operation_id == operation_id
@@ -2293,7 +2293,7 @@ impl ShutdownCoordinator {
                     process_action: None,
                 });
             }
-            Err(CommitBatchError::PayloadConflict) => {
+            Err(CommitBatchError::PayloadConflict | CommitBatchError::EffectAdmissionBlocked) => {
                 if let Some(saved) = self
                     .shutdown_recovery_action_record(&request.action_id)
                     .await?
@@ -2610,7 +2610,7 @@ impl ShutdownCoordinator {
                     process_action: None,
                 })
             }
-            Err(CommitBatchError::PayloadConflict) => {
+            Err(CommitBatchError::PayloadConflict | CommitBatchError::EffectAdmissionBlocked) => {
                 let status = self
                     .get_shutdown_target_action_status(&request.action_id)
                     .await?;
@@ -2750,7 +2750,7 @@ impl ShutdownCoordinator {
         };
         match self.repository.commit_batch(batch).await {
             Ok(CommitBatchResult::Committed(_) | CommitBatchResult::Replayed(_)) => {}
-            Err(CommitBatchError::PayloadConflict) => {
+            Err(CommitBatchError::PayloadConflict | CommitBatchError::EffectAdmissionBlocked) => {
                 if let Ok(page) = self.shutdown_plan_page(plan.clone(), 1, None).await {
                     if page.plan.details_state == ShutdownDetailsState::Compacted {
                         return Ok(page.plan);
@@ -3489,9 +3489,9 @@ impl ShutdownCoordinator {
                         })?;
                     return Ok(ApplicationQuitOutcome::Accepted { receipt, state });
                 }
-                Err(CommitBatchError::PayloadConflict) => {
-                    return Err(ApplicationQuitError::PayloadConflict)
-                }
+                Err(
+                    CommitBatchError::PayloadConflict | CommitBatchError::EffectAdmissionBlocked,
+                ) => return Err(ApplicationQuitError::PayloadConflict),
                 Err(CommitBatchError::CapacityExceeded | CommitBatchError::SequenceExhausted) => {
                     return Err(ApplicationQuitError::CapacityExceeded)
                 }
@@ -4283,7 +4283,9 @@ impl ShutdownCoordinator {
                 }
             }
             Err(
-                CommitBatchError::PayloadConflict | CommitBatchError::StreamHeadConflict { .. },
+                CommitBatchError::PayloadConflict
+                | CommitBatchError::EffectAdmissionBlocked
+                | CommitBatchError::StreamHeadConflict { .. },
             ) => ActivationCommit::RejectedBeforeCommit {
                 failure: SafeOperationFailure::new(
                     SessionOperationFailureKind::PersistFailure,

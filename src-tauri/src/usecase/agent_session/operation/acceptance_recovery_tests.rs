@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::adaptor::controller::agent_session_operation_wiring::{
-    ConservativeRecoveryExecutor, RuntimeAgentSessionOperationGate,
+    ActiveSendRecoveryContext, ConservativeRecoveryExecutor, RuntimeAgentSessionOperationGate,
     RuntimePermissionResponseOperationGate, RuntimeSendOperationGate,
 };
 use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
@@ -234,15 +234,6 @@ impl RecordingStartupSendGate {
     fn effect_count(&self) -> usize {
         self.effects.lock().unwrap().len()
     }
-
-    fn provider_establish_effect_count(&self) -> usize {
-        self.effects
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|effect| effect.establish_obligation_id.is_some())
-            .count()
-    }
 }
 
 #[async_trait::async_trait]
@@ -250,13 +241,26 @@ impl SendAdmissionGate for RecordingStartupSendGate {
     async fn plan_send(
         &self,
         _principal: &str,
+        _operation_id: &str,
         _canonical_payload: &str,
     ) -> Result<SendPlan, SafeOperationFailure> {
         panic!("startup recovery must not plan a new send")
     }
 
-    async fn start_provider_effect(&self, effect: &AcceptedSendEffect) {
+    async fn canonical_immediate_turn_is_current(
+        &self,
+        _session_id: &str,
+        _turn_id: u64,
+    ) -> Result<bool, SafeOperationFailure> {
+        Ok(true)
+    }
+
+    async fn start_provider_effect(
+        &self,
+        effect: &AcceptedSendEffect,
+    ) -> Result<super::ports::SendEffectDispatch, SafeOperationFailure> {
         self.effects.lock().unwrap().push(effect.clone());
+        Ok(super::ports::SendEffectDispatch::Scheduled)
     }
 }
 
@@ -1069,11 +1073,6 @@ async fn b037_startup_send_recovery_skips_non_owner_partitions_after_restart() {
         0
     );
     assert_eq!(gate.effect_count(), 0, "provider turn start must stay at 0");
-    assert_eq!(
-        gate.provider_establish_effect_count(),
-        0,
-        "provider create/resume must stay at 0"
-    );
     assert_eq!(snapshot(&reopened, &cases).await, before_restart);
 
     for (label, session_id, partition, expected_state) in cases {
@@ -1799,7 +1798,7 @@ fn f05_production_session_close_recovery_graph(
         repository,
         authority,
         Arc::new(RuntimePermissionResponseOperationGate::new(
-            runtime,
+            runtime.clone(),
             session_store,
         )),
         store.installation_id().to_string(),
@@ -1808,7 +1807,7 @@ fn f05_production_session_close_recovery_graph(
         stop,
         lifecycle.clone(),
         operation_gate,
-        send,
+        ActiveSendRecoveryContext::new(send, runtime, send_gate.current_process_claims()),
         permission,
         store.clone(),
     ));

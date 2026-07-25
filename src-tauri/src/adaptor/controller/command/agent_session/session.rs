@@ -1198,6 +1198,7 @@ mod tests {
         async fn plan_send(
             &self,
             _principal: &str,
+            _operation_id: &str,
             _canonical_payload: &str,
         ) -> Result<
             crate::usecase::agent_session::operation::SendPlan,
@@ -1206,6 +1207,7 @@ mod tests {
             Ok(crate::usecase::agent_session::operation::SendPlan {
                 session_id: "cross-surface-session".to_string(),
                 initial_session: None,
+                session_projection_guard: crate::domain::local_event::RevisionGuard::Absent,
                 disposition: crate::domain::agent_session::events::SendDisposition::StartedTurn {
                     turn_id: "1".to_string(),
                 },
@@ -1216,14 +1218,25 @@ mod tests {
                     ..Default::default()
                 },
                 reserved_turn_id: None,
-                provider_established: true,
             })
+        }
+
+        async fn canonical_immediate_turn_is_current(
+            &self,
+            _session_id: &str,
+            _turn_id: u64,
+        ) -> Result<bool, crate::domain::local_event::SafeOperationFailure> {
+            Ok(true)
         }
 
         async fn start_provider_effect(
             &self,
             _effect: &crate::usecase::agent_session::operation::AcceptedSendEffect,
-        ) {
+        ) -> Result<
+            crate::usecase::agent_session::operation::SendEffectDispatch,
+            crate::domain::local_event::SafeOperationFailure,
+        > {
+            Ok(crate::usecase::agent_session::operation::SendEffectDispatch::Scheduled)
         }
     }
 
@@ -1237,6 +1250,7 @@ mod tests {
         async fn plan_send(
             &self,
             _principal: &str,
+            _operation_id: &str,
             _canonical_payload: &str,
         ) -> Result<
             crate::usecase::agent_session::operation::SendPlan,
@@ -1245,6 +1259,7 @@ mod tests {
             Ok(crate::usecase::agent_session::operation::SendPlan {
                 session_id: "f03-journal-session".to_string(),
                 initial_session: None,
+                session_projection_guard: crate::domain::local_event::RevisionGuard::Absent,
                 disposition: crate::domain::agent_session::events::SendDisposition::StartedTurn {
                     turn_id: "1".to_string(),
                 },
@@ -1255,19 +1270,30 @@ mod tests {
                     ..Default::default()
                 },
                 reserved_turn_id: None,
-                provider_established: true,
             })
+        }
+
+        async fn canonical_immediate_turn_is_current(
+            &self,
+            _session_id: &str,
+            _turn_id: u64,
+        ) -> Result<bool, crate::domain::local_event::SafeOperationFailure> {
+            Ok(true)
         }
 
         async fn start_provider_effect(
             &self,
             _effect: &crate::usecase::agent_session::operation::AcceptedSendEffect,
-        ) {
+        ) -> Result<
+            crate::usecase::agent_session::operation::SendEffectDispatch,
+            crate::domain::local_event::SafeOperationFailure,
+        > {
             self.effects
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             // Acceptance is already committed here. Fail only the following
             // caller-journal resolution write so the public replay must heal it.
             self.store.fault_injector().arm_fail_before_begin();
+            Ok(crate::usecase::agent_session::operation::SendEffectDispatch::Scheduled)
         }
     }
 
@@ -1283,6 +1309,7 @@ mod tests {
         async fn plan_send(
             &self,
             _principal: &str,
+            _operation_id: &str,
             _canonical_payload: &str,
         ) -> Result<
             crate::usecase::agent_session::operation::SendPlan,
@@ -1312,6 +1339,7 @@ mod tests {
                         None,
                     ),
                 ),
+                session_projection_guard: crate::domain::local_event::RevisionGuard::Absent,
                 disposition: crate::domain::agent_session::events::SendDisposition::StartedTurn {
                     turn_id: "1".to_string(),
                 },
@@ -1322,7 +1350,6 @@ mod tests {
                     ..Default::default()
                 },
                 reserved_turn_id: None,
-                provider_established: true,
             })
         }
 
@@ -1339,6 +1366,7 @@ mod tests {
                     crate::usecase::agent_session::session::SendAcceptanceProjectionInput {
                         session_id: &plan.session_id,
                         initial_session: plan.initial_session.as_ref(),
+                        session_projection_guard: plan.session_projection_guard,
                         human_message_id: &plan.human_message_id,
                         prompt: &plan.prompt,
                         disposition: &plan.disposition,
@@ -1357,12 +1385,24 @@ mod tests {
                 })
         }
 
+        async fn canonical_immediate_turn_is_current(
+            &self,
+            _session_id: &str,
+            _turn_id: u64,
+        ) -> Result<bool, crate::domain::local_event::SafeOperationFailure> {
+            Ok(true)
+        }
+
         async fn start_provider_effect(
             &self,
             _effect: &crate::usecase::agent_session::operation::AcceptedSendEffect,
-        ) {
+        ) -> Result<
+            crate::usecase::agent_session::operation::SendEffectDispatch,
+            crate::domain::local_event::SafeOperationFailure,
+        > {
             self.effects
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(crate::usecase::agent_session::operation::SendEffectDispatch::Scheduled)
         }
     }
 

@@ -43,10 +43,12 @@ pub(crate) use read_paths::{
     agent_read_paths_from_message, agent_read_paths_from_parts, merge_agent_read_paths,
 };
 pub(crate) use store::{
-    AgentSessionProjectionCodec, CanonicalAgentSessionProjection, CanonicalQueuedSend,
-    ErrorEpisodeInput, NextTurnIdError, PendingWorkflowTurnCompletion,
-    PendingWorkflowTurnCompletionPage, RuntimeTerminalParticipantProvider,
-    RuntimeTerminalParticipants, SendAcceptanceProjectionInput,
+    AcceptedQueuedTurnStartCommitOutcome, AgentSessionProjectionCodec,
+    BackendSessionRecoveryStartOutcome, CanonicalAgentSessionProjection, CanonicalQueuedSend,
+    ContextRestoreCompletionRequest, ErrorEpisodeInput, NextTurnIdError,
+    PendingWorkflowTurnCompletion, PendingWorkflowTurnCompletionPage,
+    ProviderSessionEstablishmentOutcome, RuntimeTerminalParticipantProvider,
+    RuntimeTerminalParticipants, SendAcceptanceAllocation, SendAcceptanceProjectionInput,
 };
 #[cfg(test)]
 pub(crate) use store::{
@@ -489,6 +491,10 @@ pub struct SessionMeta {
     pub agent_session_id: Option<String>,
     #[serde(default)]
     pub provider_session_generation: u64,
+    /// Idempotency identity of the provider-establishment observation that
+    /// advanced `provider_session_generation`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub(crate) provider_session_observation_id: Option<String>,
     /// The provider generation whose first turn must receive a transcript reinjection.
     /// Kept separate from `context_carry`, which reports the last applied carry strategy.
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -899,6 +905,7 @@ impl SessionMeta {
             updated_at: session.updated_at,
             agent_session_id: session.agent_session_id.clone(),
             provider_session_generation: 0,
+            provider_session_observation_id: None,
             context_reinjection_generation: None,
             context_carry: session.context_carry.clone(),
             pending_recovery_message: None,

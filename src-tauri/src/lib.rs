@@ -549,6 +549,174 @@ where
     }
 }
 
+/// App-lifetime owner for recovery work that can become runnable after the
+/// initial two-pass scan has quiesced. Store commits and process-local retry
+/// requests only publish wakeups; this single supervisor performs fresh
+/// bounded scans and owns capped retry while storage is unavailable.
+async fn run_wakeable_recovery<Recover, Future, Error, Subscribe>(
+    worker_name: &'static str,
+    mut recover_pass: Recover,
+    mut subscribe: Subscribe,
+    wakeup: Arc<tokio::sync::Notify>,
+    initial_retry_delay: std::time::Duration,
+    maximum_retry_delay: std::time::Duration,
+) where
+    Recover: FnMut() -> Future,
+    Future: std::future::Future<Output = Result<usize, Error>>,
+    Error: std::fmt::Debug,
+    Subscribe: FnMut() -> domain::local_event::LocalEventSubscription,
+{
+    use futures_util::{FutureExt as _, StreamExt as _};
+
+    // Subscribe before the first inventory scan. A commit racing the final
+    // empty pass is then buffered by the subscription, while a process-local
+    // retry racing that same boundary leaves a permit in `Notify`.
+    let mut signals = subscribe().into_stream();
+    loop {
+        run_startup_recovery(
+            worker_name,
+            &mut recover_pass,
+            initial_retry_delay,
+            maximum_retry_delay,
+        )
+        .await;
+        let mut signal_stream_closed = tokio::select! {
+            _ = wakeup.notified() => false,
+            signal = signals.next() => signal.is_none(),
+        };
+        // One send-inventory scan is enough for every commit already visible
+        // at this boundary. Coalesce the buffered global-store burst instead
+        // of rescanning every pending page once per unrelated projection or
+        // streaming commit.
+        while !signal_stream_closed {
+            match signals.next().now_or_never() {
+                Some(Some(_)) => {}
+                Some(None) => signal_stream_closed = true,
+                None => break,
+            }
+        }
+        if signal_stream_closed {
+            // A live writable store keeps its broadcaster open. Avoid a busy
+            // loop if a replacement/read-only source closes, then subscribe
+            // before taking the next fresh inventory.
+            tokio::time::sleep(maximum_retry_delay).await;
+            signals = subscribe().into_stream();
+        }
+    }
+}
+
+#[cfg(test)]
+mod recovery_supervisor_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn wakeable_recovery_does_not_lose_commit_or_notify_at_quiescence_boundary() {
+        let (signals_tx, signals_rx) = tokio::sync::mpsc::unbounded_channel();
+        let signals_rx = Arc::new(std::sync::Mutex::new(Some(signals_rx)));
+        let subscribed = Arc::new(AtomicBool::new(false));
+        let passes = Arc::new(AtomicUsize::new(0));
+        let second_pass_entered = Arc::new(tokio::sync::Notify::new());
+        let release_second_pass = Arc::new(tokio::sync::Notify::new());
+        let fourth_pass_entered = Arc::new(tokio::sync::Notify::new());
+        let release_fourth_pass = Arc::new(tokio::sync::Notify::new());
+        let wakeup = Arc::new(tokio::sync::Notify::new());
+
+        let supervisor = tokio::spawn(run_wakeable_recovery(
+            "test recovery",
+            {
+                let subscribed = subscribed.clone();
+                let passes = passes.clone();
+                let second_pass_entered = second_pass_entered.clone();
+                let release_second_pass = release_second_pass.clone();
+                let fourth_pass_entered = fourth_pass_entered.clone();
+                let release_fourth_pass = release_fourth_pass.clone();
+                move || {
+                    let subscribed = subscribed.clone();
+                    let passes = passes.clone();
+                    let second_pass_entered = second_pass_entered.clone();
+                    let release_second_pass = release_second_pass.clone();
+                    let fourth_pass_entered = fourth_pass_entered.clone();
+                    let release_fourth_pass = release_fourth_pass.clone();
+                    async move {
+                        assert!(
+                            subscribed.load(Ordering::SeqCst),
+                            "the signal subscription must exist before the first scan"
+                        );
+                        let pass = passes.fetch_add(1, Ordering::SeqCst) + 1;
+                        match pass {
+                            2 => {
+                                second_pass_entered.notify_one();
+                                release_second_pass.notified().await;
+                            }
+                            4 => {
+                                fourth_pass_entered.notify_one();
+                                release_fourth_pass.notified().await;
+                            }
+                            _ => {}
+                        }
+                        Ok::<usize, ()>(0)
+                    }
+                }
+            },
+            {
+                let subscribed = subscribed.clone();
+                move || {
+                    subscribed.store(true, Ordering::SeqCst);
+                    let receiver = signals_rx
+                        .lock()
+                        .unwrap()
+                        .take()
+                        .expect("the live test subscription is created once");
+                    let stream = futures_util::stream::unfold(receiver, |mut receiver| async {
+                        receiver.recv().await.map(|signal| (signal, receiver))
+                    });
+                    domain::local_event::LocalEventSubscription::new(Box::pin(stream))
+                }
+            },
+            wakeup.clone(),
+            std::time::Duration::from_millis(1),
+            std::time::Duration::from_millis(10),
+        ));
+
+        second_pass_entered.notified().await;
+        for index in 0..128 {
+            signals_tx
+                .send(domain::local_event::LocalEventSignal::Committed {
+                    commit_id: domain::local_event::CommitIdentity::parse(&format!(
+                        "test-commit-{index}"
+                    ))
+                    .unwrap(),
+                    max_global_sequence: domain::local_event::GlobalSequence::new(index + 1)
+                        .unwrap(),
+                })
+                .unwrap();
+        }
+        release_second_pass.notify_one();
+
+        fourth_pass_entered.notified().await;
+        wakeup.notify_one();
+        release_fourth_pass.notify_one();
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while passes.load(Ordering::SeqCst) < 6 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("both boundary wakeups must trigger a fresh two-pass scan");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert_eq!(
+            passes.load(Ordering::SeqCst),
+            6,
+            "a buffered global commit burst must coalesce into one fresh scan"
+        );
+
+        supervisor.abort();
+        let _ = supervisor.await;
+    }
+}
+
 fn spawn_startup_maintenance(
     app_data: adaptor::controller::app_data_composition::ProductionAppDataComposition,
     _shared_repo_paths: adaptor::gateway::repository::repo_paths::SharedRepoPaths,
@@ -1127,13 +1295,25 @@ pub fn run() {
                 .await;
             });
             let pending_send_recovery = send_operation.clone();
+            let pending_send_wakeup = send_operation.pending_recovery_wakeup();
+            let pending_send_signal_store = local_event_store.clone();
             tauri::async_runtime::spawn(async move {
-                run_startup_recovery(
+                run_wakeable_recovery(
                     "pending accepted send",
                     || {
                         let recovery = pending_send_recovery.clone();
                         async move { recovery.recover_pending_provider_effects_pass().await }
                     },
+                    move || {
+                        domain::local_event::LocalEventTransactionRepository::subscribe(
+                            pending_send_signal_store.as_ref(),
+                            domain::local_event::GlobalSequence::new(
+                                domain::local_event::GlobalSequence::MIN,
+                            )
+                            .expect("minimum global sequence"),
+                        )
+                    },
+                    pending_send_wakeup,
                     std::time::Duration::from_millis(50),
                     std::time::Duration::from_secs(1),
                 )
@@ -1177,9 +1357,13 @@ pub fn run() {
                     Arc::new(
                         adaptor::controller::agent_session_operation_wiring::ConservativeRecoveryExecutor::new(
                             stop_operation.clone(),
-							lifecycle_operation.clone(),
-							operation_gate.clone(),
-							send_operation.clone(),
+                            lifecycle_operation.clone(),
+                            operation_gate.clone(),
+                            adaptor::controller::agent_session_operation_wiring::ActiveSendRecoveryContext::new(
+                                send_operation.clone(),
+                                agent_runtime.clone(),
+                                send_operation_gate.current_process_claims(),
+                            ),
                             permission_response_operation.clone(),
                             local_event_store.clone(),
                         ),
