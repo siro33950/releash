@@ -8,10 +8,8 @@ use crate::domain::agent_session::value_objects::{
 pub(crate) const CLAUDE_BACKEND_ID: &str = "claude";
 
 const CLAUDE_FIXED_MODELS: &[(&str, &str)] = &[
-    ("claude-opus-4-8", "Opus 4.8"),
+    ("claude-opus-5", "Opus 5"),
     ("claude-fable-5", "Fable 5"),
-    ("claude-opus-4-7", "Opus 4.7"),
-    ("opus[1m]", "Opus 1m"),
     ("claude-sonnet-5", "Sonnet 5"),
     ("claude-haiku-4-5-20251001", "Haiku 4.5"),
 ];
@@ -130,25 +128,13 @@ mod tests {
         assert_eq!(
             ids,
             vec![
-                "claude-opus-4-8",
+                "claude-opus-5",
                 "claude-fable-5",
-                "claude-opus-4-7",
-                "opus[1m]",
                 "claude-sonnet-5",
                 "claude-haiku-4-5-20251001",
             ]
         );
-        assert_eq!(
-            names,
-            vec![
-                "Opus 4.8",
-                "Fable 5",
-                "Opus 4.7",
-                "Opus 1m",
-                "Sonnet 5",
-                "Haiku 4.5"
-            ]
-        );
+        assert_eq!(names, vec!["Opus 5", "Fable 5", "Sonnet 5", "Haiku 4.5"]);
     }
 
     #[test]

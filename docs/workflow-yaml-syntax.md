@@ -77,7 +77,7 @@ kind block が無い、または複数ある Node は parse / shape Diagnostic �
 ```yaml
 - name: review
   session:
-    model: claude-opus-4-8
+    model: claude-opus-5
     permission: ask       # ask | edit | full
     gate: approval        # auto | approval
     facets:

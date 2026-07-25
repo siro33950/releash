@@ -97,7 +97,7 @@ children:
       command: "cargo check"
   - ref: test-and-fix            # ④ 無名エントリ（kind キーで始まるマップ）
   - session:                     # ④ 無名のインライン宣言も同形
-      model: claude-opus-4-8
+      model: claude-opus-5
       permission: read
       facets:
         instruction: review-diff

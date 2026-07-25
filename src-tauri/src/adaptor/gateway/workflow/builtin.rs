@@ -598,4 +598,12 @@ mod tests {
         assert!(knowledge.contains("`true`"));
         assert!(knowledge.contains("`false`"));
     }
+
+    #[test]
+    fn full_review_uses_current_opus_model() {
+        let source = builtin_workflow_source("03_full-review").unwrap();
+
+        assert!(source.contains("model: claude-opus-5"));
+        assert!(!source.contains("claude-opus-4-8"));
+    }
 }

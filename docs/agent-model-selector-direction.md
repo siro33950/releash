@@ -5,7 +5,7 @@ Agent チャット下部の「バックエンド選択 + モデル選択」の 2
 ## 現状
 
 - `BackendSelector`（backend 切替）と `ModelSelector`（model 切替）が別ドロップダウン。
-- ラベルは backend 名 / 生モデル ID（例: `claude-opus-4-8`）のみ。アイコン・整形表示名なし。
+- ラベルは backend 名 / 生モデル ID（例: `claude-opus-5`）のみ。アイコン・整形表示名なし。
 - モデル一覧の出所は Rust の domain 定数 `CLAUDE_FIXED_MODELS` / `CODEX_FIXED_MODELS`（`src-tauri/src/domain/agent_session/value_objects/agent_models.rs`）。
 
 ## 目指す形
@@ -26,9 +26,9 @@ Agent チャット下部の「バックエンド選択 + モデル選択」の 2
 ```text
 ModelEntry {
   id:           一意 ID（フロントが唯一扱う値）
-  display_name: 表示用整形名（例: "Opus 4.8"）
+  display_name: 表示用整形名（例: "Opus 5"）
   backend:      "claude" | "codex"
-  model_id:     実モデル ID（例: "claude-opus-4-8"）
+  model_id:     実モデル ID（例: "claude-opus-5"）
 }
 ```
 
