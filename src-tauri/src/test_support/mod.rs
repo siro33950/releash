@@ -97,7 +97,7 @@ pub(crate) fn build_agent_runtime_usecase_with_controller_and_notifiers(
     registry.register(Arc::new(TestAgentBackend {
         id: "claude",
         name: "Claude",
-        models: vec!["claude-4-sonnet", "claude-opus-4-8"],
+        models: vec!["claude-4-sonnet", "claude-opus-5"],
         controller: controller.clone(),
     }));
     registry.register(Arc::new(TestAgentBackend {
