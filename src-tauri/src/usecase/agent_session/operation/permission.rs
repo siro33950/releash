@@ -135,7 +135,7 @@ pub struct PermissionResponseOperationUsecase {
     repository: Arc<dyn LocalEventTransactionRepository>,
     authority: Arc<dyn OperationBindingAuthority>,
     gate: Arc<dyn PermissionResponseGate>,
-    generation_id: String,
+    installation_id: String,
 }
 
 fn now_ms() -> i64 {
@@ -275,7 +275,6 @@ fn status_record(status: &PermissionResponseExecutionStatus) -> OperationStatusR
     };
     OperationStatusRecord {
         kind: OperationKind::PermissionResponse,
-        migration_quit: false,
         value,
     }
 }
@@ -319,10 +318,9 @@ fn decode_record(
         OperationReceiptRecord::Send { .. }
         | OperationReceiptRecord::Stop { .. }
         | OperationReceiptRecord::SessionLifecycle { .. }
-        | OperationReceiptRecord::ApplicationQuit { .. }
-        | OperationReceiptRecord::MigrationApplicationQuit { .. } => return None,
+        | OperationReceiptRecord::ApplicationQuit { .. } => return None,
     };
-    if status.kind != OperationKind::PermissionResponse || status.migration_quit {
+    if status.kind != OperationKind::PermissionResponse {
         return None;
     }
     let latest_status = match status.value {
@@ -428,7 +426,6 @@ fn decode_obligation(record: &ObligationRecord) -> Option<StoredPermissionObliga
         | ObligationRecord::WorkflowShutdown { .. }
         | ObligationRecord::WorkflowTurnCompletion { .. }
         | ObligationRecord::RecoveryPublication { .. }
-        | ObligationRecord::LegacyReconciliation { .. }
         | ObligationRecord::ProviderEstablish { .. }
         | ObligationRecord::TurnExecution { .. }
         | ObligationRecord::TerminalCommit { .. }
@@ -475,13 +472,13 @@ impl PermissionResponseOperationUsecase {
         repository: Arc<dyn LocalEventTransactionRepository>,
         authority: Arc<dyn OperationBindingAuthority>,
         gate: Arc<dyn PermissionResponseGate>,
-        generation_id: String,
+        installation_id: String,
     ) -> Self {
         Self {
             repository,
             authority,
             gate,
-            generation_id,
+            installation_id,
         }
     }
 
@@ -493,7 +490,7 @@ impl PermissionResponseOperationUsecase {
     ) -> Vec<u8> {
         super::binding::permission_response(
             principal,
-            &self.generation_id,
+            &self.installation_id,
             operation_id,
             canonical_payload.as_bytes(),
         )
@@ -779,7 +776,7 @@ impl PermissionResponseOperationUsecase {
             LocalStateMutation::OperationBinding(OperationBindingMutation {
                 key: CallerOperationKey {
                     principal: request.principal.clone(),
-                    generation_id: self.generation_id.clone(),
+                    installation_id: self.installation_id.clone(),
                     kind: OperationKind::PermissionResponse,
                     caller_request_id: request.operation_id.clone(),
                 },
@@ -814,7 +811,7 @@ impl PermissionResponseOperationUsecase {
         let batch = LocalAtomicBatch {
             commit_id: self.commit_identity("accept", &request.operation_id, 0)?,
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: OperationKind::PermissionResponse.into(),
                 idempotency_key: request.operation_id.clone(),
                 payload_hash: self.authority.digest(&binding_material),
@@ -1175,7 +1172,7 @@ impl PermissionResponseOperationUsecase {
                 }
             },
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: CommitOperationKind::OperationProgress,
                 idempotency_key: format!("{}.claim", record.receipt.operation_id),
                 payload_hash: self.authority.digest(
@@ -1318,7 +1315,7 @@ impl PermissionResponseOperationUsecase {
         let batch = LocalAtomicBatch {
             commit_id,
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: CommitOperationKind::OperationProgress,
                 idempotency_key: format!("{}.reconcile", effect.operation_id),
                 payload_hash: self.authority.digest(&status_identity_material(&status)),
@@ -1526,7 +1523,7 @@ impl PermissionResponseOperationUsecase {
                 }
             },
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: CommitOperationKind::OperationProgress,
                 idempotency_key: format!("{}.complete", effect.operation_id),
                 payload_hash: self.authority.digest(&status_identity_material(&status)),

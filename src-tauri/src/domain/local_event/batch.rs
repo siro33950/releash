@@ -13,7 +13,7 @@ use crate::domain::local_event::mutation::{LocalStateMutation, OperationKind};
 
 /// Closed classification of a logical commit. Caller-addressable operation
 /// records deliberately use the smaller [`OperationKind`] set; system
-/// recovery, migration, projection and workflow commits never masquerade as
+/// recovery, projection and workflow commits never masquerade as
 /// a caller command merely to obtain an idempotency lane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CommitOperationKind {
@@ -23,7 +23,6 @@ pub enum CommitOperationKind {
     SessionLifecycle,
     ApplicationQuit,
     Recovery,
-    Migration,
     /// A caller-initiated mutation that is not one of the durable operation
     /// families above. Unlike internal projection progress, this lane closes
     /// atomically when an application shutdown becomes current.
@@ -49,7 +48,6 @@ impl CommitOperationKind {
             Self::SessionLifecycle => "session_lifecycle",
             Self::ApplicationQuit => "application_quit",
             Self::Recovery => "recovery",
-            Self::Migration => "migration",
             Self::UserMutation => "user_mutation",
             Self::ShutdownTarget => "shutdown_target",
             Self::OperationProgress => "operation_progress",
@@ -88,7 +86,7 @@ impl From<OperationKind> for CommitOperationKind {
 /// payload hash to converge on the saved result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IdempotencyBinding {
-    pub generation_id: String,
+    pub installation_id: String,
     pub operation_kind: CommitOperationKind,
     pub idempotency_key: String,
     /// SHA-256 over the caller's canonical exact payload.

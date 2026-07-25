@@ -23,8 +23,7 @@ pub use batch::{
 };
 pub use events::{
     ApplicationDomainEvent, ApplicationShutdownPhase, CommittedDomainEvent, DomainEventPage,
-    LoadStreamRequest, LoadedDomainEvent, LocalDomainEvent, LocalStoreMigrationPhase, QuitIntent,
-    UncommittedDomainEvent,
+    LoadStreamRequest, LoadedDomainEvent, LocalDomainEvent, QuitIntent, UncommittedDomainEvent,
 };
 pub use failure::{SafeEffectObservation, SafeOperationFailure, SessionOperationFailureKind};
 pub use identifiers::{
@@ -33,27 +32,24 @@ pub use identifiers::{
 };
 pub use mutation::{
     CallerAttemptMutation, CallerAttemptResolution, CallerOperationKey, LocalStateMutation,
-    MessageProjectionMutation, MigrationCheckpointMutation, MigrationParityMutation,
-    MigrationQuitFlightMutation, ObligationMutation, OperationBindingMutation, OperationKind,
+    MessageProjectionMutation, ObligationMutation, OperationBindingMutation, OperationKind,
     OperationRecordMutation, PendingIndexEntry, PendingPartition, RecoveryActionMutation,
     RevisionGuard, SessionProjectionMutation, SessionProjectionRemovalMutation,
-    ShutdownCompactArchiveMutation, ShutdownDetailsState, ShutdownLatestPointerMutation,
+    ShutdownDetailsCompactionMutation, ShutdownDetailsState, ShutdownLatestPointerMutation,
     ShutdownPlanKey, ShutdownPlanMutation, ShutdownRecoverySnapshotMutation,
-    ShutdownRetiringPointerMutation, ShutdownTargetMutation, StopResolutionKind,
-    StopResolutionMutation, TerminalRecordMutation,
+    ShutdownTargetMutation, StopResolutionKind, StopResolutionMutation, TerminalRecordMutation,
 };
 pub use operation_record::{
     validate_operation_record, validate_stop_resolution, validate_terminal_record,
 };
 pub use query::{
-    CallerAttemptView, LegacyRawRecordView, LocalEventQuery, LocalEventQueryError,
-    LocalEventQueryResult, LocalStoreMigrationView, MessageProjectionPageEntryView,
-    MessageProjectionPageView, MessageProjectionView, MigrationQuitFlightView, ObligationView,
-    OperationBindingSummaryView, OperationBindingView, OperationRecordView, PendingIndexEntryView,
-    PendingObligationView, PendingRecoveryPageView, PendingRecoverySnapshotPageView, QueryCursor,
-    RecoveryActionView, SessionProjectionOwnerState, SessionProjectionView, ShutdownPlanPageView,
-    ShutdownPlanView, ShutdownSnapshotEntryView, ShutdownTargetView, StopResolutionView,
-    TerminalRecordView,
+    CallerAttemptView, CanonicalRuntimeOwnerView, LocalEventQuery, LocalEventQueryError,
+    LocalEventQueryResult, MessageProjectionPageEntryView, MessageProjectionPageView,
+    MessageProjectionView, ObligationView, OperationBindingSummaryView, OperationBindingView,
+    OperationRecordView, PendingIndexEntryView, PendingObligationView, PendingRecoveryPageView,
+    PendingRecoverySnapshotPageView, QueryCursor, RecoveryActionView, SessionProjectionOwnerState,
+    SessionProjectionView, ShutdownPlanPageView, ShutdownPlanView, ShutdownSnapshotEntryView,
+    ShutdownTargetView, StopResolutionView, TerminalRecordView,
 };
 pub use record::{
     AgentContentBlobRecord, AgentContextCarryStateRecord, AgentContextEpochRecord,
@@ -65,19 +61,17 @@ pub use record::{
     AgentSessionStateRecord, AgentSessionSummaryRecord, AgentTerminalKind,
     AgentTurnInterruptionRecord, AgentTurnTerminalResultRecord,
     AuthoritativeEffectObservationRecord, BackendSessionRecoveryObligationRecord,
-    FeedbackActionRecord, LegacyReconciliationRecord, MessageProjectionRecord,
-    MigrationCheckpointRecord, MigrationParityRecord, ObligationRecord,
+    FeedbackActionRecord, MessageProjectionRecord, ObligationRecord,
     ObligationRecoveryActionRecord, ObligationStateRecord, OperationReceiptRecord,
     OperationStatusRecord, OperationStatusValue, PermissionDecisionRecord, RecordAuthentication,
     RecoveryActionResultRecord, RecoveryAttemptRecord, RecoveryPublicationMessageKindRecord,
     RecoveryPublicationMessageRecord, RecoveryPublicationObligationRecord,
     RecoveryResourceViewRecord, RecoveryResultOutcomeRecord, RecoveryResultRecord,
     SendObligationDispositionRecord, SendObligationKindRecord, SessionLifecycleRecordAction,
-    SessionProjectionRecord, ShutdownArchiveRecord, ShutdownOutcomeRecord, ShutdownPlanRecord,
-    ShutdownTargetKindRecord, ShutdownTargetRecord, ShutdownTargetRecoveryRecord,
-    ShutdownTargetStateRecord, TerminalInterruptReasonRecord, TerminalResultRecord,
-    WorkflowExecutionMetadataRecord, WorkflowExecutionProjectionRecord,
-    WorkflowTurnCompletionObligationRecord, WorkflowTurnFailureSignalRecord,
-    WorkflowWorktreeOwnerRecord,
+    SessionProjectionRecord, ShutdownOutcomeRecord, ShutdownPlanRecord, ShutdownTargetKindRecord,
+    ShutdownTargetRecord, ShutdownTargetRecoveryRecord, ShutdownTargetStateRecord,
+    TerminalInterruptReasonRecord, TerminalResultRecord, WorkflowExecutionMetadataRecord,
+    WorkflowExecutionProjectionRecord, WorkflowTurnCompletionObligationRecord,
+    WorkflowTurnFailureSignalRecord, WorkflowWorktreeOwnerRecord,
 };
 pub use repository::{LocalEventSignal, LocalEventSubscription, LocalEventTransactionRepository};

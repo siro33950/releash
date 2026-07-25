@@ -1,6 +1,6 @@
 //! Store-level tests: B-050 atomicity and fault matrix, capacity and signed
 //! 64-bit boundaries, unknown-event raw preservation, cursor integration,
-//! authority pointer CAS faults, and query plan snapshots.
+//! startup validation, and query plan snapshots.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -12,10 +12,6 @@ use crate::adaptor::gateway::agent_session::session_storage::{
     AgentSessionProjectionCodecV1, FileSessionStorage,
 };
 use crate::adaptor::gateway::local_event_store::agent_session_codec::AgentSessionEventCodec;
-use crate::adaptor::gateway::local_event_store::authority::{
-    cas_authority, read_authority, AuthorityError, AuthorityFaultPoint, AuthorityMigrationRef,
-    LocalStoreAuthorityPointerV1, StoreLayout,
-};
 use crate::adaptor::gateway::local_event_store::canonical_cbor::CborValue;
 use crate::adaptor::gateway::local_event_store::clock::FakeStoreClock;
 use crate::adaptor::gateway::local_event_store::commit::SQL_SEAL_EVENT_COUNT;
@@ -24,6 +20,7 @@ use crate::adaptor::gateway::local_event_store::envelope::{
     EventCodecError, EventCodecRegistry, LocalEventPayloadCodec, StoredUnknownEvent,
 };
 use crate::adaptor::gateway::local_event_store::fault::FaultInjector;
+use crate::adaptor::gateway::local_event_store::layout::StoreLayout;
 use crate::adaptor::gateway::local_event_store::reader::{
     read_envelope, READ_QUEUE_MAX_DEPTH, SQL_OPERATION_LOOKUP, SQL_PENDING_FIRST_PAGE,
     SQL_PENDING_FIRST_PAGE_PARTITION, SQL_PENDING_FIRST_PAGE_PREFIX, SQL_TERMINAL_LOOKUP,
@@ -55,12 +52,12 @@ use crate::domain::local_event::{
     RecoveryResultOutcomeRecord, Revision, RevisionGuard, SafeEffectObservation,
     SafeOperationFailure, SessionLifecycleRecordAction, SessionOperationFailureKind,
     SessionProjectionMutation, SessionProjectionRecord, SessionProjectionRemovalMutation,
-    ShutdownCompactArchiveMutation, ShutdownDetailsState, ShutdownLatestPointerMutation,
-    ShutdownPlanKey, ShutdownPlanMutation, ShutdownPlanRecord, ShutdownRecoverySnapshotMutation,
-    ShutdownTargetKindRecord, ShutdownTargetMutation, ShutdownTargetRecord,
-    ShutdownTargetRecoveryRecord, ShutdownTargetStateRecord, StreamId, StreamVersion,
-    TerminalRecordMutation, TerminalResultRecord, UncommittedDomainEvent,
-    WorkflowExecutionMetadataRecord, WorkflowExecutionProjectionRecord,
+    ShutdownDetailsState, ShutdownLatestPointerMutation, ShutdownPlanKey, ShutdownPlanMutation,
+    ShutdownPlanRecord, ShutdownRecoverySnapshotMutation, ShutdownTargetKindRecord,
+    ShutdownTargetMutation, ShutdownTargetRecord, ShutdownTargetRecoveryRecord,
+    ShutdownTargetStateRecord, StreamId, StreamVersion, TerminalRecordMutation,
+    TerminalResultRecord, UncommittedDomainEvent, WorkflowExecutionMetadataRecord,
+    WorkflowExecutionProjectionRecord,
 };
 use crate::domain::workflow::{
     ExecutionOrigin, ExecutionStatus, TokenUsage as WorkflowTokenUsage, WorkflowDomainEvent,
@@ -71,8 +68,7 @@ use crate::usecase::agent_session::feedback::{
 };
 use crate::usecase::agent_session::notice::AgentSessionNoticeOperation;
 use crate::usecase::agent_session::session::{
-    build_new_session_with_id, AgentSessionProjectionCodec, ChatMessage, MessageRole,
-    PendingRecoveryMessage, SessionState, SessionStore,
+    build_new_session_with_id, ChatMessage, MessageRole, PendingRecoveryMessage, SessionStore,
 };
 use crate::usecase::agent_session::session_feedback_load::{
     SessionFeedbackLoadError, SessionFeedbackLoadUsecase, SessionLoadPort,
@@ -201,6 +197,8 @@ fn test_registry() -> Arc<EventCodecRegistry> {
     Arc::new(registry)
 }
 
+const TEST_INSTALLATION_ID: &str = "11111111-1111-4111-8111-111111111111";
+
 struct Harness {
     _dir: TempDir,
     root: std::path::PathBuf,
@@ -219,13 +217,18 @@ impl Harness {
         let root = dir.path().to_path_buf();
         let clock = FakeStoreClock::at(1_000);
         let fault = Arc::new(FaultInjector::new());
+        fault.set_initial_installation_id(TEST_INSTALLATION_ID);
         let store = LocalEventStore::open(LocalEventStoreConfig {
             app_data_root: root.clone(),
             clock: Arc::new(clock.clone()),
             registry,
             fault: Arc::clone(&fault),
+            path_observer: Arc::new(
+                crate::adaptor::gateway::local_event_store::layout::NoopStorePathObserver,
+            ),
         })
         .expect("open store");
+        assert_eq!(store.installation_id(), TEST_INSTALLATION_ID);
         Self {
             _dir: dir,
             root,
@@ -236,7 +239,7 @@ impl Harness {
     }
 
     fn database_path(&self) -> std::path::PathBuf {
-        StoreLayout::new(&self.root).generation_database_path(self.store.generation_id())
+        StoreLayout::new(&self.root).database_path()
     }
 
     /// Direct maintenance connection for boundary setup and plan snapshots.
@@ -435,7 +438,7 @@ fn shutdown_plan_fixture(operation_id: &str) -> ShutdownPlanRecord {
         unresolved_count: None,
         recovery_snapshot_count: None,
         recovery_snapshot_id: None,
-        boot_id: "fixture-boot".to_string(),
+        process_instance_id: "fixture-boot".to_string(),
         outcome: None,
         failure: None,
         shutdown_effect_count: None,
@@ -529,11 +532,7 @@ fn obligation_progress_mutation(obligation_id: &str, pending: bool) -> LocalStat
     LocalStateMutation::Obligation(mutation)
 }
 
-fn obligation_mutation_for_plan(
-    obligation_id: &str,
-    plan_id: &str,
-    epoch: i64,
-) -> LocalStateMutation {
+fn obligation_mutation_for_plan(obligation_id: &str, shutdown_id: &str) -> LocalStateMutation {
     let LocalStateMutation::Obligation(mut mutation) = obligation_mutation(obligation_id, true)
     else {
         unreachable!("obligation helper always returns an obligation mutation");
@@ -543,8 +542,7 @@ fn obligation_mutation_for_plan(
         .as_mut()
         .expect("pending entry")
         .shutdown_plan = Some(ShutdownPlanKey {
-        plan_id: plan_id.to_string(),
-        epoch,
+        shutdown_id: shutdown_id.to_string(),
     });
     LocalStateMutation::Obligation(mutation)
 }
@@ -560,7 +558,7 @@ fn batch(
     LocalAtomicBatch {
         commit_id: CommitIdentity::parse(commit_id).unwrap(),
         idempotency: IdempotencyBinding {
-            generation_id: "gen-test".to_string(),
+            installation_id: TEST_INSTALLATION_ID.to_string(),
             operation_kind: OperationKind::Send.into(),
             idempotency_key: idempotency_key.to_string(),
             payload_hash,
@@ -581,7 +579,7 @@ fn head(stream_id: StreamId, expected: i64) -> ExpectedStreamHead {
 fn b050_binding_key() -> CallerOperationKey {
     CallerOperationKey {
         principal: "desktop".to_string(),
-        generation_id: "gen-test".to_string(),
+        installation_id: TEST_INSTALLATION_ID.to_string(),
         kind: OperationKind::Send,
         caller_request_id: "request-b050".to_string(),
     }
@@ -589,8 +587,7 @@ fn b050_binding_key() -> CallerOperationKey {
 
 fn b050_shutdown_plan_key() -> ShutdownPlanKey {
     ShutdownPlanKey {
-        plan_id: "plan-b050".to_string(),
-        epoch: 1,
+        shutdown_id: "plan-b050".to_string(),
     }
 }
 
@@ -622,7 +619,7 @@ fn multi_stream_batch(commit_id: &str, key: &str) -> LocalAtomicBatch {
             obligation_mutation("ob-1", true),
             LocalStateMutation::ShutdownPlan(ShutdownPlanMutation {
                 key: b050_shutdown_plan_key(),
-                phase: ApplicationShutdownPhase::Preparing,
+                phase: ApplicationShutdownPhase::Prepared,
                 summary: shutdown_plan_fixture("quit-b050"),
                 details_state: ShutdownDetailsState::Available,
                 expected: RevisionGuard::Absent,
@@ -690,8 +687,8 @@ fn b059_shutdown_recovery_reserve_mutations(
             binding_hash: [59; 32],
             attempt: RecoveryAttemptRecord::ShutdownTarget {
                 resource_ref: format!(
-                    "shutdown-target:{}:{}:{ordinal}:{target_key}",
-                    plan.plan_id, plan.epoch
+                    "shutdown-target:{}:{ordinal}:{target_key}",
+                    plan.shutdown_id
                 ),
                 plan: plan.clone(),
                 ordinal,
@@ -741,8 +738,8 @@ fn b059_shutdown_recovery_finish_mutations(
             binding_hash: [59; 32],
             attempt: RecoveryAttemptRecord::ShutdownTarget {
                 resource_ref: format!(
-                    "shutdown-target:{}:{}:{ordinal}:{target_key}",
-                    plan.plan_id, plan.epoch
+                    "shutdown-target:{}:{ordinal}:{target_key}",
+                    plan.shutdown_id
                 ),
                 plan: plan.clone(),
                 ordinal,
@@ -842,8 +839,7 @@ async fn b059_shutdown_admission_blocks_new_user_mutations_but_preserves_replay_
     );
 
     let plan = ShutdownPlanKey {
-        plan_id: "plan-b059-admission".to_string(),
-        epoch: 1,
+        shutdown_id: "plan-b059-admission".to_string(),
     };
     let mut install_shutdown = batch(
         "commit-install-b059-shutdown",
@@ -854,7 +850,7 @@ async fn b059_shutdown_admission_blocks_new_user_mutations_but_preserves_replay_
         vec![
             LocalStateMutation::ShutdownPlan(ShutdownPlanMutation {
                 key: plan.clone(),
-                phase: ApplicationShutdownPhase::Preparing,
+                phase: ApplicationShutdownPhase::Prepared,
                 summary: shutdown_plan_fixture("quit-b059-admission"),
                 details_state: ShutdownDetailsState::Available,
                 expected: RevisionGuard::Absent,
@@ -1054,7 +1050,6 @@ async fn b059_shutdown_admission_blocks_new_user_mutations_but_preserves_replay_
             "application-quit",
             [39; 32],
         ),
-        (CommitOperationKind::Migration, "migration", [42; 32]),
     ] {
         let mut relabeled = batch(
             &format!("commit-b059-relabeled-{suffix}"),
@@ -1128,8 +1123,7 @@ async fn b059_shutdown_target_lane_accepts_only_the_effect_bound_agent_session_c
         .expect("seed target session");
 
     let plan = ShutdownPlanKey {
-        plan_id: "plan-b059-shutdown-lifecycle".to_string(),
-        epoch: 1,
+        shutdown_id: "plan-b059-shutdown-lifecycle".to_string(),
     };
     let mut install_shutdown = batch(
         "commit-b059-install-shutdown-lifecycle",
@@ -1204,7 +1198,7 @@ async fn b059_shutdown_target_lane_accepts_only_the_effect_bound_agent_session_c
             LocalStateMutation::OperationBinding(OperationBindingMutation {
                 key: CallerOperationKey {
                     principal: format!("shutdown:{quit_operation_id}"),
-                    generation_id: "gen-test".to_string(),
+                    installation_id: TEST_INSTALLATION_ID.to_string(),
                     kind: OperationKind::SessionLifecycle,
                     caller_request_id,
                 },
@@ -1227,7 +1221,6 @@ async fn b059_shutdown_target_lane_accepts_only_the_effect_bound_agent_session_c
                 },
                 latest_status: OperationStatusRecord {
                     kind: OperationKind::SessionLifecycle,
-                    migration_quit: false,
                     value: OperationStatusValue::Completed,
                 },
                 expected: RevisionGuard::Absent,
@@ -1257,13 +1250,12 @@ async fn b059_operation_progress_cannot_insert_recovery_publication_during_shutd
     let initial_source = ObligationRecord::BackendSessionRecovery {
         session_id: session_id.to_string(),
         recovery_id: recovery_id.to_string(),
-        detail: Some(
+        detail:
             crate::domain::local_event::BackendSessionRecoveryObligationRecord::EffectReserved {
                 old_provider_session_generation: 0,
                 reason: BackendSessionRecoveryReason::BackendSessionLost,
                 reserved_at_bits: 0,
             },
-        ),
         state: ObligationStateRecord::EffectReserved,
     };
     let mut seed_source = batch(
@@ -1293,8 +1285,7 @@ async fn b059_operation_progress_cannot_insert_recovery_publication_during_shutd
         .expect("seed accepted backend recovery");
 
     let plan = ShutdownPlanKey {
-        plan_id: "plan-b059-publication".to_string(),
-        epoch: 1,
+        shutdown_id: "plan-b059-publication".to_string(),
     };
     let mut install = batch(
         "commit-install-b059-publication-shutdown",
@@ -1305,7 +1296,7 @@ async fn b059_operation_progress_cannot_insert_recovery_publication_during_shutd
         vec![
             LocalStateMutation::ShutdownPlan(ShutdownPlanMutation {
                 key: plan.clone(),
-                phase: ApplicationShutdownPhase::Preparing,
+                phase: ApplicationShutdownPhase::Prepared,
                 summary: shutdown_plan_fixture("quit-b059-publication"),
                 details_state: ShutdownDetailsState::Available,
                 expected: RevisionGuard::Absent,
@@ -1335,14 +1326,13 @@ async fn b059_operation_progress_cannot_insert_recovery_publication_during_shutd
             original: Box::new(ObligationRecord::BackendSessionRecovery {
                 session_id: session_id.to_string(),
                 recovery_id: recovery_id.to_string(),
-                detail: Some(
+                detail:
                     crate::domain::local_event::BackendSessionRecoveryObligationRecord::Completed {
                         old_provider_session_generation: 0,
                         provider_session_generation: 1,
                         backend_session_id: "provider-session-b059".to_string(),
                         completed_at_bits: 1.0_f64.to_bits(),
                     },
-                ),
                 state: ObligationStateRecord::Completed,
             }),
             recovery_action: crate::domain::local_event::ObligationRecoveryActionRecord {
@@ -1429,8 +1419,7 @@ async fn b059_operation_progress_cannot_insert_recovery_publication_during_shutd
 async fn b059_shutdown_recovery_is_bound_to_the_existing_current_target() {
     let harness = Harness::open();
     let plan = ShutdownPlanKey {
-        plan_id: "plan-b059-fixed-target".to_string(),
-        epoch: 7,
+        shutdown_id: "plan-b059-fixed-target".to_string(),
     };
     let mut summary = shutdown_plan_fixture("quit-b059-fixed-target");
     summary.target_count = Some(2);
@@ -1486,8 +1475,7 @@ async fn b059_shutdown_recovery_is_bound_to_the_existing_current_target() {
         .expect("install active fixed target set");
 
     let foreign_plan = ShutdownPlanKey {
-        plan_id: "plan-b059-foreign".to_string(),
-        epoch: plan.epoch,
+        shutdown_id: "plan-b059-foreign".to_string(),
     };
     let blocked = [
         (
@@ -1613,7 +1601,7 @@ async fn b059_shutdown_recovery_is_bound_to_the_existing_current_target() {
     let target_count: i64 = connection
         .query_row(
             "SELECT COUNT(*) FROM shutdown_targets
-             WHERE plan_id = 'plan-b059-fixed-target' AND epoch = 7",
+             WHERE shutdown_id = 'plan-b059-fixed-target'",
             [],
             |row| row.get(0),
         )
@@ -1635,8 +1623,7 @@ async fn b059_failed_and_cancelled_shutdown_pointers_reopen_user_admission() {
     ] {
         let harness = Harness::open();
         let plan = ShutdownPlanKey {
-            plan_id: format!("plan-b059-{suffix}"),
-            epoch: 1,
+            shutdown_id: format!("plan-b059-{suffix}"),
         };
         let mut install_terminal_pointer = batch(
             &format!("commit-install-b059-{suffix}"),
@@ -1689,8 +1676,7 @@ async fn b059_failed_and_cancelled_shutdown_pointers_reopen_user_admission() {
 async fn b059_writer_transaction_race_never_commits_a_user_mutation_after_shutdown_wins() {
     let harness = Harness::open();
     let plan = ShutdownPlanKey {
-        plan_id: "plan-b059-writer-race".to_string(),
-        epoch: 1,
+        shutdown_id: "plan-b059-writer-race".to_string(),
     };
     let mut install_shutdown = batch(
         "commit-install-b059-writer-race",
@@ -1701,7 +1687,7 @@ async fn b059_writer_transaction_race_never_commits_a_user_mutation_after_shutdo
         vec![
             LocalStateMutation::ShutdownPlan(ShutdownPlanMutation {
                 key: plan.clone(),
-                phase: ApplicationShutdownPhase::Preparing,
+                phase: ApplicationShutdownPhase::Prepared,
                 summary: shutdown_plan_fixture("quit-b059-writer-race"),
                 details_state: ShutdownDetailsState::Available,
                 expected: RevisionGuard::Absent,
@@ -1816,7 +1802,7 @@ async fn durable_feedback_is_session_scoped_paged_and_revision_fenced() {
     let harness = Harness::open();
     let feedback = SessionFeedbackUsecase::new(
         harness.store.clone(),
-        harness.store.generation_id().to_string(),
+        harness.store.installation_id().to_string(),
     );
     for ordinal in 0..33 {
         feedback
@@ -1909,7 +1895,7 @@ async fn feedback_public_round_trip_bounds_utf8_text_and_keeps_failure_fields_ne
     let harness = Harness::open();
     let feedback = SessionFeedbackUsecase::new(
         harness.store.clone(),
-        harness.store.generation_id().to_string(),
+        harness.store.installation_id().to_string(),
     );
     feedback
         .record_failure(
@@ -1962,7 +1948,7 @@ async fn feedback_attempt_reservation_is_hidden_until_failure_and_success_is_ide
     let harness = Harness::open();
     let feedback = SessionFeedbackUsecase::new(
         harness.store.clone(),
-        harness.store.generation_id().to_string(),
+        harness.store.installation_id().to_string(),
     );
     let failed = feedback
         .reserve_attempt(
@@ -2021,7 +2007,7 @@ async fn abandoned_feedback_reservation_is_invisible_then_materialized_on_restar
     let harness = Harness::open();
     let first_process = SessionFeedbackUsecase::new(
         harness.store.clone(),
-        harness.store.generation_id().to_string(),
+        harness.store.installation_id().to_string(),
     );
     let reservation = first_process
         .reserve_attempt(
@@ -2048,7 +2034,7 @@ async fn abandoned_feedback_reservation_is_invisible_then_materialized_on_restar
         harness.store.clone(),
         harness.store.clone(),
         Arc::new(PerformanceRecoveryExecutor),
-        harness.store.generation_id().to_string(),
+        harness.store.installation_id().to_string(),
     );
     assert!(general_recovery
         .pending(
@@ -2067,7 +2053,7 @@ async fn abandoned_feedback_reservation_is_invisible_then_materialized_on_restar
 
     let restarted = SessionFeedbackUsecase::new(
         harness.store.clone(),
-        harness.store.generation_id().to_string(),
+        harness.store.installation_id().to_string(),
     );
     assert_eq!(
         restarted
@@ -2102,7 +2088,7 @@ async fn failed_success_settlement_keeps_the_slot_recoverable_and_reply_loss_cle
     let harness = Harness::open();
     let first_process = SessionFeedbackUsecase::new(
         harness.store.clone(),
-        harness.store.generation_id().to_string(),
+        harness.store.installation_id().to_string(),
     );
     let unsettled = first_process
         .reserve_attempt(
@@ -2126,7 +2112,7 @@ async fn failed_success_settlement_keeps_the_slot_recoverable_and_reply_loss_cle
 
     let restarted = SessionFeedbackUsecase::new(
         harness.store.clone(),
-        harness.store.generation_id().to_string(),
+        harness.store.installation_id().to_string(),
     );
     assert_eq!(
         restarted
@@ -2157,7 +2143,7 @@ async fn failed_success_settlement_keeps_the_slot_recoverable_and_reply_loss_cle
         .expect("commit resolution proves the success settlement");
     let next_process = SessionFeedbackUsecase::new(
         harness.store.clone(),
-        harness.store.generation_id().to_string(),
+        harness.store.installation_id().to_string(),
     );
     assert_eq!(
         next_process
@@ -2234,7 +2220,7 @@ async fn feedback_resolution_success_clears_only_the_exact_identity() {
     });
     let feedback = SessionFeedbackUsecase::new(
         harness.store.clone(),
-        harness.store.generation_id().to_string(),
+        harness.store.installation_id().to_string(),
     )
     .with_resolution_port(resolution.clone());
     let resolved = feedback
@@ -2327,7 +2313,7 @@ async fn feedback_retry_updates_the_same_identity_and_replays_the_saved_result()
     let harness = Harness::open();
     let feedback = SessionFeedbackUsecase::new(
         harness.store.clone(),
-        harness.store.generation_id().to_string(),
+        harness.store.installation_id().to_string(),
     )
     .with_resolution_port(Arc::new(FailingFeedbackResolution));
     let original = feedback
@@ -2431,7 +2417,7 @@ async fn feedback_mutations_racing_with_shutdown_are_typed_and_retry_starts_no_e
     });
     let feedback = SessionFeedbackUsecase::new(
         harness.store.clone(),
-        harness.store.generation_id().to_string(),
+        harness.store.installation_id().to_string(),
     )
     .with_resolution_port(resolution.clone());
     let original = feedback
@@ -2450,8 +2436,7 @@ async fn feedback_mutations_racing_with_shutdown_are_typed_and_retry_starts_no_e
         .expect("record retryable feedback before shutdown");
 
     let plan = ShutdownPlanKey {
-        plan_id: "plan-feedback-shutdown".to_string(),
-        epoch: 1,
+        shutdown_id: "plan-feedback-shutdown".to_string(),
     };
     let mut install_shutdown = batch(
         "commit-install-feedback-shutdown",
@@ -2462,7 +2447,7 @@ async fn feedback_mutations_racing_with_shutdown_are_typed_and_retry_starts_no_e
         vec![
             LocalStateMutation::ShutdownPlan(ShutdownPlanMutation {
                 key: plan.clone(),
-                phase: ApplicationShutdownPhase::Preparing,
+                phase: ApplicationShutdownPhase::Prepared,
                 summary: shutdown_plan_fixture("quit-feedback-shutdown"),
                 details_state: ShutdownDetailsState::Available,
                 expected: RevisionGuard::Absent,
@@ -2524,7 +2509,7 @@ async fn feedback_capacity_is_enforced_for_the_whole_atomic_batch() {
     let feedback = Arc::new(
         SessionFeedbackUsecase::new(
             harness.store.clone(),
-            harness.store.generation_id().to_string(),
+            harness.store.installation_id().to_string(),
         )
         .with_resolution_port(resolution.clone()),
     );
@@ -2896,7 +2881,7 @@ async fn b050_complete_multi_stream_batch_commits_atomically_with_contiguous_seq
         panic!("shutdown plan missing");
     };
     assert_eq!(plan.plan.plan, b050_shutdown_plan_key());
-    assert_eq!(plan.plan.phase, ApplicationShutdownPhase::Preparing);
+    assert_eq!(plan.plan.phase, ApplicationShutdownPhase::Prepared);
     assert!(plan.targets.is_empty());
 
     assert_eq!(
@@ -3247,29 +3232,6 @@ async fn five_hundred_concurrent_operation_acceptances_are_sealed_once_and_point
 }
 
 #[tokio::test]
-async fn stopped_writer_worker_yields_outcome_unknown() {
-    let harness = Harness::open();
-    harness.fault.stop_worker();
-    assert!(matches!(
-        harness
-            .store
-            .commit_batch(multi_stream_batch("commit-1", "key-1"))
-            .await,
-        Err(CommitBatchError::OutcomeUnknown { .. })
-    ));
-    // The queue is closed afterwards; later commits also resolve by identity.
-    assert!(matches!(
-        harness
-            .store
-            .commit_batch(multi_stream_batch("commit-2", "key-2"))
-            .await,
-        Err(CommitBatchError::OutcomeUnknown { .. })
-    ));
-}
-
-// --- Capacity and signed 64-bit boundaries ---
-
-#[tokio::test]
 async fn batch_capacity_limits_reject_before_admission() {
     let harness = Harness::open();
     let events: Vec<UncommittedDomainEvent> = (0..MAX_BATCH_EVENTS + 1)
@@ -3533,6 +3495,9 @@ async fn unknown_event_type_is_preserved_raw_and_surfaced_as_unknown() {
         clock: Arc::new(clock),
         registry: Arc::new(EventCodecRegistry::new()),
         fault: Arc::new(FaultInjector::new()),
+        path_observer: Arc::new(
+            crate::adaptor::gateway::local_event_store::layout::NoopStorePathObserver,
+        ),
     })
     .expect("reopen");
     let page = store
@@ -3825,6 +3790,9 @@ async fn b038_current_recovery_cursor_holds_first_page_snapshot_across_update_an
         clock: Arc::new(FakeStoreClock::at(1_000)),
         registry: test_registry(),
         fault: Arc::new(FaultInjector::new()),
+        path_observer: Arc::new(
+            crate::adaptor::gateway::local_event_store::layout::NoopStorePathObserver,
+        ),
     })
     .expect("reopen with a new boot identity");
     assert!(matches!(
@@ -3972,9 +3940,9 @@ async fn pending_recovery_shutdown_plan_filter_is_exact_and_cursor_bound() {
             vec![],
             vec![],
             vec![
-                obligation_mutation_for_plan("ob-plan-7-a", "plan-1", 7),
-                obligation_mutation_for_plan("ob-plan-7-b", "plan-1", 7),
-                obligation_mutation_for_plan("ob-plan-8", "plan-1", 8),
+                obligation_mutation_for_plan("ob-plan-a", "plan-1"),
+                obligation_mutation_for_plan("ob-plan-b", "plan-1"),
+                obligation_mutation_for_plan("ob-plan-other", "plan-2"),
                 obligation_mutation("ob-unassociated", true),
             ],
         ))
@@ -3982,8 +3950,7 @@ async fn pending_recovery_shutdown_plan_filter_is_exact_and_cursor_bound() {
         .expect("commit plan-filter fixtures");
 
     let plan = ShutdownPlanKey {
-        plan_id: "plan-1".to_string(),
-        epoch: 7,
+        shutdown_id: "plan-1".to_string(),
     };
     let LocalEventQueryResult::PendingRecoveryPage(first) = harness
         .store
@@ -4012,8 +3979,7 @@ async fn pending_recovery_shutdown_plan_filter_is_exact_and_cursor_bound() {
             owner: None,
             ordered_key_prefix: None,
             shutdown_plan: Some(ShutdownPlanKey {
-                plan_id: "plan-1".to_string(),
-                epoch: 7,
+                shutdown_id: "plan-1".to_string(),
             }),
             cursor: Some(cursor.clone()),
         })
@@ -4034,8 +4000,7 @@ async fn pending_recovery_shutdown_plan_filter_is_exact_and_cursor_bound() {
                 owner: None,
                 ordered_key_prefix: None,
                 shutdown_plan: Some(ShutdownPlanKey {
-                    plan_id: "plan-1".to_string(),
-                    epoch: 8,
+                    shutdown_id: "plan-2".to_string(),
                 }),
                 cursor: Some(cursor),
             })
@@ -4048,12 +4013,10 @@ async fn pending_recovery_shutdown_plan_filter_is_exact_and_cursor_bound() {
 async fn b089_shutdown_recovery_snapshot_is_identity_partition_and_cursor_bound() {
     let harness = Harness::open();
     let plan = ShutdownPlanKey {
-        plan_id: "plan-snapshot".to_string(),
-        epoch: 7,
+        shutdown_id: "plan-snapshot".to_string(),
     };
     let other_plan = ShutdownPlanKey {
-        plan_id: "plan-other-snapshot".to_string(),
-        epoch: 7,
+        shutdown_id: "plan-other-snapshot".to_string(),
     };
     let snapshot_id = "snapshot-1";
     let summary: ShutdownPlanRecord = payload(
@@ -4293,87 +4256,6 @@ async fn b089_shutdown_recovery_snapshot_is_identity_partition_and_cursor_bound(
     ));
 }
 
-// --- Authority pointer CAS ---
-
-#[test]
-fn authority_pointer_cas_faults_resolve_by_fresh_read() {
-    let dir = TempDir::new().expect("temp dir");
-    let layout = StoreLayout::new(dir.path());
-    let sqlite_pointer = LocalStoreAuthorityPointerV1::Sqlite {
-        generation_id: "gen-1".to_string(),
-        store_id: "store-1".to_string(),
-        activated_migration_id: None,
-    };
-    // Initial CAS from absent.
-    cas_authority(&layout, None, &sqlite_pointer, None).expect("initial cas");
-    assert_eq!(
-        read_authority(&layout).unwrap(),
-        Some(sqlite_pointer.clone())
-    );
-
-    // Wrong expected value conflicts and changes nothing.
-    let legacy = LocalStoreAuthorityPointerV1::Legacy {
-        source_generation_id: "legacy-1".to_string(),
-        migration: None,
-    };
-    match cas_authority(&layout, None, &legacy, None) {
-        Err(AuthorityError::CasConflict { current }) => {
-            assert_eq!(current, Some(sqlite_pointer.clone()));
-        }
-        other => panic!("expected CasConflict, got {other:?}"),
-    }
-    assert_eq!(
-        read_authority(&layout).unwrap(),
-        Some(sqlite_pointer.clone())
-    );
-
-    // Crash before rename: the fresh read still returns the old pointer.
-    let updated = LocalStoreAuthorityPointerV1::Sqlite {
-        generation_id: "gen-2".to_string(),
-        store_id: "store-1".to_string(),
-        activated_migration_id: Some("mig-1".to_string()),
-    };
-    assert!(cas_authority(
-        &layout,
-        Some(&sqlite_pointer),
-        &updated,
-        Some(AuthorityFaultPoint::TempWritten),
-    )
-    .is_err());
-    assert_eq!(
-        read_authority(&layout).unwrap(),
-        Some(sqlite_pointer.clone())
-    );
-    assert!(cas_authority(
-        &layout,
-        Some(&sqlite_pointer),
-        &updated,
-        Some(AuthorityFaultPoint::TempSynced),
-    )
-    .is_err());
-    assert_eq!(
-        read_authority(&layout).unwrap(),
-        Some(sqlite_pointer.clone())
-    );
-
-    // Crash after rename: the fresh read returns the new pointer exactly once.
-    assert!(cas_authority(
-        &layout,
-        Some(&sqlite_pointer),
-        &updated,
-        Some(AuthorityFaultPoint::AuthorityRenamed),
-    )
-    .is_err());
-    assert_eq!(read_authority(&layout).unwrap(), Some(updated.clone()));
-
-    // Corrupted file fails closed.
-    std::fs::write(layout.authority_path(), b"{}").expect("corrupt file");
-    assert!(matches!(
-        read_authority(&layout),
-        Err(AuthorityError::Corrupt { .. })
-    ));
-}
-
 // --- Query plan snapshots ---
 
 #[tokio::test]
@@ -4432,13 +4314,18 @@ fn seed_performance_fixture(harness: &Harness, row_count: usize, identity: &str)
     transaction
         .execute(
             "INSERT INTO logical_commits
-                (commit_id, generation_id, operation_kind, idempotency_key,
+                (commit_id, installation_id, operation_kind, idempotency_key,
                  payload_hash, state, first_global_sequence, last_global_sequence,
                  event_count, mutation_count, stream_heads_json, result_hash,
                  committed_at_ms)
-             VALUES (?1, 'gen-test', 'send', ?2, zeroblob(32), 'sealed',
-                     1, ?3, ?3, 12, '{}', zeroblob(32), 1)",
-            rusqlite::params![commit_id, format!("perf-{identity}"), row_count as i64],
+             VALUES (?1, ?2, 'send', ?3, zeroblob(32), 'sealed',
+                     1, ?4, ?4, 12, '{}', zeroblob(32), 1)",
+            rusqlite::params![
+                commit_id,
+                harness.store.installation_id(),
+                format!("perf-{identity}"),
+                row_count as i64
+            ],
         )
         .expect("performance logical commit");
     transaction
@@ -4514,9 +4401,8 @@ fn seed_performance_fixture(harness: &Harness, row_count: usize, identity: &str)
         let mut pending = transaction
             .prepare(
                 "INSERT INTO pending_obligations
-                    (ordered_key, obligation_id, owner, partition,
-                     shutdown_plan_id, shutdown_epoch, commit_id)
-                 VALUES (?1, ?2, ?3, 'owner', NULL, NULL, ?4)",
+                    (ordered_key, obligation_id, owner, partition, shutdown_id, commit_id)
+                 VALUES (?1, ?2, ?3, 'owner', NULL, ?4)",
             )
             .expect("prepare pending");
         for index in 0..200 {
@@ -4525,7 +4411,12 @@ fn seed_performance_fixture(harness: &Harness, row_count: usize, identity: &str)
                 StoredObligationV1::encode_new(&ObligationRecord::BackendSessionRecovery {
                     session_id: format!("perf-session-{identity}"),
                     recovery_id: obligation_id.clone(),
-                    detail: None,
+                    detail:
+                        crate::domain::local_event::BackendSessionRecoveryObligationRecord::EffectReserved {
+                            old_provider_session_generation: 0,
+                            reason: BackendSessionRecoveryReason::BackendSessionLost,
+                            reserved_at_bits: 0,
+                        },
                     state: ObligationStateRecord::ReconciliationRequired,
                 })
                 .expect("encode closed performance obligation");
@@ -4585,7 +4476,7 @@ async fn sample_pending_usecase(harness: &Harness) -> (u128, u128, usize, usize)
         repository,
         authority,
         Arc::new(PerformanceRecoveryExecutor),
-        harness.store.generation_id().to_string(),
+        harness.store.installation_id().to_string(),
     );
     let mut samples = Vec::with_capacity(1_000);
     let mut count = 0;
@@ -4711,7 +4602,7 @@ async fn stop_terminal_outcome_unknown_resolves_committed_without_reconciliation
         harness.store.clone(),
         harness.store.clone(),
         gate.clone(),
-        harness.store.generation_id().to_string(),
+        harness.store.installation_id().to_string(),
     );
     let outcome = usecase
         .request(
@@ -4857,9 +4748,9 @@ async fn sample_public_mutation(harness: &Harness, identity: &str) -> Performanc
     let session_id = uuid::Uuid::new_v4().to_string();
     let session_store = SessionStore::new(Arc::new(FileSessionStorage::default()));
     let repository: Arc<dyn LocalEventTransactionRepository> = harness.store.clone();
-    session_store.set_local_event_repository_with_projection_codec(
+    session_store.set_local_event_repository(
         repository,
-        harness.store.generation_id().to_string(),
+        harness.store.installation_id().to_string(),
         Arc::new(AgentSessionProjectionCodecV1),
     );
     let session = build_new_session_with_id(
@@ -4873,7 +4764,7 @@ async fn sample_public_mutation(harness: &Harness, identity: &str) -> Performanc
         None,
     );
     session_store
-        .save_full_session_for_migration_or_restore(&harness.root, &session)
+        .save_full_session_for_restore(&harness.root, &session)
         .expect("seed production session projection");
     let gate = Arc::new(PerformanceSendGate {
         session_store: Arc::new(session_store),
@@ -4887,7 +4778,7 @@ async fn sample_public_mutation(harness: &Harness, identity: &str) -> Performanc
         harness.store.clone(),
         authority,
         gate.clone(),
-        harness.store.generation_id().to_string(),
+        harness.store.installation_id().to_string(),
     );
     let mut samples = Vec::with_capacity(1_000);
     let mut response_bytes = 0;
@@ -4976,7 +4867,7 @@ async fn sample_terminal_usecase(harness: &Harness, identity: &str) -> Performan
         harness.store.clone(),
         authority,
         gate.clone(),
-        harness.store.generation_id().to_string(),
+        harness.store.installation_id().to_string(),
     );
     let request = crate::usecase::agent_session::operation::StopOperationRequest {
         principal: "performance-client".to_string(),
@@ -5114,8 +5005,7 @@ async fn assert_reader_failure_contract(harness: &Harness) -> (usize, usize) {
         panic!("shutdown snapshot fixture must be accepted");
     };
     let plan = ShutdownPlanKey {
-        plan_id: receipt.plan_id,
-        epoch: receipt.epoch,
+        shutdown_id: receipt.shutdown_id,
     };
     let effects_before = executor.effects.load(std::sync::atomic::Ordering::SeqCst);
     let subordinate_shutdowns_before = executor
@@ -5539,7 +5429,7 @@ async fn caller_outbox_encrypts_exact_command_and_ack_removes_retry_material() {
     let journal = CallerAttemptJournal::new(
         repository,
         authority,
-        harness.store.generation_id().to_string(),
+        harness.store.installation_id().to_string(),
     );
     let exact = br#"{"content":"private-marker","worktree_path":"/private/path"}"#;
     journal
@@ -5600,9 +5490,9 @@ async fn canonical_full_session_save_creates_an_absent_sqlite_projection() {
     let harness = Harness::open();
     let repository: Arc<dyn LocalEventTransactionRepository> = harness.store.clone();
     let session_store = SessionStore::new(Arc::new(FileSessionStorage::default()));
-    session_store.set_local_event_repository_with_projection_codec(
+    session_store.set_local_event_repository(
         repository,
-        harness.store.generation_id().to_string(),
+        harness.store.installation_id().to_string(),
         Arc::new(AgentSessionProjectionCodecV1),
     );
     let session = build_new_session_with_id(
@@ -5617,7 +5507,7 @@ async fn canonical_full_session_save_creates_an_absent_sqlite_projection() {
     );
 
     session_store
-        .save_full_session_for_migration_or_restore(&harness.root, &session)
+        .save_full_session_for_restore(&harness.root, &session)
         .expect("create missing canonical projection");
 
     let saved = session_store
@@ -5723,9 +5613,9 @@ async fn workflow_terminal_atomically_creates_exact_bounded_pending_handoff() {
     let harness = Harness::open_with_registry(Arc::new(registry));
     let repository: Arc<dyn LocalEventTransactionRepository> = harness.store.clone();
     let session_store = SessionStore::new(Arc::new(FileSessionStorage::default()));
-    session_store.set_local_event_repository_with_projection_codec(
+    session_store.set_local_event_repository(
         repository,
-        harness.store.generation_id().to_string(),
+        harness.store.installation_id().to_string(),
         Arc::new(AgentSessionProjectionCodecV1),
     );
     let context = workflow_node_context_fixture();
@@ -5740,7 +5630,7 @@ async fn workflow_terminal_atomically_creates_exact_bounded_pending_handoff() {
         Some(context.clone()),
     );
     session_store
-        .save_full_session_for_migration_or_restore(&harness.root, &session)
+        .save_full_session_for_restore(&harness.root, &session)
         .expect("seed workflow session projection");
 
     persist_terminal_fixture(
@@ -5796,9 +5686,9 @@ async fn ordinary_chat_terminal_never_enters_workflow_handoff_inventory() {
     let harness = Harness::open_with_registry(Arc::new(registry));
     let repository: Arc<dyn LocalEventTransactionRepository> = harness.store.clone();
     let session_store = SessionStore::new(Arc::new(FileSessionStorage::default()));
-    session_store.set_local_event_repository_with_projection_codec(
+    session_store.set_local_event_repository(
         repository,
-        harness.store.generation_id().to_string(),
+        harness.store.installation_id().to_string(),
         Arc::new(AgentSessionProjectionCodecV1),
     );
     let session = build_new_session_with_id(
@@ -5812,7 +5702,7 @@ async fn ordinary_chat_terminal_never_enters_workflow_handoff_inventory() {
         None,
     );
     session_store
-        .save_full_session_for_migration_or_restore(&harness.root, &session)
+        .save_full_session_for_restore(&harness.root, &session)
         .expect("seed ordinary session projection");
 
     persist_terminal_fixture(
@@ -5837,9 +5727,9 @@ async fn clean_workflow_interruption_does_not_create_an_impossible_completion_ha
     let harness = Harness::open_with_registry(Arc::new(registry));
     let repository: Arc<dyn LocalEventTransactionRepository> = harness.store.clone();
     let session_store = SessionStore::new(Arc::new(FileSessionStorage::default()));
-    session_store.set_local_event_repository_with_projection_codec(
+    session_store.set_local_event_repository(
         repository,
-        harness.store.generation_id().to_string(),
+        harness.store.installation_id().to_string(),
         Arc::new(AgentSessionProjectionCodecV1),
     );
     let session = build_new_session_with_id(
@@ -5853,7 +5743,7 @@ async fn clean_workflow_interruption_does_not_create_an_impossible_completion_ha
         Some(workflow_node_context_fixture()),
     );
     session_store
-        .save_full_session_for_migration_or_restore(&harness.root, &session)
+        .save_full_session_for_restore(&harness.root, &session)
         .expect("seed workflow session projection");
     let message_id = "agent-interrupted";
     session_store
@@ -5915,9 +5805,9 @@ async fn b035_backend_recovery_hands_off_and_settles_publication_in_atomic_commi
     let harness = Harness::open_with_registry(Arc::new(registry));
     let repository: Arc<dyn LocalEventTransactionRepository> = harness.store.clone();
     let session_store = SessionStore::new(Arc::new(FileSessionStorage::default()));
-    session_store.set_local_event_repository_with_projection_codec(
+    session_store.set_local_event_repository(
         repository,
-        harness.store.generation_id().to_string(),
+        harness.store.installation_id().to_string(),
         Arc::new(AgentSessionProjectionCodecV1),
     );
     let session = build_new_session_with_id(
@@ -5931,7 +5821,7 @@ async fn b035_backend_recovery_hands_off_and_settles_publication_in_atomic_commi
         None,
     );
     session_store
-        .save_full_session_for_migration_or_restore(&harness.root, &session)
+        .save_full_session_for_restore(&harness.root, &session)
         .expect("seed canonical session projection");
     session_store
         .begin_backend_session_recovery(
@@ -5962,7 +5852,7 @@ async fn b035_backend_recovery_hands_off_and_settles_publication_in_atomic_commi
         harness.store.clone(),
         harness.store.clone(),
         Arc::new(PendingRecoveryActionExecutor),
-        harness.store.generation_id().to_string(),
+        harness.store.installation_id().to_string(),
     );
     let page = recovery_usecase
         .pending(
@@ -6526,29 +6416,8 @@ fn shutdown_coordinator(
             harness.store.clone(),
             harness.store.clone(),
             executor.clone(),
-            harness.store.generation_id().to_string(),
+            harness.store.installation_id().to_string(),
             "test-boot".to_string(),
-        ),
-    )
-}
-
-fn migration_shutdown_coordinator(
-    store: &Arc<LocalEventStore>,
-    executor: &Arc<TestShutdownExecutor>,
-) -> Arc<crate::usecase::shutdown_coordinator::ShutdownCoordinator> {
-    let repository: Arc<dyn LocalEventTransactionRepository> = store.clone();
-    let authority: Arc<dyn crate::usecase::agent_session::operation::OperationBindingAuthority> =
-        store.clone();
-    let admission: Arc<dyn crate::usecase::shutdown_coordinator::MigrationAdmissionState> =
-        store.clone();
-    Arc::new(
-        crate::usecase::shutdown_coordinator::ShutdownCoordinator::new_with_migration_admission(
-            repository,
-            authority,
-            executor.clone(),
-            store.generation_id().to_string(),
-            store.boot_id().to_string(),
-            admission,
         ),
     )
 }
@@ -6562,8 +6431,8 @@ async fn b076_b100_first_quit_writer_unknown_keeps_durable_operation_and_intent(
             harness.store.clone(),
             harness.store.clone(),
             executor.clone(),
-            harness.store.generation_id().to_string(),
-            harness.store.boot_id().to_string(),
+            harness.store.installation_id().to_string(),
+            harness.store.process_instance_id().to_string(),
         ),
     );
     coordinator.set_pre_acceptance_hook(Arc::new({
@@ -6674,8 +6543,8 @@ async fn b065_b088_activation_writer_unknown_is_accepted_inner_and_exit_permitte
             harness.store.clone(),
             harness.store.clone(),
             executor.clone(),
-            harness.store.generation_id().to_string(),
-            harness.store.boot_id().to_string(),
+            harness.store.installation_id().to_string(),
+            harness.store.process_instance_id().to_string(),
         ),
     );
     coordinator.set_pre_activation_hook(Arc::new({
@@ -6707,16 +6576,14 @@ async fn b065_b088_activation_writer_unknown_is_accepted_inner_and_exit_permitte
     };
     let crate::usecase::shutdown_coordinator::ApplicationQuitState::OutcomeUnknown {
         operation_id,
-        plan_id,
-        epoch,
+        shutdown_id,
         activation_commit_id,
     } = state
     else {
         panic!("activation ambiguity must use the closed inner state: {state:?}");
     };
     assert_eq!(operation_id, &receipt.operation_id);
-    assert_eq!(plan_id, &receipt.plan_id);
-    assert_eq!(*epoch, receipt.epoch);
+    assert_eq!(shutdown_id, &receipt.shutdown_id);
     assert_eq!(activation_commit_id.len(), 64);
     assert!(state.grants_exit_permit());
     assert_eq!(
@@ -6747,8 +6614,8 @@ async fn b065_b088_activation_writer_unknown_is_accepted_inner_and_exit_permitte
     assert_eq!(outcome_wire["state"], lookup_wire["state"]);
     assert_eq!(outcome_wire["state"]["type"], "outcome_unknown");
     assert_eq!(outcome_wire["state"]["operation_id"], operation_id.as_str());
-    assert_eq!(outcome_wire["state"]["plan_id"], plan_id.as_str());
-    assert_eq!(outcome_wire["state"]["epoch"], epoch.to_string());
+    assert_eq!(outcome_wire["state"]["shutdown_id"], shutdown_id.as_str());
+    assert!(outcome_wire["state"].get("epoch").is_none());
     assert_eq!(
         outcome_wire["state"]["activation_commit_id"],
         activation_commit_id.as_str()
@@ -6773,7 +6640,7 @@ async fn b065_b088_activation_writer_unknown_is_accepted_inner_and_exit_permitte
         harness.store.clone(),
         harness.store.clone(),
         executor.clone(),
-        harness.store.generation_id().to_string(),
+        harness.store.installation_id().to_string(),
         "restart-boot".to_string(),
     );
     let restarted_current = restart
@@ -6781,8 +6648,7 @@ async fn b065_b088_activation_writer_unknown_is_accepted_inner_and_exit_permitte
         .await
         .expect("restart current query")
         .expect("activation-possible plan remains anchored");
-    assert_eq!(restarted_current.plan.plan_id, receipt.plan_id);
-    assert_eq!(restarted_current.plan.epoch, receipt.epoch);
+    assert_eq!(restarted_current.plan.shutdown_id, receipt.shutdown_id);
     assert_eq!(
         restarted_current.phase,
         ApplicationShutdownPhase::ReconciliationRequired
@@ -6799,8 +6665,7 @@ async fn b065_b088_activation_writer_unknown_is_accepted_inner_and_exit_permitte
     else {
         panic!("activation ambiguity must retain the normal shutdown projection");
     };
-    assert_eq!(restarted_receipt.plan_id, receipt.plan_id);
-    assert_eq!(restarted_receipt.epoch, receipt.epoch);
+    assert_eq!(restarted_receipt.shutdown_id, receipt.shutdown_id);
     assert_eq!(
         executor.effects.load(std::sync::atomic::Ordering::SeqCst),
         0,
@@ -6827,7 +6692,7 @@ async fn b059_b063_b092_pre_activation_abort_preserves_available_details_and_ret
         vec![],
         vec![LocalStateMutation::Obligation(recovery)],
     );
-    seed.idempotency.generation_id = harness.store.generation_id().to_string();
+    seed.idempotency.installation_id = harness.store.installation_id().to_string();
     harness
         .store
         .commit_batch(seed)
@@ -6851,8 +6716,8 @@ async fn b059_b063_b092_pre_activation_abort_preserves_available_details_and_ret
         repository,
         authority,
         executor.clone(),
-        harness.store.generation_id().to_string(),
-        harness.store.boot_id().to_string(),
+        harness.store.installation_id().to_string(),
+        harness.store.process_instance_id().to_string(),
     );
 
     let outcome = coordinator
@@ -6959,8 +6824,8 @@ async fn b059_b063_b092_pre_activation_abort_preserves_available_details_and_ret
     let connection = harness.raw_connection();
     let original_summary: String = connection
         .query_row(
-            "SELECT summary FROM shutdown_plans WHERE plan_id = ?1 AND epoch = ?2",
-            rusqlite::params![receipt.plan_id, receipt.epoch],
+            "SELECT summary FROM shutdown_plans WHERE shutdown_id = ?1",
+            rusqlite::params![receipt.shutdown_id],
             |row| row.get(0),
         )
         .unwrap();
@@ -6973,8 +6838,8 @@ async fn b059_b063_b092_pre_activation_abort_preserves_available_details_and_ret
         .unwrap();
     let terminal_commit_id: String = connection
         .query_row(
-            "SELECT commit_id FROM shutdown_plans WHERE plan_id = ?1 AND epoch = ?2",
-            rusqlite::params![receipt.plan_id, receipt.epoch],
+            "SELECT commit_id FROM shutdown_plans WHERE shutdown_id = ?1",
+            rusqlite::params![receipt.shutdown_id],
             |row| row.get(0),
         )
         .unwrap();
@@ -6991,7 +6856,6 @@ async fn b059_b063_b092_pre_activation_abort_preserves_available_details_and_ret
         "effect_zero",
         "terminal_fence",
         "admission_open",
-        "store_healthy",
         "same_boot",
         "known_terminal_state",
     ] {
@@ -6999,8 +6863,8 @@ async fn b059_b063_b092_pre_activation_abort_preserves_available_details_and_ret
             "pre_activation_failed" => {
                 connection
                     .execute(
-                        "UPDATE shutdown_plans SET phase = 'cancelled' WHERE plan_id = ?1 AND epoch = ?2",
-                        rusqlite::params![receipt.plan_id, receipt.epoch],
+                        "UPDATE shutdown_plans SET phase = 'cancelled' WHERE shutdown_id = ?1",
+                        rusqlite::params![receipt.shutdown_id],
                     )
                     .unwrap();
             }
@@ -7009,14 +6873,6 @@ async fn b059_b063_b092_pre_activation_abort_preserves_available_details_and_ret
                     .execute(
                         "UPDATE operation_records SET commit_id = ?1 WHERE kind = 'application_quit' AND operation_id = ?2",
                         rusqlite::params![nonterminal_commit_id, receipt.operation_id],
-                    )
-                    .unwrap();
-            }
-            "store_healthy" => {
-                connection
-                    .execute(
-                        "UPDATE store_metadata SET health = 'recovering' WHERE id = 1",
-                        [],
                     )
                     .unwrap();
             }
@@ -7030,8 +6886,7 @@ async fn b059_b063_b092_pre_activation_abort_preserves_available_details_and_ret
                                 "state": {
                                     "type": "outcome_unknown",
                                     "operation_id": receipt.operation_id.clone(),
-                                    "plan_id": receipt.plan_id.clone(),
-                                    "epoch": receipt.epoch,
+                                    "shutdown_id": receipt.shutdown_id.clone(),
                                     "activation_commit_id": "activation-unknown",
                                 }
                             })
@@ -7047,13 +6902,13 @@ async fn b059_b063_b092_pre_activation_abort_preserves_available_details_and_ret
                 match key {
                     "effect_zero" => summary["shutdown_effect_count"] = serde_json::json!(1),
                     "admission_open" => summary["admission_open"] = serde_json::json!(false),
-                    "same_boot" => summary["boot_id"] = serde_json::json!("fresh-boot"),
+                    "same_boot" => summary["process_instance_id"] = serde_json::json!("fresh-boot"),
                     _ => unreachable!(),
                 }
                 connection
                     .execute(
-                        "UPDATE shutdown_plans SET summary = ?1 WHERE plan_id = ?2 AND epoch = ?3",
-                        rusqlite::params![summary.to_string(), receipt.plan_id, receipt.epoch],
+                        "UPDATE shutdown_plans SET summary = ?1 WHERE shutdown_id = ?2",
+                        rusqlite::params![summary.to_string(), receipt.shutdown_id],
                     )
                     .unwrap();
             }
@@ -7064,8 +6919,8 @@ async fn b059_b063_b092_pre_activation_abort_preserves_available_details_and_ret
                 "SELECT p.phase, p.summary, p.revision, p.commit_id, o.latest_status
                  FROM shutdown_plans p JOIN operation_records o
                    ON o.kind = 'application_quit' AND o.operation_id = ?1
-                 WHERE p.plan_id = ?2 AND p.epoch = ?3",
-                rusqlite::params![receipt.operation_id, receipt.plan_id, receipt.epoch],
+                 WHERE p.shutdown_id = ?2",
+                rusqlite::params![receipt.operation_id, receipt.shutdown_id],
                 |row| {
                     Ok((
                         row.get(0)?,
@@ -7091,8 +6946,8 @@ async fn b059_b063_b092_pre_activation_abort_preserves_available_details_and_ret
                 "SELECT p.phase, p.summary, p.revision, p.commit_id, o.latest_status
                  FROM shutdown_plans p JOIN operation_records o
                    ON o.kind = 'application_quit' AND o.operation_id = ?1
-                 WHERE p.plan_id = ?2 AND p.epoch = ?3",
-                rusqlite::params![receipt.operation_id, receipt.plan_id, receipt.epoch],
+                 WHERE p.shutdown_id = ?2",
+                rusqlite::params![receipt.operation_id, receipt.shutdown_id],
                 |row| {
                     Ok((
                         row.get(0)?,
@@ -7112,12 +6967,9 @@ async fn b059_b063_b092_pre_activation_abort_preserves_available_details_and_ret
         );
 
         connection
-            .execute("UPDATE store_metadata SET health = 'ok' WHERE id = 1", [])
-            .unwrap();
-        connection
             .execute(
-                "UPDATE shutdown_plans SET phase = 'failed', summary = ?1 WHERE plan_id = ?2 AND epoch = ?3",
-                rusqlite::params![original_summary, receipt.plan_id, receipt.epoch],
+                "UPDATE shutdown_plans SET phase = 'failed', summary = ?1 WHERE shutdown_id = ?2",
+                rusqlite::params![original_summary, receipt.shutdown_id],
             )
             .unwrap();
         connection
@@ -7228,1277 +7080,6 @@ async fn b059_pre_activation_revalidation_aborts_when_recovery_snapshot_missed_a
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn close_quit_bootstrap_uses_bounded_exit_without_shutdown_effect() {
-    let dir = TempDir::new().expect("migration quit app data");
-    let root = dir.path().to_path_buf();
-    // An existing legacy root, even when empty, selects the automatic
-    // Legacy→SQLite path without inventing a synthetic semantic fixture.
-    std::fs::create_dir_all(root.join("sessions")).expect("legacy sessions root");
-    let open_store = || {
-        LocalEventStore::open(LocalEventStoreConfig {
-            app_data_root: root.clone(),
-            clock: Arc::new(FakeStoreClock::at(1_000)),
-            registry: test_registry(),
-            fault: Arc::new(FaultInjector::new()),
-        })
-        .expect("open migrating store")
-    };
-    let store = open_store();
-    assert!(!store.normal_admission_ready());
-    let migration_id = store
-        .active_migration_id()
-        .expect("migration locator")
-        .to_string();
-    let executor = TestShutdownExecutor::with_targets(1, ShutdownExecutorMode::Complete);
-    let coordinator = migration_shutdown_coordinator(&store, &executor);
-    let request = crate::usecase::shutdown_coordinator::ApplicationQuitRequest {
-        principal: "desktop".to_string(),
-        request_id: "migration-quit-1".to_string(),
-        intent: crate::usecase::shutdown_coordinator::ApplicationQuitIntent::Restart { code: 42 },
-    };
-
-    let first = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
-        coordinator.request(request.clone()),
-    )
-    .await
-    .expect("migration quit must decide within fifteen seconds")
-    .expect("migration quit request");
-    let crate::usecase::shutdown_coordinator::ApplicationQuitOutcome::MigrationAccepted {
-        projection: first,
-    } = first
-    else {
-        panic!("migration admission must not create a normal shutdown");
-    };
-    assert_eq!(first.receipt.migration_id, migration_id);
-    assert_eq!(first.receipt.deadline_ms - first.receipt.t0_ms, 15_000);
-    assert!(first.state.grants_exit_permit());
-    assert!(
-        !matches!(
-            first.state,
-            crate::usecase::shutdown_coordinator::MigrationApplicationQuitState::Exited
-        ),
-        "acceptance commit must not claim the platform process has exited",
-    );
-    assert_eq!(first.checkpoint.next_source_ordinal, 0);
-    assert_eq!(first.checkpoint.imported_raw_record_count, 0);
-    assert_eq!(
-        executor
-            .target_queries
-            .load(std::sync::atomic::Ordering::SeqCst),
-        0
-    );
-    assert_eq!(
-        executor.effects.load(std::sync::atomic::Ordering::SeqCst),
-        0
-    );
-    assert_eq!(
-        executor
-            .subordinate_shutdowns
-            .load(std::sync::atomic::Ordering::SeqCst),
-        0
-    );
-
-    // A different caller identity joins the same immutable flight and may
-    // not replace the first exit intent.
-    let joined = coordinator
-        .request(
-            crate::usecase::shutdown_coordinator::ApplicationQuitRequest {
-                principal: "local-api".to_string(),
-                request_id: "migration-quit-2".to_string(),
-                intent: crate::usecase::shutdown_coordinator::ApplicationQuitIntent::Exit {
-                    code: 0,
-                },
-            },
-        )
-        .await
-        .expect("join migration quit");
-    let crate::usecase::shutdown_coordinator::ApplicationQuitOutcome::MigrationAccepted {
-        projection: joined,
-    } = joined
-    else {
-        panic!("migration quit join must keep the closed projection");
-    };
-    assert_eq!(joined.receipt, first.receipt);
-    assert_eq!(
-        coordinator
-            .request(
-                crate::usecase::shutdown_coordinator::ApplicationQuitRequest {
-                    intent: crate::usecase::shutdown_coordinator::ApplicationQuitIntent::Exit {
-                        code: 99,
-                    },
-                    ..request.clone()
-                }
-            )
-            .await,
-        Err(crate::usecase::shutdown_coordinator::ApplicationQuitError::PayloadConflict)
-    );
-
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            assert!(
-                !store.migration_blocked(),
-                "empty migration unexpectedly blocked"
-            );
-            if store.cutover_ready() {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("verified pointer cutover");
-    let connection = rusqlite::Connection::open(
-        StoreLayout::new(&root).generation_database_path(store.generation_id()),
-    )
-    .expect("inspect staging store");
-    let (plan_count, operation_count, flight_count): (i64, i64, i64) = (
-        connection
-            .query_row("SELECT COUNT(*) FROM shutdown_plans", [], |row| row.get(0))
-            .unwrap(),
-        connection
-            .query_row(
-                "SELECT COUNT(*) FROM operation_records WHERE kind = 'application_quit'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap(),
-        connection
-            .query_row("SELECT COUNT(*) FROM migration_quit_flights", [], |row| {
-                row.get(0)
-            })
-            .unwrap(),
-    );
-    assert_eq!((plan_count, operation_count, flight_count), (0, 1, 1));
-    drop(connection);
-
-    assert!(store.open_normal_admission_after_authority_install());
-    let after_cutover = coordinator
-        .request(request.clone())
-        .await
-        .expect("same operation after admission opens");
-    let crate::usecase::shutdown_coordinator::ApplicationQuitOutcome::MigrationAccepted {
-        projection: after_cutover,
-    } = after_cutover
-    else {
-        panic!("known migration quit must not fall back after cutover");
-    };
-    assert_eq!(after_cutover.receipt, first.receipt);
-    assert!(matches!(
-        after_cutover.state,
-        crate::usecase::shutdown_coordinator::MigrationApplicationQuitState::ExitPending
-    ));
-
-    drop(coordinator);
-    drop(store);
-    let restarted = open_store();
-    assert!(restarted.cutover_ready());
-    let restarted_executor = TestShutdownExecutor::with_targets(1, ShutdownExecutorMode::Complete);
-    let restarted_coordinator = migration_shutdown_coordinator(&restarted, &restarted_executor);
-    let settled = restarted_coordinator
-        .settle_previous_boot_migration_quit()
-        .await
-        .expect("previous-boot migration quit settlement")
-        .expect("saved migration quit flight");
-    assert!(matches!(
-        settled.state,
-        crate::usecase::shutdown_coordinator::MigrationApplicationQuitState::Exited
-    ));
-    let replay = restarted_coordinator
-        .request(request)
-        .await
-        .expect("restart replay");
-    let crate::usecase::shutdown_coordinator::ApplicationQuitOutcome::MigrationAccepted {
-        projection: replay,
-    } = replay
-    else {
-        panic!("restart must resolve the same migration projection");
-    };
-    assert_eq!(replay.receipt, first.receipt);
-    assert!(matches!(
-        replay.state,
-        crate::usecase::shutdown_coordinator::MigrationApplicationQuitState::Exited
-    ));
-    assert_eq!(
-        restarted_executor
-            .target_queries
-            .load(std::sync::atomic::Ordering::SeqCst),
-        0
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn migration_quit_fault_cuts_keep_acceptance_pending_until_a_later_boot() {
-    let before_dir = TempDir::new().expect("pre-commit migration quit app data");
-    let before_root = before_dir.path().to_path_buf();
-    std::fs::create_dir_all(before_root.join("sessions")).expect("legacy sessions root");
-    let before_fault = Arc::new(FaultInjector::new());
-    let before_store = LocalEventStore::open(LocalEventStoreConfig {
-        app_data_root: before_root,
-        clock: Arc::new(FakeStoreClock::at(1_000)),
-        registry: test_registry(),
-        fault: Arc::clone(&before_fault),
-    })
-    .expect("open pre-commit migrating store");
-    let before_executor = TestShutdownExecutor::with_targets(1, ShutdownExecutorMode::Complete);
-    let before_coordinator = migration_shutdown_coordinator(&before_store, &before_executor);
-    before_fault.arm_fail_before_begin();
-    let rejected = before_coordinator
-        .request(
-            crate::usecase::shutdown_coordinator::ApplicationQuitRequest {
-                principal: "desktop".to_string(),
-                request_id: "migration-quit-before-commit".to_string(),
-                intent: crate::usecase::shutdown_coordinator::ApplicationQuitIntent::Exit {
-                    code: 0,
-                },
-            },
-        )
-        .await
-        .expect("pre-commit fault result");
-    assert!(matches!(
-        rejected,
-        crate::usecase::shutdown_coordinator::ApplicationQuitOutcome::RejectedBeforeCommit { .. }
-    ));
-    assert_eq!(
-        before_executor
-            .effects
-            .load(std::sync::atomic::Ordering::SeqCst),
-        0
-    );
-    let before_connection = rusqlite::Connection::open(
-        StoreLayout::new(before_dir.path()).generation_database_path(before_store.generation_id()),
-    )
-    .expect("inspect pre-commit staging store");
-    let before_rows: (i64, i64) = before_connection
-        .query_row(
-            "SELECT
-                (SELECT COUNT(*) FROM migration_quit_flights),
-                (SELECT COUNT(*) FROM shutdown_plans)",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .expect("pre-commit row counts");
-    assert_eq!(before_rows, (0, 0));
-
-    let after_dir = TempDir::new().expect("post-commit migration quit app data");
-    let after_root = after_dir.path().to_path_buf();
-    std::fs::create_dir_all(after_root.join("sessions")).expect("legacy sessions root");
-    let after_fault = Arc::new(FaultInjector::new());
-    let open_after_store = || {
-        LocalEventStore::open(LocalEventStoreConfig {
-            app_data_root: after_root.clone(),
-            clock: Arc::new(FakeStoreClock::at(1_000)),
-            registry: test_registry(),
-            fault: Arc::clone(&after_fault),
-        })
-        .expect("open post-commit migrating store")
-    };
-    let after_store = open_after_store();
-    let after_executor = TestShutdownExecutor::with_targets(1, ShutdownExecutorMode::Complete);
-    let after_coordinator = migration_shutdown_coordinator(&after_store, &after_executor);
-    let request = crate::usecase::shutdown_coordinator::ApplicationQuitRequest {
-        principal: "desktop".to_string(),
-        request_id: "migration-quit-after-commit".to_string(),
-        intent: crate::usecase::shutdown_coordinator::ApplicationQuitIntent::Restart { code: 42 },
-    };
-    after_fault.arm_crash_after_commit_before_readback();
-    let unknown = after_coordinator
-        .request(request.clone())
-        .await
-        .expect("post-commit reply-loss result");
-    assert!(matches!(
-        unknown,
-        crate::usecase::shutdown_coordinator::ApplicationQuitOutcome::OutcomeUnknown { .. }
-    ));
-    assert_eq!(
-        after_executor
-            .effects
-            .load(std::sync::atomic::Ordering::SeqCst),
-        0
-    );
-    let operation_id = match unknown {
-        crate::usecase::shutdown_coordinator::ApplicationQuitOutcome::OutcomeUnknown {
-            operation_id,
-            ..
-        } => operation_id,
-        _ => unreachable!("asserted OutcomeUnknown"),
-    };
-    let pending = after_coordinator
-        .get_application_quit_projection(&operation_id)
-        .await
-        .expect("same-boot pending lookup")
-        .expect("durable post-commit operation");
-    let crate::usecase::shutdown_coordinator::ApplicationQuitProjection::Migration(pending) =
-        pending
-    else {
-        panic!("post-commit migration operation must not become a normal plan");
-    };
-    assert!(matches!(
-        pending.state,
-        crate::usecase::shutdown_coordinator::MigrationApplicationQuitState::ExitPending
-    ));
-    drop(after_coordinator);
-    drop(after_store);
-
-    let restarted = open_after_store();
-    let restarted_executor = TestShutdownExecutor::with_targets(1, ShutdownExecutorMode::Complete);
-    let restarted_coordinator = migration_shutdown_coordinator(&restarted, &restarted_executor);
-    let settled = restarted_coordinator
-        .settle_previous_boot_migration_quit()
-        .await
-        .expect("post-commit restart settlement")
-        .expect("post-commit migration flight");
-    assert!(matches!(
-        settled.state,
-        crate::usecase::shutdown_coordinator::MigrationApplicationQuitState::Exited
-    ));
-    let replay = restarted_coordinator
-        .request(request)
-        .await
-        .expect("known operation replay after settlement");
-    let crate::usecase::shutdown_coordinator::ApplicationQuitOutcome::MigrationAccepted {
-        projection: replay,
-    } = replay
-    else {
-        panic!("known migration operation must not fall back to a shutdown plan");
-    };
-    assert!(matches!(
-        replay.state,
-        crate::usecase::shutdown_coordinator::MigrationApplicationQuitState::Exited
-    ));
-    assert_eq!(
-        restarted_executor
-            .effects
-            .load(std::sync::atomic::Ordering::SeqCst),
-        0
-    );
-}
-
-async fn wait_for_migration_decision(store: &Arc<LocalEventStore>) {
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        while !store.cutover_ready() && !store.migration_blocked() {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("bounded migration decision");
-}
-
-fn b070_legacy_source_snapshot(root: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
-    use crate::adaptor::gateway::local_event_store::migration::bounded_tests::{
-        ARCHIVED_SEMANTIC_SESSION_ID, CLOSED_SEMANTIC_SESSION_ID, SEMANTIC_SESSION_ID,
-    };
-
-    [
-        root.join("session_titles.json"),
-        root.join("sessions")
-            .join(SEMANTIC_SESSION_ID)
-            .join("meta.json"),
-        root.join("sessions")
-            .join(SEMANTIC_SESSION_ID)
-            .join("events.json"),
-        root.join("sessions")
-            .join(CLOSED_SEMANTIC_SESSION_ID)
-            .join("meta.json"),
-        root.join("sessions")
-            .join(ARCHIVED_SEMANTIC_SESSION_ID)
-            .join("meta.json"),
-    ]
-    .into_iter()
-    .map(|path| {
-        let bytes = std::fs::read(&path).expect("legacy semantic source");
-        (path, bytes)
-    })
-    .collect()
-}
-
-async fn assert_b070_public_sqlite_projection(
-    store: &Arc<LocalEventStore>,
-    root: &std::path::Path,
-) {
-    use crate::adaptor::gateway::local_event_store::migration::bounded_tests::{
-        ARCHIVED_SEMANTIC_SESSION_ID, CLOSED_SEMANTIC_SESSION_ID, SEMANTIC_SESSION_ID,
-    };
-    use crate::domain::local_event::{LegacyReconciliationRecord, ObligationStateRecord};
-
-    let LocalEventQueryResult::SessionProjectionPage(sessions) = store
-        .query(LocalEventQuery::SessionProjectionPage {
-            limit: 200,
-            after_session_id: None,
-        })
-        .await
-        .expect("migrated session page")
-    else {
-        panic!("wrong migrated session page shape");
-    };
-    assert_eq!(sessions.len(), 3);
-    for (session_id, expected_state, provider_id, provider_generation) in [
-        (SEMANTIC_SESSION_ID, SessionState::Error, None, 0),
-        (
-            CLOSED_SEMANTIC_SESSION_ID,
-            SessionState::Closed,
-            Some("provider-closed"),
-            4,
-        ),
-        (
-            ARCHIVED_SEMANTIC_SESSION_ID,
-            SessionState::Archived,
-            Some("provider-archived"),
-            7,
-        ),
-    ] {
-        let view = sessions
-            .iter()
-            .find(|view| view.session_id == session_id)
-            .expect("migrated lifecycle session");
-        let projection = AgentSessionProjectionCodecV1
-            .decode(&view.projection)
-            .expect("decode migrated public session projection");
-        assert_eq!(projection.meta.state, expected_state);
-        assert_eq!(projection.meta.agent_session_id.as_deref(), provider_id);
-        assert_eq!(
-            projection.meta.provider_session_generation,
-            provider_generation
-        );
-        if session_id == SEMANTIC_SESSION_ID {
-            assert_eq!(projection.queue_paused_at, Some(22.0));
-            assert_eq!(projection.pending_send_queue.len(), 1);
-            assert_eq!(projection.pending_send_queue[0].queue_item_id, "queue-1");
-        }
-    }
-
-    let terminal = store
-        .query(LocalEventQuery::TerminalByTurn {
-            session_id: SEMANTIC_SESSION_ID.to_string(),
-            turn_id: "1".to_string(),
-        })
-        .await
-        .expect("migrated terminal lookup");
-    assert!(matches!(
-        terminal,
-        LocalEventQueryResult::TerminalByTurn(Some(_))
-    ));
-
-    let connection = rusqlite::Connection::open(
-        StoreLayout::new(root).generation_database_path(store.generation_id()),
-    )
-    .expect("inspect migrated obligation identities");
-    let obligations = {
-        let mut statement = connection
-            .prepare(
-                "SELECT obligation_id, record FROM obligations
-                 WHERE obligation_id LIKE 'legacy-%' ORDER BY obligation_id",
-            )
-            .expect("migrated obligation identities");
-        statement
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
-            .expect("migrated obligation identity rows")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("migrated obligation identity values")
-    };
-    drop(connection);
-    for (obligation_id, record) in obligations {
-        store
-            .query(LocalEventQuery::ObligationByIdentity {
-                obligation_id: obligation_id.clone(),
-            })
-            .await
-            .unwrap_or_else(|error| {
-                panic!(
-                    "migrated obligation {obligation_id} was not publicly decodable: {error:?}; {record}"
-                )
-            });
-    }
-
-    let LocalEventQueryResult::PendingRecoveryPage(pending) = store
-        .query(LocalEventQuery::PendingRecoveryPage {
-            limit: 200,
-            partition: None,
-            owner: Some(SEMANTIC_SESSION_ID.to_string()),
-            ordered_key_prefix: None,
-            shutdown_plan: None,
-            cursor: None,
-        })
-        .await
-        .expect("migrated pending recovery page")
-    else {
-        panic!("wrong migrated recovery page shape");
-    };
-    assert_eq!(pending.entries.len(), 6);
-    let mut reconciliation_kinds = std::collections::BTreeSet::new();
-    let mut operation_observations = std::collections::BTreeSet::new();
-    for entry in pending.entries {
-        assert_eq!(entry.owner, SEMANTIC_SESSION_ID);
-        let ObligationRecord::LegacyReconciliation {
-            detail,
-            safe_actions,
-            state,
-        } = entry.record
-        else {
-            panic!("legacy unfinished work must be explicitly quarantined");
-        };
-        assert_eq!(state, ObligationStateRecord::ReconciliationRequired);
-        assert!(
-            !safe_actions.contains(
-                &crate::domain::agent_session::events::RecoveryActionKind::RetrySameEffect
-            ),
-            "migration may not infer or automatically repeat a provider effect",
-        );
-        match detail {
-            LegacyReconciliationRecord::TurnExecution { turn_id, .. } => {
-                assert_eq!(turn_id, "2");
-                reconciliation_kinds.insert("turn");
-            }
-            LegacyReconciliationRecord::QueuedSend {
-                queue_item_id,
-                input_ref,
-                ..
-            } => {
-                assert_eq!(queue_item_id, "queue-1");
-                assert!(!input_ref.is_empty());
-                reconciliation_kinds.insert("queue");
-            }
-            LegacyReconciliationRecord::Permission {
-                turn_id, request, ..
-            } => {
-                assert_eq!(turn_id, "2");
-                assert_eq!(request.id, "permission-2");
-                reconciliation_kinds.insert("permission");
-            }
-            LegacyReconciliationRecord::OperationBinding {
-                operation_id,
-                known_observation,
-                missing_evidence,
-                ..
-            } => {
-                assert!(!missing_evidence.is_empty());
-                assert!(matches!(
-                    known_observation,
-                    AgentSessionDomainEvent::SendOperationAccepted { .. }
-                        | AgentSessionDomainEvent::StopOperationAccepted { .. }
-                        | AgentSessionDomainEvent::SessionLifecycleOperationAccepted { .. }
-                ));
-                operation_observations.insert(operation_id);
-                reconciliation_kinds.insert("operation");
-            }
-            other => panic!("unexpected migration reconciliation: {other:?}"),
-        }
-    }
-    assert_eq!(
-        reconciliation_kinds,
-        std::collections::BTreeSet::from(["operation", "permission", "queue", "turn"])
-    );
-    assert_eq!(
-        operation_observations,
-        std::collections::BTreeSet::from([
-            "lifecycle-2".to_string(),
-            "send-queued-1".to_string(),
-            "stop-2".to_string(),
-        ])
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn b070_automatic_legacy_cutover_preserves_open_closed_archived_and_unfinished_work() {
-    use crate::adaptor::gateway::local_event_store::migration::bounded_tests::semantic_migration_fixture;
-
-    let dir = TempDir::new().expect("B070 migration app data");
-    let root = dir.path().to_path_buf();
-    semantic_migration_fixture(&root);
-    let legacy_before = b070_legacy_source_snapshot(&root);
-    let open_store = |now_ms| {
-        LocalEventStore::open(LocalEventStoreConfig {
-            app_data_root: root.clone(),
-            clock: Arc::new(FakeStoreClock::at(now_ms)),
-            registry: test_registry(),
-            fault: Arc::new(FaultInjector::new()),
-        })
-        .expect("open automatic legacy migration")
-    };
-
-    let store = open_store(1_000);
-    wait_for_migration_decision(&store).await;
-    assert!(!store.migration_blocked());
-    assert!(store.cutover_ready());
-    assert_b070_public_sqlite_projection(&store, &root).await;
-    for (path, expected) in &legacy_before {
-        assert_eq!(
-            std::fs::read(path).expect("legacy source remains readable"),
-            *expected,
-            "one-shot import may not rewrite its legacy source",
-        );
-    }
-    assert!(store.open_normal_admission_after_authority_install());
-    drop(store);
-
-    // The physical reopen is bound only to the immutable SQLite activation
-    // proof. A retired source becoming unreadable must not trigger record
-    // fallback or rollback to Legacy.
-    std::fs::write(root.join("session_titles.json"), b"retired-invalid-json")
-        .expect("retire legacy title source");
-    let reopened = open_store(2_000);
-    assert!(reopened.cutover_ready());
-    assert_b070_public_sqlite_projection(&reopened, &root).await;
-    assert!(matches!(
-        read_authority(&StoreLayout::new(&root)).expect("cutover authority"),
-        Some(LocalStoreAuthorityPointerV1::Sqlite { .. })
-    ));
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct B098PublicSnapshot {
-    binding: crate::domain::local_event::OperationBindingView,
-    operation: crate::domain::local_event::OperationRecordView,
-    terminal: crate::domain::local_event::TerminalRecordView,
-    available: crate::domain::local_event::ShutdownPlanPageView,
-    compacted: crate::domain::local_event::ShutdownPlanPageView,
-}
-
-fn b098_available_plan() -> ShutdownPlanKey {
-    ShutdownPlanKey {
-        plan_id: "b098-available-plan".to_string(),
-        epoch: 98,
-    }
-}
-
-fn b098_compacted_plan() -> ShutdownPlanKey {
-    ShutdownPlanKey {
-        plan_id: "b098-compacted-plan".to_string(),
-        epoch: 99,
-    }
-}
-
-async fn seed_b098_staging(store: &Arc<LocalEventStore>) {
-    use crate::adaptor::gateway::local_event_store::migration::bounded_tests::SEMANTIC_SESSION_ID;
-    use crate::domain::local_event::{
-        ShutdownOutcomeRecord, ShutdownTargetKindRecord, ShutdownTargetStateRecord,
-    };
-
-    let failure = SafeOperationFailure::new(
-        SessionOperationFailureKind::DeadlineExceeded,
-        false,
-        "B098 saved shutdown failure",
-        "b098-failure-correlation",
-    )
-    .with_detail("bounded saved failure detail");
-    let available = ShutdownPlanRecord {
-        operation_id: "b098-available-operation".to_string(),
-        intent: QuitIntent::Exit { code: 98 },
-        t0_ms: 1_000,
-        preparation_cutoff_ms: Some(14_000),
-        deadline_ms: 16_000,
-        target_count: Some(1),
-        prepared_count: Some(1),
-        effect_reserved_count: Some(1),
-        terminal_count: Some(1),
-        completed_count: Some(0),
-        unresolved_count: Some(1),
-        recovery_snapshot_count: Some(0),
-        recovery_snapshot_id: Some("b098-recovery-snapshot".to_string()),
-        boot_id: "b098-previous-boot".to_string(),
-        outcome: Some(ShutdownOutcomeRecord::ReconciliationRequired),
-        failure: Some(failure.clone()),
-        shutdown_effect_count: Some(1),
-        admission_open: Some(false),
-        retry_quit_same_boot: Some(false),
-    };
-    let compacted = ShutdownPlanRecord {
-        operation_id: "b098-compacted-operation".to_string(),
-        intent: QuitIntent::Restart { code: 99 },
-        t0_ms: 2_000,
-        preparation_cutoff_ms: Some(15_000),
-        deadline_ms: 17_000,
-        target_count: Some(2),
-        prepared_count: Some(2),
-        effect_reserved_count: Some(2),
-        terminal_count: Some(2),
-        completed_count: Some(1),
-        unresolved_count: Some(1),
-        recovery_snapshot_count: Some(1),
-        recovery_snapshot_id: Some("b098-compacted-snapshot".to_string()),
-        boot_id: "b098-older-boot".to_string(),
-        outcome: Some(ShutdownOutcomeRecord::ReconciliationRequired),
-        failure: Some(failure.clone()),
-        shutdown_effect_count: Some(1),
-        admission_open: Some(true),
-        retry_quit_same_boot: Some(false),
-    };
-    let compacted_summary = crate::adaptor::gateway::local_event_store::state_record_codec::
-        StoredShutdownPlanV1::encode_new(&compacted)
-        .expect("encode B098 compacted summary");
-    let compacted_archive = crate::domain::local_event::ShutdownArchiveRecord {
-        plan: b098_compacted_plan(),
-        terminal_phase: ApplicationShutdownPhase::ReconciliationRequired,
-        source_revision: 0,
-        summary: compacted.clone(),
-        source_summary_sha256: sha2::Sha256::digest(compacted_summary.as_bytes()).into(),
-        target_count: 2,
-        target_set_sha256: [98; 32],
-        recovery_snapshot_count: 1,
-        recovery_snapshot_sha256: [99; 32],
-    };
-    let binding_key = CallerOperationKey {
-        principal: "b098-principal".to_string(),
-        generation_id: store.generation_id().to_string(),
-        kind: OperationKind::Send,
-        caller_request_id: "b098-request".to_string(),
-    };
-    let mut staging = batch(
-        "b098-staging-rich-state",
-        "b098-staging-rich-state",
-        [98; 32],
-        Vec::new(),
-        Vec::new(),
-        vec![
-            LocalStateMutation::OperationBinding(OperationBindingMutation {
-                key: binding_key,
-                operation_id: "b098-unresolved-send".to_string(),
-                binding_hmac: [98; 32],
-            }),
-            LocalStateMutation::OperationRecord(OperationRecordMutation {
-                kind: OperationKind::Send,
-                operation_id: "b098-unresolved-send".to_string(),
-                receipt: payload(
-                    &serde_json::json!({
-                        "schema": "send_receipt_v1",
-                        "operation_id": "b098-unresolved-send",
-                        "session_id": SEMANTIC_SESSION_ID,
-                        "input_ref": "b098-input",
-                        "disposition": { "type": "started_turn", "turn_id": "98" },
-                        "principal_mac": "62".repeat(32),
-                        "binding_hmac": "62".repeat(32),
-                    })
-                    .to_string(),
-                ),
-                latest_status: payload(
-                    &serde_json::json!({
-                        "schema": "send_status_v1",
-                        "status": {
-                            "type": "reconciliation_required",
-                            "failure": {
-                                "kind": "deadline_exceeded",
-                                "retryable": false,
-                                "label": "B098 saved operation failure",
-                                "detail": "bounded saved operation detail",
-                                "correlation_id": "b098-operation-correlation"
-                            }
-                        }
-                    })
-                    .to_string(),
-                ),
-                expected: RevisionGuard::Absent,
-                revision: Revision::new(0).unwrap(),
-            }),
-            terminal_mutation(SEMANTIC_SESSION_ID, "b098-terminal"),
-            LocalStateMutation::ShutdownPlan(ShutdownPlanMutation {
-                key: b098_available_plan(),
-                phase: ApplicationShutdownPhase::ReconciliationRequired,
-                summary: available,
-                details_state: ShutdownDetailsState::Available,
-                expected: RevisionGuard::Absent,
-                revision: Revision::new(0).unwrap(),
-            }),
-            LocalStateMutation::ShutdownTarget(ShutdownTargetMutation {
-                key: b098_available_plan(),
-                ordinal: 0,
-                detail: ShutdownTargetRecord::Target {
-                    target_id: SEMANTIC_SESSION_ID.to_string(),
-                    kind: ShutdownTargetKindRecord::AgentSession,
-                    state: ShutdownTargetStateRecord::ReconciliationRequired,
-                    effect_identity: "b098-shutdown-effect".to_string(),
-                    owner_operation_id: Some("b098-available-operation".to_string()),
-                    failure: Some(failure),
-                    recovery_action: None,
-                },
-                expected: RevisionGuard::Absent,
-                revision: Revision::new(0).unwrap(),
-            }),
-            LocalStateMutation::ShutdownPlan(ShutdownPlanMutation {
-                key: b098_compacted_plan(),
-                phase: ApplicationShutdownPhase::ReconciliationRequired,
-                summary: compacted,
-                details_state: ShutdownDetailsState::Compacted,
-                expected: RevisionGuard::Absent,
-                revision: Revision::new(1).unwrap(),
-            }),
-            LocalStateMutation::ShutdownCompactArchive(ShutdownCompactArchiveMutation {
-                key: b098_compacted_plan(),
-                archive: compacted_archive,
-            }),
-        ],
-    );
-    staging.idempotency.generation_id = store.generation_id().to_string();
-    staging.idempotency.operation_kind = CommitOperationKind::UserMutation;
-    store
-        .commit_batch(staging)
-        .await
-        .expect("seed rich staging state");
-}
-
-async fn b098_public_snapshot(store: &Arc<LocalEventStore>) -> B098PublicSnapshot {
-    let binding_key = CallerOperationKey {
-        principal: "b098-principal".to_string(),
-        generation_id: store.generation_id().to_string(),
-        kind: OperationKind::Send,
-        caller_request_id: "b098-request".to_string(),
-    };
-    let LocalEventQueryResult::OperationBindingByIdentity(Some(binding)) = store
-        .query(LocalEventQuery::OperationBindingByIdentity { key: binding_key })
-        .await
-        .expect("B098 binding")
-    else {
-        panic!("B098 binding missing");
-    };
-    let LocalEventQueryResult::OperationByIdentity(Some(operation)) = store
-        .query(LocalEventQuery::OperationByIdentity {
-            kind: OperationKind::Send,
-            operation_id: "b098-unresolved-send".to_string(),
-        })
-        .await
-        .expect("B098 operation")
-    else {
-        panic!("B098 operation missing");
-    };
-    let LocalEventQueryResult::TerminalByTurn(Some(terminal)) = store
-        .query(LocalEventQuery::TerminalByTurn {
-            session_id: crate::adaptor::gateway::local_event_store::migration::bounded_tests::
-                SEMANTIC_SESSION_ID
-                .to_string(),
-            turn_id: "b098-terminal".to_string(),
-        })
-        .await
-        .expect("B098 terminal")
-    else {
-        panic!("B098 terminal missing");
-    };
-    let LocalEventQueryResult::ShutdownPlanPage(available) = store
-        .query(LocalEventQuery::ShutdownPlanPage {
-            plan: b098_available_plan(),
-            limit: 128,
-            cursor: None,
-        })
-        .await
-        .expect("B098 Available shutdown")
-    else {
-        panic!("B098 Available shutdown missing");
-    };
-    let LocalEventQueryResult::ShutdownPlanPage(compacted) = store
-        .query(LocalEventQuery::ShutdownPlanPage {
-            plan: b098_compacted_plan(),
-            limit: 128,
-            cursor: None,
-        })
-        .await
-        .expect("B098 Compacted shutdown")
-    else {
-        panic!("B098 Compacted shutdown missing");
-    };
-    assert_eq!(
-        available.plan.details_state,
-        ShutdownDetailsState::Available
-    );
-    assert_eq!(available.targets.len(), 1);
-    assert_eq!(
-        compacted.plan.details_state,
-        ShutdownDetailsState::Compacted
-    );
-    assert!(compacted.targets.is_empty());
-    assert_eq!(available.plan.summary.deadline_ms, 16_000);
-    assert_eq!(available.plan.summary.target_count, Some(1));
-    assert_eq!(available.plan.summary.unresolved_count, Some(1));
-    assert_eq!(
-        available
-            .plan
-            .summary
-            .failure
-            .as_ref()
-            .expect("saved B098 failure")
-            .correlation_id,
-        "b098-failure-correlation"
-    );
-    B098PublicSnapshot {
-        binding,
-        operation,
-        terminal,
-        available,
-        compacted,
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn b098_one_shot_cutover_faults_reopen_from_the_same_staging_public_state() {
-    use crate::adaptor::gateway::local_event_store::migration::bounded_tests::semantic_migration_fixture;
-
-    for (suffix, fault_point, pointer_moves) in [
-        ("temp-written", AuthorityFaultPoint::TempWritten, false),
-        ("temp-synced", AuthorityFaultPoint::TempSynced, false),
-        ("renamed", AuthorityFaultPoint::AuthorityRenamed, true),
-    ] {
-        let dir = TempDir::new().expect("B098 cutover app data");
-        let root = dir.path().to_path_buf();
-        let initial = LocalEventStore::open(LocalEventStoreConfig {
-            app_data_root: root.clone(),
-            clock: Arc::new(FakeStoreClock::at(1_000)),
-            registry: test_registry(),
-            fault: Arc::new(FaultInjector::new()),
-        })
-        .expect("open B098 staging generation");
-        seed_b098_staging(&initial).await;
-        let baseline = b098_public_snapshot(&initial).await;
-        let generation_id = initial.generation_id().to_string();
-        let layout = StoreLayout::new(&root);
-        let sqlite_pointer = read_authority(&layout)
-            .expect("read initial SQLite pointer")
-            .expect("initial SQLite pointer");
-        drop(initial);
-
-        semantic_migration_fixture(&root);
-        let legacy_before = b070_legacy_source_snapshot(&root);
-        let migration_id = format!("b098-{suffix}");
-        let legacy_pointer = LocalStoreAuthorityPointerV1::Legacy {
-            source_generation_id: format!("b098-legacy-{suffix}"),
-            migration: Some(AuthorityMigrationRef {
-                migration_id: migration_id.clone(),
-                staging_generation_id: generation_id.clone(),
-            }),
-        };
-        cas_authority(&layout, Some(&sqlite_pointer), &legacy_pointer, None)
-            .expect("install B098 Legacy staging pointer");
-
-        let fault = Arc::new(FaultInjector::new());
-        fault.arm_authority_cutover_fault(fault_point);
-        let first = LocalEventStore::open(LocalEventStoreConfig {
-            app_data_root: root.clone(),
-            clock: Arc::new(FakeStoreClock::at(2_000)),
-            registry: test_registry(),
-            fault,
-        })
-        .expect("open B098 faulted automatic cutover");
-        wait_for_migration_decision(&first).await;
-        assert_eq!(first.generation_id(), generation_id);
-        assert_eq!(b098_public_snapshot(&first).await, baseline);
-        if pointer_moves {
-            assert!(first.cutover_ready());
-            assert!(matches!(
-                read_authority(&layout).expect("fresh post-rename pointer"),
-                Some(LocalStoreAuthorityPointerV1::Sqlite { .. })
-            ));
-        } else {
-            assert!(first.migration_blocked());
-            assert_eq!(
-                read_authority(&layout).expect("fresh pre-rename pointer"),
-                Some(legacy_pointer.clone())
-            );
-            let LocalEventQueryResult::LocalStoreMigration(Some(progress)) = first
-                .query(LocalEventQuery::LocalStoreMigration)
-                .await
-                .expect("sealed activation progress")
-            else {
-                panic!("sealed activation progress missing");
-            };
-            assert_eq!(
-                progress.phase,
-                crate::domain::local_event::LocalStoreMigrationPhase::Activating,
-                "a transient pointer fault must preserve the restartable sealed proof",
-            );
-        }
-        drop(first);
-
-        let reopened = LocalEventStore::open(LocalEventStoreConfig {
-            app_data_root: root.clone(),
-            clock: Arc::new(FakeStoreClock::at(3_000)),
-            registry: test_registry(),
-            fault: Arc::new(FaultInjector::new()),
-        })
-        .expect("restart B098 cutover");
-        wait_for_migration_decision(&reopened).await;
-        assert!(reopened.cutover_ready());
-        assert_eq!(reopened.active_migration_id(), Some(migration_id.as_str()));
-        assert_eq!(b098_public_snapshot(&reopened).await, baseline);
-        assert!(reopened.open_normal_admission_after_authority_install());
-        assert!(matches!(
-            read_authority(&layout).expect("restarted SQLite authority"),
-            Some(LocalStoreAuthorityPointerV1::Sqlite {
-                generation_id: ref saved_generation,
-                activated_migration_id: Some(ref saved_migration),
-                ..
-            }) if saved_generation == &generation_id && saved_migration == &migration_id
-        ));
-        for (path, expected) in &legacy_before {
-            assert_eq!(
-                std::fs::read(path).expect("B098 legacy source"),
-                *expected,
-                "cutover and restart may not dual-write the legacy source",
-            );
-        }
-        let connection =
-            rusqlite::Connection::open(layout.generation_database_path(reopened.generation_id()))
-                .expect("inspect B098 generation");
-        let migration_rows: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM local_store_migrations WHERE migration_id = ?1",
-                rusqlite::params![migration_id],
-                |row| row.get(0),
-            )
-            .expect("one-shot migration row count");
-        assert_eq!(migration_rows, 1);
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn b098_projection_parity_failure_keeps_legacy_authority_and_reports_migration_blocked() {
-    use crate::adaptor::gateway::local_event_store::migration::bounded_tests::semantic_migration_fixture;
-
-    let dir = TempDir::new().expect("B098 parity failure app data");
-    let root = dir.path().to_path_buf();
-    let staging = LocalEventStore::open(LocalEventStoreConfig {
-        app_data_root: root.clone(),
-        clock: Arc::new(FakeStoreClock::at(1_000)),
-        registry: test_registry(),
-        fault: Arc::new(FaultInjector::new()),
-    })
-    .expect("open B098 parity staging");
-    let session_store = SessionStore::new(Arc::new(FileSessionStorage::default()));
-    let repository: Arc<dyn LocalEventTransactionRepository> = staging.clone();
-    session_store.set_local_event_repository_with_projection_codec(
-        repository,
-        staging.generation_id().to_string(),
-        Arc::new(AgentSessionProjectionCodecV1),
-    );
-    let extra_session = build_new_session_with_id(
-        "d1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d".to_string(),
-        "/staging-only",
-        Some("codex".to_string()),
-        crate::domain::agent_session::PermissionMode::Ask,
-        None,
-        false,
-        false,
-        None,
-    );
-    session_store
-        .save_full_session_for_migration_or_restore(&root, &extra_session)
-        .expect("seed projection that is absent from the fixed legacy inventory");
-    let generation_id = staging.generation_id().to_string();
-    let layout = StoreLayout::new(&root);
-    let sqlite_pointer = read_authority(&layout)
-        .expect("read parity staging authority")
-        .expect("parity staging authority");
-    drop(session_store);
-    drop(staging);
-
-    semantic_migration_fixture(&root);
-    let legacy_pointer = LocalStoreAuthorityPointerV1::Legacy {
-        source_generation_id: "b098-parity-legacy".to_string(),
-        migration: Some(AuthorityMigrationRef {
-            migration_id: "b098-parity-blocked".to_string(),
-            staging_generation_id: generation_id,
-        }),
-    };
-    cas_authority(&layout, Some(&sqlite_pointer), &legacy_pointer, None)
-        .expect("install parity failure Legacy pointer");
-    let blocked = LocalEventStore::open(LocalEventStoreConfig {
-        app_data_root: root,
-        clock: Arc::new(FakeStoreClock::at(2_000)),
-        registry: test_registry(),
-        fault: Arc::new(FaultInjector::new()),
-    })
-    .expect("open parity-failing migration");
-    wait_for_migration_decision(&blocked).await;
-    assert!(blocked.migration_blocked());
-    assert_eq!(
-        read_authority(&layout).expect("blocked migration pointer"),
-        Some(legacy_pointer),
-        "failed parity may not install the SQLite authority",
-    );
-    let LocalEventQueryResult::LocalStoreMigration(Some(progress)) = blocked
-        .query(LocalEventQuery::LocalStoreMigration)
-        .await
-        .expect("blocked migration projection")
-    else {
-        panic!("blocked migration projection missing");
-    };
-    assert_eq!(
-        progress.phase,
-        crate::domain::local_event::LocalStoreMigrationPhase::Failed
-    );
-    assert_eq!(
-        progress.checkpoint.safe_failure.as_deref(),
-        Some("migration_blocked")
-    );
-
-    let mut rejected = batch(
-        "b098-rejected-mutation",
-        "b098-rejected-mutation",
-        [99; 32],
-        Vec::new(),
-        Vec::new(),
-        vec![obligation_mutation("b098-rejected", true)],
-    );
-    rejected.idempotency.generation_id = blocked.generation_id().to_string();
-    rejected.idempotency.operation_kind = CommitOperationKind::UserMutation;
-    let Err(CommitBatchError::StorageUnavailable { failure }) =
-        blocked.commit_batch(rejected).await
-    else {
-        panic!("MigrationBlocked must close normal mutation admission");
-    };
-    assert_eq!(failure.kind, SessionOperationFailureKind::MigrationBlocked);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn sqlite_authority_reopen_after_post_cutover_mutation_does_not_fall_back_or_dual_write() {
-    let dir = TempDir::new().expect("post-cutover mutation app data");
-    let root = dir.path().to_path_buf();
-    std::fs::create_dir_all(root.join("sessions")).expect("legacy sessions root");
-    let legacy_titles = root.join("session_titles.json");
-    std::fs::write(&legacy_titles, b"{}\n").expect("legacy title fixture");
-    let open_store = |clock_ms| {
-        LocalEventStore::open(LocalEventStoreConfig {
-            app_data_root: root.clone(),
-            clock: Arc::new(FakeStoreClock::at(clock_ms)),
-            registry: test_registry(),
-            fault: Arc::new(FaultInjector::new()),
-        })
-    };
-    let store = open_store(1_000).expect("open migrating store");
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while !store.cutover_ready() {
-            assert!(
-                !store.migration_blocked(),
-                "empty migration unexpectedly blocked"
-            );
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("verified cutover");
-    assert!(store.open_normal_admission_after_authority_install());
-
-    let legacy_before = std::fs::read(&legacy_titles).expect("legacy title before mutation");
-    let mut post_cutover = batch(
-        "post-cutover-sqlite-only",
-        "post-cutover-sqlite-only",
-        [97; 32],
-        Vec::new(),
-        Vec::new(),
-        vec![LocalStateMutation::SessionProjection(
-            SessionProjectionMutation {
-                session_id: "post-cutover-session".to_string(),
-                projection: agent_session_projection("post-cutover-session"),
-                expected: RevisionGuard::Absent,
-                revision: Revision::new(0).unwrap(),
-            },
-        )],
-    );
-    post_cutover.idempotency.generation_id = store.generation_id().to_string();
-    store
-        .commit_batch(post_cutover)
-        .await
-        .expect("normal post-cutover commit");
-    assert_eq!(
-        std::fs::read(&legacy_titles).expect("legacy title after mutation"),
-        legacy_before,
-        "normal SQLite mutation must not dual-write the legacy source",
-    );
-    assert!(
-        !root.join("sessions").join("post-cutover-session").exists(),
-        "normal SQLite mutation must not create a legacy session layout",
-    );
-    let projected = store
-        .query(LocalEventQuery::SessionProjectionByIdentity {
-            session_id: "post-cutover-session".to_string(),
-        })
-        .await
-        .expect("query post-cutover projection");
-    assert!(matches!(
-        projected,
-        LocalEventQueryResult::SessionProjectionByIdentity(Some(_))
-    ));
-    let migration_id = store
-        .active_migration_id()
-        .expect("activated migration identity")
-        .to_string();
-    drop(store);
-
-    // Once the checksummed authority pointer is SQLite, restart must not
-    // inspect or fall back to a changed legacy source.
-    std::fs::write(&legacy_titles, b"not-json-after-cutover\n")
-        .expect("change retired legacy fixture");
-    let reopened = open_store(2_000).expect("reopen from immutable migration proof");
-    assert!(reopened.cutover_ready());
-    assert_eq!(reopened.active_migration_id(), Some(migration_id.as_str()));
-    let projected = reopened
-        .query(LocalEventQuery::SessionProjectionByIdentity {
-            session_id: "post-cutover-session".to_string(),
-        })
-        .await
-        .expect("query reopened post-cutover projection");
-    assert!(matches!(
-        projected,
-        LocalEventQueryResult::SessionProjectionByIdentity(Some(_))
-    ));
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn sqlite_authority_reopen_revalidates_the_activated_migration_parity() {
-    let dir = TempDir::new().expect("activated parity app data");
-    let root = dir.path().to_path_buf();
-    std::fs::create_dir_all(root.join("sessions")).expect("legacy sessions root");
-    let store = LocalEventStore::open(LocalEventStoreConfig {
-        app_data_root: root.clone(),
-        clock: Arc::new(FakeStoreClock::at(1_000)),
-        registry: test_registry(),
-        fault: Arc::new(FaultInjector::new()),
-    })
-    .expect("open migrating store");
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while !store.cutover_ready() {
-            assert!(
-                !store.migration_blocked(),
-                "empty migration unexpectedly blocked"
-            );
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("verified cutover");
-    let database_path = StoreLayout::new(&root).generation_database_path(store.generation_id());
-    let connection = rusqlite::Connection::open(database_path).expect("tamper parity fixture");
-    let (migration_id, parity): (String, String) = connection
-        .query_row(
-            "SELECT migration_id, parity FROM local_store_migrations",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .expect("activated parity");
-    let mut parity: serde_json::Value = serde_json::from_str(&parity).unwrap();
-    parity
-        .as_object_mut()
-        .unwrap()
-        .insert("source_count".to_string(), serde_json::Value::from(1));
-    connection
-        .execute(
-            "UPDATE local_store_migrations SET parity = ?2 WHERE migration_id = ?1",
-            rusqlite::params![migration_id, parity.to_string()],
-        )
-        .expect("corrupt parity proof");
-    drop(connection);
-    drop(store);
-
-    let reopened = LocalEventStore::open(LocalEventStoreConfig {
-        app_data_root: root,
-        clock: Arc::new(FakeStoreClock::at(2_000)),
-        registry: test_registry(),
-        fault: Arc::new(FaultInjector::new()),
-    });
-    assert!(matches!(
-        reopened,
-        Err(super::store::LocalEventStoreOpenError::Corrupt { .. })
-    ));
-}
-
 #[tokio::test]
 async fn completed_recovery_action_replays_exactly_and_preserves_pending_stop_identity() {
     let harness = Harness::open();
@@ -8540,7 +7121,7 @@ async fn completed_recovery_action_replays_exactly_and_preserves_pending_stop_id
         harness.store.clone(),
         harness.store.clone(),
         Arc::new(PendingRecoveryActionExecutor),
-        harness.store.generation_id().to_string(),
+        harness.store.installation_id().to_string(),
     );
     let pending = usecase
         .pending(
@@ -8976,8 +7557,7 @@ async fn close_quit_first_ingress_owns_exit_intent() {
     assert_eq!(binding_count, 6);
 
     let plan = ShutdownPlanKey {
-        plan_id: accepted[0].plan_id.clone(),
-        epoch: accepted[0].epoch,
+        shutdown_id: accepted[0].shutdown_id.clone(),
     };
     let before = coordinator
         .shutdown_plan_page_read_model(plan.clone(), 128, None)
@@ -9160,8 +7740,7 @@ async fn b061_terminal_plan_allows_one_new_flight_same_process_and_after_restart
     // terminal plan must not enumerate targets or start any shutdown effect.
     coordinator
         .compact_shutdown_details(ShutdownPlanKey {
-            plan_id: first_receipt.plan_id,
-            epoch: first_receipt.epoch,
+            shutdown_id: first_receipt.shutdown_id,
         })
         .await
         .expect("terminal detail compaction");
@@ -9175,7 +7754,7 @@ async fn b061_terminal_plan_allows_one_new_flight_same_process_and_after_restart
         harness.store.clone(),
         harness.store.clone(),
         executor.clone(),
-        harness.store.generation_id().to_string(),
+        harness.store.installation_id().to_string(),
         "b061-restarted-boot".to_string(),
     ));
     assert_eq!(
@@ -9308,110 +7887,6 @@ async fn b061_terminal_plan_allows_one_new_flight_same_process_and_after_restart
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn b097_available_previous_shutdown_blocks_new_quit_until_compaction_finishes() {
-    use crate::usecase::shutdown_coordinator::{
-        ApplicationQuitError, ApplicationQuitIntent, ApplicationQuitOutcome,
-        ApplicationQuitRequest, ApplicationQuitState,
-    };
-
-    let harness = Harness::open();
-    let executor = TestShutdownExecutor::with_targets(0, ShutdownExecutorMode::Complete);
-    let coordinator = shutdown_coordinator(&harness, &executor);
-    let mut completed_plans = Vec::new();
-    for ordinal in 1..=2 {
-        let outcome = coordinator
-            .request(ApplicationQuitRequest {
-                principal: "desktop".to_string(),
-                request_id: format!("b097-terminal-{ordinal}"),
-                intent: ApplicationQuitIntent::Exit { code: ordinal },
-            })
-            .await
-            .expect("seed terminal shutdown");
-        let ApplicationQuitOutcome::Accepted {
-            receipt,
-            state: ApplicationQuitState::Completed,
-        } = outcome
-        else {
-            panic!("seed shutdown must complete");
-        };
-        completed_plans.push(ShutdownPlanKey {
-            plan_id: receipt.plan_id,
-            epoch: receipt.epoch,
-        });
-    }
-
-    let third_request = ApplicationQuitRequest {
-        principal: "desktop".to_string(),
-        request_id: "b097-after-two-available".to_string(),
-        intent: ApplicationQuitIntent::Restart { code: 97 },
-    };
-    let blocked = coordinator.request(third_request.clone()).await;
-    let Err(ApplicationQuitError::PreviousShutdownCompactionPending { blocking }) = blocked else {
-        panic!("two Available plans must block a new full-detail flight");
-    };
-    assert_eq!(blocking.plan, completed_plans[0]);
-    assert_eq!(blocking.details_state, ShutdownDetailsState::Available);
-    assert!(blocking.actions.is_empty());
-    assert_eq!(
-        executor
-            .subordinate_shutdowns
-            .load(std::sync::atomic::Ordering::SeqCst),
-        2,
-        "rejection before acceptance must not start a third shutdown effect",
-    );
-    let connection = harness.raw_connection();
-    let operation_count: i64 = connection
-        .query_row(
-            "SELECT COUNT(*) FROM operation_records WHERE kind = 'application_quit'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(operation_count, 2);
-
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            let page = coordinator
-                .shutdown_plan_page(completed_plans[0].clone(), 1, None)
-                .await
-                .expect("old plan remains queryable while compacting");
-            let retiring = harness
-                .store
-                .query(LocalEventQuery::ShutdownRetiringPlan)
-                .await
-                .expect("retiring selector query");
-            if page.plan.details_state == ShutdownDetailsState::Compacted
-                && matches!(retiring, LocalEventQueryResult::ShutdownRetiringPlan(None))
-            {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("background compaction finishes");
-
-    let accepted = coordinator
-        .request(third_request)
-        .await
-        .expect("same rejected caller identity is accepted after compaction");
-    let ApplicationQuitOutcome::Accepted {
-        receipt,
-        state: ApplicationQuitState::Completed,
-    } = accepted
-    else {
-        panic!("post-compaction shutdown must complete");
-    };
-    assert_eq!(receipt.intent, ApplicationQuitIntent::Restart { code: 97 });
-    let oldest = coordinator
-        .shutdown_plan_page(completed_plans[0].clone(), 1, None)
-        .await
-        .expect("compacted history stays queryable");
-    assert_eq!(oldest.plan.plan, completed_plans[0]);
-    assert_eq!(oldest.plan.details_state, ShutdownDetailsState::Compacted);
-}
-
 #[tokio::test]
 async fn b064_activated_hanging_quit_decides_reconciliation_within_the_fixed_deadline() {
     let harness = Harness::open();
@@ -9469,8 +7944,7 @@ async fn b064_activated_hanging_quit_decides_reconciliation_within_the_fixed_dea
     let page = coordinator
         .shutdown_plan_page_read_model(
             ShutdownPlanKey {
-                plan_id: receipt.plan_id,
-                epoch: receipt.epoch,
+                shutdown_id: receipt.shutdown_id,
             },
             128,
             None,
@@ -9530,8 +8004,7 @@ async fn b064_activated_hanging_quit_decides_reconciliation_within_the_fixed_dea
     } = public else {
         panic!("wrong public reconciliation blocker outcome");
     };
-    assert_eq!(public_blocker.plan_id, current.plan.plan_id);
-    assert_eq!(public_blocker.epoch, current.plan.epoch.to_string());
+    assert_eq!(public_blocker.shutdown_id, current.plan.shutdown_id);
     assert_eq!(public_blocker.actions, current.actions);
     let operation_count_after: i64 = connection
         .query_row(
@@ -9618,8 +8091,7 @@ async fn b064_restart_keeps_completed_targets_and_does_not_replay_shutdown_effec
     let before_restart = coordinator
         .shutdown_plan_page_read_model(
             ShutdownPlanKey {
-                plan_id: receipt.plan_id.clone(),
-                epoch: receipt.epoch,
+                shutdown_id: receipt.shutdown_id.clone(),
             },
             128,
             None,
@@ -9645,7 +8117,7 @@ async fn b064_restart_keeps_completed_targets_and_does_not_replay_shutdown_effec
         repository,
         authority,
         restart_executor.clone(),
-        harness.store.generation_id().to_string(),
+        harness.store.installation_id().to_string(),
         "b064-restarted-boot".to_string(),
     );
     let recovered = restarted
@@ -9706,8 +8178,7 @@ async fn b064_restart_keeps_completed_targets_and_does_not_replay_shutdown_effec
 async fn close_quit_hard_kill_recovers_as_crash() {
     let harness = Harness::open();
     let plan = ShutdownPlanKey {
-        plan_id: "quit-exit-coupled".to_string(),
-        epoch: 7,
+        shutdown_id: "quit-exit-coupled".to_string(),
     };
     let summary = serde_json::json!({
         "schema": "shutdown_plan_summary_v1",
@@ -9725,7 +8196,7 @@ async fn close_quit_hard_kill_recovers_as_crash() {
         "unresolved_count": 1,
         "recovery_snapshot_count": 0,
         "recovery_snapshot_id": null,
-        "boot_id": "previous-boot",
+        "process_instance_id": "previous-boot",
     });
     let mut seed = batch(
         "b066-exit-coupled-seed",
@@ -9765,8 +8236,7 @@ async fn close_quit_hard_kill_recovers_as_crash() {
                     &serde_json::json!({
                         "schema": "application_quit_receipt_v1",
                         "operation_id": "quit-exit-coupled",
-                        "plan_id": "quit-exit-coupled",
-                        "epoch": 7,
+                        "shutdown_id": "quit-exit-coupled",
                         "intent": "exit",
                         "exit_code": 0,
                         "t0_ms": 1_000,
@@ -9791,7 +8261,7 @@ async fn close_quit_hard_kill_recovers_as_crash() {
             }),
         ],
     );
-    seed.idempotency.generation_id = harness.store.generation_id().to_string();
+    seed.idempotency.installation_id = harness.store.installation_id().to_string();
     seed.idempotency.operation_kind = CommitOperationKind::ApplicationQuit;
     harness
         .store
@@ -9807,7 +8277,7 @@ async fn close_quit_hard_kill_recovers_as_crash() {
         repository,
         authority,
         executor.clone(),
-        harness.store.generation_id().to_string(),
+        harness.store.installation_id().to_string(),
         "current-boot".to_string(),
     );
 
@@ -9840,8 +8310,7 @@ async fn close_quit_hard_kill_recovers_as_crash() {
     assert_eq!(
         target.observation,
         Some(SafeEffectObservation::ExitCoupledOutcomeUnknown {
-            plan_id: plan.plan_id.clone(),
-            epoch: plan.epoch,
+            shutdown_id: plan.shutdown_id.clone(),
         })
     );
     assert_eq!(target.actions, vec!["retry_same_effect"]);
@@ -9913,8 +8382,7 @@ async fn close_quit_hard_kill_recovers_as_crash() {
         wire["targets"][0]["observation"],
         serde_json::json!({
             "type": "exit_coupled_outcome_unknown",
-            "plan_id": "quit-exit-coupled",
-            "epoch": "7",
+            "shutdown_id": "quit-exit-coupled",
         })
     );
     assert_eq!(
@@ -10011,7 +8479,7 @@ async fn b067_late_aborted_inventory_result_cannot_change_a_new_shutdown_flight(
             repository,
             authority,
             executor.clone(),
-            harness.store.generation_id().to_string(),
+            harness.store.installation_id().to_string(),
             "test-boot".to_string(),
         ),
     );
@@ -10138,7 +8606,7 @@ async fn hanging_authority_query_is_bounded_by_the_absolute_decision_deadline() 
             repository,
             authority,
             executor.clone(),
-            harness.store.generation_id().to_string(),
+            harness.store.installation_id().to_string(),
             "test-boot".to_string(),
         ),
     );
@@ -10239,8 +8707,8 @@ async fn b060_exactly_4096_shutdown_targets_are_durably_accepted_as_one_plan() {
     let connection = harness.raw_connection();
     let summary: String = connection
         .query_row(
-            "SELECT summary FROM shutdown_plans WHERE plan_id = ?1 AND epoch = ?2",
-            rusqlite::params![receipt.plan_id, receipt.epoch],
+            "SELECT summary FROM shutdown_plans WHERE shutdown_id = ?1",
+            rusqlite::params![receipt.shutdown_id],
             |row| row.get(0),
         )
         .unwrap();
@@ -10288,7 +8756,7 @@ async fn b060_non_target_recovery_is_excluded_from_targets_and_retained_in_exit_
             pending("b060-unowned-runtime", PendingPartition::UnownedRuntime),
         ],
     );
-    recovery_seed.idempotency.generation_id = harness.store.generation_id().to_string();
+    recovery_seed.idempotency.installation_id = harness.store.installation_id().to_string();
     harness
         .store
         .commit_batch(recovery_seed)
@@ -10320,8 +8788,8 @@ async fn b060_non_target_recovery_is_excluded_from_targets_and_retained_in_exit_
     let connection = harness.raw_connection();
     let summary: String = connection
         .query_row(
-            "SELECT summary FROM shutdown_plans WHERE plan_id = ?1 AND epoch = ?2",
-            rusqlite::params![receipt.plan_id, receipt.epoch],
+            "SELECT summary FROM shutdown_plans WHERE shutdown_id = ?1",
+            rusqlite::params![receipt.shutdown_id],
             |row| row.get(0),
         )
         .unwrap();
@@ -10332,11 +8800,11 @@ async fn b060_non_target_recovery_is_excluded_from_targets_and_retained_in_exit_
     let mut statement = connection
         .prepare(
             "SELECT partition FROM shutdown_recovery_snapshots
-             WHERE plan_id = ?1 AND epoch = ?2 ORDER BY partition",
+             WHERE shutdown_id = ?1 ORDER BY partition",
         )
         .unwrap();
     let partitions = statement
-        .query_map(rusqlite::params![receipt.plan_id, receipt.epoch], |row| {
+        .query_map(rusqlite::params![receipt.shutdown_id], |row| {
             row.get::<_, String>(0)
         })
         .unwrap()
@@ -10459,8 +8927,7 @@ async fn b062_public_shutdown_page_enforces_encoded_one_mib_without_partial_resu
     let page = coordinator
         .shutdown_plan_page_read_model(
             ShutdownPlanKey {
-                plan_id: receipt.plan_id,
-                epoch: receipt.epoch,
+                shutdown_id: receipt.shutdown_id,
             },
             1,
             None,
@@ -10516,8 +8983,7 @@ async fn b062_shutdown_plan_page_closes_count_limit_unknown_and_cursor_boundarie
         panic!("4,096-target shutdown fixture must complete: {outcome:?}");
     };
     let plan = ShutdownPlanKey {
-        plan_id: receipt.plan_id,
-        epoch: receipt.epoch,
+        shutdown_id: receipt.shutdown_id,
     };
 
     let first = coordinator
@@ -10555,8 +9021,7 @@ async fn b062_shutdown_plan_page_closes_count_limit_unknown_and_cursor_boundarie
         coordinator
             .shutdown_plan_page(
                 ShutdownPlanKey {
-                    plan_id: "b062-unknown-plan".to_string(),
-                    epoch: 0,
+                    shutdown_id: "b062-unknown-plan".to_string(),
                 },
                 128,
                 None,
@@ -10605,14 +9070,13 @@ async fn b062_terminal_counts_fail_closed_while_unavailable_preparing_counts_rem
         panic!("terminal count fixture must be accepted");
     };
     let terminal_plan = ShutdownPlanKey {
-        plan_id: receipt.plan_id,
-        epoch: receipt.epoch,
+        shutdown_id: receipt.shutdown_id,
     };
     let connection = harness.raw_connection();
     let original_summary: String = connection
         .query_row(
-            "SELECT summary FROM shutdown_plans WHERE plan_id = ?1 AND epoch = ?2",
-            rusqlite::params![terminal_plan.plan_id, terminal_plan.epoch],
+            "SELECT summary FROM shutdown_plans WHERE shutdown_id = ?1",
+            rusqlite::params![terminal_plan.shutdown_id],
             |row| row.get(0),
         )
         .unwrap();
@@ -10638,12 +9102,8 @@ async fn b062_terminal_counts_fail_closed_while_unavailable_preparing_counts_rem
         }
         connection
             .execute(
-                "UPDATE shutdown_plans SET summary = ?1 WHERE plan_id = ?2 AND epoch = ?3",
-                rusqlite::params![
-                    malformed.to_string(),
-                    terminal_plan.plan_id,
-                    terminal_plan.epoch
-                ],
+                "UPDATE shutdown_plans SET summary = ?1 WHERE shutdown_id = ?2",
+                rusqlite::params![malformed.to_string(), terminal_plan.shutdown_id],
             )
             .unwrap();
         let error = coordinator
@@ -10660,15 +9120,14 @@ async fn b062_terminal_counts_fail_closed_while_unavailable_preparing_counts_rem
         }
         connection
             .execute(
-                "UPDATE shutdown_plans SET summary = ?1 WHERE plan_id = ?2 AND epoch = ?3",
-                rusqlite::params![original_summary, terminal_plan.plan_id, terminal_plan.epoch],
+                "UPDATE shutdown_plans SET summary = ?1 WHERE shutdown_id = ?2",
+                rusqlite::params![original_summary, terminal_plan.shutdown_id],
             )
             .unwrap();
     }
 
     let preparing_plan = ShutdownPlanKey {
-        plan_id: "b062-preparing-counts-unavailable".to_string(),
-        epoch: 0,
+        shutdown_id: "b062-preparing-counts-unavailable".to_string(),
     };
     let mut seed = batch(
         "b062-preparing-counts-unavailable",
@@ -10678,7 +9137,7 @@ async fn b062_terminal_counts_fail_closed_while_unavailable_preparing_counts_rem
         Vec::new(),
         vec![LocalStateMutation::ShutdownPlan(ShutdownPlanMutation {
             key: preparing_plan.clone(),
-            phase: ApplicationShutdownPhase::Preparing,
+            phase: ApplicationShutdownPhase::Prepared,
             summary: payload(
                 &serde_json::json!({
                     "schema": "shutdown_plan_summary_v1",
@@ -10688,7 +9147,7 @@ async fn b062_terminal_counts_fail_closed_while_unavailable_preparing_counts_rem
                     "t0_ms": 1_000,
                     "preparation_cutoff_ms": 14_000,
                     "deadline_ms": 16_000,
-                    "boot_id": "test-boot",
+                    "process_instance_id": "test-boot",
                 })
                 .to_string(),
             ),
@@ -10713,12 +9172,11 @@ async fn b076_seed_current_shutdown(
     suffix: &str,
     phase: ApplicationShutdownPhase,
     operation_state: &str,
-    boot_id: &str,
+    process_instance_id: &str,
 ) -> (ShutdownPlanKey, String) {
     let operation_id = format!("b076-operation-{suffix}");
     let plan = ShutdownPlanKey {
-        plan_id: format!("b076-plan-{suffix}"),
-        epoch: 76,
+        shutdown_id: format!("b076-plan-{suffix}"),
     };
     let binding = [76; 32];
     let failure = SafeOperationFailure::new(
@@ -10769,7 +9227,7 @@ async fn b076_seed_current_shutdown(
             ApplicationShutdownPhase::ReconciliationRequired => "exited_with_recovery",
             _ => "in_progress",
         },
-        "boot_id": boot_id,
+        "process_instance_id": process_instance_id,
         "shutdown_effect_count": 0,
         "admission_open": false,
         "retry_quit_same_boot": false,
@@ -10791,8 +9249,7 @@ async fn b076_seed_current_shutdown(
     let receipt = serde_json::json!({
         "schema": "application_quit_receipt_v1",
         "operation_id": operation_id,
-        "plan_id": plan.plan_id,
-        "epoch": plan.epoch,
+        "shutdown_id": plan.shutdown_id,
         "intent": "exit",
         "exit_code": 76,
         "t0_ms": 1_000,
@@ -10809,7 +9266,7 @@ async fn b076_seed_current_shutdown(
             LocalStateMutation::OperationBinding(OperationBindingMutation {
                 key: CallerOperationKey {
                     principal: "desktop".to_string(),
-                    generation_id: harness.store.generation_id().to_string(),
+                    installation_id: harness.store.installation_id().to_string(),
                     kind: OperationKind::ApplicationQuit,
                     caller_request_id: format!("b076-request-{suffix}"),
                 },
@@ -10838,7 +9295,7 @@ async fn b076_seed_current_shutdown(
             }),
         ],
     );
-    seed.idempotency.generation_id = harness.store.generation_id().to_string();
+    seed.idempotency.installation_id = harness.store.installation_id().to_string();
     seed.idempotency.operation_kind = CommitOperationKind::ApplicationQuit;
     harness
         .store
@@ -10851,15 +9308,15 @@ async fn b076_seed_current_shutdown(
 fn b076_coordinator(
     harness: &Harness,
     executor: &Arc<TestShutdownExecutor>,
-    boot_id: &str,
+    process_instance_id: &str,
 ) -> Arc<crate::usecase::shutdown_coordinator::ShutdownCoordinator> {
     Arc::new(
         crate::usecase::shutdown_coordinator::ShutdownCoordinator::new(
             harness.store.clone(),
             harness.store.clone(),
             executor.clone(),
-            harness.store.generation_id().to_string(),
-            boot_id.to_string(),
+            harness.store.installation_id().to_string(),
+            process_instance_id.to_string(),
         ),
     )
 }
@@ -10869,7 +9326,6 @@ async fn b076_same_boot_all_phases_and_previous_boot_nonterminal_keep_the_exact_
     use crate::usecase::shutdown_coordinator::CurrentApplicationShutdownProjection;
 
     let cases = [
-        (ApplicationShutdownPhase::Preparing, "preparing"),
         (ApplicationShutdownPhase::Prepared, "preparing"),
         (ApplicationShutdownPhase::Activated, "activated"),
         (ApplicationShutdownPhase::Quiescing, "activated"),
@@ -10886,17 +9342,17 @@ async fn b076_same_boot_all_phases_and_previous_boot_nonterminal_keep_the_exact_
     ];
     for (index, (phase, operation_state)) in cases.into_iter().enumerate() {
         let harness = Harness::open();
-        let boot_id = harness.store.boot_id().to_string();
+        let process_instance_id = harness.store.process_instance_id().to_string();
         let (plan, operation_id) = b076_seed_current_shutdown(
             &harness,
             &format!("phase-{index}"),
             phase,
             operation_state,
-            &boot_id,
+            &process_instance_id,
         )
         .await;
         let executor = TestShutdownExecutor::with_targets(0, ShutdownExecutorMode::Complete);
-        let coordinator = b076_coordinator(&harness, &executor, &boot_id);
+        let coordinator = b076_coordinator(&harness, &executor, &process_instance_id);
         let CurrentApplicationShutdownProjection::Current(Some(current)) = coordinator
             .current_application_shutdown_projection()
             .await
@@ -10920,7 +9376,7 @@ async fn b076_same_boot_all_phases_and_previous_boot_nonterminal_keep_the_exact_
     }
 
     let harness = Harness::open();
-    let current_boot = harness.store.boot_id().to_string();
+    let current_boot = harness.store.process_instance_id().to_string();
     let (plan, operation_id) = b076_seed_current_shutdown(
         &harness,
         "previous-nonterminal",
@@ -10959,9 +9415,9 @@ async fn b076_same_boot_completed_is_current_but_previous_boot_terminal_is_histo
     };
 
     let harness = Harness::open();
-    let boot_id = harness.store.boot_id().to_string();
+    let process_instance_id = harness.store.process_instance_id().to_string();
     let executor = TestShutdownExecutor::with_targets(0, ShutdownExecutorMode::Complete);
-    let coordinator = b076_coordinator(&harness, &executor, &boot_id);
+    let coordinator = b076_coordinator(&harness, &executor, &process_instance_id);
     let ApplicationQuitOutcome::Accepted { receipt, .. } = coordinator
         .request(ApplicationQuitRequest {
             principal: "desktop".to_string(),
@@ -10980,8 +9436,7 @@ async fn b076_same_boot_completed_is_current_but_previous_boot_terminal_is_histo
     else {
         panic!("same-boot completed flight must be current");
     };
-    assert_eq!(current.plan.plan_id, receipt.plan_id);
-    assert_eq!(current.plan.epoch, receipt.epoch);
+    assert_eq!(current.plan.shutdown_id, receipt.shutdown_id);
     assert_eq!(current.phase, ApplicationShutdownPhase::Completed);
 
     let restarted = b076_coordinator(&harness, &executor, "b076-next-boot");
@@ -10995,16 +9450,14 @@ async fn b076_same_boot_completed_is_current_but_previous_boot_terminal_is_histo
     let history = restarted
         .shutdown_plan_page_read_model(
             ShutdownPlanKey {
-                plan_id: receipt.plan_id.clone(),
-                epoch: receipt.epoch,
+                shutdown_id: receipt.shutdown_id.clone(),
             },
             128,
             None,
         )
         .await
         .expect("exact previous-boot terminal history");
-    assert_eq!(history.plan.plan.plan_id, receipt.plan_id);
-    assert_eq!(history.plan.plan.epoch, receipt.epoch);
+    assert_eq!(history.plan.plan.shutdown_id, receipt.shutdown_id);
     assert_eq!(history.plan.phase, ApplicationShutdownPhase::Completed);
     assert_eq!(
         executor.effects.load(std::sync::atomic::Ordering::SeqCst),
@@ -11023,17 +9476,17 @@ async fn b076_redundant_authority_mismatch_reconciles_the_same_plan_without_effe
     use crate::usecase::shutdown_coordinator::CurrentApplicationShutdownProjection;
 
     let harness = Harness::open();
-    let boot_id = harness.store.boot_id().to_string();
+    let process_instance_id = harness.store.process_instance_id().to_string();
     let (plan, operation_id) = b076_seed_current_shutdown(
         &harness,
         "authority-mismatch",
         ApplicationShutdownPhase::Activated,
         "preparing",
-        &boot_id,
+        &process_instance_id,
     )
     .await;
     let executor = TestShutdownExecutor::with_targets(0, ShutdownExecutorMode::Complete);
-    let coordinator = b076_coordinator(&harness, &executor, &boot_id);
+    let coordinator = b076_coordinator(&harness, &executor, &process_instance_id);
     let CurrentApplicationShutdownProjection::Current(Some(current)) = coordinator
         .current_application_shutdown_projection()
         .await
@@ -11075,13 +9528,13 @@ async fn b076_storage_decode_integrity_reference_and_identity_failures_are_inter
         "identity-uniqueness",
     ] {
         let harness = Harness::open();
-        let boot_id = harness.store.boot_id().to_string();
+        let process_instance_id = harness.store.process_instance_id().to_string();
         let (plan, operation_id) = b076_seed_current_shutdown(
             &harness,
             case,
-            ApplicationShutdownPhase::Preparing,
+            ApplicationShutdownPhase::Prepared,
             "preparing",
-            &boot_id,
+            &process_instance_id,
         )
         .await;
         let connection = harness.raw_connection();
@@ -11090,8 +9543,8 @@ async fn b076_storage_decode_integrity_reference_and_identity_failures_are_inter
                 connection
                     .execute(
                         "UPDATE shutdown_plans SET summary = 'not-json'
-                         WHERE plan_id = ?1 AND epoch = ?2",
-                        rusqlite::params![plan.plan_id, plan.epoch],
+                         WHERE shutdown_id = ?1",
+                        rusqlite::params![plan.shutdown_id],
                     )
                     .unwrap();
             }
@@ -11132,7 +9585,7 @@ async fn b076_storage_decode_integrity_reference_and_identity_failures_are_inter
                     )
                     .unwrap();
                 let mut receipt: serde_json::Value = serde_json::from_str(&receipt).unwrap();
-                receipt["plan_id"] = serde_json::Value::String("different-plan".to_string());
+                receipt["shutdown_id"] = serde_json::Value::String("different-plan".to_string());
                 connection
                     .execute(
                         "UPDATE operation_records SET receipt = ?1
@@ -11161,12 +9614,12 @@ async fn b076_storage_decode_integrity_reference_and_identity_failures_are_inter
                 connection
                     .execute(
                         "INSERT INTO operation_bindings
-                         (principal, generation_id, kind, caller_request_id,
+                         (principal, installation_id, kind, caller_request_id,
                           operation_id, binding_hmac, commit_id)
                          VALUES ('desktop-duplicate', ?1, 'application_quit',
                                  'b076-duplicate-request', ?2, ?3, ?4)",
                         rusqlite::params![
-                            harness.store.generation_id(),
+                            harness.store.installation_id(),
                             operation_id,
                             binding,
                             commit_id
@@ -11177,7 +9630,7 @@ async fn b076_storage_decode_integrity_reference_and_identity_failures_are_inter
             _ => unreachable!(),
         }
         let executor = TestShutdownExecutor::with_targets(0, ShutdownExecutorMode::Complete);
-        let coordinator = b076_coordinator(&harness, &executor, &boot_id);
+        let coordinator = b076_coordinator(&harness, &executor, &process_instance_id);
         let error = coordinator
             .current_application_shutdown_projection()
             .await
@@ -11212,8 +9665,8 @@ async fn b076_storage_decode_integrity_reference_and_identity_failures_are_inter
         repository,
         authority,
         executor.clone(),
-        harness.store.generation_id().to_string(),
-        harness.store.boot_id().to_string(),
+        harness.store.installation_id().to_string(),
+        harness.store.process_instance_id().to_string(),
     );
     let storage = coordinator
         .current_application_shutdown_projection()
@@ -11233,8 +9686,7 @@ async fn b076_storage_decode_integrity_reference_and_identity_failures_are_inter
 async fn b076_current_shutdown_missing_required_operation_reference_is_internal() {
     let harness = Harness::open();
     let plan = ShutdownPlanKey {
-        plan_id: "b076-missing-operation".to_string(),
-        epoch: 0,
+        shutdown_id: "b076-missing-operation".to_string(),
     };
     let mut seed = batch(
         "b076-missing-operation",
@@ -11245,7 +9697,7 @@ async fn b076_current_shutdown_missing_required_operation_reference_is_internal(
         vec![
             LocalStateMutation::ShutdownPlan(ShutdownPlanMutation {
                 key: plan.clone(),
-                phase: ApplicationShutdownPhase::Preparing,
+                phase: ApplicationShutdownPhase::Prepared,
                 summary: payload(
                     &serde_json::json!({
                         "schema": "shutdown_plan_summary_v1",
@@ -11255,7 +9707,7 @@ async fn b076_current_shutdown_missing_required_operation_reference_is_internal(
                         "t0_ms": 1_000,
                         "preparation_cutoff_ms": 14_000,
                         "deadline_ms": 16_000,
-                        "boot_id": "test-boot",
+                        "process_instance_id": "test-boot",
                     })
                     .to_string(),
                 ),
@@ -11289,408 +9741,6 @@ async fn b076_current_shutdown_missing_required_operation_reference_is_internal(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn new_quit_is_rejected_while_a_compacted_plan_still_owns_the_retiring_selector() {
-    let harness = Harness::open();
-    let first_executor = TestShutdownExecutor::with_targets(256, ShutdownExecutorMode::Complete);
-    let first = shutdown_coordinator(&harness, &first_executor);
-    let outcome = first
-        .request(
-            crate::usecase::shutdown_coordinator::ApplicationQuitRequest {
-                principal: "desktop".to_string(),
-                request_id: "quit-before-retiring-cleanup".to_string(),
-                intent: crate::usecase::shutdown_coordinator::ApplicationQuitIntent::Exit {
-                    code: 0,
-                },
-            },
-        )
-        .await
-        .expect("first quit");
-    let crate::usecase::shutdown_coordinator::ApplicationQuitOutcome::Accepted {
-        receipt,
-        state: crate::usecase::shutdown_coordinator::ApplicationQuitState::Completed,
-    } = outcome
-    else {
-        panic!("first quit must complete");
-    };
-    first
-        .compact_shutdown_details(crate::domain::local_event::ShutdownPlanKey {
-            plan_id: receipt.plan_id.clone(),
-            epoch: receipt.epoch,
-        })
-        .await
-        .expect("archive switch");
-
-    let blocked_executor = TestShutdownExecutor::with_targets(1, ShutdownExecutorMode::Complete);
-    let blocked = shutdown_coordinator(&harness, &blocked_executor);
-    let blocked_result = blocked
-        .request(
-            crate::usecase::shutdown_coordinator::ApplicationQuitRequest {
-                principal: "desktop".to_string(),
-                request_id: "quit-during-retiring-cleanup".to_string(),
-                intent: crate::usecase::shutdown_coordinator::ApplicationQuitIntent::Exit {
-                    code: 0,
-                },
-            },
-        )
-        .await;
-    let Err(
-        crate::usecase::shutdown_coordinator::ApplicationQuitError::PreviousShutdownCompactionPending {
-            blocking,
-        },
-    ) = blocked_result
-    else {
-        panic!("retiring plan must be returned as the authoritative blocker");
-    };
-    assert_eq!(blocking.plan.plan_id, receipt.plan_id);
-    assert_eq!(blocking.plan.epoch, receipt.epoch);
-    assert_eq!(
-        blocking.details_state,
-        crate::domain::local_event::ShutdownDetailsState::Compacted
-    );
-    assert!(blocking.actions.is_empty());
-    let public = crate::adaptor::presenter::application_lifecycle::application_quit_failure(
-        crate::usecase::shutdown_coordinator::ApplicationQuitError::PreviousShutdownCompactionPending {
-            blocking: blocking.clone(),
-        },
-    )
-    .expect("blocker is a public outcome");
-    let crate::adaptor::protocol::application_lifecycle_v1::ApplicationQuitOutcomeDtoV1::PreviousShutdownCompactionPending {
-        blocking: public_blocker,
-    } = public else {
-        panic!("wrong public blocker outcome");
-    };
-    assert_eq!(public_blocker.plan_id, receipt.plan_id);
-    assert_eq!(public_blocker.epoch, receipt.epoch.to_string());
-    assert!(public_blocker.actions.is_empty());
-    assert_eq!(
-        blocked_executor
-            .target_queries
-            .load(std::sync::atomic::Ordering::SeqCst),
-        0
-    );
-    assert_eq!(
-        blocked_executor
-            .effects
-            .load(std::sync::atomic::Ordering::SeqCst),
-        0
-    );
-
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            let result = harness
-                .store
-                .query(LocalEventQuery::ShutdownRetiringPlan)
-                .await
-                .expect("retiring selector query");
-            if matches!(result, LocalEventQueryResult::ShutdownRetiringPlan(None)) {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("bounded cleanup clears the selector");
-
-    let accepted = first
-        .request(
-            crate::usecase::shutdown_coordinator::ApplicationQuitRequest {
-                principal: "desktop".to_string(),
-                request_id: "quit-after-retiring-cleanup".to_string(),
-                intent: crate::usecase::shutdown_coordinator::ApplicationQuitIntent::Exit {
-                    code: 0,
-                },
-            },
-        )
-        .await
-        .expect("new quit after cleanup");
-    let crate::usecase::shutdown_coordinator::ApplicationQuitOutcome::Accepted {
-        receipt: accepted_receipt,
-        state: crate::usecase::shutdown_coordinator::ApplicationQuitState::Completed,
-    } = accepted
-    else {
-        panic!("new quit after cleanup must complete");
-    };
-    assert_ne!(accepted_receipt.operation_id, receipt.operation_id);
-}
-
-#[tokio::test]
-async fn archive_switch_reply_loss_resolves_from_the_compacted_archive() {
-    let harness = Harness::open();
-    let executor = TestShutdownExecutor::with_targets(0, ShutdownExecutorMode::Complete);
-    let coordinator = shutdown_coordinator(&harness, &executor);
-    let outcome = coordinator
-        .request(
-            crate::usecase::shutdown_coordinator::ApplicationQuitRequest {
-                principal: "desktop".to_string(),
-                request_id: "quit-before-compaction-reply-loss".to_string(),
-                intent: crate::usecase::shutdown_coordinator::ApplicationQuitIntent::Exit {
-                    code: 0,
-                },
-            },
-        )
-        .await
-        .expect("quit");
-    let crate::usecase::shutdown_coordinator::ApplicationQuitOutcome::Accepted { receipt, .. } =
-        outcome
-    else {
-        panic!("quit must be accepted");
-    };
-    let plan = crate::domain::local_event::ShutdownPlanKey {
-        plan_id: receipt.plan_id,
-        epoch: receipt.epoch,
-    };
-    harness.fault.arm_drop_reply();
-    let compacted = coordinator
-        .compact_shutdown_details(plan.clone())
-        .await
-        .expect("fresh archive readback resolves reply loss");
-    assert_eq!(compacted.details_state, ShutdownDetailsState::Compacted);
-    let page = coordinator
-        .shutdown_plan_page(plan.clone(), 128, None)
-        .await
-        .expect("compacted history");
-    assert_eq!(page.plan.details_state, ShutdownDetailsState::Compacted);
-    assert!(page.targets.is_empty());
-    assert!(page.next_cursor.is_none());
-
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            if matches!(
-                harness
-                    .store
-                    .query(LocalEventQuery::ShutdownRetiringPlan)
-                    .await
-                    .expect("retiring selector"),
-                LocalEventQueryResult::ShutdownRetiringPlan(None)
-            ) {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("bounded cleanup completes");
-    harness
-        .raw_connection()
-        .execute(
-            "DELETE FROM shutdown_plans WHERE plan_id = ?1 AND epoch = ?2",
-            rusqlite::params![plan.plan_id, plan.epoch],
-        )
-        .expect("remove optional compact plan shell");
-    let archive_only = coordinator
-        .shutdown_plan_page(plan, 128, None)
-        .await
-        .expect("archive-only compact history");
-    assert_eq!(archive_only.plan, page.plan);
-    assert!(archive_only.targets.is_empty());
-}
-
-#[tokio::test]
-async fn b096_compaction_fault_restart_is_atomic_monotonic_and_preserves_terminal_summary() {
-    for boundary in [
-        "before_begin",
-        "after_participant_write",
-        "before_commit",
-        "after_commit_before_readback",
-    ] {
-        let harness = Harness::open();
-        let LocalStateMutation::Obligation(mut recovery) =
-            obligation_mutation(&format!("b096-recovery-{boundary}"), true)
-        else {
-            unreachable!("obligation helper always returns an obligation mutation");
-        };
-        let pending = recovery.pending.as_mut().expect("pending recovery entry");
-        pending.owner = format!("b096-closed-{boundary}");
-        pending.partition = PendingPartition::ClosedSession;
-        let mut recovery_seed = batch(
-            &format!("b096-recovery-seed-{boundary}"),
-            &format!("b096-recovery-seed-{boundary}"),
-            [96; 32],
-            vec![],
-            vec![],
-            vec![LocalStateMutation::Obligation(recovery)],
-        );
-        recovery_seed.idempotency.generation_id = harness.store.generation_id().to_string();
-        harness
-            .store
-            .commit_batch(recovery_seed)
-            .await
-            .expect("seed fixed recovery detail");
-
-        let executor = TestShutdownExecutor::with_targets(2, ShutdownExecutorMode::Complete);
-        let coordinator = shutdown_coordinator(&harness, &executor);
-        let outcome = coordinator
-            .request(
-                crate::usecase::shutdown_coordinator::ApplicationQuitRequest {
-                    principal: "desktop".to_string(),
-                    request_id: format!("b096-quit-{boundary}"),
-                    intent: crate::usecase::shutdown_coordinator::ApplicationQuitIntent::Exit {
-                        code: 23,
-                    },
-                },
-            )
-            .await
-            .expect("terminal shutdown before compaction");
-        let crate::usecase::shutdown_coordinator::ApplicationQuitOutcome::Accepted {
-            receipt,
-            state: crate::usecase::shutdown_coordinator::ApplicationQuitState::Completed,
-        } = outcome
-        else {
-            panic!("terminal compaction fixture must complete: {outcome:?}");
-        };
-        let plan = ShutdownPlanKey {
-            plan_id: receipt.plan_id,
-            epoch: receipt.epoch,
-        };
-        let before = coordinator
-            .shutdown_plan_page_read_model(plan.clone(), 128, None)
-            .await
-            .expect("available terminal detail");
-        assert_eq!(before.plan.details_state, ShutdownDetailsState::Available);
-        assert_eq!(before.targets.len(), 2);
-        assert_eq!(before.plan.recovery_snapshot_count, Some(1));
-        let snapshot_id = before
-            .plan
-            .recovery_snapshot_id
-            .clone()
-            .expect("fixed recovery snapshot identity");
-
-        match boundary {
-            "before_begin" => harness.fault.arm_fail_before_begin(),
-            "after_participant_write" => harness.fault.arm_fail_after_participant_write(),
-            "before_commit" => harness.fault.arm_fail_before_commit(),
-            "after_commit_before_readback" => {
-                harness.fault.arm_crash_after_commit_before_readback()
-            }
-            _ => unreachable!(),
-        }
-        let _ = coordinator.compact_shutdown_details(plan.clone()).await;
-        tokio::task::yield_now().await;
-
-        let root = harness.root.clone();
-        let clock = harness.clock.clone();
-        drop(coordinator);
-        drop(executor);
-        let Harness {
-            _dir,
-            root: _,
-            store,
-            clock: _,
-            fault: _,
-        } = harness;
-        drop(store);
-        let reopened = LocalEventStore::open(LocalEventStoreConfig {
-            app_data_root: root,
-            clock: Arc::new(clock),
-            registry: test_registry(),
-            fault: Arc::new(FaultInjector::new()),
-        })
-        .expect("restart canonical shutdown store");
-        let restart_executor =
-            TestShutdownExecutor::with_targets(2, ShutdownExecutorMode::Complete);
-        let repository: Arc<dyn LocalEventTransactionRepository> = reopened.clone();
-        let authority: Arc<
-            dyn crate::usecase::agent_session::operation::OperationBindingAuthority,
-        > = reopened.clone();
-        let restarted = crate::usecase::shutdown_coordinator::ShutdownCoordinator::new(
-            repository,
-            authority,
-            restart_executor.clone(),
-            reopened.generation_id().to_string(),
-            format!("b096-restart-{boundary}"),
-        );
-        let observed = restarted
-            .shutdown_plan_page_read_model(plan.clone(), 128, None)
-            .await
-            .expect("restart sees one complete compaction state");
-        let expected_state = if boundary == "after_commit_before_readback" {
-            ShutdownDetailsState::Compacted
-        } else {
-            ShutdownDetailsState::Available
-        };
-        assert_eq!(observed.plan.details_state, expected_state, "{boundary}");
-        assert_eq!(observed.plan.plan, before.plan.plan);
-        assert_eq!(observed.plan.phase, before.plan.phase);
-        assert_eq!(observed.plan.intent, before.plan.intent);
-        assert_eq!(observed.plan.target_count, before.plan.target_count);
-        assert_eq!(observed.plan.completed_count, before.plan.completed_count);
-        assert_eq!(observed.plan.unresolved_count, before.plan.unresolved_count);
-        assert_eq!(
-            observed.plan.recovery_snapshot_count,
-            before.plan.recovery_snapshot_count
-        );
-        assert_eq!(
-            observed.plan.preparation_cutoff_ms,
-            before.plan.preparation_cutoff_ms
-        );
-        assert_eq!(observed.plan.deadline_ms, before.plan.deadline_ms);
-        assert_eq!(observed.plan.outcome, before.plan.outcome);
-        assert_eq!(observed.plan.safe_failure, before.plan.safe_failure);
-        if expected_state == ShutdownDetailsState::Available {
-            assert_eq!(observed.targets.len(), 2, "no empty Available state");
-            restarted
-                .compact_shutdown_details(plan.clone())
-                .await
-                .expect("retry compaction after pre-commit crash");
-        } else {
-            assert!(observed.targets.is_empty());
-            assert!(observed.next_cursor.is_none());
-        }
-
-        for _ in 0..3 {
-            let compacted = restarted
-                .shutdown_plan_page_read_model(plan.clone(), 128, None)
-                .await
-                .expect("compacted history remains monotonic");
-            assert_eq!(
-                compacted.plan.details_state,
-                ShutdownDetailsState::Compacted
-            );
-            assert!(compacted.targets.is_empty());
-            assert!(compacted.next_cursor.is_none());
-            assert_eq!(compacted.plan.intent, before.plan.intent);
-            assert_eq!(compacted.plan.target_count, before.plan.target_count);
-            assert_eq!(compacted.plan.completed_count, before.plan.completed_count);
-            assert_eq!(
-                compacted.plan.unresolved_count,
-                before.plan.unresolved_count
-            );
-            assert_eq!(
-                compacted.plan.recovery_snapshot_count,
-                before.plan.recovery_snapshot_count
-            );
-        }
-        assert!(matches!(
-            reopened
-                .query(LocalEventQuery::ShutdownTargetByIdentity {
-                    plan: plan.clone(),
-                    ordinal: 0,
-                })
-                .await,
-            Err(LocalEventQueryError::DetailsCompacted)
-        ));
-        assert!(matches!(
-            reopened
-                .query(LocalEventQuery::PendingRecoverySnapshotPage {
-                    plan: plan.clone(),
-                    snapshot_id,
-                    partition: PendingPartition::ClosedSession,
-                    limit: 200,
-                    cursor: None,
-                })
-                .await,
-            Err(LocalEventQueryError::DetailsCompacted)
-        ));
-        assert_eq!(
-            restart_executor
-                .effects
-                .load(std::sync::atomic::Ordering::SeqCst),
-            0
-        );
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn b085_b093_shutdown_action_replays_saved_result_after_compaction_restart_and_resolver_failure(
 ) {
     use crate::domain::agent_session::events::{RecoveryActionKind, RecoveryResultClassification};
@@ -11720,8 +9770,7 @@ async fn b085_b093_shutdown_action_replays_saved_result_after_compaction_restart
         ApplicationQuitState::ReconciliationRequired { .. }
     ));
     let plan = ShutdownPlanKey {
-        plan_id: receipt.plan_id.clone(),
-        epoch: receipt.epoch,
+        shutdown_id: receipt.shutdown_id.clone(),
     };
     let page = coordinator
         .shutdown_plan_page_read_model(plan.clone(), 128, None)
@@ -11811,15 +9860,15 @@ async fn b085_b093_shutdown_action_replays_saved_result_after_compaction_restart
         connection
             .execute(
                 "UPDATE shutdown_targets SET revision = revision + 1
-                 WHERE plan_id = ?1 AND epoch = ?2 AND ordinal = ?3",
-                rusqlite::params![plan.plan_id, plan.epoch, target.ordinal],
+                 WHERE shutdown_id = ?1 AND ordinal = ?2",
+                rusqlite::params![plan.shutdown_id, target.ordinal],
             )
             .expect("advance the current resource after the completed action");
         connection
             .query_row(
                 "SELECT revision FROM shutdown_targets
-                 WHERE plan_id = ?1 AND epoch = ?2 AND ordinal = ?3",
-                rusqlite::params![plan.plan_id, plan.epoch, target.ordinal],
+                 WHERE shutdown_id = ?1 AND ordinal = ?2",
+                rusqlite::params![plan.shutdown_id, target.ordinal],
                 |row| row.get::<_, i64>(0),
             )
             .unwrap()
@@ -11876,7 +9925,7 @@ async fn b085_b093_shutdown_action_replays_saved_result_after_compaction_restart
         repository,
         authority,
         restart_executor.clone(),
-        harness.store.generation_id().to_string(),
+        harness.store.installation_id().to_string(),
         "b093-restarted-boot".to_string(),
     );
     assert!(matches!(
@@ -11925,23 +9974,6 @@ async fn b085_b093_shutdown_action_replays_saved_result_after_compaction_restart
         0
     );
 
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            if matches!(
-                harness
-                    .store
-                    .query(LocalEventQuery::ShutdownRetiringPlan)
-                    .await
-                    .expect("retiring selector"),
-                LocalEventQueryResult::ShutdownRetiringPlan(None)
-            ) {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("bounded detail cleanup");
     let next_executor = TestShutdownExecutor::with_targets(0, ShutdownExecutorMode::Complete);
     let next = shutdown_coordinator(&harness, &next_executor)
         .request(ApplicationQuitRequest {
@@ -11988,8 +10020,7 @@ async fn b085_each_target_action_commits_one_result_and_the_last_action_terminat
         ApplicationQuitState::ReconciliationRequired { .. }
     ));
     let plan = ShutdownPlanKey {
-        plan_id: receipt.plan_id.clone(),
-        epoch: receipt.epoch,
+        shutdown_id: receipt.shutdown_id.clone(),
     };
     let issued = coordinator
         .shutdown_plan_page_read_model(plan.clone(), 128, None)
@@ -12115,8 +10146,7 @@ async fn shutdown_action_rejects_unavailable_tampered_and_stale_capabilities_wit
         panic!("quit must be accepted");
     };
     let plan = ShutdownPlanKey {
-        plan_id: receipt.plan_id,
-        epoch: receipt.epoch,
+        shutdown_id: receipt.shutdown_id,
     };
     let page = coordinator
         .shutdown_plan_page_read_model(plan.clone(), 128, None)
@@ -12133,12 +10163,12 @@ async fn shutdown_action_rejects_unavailable_tampered_and_stale_capabilities_wit
         action: RecoveryActionKind::RetrySameEffect,
     };
     let resource_ref = format!(
-        "shutdown-target:{}:{}:{}:{}",
-        plan.plan_id, plan.epoch, target.ordinal, target.target_key
+        "shutdown-target:{}:{}:{}",
+        plan.shutdown_id, target.ordinal, target.target_key
     );
     let unavailable_id = derive_recovery_action_id(
         harness.store.as_ref(),
-        harness.store.generation_id(),
+        harness.store.installation_id(),
         &resource_ref,
         retry.origin_revision,
         RecoveryActionKind::ReadAgain,
@@ -12185,11 +10215,10 @@ async fn shutdown_action_rejects_unavailable_tampered_and_stale_capabilities_wit
         .raw_connection()
         .execute(
             "UPDATE shutdown_targets SET revision = ?1
-             WHERE plan_id = ?2 AND epoch = ?3 AND ordinal = ?4 AND revision = ?5",
+             WHERE shutdown_id = ?2 AND ordinal = ?3 AND revision = ?4",
             rusqlite::params![
                 stale_revision.value(),
-                plan.plan_id,
-                plan.epoch,
+                plan.shutdown_id,
                 target.ordinal,
                 point.revision.value()
             ],
@@ -12245,8 +10274,7 @@ async fn shutdown_action_revision_change_after_reservation_rejects_before_effect
         panic!("quit must be accepted");
     };
     let plan = ShutdownPlanKey {
-        plan_id: receipt.plan_id,
-        epoch: receipt.epoch,
+        shutdown_id: receipt.shutdown_id,
     };
     let page = coordinator
         .shutdown_plan_page_read_model(plan.clone(), 128, None)
@@ -12295,11 +10323,10 @@ async fn shutdown_action_revision_change_after_reservation_rejects_before_effect
                     .expect("open external race fixture connection")
                     .execute(
                         "UPDATE shutdown_targets SET revision = ?1
-                         WHERE plan_id = ?2 AND epoch = ?3 AND ordinal = ?4 AND revision = ?5",
+                         WHERE shutdown_id = ?2 AND ordinal = ?3 AND revision = ?4",
                         rusqlite::params![
                             next_revision.value(),
-                            plan.plan_id,
-                            plan.epoch,
+                            plan.shutdown_id,
                             target.ordinal,
                             point.revision.value()
                         ],
@@ -12627,7 +10654,7 @@ fn sqlite_permission_usecase(
         repository,
         authority,
         gate,
-        store.generation_id().to_string(),
+        store.installation_id().to_string(),
     )
 }
 
@@ -12640,7 +10667,7 @@ enum ExpectedSqlitePermissionState {
 
 async fn assert_sqlite_permission_state(
     store: &Arc<LocalEventStore>,
-    generation_id: &str,
+    installation_id: &str,
     request: &SqlitePermissionResponseOperationRequest,
     expected: ExpectedSqlitePermissionState,
 ) {
@@ -12656,7 +10683,7 @@ async fn assert_sqlite_permission_state(
         .query(LocalEventQuery::OperationBindingByIdentity {
             key: CallerOperationKey {
                 principal: request.principal.clone(),
-                generation_id: generation_id.to_string(),
+                installation_id: installation_id.to_string(),
                 kind: OperationKind::PermissionResponse,
                 caller_request_id: request.operation_id.clone(),
             },
@@ -12843,6 +10870,9 @@ fn reopen_permission_store(
         clock: Arc::new(clock),
         registry: Arc::new(EventCodecRegistry::new()),
         fault: Arc::clone(&fault),
+        path_observer: Arc::new(
+            crate::adaptor::gateway::local_event_store::layout::NoopStorePathObserver,
+        ),
     })
     .expect("physically reopen permission store");
     (_dir, reopened, fault)
@@ -12862,7 +10892,7 @@ async fn b015_permission_response_real_sqlite_acceptance_faults_are_atomic_and_s
     for acceptance_fault in faults {
         let label = acceptance_fault.label();
         let harness = Harness::open();
-        let generation_id = harness.store.generation_id().to_string();
+        let installation_id = harness.store.installation_id().to_string();
         let response = sqlite_permission_response(&format!("permission-request-{label}"));
         let request = sqlite_permission_request(&format!("permission-operation-{label}"), response);
         let gate = SqlitePermissionGate::normal();
@@ -12888,7 +10918,7 @@ async fn b015_permission_response_real_sqlite_acceptance_faults_are_atomic_and_s
             );
             assert_sqlite_permission_state(
                 &harness.store,
-                &generation_id,
+                &installation_id,
                 &request,
                 ExpectedSqlitePermissionState::AcceptedPending,
             )
@@ -12903,7 +10933,7 @@ async fn b015_permission_response_real_sqlite_acceptance_faults_are_atomic_and_s
             );
             assert_sqlite_permission_state(
                 &harness.store,
-                &generation_id,
+                &installation_id,
                 &request,
                 ExpectedSqlitePermissionState::Absent,
             )
@@ -12914,7 +10944,7 @@ async fn b015_permission_response_real_sqlite_acceptance_faults_are_atomic_and_s
         let (_dir, reopened, _restart_fault) = reopen_permission_store(harness);
         assert_sqlite_permission_state(
             &reopened,
-            &generation_id,
+            &installation_id,
             &request,
             if acceptance_fault.committed() {
                 ExpectedSqlitePermissionState::AcceptedPending
@@ -12956,7 +10986,7 @@ async fn b015_permission_response_real_sqlite_acceptance_faults_are_atomic_and_s
         );
         assert_sqlite_permission_state(
             &reopened,
-            &generation_id,
+            &installation_id,
             &request,
             ExpectedSqlitePermissionState::Completed,
         )
@@ -12983,7 +11013,7 @@ async fn b015_permission_response_real_sqlite_acceptance_faults_are_atomic_and_s
 async fn b015_permission_response_completion_post_commit_crash_reopens_exact_result_without_blind_replay(
 ) {
     let harness = Harness::open();
-    let generation_id = harness.store.generation_id().to_string();
+    let installation_id = harness.store.installation_id().to_string();
     let response = sqlite_permission_response("permission-request-completion-crash");
     let request =
         sqlite_permission_request("permission-operation-completion-crash", response.clone());
@@ -13016,7 +11046,7 @@ async fn b015_permission_response_completion_post_commit_crash_reopens_exact_res
 
     assert_sqlite_permission_state(
         &harness.store,
-        &generation_id,
+        &installation_id,
         &request,
         ExpectedSqlitePermissionState::Completed,
     )
@@ -13025,7 +11055,7 @@ async fn b015_permission_response_completion_post_commit_crash_reopens_exact_res
     let (_dir, reopened, _restart_fault) = reopen_permission_store(harness);
     assert_sqlite_permission_state(
         &reopened,
-        &generation_id,
+        &installation_id,
         &request,
         ExpectedSqlitePermissionState::Completed,
     )
@@ -13217,6 +11247,9 @@ fn f06_reopen_after_database_update(
         clock: Arc::new(clock),
         registry: test_registry(),
         fault: Arc::new(FaultInjector::new()),
+        path_observer: Arc::new(
+            crate::adaptor::gateway::local_event_store::layout::NoopStorePathObserver,
+        ),
     })
     .expect("physically reopen store");
 
@@ -13355,15 +11388,15 @@ async fn f05_send_read_again_uses_durable_terminal_winner_after_restart() {
     };
 
     let harness = Harness::open();
-    let generation_id = harness.store.generation_id().to_string();
+    let installation_id = harness.store.installation_id().to_string();
     let session_id = "f05-production-send-session";
     let operation_id = "f05-production-send-operation";
     let execution_obligation_id = format!("{operation_id}.exec");
     let session_store = Arc::new(SessionStore::new(Arc::new(FileSessionStorage::default())));
     let repository: Arc<dyn LocalEventTransactionRepository> = harness.store.clone();
-    session_store.set_local_event_repository_with_projection_codec(
+    session_store.set_local_event_repository(
         repository,
-        harness.store.generation_id().to_string(),
+        harness.store.installation_id().to_string(),
         Arc::new(AgentSessionProjectionCodecV1),
     );
     let session = build_new_session_with_id(
@@ -13377,7 +11410,7 @@ async fn f05_send_read_again_uses_durable_terminal_winner_after_restart() {
         None,
     );
     session_store
-        .save_full_session_for_migration_or_restore(&harness.root, &session)
+        .save_full_session_for_restore(&harness.root, &session)
         .expect("seed production session projection");
     let gate = Arc::new(PerformanceSendGate {
         session_store: Arc::clone(&session_store),
@@ -13389,7 +11422,7 @@ async fn f05_send_read_again_uses_durable_terminal_winner_after_restart() {
         harness.store.clone(),
         harness.store.clone(),
         gate.clone(),
-        harness.store.generation_id().to_string(),
+        harness.store.installation_id().to_string(),
     );
 
     let accepted = usecase
@@ -13439,7 +11472,7 @@ async fn f05_send_read_again_uses_durable_terminal_winner_after_restart() {
             participant_digest: [5; 32],
         })],
     );
-    terminal_batch.idempotency.generation_id = harness.store.generation_id().to_string();
+    terminal_batch.idempotency.installation_id = harness.store.installation_id().to_string();
     terminal_batch.idempotency.operation_kind = CommitOperationKind::Recovery;
     harness
         .store
@@ -13460,7 +11493,7 @@ async fn f05_send_read_again_uses_durable_terminal_winner_after_restart() {
         planned: std::sync::atomic::AtomicUsize::new(0),
     });
     let readback =
-        AgentSendOperationUsecase::new(reopened.clone(), reopened, readback_gate, generation_id);
+        AgentSendOperationUsecase::new(reopened.clone(), reopened, readback_gate, installation_id);
 
     let result = SendRecoveryReadbackPort::read_send(
         &readback,
@@ -13494,4 +11527,2152 @@ async fn f05_send_read_again_uses_durable_terminal_winner_after_restart() {
             .any(|mutation| matches!(mutation, LocalStateMutation::Obligation(_))),
         "readback must atomically close the send obligation"
     );
+}
+
+#[derive(Default)]
+struct RecordingStorePathObserver {
+    operations: std::sync::Mutex<
+        Vec<(
+            crate::adaptor::gateway::local_event_store::layout::StorePathOperation,
+            std::path::PathBuf,
+        )>,
+    >,
+}
+
+impl crate::adaptor::gateway::local_event_store::layout::StorePathObserver
+    for RecordingStorePathObserver
+{
+    fn observe(
+        &self,
+        operation: crate::adaptor::gateway::local_event_store::layout::StorePathOperation,
+        path: &std::path::Path,
+    ) {
+        self.operations
+            .lock()
+            .expect("path observation lock")
+            .push((operation, path.to_path_buf()));
+    }
+}
+
+struct FixedLayoutStartupObserver {
+    source_root: std::path::PathBuf,
+    source_store_bytes: Vec<Vec<u8>>,
+    operations: std::sync::Mutex<
+        Vec<(
+            crate::adaptor::gateway::local_event_store::layout::StorePathOperation,
+            std::path::PathBuf,
+        )>,
+    >,
+    preexisting_temp_entries: std::collections::HashSet<std::path::PathBuf>,
+    discovered_external_store_copies: std::sync::Mutex<Vec<std::path::PathBuf>>,
+}
+
+impl FixedLayoutStartupObserver {
+    fn new(source_root: &std::path::Path) -> Self {
+        let source_layout = StoreLayout::new(source_root);
+        let source_database = source_layout.database_path();
+        let source_wal = std::path::PathBuf::from(format!("{}-wal", source_database.display()));
+        let source_store_bytes = [source_database, source_wal]
+            .into_iter()
+            .filter_map(|path| std::fs::read(path).ok())
+            .filter(|bytes| !bytes.is_empty())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            source_store_bytes.len(),
+            2,
+            "the fixed-layout oracle requires non-empty DB and WAL source snapshots"
+        );
+        Self {
+            source_root: source_root.to_path_buf(),
+            source_store_bytes,
+            operations: std::sync::Mutex::new(Vec::new()),
+            preexisting_temp_entries: Self::temp_entries().into_iter().collect(),
+            discovered_external_store_copies: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn temp_entries() -> Vec<std::path::PathBuf> {
+        let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+            return Vec::new();
+        };
+        entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .collect()
+    }
+
+    fn capture_copy_destinations(&self) {
+        let mut discovered = self
+            .discovered_external_store_copies
+            .lock()
+            .expect("external-store-copy observation lock");
+        for entry in Self::temp_entries() {
+            if self.preexisting_temp_entries.contains(&entry)
+                || entry.starts_with(&self.source_root)
+            {
+                continue;
+            }
+            let candidates = if entry.is_dir() {
+                std::fs::read_dir(&entry)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Result::ok)
+                    .map(|child| child.path())
+                    .collect::<Vec<_>>()
+            } else {
+                vec![entry]
+            };
+            for candidate in candidates {
+                let Ok(bytes) = std::fs::read(&candidate) else {
+                    continue;
+                };
+                if self
+                    .source_store_bytes
+                    .iter()
+                    .any(|source| source == &bytes)
+                    && !discovered.contains(&candidate)
+                {
+                    discovered.push(candidate);
+                }
+            }
+        }
+    }
+
+    fn assert_fixed_layout_only(&self, root: &std::path::Path) {
+        self.capture_copy_destinations();
+        let layout = StoreLayout::new(root);
+        let database = layout.database_path();
+        let allowed = [
+            root.to_path_buf(),
+            database.clone(),
+            std::path::PathBuf::from(format!("{}-wal", database.display())),
+            std::path::PathBuf::from(format!("{}-shm", database.display())),
+            layout.writer_lock_path(),
+            layout.initial_create_evidence_path(),
+        ];
+        let operations = self
+            .operations
+            .lock()
+            .expect("startup path observation lock");
+        assert!(
+            operations.iter().all(|(_, path)| allowed.contains(path)),
+            "startup observed a path outside the fixed store layout: {operations:?}"
+        );
+        assert!(
+            operations.iter().any(|(_, path)| path == &database),
+            "the acceptance oracle did not observe the fixed database source"
+        );
+        let wal = std::path::PathBuf::from(format!("{}-wal", database.display()));
+        for expected_operation in [
+            crate::adaptor::gateway::local_event_store::layout::StorePathOperation::Metadata,
+            crate::adaptor::gateway::local_event_store::layout::StorePathOperation::Open,
+            crate::adaptor::gateway::local_event_store::layout::StorePathOperation::Read,
+        ] {
+            assert!(
+                operations
+                    .iter()
+                    .any(|(operation, path)| *operation == expected_operation && path == &wal),
+                "the acceptance oracle did not observe {expected_operation:?} on the fixed WAL source"
+            );
+        }
+        let discovered = self
+            .discovered_external_store_copies
+            .lock()
+            .expect("external-store-copy observation lock");
+        assert!(
+            discovered.is_empty(),
+            "startup created or referenced a database copy outside the fixed layout: {discovered:?}"
+        );
+    }
+}
+
+impl crate::adaptor::gateway::local_event_store::layout::StorePathObserver
+    for FixedLayoutStartupObserver
+{
+    fn observe(
+        &self,
+        operation: crate::adaptor::gateway::local_event_store::layout::StorePathOperation,
+        path: &std::path::Path,
+    ) {
+        self.operations
+            .lock()
+            .expect("startup path observation lock")
+            .push((operation, path.to_path_buf()));
+        // The former inspection implementation did not report its copy
+        // destination through the path port. Scan at every observed source
+        // operation so both sides of a transient DB/WAL copy are in the
+        // acceptance oracle even when the destination is removed before
+        // startup returns.
+        self.capture_copy_destinations();
+    }
+}
+
+fn acceptance_store_config(
+    root: &std::path::Path,
+    fault: Arc<FaultInjector>,
+    observer: Arc<dyn crate::adaptor::gateway::local_event_store::layout::StorePathObserver>,
+) -> LocalEventStoreConfig {
+    LocalEventStoreConfig {
+        app_data_root: root.to_path_buf(),
+        clock: Arc::new(FakeStoreClock::at(1_000)),
+        registry: test_registry(),
+        fault,
+        path_observer: observer,
+    }
+}
+
+fn noop_path_observer(
+) -> Arc<dyn crate::adaptor::gateway::local_event_store::layout::StorePathObserver> {
+    Arc::new(crate::adaptor::gateway::local_event_store::layout::NoopStorePathObserver)
+}
+
+fn leave_nonempty_wal(root: &std::path::Path, update: &str) -> std::path::PathBuf {
+    let database = StoreLayout::new(root).database_path();
+    let connection = rusqlite::Connection::open(&database).expect("open non-empty WAL fixture");
+    connection
+        .set_db_config(
+            rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
+            true,
+        )
+        .expect("preserve committed WAL after fixture connection close");
+    connection
+        .execute_batch("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0;")
+        .expect("configure non-empty WAL fixture");
+    connection
+        .execute_batch(update)
+        .expect("append a committed frame to the fixture WAL");
+    let wal = std::path::PathBuf::from(format!("{}-wal", database.display()));
+    drop(connection);
+    assert!(
+        std::fs::metadata(&wal)
+            .expect("non-empty fixture WAL")
+            .len()
+            > 0,
+        "the startup fixture must exercise a non-empty WAL"
+    );
+    assert!(
+        std::path::PathBuf::from(format!("{}-shm", database.display())).is_file(),
+        "the startup fixture must contain SQLite's fixed SHM sidecar"
+    );
+    wal
+}
+
+fn fixed_store_files(root: &std::path::Path) -> Vec<(String, Option<Vec<u8>>)> {
+    let database = StoreLayout::new(root).database_path();
+    [
+        database.clone(),
+        std::path::PathBuf::from(format!("{}-wal", database.display())),
+        std::path::PathBuf::from(format!("{}-shm", database.display())),
+    ]
+    .into_iter()
+    .map(|path| {
+        (
+            path.file_name()
+                .expect("fixed store file name")
+                .to_string_lossy()
+                .into_owned(),
+            std::fs::read(path).ok(),
+        )
+    })
+    .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InitialCreateArtifactSnapshot {
+    database: Option<Vec<u8>>,
+    wal: Option<Vec<u8>>,
+    shm: Option<Vec<u8>>,
+    evidence: Option<Vec<u8>>,
+}
+
+fn read_optional_artifact(path: &std::path::Path) -> Option<Vec<u8>> {
+    match std::fs::read(path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => panic!("read initial-create artifact {}: {error}", path.display()),
+    }
+}
+
+fn initial_create_artifacts(root: &std::path::Path) -> InitialCreateArtifactSnapshot {
+    let layout = StoreLayout::new(root);
+    let database = layout.database_path();
+    InitialCreateArtifactSnapshot {
+        database: read_optional_artifact(&database),
+        wal: read_optional_artifact(&std::path::PathBuf::from(format!(
+            "{}-wal",
+            database.display()
+        ))),
+        shm: read_optional_artifact(&std::path::PathBuf::from(format!(
+            "{}-shm",
+            database.display()
+        ))),
+        evidence: read_optional_artifact(&layout.initial_create_evidence_path()),
+    }
+}
+
+fn metadata_identity_and_keys_from_artifacts(
+    artifacts: &InitialCreateArtifactSnapshot,
+) -> Option<(String, Vec<u8>, Vec<u8>)> {
+    let database_bytes = artifacts.database.as_ref()?;
+    let snapshot_root = tempfile::tempdir().expect("create crash-artifact inspection root");
+    let layout = StoreLayout::new(snapshot_root.path());
+    let database = layout.database_path();
+    std::fs::write(&database, database_bytes).expect("copy crash-artifact database");
+    if let Some(wal) = &artifacts.wal {
+        std::fs::write(
+            std::path::PathBuf::from(format!("{}-wal", database.display())),
+            wal,
+        )
+        .expect("copy crash-artifact WAL");
+    }
+    // Do not copy SHM. SQLite rebuilds it against the private DB+WAL snapshot,
+    // so inspecting the crash oracle cannot mutate the original sidecars.
+    let connection =
+        rusqlite::Connection::open(&database).expect("open private crash-artifact snapshot");
+    let metadata_exists: bool = connection
+        .query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM sqlite_schema
+                 WHERE type = 'table' AND name = 'store_metadata'
+             )",
+            [],
+            |row| row.get(0),
+        )
+        .expect("inspect private crash-artifact metadata table");
+    metadata_exists.then(|| {
+        connection
+            .query_row(
+                "SELECT installation_id, cursor_hmac_key, operation_binding_hmac_key
+                 FROM store_metadata WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read private crash-artifact metadata")
+    })
+}
+
+fn metadata_identity_and_keys(root: &std::path::Path) -> (String, Vec<u8>, Vec<u8>) {
+    rusqlite::Connection::open(StoreLayout::new(root).database_path())
+        .expect("open fixed store metadata")
+        .query_row(
+            "SELECT installation_id, cursor_hmac_key, operation_binding_hmac_key
+             FROM store_metadata WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("read fixed store metadata")
+}
+
+const B071_CRASH_CHILD_TEST: &str =
+    "adaptor::gateway::local_event_store::tests::b071_initial_create_abrupt_crash_child";
+const B071_CRASH_ROOT_ENV: &str = "RELEASH_TEST_B071_INITIAL_CREATE_CRASH_ROOT";
+const B071_CRASH_BOUNDARY_ENV: &str = "RELEASH_TEST_B071_INITIAL_CREATE_CRASH_BOUNDARY";
+const B071_CHILD_INSTALLATION_ID: &str = "71717171-7171-4171-8171-717171717171";
+const B071_RESTART_INSTALLATION_ID: &str = "72727272-7272-4272-8272-727272727272";
+
+fn initial_create_fault_boundaries(
+) -> [crate::adaptor::gateway::local_event_store::fault::InitialCreateFaultPoint; 10] {
+    use crate::adaptor::gateway::local_event_store::fault::InitialCreateFaultPoint as P;
+    [
+        P::BeforeEvidenceCreate,
+        P::AfterPartialEvidenceWrite,
+        P::AfterEvidenceFileSync,
+        P::AfterEvidenceDirectorySync,
+        P::AfterSqliteFileCreate,
+        P::BeforeInitializationCommit,
+        P::AfterInitializationCommitReplyLoss,
+        P::AfterDatabaseSync,
+        P::BeforeEvidenceUnlink,
+        P::AfterEvidenceUnlink,
+    ]
+}
+
+fn initial_create_fault_boundary_name(
+    point: crate::adaptor::gateway::local_event_store::fault::InitialCreateFaultPoint,
+) -> &'static str {
+    use crate::adaptor::gateway::local_event_store::fault::InitialCreateFaultPoint as P;
+    match point {
+        P::BeforeEvidenceCreate => "before-evidence-create",
+        P::AfterPartialEvidenceWrite => "after-partial-evidence-write",
+        P::AfterEvidenceFileSync => "after-evidence-file-sync",
+        P::AfterEvidenceDirectorySync => "after-evidence-directory-sync",
+        P::AfterSqliteFileCreate => "after-sqlite-file-create",
+        P::BeforeInitializationCommit => "before-initialization-commit",
+        P::AfterInitializationCommitReplyLoss => "after-initialization-commit",
+        P::AfterDatabaseSync => "after-database-sync",
+        P::BeforeEvidenceUnlink => "before-evidence-unlink",
+        P::AfterEvidenceUnlink => "after-evidence-unlink",
+    }
+}
+
+fn parse_initial_create_fault_boundary(
+    name: &str,
+) -> crate::adaptor::gateway::local_event_store::fault::InitialCreateFaultPoint {
+    initial_create_fault_boundaries()
+        .into_iter()
+        .find(|point| initial_create_fault_boundary_name(*point) == name)
+        .unwrap_or_else(|| panic!("unknown B-071 initial-create crash boundary {name:?}"))
+}
+
+fn initial_create_boundary_has_committed_metadata(
+    point: crate::adaptor::gateway::local_event_store::fault::InitialCreateFaultPoint,
+) -> bool {
+    use crate::adaptor::gateway::local_event_store::fault::InitialCreateFaultPoint as P;
+    matches!(
+        point,
+        P::AfterInitializationCommitReplyLoss
+            | P::AfterDatabaseSync
+            | P::BeforeEvidenceUnlink
+            | P::AfterEvidenceUnlink
+    )
+}
+
+fn initial_create_boundary_evidence_state(
+    point: crate::adaptor::gateway::local_event_store::fault::InitialCreateFaultPoint,
+) -> crate::adaptor::gateway::local_event_store::layout::InitialCreateEvidenceState {
+    use crate::adaptor::gateway::local_event_store::fault::InitialCreateFaultPoint as P;
+    use crate::adaptor::gateway::local_event_store::layout::InitialCreateEvidenceState as E;
+    match point {
+        P::BeforeEvidenceCreate | P::AfterEvidenceUnlink => E::Absent,
+        P::AfterPartialEvidenceWrite => E::Invalid,
+        P::AfterEvidenceFileSync
+        | P::AfterEvidenceDirectorySync
+        | P::AfterSqliteFileCreate
+        | P::BeforeInitializationCommit
+        | P::AfterInitializationCommitReplyLoss
+        | P::AfterDatabaseSync
+        | P::BeforeEvidenceUnlink => E::Valid,
+    }
+}
+
+fn initial_create_boundary_has_database(
+    point: crate::adaptor::gateway::local_event_store::fault::InitialCreateFaultPoint,
+) -> bool {
+    use crate::adaptor::gateway::local_event_store::fault::InitialCreateFaultPoint as P;
+    !matches!(
+        point,
+        P::BeforeEvidenceCreate
+            | P::AfterPartialEvidenceWrite
+            | P::AfterEvidenceFileSync
+            | P::AfterEvidenceDirectorySync
+    )
+}
+
+fn fault_with_initial_installation_id(installation_id: &str) -> Arc<FaultInjector> {
+    let fault = Arc::new(FaultInjector::new());
+    fault.set_initial_installation_id(installation_id);
+    fault
+}
+
+#[tokio::test]
+async fn b070_production_sqlite_lifecycle_never_references_legacy_file_store_paths() {
+    let directory = tempfile::tempdir().expect("B-070 app data");
+    let root = directory.path();
+    let directory_roots = [
+        "sessions",
+        "workflow_runs",
+        "workflow_logs",
+        "workflow_execution_logs",
+        "workflow_executions",
+        "workflow_event_logs",
+    ];
+    let sentinel = b"\0invalid legacy bytes\nB-070 sentinel";
+    for legacy in directory_roots {
+        let path = root.join(legacy);
+        std::fs::create_dir(&path).expect("create legacy sentinel directory");
+        std::fs::write(path.join("sentinel.invalid"), sentinel).expect("write legacy sentinel");
+    }
+    std::fs::write(root.join("session_titles.json"), sentinel)
+        .expect("write legacy title sentinel");
+    let before = [
+        "sessions/sentinel.invalid",
+        "session_titles.json",
+        "workflow_runs/sentinel.invalid",
+        "workflow_logs/sentinel.invalid",
+        "workflow_execution_logs/sentinel.invalid",
+        "workflow_executions/sentinel.invalid",
+        "workflow_event_logs/sentinel.invalid",
+    ]
+    .into_iter()
+    .map(|relative| {
+        let path = root.join(relative);
+        (
+            relative,
+            std::fs::read(&path).expect("read initial sentinel"),
+            std::fs::metadata(&path)
+                .expect("read initial sentinel metadata")
+                .len(),
+        )
+    })
+    .collect::<Vec<_>>();
+
+    let observer = Arc::new(RecordingStorePathObserver::default());
+    let store = LocalEventStore::open(acceptance_store_config(
+        root,
+        Arc::new(FaultInjector::new()),
+        observer.clone(),
+    ))
+    .expect("B-070 cold startup");
+    let repository: Arc<dyn LocalEventTransactionRepository> = store.clone();
+    let session_store = Arc::new(SessionStore::new_canonical(
+        repository,
+        store.installation_id().to_string(),
+        Arc::new(AgentSessionProjectionCodecV1),
+    ));
+    let session = build_new_session_with_id(
+        "b070-session".to_string(),
+        "/b070-worktree",
+        Some("codex".to_string()),
+        crate::domain::agent_session::PermissionMode::Ask,
+        None,
+        false,
+        false,
+        None,
+    );
+    session_store
+        .save_full_session_from_user(root, &session)
+        .expect("B-070 normal production session mutation");
+    assert_eq!(
+        session_store
+            .get_session_meta(root, "b070-session")
+            .expect("B-070 canonical query")
+            .expect("B-070 stored session")
+            .id,
+        "b070-session"
+    );
+    let send_gate = Arc::new(PerformanceSendGate {
+        session_store: session_store.clone(),
+        session_id: "b070-session".to_string(),
+        effects: std::sync::atomic::AtomicUsize::new(0),
+        planned: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let send_usecase = crate::usecase::agent_session::operation::AgentSendOperationUsecase::new(
+        store.clone(),
+        store.clone(),
+        send_gate.clone(),
+        store.installation_id().to_string(),
+    );
+    let send = send_usecase
+        .send(
+            crate::usecase::agent_session::operation::SendOperationRequest {
+                principal: "desktop".to_string(),
+                operation_id: "b070-send".to_string(),
+                canonical_payload: "{\"content\":\"B-070 production send\"}".to_string(),
+            },
+        )
+        .await
+        .expect("B-070 normal production send");
+    assert!(matches!(
+        send,
+        crate::usecase::agent_session::operation::SendCommandOutcome::Accepted(_)
+    ));
+    send_usecase
+        .get_operation("desktop", "b070-send")
+        .await
+        .expect("B-070 production send query");
+    assert_eq!(
+        send_gate.effects.load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    let feedback_maintenance = crate::usecase::agent_session::feedback::SessionFeedbackUsecase::new(
+        store.clone(),
+        store.installation_id().to_string(),
+    );
+    assert_eq!(
+        feedback_maintenance
+            .recover_abandoned_reservations()
+            .await
+            .expect("B-070 idle feedback maintenance"),
+        0
+    );
+    let cleanup = crate::infrastructure::process::pid_registry::cleanup_orphan_processes(root);
+    assert_eq!(cleanup.failures, 0);
+    session_store
+        .remove_session_for_rollback(root, "b070-session")
+        .expect("B-070 canonical session cleanup");
+
+    let shutdown = ShutdownPlanKey {
+        shutdown_id: "b070-shutdown".to_string(),
+    };
+    let mut install_shutdown = batch(
+        "b070-shutdown-commit",
+        "b070-shutdown-key",
+        [71; 32],
+        Vec::new(),
+        Vec::new(),
+        vec![
+            LocalStateMutation::ShutdownPlan(ShutdownPlanMutation {
+                key: shutdown.clone(),
+                phase: ApplicationShutdownPhase::Prepared,
+                summary: shutdown_plan_fixture("b070-quit"),
+                details_state: ShutdownDetailsState::Available,
+                expected: RevisionGuard::Absent,
+                revision: Revision::new(0).unwrap(),
+            }),
+            LocalStateMutation::ShutdownLatestPointer(ShutdownLatestPointerMutation {
+                expected: None,
+                new: Some(shutdown),
+            }),
+        ],
+    );
+    install_shutdown.idempotency.installation_id = store.installation_id().to_string();
+    install_shutdown.idempotency.operation_kind = CommitOperationKind::ApplicationQuit;
+    store
+        .commit_batch(install_shutdown)
+        .await
+        .expect("B-070 graceful shutdown persistence");
+    drop(feedback_maintenance);
+    drop(send_usecase);
+    drop(send_gate);
+    drop(session_store);
+    drop(store);
+    let reopened = LocalEventStore::open(acceptance_store_config(
+        root,
+        Arc::new(FaultInjector::new()),
+        observer.clone(),
+    ))
+    .expect("B-070 restart");
+    assert!(matches!(
+        reopened.query(LocalEventQuery::CurrentShutdown).await,
+        Ok(LocalEventQueryResult::CurrentShutdown(Some(_)))
+    ));
+    drop(reopened);
+
+    let legacy_paths = [
+        root.join("sessions"),
+        root.join("session_titles.json"),
+        root.join("workflow_runs"),
+        root.join("workflow_logs"),
+        root.join("workflow_execution_logs"),
+        root.join("workflow_executions"),
+        root.join("workflow_event_logs"),
+    ];
+    let observed = observer.operations.lock().expect("path observations");
+    assert!(
+        observed.iter().all(|(_, path)| {
+            legacy_paths
+                .iter()
+                .all(|legacy| path != legacy && !path.starts_with(legacy))
+        }),
+        "production fixed-store lifecycle accessed a legacy path: {observed:?}"
+    );
+    for (relative, bytes, length) in before {
+        let path = root.join(relative);
+        assert_eq!(std::fs::read(&path).expect("read final sentinel"), bytes);
+        assert_eq!(
+            std::fs::metadata(path)
+                .expect("read final sentinel metadata")
+                .len(),
+            length
+        );
+    }
+}
+
+#[test]
+fn b071_initial_create_cases_a_b_and_c_converge_without_replacing_ready_identity() {
+    let case_a = tempfile::tempdir().expect("B-071 Case A app data");
+    let root = case_a.path();
+    let layout = StoreLayout::new(root);
+
+    std::fs::write(layout.initial_create_evidence_path(), b"partial")
+        .expect("write partial evidence");
+    let store = LocalEventStore::open(acceptance_store_config(
+        root,
+        Arc::new(FaultInjector::new()),
+        noop_path_observer(),
+    ))
+    .expect("Case A repairs evidence only while database is absent");
+    drop(store);
+    assert!(!layout.initial_create_evidence_path().exists());
+
+    let case_b = tempfile::tempdir().expect("B-071 Case B app data");
+    let case_b_layout = StoreLayout::new(case_b.path());
+    crate::adaptor::gateway::local_event_store::layout::create_initial_create_evidence(
+        &case_b_layout,
+    )
+    .expect("create valid evidence");
+    std::fs::write(case_b_layout.database_path(), []).expect("create zero-byte residue");
+    let store = LocalEventStore::open(acceptance_store_config(
+        case_b.path(),
+        Arc::new(FaultInjector::new()),
+        noop_path_observer(),
+    ))
+    .expect("Case B retries a proven zero-byte first-create residue");
+    let after_residue = metadata_identity_and_keys(case_b.path());
+    drop(store);
+
+    crate::adaptor::gateway::local_event_store::layout::create_initial_create_evidence(
+        &case_b_layout,
+    )
+    .expect("create stale valid evidence");
+    let reopened = LocalEventStore::open(acceptance_store_config(
+        case_b.path(),
+        Arc::new(FaultInjector::new()),
+        noop_path_observer(),
+    ))
+    .expect("Case C opens the ready store");
+    assert_eq!(metadata_identity_and_keys(case_b.path()), after_residue);
+    assert_eq!(reopened.installation_id(), after_residue.0);
+    assert!(!case_b_layout.initial_create_evidence_path().exists());
+}
+
+#[test]
+fn b071_valid_evidence_does_not_authorize_deleting_an_unrelated_user_table() {
+    let directory = tempfile::tempdir().expect("B-071 unrelated-table app data");
+    let root = directory.path();
+    let layout = StoreLayout::new(root);
+    crate::adaptor::gateway::local_event_store::layout::create_initial_create_evidence(&layout)
+        .expect("create valid evidence");
+    rusqlite::Connection::open(layout.database_path())
+        .expect("create tableless SQLite")
+        .execute_batch("CREATE TABLE unrelated(value TEXT);")
+        .expect("create unrelated user table");
+    let before = fixed_store_files(root);
+    let evidence_before =
+        std::fs::read(layout.initial_create_evidence_path()).expect("read valid evidence");
+
+    assert!(matches!(
+        LocalEventStore::open(acceptance_store_config(
+            root,
+            Arc::new(FaultInjector::new()),
+            noop_path_observer(),
+        )),
+        Err(super::store::LocalEventStoreOpenError::InitializationStateInvalid)
+    ));
+    assert_eq!(fixed_store_files(root), before);
+    assert_eq!(
+        std::fs::read(layout.initial_create_evidence_path()).expect("evidence must remain"),
+        evidence_before
+    );
+}
+
+#[test]
+fn b071_evidenced_database_with_an_application_table_is_not_initial_create_residue() {
+    let directory = tempfile::tempdir().expect("B-071 application-table app data");
+    let root = directory.path();
+    let layout = StoreLayout::new(root);
+    crate::adaptor::gateway::local_event_store::layout::create_initial_create_evidence(&layout)
+        .expect("create valid initial-create evidence");
+    let fixture_connection = rusqlite::Connection::open(layout.database_path())
+        .expect("create incomplete application SQLite");
+    fixture_connection
+        .set_db_config(
+            rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
+            true,
+        )
+        .expect("preserve application-table WAL after fixture close");
+    fixture_connection
+        .execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA wal_autocheckpoint = 0;
+             CREATE TABLE events (
+                 global_sequence INTEGER PRIMARY KEY,
+                 payload BLOB NOT NULL
+             );
+             INSERT INTO events(global_sequence, payload) VALUES (1, X'01020304');",
+        )
+        .expect("leave an application table in an uncheckpointed WAL");
+    drop(fixture_connection);
+    let before = fixed_store_files(root);
+    assert!(
+        before.iter().all(|(_, bytes)| bytes.is_some()),
+        "the strong fixture must contain the database, WAL, and SHM"
+    );
+    let evidence_before =
+        std::fs::read(layout.initial_create_evidence_path()).expect("read valid evidence");
+
+    assert!(matches!(
+        LocalEventStore::open(acceptance_store_config(
+            root,
+            Arc::new(FaultInjector::new()),
+            noop_path_observer(),
+        )),
+        Err(super::store::LocalEventStoreOpenError::InitializationStateInvalid)
+    ));
+    assert_eq!(
+        fixed_store_files(root),
+        before,
+        "the database, WAL, or SHM changed while failing closed"
+    );
+    assert_eq!(
+        std::fs::read(layout.initial_create_evidence_path()).expect("evidence must remain"),
+        evidence_before,
+        "valid evidence is not authority to delete an application table"
+    );
+}
+
+#[test]
+fn b071_ready_store_with_nonempty_wal_never_uses_a_database_outside_fixed_layout() {
+    let directory = tempfile::tempdir().expect("B-071 fixed-layout ready-store app data");
+    let root = directory.path();
+    let store = LocalEventStore::open(acceptance_store_config(
+        root,
+        Arc::new(FaultInjector::new()),
+        noop_path_observer(),
+    ))
+    .expect("initialize B-071 fixed-layout ready store");
+    let installation_id = store.installation_id().to_string();
+    drop(store);
+
+    let _wal_path = leave_nonempty_wal(
+        root,
+        "UPDATE store_metadata
+            SET process_instance_id = '71717171-7171-4171-8171-717171717171'
+          WHERE id = 1;",
+    );
+    let observer = Arc::new(FixedLayoutStartupObserver::new(root));
+    let reopened = LocalEventStore::open(acceptance_store_config(
+        root,
+        Arc::new(FaultInjector::new()),
+        observer.clone(),
+    ))
+    .expect("open a ready fixed store whose committed state includes a non-empty WAL");
+
+    assert_eq!(reopened.installation_id(), installation_id);
+    observer.assert_fixed_layout_only(root);
+}
+
+#[test]
+fn b071_every_initial_create_crash_boundary_converges_to_one_ready_identity_and_key_set() {
+    use crate::adaptor::gateway::local_event_store::fault::InitialCreateFaultPoint as P;
+
+    for boundary in initial_create_fault_boundaries() {
+        let directory = tempfile::tempdir().expect("B-071 initial-create boundary fixture");
+        let root = directory.path();
+        let layout = StoreLayout::new(root);
+        let fault = Arc::new(FaultInjector::new());
+        fault.arm_initial_create_fault(boundary);
+        assert!(
+            LocalEventStore::open(acceptance_store_config(root, fault, noop_path_observer(),))
+                .is_err(),
+            "B-071 {boundary:?} did not stop the real startup path"
+        );
+        let committed_before_restart = matches!(
+            boundary,
+            P::AfterInitializationCommitReplyLoss
+                | P::AfterDatabaseSync
+                | P::BeforeEvidenceUnlink
+                | P::AfterEvidenceUnlink
+        )
+        .then(|| metadata_identity_and_keys(root));
+
+        let store = LocalEventStore::open(acceptance_store_config(
+            root,
+            Arc::new(FaultInjector::new()),
+            noop_path_observer(),
+        ))
+        .unwrap_or_else(|error| panic!("B-071 {boundary:?} did not converge: {error}"));
+        let identity_and_keys = metadata_identity_and_keys(root);
+        assert_eq!(store.installation_id(), identity_and_keys.0);
+        if let Some(expected) = committed_before_restart {
+            assert_eq!(
+                identity_and_keys, expected,
+                "B-071 {boundary:?} replaced a ready identity or key"
+            );
+        }
+        assert!(
+            !layout.initial_create_evidence_path().exists(),
+            "B-071 {boundary:?} left initial-create evidence after Ready"
+        );
+        drop(store);
+
+        let reopened = LocalEventStore::open(acceptance_store_config(
+            root,
+            Arc::new(FaultInjector::new()),
+            noop_path_observer(),
+        ))
+        .expect("B-071 converged database must reopen");
+        assert_eq!(metadata_identity_and_keys(root), identity_and_keys);
+        assert_eq!(reopened.installation_id(), identity_and_keys.0);
+    }
+}
+
+#[test]
+fn b071_initial_create_abrupt_crash_child() {
+    let Some(root) = std::env::var_os(B071_CRASH_ROOT_ENV) else {
+        // Ordinary test-suite execution runs the fixture as a harmless no-op.
+        // The parent acceptance test invokes this exact test with both vars.
+        return;
+    };
+    let boundary_name =
+        std::env::var(B071_CRASH_BOUNDARY_ENV).expect("B-071 child boundary environment");
+    let boundary = parse_initial_create_fault_boundary(&boundary_name);
+    let fault = fault_with_initial_installation_id(B071_CHILD_INSTALLATION_ID);
+    fault.arm_initial_create_process_crash(boundary);
+
+    match LocalEventStore::open(acceptance_store_config(
+        std::path::Path::new(&root),
+        fault,
+        noop_path_observer(),
+    )) {
+        Ok(_) => panic!("B-071 {boundary:?} returned Ready instead of aborting"),
+        Err(error) => {
+            panic!("B-071 {boundary:?} returned {error} instead of abruptly terminating")
+        }
+    }
+}
+
+#[test]
+fn b071_every_initial_create_boundary_recovers_after_abrupt_process_loss() {
+    use crate::adaptor::gateway::local_event_store::layout::{
+        inspect_initial_create_evidence, InitialCreateEvidenceState,
+    };
+
+    for boundary in initial_create_fault_boundaries() {
+        let directory = tempfile::tempdir().expect("B-071 abrupt crash fixture");
+        let root = directory.path();
+        let output = std::process::Command::new(
+            std::env::current_exe().expect("resolve current unit-test executable"),
+        )
+        .arg("--exact")
+        .arg(B071_CRASH_CHILD_TEST)
+        .arg("--nocapture")
+        .env(B071_CRASH_ROOT_ENV, root)
+        .env(
+            B071_CRASH_BOUNDARY_ENV,
+            initial_create_fault_boundary_name(boundary),
+        )
+        .output()
+        .unwrap_or_else(|error| panic!("spawn B-071 {boundary:?} crash child: {error}"));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            assert!(
+                output.status.signal().is_some(),
+                "B-071 {boundary:?} child was not killed by an abrupt signal: status={:?}, \
+                 stdout={}, stderr={}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        #[cfg(not(unix))]
+        assert!(
+            !output.status.success() && output.status.code() != Some(101),
+            "B-071 {boundary:?} child did not terminate abruptly: status={:?}, stdout={}, stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        // Capture every fixed SQLite artifact and the evidence file before any
+        // parent SQLite connection is opened.
+        let crashed = initial_create_artifacts(root);
+        assert_eq!(
+            crashed.database.is_some(),
+            initial_create_boundary_has_database(boundary),
+            "B-071 {boundary:?} database-presence crash oracle"
+        );
+        assert!(
+            crashed.database.is_some() || (crashed.wal.is_none() && crashed.shm.is_none()),
+            "B-071 {boundary:?} left a sidecar without its fixed database: {crashed:?}"
+        );
+        assert!(
+            crashed.wal.is_some() || crashed.shm.is_none(),
+            "B-071 {boundary:?} left SHM without WAL: {crashed:?}"
+        );
+        assert_eq!(
+            inspect_initial_create_evidence(&StoreLayout::new(root))
+                .expect("inspect abrupt-crash evidence"),
+            initial_create_boundary_evidence_state(boundary),
+            "B-071 {boundary:?} evidence crash oracle"
+        );
+        if initial_create_boundary_evidence_state(boundary) == InitialCreateEvidenceState::Invalid {
+            assert!(
+                crashed
+                    .evidence
+                    .as_ref()
+                    .is_some_and(|bytes| !bytes.is_empty()),
+                "B-071 {boundary:?} must leave the written partial evidence"
+            );
+        }
+
+        let committed_before_restart = metadata_identity_and_keys_from_artifacts(&crashed);
+        assert_eq!(
+            committed_before_restart.is_some(),
+            initial_create_boundary_has_committed_metadata(boundary),
+            "B-071 {boundary:?} commit-state crash oracle"
+        );
+        if let Some((installation_id, cursor_key, binding_key)) = &committed_before_restart {
+            assert_eq!(installation_id, B071_CHILD_INSTALLATION_ID);
+            assert_eq!(cursor_key.len(), 32);
+            assert_eq!(binding_key.len(), 32);
+        }
+        assert_eq!(
+            initial_create_artifacts(root),
+            crashed,
+            "B-071 {boundary:?} parent crash-oracle inspection mutated DB/WAL/SHM/evidence"
+        );
+
+        // Offer a different identity on restart. Pre-COMMIT artifacts must be
+        // discarded and use it; post-COMMIT artifacts must preserve the exact
+        // child identity and HMAC keys.
+        let store = LocalEventStore::open(acceptance_store_config(
+            root,
+            fault_with_initial_installation_id(B071_RESTART_INSTALLATION_ID),
+            noop_path_observer(),
+        ))
+        .unwrap_or_else(|error| {
+            panic!("B-071 {boundary:?} did not converge after abrupt crash: {error}")
+        });
+        let ready_metadata = metadata_identity_and_keys(root);
+        let expected_installation_id = if committed_before_restart.is_some() {
+            B071_CHILD_INSTALLATION_ID
+        } else {
+            B071_RESTART_INSTALLATION_ID
+        };
+        assert_eq!(store.installation_id(), expected_installation_id);
+        assert_eq!(ready_metadata.0, expected_installation_id);
+        if let Some(committed) = committed_before_restart {
+            assert_eq!(
+                ready_metadata, committed,
+                "B-071 {boundary:?} replaced committed identity or HMAC keys"
+            );
+        }
+        let ready_artifacts = initial_create_artifacts(root);
+        assert!(ready_artifacts.database.is_some());
+        assert!(
+            ready_artifacts.wal.is_some(),
+            "B-071 {boundary:?} Ready writer must own the WAL"
+        );
+        assert!(
+            ready_artifacts.shm.is_some(),
+            "B-071 {boundary:?} Ready writer must own the SHM"
+        );
+        assert!(
+            ready_artifacts.evidence.is_none(),
+            "B-071 {boundary:?} Ready must remove initial-create evidence"
+        );
+        drop(store);
+
+        let reopened = LocalEventStore::open(acceptance_store_config(
+            root,
+            fault_with_initial_installation_id("73737373-7373-4373-8373-737373737373"),
+            noop_path_observer(),
+        ))
+        .unwrap_or_else(|error| panic!("B-071 {boundary:?} second restart failed: {error}"));
+        assert_eq!(metadata_identity_and_keys(root), ready_metadata);
+        assert_eq!(reopened.installation_id(), expected_installation_id);
+    }
+}
+
+#[tokio::test]
+async fn b071_drop_joins_every_sqlite_worker_before_immediate_reopen() {
+    let directory = tempfile::tempdir().expect("B-071 worker lifetime app data");
+    let root = directory.path();
+    let mut installation_id = None;
+
+    for ordinal in 0..16 {
+        let store = LocalEventStore::open(acceptance_store_config(
+            root,
+            Arc::new(FaultInjector::new()),
+            noop_path_observer(),
+        ))
+        .unwrap_or_else(|error| panic!("immediate reopen {ordinal} failed: {error}"));
+        if let Some(expected) = &installation_id {
+            assert_eq!(store.installation_id(), expected);
+        } else {
+            installation_id = Some(store.installation_id().to_string());
+        }
+
+        let obligation_id = format!("b071-worker-lifetime-{ordinal:02}");
+        let mut seed = batch(
+            &format!("commit-{obligation_id}"),
+            &format!("key-{obligation_id}"),
+            [ordinal as u8; 32],
+            vec![],
+            vec![],
+            vec![obligation_mutation(&obligation_id, true)],
+        );
+        seed.idempotency.installation_id = store.installation_id().to_string();
+        store.commit_batch(seed).await.expect("seed worker fixture");
+
+        // A non-empty first page keeps a recovery-snapshot SQLite worker
+        // alive. Drop must join it together with the writer and all readers
+        // before releasing the process writer lock.
+        assert!(matches!(
+            store
+                .query(LocalEventQuery::PendingRecoveryPage {
+                    limit: 1,
+                    partition: None,
+                    owner: None,
+                    ordered_key_prefix: None,
+                    shutdown_plan: None,
+                    cursor: None,
+                })
+                .await,
+            Ok(LocalEventQueryResult::PendingRecoveryPage(_))
+        ));
+        drop(store);
+    }
+}
+
+#[test]
+fn b071_cases_d_and_e_fail_closed_without_mutating_fixed_database_or_sidecars() {
+    let zero_directory = tempfile::tempdir().expect("B-071 zero file");
+    let zero_layout = StoreLayout::new(zero_directory.path());
+    std::fs::write(zero_layout.database_path(), []).expect("create ambiguous zero file");
+    let zero_before = fixed_store_files(zero_directory.path());
+    assert!(matches!(
+        LocalEventStore::open(acceptance_store_config(
+            zero_directory.path(),
+            Arc::new(FaultInjector::new()),
+            noop_path_observer(),
+        )),
+        Err(super::store::LocalEventStoreOpenError::InitializationStateInvalid)
+    ));
+    assert_eq!(fixed_store_files(zero_directory.path()), zero_before);
+
+    let unrelated_directory = tempfile::tempdir().expect("B-071 unrelated SQLite");
+    let unrelated_layout = StoreLayout::new(unrelated_directory.path());
+    rusqlite::Connection::open(unrelated_layout.database_path())
+        .expect("create unrelated SQLite")
+        .execute_batch("CREATE TABLE unrelated(value TEXT);")
+        .expect("initialize unrelated SQLite");
+    let unrelated_before = fixed_store_files(unrelated_directory.path());
+    assert!(matches!(
+        LocalEventStore::open(acceptance_store_config(
+            unrelated_directory.path(),
+            Arc::new(FaultInjector::new()),
+            noop_path_observer(),
+        )),
+        Err(super::store::LocalEventStoreOpenError::InitializationStateInvalid)
+    ));
+    assert_eq!(
+        fixed_store_files(unrelated_directory.path()),
+        unrelated_before
+    );
+
+    let unsupported_directory = tempfile::tempdir().expect("B-071 unsupported schema");
+    let unsupported_root = unsupported_directory.path();
+    let store = LocalEventStore::open(acceptance_store_config(
+        unsupported_root,
+        Arc::new(FaultInjector::new()),
+        noop_path_observer(),
+    ))
+    .expect("seed recognized store");
+    drop(store);
+    let unsupported_connection =
+        rusqlite::Connection::open(StoreLayout::new(unsupported_root).database_path())
+            .expect("open recognized store fixture");
+    unsupported_connection
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;")
+        .expect("stabilize unsupported-version fixture");
+    unsupported_connection
+        .pragma_update(None, "user_version", 99_i64)
+        .expect("set unsupported version");
+    drop(unsupported_connection);
+    let unsupported_before = fixed_store_files(unsupported_root);
+    assert!(matches!(
+        LocalEventStore::open(acceptance_store_config(
+            unsupported_root,
+            Arc::new(FaultInjector::new()),
+            noop_path_observer(),
+        )),
+        Err(super::store::LocalEventStoreOpenError::UnsupportedStoreVersion)
+    ));
+    assert_eq!(fixed_store_files(unsupported_root), unsupported_before);
+
+    let invalid_directory = tempfile::tempdir().expect("B-071 invalid current store");
+    let invalid_root = invalid_directory.path();
+    let store = LocalEventStore::open(acceptance_store_config(
+        invalid_root,
+        Arc::new(FaultInjector::new()),
+        noop_path_observer(),
+    ))
+    .expect("seed current store");
+    drop(store);
+    let invalid_connection =
+        rusqlite::Connection::open(StoreLayout::new(invalid_root).database_path())
+            .expect("open current fixture");
+    invalid_connection
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;")
+        .expect("stabilize invalid-schema fixture");
+    invalid_connection
+        .execute("DROP INDEX idx_pending_obligations_owner", [])
+        .expect("remove required index");
+    drop(invalid_connection);
+    let invalid_before = fixed_store_files(invalid_root);
+    assert!(matches!(
+        LocalEventStore::open(acceptance_store_config(
+            invalid_root,
+            Arc::new(FaultInjector::new()),
+            noop_path_observer(),
+        )),
+        Err(super::store::LocalEventStoreOpenError::StoreValidationFailed)
+    ));
+    assert_eq!(fixed_store_files(invalid_root), invalid_before);
+}
+
+#[tokio::test]
+async fn b098_distinct_store_authorities_reject_cross_installation_batches() {
+    let first_directory = tempfile::tempdir().expect("B-098 first installation");
+    let second_directory = tempfile::tempdir().expect("B-098 second installation");
+    let first = LocalEventStore::open(acceptance_store_config(
+        first_directory.path(),
+        Arc::new(FaultInjector::new()),
+        noop_path_observer(),
+    ))
+    .expect("first installation");
+    let second = LocalEventStore::open(acceptance_store_config(
+        second_directory.path(),
+        Arc::new(FaultInjector::new()),
+        noop_path_observer(),
+    ))
+    .expect("second installation");
+    assert_ne!(first.installation_id(), second.installation_id());
+
+    let mut foreign = batch(
+        "commit-b098-foreign-installation",
+        "key-b098-foreign-installation",
+        [98; 32],
+        vec![],
+        vec![],
+        vec![obligation_mutation("b098-foreign-installation", true)],
+    );
+    foreign.idempotency.installation_id = first.installation_id().to_string();
+    assert!(matches!(
+        second.commit_batch(foreign).await,
+        Err(CommitBatchError::Corrupt { .. })
+    ));
+    let second_connection =
+        rusqlite::Connection::open(StoreLayout::new(second_directory.path()).database_path())
+            .expect("inspect second installation");
+    let commit_count: i64 = second_connection
+        .query_row("SELECT COUNT(*) FROM logical_commits", [], |row| row.get(0))
+        .expect("count second installation commits");
+    assert_eq!(commit_count, 0);
+}
+
+#[derive(Debug, Clone, Copy)]
+enum B071ReadyStoreCorruption {
+    Header,
+    ApplicationId,
+    SchemaVersion,
+    MetadataRow,
+    InstallationIdentity,
+    CursorHmacKey,
+    OperationBindingHmacKey,
+    RequiredIndex,
+}
+
+fn corrupt_b071_ready_store(root: &std::path::Path, corruption: B071ReadyStoreCorruption) {
+    let database = StoreLayout::new(root).database_path();
+    if matches!(corruption, B071ReadyStoreCorruption::Header) {
+        use std::io::{Seek, Write};
+
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(database)
+            .expect("open B-071 header fixture");
+        file.seek(std::io::SeekFrom::Start(0))
+            .expect("seek B-071 header fixture");
+        file.write_all(b"X").expect("corrupt B-071 SQLite header");
+        file.sync_all().expect("sync B-071 header corruption");
+        return;
+    }
+
+    let connection = rusqlite::Connection::open(database).expect("open B-071 ready fixture");
+    match corruption {
+        B071ReadyStoreCorruption::Header => unreachable!(),
+        B071ReadyStoreCorruption::ApplicationId => connection
+            .pragma_update(None, "application_id", 0_i64)
+            .expect("corrupt B-071 application id"),
+        B071ReadyStoreCorruption::SchemaVersion => connection
+            .pragma_update(None, "user_version", 99_i64)
+            .expect("corrupt B-071 schema version"),
+        B071ReadyStoreCorruption::MetadataRow => {
+            connection
+                .execute("DELETE FROM store_metadata", [])
+                .expect("remove B-071 metadata row");
+        }
+        B071ReadyStoreCorruption::InstallationIdentity => {
+            connection
+                .execute(
+                    "UPDATE store_metadata SET installation_id = 'not-a-uuid' WHERE id = 1",
+                    [],
+                )
+                .expect("corrupt B-071 installation identity");
+        }
+        B071ReadyStoreCorruption::CursorHmacKey => connection
+            .execute_batch(
+                "PRAGMA ignore_check_constraints = ON;
+                 UPDATE store_metadata SET cursor_hmac_key = X'00' WHERE id = 1;",
+            )
+            .expect("corrupt B-071 cursor HMAC key"),
+        B071ReadyStoreCorruption::OperationBindingHmacKey => connection
+            .execute_batch(
+                "PRAGMA ignore_check_constraints = ON;
+                 UPDATE store_metadata
+                    SET operation_binding_hmac_key = X'00' WHERE id = 1;",
+            )
+            .expect("corrupt B-071 operation-binding HMAC key"),
+        B071ReadyStoreCorruption::RequiredIndex => {
+            connection
+                .execute("DROP INDEX idx_pending_obligations_owner", [])
+                .expect("remove B-071 required index");
+        }
+    }
+}
+
+#[test]
+fn b071_every_initialized_store_corruption_fails_closed_without_mutation() {
+    use super::store::LocalEventStoreOpenError as E;
+
+    for (corruption, expected) in [
+        (
+            B071ReadyStoreCorruption::Header,
+            E::InitializationStateInvalid,
+        ),
+        (
+            B071ReadyStoreCorruption::ApplicationId,
+            E::StoreValidationFailed,
+        ),
+        (
+            B071ReadyStoreCorruption::SchemaVersion,
+            E::UnsupportedStoreVersion,
+        ),
+        (
+            B071ReadyStoreCorruption::MetadataRow,
+            E::StoreValidationFailed,
+        ),
+        (
+            B071ReadyStoreCorruption::InstallationIdentity,
+            E::StoreValidationFailed,
+        ),
+        (
+            B071ReadyStoreCorruption::CursorHmacKey,
+            E::StoreValidationFailed,
+        ),
+        (
+            B071ReadyStoreCorruption::OperationBindingHmacKey,
+            E::StoreValidationFailed,
+        ),
+        (
+            B071ReadyStoreCorruption::RequiredIndex,
+            E::StoreValidationFailed,
+        ),
+    ] {
+        let directory = tempfile::tempdir().expect("B-071 initialized fixture");
+        let root = directory.path();
+        let store = LocalEventStore::open(acceptance_store_config(
+            root,
+            Arc::new(FaultInjector::new()),
+            noop_path_observer(),
+        ))
+        .expect("seed B-071 initialized fixture");
+        drop(store);
+        rusqlite::Connection::open(StoreLayout::new(root).database_path())
+            .expect("open B-071 fixture for checkpoint")
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;")
+            .expect("stabilize B-071 initialized fixture");
+        corrupt_b071_ready_store(root, corruption);
+        let before = fixed_store_files(root);
+        let error = match LocalEventStore::open(acceptance_store_config(
+            root,
+            Arc::new(FaultInjector::new()),
+            noop_path_observer(),
+        )) {
+            Ok(_) => panic!("B-071 {corruption:?} unexpectedly opened"),
+            Err(error) => error,
+        };
+        assert_eq!(error, expected, "B-071 {corruption:?} classification");
+        assert_eq!(
+            fixed_store_files(root),
+            before,
+            "B-071 {corruption:?} changed the fixed database or a sidecar"
+        );
+    }
+}
+
+#[test]
+fn b071_writer_lock_is_nonblocking_and_maps_to_store_in_use() {
+    let directory = tempfile::tempdir().expect("B-071 writer lock");
+    let first = LocalEventStore::open(acceptance_store_config(
+        directory.path(),
+        Arc::new(FaultInjector::new()),
+        noop_path_observer(),
+    ))
+    .expect("first writer");
+    let started = std::time::Instant::now();
+    assert!(matches!(
+        LocalEventStore::open(acceptance_store_config(
+            directory.path(),
+            Arc::new(FaultInjector::new()),
+            noop_path_observer(),
+        )),
+        Err(super::store::LocalEventStoreOpenError::WriterLockHeld)
+    ));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(1),
+        "writer lock acquisition must not wait"
+    );
+    drop(first);
+}
+
+#[test]
+fn b071_lock_path_filesystem_failure_is_storage_unavailable_not_store_in_use() {
+    let directory = tempfile::tempdir().expect("B-071 lock filesystem failure");
+    let layout = StoreLayout::new(directory.path());
+    std::fs::create_dir(layout.writer_lock_path()).expect("occupy lock path with a directory");
+    assert!(matches!(
+        LocalEventStore::open(acceptance_store_config(
+            directory.path(),
+            Arc::new(FaultInjector::new()),
+            noop_path_observer(),
+        )),
+        Err(super::store::LocalEventStoreOpenError::StorageUnavailable)
+    ));
+}
+
+#[test]
+fn b071_recognized_v1_version_gap_is_unsupported_without_mutation() {
+    let directory = tempfile::tempdir().expect("B-071 v1 version gap");
+    let root = directory.path();
+    let store = LocalEventStore::open(acceptance_store_config(
+        root,
+        Arc::new(FaultInjector::new()),
+        noop_path_observer(),
+    ))
+    .expect("seed current store before v1 downgrade");
+    drop(store);
+    downgrade_current_store_to_supported_v1(root);
+    let connection =
+        rusqlite::Connection::open(StoreLayout::new(root).database_path()).expect("open v1 store");
+    connection
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;")
+        .expect("stabilize unsupported v1 fixture");
+    connection
+        .pragma_update(None, "user_version", 99_i64)
+        .expect("set unsupported v1 version");
+    drop(connection);
+    let before = fixed_store_files(root);
+
+    assert!(matches!(
+        LocalEventStore::open(acceptance_store_config(
+            root,
+            Arc::new(FaultInjector::new()),
+            noop_path_observer(),
+        )),
+        Err(super::store::LocalEventStoreOpenError::UnsupportedStoreVersion)
+    ));
+    assert_eq!(fixed_store_files(root), before);
+}
+
+fn downgrade_current_store_to_supported_v1(root: &std::path::Path) -> (String, String) {
+    let connection =
+        rusqlite::Connection::open(StoreLayout::new(root).database_path()).expect("open B-098 DB");
+    connection
+        .execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             BEGIN IMMEDIATE;
+             ALTER TABLE logical_commits RENAME COLUMN installation_id TO generation_id;
+             ALTER TABLE operation_bindings RENAME COLUMN installation_id TO generation_id;
+             ALTER TABLE caller_attempts RENAME COLUMN installation_id TO generation_id;
+             DROP INDEX idx_caller_attempts_scope;
+             DROP INDEX idx_caller_attempts_pending_kind;
+             DROP INDEX idx_operation_bindings_operation;
+             CREATE TABLE shutdown_plans_v1 (
+                 plan_id TEXT NOT NULL,
+                 epoch INTEGER NOT NULL CHECK (epoch >= 0),
+                 phase TEXT NOT NULL,
+                 summary TEXT NOT NULL,
+                 details_state TEXT NOT NULL,
+                 revision INTEGER NOT NULL CHECK (revision >= 0),
+                 commit_id TEXT NOT NULL REFERENCES logical_commits (commit_id),
+                 PRIMARY KEY (plan_id, epoch)
+             );
+             INSERT INTO shutdown_plans_v1
+             SELECT shutdown_id, 0, phase, summary, details_state, revision, commit_id
+             FROM shutdown_plans;
+             CREATE TABLE shutdown_targets_v1 (
+                 plan_id TEXT NOT NULL,
+                 epoch INTEGER NOT NULL,
+                 ordinal INTEGER NOT NULL,
+                 detail TEXT NOT NULL,
+                 revision INTEGER NOT NULL,
+                 commit_id TEXT NOT NULL REFERENCES logical_commits (commit_id),
+                 PRIMARY KEY (plan_id, epoch, ordinal)
+             );
+             INSERT INTO shutdown_targets_v1
+             SELECT shutdown_id, 0, ordinal, detail, revision, commit_id
+             FROM shutdown_targets;
+             CREATE TABLE shutdown_recovery_snapshots_v1 (
+                 plan_id TEXT NOT NULL,
+                 epoch INTEGER NOT NULL,
+                 partition TEXT NOT NULL,
+                 ordinal INTEGER NOT NULL,
+                 detail TEXT NOT NULL,
+                 commit_id TEXT NOT NULL REFERENCES logical_commits (commit_id),
+                 PRIMARY KEY (plan_id, epoch, ordinal)
+             );
+             INSERT INTO shutdown_recovery_snapshots_v1
+             SELECT shutdown_id, 0, partition, ordinal, detail, commit_id
+             FROM shutdown_recovery_snapshots;
+             CREATE TABLE pending_obligations_v1 (
+                 ordered_key TEXT PRIMARY KEY,
+                 obligation_id TEXT NOT NULL UNIQUE REFERENCES obligations (obligation_id),
+                 owner TEXT NOT NULL,
+                 partition TEXT NOT NULL,
+                 shutdown_plan_id TEXT,
+                 shutdown_epoch INTEGER,
+                 commit_id TEXT NOT NULL REFERENCES logical_commits (commit_id)
+             );
+             INSERT INTO pending_obligations_v1
+             SELECT ordered_key, obligation_id, owner, partition, shutdown_id,
+                    CASE WHEN shutdown_id IS NULL THEN NULL ELSE 0 END, commit_id
+             FROM pending_obligations;
+             CREATE TABLE store_metadata_v1 (
+                 id INTEGER PRIMARY KEY CHECK (id = 1),
+                 schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+                 store_id TEXT NOT NULL,
+                 generation_id TEXT NOT NULL,
+                 created_at_ms INTEGER NOT NULL,
+                 cursor_hmac_key BLOB NOT NULL,
+                 operation_binding_hmac_key BLOB NOT NULL,
+                 boot_id TEXT NOT NULL,
+                 next_global_sequence INTEGER NOT NULL,
+                 health TEXT NOT NULL,
+                 current_shutdown_plan_id TEXT,
+                 current_shutdown_epoch INTEGER,
+                 shutdown_pointer_revision INTEGER NOT NULL,
+                 retiring_shutdown_plan_id TEXT,
+                 retiring_shutdown_epoch INTEGER,
+                 shutdown_retiring_revision INTEGER NOT NULL DEFAULT 0
+             );
+             INSERT INTO store_metadata_v1 (
+                 id, schema_version, store_id, generation_id, created_at_ms,
+                 cursor_hmac_key, operation_binding_hmac_key, boot_id,
+                 next_global_sequence, health, current_shutdown_plan_id,
+                 current_shutdown_epoch, shutdown_pointer_revision,
+                 retiring_shutdown_plan_id, retiring_shutdown_epoch,
+                 shutdown_retiring_revision
+             )
+             SELECT id, 1, installation_id, installation_id, created_at_ms,
+                    cursor_hmac_key, operation_binding_hmac_key, process_instance_id,
+                    next_global_sequence, health, current_shutdown_id,
+                    CASE WHEN current_shutdown_id IS NULL THEN NULL ELSE 0 END,
+                    shutdown_pointer_revision, NULL, NULL, 0
+             FROM store_metadata;
+             DROP TABLE store_metadata;
+             DROP TABLE pending_obligations;
+             DROP TABLE shutdown_recovery_snapshots;
+             DROP TABLE shutdown_targets;
+             DROP TABLE shutdown_plans;
+             ALTER TABLE shutdown_plans_v1 RENAME TO shutdown_plans;
+             ALTER TABLE shutdown_targets_v1 RENAME TO shutdown_targets;
+             ALTER TABLE shutdown_recovery_snapshots_v1
+                 RENAME TO shutdown_recovery_snapshots;
+             ALTER TABLE pending_obligations_v1 RENAME TO pending_obligations;
+             ALTER TABLE store_metadata_v1 RENAME TO store_metadata;
+             CREATE INDEX idx_caller_attempts_scope
+                 ON caller_attempts (principal, generation_id, scope_id, kind, caller_request_id);
+             CREATE INDEX idx_caller_attempts_pending_kind
+                 ON caller_attempts (generation_id, kind, resolution, principal, caller_request_id);
+             CREATE INDEX idx_operation_bindings_operation
+                 ON operation_bindings (generation_id, kind, operation_id, principal, caller_request_id);
+             CREATE TABLE local_store_migrations (migration_id TEXT PRIMARY KEY);
+             CREATE TABLE legacy_source_inventory (source_path TEXT PRIMARY KEY);
+             CREATE TABLE legacy_raw_records (record_id TEXT PRIMARY KEY);
+             CREATE TABLE legacy_raw_record_chunks (chunk_id TEXT PRIMARY KEY);
+             CREATE TABLE migration_quit_flights (flight_id TEXT PRIMARY KEY);
+             CREATE TABLE shutdown_compact_archives (archive_id TEXT PRIMARY KEY);
+             PRAGMA application_id = 0;
+             PRAGMA user_version = 0;
+             COMMIT;
+             PRAGMA foreign_keys = ON;",
+        )
+        .expect("downgrade fixture to the supported v1 schema");
+    let legacy_store_id = "11111111-1111-4111-8111-111111111111";
+    connection
+        .execute(
+            "UPDATE store_metadata SET store_id = ?1 WHERE id = 1",
+            [legacy_store_id],
+        )
+        .expect("make the old physical store identity differ from its operation generation");
+    let identities = connection
+        .query_row(
+            "SELECT store_id, generation_id FROM store_metadata WHERE id = 1",
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .expect("read distinct supported-v1 identities");
+    assert_ne!(
+        identities.0, identities.1,
+        "the B-098 fixture must exercise a real split identity"
+    );
+    identities
+}
+
+#[test]
+fn b098_supported_v1_evolution_with_nonempty_wal_never_uses_a_database_outside_fixed_layout() {
+    let directory = tempfile::tempdir().expect("B-098 fixed-layout evolution app data");
+    let root = directory.path();
+    let store = LocalEventStore::open(acceptance_store_config(
+        root,
+        Arc::new(FaultInjector::new()),
+        noop_path_observer(),
+    ))
+    .expect("initialize B-098 fixed-layout evolution store");
+    let expected_installation_id = store.installation_id().to_string();
+    drop(store);
+    let (_legacy_store_id, legacy_generation_id) = downgrade_current_store_to_supported_v1(root);
+    assert_eq!(legacy_generation_id, expected_installation_id);
+
+    // The committed boot-id frame lives only in the WAL at classification
+    // time. This proves startup reads and evolves the fixed authority itself,
+    // rather than classifying a detached main-database image.
+    let _wal_path = leave_nonempty_wal(
+        root,
+        "UPDATE store_metadata
+            SET boot_id = '98989898-9898-4989-8989-989898989898'
+          WHERE id = 1;",
+    );
+    let observer = Arc::new(FixedLayoutStartupObserver::new(root));
+    let evolved = LocalEventStore::open(acceptance_store_config(
+        root,
+        Arc::new(FaultInjector::new()),
+        observer.clone(),
+    ))
+    .expect("evolve the supported v1 fixed store with a non-empty WAL");
+
+    assert_eq!(evolved.installation_id(), expected_installation_id);
+    observer.assert_fixed_layout_only(root);
+}
+
+struct B098Fixture {
+    _directory: tempfile::TempDir,
+    root: std::path::PathBuf,
+    identity_and_keys: (String, Vec<u8>, Vec<u8>),
+    legacy_store_id: String,
+    replay_batch: LocalAtomicBatch,
+    plan: ShutdownPlanKey,
+    signed_cursor: QueryCursor,
+    terminal_before_evolution: LocalEventQueryResult,
+    obligation_before_evolution: LocalEventQueryResult,
+    current_shutdown_before_evolution: LocalEventQueryResult,
+    shutdown_page_before_evolution: LocalEventQueryResult,
+}
+
+async fn b098_supported_v1_fixture() -> B098Fixture {
+    use crate::usecase::agent_session::operation::{
+        AgentSendOperationUsecase, CallerAttemptJournal, SendCommandOutcome, SendOperationRequest,
+    };
+
+    let directory = tempfile::tempdir().expect("B-098 app data");
+    let root = directory.path().to_path_buf();
+    let store = LocalEventStore::open(acceptance_store_config(
+        &root,
+        Arc::new(FaultInjector::new()),
+        noop_path_observer(),
+    ))
+    .expect("initialize B-098 current store");
+    let identity_and_keys = metadata_identity_and_keys(&root);
+    let repository: Arc<dyn LocalEventTransactionRepository> = store.clone();
+    let session_store = Arc::new(SessionStore::new_canonical(
+        repository,
+        store.installation_id().to_string(),
+        Arc::new(AgentSessionProjectionCodecV1),
+    ));
+    let session = build_new_session_with_id(
+        "b098-replay-session".to_string(),
+        "/b098-replay-worktree",
+        Some("codex".to_string()),
+        crate::domain::agent_session::PermissionMode::Ask,
+        None,
+        false,
+        false,
+        None,
+    );
+    session_store
+        .save_full_session_from_user(&root, &session)
+        .expect("seed B-098 replay session");
+    let replay_gate = Arc::new(PerformanceSendGate {
+        session_store: session_store.clone(),
+        session_id: session.id.clone(),
+        effects: std::sync::atomic::AtomicUsize::new(0),
+        planned: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let send_usecase = AgentSendOperationUsecase::new(
+        store.clone(),
+        store.clone(),
+        replay_gate.clone(),
+        store.installation_id().to_string(),
+    );
+    let replay_request = SendOperationRequest {
+        principal: "b098-principal".to_string(),
+        operation_id: "b098-replay-send".to_string(),
+        canonical_payload: "{\"content\":\"B-098 replay payload\"}".to_string(),
+    };
+    assert!(matches!(
+        send_usecase
+            .send(replay_request)
+            .await
+            .expect("accept B-098 operation before evolution"),
+        SendCommandOutcome::Accepted(_)
+    ));
+    assert_eq!(
+        replay_gate
+            .effects
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    let caller_journal = CallerAttemptJournal::new(
+        store.clone(),
+        store.clone(),
+        store.installation_id().to_string(),
+    );
+    caller_journal
+        .record_attempt_scoped(
+            "b098-principal",
+            OperationKind::Send,
+            "b098-caller-attempt",
+            b"{\"content\":\"B-098 journal payload\"}",
+            Some("b098-replay-session"),
+        )
+        .await
+        .expect("seed a caller attempt under the old generation authority");
+    let plan = ShutdownPlanKey {
+        shutdown_id: "b098-quit".to_string(),
+    };
+    let mut summary = shutdown_plan_fixture(&plan.shutdown_id);
+    summary.target_count = Some(2);
+    summary.prepared_count = Some(2);
+    summary.unresolved_count = Some(2);
+    let mut seed = batch(
+        "b098-seed",
+        "b098-seed",
+        [98; 32],
+        Vec::new(),
+        Vec::new(),
+        vec![
+            f06_operation_mutation(
+                "b098-send-operation",
+                f06_send_receipt("b098-send-operation"),
+                f06_send_status(serde_json::json!({
+                    "type": "awaiting_provider_start",
+                    "dependency_obligation_ids": [],
+                })),
+            ),
+            terminal_mutation("b098-session", "1"),
+            obligation_mutation("b098-obligation", true),
+            LocalStateMutation::ShutdownPlan(ShutdownPlanMutation {
+                key: plan.clone(),
+                phase: ApplicationShutdownPhase::Activated,
+                summary,
+                details_state: ShutdownDetailsState::Available,
+                expected: RevisionGuard::Absent,
+                revision: Revision::new(0).unwrap(),
+            }),
+            LocalStateMutation::ShutdownTarget(ShutdownTargetMutation {
+                key: plan.clone(),
+                ordinal: 0,
+                detail: b059_shutdown_target_detail(
+                    "b098-target",
+                    ShutdownTargetStateRecord::Prepared,
+                    None,
+                ),
+                expected: RevisionGuard::Absent,
+                revision: Revision::new(0).unwrap(),
+            }),
+            LocalStateMutation::ShutdownTarget(ShutdownTargetMutation {
+                key: plan.clone(),
+                ordinal: 1,
+                detail: b059_shutdown_target_detail(
+                    "b098-target-2",
+                    ShutdownTargetStateRecord::Prepared,
+                    None,
+                ),
+                expected: RevisionGuard::Absent,
+                revision: Revision::new(0).unwrap(),
+            }),
+            LocalStateMutation::ShutdownLatestPointer(ShutdownLatestPointerMutation {
+                expected: None,
+                new: Some(plan.clone()),
+            }),
+        ],
+    );
+    seed.idempotency.installation_id = store.installation_id().to_string();
+    seed.idempotency.operation_kind = CommitOperationKind::Projection;
+    let replay_batch = seed.clone();
+    store
+        .commit_batch(seed)
+        .await
+        .expect("seed B-098 semantic records");
+    let first_page = store
+        .query(LocalEventQuery::ShutdownPlanPage {
+            plan: plan.clone(),
+            limit: 1,
+            cursor: None,
+        })
+        .await
+        .expect("issue B-098 signed cursor before evolution");
+    let LocalEventQueryResult::ShutdownPlanPage(first_page) = first_page else {
+        panic!("B-098 first shutdown page query returned wrong shape");
+    };
+    assert_eq!(first_page.targets.len(), 1);
+    let signed_cursor = first_page
+        .next_cursor
+        .expect("B-098 fixture must issue a signed continuation cursor");
+    let terminal_before_evolution = store
+        .query(LocalEventQuery::TerminalByTurn {
+            session_id: "b098-session".to_string(),
+            turn_id: "1".to_string(),
+        })
+        .await
+        .expect("capture B-098 terminal read model before evolution");
+    assert!(matches!(
+        terminal_before_evolution,
+        LocalEventQueryResult::TerminalByTurn(Some(_))
+    ));
+    let obligation_before_evolution = store
+        .query(LocalEventQuery::ObligationByIdentity {
+            obligation_id: "b098-obligation".to_string(),
+        })
+        .await
+        .expect("capture B-098 obligation read model before evolution");
+    assert!(matches!(
+        obligation_before_evolution,
+        LocalEventQueryResult::ObligationByIdentity(Some(_))
+    ));
+    let current_shutdown_before_evolution = store
+        .query(LocalEventQuery::CurrentShutdown)
+        .await
+        .expect("capture B-098 current-shutdown read model before evolution");
+    assert!(matches!(
+        current_shutdown_before_evolution,
+        LocalEventQueryResult::CurrentShutdown(Some(_))
+    ));
+    let shutdown_page_before_evolution = store
+        .query(LocalEventQuery::ShutdownPlanPage {
+            plan: plan.clone(),
+            limit: 16,
+            cursor: None,
+        })
+        .await
+        .expect("capture complete B-098 shutdown read model before evolution");
+    let LocalEventQueryResult::ShutdownPlanPage(shutdown_page) = &shutdown_page_before_evolution
+    else {
+        panic!("B-098 complete pre-evolution shutdown page returned wrong shape");
+    };
+    assert_eq!(
+        shutdown_page.targets.len(),
+        2,
+        "B-098 exact shutdown oracle must include every target"
+    );
+    assert_eq!(
+        shutdown_page
+            .targets
+            .iter()
+            .map(|target| target.ordinal)
+            .collect::<Vec<_>>(),
+        vec![0, 1]
+    );
+    assert!(shutdown_page.next_cursor.is_none());
+    drop(caller_journal);
+    drop(send_usecase);
+    drop(replay_gate);
+    drop(session_store);
+    drop(store);
+    let (legacy_store_id, legacy_generation_id) = downgrade_current_store_to_supported_v1(&root);
+    assert_eq!(
+        legacy_generation_id, identity_and_keys.0,
+        "the operation generation is the pre-evolution idempotency/HMAC authority"
+    );
+    B098Fixture {
+        _directory: directory,
+        root,
+        identity_and_keys,
+        legacy_store_id,
+        replay_batch,
+        plan,
+        signed_cursor,
+        terminal_before_evolution,
+        obligation_before_evolution,
+        current_shutdown_before_evolution,
+        shutdown_page_before_evolution,
+    }
+}
+
+async fn assert_b098_semantics(store: &Arc<LocalEventStore>, fixture: &B098Fixture) {
+    use crate::usecase::agent_session::operation::{
+        AgentSendOperationUsecase, CallerAttemptJournal, SendCommandOutcome, SendOperationRequest,
+    };
+
+    assert_eq!(
+        metadata_identity_and_keys(&fixture.root),
+        fixture.identity_and_keys
+    );
+    assert_eq!(store.installation_id(), fixture.identity_and_keys.0);
+    assert_ne!(
+        store.installation_id(),
+        fixture.legacy_store_id,
+        "the old physical store id cannot replace the operation/HMAC authority"
+    );
+    let connection = rusqlite::Connection::open(StoreLayout::new(&fixture.root).database_path())
+        .expect("inspect converged B-098 identities");
+    for table in ["logical_commits", "operation_bindings", "caller_attempts"] {
+        let divergent: i64 = connection
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE installation_id <> ?1"),
+                [store.installation_id()],
+                |row| row.get(0),
+            )
+            .expect("count divergent installation identities");
+        assert_eq!(
+            divergent, 0,
+            "schema evolution left {table} under a split authority"
+        );
+    }
+    drop(connection);
+
+    let replay_session_store = Arc::new(SessionStore::new_canonical(
+        store.clone(),
+        store.installation_id().to_string(),
+        Arc::new(AgentSessionProjectionCodecV1),
+    ));
+    let replay_gate = Arc::new(PerformanceSendGate {
+        session_store: replay_session_store,
+        session_id: "b098-replay-session".to_string(),
+        effects: std::sync::atomic::AtomicUsize::new(0),
+        planned: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let send_usecase = AgentSendOperationUsecase::new(
+        store.clone(),
+        store.clone(),
+        replay_gate.clone(),
+        store.installation_id().to_string(),
+    );
+    assert!(matches!(
+        send_usecase
+            .send(SendOperationRequest {
+                principal: "b098-principal".to_string(),
+                operation_id: "b098-replay-send".to_string(),
+                canonical_payload: "{\"content\":\"B-098 replay payload\"}".to_string(),
+            })
+            .await
+            .expect("replay the pre-evolution send"),
+        SendCommandOutcome::Accepted(_)
+    ));
+    assert_eq!(
+        replay_gate
+            .planned
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "operation replay must not plan a second provider effect"
+    );
+    assert_eq!(
+        replay_gate
+            .effects
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "operation replay must not dispatch a second provider effect"
+    );
+    let caller_journal = CallerAttemptJournal::new(
+        store.clone(),
+        store.clone(),
+        store.installation_id().to_string(),
+    );
+    caller_journal
+        .record_attempt_scoped(
+            "b098-principal",
+            OperationKind::Send,
+            "b098-caller-attempt",
+            b"{\"content\":\"B-098 journal payload\"}",
+            Some("b098-replay-session"),
+        )
+        .await
+        .expect("same caller attempt must replay after evolution");
+    let caller_attempt = store
+        .query(LocalEventQuery::CallerAttemptByIdentity {
+            key: CallerOperationKey {
+                principal: "b098-principal".to_string(),
+                installation_id: store.installation_id().to_string(),
+                kind: OperationKind::Send,
+                caller_request_id: "b098-caller-attempt".to_string(),
+            },
+        })
+        .await
+        .expect("query evolved caller attempt");
+    let LocalEventQueryResult::CallerAttemptByIdentity(Some(caller_attempt)) = caller_attempt
+    else {
+        panic!("the pre-evolution caller attempt was not found");
+    };
+    assert_eq!(
+        caller_journal
+            .open_attempt_command(&caller_attempt)
+            .expect("open caller attempt under the preserved HMAC context"),
+        b"{\"content\":\"B-098 journal payload\"}"
+    );
+    assert!(matches!(
+        store.commit_batch(fixture.replay_batch.clone()).await,
+        Ok(CommitBatchResult::Replayed(_))
+    ));
+    assert!(matches!(
+        store
+            .query(LocalEventQuery::OperationByIdentity {
+                kind: OperationKind::Send,
+                operation_id: "b098-send-operation".to_string(),
+            })
+            .await,
+        Ok(LocalEventQueryResult::OperationByIdentity(Some(_)))
+    ));
+    assert_eq!(
+        store
+            .query(LocalEventQuery::TerminalByTurn {
+                session_id: "b098-session".to_string(),
+                turn_id: "1".to_string(),
+            })
+            .await
+            .expect("read exact evolved terminal"),
+        fixture.terminal_before_evolution,
+        "B-098 evolution changed terminal identity, result, or participant digest"
+    );
+    assert_eq!(
+        store
+            .query(LocalEventQuery::ObligationByIdentity {
+                obligation_id: "b098-obligation".to_string(),
+            })
+            .await
+            .expect("read exact evolved obligation"),
+        fixture.obligation_before_evolution,
+        "B-098 evolution changed obligation state, pending detail, hash, or revision"
+    );
+    assert_eq!(
+        store
+            .query(LocalEventQuery::CurrentShutdown)
+            .await
+            .expect("read exact evolved current shutdown"),
+        fixture.current_shutdown_before_evolution,
+        "B-098 evolution changed current shutdown phase, summary, detail state, hash, or revision"
+    );
+    assert_eq!(
+        store
+            .query(LocalEventQuery::ShutdownPlanPage {
+                plan: fixture.plan.clone(),
+                limit: 16,
+                cursor: None,
+            })
+            .await
+            .expect("read complete evolved shutdown page"),
+        fixture.shutdown_page_before_evolution,
+        "B-098 evolution changed shutdown summary, target details/ordinals, hashes, or revisions"
+    );
+    let first_page = store
+        .query(LocalEventQuery::ShutdownPlanPage {
+            plan: fixture.plan.clone(),
+            limit: 1,
+            cursor: None,
+        })
+        .await
+        .expect("B-098 shutdown page");
+    let LocalEventQueryResult::ShutdownPlanPage(first_page) = first_page else {
+        panic!("B-098 shutdown page query returned wrong shape");
+    };
+    assert_eq!(first_page.plan.plan, fixture.plan);
+    assert_eq!(first_page.targets.len(), 1);
+    let current_cursor = first_page
+        .next_cursor
+        .expect("B-098 evolved store must issue a signed continuation cursor");
+    assert!(matches!(
+        store
+            .query(LocalEventQuery::ShutdownPlanPage {
+                plan: fixture.plan.clone(),
+                limit: 1,
+                cursor: Some(fixture.signed_cursor.clone()),
+            })
+            .await,
+        Err(LocalEventQueryError::CursorExpired)
+    ));
+    let continued_page = store
+        .query(LocalEventQuery::ShutdownPlanPage {
+            plan: fixture.plan.clone(),
+            limit: 1,
+            cursor: Some(current_cursor),
+        })
+        .await
+        .expect("B-098 post-evolution signed cursor preserves pagination semantics");
+    let LocalEventQueryResult::ShutdownPlanPage(continued_page) = continued_page else {
+        panic!("B-098 continued shutdown page query returned wrong shape");
+    };
+    assert_eq!(continued_page.plan.plan, fixture.plan);
+    assert_eq!(continued_page.targets.len(), 1);
+    assert_eq!(continued_page.targets[0].ordinal, 1);
+    assert!(continued_page.next_cursor.is_none());
+}
+
+#[tokio::test]
+async fn b098_supported_schema_evolution_is_atomic_and_preserves_identity_keys_and_semantics() {
+    enum Boundary {
+        BeforeBegin,
+        BeforeCommit,
+        CommitReplyLoss,
+        BeforeReadback,
+    }
+    for boundary in [
+        Boundary::BeforeBegin,
+        Boundary::BeforeCommit,
+        Boundary::CommitReplyLoss,
+        Boundary::BeforeReadback,
+    ] {
+        let fixture = b098_supported_v1_fixture().await;
+        let fault = Arc::new(FaultInjector::new());
+        match boundary {
+            Boundary::BeforeBegin => fault.arm_schema_fail_before_begin(),
+            Boundary::BeforeCommit => fault.arm_schema_fail_before_commit(),
+            Boundary::CommitReplyLoss => fault.arm_schema_commit_reply_loss(),
+            Boundary::BeforeReadback => fault.arm_schema_fail_before_readback(),
+        }
+        assert!(matches!(
+            LocalEventStore::open(acceptance_store_config(
+                &fixture.root,
+                fault,
+                noop_path_observer(),
+            )),
+            Err(super::store::LocalEventStoreOpenError::SchemaEvolutionFailed)
+        ));
+
+        let connection =
+            rusqlite::Connection::open(StoreLayout::new(&fixture.root).database_path())
+                .expect("inspect B-098 boundary");
+        let user_version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("read B-098 schema version");
+        match boundary {
+            Boundary::BeforeBegin | Boundary::BeforeCommit => assert_eq!(user_version, 0),
+            Boundary::CommitReplyLoss | Boundary::BeforeReadback => {
+                assert_eq!(user_version, 2)
+            }
+        }
+        drop(connection);
+
+        let reopened = LocalEventStore::open(acceptance_store_config(
+            &fixture.root,
+            Arc::new(FaultInjector::new()),
+            noop_path_observer(),
+        ))
+        .expect("B-098 restart converges to a validated schema");
+        assert_b098_semantics(&reopened, &fixture).await;
+        let connection =
+            rusqlite::Connection::open(StoreLayout::new(&fixture.root).database_path())
+                .expect("inspect evolved schema");
+        for removed in [
+            "local_store_migrations",
+            "legacy_source_inventory",
+            "legacy_raw_records",
+            "legacy_raw_record_chunks",
+            "migration_quit_flights",
+            "shutdown_compact_archives",
+        ] {
+            let count: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_schema WHERE name = ?1",
+                    [removed],
+                    |row| row.get(0),
+                )
+                .expect("inspect removed obsolete schema object");
+            assert_eq!(count, 0, "obsolete schema object remained: {removed}");
+        }
+    }
 }

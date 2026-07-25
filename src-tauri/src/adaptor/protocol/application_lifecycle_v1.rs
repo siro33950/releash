@@ -1,4 +1,4 @@
-//! Strict public V1 DTOs for application quit, shutdown, and migration.
+//! Strict public V1 DTOs for application quit and shutdown.
 //!
 //! These transport shapes deliberately contain no repository or usecase
 //! behavior. Tauri and loopback WebSocket adapters share them through the
@@ -9,6 +9,49 @@ use serde::{Deserialize, Serialize};
 use super::agent_session_v1::{
     RecoveryActionIdentityDtoV1, RecoveryActionKindDtoV1, SafeOperationFailureDtoV1,
 };
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum ApplicationStartupOutcomeDtoV1 {
+    Ready,
+    Failed {
+        kind: StartupFailureKindDtoV1,
+        #[serde(rename = "safeDescription")]
+        safe_description: String,
+        #[serde(rename = "correlationId")]
+        correlation_id: String,
+        #[serde(rename = "retryOnNextLaunch")]
+        retry_on_next_launch: bool,
+        actions: [StartupFailureActionDtoV1; 1],
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum StartupFailureKindDtoV1 {
+    StoreInUse,
+    StorageUnavailable,
+    UnsupportedRuntime,
+    UnsupportedStoreVersion,
+    InitializationStateInvalid,
+    StoreValidationFailed,
+    SchemaEvolutionFailed,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum StartupFailureActionDtoV1 {
+    Quit,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum StartupFailureQuitOutcomeDtoV1 {
+    Accepted {
+        #[serde(rename = "correlationId")]
+        correlation_id: String,
+    },
+}
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -28,8 +71,7 @@ pub(crate) struct ApplicationQuitRequestDtoV1 {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ShutdownTargetActionRequestDtoV1 {
     pub action_id: String,
-    pub plan_id: String,
-    pub epoch: String,
+    pub shutdown_id: String,
     pub ordinal: String,
     pub target_key: String,
     pub origin_revision: String,
@@ -40,39 +82,11 @@ pub(crate) struct ShutdownTargetActionRequestDtoV1 {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ApplicationQuitReceiptDtoV1 {
     pub operation_id: String,
-    pub plan_id: String,
-    pub epoch: String,
+    pub shutdown_id: String,
     pub intent: String,
     pub exit_code: i32,
     pub t0_ms: String,
     pub deadline_ms: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct MigrationApplicationQuitReceiptDtoV1 {
-    pub operation_id: String,
-    pub migration_id: String,
-    pub intent: String,
-    pub exit_code: i32,
-    pub t0_ms: String,
-    pub deadline_ms: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub(crate) enum MigrationApplicationQuitStateDtoV1 {
-    ExitPending,
-    Exited,
-    ReconciliationRequired { correlation_id: String },
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct MigrationApplicationQuitProjectionDtoV1 {
-    pub receipt: MigrationApplicationQuitReceiptDtoV1,
-    pub state: MigrationApplicationQuitStateDtoV1,
-    pub migration_revision: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -83,8 +97,7 @@ pub(crate) enum ApplicationQuitStateDtoV1 {
     Completed,
     OutcomeUnknown {
         operation_id: String,
-        plan_id: String,
-        epoch: String,
+        shutdown_id: String,
         activation_commit_id: String,
     },
     FailedBeforeActivation {
@@ -102,9 +115,6 @@ pub(crate) enum ApplicationQuitOutcomeDtoV1 {
         receipt: ApplicationQuitReceiptDtoV1,
         state: ApplicationQuitStateDtoV1,
     },
-    MigrationAccepted {
-        projection: MigrationApplicationQuitProjectionDtoV1,
-    },
     RejectedBeforeCommit {
         correlation_id: String,
     },
@@ -114,10 +124,7 @@ pub(crate) enum ApplicationQuitOutcomeDtoV1 {
         intent: ApplicationQuitIntentDtoV1,
     },
     PreviousShutdownReconciliationRequired {
-        blocking: ShutdownPlanDtoV1,
-    },
-    PreviousShutdownCompactionPending {
-        blocking: ShutdownPlanDtoV1,
+        blocking: Box<ShutdownPlanDtoV1>,
     },
 }
 
@@ -127,9 +134,6 @@ pub(crate) enum ApplicationQuitLookupDtoV1 {
     Found {
         receipt: ApplicationQuitReceiptDtoV1,
         state: ApplicationQuitStateDtoV1,
-    },
-    Migration {
-        projection: MigrationApplicationQuitProjectionDtoV1,
     },
     OutcomeUnknown {
         operation_id: String,
@@ -150,18 +154,9 @@ pub(crate) enum CurrentShutdownResultDtoV1 {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub(crate) enum LocalStoreMigrationResultDtoV1 {
-    Current {
-        migration: Option<LocalStoreMigrationDtoV1>,
-    },
-}
-
-#[derive(Debug, Clone, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ShutdownPlanDtoV1 {
-    pub plan_id: String,
-    pub epoch: String,
+    pub shutdown_id: String,
     pub phase: String,
     pub revision: String,
     pub details_state: String,
@@ -210,8 +205,7 @@ pub(crate) enum SafeEffectObservationDtoV1 {
         proof_sha256: String,
     },
     ExitCoupledOutcomeUnknown {
-        plan_id: String,
-        epoch: String,
+        shutdown_id: String,
     },
 }
 
@@ -223,20 +217,6 @@ pub(crate) struct ShutdownPlanPageDtoV1 {
     pub next_cursor: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct LocalStoreMigrationDtoV1 {
-    pub migration_id: String,
-    pub phase: String,
-    pub source_inventory_sha256: String,
-    pub next_source_ordinal: String,
-    pub total_source_count: String,
-    pub imported_raw_record_count: String,
-    pub revision: String,
-    pub safe_failure: Option<String>,
-    pub correlation_id: Option<String>,
-}
-
 #[cfg(test)]
 mod b075_tests {
     use super::*;
@@ -246,19 +226,26 @@ mod b075_tests {
     fn assert_optional_string_field<T>(_: fn(&T) -> &Option<String>) {}
 
     #[test]
+    fn b071_startup_failure_quit_uses_the_fixed_closed_wire_shape() {
+        let value = serde_json::to_value(StartupFailureQuitOutcomeDtoV1::Accepted {
+            correlation_id: "startup-correlation".to_string(),
+        })
+        .expect("serialize startup failure Quit result");
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "type": "accepted",
+                "correlationId": "startup-correlation",
+            })
+        );
+    }
+
+    #[test]
     fn b075_all_application_lifecycle_struct_semantic_integer_fields_are_strings() {
-        assert_string_field(|value: &ShutdownTargetActionRequestDtoV1| &value.epoch);
         assert_string_field(|value: &ShutdownTargetActionRequestDtoV1| &value.ordinal);
         assert_string_field(|value: &ShutdownTargetActionRequestDtoV1| &value.origin_revision);
-        assert_string_field(|value: &ApplicationQuitReceiptDtoV1| &value.epoch);
         assert_string_field(|value: &ApplicationQuitReceiptDtoV1| &value.t0_ms);
         assert_string_field(|value: &ApplicationQuitReceiptDtoV1| &value.deadline_ms);
-        assert_string_field(|value: &MigrationApplicationQuitReceiptDtoV1| &value.t0_ms);
-        assert_string_field(|value: &MigrationApplicationQuitReceiptDtoV1| &value.deadline_ms);
-        assert_string_field(|value: &MigrationApplicationQuitProjectionDtoV1| {
-            &value.migration_revision
-        });
-        assert_string_field(|value: &ShutdownPlanDtoV1| &value.epoch);
         assert_string_field(|value: &ShutdownPlanDtoV1| &value.revision);
         assert_string_field(|value: &ShutdownPlanDtoV1| &value.t0_ms);
         assert_string_field(|value: &ShutdownPlanDtoV1| &value.preparation_cutoff_ms);
@@ -272,19 +259,14 @@ mod b075_tests {
         assert_optional_string_field(|value: &ShutdownPlanDtoV1| &value.recovery_snapshot_count);
         assert_string_field(|value: &ShutdownTargetDtoV1| &value.ordinal);
         assert_string_field(|value: &ShutdownTargetDtoV1| &value.revision);
-        assert_string_field(|value: &LocalStoreMigrationDtoV1| &value.next_source_ordinal);
-        assert_string_field(|value: &LocalStoreMigrationDtoV1| &value.total_source_count);
-        assert_string_field(|value: &LocalStoreMigrationDtoV1| &value.imported_raw_record_count);
-        assert_string_field(|value: &LocalStoreMigrationDtoV1| &value.revision);
     }
 
     #[test]
     fn b075_shutdown_action_rejects_json_numbers_for_each_semantic_integer_field() {
-        for field in ["epoch", "ordinal", "origin_revision"] {
+        for field in ["ordinal", "origin_revision"] {
             let mut raw = serde_json::json!({
                 "action_id": "action-1",
-                "plan_id": "plan-1",
-                "epoch": "0",
+                "shutdown_id": "plan-1",
                 "ordinal": "0",
                 "target_key": "target-1",
                 "origin_revision": "0",
@@ -320,23 +302,25 @@ mod b075_tests {
     }
 
     #[test]
-    fn b075_application_lifecycle_enum_semantic_integers_encode_as_strings() {
+    fn b075_application_lifecycle_uses_one_shutdown_identity() {
         let maximum = i64::MAX.to_string();
         let state = serde_json::to_value(ApplicationQuitStateDtoV1::OutcomeUnknown {
             operation_id: "quit-operation-1".to_string(),
-            plan_id: "plan-1".to_string(),
-            epoch: maximum.clone(),
+            shutdown_id: "plan-1".to_string(),
             activation_commit_id: "commit-1".to_string(),
         })
         .unwrap();
-        assert_eq!(state["epoch"], maximum);
 
         let observation =
             serde_json::to_value(SafeEffectObservationDtoV1::ExitCoupledOutcomeUnknown {
-                plan_id: "plan-1".to_string(),
-                epoch: i64::MAX.to_string(),
+                shutdown_id: "plan-1".to_string(),
             })
             .unwrap();
-        assert_eq!(observation["epoch"], i64::MAX.to_string());
+        assert_eq!(state["shutdown_id"], "plan-1");
+        assert_eq!(observation["shutdown_id"], "plan-1");
+        assert!(state.get("plan_id").is_none());
+        assert!(state.get("epoch").is_none());
+        assert!(observation.get("epoch").is_none());
+        assert_eq!(maximum, "9223372036854775807");
     }
 }

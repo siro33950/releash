@@ -1417,7 +1417,6 @@ export function ChatSessionView({
 			{(supervision.state.sendOperation?.latest_status.type ===
 				"reconciliation_required" ||
 				supervision.state.recovery.length > 0 ||
-				supervision.state.migration ||
 				supervision.state.shutdown ||
 				supervision.state.shutdownOutcomeUnknown) && (
 				<div className="border-b border-border bg-muted/40 px-3 py-2 text-xs">
@@ -1426,14 +1425,6 @@ export function ChatSessionView({
 						<div>
 							Accepted send requires reconciliation:{" "}
 							{supervision.state.sendOperation.receipt.operation_id}
-						</div>
-					)}
-					{supervision.state.migration && (
-						<div>
-							Local data migration: {supervision.state.migration.phase}
-							{supervision.state.migration.safe_failure
-								? ` — ${supervision.state.migration.safe_failure}`
-								: ""}
 						</div>
 					)}
 					{supervision.state.shutdown && (

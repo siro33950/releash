@@ -13,8 +13,10 @@ pub(crate) use services::{
 pub(crate) use storage::AgentSessionProjectionPreparer;
 pub(crate) use storage::{
     AgentSessionProjectedMessage, AgentSessionProjectionCommit, AgentSessionReader,
-    AgentSessionStorage, AgentSessionStorageTypes, AgentSessionWriter,
+    AgentSessionStorageTypes,
 };
+#[cfg(test)]
+pub(crate) use storage::{AgentSessionStorage, AgentSessionWriter};
 pub(crate) use value_objects::{
     ContextEpoch, ContextEpochId, ContextEpochIdentity, ContextRevision, ContextSnapshot,
     ContextSourceKind, ContextSourceState, InstructionOrigin, InvalidPermissionMode, ModelId,

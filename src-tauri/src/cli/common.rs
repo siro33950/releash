@@ -183,7 +183,7 @@ models = ["opus"]
             context_epoch: None,
         };
         store
-            .save_full_session_for_migration_or_restore(data_dir, &session)
+            .save_full_session_for_restore(data_dir, &session)
             .unwrap();
     }
 

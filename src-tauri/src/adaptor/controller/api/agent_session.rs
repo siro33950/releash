@@ -34,8 +34,7 @@ use crate::adaptor::protocol::agent_session_v1::{
 };
 use crate::adaptor::protocol::application_lifecycle_v1::{
     ApplicationQuitLookupDtoV1, ApplicationQuitOutcomeDtoV1, ApplicationQuitRequestDtoV1,
-    CurrentShutdownResultDtoV1, LocalStoreMigrationResultDtoV1, ShutdownPlanPageDtoV1,
-    ShutdownTargetActionRequestDtoV1,
+    CurrentShutdownResultDtoV1, ShutdownPlanPageDtoV1, ShutdownTargetActionRequestDtoV1,
 };
 use crate::usecase::agent_session::operation::{
     GetSendOperationError, StopOperationError, StopOperationRequest,
@@ -78,8 +77,7 @@ fn send_or_stop_admission_error(
     error: OperationApplicationErrorDtoV1,
 ) -> OperationApplicationErrorDtoV1 {
     match error {
-        OperationApplicationErrorDtoV1::MigrationInProgress
-        | OperationApplicationErrorDtoV1::ShutdownInProgress
+        OperationApplicationErrorDtoV1::ShutdownInProgress
         | OperationApplicationErrorDtoV1::Internal { .. } => error,
         other => OperationApplicationErrorDtoV1::Internal {
             correlation_id: common_error_correlation(context, &other),
@@ -91,8 +89,7 @@ fn recovery_admission_error(
     error: OperationApplicationErrorDtoV1,
 ) -> OperationApplicationErrorDtoV1 {
     match error {
-        OperationApplicationErrorDtoV1::MigrationInProgress
-        | OperationApplicationErrorDtoV1::ShutdownInProgress
+        OperationApplicationErrorDtoV1::ShutdownInProgress
         | OperationApplicationErrorDtoV1::StorageUnavailable { .. }
         | OperationApplicationErrorDtoV1::Internal { .. } => error,
         other => OperationApplicationErrorDtoV1::Internal {
@@ -161,14 +158,12 @@ enum AgentSessionWsRequestV1 {
         limit: ExplicitOption<usize>,
         partition: ExplicitOption<PendingPartitionDtoV1>,
         owner: ExplicitOption<String>,
-        shutdown_plan_id: ExplicitOption<String>,
-        shutdown_epoch: ExplicitOption<String>,
+        shutdown_id: ExplicitOption<String>,
         cursor: ExplicitOption<String>,
     },
     GetPendingRecoverySnapshot {
         id: String,
-        plan_id: String,
-        epoch: String,
+        shutdown_id: String,
         snapshot_id: String,
         partition: PendingPartitionDtoV1,
         limit: ExplicitOption<usize>,
@@ -195,17 +190,13 @@ enum AgentSessionWsRequestV1 {
     },
     GetShutdownPlan {
         id: String,
-        plan_id: String,
-        epoch: String,
+        shutdown_id: String,
         limit: ExplicitOption<usize>,
         cursor: ExplicitOption<String>,
     },
     ResolveShutdownTarget {
         id: String,
         request: ShutdownTargetActionRequestDtoV1,
-    },
-    GetLocalStoreMigration {
-        id: String,
     },
     ListFeedback {
         id: String,
@@ -248,7 +239,6 @@ impl AgentSessionWsRequestV1 {
             | Self::GetCurrentShutdown { id }
             | Self::GetShutdownPlan { id, .. }
             | Self::ResolveShutdownTarget { id, .. }
-            | Self::GetLocalStoreMigration { id }
             | Self::ListFeedback { id, .. }
             | Self::DismissFeedback { id, .. }
             | Self::RetryFeedback { id, .. } => id,
@@ -300,10 +290,7 @@ enum AgentSessionWsResultV1 {
         result: CurrentShutdownResultDtoV1,
     },
     ShutdownPlan {
-        page: ShutdownPlanPageDtoV1,
-    },
-    LocalStoreMigration {
-        result: LocalStoreMigrationResultDtoV1,
+        page: Box<ShutdownPlanPageDtoV1>,
     },
     FeedbackPage {
         page: SessionFeedbackPageMessage,
@@ -891,9 +878,6 @@ fn session_feedback_load_error(
 async fn ensure_mutation_admission(
     deps: &AgentSessionApiDeps,
 ) -> Result<(), OperationApplicationErrorDtoV1> {
-    if !deps.local_store.normal_admission_ready() {
-        return Err(OperationApplicationErrorDtoV1::MigrationInProgress);
-    }
     match deps
         .shutdown
         .current_shutdown()
@@ -913,12 +897,6 @@ async fn ensure_mutation_admission(
         Some(_) => Err(OperationApplicationErrorDtoV1::ShutdownInProgress),
         None => Ok(()),
     }
-}
-
-fn migration_query_error(
-    error: crate::domain::local_event::LocalEventQueryError,
-) -> OperationApplicationErrorDtoV1 {
-    crate::adaptor::presenter::application_lifecycle::migration_query_error(error).into()
 }
 
 async fn dispatch(
@@ -973,8 +951,7 @@ async fn dispatch(
             limit,
             partition,
             owner,
-            shutdown_plan_id,
-            shutdown_epoch,
+            shutdown_id,
             cursor,
             ..
         } => list_pending_recovery(
@@ -982,29 +959,18 @@ async fn dispatch(
             limit.0,
             partition.0,
             owner.0,
-            shutdown_plan_id.0,
-            shutdown_epoch.0,
+            shutdown_id.0,
             cursor.0,
         )
         .await,
         AgentSessionWsRequestV1::GetPendingRecoverySnapshot {
-            plan_id,
-            epoch,
+            shutdown_id,
             snapshot_id,
             partition,
             limit,
             cursor,
             ..
         } => {
-            let epoch = match decode_nonnegative_i64_decimal(&epoch) {
-                Some(epoch) => epoch,
-                None => {
-                    return AgentSessionWsResponseV1::Error {
-                        id,
-                        error: OperationApplicationErrorDtoV1::InvalidRequest,
-                    }
-                }
-            };
             let partition = match partition {
                 PendingPartitionDtoV1::ClosedSession => {
                     crate::domain::local_event::PendingPartition::ClosedSession
@@ -1025,7 +991,7 @@ async fn dispatch(
             deps.recovery
                 .pending_snapshot(
                     crate::usecase::agent_session::operation::PendingRecoverySnapshotQuery {
-                        plan: crate::domain::local_event::ShutdownPlanKey { plan_id, epoch },
+                        plan: crate::domain::local_event::ShutdownPlanKey { shutdown_id },
                         snapshot_id,
                         partition,
                         limit: limit.0.unwrap_or(32),
@@ -1064,17 +1030,13 @@ async fn dispatch(
             .map_err(Into::into)
         }
         AgentSessionWsRequestV1::GetShutdownPlan {
-            plan_id,
-            epoch,
+            shutdown_id,
             limit,
             cursor,
             ..
-        } => get_shutdown_plan(deps, plan_id, epoch, limit.0, cursor.0).await,
+        } => get_shutdown_plan(deps, shutdown_id, limit.0, cursor.0).await,
         AgentSessionWsRequestV1::ResolveShutdownTarget { request, .. } => {
             resolve_shutdown_target(deps, request).await
-        }
-        AgentSessionWsRequestV1::GetLocalStoreMigration { .. } => {
-            get_local_store_migration(deps).await
         }
         AgentSessionWsRequestV1::ListFeedback {
             session_id,
@@ -1143,8 +1105,7 @@ async fn list_pending_recovery(
     limit: Option<usize>,
     partition: Option<PendingPartitionDtoV1>,
     owner: Option<String>,
-    shutdown_plan_id: Option<String>,
-    shutdown_epoch: Option<String>,
+    shutdown_id: Option<String>,
     cursor: Option<String>,
 ) -> Result<AgentSessionWsResultV1, OperationApplicationErrorDtoV1> {
     let partition = partition.map(|value| match value {
@@ -1159,14 +1120,12 @@ async fn list_pending_recovery(
             crate::domain::local_event::PendingPartition::UnownedRuntime
         }
     });
-    let shutdown_plan = match (shutdown_plan_id, shutdown_epoch) {
-        (Some(plan_id), Some(epoch)) if !plan_id.is_empty() => {
-            let epoch = decode_nonnegative_i64_decimal(&epoch)
-                .ok_or(OperationApplicationErrorDtoV1::InvalidRequest)?;
-            Some(crate::domain::local_event::ShutdownPlanKey { plan_id, epoch })
+    let shutdown_plan = match shutdown_id {
+        Some(shutdown_id) if !shutdown_id.is_empty() => {
+            Some(crate::domain::local_event::ShutdownPlanKey { shutdown_id })
         }
-        (None, None) => None,
-        _ => return Err(OperationApplicationErrorDtoV1::InvalidRequest),
+        None => None,
+        Some(_) => return Err(OperationApplicationErrorDtoV1::InvalidRequest),
     };
     recovery
         .pending(
@@ -1333,8 +1292,6 @@ async fn resolve_shutdown_target(
     deps: &AgentSessionApiDeps,
     request: ShutdownTargetActionRequestDtoV1,
 ) -> Result<AgentSessionWsResultV1, OperationApplicationErrorDtoV1> {
-    let epoch = decode_nonnegative_i64_decimal(&request.epoch)
-        .ok_or(OperationApplicationErrorDtoV1::InvalidRequest)?;
     let ordinal = decode_nonnegative_i64_decimal(&request.ordinal)
         .ok_or(OperationApplicationErrorDtoV1::InvalidRequest)?;
     let origin_revision = decode_nonnegative_u64_decimal(&request.origin_revision)
@@ -1345,8 +1302,7 @@ async fn resolve_shutdown_target(
             crate::usecase::shutdown_coordinator::ShutdownTargetActionRequest {
                 action_id: request.action_id,
                 plan: crate::domain::local_event::ShutdownPlanKey {
-                    plan_id: request.plan_id,
-                    epoch,
+                    shutdown_id: request.shutdown_id,
                 },
                 ordinal,
                 target_key: request.target_key,
@@ -1380,35 +1336,21 @@ async fn resolve_shutdown_target(
 
 async fn get_shutdown_plan(
     deps: &AgentSessionApiDeps,
-    plan_id: String,
-    epoch: String,
+    shutdown_id: String,
     limit: Option<usize>,
     cursor: Option<String>,
 ) -> Result<AgentSessionWsResultV1, OperationApplicationErrorDtoV1> {
     let page =
         crate::adaptor::controller::command::application_lifecycle::get_shutdown_plan_result(
             deps.shutdown.as_ref(),
-            plan_id,
-            epoch,
+            shutdown_id,
             limit,
             cursor,
         )
         .await
         .map_err(OperationApplicationErrorDtoV1::from)?;
-    Ok(AgentSessionWsResultV1::ShutdownPlan { page })
-}
-
-async fn get_local_store_migration(
-    deps: &AgentSessionApiDeps,
-) -> Result<AgentSessionWsResultV1, OperationApplicationErrorDtoV1> {
-    let migration = deps
-        .shutdown
-        .local_store_migration_read_model()
-        .await
-        .map_err(migration_query_error)?
-        .map(crate::adaptor::presenter::application_lifecycle::migration);
-    Ok(AgentSessionWsResultV1::LocalStoreMigration {
-        result: LocalStoreMigrationResultDtoV1::Current { migration },
+    Ok(AgentSessionWsResultV1::ShutdownPlan {
+        page: Box::new(page),
     })
 }
 
@@ -1445,9 +1387,6 @@ fn send_command_error(error: SendCommandErrorDtoV1) -> OperationApplicationError
         SendCommandErrorDtoV1::CapacityExceeded => OperationApplicationErrorDtoV1::CapacityExceeded,
         SendCommandErrorDtoV1::FeedbackCapacityExceeded => {
             OperationApplicationErrorDtoV1::FeedbackCapacityExceeded
-        }
-        SendCommandErrorDtoV1::MigrationInProgress => {
-            OperationApplicationErrorDtoV1::MigrationInProgress
         }
         SendCommandErrorDtoV1::ShutdownInProgress => {
             OperationApplicationErrorDtoV1::ShutdownInProgress
@@ -1741,7 +1680,7 @@ mod tests {
         let feedback = Arc::new(
             crate::usecase::agent_session::feedback::SessionFeedbackUsecase::new(
                 store.clone(),
-                store.generation_id().to_string(),
+                store.installation_id().to_string(),
             ),
         );
         let load =
@@ -1819,7 +1758,7 @@ mod tests {
             let feedback = Arc::new(
                 crate::usecase::agent_session::feedback::SessionFeedbackUsecase::new(
                     store.clone(),
-                    store.generation_id().to_string(),
+                    store.installation_id().to_string(),
                 )
                 .with_resolution_port(resolution.clone()),
             );
@@ -2197,9 +2136,9 @@ mod tests {
             let session_store = Arc::new(crate::test_support::build_session_store());
             let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
                 store.clone();
-            session_store.set_local_event_repository_with_projection_codec(
+            session_store.set_local_event_repository(
                 repository,
-                store.generation_id().to_string(),
+                store.installation_id().to_string(),
                 Arc::new(
                     crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
                 ),
@@ -2216,7 +2155,7 @@ mod tests {
             );
             session.state = crate::usecase::agent_session::session::SessionState::Idle;
             session_store
-                .save_full_session_for_migration_or_restore(data.path(), &session)
+                .save_full_session_for_restore(data.path(), &session)
                 .unwrap();
             let gate = Arc::new(PublicIdentitySendGate {
                 session_store: session_store.clone(),
@@ -2229,14 +2168,14 @@ mod tests {
                     store.clone(),
                     store.clone(),
                     gate.clone(),
-                    store.generation_id().to_string(),
+                    store.installation_id().to_string(),
                 ),
             );
             let journal = Arc::new(
                 crate::usecase::agent_session::operation::CallerAttemptJournal::new(
                     store.clone(),
                     store.clone(),
-                    store.generation_id().to_string(),
+                    store.installation_id().to_string(),
                 ),
             );
             journal
@@ -2249,7 +2188,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            store.fault_injector().stop_worker();
+            store.fault_injector().arm_drop_reply();
 
             let outcome =
                 crate::adaptor::controller::command::agent_session::session::dispatch_durable_send(
@@ -2276,18 +2215,14 @@ mod tests {
                 operation_id.to_string(),
             )
             .await
-            .expect_err("Pending caller journal must not be presented as NotFound");
-            assert_eq!(
-                serde_json::to_value(tauri).unwrap(),
-                serde_json::json!({
-                    "type": "outcome_unknown",
-                    "operation_id": operation_id,
-                })
-            );
+            .expect("lookup resolves the durably committed send after reply loss");
+            let tauri = serde_json::to_value(tauri).unwrap();
+            assert_eq!(tauri["receipt"]["operation_id"], operation_id);
+            assert_eq!(tauri["latest_status"]["type"], "awaiting_provider_start");
             let websocket = websocket_get(store.clone(), send, journal, operation_id).await;
-            assert_eq!(websocket["status"], "error");
-            assert_eq!(websocket["error"]["type"], "outcome_unknown");
-            assert_eq!(websocket["error"]["operation_id"], operation_id);
+            assert_eq!(websocket["status"], "ok");
+            assert_eq!(websocket["result"]["type"], "send_operation");
+            assert_eq!(websocket["result"]["operation"], tauri);
         }
 
         let store = tokio::time::timeout(std::time::Duration::from_secs(2), async {
@@ -2310,9 +2245,9 @@ mod tests {
         let session_store = Arc::new(crate::test_support::build_session_store());
         let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
             store.clone();
-        session_store.set_local_event_repository_with_projection_codec(
+        session_store.set_local_event_repository(
             repository,
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
             Arc::new(
                 crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
             ),
@@ -2328,16 +2263,22 @@ mod tests {
                 store.clone(),
                 store.clone(),
                 gate.clone(),
-                store.generation_id().to_string(),
+                store.installation_id().to_string(),
             ),
         );
         let journal = Arc::new(
             crate::usecase::agent_session::operation::CallerAttemptJournal::new(
                 store.clone(),
                 store.clone(),
-                store.generation_id().to_string(),
+                store.installation_id().to_string(),
             ),
         );
+        assert_eq!(
+            send.recover_pending_provider_effects_pass().await.unwrap(),
+            1,
+            "production startup recovery must resume the accepted unreserved provider effect"
+        );
+        assert_eq!(gate.effects.load(std::sync::atomic::Ordering::SeqCst), 1);
 
         let conflict_id = "b007-public-payload-conflict";
         journal
@@ -2362,7 +2303,11 @@ mod tests {
         .await;
         assert_eq!(conflict["status"], "error");
         assert_eq!(conflict["error"]["type"], "payload_conflict");
-        assert_eq!(gate.effects.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            gate.effects.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "payload conflict must not duplicate the recovered provider effect"
+        );
 
         let accepted = websocket_send(
             store.clone(),
@@ -2553,13 +2498,10 @@ mod tests {
         )
         .unwrap();
         let obligation_id = "b072-recovery-obligation";
-        let record = crate::domain::local_event::ObligationRecord::LegacyReconciliation {
-            detail: crate::domain::local_event::LegacyReconciliationRecord::ProviderSession {
-                session_id: "b072-recovery-session".to_string(),
-            },
-            safe_actions: vec![
-                crate::domain::agent_session::events::RecoveryActionKind::KeepForManualResolution,
-            ],
+        let record = crate::domain::local_event::ObligationRecord::ProviderEstablish {
+            operation_id: obligation_id.to_string(),
+            effect_identity: format!("{obligation_id}.provider"),
+            session_id: "b072-recovery-session".to_string(),
             state: crate::domain::local_event::ObligationStateRecord::Pending,
         };
         store
@@ -2567,7 +2509,7 @@ mod tests {
                 commit_id: crate::domain::local_event::CommitIdentity::parse("b072-recovery-seed")
                     .unwrap(),
                 idempotency: crate::domain::local_event::IdempotencyBinding {
-                    generation_id: store.generation_id().to_string(),
+                    installation_id: store.installation_id().to_string(),
                     operation_kind: crate::domain::local_event::CommitOperationKind::Recovery,
                     idempotency_key: "b072-recovery-seed".to_string(),
                     payload_hash: store.digest(b"b072-recovery-seed/v1"),
@@ -2599,7 +2541,7 @@ mod tests {
                 store.clone(),
                 store.clone(),
                 executor.clone(),
-                store.generation_id().to_string(),
+                store.installation_id().to_string(),
             ),
         );
         let app = tauri::test::mock_builder()
@@ -2626,7 +2568,6 @@ mod tests {
             None,
             None,
             None,
-            None,
         )
         .await
         .unwrap();
@@ -2638,8 +2579,7 @@ mod tests {
                     "limit": 32,
                     "partition": null,
                     "owner": null,
-                    "shutdown_plan_id": null,
-                    "shutdown_epoch": null,
+                    "shutdown_id": null,
                     "cursor": null,
                 })
                 .to_string()
@@ -3077,8 +3017,7 @@ mod tests {
                     limit,
                     partition,
                     owner,
-                    shutdown_plan_id,
-                    shutdown_epoch,
+                    shutdown_id,
                     cursor,
                     ..
                 } => {
@@ -3087,8 +3026,7 @@ mod tests {
                         limit.0,
                         partition.0,
                         owner.0,
-                        shutdown_plan_id.0,
-                        shutdown_epoch.0,
+                        shutdown_id.0,
                         cursor.0,
                     )
                     .await
@@ -3393,20 +3331,20 @@ mod tests {
                         .map_err(Into::into)
                     }
                     AgentSessionWsRequestV1::GetShutdownPlan {
-                        plan_id,
-                        epoch,
+                        shutdown_id,
                         limit,
                         cursor,
                         ..
                     } => crate::adaptor::controller::command::application_lifecycle::get_shutdown_plan_result(
                         self.coordinator.as_ref(),
-                        plan_id,
-                        epoch,
+                        shutdown_id,
                         limit.0,
                         cursor.0,
                     )
                     .await
-                    .map(|page| AgentSessionWsResultV1::ShutdownPlan { page })
+                    .map(|page| AgentSessionWsResultV1::ShutdownPlan {
+                        page: Box::new(page),
+                    })
                     .map_err(Into::into),
                     _ => Err(OperationApplicationErrorDtoV1::InvalidRequest),
                 };
@@ -3438,14 +3376,6 @@ mod tests {
                 ),
             )
             .unwrap();
-            tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                while !store.normal_admission_ready() {
-                    assert!(!store.migration_blocked());
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await
-            .expect("normal quit admission after empty-store cutover");
             let executor = Arc::new(PublicShutdownExecutor::default());
             let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
                 store.clone();
@@ -3457,8 +3387,8 @@ mod tests {
                     repository,
                     authority,
                     executor.clone(),
-                    store.generation_id().to_string(),
-                    store.boot_id().to_string(),
+                    store.installation_id().to_string(),
+                    store.process_instance_id().to_string(),
                 ),
             );
             let (outcome, _) = crate::adaptor::controller::command::application_lifecycle::request_application_quit_result(
@@ -3480,12 +3410,10 @@ mod tests {
                 .unwrap()
                 .to_string();
             let plan = crate::domain::local_event::ShutdownPlanKey {
-                plan_id: outcome["receipt"]["plan_id"].as_str().unwrap().to_string(),
-                epoch: outcome["receipt"]["epoch"]
+                shutdown_id: outcome["receipt"]["shutdown_id"]
                     .as_str()
                     .unwrap()
-                    .parse()
-                    .unwrap(),
+                    .to_string(),
             };
             Self {
                 _data: data,
@@ -3498,25 +3426,26 @@ mod tests {
         }
 
         fn raw_connection(&self) -> rusqlite::Connection {
-            let path = crate::adaptor::gateway::local_event_store::authority::StoreLayout::new(
+            let path = crate::adaptor::gateway::local_event_store::layout::StoreLayout::new(
                 self._data.path(),
             )
-            .generation_database_path(self.store.generation_id());
+            .database_path();
             rusqlite::Connection::open(path).expect("B088 boundary connection")
         }
 
-        fn set_current_phase(&self, phase: &str, operation_state: &str, boot_id: &str) {
+        fn set_current_phase(&self, phase: &str, operation_state: &str, process_instance_id: &str) {
             let connection = self.raw_connection();
             let summary: String = connection
                 .query_row(
-                    "SELECT summary FROM shutdown_plans WHERE plan_id = ?1 AND epoch = ?2",
-                    rusqlite::params![self.plan.plan_id, self.plan.epoch],
+                    "SELECT summary FROM shutdown_plans WHERE shutdown_id = ?1",
+                    rusqlite::params![self.plan.shutdown_id],
                     |row| row.get(0),
                 )
                 .expect("B076 shutdown summary");
             let mut summary: serde_json::Value =
                 serde_json::from_str(&summary).expect("B076 valid shutdown summary");
-            summary["boot_id"] = serde_json::Value::String(boot_id.to_string());
+            summary["process_instance_id"] =
+                serde_json::Value::String(process_instance_id.to_string());
             summary["outcome"] = serde_json::Value::String(
                 match phase {
                     "completed" => "completed",
@@ -3560,13 +3489,8 @@ mod tests {
             connection
                 .execute(
                     "UPDATE shutdown_plans SET phase = ?1, summary = ?2
-                     WHERE plan_id = ?3 AND epoch = ?4",
-                    rusqlite::params![
-                        phase,
-                        summary.to_string(),
-                        self.plan.plan_id,
-                        self.plan.epoch
-                    ],
+                     WHERE shutdown_id = ?3",
+                    rusqlite::params![phase, summary.to_string(), self.plan.shutdown_id],
                 )
                 .expect("B076 update shutdown phase");
             connection
@@ -3579,10 +3503,10 @@ mod tests {
             connection
                 .execute(
                     "UPDATE store_metadata
-                     SET current_shutdown_plan_id = ?1, current_shutdown_epoch = ?2,
+                     SET current_shutdown_id = ?1,
                          shutdown_pointer_revision = shutdown_pointer_revision + 1
                      WHERE id = 1",
-                    rusqlite::params![self.plan.plan_id, self.plan.epoch],
+                    rusqlite::params![self.plan.shutdown_id],
                 )
                 .expect("B076 restore current shutdown pointer");
         }
@@ -3592,76 +3516,6 @@ mod tests {
                 .compact_shutdown_details(self.plan.clone())
                 .await
                 .expect("compact terminal quit details");
-            tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                loop {
-                    use crate::domain::local_event::LocalEventTransactionRepository as _;
-                    if matches!(
-                        self.store
-                            .query(
-                                crate::domain::local_event::LocalEventQuery::ShutdownRetiringPlan
-                            )
-                            .await
-                            .expect("retiring selector"),
-                        crate::domain::local_event::LocalEventQueryResult::ShutdownRetiringPlan(
-                            None
-                        )
-                    ) {
-                        break;
-                    }
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await
-            .expect("bounded compact-detail cleanup");
-        }
-
-        fn restore_compacted_live_shell(&self, consistent: bool) {
-            let connection = self.raw_connection();
-            let archive: String = connection
-                .query_row(
-                    "SELECT archive FROM shutdown_compact_archives WHERE plan_id = ?1 AND epoch = ?2",
-                    rusqlite::params![self.plan.plan_id, self.plan.epoch],
-                    |row| row.get(0),
-                )
-                .unwrap();
-            let archive: serde_json::Value = serde_json::from_str(&archive).unwrap();
-            let phase = archive["terminal_phase"].as_str().unwrap();
-            let mut summary = archive["summary"].as_str().unwrap().to_string();
-            if !consistent {
-                summary.push(' ');
-            }
-            let revision = archive["source_revision"].as_i64().unwrap() + 1;
-            let commit_id: String = connection
-                .query_row(
-                    "SELECT commit_id FROM logical_commits ORDER BY first_global_sequence DESC LIMIT 1",
-                    [],
-                    |row| row.get(0),
-                )
-                .unwrap();
-            connection
-                .execute(
-                    "INSERT OR REPLACE INTO shutdown_plans
-                     (plan_id, epoch, phase, summary, details_state, revision, commit_id)
-                     VALUES (?1, ?2, ?3, ?4, 'compacted', ?5, ?6)",
-                    rusqlite::params![
-                        self.plan.plan_id,
-                        self.plan.epoch,
-                        phase,
-                        summary,
-                        revision,
-                        commit_id
-                    ],
-                )
-                .unwrap();
-        }
-
-        fn remove_live_shell(&self) {
-            self.raw_connection()
-                .execute(
-                    "DELETE FROM shutdown_plans WHERE plan_id = ?1 AND epoch = ?2",
-                    rusqlite::params![self.plan.plan_id, self.plan.epoch],
-                )
-                .unwrap();
         }
     }
 
@@ -3678,22 +3532,14 @@ mod tests {
             ),
         )
         .unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while !store.normal_admission_ready() {
-                assert!(!store.migration_blocked());
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("B076 normal admission after empty-store cutover");
         let executor = Arc::new(PublicShutdownExecutor::default());
         let coordinator = Arc::new(
             crate::usecase::shutdown_coordinator::ShutdownCoordinator::new(
                 store.clone(),
                 store.clone(),
                 executor.clone(),
-                store.generation_id().to_string(),
-                store.boot_id().to_string(),
+                store.installation_id().to_string(),
+                store.process_instance_id().to_string(),
             ),
         );
         (data, store, coordinator, executor)
@@ -3940,50 +3786,6 @@ mod tests {
             ),
             (
                 serde_json::json!({
-                    "type": "get_pending_recovery",
-                    "id": "integer-current-recovery",
-                    "limit": 1,
-                    "partition": "owner",
-                    "owner": null,
-                    "shutdown_plan_id": "plan-1",
-                    "shutdown_epoch": "0",
-                    "cursor": null
-                }),
-                serde_json::json!({
-                    "type": "get_pending_recovery",
-                    "id": "integer-current-recovery",
-                    "limit": 1,
-                    "partition": "owner",
-                    "owner": null,
-                    "shutdown_plan_id": "plan-1",
-                    "shutdown_epoch": 0,
-                    "cursor": null
-                }),
-            ),
-            (
-                serde_json::json!({
-                    "type": "get_pending_recovery_snapshot",
-                    "id": "integer-recovery-snapshot",
-                    "plan_id": "plan-1",
-                    "epoch": "0",
-                    "snapshot_id": "snapshot-1",
-                    "partition": "closed_session",
-                    "limit": 1,
-                    "cursor": null
-                }),
-                serde_json::json!({
-                    "type": "get_pending_recovery_snapshot",
-                    "id": "integer-recovery-snapshot",
-                    "plan_id": "plan-1",
-                    "epoch": 0,
-                    "snapshot_id": "snapshot-1",
-                    "partition": "closed_session",
-                    "limit": 1,
-                    "cursor": null
-                }),
-            ),
-            (
-                serde_json::json!({
                     "type": "request_recovery_action",
                     "id": "integer-recovery-action",
                     "request": {
@@ -4006,30 +3808,11 @@ mod tests {
             ),
             (
                 serde_json::json!({
-                    "type": "get_shutdown_plan",
-                    "id": "integer-shutdown-plan",
-                    "plan_id": "plan-1",
-                    "epoch": "0",
-                    "limit": 1,
-                    "cursor": null
-                }),
-                serde_json::json!({
-                    "type": "get_shutdown_plan",
-                    "id": "integer-shutdown-plan",
-                    "plan_id": "plan-1",
-                    "epoch": 0,
-                    "limit": 1,
-                    "cursor": null
-                }),
-            ),
-            (
-                serde_json::json!({
                     "type": "resolve_shutdown_target",
                     "id": "integer-shutdown-action",
                     "request": {
                         "action_id": "action-1",
-                        "plan_id": "plan-1",
-                        "epoch": "0",
+                        "shutdown_id": "plan-1",
                         "ordinal": "0",
                         "target_key": "target-1",
                         "origin_revision": "0",
@@ -4041,8 +3824,7 @@ mod tests {
                     "id": "integer-shutdown-action",
                     "request": {
                         "action_id": "action-1",
-                        "plan_id": "plan-1",
-                        "epoch": "0",
+                        "shutdown_id": "plan-1",
                         "ordinal": 0,
                         "target_key": "target-1",
                         "origin_revision": "0",
@@ -4099,15 +3881,13 @@ mod tests {
                 "limit": 1,
                 "partition": null,
                 "owner": null,
-                "shutdown_plan_id": null,
-                "shutdown_epoch": null,
+                "shutdown_id": null,
                 "cursor": null
             }),
             serde_json::json!({
                 "type": "get_pending_recovery_snapshot",
                 "id": "limit-recovery-snapshot",
-                "plan_id": "plan-1",
-                "epoch": "0",
+                "shutdown_id": "plan-1",
                 "snapshot_id": "snapshot-1",
                 "partition": "closed_session",
                 "limit": 1,
@@ -4116,8 +3896,7 @@ mod tests {
             serde_json::json!({
                 "type": "get_shutdown_plan",
                 "id": "limit-shutdown-plan",
-                "plan_id": "plan-1",
-                "epoch": "0",
+                "shutdown_id": "plan-1",
                 "limit": 1,
                 "cursor": null
             }),
@@ -4192,9 +3971,9 @@ mod tests {
         let session_store = Arc::new(crate::test_support::build_session_store());
         let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
             store.clone();
-        session_store.set_local_event_repository_with_projection_codec(
+        session_store.set_local_event_repository(
             repository,
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
             Arc::new(
                 crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
             ),
@@ -4209,14 +3988,14 @@ mod tests {
                 store.clone(),
                 store.clone(),
                 gate.clone(),
-                store.generation_id().to_string(),
+                store.installation_id().to_string(),
             ),
         );
         let journal = Arc::new(
             crate::usecase::agent_session::operation::CallerAttemptJournal::new(
                 store.clone(),
                 store.clone(),
-                store.generation_id().to_string(),
+                store.installation_id().to_string(),
             ),
         );
         let command = CanonicalSendCommandV1 {
@@ -4662,14 +4441,6 @@ mod tests {
             ),
         )
         .unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while !store.normal_admission_ready() {
-                assert!(!store.migration_blocked());
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("normal shutdown admission after empty-store cutover");
         let executor = Arc::new(PublicShutdownExecutor::default());
         let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
             store.clone();
@@ -4681,8 +4452,8 @@ mod tests {
                 repository,
                 authority,
                 executor.clone(),
-                store.generation_id().to_string(),
-                store.boot_id().to_string(),
+                store.installation_id().to_string(),
+                store.process_instance_id().to_string(),
             ),
         );
         let exit_codes = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -4722,11 +4493,7 @@ mod tests {
             .as_str()
             .unwrap()
             .to_string();
-        let plan_id = tauri_outcome["receipt"]["plan_id"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        let epoch = tauri_outcome["receipt"]["epoch"]
+        let shutdown_id = tauri_outcome["receipt"]["shutdown_id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -4802,8 +4569,7 @@ mod tests {
         let tauri_page =
             crate::adaptor::controller::command::application_lifecycle::get_shutdown_plan_result(
                 coordinator.as_ref(),
-                plan_id.clone(),
-                epoch.clone(),
+                shutdown_id.clone(),
                 Some(128),
                 None,
             )
@@ -4814,8 +4580,7 @@ mod tests {
                 serde_json::json!({
                     "type": "get_shutdown_plan",
                     "id": "b072-shutdown-page",
-                    "plan_id": plan_id,
-                    "epoch": epoch,
+                    "shutdown_id": shutdown_id,
                     "limit": 128,
                     "cursor": null,
                 })
@@ -4986,14 +4751,6 @@ mod tests {
                     ),
                 )
                 .unwrap();
-                tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                    while !store.normal_admission_ready() {
-                        assert!(!store.migration_blocked());
-                        tokio::task::yield_now().await;
-                    }
-                })
-                .await
-                .expect("normal quit admission after empty-store cutover");
                 let executor = Arc::new(PublicShutdownExecutor::default());
                 let repository: Arc<
                     dyn crate::domain::local_event::LocalEventTransactionRepository,
@@ -5006,8 +4763,8 @@ mod tests {
                         repository,
                         authority,
                         executor.clone(),
-                        store.generation_id().to_string(),
-                        store.boot_id().to_string(),
+                        store.installation_id().to_string(),
+                        store.process_instance_id().to_string(),
                     ),
                 );
                 let request = ApplicationQuitRequestDtoV1 {
@@ -5141,7 +4898,6 @@ mod tests {
 
         let compacted = PublicQuitFixture::completed("b088-compacted").await;
         compacted.compact_and_wait_for_cleanup().await;
-        compacted.restore_compacted_live_shell(true);
         let compacted_live = b088_assert_lookup_on_both_surfaces(
             compacted.coordinator.clone(),
             compacted.executor.as_ref(),
@@ -5152,45 +4908,7 @@ mod tests {
         )
         .await
         .expect("compacted live normal projection");
-        let consistent_live_archive = b088_assert_lookup_on_both_surfaces(
-            compacted.coordinator.clone(),
-            compacted.executor.as_ref(),
-            &compacted.operation_id,
-            "found",
-            Some("completed"),
-            "consistent-live-archive",
-        )
-        .await
-        .expect("consistent live+archive normal projection");
-        assert_eq!(consistent_live_archive, compacted_live);
-        compacted.remove_live_shell();
-        let archive_only = b088_assert_lookup_on_both_surfaces(
-            compacted.coordinator.clone(),
-            compacted.executor.as_ref(),
-            &compacted.operation_id,
-            "found",
-            Some("completed"),
-            "archive-only-after-shell-removal",
-        )
-        .await
-        .expect("archive-only normal projection");
-        assert_eq!(
-            archive_only, compacted_live,
-            "terminal result bytes must not depend on the optional compact shell"
-        );
-
-        let inconsistent = PublicQuitFixture::completed("b088-inconsistent").await;
-        inconsistent.compact_and_wait_for_cleanup().await;
-        inconsistent.restore_compacted_live_shell(false);
-        b088_assert_lookup_on_both_surfaces(
-            inconsistent.coordinator.clone(),
-            inconsistent.executor.as_ref(),
-            &inconsistent.operation_id,
-            "internal",
-            None,
-            "inconsistent-live-archive",
-        )
-        .await;
+        assert_eq!(compacted_live["state"]["type"], "completed");
 
         let unissued_id = "f".repeat(64);
         assert_ne!(unissued_id, available.operation_id);
@@ -5226,8 +4944,8 @@ mod tests {
         missing_plan
             .raw_connection()
             .execute(
-                "DELETE FROM shutdown_plans WHERE plan_id = ?1 AND epoch = ?2",
-                rusqlite::params![missing_plan.plan.plan_id, missing_plan.plan.epoch],
+                "DELETE FROM shutdown_plans WHERE shutdown_id = ?1",
+                rusqlite::params![missing_plan.plan.shutdown_id],
             )
             .unwrap();
         b088_assert_lookup_on_both_surfaces(
@@ -5281,9 +4999,9 @@ mod tests {
             .raw_connection()
             .execute(
                 "UPDATE operation_bindings SET binding_hmac = zeroblob(32)
-                 WHERE generation_id = ?1 AND kind = 'application_quit' AND operation_id = ?2",
+                 WHERE installation_id = ?1 AND kind = 'application_quit' AND operation_id = ?2",
                 rusqlite::params![
-                    binding_integrity.store.generation_id(),
+                    binding_integrity.store.installation_id(),
                     binding_integrity.operation_id
                 ],
             )
@@ -5304,8 +5022,7 @@ mod tests {
             "state": {
                 "type": "outcome_unknown",
                 "operation_id": accepted_inner.operation_id,
-                "plan_id": accepted_inner.plan.plan_id,
-                "epoch": accepted_inner.plan.epoch,
+                "shutdown_id": accepted_inner.plan.shutdown_id,
                 "activation_commit_id": "a".repeat(64),
             }
         })
@@ -5336,22 +5053,14 @@ mod tests {
             ),
         )
         .unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while !unknown_store.normal_admission_ready() {
-                assert!(!unknown_store.migration_blocked());
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
         let unknown_executor = Arc::new(PublicShutdownExecutor::default());
         let unknown_coordinator = Arc::new(
             crate::usecase::shutdown_coordinator::ShutdownCoordinator::new(
                 unknown_store.clone(),
                 unknown_store.clone(),
                 unknown_executor.clone(),
-                unknown_store.generation_id().to_string(),
-                unknown_store.boot_id().to_string(),
+                unknown_store.installation_id().to_string(),
+                unknown_store.process_instance_id().to_string(),
             ),
         );
         unknown_coordinator.set_pre_acceptance_hook(Arc::new({
@@ -5389,62 +5098,6 @@ mod tests {
         )
         .await
         .expect("top-level OutcomeUnknown lookup");
-
-        let migration_data = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(migration_data.path().join("sessions")).unwrap();
-        let migration_store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
-            crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
-                migration_data.path().to_path_buf(),
-            ),
-        )
-        .unwrap();
-        assert!(!migration_store.normal_admission_ready());
-        let migration_executor = Arc::new(PublicShutdownExecutor::default());
-        let migration_repository: Arc<
-            dyn crate::domain::local_event::LocalEventTransactionRepository,
-        > = migration_store.clone();
-        let migration_authority: Arc<
-            dyn crate::usecase::agent_session::operation::OperationBindingAuthority,
-        > = migration_store.clone();
-        let migration_admission: Arc<
-            dyn crate::usecase::shutdown_coordinator::MigrationAdmissionState,
-        > = migration_store.clone();
-        let migration_coordinator = Arc::new(
-            crate::usecase::shutdown_coordinator::ShutdownCoordinator::new_with_migration_admission(
-                migration_repository,
-                migration_authority,
-                migration_executor.clone(),
-                migration_store.generation_id().to_string(),
-                migration_store.boot_id().to_string(),
-                migration_admission,
-            ),
-        );
-        let (migration_outcome, _) = crate::adaptor::controller::command::application_lifecycle::request_application_quit_result(
-            migration_coordinator.as_ref(),
-            ApplicationQuitRequestDtoV1 {
-                request_id: "b088-migration".to_string(),
-                intent: crate::adaptor::protocol::application_lifecycle_v1::ApplicationQuitIntentDtoV1::Restart {
-                    code: 42,
-                },
-            },
-        )
-        .await
-        .unwrap();
-        let migration_outcome = serde_json::to_value(migration_outcome).unwrap();
-        assert_eq!(migration_outcome["type"], "migration_accepted");
-        let migration_operation = migration_outcome["projection"]["receipt"]["operation_id"]
-            .as_str()
-            .unwrap();
-        b088_assert_lookup_on_both_surfaces(
-            migration_coordinator,
-            migration_executor.as_ref(),
-            migration_operation,
-            "migration",
-            None,
-            "migration-safe-projection",
-        )
-        .await
-        .expect("migration-safe known operation projection");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -5452,13 +5105,11 @@ mod tests {
         use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
 
         let fixture = PublicQuitFixture::completed("b096-public-compaction").await;
-        let plan_id = fixture.plan.plan_id.clone();
-        let epoch = fixture.plan.epoch.to_string();
+        let shutdown_id = fixture.plan.shutdown_id.clone();
         let available =
             crate::adaptor::controller::command::application_lifecycle::get_shutdown_plan_result(
                 fixture.coordinator.as_ref(),
-                plan_id.clone(),
-                epoch.clone(),
+                shutdown_id.clone(),
                 Some(128),
                 None,
             )
@@ -5485,8 +5136,7 @@ mod tests {
                 serde_json::json!({
                     "type": "get_shutdown_plan",
                     "id": "b096-available",
-                    "plan_id": plan_id,
-                    "epoch": epoch,
+                    "shutdown_id": shutdown_id,
                     "limit": 128,
                     "cursor": null,
                 })
@@ -5501,8 +5151,7 @@ mod tests {
 
         fixture.compact_and_wait_for_cleanup().await;
         let invariant_fields = [
-            "plan_id",
-            "epoch",
+            "shutdown_id",
             "phase",
             "operation_id",
             "intent",
@@ -5524,8 +5173,7 @@ mod tests {
         for repetition in 0..3 {
             let tauri = crate::adaptor::controller::command::application_lifecycle::get_shutdown_plan_result(
                 fixture.coordinator.as_ref(),
-                fixture.plan.plan_id.clone(),
-                fixture.plan.epoch.to_string(),
+                fixture.plan.shutdown_id.clone(),
                 Some(128),
                 None,
             )
@@ -5547,8 +5195,7 @@ mod tests {
                     serde_json::json!({
                         "type": "get_shutdown_plan",
                         "id": format!("b096-compacted-{repetition}"),
-                        "plan_id": fixture.plan.plan_id,
-                        "epoch": fixture.plan.epoch.to_string(),
+                        "shutdown_id": fixture.plan.shutdown_id,
                         "limit": 128,
                         "cursor": null,
                     })
@@ -5597,28 +5244,34 @@ mod tests {
         );
 
         let phases = PublicQuitFixture::completed("b076-public-phase-matrix").await;
-        let same_boot_id = phases.store.boot_id().to_string();
-        for (phase, operation_state) in [
-            ("preparing", "preparing"),
-            ("prepared", "preparing"),
-            ("activated", "activated"),
-            ("quiescing", "activated"),
-            ("completed", "completed"),
-            ("failed", "failed_before_activation"),
-            ("cancelled", "failed_before_activation"),
-            ("reconciliation_required", "reconciliation_required"),
+        let same_boot_id = phases.store.process_instance_id().to_string();
+        for (stored_phase, operation_state, public_phase) in [
+            ("prepared", "preparing", "preparing"),
+            ("activated", "activated", "activated"),
+            ("quiescing", "activated", "quiescing"),
+            ("completed", "completed", "completed"),
+            ("failed", "failed_before_activation", "failed"),
+            ("cancelled", "failed_before_activation", "cancelled"),
+            (
+                "reconciliation_required",
+                "reconciliation_required",
+                "reconciliation_required",
+            ),
         ] {
-            phases.set_current_phase(phase, operation_state, &same_boot_id);
+            phases.set_current_phase(stored_phase, operation_state, &same_boot_id);
             let current = b076_current_on_both_surfaces(
                 phases.coordinator.clone(),
                 phases.executor.as_ref(),
-                &format!("same-boot-{phase}"),
+                &format!("same-boot-{stored_phase}"),
             )
             .await
-            .unwrap_or_else(|error| panic!("same-boot {phase} must be public: {error}"));
-            assert_eq!(current["type"], "current", "{phase}");
-            assert_eq!(current["plan"]["plan_id"], phases.plan.plan_id, "{phase}");
-            assert_eq!(current["plan"]["phase"], phase, "{phase}");
+            .unwrap_or_else(|error| panic!("same-boot {stored_phase} must be public: {error}"));
+            assert_eq!(current["type"], "current", "{stored_phase}");
+            assert_eq!(
+                current["plan"]["shutdown_id"], phases.plan.shutdown_id,
+                "{stored_phase}"
+            );
+            assert_eq!(current["plan"]["phase"], public_phase, "{stored_phase}");
         }
 
         let previous_nonterminal =
@@ -5632,8 +5285,8 @@ mod tests {
         .await
         .expect("previous-boot nonterminal projection");
         assert_eq!(
-            previous_nonterminal_current["plan"]["plan_id"],
-            previous_nonterminal.plan.plan_id
+            previous_nonterminal_current["plan"]["shutdown_id"],
+            previous_nonterminal.plan.shutdown_id
         );
         assert_eq!(
             previous_nonterminal_current["plan"]["phase"],
@@ -5653,7 +5306,7 @@ mod tests {
         .await
         .expect("same-boot completed current projection");
         assert_eq!(same_boot["type"], "current");
-        assert_eq!(same_boot["plan"]["plan_id"], completed.plan.plan_id);
+        assert_eq!(same_boot["plan"]["shutdown_id"], completed.plan.shutdown_id);
         assert_eq!(same_boot["plan"]["phase"], "completed");
 
         let restarted = Arc::new(
@@ -5661,7 +5314,7 @@ mod tests {
                 completed.store.clone(),
                 completed.store.clone(),
                 completed.executor.clone(),
-                completed.store.generation_id().to_string(),
+                completed.store.installation_id().to_string(),
                 "b076-restarted-boot".to_string(),
             ),
         );
@@ -5679,8 +5332,7 @@ mod tests {
         let tauri_history =
             crate::adaptor::controller::command::application_lifecycle::get_shutdown_plan_result(
                 restarted.as_ref(),
-                completed.plan.plan_id.clone(),
-                completed.plan.epoch.to_string(),
+                completed.plan.shutdown_id.clone(),
                 Some(128),
                 None,
             )
@@ -5704,8 +5356,7 @@ mod tests {
                 serde_json::json!({
                     "type": "get_shutdown_plan",
                     "id": "b076-previous-terminal-history",
-                    "plan_id": completed.plan.plan_id,
-                    "epoch": completed.plan.epoch.to_string(),
+                    "shutdown_id": completed.plan.shutdown_id,
                     "limit": 128,
                     "cursor": null,
                 })
@@ -5780,7 +5431,7 @@ mod tests {
         )
         .await
         .expect("redundant authority mismatch projection");
-        assert_eq!(reconciled["plan"]["plan_id"], mismatch.plan.plan_id);
+        assert_eq!(reconciled["plan"]["shutdown_id"], mismatch.plan.shutdown_id);
         assert_eq!(reconciled["plan"]["phase"], "reconciliation_required");
         assert_eq!(
             reconciled["plan"]["safe_failure"]["kind"],
@@ -5833,8 +5484,8 @@ mod tests {
                     connection
                         .execute(
                             "UPDATE shutdown_plans SET summary = 'not-json'
-                             WHERE plan_id = ?1 AND epoch = ?2",
-                            rusqlite::params![fixture.plan.plan_id, fixture.plan.epoch],
+                             WHERE shutdown_id = ?1",
+                            rusqlite::params![fixture.plan.shutdown_id],
                         )
                         .unwrap();
                 }
@@ -5842,9 +5493,12 @@ mod tests {
                     connection
                         .execute(
                             "UPDATE operation_bindings SET binding_hmac = zeroblob(32)
-                             WHERE generation_id = ?1 AND kind = 'application_quit'
+                             WHERE installation_id = ?1 AND kind = 'application_quit'
                                AND operation_id = ?2",
-                            rusqlite::params![fixture.store.generation_id(), fixture.operation_id],
+                            rusqlite::params![
+                                fixture.store.installation_id(),
+                                fixture.operation_id
+                            ],
                         )
                         .unwrap();
                 }
@@ -5867,7 +5521,7 @@ mod tests {
                         )
                         .unwrap();
                     let mut receipt: serde_json::Value = serde_json::from_str(&receipt).unwrap();
-                    receipt["plan_id"] =
+                    receipt["shutdown_id"] =
                         serde_json::Value::String("b076-different-plan".to_string());
                     connection
                         .execute(
@@ -5881,21 +5535,24 @@ mod tests {
                     let (binding, commit_id): (Vec<u8>, String) = connection
                         .query_row(
                             "SELECT binding_hmac, commit_id FROM operation_bindings
-                             WHERE generation_id = ?1 AND kind = 'application_quit'
+                             WHERE installation_id = ?1 AND kind = 'application_quit'
                                AND operation_id = ?2 LIMIT 1",
-                            rusqlite::params![fixture.store.generation_id(), fixture.operation_id],
+                            rusqlite::params![
+                                fixture.store.installation_id(),
+                                fixture.operation_id
+                            ],
                             |row| Ok((row.get(0)?, row.get(1)?)),
                         )
                         .unwrap();
                     connection
                         .execute(
                             "INSERT INTO operation_bindings
-                             (principal, generation_id, kind, caller_request_id,
+                             (principal, installation_id, kind, caller_request_id,
                               operation_id, binding_hmac, commit_id)
                              VALUES ('b076-duplicate-principal', ?1, 'application_quit',
                                      'b076-duplicate-request', ?2, ?3, ?4)",
                             rusqlite::params![
-                                fixture.store.generation_id(),
+                                fixture.store.installation_id(),
                                 fixture.operation_id,
                                 binding,
                                 commit_id
@@ -5915,12 +5572,12 @@ mod tests {
             assert_eq!(internal["type"], "internal", "{case}");
         }
 
-        let (_storage_data, storage_store, storage_coordinator, storage_executor) =
+        let (_storage_data, _storage_store, storage_coordinator, storage_executor) =
             b076_empty_public_fixture().await;
-        let storage_path = crate::adaptor::gateway::local_event_store::authority::StoreLayout::new(
+        let storage_path = crate::adaptor::gateway::local_event_store::layout::StoreLayout::new(
             _storage_data.path(),
         )
-        .generation_database_path(storage_store.generation_id());
+        .database_path();
         rusqlite::Connection::open(storage_path)
             .unwrap()
             .execute("DROP TABLE store_metadata", [])
@@ -5974,9 +5631,9 @@ mod tests {
                 let repository: Arc<
                     dyn crate::domain::local_event::LocalEventTransactionRepository,
                 > = store.clone();
-                session_store.set_local_event_repository_with_projection_codec(
+                session_store.set_local_event_repository(
                     repository,
-                    store.generation_id().to_string(),
+                    store.installation_id().to_string(),
                     Arc::new(
                         crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
                     ),
@@ -6001,7 +5658,7 @@ mod tests {
                 );
                 session.state = crate::usecase::agent_session::session::SessionState::Idle;
                 session_store
-                    .save_full_session_for_migration_or_restore(data.path(), &session)
+                    .save_full_session_for_restore(data.path(), &session)
                     .unwrap();
                 let before_meta = session_store
                     .get_session_meta(data.path(), &session_id)
@@ -6018,14 +5675,14 @@ mod tests {
                         store.clone(),
                         store.clone(),
                         gate.clone(),
-                        store.generation_id().to_string(),
+                        store.installation_id().to_string(),
                     ),
                 );
                 let journal = Arc::new(
                     crate::usecase::agent_session::operation::CallerAttemptJournal::new(
                         store.clone(),
                         store.clone(),
-                        store.generation_id().to_string(),
+                        store.installation_id().to_string(),
                     ),
                 );
                 let command = CanonicalSendCommandV1 {
@@ -6259,9 +5916,9 @@ mod tests {
         let session_store = Arc::new(crate::test_support::build_session_store());
         let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
             store.clone();
-        session_store.set_local_event_repository_with_projection_codec(
+        session_store.set_local_event_repository(
             repository,
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
             Arc::new(
                 crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
             ),
@@ -6279,7 +5936,7 @@ mod tests {
         );
         session.state = crate::usecase::agent_session::session::SessionState::Idle;
         session_store
-            .save_full_session_for_migration_or_restore(data.path(), &session)
+            .save_full_session_for_restore(data.path(), &session)
             .unwrap();
         let gate = Arc::new(PublicIdentitySendGate {
             session_store,
@@ -6291,12 +5948,12 @@ mod tests {
             store.clone(),
             store.clone(),
             gate.clone(),
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
         );
         let journal = crate::usecase::agent_session::operation::CallerAttemptJournal::new(
             store.clone(),
             store.clone(),
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
         );
         let command = CanonicalSendCommandV1 {
             target: crate::adaptor::controller::agent_session_operation_wiring::CanonicalSendTargetV1::Direct {
@@ -6726,7 +6383,7 @@ mod tests {
                     repository,
                     authority,
                     gate.clone(),
-                    store.generation_id().to_string(),
+                    store.installation_id().to_string(),
                 ),
             );
             let dispatcher: Arc<dyn WsDispatchService> = Arc::new(DurableStopWsDispatcher {
@@ -6808,7 +6465,7 @@ mod tests {
                 repository,
                 authority,
                 gate.clone(),
-                store.generation_id().to_string(),
+                store.installation_id().to_string(),
             ),
         );
         let dispatcher: Arc<dyn WsDispatchService> = Arc::new(DurableStopWsDispatcher {
@@ -7092,8 +6749,7 @@ mod tests {
             "limit": 32,
             "partition": "owner",
             "owner": null,
-            "shutdown_plan_id": null,
-            "shutdown_epoch": null,
+            "shutdown_id": null,
             "cursor": null
         }));
         assert!(matches!(
@@ -7103,8 +6759,7 @@ mod tests {
         let snapshot = serde_json::from_value::<AgentSessionWsRequestV1>(serde_json::json!({
             "type": "get_pending_recovery_snapshot",
             "id": "outer-snapshot",
-            "plan_id": "plan-1",
-            "epoch": "7",
+            "shutdown_id": "plan-1",
             "snapshot_id": "snapshot-1",
             "partition": "closed_session",
             "limit": 200,
@@ -7158,8 +6813,7 @@ mod tests {
             serde_json::from_value::<AgentSessionWsRequestV1>(serde_json::json!({
                 "type": "get_pending_recovery_snapshot",
                 "id": "outer-snapshot-unknown-partition",
-                "plan_id": "plan-1",
-                "epoch": "7",
+                "shutdown_id": "plan-1",
                 "snapshot_id": "snapshot-1",
                 "partition": "future_partition",
                 "limit": 200,
@@ -7195,10 +6849,6 @@ mod tests {
         assert_eq!(
             serde_json::to_value(OperationApplicationErrorDtoV1::RequestIdConflict).unwrap(),
             serde_json::json!({ "type": "request_id_conflict" })
-        );
-        assert_eq!(
-            serde_json::to_value(OperationApplicationErrorDtoV1::MigrationInProgress).unwrap(),
-            serde_json::json!({ "type": "migration_in_progress" })
         );
         assert_eq!(
             serde_json::to_value(OperationApplicationErrorDtoV1::ShutdownInProgress).unwrap(),

@@ -25,8 +25,7 @@ use crate::domain::workflow::{
 };
 
 use super::{
-    ApplicationShutdownPhase, CommitOperationKind, OperationKind, QuitIntent, SafeOperationFailure,
-    ShutdownPlanKey,
+    CommitOperationKind, OperationKind, QuitIntent, SafeOperationFailure, ShutdownPlanKey,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -918,14 +917,6 @@ pub enum OperationReceiptRecord {
         deadline_ms: i64,
         binding_hmac: [u8; 32],
     },
-    MigrationApplicationQuit {
-        operation_id: String,
-        migration_id: String,
-        intent: QuitIntent,
-        t0_ms: i64,
-        deadline_ms: i64,
-        binding_hmac: [u8; 32],
-    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -986,9 +977,6 @@ pub enum OperationStatusValue {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperationStatusRecord {
     pub kind: OperationKind,
-    /// Distinguishes normal application quit from migration-safe quit while
-    /// retaining the same caller-facing `OperationKind`.
-    pub migration_quit: bool,
     pub value: OperationStatusValue,
 }
 
@@ -1012,11 +1000,6 @@ pub enum TerminalInterruptReasonRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentTurnTerminalResultRecord {
     Current(TurnResult),
-    Legacy {
-        exit_code: i32,
-        reason: Option<String>,
-        token_usage: Option<TurnTokenUsage>,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1047,13 +1030,6 @@ pub enum TerminalResultRecord {
     StopSuperseded {
         terminal_identity: String,
         terminal_result_sha256: [u8; 32],
-    },
-    LegacyStopResolution {
-        operation_id: String,
-        session_id: String,
-        turn_id: String,
-        resolution: StopResolution,
-        known_observation: Box<AgentSessionDomainEvent>,
     },
 }
 
@@ -1164,51 +1140,6 @@ pub struct AuthoritativeEffectObservationRecord {
     pub proof_mac: [u8; 32],
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LegacyMissingEvidenceRecord {
-    Principal,
-    ExactCallerBinding,
-    ImmutableReceipt,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum LegacyReconciliationRecord {
-    TurnExecution {
-        session_id: String,
-        turn_id: String,
-    },
-    QueuedSend {
-        session_id: String,
-        queue_item_id: String,
-        human_message_id: String,
-        reserved_turn_id: String,
-        input_ref: String,
-    },
-    Permission {
-        session_id: String,
-        turn_id: String,
-        request: PermissionRequest,
-    },
-    ProviderSession {
-        session_id: String,
-    },
-    BackendRecovery {
-        session_id: String,
-        recovery_id: String,
-    },
-    RecoveryPublication {
-        session_id: String,
-        pending_message: RecoveryPublicationMessageRecord,
-    },
-    OperationBinding {
-        operation_kind: OperationKind,
-        operation_id: String,
-        session_id: String,
-        known_observation: AgentSessionDomainEvent,
-        missing_evidence: Vec<LegacyMissingEvidenceRecord>,
-    },
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum ObligationRecord {
     Send {
@@ -1253,10 +1184,7 @@ pub enum ObligationRecord {
     BackendSessionRecovery {
         session_id: String,
         recovery_id: String,
-        /// Historic reconciliation rows may contain only the stable session
-        /// and recovery identity. Current reservations/completions carry the
-        /// corresponding closed detail variant.
-        detail: Option<BackendSessionRecoveryObligationRecord>,
+        detail: BackendSessionRecoveryObligationRecord,
         state: ObligationStateRecord,
     },
     WorkflowShutdown {
@@ -1280,11 +1208,6 @@ pub enum ObligationRecord {
         message_id: String,
         source_obligation_id: String,
         detail: RecoveryPublicationObligationRecord,
-        state: ObligationStateRecord,
-    },
-    LegacyReconciliation {
-        detail: LegacyReconciliationRecord,
-        safe_actions: Vec<RecoveryActionKind>,
         state: ObligationStateRecord,
     },
     ProviderEstablish {
@@ -1510,7 +1433,7 @@ pub struct ShutdownPlanRecord {
     pub unresolved_count: Option<u64>,
     pub recovery_snapshot_count: Option<u64>,
     pub recovery_snapshot_id: Option<String>,
-    pub boot_id: String,
+    pub process_instance_id: String,
     pub outcome: Option<ShutdownOutcomeRecord>,
     pub failure: Option<SafeOperationFailure>,
     pub shutdown_effect_count: Option<u64>,
@@ -1544,108 +1467,6 @@ pub enum ShutdownTargetRecord {
         revision: u64,
         record: Box<ObligationRecord>,
     },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ShutdownArchiveRecord {
-    pub plan: ShutdownPlanKey,
-    pub terminal_phase: ApplicationShutdownPhase,
-    pub source_revision: u64,
-    pub summary: ShutdownPlanRecord,
-    pub source_summary_sha256: [u8; 32],
-    pub target_count: u64,
-    pub target_set_sha256: [u8; 32],
-    pub recovery_snapshot_count: u64,
-    pub recovery_snapshot_sha256: [u8; 32],
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MigrationSubstepRecord {
-    Inventory,
-    InventoryPersist,
-    RawChunks,
-    SourceComplete,
-    SemanticSessionProjection,
-    SemanticEvents,
-    Parity,
-    AuthorityPointer,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MigrationCheckpointRecord {
-    pub substep: Option<MigrationSubstepRecord>,
-    pub inventory_next_source_ordinal: Option<u64>,
-    pub next_source_ordinal: u64,
-    pub source_ordinal: Option<u64>,
-    pub source_record_ordinal: Option<u64>,
-    pub source_byte_offset: Option<u64>,
-    pub total_source_count: u64,
-    pub imported_raw_record_count: u64,
-    pub semantic_session_count: u64,
-    pub semantic_message_count: u64,
-    pub semantic_workflow_count: u64,
-    pub semantic_event_count: u64,
-    pub semantic_session_after: Option<String>,
-    pub semantic_source_kind: Option<MigrationSemanticSourceKindRecord>,
-    pub semantic_source_ordinal: Option<u64>,
-    pub semantic_source_path: Option<String>,
-    pub semantic_next_event_ordinal: Option<u64>,
-    pub semantic_next_chunk_index: Option<u64>,
-    pub semantic_terminal_count: u64,
-    pub semantic_stop_resolution_count: u64,
-    pub semantic_agent_pending_obligation_count: u64,
-    pub semantic_pending_queue_count: u64,
-    pub semantic_pending_permission_count: u64,
-    pub semantic_titled_session_count: u64,
-    pub semantic_workflow_instruction_count: u64,
-    pub semantic_context_epoch_payload_count: u64,
-    pub semantic_agent_read_path_count: u64,
-    pub semantic_owner_relation_count: u64,
-    /// Bounded compatibility marker emitted when the one-shot import fails.
-    /// The gateway maps this closed checkpoint field to/from the stored V1
-    /// `safe_failure` member; it is not an unbounded provider/storage error.
-    pub safe_failure: Option<String>,
-    pub correlation_id: Option<String>,
-    pub read_only: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MigrationSemanticSourceKindRecord {
-    AgentSession,
-    Workflow,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MigrationIntegrityRecord {
-    Pending,
-    Verified,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MigrationParityRecord {
-    pub source_count: u64,
-    pub raw_record_count: u64,
-    pub semantic_session_count: u64,
-    pub semantic_message_count: u64,
-    pub semantic_workflow_count: u64,
-    pub semantic_event_count: u64,
-    pub semantic_terminal_count: u64,
-    pub semantic_stop_resolution_count: u64,
-    pub semantic_agent_pending_obligation_count: u64,
-    pub semantic_pending_queue_count: u64,
-    pub semantic_pending_permission_count: u64,
-    pub semantic_titled_session_count: u64,
-    pub semantic_workflow_instruction_count: u64,
-    pub semantic_workflow_instruction_sha256: [u8; 32],
-    pub semantic_context_epoch_payload_count: u64,
-    pub semantic_context_epoch_payload_sha256: [u8; 32],
-    pub semantic_agent_read_path_count: u64,
-    pub semantic_agent_read_path_sha256: [u8; 32],
-    pub semantic_owner_relation_count: u64,
-    pub semantic_owner_relation_sha256: [u8; 32],
-    pub inventory_sha256: [u8; 32],
-    pub source_unchanged: bool,
-    pub integrity: MigrationIntegrityRecord,
 }
 
 fn identity_field(bytes: &mut Vec<u8>, value: &[u8]) {
@@ -1777,7 +1598,6 @@ fn identity_failure(bytes: &mut Vec<u8>, value: &SafeOperationFailure) {
     bytes.push(match value.kind {
         super::SessionOperationFailureKind::StorageUnavailable => 0,
         super::SessionOperationFailureKind::StorageCorrupt => 1,
-        super::SessionOperationFailureKind::MigrationBlocked => 2,
         super::SessionOperationFailureKind::PersistFailure => 3,
         super::SessionOperationFailureKind::ProtocolIncompatible => 4,
         super::SessionOperationFailureKind::ProviderUnavailable => 5,
@@ -1792,7 +1612,6 @@ fn identity_failure(bytes: &mut Vec<u8>, value: &SafeOperationFailure) {
         super::SessionOperationFailureKind::RuntimeGenerationChanged => 14,
         super::SessionOperationFailureKind::InvalidEffectIntent => 15,
         super::SessionOperationFailureKind::PreviousShutdownReconciliationRequired => 16,
-        super::SessionOperationFailureKind::PreviousShutdownCompactionPending => 17,
         super::SessionOperationFailureKind::Internal => 18,
     });
     bytes.push(u8::from(value.retryable));
@@ -1829,29 +1648,8 @@ impl TerminalResultRecord {
                 identity_text(bytes, message_id);
                 bytes.extend_from_slice(&streaming_final_sequence.to_be_bytes());
                 bytes.extend_from_slice(&completed_at_bits.to_be_bytes());
-                match result {
-                    AgentTurnTerminalResultRecord::Current(result) => {
-                        bytes.push(0);
-                        identity_turn_result(bytes, result);
-                    }
-                    AgentTurnTerminalResultRecord::Legacy {
-                        exit_code,
-                        reason,
-                        token_usage,
-                    } => {
-                        bytes.push(1);
-                        bytes.extend_from_slice(&exit_code.to_be_bytes());
-                        identity_optional_text(bytes, reason.as_deref());
-                        match token_usage {
-                            Some(value) => {
-                                bytes.push(1);
-                                bytes.extend_from_slice(&value.input_tokens.to_be_bytes());
-                                bytes.extend_from_slice(&value.output_tokens.to_be_bytes());
-                            }
-                            None => bytes.push(0),
-                        }
-                    }
-                }
+                let AgentTurnTerminalResultRecord::Current(result) = result;
+                identity_turn_result(bytes, result);
             }
             Self::SessionClosed {
                 operation_id,
@@ -1894,9 +1692,6 @@ impl TerminalResultRecord {
                 identity_text(bytes, "stop_superseded");
                 identity_text(bytes, terminal_identity);
                 identity_field(bytes, terminal_result_sha256);
-            }
-            Self::LegacyStopResolution { .. } => {
-                return Err("legacy terminal observation has no identity-v1 encoding")
             }
         }
         Ok(())
@@ -2072,13 +1867,12 @@ impl ObligationRecord {
                 identity_text(bytes, session_id);
                 identity_text(bytes, recovery_id);
                 match detail {
-                    None => bytes.push(0),
-                    Some(BackendSessionRecoveryObligationRecord::EffectReserved {
+                    BackendSessionRecoveryObligationRecord::EffectReserved {
                         old_provider_session_generation,
                         reason,
                         reserved_at_bits,
-                    }) => {
-                        bytes.push(1);
+                    } => {
+                        bytes.push(0);
                         bytes.extend_from_slice(&old_provider_session_generation.to_be_bytes());
                         bytes.push(match reason {
                             BackendSessionRecoveryReason::ResumeMismatch => 0,
@@ -2086,23 +1880,23 @@ impl ObligationRecord {
                         });
                         bytes.extend_from_slice(&reserved_at_bits.to_be_bytes());
                     }
-                    Some(BackendSessionRecoveryObligationRecord::Completed {
+                    BackendSessionRecoveryObligationRecord::Completed {
                         old_provider_session_generation,
                         provider_session_generation,
                         backend_session_id,
                         completed_at_bits,
-                    }) => {
-                        bytes.push(2);
+                    } => {
+                        bytes.push(1);
                         bytes.extend_from_slice(&old_provider_session_generation.to_be_bytes());
                         bytes.extend_from_slice(&provider_session_generation.to_be_bytes());
                         identity_text(bytes, backend_session_id);
                         bytes.extend_from_slice(&completed_at_bits.to_be_bytes());
                     }
-                    Some(BackendSessionRecoveryObligationRecord::Failed {
+                    BackendSessionRecoveryObligationRecord::Failed {
                         error_sha256,
                         failed_at_bits,
-                    }) => {
-                        bytes.push(3);
+                    } => {
+                        bytes.push(2);
                         identity_field(bytes, error_sha256);
                         bytes.extend_from_slice(&failed_at_bits.to_be_bytes());
                     }
@@ -2232,9 +2026,6 @@ impl ObligationRecord {
                     }
                 }
                 identity_obligation_state(bytes, *state);
-            }
-            Self::LegacyReconciliation { .. } => {
-                return Err("legacy reconciliation obligation has no identity-v1 encoding")
             }
             Self::ProviderEstablish {
                 operation_id,

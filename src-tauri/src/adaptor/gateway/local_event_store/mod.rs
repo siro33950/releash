@@ -1,12 +1,6 @@
-//! Permanent SQLite local event store gateway.
-//!
-//! Implements `domain::local_event::LocalEventTransactionRepository` on
-//! bundled SQLite: schema version 1, the single-writer worker with a bounded
-//! two-lane queue, the bounded reader pool, canonical CBOR payload codec,
-//! MAC-protected cursors, and the `authority-v1.json` cutover pointer.
+//! Permanent fixed-path SQLite local event store gateway.
 
 pub(crate) mod agent_session_codec;
-pub(crate) mod authority;
 pub(crate) mod canonical_cbor;
 pub(crate) mod clock;
 pub(crate) mod commit;
@@ -15,7 +9,7 @@ pub(crate) mod cursor;
 pub(crate) mod envelope;
 pub(crate) mod fault;
 pub(crate) mod hmac_sha256;
-pub(crate) mod migration;
+pub(crate) mod layout;
 pub(crate) mod projection_record_codec;
 pub(crate) mod read_only;
 pub(crate) mod reader;

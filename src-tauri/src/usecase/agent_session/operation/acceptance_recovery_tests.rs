@@ -11,15 +11,15 @@ use crate::domain::agent_session::entities::{
     PermissionResponseDecision, TurnResult,
 };
 use crate::domain::agent_session::events::{
-    AgentSessionDomainEvent, RecoveryActionKind, RecoveryResultClassification, SendDisposition,
-    StopResolution,
+    AgentSessionDomainEvent, BackendSessionRecoveryReason, RecoveryActionKind,
+    RecoveryResultClassification, SendDisposition, StopResolution,
 };
 use crate::domain::local_event::{
     AgentMessageProjectionRecord, AgentMessageRoleRecord, AgentSessionStateRecord,
     AgentTerminalKind, AgentTurnTerminalResultRecord, AuthoritativeEffectObservationRecord,
-    CommitBatchError, CommitBatchResult, CommitIdentity, CommitOperationKind, ExpectedStreamHead,
-    IdempotencyBinding, LegacyReconciliationRecord, LoadStreamRequest, LoadedDomainEvent,
-    LocalAtomicBatch, LocalDomainEvent, LocalEventQuery, LocalEventQueryResult,
+    BackendSessionRecoveryObligationRecord, CommitBatchError, CommitBatchResult, CommitIdentity,
+    CommitOperationKind, ExpectedStreamHead, IdempotencyBinding, LoadStreamRequest,
+    LoadedDomainEvent, LocalAtomicBatch, LocalDomainEvent, LocalEventQuery, LocalEventQueryResult,
     LocalEventTransactionRepository, LocalStateMutation, MessageProjectionMutation,
     MessageProjectionRecord, ObligationMutation, ObligationRecord, ObligationStateRecord,
     OperationKind, OperationReceiptRecord, OperationRecordMutation, OperationStatusRecord,
@@ -188,12 +188,14 @@ fn agent_terminal_result(
 }
 
 fn backend_reconciliation(session_id: &str, recovery_id: &str) -> ObligationRecord {
-    ObligationRecord::LegacyReconciliation {
-        detail: LegacyReconciliationRecord::BackendRecovery {
-            session_id: session_id.to_string(),
-            recovery_id: recovery_id.to_string(),
+    ObligationRecord::BackendSessionRecovery {
+        session_id: session_id.to_string(),
+        recovery_id: recovery_id.to_string(),
+        detail: BackendSessionRecoveryObligationRecord::EffectReserved {
+            old_provider_session_generation: 0,
+            reason: BackendSessionRecoveryReason::BackendSessionLost,
+            reserved_at_bits: 0,
         },
-        safe_actions: Vec::new(),
         state: ObligationStateRecord::ReconciliationRequired,
     }
 }
@@ -207,7 +209,7 @@ async fn commit_mutations(
         .commit_batch(LocalAtomicBatch {
             commit_id: CommitIdentity::parse(identity).unwrap(),
             idempotency: IdempotencyBinding {
-                generation_id: store.generation_id().to_string(),
+                installation_id: store.installation_id().to_string(),
                 operation_kind: CommitOperationKind::Recovery,
                 idempotency_key: identity.to_string(),
                 payload_hash: OperationBindingAuthority::digest(
@@ -396,7 +398,7 @@ async fn b022_each_terminal_commit_boundary_is_all_old_or_all_new_after_reload()
             .commit_batch(LocalAtomicBatch {
                 commit_id: CommitIdentity::parse(&format!("b022-terminal-{boundary}")).unwrap(),
                 idempotency: IdempotencyBinding {
-                    generation_id: store.generation_id().to_string(),
+                    installation_id: store.installation_id().to_string(),
                     operation_kind: CommitOperationKind::OperationProgress,
                     idempotency_key: format!("b022-terminal-{boundary}"),
                     payload_hash: OperationBindingAuthority::digest(
@@ -524,7 +526,7 @@ async fn b026_all_terminal_contender_orders_keep_one_complete_winner_across_relo
                 .commit_batch(LocalAtomicBatch {
                     commit_id: CommitIdentity::parse(&batch_identity).unwrap(),
                     idempotency: IdempotencyBinding {
-                        generation_id: store.generation_id().to_string(),
+                        installation_id: store.installation_id().to_string(),
                         operation_kind: CommitOperationKind::Stop,
                         idempotency_key: batch_identity.clone(),
                         payload_hash: OperationBindingAuthority::digest(
@@ -694,8 +696,16 @@ impl RecoveryEffectExecutor for ClosedActionExecutor {
     ) -> Result<RecoveryEffectResult, SafeOperationFailure> {
         assert!(matches!(
             &request.immutable_obligation,
-            ObligationRecord::Observed { observation, .. }
-                if observation.effect_identity == request.obligation_id
+            ObligationRecord::Observed {
+                original,
+                observation,
+            } if matches!(
+                original.as_ref(),
+                ObligationRecord::PermissionResponse {
+                    effect_identity,
+                    ..
+                } if observation.effect_identity == *effect_identity
+            )
         ));
         if matches!(
             request.action,
@@ -743,7 +753,7 @@ fn recovery_usecase(
         store.clone(),
         store.clone(),
         executor,
-        store.generation_id().to_string(),
+        store.installation_id().to_string(),
     )
 }
 
@@ -992,7 +1002,6 @@ async fn b037_startup_send_recovery_skips_non_owner_partitions_after_restart() {
                 },
                 latest_status: OperationStatusRecord {
                     kind: OperationKind::Send,
-                    migration_quit: false,
                     value: OperationStatusValue::AwaitingProviderStart {
                         dependency_obligation_ids: vec![establish_obligation_id.clone()],
                     },
@@ -1049,7 +1058,7 @@ async fn b037_startup_send_recovery_skips_non_owner_partitions_after_restart() {
         reopened.clone(),
         reopened.clone(),
         gate.clone(),
-        reopened.generation_id().to_string(),
+        reopened.installation_id().to_string(),
     );
 
     assert_eq!(
@@ -1117,8 +1126,7 @@ async fn b037_startup_send_recovery_skips_non_owner_partitions_after_restart() {
 async fn b090_real_store_decoded_public_pages_keep_exact_shutdown_plan_association() {
     let (_directory, store) = open_store();
     let selected = ShutdownPlanKey {
-        plan_id: "b090-plan-1".to_string(),
-        epoch: 7,
+        shutdown_id: "b090-plan-1".to_string(),
     };
     let mut mutations = Vec::with_capacity(204);
     let mut associated = |obligation_id: String, ordinal: usize, plan: ShutdownPlanKey| {
@@ -1142,19 +1150,17 @@ async fn b090_real_store_decoded_public_pages_keep_exact_shutdown_plan_associati
         );
     }
     associated(
-        "b090-other-epoch".to_string(),
+        "b090-other-shutdown".to_string(),
         201,
         ShutdownPlanKey {
-            plan_id: selected.plan_id.clone(),
-            epoch: 8,
+            shutdown_id: "b090-plan-other".to_string(),
         },
     );
     associated(
         "b090-other-plan".to_string(),
         202,
         ShutdownPlanKey {
-            plan_id: "b090-plan-2".to_string(),
-            epoch: 7,
+            shutdown_id: "b090-plan-2".to_string(),
         },
     );
     mutations.push(pending_obligation(
@@ -1208,22 +1214,28 @@ fn observed_recovery_record(
     include_observation: bool,
 ) -> ObligationRecord {
     let safe_view = "provider confirms the effect never started";
+    let effect_identity = format!("permission-response:{obligation_id}");
     let canonical = serde_json::to_vec(&serde_json::json!({
         "schema": "authoritative_effect_observation_v1",
-        "effect_identity": obligation_id,
+        "effect_identity": effect_identity,
         "origin_revision": 0,
         "classification": "confirmed_no_effect",
         "cancellable": true,
         "safe_view": safe_view,
     }))
     .unwrap();
-    let original = ObligationRecord::LegacyReconciliation {
-        detail: LegacyReconciliationRecord::BackendRecovery {
-            session_id: "action-owner".to_string(),
-            recovery_id: format!("recovery-{obligation_id}"),
+    let original = ObligationRecord::PermissionResponse {
+        operation_id: obligation_id.to_string(),
+        effect_identity: effect_identity.clone(),
+        session_id: "action-owner".to_string(),
+        turn_id: "1".to_string(),
+        response: PermissionResponse {
+            request_id: format!("request-{obligation_id}"),
+            decision: PermissionResponseDecision::Deny { message: None },
         },
-        safe_actions: vec![RecoveryActionKind::RetrySameEffect],
-        state: ObligationStateRecord::ReconciliationRequired,
+        owner_access: true,
+        from_runtime_state: true,
+        state: ObligationStateRecord::Pending,
     };
     if !include_observation {
         return original;
@@ -1231,7 +1243,7 @@ fn observed_recovery_record(
     ObligationRecord::Observed {
         original: Box::new(original),
         observation: AuthoritativeEffectObservationRecord {
-            effect_identity: obligation_id.to_string(),
+            effect_identity,
             origin_revision: 0,
             classification: RecoveryResultClassification::ConfirmedNoEffect,
             cancellable: true,
@@ -1475,7 +1487,7 @@ async fn b081_real_store_executes_all_five_closed_actions_and_rejects_unoffered_
 
     let direct_cancel_id = derive_recovery_action_id(
         store.as_ref(),
-        store.generation_id(),
+        store.installation_id(),
         unavailable_id,
         0,
         RecoveryActionKind::CancelIfSafe,
@@ -1564,7 +1576,7 @@ async fn b079_real_store_keeps_normal_fatal_and_close_superseded_terminal_unique
             store.clone(),
             store.clone(),
             gate.clone(),
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
         );
         let session_id = format!("superseded-{case}");
         let request_id = format!("stop-request-{case}");
@@ -1617,7 +1629,7 @@ async fn b079_real_store_keeps_normal_fatal_and_close_superseded_terminal_unique
             .commit_batch(LocalAtomicBatch {
                 commit_id: CommitIdentity::parse(&format!("b079-{case}-terminal")).unwrap(),
                 idempotency: IdempotencyBinding {
-                    generation_id: store.generation_id().to_string(),
+                    installation_id: store.installation_id().to_string(),
                     operation_kind: CommitOperationKind::OperationProgress,
                     idempotency_key: format!("b079-{case}-terminal"),
                     payload_hash: OperationBindingAuthority::digest(
@@ -1647,7 +1659,7 @@ async fn b079_real_store_keeps_normal_fatal_and_close_superseded_terminal_unique
             store.clone(),
             store.clone(),
             gate.clone(),
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
         );
         let (saved_receipt, saved_state) = restarted
             .get_operation("local-app", &request_id)
@@ -1741,9 +1753,9 @@ fn f05_production_session_close_recovery_graph(
     let session_store = Arc::new(crate::test_support::build_session_store());
     let repository: Arc<dyn LocalEventTransactionRepository> = store.clone();
     let authority: Arc<dyn OperationBindingAuthority> = store.clone();
-    session_store.set_local_event_repository_with_projection_codec(
+    session_store.set_local_event_repository(
         repository.clone(),
-        store.generation_id().to_string(),
+        store.installation_id().to_string(),
         Arc::new(
             crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
         ),
@@ -1761,13 +1773,13 @@ fn f05_production_session_close_recovery_graph(
         repository.clone(),
         authority.clone(),
         operation_gate.clone(),
-        store.generation_id().to_string(),
+        store.installation_id().to_string(),
     ));
     let stop = Arc::new(StopOperationUsecase::new(
         repository.clone(),
         authority.clone(),
         operation_gate.clone(),
-        store.generation_id().to_string(),
+        store.installation_id().to_string(),
     ));
     operation_gate.bind_stop_operation(Arc::downgrade(&stop));
     let send_gate = Arc::new(RuntimeSendOperationGate::new(
@@ -1779,7 +1791,7 @@ fn f05_production_session_close_recovery_graph(
         repository.clone(),
         authority.clone(),
         send_gate.clone(),
-        store.generation_id().to_string(),
+        store.installation_id().to_string(),
     ));
     operation_gate.bind_send_operation(Arc::downgrade(&send));
     send_gate.bind_status_sink(Arc::downgrade(&send));
@@ -1790,7 +1802,7 @@ fn f05_production_session_close_recovery_graph(
             runtime,
             session_store,
         )),
-        store.generation_id().to_string(),
+        store.installation_id().to_string(),
     ));
     let executor = Arc::new(ConservativeRecoveryExecutor::new(
         stop,
@@ -1805,7 +1817,7 @@ fn f05_production_session_close_recovery_graph(
             store.clone(),
             store.clone(),
             executor,
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
         ),
         lifecycle,
     )
@@ -1857,7 +1869,6 @@ async fn f05_production_session_close_read_again_settles_owner_operation_and_obl
                 },
                 latest_status: OperationStatusRecord {
                     kind: OperationKind::SessionLifecycle,
-                    migration_quit: false,
                     value: OperationStatusValue::Accepted,
                 },
                 expected: RevisionGuard::Absent,

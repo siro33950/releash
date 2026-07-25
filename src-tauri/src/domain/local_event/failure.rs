@@ -16,7 +16,6 @@ pub const NOTICE_DETAIL_MAX_BYTES: usize = 2048;
 pub enum SessionOperationFailureKind {
     StorageUnavailable,
     StorageCorrupt,
-    MigrationBlocked,
     PersistFailure,
     ProtocolIncompatible,
     ProviderUnavailable,
@@ -31,7 +30,6 @@ pub enum SessionOperationFailureKind {
     RuntimeGenerationChanged,
     InvalidEffectIntent,
     PreviousShutdownReconciliationRequired,
-    PreviousShutdownCompactionPending,
     Internal,
 }
 
@@ -49,8 +47,7 @@ pub enum SafeEffectObservation {
         proof_sha256: [u8; 32],
     },
     ExitCoupledOutcomeUnknown {
-        plan_id: String,
-        epoch: i64,
+        shutdown_id: String,
     },
 }
 

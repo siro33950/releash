@@ -207,6 +207,9 @@ beforeEach(() => {
 	mocks.reconciliationFailuresRemaining = 0;
 	mocks.workspaceSelectionInvalidated = null;
 	mocks.invoke.mockImplementation((command: string, args?: unknown) => {
+		if (command === "get_application_startup_outcome") {
+			return Promise.resolve({ type: "ready" });
+		}
 		if (command === "get_cwd" || command === "get_main_repo_path") {
 			return Promise.resolve("/repo");
 		}

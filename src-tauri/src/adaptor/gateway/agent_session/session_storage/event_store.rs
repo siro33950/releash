@@ -57,10 +57,7 @@ impl FileSessionStorage {
         #[cfg(not(test))]
         return load_queue_pause_projection_from_dir_with_checkpoint(&dir, false);
         #[cfg(test)]
-        load_queue_pause_projection_from_dir_with_checkpoint(
-            &dir,
-            !self.legacy_mutation_admission_closed(),
-        )
+        load_queue_pause_projection_from_dir_with_checkpoint(&dir, true)
     }
 
     pub fn load_session_events(
@@ -83,7 +80,6 @@ impl FileSessionStorage {
         session_id: &str,
         event: &AgentSessionEvent,
     ) -> Result<Vec<AgentSessionEvent>, String> {
-        self.ensure_legacy_mutation_admitted()?;
         if !self.reconcile_session_transaction(app_data_dir, session_id)? {
             return Err(format!("Session not found: {session_id}"));
         }
@@ -104,7 +100,6 @@ impl FileSessionStorage {
         session_id: &str,
         event: &AgentSessionEvent,
     ) -> Result<(), String> {
-        self.ensure_legacy_mutation_admitted()?;
         if !self.reconcile_session_transaction(app_data_dir, session_id)? {
             return Err(format!("Session not found: {session_id}"));
         }
@@ -135,7 +130,6 @@ impl FileSessionStorage {
         session_id: &str,
         events: &[AgentSessionEvent],
     ) -> Result<(), String> {
-        self.ensure_legacy_mutation_admitted()?;
         if events.is_empty() {
             return Ok(());
         }
@@ -1061,38 +1055,6 @@ fn decode_event_log_content(
     decode_event_log_records(records, source_id, 0)
 }
 
-pub(super) fn decode_legacy_event_record_v1(
-    raw: &[u8],
-    source_id: &str,
-    record_ordinal: u64,
-) -> Result<Vec<AgentSessionEvent>, String> {
-    #[derive(Deserialize)]
-    struct RawBatch {
-        events: Vec<Box<RawValue>>,
-    }
-
-    let raw: Box<RawValue> = serde_json::from_slice(raw)
-        .map_err(|error| format!("invalid legacy event record: {error}"))?;
-    let value: serde_json::Value = serde_json::from_str(raw.get())
-        .map_err(|error| format!("invalid legacy event record: {error}"))?;
-    let records = if value.get("type").is_none() && value.get("events").is_some() {
-        let batch: RawBatch = serde_json::from_str(raw.get())
-            .map_err(|error| format!("invalid legacy event batch: {error}"))?;
-        vec![RawEventLogRecord::Batch {
-            events: batch.events,
-        }]
-    } else {
-        vec![RawEventLogRecord::Event(raw)]
-    };
-    let decoded = decode_event_log_records(records, source_id, record_ordinal)
-        .map_err(|error| error.to_string())?;
-    Ok(decoded
-        .records
-        .into_iter()
-        .map(|record| record.event)
-        .collect())
-}
-
 fn decode_event_log_records(
     records: Vec<RawEventLogRecord>,
     source_id: &str,
@@ -1249,10 +1211,7 @@ mod tests {
     fn storage_with_session(tmp: &tempfile::TempDir, session_id: &str) -> FileSessionStorage {
         let storage = FileSessionStorage::default();
         storage
-            .save_full_session_for_migration_or_restore(
-                tmp.path(),
-                &session(session_id, tmp.path()),
-            )
+            .save_full_session_for_restore(tmp.path(), &session(session_id, tmp.path()))
             .unwrap();
         storage
     }

@@ -34,9 +34,8 @@ pub(crate) struct TauriWorkflowRuntimeCommandGateway {
     engine: Arc<dyn WorkflowRuntimeEngine>,
     session_store: Arc<SessionStore>,
     agent_runtime: Arc<AgentSessionRuntimeUsecase>,
-    local_event_repository:
-        Option<Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>>,
-    local_event_generation_id: Option<String>,
+    local_event_repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
+    local_event_installation_id: String,
 }
 
 pub(crate) struct TauriWorkflowRuntimeCommandGatewayDeps {
@@ -49,7 +48,7 @@ pub(crate) struct TauriWorkflowRuntimeCommandGatewayDeps {
     pub(crate) data_dir: Option<PathBuf>,
     pub(crate) local_event_repository:
         Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
-    pub(crate) local_event_generation_id: String,
+    pub(crate) local_event_installation_id: String,
 }
 
 struct WorkflowShutdownRecord<'a> {
@@ -73,8 +72,8 @@ impl TauriWorkflowRuntimeCommandGateway {
         &self,
         effect_identity: &str,
     ) -> Result<Option<crate::domain::local_event::ObligationView>, ()> {
-        let repository = self.local_event_repository.as_ref().ok_or(())?;
-        let result = repository
+        let result = self
+            .local_event_repository
             .query(
                 crate::domain::local_event::LocalEventQuery::ObligationByIdentity {
                     obligation_id: Self::shutdown_obligation_id(effect_identity),
@@ -135,12 +134,8 @@ impl TauriWorkflowRuntimeCommandGateway {
             expected,
             revision,
         } = record;
-        let (Some(repository), Some(generation_id)) = (
-            self.local_event_repository.as_ref(),
-            self.local_event_generation_id.as_ref(),
-        ) else {
-            return false;
-        };
+        let repository = &self.local_event_repository;
+        let installation_id = &self.local_event_installation_id;
         let obligation_id = Self::shutdown_obligation_id(effect_identity);
         let record = crate::domain::local_event::ObligationRecord::WorkflowShutdown {
             operation_id: operation_id.to_string(),
@@ -180,7 +175,7 @@ impl TauriWorkflowRuntimeCommandGateway {
         let batch = crate::domain::local_event::LocalAtomicBatch {
             commit_id,
             idempotency: crate::domain::local_event::IdempotencyBinding {
-                generation_id: generation_id.clone(),
+                installation_id: installation_id.clone(),
                 operation_kind: crate::domain::local_event::OperationKind::ApplicationQuit.into(),
                 idempotency_key: format!("{obligation_id}.{}", revision.value()),
                 payload_hash,
@@ -213,10 +208,8 @@ impl TauriWorkflowRuntimeCommandGateway {
             branch_diff_context,
             data_dir,
             local_event_repository,
-            local_event_generation_id,
+            local_event_installation_id,
         } = deps;
-        let authority_repository = local_event_repository.clone();
-        let authority_generation_id = local_event_generation_id.clone();
         let engine = new_workflow_runtime_engine(
             Arc::new(DefaultWorkflowDefinitionResolver),
             Arc::new(AppConfigManagedWorktreeResolver::new(
@@ -225,24 +218,17 @@ impl TauriWorkflowRuntimeCommandGateway {
             )),
             Some(branch_diff_context),
             open_tabs,
+            data_dir,
+            local_event_repository.clone(),
+            local_event_installation_id.clone(),
         );
-        let engine_for_init = engine.clone();
-        tauri::async_runtime::block_on(async move {
-            engine_for_init
-                .set_local_event_repository(local_event_repository, local_event_generation_id)
-                .await;
-            if let Some(data_dir) = data_dir {
-                engine_for_init.set_execution_store_data_dir(data_dir).await;
-            }
-            Ok::<(), WorkflowEngineError>(())
-        })?;
         Ok(Self {
             app,
             engine,
             session_store,
             agent_runtime,
-            local_event_repository: Some(authority_repository),
-            local_event_generation_id: Some(authority_generation_id),
+            local_event_repository,
+            local_event_installation_id,
         })
     }
 }

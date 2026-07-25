@@ -15,30 +15,25 @@ use crate::adaptor::gateway::local_event_store::projection_record_codec::{
     encode_message_projection_update_v1, encode_session_projection_update_v1,
 };
 use crate::adaptor::gateway::local_event_store::state_record_codec::{
-    StoredMigrationCheckpointV1, StoredMigrationParityV1, StoredMigrationQuitV1,
     StoredObligationV1, StoredOperationReceiptV1, StoredOperationStatusV1, StoredRecoveryActionV1,
-    StoredRecoveryResultV1, StoredShutdownArchiveV1, StoredShutdownPlanV1, StoredShutdownTargetV1,
-    StoredTerminalV1,
+    StoredRecoveryResultV1, StoredShutdownPlanV1, StoredShutdownTargetV1, StoredTerminalV1,
 };
 use crate::adaptor::gateway::local_event_store::writer::{PreparedBatch, PreparedEvent};
 use crate::domain::local_event::{
     validate_operation_record, validate_stop_resolution, validate_terminal_record,
     CallerAttemptMutation, CommitBatchError, CommitBatchResult, CommitOperationKind,
     CommitResolution, CommittedBatch, CommittedStreamHead, IdempotencyBinding,
-    LocalEventQueryError, LocalStateMutation, MessageProjectionMutation,
-    MigrationCheckpointMutation, MigrationParityMutation, MigrationQuitFlightMutation,
-    ObligationMutation, ObligationRecord, ObligationStateRecord, OperationBindingMutation,
-    OperationKind, OperationRecordMutation, RecoveryActionMutation, RecoveryAttemptRecord,
+    LocalEventQueryError, LocalStateMutation, MessageProjectionMutation, ObligationMutation,
+    ObligationRecord, ObligationStateRecord, OperationBindingMutation, OperationKind,
+    OperationRecordMutation, RecoveryActionMutation, RecoveryAttemptRecord,
     RecoveryResourceViewRecord, RecoveryResultRecord, Revision, RevisionGuard,
     SafeOperationFailure, SessionOperationFailureKind, SessionProjectionMutation,
-    ShutdownCompactArchiveMutation, ShutdownLatestPointerMutation, ShutdownPlanMutation,
-    ShutdownRecoverySnapshotMutation, ShutdownRetiringPointerMutation, ShutdownTargetMutation,
-    ShutdownTargetRecord, StopResolutionMutation, StreamId, StreamVersion, TerminalRecordMutation,
+    ShutdownDetailsCompactionMutation, ShutdownLatestPointerMutation, ShutdownPlanMutation,
+    ShutdownRecoverySnapshotMutation, ShutdownTargetMutation, ShutdownTargetRecord,
+    StopResolutionMutation, StreamId, StreamVersion, TerminalRecordMutation,
 };
 
-use crate::adaptor::gateway::local_event_store::envelope::{
-    migration_phase_to_label, shutdown_phase_to_label,
-};
+use crate::adaptor::gateway::local_event_store::envelope::shutdown_phase_to_label;
 
 pub(crate) const SQL_SEAL_EVENT_COUNT: &str = "SELECT COUNT(*) FROM events
      WHERE global_sequence BETWEEN ?1 AND ?2 AND commit_id = ?3";
@@ -138,12 +133,8 @@ fn operation_progress_is_structurally_valid(mutations: &[LocalStateMutation]) ->
             | LocalStateMutation::ShutdownPlan(_)
             | LocalStateMutation::ShutdownTarget(_)
             | LocalStateMutation::ShutdownRecoverySnapshot(_)
-            | LocalStateMutation::ShutdownCompactArchive(_)
-            | LocalStateMutation::ShutdownLatestPointer(_)
-            | LocalStateMutation::ShutdownRetiringPointer(_)
-            | LocalStateMutation::MigrationCheckpoint(_)
-            | LocalStateMutation::MigrationParity(_)
-            | LocalStateMutation::MigrationQuitFlight(_) => return false,
+            | LocalStateMutation::ShutdownDetailsCompaction(_)
+            | LocalStateMutation::ShutdownLatestPointer(_) => return false,
         }
     }
     advances_existing_owner
@@ -218,14 +209,13 @@ fn operation_progress_backend_publication_is_valid(
             ObligationRecord::BackendSessionRecovery {
                 session_id: stored_session_id,
                 recovery_id: stored_recovery_id,
-                detail: Some(
+                detail:
                     crate::domain::local_event::BackendSessionRecoveryObligationRecord::Completed {
                         old_provider_session_generation,
                         provider_session_generation,
                         backend_session_id,
                         ..
                     },
-                ),
                 state: ObligationStateRecord::Completed,
             } if stored_session_id == session_id
                 && stored_recovery_id == recovery_id
@@ -269,12 +259,8 @@ fn internal_progress_is_anchored_to_existing_owner(prepared: &PreparedBatch) -> 
             | LocalStateMutation::ShutdownPlan(_)
             | LocalStateMutation::ShutdownTarget(_)
             | LocalStateMutation::ShutdownRecoverySnapshot(_)
-            | LocalStateMutation::ShutdownCompactArchive(_)
-            | LocalStateMutation::ShutdownLatestPointer(_)
-            | LocalStateMutation::ShutdownRetiringPointer(_)
-            | LocalStateMutation::MigrationCheckpoint(_)
-            | LocalStateMutation::MigrationParity(_)
-            | LocalStateMutation::MigrationQuitFlight(_) => return false,
+            | LocalStateMutation::ShutdownDetailsCompaction(_)
+            | LocalStateMutation::ShutdownLatestPointer(_) => return false,
             LocalStateMutation::OperationRecord(operation)
             | LocalStateMutation::SessionLifecycleOperation(operation) => {
                 if !guard_advances_existing(operation.expected, operation.revision) {
@@ -351,10 +337,7 @@ fn receipt_session_id(
         | crate::domain::local_event::OperationReceiptRecord::SessionLifecycle {
             session_id, ..
         } => Some(session_id),
-        crate::domain::local_event::OperationReceiptRecord::ApplicationQuit { .. }
-        | crate::domain::local_event::OperationReceiptRecord::MigrationApplicationQuit { .. } => {
-            None
-        }
+        crate::domain::local_event::OperationReceiptRecord::ApplicationQuit { .. } => None,
     }
 }
 
@@ -375,7 +358,6 @@ fn obligation_session_id(record: &ObligationRecord) -> Option<&str> {
         ObligationRecord::Observed { original, .. }
         | ObligationRecord::RecoveryTransition { original, .. } => obligation_session_id(original),
         ObligationRecord::WorkflowShutdown { .. }
-        | ObligationRecord::LegacyReconciliation { .. }
         | ObligationRecord::RecoveryReserved { .. }
         | ObligationRecord::RecoveryCompleted { .. }
         | ObligationRecord::WorkflowExecution { .. } => None,
@@ -483,12 +465,8 @@ fn projection_progress_has_one_session_scope(prepared: &PreparedBatch) -> bool {
             | LocalStateMutation::ShutdownPlan(_)
             | LocalStateMutation::ShutdownTarget(_)
             | LocalStateMutation::ShutdownRecoverySnapshot(_)
-            | LocalStateMutation::ShutdownCompactArchive(_)
-            | LocalStateMutation::ShutdownLatestPointer(_)
-            | LocalStateMutation::ShutdownRetiringPointer(_)
-            | LocalStateMutation::MigrationCheckpoint(_)
-            | LocalStateMutation::MigrationParity(_)
-            | LocalStateMutation::MigrationQuitFlight(_) => false,
+            | LocalStateMutation::ShutdownDetailsCompaction(_)
+            | LocalStateMutation::ShutdownLatestPointer(_) => false,
         };
         if !scoped {
             return false;
@@ -578,7 +556,6 @@ fn workflow_progress_has_one_execution_scope(prepared: &PreparedBatch) -> bool {
 fn recovery_result_targets_shutdown_target(
     resource_view: &RecoveryResourceViewRecord,
     current_plan_id: &str,
-    current_epoch: i64,
     target_ordinal: i64,
     target_key: &str,
     target_state: crate::domain::local_event::ShutdownTargetStateRecord,
@@ -590,8 +567,7 @@ fn recovery_result_targets_shutdown_target(
             target_id,
             state,
         } => {
-            plan.plan_id == current_plan_id
-                && plan.epoch == current_epoch
+            plan.shutdown_id == current_plan_id
                 && *ordinal == target_ordinal
                 && target_id == target_key
                 && *state == target_state
@@ -613,8 +589,8 @@ fn recovery_result_targets_shutdown_target(
             };
             value.get("schema").and_then(serde_json::Value::as_str)
                 == Some("shutdown_target_recovery_result_v1")
-                && value.get("plan_id").and_then(serde_json::Value::as_str) == Some(current_plan_id)
-                && value.get("epoch").and_then(serde_json::Value::as_i64) == Some(current_epoch)
+                && value.get("shutdown_id").and_then(serde_json::Value::as_str)
+                    == Some(current_plan_id)
                 && value.get("ordinal").and_then(serde_json::Value::as_i64) == Some(target_ordinal)
                 && value.get("target_key").and_then(serde_json::Value::as_str) == Some(target_key)
                 && value.get("state").and_then(serde_json::Value::as_str) == Some(state)
@@ -655,7 +631,6 @@ fn shutdown_effect_request_id(effect_identity: &str) -> String {
 fn shutdown_target_agent_session_lifecycle_is_bound_to_current_plan(
     connection: &Connection,
     current_plan_id: &str,
-    current_epoch: i64,
     current_plan_summary: &str,
     prepared: &PreparedBatch,
 ) -> Result<bool, CommitBatchError> {
@@ -704,7 +679,6 @@ fn shutdown_target_agent_session_lifecycle_is_bound_to_current_plan(
         || *first_accepted_revision < 0
         || *commit_operation_kind != CommitOperationKind::ShutdownTarget
         || operation.latest_status.kind != OperationKind::SessionLifecycle
-        || operation.latest_status.migration_quit
         || session_id.is_empty()
         || !match operation.expected {
             RevisionGuard::Absent => {
@@ -723,14 +697,12 @@ fn shutdown_target_agent_session_lifecycle_is_bound_to_current_plan(
     let mut statement = connection
         .prepare(
             "SELECT detail FROM shutdown_targets
-             WHERE plan_id = ?1 AND epoch = ?2
+             WHERE shutdown_id = ?1
              ORDER BY ordinal LIMIT 4097",
         )
         .map_err(|error| storage_unavailable(&error))?;
     let rows = statement
-        .query_map(params![current_plan_id, current_epoch], |row| {
-            row.get::<_, String>(0)
-        })
+        .query_map(params![current_plan_id], |row| row.get::<_, String>(0))
         .map_err(|error| storage_unavailable(&error))?;
     for row in rows {
         let raw = row.map_err(|error| storage_unavailable(&error))?;
@@ -778,7 +750,7 @@ fn shutdown_target_agent_session_lifecycle_is_bound_to_current_plan(
 
     let binding_matches = |binding: &OperationBindingMutation| {
         binding.key.principal == principal
-            && binding.key.generation_id == batch.idempotency.generation_id
+            && binding.key.installation_id == batch.idempotency.installation_id
             && binding.key.kind == OperationKind::SessionLifecycle
             && binding.key.caller_request_id == caller_request_id
             && binding.operation_id == *operation_id
@@ -811,7 +783,7 @@ fn shutdown_target_agent_session_lifecycle_is_bound_to_current_plan(
         }
         let bindings = connection
             .prepare(
-                "SELECT principal, generation_id, caller_request_id, binding_hmac
+                "SELECT principal, installation_id, caller_request_id, binding_hmac
                  FROM operation_bindings
                  WHERE kind = ?1 AND operation_id = ?2",
             )
@@ -833,7 +805,7 @@ fn shutdown_target_agent_session_lifecycle_is_bound_to_current_plan(
             .map_err(|error| storage_unavailable(&error))?;
         if bindings.len() != 1
             || bindings[0].0 != principal
-            || bindings[0].1 != batch.idempotency.generation_id
+            || bindings[0].1 != batch.idempotency.installation_id
             || bindings[0].2 != caller_request_id
             || !bool::from(
                 bindings[0]
@@ -1041,12 +1013,8 @@ fn shutdown_target_agent_session_lifecycle_is_bound_to_current_plan(
             | LocalStateMutation::ShutdownPlan(_)
             | LocalStateMutation::ShutdownTarget(_)
             | LocalStateMutation::ShutdownRecoverySnapshot(_)
-            | LocalStateMutation::ShutdownCompactArchive(_)
-            | LocalStateMutation::ShutdownLatestPointer(_)
-            | LocalStateMutation::ShutdownRetiringPointer(_)
-            | LocalStateMutation::MigrationCheckpoint(_)
-            | LocalStateMutation::MigrationParity(_)
-            | LocalStateMutation::MigrationQuitFlight(_) => return Ok(false),
+            | LocalStateMutation::ShutdownDetailsCompaction(_)
+            | LocalStateMutation::ShutdownLatestPointer(_) => return Ok(false),
         }
     }
 
@@ -1136,7 +1104,6 @@ fn shutdown_target_agent_session_lifecycle_is_bound_to_current_plan(
 fn application_quit_progress_is_bound_to_current_plan(
     connection: &Connection,
     current_plan_id: &str,
-    current_epoch: i64,
     current_plan_summary: &str,
     prepared: &PreparedBatch,
 ) -> Result<bool, CommitBatchError> {
@@ -1160,7 +1127,7 @@ fn application_quit_progress_is_bound_to_current_plan(
         return Ok(batch.expected_heads.is_empty()
             && batch.events.is_empty()
             && binding.key.kind == OperationKind::ApplicationQuit
-            && binding.key.generation_id == batch.idempotency.generation_id
+            && binding.key.installation_id == batch.idempotency.installation_id
             && !binding.key.principal.is_empty()
             && !binding.key.caller_request_id.is_empty()
             && binding.operation_id == operation_id
@@ -1187,12 +1154,12 @@ fn application_quit_progress_is_bound_to_current_plan(
         let mut statement = connection
             .prepare(
                 "SELECT detail, revision FROM shutdown_targets
-                 WHERE plan_id = ?1 AND epoch = ?2
+                 WHERE shutdown_id = ?1
                  ORDER BY ordinal LIMIT 4097",
             )
             .map_err(|error| storage_unavailable(&error))?;
         let rows = statement
-            .query_map(params![current_plan_id, current_epoch], |row| {
+            .query_map(params![current_plan_id], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
             })
             .map_err(|error| storage_unavailable(&error))?;
@@ -1249,8 +1216,7 @@ fn application_quit_progress_is_bound_to_current_plan(
     }
 
     let current_plan = ShutdownPlanKey {
-        plan_id: current_plan_id.to_string(),
-        epoch: current_epoch,
+        shutdown_id: current_plan_id.to_string(),
     };
     let mut operation_revision = None;
     let mut operation_status = None;
@@ -1275,7 +1241,6 @@ fn application_quit_progress_is_bound_to_current_plan(
                     || receipt_operation_id != operation_id
                     || plan != &current_plan
                     || operation.latest_status.kind != OperationKind::ApplicationQuit
-                    || operation.latest_status.migration_quit
                     || !guard_advances_existing(operation.expected, operation.revision)
                 {
                     return Ok(false);
@@ -1303,8 +1268,8 @@ fn application_quit_progress_is_bound_to_current_plan(
                 let existing: Option<(String, i64)> = connection
                     .query_row(
                         "SELECT detail, revision FROM shutdown_targets
-                         WHERE plan_id = ?1 AND epoch = ?2 AND ordinal = ?3",
-                        params![current_plan_id, current_epoch, target.ordinal],
+                         WHERE shutdown_id = ?1 AND ordinal = ?2",
+                        params![current_plan_id, target.ordinal],
                         |row| Ok((row.get(0)?, row.get(1)?)),
                     )
                     .optional()
@@ -1390,11 +1355,7 @@ fn application_quit_progress_is_bound_to_current_plan(
             | LocalStateMutation::RecoveryAction(_)
             | LocalStateMutation::SessionLifecycleOperation(_)
             | LocalStateMutation::ShutdownRecoverySnapshot(_)
-            | LocalStateMutation::ShutdownCompactArchive(_)
-            | LocalStateMutation::ShutdownRetiringPointer(_)
-            | LocalStateMutation::MigrationCheckpoint(_)
-            | LocalStateMutation::MigrationParity(_)
-            | LocalStateMutation::MigrationQuitFlight(_) => return Ok(false),
+            | LocalStateMutation::ShutdownDetailsCompaction(_) => return Ok(false),
         }
     }
 
@@ -1429,13 +1390,11 @@ fn application_quit_progress_is_bound_to_current_plan(
             &event.event,
             crate::domain::local_event::LocalDomainEvent::Application(
                 ApplicationDomainEvent::ShutdownPhaseAdvanced {
-                    plan_id,
-                    epoch,
+                    shutdown_id,
                     phase,
                     ..
                 }
-            ) if plan_id == current_plan_id
-                && *epoch == current_epoch
+            ) if shutdown_id == current_plan_id
                 && Some(*phase) == plan_phase
         );
     let activation = batch.idempotency.idempotency_key == format!("{operation_id}.activate")
@@ -1471,7 +1430,6 @@ fn application_quit_progress_is_bound_to_current_plan(
 fn shutdown_target_recovery_is_bound_to_current_plan(
     connection: &Connection,
     current_plan_id: &str,
-    current_epoch: i64,
     current_plan_summary: &str,
     mutations: &[LocalStateMutation],
 ) -> Result<bool, CommitBatchError> {
@@ -1522,26 +1480,23 @@ fn shutdown_target_recovery_is_bound_to_current_plan(
         (Some(operation), Some(plan), Some(pointer))
             if operation.operation_id == plan_summary.operation_id
                 && matches!(operation.expected, RevisionGuard::Expected(_))
-                && plan.key.plan_id == current_plan_id
-                && plan.key.epoch == current_epoch
+                && plan.key.shutdown_id == current_plan_id
                 && plan.phase
                     == crate::domain::local_event::ApplicationShutdownPhase::Completed
                 && plan.summary.operation_id == plan_summary.operation_id
                 && plan.summary.intent == plan_summary.intent
                 && matches!(plan.expected, RevisionGuard::Expected(_))
-                && pointer.expected.as_ref().is_some_and(|key| {
-                    key.plan_id == current_plan_id && key.epoch == current_epoch
-                })
+                && pointer
+                    .expected
+                    .as_ref()
+                    .is_some_and(|key| key.shutdown_id == current_plan_id)
                 && pointer.new.is_none() =>
         {
             true
         }
         _ => return Ok(false),
     };
-    if target.key.plan_id != current_plan_id
-        || target.key.epoch != current_epoch
-        || target.ordinal < 0
-    {
+    if target.key.shutdown_id != current_plan_id || target.ordinal < 0 {
         return Ok(false);
     }
     let RevisionGuard::Expected(expected_target_revision) = target.expected else {
@@ -1552,8 +1507,8 @@ fn shutdown_target_recovery_is_bound_to_current_plan(
     let existing_target: Option<(String, i64)> = connection
         .query_row(
             "SELECT detail, revision FROM shutdown_targets
-             WHERE plan_id = ?1 AND epoch = ?2 AND ordinal = ?3",
-            params![current_plan_id, current_epoch, target.ordinal],
+             WHERE shutdown_id = ?1 AND ordinal = ?2",
+            params![current_plan_id, target.ordinal],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()
@@ -1621,11 +1576,10 @@ fn shutdown_target_recovery_is_bound_to_current_plan(
         return Ok(false);
     };
     let expected_resource_ref = format!(
-        "shutdown-target:{current_plan_id}:{current_epoch}:{}:{target_key}",
+        "shutdown-target:{current_plan_id}:{}:{target_key}",
         target.ordinal
     );
-    if plan.plan_id != current_plan_id
-        || plan.epoch != current_epoch
+    if plan.shutdown_id != current_plan_id
         || *ordinal != target.ordinal
         || target_key != &shutdown_target_key(*existing_kind, existing_target_id)
         || resource_ref != &expected_resource_ref
@@ -1721,7 +1675,6 @@ fn shutdown_target_recovery_is_bound_to_current_plan(
                 && recovery_result_targets_shutdown_target(
                     &completed.resource_view,
                     current_plan_id,
-                    current_epoch,
                     target.ordinal,
                     target_key,
                     *state,
@@ -1775,9 +1728,9 @@ fn lookup_idempotency(
             "SELECT commit_id, payload_hash, state, first_global_sequence, last_global_sequence,
                     event_count, mutation_count, stream_heads_json, result_hash
              FROM logical_commits
-             WHERE generation_id = ?1 AND operation_kind = ?2 AND idempotency_key = ?3",
+             WHERE installation_id = ?1 AND operation_kind = ?2 AND idempotency_key = ?3",
             params![
-                idempotency.generation_id,
+                idempotency.installation_id,
                 idempotency.operation_kind.label(),
                 idempotency.idempotency_key
             ],
@@ -2033,32 +1986,29 @@ fn execute_in_transaction(
     // user mutation is closed before state or external-effect intent can be
     // recorded. Workflow/projection commits remain available to quiesce the
     // fixed target set owned by the active plan.
-    let (
-        current_shutdown,
-        current_shutdown_epoch,
-        current_shutdown_phase,
-        current_shutdown_summary,
-    ): (Option<String>, Option<i64>, Option<String>, Option<String>) = connection
+    let (current_shutdown, current_shutdown_phase, current_shutdown_summary): (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = connection
         .query_row(
-            "SELECT m.current_shutdown_plan_id, m.current_shutdown_epoch, p.phase, p.summary
+            "SELECT m.current_shutdown_id, p.phase, p.summary
              FROM store_metadata m
              LEFT JOIN shutdown_plans p
-               ON p.plan_id = m.current_shutdown_plan_id
-              AND p.epoch = m.current_shutdown_epoch
+               ON p.shutdown_id = m.current_shutdown_id
              WHERE m.id = 1",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .map_err(|error| storage_unavailable(&error))?;
     let shutdown_admission_closed = match (
         current_shutdown.as_ref(),
-        current_shutdown_epoch,
         current_shutdown_phase.as_deref(),
         current_shutdown_summary.as_deref(),
     ) {
-        (None, None, None, None) => false,
-        (Some(_), Some(_), Some("failed" | "cancelled" | "completed"), Some(_)) => false,
-        (Some(_), Some(_), Some(_), Some(_)) => true,
+        (None, None, None) => false,
+        (Some(_), Some("failed" | "cancelled" | "completed"), Some(_)) => false,
+        (Some(_), Some(_), Some(_)) => true,
         _ => return Err(corrupt("current shutdown pointer has no exact plan phase")),
     };
     let shutdown_target_recovery = if shutdown_admission_closed
@@ -2069,7 +2019,6 @@ fn execute_in_transaction(
             current_shutdown
                 .as_deref()
                 .expect("closed shutdown has a plan id"),
-            current_shutdown_epoch.expect("closed shutdown has an epoch"),
             current_shutdown_summary
                 .as_deref()
                 .expect("closed shutdown has a summary"),
@@ -2097,7 +2046,6 @@ fn execute_in_transaction(
             current_shutdown
                 .as_deref()
                 .expect("closed shutdown has a plan id"),
-            current_shutdown_epoch.expect("closed shutdown has an epoch"),
             current_shutdown_summary
                 .as_deref()
                 .expect("closed shutdown has a summary"),
@@ -2114,7 +2062,6 @@ fn execute_in_transaction(
             current_shutdown
                 .as_deref()
                 .expect("closed shutdown has a plan id"),
-            current_shutdown_epoch.expect("closed shutdown has an epoch"),
             current_shutdown_summary
                 .as_deref()
                 .expect("closed shutdown has a summary"),
@@ -2153,7 +2100,6 @@ fn execute_in_transaction(
                 | CommitOperationKind::Projection
                 | CommitOperationKind::ShutdownTarget
                 | CommitOperationKind::ApplicationQuit
-                | CommitOperationKind::Migration
         ) && !shutdown_target_recovery
             && !internal_progress
             && !shutdown_target_lifecycle
@@ -2229,13 +2175,13 @@ fn execute_in_transaction(
     connection
         .execute(
             "INSERT INTO logical_commits (
-                commit_id, generation_id, operation_kind, idempotency_key, payload_hash,
+                commit_id, installation_id, operation_kind, idempotency_key, payload_hash,
                 state, first_global_sequence, last_global_sequence, event_count,
                 mutation_count, stream_heads_json, result_hash, committed_at_ms
              ) VALUES (?1, ?2, ?3, ?4, ?5, 'preparing', NULL, NULL, ?6, ?7, ?8, NULL, ?9)",
             params![
                 commit_id,
-                batch.idempotency.generation_id,
+                batch.idempotency.installation_id,
                 batch.idempotency.operation_kind.label(),
                 batch.idempotency.idempotency_key,
                 batch.idempotency.payload_hash.as_slice(),
@@ -2563,8 +2509,8 @@ fn validate_one_guard(
             let existing: Option<(i64, String)> = connection
                 .query_row(
                     "SELECT revision, details_state FROM shutdown_plans
-                     WHERE plan_id = ?1 AND epoch = ?2",
-                    params![m.key.plan_id, m.key.epoch],
+                     WHERE shutdown_id = ?1",
+                    params![m.key.shutdown_id],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()
@@ -2584,8 +2530,8 @@ fn validate_one_guard(
             let details_state: Option<String> = connection
                 .query_row(
                     "SELECT details_state FROM shutdown_plans
-                     WHERE plan_id = ?1 AND epoch = ?2",
-                    params![m.key.plan_id, m.key.epoch],
+                     WHERE shutdown_id = ?1",
+                    params![m.key.shutdown_id],
                     |row| row.get(0),
                 )
                 .optional()
@@ -2596,8 +2542,8 @@ fn validate_one_guard(
             let existing = read_revision(
                 connection,
                 "SELECT revision FROM shutdown_targets
-                 WHERE plan_id = ?1 AND epoch = ?2 AND ordinal = ?3",
-                params![m.key.plan_id, m.key.epoch, m.ordinal],
+                 WHERE shutdown_id = ?1 AND ordinal = ?2",
+                params![m.key.shutdown_id, m.ordinal],
             )?;
             check_guard(existing, m.expected)
         }
@@ -2605,8 +2551,8 @@ fn validate_one_guard(
             let details_state: Option<String> = connection
                 .query_row(
                     "SELECT details_state FROM shutdown_plans
-                     WHERE plan_id = ?1 AND epoch = ?2",
-                    params![m.key.plan_id, m.key.epoch],
+                     WHERE shutdown_id = ?1",
+                    params![m.key.shutdown_id],
                     |row| row.get(0),
                 )
                 .optional()
@@ -2617,8 +2563,8 @@ fn validate_one_guard(
             let existing: Option<String> = connection
                 .query_row(
                     "SELECT detail FROM shutdown_recovery_snapshots
-                     WHERE plan_id = ?1 AND epoch = ?2 AND partition = ?3 AND ordinal = ?4",
-                    params![m.key.plan_id, m.key.epoch, m.partition.label(), m.ordinal],
+                     WHERE shutdown_id = ?1 AND partition = ?2 AND ordinal = ?3",
+                    params![m.key.shutdown_id, m.partition.label(), m.ordinal],
                     |row| row.get(0),
                 )
                 .optional()
@@ -2635,42 +2581,38 @@ fn validate_one_guard(
                 }
             }
         }
-        LocalStateMutation::ShutdownCompactArchive(m) => {
-            let existing: Option<String> = connection
+        LocalStateMutation::ShutdownDetailsCompaction(m) => {
+            let existing: Option<(String, String, i64)> = connection
                 .query_row(
-                    "SELECT archive FROM shutdown_compact_archives
-                     WHERE plan_id = ?1 AND epoch = ?2",
-                    params![m.key.plan_id, m.key.epoch],
-                    |row| row.get(0),
+                    "SELECT phase, details_state, revision FROM shutdown_plans
+                     WHERE shutdown_id = ?1",
+                    params![m.key.shutdown_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )
                 .optional()
                 .map_err(|error| storage_unavailable(&error))?;
             match existing {
-                None => Ok(()),
-                Some(archive) => {
-                    let saved = encoded_record(StoredShutdownArchiveV1::decode(&archive))?;
-                    if saved.value() == &m.archive {
-                        Ok(())
-                    } else {
-                        Err(CommitBatchError::PayloadConflict)
-                    }
+                Some((phase, details, revision))
+                    if matches!(phase.as_str(), "completed" | "failed" | "cancelled")
+                        && details == "available"
+                        && revision == m.expected.value()
+                        && m.revision
+                            == m.expected.next().ok_or_else(|| {
+                                corrupt("shutdown details compaction revision overflow")
+                            })? =>
+                {
+                    Ok(())
                 }
+                Some((_, details, revision))
+                    if details == "compacted" && revision == m.revision.value() =>
+                {
+                    Ok(())
+                }
+                Some((_, _, revision)) => Err(conflict(revision)),
+                None => Err(CommitBatchError::PayloadConflict),
             }
         }
         LocalStateMutation::ShutdownLatestPointer(m) => validate_shutdown_pointer(connection, m),
-        LocalStateMutation::ShutdownRetiringPointer(m) => {
-            validate_shutdown_retiring_pointer(connection, m)
-        }
-        LocalStateMutation::MigrationCheckpoint(m) => validate_migration_checkpoint(connection, m),
-        LocalStateMutation::MigrationParity(m) => {
-            let existing = read_revision(
-                connection,
-                "SELECT revision FROM local_store_migrations WHERE migration_id = ?1",
-                params![m.migration_id],
-            )?;
-            check_guard(existing, m.expected)
-        }
-        LocalStateMutation::MigrationQuitFlight(m) => validate_migration_quit_flight(connection, m),
     }
 }
 
@@ -2681,10 +2623,10 @@ fn validate_operation_binding(
     let existing: Option<(String, Vec<u8>)> = connection
         .query_row(
             "SELECT operation_id, binding_hmac FROM operation_bindings
-             WHERE principal = ?1 AND generation_id = ?2 AND kind = ?3 AND caller_request_id = ?4",
+             WHERE principal = ?1 AND installation_id = ?2 AND kind = ?3 AND caller_request_id = ?4",
             params![
                 m.key.principal,
-                m.key.generation_id,
+                m.key.installation_id,
                 m.key.kind.label(),
                 m.key.caller_request_id
             ],
@@ -2710,10 +2652,10 @@ fn validate_caller_attempt(
     let existing: Option<(Option<String>, Vec<u8>, i64)> = connection
         .query_row(
             "SELECT scope_id, command_hash, revision FROM caller_attempts
-             WHERE principal = ?1 AND generation_id = ?2 AND kind = ?3 AND caller_request_id = ?4",
+             WHERE principal = ?1 AND installation_id = ?2 AND kind = ?3 AND caller_request_id = ?4",
             params![
                 m.key.principal,
-                m.key.generation_id,
+                m.key.installation_id,
                 m.key.kind.label(),
                 m.key.caller_request_id
             ],
@@ -2771,78 +2713,20 @@ fn validate_shutdown_pointer(
     connection: &Connection,
     m: &ShutdownLatestPointerMutation,
 ) -> Result<(), CommitBatchError> {
-    let (plan_id, epoch, revision): (Option<String>, Option<i64>, i64) = connection
+    let (shutdown_id, revision): (Option<String>, i64) = connection
         .query_row(
-            "SELECT current_shutdown_plan_id, current_shutdown_epoch, shutdown_pointer_revision
+            "SELECT current_shutdown_id, shutdown_pointer_revision
              FROM store_metadata WHERE id = 1",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .map_err(|error| storage_unavailable(&error))?;
-    let current = match (plan_id, epoch) {
-        (Some(plan_id), Some(epoch)) => Some((plan_id, epoch)),
-        _ => None,
-    };
-    let expected = m
-        .expected
-        .as_ref()
-        .map(|key| (key.plan_id.clone(), key.epoch));
-    if current != expected {
-        return Err(conflict(revision));
-    }
-    Ok(())
-}
-
-fn validate_shutdown_retiring_pointer(
-    connection: &Connection,
-    m: &ShutdownRetiringPointerMutation,
-) -> Result<(), CommitBatchError> {
-    let (plan_id, epoch, revision): (Option<String>, Option<i64>, i64) = connection
-        .query_row(
-            "SELECT retiring_shutdown_plan_id, retiring_shutdown_epoch,
-                    shutdown_retiring_revision
-             FROM store_metadata WHERE id = 1",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .map_err(|error| storage_unavailable(&error))?;
-    let current = match (plan_id, epoch) {
-        (Some(plan_id), Some(epoch)) => Some((plan_id, epoch)),
-        (None, None) => None,
-        _ => return Err(corrupt("partial shutdown retiring selector")),
-    };
-    let expected = m
-        .expected
-        .as_ref()
-        .map(|key| (key.plan_id.clone(), key.epoch));
-    if current != expected {
-        return Err(conflict(revision));
-    }
-    Ok(())
-}
-
-fn validate_migration_checkpoint(
-    connection: &Connection,
-    m: &MigrationCheckpointMutation,
-) -> Result<(), CommitBatchError> {
-    let existing: Option<(Vec<u8>, i64)> = connection
-        .query_row(
-            "SELECT source_inventory_hash, revision FROM local_store_migrations
-             WHERE migration_id = ?1",
-            params![m.migration_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .optional()
         .map_err(|error| storage_unavailable(&error))?;
-    match existing {
-        None => check_guard(None, m.expected),
-        Some((hash, revision)) => {
-            if hash.as_slice() != m.source_inventory_hash.as_slice() {
-                return Err(CommitBatchError::PayloadConflict);
-            }
-            check_guard(Some(revision), m.expected)
-        }
+    let current = shutdown_id;
+    let expected = m.expected.as_ref().map(|key| key.shutdown_id.clone());
+    if current != expected {
+        return Err(conflict(revision));
     }
+    Ok(())
 }
 
 // --- Mutation apply (step 6); guards were validated in step 4 ---
@@ -2933,20 +2817,10 @@ fn apply_mutation(
         LocalStateMutation::ShutdownRecoverySnapshot(m) => {
             apply_shutdown_snapshot(connection, commit_id, m)
         }
-        LocalStateMutation::ShutdownCompactArchive(m) => {
-            apply_shutdown_archive(connection, commit_id, m)
+        LocalStateMutation::ShutdownDetailsCompaction(m) => {
+            apply_shutdown_details_compaction(connection, commit_id, m)
         }
         LocalStateMutation::ShutdownLatestPointer(m) => apply_shutdown_pointer(connection, m),
-        LocalStateMutation::ShutdownRetiringPointer(m) => {
-            apply_shutdown_retiring_pointer(connection, m)
-        }
-        LocalStateMutation::MigrationCheckpoint(m) => {
-            apply_migration_checkpoint(connection, commit_id, m)
-        }
-        LocalStateMutation::MigrationParity(m) => apply_migration_parity(connection, commit_id, m),
-        LocalStateMutation::MigrationQuitFlight(m) => {
-            apply_migration_quit_flight(connection, commit_id, m)
-        }
     }
 }
 
@@ -2963,12 +2837,12 @@ fn apply_operation_binding(
 ) -> Result<(), CommitBatchError> {
     run(connection.execute(
         "INSERT INTO operation_bindings
-            (principal, generation_id, kind, caller_request_id, operation_id, binding_hmac, commit_id)
+            (principal, installation_id, kind, caller_request_id, operation_id, binding_hmac, commit_id)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-         ON CONFLICT (principal, generation_id, kind, caller_request_id) DO NOTHING",
+         ON CONFLICT (principal, installation_id, kind, caller_request_id) DO NOTHING",
         params![
             m.key.principal,
-            m.key.generation_id,
+            m.key.installation_id,
             m.key.kind.label(),
             m.key.caller_request_id,
             m.operation_id,
@@ -2985,10 +2859,10 @@ fn apply_caller_attempt(
 ) -> Result<(), CommitBatchError> {
     run(connection.execute(
         "INSERT INTO caller_attempts
-            (principal, generation_id, kind, caller_request_id, scope_id, command_hash,
+            (principal, installation_id, kind, caller_request_id, scope_id, command_hash,
              sealed_command, resolution, revision, commit_id)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-         ON CONFLICT (principal, generation_id, kind, caller_request_id) DO UPDATE SET
+         ON CONFLICT (principal, installation_id, kind, caller_request_id) DO UPDATE SET
             scope_id = excluded.scope_id,
             sealed_command = excluded.sealed_command,
             resolution = excluded.resolution,
@@ -2996,7 +2870,7 @@ fn apply_caller_attempt(
             commit_id = excluded.commit_id",
         params![
             m.key.principal,
-            m.key.generation_id,
+            m.key.installation_id,
             m.key.kind.label(),
             m.key.caller_request_id,
             m.scope_id,
@@ -3219,8 +3093,8 @@ fn apply_obligation(
         run(connection.execute(
             "INSERT INTO pending_obligations
                 (ordered_key, obligation_id, owner, partition,
-                 shutdown_plan_id, shutdown_epoch, commit_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                 shutdown_id, commit_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 pending.ordered_key,
                 m.obligation_id,
@@ -3229,8 +3103,7 @@ fn apply_obligation(
                 pending
                     .shutdown_plan
                     .as_ref()
-                    .map(|plan| plan.plan_id.clone()),
-                pending.shutdown_plan.as_ref().map(|plan| plan.epoch),
+                    .map(|plan| plan.shutdown_id.clone()),
                 commit_id
             ],
         ))?;
@@ -3245,8 +3118,8 @@ fn apply_shutdown_plan(
 ) -> Result<(), CommitBatchError> {
     let existing: Option<String> = connection
         .query_row(
-            "SELECT summary FROM shutdown_plans WHERE plan_id = ?1 AND epoch = ?2",
-            params![m.key.plan_id, m.key.epoch],
+            "SELECT summary FROM shutdown_plans WHERE shutdown_id = ?1",
+            params![m.key.shutdown_id],
             |row| row.get(0),
         )
         .optional()
@@ -3260,17 +3133,16 @@ fn apply_shutdown_plan(
     };
     run(connection.execute(
         "INSERT INTO shutdown_plans
-            (plan_id, epoch, phase, summary, details_state, revision, commit_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-         ON CONFLICT (plan_id, epoch) DO UPDATE SET
+            (shutdown_id, phase, summary, details_state, revision, commit_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT (shutdown_id) DO UPDATE SET
             phase = excluded.phase,
             summary = excluded.summary,
             details_state = excluded.details_state,
             revision = excluded.revision,
             commit_id = excluded.commit_id",
         params![
-            m.key.plan_id,
-            m.key.epoch,
+            m.key.shutdown_id,
             shutdown_phase_to_label(m.phase),
             summary,
             m.details_state.label(),
@@ -3287,8 +3159,8 @@ fn apply_shutdown_target(
 ) -> Result<(), CommitBatchError> {
     let existing: Option<String> = connection
         .query_row(
-            "SELECT detail FROM shutdown_targets WHERE plan_id = ?1 AND epoch = ?2 AND ordinal = ?3",
-            params![m.key.plan_id, m.key.epoch, m.ordinal],
+            "SELECT detail FROM shutdown_targets WHERE shutdown_id = ?1 AND ordinal = ?2",
+            params![m.key.shutdown_id, m.ordinal],
             |row| row.get(0),
         )
         .optional()
@@ -3301,15 +3173,14 @@ fn apply_shutdown_target(
         None => encoded_record(StoredShutdownTargetV1::encode_new(&m.detail))?,
     };
     run(connection.execute(
-        "INSERT INTO shutdown_targets (plan_id, epoch, ordinal, detail, revision, commit_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-         ON CONFLICT (plan_id, epoch, ordinal) DO UPDATE SET
+        "INSERT INTO shutdown_targets (shutdown_id, ordinal, detail, revision, commit_id)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT (shutdown_id, ordinal) DO UPDATE SET
             detail = excluded.detail,
             revision = excluded.revision,
             commit_id = excluded.commit_id",
         params![
-            m.key.plan_id,
-            m.key.epoch,
+            m.key.shutdown_id,
             m.ordinal,
             detail,
             m.revision.value(),
@@ -3326,12 +3197,11 @@ fn apply_shutdown_snapshot(
     let detail = encoded_record(StoredShutdownTargetV1::encode_new(&m.detail))?;
     run(connection.execute(
         "INSERT INTO shutdown_recovery_snapshots
-            (plan_id, epoch, partition, ordinal, detail, commit_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-         ON CONFLICT (plan_id, epoch, partition, ordinal) DO NOTHING",
+            (shutdown_id, partition, ordinal, detail, commit_id)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT (shutdown_id, ordinal) DO NOTHING",
         params![
-            m.key.plan_id,
-            m.key.epoch,
+            m.key.shutdown_id,
             m.partition.label(),
             m.ordinal,
             detail,
@@ -3340,146 +3210,25 @@ fn apply_shutdown_snapshot(
     ))
 }
 
-fn apply_shutdown_archive(
+fn apply_shutdown_details_compaction(
     connection: &Connection,
     commit_id: &str,
-    m: &ShutdownCompactArchiveMutation,
+    m: &ShutdownDetailsCompactionMutation,
 ) -> Result<(), CommitBatchError> {
-    let archive = encoded_record(StoredShutdownArchiveV1::encode_new(&m.archive))?;
     run(connection.execute(
-        "INSERT INTO shutdown_compact_archives (plan_id, epoch, archive, commit_id)
-         VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT (plan_id, epoch) DO NOTHING",
-        params![m.key.plan_id, m.key.epoch, archive, commit_id],
+        "DELETE FROM shutdown_targets WHERE shutdown_id = ?1",
+        params![m.key.shutdown_id],
+    ))?;
+    run(connection.execute(
+        "DELETE FROM shutdown_recovery_snapshots WHERE shutdown_id = ?1",
+        params![m.key.shutdown_id],
+    ))?;
+    run(connection.execute(
+        "UPDATE shutdown_plans
+         SET details_state = 'compacted', revision = ?2, commit_id = ?3
+         WHERE shutdown_id = ?1",
+        params![m.key.shutdown_id, m.revision.value(), commit_id],
     ))
-}
-
-/// Remove obsolete detail rows only after their plan is durably compacted.
-/// This is physical maintenance, not a semantic mutation: readers switch to
-/// the archive as soon as the plan CAS commits. Each invocation is bounded to
-/// 64 rows, 4 MiB and 50 ms and is safe to repeat after a crash.
-pub(crate) fn cleanup_compacted_shutdown_details(
-    connection: &Connection,
-) -> Result<usize, rusqlite::Error> {
-    const MAX_ROWS: usize = 64;
-    const MAX_BYTES: usize = 4 * 1024 * 1024;
-    let started = std::time::Instant::now();
-    let selector_present: i64 = connection.query_row(
-        "SELECT retiring_shutdown_plan_id IS NOT NULL
-                AND retiring_shutdown_epoch IS NOT NULL
-         FROM store_metadata WHERE id = 1",
-        [],
-        |row| row.get(0),
-    )?;
-    if selector_present == 0 {
-        return Ok(0);
-    }
-    connection.execute_batch("BEGIN IMMEDIATE")?;
-    let cleanup = (|| -> Result<usize, rusqlite::Error> {
-        let pointer: (Option<String>, Option<i64>) = connection.query_row(
-            "SELECT retiring_shutdown_plan_id, retiring_shutdown_epoch
-             FROM store_metadata WHERE id = 1",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        let (Some(plan_id), Some(epoch)) = pointer else {
-            return Ok(0);
-        };
-
-        let mut statement = connection.prepare(
-            "SELECT detail_kind, detail_rowid, detail_bytes FROM (
-                 SELECT 0 AS detail_kind, t.rowid AS detail_rowid,
-                        length(CAST(t.detail AS BLOB)) AS detail_bytes
-                 FROM shutdown_targets t
-                 JOIN shutdown_plans p
-                   ON p.plan_id = t.plan_id AND p.epoch = t.epoch
-                 WHERE t.plan_id = ?1 AND t.epoch = ?2
-                   AND p.details_state = 'compacted'
-                 UNION ALL
-                 SELECT 1 AS detail_kind, s.rowid AS detail_rowid,
-                        length(CAST(s.detail AS BLOB)) AS detail_bytes
-                 FROM shutdown_recovery_snapshots s
-                 JOIN shutdown_plans p
-                   ON p.plan_id = s.plan_id AND p.epoch = s.epoch
-                 WHERE s.plan_id = ?1 AND s.epoch = ?2
-                   AND p.details_state = 'compacted'
-             )
-             ORDER BY detail_kind, detail_rowid
-             LIMIT ?3",
-        )?;
-        let rows = statement.query_map(params![plan_id, epoch, MAX_ROWS as i64], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, i64>(2)?,
-            ))
-        })?;
-        let mut selected = Vec::new();
-        let mut selected_bytes = 0usize;
-        for row in rows {
-            let (kind, rowid, bytes) = row?;
-            let bytes = usize::try_from(bytes).unwrap_or(usize::MAX);
-            if selected_bytes.saturating_add(bytes) > MAX_BYTES
-                || started.elapsed() >= std::time::Duration::from_millis(50)
-            {
-                break;
-            }
-            selected_bytes = selected_bytes.saturating_add(bytes);
-            selected.push((kind, rowid));
-        }
-        drop(statement);
-
-        let mut deleted = 0usize;
-        for (kind, rowid) in selected {
-            if started.elapsed() >= std::time::Duration::from_millis(50) {
-                break;
-            }
-            let table = if kind == 0 {
-                "shutdown_targets"
-            } else {
-                "shutdown_recovery_snapshots"
-            };
-            deleted = deleted.saturating_add(connection.execute(
-                &format!("DELETE FROM {table} WHERE rowid = ?1"),
-                params![rowid],
-            )?);
-        }
-
-        let remaining: i64 = connection.query_row(
-            "SELECT EXISTS(
-                 SELECT 1 FROM shutdown_targets
-                 WHERE plan_id = ?1 AND epoch = ?2
-                 UNION ALL
-                 SELECT 1 FROM shutdown_recovery_snapshots
-                 WHERE plan_id = ?1 AND epoch = ?2
-             )",
-            params![plan_id, epoch],
-            |row| row.get(0),
-        )?;
-        if remaining == 0 {
-            connection.execute(
-                "UPDATE store_metadata SET
-                    retiring_shutdown_plan_id = NULL,
-                    retiring_shutdown_epoch = NULL,
-                    shutdown_retiring_revision = shutdown_retiring_revision + 1
-                 WHERE id = 1
-                   AND retiring_shutdown_plan_id = ?1
-                   AND retiring_shutdown_epoch = ?2",
-                params![plan_id, epoch],
-            )?;
-        }
-        Ok(deleted)
-    })();
-    match cleanup {
-        Ok(deleted) => {
-            connection.execute_batch("COMMIT")?;
-            Ok(deleted)
-        }
-        Err(error) => {
-            let _ = connection.execute_batch("ROLLBACK");
-            Err(error)
-        }
-    }
 }
 
 fn apply_shutdown_pointer(
@@ -3488,376 +3237,9 @@ fn apply_shutdown_pointer(
 ) -> Result<(), CommitBatchError> {
     run(connection.execute(
         "UPDATE store_metadata SET
-            current_shutdown_plan_id = ?1,
-            current_shutdown_epoch = ?2,
+            current_shutdown_id = ?1,
             shutdown_pointer_revision = shutdown_pointer_revision + 1
          WHERE id = 1",
-        params![
-            m.new.as_ref().map(|key| key.plan_id.clone()),
-            m.new.as_ref().map(|key| key.epoch)
-        ],
+        params![m.new.as_ref().map(|key| key.shutdown_id.clone())],
     ))
-}
-
-fn apply_shutdown_retiring_pointer(
-    connection: &Connection,
-    m: &ShutdownRetiringPointerMutation,
-) -> Result<(), CommitBatchError> {
-    if let Some(plan) = &m.new {
-        let details_state: Option<String> = connection
-            .query_row(
-                "SELECT details_state FROM shutdown_plans
-                 WHERE plan_id = ?1 AND epoch = ?2",
-                params![plan.plan_id, plan.epoch],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|error| storage_unavailable(&error))?;
-        if details_state.as_deref() != Some("compacted") {
-            return Err(CommitBatchError::PayloadConflict);
-        }
-    }
-    run(connection.execute(
-        "UPDATE store_metadata SET
-            retiring_shutdown_plan_id = ?1,
-            retiring_shutdown_epoch = ?2,
-            shutdown_retiring_revision = shutdown_retiring_revision + 1
-         WHERE id = 1",
-        params![
-            m.new.as_ref().map(|key| key.plan_id.clone()),
-            m.new.as_ref().map(|key| key.epoch)
-        ],
-    ))
-}
-
-fn apply_migration_checkpoint(
-    connection: &Connection,
-    commit_id: &str,
-    m: &MigrationCheckpointMutation,
-) -> Result<(), CommitBatchError> {
-    let existing: Option<String> = connection
-        .query_row(
-            "SELECT checkpoint FROM local_store_migrations WHERE migration_id = ?1",
-            params![m.migration_id],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|error| storage_unavailable(&error))?;
-    let checkpoint = match existing {
-        Some(raw) => {
-            let stored = encoded_record(StoredMigrationCheckpointV1::decode(&raw))?;
-            encoded_record(stored.encode_update(&m.checkpoint))?
-        }
-        None => encoded_record(StoredMigrationCheckpointV1::encode_new(&m.checkpoint))?,
-    };
-    run(connection.execute(
-        "INSERT INTO local_store_migrations
-            (migration_id, phase, source_inventory_hash, checkpoint, parity, revision, commit_id)
-         VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6)
-         ON CONFLICT (migration_id) DO UPDATE SET
-            phase = excluded.phase,
-            checkpoint = excluded.checkpoint,
-            revision = excluded.revision,
-            commit_id = excluded.commit_id",
-        params![
-            m.migration_id,
-            migration_phase_to_label(m.phase),
-            m.source_inventory_hash.as_slice(),
-            checkpoint,
-            m.revision.value(),
-            commit_id
-        ],
-    ))
-}
-
-fn apply_migration_parity(
-    connection: &Connection,
-    commit_id: &str,
-    m: &MigrationParityMutation,
-) -> Result<(), CommitBatchError> {
-    let existing: Option<Option<String>> = connection
-        .query_row(
-            "SELECT parity FROM local_store_migrations WHERE migration_id = ?1",
-            params![m.migration_id],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|error| storage_unavailable(&error))?;
-    let parity = match existing.flatten() {
-        Some(raw) => {
-            let stored = encoded_record(StoredMigrationParityV1::decode(&raw))?;
-            encoded_record(stored.encode_update(&m.parity))?
-        }
-        None => encoded_record(StoredMigrationParityV1::encode_new(&m.parity))?,
-    };
-    run(connection.execute(
-        "UPDATE local_store_migrations SET
-            parity = ?2,
-            revision = ?3,
-            commit_id = ?4
-         WHERE migration_id = ?1",
-        params![m.migration_id, parity, m.revision.value(), commit_id],
-    ))
-}
-
-fn validate_migration_quit_flight(
-    connection: &Connection,
-    m: &MigrationQuitFlightMutation,
-) -> Result<(), CommitBatchError> {
-    let existing: Option<(String, String, i64)> = connection
-        .query_row(
-            "SELECT migration_id, accepted_boot_id, revision
-             FROM migration_quit_flights WHERE operation_id = ?1",
-            params![m.operation_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .optional()
-        .map_err(|error| storage_unavailable(&error))?;
-    match existing {
-        None => check_guard(None, m.expected)?,
-        Some((migration_id, accepted_boot_id, revision)) => {
-            if migration_id != m.migration_id || accepted_boot_id != m.accepted_boot_id {
-                return Err(CommitBatchError::PayloadConflict);
-            }
-            check_guard(Some(revision), m.expected)?;
-        }
-    }
-    let migration_exists: i64 = connection
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM local_store_migrations WHERE migration_id = ?1)",
-            params![m.migration_id],
-            |row| row.get(0),
-        )
-        .map_err(|error| storage_unavailable(&error))?;
-    if migration_exists == 0 {
-        return Err(CommitBatchError::PayloadConflict);
-    }
-    let other_operation: Option<String> = connection
-        .query_row(
-            "SELECT operation_id FROM migration_quit_flights
-             WHERE migration_id = ?1 AND operation_id <> ?2",
-            params![m.migration_id, m.operation_id],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|error| storage_unavailable(&error))?;
-    if other_operation.is_some() {
-        return Err(CommitBatchError::PayloadConflict);
-    }
-    Ok(())
-}
-
-fn apply_migration_quit_flight(
-    connection: &Connection,
-    commit_id: &str,
-    m: &MigrationQuitFlightMutation,
-) -> Result<(), CommitBatchError> {
-    let quit_receipt: String = connection
-        .query_row(
-            "SELECT receipt FROM operation_records
-             WHERE kind = 'application_quit' AND operation_id = ?1",
-            params![m.operation_id],
-            |row| row.get(0),
-        )
-        .map_err(|error| storage_unavailable(&error))?;
-    encoded_record(StoredMigrationQuitV1::decode(&quit_receipt))?;
-    let changed = connection
-        .execute(
-            "INSERT OR IGNORE INTO migration_quit_flights
-                (operation_id, migration_id, migration_revision, checkpoint,
-                 accepted_boot_id, revision, commit_id)
-             SELECT ?1, migration_id, revision, checkpoint, ?3, ?4, ?5
-             FROM local_store_migrations WHERE migration_id = ?2",
-            params![
-                m.operation_id,
-                m.migration_id,
-                m.accepted_boot_id,
-                m.revision.value(),
-                commit_id
-            ],
-        )
-        .map_err(|error| storage_unavailable(&error))?;
-    if changed == 0 {
-        let saved: Option<(String, String, i64)> = connection
-            .query_row(
-                "SELECT migration_id, accepted_boot_id, revision
-                 FROM migration_quit_flights WHERE operation_id = ?1",
-                params![m.operation_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .optional()
-            .map_err(|error| storage_unavailable(&error))?;
-        if saved
-            .as_ref()
-            .map(|(migration_id, accepted_boot_id, revision)| {
-                (migration_id.as_str(), accepted_boot_id.as_str(), *revision)
-            })
-            == Some((
-                m.migration_id.as_str(),
-                m.accepted_boot_id.as_str(),
-                m.revision.value(),
-            ))
-        {
-            return Ok(());
-        }
-        return Err(CommitBatchError::PayloadConflict);
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod shutdown_compaction_tests {
-    use super::*;
-    use crate::adaptor::gateway::local_event_store::schema::apply_schema;
-    use crate::domain::local_event::{
-        ApplicationShutdownPhase, QuitIntent, Revision, ShutdownDetailsState, ShutdownPlanKey,
-        ShutdownPlanMutation, ShutdownPlanRecord,
-    };
-
-    fn seed_retiring_plan(connection: &Connection, target_count: usize) {
-        apply_schema(connection).expect("schema");
-        connection
-            .execute(
-                "INSERT INTO store_metadata (
-                    id, schema_version, store_id, generation_id, created_at_ms,
-                    cursor_hmac_key, operation_binding_hmac_key, boot_id,
-                    next_global_sequence, health, current_shutdown_plan_id,
-                    current_shutdown_epoch, shutdown_pointer_revision,
-                    retiring_shutdown_plan_id, retiring_shutdown_epoch,
-                    shutdown_retiring_revision
-                 ) VALUES (
-                    1, 1, 'store', 'generation', 0, zeroblob(32), zeroblob(32),
-                    'boot', 1, 'ok', NULL, NULL, 0, 'plan', 0, 1
-                 )",
-                [],
-            )
-            .expect("metadata");
-        connection
-            .execute(
-                "INSERT INTO logical_commits (
-                    commit_id, generation_id, operation_kind, idempotency_key,
-                    payload_hash, state, first_global_sequence,
-                    last_global_sequence, event_count, mutation_count,
-                    stream_heads_json, result_hash, committed_at_ms
-                 ) VALUES (
-                    'seed', 'generation', 'application_quit', 'seed', zeroblob(32),
-                    'sealed', NULL, NULL, 0, 0, '[]', zeroblob(32), 0
-                 )",
-                [],
-            )
-            .expect("logical commit");
-        connection
-            .execute(
-                "INSERT INTO shutdown_plans
-                    (plan_id, epoch, phase, summary, details_state, revision, commit_id)
-                 VALUES ('plan', 0, 'completed', '{}', 'compacted', 1, 'seed')",
-                [],
-            )
-            .expect("plan");
-        for ordinal in 0..target_count {
-            connection
-                .execute(
-                    "INSERT INTO shutdown_targets
-                        (plan_id, epoch, ordinal, detail, revision, commit_id)
-                     VALUES ('plan', 0, ?1, '{}', 0, 'seed')",
-                    params![ordinal as i64],
-                )
-                .expect("target");
-        }
-    }
-
-    #[test]
-    fn retiring_cleanup_is_sixty_four_rows_and_restart_resumable() {
-        let directory = tempfile::TempDir::new().expect("temp dir");
-        let database = directory.path().join("shutdown-cleanup.sqlite3");
-        let connection = Connection::open(&database).expect("open fixture");
-        seed_retiring_plan(&connection, 130);
-
-        assert_eq!(
-            cleanup_compacted_shutdown_details(&connection).expect("first cleanup"),
-            64
-        );
-        let remaining: i64 = connection
-            .query_row("SELECT COUNT(*) FROM shutdown_targets", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        assert_eq!(remaining, 66);
-        let retiring: Option<String> = connection
-            .query_row(
-                "SELECT retiring_shutdown_plan_id FROM store_metadata WHERE id = 1",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(retiring.as_deref(), Some("plan"));
-        drop(connection);
-
-        let reopened = Connection::open(&database).expect("reopen fixture");
-        apply_schema(&reopened).expect("reopen schema");
-        assert_eq!(
-            cleanup_compacted_shutdown_details(&reopened).expect("second cleanup"),
-            64
-        );
-        assert_eq!(
-            cleanup_compacted_shutdown_details(&reopened).expect("final cleanup"),
-            2
-        );
-        let remaining: i64 = reopened
-            .query_row("SELECT COUNT(*) FROM shutdown_targets", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        assert_eq!(remaining, 0);
-        let pointer: (Option<String>, Option<i64>) = reopened
-            .query_row(
-                "SELECT retiring_shutdown_plan_id, retiring_shutdown_epoch
-                 FROM store_metadata WHERE id = 1",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(pointer, (None, None));
-    }
-
-    #[test]
-    fn compacted_plan_cannot_return_to_available() {
-        let connection = Connection::open_in_memory().expect("open fixture");
-        seed_retiring_plan(&connection, 0);
-        let mutation = LocalStateMutation::ShutdownPlan(ShutdownPlanMutation {
-            key: ShutdownPlanKey {
-                plan_id: "plan".to_string(),
-                epoch: 0,
-            },
-            phase: ApplicationShutdownPhase::Completed,
-            summary: ShutdownPlanRecord {
-                operation_id: "quit".to_string(),
-                intent: QuitIntent::Exit { code: 0 },
-                t0_ms: 0,
-                preparation_cutoff_ms: None,
-                deadline_ms: 15_000,
-                target_count: None,
-                prepared_count: None,
-                effect_reserved_count: None,
-                terminal_count: None,
-                completed_count: None,
-                unresolved_count: None,
-                recovery_snapshot_count: None,
-                recovery_snapshot_id: None,
-                boot_id: "boot".to_string(),
-                outcome: None,
-                failure: None,
-                shutdown_effect_count: None,
-                admission_open: None,
-                retry_quit_same_boot: None,
-            },
-            details_state: ShutdownDetailsState::Available,
-            expected: RevisionGuard::Expected(Revision::new(1).unwrap()),
-            revision: Revision::new(2).unwrap(),
-        });
-        assert_eq!(
-            validate_one_guard(&connection, &mutation),
-            Err(CommitBatchError::PayloadConflict)
-        );
-    }
 }

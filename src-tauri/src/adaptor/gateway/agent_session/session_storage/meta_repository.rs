@@ -83,9 +83,6 @@ impl FileSessionStorage {
 
     #[cfg(test)]
     pub fn remove_session(&self, app_data_dir: &Path, session_id: &str) {
-        if self.ensure_legacy_mutation_admitted().is_err() {
-            return;
-        }
         self.remove_session_file_and_cache(app_data_dir, session_id);
     }
 
@@ -125,7 +122,6 @@ impl FileSessionStorage {
                     .materialization_pending_sessions
                     .read()
                     .contains(session_id)
-                    && !self.legacy_mutation_admission_closed()
                 {
                     let _lock = self.file_lock.lock();
                     self.apply_pending_session_transaction(&dir, session_id)?;
@@ -153,7 +149,6 @@ impl FileSessionStorage {
         session_id: &str,
         update: &mut dyn FnMut(&mut SessionMeta) -> Result<(), String>,
     ) -> Result<SessionMeta, String> {
-        self.ensure_legacy_mutation_admitted()?;
         self.ensure_loaded(app_data_dir)?;
         if let Some(err) = self.invalid_sessions.read().get(session_id) {
             return Err(err.clone());
@@ -181,7 +176,6 @@ impl FileSessionStorage {
         update: &mut dyn FnMut(&mut SessionMeta) -> Result<(), String>,
         events: &[AgentSessionEvent],
     ) -> Result<SessionMeta, String> {
-        self.ensure_legacy_mutation_admitted()?;
         self.ensure_loaded(app_data_dir)?;
         if let Some(err) = self.invalid_sessions.read().get(session_id) {
             return Err(err.clone());
@@ -220,9 +214,6 @@ impl FileSessionStorage {
         return Ok(true);
         #[cfg(test)]
         {
-            if self.legacy_mutation_admission_closed() {
-                return Ok(true);
-            }
             if !self
                 .materialization_pending_sessions
                 .read()
@@ -253,7 +244,6 @@ impl FileSessionStorage {
         dir: &Path,
         session_id: &str,
     ) -> Result<(), String> {
-        self.ensure_legacy_mutation_admitted()?;
         if self
             .materialization_pending_sessions
             .read()
@@ -305,8 +295,7 @@ impl FileSessionStorage {
                 else {
                     continue;
                 };
-                #[cfg(test)]
-                if !self.legacy_mutation_admission_closed() {
+                {
                     match self.apply_committed_meta_event_transaction(&path, &session_id) {
                         Ok(()) => {}
                         Err(error) if error.is_corrupt() => {

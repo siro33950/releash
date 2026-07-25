@@ -20,6 +20,9 @@ const mockInvoke = vi.mocked(invoke);
 beforeEach(() => {
 	localStorage.clear();
 	mockInvoke.mockImplementation((cmd: string) => {
+		if (cmd === "get_application_startup_outcome") {
+			return Promise.resolve({ type: "ready" });
+		}
 		if (cmd === "get_performance_telemetry_enabled") {
 			return Promise.resolve(true);
 		}
@@ -47,6 +50,9 @@ describe("App", () => {
 			JSON.stringify({ performanceTelemetry: true }),
 		);
 		mockInvoke.mockImplementation((cmd: string) => {
+			if (cmd === "get_application_startup_outcome") {
+				return Promise.resolve({ type: "ready" });
+			}
 			if (cmd === "get_performance_telemetry_enabled") {
 				return Promise.resolve(false);
 			}

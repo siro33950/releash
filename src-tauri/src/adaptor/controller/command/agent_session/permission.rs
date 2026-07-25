@@ -466,9 +466,6 @@ fn permission_admission_error(
     error: OperationApplicationErrorDtoV1,
 ) -> PermissionResponseCommandErrorDtoV1 {
     match error {
-        OperationApplicationErrorDtoV1::MigrationInProgress => {
-            PermissionResponseCommandErrorDtoV1::MigrationInProgress
-        }
         OperationApplicationErrorDtoV1::ShutdownInProgress => {
             PermissionResponseCommandErrorDtoV1::ShutdownInProgress
         }

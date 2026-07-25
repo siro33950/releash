@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -8,6 +8,9 @@ use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 use tokio::sync::Notify;
 
 use super::child_process;
+use crate::infrastructure::app_data_path::{
+    AppDataPathObserver, AppDataPathOperation, NoopAppDataPathObserver,
+};
 
 static CLEANUP_ACTIVE: AtomicBool = AtomicBool::new(false);
 static CLEANUP_NOTIFY: OnceLock<Notify> = OnceLock::new();
@@ -26,10 +29,28 @@ pub(crate) struct PidFileV1 {
     pub created_at_ms: u128,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub(crate) struct PidRegistration {
     path: PathBuf,
+    observer: Arc<dyn AppDataPathObserver>,
 }
+
+impl std::fmt::Debug for PidRegistration {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PidRegistration")
+            .field("path", &self.path)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for PidRegistration {
+    fn eq(&self, other: &Self) -> bool {
+        self.path == other.path
+    }
+}
+
+impl Eq for PidRegistration {}
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct CleanupReport {
@@ -54,6 +75,8 @@ impl CleanupReport {
 
 impl PidRegistration {
     pub(crate) fn remove(&self) {
+        self.observer
+            .observe(AppDataPathOperation::Remove, &self.path);
         if let Err(error) = std::fs::remove_file(&self.path) {
             if error.kind() != std::io::ErrorKind::NotFound {
                 log::warn!(
@@ -75,14 +98,22 @@ pub(crate) async fn wait_for_cleanup_gate() {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn cleanup_orphan_processes(data_dir: &Path) -> CleanupReport {
+    cleanup_orphan_processes_with_observer(data_dir, Arc::new(NoopAppDataPathObserver))
+}
+
+pub(crate) fn cleanup_orphan_processes_with_observer(
+    data_dir: &Path,
+    observer: Arc<dyn AppDataPathObserver>,
+) -> CleanupReport {
     if CLEANUP_ACTIVE.swap(true, Ordering::AcqRel) {
         return CleanupReport {
             skipped: 1,
             ..CleanupReport::default()
         };
     }
-    let report = cleanup_orphan_processes_all_dirs(data_dir);
+    let report = cleanup_orphan_processes_all_dirs(data_dir, observer.as_ref());
     CLEANUP_ACTIVE.store(false, Ordering::Release);
     cleanup_notify().notify_waiters();
     crate::other::telemetry::record_orphan_cleanup_counts(
@@ -95,19 +126,34 @@ pub(crate) fn cleanup_orphan_processes(data_dir: &Path) -> CleanupReport {
     report
 }
 
-fn cleanup_orphan_processes_all_dirs(data_dir: &Path) -> CleanupReport {
-    let mut report = cleanup_orphan_processes_inner(data_dir);
+fn cleanup_orphan_processes_all_dirs(
+    data_dir: &Path,
+    observer: &dyn AppDataPathObserver,
+) -> CleanupReport {
+    let mut report = cleanup_orphan_processes_inner_with_observer(data_dir, observer);
     if let Some(env_data_dir) = data_dir_from_env() {
         if env_data_dir != data_dir {
-            report.merge(cleanup_orphan_processes_inner(&env_data_dir));
+            report.merge(cleanup_orphan_processes_inner_with_observer(
+                &env_data_dir,
+                observer,
+            ));
         }
     }
     report
 }
 
+#[cfg(test)]
 fn cleanup_orphan_processes_inner(data_dir: &Path) -> CleanupReport {
+    cleanup_orphan_processes_inner_with_observer(data_dir, &NoopAppDataPathObserver)
+}
+
+fn cleanup_orphan_processes_inner_with_observer(
+    data_dir: &Path,
+    observer: &dyn AppDataPathObserver,
+) -> CleanupReport {
     let mut report = CleanupReport::default();
     let dir = registry_dir(data_dir);
+    observer.observe(AppDataPathOperation::ReadDir, &dir);
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return report;
     };
@@ -118,7 +164,7 @@ fn cleanup_orphan_processes_inner(data_dir: &Path) -> CleanupReport {
             continue;
         }
         report.scanned += 1;
-        match read_pid_file(&path) {
+        match read_pid_file_with_observer(&path, observer) {
             Ok(pid_file) => {
                 match owner_status(&pid_file) {
                     OwnerStatus::Live | OwnerStatus::Unknown => {
@@ -132,6 +178,7 @@ fn cleanup_orphan_processes_inner(data_dir: &Path) -> CleanupReport {
                 } else {
                     report.failures += 1;
                 }
+                observer.observe(AppDataPathOperation::Remove, &path);
                 if let Err(error) = std::fs::remove_file(&path) {
                     if error.kind() != std::io::ErrorKind::NotFound {
                         report.failures += 1;
@@ -157,6 +204,22 @@ pub(crate) fn save_pgid(
     backend_id: &str,
     pid: u32,
 ) -> Option<PidRegistration> {
+    save_pgid_with_observer(
+        data_dir,
+        session_id,
+        backend_id,
+        pid,
+        Arc::new(NoopAppDataPathObserver),
+    )
+}
+
+pub(crate) fn save_pgid_with_observer(
+    data_dir: Option<&Path>,
+    session_id: &str,
+    backend_id: &str,
+    pid: u32,
+    observer: Arc<dyn AppDataPathObserver>,
+) -> Option<PidRegistration> {
     let fallback_data_dir = data_dir_from_env();
     let data_dir = match data_dir {
         Some(data_dir) => data_dir,
@@ -171,6 +234,7 @@ pub(crate) fn save_pgid(
         },
     };
     let dir = registry_dir(data_dir);
+    observer.observe(AppDataPathOperation::Write, &dir);
     if let Err(error) = std::fs::create_dir_all(&dir) {
         log::warn!(
             "failed to create agent process registry {}: {error}",
@@ -190,8 +254,8 @@ pub(crate) fn save_pgid(
         created_at_ms: now_ms(),
     };
     let path = pid_file_path(&dir, session_id, backend_id, pid);
-    match write_pid_file(&path, &file) {
-        Ok(()) => Some(PidRegistration { path }),
+    match write_pid_file_with_observer(&path, &file, observer.as_ref()) {
+        Ok(()) => Some(PidRegistration { path, observer }),
         Err(error) => {
             log::warn!(
                 "failed to write agent process pid file {}: {error}",
@@ -242,16 +306,38 @@ fn sanitize_file_component(value: &str) -> String {
     }
 }
 
+#[cfg(test)]
 fn write_pid_file(path: &Path, file: &PidFileV1) -> Result<(), String> {
+    write_pid_file_with_observer(path, file, &NoopAppDataPathObserver)
+}
+
+fn write_pid_file_with_observer(
+    path: &Path,
+    file: &PidFileV1,
+    observer: &dyn AppDataPathObserver,
+) -> Result<(), String> {
     let json = serde_json::to_string_pretty(file).map_err(|error| error.to_string())?;
     let tmp = path.with_extension("json.tmp");
+    observer.observe(AppDataPathOperation::Open, &tmp);
+    observer.observe(AppDataPathOperation::Write, &tmp);
     std::fs::write(&tmp, json)
         .map_err(|error| format!("failed to write pid tmp {}: {error}", tmp.display()))?;
+    observer.observe(AppDataPathOperation::Rename, path);
     std::fs::rename(&tmp, path)
         .map_err(|error| format!("failed to rename pid file {}: {error}", path.display()))
 }
 
+#[cfg(test)]
 pub(crate) fn read_pid_file(path: &Path) -> Result<PidFileV1, String> {
+    read_pid_file_with_observer(path, &NoopAppDataPathObserver)
+}
+
+fn read_pid_file_with_observer(
+    path: &Path,
+    observer: &dyn AppDataPathObserver,
+) -> Result<PidFileV1, String> {
+    observer.observe(AppDataPathOperation::Open, path);
+    observer.observe(AppDataPathOperation::Read, path);
     let content = std::fs::read_to_string(path)
         .map_err(|error| format!("failed to read pid file: {error}"))?;
     let file: PidFileV1 =

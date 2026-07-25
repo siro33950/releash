@@ -29,13 +29,15 @@ pub(crate) fn append_required_events_for_app_as<R: tauri::Runtime>(
     operation_kind: crate::domain::local_event::CommitOperationKind,
     events: &[WorkflowEvent],
 ) -> Result<(), String> {
-    let data_dir = crate::infrastructure::platform::app_data_dir::resolve_data_dir(app)
-        .map_err(|_| "failed to resolve app data dir".to_string())?;
     let Some(store) = app
         .try_state::<std::sync::Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>>()
     else {
         #[cfg(test)]
-        return append_required_events(&data_dir, events);
+        return append_required_events(
+            &crate::infrastructure::platform::app_data_dir::resolve_data_dir(app)
+                .map_err(|_| "failed to resolve app data dir".to_string())?,
+            events,
+        );
         #[cfg(not(test))]
         return Err("workflow SQLite event authority is not managed".to_string());
     };
@@ -43,7 +45,7 @@ pub(crate) fn append_required_events_for_app_as<R: tauri::Runtime>(
     let repository: std::sync::Arc<
         dyn crate::domain::local_event::LocalEventTransactionRepository,
     > = store.clone();
-    WorkflowEventLog::with_authority(&data_dir, repository, store.generation_id().to_string())
+    WorkflowEventLog::with_authority(repository, store.installation_id().to_string())
         .append_batch_durable_with_mutations_blocking_as(operation_kind, events, Vec::new())
 }
 
@@ -53,13 +55,15 @@ pub(crate) fn append_required_events_with_mutations_for_app_as<R: tauri::Runtime
     events: &[WorkflowEvent],
     state_mutations: Vec<crate::domain::local_event::LocalStateMutation>,
 ) -> Result<(), String> {
-    let data_dir = crate::infrastructure::platform::app_data_dir::resolve_data_dir(app)
-        .map_err(|_| "failed to resolve app data dir".to_string())?;
     let Some(store) = app
         .try_state::<std::sync::Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>>()
     else {
         #[cfg(test)]
-        return append_required_events(&data_dir, events);
+        return append_required_events(
+            &crate::infrastructure::platform::app_data_dir::resolve_data_dir(app)
+                .map_err(|_| "failed to resolve app data dir".to_string())?,
+            events,
+        );
         #[cfg(not(test))]
         return Err("workflow SQLite event authority is not managed".to_string());
     };
@@ -67,7 +71,7 @@ pub(crate) fn append_required_events_with_mutations_for_app_as<R: tauri::Runtime
     let repository: std::sync::Arc<
         dyn crate::domain::local_event::LocalEventTransactionRepository,
     > = store.clone();
-    WorkflowEventLog::with_authority(&data_dir, repository, store.generation_id().to_string())
+    WorkflowEventLog::with_authority(repository, store.installation_id().to_string())
         .append_batch_durable_with_mutations_blocking_as(operation_kind, events, state_mutations)
 }
 
@@ -76,8 +80,6 @@ pub(crate) fn commit_projection_with_mutations_for_app<R: tauri::Runtime>(
     execution_id: &str,
     state_mutations: Vec<crate::domain::local_event::LocalStateMutation>,
 ) -> Result<(), String> {
-    let data_dir = crate::infrastructure::platform::app_data_dir::resolve_data_dir(app)
-        .map_err(|_| "failed to resolve app data dir".to_string())?;
     let Some(store) = app
         .try_state::<std::sync::Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>>()
     else {
@@ -90,7 +92,7 @@ pub(crate) fn commit_projection_with_mutations_for_app<R: tauri::Runtime>(
     let repository: std::sync::Arc<
         dyn crate::domain::local_event::LocalEventTransactionRepository,
     > = store.clone();
-    WorkflowEventLog::with_authority(&data_dir, repository, store.generation_id().to_string())
+    WorkflowEventLog::with_authority(repository, store.installation_id().to_string())
         .commit_projection_durable_blocking(execution_id, state_mutations)
 }
 

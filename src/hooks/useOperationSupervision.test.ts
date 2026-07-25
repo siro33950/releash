@@ -28,14 +28,11 @@ describe("useOperationSupervision", () => {
 					return Promise.resolve({ entries: [], next_cursor: null });
 				case "list_pending_agent_recovery":
 					return Promise.resolve({ entries: [], next_cursor: null });
-				case "get_local_store_migration":
-					return Promise.resolve({ type: "current", migration: null });
 				case "get_application_shutdown":
 					return Promise.resolve({
 						type: "current",
 						plan: {
-							plan_id: "plan-1",
-							epoch: "0",
+							shutdown_id: "plan-1",
 							phase: "reconciliation_required",
 							outcome: "reconciliation_required",
 							actions: [],
@@ -54,8 +51,7 @@ describe("useOperationSupervision", () => {
 								state: "reconciliation_required",
 								observation: {
 									type: "exit_coupled_outcome_unknown",
-									plan_id: "plan-1",
-									epoch: "0",
+									shutdown_id: "plan-1",
 								},
 								revision: "2",
 								actions: ["retry_same_effect"],
@@ -85,8 +81,7 @@ describe("useOperationSupervision", () => {
 		);
 		expect(result.current.state.shutdownTargets[0].observation).toEqual({
 			type: "exit_coupled_outcome_unknown",
-			plan_id: "plan-1",
-			epoch: "0",
+			shutdown_id: "plan-1",
 		});
 
 		await act(async () => {
@@ -98,8 +93,7 @@ describe("useOperationSupervision", () => {
 		expect(mockInvoke).toHaveBeenCalledWith("resolve_shutdown_target_action", {
 			request: {
 				action_id: "shutdown-action-1",
-				plan_id: "plan-1",
-				epoch: "0",
+				shutdown_id: "plan-1",
 				ordinal: "0",
 				target_key: "target-key-1",
 				origin_revision: "2",
@@ -116,8 +110,6 @@ describe("useOperationSupervision", () => {
 					return Promise.resolve({ entries: [], next_cursor: null });
 				case "list_pending_agent_recovery":
 					return Promise.resolve({ entries: [], next_cursor: null });
-				case "get_local_store_migration":
-					return Promise.resolve({ type: "current", migration: null });
 				case "get_application_shutdown":
 					return Promise.resolve({
 						type: "outcome_unknown",
@@ -175,8 +167,6 @@ describe("useOperationSupervision", () => {
 						],
 						next_cursor: null,
 					});
-				case "get_local_store_migration":
-					return Promise.resolve({ type: "current", migration: null });
 				case "get_application_shutdown":
 					return Promise.resolve({ type: "current", plan: null });
 				default:
@@ -233,8 +223,6 @@ describe("useOperationSupervision", () => {
 						});
 					case "list_pending_agent_recovery":
 						return Promise.resolve({ entries: [], next_cursor: null });
-					case "get_local_store_migration":
-						return Promise.resolve({ type: "current", migration: null });
 					case "get_application_shutdown":
 						return Promise.resolve({ type: "current", plan: null });
 					default:
@@ -254,8 +242,7 @@ describe("useOperationSupervision", () => {
 			limit: 32,
 			partition: null,
 			owner: "session-1",
-			shutdownPlanId: null,
-			shutdownEpoch: null,
+			shutdownId: null,
 			cursor: null,
 		});
 		expect(mockInvoke).toHaveBeenCalledWith("get_stop_operation", {
@@ -295,8 +282,6 @@ describe("useOperationSupervision", () => {
 						});
 					case "list_pending_agent_recovery":
 						return Promise.resolve({ entries: [], next_cursor: null });
-					case "get_local_store_migration":
-						return Promise.resolve({ type: "current", migration: null });
 					case "get_application_shutdown":
 						return Promise.resolve({ type: "current", plan: null });
 					default:
@@ -360,8 +345,6 @@ describe("useOperationSupervision", () => {
 						return Promise.resolve({ operation_id: args?.operationId });
 					case "list_pending_agent_recovery":
 						return Promise.resolve({ entries: [], next_cursor: null });
-					case "get_local_store_migration":
-						return Promise.resolve({ type: "current", migration: null });
 					case "get_application_shutdown":
 						return Promise.resolve({ type: "current", plan: null });
 					default:
@@ -410,8 +393,6 @@ describe("useOperationSupervision", () => {
 						return Promise.reject(new Error("readback unavailable"));
 					case "list_pending_agent_recovery":
 						return Promise.resolve({ entries: [], next_cursor: null });
-					case "get_local_store_migration":
-						return Promise.resolve({ type: "current", migration: null });
 					case "get_application_shutdown":
 						return Promise.resolve({ type: "current", plan: null });
 					default:
@@ -462,14 +443,11 @@ describe("useOperationSupervision", () => {
 					return Promise.resolve({ entries: [], next_cursor: null });
 				case "list_pending_agent_recovery":
 					return Promise.resolve({ entries: [], next_cursor: null });
-				case "get_local_store_migration":
-					return Promise.resolve({ type: "current", migration: null });
 				case "get_application_shutdown":
 					return Promise.resolve({
 						type: "current",
 						plan: {
-							plan_id: "failed-plan",
-							epoch: "0",
+							shutdown_id: "failed-plan",
 							phase: "failed",
 							outcome: "aborted_before_activation",
 							actions: ["retry_quit"],

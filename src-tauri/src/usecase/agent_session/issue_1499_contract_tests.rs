@@ -191,7 +191,7 @@ fn close_quit_decision_table_has_one_complete_row_per_typed_surface() {
     let table = decision_table
         .split("## Surface decision table")
         .nth(1)
-        .and_then(|tail| tail.split("## Session lifecycle operation contract").next())
+        .and_then(|tail| tail.split("## Application shutdown contract").next())
         .expect("the surface decision table must have stable section boundaries");
     let mut rows = table.lines().filter(|line| {
         line.starts_with('|')
@@ -200,83 +200,25 @@ fn close_quit_decision_table_has_one_complete_row_per_typed_surface() {
     });
 
     let expected_surfaces = [
-        ("chat tab close", "close_quit_chat_tab_close_is_view_only"),
-        (
-            "chat panel close",
-            "close_quit_chat_panel_close_is_view_only",
-        ),
-        (
-            "workflow node tab close",
-            "close_quit_workflow_node_tab_close_is_view_only",
-        ),
-        ("workspace close", "close_quit_workspace_close_is_view_only"),
-        ("window close", "close_quit_window_close_is_view_only"),
-        (
-            "normal Session close（active）",
-            "close_quit_active_session_close_commits_terminal_and_pause",
-        ),
-        (
-            "normal Session close（Idle）",
-            "close_quit_idle_session_close_has_no_synthetic_terminal",
-        ),
-        (
-            "open Session archive（active）",
-            "close_quit_active_open_archive_commits_terminal_and_pause",
-        ),
-        (
-            "open Session archive（Idle）",
-            "close_quit_idle_open_archive_has_no_synthetic_terminal",
-        ),
-        (
-            "closed Session archive",
-            "close_quit_closed_archive_changes_projection_only",
-        ),
-        (
-            "backend switch（受理）",
-            "close_quit_idle_backend_switch_is_ack_driven",
-        ),
-        (
-            "backend switch（拒否）",
-            "close_quit_backend_switch_rejects_active_or_pending_session",
-        ),
-        ("Cmd-Q", "close_quit_cmd_q_routes_to_shared_shutdown"),
-        (
-            "Application menu Quit",
-            "close_quit_application_menu_routes_to_shared_shutdown",
-        ),
-        (
-            "Dock Quit",
-            "close_quit_dock_native_exit_uses_shared_shutdown_contract",
-        ),
-        ("Tray Quit", "close_quit_tray_routes_to_shared_shutdown"),
-        (
-            "cooperative OS logout / shutdown",
-            "close_quit_cooperative_os_exit_uses_shared_shutdown_contract",
-        ),
-        (
-            "programmatic exit",
-            "close_quit_programmatic_exit_requires_coordinator_permit",
-        ),
-        (
-            "programmatic restart",
-            "close_quit_programmatic_restart_requires_coordinator_permit",
-        ),
-        (
-            "concurrent quit across surfaces",
-            "close_quit_first_ingress_owns_exit_intent",
-        ),
-        (
-            "cooperative quit during bootstrap",
-            "close_quit_bootstrap_uses_bounded_exit_without_shutdown_effect",
-        ),
-        (
-            "hard kill / power loss",
-            "close_quit_hard_kill_recovers_as_crash",
-        ),
+        "chat tab close",
+        "chat panel close",
+        "workflow node tab close",
+        "workspace close",
+        "window close",
+        "active Session close",
+        "Idle Session close",
+        "active open Session archive",
+        "Idle open Session archive",
+        "closed Session archive",
+        "backend switch",
+        "Cmd-Q / menu / Dock / Tray Quit",
+        "cooperative OS logout / shutdown",
+        "programmatic exit / restart",
+        "concurrent quit",
+        "cooperative quit during SQLite startup failure",
+        "hard kill / power loss",
     ];
-    let expected = expected_surfaces
-        .into_iter()
-        .collect::<std::collections::HashMap<_, _>>();
+    let expected = expected_surfaces.into_iter().collect::<HashSet<_>>();
     let mut observed = HashSet::new();
 
     for row in rows.by_ref() {
@@ -287,8 +229,8 @@ fn close_quit_decision_table_has_one_complete_row_per_typed_surface() {
             .collect::<Vec<_>>();
         assert_eq!(
             cells.len(),
-            11,
-            "every surface row must define all 11 decision-table columns: {row}"
+            6,
+            "every surface row must define all six semantic columns: {row}"
         );
         assert!(
             cells.iter().all(|cell| !cell.is_empty()),
@@ -299,22 +241,15 @@ fn close_quit_decision_table_has_one_complete_row_per_typed_surface() {
             observed.insert(surface.to_string()),
             "typed surface appears more than once: {surface}"
         );
-        let expected_test = expected
-            .get(surface)
-            .unwrap_or_else(|| panic!("unexpected typed surface in decision table: {surface}"));
-        assert_eq!(
-            cells[10],
-            format!("`{expected_test}`"),
-            "each surface must retain its exact executable acceptance identity"
+        assert!(
+            expected.contains(surface),
+            "unexpected typed surface in decision table: {surface}"
         );
     }
 
     assert_eq!(
         observed,
-        expected
-            .keys()
-            .map(|surface| (*surface).to_string())
-            .collect(),
+        expected.into_iter().map(str::to_string).collect(),
         "the decision table must contain every typed surface exactly once"
     );
 }

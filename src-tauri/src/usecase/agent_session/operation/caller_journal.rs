@@ -60,7 +60,7 @@ pub struct PendingCallerAttemptPage {
 pub struct CallerAttemptJournal {
     repository: Arc<dyn LocalEventTransactionRepository>,
     authority: Arc<dyn OperationBindingAuthority>,
-    generation_id: String,
+    installation_id: String,
 }
 
 pub struct BoundCallerOperation<'a> {
@@ -84,12 +84,12 @@ impl CallerAttemptJournal {
     pub fn new(
         repository: Arc<dyn LocalEventTransactionRepository>,
         authority: Arc<dyn OperationBindingAuthority>,
-        generation_id: String,
+        installation_id: String,
     ) -> Self {
         Self {
             repository,
             authority,
-            generation_id,
+            installation_id,
         }
     }
 
@@ -101,7 +101,7 @@ impl CallerAttemptJournal {
     ) -> CallerOperationKey {
         CallerOperationKey {
             principal: principal.to_string(),
-            generation_id: self.generation_id.clone(),
+            installation_id: self.installation_id.clone(),
             kind,
             caller_request_id: caller_request_id.to_string(),
         }
@@ -133,7 +133,7 @@ impl CallerAttemptJournal {
     ) -> Vec<u8> {
         format!(
             "caller-attempt-command/v1\0{principal}\0{}\0{}\0{caller_request_id}",
-            self.generation_id,
+            self.installation_id,
             kind.label()
         )
         .into_bytes()
@@ -161,7 +161,7 @@ impl CallerAttemptJournal {
         let owner_key = self.authority.digest(
             format!(
                 "caller-attempt-owner/v1\0{principal}\0{}\0{}\0{caller_request_id}",
-                self.generation_id,
+                self.installation_id,
                 kind.label()
             )
             .as_bytes(),
@@ -198,7 +198,7 @@ impl CallerAttemptJournal {
         let batch = LocalAtomicBatch {
             commit_id: self.commit_id(principal, kind, caller_request_id, step),
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: if matches!(expected, RevisionGuard::Expected(_)) {
                     crate::domain::local_event::CommitOperationKind::OperationProgress
                 } else {
@@ -347,7 +347,7 @@ impl CallerAttemptJournal {
         let owner_key = self.authority.digest(
             format!(
                 "caller-attempt-bound-owner/v1\0{principal}\0{}\0{}\0{caller_request_id}\0{operation_id}",
-                self.generation_id,
+                self.installation_id,
                 kind.label()
             )
             .as_bytes(),
@@ -365,7 +365,7 @@ impl CallerAttemptJournal {
         let batch = LocalAtomicBatch {
             commit_id: commit_id.clone(),
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: kind.into(),
                 idempotency_key: format!("attempt.{}.bound", hex_encode(&owner_key)),
                 payload_hash,
@@ -463,7 +463,7 @@ impl CallerAttemptJournal {
             .repository
             .query(LocalEventQuery::CallerAttemptPage {
                 principal: principal.to_string(),
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 scope_id: scope_id.to_string(),
                 limit,
                 after_kind,
@@ -502,7 +502,7 @@ impl CallerAttemptJournal {
         let payload = format!("{}\0{}", key.kind.label(), key.caller_request_id);
         let binding = format!(
             "caller-attempt-page/v1\0{principal}\0{}\0{scope_id}\0{payload}",
-            self.generation_id
+            self.installation_id
         );
         format!(
             "{}.{}",
@@ -524,7 +524,7 @@ impl CallerAttemptJournal {
         let payload = String::from_utf8(payload).map_err(|_| CallerJournalError::InvalidRequest)?;
         let binding = format!(
             "caller-attempt-page/v1\0{principal}\0{}\0{scope_id}\0{payload}",
-            self.generation_id
+            self.installation_id
         );
         let supplied = hex::decode(mac_hex).map_err(|_| CallerJournalError::InvalidRequest)?;
         let supplied: [u8; 32] = supplied

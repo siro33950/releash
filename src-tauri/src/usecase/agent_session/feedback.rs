@@ -121,7 +121,7 @@ pub(crate) enum FeedbackError {
 
 pub(crate) struct SessionFeedbackUsecase {
     repository: Arc<dyn LocalEventTransactionRepository>,
-    generation_id: String,
+    installation_id: String,
     process_instance_id: String,
     resolution_port: Option<Arc<dyn FeedbackResolutionPort>>,
 }
@@ -129,11 +129,11 @@ pub(crate) struct SessionFeedbackUsecase {
 impl SessionFeedbackUsecase {
     pub(crate) fn new(
         repository: Arc<dyn LocalEventTransactionRepository>,
-        generation_id: String,
+        installation_id: String,
     ) -> Self {
         Self {
             repository,
-            generation_id,
+            installation_id,
             process_instance_id: uuid::Uuid::new_v4().to_string(),
             resolution_port: None,
         }
@@ -181,7 +181,7 @@ impl SessionFeedbackUsecase {
             commit_id: CommitIdentity::parse(&hex::encode(commit_hash))
                 .map_err(|_| internal("reserve-identity"))?,
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: CommitOperationKind::Recovery,
                 idempotency_key: format!("feedback.reserve.{feedback_id}"),
                 payload_hash,
@@ -247,7 +247,7 @@ impl SessionFeedbackUsecase {
             commit_id: CommitIdentity::parse(&hex::encode(commit_hash))
                 .map_err(|_| internal("materialize-identity"))?,
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: CommitOperationKind::Recovery,
                 idempotency_key: format!("feedback.materialize.{}", reservation.feedback_id),
                 payload_hash,
@@ -309,7 +309,7 @@ impl SessionFeedbackUsecase {
             commit_id: CommitIdentity::parse(&hex::encode(commit_hash))
                 .map_err(|_| internal("success-identity"))?,
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: CommitOperationKind::Recovery,
                 idempotency_key: format!("feedback.success.{}", reservation.feedback_id),
                 payload_hash,
@@ -430,7 +430,7 @@ impl SessionFeedbackUsecase {
             commit_id: CommitIdentity::parse(&hex::encode(commit_hash))
                 .map_err(|_| internal("create-identity"))?,
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: CommitOperationKind::Recovery,
                 idempotency_key: format!("feedback.create.{feedback_id}"),
                 payload_hash,
@@ -550,7 +550,7 @@ impl SessionFeedbackUsecase {
             commit_id: CommitIdentity::parse(&hex::encode(commit_hash))
                 .map_err(|_| internal("dismiss-identity"))?,
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: CommitOperationKind::Recovery,
                 idempotency_key: format!("feedback.dismiss.{feedback_id}.{}", next.value()),
                 payload_hash,
@@ -630,7 +630,7 @@ impl SessionFeedbackUsecase {
             commit_id: CommitIdentity::parse(&hex::encode(reserve_commit_hash))
                 .map_err(|_| internal("retry-reserve-identity"))?,
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: CommitOperationKind::Recovery,
                 idempotency_key: format!(
                     "feedback.retry.{feedback_id}.{expected_revision}.reserve"
@@ -725,7 +725,7 @@ impl SessionFeedbackUsecase {
             commit_id: CommitIdentity::parse(&hex::encode(commit_hash))
                 .map_err(|_| internal("retry-identity"))?,
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: CommitOperationKind::OperationProgress,
                 idempotency_key: format!("feedback.retry.{feedback_id}.{}", next.value()),
                 payload_hash,
@@ -999,7 +999,6 @@ fn failure_kind_label_for_hash(kind: SessionOperationFailureKind) -> &'static st
     match kind {
         SessionOperationFailureKind::StorageUnavailable => "storage_unavailable",
         SessionOperationFailureKind::StorageCorrupt => "storage_corrupt",
-        SessionOperationFailureKind::MigrationBlocked => "migration_blocked",
         SessionOperationFailureKind::PersistFailure => "persist_failure",
         SessionOperationFailureKind::ProtocolIncompatible => "protocol_incompatible",
         SessionOperationFailureKind::ProviderUnavailable => "provider_unavailable",
@@ -1015,9 +1014,6 @@ fn failure_kind_label_for_hash(kind: SessionOperationFailureKind) -> &'static st
         SessionOperationFailureKind::InvalidEffectIntent => "invalid_effect_intent",
         SessionOperationFailureKind::PreviousShutdownReconciliationRequired => {
             "previous_shutdown_reconciliation_required"
-        }
-        SessionOperationFailureKind::PreviousShutdownCompactionPending => {
-            "previous_shutdown_compaction_pending"
         }
         SessionOperationFailureKind::Internal => "internal",
     }

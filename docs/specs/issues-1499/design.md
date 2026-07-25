@@ -1,631 +1,254 @@
 # Design
 
+Primary Spec: [requirements.md](requirements.md) / [behavior.md](behavior.md)
+
 ## The actual design
 
 ### Architecture
 
-#1499はF2 #1384とF3 #1385を内包し、暫定file-store bridgeを作らず次の恒久境界を同じreleaseで導入する。
+Rust backend が、command acceptance、operation identity、domain transition、persistence admission、recovery、shutdown を所有する。frontend は入力 attempt と backend が返す read model を保持し、domain decision を再実装しない。controller は operation usecase だけを呼び、usecase は一つの canonical persistence gateway と、provider / workflow / process exit を抽象化した effect port を使う。
 
-1. agent message partとagent / workflow eventはdomain layerが所有する。
-2. usecaseはcaller operation identity、terminal arbitration、durable obligation、recovery、shutdownを所有する。
-3. bundled SQLite local event storeはagent sessionとworkflowを跨ぐ唯一のmutation authorityである。
-4. gatewayはSQLite schema、versioned persistence DTO、legacy migrationを所有する。
-5. Tauri / WebSocketは同じusecase / query serviceとpresenterを使い、frontendは結果をmirrorする。
+この分割は [DOMAIN.md](../../architecture/DOMAIN.md)、[USECASE.md](../../architecture/USECASE.md)、[GATEWAY.md](../../architecture/GATEWAY.md)、[CONTROLLER.md](../../architecture/CONTROLLER.md) と repository の Rust-first 規約に従う。
 
-`specs/milestone-84-agent-chat-stabilization/d3-durable-event-store-design.md`の必要な判断は本書へ統合済みである。D3は設計経緯として参照できるが、実装に追加判断を要求する正本ではない。close / quitの利用者可視意味論は`specs/milestone-84-agent-chat-stabilization/close-quit-decision-table.md`と一致させる。
+責務境界は次のとおり。
 
-#### Layer ownership
+| Concern | Owner |
+| --- | --- |
+| message、turn、permission、queue、operation、terminal の意味 | domain |
+| send、Stop、recovery、Session lifecycle、shutdown、startup outcome の調停 | usecase |
+| SQLite の create / open、schema evolution、atomic persistence、query | gateway |
+| provider、runtime、workflow、process exit への作用 | infrastructure port |
+| Tauri / WebSocket の意味的に同じ入出力 | controller / presenter |
+| 表示と caller attempt の保持 | frontend |
 
-| Layer | Owner | Placement |
-| --- | --- | --- |
-| domain | `MessagePart`、`AgentSessionDomainEvent`、`WorkflowDomainEvent`、operation / terminal / obligation / recovery / shutdownのclosed type、`LocalEventTransactionRepository` port | `src-tauri/src/domain/agent_session/`、`domain/workflow/`、`domain/local_event/` |
-| usecase | send acceptance、terminal arbitration、Stop deadline、effect reservation、recovery、feedback、session lifecycle、shutdown coordinator | `src-tauri/src/usecase/agent_session/`、`usecase/shutdown_coordinator.rs` |
-| adaptor/gateway | SQLite repository、schema migration、persistence DTO、legacy reader / importer、bounded query implementation | `src-tauri/src/adaptor/gateway/local_event_store/` |
-| adaptor/controller / protocol | Tauri / WebSocket input validation、usecase call、public DTO mapping | `src-tauri/src/adaptor/controller/`、`adaptor/protocol/` |
-| infrastructure | provider / workflow / child process effect、native quit ingress | existing runtime / platform modules |
-| frontend | caller attempt identity、composer snapshot、backend projectionのmirror、明示action | existing hooks / components |
+恒久 SQLite store は固定 path に一つだけ存在し、normal runtime の唯一の persistence authority である。旧 file-store は production composition の依存、入力、fallback、cleanup 対象に含めない。この保証は startup だけでなく、background maintenance、retention、cleanup、shutdown にも適用する。
 
-依存方向はcontroller / gateway → usecase → domainである。domainは`serde`、rusqlite、filesystem、Tauri、WebSocketへ依存しない。usecaseに同義`MessagePart`、SQL row、persistence envelopeを置かない。
+startup composition は二段に分ける。pre-admission では `ApplicationStartupAuthority`、process-local exit port、固定 store の opener だけを構築する。store が `Ready` を返した後にだけ Session、Workflow、PTY、provider、normal application state、WebSocket server、startup recovery、maintenance を構築する。Tauriのinvoke handlerが静的にroute名を登録していても、top-level dispatcherは`ApplicationStartupOutcome`を最初に検査し、`Failed`ではstartup用二command以外をstate解決前に`ApplicationUnavailable`として拒否する。したがってstore open failureからnormal runtimeの一部だけが生きる経路はない。
 
-#### Commit ownership
+`ApplicationStartupAuthority` はusecase-ownedである。gatewayはpath / SQLite failureをprivateなclosed errorへ分類し、usecaseがpublicな`ApplicationStartupOutcome`と利用可能actionを決め、presenterがallow-listed wire representationへ写像する。controllerとfrontendはraw errorを解析しない。
 
-| Fact | Transaction participant | Commit後の派生物 |
-| --- | --- | --- |
-| send acceptance | exact request binding、human input event、turnまたはqueue identity、必要なobligation | immutable receipt、status emit |
-| streaming observation | part event、message revision、turn fence | live / reload projection |
-| terminal | terminal event、final parts、assistant message、session / permission / queue state、Stop resolution | terminal notification |
-| external effect | operation / obligation、effect identity、owner revision、safe observation | pending recovery page |
-| session lifecycle | lifecycle operation、session state、必要なterminal / queue pause / close obligation | session / history projection |
-| shutdown | caller binding、plan、target / recovery snapshot、phase、result | progress emit、exit permit |
-
-表の各行は一つのSQLite transactionで確定する。notification、WebSocket publish、frontend updateはcommit根拠ではなく、失敗してもidentity queryから同じ結果を再取得できる。
-
-#### Production cutover
-
-1. 起動時にexclusive app-data writer lockを取得し、`LocalStoreAuthorityPointerV1`を読む。
-2. 新規installationは空のSQLite generationを作成して`Sqlite` authorityを発行する。
-3. `Legacy` authorityはmutation / provider effect admissionを閉じ、legacyをread-only表示しながらstaging SQLiteへ自動migrationする。
-4. parity成功後だけauthority pointerを`Legacy`から`Sqlite`へ一度CASする。
-5. cutover後はSQLiteだけを読み書きし、legacy dual write、record単位fallback、legacy rollbackを行わない。
-6. production compositionはすべての#1499 mutationを同じ`LocalEventTransactionRepository` instanceへ注入する。旧file-store append成功をcommitとみなす経路、全履歴scan fallback、`phase0_*` module / type / tableを残さない。
-
-F4 / F5のprovider wire全体のtyped adapter化、F8の追加query、F10のqueue lifecycle全体は後続である。ただし#1499に必要なproduction event apply、identity lookup、pending recovery、terminal、shutdown queryは今回のSQLite schemaとportで実装する。
-
-#### Implementation order
-
-次はruntime phaseやsubphaseではなく、同じ#1499内の直列依存である。後段taskは前段のproduction codeとcontract testを使い、同義port / checkpoint / schemaを作らない。
-
-1. domain `MessagePart`を単一定義にし、agent / workflow domain eventとlegacy / public DTO converterを確定する。
-2. `LocalEventTransactionRepository`、SQLite schema、single writer、idempotency / sequence / direct index、fault harnessを実装する。
-3. send / Stop / session lifecycleのcaller journal、operation binding、acceptance / identity queryをSQLite portへ接続する。
-4. terminal batch、durable obligation、pending recovery / action、feedbackを接続する。
-5. shutdown coordinator、plan / target / snapshot、detail compaction、migration-safe quitを同じSQLite port / schemaへ接続する。step 2のportとstep 4のobligationを前提とし、独立checkpoint authorityを作らない。
-6. Legacy→staging SQLite migration、parity、authority pointer cutoverを実装する。step 1–5の全known type / table / projectionが揃う前にcutoverを有効化しない。
-7. Tauri / WebSocket / frontendを同じusecase / presenterへ接続し、旧file-store mutationと旧全履歴scan fallbackをproduction compositionから外す。
-8. F1b、legacy compatibility、fault / restart / performance matrixを通し、新規installationとupgradeのnormal admissionを有効化する。
+shutdown は一つの Rust-owned durable aggregate を正本とする。保存、整合性検証、作用開始可否、current read、history read、target pagination は同じ SQLite の `shutdown_plans` / `shutdown_targets` と committed revision を共有する。summary と detail は同じ aggregate の view であり、不一致時は fail closed にする。page file、page reference、root hash、root page、別 archive blob、current recovery collection は shutdown authority にしない。
 
 ### Interface
 
-#### Store port
+公開 interface は実装型ではなく、次の意味を保証する。
 
-内向きportは次の責任だけを公開する。SQL、row ID、WAL、serializationを型へ漏らさない。
+- deadline、capacity、page、wire integer の exact value は [requirements.md](requirements.md) の public boundary table を正本とし、本 Design では再定義しない。
+- command は未受理、受理済み、結果確認必要、完了を区別する。
+- 同じ authorized caller と request identity の同じ intent は同じ result を返す。
+- 同じ request identity の異なる intent は effect を開始せず conflict になる。
+- 受理済み operation は response loss と restart 後も direct lookup できる。
+- collection access は一貫した revision の結果だけを返し、完全性を保証できない場合は partial result を返さない。
+- Tauri と WebSocket は transport 表現が異なっても同じ semantic result を返す。
+- public integer は lossless に往復し、不正表現を domain command へ渡さない。
 
-```rust
-#[async_trait::async_trait]
-pub trait LocalEventTransactionRepository: Send + Sync {
-    async fn commit_batch(
-        &self,
-        batch: LocalAtomicBatch,
-    ) -> Result<CommitBatchResult, CommitBatchError>;
+Safe failure は利用者が行動を選べる分類、公開可能な説明、相関情報だけを持つ。private payload、path、SQL、internal proof は公開しない。
 
-    async fn resolve_commit(
-        &self,
-        identity: CommitIdentity,
-    ) -> Result<CommitResolution, LocalEventQueryError>;
+recovery action と application shutdown status の公開意味は [agent-chat-ideal-vocabulary.md](../../../specs/milestone-84-agent-chat-stabilization/agent-chat-ideal-vocabulary.md) を共通語彙とし、transport や内部 state machine が別の意味を追加しない。
 
-    async fn load_stream(
-        &self,
-        request: LoadStreamRequest,
-    ) -> Result<DomainEventPage, LocalEventQueryError>;
+normal admission 前の Rust interface は次の closed contract とする。これは legacy-data migration の state、progress、query、gate、または別名ではなく、一回の store create / open attempt の process-local result である。
 
-    async fn query(
-        &self,
-        request: LocalEventQuery,
-    ) -> Result<LocalEventQueryResult, LocalEventQueryError>;
+```text
+ApplicationStartupOutcome =
+  Ready
+  | Failed {
+      kind: StartupFailureKind,
+      safe_description: String,
+      correlation_id: String,
+      retry_on_next_launch: bool,
+      actions: [Quit],
+    }
 
-    fn subscribe(&self, after: GlobalSequence) -> LocalEventSubscription;
-}
+StartupFailureKind =
+  StoreInUse
+  | StorageUnavailable
+  | UnsupportedRuntime
+  | UnsupportedStoreVersion
+  | InitializationStateInvalid
+  | StoreValidationFailed
+  | SchemaEvolutionFailed
 ```
 
-`commit_batch`だけがmutation入口である。query methodはsnapshot readだけを行い、repair、migration、projection rebuildを暗黙実行しない。subscription lag時は`after`からbounded replayし、保持範囲外なら`ReplayRequired`を返す。
+`safe_description` は kind から作る allow-listed 文言であり、下位 error の文字列を使わない。`correlation_id` は一回の失敗ごとにUUID v4として生成する非秘密の診断相関子で、installation identityではない。`retry_on_next_launch`は同一process内のloopを許可する値ではない。`actions`は`Failed`で常に`Quit`一件、`Ready`では空である。
 
-`LocalEventQuery`は`CommitByIdentity | StreamPage | OperationByIdentity | TerminalByTurn | PendingRecoveryPage | PendingRecoverySnapshotPage | RecoveryActionByIdentity | CurrentShutdown | ShutdownPlanPage | LocalStoreMigration`のclosed sumである。`LocalEventQueryResult`も各queryと一対一のclosed sumとし、generic row / JSON / mapを返さない。F8 / F10が追加するqueryは別variantと専用resultをschema migrationと同時に追加する。
+`retry_on_next_launch` の写像は次に固定する。
 
-#### Atomic batch
-
-```rust
-pub struct LocalAtomicBatch {
-    pub commit_id: CommitIdentity,
-    pub idempotency: IdempotencyBinding,
-    pub expected_heads: Vec<ExpectedStreamHead>,
-    pub events: Vec<UncommittedDomainEvent>,
-    pub state_mutations: Vec<LocalStateMutation>,
-}
-
-pub enum CommitBatchResult {
-    Committed(CommittedBatch),
-    Replayed(CommittedBatch),
-}
-
-pub enum CommitBatchError {
-    PayloadConflict,
-    StreamHeadConflict { current: StreamVersion },
-    CapacityExceeded,
-    SequenceExhausted,
-    StorageUnavailable { failure: SafeOperationFailure },
-    OutcomeUnknown { identity: CommitIdentity },
-    Corrupt { correlation_id: String },
-}
-```
-
-同じidempotency key / canonical payloadは同じ`CommittedBatch`へ戻る。同じkey / different payloadは`PayloadConflict`である。`OutcomeUnknown`は別identityを作らず`resolve_commit`または同じbatchの再試行で解決する。
-
-#### Application commands and queries
-
-公開endpointは次の一組である。snake_case名はTauri command、同じ行のrequest / resultはWebSocket V1でも共用する。
-
-| Endpoint | Kind | Main result |
+| Kind | Value | Reason |
 | --- | --- | --- |
-| `send_agent_message` | command | `Accepted { receipt, latest_status } | RejectedBeforeCommit | OutcomeUnknown` |
-| `get_agent_send_operation` | query | immutable receiptとlatest status |
-| `stop_agent_session` / `get_stop_operation` | command / query | Accepted Stop、terminal / resolution、ReconciliationRequired |
-| `request_session_lifecycle` / `get_session_lifecycle_operation` | Tauri command / query | close / archive / backend switchのstable operation |
-| `list_pending_agent_recovery` | query | current pending-only bounded page |
-| `get_pending_recovery_snapshot` | query | shutdown plan固定snapshot page |
-| `resolve_pending_recovery_action` / `resolve_shutdown_target_action` | command | action identityに束縛したresult |
-| `get_recovery_action` | query | saved action attempt / result |
-| `get_local_store_migration` | query | migration progress。通常稼働時は`None` |
-| `get_application_shutdown` | query | normal shutdown current projection |
-| `request_application_quit` / `get_application_quit_operation` | command / query | `Shutdown | Migration` projection |
-| `get_shutdown_plan` | query | plan / history bounded page |
-| feedback query / dismiss / retry | query / command | session-scoped bounded feedback |
+| `StoreInUse` | `true` | owner process の終了後は同じ fixed store を再評価できる |
+| `StorageUnavailable` | `true` | 次回 attempt で filesystem condition を再評価できる |
+| `UnsupportedRuntime` | `false` | 対応 build が必要で、同じ build 内の再試行では変わらない |
+| `UnsupportedStoreVersion` | `false` | 対応 build が必要で、既存 store を変更しない |
+| `InitializationStateInvalid` | `false` | 自動 create / repair を安全と証明できない |
+| `StoreValidationFailed` | `false` | 初期化済み store の自動 repair を行わない |
+| `SchemaEvolutionFailed` | `true` | transaction 後の旧 / 新 schema を次回 startup で再分類できる |
 
-operation identityはsend / Stop / quit / session lifecycleで1..=128 bytes、`[A-Za-z0-9._:-]`である。WebSocket outer request IDはtransport重複制御だけに使い、operation identityの代用にしない。caller principal、app-data generation、operation kind、caller request ID、canonical exact payloadをinstallation keyでHMAC bindingする。keyはowner-onlyで、default再生成、public DTO、log出力を禁止する。
+`ApplicationStartupAuthority` は最初の outcome と correlation を process lifetime 中保持し、query のたびに store attempt を再実行しない。pre-admission Tauri surface は read-only な `get_application_startup_outcome` と、`Failed` のときだけ有効な `quit_after_startup_failure` に閉じる。後者は process-local single-flight に join し、SQLite、normal shutdown coordinator、Session / Workflow state を参照または作成しない。他のTauri commandは`ApplicationUnavailable`を返し、domain-specific failureや空read modelへfallbackしない。normal WebSocket serverは`Ready`前に起動しないため、startup failure用WebSocket routeは作らない。
 
-built-in Tauri callerはfrontendから受け取ったoperation / request IDとexact commandを、usecase dispatchより先にRust-owned `caller_attempts`へ保存する。保存できなければeffect 0件の`RejectedBeforeCommit`、保存結果不明なら同identityの`OutcomeUnknown`とする。response喪失またはUI restart後は同じattemptをidentity queryまたはsame-payload commandへ再接続し、Acceptedまたはdeterministicなpre-commit rejectionを確認した後だけjournal entryをclearする。これはowner-privateなlocal outboxであり、public prepared lifecycle、prepared list、content resolverを作らない。external WebSocket callerは送信前にidentityとexact payloadを自身のdurable stateへ保存することをprotocol preconditionとする。
+presenterがfrontendへ渡すclosed wire shapeは次のとおりである。fieldの追加はpublic representation versionの変更として扱う。
 
-#### Command result rules
+```text
+{ "type": "ready" }
 
-- acceptance前failureはstate / external effectを0件にして`RejectedBeforeCommit`またはendpoint固有rejectionを返す。
-- acceptance transactionの結果を確認できない場合は同じoperation identityのtop-level`OutcomeUnknown`を返す。
-- acceptance後のeffect / completion結果不明はAccepted receiptを維持しlatest statusを`ReconciliationRequired`とする。
-- 別principalによる既存identityのcommand / queryは`NotFound`で、存在を開示しない。
-- same identity / different exact payloadは`PayloadConflict`で、既存operationを変更しない。
-- direct queryはoperation recordをpoint lookupし、current session projectionから過去resultを再構築しない。
-
-#### Endpoint errors
-
-各Tauri endpointは行ごとのnamed error enumを持ち、WebSocketは同じ集合を共通envelopeへ写す。result内のRejected / Failed / OutcomeUnknown / ReconciliationRequiredをdirect errorへ複製しない。`StorageUnavailable`はbounded failure、`Internal`はcorrelation IDだけを持つ。
-
-| Endpoint | Exact direct error |
-| --- | --- |
-| `send_agent_message` | InvalidRequest, PayloadConflict(Send), CapacityExceeded, FeedbackCapacityExceeded, MigrationInProgress, ShutdownInProgress, ResponseTooLarge, Internal |
-| `get_agent_send_operation` | InvalidRequest, NotFound, QueryBusy, DeadlineExceeded, StorageUnavailable, Internal |
-| `stop_agent_session` | InvalidRequest, PayloadConflict(Stop), FeedbackCapacityExceeded, MigrationInProgress, ShutdownInProgress, Internal |
-| `get_stop_operation` | InvalidRequest, NotFound, QueryBusy, DeadlineExceeded, StorageUnavailable, Internal |
-| `request_session_lifecycle` | InvalidRequest, PayloadConflict(SessionLifecycle), FeedbackCapacityExceeded, MigrationInProgress, ShutdownInProgress, Internal |
-| `get_session_lifecycle_operation` | InvalidRequest, NotFound, QueryBusy, DeadlineExceeded, StorageUnavailable, Internal |
-| `list_pending_agent_recovery` | InvalidRequest, CursorMismatch, CursorExpired, QueryBusy, DeadlineExceeded, ResponseTooLarge, StorageUnavailable, Internal |
-| `get_pending_recovery_snapshot` | InvalidRequest, NotFound, SnapshotMismatch, CursorMismatch, CursorExpired, DetailsCompacted, QueryBusy, DeadlineExceeded, ResponseTooLarge, StorageUnavailable, Internal |
-| recovery action command | InvalidRequest, MigrationInProgress, ShutdownInProgress, StorageUnavailable, Internal |
-| `get_recovery_action` | InvalidRequest, NotFound, QueryBusy, DeadlineExceeded, StorageUnavailable, Internal |
-| `get_local_store_migration` | StorageUnavailable, Internal |
-| `get_application_shutdown` | Internal |
-| `request_application_quit` | InvalidRequest, PayloadConflict(ApplicationQuit), CapacityExceeded, ResponseTooLarge, Internal |
-| `get_application_quit_operation` | InvalidRequest, NotFound, QueryBusy, DeadlineExceeded, StorageUnavailable, Internal |
-| `get_shutdown_plan` | InvalidRequest, NotFound, CursorMismatch, CursorExpired, QueryBusy, DeadlineExceeded, ResponseTooLarge, StorageUnavailable, Internal |
-| feedback query | InvalidRequest, CursorMismatch, CursorExpired, QueryBusy, DeadlineExceeded, ResponseTooLarge, StorageUnavailable, Internal |
-| feedback dismiss / retry | InvalidRequest, StorageUnavailable, Internal |
-
-#### Public closed types
-
-Requirements / Behaviorで使うclosed variantは次で固定する。
-
-```rust
-pub enum SendDisposition {
-    StartedTurn { turn_id: String },
-    Queued { queue_item_id: String },
-}
-pub enum SendExecutionStatus {
-    AwaitingProviderStart { dependency_obligation_ids: Vec<String> },
-    Queued { queue_item_id: String, reserved_turn_id: String },
-    ProviderStartReserved { obligation_id: String },
-    Running { turn_id: String },
-    ReconciliationRequired { failure: SafeOperationFailure },
-    Failed { failure: SafeOperationFailure },
-    Terminal { result: TurnResult },
-}
-pub enum RecoveryActionKind {
-    ReadAgain,
-    RetrySameEffect,
-    UseObservedResult,
-    CancelIfSafe,
-    KeepForManualResolution,
-}
-pub enum RecoveryResultClassification {
-    Pending,
-    Succeeded,
-    ConfirmedNoEffect,
-    Ambiguous,
-    CancelledBeforeEffect,
-    Unchanged,
-}
-pub enum ApplicationShutdownPhase {
-    Preparing,
-    Prepared,
-    Activated,
-    Quiescing,
-    Completed,
-    Failed,
-    Cancelled,
-    ReconciliationRequired,
-}
-pub enum ApplicationQuitProjection {
-    Shutdown(ApplicationShutdownProjection),
-    Migration(MigrationApplicationQuitProjection),
-}
-pub enum LocalStoreMigrationPhase {
-    InspectingSource,
-    Importing,
-    Verifying,
-    Activating,
-    Failed,
-}
-pub enum SessionOperationFailureKind {
-    StorageUnavailable,
-    StorageCorrupt,
-    MigrationBlocked,
-    PersistFailure,
-    ProtocolIncompatible,
-    ProviderUnavailable,
-    ExternalEffectFailed,
-    OutcomeUnknown,
-    DeadlineExceeded,
-    CapacityExceeded,
-    StopCapacityExceeded,
-    ShutdownAuthorityMismatch,
-    TargetRevisionChanged,
-    OwnerRevisionChanged,
-    RuntimeGenerationChanged,
-    InvalidEffectIntent,
-    PreviousShutdownReconciliationRequired,
-    PreviousShutdownCompactionPending,
-    Internal,
-}
-pub struct SafeOperationFailure {
-    pub kind: SessionOperationFailureKind,
-    pub retryable: bool,
-    pub label: BoundedNoticeText,
-    pub detail: Option<BoundedNoticeText>,
-    pub correlation_id: String,
-}
+{ "type": "failed",
+  "kind": "store_in_use"
+        | "storage_unavailable"
+        | "unsupported_runtime"
+        | "unsupported_store_version"
+        | "initialization_state_invalid"
+        | "store_validation_failed"
+        | "schema_evolution_failed",
+  "safeDescription": <allow-listed string>,
+  "correlationId": <same process outcome value>,
+  "retryOnNextLaunch": <fixed mapping>,
+  "actions": ["quit"] }
 ```
 
-`ApplicationQuitOperationId`はbackend発行でcaller request IDとは別である。normal shutdownは`ShutdownPlan { plan_id, epoch }`、migration中quitは`MigrationFlight { migration_id }`へ一意にlocateする。known-operation queryはlocator破損を`Internal`、acceptance transaction不明をtop-level`OutcomeUnknown`、acceptance後の参照transaction不明をAccepted内`OutcomeUnknown`とし、`Current(None)`や別operationへfallbackしない。
-
-`BoundedNoticeText`はvalue、truncated、optional original bytes / digestを持つ。labelはUTF-8 160 bytes、detailは2048 bytes以下である。filesystem path、secret、raw SQL、provider payload、unbounded raw errorを含めない。`PayloadConflict | NotFound | InvalidRequest | CursorMismatch | CursorExpired | SnapshotMismatch | DetailsCompacted`はdurable failure kindへ水増ししない。
-
-#### Bounds and encoding
-
-- pending recovery: 200 entriesかつencoded 4 MiB以下。
-- feedback: 32 entries / page、process unresolved 512件。
-- Stop: unresolved distinct target 32件。
-- shutdown: 4096 targets、128 targets / page、1 MiB / page、full detail set最大2件。
-- WebSocket: 16 connections / process、32 in-flight / connection、60 requests/s burst 120、request / response 16 MiB、outbound 32 responses / 16 MiB。
-- persisted revision / epoch / sequence / ordinal / count / offsetは0以上`i64::MAX`以下。wireは先頭ゼロなしASCII decimal string。page limit / byte limitはJSON非負整数、exit codeはJSON signed integer。
-
-cursorはsnapshot identity、filter、last key、expiryをMACする。filter違い / 改変は`CursorMismatch`、restart / expiryは`CursorExpired`で、partial pageを返さない。
-
-#### DTO ownership
-
-domain / usecase typeにserdeを付けない。`adaptor/protocol`のV1 DTOはstructをsnake_case object、enumを`{ "type": "snake_case", ... }`のadjacently tagged objectとしてencodeする。missing / duplicate / unknown fieldを拒否し、`Option`はfieldを省略せず`null | value`で表す。ただしlegacy JSON reader / writerだけは変更前codecのcamelCaseとoptional field omissionを維持する。
-
-Tauri / WebSocket presenterは同じcanonical resultから別transport envelopeへtotal mappingする。`serde_json::Value`、flatten、untagged enum、transport固有defaultをpublic schemaへ入れない。domainの`JsonPayload`はprotocol境界でだけvalidated JSON valueへ変換する。
+`quit_after_startup_failure`は`{ "type": "accepted", "correlationId": <同一process outcomeの値> }`を返すか、native exitが先に完了する。重複callも同じ結果へjoinし、process-local progress DTOを作らない。`Ready`でのcallはeffect 0件の`ApplicationUnavailable`である。
 
 ### Data Model
 
-#### Canonical message part
+`MessagePart`、domain event、operation、terminal、recovery obligation、shutdown aggregate は domain vocabulary である。SQLite representation と public representation はこれらを各境界へ写像するが、domain の意味を変更しない。
 
-`src-tauri/src/domain/agent_session/entities/message_part.rs`の`MessagePart`を唯一のsemantic定義にする。usecase側の同義enumは削除し、session、runtime event、projection、test supportはdomain typeをimportする。
+operation binding は canonical SQLite store 内で、authorized principal、command kind、caller request identity、semantic intent を一意に対応させる。別の永続 generation や切替 authority を operation scope にしない。
 
-```rust
-pub enum MessagePart {
-    Thinking { content: String, parent_tool_use_id: Option<String> },
-    Text { content: String, parent_tool_use_id: Option<String> },
-    ToolUse { id: String, tool: String, input: JsonPayload, parent_tool_use_id: Option<String> },
-    ToolResult {
-        content: String,
-        is_error: bool,
-        tool_use_id: Option<String>,
-        parent_tool_use_id: Option<String>,
-        content_ref: Option<ToolOutputRef>,
-        summary: Option<ToolOutputSummary>,
-    },
-    Error { content: String, parent_tool_use_id: Option<String> },
-    Permission {
-        request: PermissionRequest,
-        status: PermissionPartStatus,
-        answers: Option<JsonPayload>,
-        parent_tool_use_id: Option<String>,
-    },
-    TaskStatus { task_tool_use_id: String, status: String, description: Option<String>, summary: Option<String> },
-    TodoListSnapshot { items: Vec<TodoListItem> },
-    SystemNotification {
-        notification_type: SystemNotificationType,
-        status: String,
-        label: String,
-        detail: Option<String>,
-        hook_id: Option<String>,
-    },
-    Image { data: String, media_type: String },
-    ImageRef { attachment: Attachment },
-}
-```
+receipt は受理時点の不変事実、status はその後の進行状態である。status failure は receipt を未受理へ戻さない。terminal と recovery result は同じ owner / operation の canonical outcome を参照する。
 
-gatewayの`StoredMessagePartV1`は変更前JSON tag / field / camelCase / optional omissionをexactに再現する。protocolの`MessagePartDtoV1`は公開schemaを所有する。両者はdomainと明示変換し、known variantでlossy conversionを禁止する。unknown additive stored payloadはenvelope raw bytesを保持し、unknown required variantは`IncompatibleStoredEvent`でfail closedにする。
+未完了の外部作用は operation に結び付く recovery obligation として追跡する。terminal は turn の outcome と競合 operation の解決を同時に確定し、shutdown はその flight に属する target obligation と summary を一つの aggregate として扱う。一つの利用者操作で同時に変わるこれらの state は同じ atomic persistence boundary に参加する。
 
-usecase側`PermissionRequestMsg`、`PermissionPartStatus`、`serde_json::Value` payloadはそのままdomainへ移さない。既存意味をdomainの`PermissionRequest`、domain-owned `PermissionPartStatus`、`JsonPayload`へ移し、legacy / public field名は各DTO converterで維持する。`ToolOutputRef`、`ToolOutputSummary`、`TodoListItem`、`SystemNotificationType`、`Attachment`も既存domain typeを直接使う。
+永続 identity は `installation_id` 一つにする。owner は local event store gateway であり、初回初期化 transaction 内で UUID v4 として一度だけ生成し、singleton `store_metadata` に保存する。restart と supported schema evolution は同じ値を読む。ready store で欠損、形式不正、変更を検出した場合は生成し直さず `StoreValidationFailed` にする。
 
-#### Domain events
+operation binding、logical commit の idempotency、cursor HMAC、recovery action、obligation、shutdown correlation は、同じ SQLite file に属することを `installation_id` で domain separation する。単一 database 内の primary key に `installation_id` を反復保存する必要はないが、署名・hash の canonical input には含める。`store_id`、`generation_id`、`app_data_generation` は持たない。
 
-`AgentSessionEvent`をusecaseから`domain/agent_session/events/AgentSessionDomainEvent`へ移す。既存event variantとF1公開意味論は変えない。payloadの`MessagePart`、permission、tool output、turn / session identityはdomain typeを使う。operation acceptance、obligation、terminal / Stop resolution、session lifecycle、recovery publicationは同じenumのclosed variantとして追加する。
+`cursor_hmac_key` と `operation_binding_hmac_key` は cryptographically secure な 32 bytes とし、`installation_id` と同じ初回 transaction で一度だけ保存する。restart、schema evolution、quit、recovery で再生成しない。欠損・長さ不正は validation failure である。
 
-workflowのgateway-owned `WorkflowEvent`は`domain/workflow/events/WorkflowDomainEvent`へ移し、gatewayは`StoredWorkflowEventV1`との変換だけを持つ。`LocalDomainEvent`は`AgentSession | Workflow | Application`のclosed sumである。event type / payload versionはgateway registryが決定し、Rust type nameやserde tagをpersistent identityにしない。
-
-#### Store identities
-
-```rust
-pub struct StreamId(String);
-pub struct EventId(String);
-pub struct CommitIdentity(String);
-pub struct StreamVersion(i64);      // 0..=i64::MAX
-pub struct GlobalSequence(i64);     // 1..=i64::MAX
-pub struct StreamSequence(i64);     // 1..=i64::MAX
-
-pub struct ExpectedStreamHead {
-    pub stream_id: StreamId,
-    pub expected: StreamVersion,
-}
-```
-
-stream IDは`agent-session:<session_id>`、`workflow:<execution_id>`、`application`のnamespace付きopaque stringである。一batchは複数streamへeventを追加できる。`expected_heads`はbatchが変更する全streamをexactly once含む。
-
-#### State mutations
-
-`LocalStateMutation`は次のclosed familyで、任意SQLを許さない。
-
-- operation caller binding / direct operation record
-- built-in caller attempt journal
-- message / session / queue projection
-- terminal unique record / Stop resolution
-- obligation state / pending index
-- recovery action attempt / completed result
-- session lifecycle operation
-- shutdown plan / target / recovery snapshot / compact archive / latest pointer
-- migration checkpoint / parity result
-
-mutationはexpected revisionとnew revisionを持つCASである。eventとstate mutationは同じbatchでcommitする。terminal unique keyは`(session_id, turn_id)`、operation binding unique keyは`(principal, generation, kind, caller_request_id)`、idempotency unique keyは`(generation, operation_kind, idempotency_key)`である。
-
-| Mutation family | Guard | Write |
-| --- | --- | --- |
-| operation binding | key absentまたはsame HMAC / operation ID | immutable caller binding |
-| caller attempt | principal + operation kind + caller key absentまたはsame command hash | encrypted / owner-private exact commandとresolution state |
-| operation record | absentまたはexpected revision | receipt不変、latest status / revision更新 |
-| session / message / queue projection | expected session / message revision | complete projection row |
-| terminal | `(session, turn)` absentまたはsame terminal identity | terminal resultとparticipant digest |
-| Stop resolution | Stop operation ID absentまたはsame result | Succeeded / Superseded |
-| obligation / pending index | expected obligation revision、pending key parity | state rowとpending indexを同時insert / delete |
-| recovery action | action ID absentまたはsame binding / expected revision | attemptまたはimmutable completed result |
-| shutdown | plan / epoch / target / latest pointer expected revision | plan、target、snapshot、archive、pointer |
-| migration | migration ID / source inventory hash / checkpoint expected revision | phase、next checkpoint、parity result |
-
-guard不一致をlast-write-winsへ変換しない。same semantic resultのreplayは保存済みresult、different resultはtyped conflictまたはintegrity failureである。
-
-#### Persistence envelope
-
-gateway-owned envelopeは次のfieldを必須にする。
-
-```rust
-pub struct StoredEventEnvelopeV1 {
-    pub event_id: String,
-    pub commit_id: String,
-    pub stream_id: String,
-    pub stream_sequence: i64,
-    pub global_sequence: i64,
-    pub event_type: String,
-    pub payload_version: i64,
-    pub occurred_at: String,
-    pub payload: Vec<u8>,
-    pub payload_sha256: [u8; 32],
-}
-```
-
-payloadはcanonical CBORを新規SQLite eventのcodecとする。map key順、integer幅、float禁止、duplicate key禁止をcodec testで固定する。content hashはintegrity用でpublic semantic identityに使わない。unknown event type / versionはraw envelopeをそのまま返す`StoredUnknownEvent`として保持し、projectionが意味を必要とするstreamはfail closed、単に通過保存できるmigration / export内部処理はbytesを変更しない。
+`process_instance_id` は process 起動ごとに生成する別の fence token である。effect reservation やshutdown planに保存してよいが、restart後は「このprocessは現ownerではない」と証明するhistorical valueとしてだけ読む。新processは新しい値を使い、operation binding、HMAC、idempotency、obligation / action identity、public correlationのscopeには使わない。
 
 ### Database
 
-#### Physical layout and SQLite configuration
+#### Fixed layout
 
-app-data内の配置は次で固定する。
+gateway が app-data から導出して production で触れる local event store path は次の三つだけである。
 
-```text
-local-event-store/
-├── authority-v1.json
-└── generations/
-    └── <generation-id>.sqlite3
-```
+| Path | Responsibility |
+| --- | --- |
+| `<app-data>/local-event-store.sqlite3` | 唯一の恒久 read / write authority |
+| `<app-data>/local-event-store.lock` | process 間の exclusive writer mutex。durable state を保存しない |
+| `<app-data>/local-event-store.initial-create` | 初回 create を normal admission まで完了していないことだけを証明する versioned evidence |
 
-`authority-v1.json`は`Legacy { source_generation_id, migration: Option<{ migration_id, staging_generation_id }> } | Sqlite { generation_id, store_id, activated_migration_id }`のclosed unionである。既存app-data generationを`source_generation_id`に使い、完全なsource inventory hashはstaging DBへ保存する。`store_id`は`store_metadata`のimmutable IDと一致させ、DB content hashにはしない。owner-only permission、versioned envelope、checksumを持ち、temporary file write → file sync → rename → parent directory syncでCASする。pointerはmigration stagingのlocatorとcutoverだけに使い、通常batch commitには使わない。
+SQLite 自身の `-wal` / `-shm` sidecar は fixed database の一部として扱う。database generation directory、authority pointer、staging database、legacy source inventory は作らない。`StoreLayout` は上の固定名を join するだけで、app-data または legacy root を列挙しない。
 
-SQLiteはbundled libraryを使い、最低version 3.45をcompile / startup checkする。connection設定は`journal_mode=WAL`、`synchronous=FULL`、`foreign_keys=ON`、`trusted_schema=OFF`、`busy_timeout=250ms`である。schema migrationはexclusive writer lock下、normal admission前に行う。application process内のwriter connectionは一つ、reader poolは最大4 connectionである。
+#### Initial-create protocol
 
-#### Schema
+既存 file が 0 byte であるという事実だけでは、初回 create の中断と初期化済み database の切詰めを区別できない。そのため、空 file を無条件で再初期化しない。初回作成は次の durability order を使う。
 
-schema version 1のtableとauthorityは次のとおり。
+1. `local-event-store.lock` を non-blocking に exclusive lock する。
+2. fixed database が absent で initial-create evidence も absent の場合だけ、固定 magic、format version、checksum を持つ `local-event-store.initial-create` を create-new し、file と app-data directory を sync する。evidence は identity、source path、schema progress、store locator、operation state を持たない。
+3. fixed database を直接 create / openし、`BEGIN IMMEDIATE` 内で全 schema、singleton metadata、`installation_id`、二つの HMAC key、`PRAGMA application_id = 0x524C5348`、schema version を一つの初期化成果として確定する。
+4. commit 後に database / WAL を checkpoint・syncし、readback validation を行う。
+5. validation 成功後に initial-create evidence を削除して app-data directory を syncする。ここまで normal admission を開かない。
 
-| Table | Primary / unique key | Purpose |
-| --- | --- | --- |
-| `store_metadata` | singleton | schema / generation / sequence / health |
-| `logical_commits` | `commit_id`; unique idempotency tuple | payload binding、state、sequence range、result hash |
-| `stream_heads` | `stream_id` | current stream version |
-| `events` | `global_sequence`; unique `(stream_id, stream_sequence)`, `event_id` | immutable envelope |
-| `operation_bindings` | principal + generation + kind + caller key | exact command replay / conflict |
-| `caller_attempts` | principal + generation + kind + caller key | built-in Tauri callerのresponse-loss / UI-restart outbox |
-| `operation_records` | kind + operation ID | immutable receiptとlatest status direct lookup |
-| `session_projection` | session ID | bounded session / queue / lifecycle read model |
-| `message_projection` | session ID + message ID | complete message / parts read model |
-| `terminal_records` | session ID + turn ID | terminal uniquenessとcomplete terminal result |
-| `stop_resolutions` | Stop operation ID | Succeeded / Superseded result |
-| `obligations` | obligation ID | pending / terminal durable work |
-| `pending_obligations` | ordered key; unique obligation ID | startup / filtered recovery index |
-| `recovery_action_attempts` | action ID | exact replay result |
-| `shutdown_plans` | plan ID + epoch | plan root / phase / summary |
-| `shutdown_targets` | plan ID + epoch + ordinal | bounded target detail |
-| `shutdown_recovery_snapshots` | plan ID + epoch + partition + ordinal | frozen recovery detail |
-| `shutdown_compact_archives` | plan ID + epoch | immutable Compacted summary |
-| `local_store_migrations` | migration ID | source inventory / checkpoint / parity / phase |
-| `legacy_raw_records` | migration ID + source ordinal | raw-preserved legacy bytes |
+databaseがabsentなら、partial / invalid evidenceはdatabase作成前に中断したapp-owned artifactとして削除・directory syncし、手順2から再作成できる。有効なevidenceが残る間はnormal commandが一度もadmissionされていないため、fixed databaseがabsent、0 byte、またはapplication tableのない検証可能なSQLiteなら、その初回作成残骸だけを除去して同じpathで手順3から再試行できる。databaseが既にready metadataまで検証できる場合はdatabaseを変更せずevidenceだけを完了処理する。evidenceがabsent / invalidの既存空file、別用途SQLite、非SQLite、またはevidenceがあっても非空で検証不能なfileは初回残骸と推測せずfail closedにする。
 
-foreign keyとCHECK constraintでsequence正数、revision非負、closed tag、hash長、plan / epoch associationを検証する。public query用indexはoperation identity、terminal unique key、pending ordered key + owner / partition / shutdown association、shutdown plan / target、event stream / global sequenceに限定する。F8 / F10の追加read modelは後続schema migrationで追加できる。
+initial-create evidence は成功後に存在せず、runtime authority、installation identity、schema version、進捗、public startup state ではない。通常起動、schema evolution、operation、shutdown はこれを参照しない。
 
-#### Commit transaction
+#### Open and schema evolution
 
-writerは次の順で`commit_batch`を実行する。
+既存 store は read-only classification で SQLite header、`application_id`、singleton metadata、schema version、HMAC key の形を確認してから write-capable connection を渡す。ready store の validation failure は file の byte を置換、削除、truncate、再初期化しない。SQLite の通常 crash recovery と supported schema evolution 以外の修復を自動実行しない。
 
-1. queue admission前にbatch件数、decoded bytes、identity、duplicate keyを検証する。
-2. `BEGIN IMMEDIATE`を開始する。
-3. idempotency tupleをpoint lookupする。same bindingはsaved resultを返し、different bindingはrollbackして`PayloadConflict`。
-4. 全expected stream headとstate mutation revisionを検証する。不一致はrollbackしてtyped conflict。
-5. `logical_commits(state='preparing')`をinsertし、eventsへ連続global / stream sequenceを割り当てる。
-6. state mutation、direct index、projectionを同じtransactionで更新する。
-7. event count、participant count、sequence range、result hashを検証し、logical commitを`sealed`へ更新する。
-8. SQLite `COMMIT`後、別statementでidempotency keyをfresh readbackして`CommittedBatch`を返す。COMMIT開始からfresh readback完了までのerror / reply喪失はすべて同じcommit identityの`OutcomeUnknown`とする。
-9. commit notificationをpublishする。publish失敗はcommit resultを変えない。
+startup error の写像は次に固定する。
 
-readerは`sealed` commitへjoinできるrowだけを見る。SQLite commit前failureは変更前へrollbackする。COMMIT / reply結果不明は`OutcomeUnknown`で、same commit identityの`logical_commits` / idempotency lookupによりCommittedかabsence確定へ収束する。COMMIT開始後のabsenceは、exclusive writer lockを再取得してWAL recoveryが終わるまで未commit根拠にしない。
+| Condition | Outcome |
+| --- | --- |
+| exclusive writer lock が別 process の ownership / contention により取得できない | `StoreInUse` |
+| bundled SQLite runtime がminimum version / required featureを満たさない | `UnsupportedRuntime` |
+| fixed path / lock / evidence / SQLiteへのI/O、permission、capacity error | `StorageUnavailable` |
+| ready storeを検証できず、absent / empty / foreign / non-SQLite fileを未完了初回作成と証明できない | `InitializationStateInvalid` |
+| recognized application storeのschema versionがnewer、gap、またはcompiled-in pathの対象外 | `UnsupportedStoreVersion` |
+| recognized supported schemaのsingleton metadata、installation identity、HMAC key、schema / integrity invariantが不正 | `StoreValidationFailed` |
+| supported schema stepのtransaction、commit readback、post-step invariantを確認できない | `SchemaEvolutionFailed` |
 
-writer queueはnormal lane 1024 requests / 64 MiB、critical terminal / Stop / shutdown lane 128 requests / 8 MiBを予約する。一batchは4096 events、8192 state mutations、decoded 16 MiB以下である。上限超過はwriter開始前`CapacityExceeded`で、critical laneをnormal backlogでstarveさせない。
+fully validなready storeがある場合、initial-create evidenceはdatabase authorityを変更しないstale artifactとしてReady前に削除・directory syncする。そのcleanupに失敗した場合は`StorageUnavailable`であり、normal admissionを開かない。fixed databaseが存在してreadyでない場合、invalid evidenceをrepair / recreateの根拠にしない。database absent時のinvalid evidence再作成は、databaseが存在しないことをlock取得後に再確認した場合だけ許可する。
 
-#### Projection and bounded reads
+supported schema evolution は、compiled-in の現在 version まで連続する各 step を一度ずつ `BEGIN IMMEDIATE` transaction で適用し、step の schema / data invariant、`PRAGMA user_version`、metadata の schema version を同じ commit で更新する。commit 後の readback が全て成功してから次 step または normal admission へ進む。installation identity と HMAC key は mutation 対象にしない。未対応 version、version gap、step failure、commit 結果不明は `UnsupportedStoreVersion` または `SchemaEvolutionFailed` として fail closed にする。
 
-transaction内projectionはeventと同じcommitで更新し、public queryはprojection tableをpoint / range lookupする。startup時の通常pathで全event replayしない。integrity checkまたは明示maintenance用rebuildは空のstaging projectionへglobal sequence順でreplayし、source head / count / hash parity後に同じSQLite transactionでactive projection generationを切り替える。
+一回の startup attempt は、writer lock を待たず、SQLite `busy_timeout` を最大 2 秒とし、create / open / evolution / validation の内側で retry loop を持たない。ここで bounded とは、対象 path、lock attempt、SQLite busy wait、version step の実行回数が有限であることを指す。OS filesystem call 自体の wall-clock 完了を推測する意味ではない。fault test は各 I/O / transaction 境界で呼出回数と outcome を観測する。
 
-pending recovery first pageは`pending_obligations`のordered index、terminalはunique key、operation statusはdirect keyを使う。query plan snapshotをCIで固定し、`SCAN events`またはsession directory scanを含むplanを失敗させる。
+current target schema と codec / domain enum は `store_id`、`generation_id`、migration operation kind、migration quit flag、`local_store_migrations`、`legacy_source_inventory`、`legacy_raw_records`、`legacy_raw_record_chunks`、`migration_quit_flights`、`shutdown_compact_archives` を持たない。supported SQLite schema evolutionでこれらの廃止済みfield / tableを除去する場合も、legacy pathを探索・読込せず、authority・progress・compatibility readとして保持しない。
 
-watchはcommit後のin-process broadcastで`commit_id / max_global_sequence`だけを通知する。lagged subscriberはlast global sequenceから最大200 events / 4 MiBをreplayする。notificationをauthorityにしない。
+#### Canonical shutdown rows
 
-#### Legacy to SQLite migration
+`shutdown_id` は accepted application quit の backend operation identity と同じ値であり、別のplan ID、epoch、generation identityを作らない。`shutdown_plans`はshutdown / operation identity、intent、accepted process instance、`T0`、`T0 + 13秒`のpreparation cutoff、`T0 + 15秒`のexit deadline、phase、aggregate revision、target count、state別count、safe failure、detail availabilityを一行で持つ。保存されるphaseは`Prepared | Activated | Quiescing | Completed | Failed | Cancelled | ReconciliationRequired`に閉じ、`Prepared`をvocabularyの利用者可視`Preparing`へ、それ以外を対応する利用者可視statusへ一方向に写像する。
 
-`LocalStoreMigrationProjection`は`migration_id / phase / imported_source_count / total_source_count / read_only / safe_failure`を返す。全phaseで`read_only=true`、mutationは`MigrationInProgress`で拒否する。
+`shutdown_targets`は`(shutdown_id, ordinal)`をprimary keyとし、stable target identity、`AgentSession | WorkflowExecution | WorkflowNode`のkind、`Prepared | EffectReserved | Completed | Failed | ReconciliationRequired`のtarget state、effect identity / observation、recovery action identity、safe detail、row revisionを順序付き一行で持つ。`shutdown_recovery_snapshots`は`(shutdown_id, ordinal)`をprimary keyとし、quit acceptance時点のpending recovery identity、owner、safe recordを同じaggregate revisionに固定する。
 
-1. `InspectingSource`: staging SQLite generationを先に作り、Legacy pointerの`migration`へmigration / generation IDをCASしてから、legacy session / workflow rootをstable path順で列挙する。relative path、size、mtime、SHA-256、record countをstaging DBのimmutable inventoryへ保存する。
-2. `Importing`: 最大256 source recordsまたはdecoded 16 MiBを一batchとしてstaging SQLiteへ変換する。checkpointは次に処理するsource / record / substepを指す。
-3. known eventはdomain eventへdecodeして新envelopeへ保存する。unknown additive recordは`legacy_raw_records`へ元bytesとsource metadataを保存する。required semantic不明、source drift、identity collisionは`MigrationBlocked`。
-4. 未完了作業はidentity、exact payload / safe observation、owner revisionを証明できる場合だけobligationへ移す。証明できない作業は`Paused | Failed | ReconciliationRequired`でeffect 0件とし、推測でterminal化しない。
-5. `Verifying`: record count、session / workflow public projection、terminal、permission、queue、known event result、operation / owner relation、pending work、shutdown detailをlegacy fixtureと照合する。
-6. `Activating`: staging DBを`integrity_check`し、WAL checkpoint / fsync後にauthority pointerをCASする。結果不明はpointerをfresh readし、Legacyなら同checkpoint、SqliteならDB parity確認から再開する。
-7. Sqlite authority確認後だけnormal admissionを開く。legacy filesは変更・削除せず残すが、runtime reader / writerは以後参照しない。
+current shutdown locatorは`store_metadata.current_shutdown_id`から同じ`shutdown_plans` rowへのnullable foreign keyとする。quit acceptanceで設定し、`Completed | Failed | Cancelled`へのterminal transactionでclearする。`ReconciliationRequired`はblocking currentとして保持する。plan history rowはlocatorの有無にかかわらず残るため、current read、known-operation read、history readが別結果を合成しない。別fileやhashをauthorityにしない。
 
-migration中quitはnormal shutdown planを作らない。Legacy pointerが指すstaging SQLiteへcaller binding、backend quit operation、`MigrationFlight` locator、current migration checkpointを同じtransactionで保存し、15秒以内にprocess exitする。次bootはLegacy pointerのmigration locatorから同じDBを開き、同じflightを`Exited | ReconciliationRequired`へ一方向に確定する。cutover後は同じDBがSqlite authorityになるため、known-operation queryは前後とも同じ`MigrationApplicationQuitProjection`を返す。
+quit の acceptance transaction は operation binding / receipt、plan row、0〜4096 の ordered target rows、開始時 recovery snapshot rows、current locator を全て確定する。`target_count = 0`ではtarget rowが0件で`MIN / MAX`は`NULL`、`target_count > 0`ではordinalが0から連続し、`COUNT(*) = target_count`、`MIN = 0`、`MAX = target_count - 1`でなければeffect gateを閉じる。recovery snapshot countもplan rowと実row数を一致させる。保存後検証はこのrow setをread transactionで読むだけであり、serialized page、reference、root hash、root pageを生成・比較しない。
 
-#### Shutdown detail compaction
+acceptance transactionのplan phaseは`Prepared`である。保存後検証に成功したaccepted processだけが、plan revisionとcurrent locatorをguardに`Prepared -> Activated`を一transactionでcompare-and-setできる。activation commitをreadbackできない場合はeffectを開始せず、同じshutdownを`ReconciliationRequired`として解決する。previous processの`process_instance_id`を持つplanや、restartで発見した未予約targetからshutdown effectを自動開始しない。
 
-terminal shutdown planのdetailは次の一transactionで`Available`から`Compacted`へ切り替える。
+`Activated`を確認したaccepted processは、各external shutdown effectの直前に同じtarget rowを`Prepared`から`EffectReserved`へcompare-and-setし、plan revisionとsummary countを同じtransactionで更新する。commit済みreservation、current process instance、current owner revisionをreadbackできた場合だけeffectを開始する。外部作用を要しないtargetはactivation後に`Prepared -> Completed`を一transactionで確定する。effect resultは同じtarget rowをterminalまたはreconciliationへ進め、最後のtargetとplan terminalを同じtransactionで確定する。`target_count = 0`はactivation readback後にeffect 0件のままplanを`Completed`へ進めてcurrent locatorを同じtransactionでclearする。current / history summary、target detail、effect gate、recovery actionは全てこのrow stateを読む。
 
-1. plan / target / fixed recovery snapshotを同じread snapshotで集計する。
-2. identity、intent、terminal phase、counts、deadline、outcome、safe failure、source revision / hashを`shutdown_compact_archives`へinsertする。
-3. planのdetails stateを`Compacted`へCASする。
-4. COMMIT後のqueryはarchiveだけをauthorityにし、entries空、next cursorなし、exact detail queryは`DetailsCompacted`を返す。
-5. obsolete target / snapshot rowはbackgroundで64 rows / 4 MiB / 50 msごとに削除する。削除途中でもqueryはAvailableへ戻らない。
+target pagination は `(shutdown_id, plan_revision, next_ordinal, limit)` を installation-scoped cursor key で署名し、`ORDER BY ordinal` で rowを直接読む。continuation時に plan revisionが変われば partial pageを返さず revision conflictにする。full detailを保持するterminal shutdownが2件を超えた場合は、一つのtransactionで最古planをsummary-onlyへ変更してそのtarget / historical recovery rowsを削除する。summary rowを別archive blobへ複製しない。
 
-新quit受理前に最大2 full detail setを検査する。必要なprior compactionをcommitできない間は`PreviousShutdownCompactionPending`とblocking projectionを返し、新plan / effectを作らない。
+#### Other mutations and reads
+
+operation binding の database key は `(principal, command_kind, caller_request_identity)`、logical commit の idempotency key は `(operation_kind, idempotency_key)` とし、single fixed database が installation scope を与える。HMAC / digest の canonical bytes には `installation_id` を含める。mutation は一つの atomic persistence boundary で event と必要な state を確定する。read は同じ committed revision から結果を作り、異なる revision の断片を合成しない。identity lookup と bounded collection access は無関係な全履歴に依存しない。
 
 ### UI/UX
 
-- composer snapshotとcaller-generated operation IDを一attempt中固定し、Accepted receipt時だけそのsnapshotをclearする。
-- `RejectedBeforeCommit | OutcomeUnknown | PayloadConflict`では入力を保持し、別identityで自動sendしない。
-- Accepted後のFailed / ReconciliationRequiredは同じoperationのstatusとして表示し、入力を復元しない。
-- pending recoveryはownerまたは`ClosedSession | ArchivedSession | UnownedRuntime` partitionへ表示し、backend提示actionだけを有効にする。
-- migration中はlegacy dataをread-only表示し、progressとsafe failureをWorkspaceのblocking stateとして表示する。未実行nodeの表示規則は別Issueであり本画面へ混ぜない。
-- view closeはbackend operationを作らない。session close、archive、backend switch、application quitは別actionとして表示する。
-- shutdown / migration / feedbackはbackend projectionをmirrorし、frontendでterminal winner、retryability、Current(None)を推測しない。
+通常起動に成功した場合だけ normal workbench を表示する。startup に失敗した場合は S11 を排他的に表示し、Rust が返した failure kind に対応する allow-listed label、safe description、correlation、`retry_on_next_launch` の guidance、Quit だけを表示する。Session、transcript、normal mutation、migration progress、initial-create evidence、旧 file-store data、raw path / SQL / database error を表示しない。
+
+composer は durable acceptance 後だけ対応する attempt を clear する。accepted operation、pending recovery、Session lifecycle、shutdown は backend read model を表示し、frontend timeout や文字列解析から retry、terminal、成功を合成しない。
 
 ### Algorithm
 
-#### Normal send
+通常 command は、authorized caller と semantic intent を検証し、既存 operation があれば replay / conflict を決め、新規なら durable acceptance を確定する。全 external effect は共通の Rust-owned dispatch boundary を通り、実際の呼出し直前に canonical intent と現在の owner がまだ有効であることを再確認してから開始する。stale な intent は作用を開始しない。作用後の結果不明は同じ operation を reconciliation へ進める。
 
-1. identity / principal / exact payload / capacity / migration / shutdown admissionを検証する。
-2. existing bindingをpoint lookupし、same payloadはsaved receipt、different payloadはPayloadConflict、別principalはNotFoundを返す。
-3. current session revisionから`StartedTurn | Queued`を一度決める。
-4. binding、human input event、message / turnまたはqueue identity、provider establish / turn execution obligationを一batchでcommitする。
-5. commit確認後だけAccepted receiptを返し、provider effectをobligation identityで開始する。
-6. effect後crashは同obligationをReconciliationRequiredとして回収し、自動で別effect identityを作らない。
+terminal 競合は一つの canonical outcome へ収束する。Stop、close、quit、failure、crash は queue を pause し、通常完了だけが許可された次 item を開始できる。
 
-#### Terminal closure
+application composition は initial-create protocol、SQLite の create / open、必要な schema evolution、store validation、initial-create evidence の完了を終えてから normal command ingress を公開する。各試行は Startup attempt boundary の一回だけで Ready または safe failure へ着地し、旧 file-store の存在や履歴量を待たない。startup failure 中の cooperative quit は durable operation を作らず、request ingress から15秒以内に process-local exit を一度だけdispatchする。
 
-turn gateでterminal candidateをcompare-and-setし、winnerだけがfinal parts、assistant message、terminal event、session / permission / queue state、関連Stop resolutionを一batchへ入れる。unique terminal keyとexpected session / turn revisionを同時検証する。loserまたはold turn eventはno-op resultとして保存せず、既存winnerを返す。notification failureはterminalを取り消さない。
-
-#### Stop deadline
-
-Stop acceptanceはtarget / expected revision / queue pause / deadline permit / terminal obligationを先にcommitする。provider interruptを別taskで開始し、fake-clock T0+10秒でwinner未確定なら`Interrupted(Timeout)` terminal batchを試す。保存不能時はStop / capacity permitを保持してReconciliationRequiredへ進め、startup / manual recoveryが同じterminal identityをretryする。late provider resultはturn fenceで無効化する。
-
-#### External effects and recovery
-
-effect前にobligationを`EffectReserved`へcommitし、effect identityをprovider / workflow / OS portへ渡す。resultを確認できた場合だけowner state、obligation terminal、publicationを一batchで確定する。結果不明はobservationとcapabilityを保存してReconciliationRequiredとする。startupは`pending_obligations`だけを読む。
-
-recovery actionはbackend発行action ID、origin revision、effect identityへ束縛する。Completed resultはoutcome / classification / resource revision / canonical result hash / safe resource viewを64 KiB以下で保存し、current resourceから再構築しない。`RetrySameEffect`は同じeffect identityだけを使い、`CancelIfSafe`は`ConfirmedNoEffect`を再検証できるtargetだけに提示する。
-
-#### Session lifecycle
-
-view closeはUI stateだけを変更する。normal close / archive / backend switchはoperation bindingとsession revision gateを使う。active close / open archiveは`SessionClosed` terminalとqueue pauseをterminal batchに含め、Idle close / archiveはsynthetic terminalを作らない。backend switchはIdleかつpending permission / recovery / provider operationなしだけを受理し、old runtime close結果確認前にnew backendを開始しない。10秒以内にCompletedまたはReconciliationRequiredへ進める。
-
-#### Shutdown
-
-first quitはcaller binding、plan identity、intent、T0、15秒deadline、最大4096 target、preexisting recovery snapshotを固定する。全target preparationをbounded pageでcommitした後、一つのtransactionでphaseをActivatedへ進める。Activated前failureはeffect 0件でabort可能、Activated後はabortせずT0+15秒に未完了targetをReconciliationRequiredとして同じplanへ残してexit / restartする。
-
-全graceful surfaceは同じcoordinator ingressを呼ぶ。別request IDはfirst intentを変更せずcurrent flightへjoinする。previous-boot nonterminalまたは未解決shutdownがある場合は新flightを作らない。exit permitはplan / epoch / intent / terminal decisionへ一度だけ束縛し、native exit handlerはpermitなしexitをpreventする。
-
-#### Migration
-
-Database節の7 stepを一つのstate machineとして実装する。migration stateとcurrent source batch checkpointを同じcommitで更新する。authority pointer result不明をLegacy / Sqliteへ推測せずActivatingを維持し、次bootのfresh pointer / DB verificationで決着する。
-
-#### F1b and fault matrix
-
-Claude / Codex wire fixtureはproduction wire adaptor → `apply_runtime_event` → domain event → SQLite store → production projectorを通す。wire→domain eventとdomain event→public resultのgoldenを別testにし、test-only reducerでexpected stateを生成しない。
-
-fault matrixはsend acceptance、permission、provider establish、streaming、terminal、Stop、recovery、session lifecycle、shutdown、migrationのtransaction開始前、participant write後、COMMIT前後、reply喪失、notification前、restartを網羅する。各caseで変更前または全確定後だけ、identity不変、external effect 0または1を検査する。
-
-legacy migrationはsource 0 / 1 / 255 / 256 / 257件、16 MiB境界、unknown additive / required version、source drift、identity collision、pointer CAS前後を検査する。shutdownはtarget 4096 / 4097、page / byte、T0+13 / +15秒、detail Available→Compacted、64-row削除batchを検査する。
+application quit は最初のaccepted intentを一つのflightに固定する。`T0 + 13秒`をdurability / preparation cutoffとし、それ以後は新しいtarget reservationやshutdown effectを開始しない。cutoffまでにeffect開始前の安全なabortを確定できる場合だけworkbenchへ戻る。reservation済み、effect開始済み、または開始結果不明の場合はadmissionを再開せず、残り2秒で未完了targetをreconciliationとして確定し、`T0 + 15秒`までにexit / restartする。未完了結果は同じshutdown identityで次回起動へ残す。
 
 ### Infra
 
-新しいserver / remote serviceは追加しない。loopback WebSocketは既存local API、Bearer auth、shutdown lifecycleを共有する。
+SQLite、filesystem、provider process、native exit は infrastructure concern であり、domain へ library type や physical layout を露出しない。blocking I/O は async executor を塞がず、deadline 後の late result は元 operation にだけ適用する。
 
-SQLite blocking callはtokio task上で直接行わず、専用single-writer workerとbounded reader poolへ送る。provider / workflow / OS effectをDB transaction中にawaitしない。writer worker停止、reply channel drop、process crashをfault injectionできるようにする。
+production validation は path-recording filesystem port と sentinel を使い、startup、通常処理、background maintenance、retention、cleanup、shutdown、restart の各 lifecycle でB-070が列挙する旧file-store pathへのopen / stat / read_dir / read / write / rename / removeが0件であることを検証する。configuration migration、SQLite schema evolution、watch subscription initialization は別fixtureとallow-listで非退行を検証し、この禁止に含めない。
 
-test supportはtemporary app-data、bundled SQLite、fake clock、fault-injectable writer、recording provider / workflow / process-exit portを使う。実provider process、CLI、network、credentialをF1bで使わない。
+startup / schema acceptance oracle は次に固定する。
 
-telemetryはoperation kind、opaque correlation / commit identity、phase、duration、safe failure kind、queue depth、SQLite error classだけを記録する。message content、image bytes、permission payload、binding bytes、HMAC key、SQL parameter、filesystem pathを記録しない。
-
-### Traceability
-
-| Requirement | Design owner | Verification |
+| Behavior | Fault / fixture | Required observation |
 | --- | --- | --- |
-| R-001–R-003 | Interface command rules、Algorithm Normal send、UI/UX | response喪失 / replay / principal / payload / composer matrix |
-| R-004–R-005 | Commit ownership、Database Commit transaction、External effects | effect前後 / COMMIT前後 / restart fault matrix |
-| R-006–R-007 | Data Model terminal unique record、Terminal closure | participant atomicityと全winner順 |
-| R-008–R-009 | Stop bound / deadline、pending obligation | fake clock 10秒、storage failure、32 / 33件 |
-| R-010 | pending index、bounded read、recovery algorithm | 201件、filter / cursor / snapshot、scan禁止plan |
-| R-011 | feedback interface / UI | unreadable session、32 / 512件、revision / truncation |
-| R-012 | F1b production composition | Claude / Codex golden、mutation test、external process 0 |
-| R-013 | Store port、Schema、Commit transaction、Production cutover | multi-stream atomicity、idempotency、sequence、capacity、legacy access 0 |
-| R-014 | Session lifecycle、close / quit decision table | surface全行、10秒、active / Idle / archive / switch |
-| R-015–R-016 | quit interface、Shutdown algorithm / compaction | all ingress、15秒、4096 / 4097、Available→Compacted |
-| R-017 | indexes、bounds、query plan gate | 10 / 1,000,000件、1000 sample、p95 / p99 |
-| R-018 | Legacy migration、DTO encoding、migration-safe quit | checkpoint / pointer crash、surface parity、integer boundary |
-| R-019 | compatibility fixtures | B-077の全anchorと既存golden |
-| R-020 | terminal batch、Stop resolution | winner / superseded / persistence failure / capacity release |
-| R-021 | recovery action attempt | five action kind、exact replay、stale / unavailable / ambiguous |
-| R-022 | Canonical MessagePart、domain events、DTO ownership | single-definition check、legacy JSON / SQLite / presenter round-trip |
+| B-071 initial create | evidence create前、partial write後、file sync後、directory sync後、SQLite file create後、initialization commit前、commit reply loss後、database sync後、evidence unlink前後でprocessを停止 | 次回はCase A / B / Cのいずれかへ一意に分類し、Readyは一つのinstallation identity / key setだけを持つ。normal effectはReady前0件 |
+| B-071 initialized failure | valid ready fixtureのheader、application ID、schema version、metadata row、installation identity、各HMAC key、required indexを一項目ずつ破損 | closed failure kindが期待値と一致し、database / WAL / SHMの存在、length、SHA-256をattempt前後で変更せず、normal stateを構築しない |
+| B-071 safe surface | 各`StartupFailureKind`と重複Quitをfake gateway / fake clock / fake exit portへ入力 | allow-listed fieldだけを返し、全normal Tauri commandは`ApplicationUnavailable`、WebSocket listen 0回、exit dispatch 1回、deadline 15秒以内 |
+| B-098 schema evolution | supported old schemaにoperation、terminal、obligation、shutdown、signed cursorを保存し、各version stepのtransaction開始前、commit前、commit reply loss後、readback前で停止 | 再起動後は検証可能な旧 / 新schemaだけになり、同じoperation replay、terminal、obligation、shutdown summary / detail、cursor semanticsへ収束し、installation identity / HMAC keyはbyte不変 |
+| B-070 legacy non-reference | 各legacy rootにmalformed sentinelを置き、production startupからrestartまでpath-recording gatewayを通す | B-070が列挙するaccessは0件、sentinel byte / metadata / directory entryは不変。SQLite schema / configuration / watchの各正当な初期化testは成功 |
 
 ## Alternatives Considered
 
-- 暫定file storeへatomic manifestを追加して後でSQLiteへ移す: 同じclosureを二度実装し、migration authorityと`phase0_*`命名を残すため不採用。
-- F2を後回しにしてusecase eventをSQLite payloadにする: persistence DTOがusecase型へ固定され、F2時に全event変換をやり直すため不採用。
-- SQLiteをinfrastructureに隠しgatewayへfile-store互換APIを残す: legacy layoutがportを支配し、multi-stream transactionを表現できないため不採用。
-- eventだけを保存して起動時に全履歴foldする: R-017のhistory independenceを満たさないため不採用。必要なdirect / bounded projectionを同transactionで更新する。
-- projectionを別transactionで非同期更新する: commit直後にpartial public stateを作るため不採用。
-- provider effect後にobligationを保存する: effect直後crashを同じidentityで回収できないため不採用。
-- dual write / record単位fallback: authorityが二つになりparity failureを隠すため不採用。
-- public Prepare / Commit / Cancel send:既存single-send contractを不要に広げるため不採用。
-- managed backup / restoreを同時実装する: #1499のclosure成立に不要で公開data lifecycle判断を増やすため不採用。
+- legacy file-store を読み、SQLite へ import して切り替える案: 二重 authority と証拠不足の未完了作用を生むため不採用。
+- file-store compatibility API を残す案: normal runtime が旧物理設計へ依存し続けるため不採用。
+- event だけを保存し、起動時や query 時に全履歴を再計算する案: history-independent な操作保証を満たさないため不採用。
+- frontend が timeout、retryability、terminal winner を決める案: Rust-owned authority と live / reload 等価性を破るため不採用。
 
 ## Cross-cutting concerns
 
-- Crash consistency: SQLite COMMITとauthority pointer CASだけをcommit根拠にする。notification、WAL file存在、worker future完了を根拠にしない。
-- Idempotency: same key / same canonical bindingはsaved result、different bindingはPayloadConflict。absenceはWAL recovery / writer exclusion後だけ未commit根拠にする。
-- Security: app-data / DB / keyはowner-only。bindingはconstant-time比較し、content、secret、path、raw SQLをpublic failure / telemetryへ出さない。
-- Concurrency: operation gate、terminal gate、obligation claim、shutdown epoch、migration lockはscopeを分ける。external effect中にDB transactionやsession lockを保持しない。
-- Compatibility: legacy JSONとpublic DTOのknown shapeをgolden固定する。migration中はread-only、cutover後はSQLite-onlyである。
-- Performance: pending first 200 p95 50 ms、identity query p95 20 ms / p99 50 ms、大規模fixture p95比1.25以下。query planに全event scanを認めない。
-- Schema evolution: additive stored payloadはraw-preserve、required semantic changeは新payload versionとtotal converterを必須にする。destructive migrationはstaging generation / parity / pointer cutoverを使う。
-- Retention: operation receipt、completed recovery action、terminal、shutdown compact archiveは本Issueでtime-based GCしない。event / privacy retentionは別Issueで決定する。
+- Crash consistency: committed SQLite state だけを受理・完了の根拠にする。
+- Security: secret、private response、path、internal proof を public failure や telemetry へ出さない。
+- Idempotency: same identity / same intent は replay、different intent は conflict。
+- Compatibility: SQLite persistence と public representation を独立して version 管理する。
+- Performance: direct lookup と bounded collection は無関係な履歴量から独立させる。
+- Retention: cleanup は canonical state を変更せず、旧 file-store を対象にしない。
 
 ## Risks
 
-- legacy fixtureには現行codecの暗黙defaultがある。`StoredMessagePartV1` / legacy event DTOを先にgolden固定し、domain統合とmigrationを同じfixtureで検査する。
-- SQLite COMMIT errorは実際のcommit有無を表さない場合がある。`OutcomeUnknown`とidempotency readbackを必須にし、別identity retryを禁止する。
-- authority pointerはSQLite外の唯一のcutover authorityである。通常mutationには使わず、CAS / fsync / checksum / fresh readbackのfault testを独立させる。
-- storage全損中はAccepted Stop terminalを10秒以内に保存できない。Accepted factとcapacityを保持し、ReconciliationRequiredとしてIdle / queue drainを抑止する。
-- 4096-target shutdownとmigration importは長時間になる。bounded batch、critical writer lane、15秒decision deadlineを分離し、進捗保存とeffect開始を混同しない。
-- graceful eventを配信しないhard kill / power lossはcoordinatorを通らない。次bootのSQLite WAL recovery、pending obligation、shutdown / migration readbackで回収する。
+- 初回作成残骸を破損済み store と誤認すると永久 block になる。初期化が完了した事実を安全に確認できるかどうかで outcome を分ける acceptance test を必須にする。
+- 初期化済み store の検証 failure を空 store と誤認すると data loss になる。initial-create evidence が正常にdurable化され、かつnormal admission前であると証明できる残骸以外の自動置換、削除、再初期化を禁止する。
+- initial-create evidence の削除前にnormal admissionすると、evidenceがdata消失を許す誤った証拠になる。database readback、sync、evidence削除、directory syncの完了後だけReadyを公開する。
+- installation identity またはHMAC keyをschema evolution時に再生成すると、replay、cursor、obligation correlationがrestart前後で分裂する。ready storeではimmutableとして検証し、欠損時はfail closedにする。
+- startup failure を normal shutdown と共用すると不要なdurable progressが生じる。startup failure は pre-admission の process-local exit に限定する。
+- shutdown summary と detail を別 authority にすると結果が分裂する。plan / ordered target rowと同じaggregate revisionからのみ保存検証、effect reservation、公開readを行い、不一致をfail closedにする。

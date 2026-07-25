@@ -311,7 +311,7 @@ mod tests {
         let (notice_usecase, notice_query) = notice_services();
         let session_id = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
         store
-            .save_full_session_for_migration_or_restore(
+            .save_full_session_for_restore(
                 tmp.path(),
                 &codex_session(session_id, SessionState::Closed),
             )
@@ -350,7 +350,7 @@ mod tests {
         let store = Arc::new(crate::test_support::build_session_store());
         let session_id = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
         store
-            .save_full_session_for_migration_or_restore(
+            .save_full_session_for_restore(
                 tmp.path(),
                 &codex_session(session_id, SessionState::Idle),
             )
@@ -384,7 +384,7 @@ mod tests {
         let (notice_usecase, notice_query) = notice_services();
         let session_id = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
         store
-            .save_full_session_for_migration_or_restore(
+            .save_full_session_for_restore(
                 tmp.path(),
                 &codex_session(session_id, SessionState::Idle),
             )
@@ -424,7 +424,7 @@ mod tests {
         let store = Arc::new(crate::test_support::build_session_store());
         let session_id = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
         store
-            .save_full_session_for_migration_or_restore(
+            .save_full_session_for_restore(
                 tmp.path(),
                 &codex_session(session_id, SessionState::Idle),
             )
@@ -510,7 +510,7 @@ mod tests {
         let (notice_usecase, notice_query) = notice_services();
         let session_id = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
         store
-            .save_full_session_for_migration_or_restore(
+            .save_full_session_for_restore(
                 tmp.path(),
                 &codex_session(session_id, SessionState::Idle),
             )
@@ -539,7 +539,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let store = Arc::new(crate::test_support::build_session_store());
         store
-            .save_full_session_for_migration_or_restore(
+            .save_full_session_for_restore(
                 tmp.path(),
                 &codex_session("a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d", SessionState::Idle),
             )
@@ -565,7 +565,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let store = Arc::new(crate::test_support::build_session_store());
         store
-            .save_full_session_for_migration_or_restore(
+            .save_full_session_for_restore(
                 tmp.path(),
                 &codex_session("a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d", SessionState::Closed),
             )

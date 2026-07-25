@@ -35,16 +35,6 @@ fn apply_private_context(private_context: SessionPrivateContext, meta: &mut Sess
     }
 }
 
-pub(super) fn hydrate_meta_private_context_bytes(
-    raw: &[u8],
-    meta: &mut SessionMeta,
-) -> Result<(), String> {
-    let private_context: SessionPrivateContext = serde_json::from_slice(raw)
-        .map_err(|error| format!("legacy private context is incompatible: {error}"))?;
-    apply_private_context(private_context, meta);
-    Ok(())
-}
-
 #[cfg(test)]
 fn private_context_from_meta(meta: &SessionMeta) -> SessionPrivateContext {
     SessionPrivateContext {

@@ -21,7 +21,7 @@ pub struct CursorClaims {
     pub snapshot_id: String,
     pub filter_hash: [u8; 32],
     pub last_key: String,
-    pub boot_id: String,
+    pub process_instance_id: String,
     pub expires_at_ms: i64,
 }
 
@@ -40,7 +40,7 @@ pub fn issue_cursor(
     snapshot_id: &str,
     filter: &[u8; 32],
     last_key: &str,
-    boot_id: &str,
+    process_instance_id: &str,
     expires_at_ms: i64,
 ) -> String {
     let body = [
@@ -48,7 +48,7 @@ pub fn issue_cursor(
         snapshot_id,
         &hex::encode(filter),
         last_key,
-        boot_id,
+        process_instance_id,
         &expires_at_ms.to_string(),
     ]
     .join(&FIELD_SEPARATOR.to_string());
@@ -106,7 +106,7 @@ pub fn verify_cursor(
         snapshot_id: fields[1].to_string(),
         filter_hash: filter,
         last_key: fields[3].to_string(),
-        boot_id: fields[4].to_string(),
+        process_instance_id: fields[4].to_string(),
         expires_at_ms,
     })
 }

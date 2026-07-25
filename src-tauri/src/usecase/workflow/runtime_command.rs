@@ -21,9 +21,8 @@ use super::ports::{
 use super::ports::{
     WorkflowAbortExecutionGateway, WorkflowApprovalChatGateway, WorkflowApprovalGateway,
     WorkflowResumeExecutionGateway, WorkflowRuntimeShutdownGateway, WorkflowRuntimeStateGateway,
-    WorkflowStartExecutionGateway, WorkflowStartupRecoveryAdmission, WorkflowStopExecutionGateway,
-    WorkflowSubmitOutputGateway, WorkflowTurnCompleteCommand, WorkflowTurnCompleteGateway,
-    WorkflowTurnTokenUsage,
+    WorkflowStartExecutionGateway, WorkflowStopExecutionGateway, WorkflowSubmitOutputGateway,
+    WorkflowTurnCompleteCommand, WorkflowTurnCompleteGateway, WorkflowTurnTokenUsage,
 };
 use super::turn_complete::WorkflowTurnCompleteUsecase;
 
@@ -68,39 +67,6 @@ impl WorkflowRuntimeUsecase {
 
     pub async fn recover_startup(&self) -> Result<(), WorkflowError> {
         self.runtime.recover_startup().await
-    }
-
-    /// Wait for the verified local-store authority and invoke workflow
-    /// recovery exactly once. A blocked migration leaves the runtime inert.
-    #[cfg(test)]
-    pub async fn recover_startup_after_admission(
-        &self,
-        admission: &dyn WorkflowStartupRecoveryAdmission,
-    ) -> Result<bool, WorkflowError> {
-        if !self.wait_for_startup_recovery_admission(admission).await {
-            return Ok(false);
-        }
-        self.recover_startup().await?;
-        Ok(true)
-    }
-
-    /// Waits for verified local-store cutover without starting recovery. The
-    /// composition root uses this boundary to replay durable workflow turn
-    /// handoffs before orphan interruption can inspect the same executions.
-    #[cfg(test)]
-    pub async fn wait_for_startup_recovery_admission(
-        &self,
-        admission: &dyn WorkflowStartupRecoveryAdmission,
-    ) -> bool {
-        loop {
-            if admission.normal_mutation_admitted() {
-                return true;
-            }
-            if admission.migration_blocked() {
-                return false;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
     }
 
     pub async fn abort_execution(
@@ -243,29 +209,12 @@ impl WorkflowRuntimeUsecase {
 mod tests {
     use super::*;
     use crate::domain::workflow::{ExecutionOrigin, WorkflowDefinition};
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Mutex;
 
     #[derive(Default)]
     struct FakeRuntimeGateway {
         calls: Mutex<Vec<&'static str>>,
         session_running: bool,
-    }
-
-    #[derive(Default)]
-    struct FakeStartupRecoveryAdmission {
-        normal_mutation_admitted: AtomicBool,
-        migration_blocked: AtomicBool,
-    }
-
-    impl WorkflowStartupRecoveryAdmission for FakeStartupRecoveryAdmission {
-        fn normal_mutation_admitted(&self) -> bool {
-            self.normal_mutation_admitted.load(Ordering::SeqCst)
-        }
-
-        fn migration_blocked(&self) -> bool {
-            self.migration_blocked.load(Ordering::SeqCst)
-        }
     }
 
     #[async_trait::async_trait]
@@ -435,62 +384,6 @@ mod tests {
             self.calls.lock().unwrap().push("validate_approval_chat");
             Ok(())
         }
-    }
-
-    #[tokio::test]
-    async fn startup_recovery_waits_for_normal_admission_and_runs_once() {
-        let gateway = Arc::new(FakeRuntimeGateway::default());
-        let usecase = WorkflowRuntimeUsecase::new(gateway.clone());
-        let admission = Arc::new(FakeStartupRecoveryAdmission::default());
-
-        assert!(
-            gateway.calls.lock().unwrap().is_empty(),
-            "runtime construction must not start recovery"
-        );
-
-        let pending_recovery = {
-            let usecase = usecase.clone();
-            let admission = admission.clone();
-            tokio::spawn(async move {
-                usecase
-                    .recover_startup_after_admission(admission.as_ref())
-                    .await
-            })
-        };
-        tokio::task::yield_now().await;
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-
-        assert!(!pending_recovery.is_finished());
-        assert!(gateway.calls.lock().unwrap().is_empty());
-
-        admission
-            .normal_mutation_admitted
-            .store(true, Ordering::SeqCst);
-        let recovered = tokio::time::timeout(std::time::Duration::from_secs(1), pending_recovery)
-            .await
-            .expect("recovery should observe normal admission")
-            .expect("recovery task should not panic")
-            .expect("recovery should succeed");
-
-        assert!(recovered);
-        assert_eq!(
-            gateway.calls.lock().unwrap().as_slice(),
-            ["recover_startup"]
-        );
-    }
-
-    #[tokio::test]
-    async fn startup_recovery_stays_inert_when_migration_is_blocked() {
-        let gateway = Arc::new(FakeRuntimeGateway::default());
-        let usecase = WorkflowRuntimeUsecase::new(gateway.clone());
-        let admission = FakeStartupRecoveryAdmission::default();
-        admission.migration_blocked.store(true, Ordering::SeqCst);
-
-        assert!(!usecase
-            .recover_startup_after_admission(&admission)
-            .await
-            .unwrap());
-        assert!(gateway.calls.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

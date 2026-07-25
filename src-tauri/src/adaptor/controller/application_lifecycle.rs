@@ -8,30 +8,31 @@ use crate::usecase::agent_session::operation::{
 };
 use crate::usecase::shutdown_coordinator::{
     ApplicationProcessAction, ApplicationQuitIntent, ApplicationQuitOutcome,
-    ApplicationQuitRequest, MigrationAdmissionState, ShutdownCoordinator, ShutdownEffectReadback,
-    ShutdownTarget, ShutdownTargetExecutor,
+    ApplicationQuitRequest, ShutdownCoordinator, ShutdownEffectReadback, ShutdownTarget,
+    ShutdownTargetExecutor,
 };
 
-impl MigrationAdmissionState for crate::adaptor::gateway::local_event_store::LocalEventStore {
-    fn normal_admission_ready(&self) -> bool {
-        self.normal_admission_ready()
-    }
+pub(crate) struct TauriProcessLocalExitPort {
+    app: tauri::AppHandle,
+}
 
-    fn active_migration_id(&self) -> Option<String> {
-        self.active_migration_id().map(str::to_string)
+impl TauriProcessLocalExitPort {
+    pub(crate) fn new(app: tauri::AppHandle) -> Self {
+        Self { app }
     }
 }
 
-#[cfg(test)]
-impl crate::usecase::workflow::ports::WorkflowStartupRecoveryAdmission
-    for crate::adaptor::gateway::local_event_store::LocalEventStore
-{
-    fn normal_mutation_admitted(&self) -> bool {
-        self.normal_admission_ready()
-    }
+fn dispatch_startup_failure_process_exit(exit: impl FnOnce()) {
+    // `AppHandle::exit` itself emits `RunEvent::ExitRequested`. Grant the
+    // native exit before dispatch so the lifecycle hook does not prevent the
+    // one process-local effect and then join its own already-fired flight.
+    crate::infrastructure::platform::tray::mark_quit_requested();
+    exit();
+}
 
-    fn migration_blocked(&self) -> bool {
-        self.migration_blocked()
+impl crate::usecase::application_startup::ProcessLocalExitPort for TauriProcessLocalExitPort {
+    fn exit(&self, code: i32) {
+        dispatch_startup_failure_process_exit(|| self.app.exit(code));
     }
 }
 
@@ -109,7 +110,6 @@ impl ApplicationProcessActionDispatcher {
 }
 
 struct RuntimeShutdownExecutor {
-    store: Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
     runtime: Arc<crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase>,
     workflow_runtime: Arc<crate::usecase::workflow::WorkflowRuntimeUsecase>,
     lifecycle_operation:
@@ -245,11 +245,6 @@ impl ShutdownTargetExecutor for RuntimeShutdownExecutor {
     async fn targets(
         &self,
     ) -> Result<Vec<ShutdownTarget>, crate::domain::local_event::SafeOperationFailure> {
-        // Migration-safe quit persists the same SQLite flight but must not
-        // start agent or workflow termination while Legacy is read-only.
-        if !self.store.normal_admission_ready() {
-            return Ok(Vec::new());
-        }
         let session_ids = self
             .runtime
             .application_shutdown_target_session_ids()
@@ -418,26 +413,24 @@ pub(crate) fn build_shutdown_coordinator(
     >,
     shutdown_local_api: Arc<dyn Fn() + Send + Sync>,
 ) -> Arc<ShutdownCoordinator> {
-    let generation_id = store.generation_id().to_string();
-    let boot_id = store.boot_id().to_string();
+    let installation_id = store.installation_id().to_string();
+    let process_instance_id = store.process_instance_id().to_string();
     let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
         store.clone();
     let authority: Arc<dyn crate::usecase::agent_session::operation::OperationBindingAuthority> =
         store.clone();
     let executor: Arc<dyn ShutdownTargetExecutor> = Arc::new(RuntimeShutdownExecutor {
-        store: store.clone(),
         runtime,
         workflow_runtime,
         lifecycle_operation,
         shutdown_local_api,
     });
-    Arc::new(ShutdownCoordinator::new_with_migration_admission(
+    Arc::new(ShutdownCoordinator::new(
         repository,
         authority,
         executor,
-        generation_id,
-        boot_id,
-        store,
+        installation_id,
+        process_instance_id,
     ))
 }
 
@@ -462,13 +455,7 @@ pub(crate) fn request_application_quit(
             {
                 process_actions.dispatch_tauri(app, receipt.intent.into());
             }
-            Ok(ApplicationQuitOutcome::MigrationAccepted { projection })
-                if projection.grants_exit_permit() =>
-            {
-                process_actions.dispatch_tauri(app, projection.receipt.intent.into());
-            }
             Ok(ApplicationQuitOutcome::Accepted { .. })
-            | Ok(ApplicationQuitOutcome::MigrationAccepted { .. })
             | Ok(ApplicationQuitOutcome::OutcomeUnknown { .. })
             | Ok(ApplicationQuitOutcome::RejectedBeforeCommit { .. })
             | Err(_) => {
@@ -483,28 +470,17 @@ pub(crate) fn request_application_quit(
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_session_lifecycle_shutdown_result, shutdown_effect_request_id,
-        ApplicationProcessActionDispatcher, ApplicationProcessActionPort,
+        classify_session_lifecycle_shutdown_result, dispatch_startup_failure_process_exit,
+        shutdown_effect_request_id, ApplicationProcessActionDispatcher,
+        ApplicationProcessActionPort,
     };
-    use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
-    use crate::domain::local_event::{
-        LocalEventTransactionRepository, Revision, SafeOperationFailure,
-        SessionOperationFailureKind,
-    };
+    use crate::domain::local_event::{SafeOperationFailure, SessionOperationFailureKind};
     use crate::usecase::agent_session::operation::{
         SessionLifecycleAction, SessionLifecycleCommandResult, SessionLifecycleOperationError,
         SessionLifecycleOperationState, SessionLifecycleReceipt, SessionLifecycleRejection,
     };
-    use crate::usecase::shutdown_coordinator::{
-        ApplicationProcessAction, ApplicationQuitIntent, ApplicationQuitOutcome,
-        ApplicationQuitRequest, MigrationAdmissionState, MigrationApplicationQuitProjection,
-        MigrationApplicationQuitState, ShutdownCoordinator, ShutdownEffectReadback, ShutdownTarget,
-        ShutdownTargetExecutor,
-    };
-    use std::path::Path;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use crate::usecase::shutdown_coordinator::ApplicationProcessAction;
     use std::sync::{Arc, Mutex};
-    use tempfile::TempDir;
 
     const TEST_EFFECT_IDENTITY: &str = "shutdown-effect-lifecycle-result";
 
@@ -527,6 +503,28 @@ mod tests {
             "{}-{suffix}",
             shutdown_effect_request_id(TEST_EFFECT_IDENTITY)
         )
+    }
+
+    #[test]
+    fn startup_failure_process_exit_grants_the_native_exit_before_dispatch() {
+        let _guard = crate::infrastructure::platform::tray::QUIT_REQUESTED_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::infrastructure::platform::tray::QUIT_REQUESTED
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+
+        dispatch_startup_failure_process_exit(|| {
+            assert!(
+                !crate::infrastructure::platform::window_lifecycle::should_prevent_exit(),
+                "the native ExitRequested callback must observe an exit permit"
+            );
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        crate::infrastructure::platform::tray::QUIT_REQUESTED
+            .store(false, std::sync::atomic::Ordering::SeqCst);
     }
 
     #[test]
@@ -742,121 +740,6 @@ mod tests {
         }
     }
 
-    #[derive(Default)]
-    struct NoMigrationShutdownEffects {
-        target_queries: AtomicUsize,
-        target_effects: AtomicUsize,
-        target_readbacks: AtomicUsize,
-        subordinate_shutdowns: AtomicUsize,
-    }
-
-    #[async_trait::async_trait]
-    impl ShutdownTargetExecutor for NoMigrationShutdownEffects {
-        async fn targets(&self) -> Result<Vec<ShutdownTarget>, SafeOperationFailure> {
-            self.target_queries.fetch_add(1, Ordering::SeqCst);
-            Ok(vec![ShutdownTarget {
-                target_id: "must-not-run".to_string(),
-                kind: "agent_session".to_string(),
-            }])
-        }
-
-        async fn execute_target(
-            &self,
-            _operation_id: &str,
-            _effect_identity: &str,
-            _owner_revision: Revision,
-            _target: &ShutdownTarget,
-        ) -> Result<(), SafeOperationFailure> {
-            self.target_effects.fetch_add(1, Ordering::SeqCst);
-            Ok(())
-        }
-
-        async fn read_target_effect(
-            &self,
-            _operation_id: &str,
-            _effect_identity: &str,
-            _owner_revision: Revision,
-            _target: &ShutdownTarget,
-        ) -> Result<ShutdownEffectReadback, SafeOperationFailure> {
-            self.target_readbacks.fetch_add(1, Ordering::SeqCst);
-            Ok(ShutdownEffectReadback::Completed)
-        }
-
-        async fn shutdown_subordinates(&self) -> Result<(), SafeOperationFailure> {
-            self.subordinate_shutdowns.fetch_add(1, Ordering::SeqCst);
-            Ok(())
-        }
-    }
-
-    impl NoMigrationShutdownEffects {
-        fn assert_unused(&self) {
-            assert_eq!(self.target_queries.load(Ordering::SeqCst), 0);
-            assert_eq!(self.target_effects.load(Ordering::SeqCst), 0);
-            assert_eq!(self.target_readbacks.load(Ordering::SeqCst), 0);
-            assert_eq!(self.subordinate_shutdowns.load(Ordering::SeqCst), 0);
-        }
-    }
-
-    fn open_migrating_store(root: &Path) -> Arc<LocalEventStore> {
-        LocalEventStore::open(LocalEventStoreConfig::production(root.to_path_buf()))
-            .expect("open migration-safe local event store")
-    }
-
-    fn migration_coordinator(
-        store: &Arc<LocalEventStore>,
-        executor: &Arc<NoMigrationShutdownEffects>,
-    ) -> Arc<ShutdownCoordinator> {
-        let repository: Arc<dyn LocalEventTransactionRepository> = store.clone();
-        let authority: Arc<
-            dyn crate::usecase::agent_session::operation::OperationBindingAuthority,
-        > = store.clone();
-        let admission: Arc<dyn MigrationAdmissionState> = store.clone();
-        Arc::new(ShutdownCoordinator::new_with_migration_admission(
-            repository,
-            authority,
-            executor.clone(),
-            store.generation_id().to_string(),
-            store.boot_id().to_string(),
-            admission,
-        ))
-    }
-
-    async fn finish_migration_cutover(store: &LocalEventStore) {
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            loop {
-                assert!(
-                    !store.migration_blocked(),
-                    "empty migration fixture must not block"
-                );
-                if store.cutover_ready() {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("migration cutover");
-        assert!(store.open_normal_admission_after_authority_install());
-    }
-
-    fn migration_projection(
-        outcome: ApplicationQuitOutcome,
-    ) -> Box<MigrationApplicationQuitProjection> {
-        let ApplicationQuitOutcome::MigrationAccepted { projection } = outcome else {
-            panic!("migration-safe quit must return its closed projection: {outcome:?}");
-        };
-        projection
-    }
-
-    fn dispatch_migration_projection(
-        dispatcher: &ApplicationProcessActionDispatcher,
-        port: &RecordingProcessPort,
-        projection: &MigrationApplicationQuitProjection,
-    ) -> bool {
-        projection.grants_exit_permit()
-            && dispatcher.dispatch(port, projection.receipt.intent.into())
-    }
-
     #[test]
     fn f11_concrete_process_port_routes_exit_and_restart_to_distinct_destinations() {
         let _guard = crate::infrastructure::platform::tray::QUIT_REQUESTED_TEST_LOCK
@@ -931,233 +814,5 @@ mod tests {
             &[ApplicationProcessAction::Restart { code: 23 }],
             "same/different identity replays and response loss cannot change or repeat the first process action"
         );
-    }
-
-    #[tokio::test]
-    async fn f10_crash_before_process_dispatch_settles_only_on_the_next_physical_boot() {
-        let dir = TempDir::new().expect("migration quit app data");
-        std::fs::create_dir_all(dir.path().join("sessions")).expect("legacy sessions root");
-        let store = open_migrating_store(dir.path());
-        assert!(!store.normal_admission_ready());
-        let accepting_boot_id = store.boot_id().to_string();
-        let executor = Arc::new(NoMigrationShutdownEffects::default());
-        let coordinator = migration_coordinator(&store, &executor);
-        let request = ApplicationQuitRequest {
-            principal: "desktop".to_string(),
-            request_id: "f10-crash-before-process-dispatch".to_string(),
-            intent: ApplicationQuitIntent::Exit { code: -17 },
-        };
-
-        let accepted = migration_projection(
-            coordinator
-                .request(request.clone())
-                .await
-                .expect("migration quit acceptance"),
-        );
-        assert!(matches!(
-            accepted.state,
-            MigrationApplicationQuitState::ExitPending
-        ));
-        assert!(accepted.grants_exit_permit());
-        assert!(
-            coordinator
-                .current_shutdown()
-                .await
-                .expect("normal shutdown projection query")
-                .is_none(),
-            "migration-safe quit must not create a normal shutdown plan"
-        );
-        executor.assert_unused();
-
-        // Fault cut: the durable projection has granted the exact action, but
-        // the accepting process crashes immediately before dispatch.
-        let _accepting_dispatcher = ApplicationProcessActionDispatcher::default();
-        let accepting_port = RecordingProcessPort::default();
-        assert!(accepting_port
-            .actions
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .is_empty());
-
-        finish_migration_cutover(&store).await;
-        drop(coordinator);
-        drop(store);
-
-        let restarted = open_migrating_store(dir.path());
-        assert_ne!(restarted.boot_id(), accepting_boot_id);
-        let restarted_executor = Arc::new(NoMigrationShutdownEffects::default());
-        let restarted_coordinator = migration_coordinator(&restarted, &restarted_executor);
-        let settled = restarted_coordinator
-            .settle_previous_boot_migration_quit()
-            .await
-            .expect("previous-boot settlement")
-            .expect("saved migration quit flight");
-        assert!(matches!(
-            settled.state,
-            MigrationApplicationQuitState::Exited
-        ));
-        assert!(!settled.grants_exit_permit());
-
-        let restarted_dispatcher = ApplicationProcessActionDispatcher::default();
-        let restarted_port = RecordingProcessPort::default();
-        assert!(!dispatch_migration_projection(
-            &restarted_dispatcher,
-            &restarted_port,
-            &settled,
-        ));
-        let replay = migration_projection(
-            restarted_coordinator
-                .request(request)
-                .await
-                .expect("settled migration quit replay"),
-        );
-        assert!(matches!(
-            replay.state,
-            MigrationApplicationQuitState::Exited
-        ));
-        assert!(!dispatch_migration_projection(
-            &restarted_dispatcher,
-            &restarted_port,
-            &replay,
-        ));
-        assert!(
-            restarted_port
-                .actions
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .is_empty(),
-            "a later boot may settle the flight but must never repeat its process action"
-        );
-        executor.assert_unused();
-        restarted_executor.assert_unused();
-    }
-
-    #[tokio::test]
-    async fn f10_lost_process_handoff_replays_once_per_boot_then_settles_without_next_boot_action()
-    {
-        let dir = TempDir::new().expect("migration quit app data");
-        std::fs::create_dir_all(dir.path().join("sessions")).expect("legacy sessions root");
-        let store = open_migrating_store(dir.path());
-        assert!(!store.normal_admission_ready());
-        let accepting_boot_id = store.boot_id().to_string();
-        let executor = Arc::new(NoMigrationShutdownEffects::default());
-        let coordinator = migration_coordinator(&store, &executor);
-        let request = ApplicationQuitRequest {
-            principal: "desktop".to_string(),
-            request_id: "f10-lost-process-handoff".to_string(),
-            intent: ApplicationQuitIntent::Restart { code: 42 },
-        };
-        let accepted = migration_projection(
-            coordinator
-                .request(request.clone())
-                .await
-                .expect("migration quit acceptance"),
-        );
-        assert!(matches!(
-            accepted.state,
-            MigrationApplicationQuitState::ExitPending
-        ));
-
-        let dispatcher = ApplicationProcessActionDispatcher::default();
-        let port = RecordingProcessPort::default();
-        {
-            let _guard = crate::infrastructure::platform::tray::QUIT_REQUESTED_TEST_LOCK
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            crate::infrastructure::platform::tray::QUIT_REQUESTED.store(false, Ordering::SeqCst);
-            assert!(dispatch_migration_projection(&dispatcher, &port, &accepted));
-            crate::infrastructure::platform::tray::QUIT_REQUESTED.store(false, Ordering::SeqCst);
-        }
-        assert_eq!(
-            port.actions
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .as_slice(),
-            &[ApplicationProcessAction::Restart { code: 42 }]
-        );
-
-        // The platform handoff has no acknowledgement channel. Treat its
-        // result as lost: durable state stays pending, and a same-boot replay
-        // reaches the same grant but the concrete dispatcher refuses a second
-        // process action.
-        let pending = migration_projection(
-            coordinator
-                .request(request.clone())
-                .await
-                .expect("same-boot migration quit replay"),
-        );
-        assert!(matches!(
-            pending.state,
-            MigrationApplicationQuitState::ExitPending
-        ));
-        assert!(pending.grants_exit_permit());
-        assert!(!dispatch_migration_projection(&dispatcher, &port, &pending));
-        assert_eq!(
-            port.actions
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .as_slice(),
-            &[ApplicationProcessAction::Restart { code: 42 }]
-        );
-        assert!(
-            coordinator
-                .current_shutdown()
-                .await
-                .expect("normal shutdown projection query")
-                .is_none(),
-            "migration-safe quit must not create a normal shutdown plan"
-        );
-        executor.assert_unused();
-
-        finish_migration_cutover(&store).await;
-        drop(coordinator);
-        drop(store);
-
-        let restarted = open_migrating_store(dir.path());
-        assert_ne!(restarted.boot_id(), accepting_boot_id);
-        let restarted_executor = Arc::new(NoMigrationShutdownEffects::default());
-        let restarted_coordinator = migration_coordinator(&restarted, &restarted_executor);
-        let settled = restarted_coordinator
-            .settle_previous_boot_migration_quit()
-            .await
-            .expect("previous-boot settlement")
-            .expect("saved migration quit flight");
-        assert!(matches!(
-            settled.state,
-            MigrationApplicationQuitState::Exited
-        ));
-
-        let restarted_dispatcher = ApplicationProcessActionDispatcher::default();
-        let restarted_port = RecordingProcessPort::default();
-        assert!(!dispatch_migration_projection(
-            &restarted_dispatcher,
-            &restarted_port,
-            &settled,
-        ));
-        let replay = migration_projection(
-            restarted_coordinator
-                .request(request)
-                .await
-                .expect("settled migration quit replay"),
-        );
-        assert!(matches!(
-            replay.state,
-            MigrationApplicationQuitState::Exited
-        ));
-        assert!(!dispatch_migration_projection(
-            &restarted_dispatcher,
-            &restarted_port,
-            &replay,
-        ));
-        assert!(
-            restarted_port
-                .actions
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .is_empty(),
-            "the settling boot must emit no process action"
-        );
-        executor.assert_unused();
-        restarted_executor.assert_unused();
     }
 }

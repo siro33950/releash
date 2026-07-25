@@ -154,7 +154,7 @@ fn review_session_context(
     }
     #[cfg(not(test))]
     {
-        crate::adaptor::controller::wiring::build_file_direct_session_read_store(
+        crate::adaptor::controller::wiring::build_canonical_session_read_store(
             data_dir.to_path_buf(),
         )?
         .get_session_review_context(data_dir, session_id)

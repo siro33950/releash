@@ -46,11 +46,13 @@ pub(crate) use store::{
     AgentSessionProjectionCodec, CanonicalAgentSessionProjection, CanonicalQueuedSend,
     ErrorEpisodeInput, NextTurnIdError, PendingWorkflowTurnCompletion,
     PendingWorkflowTurnCompletionPage, RuntimeTerminalParticipantProvider,
-    RuntimeTerminalParticipants, SendAcceptanceProjectionInput, SessionEventLogRecoverySignal,
+    RuntimeTerminalParticipants, SendAcceptanceProjectionInput,
 };
-pub use store::{
-    SessionQueuePauseReader, SessionReaderPort, SessionReviewContextReader, SessionStore,
+#[cfg(test)]
+pub(crate) use store::{
+    SessionEventLogRecoverySignal, SessionQueuePauseReader, SessionReviewContextReader,
 };
+pub use store::{SessionReaderPort, SessionStore};
 #[cfg(test)]
 pub(crate) use stored_lifecycle::CloseSessionOutcome;
 pub(crate) use stored_lifecycle::{
@@ -357,6 +359,7 @@ pub struct ChatSession {
 pub const SESSION_BODY_FORMAT_VERSION: u32 = 1;
 pub const INITIAL_SESSION_PAGE_LIMIT: usize = 50;
 pub const DEFAULT_SESSION_PAGE_LIMIT: usize = INITIAL_SESSION_PAGE_LIMIT;
+#[cfg(test)]
 pub const MAX_SESSION_PAGE_LIMIT: usize = 200;
 #[cfg(test)]
 pub const MAX_TOOL_OUTPUT_BYTES: usize =
@@ -670,6 +673,7 @@ pub struct SessionToolOutput {
     pub byte_size: u64,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct MessageIndexEntry {
     pub id: String,
@@ -1164,7 +1168,7 @@ pub fn create_session_internal_with_attributes(
         workflow_node_session,
         workflow_node_context,
     );
-    session_store.save_full_session_for_migration_or_restore(data_dir, &session)?;
+    session_store.save_full_session_for_restore(data_dir, &session)?;
     Ok(session)
 }
 
@@ -1299,7 +1303,7 @@ pub fn create_session_with_model_and_plan_mode(
         false,
         None,
     );
-    session_store.save_full_session_for_migration_or_restore(data_dir, &session)?;
+    session_store.save_full_session_for_restore(data_dir, &session)?;
     Ok(session)
 }
 
@@ -2128,10 +2132,10 @@ mod tests {
         regular.workflow_node_session = false;
 
         store
-            .save_full_session_for_migration_or_restore(tmp.path(), &workflow_node)
+            .save_full_session_for_restore(tmp.path(), &workflow_node)
             .unwrap();
         store
-            .save_full_session_for_migration_or_restore(tmp.path(), &regular)
+            .save_full_session_for_restore(tmp.path(), &regular)
             .unwrap();
 
         update_session_state_in_data_dir(&store, tmp.path(), &workflow_node.id, SessionState::Idle)
@@ -2185,7 +2189,7 @@ mod tests {
             context_epoch: None,
         };
         store
-            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .save_full_session_for_restore(tmp.path(), &session)
             .unwrap();
         std::fs::write(
             tmp.path()
@@ -2254,7 +2258,7 @@ mod tests {
             context_epoch: None,
         };
         store
-            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .save_full_session_for_restore(tmp.path(), &session)
             .unwrap();
 
         let shell = store

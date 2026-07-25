@@ -272,8 +272,6 @@ describe("ChatSessionView operation supervision", () => {
 				case "list_pending_agent_attempts":
 				case "list_pending_agent_recovery":
 					return Promise.resolve({ entries: [], next_cursor: null });
-				case "get_local_store_migration":
-					return Promise.resolve({ type: "current", migration: null });
 				case "get_application_shutdown":
 					return Promise.resolve({
 						type: "outcome_unknown",

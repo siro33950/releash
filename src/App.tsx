@@ -28,7 +28,79 @@ interface NewSessionCreationState {
 	error: string | null;
 }
 
-function App() {
+type StartupFailureKind =
+	| "store_in_use"
+	| "storage_unavailable"
+	| "unsupported_runtime"
+	| "unsupported_store_version"
+	| "initialization_state_invalid"
+	| "store_validation_failed"
+	| "schema_evolution_failed";
+
+type ApplicationStartupOutcome =
+	| { type: "ready" }
+	| {
+			type: "failed";
+			kind: StartupFailureKind;
+			safeDescription: string;
+			correlationId: string;
+			retryOnNextLaunch: boolean;
+			actions: ["quit"];
+	  };
+
+function StartupFailureScreen({
+	failure,
+}: {
+	failure: Extract<ApplicationStartupOutcome, { type: "failed" }>;
+}) {
+	const [quitting, setQuitting] = useState(false);
+	const quit = useCallback(async () => {
+		if (quitting) return;
+		setQuitting(true);
+		try {
+			await invoke("quit_after_startup_failure");
+		} catch {
+			setQuitting(false);
+		}
+	}, [quitting]);
+	return (
+		<main className="flex min-h-screen items-center justify-center bg-background p-6 text-foreground">
+			<section
+				aria-labelledby="startup-failure-title"
+				className="w-full max-w-lg rounded-xl border border-border bg-card p-6 shadow-lg"
+			>
+				<p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+					Releash could not start
+				</p>
+				<h1 id="startup-failure-title" className="text-xl font-semibold">
+					{failure.safeDescription}
+				</h1>
+				<p className="mt-3 text-sm text-muted-foreground">
+					Classification:{" "}
+					<code className="font-mono text-xs">{failure.kind}</code>
+				</p>
+				<p className="mt-4 text-sm">
+					{failure.retryOnNextLaunch
+						? "Quit Releash, then launch it again to retry."
+						: "Quit Releash and use a compatible build or resolve the local data issue before launching again."}
+				</p>
+				<p className="mt-4 break-all font-mono text-xs text-muted-foreground">
+					Correlation: {failure.correlationId}
+				</p>
+				<button
+					type="button"
+					className="mt-6 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+					disabled={quitting}
+					onClick={() => void quit()}
+				>
+					{quitting ? "Quitting…" : "Quit"}
+				</button>
+			</section>
+		</main>
+	);
+}
+
+function WorkbenchApp() {
 	const { settings, updateSettings, updateTheme } = useSettings();
 	const updateChecker = useUpdateChecker(settings.autoUpdate);
 	const { worktrees, selectedWorktreeId, openWorktreeTab } =
@@ -349,6 +421,58 @@ function App() {
 			/>
 		</TooltipProvider>
 	);
+}
+
+function App() {
+	const [outcome, setOutcome] = useState<ApplicationStartupOutcome | null>(
+		null,
+	);
+	const [outcomeUnavailable, setOutcomeUnavailable] = useState(false);
+
+	useEffect(() => {
+		let active = true;
+		void invoke<ApplicationStartupOutcome>("get_application_startup_outcome")
+			.then((result) => {
+				if (active) setOutcome(result);
+			})
+			.catch(() => {
+				if (active) setOutcomeUnavailable(true);
+			});
+		return () => {
+			active = false;
+		};
+	}, []);
+
+	if (outcomeUnavailable) {
+		return (
+			<main className="flex min-h-screen items-center justify-center bg-background p-6 text-foreground">
+				<section className="w-full max-w-lg rounded-xl border border-border bg-card p-6 shadow-lg">
+					<p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+						Releash could not start
+					</p>
+					<h1 className="text-xl font-semibold">Startup outcome unavailable</h1>
+					<p className="mt-3 text-sm leading-6 text-muted-foreground">
+						Close Releash and launch it again. No application operation is
+						available in this state.
+					</p>
+				</section>
+			</main>
+		);
+	}
+	if (!outcome) {
+		return (
+			<main
+				aria-label="Starting Releash"
+				className="flex min-h-screen items-center justify-center bg-background text-sm text-muted-foreground"
+			>
+				Starting Releash…
+			</main>
+		);
+	}
+	if (outcome.type === "failed") {
+		return <StartupFailureScreen failure={outcome} />;
+	}
+	return <WorkbenchApp />;
 }
 
 export default App;

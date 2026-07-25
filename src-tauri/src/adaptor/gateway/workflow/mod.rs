@@ -1,8 +1,7 @@
 //! Workflow gateway implementations for the clean architecture ports.
 //!
-//! These adapters intentionally preserve the existing workflow persistence
-//! formats (`workflow_executions/`, `workflow_execution_logs/`, workflow YAML, facet markdown,
-//! execution event logs and workflow YAML/facet markdown.
+//! Workflow definitions, diagnostics, and facets remain file-backed. Runtime
+//! execution state and events use the fixed SQLite local event store.
 
 pub(crate) mod approval_runtime;
 pub(crate) mod builtin;

@@ -13,8 +13,8 @@ use crate::adaptor::gateway::local_event_store::canonical_cbor::{
     decode_canonical, encode_canonical, CanonicalCborError, CborValue,
 };
 use crate::domain::local_event::{
-    ApplicationDomainEvent, ApplicationShutdownPhase, LocalDomainEvent, LocalStoreMigrationPhase,
-    QuitIntent, UncommittedDomainEvent,
+    ApplicationDomainEvent, ApplicationShutdownPhase, LocalDomainEvent, QuitIntent,
+    UncommittedDomainEvent,
 };
 
 /// Gateway-owned stored envelope, schema version 1.
@@ -138,7 +138,7 @@ impl EventCodecRegistry {
     pub fn register(&mut self, codec: Arc<dyn LocalEventPayloadCodec>) {
         self.by_type.insert(codec.event_type(), Arc::clone(&codec));
         // A caller-provided codec may intentionally refine a built-in domain
-        // event mapping (for example, a migration compatibility codec). Keep
+        // event mapping (for example, a versioned compatibility codec). Keep
         // decode lookup and encode dispatch on the same last-registration-wins
         // rule.
         self.codecs.insert(0, codec);
@@ -236,7 +236,6 @@ fn int_entry(key: &str, value: i64) -> (CborValue, CborValue) {
 
 fn shutdown_phase_label(phase: ApplicationShutdownPhase) -> &'static str {
     match phase {
-        ApplicationShutdownPhase::Preparing => "preparing",
         ApplicationShutdownPhase::Prepared => "prepared",
         ApplicationShutdownPhase::Activated => "activated",
         ApplicationShutdownPhase::Quiescing => "quiescing",
@@ -249,7 +248,6 @@ fn shutdown_phase_label(phase: ApplicationShutdownPhase) -> &'static str {
 
 fn parse_shutdown_phase(raw: &str) -> Option<ApplicationShutdownPhase> {
     match raw {
-        "preparing" => Some(ApplicationShutdownPhase::Preparing),
         "prepared" => Some(ApplicationShutdownPhase::Prepared),
         "activated" => Some(ApplicationShutdownPhase::Activated),
         "quiescing" => Some(ApplicationShutdownPhase::Quiescing),
@@ -261,37 +259,12 @@ fn parse_shutdown_phase(raw: &str) -> Option<ApplicationShutdownPhase> {
     }
 }
 
-fn migration_phase_label(phase: LocalStoreMigrationPhase) -> &'static str {
-    match phase {
-        LocalStoreMigrationPhase::InspectingSource => "inspecting_source",
-        LocalStoreMigrationPhase::Importing => "importing",
-        LocalStoreMigrationPhase::Verifying => "verifying",
-        LocalStoreMigrationPhase::Activating => "activating",
-        LocalStoreMigrationPhase::Failed => "failed",
-    }
-}
-
-pub(crate) fn parse_migration_phase(raw: &str) -> Option<LocalStoreMigrationPhase> {
-    match raw {
-        "inspecting_source" => Some(LocalStoreMigrationPhase::InspectingSource),
-        "importing" => Some(LocalStoreMigrationPhase::Importing),
-        "verifying" => Some(LocalStoreMigrationPhase::Verifying),
-        "activating" => Some(LocalStoreMigrationPhase::Activating),
-        "failed" => Some(LocalStoreMigrationPhase::Failed),
-        _ => None,
-    }
-}
-
 pub(crate) fn shutdown_phase_to_label(phase: ApplicationShutdownPhase) -> &'static str {
     shutdown_phase_label(phase)
 }
 
 pub(crate) fn label_to_shutdown_phase(raw: &str) -> Option<ApplicationShutdownPhase> {
     parse_shutdown_phase(raw)
-}
-
-pub(crate) fn migration_phase_to_label(phase: LocalStoreMigrationPhase) -> &'static str {
-    migration_phase_label(phase)
 }
 
 fn map_get<'a>(entries: &'a [(CborValue, CborValue)], key: &str) -> Option<&'a CborValue> {
@@ -357,35 +330,18 @@ impl LocalEventPayloadCodec for ApplicationEventCodec {
                 entries
             }
             ApplicationDomainEvent::ShutdownPhaseAdvanced {
-                plan_id,
-                epoch,
+                shutdown_id,
                 phase,
                 at_ms,
             } => vec![
                 text_entry("kind", "shutdown_phase_advanced"),
-                text_entry("plan_id", plan_id),
-                int_entry("epoch", *epoch),
+                text_entry("shutdown_id", shutdown_id),
                 text_entry("phase", shutdown_phase_label(*phase)),
                 int_entry("at_ms", *at_ms),
             ],
-            ApplicationDomainEvent::ShutdownDetailsCompacted {
-                plan_id,
-                epoch,
-                at_ms,
-            } => vec![
+            ApplicationDomainEvent::ShutdownDetailsCompacted { shutdown_id, at_ms } => vec![
                 text_entry("kind", "shutdown_details_compacted"),
-                text_entry("plan_id", plan_id),
-                int_entry("epoch", *epoch),
-                int_entry("at_ms", *at_ms),
-            ],
-            ApplicationDomainEvent::LocalStoreMigrationPhaseAdvanced {
-                migration_id,
-                phase,
-                at_ms,
-            } => vec![
-                text_entry("kind", "local_store_migration_phase_advanced"),
-                text_entry("migration_id", migration_id),
-                text_entry("phase", migration_phase_label(*phase)),
+                text_entry("shutdown_id", shutdown_id),
                 int_entry("at_ms", *at_ms),
             ],
         };
@@ -427,27 +383,23 @@ impl LocalEventPayloadCodec for ApplicationEventCodec {
                 }
             }
             "shutdown_phase_advanced" => ApplicationDomainEvent::ShutdownPhaseAdvanced {
-                plan_id: map_text(entries, "plan_id").ok_or_else(malformed)?,
-                epoch: map_i64(entries, "epoch").ok_or_else(malformed)?,
+                // Schema v1 events are immutable commit evidence. During the
+                // supported v1 -> v2 schema step the aggregate identity is
+                // unchanged (`plan_id == operation_id`), so decoding accepts
+                // that prior field without retaining a second identity.
+                shutdown_id: map_text(entries, "shutdown_id")
+                    .or_else(|| map_text(entries, "plan_id"))
+                    .ok_or_else(malformed)?,
                 phase: parse_shutdown_phase(&map_text(entries, "phase").ok_or_else(malformed)?)
                     .ok_or_else(malformed)?,
                 at_ms,
             },
             "shutdown_details_compacted" => ApplicationDomainEvent::ShutdownDetailsCompacted {
-                plan_id: map_text(entries, "plan_id").ok_or_else(malformed)?,
-                epoch: map_i64(entries, "epoch").ok_or_else(malformed)?,
+                shutdown_id: map_text(entries, "shutdown_id")
+                    .or_else(|| map_text(entries, "plan_id"))
+                    .ok_or_else(malformed)?,
                 at_ms,
             },
-            "local_store_migration_phase_advanced" => {
-                ApplicationDomainEvent::LocalStoreMigrationPhaseAdvanced {
-                    migration_id: map_text(entries, "migration_id").ok_or_else(malformed)?,
-                    phase: parse_migration_phase(
-                        &map_text(entries, "phase").ok_or_else(malformed)?,
-                    )
-                    .ok_or_else(malformed)?,
-                    at_ms,
-                }
-            }
             _ => return Ok(None),
         };
         Ok(Some(LocalDomainEvent::Application(event)))
@@ -473,20 +425,13 @@ mod tests {
                 at_ms: 1_700_000_000_001,
             },
             ApplicationDomainEvent::ShutdownPhaseAdvanced {
-                plan_id: "plan-1".to_string(),
-                epoch: 3,
+                shutdown_id: "plan-1".to_string(),
                 phase: ApplicationShutdownPhase::Activated,
                 at_ms: 5,
             },
             ApplicationDomainEvent::ShutdownDetailsCompacted {
-                plan_id: "plan-1".to_string(),
-                epoch: 3,
+                shutdown_id: "plan-1".to_string(),
                 at_ms: 6,
-            },
-            ApplicationDomainEvent::LocalStoreMigrationPhaseAdvanced {
-                migration_id: "mig-1".to_string(),
-                phase: LocalStoreMigrationPhase::Verifying,
-                at_ms: 7,
             },
         ];
         for event in events {

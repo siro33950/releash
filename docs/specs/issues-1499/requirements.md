@@ -1,140 +1,107 @@
 # Context
 
-対象 Issue: [#1499](https://github.com/siro33950/releash/issues/1499)「[Agentチャット安定化] Phase 0完了: command受理・terminal・recovery・shutdownのdurable closure」
+Issue #1499 は、milestone 84「Agent チャット安定化」で確定した send、terminal、Stop、recovery、close、quit の保証を、一つの恒久 local event store 上で成立させるための Primary Spec である。
 
-milestone 84「Agentチャット安定化」の Phase 0 完了ゲートである。完了済み Phase 0 Issue の正本・実装を監査した結果、command 受理、terminal、recovery、close / quit に残った保証の穴を、個別の応急処置へ分割せず一つの Rust-owned lifecycle boundary として閉じる。Issue 本文の11項目はすべて完了条件であり、項目単位の部分完了では Phase 0 完了としない。
+現状は、同じ操作の受理事実、実行状態、回復状態、shutdown 状態が複数の保存経路と一時状態に分かれ、response loss、crash、restart、並行操作の境界で一意な結果を返せない。また、旧 file-store の物理設計を前提にした移行語彙が現行契約へ残り、恒久 SQLite store の責務と競合している。
 
-監査・設計の基準は次のとおり。
+本 Issue は、固定 path の SQLite store を直接 create / open し、正常稼働時の唯一の read / write authority とする。変更前の file-store data は互換対象にせず、アプリケーションの production lifecycle 全体で探索、参照、変換、変更しない。
 
-- 監査基準 commit: `ce02bedc6599c25a7902b5af6417569647b41824`
-- Spec 作成時の実装確認 commit: `20ad0349434ecf162daf5027a95cf7b7ff3c454e`
-- 正本: `specs/milestone-84-agent-chat-stabilization/` の audit / vocabulary / lifecycle / presentation と close / quit decision table。本Primary Specは、F2 #1384のcanonical message part型とF3 #1385の恒久SQLite event storeを#1499へ統合した実装正本である
-- 正本間の優先関係: 関連正本の利用者可視invariantとsemantic語彙を維持し、各文書の2026-07-21 supersession noteに従う。旧`Phase0*` / root / manifest / bootstrap / future F3というphysical記述と本Primary Specが衝突する場合は、本Primary Specのdomain型、SQLite transaction、local-store migrationを優先し、旧physical containerを実装しない
-- 完了済み Phase 0: D1 #1445、F1 #1383、L1 #1402、L2 #1403、L4 #1405、L6 #1407、L7 #1408、L8 #1409、L10 #1411、S10a #1398、P2 #1414、X1 #1417
-- 後続との境界: active-turn steer #1498、queue lifecycle 全体 #1404、dangling turn / fork recovery #1406、Notice authority 全体 #1393、runtime 全体の分解 #1412、cross-backend parity E2E 全体 #1416
-- 後続との物理境界: F4 #1386 / F5 #1387のtyped wire adapter、F8 #1491の追加bounded query、F10 #1497のqueue lifecycle projection。F2 #1384とF3 #1385は#1499へ統合し、別の先行・後続runtimeを作らない
+本 Primary Spec の受入条件と実装方針は次を正本とする。
 
-GitHub Issue は #1499 の1件だけを使う。実装を複数 commit / PR に分けることはできるが、すべてが同じ operation identity、terminal identity、durable obligation、deadline、authority cutover 契約を使い、最後の統合 fault matrix と全 surface 検証が完了するまで Issue を close しない。
+- [behavior.md](behavior.md)
+- [design.md](design.md)
 
-Repository constraint として、caller が渡す operation identity の検証、payload binding と semantic comparison、receipt / status、terminal、recovery、shutdown 判断は Rust が所有する。frontend は caller として identity を一度だけ生成・保持し、backend が返した receipt、status、available actions を mirrorして入力と明示操作を渡す。
+利用者可視の語彙、lifecycle、presentation、close / quit の横断契約と、後続 Issue への routing は次を正本とする。
+
+- [agent-chat-ideal-vocabulary.md](../../../specs/milestone-84-agent-chat-stabilization/agent-chat-ideal-vocabulary.md)
+- [agent-chat-ideal-lifecycle.md](../../../specs/milestone-84-agent-chat-stabilization/agent-chat-ideal-lifecycle.md)
+- [agent-chat-ideal-presentation.md](../../../specs/milestone-84-agent-chat-stabilization/agent-chat-ideal-presentation.md)
+- [close-quit-decision-table.md](../../../specs/milestone-84-agent-chat-stabilization/close-quit-decision-table.md)
+- [agent-chat-instability-audit.md](../../../specs/milestone-84-agent-chat-stabilization/agent-chat-instability-audit.md)
+- [phase-plan.md](../../../specs/milestone-84-agent-chat-stabilization/phase-plan.md)
 
 # Outcome
 
-Releash で通常の agent session または workflow-owned agent session を利用する開発者が、応答喪失、保存失敗、provider hang、process crash、同時 Stop、多重 quit のいずれに遭遇しても、入力の二重実行、部分 terminal、見かけ上の通常 Idle、消失した回復処理、永久待ちを経験しない。
+Releash の利用者は、同じ操作について response loss や restart を跨いでも同じ受理事実と結果を確認できる。未完了の作用は同じ identity で安全に監督・解決でき、「未受理」「受理済みで進行中」「結果確認が必要」「完了」を区別できる。
 
-通常 send は受理済みか未受理かを再試行後も一意に判定でき、受理済みなら同じ session / input / turn または queue item を返す。terminal と Stop は crash を跨いで一度だけ確定し、未完了なら起動時に回復対象として見える。storage failure は壊れた SessionMeta の再読込に依存せず対象 session へ安全に表示される。view close、session close、backend switch、application quit は別の操作として扱われ、すべての graceful quit surface は15秒以内に exit または abort を決定する。
-
-これらの保証は暫定file-store bridgeを経由せず、domain-owned eventと恒久SQLite local event storeで直接実現する。既存file storeは一回限りの自動migration sourceとしてだけ読み、cutover後の正本、fallback、dual-write先にしない。
+永続化の正本は固定 path の SQLite store 一つになる。通常の SQLite schema evolution は normal admission 前に完了し、成功した場合だけ workbench を利用できる。起動に失敗した場合は Rust-owned の安全な failure surface と終了操作だけを提供する。
 
 # Current Behavior
 
-外部 provider は起動せず、監査基準 commit、正本、source、既存 test を静的に照合した。以下の入力は、現在の不足を再現できる最小条件である。
+実装 commit `69b81d34953e8303efbd04e97258c59bda8f2dfe` の source と checked-in test を照合した。外部 provider は実行していない。元の監査所見は [agent-chat-instability-audit.md](../../../specs/milestone-84-agent-chat-stabilization/agent-chat-instability-audit.md) を正本とし、現在の実装が本 Spec と食い違う最小再現だけを次に示す。
 
-| # | 最小入力 | 現在の実際の結果 | 根拠 |
-| --- | --- | --- | --- |
-| 1 | 既存 Idle session `s-1` へ本文 `hello` を通常sendし、backendの成功応答だけを失った後、同じcallerが同じ内容を再送する | caller operation identityを受け取るfieldがないため、2回目は初回と同じ操作として照会されず、別のhuman messageとturnまたはqueue itemになる。Tauri commandにもreceipt / status queryがなく、WebSocketにはagent send routeがない | `src-tauri/src/usecase/agent_session/runtime/usecase.rs::SendAgentMessageRequest`、`AgentSessionRuntimeUsecase::send_message`、`src-tauri/src/adaptor/controller/command/agent_session/session.rs::send_agent_message`、`src/hooks/useSessionStore.ts::sendAgentMessage` |
-| 2 | pending permissionへproviderが成功応答した直後、message partsの保存を失敗させる | provider responseは既に送信済みで、保存failureはwarnだけになり、その後もpermission resolved event、live snapshot、Streaming projectionの処理が続いてcommandは成功を返し得る。保存済みmessageと公開stateが一致しない | `src-tauri/src/usecase/agent_session/runtime/usecase.rs::AgentSessionRuntimeUsecase::respond_permission`、`append_permission_resolved_event` |
-| 3 | streaming turnの完了でterminal event / message materializationが成功した直後、Session lifecycle更新前にprocessを終了する | final parts、assistant message、terminal eventの保存とSession lifecycle更新が別callであるため、terminal側だけが残り、SessionMeta側は変更前のstateを保持し得る | `src-tauri/src/usecase/agent_session/runtime/usecase.rs::complete_turn_with_acceptance_and_persist_kind`から`SessionLifecycleController::complete_turn_state`までのcall boundary、`src-tauri/src/usecase/agent_session/session/lifecycle_controller.rs::complete_turn_state` |
-| 4 | event pumpが`BackendSessionCleared`またはresume mismatchを適用し、provider session再確立が永久停止している間にStopを受理する | event pumpは`runtime_event_locks`を保持したまま回復処理をawaitし、10秒watchdogの`force_finalize_interrupted_turn`も同じlockを期限なしで待つため、10秒時点で`Interrupted(Timeout)`にならない | `src-tauri/src/usecase/agent_session/runtime/usecase.rs::spawn_event_pump_task`、`apply_runtime_event`、`src-tauri/src/usecase/agent_session/runtime/transitions.rs::force_finalize_interrupted_turn` |
-| 5 | requestが指すsessionのsession dataと`meta.json`を共に読めない状態でsession-scoped failure noticeを追加する | notice target validationが同じ`get_session_meta`に失敗して`false`を返すため、updateは空snapshotのまま戻り、failure自体が対象sessionへ表示されない | `src-tauri/src/adaptor/controller/agent_session_notice_wiring.rs::SessionStoreNoticeSessionLookup::contains_session`、`src-tauri/src/usecase/agent_session/notice.rs::AgentSessionNoticeUsecase::update` |
-| 6 | backend recovery開始を保存した後にprocessを終了し、再起動後に個別sessionを開かずsession listだけを取得する | event projectionがRecoveringでも、公開抑止用snapshotはmemory-only mapから失われている。list処理はsnapshot不在のsessionを結果から除外するため、未完了recoveryを一覧から発見できない。また判定のたびにsession event全履歴を読む | `src-tauri/src/usecase/agent_session/session/store.rs::recovery_publication_snapshots`、`overlay_recovery_publication_snapshots`、`src-tauri/src/usecase/agent_session/runtime/usecase.rs::backend_recovery_projection` |
-| 7 | Claude / CodexのF1 wire fixtureをread-model goldenへ入力する | fixtureはproductionの`apply_runtime_event`を通らず、`src-tauri/src/test_support/agent_session_wire_replay.rs::assert_fixture_read_model`内の専用match / reducerがevent logを組み立てるため、production適用経路だけの乖離を検出できない | `src-tauri/src/test_support/agent_session_wire_replay.rs::assert_fixture_read_model`、production側`src-tauri/src/usecase/agent_session/runtime/usecase.rs::apply_runtime_event` |
-| 8 | Cmd-Q、application menu Quit、Dock Quit、window close、tray Quitをそれぞれ要求する | window closeはhide / minimizeだけを行う。tray Quitだけが`QUIT_REQUESTED`を立ててapplication lifecycleを開始する。その他の`ExitRequested`はflagがfalseならpreventされ、共通shutdown resultを持たない。`ExitRequested`のmatch inputにはCmd-Q / Dock / OS originの区別もない | `src-tauri/src/infrastructure/platform/window_lifecycle.rs::handle_run_event`、`src-tauri/src/infrastructure/platform/tray.rs::handle_menu_event`、`src-tauri/src/lib.rs`のtray wiring、`src-tauri/src/infrastructure/platform/menu.rs::setup_menu` |
-| 9 | StopをAcceptedにした後、10秒watchdogによるterminal保存を全retry失敗させる | `force_finalize_interrupted_turn`はwarning後に未完了terminal identityを別のdurable inventoryへ残さず戻る。live stateはStreaming / Waitingのまま、queueだけがPausedで、restart後に同じStopをReconciliationRequiredとして列挙するqueryがない | `src-tauri/src/usecase/agent_session/runtime/transitions.rs::interrupt`、`force_finalize_interrupted_turn`、`src-tauri/src/usecase/agent_session/runtime/usecase.rs::complete_turn_with_acceptance_and_persist_kind` |
-| 10 | agent session closeまたはworkflow command shutdownを永久pendingにしてtray Quitを要求する | application shutdownは`close_all().await`、`shutdown_active_commands().await`、local API shutdownを上位deadlineなしで直列実行するため、先行futureが戻らなければexit / abortの判断へ進まない | `src-tauri/src/usecase/application_lifecycle.rs::ApplicationLifecycleUsecase::shutdown`、`src-tauri/src/adaptor/controller/application_lifecycle.rs::request_application_quit_with_runtime` |
-| 11 | session更新とworkflow event更新を一つの操作として行う、または公開u64に`9223372036854775807`を入れてTauri JSONをfrontendで読む | sessionは`meta.json`、`index.json`、`events.json`、`messages/`、`private_context.json`等、workflowは別の`workflow_execution_logs/<id>.ndjson`へ保存され、両者を同じglobal commit / CASへ参加させる境界がない。u64はJSON numberのまま送られ、JavaScriptでは`9223372036854776000`へ丸められる | `src-tauri/src/adaptor/gateway/agent_session/session_storage/layout.rs`、`src-tauri/src/adaptor/gateway/workflow/event_repository.rs::WorkflowEventLogRepository`、`src-tauri/src/usecase/agent_session/session/mod.rs::SessionMeta`、`src/hooks/useSessionStore.ts`の`number`型revision |
-| 12 | 保存済みmessage partをdomain処理、session event、legacy JSON、Tauri / WebSocketへ順に通す | domainとusecaseに同名だが異なる`MessagePart` enumがあり、permission payloadやJSON表現はusecase側のserde typeが所有する。domain eventを恒久storeへ保存するにはどちらかへ依存するかlossy変換が必要になり、F2を後回しにするとSQLite payloadを再設計することになる | `src-tauri/src/domain/agent_session/entities/message_part.rs::MessagePart`、`src-tauri/src/usecase/agent_session/session/mod.rs::MessagePart`、`src-tauri/src/usecase/agent_session/event_log/events.rs::AgentSessionEvent` |
+| 最小再現 | 現在の実際の結果 | 根拠 |
+| --- | --- | --- |
+| 変更前の file-store がある app-data で起動する | SQLite を直接開かず旧 data を検出して import し、完了まで normal admission を migration 状態で制御する | `src-tauri/src/adaptor/gateway/local_event_store/store.rs::LocalEventStore::open`、`src-tauri/src/adaptor/gateway/local_event_store/migration.rs::import_legacy` |
+| 新しい app-data で初回起動する | 固定 SQLite file 一つではなく、生成した database file と別の authority file を順に公開する | `src-tauri/src/adaptor/gateway/local_event_store/store.rs::LocalEventStore::open`、`src-tauri/src/adaptor/gateway/local_event_store/authority.rs::StoreLayout` |
+| Tauri または WebSocket から startup state を読む | legacy migration の進捗を public result として返す command / route が存在する | `src-tauri/src/adaptor/protocol/application_lifecycle_v1.rs::LocalStoreMigrationResultDtoV1`、`src-tauri/src/adaptor/controller/command/application_lifecycle.rs::get_local_store_migration` |
+| migration 中に application quit を要求する | normal application quit とは別の migration quit flight と projection を作る | `src-tauri/src/usecase/shutdown_coordinator.rs::MigrationQuitFlightView`、`src-tauri/src/adaptor/protocol/application_lifecycle_v1.rs::MigrationApplicationQuitProjectionDtoV1` |
+| migration / cutover の crash test を実行する | migration checkpoint、parity、cutover authority の存続を正解として検証する | `src-tauri/src/adaptor/gateway/local_event_store/tests.rs::b098_projection_parity_failure_keeps_legacy_authority_and_reports_migration_blocked` |
 
 # Scope / Non-goals
 
-Scope は Issue #1499 の11項目と、それらを恒久SQLite store上で矛盾なく成立させるために統合したF2 / F3の範囲である。
+Scope は次のとおり。
 
-- 通常sendのcaller指定opaque operation identity、変更されないreceipt、payload conflict、response喪失・restart・並行再送の収束
-- 受理済みsendのhuman / assistant message、turnまたはqueued input、provider startの一回性と、Accepted receipt / latest status / ReconciliationRequiredの再取得
-- active turn 中に受理した queued send のrestart後表示、同一operation再送、provider start一回性。queue の cancel / reorder / rebase / drain lifecycle 全体は #1404 に残す
-- provider操作を開始できなかったfailureと、開始後に結果が分からないfailureの区別、安全なretry / reconciliation表示
-- final parts / assistant message / terminal / session state / queue pauseを同じSQLite transactionへ参加させ、保存途中のerrorやcrash後にも部分結果を公開しない恒久保証
-- Stop の10秒deadline、遅延resultの無効化、terminal保存失敗後のstartup / manual reconciliation、同時Stopの受入上限
-- 未完了 recovery のbounded startup discovery、一回だけのprovider操作とpending message publication
-- SessionMeta を再読込しなくても対象sessionへ届くtyped failure feedback、identity別clear、paging、capacity到達時の解消経路
-- production runtime event path を通す F1b golden
-- domain-owned event、gateway-owned persistence DTO、恒久SQLite local event storeと、close / quit decision tableの正本化
-- domain `MessagePart`を唯一のsemantic定義にし、legacy persistence DTOとpublic DTOを明示変換で分離するF2の型統合
-- Tauri と WebSocket の通常 send / read adapter。両 adapter は同じ backend-owned usecase contract を呼び、transport 固有の判断を持たない
-- 保存済み整数の共通lossless domainと、Tauri / WebSocketで同じ値を丸めず往復するcanonical decimal string encoding
-- Cmd-Q、application menu、Dock、tray、native exit、cooperative OS logout / shutdown を一つの bounded shutdown coordinator へ接続する。native event が origin を識別できない場合は推測せず同じ ingress とする
+- 通常 send の再試行可能な受理契約と composer の clear 境界
+- terminal、Stop、recovery、Session lifecycle、application quit の一回性と crash / restart 結果
+- 未解決作用と操作 failure の、安全で session-scoped な表示・解決
+- domain-owned event と一つの canonical `MessagePart`
+- Rust-owned state authority と、Tauri / WebSocket に共通する意味論
+- 固定 path の恒久 SQLite store、通常の SQLite schema evolution、safe startup failure
+- production startup、background maintenance、retention、cleanup、shutdown を含む旧 file-store 非参照保証
+- history size に依存しない identity lookup と bounded collection access
 
 Non-goals は次のとおり。
 
-- active-turn steer の完全な write-ahead / ack / reconciliation（#1498）
-- queue の cancel / reorder / rebase / drain / history を含む event-sourced lifecycle 全体（#1404）
-  #1499はqueued sendの`Pending`、provider start intent、immutable runtime guard、dispatch handoffまでを保持するが、provider start前cancelを含むqueue cancel / CAS / rebaseの実行契約は実装しない。
-- 既存 dangling turn 全体の完全修復と fork recovery state の整理（#1406）
-- durable Notice / operation feedback authority 全体（#1393）。本 Issue は storage failure の狭い command feedback だけを扱う
-- runtime 全体の module 分解（#1412）
-- cross-backend parity E2E 全体（#1416）
-- F4 / F5が扱うprovider wire全体のtyped adapter化、F8が扱う追加query/read model、F10が扱うqueue lifecycle全体のprojection。本Issueに必要なproduction event apply path、pending index、identity lookup、terminal / shutdown read modelは実装する
-- public Prepare / Commit / Cancelによる二段send、prepared operation一覧、prepared / accepted content resolver、resource-isolated input、resource-wideまたはoperation単位のprivacy purge、managed backup / restore command、app-data reset、privacy authority全消去、汎用export / import。legacy dataの内部one-shot migrationはScopeであり、このnon-goalに含めない
-- OS が graceful event を配信しない hard kill、power loss、強制終了そのものの阻止。これらは次回起動時の crash recovery で回収する
+- 変更前の file-store data の migration、compatibility read、import、merge、fallback、dual write、変更、削除
+- legacy-data migration 用の state、progress、query、API、gate、checkpoint、parity、cutover、特殊 quit、または別名の同等機構
+- managed backup / restore、export / import、app-data reset、privacy purge
+- active-turn steer 全体、queue lifecycle 全体、provider wire 全体の typed adapter 化、runtime 全体の module 分解
+- hard kill、power loss、OS による即時強制終了そのものの阻止
+- Phase 0、F2、F3、D3 など計画上の名称を runtime module、type、table、physical store identity に使用すること
 
 # Requirements
 
-- **R-001**: 通常sendのTauri / WebSocket surfaceは、WebSocket transportのrequest IDとは別のcaller指定opaque `operation_id`とexact payloadを受け取る。`operation_id`は1〜128 bytesの`[A-Za-z0-9._:-]`とし、同じinstallation authority内でTauri / WebSocket接続を跨いで同じ操作を指す。最初のrequestはcaller principalとoperation identityへpayloadを不変に束縛し、human input、turn start intentまたはqueued input、およびrestart後に同じ操作を回収できる情報をcanonicalに保存した後だけAccepted receiptを返す。canonical保存前のfailureは`RejectedBeforeCommit`としてprovider I/Oと公開state変更を0件にする。保存結果を確認できないfailureはtop-level `OutcomeUnknown`として同じoperation identityを返し、別identityの自動sendを行わない。Accepted receiptの確定後にprovider effectの結果だけを確認できない場合は、top-level Acceptedを維持しlatest statusを`ReconciliationRequired`とする。
-  同じprincipal、operation identity、payloadの応答喪失、timeout、並行再送、restart後の再試行は、同じsession、opaque `input_ref`を含むimmutable Accepted receipt、turnまたはqueue itemとlatest statusへ収束し、human message、assistant message、turn、queue item、provider effectを増やさない。Accepted receiptのdispositionは`StartedTurn`または`Queued`のどちらかであり、serverが受理時に確定した値を再試行後も変更しない。Accepted後の恒久実行failureもtop-level Accepted receiptを維持し、latest statusだけを更新する。
-  別principalが、既に別principalへ束縛された同じoperation identityを同じpayloadまたは任意のpayloadでsendまたは照会した場合は`NotFound`を返す。既存receipt、status、session、message、turn、queue item、provider stateを公開せず変更せず、そのprincipal用の新しいoperationも作らず、external effectを0件にする。
-- **R-002**: 同じ operation identity を、束縛済み snapshot と異なる content、image、mention、editor context、session target、worktree、または実行 configuration へ使用した場合は typed conflict を返し、既存 receipt、status、session、provider state を変更しない。server が決めた turn / queue disposition や、受理後に変化した session state だけを理由に conflict にしない。
-  このtyped conflictのexact tagは`PayloadConflict`であり、Tauri / WebSocketで同じoperation identityとeffect 0件を返す。
-- **R-003**: composer は immutable Accepted receipt を受け取った時だけ、その receipt に対応する送信時 snapshot を clear する。`RejectedBeforeCommit`またはacceptance未確認ではsnapshotを保持する。Accepted後にstatusがReconciliationRequiredになった場合や、status / projection query、通知に失敗した場合も、送信済みsnapshotを復元せず自動再sendしない。送信待機中に追加した入力は消さない。
-- **R-004**: 通常send、permission response、provider session create / resume、session closeその他のprovider effectを伴う操作は、受理済み操作をrestart後も同じidentityから取得できる場合だけexternal effectを開始する。受理結果を確認できない場合は`RejectedBeforeCommit`または`OutcomeUnknown`として同じidentityを返し、external effectを0件にする。
-  permission responseはanswers、updated input、deny messageを含む受理時と同じpayloadをrestart後も取得できる場合だけproviderへ送る。payloadを安全に取得できない場合は同じpermission identityをFailedと利用可能なsafe action付きで表示し、provider responseを0件にする。
-  provider create / resumeを必要とするAccepted sendはimmutable receiptを維持し、provider確立を確認するまでlatest statusを`AwaitingProviderStart`として表示する。確立前または確立failure中はturn / queued inputのprovider startを行わない。
-  external effect後に結果を一意に確定できない場合は、restart後も同じoperation identity、現在確認できるobservation、`ReconciliationRequired`、backendが提示するsafe actionを表示し、同じeffectを自動再実行しない。backendが安全な実行または回復方法を提示できない操作の実行要求は`InvalidEffectIntent`を返し、未完了一覧とprovider / workflow / OS effectを増やさない。providerから受信したstreaming partとterminalは、保存済みの完全な結果だけをpublic surfaceへ表示する。
-- **R-005**: R-004 の各対象操作、terminal、recovery、shutdown について、保存中の error または process crash 後に live / reload / Tauri / WebSocket から観測できる状態は、変更前または完全に確定した変更後のどちらかだけである。部分 message、部分 terminal、未保存成功、通常 Idle を装った未完了状態を公開しない。
-  操作の結果を確認できない場合は同じidentityを持つ`OutcomeUnknown`を返し、未受理、成功、失敗のいずれかへ推測せず、同じidentityの照会・再試行で変更前または完全に確定した変更後へ収束させる。
-- **R-006**: turn 終端後は final parts、assistant message、terminal result、session state、permission settlement、reason に対応する queue state が一つの整合した結果として観測できる。通常完了かつ queue が pause されていない場合は既存の queue 進行条件を維持し、Accepted Stop、active / Idle normal session close、open-session archive、graceful quit では queue を保持したままpauseする。既存の pause は terminal によって解除しない。確定後の通知失敗は terminal を取り消さず、再取得で同じ結果へ戻る。
-- **R-007**: 各 started turn の terminal result は1件だけである。Stop、watchdog、session close、Fatal、provider completion が競合しても、先に確定した reason と parts を変更しない。後続 turn 終端後に届いた過去 turn の event は、過去 turn と現在 turn のどちらも変更しない。
-- **R-008**: local storage failure が同時に発生していない状態では、provider interrupt / close または session 処理が永久停止しても、Accepted Stop から10秒以内に live 表示と reload 結果の双方が `Interrupted(Timeout)` へ確定する。その後に届いた古い結果は terminal、parts、session state を変更しない。Stopのcaller指定request identityは1〜128 bytesの`[A-Za-z0-9._:-]`とし、空、129 bytes以上、または文字集合外の値にはexact `InvalidRequest`を返してStop受理、provider interrupt、terminal変更を0件にする。Stopのexact request payloadは`session_id / target_turn_id / expected_session_revision`の3 fieldである。同じrequest identityと3 fieldが同じ重複Stop、および別request identityから同じ未解決target turnへ要求したStopは、同じbackend Stop identityと結果へ合流する。別request identityのjoinは初回受理時のexpected revision guardを変更しない。同じrequest identityを別session、別turn、または異なるexpected revisionへ再利用した場合はexact `PayloadConflict`を返し、Stop受理、provider interrupt、terminal変更を0件にする。異なる未完了targetのStopはprocess全体で32件まで同時にAcceptedとなり、上限中の33件目以降はAcceptedを返さずprovider interrupt前にtyped capacity rejectionとする。terminalを10秒以内に保存できない場合は R-009 を適用する。
-- **R-009**: Stop は、target turn と queue pause を restart 後も識別できる状態になった場合だけ Accepted となる。Accepted 後に terminal を保存できない場合は、10秒到達時にも通常 Idle や queue drain へ進まず、同じ target turn の未完了 Stop を ReconciliationRequired として表示する。storage が再び読める状態で restart しても同じ未完了 Stop が発見され、明示 retry または startup recovery によって terminal を1回だけ確定する。Stop 受理情報を保存できない場合は Accepted を返さず provider interrupt を開始しない。
-- **R-010**: startupは個別sessionの事前読込を要求せず、send / queued execution、permission response、provider create / resume、streaming / terminal、session close、backend recovery、workflow shutdown、pending recovery publicationの未完了作業を列挙する。未完了一覧はTauri / WebSocketの同じqueryからowner、`ClosedSession | ArchivedSession | UnownedRuntime` partition、またはshutdown plan associationで取得でき、1 pageを200件かつencoded 4 MiB以下に制限する。最初のpageで固定したsnapshotをcursorが有効な間維持し、途中の更新結果を混ぜない。別filter / requestへのcursor再利用、binding不一致または改変は`CursorMismatch`、process restart、有効期限または保持期間の失効は`CursorExpired`とし、先頭からの再取得を要求する。回復開始直後、external effect後、回復完了とmessage公開の間、回復結果保存中の各crash後も作業を失わず、同じeffectまたはmessageを重複させない。保存済みReconciliationRequired / Failedを通常Recoveringへ推測変換せず、provider establish成功前のturn / queue executionを開始しない。未解決中はnew turn、queue drain、workflow resumeを許可しない。same-bootまたはprevious-bootの未解決shutdownが残る間のnew quitはAccepted前にexact `PreviousShutdownReconciliationRequired`を返し、新しいshutdown identityまたはeffectを作らず既存identityの解決を要求する。terminalなprevious shutdownはこの拒否対象にせず、次のquit受理条件を満たせば新しい処理を開始できる。同じruntimeまたはworkflow executionへの終了処理を別identityで重複させない。normal sessionはsession list、workflow-owned sessionはowning run / node、closed sessionはclosed historyへ表示し、closed sessionを自動reopen / provider resumeしない。
-- **R-011**: session data と meta の双方が読めない場合も、要求が指した session へ operation kind、available actionsとcanonical `failure: SafeOperationFailure`を持つ failure feedback を表示する。retryability、label、detail、failure kindをfeedback直下へ複製せず、`failure.correlation_id`を同じfailureのfeedback表示とlogを結ぶ一意なidentityとして使う。未解決 feedback は identity ごとに32件以下のpageで個別取得でき、別 session の成功、別 operation の成功、古い成功、別 failure の追加では消えない。明示 dismiss または当該 failure identity を解決した成功だけが対象 feedback を消す。process全体の未解決feedbackが512件に達した場合は既存identityを消さず、新しいfailureを追加し得るread / mutationを対象へ作用する前に typed capacity failure として拒否し、mutationのexternal effectを0件にする。capacity到達中もfeedbackのpage取得、既存identityのdismiss、既存identityが示すresolution retryは利用できる。dismissとresolution retryはfailure identityとexpected revisionを照合し、stale revisionならcurrent revision付きtyped conflictを返してentry、未解決件数、capacity slotを変更しない。dismissは未解決件数を1件減らし、resolution retryが再び失敗した場合は同じidentityを更新して未解決件数を増やさない。label は UTF-8 で160 bytes 以下、detail は2048 bytes 以下とし、超過時は truncation marker を付ける。filesystem path、secret、raw SQL、provider payload、unbounded raw error を表示しない。
-  process全体の未解決feedback上限による拒否はexact `FeedbackCapacityExceeded`、stale revisionはexact `RevisionConflict { current_revision }`であり、Tauri / WebSocketはtagとpayloadを同じfieldで返す。
-- **R-012**: Claude / Codexの代表wire inputについて、productionのpublic session interfaceが返すpublic event、live / reload read model、terminal resultは既存F1の公開結果と一致する。provider wireからpublic eventまでの互換性と、public eventからsession resultまでの互換性は互いを隠さず独立して判定できる。repository maintainerは実provider process、CLI、network、credentialを使わず既存CIでこの互換性を再現でき、#1499適用後も既存F1 goldenの結果を維持できる。
-- **R-013**: #1499はbundled SQLiteを唯一のmutation authorityとするlocal event storeを実装する。agent sessionとworkflowのdomain event、operation binding、durable obligation、terminal、queue pause、shutdown planを、一つの`commit_batch`でstreamごとのexpected head、global sequence、idempotency keyを検証し、全participantを同じtransactionで確定する。commit成功後だけ公開projectionを更新し、失敗時は変更前、結果確認不能時は同じtransaction / operation identityの`OutcomeUnknown`として解決する。per-stream sequenceとglobal sequenceはsigned 64-bit正数、revision / epoch / ordinal / countはsigned 64-bit非負数に制限し、overflow前にtyped capacity failureで拒否する。
-  persistence envelopeとschemaはgatewayがversion管理し、domain eventへstorage library、SQL row、serde表現を持ち込まない。未知のadditive payloadは元bytesとtype / versionを失わず保持し、未知のrequired semantic version、hash不一致、参照不整合はfail closedにする。writerはprocess内で一つ、write queueは件数とdecoded bytesの両方をboundedにし、readはsealed commitだけをsnapshotとして参照する。#1499に必要なidentity、pending recovery、terminal、shutdownのindexは同じtransactionで更新し、append、point lookup、first bounded pageが無関係な全履歴scanに依存しない。legacy file storeへのdual write、record単位fallback、cutover後rollback、runtime名に`phase0`を含むbridgeを作らない。
-- **R-014**: close / quit正本はchat tab / panel、normal session close、closed / open session archive、backend switch、workflow node tab、workspace、window close、Cmd-Q、application menu、Dock、tray、cooperative OS logout / shutdown、programmatic exit / restart、hard killを個別行で扱い、利用者から観測できるscope、受理条件、active turn、parts、permission、queue、runtime、deadline、failure、resultを確定する。view closeはviewだけを閉じ、backend operation、terminal、runtime effectを作らない。
-  normal session close、open / closed archive、backend switchはTauri専用の一つのSessionLifecycle commandを使う。caller request identityは1〜128 bytesの`[A-Za-z0-9._:-]`、exact payloadは`session_id / expected_session_revision / action`で、actionは`Close | ArchiveOpen | ArchiveClosed | SwitchBackend { backend_id }`のclosed setとする。不正identityは`InvalidRequest`としてoperation、session変更、external effectを0件にする。
-  同じprincipal、request identity、exact payloadのresponse喪失、timeout、並行replay、restart後replayは、同じbackend発行opaque operation identity、first accepted revisionを含むimmutable Accepted receipt、current stateまたはCompleted outcomeへ収束する。同じprincipalが同じrequest identityを異なるpayloadへ再利用した場合は`PayloadConflict`を返し、既存operationとsessionを変更せずexternal effectを0件にする。別principalが既存operation identityを照会した場合、または対象sessionへのauthorityを持たずにcommandを要求した場合は`NotFound`とし、operationの存在を公開しない。
-  別request identityから同じprincipalが同じ未解決sessionと同じnormalized actionを要求した場合は同じbackend operationへ合流する。SwitchBackendはbackend IDまで同じ場合だけ同一actionである。後続requestのexpected revisionはcaller bindingへ保存するが、first accepted revision guardを変更しない。同じsessionに別actionのoperationが未解決なら`PendingOperation`を返し、二つ目のoperation / effectを作らない。authorizedな別principalから同じsessionへ新しいcommandが来た場合も既存operation identityを公開せず`PendingOperation`とする。
-  Acceptedはqueue pause、active turnに必要な`SessionClosed` terminal、session / archive / backend選択結果、restart後の回復に必要な同じoperation identityを確認できる場合だけ返す。active normal close / open archiveは`SessionClosed` terminal後にClosed / Archivedとなり、Idle close / open archiveとclosed archiveはsynthetic terminalを追加しない。active / Idle normal closeとopen archiveはqueue内容を保持したPaused、closed archiveはqueue不変とする。backend switchはIdleかつpending permission / recovery / provider operationなしの場合だけ受理し、queueを保持したPausedとし、old runtimeの結果を確認するまでnew backendを開始しない。
-  commandはrequestから10秒以内に`Completed`、`ReconciliationRequired`、または受理前rejectionへ確定する。Accepted後にruntime resultを確認できない場合もreceiptと確定済みsession / queue / terminalを維持し、operation stateだけを`ReconciliationRequired`へ進める。operation identity queryはresponse喪失、10秒後、restart後も同じreceipt、state、Completed outcomeを返し、current session stateから別結果を再構築しない。受理前rejectionは`Busy | PendingOperation | RevisionConflict { current_revision } | InvalidState | Failed { failure }`のいずれかで、session変更とexternal effectを0件にする。
-- **R-015**: 全graceful quit surfaceは同じapplication shutdown契約へ収束する。caller request identityは1〜128 bytesの`[A-Za-z0-9._:-]`、intentは`Exit | Restart`とsigned exit codeで、codeなしは0とする。不正identityは`InvalidRequest`、同じprincipal / request identityを別intentへ再利用した場合は`PayloadConflict`を返し、shutdown identity、admission、external effectを0件にする。同じidentity / intentのreplayは同じbackend operationへ戻り、別request identityから進行中flightへ来たrequestは最初に受理したintentを変更せず同じoperationへ合流する。
-  最初のAccepted quitは新しいagent、workflow、local API、Tauri mutationの受付を閉じ、quit以前にAcceptedとなった操作を完了結果またはrestart後も同じidentityから取得できる未完了結果へ進める。shutdown targetはopenなactive / Idle sessionとrunning workflowで、関連runtime / childはownerと同じtargetとして扱う。closed / archived sessionとowner不明runtimeの既存recoveryは新targetに含めず、既存recovery一覧とexit summaryに残す。targetは4096件までで、4097件目を含むrequestは`CapacityExceeded`としてshutdown effectを0件にする。
-  same-bootまたはprevious-bootのnonterminal shutdownがあるnew quitは`PreviousShutdownReconciliationRequired`とそのblocking shutdown projectionを返し、新しいoperation / effectを作らない。terminalなprevious shutdownは通常new quitを妨げないが、以前のdetailを安全に保持したまま新しいflightを公開できない間は`PreviousShutdownCompactionPending`とblocking projectionを返す。公開できるfull detail setは最大2件である。
-  shutdown projectionのphaseは`Preparing | Prepared | Activated | Quiescing | Completed | Failed | Cancelled | ReconciliationRequired`とし、same-bootのcurrent flightはそのexact phase、previous-boot nonterminalは同じidentityの`ReconciliationRequired`、previous-boot terminalはcurrent queryで`Current(None)`としhistory queryから取得する。`RetryQuit`はsame-bootのactivation前Failed、shutdown effect 0件、通常mutation受付再開、storage利用可能を同時に確認できる場合だけ提示する。
-  planは1 page 128 target以下かつencoded 1 MiB以下、一targetもencoded 1 MiB以下で返す。limit 129、page / target超過、target 4097件はpartial resultを返さず`InvalidRequest`、`ResponseTooLarge`、`CapacityExceeded`へ確定する。
-  backend発行`ApplicationQuitOperationId`のqueryはnormal shutdownとmigration-safe quitを区別し、response喪失とrestart後も同じoperationを返す。未発行identityは`NotFound`、acceptance結果不明はtop-level `OutcomeUnknown`、Accepted後の参照先結果不明はAccepted内`OutcomeUnknown`、authorityを安全に読めない場合は`Internal`とし、current shutdownまたは別operationへfallbackしない。
-- **R-016**: graceful shutdownは最初のquit requestから15秒以内にexit、restart、またはactivation前abortを決定する。全targetの未完了情報をrestart後も同じidentityから取得できない場合は不可逆effectを開始せず`AbortedBeforeActivation(details=Available)`とsafe failureを返し、通常mutation受付を再開する。
-  全targetの準備完了後にshutdownが開始された場合はabortせず、15秒時点で未完了のtargetを同じidentityの`ReconciliationRequired`として残し、summaryを`ExitedWithRecovery`としてexitまたはrestartする。shutdown開始結果を確認できない場合も未開始と推測して別commandを開始せず、同じplan identityを`ReconciliationRequired`として保持してrecovery exitへ進む。
-  process exitに伴うpipe close、job object、parent-death signal等によりeffect結果を確認できない場合は、target public stateを`ReconciliationRequired`とし、plan / epoch / effect identity付き`SafeEffectObservation::ExitCoupledOutcomeUnknown`を併記する。これはfailure kindまたはtarget state variantにはしない。
-  shutdown開始時点の既存recoveryは、plan / epochと`ClosedSession | ArchivedSession | UnownedRuntime` partitionを指定するqueryから1 page 200件かつdecoded 4 MiB以下で取得できる。validな空partitionは空pageを返し、別plan、別partitionへのcursor再利用、cursor改変、失効、details compaction、unknown partitionはそれぞれ規定のtyped errorとなり、current inventoryへfallbackしない。
-  terminal shutdown detailはpublic queryから見て`Available`または`Compacted`のどちらかだけである。`Available`中は保存済みtarget / recovery detailを取得できる。`Compacted`へ切り替わった後は同じplan identity、intent、terminal phase、counts、deadline、outcome、safe failureを維持し、plan pageはentries空、next cursorなし、exact detail queryは`DetailsCompacted`を返す。切替途中のNotFound、empty Available、current inventoryへのfallback、CompactedからAvailableへの逆行を公開しない。
-  abort後にstorageが復旧した新しいquitは新しいoperationとして開始できる。old operationの遅延resultは新しいsession、workflow、shutdown result、admissionを変更せずexternal effectを増やさない。
-- **R-017**: 未完了件数を固定したstartup recovery discovery、同じturnへのterminal要求、同じpayloadの通常mutationは、無関係なsessionまたはevent履歴を10件から1000000件へ増やしても、返すidentity、result、page件数 / byte上限、external effect件数を変えない。同一release環境でclient request開始から公開result受領までを1000 sample以上測定した大規模fixtureのp95は小規模fixtureの1.25倍以下とし、pending recovery first 200件はp95 50 ms以下、bounded identity queryはp95 20 ms / p99 50 ms以下とする。
-  bounded shutdown snapshot queryが同時commitと競合して一貫したsnapshotを固定できない場合は`QueryBusy`、公開された2秒上限までにfoldできない場合は`DeadlineExceeded`を返し、partial count / entry / pageを返さずstateとexternal effectを変更しない。
-- **R-018**: 変更前に保存されたopen / closed / archived session、event、terminal、permission、queue-linked inputは明示migration操作なしに読め、確定済みtranscript、terminal reason、session lifecycle、owner relation、既知eventの公開結果を維持する。未完了active turn、queued input、permission、recoveryは元identityと既知observationを保持する。外部作用の開始または結果を保存済みdataから一意に確認できない場合は通常進行中と表示せず、`Paused | Failed | ReconciliationRequired`と利用可能なsafe actionを表示し、自動provider effectを開始しない。
-  upgradeはlegacy inventoryを固定してstaging SQLite databaseへbounded batchで取り込み、record count、公開projection、known event result、owner relation、未完了operationを照合した後だけauthority pointerを`Legacy`から`Sqlite`へ一度切り替える。途中終了後は同じmigration identityとcheckpointから再開し、完了済みdataを重複させずlegacy dataを自動書換えしない。完了前は既存dataをread-onlyで表示し、新しいmutationは`MigrationInProgress`を返す。upgrade中のapplication quitはagent / workflow終了commandを開始せず15秒以内にprocessを終了し、restart後に同じmigrationとquit operationを再取得できる。cutover後はSQLiteだけを読み書きし、legacy fallback、dual write、legacyへのrollbackを行わない。
-  Tauri / WebSocketは同じoperationとsession stateについてsend result、receipt、status、pending recovery、shutdown、feedback、safe actionをsemanticに一致させる。WebSocketはloopback Bearer認証、1 process 16 connections、1 connection 32 in-flight、60 requests/s・burst 120、request / response 16 MiB、outbound 32 responses / 16 MiBの上限を持つ。上限超過は規定のHTTP status、typed error、またはclose codeとなり、accepted operationのreceipt / statusを変更しない。
-  epoch、revision、sequence、ordinal、count、offsetその他のsemantic integer fieldは`0`または先頭ゼロのないASCII decimal stringで表し、`9223372036854775807`までlosslessに往復する。fieldごとの0可否を守り、JSON number、負数、正符号、先頭ゼロ、指数表記、空白付き、範囲超過は`InvalidRequest`としてstate / identityを変更せずexternal effectを0件にする。page limit / byte limitはJSON非負整数、exit codeはJSON signed整数のままとする。
-  current application shutdown queryは、shutdown不在だけを`Current(None)`、same-boot current flightをexact phase、previous-boot nonterminalを同じidentityの`ReconciliationRequired`、previous-boot terminalを`Current(None)`として返す。冗長authorityだけのsemantic mismatchは`ShutdownAuthorityMismatch`付き`ReconciliationRequired`、storage / decode / integrity / required-reference / identity一意性failureは`Internal`、同じplan identityに束縛された保存結果不明だけは`OutcomeUnknown`とし、相互変換または通常状態へのfallbackを行わない。
-- **R-019**: #1499はD1 #1445で確定したdesign-onlyのconfiguration / Goal / reasoning effort / launch / permission境界を再定義しない。F1 #1383、L1 #1402、L2 #1403、L4 #1405、L6 #1407、L7 #1408、L8 #1409、L10 #1411、S10a #1398、P2 #1414、X1 #1417については、B-077のtrace matrixに示す既存正本の公開結果を維持する。
-- **R-020**: started turnまたはqueued由来turnの終端は、terminal reason、final parts、assistant message、session state、permission settlement、queue stateが一つの整合した結果として同時に観測できる。同じturnにAccepted Stopがある場合はStopの解決結果も同時に観測でき、Stopが先に終端を確定した場合は成功、normal completion / Fatal / closeなど別の終端が先に確定した場合はsupersededとして理由を区別する。保存に失敗した場合は一部だけを終端済みに見せず、同じ未解決作業とStop capacity占有を維持する。restart、競合、同じ操作の再試行後もterminalと各解決結果は1件だけであり、完全に解決した後は別targetのStopが解放済みcapacityを利用できる。
-- **R-021**: Tauri / WebSocketはcurrent pending recoveryとshutdown planの未解決targetについて、backendが現在提示するsafe actionだけを実行し、action identityだけでその進行中またはcompleted resultを再取得できる。同じactionの応答喪失、crash、restart後の再実行は同じresultへ戻り、古い表示、改変action、利用不能actionはstate / effect 0件のtyped errorとなる。結果を一意に読めない外部作用は盲目的に再実行せず、安全なretryも同じeffect identityだけを使う。開始だけ確認できたactionは未解決のまま関連session / workflow表示と一致させ、終端または未開始を信頼できる根拠で確認できたactionだけが関連するterminal、operation status、permission、publication、session / configuration / archive、workflow stateを一つの結果として確定する。全shutdown targetが解決したplanはterminalとなり、新しいquitを妨げない。completed actionは時間経過、restart、shutdown details取得不能後もsame identityからexact resultを返す。未発行または改変されたidentityは`NotFound`を返し、新しいeffectを開始しない。
-  公開するrecovery action kindはclosedな`ReadAgain | RetrySameEffect | UseObservedResult | CancelIfSafe | KeepForManualResolution`とする。`RetrySameEffect`は同じ外部作用identityだけを使う。`UseObservedResult`と`CancelIfSafe`は、backendが保存済みの信頼できる観測根拠を再検証できる場合だけ利用可能にする。readbackがeffect未開始を`ConfirmedNoEffect`として証明した場合だけ、取消可能な対象を`CancelledBeforeEffect`へ確定できる。開始またはackだけの観測を成功へ読み替えず、ambiguousな観測を`ConfirmedNoEffect`へ読み替えない。
-  recovery actionのstale revisionは`RevisionConflict { current_revision }`、current viewがそのactionを提示しない場合は`ActionUnavailable`、shutdown targetのowner / runtime / executor revisionがhandoff前に変わった場合は`TargetRevisionChanged`として、公開stateとexternal effectを変更せず返す。result classificationはclosed exact 6値`Pending | Succeeded | ConfirmedNoEffect | Ambiguous | CancelledBeforeEffect | Unchanged`とし、`ConfirmedNoEffect`から`CancelledBeforeEffect`へ進めるのはkind固有cancel policyが許可するtargetだけである。non-cancellable targetには`CancelIfSafe`を提示せず、直接指定しても`ActionUnavailable`を返す。
-  action実行後にsame actionの結果を確認できない場合はcommand resultを`ActionOutcomeUnknown { action_id }`として返し、同じaction IDの照会以外から成功・未受理を推測せず、別actionまたはexternal effectを作らない。
-  recovery actionの成功resultは`outcome / classification / resource_revision / canonical_result_sha256`を持ち、same action replayでは保存済みの同じ4 fieldとresource viewを返す。resourceやplan detailが後で変化・取得不能になってもclassificationを再計算せず、`Pending+Pending | Pending+ConfirmedNoEffect | Pending+Ambiguous | Terminal+Succeeded | Terminal+CancelledBeforeEffect | Unchanged+Unchanged`以外の組合せを返さない。
-- **R-022**: agent message partのsemantic定義はdomain layerの一つのclosed typeだけが所有する。session usecase、runtime event、projectionはそのdomain typeを使い、usecase layerに同義enumを残さない。gatewayはlegacy JSONおよびSQLite envelope用のversioned persistence DTO、presenterはTauri / WebSocket用のversioned public DTOを個別に所有し、明示変換でdomain typeと接続する。変更前の既知JSON fixture、Claude / Codex F1 fixture、Tauri / WebSocketの公開tag / field / order / optionalityは変更せずround-tripし、unknown additive persistence payloadはraw-preserve、unknown required variantはtyped incompatibilityとしてfail closedにする。
+次の値は外部から観測できる boundary の単一正本である。内部 queue、table、cursor 表現、処理手順は規定しない。
+
+| Boundary | Public contract |
+| --- | --- |
+| Caller request identity | UTF-8 1〜128 bytes、許可文字は `[A-Za-z0-9._:-]` |
+| Stop | request ingress から 10 秒、異なる未解決 target は process 全体で最大 32 件 |
+| Pending recovery | 1 page は最大 200 件かつ encoded 4 MiB |
+| Session feedback | 1 page は最大 32 件、未解決総数は process 全体で最大 512 件、label は UTF-8 160 bytes、detail は 2048 bytes |
+| Session lifecycle | request ingress から 10 秒 |
+| Application quit | 最初の request ingress から 15 秒、target は最大 4096 件 |
+| Shutdown detail | target page は最大 128 件で、response envelope を除く encoded target entry の合計は 1 MiB、1 target entry も encoded 1 MiB。full detail を保持する terminal shutdown は最大 2 件、関連 recovery page は最大 200 件かつ encoded 4 MiB |
+| Shutdown query | 一貫した snapshot を 2 秒以内に返せなければ partial result なしの deadline failure |
+| Startup attempt | 固定 SQLite path とその writer lock / initial-create evidence だけを対象に一回の create / open / schema evolution / validation を行う。writer lock は待たず、SQLite busy wait は最大 2 秒、同一 process 内の自動再試行は 0 回 |
+| History-independent read | 無関係な履歴 10 件と 1,000,000 件を各 1,000 sample 比較し、大規模 fixture の p95 は小規模 fixture の 1.25 倍以下。pending recovery first 200 は p95 50 ms 以下、identity lookup は p95 20 ms / p99 50 ms 以下 |
+| WebSocket | loopback Bearer 認証、1 process 16 connections、1 connection 32 in-flight、60 requests/s・burst 120、request / response 16 MiB、outbound 32 responses / 16 MiB |
+| Semantic integer | `0` または先頭ゼロのない ASCII decimal string で `9223372036854775807` まで。JSON number、負数、正符号、指数表記、空白、範囲超過は拒否する。page / byte limit は JSON 非負整数、exit code は JSON signed integer |
+
+- **R-001**: 通常 send は public boundary に従う caller 保持の stable operation identity を持ち、同じ authorized caller、identity、意味的に同じ入力の再試行は、response loss、並行要求、restart を跨いでも同じ受理事実、同じ入力、同じ turn または queue item へ収束する。
+- **R-002**: 同じ operation identity を異なる入力へ再利用した要求は、既存操作を変更せず、provider effect を開始せず、payload conflict として拒否する。
+- **R-003**: composer は send が durable に受理された場合だけ、その送信 attempt に対応する本文と添付を clear する。未受理、conflict、結果不明では保持し、受理後の実行 failure を新規 send failure として再送しない。
+- **R-004**: provider、runtime、workflow への外部作用は、その作用を同じ identity で追跡・回復できる durable intent が確定し、開始直前にも対象 owner と intent が有効だと確認できた場合だけ開始する。作用結果を一意に確認できない場合は成功または未開始を推測せず、同じ identity の reconciliation として公開する。
+- **R-005**: 一つの利用者操作として不可分な event、state、receipt、terminal、recovery 参加者は、全て確定するか全て未変更でなければならない。結果確認不能時は同じ操作を解決し、部分成功を公開しない。
+- **R-006**: terminal 確定後の通知や readback failure は terminal を未確定へ戻さない。通常完了だけが許可された次の queue item を開始でき、Stop、close、quit、failure、crash は queue を pause する。
+- **R-007**: 一つの turn に競合する terminal が到着しても canonical terminal は一つだけであり、遅延 event は別 turn または別 operation の状態を変更しない。
+- **R-008**: Stop は backend に依存せず、request から 10 秒以内に terminal または同じ Stop identity の結果確認必要状態へ到達する。重複 Stop は同じ進捗へ join し、保証可能な capacity を超える要求は作用開始前に拒否する。
+- **R-009**: Accepted Stop の terminal を保存できない場合、対象 turn を通常 Idle と扱わず、queue を再開せず、restart 後も同じ Stop identity と既知の観測結果から回復する。
+- **R-010**: 未解決の durable work は startup で発見でき、owner、status、safe observation、利用可能な解決操作を public boundary に従う bounded collection と direct identity lookup で取得できる。回復の response loss と restart は同じ action result へ収束する。
+- **R-011**: 操作 failure は対象 session に安全な文言で表示され、別 session の成功や古い attempt で消えない。明示 dismiss または同じ failure identity を解決した結果だけが表示を更新し、public boundary の capacity 到達時にも既存 failure の閲覧・解決手段を失わない。
+- **R-012**: Claude / Codex の代表 input は production composition を通して既存の公開 event、read model、terminal semantics を維持する。provider 入力から domain への互換性と、domain から public surface への互換性を独立して検証できる。Tauri / WebSocket は同じ operation に同じ意味を返し、未認証・権限外・公開 resource limit 超過を作用開始前に拒否し、公開整数を lossless に往復する。
+- **R-013**: 固定 path の bundled SQLite store は正常稼働時の唯一の persistence authority である。domain event と操作状態は同じ atomic persistence boundary で確定し、commit 結果不明は同じ identity で解決する。public read は commit 済みの一貫した state だけを返す。
+- **R-014**: view close、Session close、open / closed archive、backend switch は異なる操作である。view close は表示だけを閉じる。Session lifecycle 操作は同じ request の replay と conflict を区別し、10 秒以内に完了または同じ operation identity の結果確認必要状態へ到達する。
+- **R-015**: Cmd-Q、menu、Dock、tray、native cooperative exit、programmatic exit / restart は一つの application quit operation へ収束する。最初に受理した intent が flight を所有し、全 surface は同じ shutdown 結果を表示する。startup failure 中は durable quit operation を作らず、安全な process-local exit だけを提供する。
+- **R-016**: graceful application quit は最初の request から 15 秒以内に、作用開始前の安全な abort、exit、または restart を決定する。作用開始後または開始結果不明の場合は未完了 identity を残して終了し、再起動後に確認できる。
+- **R-017**: operation / terminal の direct lookup と、startup recovery、feedback、shutdown target / history / associated recovery の collection query は、無関係な session や event history の件数に依存しない。collection は同じ revision の有限 page と continuation を返す。public boundary の limit、capacity、deadline 内に完全な結果を返せない場合は、partial result を返さず安全な failure とする。
+- **R-018**: 起動時は Startup attempt boundary に従って固定 path の SQLite store を直接 create / open し、対応可能な SQLite schema だけを normal admission 前に進化させる。成功後だけ normal workbench を開く。未初期化の初回作成残骸は、初回作成が未完了だったという durable evidence がある場合だけ安全に再試行する。初期化済み store、または未初期化と証明できない既存 file の検証 failure は、自動置換・削除・再初期化せず、Rust が分類した safe startup failure にする。failure surface は安全な説明、correlation、再起動時の扱い、process-local Quit だけを返し、normal command、durable quit、provider / workflow effect を admission しない。変更前の file-store は startup、通常処理、background maintenance、retention、cleanup、shutdown の入力にせず、探索、stat、列挙、読込、decode、import、変換、merge、fallback、dual write、変更、削除しない。
+- **R-019**: #1499 は完了済み milestone 84 契約の利用者可視結果を退行させず、D1 #1445で確定したdesign-only境界を再定義しない。過去 Issue の Spec を現行正本として書き換えず、本 Primary Spec と milestone 84 現行正本で解決を定義する。
+- **R-020**: Stop と normal completion、failure、Session close、quit が競合した場合も、turn terminal、Stop result、queue pause、Session / shutdown state は一つの canonical outcome へ収束する。保存 failure は capacity 解放や次の実行開始の根拠にしない。
+- **R-021**: pending recovery と shutdown target の解決操作は backend 発行の stable action identity を持ち、同じ action の再試行は保存済み結果を返す。安全性を証明できない操作を提示せず、結果不明は別 action による blind retry へ変換しない。
+- **R-022**: supported message content は、保存、restart、Tauri、WebSocket を跨いでも同じ意味を lossless に保つ。未知の必須 semantics は別の意味へ推測せず、安全な incompatibility として扱う。
+
 # Assumptions / Open Questions
 
-- **A-001（ユーザー確認済み）**: 外部 provider を実行する動的監査は行わず、指定 commit、正本、source、既存 test の照合を現状証拠とする。実装時の受入検証は fake provider / fault injection / process restart harness で行う。
-- Open Questions: なし。
+- OPEN 事項はない。

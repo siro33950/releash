@@ -152,7 +152,7 @@ pub struct AgentSendOperationUsecase {
     repository: Arc<dyn LocalEventTransactionRepository>,
     authority: Arc<dyn OperationBindingAuthority>,
     gate: Arc<dyn SendAdmissionGate>,
-    generation_id: String,
+    installation_id: String,
 }
 
 fn now_ms() -> i64 {
@@ -246,7 +246,6 @@ fn status_record(status: &SendExecutionStatus) -> OperationStatusRecord {
     };
     OperationStatusRecord {
         kind: OperationKind::Send,
-        migration_quit: false,
         value,
     }
 }
@@ -273,10 +272,9 @@ fn decode_send_record(
         OperationReceiptRecord::PermissionResponse { .. }
         | OperationReceiptRecord::Stop { .. }
         | OperationReceiptRecord::SessionLifecycle { .. }
-        | OperationReceiptRecord::ApplicationQuit { .. }
-        | OperationReceiptRecord::MigrationApplicationQuit { .. } => return None,
+        | OperationReceiptRecord::ApplicationQuit { .. } => return None,
     };
-    if status_record.kind != OperationKind::Send || status_record.migration_quit {
+    if status_record.kind != OperationKind::Send {
         return None;
     }
     let latest_status = match status_record.value {
@@ -398,7 +396,6 @@ impl SendObligationData {
             | ObligationRecord::WorkflowShutdown { .. }
             | ObligationRecord::WorkflowTurnCompletion { .. }
             | ObligationRecord::RecoveryPublication { .. }
-            | ObligationRecord::LegacyReconciliation { .. }
             | ObligationRecord::ProviderEstablish { .. }
             | ObligationRecord::TurnExecution { .. }
             | ObligationRecord::TerminalCommit { .. }
@@ -520,13 +517,13 @@ impl AgentSendOperationUsecase {
         repository: Arc<dyn LocalEventTransactionRepository>,
         authority: Arc<dyn OperationBindingAuthority>,
         gate: Arc<dyn SendAdmissionGate>,
-        generation_id: String,
+        installation_id: String,
     ) -> Self {
         Self {
             repository,
             authority,
             gate,
-            generation_id,
+            installation_id,
         }
     }
 
@@ -635,7 +632,7 @@ impl AgentSendOperationUsecase {
         let principal_mac = self.authority.mac(&principal_material(&request.principal));
         let binding_hmac = self.authority.mac(&super::binding::send(
             &request.principal,
-            &self.generation_id,
+            &self.installation_id,
             &request.operation_id,
             request.canonical_payload.as_bytes(),
         ));
@@ -803,7 +800,7 @@ impl AgentSendOperationUsecase {
             LocalStateMutation::OperationBinding(OperationBindingMutation {
                 key: CallerOperationKey {
                     principal: request.principal.clone(),
-                    generation_id: self.generation_id.clone(),
+                    installation_id: self.installation_id.clone(),
                     kind: OperationKind::Send,
                     caller_request_id: request.operation_id.clone(),
                 },
@@ -887,12 +884,12 @@ impl AgentSendOperationUsecase {
         let batch = LocalAtomicBatch {
             commit_id: self.commit_identity(&request.operation_id)?,
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: OperationKind::Send.into(),
                 idempotency_key: request.operation_id.clone(),
                 payload_hash: self.authority.digest(&super::binding::send(
                     &request.principal,
-                    &self.generation_id,
+                    &self.installation_id,
                     &request.operation_id,
                     request.canonical_payload.as_bytes(),
                 )),
@@ -1052,7 +1049,7 @@ impl AgentSendOperationUsecase {
                 .query(LocalEventQuery::CallerAttemptByIdentity {
                     key: CallerOperationKey {
                         principal: principal.to_string(),
-                        generation_id: self.generation_id.clone(),
+                        installation_id: self.installation_id.clone(),
                         kind: OperationKind::Send,
                         caller_request_id: operation_id.to_string(),
                     },
@@ -1458,12 +1455,7 @@ impl AgentSendOperationUsecase {
                 result: turn_result,
                 ..
             } => turn_result,
-            TerminalResultRecord::AgentTurn {
-                result: AgentTurnTerminalResultRecord::Legacy { .. },
-                ..
-            }
-            | TerminalResultRecord::StopSuperseded { .. }
-            | TerminalResultRecord::LegacyStopResolution { .. } => {
+            TerminalResultRecord::StopSuperseded { .. } => {
                 return Err("runtime terminal send result is incompatible".to_string())
             }
         };
@@ -1677,7 +1669,7 @@ impl AgentSendOperationUsecase {
             commit_id: CommitIdentity::parse(&hex_encode(&commit_digest))
                 .map_err(|_| internal_error("status-commit-id"))?,
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: CommitOperationKind::OperationProgress,
                 idempotency_key: format!("{operation_id}.st{}", next_revision.value()),
                 payload_hash: status_hash,
@@ -1821,7 +1813,7 @@ impl AgentSendOperationUsecase {
             commit_id: CommitIdentity::parse(&hex_encode(&digest))
                 .map_err(|_| internal_error("obligation-transition-commit"))?,
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: CommitOperationKind::OperationProgress,
                 idempotency_key: format!(
                     "{operation_id}.{obligation_id}.{}",
@@ -1911,7 +1903,7 @@ impl AgentSendOperationUsecase {
             ))
             .map_err(|_| internal_error("running-commit-id"))?,
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: CommitOperationKind::OperationProgress,
                 idempotency_key: format!(
                     "{operation_id}.{obligation_id}.running.{}",

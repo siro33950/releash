@@ -6,9 +6,11 @@ use base64::Engine as _;
 use parking_lot::RwLock;
 use sha2::{Digest, Sha256};
 
+#[cfg(test)]
+use crate::domain::agent_session::AgentSessionStorage;
 use crate::domain::agent_session::{
     AgentSessionProjectedMessage, AgentSessionProjectionCommit, AgentSessionReader,
-    AgentSessionStorage, AgentSessionStorageTypes,
+    AgentSessionStorageTypes,
 };
 use crate::domain::path::same_worktree_path;
 use crate::usecase::agent_session::context_meta::ContextEpochMeta;
@@ -273,8 +275,8 @@ struct PreviousSessionProjection {
 #[derive(Clone)]
 struct AgentSessionEventAuthority {
     repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
-    generation_id: String,
-    projection_codec: Option<Arc<dyn AgentSessionProjectionCodec>>,
+    installation_id: String,
+    projection_codec: Arc<dyn AgentSessionProjectionCodec>,
 }
 
 #[derive(Debug, Clone)]
@@ -820,9 +822,7 @@ async fn prepare_canonical_event_projection_mutations(
     fallback_meta: Option<SessionMeta>,
     terminal_message_patch: Option<&TerminalMessageProjectionPatch>,
 ) -> Result<Vec<crate::domain::local_event::LocalStateMutation>, String> {
-    let codec = authority.projection_codec.as_ref().ok_or_else(|| {
-        "agent-session mutation admission is closed while migration is in progress".to_string()
-    })?;
+    let codec = authority.projection_codec.as_ref();
     let stored = match authority
         .repository
         .query(
@@ -1432,6 +1432,7 @@ fn recovery_publication_obligation_mutation(
     ))
 }
 
+#[cfg(test)]
 pub trait SessionReviewContextReader: Send + Sync {
     fn get_session_review_context(
         &self,
@@ -1442,6 +1443,7 @@ pub trait SessionReviewContextReader: Send + Sync {
 
 /// Gateway が物理 event log を修復した事実を usecase へ一度だけ伝える signal。
 /// 修復方式や storage format は domain の writer API へ露出させない。
+#[cfg(test)]
 pub(crate) trait SessionEventLogRecoverySignal: Send + Sync {
     #[cfg(test)]
     fn take_event_log_recovered(&self, session_id: &str) -> bool;
@@ -1449,6 +1451,7 @@ pub(crate) trait SessionEventLogRecoverySignal: Send + Sync {
 
 /// queue pause の小さい durable projection を読む port。
 /// transcript 全体の read model を構築せず runtime/query を hydrate するために分離する。
+#[cfg(test)]
 pub trait SessionQueuePauseReader: Send + Sync {
     fn load_queue_paused_at(
         &self,
@@ -1457,6 +1460,7 @@ pub trait SessionQueuePauseReader: Send + Sync {
     ) -> Result<Option<f64>, String>;
 }
 
+#[cfg(test)]
 pub trait SessionStoragePort:
     AgentSessionStorage<
         Session = ChatSession,
@@ -1476,6 +1480,7 @@ pub trait SessionStoragePort:
 {
 }
 
+#[cfg(test)]
 impl<T> SessionStoragePort for T where
     T: AgentSessionStorage<
             Session = ChatSession,
@@ -1540,7 +1545,8 @@ pub(crate) type SessionBackendEstablishedHook =
 pub(crate) type SessionProjectedReadModelHook = Arc<dyn Fn(&str, &SessionReadModel) + Send + Sync>;
 
 pub struct SessionStore {
-    storage: Arc<dyn SessionStoragePort>,
+    #[cfg(test)]
+    storage: Option<Arc<dyn SessionStoragePort>>,
     event_authority: RwLock<Option<AgentSessionEventAuthority>>,
     state_change_listeners: RwLock<Vec<SessionStateChangeListener>>,
     event_log_recovery_listeners: RwLock<Vec<SessionEventLogRecoveryListener>>,
@@ -1676,30 +1682,20 @@ impl AgentSessionReader for SessionStore {
 }
 
 impl SessionStore {
-    /// Reads follow the authority pointer independently from mutation
-    /// admission.  While a Legacy authority is being imported the SQLite
-    /// projection codec is deliberately not installed, so the immutable
-    /// legacy source remains the only public read model.  Once cutover is
-    /// verified the codec is installed exactly once and every read switches
-    /// to the bounded SQLite projection path.
     fn list_metas_for_active_read_authority(
         &self,
         app_data_dir: &Path,
     ) -> Result<Vec<SessionMeta>, String> {
-        if self.canonical_authority_active() {
-            self.list_metas_canonical(app_data_dir)
-        } else {
-            self.storage.list_metas(app_data_dir)
+        #[cfg(test)]
+        if !self.canonical_authority_active() {
+            return self.test_storage().list_metas(app_data_dir);
         }
+        self.list_metas_canonical(app_data_dir)
     }
 
     fn ensure_canonical_mutation_admission(&self) -> Result<(), String> {
         match self.event_authority.read().as_ref() {
-            Some(authority) if authority.projection_codec.is_some() => Ok(()),
-            Some(_) => Err(
-                "agent-session mutation admission is closed while migration is in progress"
-                    .to_string(),
-            ),
+            Some(_) => Ok(()),
             None => {
                 #[cfg(test)]
                 return Ok(());
@@ -1710,15 +1706,13 @@ impl SessionStore {
     }
 
     fn canonical_authority_active(&self) -> bool {
-        self.event_authority
-            .read()
-            .as_ref()
-            .is_some_and(|authority| authority.projection_codec.is_some())
+        self.event_authority.read().is_some()
     }
 
+    #[cfg(test)]
     pub fn new(storage: Arc<dyn SessionStoragePort>) -> Self {
         Self {
-            storage,
+            storage: Some(storage),
             event_authority: RwLock::new(None),
             state_change_listeners: RwLock::new(Vec::new()),
             event_log_recovery_listeners: RwLock::new(Vec::new()),
@@ -1748,30 +1742,65 @@ impl SessionStore {
         }
     }
 
-    pub fn set_local_event_repository(
-        &self,
+    pub(crate) fn new_canonical(
         repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
-        generation_id: String,
-    ) {
-        self.storage.close_mutation_admission();
-        *self.event_authority.write() = Some(AgentSessionEventAuthority {
-            repository,
-            generation_id,
-            projection_codec: None,
-        });
+        installation_id: String,
+        projection_codec: Arc<dyn AgentSessionProjectionCodec>,
+    ) -> Self {
+        Self {
+            #[cfg(test)]
+            storage: None,
+            event_authority: RwLock::new(Some(AgentSessionEventAuthority {
+                repository,
+                installation_id,
+                projection_codec,
+            })),
+            state_change_listeners: RwLock::new(Vec::new()),
+            event_log_recovery_listeners: RwLock::new(Vec::new()),
+            runtime_terminal_participant_provider: RwLock::new(None),
+            #[cfg(test)]
+            permission_response_reservations: RwLock::new(HashMap::new()),
+            #[cfg(test)]
+            save_hook: RwLock::new(None),
+            #[cfg(test)]
+            append_message_hook: RwLock::new(None),
+            #[cfg(test)]
+            persist_parts_hook: RwLock::new(None),
+            #[cfg(test)]
+            append_event_hook: RwLock::new(None),
+            #[cfg(test)]
+            set_state_hook: RwLock::new(None),
+            #[cfg(test)]
+            projection_hook: RwLock::new(None),
+            #[cfg(test)]
+            appended_event_hook: RwLock::new(None),
+            #[cfg(test)]
+            event_projection_hook: RwLock::new(None),
+            #[cfg(test)]
+            backend_established_hook: RwLock::new(None),
+            #[cfg(test)]
+            projected_read_model_hook: RwLock::new(None),
+        }
     }
 
-    pub(crate) fn set_local_event_repository_with_projection_codec(
+    #[cfg(test)]
+    fn test_storage(&self) -> &dyn SessionStoragePort {
+        self.storage
+            .as_deref()
+            .expect("test file-session storage is not configured")
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_local_event_repository(
         &self,
         repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
-        generation_id: String,
+        installation_id: String,
         projection_codec: Arc<dyn AgentSessionProjectionCodec>,
     ) {
-        self.storage.close_mutation_admission();
         *self.event_authority.write() = Some(AgentSessionEventAuthority {
             repository,
-            generation_id,
-            projection_codec: Some(projection_codec),
+            installation_id,
+            projection_codec,
         });
     }
 
@@ -1896,9 +1925,7 @@ impl SessionStore {
         let Some(authority) = self.event_authority.read().clone() else {
             return Ok(None);
         };
-        let Some(codec) = authority.projection_codec.clone() else {
-            return Ok(None);
-        };
+        let codec = authority.projection_codec.clone();
         let session_id = session_id.to_string();
         std::thread::scope(|scope| {
             scope
@@ -2028,9 +2055,7 @@ impl SessionStore {
         let Some(authority) = self.event_authority.read().clone() else {
             return Ok(None);
         };
-        let Some(codec) = authority.projection_codec.clone() else {
-            return Ok(None);
-        };
+        let codec = authority.projection_codec.clone();
         let session_id = session_id.to_string();
         let message_id = message_id.to_string();
         std::thread::scope(|scope| {
@@ -2093,10 +2118,7 @@ impl SessionStore {
             .read()
             .clone()
             .ok_or_else(|| "agent-session SQLite authority is unavailable".to_string())?;
-        let codec = authority
-            .projection_codec
-            .clone()
-            .ok_or_else(|| "agent-session projection codec is unavailable".to_string())?;
+        let codec = authority.projection_codec.clone();
         let owner = owner.map(str::to_string);
         let ordered_key_prefix = turn_id.map_or_else(
             || WORKFLOW_TURN_COMPLETION_ORDERED_KEY_PREFIX.to_string(),
@@ -2502,7 +2524,7 @@ impl SessionStore {
                             let batch = crate::domain::local_event::LocalAtomicBatch {
                                 commit_id: commit_id.clone(),
                                 idempotency: crate::domain::local_event::IdempotencyBinding {
-                                    generation_id: authority.generation_id.clone(),
+                                    installation_id: authority.installation_id.clone(),
                                     operation_kind:
                                         crate::domain::local_event::CommitOperationKind::Recovery,
                                     idempotency_key,
@@ -2619,9 +2641,7 @@ impl SessionStore {
         let authority = self.event_authority.read().clone().ok_or_else(|| {
             "agent-session SQLite projection authority is unavailable".to_string()
         })?;
-        let codec = authority.projection_codec.clone().ok_or_else(|| {
-            "agent-session mutation admission is closed while migration is in progress".to_string()
-        })?;
+        let codec = authority.projection_codec.clone();
         std::thread::scope(|scope| {
             scope
                 .spawn(move || {
@@ -2683,9 +2703,7 @@ impl SessionStore {
         let authority = self.event_authority.read().clone().ok_or_else(|| {
             "agent-session SQLite projection authority is unavailable".to_string()
         })?;
-        let codec = authority.projection_codec.clone().ok_or_else(|| {
-            "agent-session mutation admission is closed while migration is in progress".to_string()
-        })?;
+        let codec = authority.projection_codec.clone();
         let session_id = session_id.to_string();
         let before_position = cursor
             .map(|cursor| i64::try_from(cursor.0))
@@ -2814,21 +2832,11 @@ impl SessionStore {
             #[cfg(not(test))]
             return Err("agent-session SQLite event authority is not configured".to_string());
         };
-        if authority.projection_codec.is_none() {
-            return Err(
-                "agent-session mutation admission is closed while migration is in progress"
-                    .to_string(),
-            );
-        }
-        let fallback_meta = if authority.projection_codec.is_some() {
-            Some(
-                self.canonical_session_projection(session_id)?
-                    .ok_or_else(|| format!("Session projection not found: {session_id}"))?
-                    .meta,
-            )
-        } else {
-            None
-        };
+        let fallback_meta = Some(
+            self.canonical_session_projection(session_id)?
+                .ok_or_else(|| format!("Session projection not found: {session_id}"))?
+                .meta,
+        );
         let session_id = session_id.to_string();
         let events = events.to_vec();
         std::thread::scope(|scope| {
@@ -2848,9 +2856,7 @@ impl SessionStore {
                             let mut exact = Sha256::new();
                             hash_identity_field(&mut exact, b"agent_event_commit_identity_v1");
                             hash_identity_field(&mut exact, session_id.as_bytes());
-                            let codec = authority.projection_codec.as_ref().ok_or_else(|| {
-                                "agent-session projection codec is unavailable".to_string()
-                            })?;
+                            let codec = authority.projection_codec.as_ref();
                             let encoded_events = codec.encode_events_for_identity(&events)?;
                             hash_identity_field(&mut exact, &encoded_events);
                             let payload_hash: [u8; 32] = exact.finalize().into();
@@ -2871,7 +2877,8 @@ impl SessionStore {
                                     })?
                                     .head;
                                 let mut state_mutations = Vec::new();
-                                if let Some(codec) = authority.projection_codec.as_ref() {
+                                {
+                                    let codec = authority.projection_codec.as_ref();
                                     let result = authority
                                         .repository
                                         .query(crate::domain::local_event::LocalEventQuery::SessionProjectionByIdentity {
@@ -3105,7 +3112,7 @@ impl SessionStore {
                                         "agent event commit identity is invalid".to_string()
                                     })?,
                                     idempotency: crate::domain::local_event::IdempotencyBinding {
-                                        generation_id: authority.generation_id.clone(),
+                                        installation_id: authority.installation_id.clone(),
                                         operation_kind,
                                         idempotency_key: hex::encode(payload_hash),
                                         payload_hash,
@@ -3174,12 +3181,6 @@ impl SessionStore {
             .read()
             .clone()
             .ok_or_else(|| "agent-session SQLite authority is unavailable".to_string())?;
-        if authority.projection_codec.is_none() {
-            return Err(
-                "agent-session mutation admission is closed while migration is in progress"
-                    .to_string(),
-            );
-        }
         let current_projection = self.canonical_session_projection(session_id)?;
         let fallback_meta = current_projection
             .as_ref()
@@ -3216,9 +3217,7 @@ impl SessionStore {
                                 &mut exact,
                                 operation_kind.label().as_bytes(),
                             );
-                            let codec = authority.projection_codec.as_ref().ok_or_else(|| {
-                                "agent-session projection codec is unavailable".to_string()
-                            })?;
+                            let codec = authority.projection_codec.as_ref();
                             let encoded_events = codec.encode_events_for_identity(&events)?;
                             hash_identity_field(&mut exact, &encoded_events);
                             for mutation in &additional_mutations {
@@ -3228,7 +3227,7 @@ impl SessionStore {
                                 hash_identity_field(&mut exact, &encoded);
                             }
                             if let Some(patch) = &terminal_message_patch {
-                                hash_terminal_message_patch(&mut exact, codec.as_ref(), patch)?;
+                                hash_terminal_message_patch(&mut exact, codec, patch)?;
                             }
                             if let Some(patch) = &projection_meta_patch {
                                 hash_projection_meta_patch(&mut exact, patch)?;
@@ -3267,11 +3266,9 @@ impl SessionStore {
                                     )
                                     .await?;
                                 if let Some(patch) = &projection_meta_patch {
-                                    let codec = authority.projection_codec.as_ref().ok_or_else(|| {
-                                        "agent-session mutation admission is closed while migration is in progress".to_string()
-                                    })?;
+                                    let codec = authority.projection_codec.as_ref();
                                     patch_event_projection_meta(
-                                        codec.as_ref(),
+                                        codec,
                                         &mut state_mutations,
                                         patch,
                                     )?;
@@ -3292,7 +3289,7 @@ impl SessionStore {
                                 let batch = crate::domain::local_event::LocalAtomicBatch {
                                     commit_id: commit_id.clone(),
                                     idempotency: crate::domain::local_event::IdempotencyBinding {
-                                        generation_id: authority.generation_id.clone(),
+                                        installation_id: authority.installation_id.clone(),
                                         operation_kind,
                                         idempotency_key: hex::encode(payload_hash),
                                         payload_hash,
@@ -3388,12 +3385,7 @@ impl SessionStore {
             #[cfg(not(test))]
             return Err("agent-session SQLite event authority is not configured".to_string());
         };
-        let Some(codec) = authority.projection_codec.clone() else {
-            return Err(
-                "agent-session mutation admission is closed while migration is in progress"
-                    .to_string(),
-            );
-        };
+        let codec = authority.projection_codec.clone();
         let session_id = projection.meta.id.clone();
         let content_blobs = externalize_canonical_message_content(&mut projection.messages)?;
         let encoded_messages = projection
@@ -3550,7 +3542,7 @@ impl SessionStore {
                                     "agent projection commit identity is invalid".to_string()
                                 })?,
                                 idempotency: crate::domain::local_event::IdempotencyBinding {
-                                    generation_id: authority.generation_id.clone(),
+                                    installation_id: authority.installation_id.clone(),
                                     operation_kind,
                                     idempotency_key: hex::encode(binding_hash),
                                     payload_hash: binding_hash,
@@ -3588,12 +3580,6 @@ impl SessionStore {
             .read()
             .clone()
             .ok_or_else(|| "agent-session SQLite authority is unavailable".to_string())?;
-        if authority.projection_codec.is_none() {
-            return Err(
-                "agent-session mutation admission is closed while migration is in progress"
-                    .to_string(),
-            );
-        }
         let current_projection = self.canonical_session_projection(session_id)?;
         let fallback_meta = current_projection
             .as_ref()
@@ -3658,21 +3644,16 @@ impl SessionStore {
                 record => record,
             }
         }
-        let (
-            old_provider_session_generation,
-            reserved_at_bits,
-        ) = match original(&source.record) {
+        let (old_provider_session_generation, reserved_at_bits) = match original(&source.record) {
             crate::domain::local_event::ObligationRecord::BackendSessionRecovery {
                 session_id: stored_session_id,
                 recovery_id: stored_recovery_id,
                 detail:
-                    Some(
-                        crate::domain::local_event::BackendSessionRecoveryObligationRecord::EffectReserved {
-                            old_provider_session_generation,
-                            reserved_at_bits,
-                            ..
-                        },
-                    ),
+                    crate::domain::local_event::BackendSessionRecoveryObligationRecord::EffectReserved {
+                        old_provider_session_generation,
+                        reserved_at_bits,
+                        ..
+                    },
                 state: crate::domain::local_event::ObligationStateRecord::EffectReserved,
             } if stored_session_id == session_id && stored_recovery_id == recovery_id => {
                 (*old_provider_session_generation, *reserved_at_bits)
@@ -3731,14 +3712,13 @@ impl SessionStore {
             crate::domain::local_event::ObligationRecord::BackendSessionRecovery {
                 session_id: session_id.to_string(),
                 recovery_id: recovery_id.to_string(),
-                detail: Some(
+                detail:
                     crate::domain::local_event::BackendSessionRecoveryObligationRecord::Completed {
                         old_provider_session_generation,
                         provider_session_generation,
                         backend_session_id: backend_session_id.clone(),
                         completed_at_bits: at.to_bits(),
                     },
-                ),
                 state: crate::domain::local_event::ObligationStateRecord::Completed,
             },
             None,
@@ -3815,10 +3795,7 @@ impl SessionStore {
                             format!("failed to create backend readback runtime: {error}")
                         })?
                         .block_on(async move {
-                            let codec = authority.projection_codec.as_ref().ok_or_else(|| {
-                                "agent-session mutation admission is closed while migration is in progress"
-                                    .to_string()
-                            })?;
+                            let codec = authority.projection_codec.as_ref();
                             let stream_id =
                                 crate::domain::local_event::StreamId::agent_session(&session_id)
                                     .map_err(|_| {
@@ -3836,17 +3813,16 @@ impl SessionStore {
                                     format!("backend recovery stream head read failed: {error}")
                                 })?
                                 .head;
-                            let mut mutations =
-                                prepare_canonical_event_projection_mutations(
-                                    &authority,
-                                    &session_id,
-                                    &events,
-                                    fallback_meta,
-                                    None,
-                                )
-                                .await?;
+                            let mut mutations = prepare_canonical_event_projection_mutations(
+                                &authority,
+                                &session_id,
+                                &events,
+                                fallback_meta,
+                                None,
+                            )
+                            .await?;
                             patch_event_projection_meta(
-                                codec.as_ref(),
+                                codec,
                                 &mut mutations,
                                 &EventProjectionMetaPatch::ReadbackCompleted {
                                     old_provider_session_generation,
@@ -3860,12 +3836,13 @@ impl SessionStore {
                             let occurred_at_ms = (at * 1000.0).round() as i64;
                             let uncommitted_events = events
                                 .into_iter()
-                                .map(|event| {
-                                    crate::domain::local_event::UncommittedDomainEvent {
-                                        stream_id: stream_id.clone(),
-                                        event: crate::domain::local_event::LocalDomainEvent::AgentSession(event),
-                                        occurred_at_ms,
-                                    }
+                                .map(|event| crate::domain::local_event::UncommittedDomainEvent {
+                                    stream_id: stream_id.clone(),
+                                    event:
+                                        crate::domain::local_event::LocalDomainEvent::AgentSession(
+                                            event,
+                                        ),
+                                    occurred_at_ms,
                                 })
                                 .collect::<Vec<_>>();
                             let encoded_events = authority
@@ -3890,8 +3867,7 @@ impl SessionStore {
                             for encoded in mutation_identities {
                                 hash_identity_field(&mut participant, &encoded);
                             }
-                            let participant_digest: [u8; 32] =
-                                participant.finalize().into();
+                            let participant_digest: [u8; 32] = participant.finalize().into();
                             // RecoveryActionUsecase validates and merges this
                             // exact source closure into its single wrapped
                             // source mutation; it is deliberately excluded
@@ -3933,9 +3909,7 @@ impl SessionStore {
             .read()
             .clone()
             .ok_or_else(|| "agent-session SQLite authority is unavailable".to_string())?;
-        let codec = authority.projection_codec.as_ref().ok_or_else(|| {
-            "agent-session mutation admission is closed while migration is in progress".to_string()
-        })?;
+        let codec = authority.projection_codec.as_ref();
         let projection = mutations
             .iter_mut()
             .find_map(|mutation| match mutation {
@@ -3978,9 +3952,7 @@ impl SessionStore {
             .read()
             .clone()
             .ok_or_else(|| "agent-session SQLite authority is unavailable".to_string())?;
-        let codec = authority.projection_codec.clone().ok_or_else(|| {
-            "agent-session mutation admission is closed while migration is in progress".to_string()
-        })?;
+        let codec = authority.projection_codec.clone();
         let session_id = session_id.to_string();
         let human_message_id = human_message_id.to_string();
         let prompt = prompt.clone();
@@ -4246,12 +4218,6 @@ impl SessionStore {
             #[cfg(not(test))]
             return Err("agent-session SQLite event authority is not configured".to_string());
         };
-        if authority.projection_codec.is_none() {
-            return Err(
-                "agent-session mutation admission is closed while migration is in progress"
-                    .to_string(),
-            );
-        }
         let session_id = session_id.to_string();
         std::thread::scope(|scope| {
             scope
@@ -4299,7 +4265,7 @@ impl SessionStore {
                             let batch = crate::domain::local_event::LocalAtomicBatch {
                                 commit_id: commit_identity.clone(),
                                 idempotency: crate::domain::local_event::IdempotencyBinding {
-                                    generation_id: authority.generation_id.clone(),
+                                    installation_id: authority.installation_id.clone(),
                                     operation_kind: crate::domain::local_event::CommitOperationKind::Projection,
                                     idempotency_key: hex::encode(binding_hash),
                                     payload_hash: binding_hash,
@@ -4344,81 +4310,6 @@ impl SessionStore {
                 })
                 .join()
                 .map_err(|_| "agent rollback worker panicked".to_string())?
-        })
-    }
-
-    #[allow(dead_code)] // Explicit forensic/migration reader; never used by normal production paths.
-    fn read_agent_events_from_authority(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<Vec<AgentSessionEvent>>, String> {
-        let Some(authority) = self.event_authority.read().clone() else {
-            return Ok(None);
-        };
-        let session_id = session_id.to_string();
-        std::thread::scope(|scope| {
-            scope
-                .spawn(move || {
-                    tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .map_err(|error| {
-                            format!("failed to create agent event read runtime: {error}")
-                        })?
-                        .block_on(async move {
-                            let stream_id = crate::domain::local_event::StreamId::agent_session(
-                                &session_id,
-                            )
-                            .map_err(|_| "agent session stream identity is invalid".to_string())?;
-                            let mut after = None;
-                            let mut events = Vec::new();
-                            loop {
-                                let page = authority
-                                    .repository
-                                    .load_stream(crate::domain::local_event::LoadStreamRequest {
-                                        stream_id: stream_id.clone(),
-                                        after,
-                                        limit: 200,
-                                    })
-                                    .await
-                                    .map_err(|error| {
-                                        format!("agent SQLite event read failed: {error}")
-                                    })?;
-                                for committed in page.events {
-                                    match committed.event {
-                                        crate::domain::local_event::LoadedDomainEvent::Known(
-                                            event,
-                                        ) => match *event {
-                                            crate::domain::local_event::LocalDomainEvent::AgentSession(
-                                                event,
-                                            ) => events.push(event),
-                                            _ => {
-                                                return Err(
-                                                    "agent stream contains a foreign domain event"
-                                                        .to_string(),
-                                                );
-                                            }
-                                        },
-                                        crate::domain::local_event::LoadedDomainEvent::Unknown {
-                                            event_type,
-                                            payload_version,
-                                        } => {
-                                            return Err(format!(
-                                                "agent stream contains unknown required event {event_type} v{payload_version}"
-                                            ));
-                                        }
-                                    }
-                                }
-                                let Some(next_after) = page.next_after else {
-                                    break;
-                                };
-                                after = Some(next_after);
-                            }
-                            Ok(Some(events))
-                        })
-                })
-                .join()
-                .map_err(|_| "agent SQLite event read worker panicked".to_string())?
         })
     }
 
@@ -4548,7 +4439,7 @@ impl SessionStore {
 
     fn overlay_recovery_publication_snapshots(
         &self,
-        app_data_dir: &Path,
+        _app_data_dir: &Path,
         summaries: Vec<SessionSummary>,
         expected_list: RecoveryPublicationList,
     ) -> Result<Vec<SessionSummary>, String> {
@@ -4563,13 +4454,18 @@ impl SessionStore {
                 } else if self.canonical_authority_active() {
                     (Vec::new(), None)
                 } else {
-                    (
-                        self.storage
-                            .load_session_events(app_data_dir, &summary.id)?,
-                        self.storage
-                            .get_session_meta(app_data_dir, &summary.id)?
-                            .and_then(|meta| meta.recovery_publication_snapshot),
-                    )
+                    #[cfg(test)]
+                    {
+                        (
+                            self.test_storage()
+                                .load_session_events(_app_data_dir, &summary.id)?,
+                            self.test_storage()
+                                .get_session_meta(_app_data_dir, &summary.id)?
+                                .and_then(|meta| meta.recovery_publication_snapshot),
+                        )
+                    }
+                    #[cfg(not(test))]
+                    unreachable!("production always has a SQLite event authority")
                 };
             let recovery = TurnEventLog::from_events(events).project().backend_recovery;
             if let Some(BackendSessionRecoveryProjection::Recovering { recovery_id, .. }) = recovery
@@ -4647,7 +4543,7 @@ impl SessionStore {
 
     pub fn session_title(
         &self,
-        app_data_dir: &Path,
+        _app_data_dir: &Path,
         session_id: &str,
     ) -> Result<Option<String>, String> {
         if let Some(projection) = self.canonical_session_projection(session_id)? {
@@ -4656,7 +4552,10 @@ impl SessionStore {
         if self.canonical_authority_active() {
             return Ok(None);
         }
-        self.storage.session_title(app_data_dir, session_id)
+        #[cfg(test)]
+        return self.test_storage().session_title(_app_data_dir, session_id);
+        #[cfg(not(test))]
+        unreachable!("production always has a SQLite event authority")
     }
 
     pub fn session_titles(&self, app_data_dir: &Path) -> Result<HashMap<String, String>, String> {
@@ -4669,7 +4568,10 @@ impl SessionStore {
             }
             return Ok(titles);
         }
-        self.storage.session_titles(app_data_dir)
+        #[cfg(test)]
+        return self.test_storage().session_titles(app_data_dir);
+        #[cfg(not(test))]
+        unreachable!("production always has a SQLite event authority")
     }
 
     pub fn set_session_title(
@@ -4689,7 +4591,7 @@ impl SessionStore {
         if !self.canonical_authority_active() {
             #[cfg(test)]
             {
-                self.storage.write_session_title(
+                self.test_storage().write_session_title(
                     app_data_dir,
                     session_id,
                     title_for_summary.as_deref(),
@@ -4753,12 +4655,17 @@ impl SessionStore {
         if !self.canonical_authority_active() {
             #[cfg(test)]
             {
-                let title = self.storage.session_title(app_data_dir, session_id)?;
-                self.storage
+                let title = self
+                    .test_storage()
+                    .session_title(app_data_dir, session_id)?;
+                self.test_storage()
                     .fork_session_layout(app_data_dir, session_id, &forked_meta)?;
                 if let Some(title) = title.as_deref() {
-                    self.storage
-                        .write_session_title(app_data_dir, &forked_meta.id, Some(title))?;
+                    self.test_storage().write_session_title(
+                        app_data_dir,
+                        &forked_meta.id,
+                        Some(title),
+                    )?;
                 }
                 return Ok(forked_meta.to_session(Vec::new()));
             }
@@ -4815,7 +4722,7 @@ impl SessionStore {
 
     pub fn get_session_meta(
         &self,
-        app_data_dir: &Path,
+        _app_data_dir: &Path,
         session_id: &str,
     ) -> Result<Option<SessionMeta>, String> {
         if let Some(projection) = self.canonical_session_projection(session_id)? {
@@ -4824,12 +4731,17 @@ impl SessionStore {
         if self.canonical_authority_active() {
             return Ok(None);
         }
-        self.storage.get_session_meta(app_data_dir, session_id)
+        #[cfg(test)]
+        return self
+            .test_storage()
+            .get_session_meta(_app_data_dir, session_id);
+        #[cfg(not(test))]
+        unreachable!("production always has a SQLite event authority")
     }
 
     pub fn get_session_review_context(
         &self,
-        app_data_dir: &Path,
+        _app_data_dir: &Path,
         session_id: &str,
     ) -> Result<Option<SessionReviewContext>, String> {
         if let Some(projection) = self.canonical_session_projection(session_id)? {
@@ -4838,13 +4750,17 @@ impl SessionStore {
         if self.canonical_authority_active() {
             return Ok(None);
         }
-        self.storage
-            .get_session_review_context(app_data_dir, session_id)
+        #[cfg(test)]
+        return self
+            .test_storage()
+            .get_session_review_context(_app_data_dir, session_id);
+        #[cfg(not(test))]
+        unreachable!("production always has a SQLite event authority")
     }
 
     pub fn load_full_session_for_restore(
         &self,
-        app_data_dir: &Path,
+        _app_data_dir: &Path,
         session_id: &str,
     ) -> Result<Option<ChatSession>, String> {
         if let Some(projection) = self.canonical_session_projection(session_id)? {
@@ -4854,13 +4770,17 @@ impl SessionStore {
         if self.canonical_authority_active() {
             return Ok(None);
         }
-        self.storage
-            .load_full_session_for_restore(app_data_dir, session_id)
+        #[cfg(test)]
+        return self
+            .test_storage()
+            .load_full_session_for_restore(_app_data_dir, session_id);
+        #[cfg(not(test))]
+        unreachable!("production always has a SQLite event authority")
     }
 
     pub fn load_session_events(
         &self,
-        app_data_dir: &Path,
+        _app_data_dir: &Path,
         session_id: &str,
     ) -> Result<Vec<AgentSessionEvent>, String> {
         if let Some(projection) = self.canonical_session_projection(session_id)? {
@@ -4869,7 +4789,12 @@ impl SessionStore {
         if self.canonical_authority_active() {
             return Ok(Vec::new());
         }
-        self.storage.load_session_events(app_data_dir, session_id)
+        #[cfg(test)]
+        return self
+            .test_storage()
+            .load_session_events(_app_data_dir, session_id);
+        #[cfg(not(test))]
+        unreachable!("production always has a SQLite event authority")
     }
 
     /// Read only the bounded reducer input owned by the current session
@@ -4877,7 +4802,7 @@ impl SessionStore {
     /// instead of replaying historical turns.
     pub(crate) fn load_current_reducer_events(
         &self,
-        app_data_dir: &Path,
+        _app_data_dir: &Path,
         session_id: &str,
     ) -> Result<Vec<AgentSessionEvent>, String> {
         if let Some(projection) = self.canonical_session_projection(session_id)? {
@@ -4886,13 +4811,20 @@ impl SessionStore {
         if self.canonical_authority_active() {
             return Ok(Vec::new());
         }
-        let events = self.storage.load_session_events(app_data_dir, session_id)?;
-        Ok(bounded_reducer_events(Vec::new(), &events))
+        #[cfg(test)]
+        {
+            let events = self
+                .test_storage()
+                .load_session_events(_app_data_dir, session_id)?;
+            Ok(bounded_reducer_events(Vec::new(), &events))
+        }
+        #[cfg(not(test))]
+        unreachable!("production always has a SQLite event authority")
     }
 
     pub fn load_queue_paused_at(
         &self,
-        app_data_dir: &Path,
+        _app_data_dir: &Path,
         session_id: &str,
     ) -> Result<Option<f64>, String> {
         if let Some(projection) = self.canonical_session_projection(session_id)? {
@@ -4901,7 +4833,12 @@ impl SessionStore {
         if self.canonical_authority_active() {
             return Ok(None);
         }
-        self.storage.load_queue_paused_at(app_data_dir, session_id)
+        #[cfg(test)]
+        return self
+            .test_storage()
+            .load_queue_paused_at(_app_data_dir, session_id);
+        #[cfg(not(test))]
+        unreachable!("production always has a SQLite event authority")
     }
 
     #[cfg(test)]
@@ -4930,13 +4867,15 @@ impl SessionStore {
         if !self.canonical_authority_active() {
             #[cfg(test)]
             {
-                self.storage.append_session_events(
+                self.test_storage().append_session_events(
                     app_data_dir,
                     session_id,
                     std::slice::from_ref(&event),
                 )?;
-                let events = self.storage.load_session_events(app_data_dir, session_id)?;
-                if self.storage.take_event_log_recovered(session_id) {
+                let events = self
+                    .test_storage()
+                    .load_session_events(app_data_dir, session_id)?;
+                if self.test_storage().take_event_log_recovered(session_id) {
                     self.notify_event_log_recovered(session_id);
                 }
                 return self.project_session_events(app_data_dir, session_id, &events);
@@ -4970,13 +4909,15 @@ impl SessionStore {
         if !self.canonical_authority_active() {
             #[cfg(test)]
             {
-                self.storage.append_session_events(
+                self.test_storage().append_session_events(
                     app_data_dir,
                     session_id,
                     std::slice::from_ref(&event),
                 )?;
-                let events = self.storage.load_session_events(app_data_dir, session_id)?;
-                if self.storage.take_event_log_recovered(session_id) {
+                let events = self
+                    .test_storage()
+                    .load_session_events(app_data_dir, session_id)?;
+                if self.test_storage().take_event_log_recovered(session_id) {
                     self.notify_event_log_recovered(session_id);
                 }
                 let projected = TurnEventLog::from_events(events.clone()).project();
@@ -5059,7 +5000,7 @@ impl SessionStore {
                 .event_authority
                 .read()
                 .as_ref()
-                .and_then(|authority| authority.projection_codec.clone())
+                .map(|authority| authority.projection_codec.clone())
                 .ok_or_else(|| "agent-session projection codec is unavailable".to_string())?;
             let previous = self
                 .canonical_session_projection(session_id)?
@@ -5285,14 +5226,14 @@ impl SessionStore {
                         projected_result = Some((projected, output));
                         Ok(commit)
                     };
-                    self.storage.commit_session_projection(
+                    self.test_storage().commit_session_projection(
                         app_data_dir,
                         session_id,
                         events,
                         &mut prepare,
                     )?
                 };
-                if self.storage.take_event_log_recovered(session_id) {
+                if self.test_storage().take_event_log_recovered(session_id) {
                     self.notify_event_log_recovered(session_id);
                 }
                 let (projected, output) = projected_result
@@ -5472,7 +5413,13 @@ impl SessionStore {
                         .map(|projection| projection.reducer_events)
                         .unwrap_or_default()
                 } else {
-                    self.storage.load_session_events(app_data_dir, session_id)?
+                    #[cfg(test)]
+                    {
+                        self.test_storage()
+                            .load_session_events(app_data_dir, session_id)?
+                    }
+                    #[cfg(not(test))]
+                    unreachable!("production always has a SQLite event authority")
                 };
                 events
                     .iter()
@@ -5506,12 +5453,9 @@ impl SessionStore {
         if !self.canonical_authority_active() {
             #[cfg(test)]
             {
-                self.storage.append_session_event_without_projection(
-                    app_data_dir,
-                    session_id,
-                    &event,
-                )?;
-                if self.storage.take_event_log_recovered(session_id) {
+                self.test_storage()
+                    .append_session_event_without_projection(app_data_dir, session_id, &event)?;
+                if self.test_storage().take_event_log_recovered(session_id) {
                     self.notify_event_log_recovered(session_id);
                 }
                 return Ok(());
@@ -5920,7 +5864,8 @@ impl SessionStore {
             #[cfg(test)]
             {
                 let mut updated = None;
-                self.storage.update_session_meta_and_append_session_events(
+                self.test_storage()
+                    .update_session_meta_and_append_session_events(
                 app_data_dir,
                 session_id,
                 &mut |meta| {
@@ -5952,11 +5897,10 @@ impl SessionStore {
                 crate::domain::local_event::ObligationRecord::BackendSessionRecovery {
                     session_id: stored_session_id,
                     recovery_id: stored_recovery_id,
-                    detail: Some(
+                    detail:
                         crate::domain::local_event::BackendSessionRecoveryObligationRecord::EffectReserved {
                             ..
                         },
-                    ),
                     state: crate::domain::local_event::ObligationStateRecord::EffectReserved,
                 } if stored_session_id == session_id && stored_recovery_id == recovery_id => {
                     return self
@@ -5966,14 +5910,13 @@ impl SessionStore {
                 crate::domain::local_event::ObligationRecord::BackendSessionRecovery {
                     session_id: stored_session_id,
                     recovery_id: stored_recovery_id,
-                    detail: Some(
+                    detail:
                         crate::domain::local_event::BackendSessionRecoveryObligationRecord::Completed {
                             ..
                         }
                         | crate::domain::local_event::BackendSessionRecoveryObligationRecord::Failed {
                             ..
                         },
-                    ),
                     ..
                 } if stored_session_id == session_id && stored_recovery_id == recovery_id => {}
                 _ => {
@@ -5988,13 +5931,12 @@ impl SessionStore {
             crate::domain::local_event::ObligationRecord::BackendSessionRecovery {
             session_id: session_id.to_string(),
             recovery_id: recovery_id.to_string(),
-                detail: Some(
+                detail:
                     crate::domain::local_event::BackendSessionRecoveryObligationRecord::EffectReserved {
                         old_provider_session_generation,
                         reason,
                         reserved_at_bits: at.to_bits(),
                     },
-                ),
                 state: crate::domain::local_event::ObligationStateRecord::EffectReserved,
             };
         let obligation = backend_recovery_obligation_mutation(
@@ -6074,7 +6016,8 @@ impl SessionStore {
             #[cfg(test)]
             {
                 let mut updated = None;
-                self.storage.update_session_meta_and_append_session_events(
+                self.test_storage()
+                    .update_session_meta_and_append_session_events(
                 app_data_dir,
                 session_id,
                 &mut |meta| {
@@ -6109,11 +6052,10 @@ impl SessionStore {
             crate::domain::local_event::ObligationRecord::BackendSessionRecovery {
                 session_id: stored_session_id,
                 recovery_id: stored_recovery_id,
-                detail: Some(
+                detail:
                     crate::domain::local_event::BackendSessionRecoveryObligationRecord::Completed {
                         ..
                     },
-                ),
                 state: crate::domain::local_event::ObligationStateRecord::Completed,
             } if stored_session_id == session_id && stored_recovery_id == recovery_id => {
                 return self
@@ -6123,12 +6065,11 @@ impl SessionStore {
             crate::domain::local_event::ObligationRecord::BackendSessionRecovery {
                 session_id: stored_session_id,
                 recovery_id: stored_recovery_id,
-                detail: Some(
+                detail:
                     crate::domain::local_event::BackendSessionRecoveryObligationRecord::EffectReserved {
                         old_provider_session_generation: stored_generation,
                         ..
                     },
-                ),
                 state: crate::domain::local_event::ObligationStateRecord::EffectReserved,
             } if stored_session_id == session_id
                 && stored_recovery_id == recovery_id
@@ -6136,11 +6077,10 @@ impl SessionStore {
             crate::domain::local_event::ObligationRecord::BackendSessionRecovery {
                 session_id: stored_session_id,
                 recovery_id: stored_recovery_id,
-                detail: Some(
+                detail:
                     crate::domain::local_event::BackendSessionRecoveryObligationRecord::Failed {
                         ..
                     },
-                ),
                 ..
             } if stored_session_id == session_id && stored_recovery_id == recovery_id => {
                 return Err("backend recovery reservation is not pending".to_string());
@@ -6153,14 +6093,13 @@ impl SessionStore {
             crate::domain::local_event::ObligationRecord::BackendSessionRecovery {
                 session_id: session_id.to_string(),
                 recovery_id: recovery_id.to_string(),
-                detail: Some(
+                detail:
                     crate::domain::local_event::BackendSessionRecoveryObligationRecord::Completed {
                         old_provider_session_generation,
                         provider_session_generation,
                         backend_session_id: backend_session_id.clone(),
                         completed_at_bits: at.to_bits(),
                     },
-                ),
                 state: crate::domain::local_event::ObligationStateRecord::Completed,
             };
         let obligation = backend_recovery_obligation_mutation(
@@ -6280,20 +6219,21 @@ impl SessionStore {
             #[cfg(test)]
             {
                 let mut updated = None;
-                self.storage.update_session_meta_and_append_session_events(
-                    app_data_dir,
-                    session_id,
-                    &mut |meta| {
-                        meta.state = SessionState::Error;
-                        meta.error_reason = Some(error.to_string());
-                        meta.pending_recovery_message = Some(pending_recovery_message.clone());
-                        meta.recovery_publication_snapshot = None;
-                        meta.updated_at = at;
-                        updated = Some(meta.clone());
-                        Ok(())
-                    },
-                    std::slice::from_ref(&event),
-                )?;
+                self.test_storage()
+                    .update_session_meta_and_append_session_events(
+                        app_data_dir,
+                        session_id,
+                        &mut |meta| {
+                            meta.state = SessionState::Error;
+                            meta.error_reason = Some(error.to_string());
+                            meta.pending_recovery_message = Some(pending_recovery_message.clone());
+                            meta.recovery_publication_snapshot = None;
+                            meta.updated_at = at;
+                            updated = Some(meta.clone());
+                            Ok(())
+                        },
+                        std::slice::from_ref(&event),
+                    )?;
                 return updated.ok_or_else(|| format!("Session not found: {session_id}"));
             }
             #[cfg(not(test))]
@@ -6308,11 +6248,10 @@ impl SessionStore {
             crate::domain::local_event::ObligationRecord::BackendSessionRecovery {
                 session_id: stored_session_id,
                 recovery_id: stored_recovery_id,
-                detail: Some(
+                detail:
                     crate::domain::local_event::BackendSessionRecoveryObligationRecord::Failed {
                         ..
                     },
-                ),
                 state: crate::domain::local_event::ObligationStateRecord::Failed,
             } if stored_session_id == session_id && stored_recovery_id == recovery_id => {
                 return self
@@ -6322,21 +6261,19 @@ impl SessionStore {
             crate::domain::local_event::ObligationRecord::BackendSessionRecovery {
                 session_id: stored_session_id,
                 recovery_id: stored_recovery_id,
-                detail: Some(
+                detail:
                     crate::domain::local_event::BackendSessionRecoveryObligationRecord::EffectReserved {
                         ..
                     },
-                ),
                 state: crate::domain::local_event::ObligationStateRecord::EffectReserved,
             } if stored_session_id == session_id && stored_recovery_id == recovery_id => {}
             crate::domain::local_event::ObligationRecord::BackendSessionRecovery {
                 session_id: stored_session_id,
                 recovery_id: stored_recovery_id,
-                detail: Some(
+                detail:
                     crate::domain::local_event::BackendSessionRecoveryObligationRecord::Completed {
                         ..
                     },
-                ),
                 ..
             } if stored_session_id == session_id && stored_recovery_id == recovery_id => {
                 return Err("backend recovery reservation is not pending".to_string());
@@ -6350,12 +6287,11 @@ impl SessionStore {
             crate::domain::local_event::ObligationRecord::BackendSessionRecovery {
                 session_id: session_id.to_string(),
                 recovery_id: recovery_id.to_string(),
-                detail: Some(
+                detail:
                     crate::domain::local_event::BackendSessionRecoveryObligationRecord::Failed {
                         error_sha256: error_digest,
                         failed_at_bits: at.to_bits(),
                     },
-                ),
                 state: crate::domain::local_event::ObligationStateRecord::Failed,
             };
         let obligation = backend_recovery_obligation_mutation(
@@ -6603,9 +6539,9 @@ impl SessionStore {
         self.commit_agent_events(app_data_dir, session_id, events)?;
         #[cfg(test)]
         if !self.canonical_authority_active() {
-            self.storage
+            self.test_storage()
                 .append_session_events(app_data_dir, session_id, events)?;
-            if self.storage.take_event_log_recovered(session_id) {
+            if self.test_storage().take_event_log_recovered(session_id) {
                 self.notify_event_log_recovered(session_id);
             }
         }
@@ -6632,9 +6568,9 @@ impl SessionStore {
         )?;
         #[cfg(test)]
         if !self.canonical_authority_active() {
-            self.storage
+            self.test_storage()
                 .append_session_events(app_data_dir, session_id, events)?;
-            if self.storage.take_event_log_recovered(session_id) {
+            if self.test_storage().take_event_log_recovered(session_id) {
                 self.notify_event_log_recovered(session_id);
             }
         }
@@ -6647,12 +6583,15 @@ impl SessionStore {
         session_id: &str,
         agent_message_id: &str,
     ) -> Result<Option<ChatMessage>, String> {
+        #[cfg(test)]
         if !self.canonical_authority_active() {
-            return self.storage.load_previous_human_message_before_agent(
-                app_data_dir,
-                session_id,
-                agent_message_id,
-            );
+            return self
+                .test_storage()
+                .load_previous_human_message_before_agent(
+                    app_data_dir,
+                    session_id,
+                    agent_message_id,
+                );
         }
         let Some(session) = self.load_full_session_for_restore(app_data_dir, session_id)? else {
             return Ok(None);
@@ -6682,7 +6621,8 @@ impl SessionStore {
         self.remove_canonical_session_projection(session_id)?;
         #[cfg(test)]
         if !self.canonical_authority_active() {
-            self.storage.remove_session(_app_data_dir, session_id);
+            self.test_storage()
+                .remove_session(_app_data_dir, session_id);
         }
         Ok(())
     }
@@ -6725,7 +6665,7 @@ impl SessionStore {
     /// Do not pass shell/page sessions returned by `get_session_shell` or `get_session_page`.
     /// Normal runtime updates must use `append_message`, `persist_message_parts`, or meta-only
     /// update methods so page-external message chunks cannot be removed by partial input.
-    pub fn save_full_session_for_migration_or_restore(
+    pub fn save_full_session_for_restore(
         &self,
         app_data_dir: &Path,
         session: &ChatSession,
@@ -6808,8 +6748,8 @@ impl SessionStore {
         )?;
         #[cfg(test)]
         if !self.canonical_authority_active() {
-            self.storage
-                .save_full_session_for_migration_or_restore(app_data_dir, session)?;
+            self.test_storage()
+                .save_full_session_for_restore(app_data_dir, session)?;
         }
         if previous_state.as_ref() != Some(&session.state) {
             let revision = self.require_meta(app_data_dir, &session.id)?.state_revision;
@@ -6888,16 +6828,18 @@ impl SessionStore {
             {
                 let mut update = Some(update);
                 let mut state_changed = false;
-                let meta =
-                    self.storage
-                        .update_session_meta(app_data_dir, session_id, &mut |meta| {
-                            let previous_state = meta.state.clone();
-                            update.take().expect("legacy meta update runs once")(meta)?;
-                            meta.state_revision =
-                                next_sqlite_counter(meta.state_revision, "session state revision")?;
-                            state_changed = previous_state != meta.state;
-                            Ok(())
-                        })?;
+                let meta = self.test_storage().update_session_meta(
+                    app_data_dir,
+                    session_id,
+                    &mut |meta| {
+                        let previous_state = meta.state.clone();
+                        update.take().expect("legacy meta update runs once")(meta)?;
+                        meta.state_revision =
+                            next_sqlite_counter(meta.state_revision, "session state revision")?;
+                        state_changed = previous_state != meta.state;
+                        Ok(())
+                    },
+                )?;
                 return Ok((meta, state_changed));
             }
             #[cfg(not(test))]
@@ -6930,12 +6872,14 @@ impl SessionStore {
             {
                 let mut update = Some(update);
                 let mut changed = false;
-                let meta =
-                    self.storage
-                        .update_session_meta(app_data_dir, session_id, &mut |meta| {
-                            changed = update.take().expect("legacy meta update runs once")(meta)?;
-                            Ok(())
-                        })?;
+                let meta = self.test_storage().update_session_meta(
+                    app_data_dir,
+                    session_id,
+                    &mut |meta| {
+                        changed = update.take().expect("legacy meta update runs once")(meta)?;
+                        Ok(())
+                    },
+                )?;
                 return Ok(changed.then_some(meta));
             }
             #[cfg(not(test))]
@@ -7332,7 +7276,7 @@ impl SessionStore {
 
     pub fn get_session_page(
         &self,
-        app_data_dir: &Path,
+        _app_data_dir: &Path,
         session_id: &str,
         cursor: Option<PageCursor>,
         limit: usize,
@@ -7342,8 +7286,12 @@ impl SessionStore {
                 .canonical_message_page(session_id, cursor, limit)
                 .map(Some);
         }
-        self.storage
-            .get_session_page(app_data_dir, session_id, cursor, limit)
+        #[cfg(test)]
+        return self
+            .test_storage()
+            .get_session_page(_app_data_dir, session_id, cursor, limit);
+        #[cfg(not(test))]
+        unreachable!("production always has a SQLite event authority")
     }
 
     #[cfg(test)]
@@ -7361,7 +7309,7 @@ impl SessionStore {
         if !self.canonical_authority_active() {
             #[cfg(test)]
             return self
-                .storage
+                .test_storage()
                 .append_message(_app_data_dir, session_id, message);
             #[cfg(not(test))]
             return Err("agent-session SQLite event authority is not configured".to_string());
@@ -7391,7 +7339,7 @@ impl SessionStore {
 
     pub fn get_session_attachment(
         &self,
-        app_data_dir: &Path,
+        _app_data_dir: &Path,
         session_id: &str,
         attachment_id: &str,
     ) -> Result<Option<SessionAttachment>, String> {
@@ -7429,13 +7377,19 @@ impl SessionStore {
                         .transpose()
                 });
         }
-        self.storage
-            .get_session_attachment(app_data_dir, session_id, attachment_id)
+        #[cfg(test)]
+        return self.test_storage().get_session_attachment(
+            _app_data_dir,
+            session_id,
+            attachment_id,
+        );
+        #[cfg(not(test))]
+        unreachable!("production always has a SQLite event authority")
     }
 
     pub fn get_session_tool_output(
         &self,
-        app_data_dir: &Path,
+        _app_data_dir: &Path,
         session_id: &str,
         tool_output_id: &str,
     ) -> Result<Option<SessionToolOutput>, String> {
@@ -7467,8 +7421,14 @@ impl SessionStore {
                         .transpose()
                 });
         }
-        self.storage
-            .get_session_tool_output(app_data_dir, session_id, tool_output_id)
+        #[cfg(test)]
+        return self.test_storage().get_session_tool_output(
+            _app_data_dir,
+            session_id,
+            tool_output_id,
+        );
+        #[cfg(not(test))]
+        unreachable!("production always has a SQLite event authority")
     }
 
     /// Atomically records streaming-domain events and the exact public message snapshot.
@@ -7568,7 +7528,7 @@ impl SessionStore {
         }
         if !self.canonical_authority_active() {
             #[cfg(test)]
-            return self.storage.persist_message_parts(
+            return self.test_storage().persist_message_parts(
                 _app_data_dir,
                 session_id,
                 message_id,
@@ -7647,17 +7607,16 @@ mod tests {
     #[test]
     fn backend_recovery_obligation_mutation_keeps_closed_identity_and_detail() {
         let record = crate::domain::local_event::ObligationRecord::BackendSessionRecovery {
-			session_id: "session-1".to_string(),
-			recovery_id: "recovery-1".to_string(),
-			detail: Some(
-				crate::domain::local_event::BackendSessionRecoveryObligationRecord::EffectReserved {
-					old_provider_session_generation: 7,
-					reason: BackendSessionRecoveryReason::BackendSessionLost,
-					reserved_at_bits: 42,
-				},
-			),
-			state: crate::domain::local_event::ObligationStateRecord::EffectReserved,
-		};
+            session_id: "session-1".to_string(),
+            recovery_id: "recovery-1".to_string(),
+            detail:
+                crate::domain::local_event::BackendSessionRecoveryObligationRecord::EffectReserved {
+                    old_provider_session_generation: 7,
+                    reason: BackendSessionRecoveryReason::BackendSessionLost,
+                    reserved_at_bits: 42,
+                },
+            state: crate::domain::local_event::ObligationStateRecord::EffectReserved,
+        };
         let mutation = backend_recovery_obligation_mutation(
             "backend-recovery:session-1:recovery-1".to_string(),
             record.clone(),
@@ -7887,7 +7846,7 @@ mod tests {
             }),
         );
         writer
-            .save_full_session_for_migration_or_restore(app_data_dir.path(), &workflow)
+            .save_full_session_for_restore(app_data_dir.path(), &workflow)
             .unwrap();
 
         for session_id in [&active.id, &closed.id, &workflow.id] {
@@ -7999,13 +7958,13 @@ mod tests {
             ),
         )
         .unwrap();
-        let generation_id = local_store.generation_id().to_string();
+        let installation_id = local_store.installation_id().to_string();
         let writer = crate::test_support::build_session_store();
         let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
             local_store.clone();
-        writer.set_local_event_repository_with_projection_codec(
+        writer.set_local_event_repository(
             repository,
-            generation_id.clone(),
+            installation_id.clone(),
             Arc::new(
                 crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
             ),
@@ -8050,9 +8009,9 @@ mod tests {
         let reopened = crate::test_support::build_session_store();
         let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
             local_store;
-        reopened.set_local_event_repository_with_projection_codec(
+        reopened.set_local_event_repository(
             repository,
-            generation_id,
+            installation_id,
             Arc::new(
                 crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
             ),
@@ -8100,13 +8059,13 @@ mod tests {
             ),
         )
         .unwrap();
-        let generation_id = local_store.generation_id().to_string();
+        let installation_id = local_store.installation_id().to_string();
         let writer = crate::test_support::build_session_store();
         let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
             local_store.clone();
-        writer.set_local_event_repository_with_projection_codec(
+        writer.set_local_event_repository(
             repository,
-            generation_id.clone(),
+            installation_id.clone(),
             Arc::new(
                 crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
             ),
@@ -8156,7 +8115,7 @@ mod tests {
             }),
         );
         writer
-            .save_full_session_for_migration_or_restore(app_data_dir.path(), &workflow)
+            .save_full_session_for_restore(app_data_dir.path(), &workflow)
             .unwrap();
 
         for session_id in [&active.id, &closed.id, &archived.id, &workflow.id] {
@@ -8239,14 +8198,13 @@ mod tests {
                 ),
             )
             .unwrap();
-        assert_eq!(reopened_local_store.generation_id(), generation_id);
-        assert!(reopened_local_store.normal_admission_ready());
+        assert_eq!(reopened_local_store.installation_id(), installation_id);
         let reopened = crate::test_support::build_session_store();
         let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
             reopened_local_store;
-        reopened.set_local_event_repository_with_projection_codec(
+        reopened.set_local_event_repository(
             repository,
-            generation_id,
+            installation_id,
             Arc::new(
                 crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
             ),
@@ -8383,13 +8341,12 @@ mod tests {
                 crate::domain::local_event::ObligationRecord::BackendSessionRecovery {
                     session_id: stored_session_id,
                     recovery_id: stored_recovery_id,
-                    detail: Some(
+                    detail:
                         crate::domain::local_event::BackendSessionRecoveryObligationRecord::EffectReserved {
                             old_provider_session_generation: 1,
                             reason: BackendSessionRecoveryReason::BackendSessionLost,
                             ..
-                        }
-                    ),
+                        },
                     state: crate::domain::local_event::ObligationStateRecord::EffectReserved,
                 } if stored_session_id == session_id && stored_recovery_id == recovery_id
             ));
@@ -8509,78 +8466,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_authority_remains_readable_while_canonical_mutation_is_closed() {
-        let app_data_dir = tempfile::tempdir().unwrap();
-        let store = crate::test_support::build_session_store();
-        let session = super::super::create_session_internal(
-            &store,
-            app_data_dir.path(),
-            "/repo",
-            Some("codex".to_string()),
-        )
-        .unwrap();
-        let local_store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
-            crate::adaptor::gateway::local_event_store::LocalEventStoreConfig {
-                app_data_root: app_data_dir.path().to_path_buf(),
-                clock: Arc::new(
-                    crate::adaptor::gateway::local_event_store::clock::FakeStoreClock::at(1_000),
-                ),
-                registry: Arc::new(
-                    crate::adaptor::gateway::local_event_store::envelope::EventCodecRegistry::new(),
-                ),
-                fault: Arc::new(
-                    crate::adaptor::gateway::local_event_store::fault::FaultInjector::new(),
-                ),
-            },
-        )
-        .unwrap();
-        let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
-            local_store.clone();
-        store.set_local_event_repository(repository, local_store.generation_id().to_string());
-
-        let summaries = store.list_sessions(app_data_dir.path(), "/repo").unwrap();
-        assert_eq!(summaries.len(), 1);
-        assert_eq!(summaries[0].id, session.id);
-        assert!(store
-            .set_session_state(app_data_dir.path(), &session.id, SessionState::Closed)
-            .unwrap_err()
-            .contains("migration is in progress"));
-        assert!(store
-            .append_session_events(
-                app_data_dir.path(),
-                &session.id,
-                &[AgentSessionEvent::QueuePaused { at: 8.0 }],
-            )
-            .unwrap_err()
-            .contains("migration is in progress"));
-        assert!(store
-            .begin_backend_session_recovery(
-                app_data_dir.path(),
-                &session.id,
-                "recovery-during-migration",
-                BackendSessionRecoveryReason::BackendSessionLost,
-            )
-            .unwrap_err()
-            .contains("migration is in progress"));
-        assert!(store
-            .remove_session_for_rollback(app_data_dir.path(), &session.id)
-            .unwrap_err()
-            .contains("migration is in progress"));
-        assert!(store
-            .load_session_events(app_data_dir.path(), &session.id)
-            .unwrap()
-            .is_empty());
-        assert_eq!(
-            store
-                .get_session_meta(app_data_dir.path(), &session.id)
-                .unwrap()
-                .unwrap()
-                .state,
-            session.state
-        );
-    }
-
-    #[test]
     fn b060_application_shutdown_inventory_uses_canonical_session_ownership_and_state() {
         let app_data_dir = tempfile::tempdir().unwrap();
         let local_store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
@@ -8589,14 +8474,13 @@ mod tests {
             ),
         )
         .unwrap();
-        assert!(local_store.normal_admission_ready());
 
         let store = crate::test_support::build_session_store();
         let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
             local_store.clone();
-        store.set_local_event_repository_with_projection_codec(
+        store.set_local_event_repository(
             repository,
-            local_store.generation_id().to_string(),
+            local_store.installation_id().to_string(),
             Arc::new(
                 crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
             ),

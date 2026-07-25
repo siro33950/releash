@@ -3,14 +3,9 @@
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
-use crate::adaptor::gateway::agent_session::session_storage::{
-    decode_agent_session_events_v1, encode_agent_session_events_v1,
-};
 use crate::domain::agent_session::entities::{
-    InterruptReason, PermissionAllowedPrompt, PermissionDecision as EntityPermissionDecision,
-    PermissionQuestion, PermissionQuestionOption, PermissionRequest, PermissionRequestBody,
-    PermissionRequestStatus, PermissionResponse, PermissionResponseDecision, TokenUsage,
-    TurnResult, TurnStopReason,
+    InterruptReason, PermissionResponse, PermissionResponseDecision, TokenUsage, TurnResult,
+    TurnStopReason,
 };
 use crate::domain::agent_session::events::{
     BackendSessionRecoveryReason, RecoveryActionKind, RecoveryResultClassification,
@@ -19,8 +14,7 @@ use crate::domain::agent_session::events::{
 use crate::domain::agent_session::value_objects::JsonPayload;
 use crate::domain::local_event::record::*;
 use crate::domain::local_event::{
-    ApplicationShutdownPhase, CommitOperationKind, OperationKind, QuitIntent,
-    SessionOperationFailureKind, ShutdownPlanKey,
+    CommitOperationKind, OperationKind, QuitIntent, SessionOperationFailureKind, ShutdownPlanKey,
 };
 use crate::domain::workflow::{
     ExecutionInterruptionReason, ExecutionOrigin, ExecutionStatus, TokenUsage as WorkflowTokenUsage,
@@ -41,10 +35,6 @@ pub(crate) enum StoredRecordFamily {
     RecoveryResult,
     ShutdownPlan,
     ShutdownTarget,
-    ShutdownArchive,
-    MigrationCheckpoint,
-    MigrationParity,
-    MigrationQuit,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -240,61 +230,6 @@ semantic_dto!(
     encode_shutdown_target,
     known_shutdown_target_fields
 );
-semantic_dto!(
-    StoredShutdownArchiveV1,
-    ShutdownArchiveRecord,
-    StoredRecordFamily::ShutdownArchive,
-    decode_shutdown_archive,
-    encode_shutdown_archive,
-    known_shutdown_archive_fields
-);
-semantic_dto!(
-    StoredMigrationCheckpointV1,
-    MigrationCheckpointRecord,
-    StoredRecordFamily::MigrationCheckpoint,
-    decode_migration_checkpoint,
-    encode_migration_checkpoint,
-    known_migration_checkpoint_fields
-);
-semantic_dto!(
-    StoredMigrationParityV1,
-    MigrationParityRecord,
-    StoredRecordFamily::MigrationParity,
-    decode_migration_parity,
-    encode_migration_parity,
-    known_migration_parity_fields
-);
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct StoredMigrationQuitV1 {
-    #[cfg(test)]
-    raw: String,
-}
-
-impl StoredMigrationQuitV1 {
-    pub(crate) fn decode(raw: &str) -> Result<Self, StoredRecordCodecError> {
-        let (object, schema) = validated_object(StoredRecordFamily::MigrationQuit, raw)?;
-        match schema.as_str() {
-            "migration_application_quit_receipt_v1" => {
-                decode_operation_receipt_for_family(&object, StoredRecordFamily::MigrationQuit)?;
-            }
-            "migration_application_quit_status_v1" => {
-                decode_operation_status_for_family(&object, StoredRecordFamily::MigrationQuit)?;
-            }
-            _ => unreachable!("validated migration quit V1 schema"),
-        }
-        Ok(Self {
-            #[cfg(test)]
-            raw: raw.to_string(),
-        })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn raw(&self) -> &str {
-        &self.raw
-    }
-}
-
 /// A decoded, version-one persistence DTO.  Every variant retains the exact
 /// input bytes so additive fields survive read/export/rewrite unchanged.
 #[cfg(test)]
@@ -308,10 +243,6 @@ pub(crate) enum StoredStateRecordV1 {
     RecoveryResult(StoredRecoveryResultV1),
     ShutdownPlan(StoredShutdownPlanV1),
     ShutdownTarget(StoredShutdownTargetV1),
-    ShutdownArchive(StoredShutdownArchiveV1),
-    MigrationCheckpoint(StoredMigrationCheckpointV1),
-    MigrationParity(StoredMigrationParityV1),
-    MigrationQuit(StoredMigrationQuitV1),
 }
 
 #[cfg(test)]
@@ -341,18 +272,6 @@ impl StoredStateRecordV1 {
             StoredRecordFamily::ShutdownTarget => {
                 Self::ShutdownTarget(StoredShutdownTargetV1::decode(raw)?)
             }
-            StoredRecordFamily::ShutdownArchive => {
-                Self::ShutdownArchive(StoredShutdownArchiveV1::decode(raw)?)
-            }
-            StoredRecordFamily::MigrationCheckpoint => {
-                Self::MigrationCheckpoint(StoredMigrationCheckpointV1::decode(raw)?)
-            }
-            StoredRecordFamily::MigrationParity => {
-                Self::MigrationParity(StoredMigrationParityV1::decode(raw)?)
-            }
-            StoredRecordFamily::MigrationQuit => {
-                Self::MigrationQuit(StoredMigrationQuitV1::decode(raw)?)
-            }
         })
     }
 
@@ -366,10 +285,6 @@ impl StoredStateRecordV1 {
             Self::RecoveryResult(value) => value.raw(),
             Self::ShutdownPlan(value) => value.raw(),
             Self::ShutdownTarget(value) => value.raw(),
-            Self::ShutdownArchive(value) => value.raw(),
-            Self::MigrationCheckpoint(value) => value.raw(),
-            Self::MigrationParity(value) => value.raw(),
-            Self::MigrationQuit(value) => value.raw(),
         }
     }
 }
@@ -736,32 +651,10 @@ fn encode_operation_receipt(
                 Value::String("application_quit_receipt_v1".into()),
             );
             object.insert("operation_id".into(), Value::String(operation_id.clone()));
-            object.insert("plan_id".into(), Value::String(plan.plan_id.clone()));
-            object.insert("epoch".into(), Value::from(plan.epoch));
-            object.insert("intent".into(), Value::String(intent.into()));
-            object.insert("exit_code".into(), Value::from(code));
-            object.insert("t0_ms".into(), Value::from(*t0_ms));
-            object.insert("deadline_ms".into(), Value::from(*deadline_ms));
             object.insert(
-                "binding_hmac".into(),
-                Value::String(hex::encode(binding_hmac)),
+                "shutdown_id".into(),
+                Value::String(plan.shutdown_id.clone()),
             );
-        }
-        OperationReceiptRecord::MigrationApplicationQuit {
-            operation_id,
-            migration_id,
-            intent,
-            t0_ms,
-            deadline_ms,
-            binding_hmac,
-        } => {
-            let (intent, code) = quit_fields(*intent);
-            object.insert(
-                "schema".into(),
-                Value::String("migration_application_quit_receipt_v1".into()),
-            );
-            object.insert("operation_id".into(), Value::String(operation_id.clone()));
-            object.insert("migration_id".into(), Value::String(migration_id.clone()));
             object.insert("intent".into(), Value::String(intent.into()));
             object.insert("exit_code".into(), Value::from(code));
             object.insert("t0_ms".into(), Value::from(*t0_ms));
@@ -843,24 +736,13 @@ fn decode_operation_receipt_for_family(
         "application_quit_receipt_v1" => Ok(OperationReceiptRecord::ApplicationQuit {
             operation_id: string_field(object, family, "operation_id")?,
             plan: ShutdownPlanKey {
-                plan_id: string_field(object, family, "plan_id")?,
-                epoch: required_i64(object, family, "epoch")?,
+                shutdown_id: string_field(object, family, "shutdown_id")?,
             },
             intent: decode_quit_intent(object, family)?,
             t0_ms: required_i64(object, family, "t0_ms")?,
             deadline_ms: required_i64(object, family, "deadline_ms")?,
             binding_hmac: hash_field(object, family, "binding_hmac")?,
         }),
-        "migration_application_quit_receipt_v1" => {
-            Ok(OperationReceiptRecord::MigrationApplicationQuit {
-                operation_id: string_field(object, family, "operation_id")?,
-                migration_id: string_field(object, family, "migration_id")?,
-                intent: decode_quit_intent(object, family)?,
-                t0_ms: required_i64(object, family, "t0_ms")?,
-                deadline_ms: required_i64(object, family, "deadline_ms")?,
-                binding_hmac: hash_field(object, family, "binding_hmac")?,
-            })
-        }
         schema => Err(StoredRecordCodecError::Incompatible {
             family,
             schema: schema.to_string(),
@@ -913,7 +795,6 @@ fn decode_commit_operation_kind(
         "session_lifecycle" => Ok(CommitOperationKind::SessionLifecycle),
         "application_quit" => Ok(CommitOperationKind::ApplicationQuit),
         "recovery" => Ok(CommitOperationKind::Recovery),
-        "migration" => Ok(CommitOperationKind::Migration),
         "user_mutation" => Ok(CommitOperationKind::UserMutation),
         "shutdown_target" => Ok(CommitOperationKind::ShutdownTarget),
         "operation_progress" => Ok(CommitOperationKind::OperationProgress),
@@ -968,18 +849,7 @@ fn known_operation_receipt_fields(schema: &str) -> &'static [&'static str] {
         "application_quit_receipt_v1" => &[
             "schema",
             "operation_id",
-            "plan_id",
-            "epoch",
-            "intent",
-            "exit_code",
-            "t0_ms",
-            "deadline_ms",
-            "binding_hmac",
-        ],
-        "migration_application_quit_receipt_v1" => &[
-            "schema",
-            "operation_id",
-            "migration_id",
+            "shutdown_id",
             "intent",
             "exit_code",
             "t0_ms",
@@ -993,15 +863,12 @@ fn known_operation_receipt_fields(schema: &str) -> &'static [&'static str] {
 fn operation_status_schema(
     value: &OperationStatusRecord,
 ) -> Result<&'static str, StoredRecordCodecError> {
-    let family = StoredRecordFamily::OperationStatus;
-    match (value.kind, value.migration_quit) {
-        (OperationKind::Send, false) => Ok("send_status_v1"),
-        (OperationKind::PermissionResponse, false) => Ok("permission_response_status_v1"),
-        (OperationKind::Stop, false) => Ok("stop_status_v1"),
-        (OperationKind::SessionLifecycle, false) => Ok("slc_status_v1"),
-        (OperationKind::ApplicationQuit, false) => Ok("application_quit_status_v1"),
-        (OperationKind::ApplicationQuit, true) => Ok("migration_application_quit_status_v1"),
-        _ => malformed(family),
+    match value.kind {
+        OperationKind::Send => Ok("send_status_v1"),
+        OperationKind::PermissionResponse => Ok("permission_response_status_v1"),
+        OperationKind::Stop => Ok("stop_status_v1"),
+        OperationKind::SessionLifecycle => Ok("slc_status_v1"),
+        OperationKind::ApplicationQuit => Ok("application_quit_status_v1"),
     }
 }
 
@@ -1075,8 +942,7 @@ fn encode_operation_status_value(value: &OperationStatusValue) -> Value {
         } => serde_json::json!({
             "type":"outcome_unknown",
             "operation_id":operation_id,
-            "plan_id":plan.plan_id,
-            "epoch":plan.epoch,
+            "shutdown_id":plan.shutdown_id,
             "activation_commit_id":activation_commit_id,
         }),
         OperationStatusValue::FailedBeforeActivation { failure } => serde_json::json!({
@@ -1105,13 +971,12 @@ fn decode_operation_status_for_family(
     family: StoredRecordFamily,
 ) -> Result<OperationStatusRecord, StoredRecordCodecError> {
     let schema = required_text(object, family, "schema")?;
-    let (kind, migration_quit, field) = match schema {
-        "send_status_v1" => (OperationKind::Send, false, "status"),
-        "permission_response_status_v1" => (OperationKind::PermissionResponse, false, "status"),
-        "stop_status_v1" => (OperationKind::Stop, false, "state"),
-        "slc_status_v1" => (OperationKind::SessionLifecycle, false, "state"),
-        "application_quit_status_v1" => (OperationKind::ApplicationQuit, false, "state"),
-        "migration_application_quit_status_v1" => (OperationKind::ApplicationQuit, true, "state"),
+    let (kind, field) = match schema {
+        "send_status_v1" => (OperationKind::Send, "status"),
+        "permission_response_status_v1" => (OperationKind::PermissionResponse, "status"),
+        "stop_status_v1" => (OperationKind::Stop, "state"),
+        "slc_status_v1" => (OperationKind::SessionLifecycle, "state"),
+        "application_quit_status_v1" => (OperationKind::ApplicationQuit, "state"),
         _ => {
             return Err(StoredRecordCodecError::Incompatible {
                 family,
@@ -1192,8 +1057,7 @@ fn decode_operation_status_for_family(
         "outcome_unknown" => OperationStatusValue::OutcomeUnknown {
             operation_id: string_field(nested, family, "operation_id")?,
             plan: ShutdownPlanKey {
-                plan_id: string_field(nested, family, "plan_id")?,
-                epoch: required_i64(nested, family, "epoch")?,
+                shutdown_id: string_field(nested, family, "shutdown_id")?,
             },
             activation_commit_id: string_field(nested, family, "activation_commit_id")?,
         },
@@ -1248,11 +1112,7 @@ fn decode_operation_status_for_family(
             })
         }
     };
-    Ok(OperationStatusRecord {
-        kind,
-        migration_quit,
-        value,
-    })
+    Ok(OperationStatusRecord { kind, value })
 }
 
 fn known_operation_status_fields(_schema: &str) -> &'static [&'static str] {
@@ -1263,7 +1123,6 @@ fn failure_kind_label(value: SessionOperationFailureKind) -> &'static str {
     match value {
         SessionOperationFailureKind::StorageUnavailable => "storage_unavailable",
         SessionOperationFailureKind::StorageCorrupt => "storage_corrupt",
-        SessionOperationFailureKind::MigrationBlocked => "migration_blocked",
         SessionOperationFailureKind::PersistFailure => "persist_failure",
         SessionOperationFailureKind::ProtocolIncompatible => "protocol_incompatible",
         SessionOperationFailureKind::ProviderUnavailable => "provider_unavailable",
@@ -1279,9 +1138,6 @@ fn failure_kind_label(value: SessionOperationFailureKind) -> &'static str {
         SessionOperationFailureKind::InvalidEffectIntent => "invalid_effect_intent",
         SessionOperationFailureKind::PreviousShutdownReconciliationRequired => {
             "previous_shutdown_reconciliation_required"
-        }
-        SessionOperationFailureKind::PreviousShutdownCompactionPending => {
-            "previous_shutdown_compaction_pending"
         }
         SessionOperationFailureKind::Internal => "internal",
     }
@@ -1305,7 +1161,6 @@ fn parse_failure_kind(raw: &str) -> Option<SessionOperationFailureKind> {
     Some(match normalized.as_str() {
         "storage_unavailable" => SessionOperationFailureKind::StorageUnavailable,
         "storage_corrupt" => SessionOperationFailureKind::StorageCorrupt,
-        "migration_blocked" => SessionOperationFailureKind::MigrationBlocked,
         "persist_failure" => SessionOperationFailureKind::PersistFailure,
         "protocol_incompatible" => SessionOperationFailureKind::ProtocolIncompatible,
         "provider_unavailable" => SessionOperationFailureKind::ProviderUnavailable,
@@ -1321,9 +1176,6 @@ fn parse_failure_kind(raw: &str) -> Option<SessionOperationFailureKind> {
         "invalid_effect_intent" => SessionOperationFailureKind::InvalidEffectIntent,
         "previous_shutdown_reconciliation_required" => {
             SessionOperationFailureKind::PreviousShutdownReconciliationRequired
-        }
-        "previous_shutdown_compaction_pending" => {
-            SessionOperationFailureKind::PreviousShutdownCompactionPending
         }
         "internal" => SessionOperationFailureKind::Internal,
         _ => return None,
@@ -1543,35 +1395,7 @@ fn decode_terminal_reason(
     }
 }
 
-fn encode_legacy_event_observation(
-    event: &crate::domain::agent_session::events::AgentSessionDomainEvent,
-    family: StoredRecordFamily,
-) -> Result<Value, StoredRecordCodecError> {
-    let bytes = encode_agent_session_events_v1(std::slice::from_ref(event), false)
-        .map_err(|_| StoredRecordCodecError::Malformed { family })?;
-    serde_json::from_slice(&bytes).map_err(|_| StoredRecordCodecError::Malformed { family })
-}
-
-fn decode_legacy_event_observation(
-    value: &Value,
-    family: StoredRecordFamily,
-) -> Result<crate::domain::agent_session::events::AgentSessionDomainEvent, StoredRecordCodecError> {
-    let bytes =
-        serde_json::to_vec(value).map_err(|_| StoredRecordCodecError::Malformed { family })?;
-    let mut events = decode_agent_session_events_v1(&bytes).map_err(|_| {
-        StoredRecordCodecError::Incompatible {
-            family,
-            schema: "legacy_agent_observation_v1".to_string(),
-        }
-    })?;
-    if events.len() != 1 {
-        return malformed(family);
-    }
-    Ok(events.remove(0))
-}
-
 fn encode_terminal(value: &TerminalResultRecord) -> Result<Value, StoredRecordCodecError> {
-    let family = StoredRecordFamily::Terminal;
     Ok(match value {
         TerminalResultRecord::AgentTurn {
             kind,
@@ -1611,32 +1435,8 @@ fn encode_terminal(value: &TerminalResultRecord) -> Result<Value, StoredRecordCo
                 "completed_at_bits".into(),
                 Value::String(completed_at_bits.to_string()),
             );
-            match result {
-                AgentTurnTerminalResultRecord::Current(result) => {
-                    object.insert("turn_result".into(), encode_turn_result(result));
-                }
-                AgentTurnTerminalResultRecord::Legacy {
-                    exit_code,
-                    reason,
-                    token_usage,
-                } => {
-                    let mut legacy = Map::new();
-                    legacy.insert("exit_code".into(), Value::from(*exit_code));
-                    if let Some(reason) = reason {
-                        legacy.insert("reason".into(), Value::String(reason.clone()));
-                    }
-                    if let Some(usage) = token_usage {
-                        legacy.insert(
-                            "token_usage".into(),
-                            serde_json::json!({
-                                "input_tokens":usage.input_tokens,
-                                "output_tokens":usage.output_tokens,
-                            }),
-                        );
-                    }
-                    object.insert("legacy_result".into(), Value::Object(legacy));
-                }
-            }
+            let AgentTurnTerminalResultRecord::Current(result) = result;
+            object.insert("turn_result".into(), encode_turn_result(result));
             Value::Object(object)
         }
         TerminalResultRecord::SessionClosed {
@@ -1681,23 +1481,6 @@ fn encode_terminal(value: &TerminalResultRecord) -> Result<Value, StoredRecordCo
             "terminal_identity":terminal_identity,
             "terminal_result_sha256":hex::encode(terminal_result_sha256),
         }),
-        TerminalResultRecord::LegacyStopResolution {
-            operation_id,
-            session_id,
-            turn_id,
-            resolution,
-            known_observation,
-        } => serde_json::json!({
-            "schema":"legacy_stop_resolution_v1",
-            "operation_id":operation_id,
-            "session_id":session_id,
-            "turn_id":turn_id,
-            "resolution":match resolution {
-                StopResolution::Succeeded => "succeeded",
-                StopResolution::Superseded => "superseded",
-            },
-            "known_observation":encode_legacy_event_observation(known_observation, family)?,
-        }),
     })
 }
 
@@ -1720,34 +1503,15 @@ fn decode_terminal(
                     })
                 }
             };
-            let result = match (object.get("turn_result"), object.get("legacy_result")) {
-                (Some(result), None) => {
-                    AgentTurnTerminalResultRecord::Current(decode_turn_result(result, family)?)
-                }
-                (None, Some(legacy)) => {
-                    let legacy = legacy
-                        .as_object()
-                        .ok_or(StoredRecordCodecError::Malformed { family })?;
-                    AgentTurnTerminalResultRecord::Legacy {
-                        exit_code: i32::try_from(required_i64(legacy, family, "exit_code")?)
-                            .map_err(|_| StoredRecordCodecError::Malformed { family })?,
-                        reason: optional_string(legacy, "reason"),
-                        token_usage: legacy
-                            .get("token_usage")
-                            .map(|usage| {
-                                let usage = usage
-                                    .as_object()
-                                    .ok_or(StoredRecordCodecError::Malformed { family })?;
-                                Ok(TurnTokenUsage {
-                                    input_tokens: u64_field(usage, family, "input_tokens")?,
-                                    output_tokens: u64_field(usage, family, "output_tokens")?,
-                                })
-                            })
-                            .transpose()?,
-                    }
-                }
-                _ => return malformed(family),
-            };
+            let result = AgentTurnTerminalResultRecord::Current(decode_turn_result(
+                object
+                    .get("turn_result")
+                    .ok_or(StoredRecordCodecError::MissingReference {
+                        family,
+                        field: "turn_result",
+                    })?,
+                family,
+            )?);
             Ok(TerminalResultRecord::AgentTurn {
                 kind,
                 session_id: string_field(object, family, "session_id")?,
@@ -1798,30 +1562,6 @@ fn decode_terminal(
             terminal_identity: string_field(object, family, "terminal_identity")?,
             terminal_result_sha256: hash_field(object, family, "terminal_result_sha256")?,
         }),
-        "legacy_stop_resolution_v1" => Ok(TerminalResultRecord::LegacyStopResolution {
-            operation_id: string_field(object, family, "operation_id")?,
-            session_id: string_field(object, family, "session_id")?,
-            turn_id: string_field(object, family, "turn_id")?,
-            resolution: match required_text(object, family, "resolution")? {
-                "succeeded" => StopResolution::Succeeded,
-                "superseded" => StopResolution::Superseded,
-                other => {
-                    return Err(StoredRecordCodecError::Incompatible {
-                        family,
-                        schema: format!("legacy_stop_resolution.{other}"),
-                    })
-                }
-            },
-            known_observation: Box::new(decode_legacy_event_observation(
-                object.get("known_observation").ok_or(
-                    StoredRecordCodecError::MissingReference {
-                        family,
-                        field: "known_observation",
-                    },
-                )?,
-                family,
-            )?),
-        }),
         schema => Err(StoredRecordCodecError::Incompatible {
             family,
             schema: schema.to_string(),
@@ -1840,7 +1580,6 @@ fn known_terminal_fields(schema: &str) -> &'static [&'static str] {
             "streaming_final_seq",
             "completed_at_bits",
             "turn_result",
-            "legacy_result",
         ],
         "session_closed_terminal_v1" => &["schema", "operation_id", "reason", "turn_result"],
         "stop_terminal_v1" => &[
@@ -1851,14 +1590,6 @@ fn known_terminal_fields(schema: &str) -> &'static [&'static str] {
             "turn_result",
         ],
         "stop_superseded_v1" => &["schema", "terminal_identity", "terminal_result_sha256"],
-        "legacy_stop_resolution_v1" => &[
-            "schema",
-            "operation_id",
-            "session_id",
-            "turn_id",
-            "resolution",
-            "known_observation",
-        ],
         _ => &["schema"],
     }
 }
@@ -2395,72 +2126,68 @@ fn encode_obligation(value: &ObligationRecord) -> Result<Value, StoredRecordCode
                 "state".into(),
                 Value::String(obligation_state_label(*state).to_string()),
             );
-            if let Some(detail) = detail {
-                match detail {
-                    BackendSessionRecoveryObligationRecord::EffectReserved {
-                        old_provider_session_generation,
-                        reason,
-                        reserved_at_bits,
-                    } => {
-                        object.insert(
-                            "old_provider_session_generation".into(),
-                            Value::String(old_provider_session_generation.to_string()),
-                        );
-                        object.insert(
-                            "reason".into(),
-                            Value::String(
-                                match reason {
-                                    BackendSessionRecoveryReason::ResumeMismatch => {
-                                        "resume_mismatch"
-                                    }
-                                    BackendSessionRecoveryReason::BackendSessionLost => {
-                                        "backend_session_lost"
-                                    }
+            match detail {
+                BackendSessionRecoveryObligationRecord::EffectReserved {
+                    old_provider_session_generation,
+                    reason,
+                    reserved_at_bits,
+                } => {
+                    object.insert(
+                        "old_provider_session_generation".into(),
+                        Value::String(old_provider_session_generation.to_string()),
+                    );
+                    object.insert(
+                        "reason".into(),
+                        Value::String(
+                            match reason {
+                                BackendSessionRecoveryReason::ResumeMismatch => "resume_mismatch",
+                                BackendSessionRecoveryReason::BackendSessionLost => {
+                                    "backend_session_lost"
                                 }
-                                .to_string(),
-                            ),
-                        );
-                        object.insert(
-                            "reserved_at_bits".into(),
-                            Value::String(reserved_at_bits.to_string()),
-                        );
-                    }
-                    BackendSessionRecoveryObligationRecord::Completed {
-                        old_provider_session_generation,
-                        provider_session_generation,
-                        backend_session_id,
-                        completed_at_bits,
-                    } => {
-                        object.insert(
-                            "old_provider_session_generation".into(),
-                            Value::String(old_provider_session_generation.to_string()),
-                        );
-                        object.insert(
-                            "provider_session_generation".into(),
-                            Value::String(provider_session_generation.to_string()),
-                        );
-                        object.insert(
-                            "backend_session_id".into(),
-                            Value::String(backend_session_id.clone()),
-                        );
-                        object.insert(
-                            "completed_at_bits".into(),
-                            Value::String(completed_at_bits.to_string()),
-                        );
-                    }
-                    BackendSessionRecoveryObligationRecord::Failed {
-                        error_sha256,
-                        failed_at_bits,
-                    } => {
-                        object.insert(
-                            "error_sha256".into(),
-                            Value::String(hex::encode(error_sha256)),
-                        );
-                        object.insert(
-                            "failed_at_bits".into(),
-                            Value::String(failed_at_bits.to_string()),
-                        );
-                    }
+                            }
+                            .to_string(),
+                        ),
+                    );
+                    object.insert(
+                        "reserved_at_bits".into(),
+                        Value::String(reserved_at_bits.to_string()),
+                    );
+                }
+                BackendSessionRecoveryObligationRecord::Completed {
+                    old_provider_session_generation,
+                    provider_session_generation,
+                    backend_session_id,
+                    completed_at_bits,
+                } => {
+                    object.insert(
+                        "old_provider_session_generation".into(),
+                        Value::String(old_provider_session_generation.to_string()),
+                    );
+                    object.insert(
+                        "provider_session_generation".into(),
+                        Value::String(provider_session_generation.to_string()),
+                    );
+                    object.insert(
+                        "backend_session_id".into(),
+                        Value::String(backend_session_id.clone()),
+                    );
+                    object.insert(
+                        "completed_at_bits".into(),
+                        Value::String(completed_at_bits.to_string()),
+                    );
+                }
+                BackendSessionRecoveryObligationRecord::Failed {
+                    error_sha256,
+                    failed_at_bits,
+                } => {
+                    object.insert(
+                        "error_sha256".into(),
+                        Value::String(hex::encode(error_sha256)),
+                    );
+                    object.insert(
+                        "failed_at_bits".into(),
+                        Value::String(failed_at_bits.to_string()),
+                    );
                 }
             }
             Ok(Value::Object(object))
@@ -2592,31 +2319,6 @@ fn encode_obligation(value: &ObligationRecord) -> Result<Value, StoredRecordCode
                     );
                 }
             }
-            Ok(Value::Object(object))
-        }
-        ObligationRecord::LegacyReconciliation {
-            detail,
-            safe_actions,
-            state,
-        } => {
-            let mut object = encode_legacy_reconciliation(detail, family)?;
-            object.insert(
-                "schema".into(),
-                Value::String("legacy_agent_reconciliation_obligation_v1".into()),
-            );
-            object.insert(
-                "safe_actions".into(),
-                Value::Array(
-                    safe_actions
-                        .iter()
-                        .map(|action| Value::String(recovery_action_label(*action).to_string()))
-                        .collect(),
-                ),
-            );
-            object.insert(
-                "state".into(),
-                Value::String(obligation_state_label(*state).to_string()),
-            );
             Ok(Value::Object(object))
         }
         ObligationRecord::ProviderEstablish {
@@ -2907,12 +2609,12 @@ fn decode_obligation_base(
         }),
         "backend_session_recovery_obligation_v1" => {
             let detail = if object.contains_key("error_sha256") {
-                Some(BackendSessionRecoveryObligationRecord::Failed {
+                BackendSessionRecoveryObligationRecord::Failed {
                     error_sha256: hash_field(object, family, "error_sha256")?,
                     failed_at_bits: u64_field(object, family, "failed_at_bits")?,
-                })
+                }
             } else if object.contains_key("backend_session_id") {
-                Some(BackendSessionRecoveryObligationRecord::Completed {
+                BackendSessionRecoveryObligationRecord::Completed {
                     old_provider_session_generation: u64_field(
                         object,
                         family,
@@ -2925,9 +2627,9 @@ fn decode_obligation_base(
                     )?,
                     backend_session_id: string_field(object, family, "backend_session_id")?,
                     completed_at_bits: u64_field(object, family, "completed_at_bits")?,
-                })
-            } else if object.contains_key("old_provider_session_generation") {
-                Some(BackendSessionRecoveryObligationRecord::EffectReserved {
+                }
+            } else {
+                BackendSessionRecoveryObligationRecord::EffectReserved {
                     old_provider_session_generation: u64_field(
                         object,
                         family,
@@ -2944,9 +2646,7 @@ fn decode_obligation_base(
                         }
                     },
                     reserved_at_bits: u64_field(object, family, "reserved_at_bits")?,
-                })
-            } else {
-                None
+                }
             };
             Ok(ObligationRecord::BackendSessionRecovery {
                 session_id: string_field(object, family, "session_id")?,
@@ -3047,27 +2747,6 @@ fn decode_obligation_base(
                 state,
             })
         }
-        "legacy_agent_reconciliation_obligation_v1" => Ok(ObligationRecord::LegacyReconciliation {
-            detail: decode_legacy_reconciliation(object, family)?,
-            safe_actions: object
-                .get("safe_actions")
-                .and_then(Value::as_array)
-                .ok_or(StoredRecordCodecError::MissingReference {
-                    family,
-                    field: "safe_actions",
-                })?
-                .iter()
-                .map(|value| {
-                    decode_recovery_action_kind(
-                        value
-                            .as_str()
-                            .ok_or(StoredRecordCodecError::Malformed { family })?,
-                        family,
-                    )
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-            state,
-        }),
         "provider_establish_obligation_v1" => Ok(ObligationRecord::ProviderEstablish {
             operation_id: string_field(object, family, "operation_id")?,
             effect_identity: string_field(object, family, "effect_identity")?,
@@ -3162,429 +2841,6 @@ fn decode_obligation_base(
         other => Err(StoredRecordCodecError::Incompatible {
             family,
             schema: other.to_string(),
-        }),
-    }
-}
-
-fn encode_permission_request(
-    value: &PermissionRequest,
-    family: StoredRecordFamily,
-) -> Result<Value, StoredRecordCodecError> {
-    let mut object = Map::new();
-    object.insert("id".into(), Value::String(value.id.clone()));
-    if let Some(tool_use_id) = &value.tool_use_id {
-        object.insert("tool_use_id".into(), Value::String(tool_use_id.clone()));
-    }
-    object.insert("tool_name".into(), Value::String(value.tool_name.clone()));
-    match &value.body {
-        PermissionRequestBody::ToolApproval { input } => {
-            object.insert("kind".into(), Value::String("tool_approval".into()));
-            object.insert("input".into(), json_payload_value(input, family)?);
-        }
-        PermissionRequestBody::PlanApproval {
-            plan,
-            allowed_prompts,
-        } => {
-            object.insert("kind".into(), Value::String("plan_approval".into()));
-            object.insert("plan".into(), Value::String(plan.clone()));
-            object.insert(
-                "allowed_prompts".into(),
-                Value::Array(
-                    allowed_prompts
-                        .iter()
-                        .map(
-                            |prompt| serde_json::json!({"tool":prompt.tool,"prompt":prompt.prompt}),
-                        )
-                        .collect(),
-                ),
-            );
-        }
-        PermissionRequestBody::Question { questions } => {
-            object.insert("kind".into(), Value::String("question".into()));
-            object.insert(
-                "questions".into(),
-                Value::Array(
-                    questions
-                        .iter()
-                        .map(|question| {
-                            serde_json::json!({
-                                "question":question.question,
-                                "header":question.header,
-                                "options":question.options.iter().map(|option| serde_json::json!({
-                                    "label":option.label,
-                                    "description":option.description,
-                                })).collect::<Vec<_>>(),
-                                "multi_select":question.multi_select,
-                            })
-                        })
-                        .collect(),
-                ),
-            );
-        }
-        PermissionRequestBody::PermissionGrant { requested } => {
-            object.insert("kind".into(), Value::String("permission_grant".into()));
-            object.insert("input".into(), json_payload_value(requested, family)?);
-        }
-    }
-    for (key, value) in [
-        ("title", &value.title),
-        ("display_name", &value.display_name),
-        ("description", &value.description),
-        ("decision_reason", &value.decision_reason),
-    ] {
-        if let Some(value) = value {
-            object.insert(key.into(), Value::String(value.clone()));
-        }
-    }
-    Ok(Value::Object(object))
-}
-
-fn decode_permission_request(
-    value: &Value,
-    family: StoredRecordFamily,
-) -> Result<PermissionRequest, StoredRecordCodecError> {
-    let object = value
-        .as_object()
-        .ok_or(StoredRecordCodecError::Malformed { family })?;
-    let body = match required_text(object, family, "kind")? {
-        "tool_approval" => PermissionRequestBody::ToolApproval {
-            input: decode_json_payload(
-                object
-                    .get("input")
-                    .ok_or(StoredRecordCodecError::MissingReference {
-                        family,
-                        field: "input",
-                    })?,
-                family,
-            )?,
-        },
-        "plan_approval" => PermissionRequestBody::PlanApproval {
-            plan: string_field(object, family, "plan")?,
-            allowed_prompts: object
-                .get("allowed_prompts")
-                .and_then(Value::as_array)
-                .map(Vec::as_slice)
-                .unwrap_or(&[])
-                .iter()
-                .map(|value| {
-                    let value = value
-                        .as_object()
-                        .ok_or(StoredRecordCodecError::Malformed { family })?;
-                    Ok(PermissionAllowedPrompt {
-                        tool: string_field(value, family, "tool")?,
-                        prompt: string_field(value, family, "prompt")?,
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-        },
-        "question" => PermissionRequestBody::Question {
-            questions: object
-                .get("questions")
-                .and_then(Value::as_array)
-                .ok_or(StoredRecordCodecError::MissingReference {
-                    family,
-                    field: "questions",
-                })?
-                .iter()
-                .map(|value| {
-                    let value = value
-                        .as_object()
-                        .ok_or(StoredRecordCodecError::Malformed { family })?;
-                    Ok(PermissionQuestion {
-                        question: string_field(value, family, "question")?,
-                        header: optional_string(value, "header"),
-                        options: value
-                            .get("options")
-                            .and_then(Value::as_array)
-                            .map(Vec::as_slice)
-                            .unwrap_or(&[])
-                            .iter()
-                            .map(|option| {
-                                let option = option
-                                    .as_object()
-                                    .ok_or(StoredRecordCodecError::Malformed { family })?;
-                                Ok(PermissionQuestionOption {
-                                    label: string_field(option, family, "label")?,
-                                    description: optional_string(option, "description"),
-                                })
-                            })
-                            .collect::<Result<Vec<_>, _>>()?,
-                        multi_select: value
-                            .get("multi_select")
-                            .and_then(Value::as_bool)
-                            .unwrap_or(false),
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-        },
-        "permission_grant" => PermissionRequestBody::PermissionGrant {
-            requested: decode_json_payload(
-                object
-                    .get("input")
-                    .ok_or(StoredRecordCodecError::MissingReference {
-                        family,
-                        field: "input",
-                    })?,
-                family,
-            )?,
-        },
-        other => {
-            return Err(StoredRecordCodecError::Incompatible {
-                family,
-                schema: format!("permission_request_kind.{other}"),
-            })
-        }
-    };
-    let status = match object.get("status") {
-        None | Some(Value::String(_)) => PermissionRequestStatus::Pending,
-        Some(Value::Object(status)) => match required_text(status, family, "type")? {
-            "pending" => PermissionRequestStatus::Pending,
-            "resolved" => PermissionRequestStatus::Resolved {
-                decision: match required_text(status, family, "decision")? {
-                    "allowed" | "allow" => EntityPermissionDecision::Allowed,
-                    "denied" | "deny" => EntityPermissionDecision::Denied,
-                    "cancelled" | "canceled" => EntityPermissionDecision::Cancelled,
-                    other => {
-                        return Err(StoredRecordCodecError::Incompatible {
-                            family,
-                            schema: format!("permission_request_status.{other}"),
-                        })
-                    }
-                },
-                answers: status
-                    .get("answers")
-                    .filter(|value| !value.is_null())
-                    .map(|value| decode_json_payload(value, family))
-                    .transpose()?,
-            },
-            other => {
-                return Err(StoredRecordCodecError::Incompatible {
-                    family,
-                    schema: format!("permission_request_status.{other}"),
-                })
-            }
-        },
-        _ => return malformed(family),
-    };
-    Ok(PermissionRequest {
-        id: string_field(object, family, "id")?,
-        tool_use_id: optional_string(object, "tool_use_id"),
-        parent_tool_use_id: optional_string(object, "parent_tool_use_id"),
-        tool_name: string_field(object, family, "tool_name")?,
-        body,
-        title: optional_string(object, "title"),
-        display_name: optional_string(object, "display_name"),
-        description: optional_string(object, "description"),
-        decision_reason: optional_string(object, "decision_reason"),
-        status,
-    })
-}
-
-fn encode_legacy_reconciliation(
-    value: &LegacyReconciliationRecord,
-    family: StoredRecordFamily,
-) -> Result<Map<String, Value>, StoredRecordCodecError> {
-    let mut object = Map::new();
-    match value {
-        LegacyReconciliationRecord::TurnExecution {
-            session_id,
-            turn_id,
-        } => {
-            object.insert("kind".into(), Value::String("turn_execution".into()));
-            object.insert("session_id".into(), Value::String(session_id.clone()));
-            object.insert("turn_id".into(), Value::String(turn_id.clone()));
-        }
-        LegacyReconciliationRecord::QueuedSend {
-            session_id,
-            queue_item_id,
-            human_message_id,
-            reserved_turn_id,
-            input_ref,
-        } => {
-            object.insert("kind".into(), Value::String("queued_send".into()));
-            object.insert("session_id".into(), Value::String(session_id.clone()));
-            object.insert("queue_item_id".into(), Value::String(queue_item_id.clone()));
-            object.insert(
-                "human_message_id".into(),
-                Value::String(human_message_id.clone()),
-            );
-            object.insert(
-                "reserved_turn_id".into(),
-                Value::String(reserved_turn_id.clone()),
-            );
-            object.insert("input_ref".into(), Value::String(input_ref.clone()));
-        }
-        LegacyReconciliationRecord::Permission {
-            session_id,
-            turn_id,
-            request,
-        } => {
-            object.insert("kind".into(), Value::String("permission".into()));
-            object.insert("session_id".into(), Value::String(session_id.clone()));
-            object.insert("turn_id".into(), Value::String(turn_id.clone()));
-            object.insert(
-                "request".into(),
-                encode_permission_request(request, family)?,
-            );
-        }
-        LegacyReconciliationRecord::ProviderSession { session_id } => {
-            object.insert("kind".into(), Value::String("provider_session".into()));
-            object.insert("session_id".into(), Value::String(session_id.clone()));
-        }
-        LegacyReconciliationRecord::BackendRecovery {
-            session_id,
-            recovery_id,
-        } => {
-            object.insert("kind".into(), Value::String("backend_recovery".into()));
-            object.insert("session_id".into(), Value::String(session_id.clone()));
-            object.insert("recovery_id".into(), Value::String(recovery_id.clone()));
-        }
-        LegacyReconciliationRecord::RecoveryPublication {
-            session_id,
-            pending_message,
-        } => {
-            object.insert("kind".into(), Value::String("recovery_publication".into()));
-            object.insert("session_id".into(), Value::String(session_id.clone()));
-            object.insert(
-                "pending_message".into(),
-                encode_publication_message(pending_message),
-            );
-        }
-        LegacyReconciliationRecord::OperationBinding {
-            operation_kind,
-            operation_id,
-            session_id,
-            known_observation,
-            missing_evidence,
-        } => {
-            object.insert("kind".into(), Value::String("operation_binding".into()));
-            object.insert(
-                "operation_kind".into(),
-                Value::String(operation_kind.label().to_string()),
-            );
-            object.insert("operation_id".into(), Value::String(operation_id.clone()));
-            object.insert("session_id".into(), Value::String(session_id.clone()));
-            object.insert(
-                "known_observation".into(),
-                encode_legacy_event_observation(known_observation, family)?,
-            );
-            object.insert(
-                "missing_evidence".into(),
-                Value::Array(
-                    missing_evidence
-                        .iter()
-                        .map(|value| {
-                            Value::String(
-                                match value {
-                                    LegacyMissingEvidenceRecord::Principal => "principal",
-                                    LegacyMissingEvidenceRecord::ExactCallerBinding => {
-                                        "exact_caller_binding"
-                                    }
-                                    LegacyMissingEvidenceRecord::ImmutableReceipt => {
-                                        "immutable_receipt"
-                                    }
-                                }
-                                .to_string(),
-                            )
-                        })
-                        .collect(),
-                ),
-            );
-        }
-    }
-    Ok(object)
-}
-
-fn decode_legacy_reconciliation(
-    object: &Map<String, Value>,
-    family: StoredRecordFamily,
-) -> Result<LegacyReconciliationRecord, StoredRecordCodecError> {
-    match required_text(object, family, "kind")? {
-        "turn_execution" => Ok(LegacyReconciliationRecord::TurnExecution {
-            session_id: string_field(object, family, "session_id")?,
-            turn_id: string_field(object, family, "turn_id")?,
-        }),
-        "queued_send" => Ok(LegacyReconciliationRecord::QueuedSend {
-            session_id: string_field(object, family, "session_id")?,
-            queue_item_id: string_field(object, family, "queue_item_id")?,
-            human_message_id: string_field(object, family, "human_message_id")?,
-            reserved_turn_id: string_field(object, family, "reserved_turn_id")?,
-            input_ref: string_field(object, family, "input_ref")?,
-        }),
-        "permission" => Ok(LegacyReconciliationRecord::Permission {
-            session_id: string_field(object, family, "session_id")?,
-            turn_id: string_field(object, family, "turn_id")?,
-            request: decode_permission_request(
-                object
-                    .get("request")
-                    .ok_or(StoredRecordCodecError::MissingReference {
-                        family,
-                        field: "request",
-                    })?,
-                family,
-            )?,
-        }),
-        "provider_session" => Ok(LegacyReconciliationRecord::ProviderSession {
-            session_id: string_field(object, family, "session_id")?,
-        }),
-        "backend_recovery" => Ok(LegacyReconciliationRecord::BackendRecovery {
-            session_id: string_field(object, family, "session_id")?,
-            recovery_id: string_field(object, family, "recovery_id")?,
-        }),
-        "recovery_publication" => Ok(LegacyReconciliationRecord::RecoveryPublication {
-            session_id: string_field(object, family, "session_id")?,
-            pending_message: decode_publication_message(
-                object
-                    .get("pending_message")
-                    .ok_or(StoredRecordCodecError::MissingReference {
-                        family,
-                        field: "pending_message",
-                    })?,
-                family,
-            )?,
-        }),
-        "operation_binding" => Ok(LegacyReconciliationRecord::OperationBinding {
-            operation_kind: OperationKind::parse(required_text(object, family, "operation_kind")?)
-                .ok_or_else(|| StoredRecordCodecError::Incompatible {
-                    family,
-                    schema: "legacy.operation_kind".to_string(),
-                })?,
-            operation_id: string_field(object, family, "operation_id")?,
-            session_id: string_field(object, family, "session_id")?,
-            known_observation: decode_legacy_event_observation(
-                object.get("known_observation").ok_or(
-                    StoredRecordCodecError::MissingReference {
-                        family,
-                        field: "known_observation",
-                    },
-                )?,
-                family,
-            )?,
-            missing_evidence: object
-                .get("missing_evidence")
-                .and_then(Value::as_array)
-                .ok_or(StoredRecordCodecError::MissingReference {
-                    family,
-                    field: "missing_evidence",
-                })?
-                .iter()
-                .map(|value| match value.as_str() {
-                    Some("principal") => Ok(LegacyMissingEvidenceRecord::Principal),
-                    Some("exact_caller_binding") => {
-                        Ok(LegacyMissingEvidenceRecord::ExactCallerBinding)
-                    }
-                    Some("immutable_receipt") => Ok(LegacyMissingEvidenceRecord::ImmutableReceipt),
-                    Some(other) => Err(StoredRecordCodecError::Incompatible {
-                        family,
-                        schema: format!("legacy.missing_evidence.{other}"),
-                    }),
-                    None => malformed(family),
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-        }),
-        other => Err(StoredRecordCodecError::Incompatible {
-            family,
-            schema: format!("legacy_reconciliation.{other}"),
         }),
     }
 }
@@ -3850,8 +3106,7 @@ fn decode_recovery_attempt(
             Ok(RecoveryAttemptRecord::ShutdownTarget {
                 resource_ref: string_field(object, family, "resource_ref")?,
                 plan: ShutdownPlanKey {
-                    plan_id: string_field(object, family, "plan_id")?,
-                    epoch: required_i64(object, family, "epoch")?,
+                    shutdown_id: string_field(object, family, "shutdown_id")?,
                 },
                 ordinal: required_i64(object, family, "ordinal")?,
                 target_key: string_field(object, family, "target_key")?,
@@ -3940,8 +3195,10 @@ fn encode_recovery_attempt(value: &RecoveryAttemptRecord) -> Result<Value, Store
                 Value::String("recovery_action_attempt_v1".into()),
             );
             object.insert("resource_ref".into(), Value::String(resource_ref.clone()));
-            object.insert("plan_id".into(), Value::String(plan.plan_id.clone()));
-            object.insert("epoch".into(), Value::from(plan.epoch));
+            object.insert(
+                "shutdown_id".into(),
+                Value::String(plan.shutdown_id.clone()),
+            );
             object.insert("ordinal".into(), Value::from(*ordinal));
             object.insert("target_key".into(), Value::String(target_key.clone()));
             object.insert("origin_revision".into(), Value::from(*origin_revision));
@@ -3998,8 +3255,7 @@ fn known_recovery_attempt_fields(_: &str) -> &'static [&'static str] {
         "state",
         "failure",
         "resource_ref",
-        "plan_id",
-        "epoch",
+        "shutdown_id",
         "ordinal",
         "target_key",
         "effect_identity_sha256",
@@ -4089,8 +3345,7 @@ fn encode_recovery_resource_view(
             state,
         } => serde_json::to_string(&serde_json::json!({
             "schema":"shutdown_target_recovery_result_v1",
-            "plan_id":plan.plan_id,
-            "epoch":plan.epoch,
+            "shutdown_id":plan.shutdown_id,
             "ordinal":ordinal,
             "target_key":target_id,
             "state":shutdown_target_state_label(*state),
@@ -4333,7 +3588,10 @@ fn encode_shutdown_plan(value: &ShutdownPlanRecord) -> Result<Value, StoredRecor
     if let Some(field) = &value.recovery_snapshot_id {
         object.insert("recovery_snapshot_id".into(), Value::String(field.clone()));
     }
-    object.insert("boot_id".into(), Value::String(value.boot_id.clone()));
+    object.insert(
+        "process_instance_id".into(),
+        Value::String(value.process_instance_id.clone()),
+    );
     if let Some(outcome) = value.outcome {
         object.insert(
             "outcome".into(),
@@ -4412,7 +3670,7 @@ fn decode_shutdown_plan(
         unresolved_count: count("unresolved_count")?,
         recovery_snapshot_count: count("recovery_snapshot_count")?,
         recovery_snapshot_id: optional_string(object, "recovery_snapshot_id"),
-        boot_id: optional_string(object, "boot_id").unwrap_or_default(),
+        process_instance_id: optional_string(object, "process_instance_id").unwrap_or_default(),
         outcome,
         failure: object
             .get("failure")
@@ -4442,7 +3700,7 @@ fn known_shutdown_plan_fields(_: &str) -> &'static [&'static str] {
         "unresolved_count",
         "recovery_snapshot_count",
         "recovery_snapshot_id",
-        "boot_id",
+        "process_instance_id",
         "outcome",
         "failure",
         "shutdown_effect_count",
@@ -4616,462 +3874,6 @@ fn known_shutdown_target_fields(_: &str) -> &'static [&'static str] {
     ]
 }
 
-fn shutdown_phase_label(value: ApplicationShutdownPhase) -> &'static str {
-    match value {
-        ApplicationShutdownPhase::Preparing => "preparing",
-        ApplicationShutdownPhase::Prepared => "prepared",
-        ApplicationShutdownPhase::Activated => "activated",
-        ApplicationShutdownPhase::Quiescing => "quiescing",
-        ApplicationShutdownPhase::Completed => "completed",
-        ApplicationShutdownPhase::Failed => "failed",
-        ApplicationShutdownPhase::Cancelled => "cancelled",
-        ApplicationShutdownPhase::ReconciliationRequired => "reconciliation_required",
-    }
-}
-
-fn decode_shutdown_phase(
-    raw: &str,
-    family: StoredRecordFamily,
-) -> Result<ApplicationShutdownPhase, StoredRecordCodecError> {
-    match raw {
-        "preparing" => Ok(ApplicationShutdownPhase::Preparing),
-        "prepared" => Ok(ApplicationShutdownPhase::Prepared),
-        "activated" => Ok(ApplicationShutdownPhase::Activated),
-        "quiescing" => Ok(ApplicationShutdownPhase::Quiescing),
-        "completed" => Ok(ApplicationShutdownPhase::Completed),
-        "failed" => Ok(ApplicationShutdownPhase::Failed),
-        "cancelled" => Ok(ApplicationShutdownPhase::Cancelled),
-        "reconciliation_required" => Ok(ApplicationShutdownPhase::ReconciliationRequired),
-        other => Err(StoredRecordCodecError::Incompatible {
-            family,
-            schema: format!("shutdown_phase.{other}"),
-        }),
-    }
-}
-
-fn decode_shutdown_archive(
-    object: &Map<String, Value>,
-) -> Result<ShutdownArchiveRecord, StoredRecordCodecError> {
-    let family = StoredRecordFamily::ShutdownArchive;
-    // The summary is an embedded StoredShutdownPlanV1 document. It commonly
-    // exceeds the short identity/reference bound and is bounded by the
-    // enclosing archive record instead.
-    let raw_summary = required_text(object, family, "summary")?.to_string();
-    let summary = StoredShutdownPlanV1::decode(&raw_summary)?.into_value();
-    let source_summary_sha256 = hash_field(object, family, "source_summary_sha256")?;
-    let actual_summary_sha256: [u8; 32] = Sha256::digest(raw_summary.as_bytes()).into();
-    if source_summary_sha256 != actual_summary_sha256 {
-        return Err(StoredRecordCodecError::Integrity { family });
-    }
-    Ok(ShutdownArchiveRecord {
-        plan: ShutdownPlanKey {
-            plan_id: string_field(object, family, "plan_id")?,
-            epoch: required_i64(object, family, "epoch")?,
-        },
-        terminal_phase: decode_shutdown_phase(
-            required_text(object, family, "terminal_phase")?,
-            family,
-        )?,
-        source_revision: u64_field(object, family, "source_revision")?,
-        summary,
-        source_summary_sha256,
-        target_count: u64_field(object, family, "target_count")?,
-        target_set_sha256: hash_field(object, family, "target_set_sha256")?,
-        recovery_snapshot_count: u64_field(object, family, "recovery_snapshot_count")?,
-        recovery_snapshot_sha256: hash_field(object, family, "recovery_snapshot_sha256")?,
-    })
-}
-
-fn encode_shutdown_archive(value: &ShutdownArchiveRecord) -> Result<Value, StoredRecordCodecError> {
-    let family = StoredRecordFamily::ShutdownArchive;
-    let summary = StoredShutdownPlanV1::encode_new(&value.summary)?;
-    let actual_summary_sha256: [u8; 32] = Sha256::digest(summary.as_bytes()).into();
-    if value.source_summary_sha256 != actual_summary_sha256 {
-        return Err(StoredRecordCodecError::Integrity { family });
-    }
-    Ok(serde_json::json!({
-        "schema":"shutdown_compact_archive_v1",
-        "plan_id":value.plan.plan_id,
-        "epoch":value.plan.epoch,
-        "terminal_phase":shutdown_phase_label(value.terminal_phase),
-        "source_revision":value.source_revision,
-        "summary":summary,
-        "source_summary_sha256":hex::encode(value.source_summary_sha256),
-        "target_count":value.target_count,
-        "target_set_sha256":hex::encode(value.target_set_sha256),
-        "recovery_snapshot_count":value.recovery_snapshot_count,
-        "recovery_snapshot_sha256":hex::encode(value.recovery_snapshot_sha256),
-    }))
-}
-
-fn known_shutdown_archive_fields(_: &str) -> &'static [&'static str] {
-    &[
-        "schema",
-        "plan_id",
-        "epoch",
-        "terminal_phase",
-        "source_revision",
-        "summary",
-        "source_summary_sha256",
-        "target_count",
-        "target_set_sha256",
-        "recovery_snapshot_count",
-        "recovery_snapshot_sha256",
-    ]
-}
-
-fn migration_substep_label(value: MigrationSubstepRecord) -> &'static str {
-    match value {
-        MigrationSubstepRecord::Inventory => "inventory",
-        MigrationSubstepRecord::InventoryPersist => "inventory_persist",
-        MigrationSubstepRecord::RawChunks => "raw_chunks",
-        MigrationSubstepRecord::SourceComplete => "source_complete",
-        MigrationSubstepRecord::SemanticSessionProjection => "semantic_session_projection",
-        MigrationSubstepRecord::SemanticEvents => "semantic_events",
-        MigrationSubstepRecord::Parity => "parity",
-        MigrationSubstepRecord::AuthorityPointer => "authority_pointer",
-    }
-}
-
-fn decode_migration_substep(
-    raw: &str,
-    family: StoredRecordFamily,
-) -> Result<MigrationSubstepRecord, StoredRecordCodecError> {
-    match raw {
-        "inventory" => Ok(MigrationSubstepRecord::Inventory),
-        "inventory_persist" => Ok(MigrationSubstepRecord::InventoryPersist),
-        "raw_chunks" | "records" => Ok(MigrationSubstepRecord::RawChunks),
-        "source_complete" => Ok(MigrationSubstepRecord::SourceComplete),
-        "semantic_session_projection" => Ok(MigrationSubstepRecord::SemanticSessionProjection),
-        "semantic_events" => Ok(MigrationSubstepRecord::SemanticEvents),
-        "parity" => Ok(MigrationSubstepRecord::Parity),
-        "authority_pointer" => Ok(MigrationSubstepRecord::AuthorityPointer),
-        other => Err(StoredRecordCodecError::Incompatible {
-            family,
-            schema: format!("migration_substep.{other}"),
-        }),
-    }
-}
-
-fn encode_migration_checkpoint(
-    value: &MigrationCheckpointRecord,
-) -> Result<Value, StoredRecordCodecError> {
-    let mut object = Map::new();
-    object.insert(
-        "schema".into(),
-        Value::String("legacy_migration_checkpoint_v1".into()),
-    );
-    if let Some(substep) = value.substep {
-        object.insert(
-            "substep".into(),
-            Value::String(migration_substep_label(substep).into()),
-        );
-    }
-    let optional_numbers = [
-        (
-            "inventory_next_source_ordinal",
-            value.inventory_next_source_ordinal,
-        ),
-        ("source_ordinal", value.source_ordinal),
-        ("source_record_ordinal", value.source_record_ordinal),
-        ("source_byte_offset", value.source_byte_offset),
-        ("semantic_source_ordinal", value.semantic_source_ordinal),
-        (
-            "semantic_next_event_ordinal",
-            value.semantic_next_event_ordinal,
-        ),
-        ("semantic_next_chunk_index", value.semantic_next_chunk_index),
-    ];
-    for (key, field) in optional_numbers {
-        if let Some(field) = field {
-            object.insert(key.into(), Value::from(field));
-        }
-    }
-    for (key, field) in [
-        ("next_source_ordinal", value.next_source_ordinal),
-        ("total_source_count", value.total_source_count),
-        ("imported_raw_record_count", value.imported_raw_record_count),
-        ("semantic_session_count", value.semantic_session_count),
-        ("semantic_message_count", value.semantic_message_count),
-        ("semantic_workflow_count", value.semantic_workflow_count),
-        ("semantic_event_count", value.semantic_event_count),
-        ("semantic_terminal_count", value.semantic_terminal_count),
-        (
-            "semantic_stop_resolution_count",
-            value.semantic_stop_resolution_count,
-        ),
-        (
-            "semantic_agent_pending_obligation_count",
-            value.semantic_agent_pending_obligation_count,
-        ),
-        (
-            "semantic_pending_queue_count",
-            value.semantic_pending_queue_count,
-        ),
-        (
-            "semantic_pending_permission_count",
-            value.semantic_pending_permission_count,
-        ),
-        (
-            "semantic_titled_session_count",
-            value.semantic_titled_session_count,
-        ),
-        (
-            "semantic_workflow_instruction_count",
-            value.semantic_workflow_instruction_count,
-        ),
-        (
-            "semantic_context_epoch_payload_count",
-            value.semantic_context_epoch_payload_count,
-        ),
-        (
-            "semantic_agent_read_path_count",
-            value.semantic_agent_read_path_count,
-        ),
-        (
-            "semantic_owner_relation_count",
-            value.semantic_owner_relation_count,
-        ),
-    ] {
-        object.insert(key.into(), Value::from(field));
-    }
-    for (key, field) in [
-        ("semantic_session_after", &value.semantic_session_after),
-        ("semantic_source_path", &value.semantic_source_path),
-        ("safe_failure", &value.safe_failure),
-        ("correlation_id", &value.correlation_id),
-    ] {
-        if let Some(field) = field {
-            object.insert(key.into(), Value::String(field.clone()));
-        }
-    }
-    if let Some(kind) = value.semantic_source_kind {
-        object.insert(
-            "semantic_source_kind".into(),
-            Value::String(
-                match kind {
-                    MigrationSemanticSourceKindRecord::AgentSession => "agent_session",
-                    MigrationSemanticSourceKindRecord::Workflow => "workflow",
-                }
-                .into(),
-            ),
-        );
-    }
-    object.insert("read_only".into(), Value::Bool(value.read_only));
-    Ok(Value::Object(object))
-}
-
-fn decode_migration_checkpoint(
-    object: &Map<String, Value>,
-) -> Result<MigrationCheckpointRecord, StoredRecordCodecError> {
-    let family = StoredRecordFamily::MigrationCheckpoint;
-    let number = |key| optional_u64(object, key).unwrap_or(0);
-    Ok(MigrationCheckpointRecord {
-        substep: object
-            .get("substep")
-            .and_then(Value::as_str)
-            .map(|raw| decode_migration_substep(raw, family))
-            .transpose()?,
-        inventory_next_source_ordinal: optional_u64(object, "inventory_next_source_ordinal"),
-        next_source_ordinal: u64_field(object, family, "next_source_ordinal")?,
-        source_ordinal: optional_u64(object, "source_ordinal"),
-        source_record_ordinal: optional_u64(object, "source_record_ordinal")
-            .or_else(|| optional_u64(object, "record_ordinal")),
-        source_byte_offset: optional_u64(object, "source_byte_offset"),
-        total_source_count: number("total_source_count"),
-        imported_raw_record_count: number("imported_raw_record_count"),
-        semantic_session_count: number("semantic_session_count"),
-        semantic_message_count: number("semantic_message_count"),
-        semantic_workflow_count: number("semantic_workflow_count"),
-        semantic_event_count: number("semantic_event_count"),
-        semantic_session_after: optional_string(object, "semantic_session_after"),
-        semantic_source_kind: object
-            .get("semantic_source_kind")
-            .and_then(Value::as_str)
-            .map(|raw| match raw {
-                "agent_session" => Ok(MigrationSemanticSourceKindRecord::AgentSession),
-                "workflow" => Ok(MigrationSemanticSourceKindRecord::Workflow),
-                other => Err(StoredRecordCodecError::Incompatible {
-                    family,
-                    schema: format!("migration_source_kind.{other}"),
-                }),
-            })
-            .transpose()?,
-        semantic_source_ordinal: optional_u64(object, "semantic_source_ordinal"),
-        semantic_source_path: optional_string(object, "semantic_source_path"),
-        semantic_next_event_ordinal: optional_u64(object, "semantic_next_event_ordinal"),
-        semantic_next_chunk_index: optional_u64(object, "semantic_next_chunk_index"),
-        semantic_terminal_count: number("semantic_terminal_count"),
-        semantic_stop_resolution_count: number("semantic_stop_resolution_count"),
-        semantic_agent_pending_obligation_count: number("semantic_agent_pending_obligation_count"),
-        semantic_pending_queue_count: number("semantic_pending_queue_count"),
-        semantic_pending_permission_count: number("semantic_pending_permission_count"),
-        semantic_titled_session_count: number("semantic_titled_session_count"),
-        semantic_workflow_instruction_count: number("semantic_workflow_instruction_count"),
-        semantic_context_epoch_payload_count: number("semantic_context_epoch_payload_count"),
-        semantic_agent_read_path_count: number("semantic_agent_read_path_count"),
-        semantic_owner_relation_count: number("semantic_owner_relation_count"),
-        safe_failure: optional_string(object, "safe_failure"),
-        correlation_id: optional_string(object, "correlation_id"),
-        read_only: object
-            .get("read_only")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
-    })
-}
-
-fn known_migration_checkpoint_fields(_: &str) -> &'static [&'static str] {
-    &[
-        "schema",
-        "substep",
-        "inventory_next_source_ordinal",
-        "next_source_ordinal",
-        "source_ordinal",
-        "source_record_ordinal",
-        "record_ordinal",
-        "source_byte_offset",
-        "total_source_count",
-        "imported_raw_record_count",
-        "semantic_session_count",
-        "semantic_message_count",
-        "semantic_workflow_count",
-        "semantic_event_count",
-        "semantic_session_after",
-        "semantic_source_kind",
-        "semantic_source_ordinal",
-        "semantic_source_path",
-        "semantic_next_event_ordinal",
-        "semantic_next_chunk_index",
-        "semantic_terminal_count",
-        "semantic_stop_resolution_count",
-        "semantic_agent_pending_obligation_count",
-        "semantic_pending_queue_count",
-        "semantic_pending_permission_count",
-        "semantic_titled_session_count",
-        "semantic_workflow_instruction_count",
-        "semantic_context_epoch_payload_count",
-        "semantic_agent_read_path_count",
-        "semantic_owner_relation_count",
-        "safe_failure",
-        "correlation_id",
-        "read_only",
-    ]
-}
-
-fn encode_migration_parity(value: &MigrationParityRecord) -> Result<Value, StoredRecordCodecError> {
-    Ok(serde_json::json!({
-        "schema":"legacy_migration_parity_v1",
-        "source_count":value.source_count,
-        "raw_record_count":value.raw_record_count,
-        "semantic_session_count":value.semantic_session_count,
-        "semantic_message_count":value.semantic_message_count,
-        "semantic_workflow_count":value.semantic_workflow_count,
-        "semantic_event_count":value.semantic_event_count,
-        "semantic_terminal_count":value.semantic_terminal_count,
-        "semantic_stop_resolution_count":value.semantic_stop_resolution_count,
-        "semantic_agent_pending_obligation_count":value.semantic_agent_pending_obligation_count,
-        "semantic_pending_queue_count":value.semantic_pending_queue_count,
-        "semantic_pending_permission_count":value.semantic_pending_permission_count,
-        "semantic_titled_session_count":value.semantic_titled_session_count,
-        "semantic_workflow_instruction_count":value.semantic_workflow_instruction_count,
-        "semantic_workflow_instruction_sha256":hex::encode(value.semantic_workflow_instruction_sha256),
-        "semantic_context_epoch_payload_count":value.semantic_context_epoch_payload_count,
-        "semantic_context_epoch_payload_sha256":hex::encode(value.semantic_context_epoch_payload_sha256),
-        "semantic_agent_read_path_count":value.semantic_agent_read_path_count,
-        "semantic_agent_read_path_sha256":hex::encode(value.semantic_agent_read_path_sha256),
-        "semantic_owner_relation_count":value.semantic_owner_relation_count,
-        "semantic_owner_relation_sha256":hex::encode(value.semantic_owner_relation_sha256),
-        "inventory_sha256":hex::encode(value.inventory_sha256),
-        "source_unchanged":value.source_unchanged,
-        "integrity":match value.integrity { MigrationIntegrityRecord::Pending => "pending", MigrationIntegrityRecord::Verified => "ok" },
-    }))
-}
-
-fn decode_migration_parity(
-    object: &Map<String, Value>,
-) -> Result<MigrationParityRecord, StoredRecordCodecError> {
-    let family = StoredRecordFamily::MigrationParity;
-    let number = |key| optional_u64(object, key).unwrap_or(0);
-    let hash = |key| {
-        object
-            .get(key)
-            .and_then(Value::as_str)
-            .map(|raw| decode_hash32(family, raw))
-            .transpose()
-            .map(|value| value.unwrap_or([0; 32]))
-    };
-    Ok(MigrationParityRecord {
-        source_count: u64_field(object, family, "source_count")?,
-        raw_record_count: number("raw_record_count"),
-        semantic_session_count: number("semantic_session_count"),
-        semantic_message_count: number("semantic_message_count"),
-        semantic_workflow_count: number("semantic_workflow_count"),
-        semantic_event_count: number("semantic_event_count"),
-        semantic_terminal_count: number("semantic_terminal_count"),
-        semantic_stop_resolution_count: number("semantic_stop_resolution_count"),
-        semantic_agent_pending_obligation_count: number("semantic_agent_pending_obligation_count"),
-        semantic_pending_queue_count: number("semantic_pending_queue_count"),
-        semantic_pending_permission_count: number("semantic_pending_permission_count"),
-        semantic_titled_session_count: number("semantic_titled_session_count"),
-        semantic_workflow_instruction_count: number("semantic_workflow_instruction_count"),
-        semantic_workflow_instruction_sha256: hash("semantic_workflow_instruction_sha256")?,
-        semantic_context_epoch_payload_count: number("semantic_context_epoch_payload_count"),
-        semantic_context_epoch_payload_sha256: hash("semantic_context_epoch_payload_sha256")?,
-        semantic_agent_read_path_count: number("semantic_agent_read_path_count"),
-        semantic_agent_read_path_sha256: hash("semantic_agent_read_path_sha256")?,
-        semantic_owner_relation_count: number("semantic_owner_relation_count"),
-        semantic_owner_relation_sha256: hash("semantic_owner_relation_sha256")?,
-        inventory_sha256: hash("inventory_sha256")?,
-        source_unchanged: object
-            .get("source_unchanged")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
-        integrity: match object
-            .get("integrity")
-            .and_then(Value::as_str)
-            .unwrap_or("pending")
-        {
-            "pending" => MigrationIntegrityRecord::Pending,
-            "ok" | "verified" => MigrationIntegrityRecord::Verified,
-            other => {
-                return Err(StoredRecordCodecError::Incompatible {
-                    family,
-                    schema: format!("migration_integrity.{other}"),
-                })
-            }
-        },
-    })
-}
-
-fn known_migration_parity_fields(_: &str) -> &'static [&'static str] {
-    &[
-        "schema",
-        "source_count",
-        "raw_record_count",
-        "semantic_session_count",
-        "semantic_message_count",
-        "semantic_workflow_count",
-        "semantic_event_count",
-        "semantic_terminal_count",
-        "semantic_stop_resolution_count",
-        "semantic_agent_pending_obligation_count",
-        "semantic_pending_queue_count",
-        "semantic_pending_permission_count",
-        "semantic_titled_session_count",
-        "semantic_workflow_instruction_count",
-        "semantic_workflow_instruction_sha256",
-        "semantic_context_epoch_payload_count",
-        "semantic_context_epoch_payload_sha256",
-        "semantic_agent_read_path_count",
-        "semantic_agent_read_path_sha256",
-        "semantic_owner_relation_count",
-        "semantic_owner_relation_sha256",
-        "inventory_sha256",
-        "source_unchanged",
-        "integrity",
-    ]
-}
-
 fn validate_typed_metadata(
     family: StoredRecordFamily,
     schema: &str,
@@ -5208,7 +4010,6 @@ fn allowed_schemas(family: StoredRecordFamily) -> &'static [&'static str] {
             "stop_receipt_v1",
             "slc_receipt_v1",
             "application_quit_receipt_v1",
-            "migration_application_quit_receipt_v1",
         ],
         StoredRecordFamily::OperationStatus => &[
             "send_status_v1",
@@ -5216,14 +4017,12 @@ fn allowed_schemas(family: StoredRecordFamily) -> &'static [&'static str] {
             "stop_status_v1",
             "slc_status_v1",
             "application_quit_status_v1",
-            "migration_application_quit_status_v1",
         ],
         StoredRecordFamily::Terminal => &[
             "agent_turn_terminal_v1",
             "session_closed_terminal_v1",
             "stop_terminal_v1",
             "stop_superseded_v1",
-            "legacy_stop_resolution_v1",
         ],
         StoredRecordFamily::Obligation => &[
             "send_obligation_v1",
@@ -5236,7 +4035,6 @@ fn allowed_schemas(family: StoredRecordFamily) -> &'static [&'static str] {
             "workflow_shutdown_effect_v1",
             "workflow_turn_completion_obligation_v1",
             "recovery_publication_obligation_v1",
-            "legacy_agent_reconciliation_obligation_v1",
             "recovery_reserved_obligation_v1",
             "recovery_completed_obligation_v1",
             "terminal_commit_obligation_v1",
@@ -5254,13 +4052,6 @@ fn allowed_schemas(family: StoredRecordFamily) -> &'static [&'static str] {
         StoredRecordFamily::ShutdownTarget => {
             &["shutdown_target_v1", "shutdown_recovery_snapshot_v1"]
         }
-        StoredRecordFamily::ShutdownArchive => &["shutdown_compact_archive_v1"],
-        StoredRecordFamily::MigrationCheckpoint => &["legacy_migration_checkpoint_v1"],
-        StoredRecordFamily::MigrationParity => &["legacy_migration_parity_v1"],
-        StoredRecordFamily::MigrationQuit => &[
-            "migration_application_quit_receipt_v1",
-            "migration_application_quit_status_v1",
-        ],
     }
 }
 
@@ -5391,35 +4182,20 @@ fn validate_required_shape(
             require_text_fields(
                 object,
                 family,
-                &["operation_id", "plan_id", "intent", "binding_hmac"],
-            )?;
-            required_i64(object, family, "epoch")?;
-            required_i64(object, family, "deadline_ms")?;
-        }
-        "migration_application_quit_receipt_v1" => {
-            require_text_fields(
-                object,
-                family,
-                &["operation_id", "migration_id", "intent", "binding_hmac"],
+                &["operation_id", "shutdown_id", "intent", "binding_hmac"],
             )?;
             required_i64(object, family, "deadline_ms")?;
         }
         "send_status_v1" | "permission_response_status_v1" => {
             required_object(object, family, "status")?;
         }
-        "stop_status_v1"
-        | "slc_status_v1"
-        | "application_quit_status_v1"
-        | "migration_application_quit_status_v1" => {
+        "stop_status_v1" | "slc_status_v1" | "application_quit_status_v1" => {
             required_object(object, family, "state")?;
         }
         "agent_turn_terminal_v1"
         | "session_closed_terminal_v1"
         | "stop_terminal_v1"
-        | "stop_superseded_v1"
-        | "legacy_stop_resolution_v1" => {
-            // Historical terminal shapes differ, but each has a stable session
-            // or operation reference and a closed v1 schema.
+        | "stop_superseded_v1" => {
             if object.get("session_id").and_then(Value::as_str).is_none()
                 && object.get("operation_id").and_then(Value::as_str).is_none()
                 && object
@@ -5462,7 +4238,6 @@ fn validate_required_shape(
             )?;
         }
         "recovery_publication_obligation_v1"
-        | "legacy_agent_reconciliation_obligation_v1"
         | "provider_establish_obligation_v1"
         | "turn_execution_obligation_v1"
         | "workflow_turn_completion_obligation_v1"
@@ -5477,7 +4252,7 @@ fn validate_required_shape(
                 family,
                 &[
                     "resource_ref",
-                    "plan_id",
+                    "shutdown_id",
                     "target_key",
                     "action",
                     "effect_identity_sha256",
@@ -5485,7 +4260,6 @@ fn validate_required_shape(
                     "state",
                 ],
             )?;
-            required_i64(object, family, "epoch")?;
             required_i64(object, family, "ordinal")?;
             required_i64(object, family, "origin_revision")?;
             required_i64(object, family, "exit_code")?;
@@ -5553,55 +4327,6 @@ fn validate_required_shape(
         }
         "shutdown_recovery_snapshot_v1" => {
             require_text_fields(object, family, &["obligation_id", "owner", "record"])?;
-        }
-        "shutdown_compact_archive_v1" => {
-            required_text(object, family, "plan_id")?;
-            required_i64(object, family, "epoch")?;
-        }
-        "legacy_migration_checkpoint_v1" => {
-            required_i64(object, family, "next_source_ordinal")?;
-        }
-        "legacy_migration_parity_v1" => {
-            for field in [
-                "source_count",
-                "raw_record_count",
-                "semantic_session_count",
-                "semantic_message_count",
-                "semantic_workflow_count",
-                "semantic_event_count",
-                "semantic_terminal_count",
-                "semantic_stop_resolution_count",
-                "semantic_agent_pending_obligation_count",
-                "semantic_pending_queue_count",
-                "semantic_pending_permission_count",
-                "semantic_titled_session_count",
-                "semantic_workflow_instruction_count",
-                "semantic_context_epoch_payload_count",
-                "semantic_agent_read_path_count",
-                "semantic_owner_relation_count",
-            ] {
-                required_i64(object, family, field)?;
-            }
-            for field in [
-                "semantic_workflow_instruction_sha256",
-                "semantic_context_epoch_payload_sha256",
-                "semantic_agent_read_path_sha256",
-                "semantic_owner_relation_sha256",
-                "inventory_sha256",
-            ] {
-                hash_field(object, family, field)?;
-            }
-            if object
-                .get("source_unchanged")
-                .and_then(Value::as_bool)
-                .is_none()
-            {
-                return Err(StoredRecordCodecError::MissingReference {
-                    family,
-                    field: "source_unchanged",
-                });
-            }
-            required_text(object, family, "integrity")?;
         }
         _ => {}
     }
@@ -5681,22 +4406,6 @@ mod tests {
             (
                 StoredRecordFamily::ShutdownTarget,
                 r#"{"schema":"shutdown_target_v1","target_id":"s-1","kind":"agent_session","state":"prepared"}"#,
-            ),
-            (
-                StoredRecordFamily::ShutdownArchive,
-                r#"{"schema":"shutdown_compact_archive_v1","plan_id":"plan-1","epoch":1,"terminal_phase":"completed","source_revision":0,"summary":"{\"schema\":\"shutdown_plan_summary_v1\",\"operation_id\":\"quit-1\",\"intent\":\"exit\",\"deadline_ms\":15001}","source_summary_sha256":"5390b228a5c4c1ac33108627622f9e757451cdfd562210aff91128a5e5953cd6","target_count":0,"target_set_sha256":"0000000000000000000000000000000000000000000000000000000000000000","recovery_snapshot_count":0,"recovery_snapshot_sha256":"0000000000000000000000000000000000000000000000000000000000000000"}"#,
-            ),
-            (
-                StoredRecordFamily::MigrationCheckpoint,
-                r#"{"schema":"legacy_migration_checkpoint_v1","next_source_ordinal":0,"record_ordinal":0,"substep":"records"}"#,
-            ),
-            (
-                StoredRecordFamily::MigrationParity,
-                r#"{"schema":"legacy_migration_parity_v1","source_count":0,"raw_record_count":0,"semantic_session_count":0,"semantic_message_count":0,"semantic_workflow_count":0,"semantic_event_count":0,"semantic_terminal_count":0,"semantic_stop_resolution_count":0,"semantic_agent_pending_obligation_count":0,"semantic_pending_queue_count":0,"semantic_pending_permission_count":0,"semantic_titled_session_count":0,"semantic_workflow_instruction_count":0,"semantic_workflow_instruction_sha256":"0000000000000000000000000000000000000000000000000000000000000000","semantic_context_epoch_payload_count":0,"semantic_context_epoch_payload_sha256":"0000000000000000000000000000000000000000000000000000000000000000","semantic_agent_read_path_count":0,"semantic_agent_read_path_sha256":"0000000000000000000000000000000000000000000000000000000000000000","semantic_owner_relation_count":0,"semantic_owner_relation_sha256":"0000000000000000000000000000000000000000000000000000000000000000","inventory_sha256":"0000000000000000000000000000000000000000000000000000000000000000","source_unchanged":true,"integrity":"pending"}"#,
-            ),
-            (
-                StoredRecordFamily::MigrationQuit,
-                r#"{"schema":"migration_application_quit_receipt_v1","operation_id":"quit-1","migration_id":"migration-1","intent":"exit","exit_code":0,"t0_ms":1,"deadline_ms":15001,"binding_hmac":"0000000000000000000000000000000000000000000000000000000000000000"}"#,
             ),
         ];
 
@@ -5778,51 +4487,6 @@ mod tests {
         .to_string();
         StoredShutdownTargetV1::decode(&snapshot)
             .expect("embedded recovery obligation may exceed an identity bound");
-
-        let summary = serde_json::json!({
-            "schema": "shutdown_plan_summary_v1",
-            "operation_id": "quit-1",
-            "intent": "exit",
-            "deadline_ms": 15_001,
-            "future_additive": "y".repeat(1_024),
-        })
-        .to_string();
-        let archive = serde_json::json!({
-            "schema": "shutdown_compact_archive_v1",
-            "plan_id": "plan-1",
-            "epoch": 1,
-            "terminal_phase": "completed",
-            "source_revision": 0,
-            "summary": summary,
-            "source_summary_sha256": hex::encode(Sha256::digest(summary.as_bytes())),
-            "target_count": 0,
-            "target_set_sha256": "0".repeat(64),
-            "recovery_snapshot_count": 0,
-            "recovery_snapshot_sha256": "0".repeat(64),
-        })
-        .to_string();
-        StoredShutdownArchiveV1::decode(&archive)
-            .expect("embedded shutdown summary may exceed an identity bound");
-    }
-
-    #[test]
-    fn every_legacy_reconciliation_kind_has_a_closed_persistence_tag() {
-        for kind in [
-            "turn_execution",
-            "queued_send",
-            "permission",
-            "provider_session",
-            "backend_recovery",
-            "recovery_publication",
-            "operation_binding",
-        ] {
-            parse_closed_tag(
-                StoredRecordFamily::Obligation,
-                "legacy_agent_reconciliation_obligation_v1",
-                kind,
-            )
-            .unwrap_or_else(|error| panic!("legacy reconciliation kind {kind}: {error:?}"));
-        }
     }
 
     #[test]
@@ -5872,10 +4536,6 @@ mod tests {
             (
                 StoredRecordFamily::Obligation,
                 r#"{"schema":"send_obligation_v1","operation_id":"op-1","state":"prepared"}"#,
-            ),
-            (
-                StoredRecordFamily::MigrationParity,
-                r#"{"schema":"legacy_migration_parity_v1","source_count":0}"#,
             ),
             (StoredRecordFamily::ShutdownTarget, "not-json"),
         ] {

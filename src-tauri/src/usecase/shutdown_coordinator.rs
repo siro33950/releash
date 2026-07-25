@@ -16,19 +16,17 @@ use crate::domain::local_event::{
     CommitBatchResult, CommitIdentity, CommitOperationKind, CommitResolution, ExpectedStreamHead,
     IdempotencyBinding, LoadStreamRequest, LocalAtomicBatch, LocalDomainEvent, LocalEventQuery,
     LocalEventQueryResult, LocalEventTransactionRepository, LocalStateMutation,
-    LocalStoreMigrationPhase, MigrationCheckpointRecord, MigrationQuitFlightMutation,
-    MigrationQuitFlightView, ObligationStateRecord, OperationBindingMutation, OperationBindingView,
-    OperationKind, OperationReceiptRecord, OperationRecordMutation, OperationStatusRecord,
-    OperationStatusValue, PendingPartition, QueryCursor, QuitIntent, RecoveryActionMutation,
-    RecoveryActionView, RecoveryAttemptRecord, RecoveryResourceViewRecord,
-    RecoveryResultOutcomeRecord, Revision, RevisionGuard, SafeEffectObservation,
-    SafeOperationFailure, SessionOperationFailureKind, ShutdownArchiveRecord,
-    ShutdownCompactArchiveMutation, ShutdownDetailsState, ShutdownLatestPointerMutation,
+    ObligationStateRecord, OperationBindingMutation, OperationBindingView, OperationKind,
+    OperationReceiptRecord, OperationRecordMutation, OperationStatusRecord, OperationStatusValue,
+    PendingPartition, QueryCursor, QuitIntent, RecoveryActionMutation, RecoveryActionView,
+    RecoveryAttemptRecord, RecoveryResourceViewRecord, RecoveryResultOutcomeRecord, Revision,
+    RevisionGuard, SafeEffectObservation, SafeOperationFailure, SessionOperationFailureKind,
+    ShutdownDetailsCompactionMutation, ShutdownDetailsState, ShutdownLatestPointerMutation,
     ShutdownOutcomeRecord, ShutdownPlanKey, ShutdownPlanMutation, ShutdownPlanPageView,
     ShutdownPlanRecord, ShutdownPlanView, ShutdownRecoverySnapshotMutation,
-    ShutdownRetiringPointerMutation, ShutdownTargetKindRecord, ShutdownTargetMutation,
-    ShutdownTargetRecord, ShutdownTargetRecoveryRecord, ShutdownTargetStateRecord, StreamId,
-    StreamVersion, UncommittedDomainEvent,
+    ShutdownTargetKindRecord, ShutdownTargetMutation, ShutdownTargetRecord,
+    ShutdownTargetRecoveryRecord, ShutdownTargetStateRecord, StreamId, StreamVersion,
+    UncommittedDomainEvent,
 };
 use crate::usecase::agent_session::operation::{
     constant_time_eq_32, decode_recovery_completed_result, derive_recovery_action_id,
@@ -200,167 +198,10 @@ enum ActivationCommit {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplicationQuitReceipt {
     pub operation_id: String,
-    pub plan_id: String,
-    pub epoch: i64,
+    pub shutdown_id: String,
     pub intent: ApplicationQuitIntent,
     pub t0_ms: i64,
     pub deadline_ms: i64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MigrationApplicationQuitReceipt {
-    pub operation_id: String,
-    pub migration_id: String,
-    pub intent: ApplicationQuitIntent,
-    pub t0_ms: i64,
-    pub deadline_ms: i64,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum MigrationApplicationQuitState {
-    ExitPending,
-    Exited,
-    ReconciliationRequired { failure: SafeOperationFailure },
-}
-
-impl MigrationApplicationQuitState {
-    pub fn grants_exit_permit(&self) -> bool {
-        matches!(self, Self::ExitPending)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct MigrationApplicationQuitProjection {
-    pub receipt: MigrationApplicationQuitReceipt,
-    pub state: MigrationApplicationQuitState,
-    pub checkpoint: MigrationCheckpointRecord,
-    pub migration_revision: Revision,
-    accepted_boot_id: String,
-    observed_boot_id: String,
-}
-
-impl MigrationApplicationQuitProjection {
-    /// A migration quit may only drive the process that durably accepted it.
-    /// A later boot can still observe `ExitPending` while its boot-settlement
-    /// retry is in flight, but must not issue the process action again.
-    pub fn grants_exit_permit(&self) -> bool {
-        self.state.grants_exit_permit() && self.accepted_boot_id == self.observed_boot_id
-    }
-}
-
-#[cfg(test)]
-mod migration_process_action_tests {
-    use super::{
-        decode_migration_operation_receipt_record, decode_migration_operation_status_record,
-        migration_operation_receipt_record, migration_operation_status_record,
-        ApplicationQuitIntent, MigrationApplicationQuitProjection, MigrationApplicationQuitReceipt,
-        MigrationApplicationQuitState,
-    };
-    use crate::domain::local_event::{MigrationCheckpointRecord, Revision};
-
-    fn projection(
-        state: MigrationApplicationQuitState,
-        accepted_boot_id: &str,
-        observed_boot_id: &str,
-    ) -> MigrationApplicationQuitProjection {
-        MigrationApplicationQuitProjection {
-            receipt: MigrationApplicationQuitReceipt {
-                operation_id: "quit-operation-1".to_string(),
-                migration_id: "migration-1".to_string(),
-                intent: ApplicationQuitIntent::Restart { code: 17 },
-                t0_ms: 10,
-                deadline_ms: 15_010,
-            },
-            state,
-            checkpoint: MigrationCheckpointRecord {
-                substep: None,
-                inventory_next_source_ordinal: None,
-                next_source_ordinal: 0,
-                source_ordinal: None,
-                source_record_ordinal: None,
-                source_byte_offset: None,
-                total_source_count: 0,
-                imported_raw_record_count: 0,
-                semantic_session_count: 0,
-                semantic_message_count: 0,
-                semantic_workflow_count: 0,
-                semantic_event_count: 0,
-                semantic_session_after: None,
-                semantic_source_kind: None,
-                semantic_source_ordinal: None,
-                semantic_source_path: None,
-                semantic_next_event_ordinal: None,
-                semantic_next_chunk_index: None,
-                semantic_terminal_count: 0,
-                semantic_stop_resolution_count: 0,
-                semantic_agent_pending_obligation_count: 0,
-                semantic_pending_queue_count: 0,
-                semantic_pending_permission_count: 0,
-                semantic_titled_session_count: 0,
-                semantic_workflow_instruction_count: 0,
-                semantic_context_epoch_payload_count: 0,
-                semantic_agent_read_path_count: 0,
-                semantic_owner_relation_count: 0,
-                read_only: false,
-                safe_failure: None,
-                correlation_id: None,
-            },
-            migration_revision: Revision::new(0).expect("zero revision"),
-            accepted_boot_id: accepted_boot_id.to_string(),
-            observed_boot_id: observed_boot_id.to_string(),
-        }
-    }
-
-    #[test]
-    fn f11_migration_process_action_is_scoped_to_the_accepting_boot() {
-        assert!(projection(
-            MigrationApplicationQuitState::ExitPending,
-            "boot-accepting",
-            "boot-accepting",
-        )
-        .grants_exit_permit());
-        assert!(!projection(
-            MigrationApplicationQuitState::ExitPending,
-            "boot-accepting",
-            "boot-after-restart",
-        )
-        .grants_exit_permit());
-        assert!(!projection(
-            MigrationApplicationQuitState::Exited,
-            "boot-accepting",
-            "boot-accepting",
-        )
-        .grants_exit_permit());
-    }
-
-    #[test]
-    fn f11_migration_restart_code_survives_closed_record_round_trip() {
-        let receipt = MigrationApplicationQuitReceipt {
-            operation_id: "quit-operation-restart".to_string(),
-            migration_id: "migration-restart".to_string(),
-            intent: ApplicationQuitIntent::Restart { code: i32::MIN },
-            t0_ms: 10,
-            deadline_ms: 15_010,
-        };
-        let binding = [0xa5; 32];
-        let stored_receipt = migration_operation_receipt_record(&receipt, binding);
-        let (decoded_receipt, decoded_binding) =
-            decode_migration_operation_receipt_record(&stored_receipt)
-                .expect("closed migration receipt");
-        assert_eq!(decoded_receipt, receipt);
-        assert_eq!(decoded_binding, binding);
-
-        for state in [
-            MigrationApplicationQuitState::ExitPending,
-            MigrationApplicationQuitState::Exited,
-        ] {
-            let stored_state = migration_operation_status_record(&state);
-            assert_eq!(
-                decode_migration_operation_status_record(&stored_state),
-                Some(state)
-            );
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -369,7 +210,6 @@ pub enum ApplicationQuitProjection {
         receipt: ApplicationQuitReceipt,
         state: ApplicationQuitState,
     },
-    Migration(Box<MigrationApplicationQuitProjection>),
     OutcomeUnknown {
         operation_id: String,
         intent: ApplicationQuitIntent,
@@ -383,8 +223,7 @@ pub enum ApplicationQuitState {
     Completed,
     OutcomeUnknown {
         operation_id: String,
-        plan_id: String,
-        epoch: i64,
+        shutdown_id: String,
         activation_commit_id: String,
     },
     FailedBeforeActivation {
@@ -402,7 +241,7 @@ impl ApplicationQuitState {
             // Activated is the irreversible boundary.  A failure or timeout
             // while persisting the final summary must never turn a
             // post-activation quit back into an abort; unresolved targets
-            // were already bound to this plan/epoch for next-boot readback.
+            // were already bound to this shutdown for next-boot readback.
             Self::Activated
                 | Self::Completed
                 | Self::OutcomeUnknown { .. }
@@ -416,9 +255,6 @@ pub enum ApplicationQuitOutcome {
     Accepted {
         receipt: ApplicationQuitReceipt,
         state: ApplicationQuitState,
-    },
-    MigrationAccepted {
-        projection: Box<MigrationApplicationQuitProjection>,
     },
     RejectedBeforeCommit {
         failure: SafeOperationFailure,
@@ -444,9 +280,6 @@ pub enum ApplicationQuitError {
     InvalidRequest,
     PayloadConflict,
     PreviousShutdownReconciliationRequired {
-        blocking: Box<ApplicationShutdownPlanReadModel>,
-    },
-    PreviousShutdownCompactionPending {
         blocking: Box<ApplicationShutdownPlanReadModel>,
     },
     CapacityExceeded,
@@ -531,19 +364,6 @@ pub struct ApplicationShutdownPlanPageReadModel {
     pub next_cursor: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LocalStoreMigrationReadModel {
-    pub migration_id: String,
-    pub phase: LocalStoreMigrationPhase,
-    pub source_inventory_hash: [u8; 32],
-    pub next_source_ordinal: i64,
-    pub total_source_count: i64,
-    pub imported_raw_record_count: i64,
-    pub revision: Revision,
-    pub safe_failure: Option<String>,
-    pub correlation_id: Option<String>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShutdownEffectReadback {
     Completed,
@@ -578,25 +398,6 @@ pub trait ShutdownTargetExecutor: Send + Sync {
     /// only after all fixed domain targets have reached a terminal result.
     async fn shutdown_subordinates(&self) -> Result<(), SafeOperationFailure> {
         Ok(())
-    }
-}
-
-pub trait MigrationAdmissionState: Send + Sync {
-    fn normal_admission_ready(&self) -> bool;
-    fn active_migration_id(&self) -> Option<String>;
-}
-
-#[cfg(test)]
-struct NormalAdmissionState;
-
-#[cfg(test)]
-impl MigrationAdmissionState for NormalAdmissionState {
-    fn normal_admission_ready(&self) -> bool {
-        true
-    }
-
-    fn active_migration_id(&self) -> Option<String> {
-        None
     }
 }
 
@@ -793,8 +594,7 @@ fn operation_receipt_record(
     OperationReceiptRecord::ApplicationQuit {
         operation_id: receipt.operation_id.clone(),
         plan: ShutdownPlanKey {
-            plan_id: receipt.plan_id.clone(),
-            epoch: receipt.epoch,
+            shutdown_id: receipt.shutdown_id.clone(),
         },
         intent: receipt.intent.domain(),
         t0_ms: receipt.t0_ms,
@@ -820,8 +620,7 @@ fn decode_operation_receipt_record(
     Some((
         ApplicationQuitReceipt {
             operation_id: operation_id.clone(),
-            plan_id: plan.plan_id.clone(),
-            epoch: plan.epoch,
+            shutdown_id: plan.shutdown_id.clone(),
             intent: application_quit_intent_from_domain(*intent)?,
             t0_ms: *t0_ms,
             deadline_ms: *deadline_ms,
@@ -860,14 +659,12 @@ fn operation_status_record(state: &ApplicationQuitState) -> OperationStatusRecor
         ApplicationQuitState::Completed => OperationStatusValue::Completed,
         ApplicationQuitState::OutcomeUnknown {
             operation_id,
-            plan_id,
-            epoch,
+            shutdown_id,
             activation_commit_id,
         } => OperationStatusValue::OutcomeUnknown {
             operation_id: operation_id.clone(),
             plan: ShutdownPlanKey {
-                plan_id: plan_id.clone(),
-                epoch: *epoch,
+                shutdown_id: shutdown_id.clone(),
             },
             activation_commit_id: activation_commit_id.clone(),
         },
@@ -884,13 +681,12 @@ fn operation_status_record(state: &ApplicationQuitState) -> OperationStatusRecor
     };
     OperationStatusRecord {
         kind: OperationKind::ApplicationQuit,
-        migration_quit: false,
         value,
     }
 }
 
 fn decode_operation_status_record(record: &OperationStatusRecord) -> Option<ApplicationQuitState> {
-    if record.kind != OperationKind::ApplicationQuit || record.migration_quit {
+    if record.kind != OperationKind::ApplicationQuit {
         return None;
     }
     Some(match &record.value {
@@ -903,8 +699,7 @@ fn decode_operation_status_record(record: &OperationStatusRecord) -> Option<Appl
             activation_commit_id,
         } => ApplicationQuitState::OutcomeUnknown {
             operation_id: operation_id.clone(),
-            plan_id: plan.plan_id.clone(),
-            epoch: plan.epoch,
+            shutdown_id: plan.shutdown_id.clone(),
             activation_commit_id: activation_commit_id.clone(),
         },
         OperationStatusValue::FailedBeforeActivation { failure } => {
@@ -940,16 +735,14 @@ fn application_quit_state_identity(state: &ApplicationQuitState) -> Vec<u8> {
         ApplicationQuitState::Completed => bytes.extend_from_slice(b"completed"),
         ApplicationQuitState::OutcomeUnknown {
             operation_id,
-            plan_id,
-            epoch,
+            shutdown_id,
             activation_commit_id,
         } => {
             bytes.extend_from_slice(b"outcome_unknown\0");
             bytes.extend_from_slice(operation_id.as_bytes());
             bytes.push(0);
-            bytes.extend_from_slice(plan_id.as_bytes());
+            bytes.extend_from_slice(shutdown_id.as_bytes());
             bytes.push(0);
-            bytes.extend_from_slice(&epoch.to_be_bytes());
             bytes.extend_from_slice(activation_commit_id.as_bytes());
         }
         ApplicationQuitState::FailedBeforeActivation { failure } => {
@@ -964,104 +757,12 @@ fn application_quit_state_identity(state: &ApplicationQuitState) -> Vec<u8> {
     bytes
 }
 
-fn migration_operation_receipt_record(
-    receipt: &MigrationApplicationQuitReceipt,
-    binding_hmac: [u8; 32],
-) -> OperationReceiptRecord {
-    OperationReceiptRecord::MigrationApplicationQuit {
-        operation_id: receipt.operation_id.clone(),
-        migration_id: receipt.migration_id.clone(),
-        intent: receipt.intent.domain(),
-        t0_ms: receipt.t0_ms,
-        deadline_ms: receipt.deadline_ms,
-        binding_hmac,
-    }
-}
-
-fn decode_migration_operation_receipt_record(
-    record: &OperationReceiptRecord,
-) -> Option<(MigrationApplicationQuitReceipt, [u8; 32])> {
-    let OperationReceiptRecord::MigrationApplicationQuit {
-        operation_id,
-        migration_id,
-        intent,
-        t0_ms,
-        deadline_ms,
-        binding_hmac,
-    } = record
-    else {
-        return None;
-    };
-    Some((
-        MigrationApplicationQuitReceipt {
-            operation_id: operation_id.clone(),
-            migration_id: migration_id.clone(),
-            intent: application_quit_intent_from_domain(*intent)?,
-            t0_ms: *t0_ms,
-            deadline_ms: *deadline_ms,
-        },
-        *binding_hmac,
-    ))
-}
-
-fn migration_operation_status_record(
-    state: &MigrationApplicationQuitState,
-) -> OperationStatusRecord {
-    let value = match state {
-        MigrationApplicationQuitState::ExitPending => OperationStatusValue::ExitPending,
-        MigrationApplicationQuitState::Exited => OperationStatusValue::Exited,
-        MigrationApplicationQuitState::ReconciliationRequired { failure } => {
-            OperationStatusValue::ReconciliationRequired {
-                failure: failure.clone(),
-            }
-        }
-    };
-    OperationStatusRecord {
-        kind: OperationKind::ApplicationQuit,
-        migration_quit: true,
-        value,
-    }
-}
-
-fn decode_migration_operation_status_record(
-    record: &OperationStatusRecord,
-) -> Option<MigrationApplicationQuitState> {
-    if record.kind != OperationKind::ApplicationQuit || !record.migration_quit {
-        return None;
-    }
-    Some(match &record.value {
-        OperationStatusValue::ExitPending => MigrationApplicationQuitState::ExitPending,
-        OperationStatusValue::Exited => MigrationApplicationQuitState::Exited,
-        OperationStatusValue::ReconciliationRequired { failure } => {
-            MigrationApplicationQuitState::ReconciliationRequired {
-                failure: failure.clone(),
-            }
-        }
-        OperationStatusValue::Accepted
-        | OperationStatusValue::AwaitingProviderStart { .. }
-        | OperationStatusValue::AwaitingProviderResponse { .. }
-        | OperationStatusValue::Queued { .. }
-        | OperationStatusValue::ProviderStartReserved { .. }
-        | OperationStatusValue::Running { .. }
-        | OperationStatusValue::Completed
-        | OperationStatusValue::PermissionCompleted { .. }
-        | OperationStatusValue::StopCompleted { .. }
-        | OperationStatusValue::Preparing
-        | OperationStatusValue::Activated
-        | OperationStatusValue::OutcomeUnknown { .. }
-        | OperationStatusValue::FailedBeforeActivation { .. }
-        | OperationStatusValue::Failed { .. }
-        | OperationStatusValue::Terminal { .. } => return None,
-    })
-}
-
 pub struct ShutdownCoordinator {
     repository: Arc<dyn LocalEventTransactionRepository>,
     authority: Arc<dyn OperationBindingAuthority>,
     executor: Arc<dyn ShutdownTargetExecutor>,
-    generation_id: String,
-    boot_id: String,
-    migration_admission: Arc<dyn MigrationAdmissionState>,
+    installation_id: String,
+    process_instance_id: String,
     request_flight: tokio::sync::Mutex<()>,
     ingress_sequence: AtomicU64,
     #[cfg(test)]
@@ -1078,39 +779,19 @@ pub struct ShutdownCoordinator {
 }
 
 impl ShutdownCoordinator {
-    #[cfg(test)]
     pub fn new(
         repository: Arc<dyn LocalEventTransactionRepository>,
         authority: Arc<dyn OperationBindingAuthority>,
         executor: Arc<dyn ShutdownTargetExecutor>,
-        generation_id: String,
-        boot_id: String,
-    ) -> Self {
-        Self::new_with_migration_admission(
-            repository,
-            authority,
-            executor,
-            generation_id,
-            boot_id,
-            Arc::new(NormalAdmissionState),
-        )
-    }
-
-    pub fn new_with_migration_admission(
-        repository: Arc<dyn LocalEventTransactionRepository>,
-        authority: Arc<dyn OperationBindingAuthority>,
-        executor: Arc<dyn ShutdownTargetExecutor>,
-        generation_id: String,
-        boot_id: String,
-        migration_admission: Arc<dyn MigrationAdmissionState>,
+        installation_id: String,
+        process_instance_id: String,
     ) -> Self {
         Self {
             repository,
             authority,
             executor,
-            generation_id,
-            boot_id,
-            migration_admission,
+            installation_id,
+            process_instance_id,
             request_flight: tokio::sync::Mutex::new(()),
             ingress_sequence: AtomicU64::new(0),
             #[cfg(test)]
@@ -1187,8 +868,8 @@ impl ShutdownCoordinator {
         target_key: &str,
     ) -> String {
         format!(
-            "shutdown-target:{}:{}:{}:{}",
-            plan.plan_id, plan.epoch, ordinal, target_key
+            "shutdown-target:{}:{}:{}",
+            plan.shutdown_id, ordinal, target_key
         )
     }
 
@@ -1206,8 +887,7 @@ impl ShutdownCoordinator {
         let mut material = Vec::new();
         push_lp(&mut material, "shutdown-target-recovery-binding/v1");
         push_lp(&mut material, resource_ref);
-        push_lp(&mut material, &request.plan.plan_id);
-        material.extend_from_slice(&request.plan.epoch.to_be_bytes());
+        push_lp(&mut material, &request.plan.shutdown_id);
         material.extend_from_slice(&request.ordinal.to_be_bytes());
         push_lp(&mut material, &request.target_key);
         material.extend_from_slice(&request.origin_revision.to_be_bytes());
@@ -1224,7 +904,7 @@ impl ShutdownCoordinator {
     fn caller_key(&self, principal: &str, request_id: &str) -> CallerOperationKey {
         CallerOperationKey {
             principal: principal.to_string(),
-            generation_id: self.generation_id.clone(),
+            installation_id: self.installation_id.clone(),
             kind: OperationKind::ApplicationQuit,
             caller_request_id: request_id.to_string(),
         }
@@ -1255,7 +935,6 @@ impl ShutdownCoordinator {
         operation_id: &str,
         binding_material: &[u8],
         binding_hmac: [u8; 32],
-        migration_flight: Option<&MigrationQuitFlightView>,
     ) -> Result<bool, ApplicationQuitError> {
         let commit_id = CommitIdentity::parse(&hex::encode(
             self.authority.digest(
@@ -1269,31 +948,17 @@ impl ShutdownCoordinator {
         .map_err(|_| ApplicationQuitError::Internal {
             correlation_id: correlation("join-identity"),
         })?;
-        let mut state_mutations = vec![LocalStateMutation::OperationBinding(
+        let state_mutations = vec![LocalStateMutation::OperationBinding(
             OperationBindingMutation {
                 key: key.clone(),
                 operation_id: operation_id.to_string(),
                 binding_hmac,
             },
         )];
-        if let Some(flight) = migration_flight {
-            state_mutations.push(LocalStateMutation::MigrationQuitFlight(
-                MigrationQuitFlightMutation {
-                    operation_id: flight.operation_id.clone(),
-                    migration_id: flight.migration_id.clone(),
-                    accepted_boot_id: flight.accepted_boot_id.clone(),
-                    expected: RevisionGuard::Expected(flight.revision),
-                    // This participant is an immutable locator assertion. It
-                    // proves the join targets the current migration flight;
-                    // it deliberately does not advance the flight revision.
-                    revision: flight.revision,
-                },
-            ));
-        }
         let batch = LocalAtomicBatch {
             commit_id: commit_id.clone(),
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: OperationKind::ApplicationQuit.into(),
                 idempotency_key: format!("{}.join.{}", operation_id, key.caller_request_id),
                 payload_hash: self.authority.digest(binding_material),
@@ -1402,8 +1067,7 @@ impl ShutdownCoordinator {
                 });
             };
             if current.as_ref().is_some_and(|plan| {
-                plan.plan.plan_id == receipt.plan_id
-                    && plan.plan.epoch == receipt.epoch
+                plan.plan.shutdown_id == receipt.shutdown_id
                     && plan.phase == ApplicationShutdownPhase::ReconciliationRequired
             }) {
                 state = ApplicationQuitState::ReconciliationRequired {
@@ -1419,207 +1083,13 @@ impl ShutdownCoordinator {
         Ok(Some((receipt, state, binding, revision)))
     }
 
-    async fn migration_flight_by_operation(
-        &self,
-        operation_id: &str,
-    ) -> Result<Option<MigrationQuitFlightView>, crate::domain::local_event::LocalEventQueryError>
-    {
-        let result = self
-            .repository
-            .query(LocalEventQuery::MigrationQuitFlightByOperation {
-                operation_id: operation_id.to_string(),
-            })
-            .await?;
-        let LocalEventQueryResult::MigrationQuitFlight(flight) = result else {
-            return Err(crate::domain::local_event::LocalEventQueryError::Internal {
-                correlation_id: correlation("migration-flight-operation-shape"),
-            });
-        };
-        Ok(flight)
-    }
-
-    async fn migration_flight_by_migration(
-        &self,
-        migration_id: &str,
-    ) -> Result<Option<MigrationQuitFlightView>, crate::domain::local_event::LocalEventQueryError>
-    {
-        let result = self
-            .repository
-            .query(LocalEventQuery::MigrationQuitFlightByMigration {
-                migration_id: migration_id.to_string(),
-            })
-            .await?;
-        let LocalEventQueryResult::MigrationQuitFlight(flight) = result else {
-            return Err(crate::domain::local_event::LocalEventQueryError::Internal {
-                correlation_id: correlation("migration-flight-migration-shape"),
-            });
-        };
-        Ok(flight)
-    }
-
-    /// Resolve a migration-safe quit accepted by an earlier process boot.
-    /// The acceptance record is deliberately `ExitPending`; observing a new
-    /// boot is the first durable fact that the accepting process is no longer
-    /// running, so only this boot-boundary path may advance it to `Exited`.
-    pub async fn settle_previous_boot_migration_quit(
-        &self,
-    ) -> Result<Option<MigrationApplicationQuitProjection>, ApplicationQuitError> {
-        let Some(migration_id) = self.migration_admission.active_migration_id() else {
-            return Ok(None);
-        };
-        let Some(flight) = self
-            .migration_flight_by_migration(&migration_id)
-            .await
-            .map_err(|_| ApplicationQuitError::Internal {
-                correlation_id: correlation("migration-quit-boot-flight"),
-            })?
-        else {
-            return Ok(None);
-        };
-        let projection = self
-            .get_application_quit_projection(&flight.operation_id)
-            .await
-            .map_err(|_| ApplicationQuitError::Internal {
-                correlation_id: correlation("migration-quit-boot-projection"),
-            })?
-            .ok_or_else(|| ApplicationQuitError::Internal {
-                correlation_id: correlation("migration-quit-boot-projection-missing"),
-            })?;
-        let ApplicationQuitProjection::Migration(projection) = projection else {
-            return Err(ApplicationQuitError::Internal {
-                correlation_id: correlation("migration-quit-boot-projection-shape"),
-            });
-        };
-        if flight.accepted_boot_id == self.boot_id
-            || !matches!(projection.state, MigrationApplicationQuitState::ExitPending)
-        {
-            return Ok(Some(*projection));
-        }
-
-        let operation = self
-            .repository
-            .query(LocalEventQuery::OperationByIdentity {
-                kind: OperationKind::ApplicationQuit,
-                operation_id: flight.operation_id.clone(),
-            })
-            .await
-            .map_err(|_| ApplicationQuitError::Internal {
-                correlation_id: correlation("migration-quit-boot-operation"),
-            })?;
-        let LocalEventQueryResult::OperationByIdentity(Some(operation)) = operation else {
-            return Err(ApplicationQuitError::Internal {
-                correlation_id: correlation("migration-quit-boot-operation-missing"),
-            });
-        };
-        if operation.kind != OperationKind::ApplicationQuit
-            || operation.operation_id != flight.operation_id
-        {
-            return Err(ApplicationQuitError::Internal {
-                correlation_id: correlation("migration-quit-boot-operation-mismatch"),
-            });
-        }
-        let next_revision = operation
-            .revision
-            .next()
-            .ok_or(ApplicationQuitError::CapacityExceeded)?;
-        let state = MigrationApplicationQuitState::Exited;
-        let latest_status = migration_operation_status_record(&state);
-        let commit_id = CommitIdentity::parse(&hex::encode(
-            self.authority.digest(
-                format!(
-                    "migration-application-quit-boot-settle/v1\0{}\0{}",
-                    flight.operation_id, flight.accepted_boot_id
-                )
-                .as_bytes(),
-            ),
-        ))
-        .map_err(|_| ApplicationQuitError::Internal {
-            correlation_id: correlation("migration-quit-boot-commit-id"),
-        })?;
-        let batch = LocalAtomicBatch {
-            commit_id: commit_id.clone(),
-            idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
-                operation_kind: OperationKind::ApplicationQuit.into(),
-                idempotency_key: format!("{}.previous-boot-settlement", flight.operation_id),
-                payload_hash: self
-                    .authority
-                    .digest(b"migration-application-quit-status/v1/exited"),
-            },
-            expected_heads: Vec::new(),
-            events: Vec::new(),
-            state_mutations: vec![
-                LocalStateMutation::OperationRecord(OperationRecordMutation {
-                    kind: OperationKind::ApplicationQuit,
-                    operation_id: operation.operation_id,
-                    receipt: operation.receipt,
-                    latest_status,
-                    expected: RevisionGuard::Expected(operation.revision),
-                    revision: next_revision,
-                }),
-                // Immutable locator assertion keeps the operation, migration,
-                // accepted boot, and checkpoint in the settlement commit.
-                LocalStateMutation::MigrationQuitFlight(MigrationQuitFlightMutation {
-                    operation_id: flight.operation_id.clone(),
-                    migration_id: flight.migration_id,
-                    accepted_boot_id: flight.accepted_boot_id,
-                    expected: RevisionGuard::Expected(flight.revision),
-                    revision: flight.revision,
-                }),
-            ],
-        };
-        match self.repository.commit_batch(batch).await {
-            Ok(CommitBatchResult::Committed(_) | CommitBatchResult::Replayed(_)) => {}
-            Err(CommitBatchError::OutcomeUnknown { .. }) => {
-                if !matches!(
-                    self.repository.resolve_commit(commit_id).await,
-                    Ok(CommitResolution::Committed(_))
-                ) {
-                    return Err(ApplicationQuitError::Internal {
-                        correlation_id: correlation("migration-quit-boot-outcome-unknown"),
-                    });
-                }
-            }
-            Err(CommitBatchError::CapacityExceeded | CommitBatchError::SequenceExhausted) => {
-                return Err(ApplicationQuitError::CapacityExceeded)
-            }
-            Err(
-                CommitBatchError::PayloadConflict | CommitBatchError::StreamHeadConflict { .. },
-            ) => {
-                return Err(ApplicationQuitError::Internal {
-                    correlation_id: correlation("migration-quit-boot-conflict"),
-                })
-            }
-            Err(CommitBatchError::StorageUnavailable { .. } | CommitBatchError::Corrupt { .. }) => {
-                return Err(ApplicationQuitError::Internal {
-                    correlation_id: correlation("migration-quit-boot-storage"),
-                })
-            }
-        }
-        let settled = self
-            .get_application_quit_projection(&flight.operation_id)
-            .await
-            .map_err(|_| ApplicationQuitError::Internal {
-                correlation_id: correlation("migration-quit-boot-readback"),
-            })?
-            .ok_or_else(|| ApplicationQuitError::Internal {
-                correlation_id: correlation("migration-quit-boot-readback-missing"),
-            })?;
-        let ApplicationQuitProjection::Migration(settled) = settled else {
-            return Err(ApplicationQuitError::Internal {
-                correlation_id: correlation("migration-quit-boot-readback-shape"),
-            });
-        };
-        Ok(Some(*settled))
-    }
-
     fn caller_attempt_journal(
         &self,
     ) -> crate::usecase::agent_session::operation::CallerAttemptJournal {
         crate::usecase::agent_session::operation::CallerAttemptJournal::new(
             self.repository.clone(),
             self.authority.clone(),
-            self.generation_id.clone(),
+            self.installation_id.clone(),
         )
     }
 
@@ -1650,7 +1120,7 @@ impl ShutdownCoordinator {
         let result = self
             .repository
             .query(LocalEventQuery::PendingCallerAttemptsByOperation {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 kind: OperationKind::ApplicationQuit,
                 operation_id: operation_id.to_string(),
                 limit: 2,
@@ -1685,7 +1155,7 @@ impl ShutdownCoordinator {
         let result = self
             .repository
             .query(LocalEventQuery::PendingCallerAttemptsByKind {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 kind: OperationKind::ApplicationQuit,
                 limit: 3,
             })
@@ -1726,7 +1196,7 @@ impl ShutdownCoordinator {
         let result = self
             .repository
             .query(LocalEventQuery::OperationBindingSummaryByOperation {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 kind: OperationKind::ApplicationQuit,
                 operation_id: operation_id.to_string(),
                 expected_binding_hmac,
@@ -1747,15 +1217,11 @@ impl ShutdownCoordinator {
     ) -> Result<(), crate::domain::local_event::LocalEventQueryError> {
         if let ApplicationQuitState::OutcomeUnknown {
             operation_id,
-            plan_id,
-            epoch,
+            shutdown_id,
             ..
         } = state
         {
-            if operation_id != &receipt.operation_id
-                || plan_id != &receipt.plan_id
-                || *epoch != receipt.epoch
-            {
+            if operation_id != &receipt.operation_id || shutdown_id != &receipt.shutdown_id {
                 return Err(crate::domain::local_event::LocalEventQueryError::Corrupt {
                     correlation_id: correlation("quit-projection-unknown-reference"),
                 });
@@ -1765,8 +1231,7 @@ impl ShutdownCoordinator {
             .repository
             .query(LocalEventQuery::ShutdownPlanPage {
                 plan: ShutdownPlanKey {
-                    plan_id: receipt.plan_id.clone(),
-                    epoch: receipt.epoch,
+                    shutdown_id: receipt.shutdown_id.clone(),
                 },
                 limit: 1,
                 cursor: None,
@@ -1866,58 +1331,6 @@ impl ShutdownCoordinator {
                     .await?;
                 Ok(Some(ApplicationQuitProjection::Shutdown { receipt, state }))
             }
-            OperationReceiptRecord::MigrationApplicationQuit { .. } => {
-                let (receipt, binding) = decode_migration_operation_receipt_record(&record.receipt)
-                    .ok_or_else(
-                        || crate::domain::local_event::LocalEventQueryError::Corrupt {
-                            correlation_id: correlation("migration-quit-receipt-decode"),
-                        },
-                    )?;
-                if receipt.operation_id != operation_id {
-                    return Err(crate::domain::local_event::LocalEventQueryError::Corrupt {
-                        correlation_id: correlation("migration-quit-operation-reference"),
-                    });
-                }
-                let bindings = self
-                    .application_quit_binding_summary(operation_id, Some(binding))
-                    .await?;
-                if bindings.total_count == 0 || bindings.matching_binding_count != 1 {
-                    return Err(crate::domain::local_event::LocalEventQueryError::Corrupt {
-                        correlation_id: correlation("migration-quit-binding-integrity"),
-                    });
-                }
-                let state = decode_migration_operation_status_record(&record.latest_status)
-                    .ok_or_else(
-                        || crate::domain::local_event::LocalEventQueryError::Corrupt {
-                            correlation_id: correlation("migration-quit-state-decode"),
-                        },
-                    )?;
-                let flight = self
-                    .migration_flight_by_operation(operation_id)
-                    .await?
-                    .ok_or_else(
-                        || crate::domain::local_event::LocalEventQueryError::Corrupt {
-                            correlation_id: correlation("migration-quit-flight-missing"),
-                        },
-                    )?;
-                if flight.operation_id != receipt.operation_id
-                    || flight.migration_id != receipt.migration_id
-                {
-                    return Err(crate::domain::local_event::LocalEventQueryError::Corrupt {
-                        correlation_id: correlation("migration-quit-flight-mismatch"),
-                    });
-                }
-                Ok(Some(ApplicationQuitProjection::Migration(Box::new(
-                    MigrationApplicationQuitProjection {
-                        receipt,
-                        state,
-                        checkpoint: flight.checkpoint,
-                        migration_revision: flight.migration_revision,
-                        accepted_boot_id: flight.accepted_boot_id,
-                        observed_boot_id: self.boot_id.clone(),
-                    },
-                ))))
-            }
             OperationReceiptRecord::Send { .. }
             | OperationReceiptRecord::PermissionResponse { .. }
             | OperationReceiptRecord::Stop { .. }
@@ -1951,11 +1364,10 @@ impl ShutdownCoordinator {
     ) -> bool {
         matches!(
             phase,
-            ApplicationShutdownPhase::Preparing
-                | ApplicationShutdownPhase::Prepared
+            ApplicationShutdownPhase::Prepared
                 | ApplicationShutdownPhase::Activated
                 | ApplicationShutdownPhase::Quiescing
-        ) && summary.boot_id != self.boot_id
+        ) && summary.process_instance_id != self.process_instance_id
     }
 
     fn has_exit_coupled_observation(
@@ -1968,7 +1380,7 @@ impl ShutdownCoordinator {
             ApplicationShutdownPhase::Prepared
                 | ApplicationShutdownPhase::Activated
                 | ApplicationShutdownPhase::Quiescing
-        ) && summary.boot_id != self.boot_id
+        ) && summary.process_instance_id != self.process_instance_id
     }
 
     fn decode_shutdown_plan_read_model(
@@ -2044,7 +1456,7 @@ impl ShutdownCoordinator {
                 correlation_id: correlation("shutdown-summary-preparation-cutoff-ms"),
             }
         })?;
-        if summary.operation_id.is_empty() || summary.boot_id.is_empty() {
+        if summary.operation_id.is_empty() || summary.process_instance_id.is_empty() {
             return Err(crate::domain::local_event::LocalEventQueryError::Internal {
                 correlation_id: correlation("shutdown-summary-reference"),
             });
@@ -2086,23 +1498,6 @@ impl ShutdownCoordinator {
                 correlation_id: correlation(&format!("blocking-shutdown-decode-{error}")),
             },
         }
-    }
-
-    async fn blocking_plan_read_model(
-        &self,
-        plan: ShutdownPlanKey,
-    ) -> Result<Box<ApplicationShutdownPlanReadModel>, ApplicationQuitError> {
-        let page = self
-            .shutdown_plan_page(plan, 1, None)
-            .await
-            .map_err(|error| ApplicationQuitError::Internal {
-                correlation_id: correlation(&format!("blocking-shutdown-read-{error}")),
-            })?;
-        self.decode_shutdown_plan_read_model(page.plan)
-            .map(Box::new)
-            .map_err(|error| ApplicationQuitError::Internal {
-                correlation_id: correlation(&format!("blocking-shutdown-decode-{error}")),
-            })
     }
 
     async fn current_shutdown_reconciliation_error(&self) -> ApplicationQuitError {
@@ -2167,8 +1562,7 @@ impl ShutdownCoordinator {
                         Some(
                             self.shutdown_plan_page_read_model(
                                 ShutdownPlanKey {
-                                    plan_id: completed.receipt.plan_id,
-                                    epoch: completed.receipt.epoch,
+                                    shutdown_id: completed.receipt.shutdown_id,
                                 },
                                 1,
                                 None,
@@ -2199,17 +1593,14 @@ impl ShutdownCoordinator {
                     intent,
                 })
             }
-            Some(ApplicationQuitProjection::Migration(_))
-            | Some(ApplicationQuitProjection::OutcomeUnknown { .. })
-            | None => {
+            Some(ApplicationQuitProjection::OutcomeUnknown { .. }) | None => {
                 return Err(crate::domain::local_event::LocalEventQueryError::Corrupt {
                     correlation_id: correlation("current-shutdown-operation-reference"),
                 })
             }
         };
         if receipt.operation_id != current.operation_id
-            || receipt.plan_id != current.plan.plan_id
-            || receipt.epoch != current.plan.epoch
+            || receipt.shutdown_id != current.plan.shutdown_id
             || receipt.intent.mode() != current.intent
             || receipt.intent.code() != current.exit_code
             || receipt.t0_ms != current.t0_ms
@@ -2221,15 +1612,11 @@ impl ShutdownCoordinator {
         }
         if let ApplicationQuitState::OutcomeUnknown {
             operation_id,
-            plan_id,
-            epoch,
+            shutdown_id,
             ..
         } = &state
         {
-            if operation_id != &current.operation_id
-                || plan_id != &current.plan.plan_id
-                || *epoch != current.plan.epoch
-            {
+            if operation_id != &current.operation_id || shutdown_id != &current.plan.shutdown_id {
                 return Err(crate::domain::local_event::LocalEventQueryError::Corrupt {
                     correlation_id: correlation("current-shutdown-unknown-reference"),
                 });
@@ -2243,7 +1630,7 @@ impl ShutdownCoordinator {
         let authority_matches = matches!(
             (current.phase, &state),
             (
-                ApplicationShutdownPhase::Preparing | ApplicationShutdownPhase::Prepared,
+                ApplicationShutdownPhase::Prepared,
                 ApplicationQuitState::Preparing
             ) | (
                 ApplicationShutdownPhase::Activated | ApplicationShutdownPhase::Quiescing,
@@ -2276,61 +1663,6 @@ impl ShutdownCoordinator {
         )))
     }
 
-    pub async fn local_store_migration(
-        &self,
-    ) -> Result<
-        Option<crate::domain::local_event::LocalStoreMigrationView>,
-        crate::domain::local_event::LocalEventQueryError,
-    > {
-        let result = self
-            .repository
-            .query(LocalEventQuery::LocalStoreMigration)
-            .await?;
-        let LocalEventQueryResult::LocalStoreMigration(migration) = result else {
-            return Err(crate::domain::local_event::LocalEventQueryError::Internal {
-                correlation_id: correlation("migration-shape"),
-            });
-        };
-        Ok(migration)
-    }
-
-    pub async fn local_store_migration_read_model(
-        &self,
-    ) -> Result<
-        Option<LocalStoreMigrationReadModel>,
-        crate::domain::local_event::LocalEventQueryError,
-    > {
-        let Some(value) = self.local_store_migration().await? else {
-            return Ok(None);
-        };
-        let integer = |key: &str, raw: u64| {
-            i64::try_from(raw).map_err(|_| {
-                crate::domain::local_event::LocalEventQueryError::Internal {
-                    correlation_id: correlation(&format!("migration-checkpoint-{key}")),
-                }
-            })
-        };
-        let next_source_ordinal =
-            integer("next_source_ordinal", value.checkpoint.next_source_ordinal)?;
-        let total_source_count =
-            integer("total_source_count", value.checkpoint.total_source_count)?;
-        let imported_raw_record_count = integer(
-            "imported_raw_record_count",
-            value.checkpoint.imported_raw_record_count,
-        )?;
-        Ok(Some(LocalStoreMigrationReadModel {
-            migration_id: value.migration_id,
-            phase: value.phase,
-            source_inventory_hash: value.source_inventory_hash,
-            next_source_ordinal,
-            total_source_count,
-            imported_raw_record_count,
-            revision: value.revision,
-            safe_failure: value.checkpoint.safe_failure,
-            correlation_id: value.checkpoint.correlation_id,
-        }))
-    }
-
     pub async fn retry_quit_available(
         &self,
         plan: &ShutdownPlanView,
@@ -2351,23 +1683,6 @@ impl ShutdownCoordinator {
     }
 
     async fn ensure_shutdown_detail_capacity(&self) -> Result<(), ApplicationQuitError> {
-        let retiring = self
-            .repository
-            .query(LocalEventQuery::ShutdownRetiringPlan)
-            .await
-            .map_err(|error| ApplicationQuitError::Internal {
-                correlation_id: correlation(&format!("retiring-read-{error}")),
-            })?;
-        let LocalEventQueryResult::ShutdownRetiringPlan(retiring) = retiring else {
-            return Err(ApplicationQuitError::Internal {
-                correlation_id: correlation("retiring-shape"),
-            });
-        };
-        if let Some(retiring) = retiring {
-            return Err(ApplicationQuitError::PreviousShutdownCompactionPending {
-                blocking: self.blocking_plan_read_model(retiring).await?,
-            });
-        }
         let result = self
             .repository
             .query(LocalEventQuery::AvailableShutdownHistory { limit: 3 })
@@ -2392,18 +1707,8 @@ impl ShutdownCoordinator {
         ) {
             return Err(self.previous_shutdown_reconciliation_error(oldest));
         }
-        // Admission never performs an unbounded aggregate-and-switch itself.
-        // It kicks the sole background compactor and rejects before creating
-        // a new operation until the retiring selector is durably cleared.
-        let blocking = self
-            .decode_shutdown_plan_read_model(oldest.clone())
-            .map_err(|error| ApplicationQuitError::Internal {
-                correlation_id: correlation(&format!("compaction-blocker-decode-{error}")),
-            })?;
-        self.schedule_shutdown_detail_compaction(oldest.plan);
-        Err(ApplicationQuitError::PreviousShutdownCompactionPending {
-            blocking: Box::new(blocking),
-        })
+        self.compact_shutdown_details(oldest.plan).await?;
+        Ok(())
     }
 
     fn background_compactor(&self) -> Self {
@@ -2411,9 +1716,8 @@ impl ShutdownCoordinator {
             repository: Arc::clone(&self.repository),
             authority: Arc::clone(&self.authority),
             executor: Arc::clone(&self.executor),
-            generation_id: self.generation_id.clone(),
-            boot_id: self.boot_id.clone(),
-            migration_admission: Arc::clone(&self.migration_admission),
+            installation_id: self.installation_id.clone(),
+            process_instance_id: self.process_instance_id.clone(),
             request_flight: tokio::sync::Mutex::new(()),
             ingress_sequence: AtomicU64::new(0),
             #[cfg(test)]
@@ -2426,28 +1730,9 @@ impl ShutdownCoordinator {
         }
     }
 
-    fn schedule_shutdown_detail_compaction(&self, plan: ShutdownPlanKey) {
-        let worker = self.background_compactor();
-        tokio::spawn(async move {
-            if let Err(error) = worker.compact_shutdown_details(plan).await {
-                log::warn!("background shutdown detail compaction deferred: {error:?}");
-            }
-        });
-    }
-
     fn schedule_oldest_shutdown_detail_compaction(&self) {
         let worker = self.background_compactor();
         tokio::spawn(async move {
-            let Ok(LocalEventQueryResult::ShutdownRetiringPlan(retiring)) = worker
-                .repository
-                .query(LocalEventQuery::ShutdownRetiringPlan)
-                .await
-            else {
-                return;
-            };
-            if retiring.is_some() {
-                return;
-            }
             let Ok(LocalEventQueryResult::AvailableShutdownHistory(mut available)) = worker
                 .repository
                 .query(LocalEventQuery::AvailableShutdownHistory { limit: 3 })
@@ -2533,8 +1818,7 @@ impl ShutdownCoordinator {
                     ShutdownTargetStateRecord::Prepared | ShutdownTargetStateRecord::EffectReserved
                 ))
             .then(|| SafeEffectObservation::ExitCoupledOutcomeUnknown {
-                plan_id: plan.plan.plan_id.clone(),
-                epoch: plan.plan.epoch,
+                shutdown_id: plan.plan.shutdown_id.clone(),
             });
             let state = if observation.is_some() {
                 "reconciliation_required".to_string()
@@ -2561,7 +1845,7 @@ impl ShutdownCoordinator {
                 vec![RecoveryActionIdentity {
                     action_id: derive_recovery_action_id(
                         &*self.authority,
-                        &self.generation_id,
+                        &self.installation_id,
                         &resource_ref,
                         target.revision.value() as u64,
                         action,
@@ -2706,8 +1990,7 @@ impl ShutdownCoordinator {
                 stream_id,
                 event: LocalDomainEvent::Application(
                     ApplicationDomainEvent::ShutdownPhaseAdvanced {
-                        plan_id: plan.plan_id.clone(),
-                        epoch: plan.epoch,
+                        shutdown_id: plan.shutdown_id.clone(),
                         phase: ApplicationShutdownPhase::Completed,
                         at_ms,
                     },
@@ -2790,7 +2073,7 @@ impl ShutdownCoordinator {
         }
         let issued = derive_recovery_action_id(
             &*self.authority,
-            &self.generation_id,
+            &self.installation_id,
             &resource_ref,
             request.origin_revision,
             request.action,
@@ -2944,7 +2227,7 @@ impl ShutdownCoordinator {
             )))
             .map_err(|_| RecoveryActionError::InvalidRequest)?,
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: CommitOperationKind::Recovery,
                 idempotency_key: format!("{}.reserve", request.action_id),
                 payload_hash: binding_hash,
@@ -3300,7 +2583,7 @@ impl ShutdownCoordinator {
             )))
             .map_err(|_| RecoveryActionError::InvalidRequest)?,
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: CommitOperationKind::Recovery,
                 idempotency_key: format!("{}.finish", request.action_id),
                 payload_hash: completed_payload_sha256,
@@ -3386,121 +2669,28 @@ impl ShutdownCoordinator {
         &self,
         plan: ShutdownPlanKey,
     ) -> Result<ShutdownPlanView, ApplicationQuitError> {
-        let mut cursor = None;
-        let mut current = None;
-        let mut target_count = 0usize;
-        let mut target_digest_material = Vec::new();
-        loop {
-            let page = self
-                .shutdown_plan_page(plan.clone(), 128, cursor)
-                .await
-                .map_err(|_| ApplicationQuitError::Internal {
-                    correlation_id: correlation("compact-read"),
-                })?;
-            if !matches!(
-                page.plan.phase,
-                ApplicationShutdownPhase::Completed
-                    | ApplicationShutdownPhase::Failed
-                    | ApplicationShutdownPhase::Cancelled
-            ) {
-                return Err(self.previous_shutdown_reconciliation_error(page.plan));
-            }
-            if page.plan.details_state == ShutdownDetailsState::Compacted {
-                return Ok(page.plan);
-            }
-            current.get_or_insert_with(|| page.plan.clone());
-            for target in page.targets {
-                target_count = target_count.saturating_add(1);
-                target_digest_material.extend_from_slice(&target.ordinal.to_be_bytes());
-                target_digest_material.extend_from_slice(&target.detail_sha256);
-            }
-            cursor = page.next_cursor.map(|value| value.as_str().to_string());
-            if cursor.is_none() {
-                break;
-            }
-        }
-        let mut recovery_snapshot_count = 0usize;
-        let mut recovery_digest_material = Vec::new();
-        let current_summary = &current
-            .as_ref()
-            .ok_or_else(|| ApplicationQuitError::Internal {
-                correlation_id: correlation("compact-empty"),
+        let current = self
+            .shutdown_plan_page(plan.clone(), 1, None)
+            .await
+            .map_err(|_| ApplicationQuitError::Internal {
+                correlation_id: correlation("compact-read"),
             })?
-            .summary;
-        let expected_recovery_count = current_summary.recovery_snapshot_count.unwrap_or(0);
-        let snapshot_id = current_summary.recovery_snapshot_id.as_deref();
-        if expected_recovery_count > 0 && snapshot_id.is_none() {
-            return Err(ApplicationQuitError::Internal {
-                correlation_id: correlation("compact-recovery-snapshot-id"),
-            });
+            .plan;
+        if !matches!(
+            current.phase,
+            ApplicationShutdownPhase::Completed
+                | ApplicationShutdownPhase::Failed
+                | ApplicationShutdownPhase::Cancelled
+        ) {
+            return Err(self.previous_shutdown_reconciliation_error(current));
         }
-        if let Some(snapshot_id) = snapshot_id {
-            for partition in [
-                PendingPartition::ClosedSession,
-                PendingPartition::ArchivedSession,
-                PendingPartition::UnownedRuntime,
-            ] {
-                let mut recovery_cursor = None;
-                loop {
-                    let result = self
-                        .repository
-                        .query(LocalEventQuery::PendingRecoverySnapshotPage {
-                            plan: plan.clone(),
-                            snapshot_id: snapshot_id.to_string(),
-                            partition,
-                            limit: 200,
-                            cursor: recovery_cursor,
-                        })
-                        .await
-                        .map_err(|_| ApplicationQuitError::Internal {
-                            correlation_id: correlation("compact-recovery-read"),
-                        })?;
-                    let LocalEventQueryResult::PendingRecoverySnapshotPage(page) = result else {
-                        return Err(ApplicationQuitError::Internal {
-                            correlation_id: correlation("compact-recovery-shape"),
-                        });
-                    };
-                    for entry in page.entries {
-                        recovery_snapshot_count = recovery_snapshot_count.saturating_add(1);
-                        recovery_digest_material
-                            .extend_from_slice(entry.partition.label().as_bytes());
-                        recovery_digest_material.extend_from_slice(&entry.ordinal.to_be_bytes());
-                        recovery_digest_material.extend_from_slice(&entry.detail_sha256);
-                    }
-                    recovery_cursor = page.next_cursor;
-                    if recovery_cursor.is_none() {
-                        break;
-                    }
-                }
-            }
+        if current.details_state == ShutdownDetailsState::Compacted {
+            return Ok(current);
         }
-        if recovery_snapshot_count as u64 != expected_recovery_count {
-            return Err(ApplicationQuitError::Internal {
-                correlation_id: correlation("compact-recovery-count"),
-            });
-        }
-        let current = current.ok_or_else(|| ApplicationQuitError::Internal {
-            correlation_id: correlation("compact-empty"),
-        })?;
         let next_revision = current
             .revision
             .next()
             .ok_or(ApplicationQuitError::CapacityExceeded)?;
-        let target_set_sha256 = self.authority.digest(&target_digest_material);
-        let recovery_snapshot_sha256 = self.authority.digest(&recovery_digest_material);
-        let archive = ShutdownArchiveRecord {
-            plan: plan.clone(),
-            terminal_phase: current.phase,
-            source_revision: current.revision.value() as u64,
-            summary: current.summary.clone(),
-            source_summary_sha256: current.summary_sha256,
-            target_count: u64::try_from(target_count)
-                .map_err(|_| ApplicationQuitError::CapacityExceeded)?,
-            target_set_sha256,
-            recovery_snapshot_count: u64::try_from(recovery_snapshot_count)
-                .map_err(|_| ApplicationQuitError::CapacityExceeded)?,
-            recovery_snapshot_sha256,
-        };
         let stream_id = StreamId::application();
         let head = self
             .application_head()
@@ -3508,20 +2698,20 @@ impl ShutdownCoordinator {
             .map_err(|_| ApplicationQuitError::Internal {
                 correlation_id: correlation("compact-head"),
             })?;
-        let mut archive_identity = Vec::new();
-        archive_identity.extend_from_slice(b"shutdown-compact-archive/v1\0");
-        archive_identity.extend_from_slice(&archive.source_summary_sha256);
-        archive_identity.extend_from_slice(&archive.target_set_sha256);
-        archive_identity.extend_from_slice(&archive.recovery_snapshot_sha256);
-        archive_identity.extend_from_slice(&archive.source_revision.to_be_bytes());
-        let payload_hash = self.authority.digest(&archive_identity);
+        let payload_hash = self.authority.digest(
+            format!(
+                "shutdown-summary-only/v2\0{}\0{}",
+                plan.shutdown_id,
+                current.revision.value()
+            )
+            .as_bytes(),
+        );
         let batch = LocalAtomicBatch {
             commit_id: CommitIdentity::parse(&hex::encode(
                 self.authority.digest(
                     format!(
-                        "shutdown-compact/v1\0{}\0{}\0{}",
-                        plan.plan_id,
-                        plan.epoch,
+                        "shutdown-compact/v2\0{}\0{}",
+                        plan.shutdown_id,
                         next_revision.value()
                     )
                     .as_bytes(),
@@ -3531,14 +2721,9 @@ impl ShutdownCoordinator {
                 correlation_id: correlation("compact-identity"),
             })?,
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: OperationKind::ApplicationQuit.into(),
-                idempotency_key: format!(
-                    "{}.{}.compact.{}",
-                    plan.plan_id,
-                    plan.epoch,
-                    next_revision.value()
-                ),
+                idempotency_key: format!("{}.compact.{}", plan.shutdown_id, next_revision.value()),
                 payload_hash,
             },
             expected_heads: vec![ExpectedStreamHead {
@@ -3549,31 +2734,19 @@ impl ShutdownCoordinator {
                 stream_id,
                 event: LocalDomainEvent::Application(
                     ApplicationDomainEvent::ShutdownDetailsCompacted {
-                        plan_id: plan.plan_id.clone(),
-                        epoch: plan.epoch,
+                        shutdown_id: plan.shutdown_id.clone(),
                         at_ms: now_ms(),
                     },
                 ),
                 occurred_at_ms: now_ms(),
             }],
-            state_mutations: vec![
-                LocalStateMutation::ShutdownCompactArchive(ShutdownCompactArchiveMutation {
+            state_mutations: vec![LocalStateMutation::ShutdownDetailsCompaction(
+                ShutdownDetailsCompactionMutation {
                     key: plan.clone(),
-                    archive,
-                }),
-                LocalStateMutation::ShutdownPlan(ShutdownPlanMutation {
-                    key: plan.clone(),
-                    phase: current.phase,
-                    summary: current.summary,
-                    details_state: ShutdownDetailsState::Compacted,
-                    expected: RevisionGuard::Expected(current.revision),
+                    expected: current.revision,
                     revision: next_revision,
-                }),
-                LocalStateMutation::ShutdownRetiringPointer(ShutdownRetiringPointerMutation {
-                    expected: None,
-                    new: Some(plan.clone()),
-                }),
-            ],
+                },
+            )],
         };
         match self.repository.commit_batch(batch).await {
             Ok(CommitBatchResult::Committed(_) | CommitBatchResult::Replayed(_)) => {}
@@ -3583,8 +2756,8 @@ impl ShutdownCoordinator {
                         return Ok(page.plan);
                     }
                 }
-                return Err(ApplicationQuitError::PreviousShutdownCompactionPending {
-                    blocking: self.blocking_plan_read_model(plan).await?,
+                return Err(ApplicationQuitError::Internal {
+                    correlation_id: correlation("compact-conflict"),
                 });
             }
             Err(CommitBatchError::CapacityExceeded | CommitBatchError::SequenceExhausted) => {
@@ -3596,8 +2769,8 @@ impl ShutdownCoordinator {
                         return Ok(page.plan);
                     }
                 }
-                return Err(ApplicationQuitError::PreviousShutdownCompactionPending {
-                    blocking: self.blocking_plan_read_model(plan).await?,
+                return Err(ApplicationQuitError::Internal {
+                    correlation_id: correlation("compact-stream-conflict"),
                 });
             }
             Err(CommitBatchError::OutcomeUnknown { .. }) => {
@@ -3728,220 +2901,6 @@ impl ShutdownCoordinator {
         Ok(hex::encode(self.authority.digest(&material)))
     }
 
-    async fn request_migration_quit(
-        &self,
-        request: &ApplicationQuitRequest,
-        migration_id: &str,
-        t0_ms: i64,
-    ) -> Result<ApplicationQuitOutcome, ApplicationQuitError> {
-        let deadline_ms = t0_ms.saturating_add(DECISION_DEADLINE.as_millis() as i64);
-        let operation_id = self.operation_id(&request.principal, &request.request_id);
-        let caller_key = self.caller_key(&request.principal, &request.request_id);
-        if let Some(saved_binding) = self.get_binding(&caller_key).await? {
-            let binding_material =
-                crate::usecase::agent_session::operation::binding::application_quit(
-                    &request.principal,
-                    &self.generation_id,
-                    &request.request_id,
-                    &saved_binding.operation_id,
-                    request.intent.mode(),
-                    request.intent.code(),
-                );
-            if !constant_time_eq_32(
-                &saved_binding.binding_hmac,
-                &self.authority.mac(&binding_material),
-            ) {
-                return Err(ApplicationQuitError::PayloadConflict);
-            }
-            let projection = self
-                .get_application_quit_projection(&saved_binding.operation_id)
-                .await
-                .map_err(|_| ApplicationQuitError::Internal {
-                    correlation_id: correlation("migration-bound-operation"),
-                })?
-                .ok_or_else(|| ApplicationQuitError::Internal {
-                    correlation_id: correlation("migration-bound-operation-missing"),
-                })?;
-            let ApplicationQuitProjection::Migration(projection) = projection else {
-                return Err(ApplicationQuitError::Internal {
-                    correlation_id: correlation("migration-bound-shutdown-projection"),
-                });
-            };
-            if projection.receipt.migration_id != migration_id {
-                return Err(ApplicationQuitError::Internal {
-                    correlation_id: correlation("migration-bound-flight-mismatch"),
-                });
-            }
-            return Ok(ApplicationQuitOutcome::MigrationAccepted { projection });
-        }
-
-        if let Some(flight) = self
-            .migration_flight_by_migration(migration_id)
-            .await
-            .map_err(|_| ApplicationQuitError::Internal {
-                correlation_id: correlation("migration-current-flight"),
-            })?
-        {
-            let projection = self
-                .get_application_quit_projection(&flight.operation_id)
-                .await
-                .map_err(|_| ApplicationQuitError::Internal {
-                    correlation_id: correlation("migration-current-operation"),
-                })?
-                .ok_or_else(|| ApplicationQuitError::Internal {
-                    correlation_id: correlation("migration-current-operation-missing"),
-                })?;
-            let ApplicationQuitProjection::Migration(projection) = projection else {
-                return Err(ApplicationQuitError::Internal {
-                    correlation_id: correlation("migration-current-projection"),
-                });
-            };
-            let binding_material =
-                crate::usecase::agent_session::operation::binding::application_quit(
-                    &request.principal,
-                    &self.generation_id,
-                    &request.request_id,
-                    &flight.operation_id,
-                    request.intent.mode(),
-                    request.intent.code(),
-                );
-            let remaining = deadline_ms.saturating_sub(now_ms()).max(0) as u64;
-            if remaining == 0
-                || !tokio::time::timeout(
-                    Duration::from_millis(remaining),
-                    self.save_join_binding(
-                        caller_key,
-                        &flight.operation_id,
-                        &binding_material,
-                        self.authority.mac(&binding_material),
-                        Some(&flight),
-                    ),
-                )
-                .await
-                .is_ok_and(|result| result.is_ok_and(|saved| saved))
-            {
-                return Ok(ApplicationQuitOutcome::OutcomeUnknown {
-                    request_id: request.request_id.clone(),
-                    operation_id: flight.operation_id.clone(),
-                    intent: request.intent,
-                });
-            }
-            return Ok(ApplicationQuitOutcome::MigrationAccepted { projection });
-        }
-
-        let binding_material = crate::usecase::agent_session::operation::binding::application_quit(
-            &request.principal,
-            &self.generation_id,
-            &request.request_id,
-            &operation_id,
-            request.intent.mode(),
-            request.intent.code(),
-        );
-        let binding = self.authority.mac(&binding_material);
-        let receipt = MigrationApplicationQuitReceipt {
-            operation_id: operation_id.clone(),
-            migration_id: migration_id.to_string(),
-            intent: request.intent,
-            t0_ms,
-            deadline_ms,
-        };
-        let state = MigrationApplicationQuitState::ExitPending;
-        let batch = LocalAtomicBatch {
-            commit_id: CommitIdentity::parse(&hex::encode(self.authority.digest(
-                format!("migration-application-quit-accept/v1\0{operation_id}").as_bytes(),
-            )))
-            .map_err(|_| ApplicationQuitError::Internal {
-                correlation_id: correlation("migration-quit-commit-id"),
-            })?,
-            idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
-                operation_kind: OperationKind::ApplicationQuit.into(),
-                idempotency_key: operation_id.clone(),
-                payload_hash: self.authority.digest(&binding_material),
-            },
-            expected_heads: Vec::new(),
-            events: Vec::new(),
-            state_mutations: vec![
-                LocalStateMutation::OperationBinding(OperationBindingMutation {
-                    key: caller_key,
-                    operation_id: operation_id.clone(),
-                    binding_hmac: binding,
-                }),
-                LocalStateMutation::OperationRecord(OperationRecordMutation {
-                    kind: OperationKind::ApplicationQuit,
-                    operation_id: operation_id.clone(),
-                    receipt: migration_operation_receipt_record(&receipt, binding),
-                    latest_status: migration_operation_status_record(&state),
-                    expected: RevisionGuard::Absent,
-                    revision: Revision::new(0).expect("zero revision"),
-                }),
-                LocalStateMutation::MigrationQuitFlight(MigrationQuitFlightMutation {
-                    operation_id: operation_id.clone(),
-                    migration_id: migration_id.to_string(),
-                    accepted_boot_id: self.boot_id.clone(),
-                    expected: RevisionGuard::Absent,
-                    revision: Revision::new(0).expect("zero revision"),
-                }),
-            ],
-        };
-        let remaining = deadline_ms.saturating_sub(now_ms()).max(0) as u64;
-        if remaining == 0 {
-            return Ok(ApplicationQuitOutcome::OutcomeUnknown {
-                request_id: request.request_id.clone(),
-                operation_id: operation_id.clone(),
-                intent: request.intent,
-            });
-        }
-        let commit = tokio::time::timeout(
-            Duration::from_millis(remaining),
-            self.repository.commit_batch(batch),
-        )
-        .await;
-        match commit {
-            Ok(Ok(CommitBatchResult::Committed(_) | CommitBatchResult::Replayed(_))) => {
-                let projection = self
-                    .get_application_quit_projection(&operation_id)
-                    .await
-                    .map_err(|_| ApplicationQuitError::Internal {
-                        correlation_id: correlation("migration-quit-readback"),
-                    })?
-                    .ok_or_else(|| ApplicationQuitError::Internal {
-                        correlation_id: correlation("migration-quit-readback-missing"),
-                    })?;
-                let ApplicationQuitProjection::Migration(projection) = projection else {
-                    return Err(ApplicationQuitError::Internal {
-                        correlation_id: correlation("migration-quit-readback-shape"),
-                    });
-                };
-                Ok(ApplicationQuitOutcome::MigrationAccepted { projection })
-            }
-            Ok(Err(CommitBatchError::PayloadConflict)) => {
-                Err(ApplicationQuitError::PayloadConflict)
-            }
-            Ok(Err(CommitBatchError::CapacityExceeded | CommitBatchError::SequenceExhausted)) => {
-                Err(ApplicationQuitError::CapacityExceeded)
-            }
-            Ok(Err(CommitBatchError::StorageUnavailable { failure })) => {
-                Ok(ApplicationQuitOutcome::RejectedBeforeCommit { failure })
-            }
-            Ok(Err(CommitBatchError::OutcomeUnknown { .. })) | Err(_) => {
-                Ok(ApplicationQuitOutcome::OutcomeUnknown {
-                    request_id: request.request_id.clone(),
-                    operation_id,
-                    intent: request.intent,
-                })
-            }
-            Ok(Err(CommitBatchError::StreamHeadConflict { .. })) => {
-                Err(ApplicationQuitError::Internal {
-                    correlation_id: correlation("migration-quit-stream-head"),
-                })
-            }
-            Ok(Err(CommitBatchError::Corrupt { correlation_id })) => {
-                Err(ApplicationQuitError::Internal { correlation_id })
-            }
-        }
-    }
-
     pub async fn request(
         &self,
         request: ApplicationQuitRequest,
@@ -3972,11 +2931,7 @@ impl ShutdownCoordinator {
             }),
         };
         if !matches!(&outcome, Ok(ApplicationQuitOutcome::OutcomeUnknown { .. })) {
-            let accepted = matches!(
-                &outcome,
-                Ok(ApplicationQuitOutcome::Accepted { .. })
-                    | Ok(ApplicationQuitOutcome::MigrationAccepted { .. })
-            );
+            let accepted = matches!(&outcome, Ok(ApplicationQuitOutcome::Accepted { .. }));
             let resolution = tokio::time::timeout(
                 Duration::from_secs(1),
                 self.caller_attempt_journal().clear_attempt(
@@ -4029,24 +2984,13 @@ impl ShutdownCoordinator {
                 });
             }
         };
-        if !self.migration_admission.normal_admission_ready() {
-            let migration_id = self
-                .migration_admission
-                .active_migration_id()
-                .ok_or_else(|| ApplicationQuitError::Internal {
-                    correlation_id: correlation("migration-admission-locator"),
-                })?;
-            return self
-                .request_migration_quit(&request, &migration_id, ingress_t0_ms)
-                .await;
-        }
         let operation_id = self.operation_id(&request.principal, &request.request_id);
         let caller_key = self.caller_key(&request.principal, &request.request_id);
         if let Some(saved_binding) = self.get_binding(&caller_key).await? {
             let binding_material =
                 crate::usecase::agent_session::operation::binding::application_quit(
                     &request.principal,
-                    &self.generation_id,
+                    &self.installation_id,
                     &request.request_id,
                     &saved_binding.operation_id,
                     request.intent.mode(),
@@ -4055,18 +2999,6 @@ impl ShutdownCoordinator {
             let binding = self.authority.mac(&binding_material);
             if !constant_time_eq_32(&saved_binding.binding_hmac, &binding) {
                 return Err(ApplicationQuitError::PayloadConflict);
-            }
-            // Migration-safe operations stay addressable after cutover. The
-            // saved caller binding therefore has to resolve its closed
-            // locator before this path assumes a normal shutdown plan.
-            if let Some(ApplicationQuitProjection::Migration(projection)) = self
-                .get_application_quit_projection(&saved_binding.operation_id)
-                .await
-                .map_err(|_| ApplicationQuitError::Internal {
-                    correlation_id: correlation("bound-operation-projection"),
-                })?
-            {
-                return Ok(ApplicationQuitOutcome::MigrationAccepted { projection });
             }
             let saved_operation = self
                 .get_operation(&saved_binding.operation_id)
@@ -4110,7 +3042,7 @@ impl ShutdownCoordinator {
         {
             let join_material = crate::usecase::agent_session::operation::binding::application_quit(
                 &request.principal,
-                &self.generation_id,
+                &self.installation_id,
                 &request.request_id,
                 &receipt.operation_id,
                 request.intent.mode(),
@@ -4123,7 +3055,6 @@ impl ShutdownCoordinator {
                     &receipt.operation_id,
                     &join_material,
                     join_binding,
-                    None,
                 )
                 .await?
             {
@@ -4197,7 +3128,7 @@ impl ShutdownCoordinator {
                 let join_material =
                     crate::usecase::agent_session::operation::binding::application_quit(
                         &request.principal,
-                        &self.generation_id,
+                        &self.installation_id,
                         &request.request_id,
                         &current_operation,
                         request.intent.mode(),
@@ -4210,7 +3141,6 @@ impl ShutdownCoordinator {
                         &current_operation,
                         &join_material,
                         join_binding,
-                        None,
                     )
                     .await?
                 {
@@ -4255,7 +3185,7 @@ impl ShutdownCoordinator {
 
         let binding_material = crate::usecase::agent_session::operation::binding::application_quit(
             &request.principal,
-            &self.generation_id,
+            &self.installation_id,
             &request.request_id,
             &operation_id,
             request.intent.mode(),
@@ -4390,15 +3320,13 @@ impl ShutdownCoordinator {
         let t0_ms = ingress_t0_ms;
         let receipt = ApplicationQuitReceipt {
             operation_id: operation_id.clone(),
-            plan_id: operation_id.clone(),
-            epoch: 0,
+            shutdown_id: operation_id.clone(),
             intent: request.intent,
             t0_ms,
             deadline_ms: t0_ms.saturating_add(DECISION_DEADLINE.as_millis() as i64),
         };
         let plan = ShutdownPlanKey {
-            plan_id: receipt.plan_id.clone(),
-            epoch: receipt.epoch,
+            shutdown_id: receipt.shutdown_id.clone(),
         };
         let target_count =
             u64::try_from(targets.len()).map_err(|_| ApplicationQuitError::CapacityExceeded)?;
@@ -4418,7 +3346,7 @@ impl ShutdownCoordinator {
             unresolved_count: Some(target_count),
             recovery_snapshot_count: Some(recovery_snapshot_count),
             recovery_snapshot_id,
-            boot_id: self.boot_id.clone(),
+            process_instance_id: self.process_instance_id.clone(),
             outcome: None,
             failure: None,
             shutdown_effect_count: None,
@@ -4441,7 +3369,7 @@ impl ShutdownCoordinator {
             }),
             LocalStateMutation::ShutdownPlan(ShutdownPlanMutation {
                 key: plan.clone(),
-                phase: ApplicationShutdownPhase::Preparing,
+                phase: ApplicationShutdownPhase::Prepared,
                 summary: summary.clone(),
                 details_state: ShutdownDetailsState::Available,
                 expected: RevisionGuard::Absent,
@@ -4450,13 +3378,6 @@ impl ShutdownCoordinator {
             LocalStateMutation::ShutdownLatestPointer(ShutdownLatestPointerMutation {
                 expected: replaces_failed_plan,
                 new: Some(plan.clone()),
-            }),
-            // Close the read/check-to-accept race with the background archive
-            // switch. This no-op CAS shares the acceptance transaction and
-            // rejects if any prior plan owns the retiring selector.
-            LocalStateMutation::ShutdownRetiringPointer(ShutdownRetiringPointerMutation {
-                expected: None,
-                new: None,
             }),
         ];
         for (ordinal, target) in targets.iter().enumerate() {
@@ -4506,7 +3427,7 @@ impl ShutdownCoordinator {
                 correlation_id: correlation("commit-id"),
             })?,
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: OperationKind::ApplicationQuit.into(),
                 idempotency_key: operation_id.clone(),
                 payload_hash: self.authority.digest(&binding_material),
@@ -4531,9 +3452,8 @@ impl ShutdownCoordinator {
                     stream_id,
                     event: LocalDomainEvent::Application(
                         ApplicationDomainEvent::ShutdownPhaseAdvanced {
-                            plan_id: plan.plan_id.clone(),
-                            epoch: plan.epoch,
-                            phase: ApplicationShutdownPhase::Preparing,
+                            shutdown_id: plan.shutdown_id.clone(),
+                            phase: ApplicationShutdownPhase::Prepared,
                             at_ms: t0_ms,
                         },
                     ),
@@ -4586,28 +3506,6 @@ impl ShutdownCoordinator {
                     return Ok(ApplicationQuitOutcome::RejectedBeforeCommit { failure })
                 }
                 Err(CommitBatchError::StreamHeadConflict { .. }) => {
-                    let retiring = self
-                        .repository
-                        .query(LocalEventQuery::ShutdownRetiringPlan)
-                        .await
-                        .map_err(|error| ApplicationQuitError::Internal {
-                            correlation_id: correlation(&format!(
-                                "accept-conflict-retiring-read-{error}"
-                            )),
-                        })?;
-                    match retiring {
-                        LocalEventQueryResult::ShutdownRetiringPlan(Some(retiring)) => {
-                            return Err(ApplicationQuitError::PreviousShutdownCompactionPending {
-                                blocking: self.blocking_plan_read_model(retiring).await?,
-                            });
-                        }
-                        LocalEventQueryResult::ShutdownRetiringPlan(None) => {}
-                        _ => {
-                            return Err(ApplicationQuitError::Internal {
-                                correlation_id: correlation("accept-conflict-retiring-shape"),
-                            });
-                        }
-                    }
                     return Err(self.current_shutdown_reconciliation_error().await);
                 }
                 Err(CommitBatchError::Corrupt { correlation_id }) => {
@@ -4628,8 +3526,7 @@ impl ShutdownCoordinator {
         deadlines: ShutdownDeadlines,
     ) -> ApplicationQuitOutcome {
         let plan = ShutdownPlanKey {
-            plan_id: receipt.plan_id.clone(),
-            epoch: receipt.epoch,
+            shutdown_id: receipt.shutdown_id.clone(),
         };
         let prepared =
             tokio::time::timeout_at(deadlines.preparation_cutoff, self.prepared_targets(&plan))
@@ -4702,8 +3599,7 @@ impl ShutdownCoordinator {
                 return ApplicationQuitOutcome::Accepted {
                     state: ApplicationQuitState::OutcomeUnknown {
                         operation_id: receipt.operation_id.clone(),
-                        plan_id: receipt.plan_id.clone(),
-                        epoch: receipt.epoch,
+                        shutdown_id: receipt.shutdown_id.clone(),
                         activation_commit_id: self.activation_commit_id(&receipt.operation_id),
                     },
                     receipt,
@@ -4745,8 +3641,7 @@ impl ShutdownCoordinator {
         deadlines: ShutdownDeadlines,
     ) -> ApplicationQuitOutcome {
         let plan = ShutdownPlanKey {
-            plan_id: receipt.plan_id.clone(),
-            epoch: receipt.epoch,
+            shutdown_id: receipt.shutdown_id.clone(),
         };
         let targets = match tokio::time::timeout_at(
             deadlines.decision_deadline,
@@ -4782,8 +3677,7 @@ impl ShutdownCoordinator {
         deadlines: ShutdownDeadlines,
     ) -> ApplicationQuitOutcome {
         let plan = ShutdownPlanKey {
-            plan_id: receipt.plan_id.clone(),
-            epoch: receipt.epoch,
+            shutdown_id: receipt.shutdown_id.clone(),
         };
         let mut unresolved = None;
         for stored in targets {
@@ -4973,7 +3867,7 @@ impl ShutdownCoordinator {
             ))
             .expect("digest commit identity"),
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: OperationKind::ApplicationQuit.into(),
                 idempotency_key: format!(
                     "{}.target.{}.{}",
@@ -5319,7 +4213,7 @@ impl ShutdownCoordinator {
             commit_id: CommitIdentity::parse(&self.activation_commit_id(&receipt.operation_id))
                 .expect("digest commit identity"),
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: OperationKind::ApplicationQuit.into(),
                 idempotency_key: format!("{}.activate", receipt.operation_id),
                 payload_hash: summary_sha256,
@@ -5332,8 +4226,7 @@ impl ShutdownCoordinator {
                 stream_id,
                 event: LocalDomainEvent::Application(
                     ApplicationDomainEvent::ShutdownPhaseAdvanced {
-                        plan_id: receipt.plan_id.clone(),
-                        epoch: receipt.epoch,
+                        shutdown_id: receipt.shutdown_id.clone(),
                         phase: ApplicationShutdownPhase::Activated,
                         at_ms,
                     },
@@ -5351,8 +4244,7 @@ impl ShutdownCoordinator {
                 }),
                 LocalStateMutation::ShutdownPlan(ShutdownPlanMutation {
                     key: ShutdownPlanKey {
-                        plan_id: receipt.plan_id.clone(),
-                        epoch: receipt.epoch,
+                        shutdown_id: receipt.shutdown_id.clone(),
                     },
                     phase: ApplicationShutdownPhase::Activated,
                     summary: summary.clone(),
@@ -5415,8 +4307,7 @@ impl ShutdownCoordinator {
             _ => ApplicationShutdownPhase::ReconciliationRequired,
         };
         let plan = ShutdownPlanKey {
-            plan_id: receipt.plan_id.clone(),
-            epoch: receipt.epoch,
+            shutdown_id: receipt.shutdown_id.clone(),
         };
         let Ok(Some((_, _, _, operation_revision))) =
             self.get_operation(&receipt.operation_id).await
@@ -5533,7 +4424,7 @@ impl ShutdownCoordinator {
             ))
             .expect("digest commit identity"),
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: OperationKind::ApplicationQuit.into(),
                 idempotency_key: format!(
                     "{}.finish.{}",
@@ -5552,8 +4443,7 @@ impl ShutdownCoordinator {
                 stream_id,
                 event: LocalDomainEvent::Application(
                     ApplicationDomainEvent::ShutdownPhaseAdvanced {
-                        plan_id: receipt.plan_id.clone(),
-                        epoch: receipt.epoch,
+                        shutdown_id: receipt.shutdown_id.clone(),
                         phase,
                         at_ms,
                     },

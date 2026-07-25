@@ -238,10 +238,7 @@ mod tests {
         let session_id = uuid::Uuid::new_v4().to_string();
 
         session_store
-            .save_full_session_for_migration_or_restore(
-                tmp.path(),
-                &workflow_node_session_for_test(&session_id),
-            )
+            .save_full_session_for_restore(tmp.path(), &workflow_node_session_for_test(&session_id))
             .unwrap();
         open_tabs.add(&session_id);
 
@@ -265,10 +262,7 @@ mod tests {
         let session_id = uuid::Uuid::new_v4().to_string();
 
         session_store
-            .save_full_session_for_migration_or_restore(
-                tmp.path(),
-                &workflow_node_session_for_test(&session_id),
-            )
+            .save_full_session_for_restore(tmp.path(), &workflow_node_session_for_test(&session_id))
             .unwrap();
         session_store
             .set_session_state(tmp.path(), &session_id, SessionState::Closed)
@@ -294,10 +288,7 @@ mod tests {
         let session_id = uuid::Uuid::new_v4().to_string();
 
         session_store
-            .save_full_session_for_migration_or_restore(
-                tmp.path(),
-                &workflow_node_session_for_test(&session_id),
-            )
+            .save_full_session_for_restore(tmp.path(), &workflow_node_session_for_test(&session_id))
             .unwrap();
 
         let changed = try_close_node_session_tab_state(Some(&open_tabs), &session_id);
@@ -322,7 +313,7 @@ mod tests {
         session.state = SessionState::Closed;
 
         session_store
-            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .save_full_session_for_restore(tmp.path(), &session)
             .unwrap();
 
         open_node_session_tab_state(&open_tabs, &session_id);
@@ -357,10 +348,7 @@ mod tests {
         let session_id = uuid::Uuid::new_v4().to_string();
 
         session_store
-            .save_full_session_for_migration_or_restore(
-                tmp.path(),
-                &workflow_node_session_for_test(&session_id),
-            )
+            .save_full_session_for_restore(tmp.path(), &workflow_node_session_for_test(&session_id))
             .unwrap();
         open_tabs.add(&session_id);
         insert_runtime(&handles, &session_id, TurnPhase::Idle, false).await;
@@ -389,7 +377,7 @@ mod tests {
         session.state = SessionState::Closed;
 
         session_store
-            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .save_full_session_for_restore(tmp.path(), &session)
             .unwrap();
         insert_runtime(&handles, &session_id, TurnPhase::Idle, false).await;
 
@@ -415,10 +403,7 @@ mod tests {
         let session_id = uuid::Uuid::new_v4().to_string();
 
         session_store
-            .save_full_session_for_migration_or_restore(
-                tmp.path(),
-                &workflow_node_session_for_test(&session_id),
-            )
+            .save_full_session_for_restore(tmp.path(), &workflow_node_session_for_test(&session_id))
             .unwrap();
         open_tabs.add(&session_id);
         insert_runtime(&handles, &session_id, TurnPhase::Idle, true).await;
@@ -443,10 +428,7 @@ mod tests {
         let session_id = uuid::Uuid::new_v4().to_string();
 
         session_store
-            .save_full_session_for_migration_or_restore(
-                tmp.path(),
-                &workflow_node_session_for_test(&session_id),
-            )
+            .save_full_session_for_restore(tmp.path(), &workflow_node_session_for_test(&session_id))
             .unwrap();
         open_tabs.add(&session_id);
         insert_runtime(&handles, &session_id, TurnPhase::Idle, false).await;
@@ -470,7 +452,7 @@ mod tests {
         let mut session = workflow_node_session_for_test(&session_id);
         session.state = SessionState::Closed;
         session_store
-            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .save_full_session_for_restore(tmp.path(), &session)
             .unwrap();
         insert_runtime(&handles, &session_id, TurnPhase::Idle, false).await;
 
@@ -496,10 +478,7 @@ mod tests {
         // Workflow node session: tab open + runtime active
         let node_id = uuid::Uuid::new_v4().to_string();
         session_store
-            .save_full_session_for_migration_or_restore(
-                tmp.path(),
-                &workflow_node_session_for_test(&node_id),
-            )
+            .save_full_session_for_restore(tmp.path(), &workflow_node_session_for_test(&node_id))
             .unwrap();
         open_tabs.add(&node_id);
         insert_runtime(&handles, &node_id, TurnPhase::Idle, false).await;
@@ -509,7 +488,7 @@ mod tests {
         let mut non_workflow = workflow_node_session_for_test(&non_workflow_id);
         non_workflow.workflow_node_session = false;
         session_store
-            .save_full_session_for_migration_or_restore(tmp.path(), &non_workflow)
+            .save_full_session_for_restore(tmp.path(), &non_workflow)
             .unwrap();
 
         // Resolver returns None for non-workflow session → tab operations would not proceed
@@ -534,10 +513,7 @@ mod tests {
         // Setup: another node session with an active runtime that must remain untouched
         let other_id = uuid::Uuid::new_v4().to_string();
         session_store
-            .save_full_session_for_migration_or_restore(
-                tmp.path(),
-                &workflow_node_session_for_test(&other_id),
-            )
+            .save_full_session_for_restore(tmp.path(), &workflow_node_session_for_test(&other_id))
             .unwrap();
         insert_runtime(&handles, &other_id, TurnPhase::Idle, false).await;
 
@@ -558,10 +534,7 @@ mod tests {
         let session_id = uuid::Uuid::new_v4().to_string();
 
         session_store
-            .save_full_session_for_migration_or_restore(
-                tmp.path(),
-                &workflow_node_session_for_test(&session_id),
-            )
+            .save_full_session_for_restore(tmp.path(), &workflow_node_session_for_test(&session_id))
             .unwrap();
 
         let resolved = resolve_node_session_with_data_dir(&session_store, tmp.path(), &session_id)

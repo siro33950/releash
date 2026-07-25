@@ -1,769 +1,684 @@
+# Behavior
+
+Primary Spec: [requirements.md](requirements.md) / [design.md](design.md)
+
 ## B-001: 通常 send の初回受理
 
-GIVEN Idle の session s-1 と caller が保持する operation identity op-1 と入力 hello がある
-WHEN Tauri から operation identity op-1 を指定して通常 send を行う
-THEN Accepted は operation identity、session identity、opaque input_ref、StartedTurn dispositionを持つimmutable receiptとlatest statusを返す
-AND session s-1 には human message と turn が各1件だけ現れ、provider start は最大1回である
+GIVEN 送信可能な Session と新しい operation identity がある。
+WHEN 利用者が message を送信する。
+THEN backend は受理事実を永続化してから Accepted を返し、同じ input を一つの turn または queue item に結び付ける。
 
 ## B-002: 応答喪失後の通常 send 再試行
 
-GIVEN operation identity op-1 の通常 send が受理された直後に response を失っている
-WHEN 同じ principal が同じ operation identity と同じ payload で再試行する
-THEN 初回と同じ session、receipt、disposition、turn または queue item、latest status が返る
-AND human message、assistant message、turn、queue item、provider effect は増えない
+GIVEN send が受理されたが caller が応答を受け取れなかった。
+WHEN caller が同じ identity と同じ input で再試行する。
+THEN 同じ receipt と現在状態を返し、新しい message、turn、queue item、provider effect を作らない。
 
 ## B-003: Restart 後の通常 send 再試行
 
-GIVEN operation identity op-1 の通常 send が受理された直後に process が終了している
-WHEN process を再起動して同じ operation identity と同じ payload で再試行する
-THEN 再起動前と同じ Accepted receipt と latest status が返る
-AND human message、turn、queue item、provider start は各最大1件である
+GIVEN Accepted send の response が失われた後にアプリを再起動した。
+WHEN caller が同じ identity を照会または再試行する。
+THEN SQLite に保存された同じ operation と receipt を返す。
 
 ## B-004: Tauri と WebSocket の並行再試行
 
-GIVEN Tauri と認証済み WebSocket が同じ installation authority に接続している
-WHEN 両 surface から同じ operation identity と同じ payload を同時に送る
-THEN 両 surface は同じ Accepted receipt、disposition、latest status へ収束する
-AND human message、turn、queue item、provider start は各最大1件である
+GIVEN 同じ authorized caller の同じ send が Tauri と WebSocket から並行して届く。
+WHEN 両方が同じ identity と input を使用する。
+THEN 一つの operation だけを受理し、両 surface は意味的に同じ結果へ収束する。
 
-## B-005: 新規 session 作成を伴う通常 send の再試行
+## B-005: 新規 Session 作成を伴う通常 send の再試行
 
-GIVEN 新規 session を対象にした operation identity op-new と入力 hello がある
-WHEN 初回 response 喪失後に同じ operation identity と payload で再試行する
-THEN 同じ session identity と同じ Accepted receipt が返る
-AND session、human message、turn、provider start は各最大1件である
+GIVEN send が新しい Session の作成を必要とする。
+WHEN response loss または並行再試行が起きる。
+THEN Session と send の受理は同じ結果へ収束し、Session を重複作成しない。
 
 ## B-006: Active turn 中の queued send
 
-GIVEN session s-1 に active turn があり、operation identity op-q の通常 send を受理できる
-WHEN op-q を送信し、response 喪失後に restart して同じ payload で再試行する
-THEN 受理時から変わらない Queued disposition、同じ queue item、latest status が返る
-AND provider start はその queue item が実行可能になるまで0件で、実行後も最大1件である
+GIVEN Session に active turn があり、入力を queue できる。
+WHEN 通常 send が受理される。
+THEN receipt は queued input を一意に示し、restart 後も同じ queue item として取得できる。
 
 ## B-007: 通常 send の保存結果不明
 
-GIVEN operation identity op-1 の最初の通常 send で保存結果を確認できない
-WHEN send result を受け取り、続けて operation identity op-1 を照会する
-THEN send result と writer 未解決中の照会は同じ operation identity の OutcomeUnknown を返し、解決後はcanonical record不在のNotFoundまたは同じreceipt / statusを持つAcceptedのどちらかだけへ収束する
-AND NotFound後は同じpayloadで再試行でき、別 operation identity の自動 send と重複 provider effect は発生しない
+GIVEN send の保存結果を応答だけから確定できない。
+WHEN caller が結果を受け取る。
+THEN backend は未受理を推測せず同じ operation の結果不明を返し、lookup または same-input retry で解決させる。
 
 ## B-008: Accepted 後の実行結果不明と恒久 failure
 
-GIVEN operation identity op-1 には immutable Accepted receipt がある
-WHEN provider effect の結果不明または恒久 failure を発生させて operation を再取得する
-THEN top-level Accepted と元の receipt は維持され、latest status だけが ReconciliationRequired または Failed へ変わる
-AND composer に入力は復元されず、別 operation の自動 send は発生しない
+GIVEN send は Accepted だが provider 実行の結果を確認できない。
+WHEN operation を照会する。
+THEN receipt を維持した結果確認必要状態または failure を返し、未受理へ戻さず自動再送しない。
 
 ## B-009: Operation identity の入力制約
 
-GIVEN 独立したIdle sessionごとに1 byteと128 bytesの許可文字だけからなるoperation identity、および空、129 bytes、non-ASCII、または`[A-Za-z0-9._:-]`以外のASCIIを含むoperation identityがある
-WHEN TauriとWebSocketの各surfaceから各identityを指定して通常sendを要求する
-THEN 1 byteと128 bytesのidentityはAcceptedとなり、不正なidentityは両surfaceでInvalidRequestとなる
-AND 不正なidentityではsession、message、turn、queue item、provider effectは変更されず、各valid identityのoperationは1件だけである
+GIVEN 1 byte と 128 bytes の許可文字だけからなる identity、および空、129 bytes、non-ASCII、または `[A-Za-z0-9._:-]` 以外を含む identity がある。
+WHEN Tauri と WebSocket の各 surface から通常 send を要求する。
+THEN 1 byte と 128 bytes は受理でき、不正な identity は durable state と外部作用を変更せず invalid request として拒否する。
 
 ## B-010: Operation payload conflict
 
-GIVEN operation identity op-1 が content、image、mention、editor context、session target、worktree、実行 configuration を含む payload P に束縛されている
-WHEN P の各項目を一つだけ変更した payload P2 と同じ operation identity で再試行する
-THEN Tauri と WebSocket は同じ PayloadConflict と operation identity を返す
-AND 元の receipt、status、session、message、turn、queue item、provider state は変わらない
+GIVEN 既存 operation identity がある。
+WHEN 同じ caller が異なる input で再利用する。
+THEN payload conflict を返し、既存 operation と provider state を変更しない。
 
 ## B-011: 受理後 state 変化を conflict にしない
 
-GIVEN operation identity op-1 の payload が受理され、その後 session state と server が決めた disposition が変化している
-WHEN 同じ operation identity と受理時と同じ caller payload で再試行する
-THEN PayloadConflict ではなく同じ immutable receipt と現在の latest status が返る
-AND message、turn、queue item、provider effect は増えない
+GIVEN send 受理後に Session や operation status が進んだ。
+WHEN original input で再試行する。
+THEN 受理時の binding と比較して replay し、現在 state の変化を payload conflict と扱わない。
 
 ## B-012: Composer の Accepted clear 境界
 
-GIVEN composer に hello があり、送信待機中に追加入力 world を行う
-WHEN hello に対応する immutable Accepted receipt を受け取る
-THEN hello の snapshot だけが clear され、world は composer に残る
-AND Accepted 後の status 更新または通知 failure で hello は復元されない
+GIVEN composer に送信 attempt の本文と添付がある。
+WHEN その attempt が Accepted になる。
+THEN その attempt に対応する本文と添付だけを clear する。
 
 ## B-013: Composer の未受理保持
 
-GIVEN composer に hello があり、通常 send を要求する
-WHEN RejectedBeforeCommit または top-level OutcomeUnknown を受け取る
-THEN hello の snapshot は composer に残る
-AND frontend は別 operation identity で自動再送しない
+GIVEN send が未受理、conflict、または結果不明である。
+WHEN caller が結果を受け取る。
+THEN composer の本文と添付を保持する。
 
 ## B-014: 通常 send の受理前 failure
 
-GIVEN operation identity op-1 の通常 send で受理情報を保存できない
-WHEN send を要求する
-THEN RejectedBeforeCommit と safe failure が返る
-AND message、turn、queue item、provider I/O は0件である
+GIVEN validation、authorization、capacity、または保存開始前の failure がある。
+WHEN send を要求する。
+THEN durable operation を作らず、入力を保持できる受理前 rejection を返す。
 
 ## B-015: Permission exact payload の restart 回復
 
-GIVEN answers、updated input、deny message を含む permission response が受理済みで provider 未送信である
-WHEN process を再起動して pending recovery を取得し、同じ effect を安全に再開する
-THEN 元と同じ permission response が最大1回だけ provider へ送られ、同じ identity の結果が表示される
-AND redacted summary から別 payload は生成されない
+GIVEN permission response が受理され、provider 確認前に crash した。
+WHEN アプリが再起動する。
+THEN 同じ response intent を安全に readback / reconcile し、blind resend しない。
 
 ## B-016: Permission exact payload の欠損
 
-GIVEN 未完了 permission response の exact payload、size、または owner access を確認できない
-WHEN restart 後に pending recovery を取得する
-THEN 同じ permission identity は Failed と safe actions を表示する
-AND provider response は0件である
+GIVEN provider が正確な permission response を必要とするが、安全な再利用根拠を復元できない。
+WHEN recovery を行う。
+THEN response を推測せず、再入力または手動解決が必要な状態を表示する。
 
-## B-017: Provider establish と send の依存順
+## B-017: Provider establish と send の依存
 
-GIVEN provider session create または resume が必要な Accepted send がある
-WHEN create または resume を未解決、failure、success の順に変化させる
-THEN success 確認前は receipt dispositionを維持して status を AwaitingProviderStart と表示し、確認後だけ provider start へ進む
-AND 未解決または failure の間は turn と queued input の provider start は0件である
+GIVEN send に provider session の確立が必要である。
+WHEN send が Accepted になる。
+THEN establish と send を同じ operation の回復可能な進行として表示し、確立前に provider start 完了を表示しない。
 
 ## B-018: Readback できる外部作用直後の crash
 
-GIVEN stable effect identity を持つ provider 操作が外部で完了している
-WHEN result 保存前に process を終了し、restart 後に回復する
-THEN authoritative readback により同じ operation identity が完全な結果へ確定する
-AND provider effect は再実行されない
+GIVEN durable intent 後に外部作用を開始し、結果保存前に crash した。
+WHEN provider が結果を authoritative に確認できる。
+THEN 同じ identity で readback し、重複作用なしで結果へ収束する。
 
 ## B-019: Readback できない外部作用直後の crash
 
-GIVEN provider effect は開始されたが結果を一意に読み戻せない
-WHEN result 保存前に process を終了し、restart 後に pending recovery を取得する
-THEN 同じ operation identity、既知 observation、ReconciliationRequired、利用可能な safe actions が表示される
-AND provider effect は自動再実行されない
+GIVEN 外部作用の結果を authoritative に確認できない。
+WHEN crash recovery がその intent を発見する。
+THEN 成功または未開始を推測せず、manual reconciliation を要求する。
 
 ## B-020: Streaming part の保存 failure
 
-GIVEN active turn が provider から一つの streaming part を受信する
-WHEN その part の保存を失敗させて live と reload を読む
-THEN 両方に未保存 part は表示されない
-AND 次の完全に保存済み結果との間に部分 message は現れない
+GIVEN streaming 中に canonical persistence が失敗する。
+WHEN runtime がその failure を検出する。
+THEN live 成功を確定扱いせず、既知の parts を保全して対象 turn を結果確認必要状態へ着地させる。
 
-## B-021: Invalid effect intent
+## B-021: Invalid または stale な effect intent
 
-GIVEN retry または readback capability と stable effect identity の組合せが不正な未完了操作がある
-WHEN pending recovery の実行を要求する
-THEN InvalidEffectIntent と同じ未完了 identity が返る
-AND provider、workflow、OS effect と未完了一覧 entry は増えない
+GIVEN 外部作用を安全に相関・回復できない、または durable acceptance 後に対象 owner が変わった intent がある。
+WHEN effect の開始直前に canonical state を再確認する。
+THEN effect を開始せず、安全な failure または既存 operation の reconciliation として公開する。
 
 ## B-022: Terminal 確定中 crash の原子性
 
-GIVEN active turn に final parts、assistant message、terminal result、session state、permission、queue state の変更が必要である
-WHEN 保存処理の各境界で process を終了して live と reload を読む
-THEN 変更前または全項目が揃った変更後だけが表示される
-AND 部分 terminal、未保存 success、通常 Idle を装う未完了状態は表示されない
+GIVEN turn terminal に複数の state 更新が必要である。
+WHEN 確定中に crash する。
+THEN 再起動後は全て未確定または全て確定のどちらかになり、partial terminal を公開しない。
 
 ## B-023: Terminal 確定後の通知 failure
 
-GIVEN turn の完全な terminal result が保存済みである
-WHEN UI 通知または配信を失敗させて再取得する
-THEN 同じ final parts、assistant message、terminal reason、session state、permission、queue state が返る
-AND terminal は取り消されず重複もしない
+GIVEN terminal は durable に確定した。
+WHEN UI 通知または直後の query が失敗する。
+THEN terminal は維持され、reload / direct read で同じ結果を取得できる。
 
 ## B-024: Normal completion 後の queue 継続
 
-GIVEN pause されていない queue と active turn がある
-WHEN turn が正常完了する
-THEN terminal の全項目と整合した queue state が表示され、既存の queue 進行条件が維持される
-AND terminal result は1件だけである
+GIVEN turn が normal completion し、queue が明示的に利用可能である。
+WHEN 次 item の実行条件を再検証できる。
+THEN 一件だけ開始し、条件を満たさなければ queue を変更せず理由を表示する。
 
 ## B-025: Stop または close terminal の queue pause
 
-GIVEN queue を持つ active session がある
-WHEN Accepted Stop、normal session close、open-session archive、または graceful quit が terminal を確定する
-THEN terminal の全項目と同時に queue は内容を保持した Paused と表示される
-AND 既存 pause は解除されない
+GIVEN turn が Stop、Session close、quit、failure、または crash で終わる。
+WHEN terminal が確定する。
+THEN queue を保持したまま pause し、明示 resume まで開始しない。
 
 ## B-026: 競合する terminal
 
-GIVEN 同じ started turn に Stop、watchdog、session close、Fatal、provider completion が競合する
-WHEN すべての結果を任意順で到着させる
-THEN 最初に確定した terminal reason と parts だけが live と reload に表示される
-AND terminal、assistant message、Stop resolution はそれぞれ最大1件である
+GIVEN 同じ turn に複数の terminal candidate が到着する。
+WHEN backend が確定を試みる。
+THEN 一つの canonical terminal だけが勝ち、他は同じ結果へ収束する。
 
 ## B-027: 過去 turn の遅延 event
 
-GIVEN turn t-1 が terminal となり後続 turn t-2 が開始済みである
-WHEN t-1 の streaming または terminal event を遅延到着させる
-THEN t-1 の確定済み結果と t-2 の parts、state、terminal は変わらない
-AND 新しい message または terminal は増えない
+GIVEN 過去 turn の event が current turn 開始後に到着する。
+WHEN event を適用する。
+THEN 過去 turn の結果だけへ収束させ、current turn を変更しない。
 
-## B-028: Stop の10秒 deadline
+## B-028: Stop の 10 秒 deadline
 
-GIVEN storage は利用可能で、Accepted Stop の provider interrupt と session 処理が永久停止する
-WHEN Accepted 時刻から10秒まで live 表示と reload 結果を観測する
-THEN 10秒以内に両方が Interrupted(Timeout) へ確定する
-AND terminal result は1件だけである
+GIVEN active turn に Stop を要求する。
+WHEN backend または storage が遅延する。
+THEN request から 10 秒以内に terminal または同じ Stop identity の結果確認必要状態を返す。
 
 ## B-029: Stop 後の stale result
 
-GIVEN Accepted Stop が Interrupted(Timeout) へ確定している
-WHEN 元の provider interrupt または completion を遅延到着させる
-THEN terminal reason、parts、session state、queue state は変わらない
-AND assistant message と terminal は増えない
+GIVEN Stop 後に古い provider result が到着する。
+WHEN terminal を適用する。
+THEN canonical winner を変更せず、別 turn や queue を開始しない。
 
 ## B-030: Stop request identity の payload conflict
 
-GIVEN Stop request identity stop-1 が exact payload `session s-1 / 未解決turn t-1 / expected session revision 1` とbackend Stop identityへ束縛されている
-WHEN 別request identity stop-2で同じtargetと別expected revisionを提示した後、stop-1を別session、別turn、または別expected revisionへ再利用する
-THEN stop-2は既存のbackend Stop identityとresultへ合流して初回revision guardを変更せず、stop-1の3 fieldいずれかの変更はPayloadConflictを返す
-AND 応答喪失、restart、同時join後も同じbackend Stop identityとresultを返し、合流または競合による追加のprovider interrupt、terminal変更は0件である
+GIVEN Stop request identity が既に target turn に結び付いている。
+WHEN 同じ identity を別 target に再利用する。
+THEN conflict として拒否し、interrupt を開始しない。
 
 ## B-031: Stop capacity の境界
 
-GIVEN storage は利用可能で、異なる32 target の Accepted Stop が未解決である
-WHEN 33件目の別 target に Stop を要求する
-THEN 先の32件は10秒保証を維持し、33件目は StopCapacityExceeded を返す
-AND 33件目の provider interrupt と terminal は0件である
+GIVEN 異なる target の未解決 Stop が process 全体で 32 件ある。
+WHEN 33 件目の target へ Stop が届く。
+THEN 先の 32 件は 10 秒保証を維持し、33 件目は Accepted にせず作用開始前に capacity failure を返す。
 
 ## B-032: Stop 受理情報の保存 failure
 
-GIVEN active turn に Stop を要求できる
-WHEN target turn と queue pause をrestart後も識別する情報の保存を失敗させる
-THEN Stop は RejectedBeforeAcceptance と safe failure を返す
-AND provider interrupt、terminal、queue 変更は0件である
+GIVEN Stop の受理を確定できない。
+WHEN interrupt 開始前に failure が判明する。
+THEN interrupt を開始せず、turn と queue を変更しない。
 
 ## B-033: Accepted Stop 後の terminal 保存 failure
 
-GIVEN target turn と queue pause を識別できる Accepted Stop がある
-WHEN 10秒まで terminal 保存を失敗させる
-THEN session は同じ target turn と Stop identity の ReconciliationRequired を表示する
-AND 通常 Idle と queue drain へ進まず Stop capacity を保持する
+GIVEN Stop は Accepted で interrupt を開始した。
+WHEN terminal を保存できない。
+THEN 同じ Stop identity を結果確認必要状態に保ち、通常 Idle を表示しない。
 
 ## B-034: Stop recovery の一回性
 
-GIVEN Accepted Stop が terminal 保存 failure により ReconciliationRequired である
-WHEN storage 復旧後に restart recovery と manual retry を競合させる
-THEN terminal と Stop resolution は各1件だけ確定する
-AND 完全解決後は解放された capacity を別 target の Stop が利用できる
+GIVEN Accepted Stop が restart 時に未解決である。
+WHEN recovery が開始する。
+THEN 同じ Stop identity と既知 observation を使い、interrupt や terminal を重複させない。
 
 ## B-035: Startup recovery discovery
 
-GIVEN send、queued execution、permission、provider create / resume、streaming / terminal、session close、backend recovery、workflow shutdown、publication の未完了操作が各1件ある
-WHEN 個別 session を開かず current pending recovery の最初の page を取得する
-THEN 全 category が元 identity、ownerまたはpartition、既知 status、available actions とともに列挙される
-AND 通常 Recovering、Idle、完了へ推測変換されない
+GIVEN SQLite に未解決の durable work がある。
+WHEN normal startup が store を開く。
+THEN 1 page 最大 200 件かつ encoded 4 MiB の recovery inventory と continuation から発見し、Session の個別 open や全履歴 scan を待たない。
 
-## B-036: Recovery crash boundary
+## B-036: Recovery crash 境界
 
-GIVEN 未完了 recovery が1件ある
-WHEN recovery 開始直後、external effect直後、completion直後、message publication直前の各時点で process を終了して再起動する
-THEN 同じ recovery identity が変更前または完全な変更後として再表示される
-AND external effect と公開 message は各最大1件である
+GIVEN recovery の途中で再び crash する。
+WHEN 次回 startup が同じ work を発見する。
+THEN 保存済み進行から再開し、完了済み作用を重複させない。
 
 ## B-037: Recovery owner partition
 
-GIVEN normal、workflow-owned、closed、archived、owner不明の未完了 recovery がある
-WHEN owner filter と ClosedSession、ArchivedSession、UnownedRuntime partition を指定して取得する
-THEN normal は session list、workflow-owned は owning run / node、closed は closed history、各partitionは該当 entryだけを返す
-AND closed session は自動 reopen または provider resume されない
+GIVEN 未解決 work が Session、Workflow、closed history、または unowned runtime に属する。
+WHEN recovery 一覧を表示する。
+THEN 正しい owner surface だけに表示し、owner を推測で変更しない。
 
-## B-038: Recovery page snapshot と cursor
+## B-038: Public collection の一貫性
 
-GIVEN current pending recovery が201件あり、最初のpage取得後に一覧が更新される
-WHEN 同じcursorで末尾まで読み、別filterへの再利用、改変、restart後の再利用を行う
-THEN valid cursorは最初に固定したsnapshotだけを200件かつencoded 4 MiB以下で返す
-AND 別filterまたは改変はCursorMismatch、restartまたは失効はCursorExpiredを返しpartial pageを返さない
+GIVEN pending recovery、feedback、shutdown target / history / associated recovery のいずれかが複数あり、取得中にも状態が変わり得る。
+WHEN caller が各 public boundary 内の page と continuation を使って collection を取得する。
+THEN 同じ collection revision の結果だけを返し、異なる revision を混在させず、一貫した有限 page を返せない場合は partial result のない再取得可能な failure を返す。
 
 ## B-039: 未解決 shutdown による new quit の拒否
 
-GIVEN same-boot または previous-boot の未解決 shutdown がある
-WHEN new quit を要求する
-THEN PreviousShutdownReconciliationRequired と既存 identity、available actions が返る
-AND 新しい shutdown identity、terminal、workflow shutdown、child termination、OS effect は0件である
+GIVEN 前回の shutdown に未解決結果が残る。
+WHEN 新しい quit を要求する。
+THEN 新しい flight や effect を作らず、blocking shutdown と解決操作を返す。
 
 ## B-040: Recovery 中の mutation 抑止
 
-GIVEN sessionまたはworkflowに未解決 recovery がある
-WHEN new turn、queue drain、workflow resume を要求する
-THEN 対象の未解決 identity と safe failure が表示される
-AND provider start、queue drain、workflow resume effect は0件である
+GIVEN 対象 resource が結果確認必要状態にある。
+WHEN 競合する通常 mutation を要求する。
+THEN 受理せず、既存 recovery identity と解決操作を維持する。
 
 ## B-041: Meta を読めない failure feedback
 
-GIVEN request が session s-1 を明示し、session data と meta の双方を読めない
-WHEN Tauri または WebSocket からその操作を行う
-THEN s-1 の feedback query は operation kind、available actions、canonical `failure: SafeOperationFailure`を返し、`failure.correlation_id`は同じfailureの表示とlogを結ぶ一意なidentityである
-AND kind、retryable、label、detailをfeedback直下へ複製せず、filesystem path、secret、raw SQL、provider payload、raw error は返さない
+GIVEN 対象 Session の通常 read model を構築できない。
+WHEN 操作 failure を表示する必要がある。
+THEN 別の Rust-owned feedback access から安全な session-scoped failure を取得できる。
 
-## B-042: Failure feedback の paging と独立性
+## B-042: Failure feedback collection の独立性
 
-GIVEN session s-1 に異なる33件の未解決 feedback がある
-WHEN pageを最後まで取得し、別sessionの成功と別failureの追加を行う
-THEN 各pageは32件以下で、33件すべてを重複なく返す
-AND 既存 feedback は別sessionの成功、別operationの成功、古い成功、別failure追加では消えない
+GIVEN 一つの Session に複数の未解決 failure がある。
+WHEN 一覧を取得する。
+THEN 各 failure identity を独立して返し、別 attempt の success で消さない。
 
 ## B-043: Failure identity による clear
 
-GIVEN session s-1 に未解決 feedback f-1 と f-2 がある
-WHEN f-1 をdismissするかf-1を解決した成功を確定する
-THEN f-1だけが消え、f-2は残る
-AND 未解決件数は1件だけ減る
+GIVEN 表示中の failure がある。
+WHEN 同じ identity の解決または明示 dismiss が成功する。
+THEN 対象一件だけを更新または除去する。
 
 ## B-044: Failure feedback capacity
 
-GIVEN process全体に512件の未解決 feedback がある
-WHEN 新しい failure を追加し得る readまたはmutationと、既存feedbackの取得・dismiss・resolution retryを行う
-THEN 新しい操作だけが FeedbackCapacityExceeded となり、既存3操作は利用できる
-AND 新しい external effect、feedback、既存identityの削除は0件である
+GIVEN process 全体の未解決 feedback が 512 件に達した。
+WHEN 新しい failure を生成し得る operation が届く。
+THEN 対象 mutation 前に拒否し、既存 feedback の 1 page 最大 32 件の閲覧・dismiss・解決を引き続き許可する。
 
 ## B-045: Feedback revision conflict
 
-GIVEN feedback f-1 のcurrent revisionが2である
-WHEN expected revision 1でdismissまたはresolution retryする
-THEN RevisionConflictとcurrent revision 2が返る
-AND entry、未解決件数、capacity slot、external effectは変わらない
+GIVEN caller が古い feedback revision を使う。
+WHEN dismiss または解決を要求する。
+THEN 現表示を変更せず revision conflict を返す。
 
 ## B-046: Feedback 表示上限
 
-GIVEN labelが160 UTF-8 bytesを超え、detailが2048 bytesを超えるsafe failureがある
-WHEN feedbackを取得する
-THEN labelとdetailは各上限以下でtruncation markerを含む
-AND path、secret、raw SQL、provider payload、unbounded raw errorは含まれない
+GIVEN failure の label が UTF-8 160 bytes、または detail が 2048 bytes を超える。
+WHEN public feedback を構築する。
+THEN 各上限内へ安全に省略して省略 marker を表示し、secret、path、SQL、provider raw payload を露出しない。
 
 ## B-047: Production runtime event golden
 
-GIVEN ClaudeとCodexの代表wire fixtureと期待するpublic event、live / reload read model、terminal resultがある
-WHEN fixtureをpublic production session interfaceへ入力する
-THEN expected public event、live / reload read model、terminal resultと一致する
-AND fixture replayはlive runtime eventと同じpublic production session interfaceを通る
+GIVEN `src-tauri/src/infrastructure/agent_session/fixtures/{claude,codex}/normal_turn/` の `wire.jsonl`、`convert.golden`、`read_model.golden` がある。
+WHEN 各 wire fixture を production adapter、usecase、SQLite persistence、reopen projection へ通す。
+THEN provider conversion と live / reopen read model が各 golden に一致し、fixture ごとの canonical terminal は一件だけになる。
 
-## B-048: Wire互換とprojection互換の独立検出
+## B-048: Wire 互換と projection 互換の独立検出
 
-GIVEN B-047のgolden suiteが成功している
-WHEN provider入力からpublic eventへの変換だけ、またはpublic eventからsession resultへの変換だけを別々に破壊する
-THEN 前者ではwire互換testだけ、後者ではprojection互換testだけが対応して失敗する
-AND 既存F1 goldenも引き続き成功する
+GIVEN B-047 の `wire.jsonl`、`canonical_events.json`、二つの golden がある。
+WHEN provider conversion だけを検証する suite と、canonical event から projection だけを検証する suite を別々に実行する。
+THEN 一方の mapping だけを変えた場合は対応する suite が独立して失敗し、production-path suite は両方の退行を検出する。
 
 ## B-049: Hermetic F1b
 
-GIVEN networkと実provider processを利用できないCI環境がある
-WHEN F1b golden suiteを実行する
-THEN ClaudeとCodexの全fixtureが既存CI内で完了する
-AND CLI、network、実provider processは起動されない
+GIVEN repository CI で B-047 / B-048 の checked-in fixture を検証する。
+WHEN Claude / Codex の各 suite を実行する。
+THEN 実 provider process、CLI、network、credential を使用せず同じ golden result を得る。
 
-## B-050: 恒久SQLite transactionのatomicity
+## B-050: 恒久 SQLite mutation の atomicity
 
-GIVEN agent session event、workflow event、operation binding、obligation、terminal、queue pause、shutdown planを同時に変更するbatchと、各streamのexpected head、idempotency keyがある
-WHEN bundled SQLite storeへbatchをcommitし、transaction開始前、各participant write後、commit応答前後でstorage errorまたはprocess crashを発生させ、同じidentityで再試行する
-THEN public queryは変更前または全participant確定後だけを返し、成功したbatchには連続したglobal sequenceとstream sequenceが一度だけ割り当てられ、同じidempotency key / payloadの再試行は同じcommit resultへ戻る
-AND expected head不一致はtyped conflict、queue admission前の上限超過はtyped capacity failure、commit結果確認不能は同じtransaction identityのOutcomeUnknownとなり、部分event、partial projection、legacy dual write、全履歴scanは発生しない
+GIVEN 一つの operation が複数の domain state を変更する。
+WHEN persistence が成功、失敗、または結果不明になる。
+THEN 全参加者が同じ結果へ収束し、partial public state を返さない。
 
 ## B-051: Close / quit decision table
 
-GIVEN close / quit正本がある
-WHEN chat tab、panel、normal session close、open / closed archive、backend switch、workflow node tab、workspace、window close、Cmd-Q、menu、Dock、tray、OS logout / shutdown、programmatic exit / restart、hard killの各行を読む
-THEN 各行にscope、admission、active turn、parts、permission、queue、runtime、deadline、persist failure、UI result、testが記載される
-AND 行間で同じsurfaceに矛盾する意味論がない
+GIVEN 各 close / quit surface がある。
+WHEN 同じ Session / application state で操作する。
+THEN [close-quit-decision-table.md](../../../specs/milestone-84-agent-chat-stabilization/close-quit-decision-table.md) の該当行どおりに観測できる。
 
 ## B-052: View close の意味論
 
-GIVEN active turnとqueueを持つsessionのchat tab、panel、workflow node tab、workspace view、windowが開いている
-WHEN 各viewだけを閉じる
-THEN 対象viewだけが閉じ、session、turn、parts、permission、queue、runtimeは変わらない
-AND terminal、provider interrupt、session closeは0件である
+GIVEN chat、workflow、workspace、window の view が開いている。
+WHEN view close を行う。
+THEN 表示だけを閉じ、turn、permission、queue、runtime、workflow、shutdown を変更しない。
 
-## B-053: Active normal session close と open archive
+## B-053: Active normal Session close と open archive
 
-GIVEN active turnとqueueを持つopen normal sessionがある
-WHEN session closeまたはopen-session archiveを要求する
-THEN SessionClosed terminalとClosedまたはArchived stateが整合して表示され、queueは内容を保持したPausedになる
-AND terminalとruntime closeは各最大1件である
+GIVEN active turn の Session がある。
+WHEN normal close または open archive を受理する。
+THEN final parts、SessionClosed terminal、permission settlement、queue pause、Closed / Archived を一つの outcome として表示する。
 
 ## B-054: Idle close と archive
 
-GIVEN queueを持つIdle open sessionと既にClosedのsessionがある
-WHEN open sessionをcloseまたはarchiveし、Closed sessionをarchiveする
-THEN open sessionはqueueを保持したPausedのClosedまたはArchivedとなり、Closed sessionはqueueを変えずArchivedになる
-AND synthetic terminalは追加されない
+GIVEN Idle Session がある。
+WHEN close または archive を受理する。
+THEN synthetic turn terminal を追加せず、Session state と queue pause だけを確定する。
 
 ## B-055: Backend switch
 
-GIVEN sessionがIdleでpending permission、recovery、provider処理を持たない
-WHEN backend switchを要求する
-THEN queueを保持したPausedと新しいbackendが表示される
-AND active turnまたはいずれかのpending作業があるcaseは受理されずbackendとqueueを変更しない
+GIVEN Session が Idle で未解決 permission / recovery / effect がない。
+WHEN backend switch を受理する。
+THEN old runtime の結果を確認してから new backend を effective にし、結果不明では old backend と queue pause を維持する。
 
-## B-056: Close系commandの10秒結果
+## B-056: Close 系 command の 10 秒結果
 
-GIVEN activeまたはIdle normal session close、activeまたはIdle open archive、closed archive、Idle backend switchの各対象でruntime処理が永久停止する
-WHEN requestから10秒まで結果を観測する
-THEN 各commandは完了または結果未確認を示すtyped resultへ10秒以内に確定する
-AND 遅延結果はterminalと外部作用を重複させずsessionをreopenせず別backendを開始しない
+GIVEN Session lifecycle command が Accepted である。
+WHEN runtime または storage が遅延する。
+THEN request から 10 秒以内に完了または同じ operation identity の結果確認必要状態を返す。
 
-## B-057: Graceful quit surface のsingle flight
+## B-057: Graceful quit surface の single flight
 
-GIVEN Cmd-Q、application menu、Dock、tray、native exit、cooperative OS logout / shutdownから同時quitできる
-WHEN 各surfaceから同じintentでquitを要求する
-THEN 全surfaceのcaller bindingは同じbackend発行opaque ApplicationQuitOperationId、最初に固定したExitまたはRestartとexit code、同じ進行resultへ合流する
-AND shutdown plan、target terminal、workflow shutdown、child termination、process exitは各最大1件である
+GIVEN 複数の graceful quit surface が同時に要求される。
+WHEN 最初の request が Accepted になる。
+THEN 一つの flight へ join し、最初の intent と deadline を変更しない。
 
-## B-058: Quit request identity のpayload conflict
+## B-058: Quit request identity の payload conflict
 
-GIVEN quit request identity quit-1がExitかつcode 0へ束縛されている
-WHEN quit-1をRestartまたは別exit codeへ再利用する
-THEN PayloadConflictが返る
-AND Tauri / WebSocketの両方で最初のoperationとintentが変わらず、新しいshutdown identity、admission変更、shutdown effectは0件である
+GIVEN quit request identity が既存 intent に結び付いている。
+WHEN 同じ identity を異なる exit / restart intent に再利用する。
+THEN conflict として拒否し、既存 flight を変更しない。
 
 ## B-059: Shutdown admission
 
-GIVEN 最初のquitより前にAcceptedとなった通常操作と、quit後に要求するagent、workflow、local API、Tauri mutationがある
-WHEN quitを受理してshutdown中に各結果を取得する
-THEN quit前のAccepted操作は完了またはrestart後も取得できる未完了結果へ進み、quit後のmutationはShutdownInProgressを返す
-AND quit後に新しいagent、workflow、local API mutationは受理されない
+GIVEN application quit が Accepted になる。
+WHEN shutdown が進行する。
+THEN 新しい通常 mutation を受理せず、先に受理した operation を安全な outcome へ着地させる。
 
 ## B-060: Shutdown target 上限
 
-GIVEN openなactive / Idle sessionとrunning workflowを合計4096件または4097件持ち、closed / archived recoveryとowner不明runtimeもある
-WHEN quitを要求する
-THEN 4096件は一つのplanとして受理され、4097件はCapacityExceededでeffect 0件のabortとなる
-AND closed / archived recoveryとowner不明runtimeはtarget数に含まれずexit summaryに残る
+GIVEN open Session と running Workflow の shutdown target が合計 4096 件または 4097 件ある。
+WHEN quit を要求する。
+THEN 4096 件は一つの flight として受理でき、4097 件は effect を開始せず capacity failure で安全に abort する。
 
-## B-061: Previous shutdown とcompaction gate
+## B-061: Previous shutdown の未解決状態
 
-GIVEN 未解決previous shutdown、cleanup待ちのterminal shutdown、cleanup進行中のterminal shutdown、detailがCompactedのterminal shutdownがある
-WHEN new quitを要求する
-THEN 未解決caseはPreviousShutdownReconciliationRequired、cleanupが別planを保持中のcaseはPreviousShutdownCompactionPending、cleanup待ちまたはCompactedで受入条件を満たすcaseは一つの新しいflightを返す
-AND authority不整合を含む拒否caseでは新しいplan、target、effectは0件であり、restartや同時要求後も同じ判定へ収束する
+GIVEN previous shutdown の未解決結果がある。
+WHEN new quit を要求する。
+THEN 理由を示して新 flight を作らず、既存 result を解決または保持する。
 
-## B-062: Shutdown projection と plan page の公開境界
+## B-062: Shutdown summary と detail の一貫性
 
-GIVEN same-bootのPreparing / Prepared / Activated / Quiescing / Completed / Failed / Cancelled / ReconciliationRequired plan、details Available / Compactedのterminal plan、4096 target、limit 1 / 128 / 129、encoded 1 MiB以下 / 超過のtargetとpage、unknown plan、valid / 改変 / 失効cursorがある
-WHEN TauriとWebSocketからcurrent shutdownとexact plan pageを取得する
-THEN same-boot currentは同じplan identityとexact phaseを返し、Available planは最大128件かつ1 MiB以下の同じsnapshot pageを返し、Compacted planは同じidentity、intent、terminal phase、counts、deadline、failureを維持してentries空、next cursorなしを返す
-AND unknown planはNotFound、limit 129はInvalidRequest、改変 / 失効cursorはCursorMismatch / CursorExpired、encoded超過はResponseTooLargeとなり、partial target / pageを返さずstateとexternal effectを変更しない
+GIVEN shutdown に複数 target がある。
+WHEN current summary、history summary、target detail、または continuation page を読む。
+THEN 同じ committed shutdown identity と revision に属する plan と ordered target だけから一貫した結果を返し、target page は最大 128 件かつ response envelope を除く encoded entry 合計 1 MiB 以内になる。
+AND page 取得中に revision が変わった場合は異なる revision の target を混ぜず、partial result のない revision conflict を返す。
+AND 旧 page file、page reference、root hash、root page、または current recovery collection の有無や内容を summary / detail / effect 可否の代替根拠にしない。
 
-## B-063: Shutdown activation 前 failure のabort
+## B-063: Shutdown activation 前 failure の abort
 
-GIVEN quitの全targetをrestart後も識別できる状態へ準備中である
-WHEN 一targetの保存を失敗させ、shutdown effect未開始を確認できる
-THEN 15秒以内に`AbortedBeforeActivation(details=Available)` summaryとsafe failureが返り、成功済みtarget detailと固定済みrecovery snapshot detailを同じplanから取得でき、通常mutation受付が再開する
-AND summaryのtarget countは取得可能な成功済みtarget detail件数と一致し、session close、workflow shutdown、child termination、provider effectは0件である
+GIVEN shutdown effect がまだ開始されていない。
+WHEN 準備または開始可否の確定が安全に失敗する。
+THEN 外部作用を開始せず abort し、通常利用を再開できる結果を表示する。
 
-## B-064: Shutdown activation 後のbounded exit
+## B-064: Shutdown activation 後の bounded exit
 
-GIVEN 全target準備後にshutdownが開始され、一部targetが永久停止する
-WHEN 最初のquitから15秒まで観測してprocessを再起動する
-THEN processはabortせず15秒以内にExitedWithRecoveryでexitし、restart後に同じidentityの未完了targetが表示される
-AND 完了済みtargetのterminal、workflow shutdown、child terminationは再実行されない
+GIVEN shutdown effect を開始した、または開始結果を確認できない。
+WHEN quit request から 15 秒が経過する。
+THEN abort せず、未完了 identity を残して指定 intent で exit または restart する。
 
 ## B-065: Durable plan activation の結果不明
 
-GIVEN plan identityとPrepared resultはdurableに取得できるが、activation writerの結果を確認できないshutdownがある
-WHEN quitの15秒deadlineへ到達し、current shutdownとknown quit operationを取得する
-THEN current shutdownは同じplan identityのReconciliationRequiredを返し、known quit operationは元のAccepted operationと同じplanを返す
-AND 未開始と推測してabortまたは別shutdown commandを開始せず、明示shutdown command 0件のままExitedWithRecoveryとしてexitし、restart後も同じplan identityを返す
+GIVEN shutdown 開始の保存結果を確認できない。
+WHEN deadline に達する。
+THEN 未開始を推測して別 command を始めず、同じ shutdown identity を結果確認必要状態にする。
 
 ## B-066: Process exit に伴う暗黙作用
 
-GIVEN activated shutdownに未開始targetと既存childが残っている
-WHEN process exitによりpipe close、job object、parent-death signalが起こり得る状態でrestartする
-THEN shutdown planまたはpending recovery queryはtarget public stateをReconciliationRequiredとして返し、同じplan / epoch / effect identityの`SafeEffectObservation::ExitCoupledOutcomeUnknown`を併記する
-AND ExitCoupledOutcomeUnknownをpublic state variantにせず、未開始または成功へ推測せず、同じ外部作用を自動再実行しない
+GIVEN process exit が child process や pipe に影響し得る。
+WHEN 明示 command の結果を確認できないまま終了する。
+THEN 成功または無作用を推測せず、restart 後の readback 対象にする。
 
-## B-067: Shutdown 遅延結果のfence
+## B-067: Shutdown 遅延結果の fence
 
-GIVEN abort済みまたは新しいflightが開始済みのshutdownに旧flightの遅延結果がある
-WHEN 遅延結果を到着させる
-THEN 新しいsession、workflow、shutdown result、admission stateは変わらない
-AND terminal、workflow shutdown、child termination、process exitは増えない
+GIVEN 旧 shutdown の遅延結果が new flight 後に届く。
+WHEN 結果を適用する。
+THEN 元 flight だけへ収束させ、new flight、Session、Workflow を変更しない。
 
-## B-068: 履歴件数に依存しないbounded operation
+## B-068: 履歴件数に依存しない bounded operation
 
-GIVEN 未完了件数を固定し、無関係なsessionまたはevent履歴が10件と1000000件のfixtureがある
-WHEN startup recovery first page、同じturnのterminal、同じpayloadのmutation、identity queryを各1000 sample実行する
-THEN identity、result、page件数、byte上限、effect件数が一致し、大規模fixtureのp95は小規模の1.25倍以下である
-AND pending recovery first 200件はp95 50 ms以下、identity queryはp95 20 msかつp99 50 ms以下である
+GIVEN 未解決件数を固定し、無関係な Session または event history が 10 件と 1,000,000 件の fixture がある。
+WHEN operation / terminal identity lookup と各 collection の first page を同一 release 環境で各 1,000 sample 実行する。
+THEN identity、result、page、continuation は一致し、大規模 fixture の p95 は小規模 fixture の 1.25 倍以下、pending recovery first 200 は p95 50 ms 以下、identity lookup は p95 20 ms / p99 50 ms 以下になる。
 
-## B-069: Shutdown snapshot query のbounded failure
+## B-069: Shutdown query の bounded failure
 
-GIVEN shutdown snapshot取得中に同時commitが競合するcaseと、公開2秒上限を超えるcaseがある
-WHEN 各caseでsnapshot queryを行う
-THEN 前者はQueryBusy、後者はDeadlineExceededを返す
-AND partial count、entry、pageを返さずstateとexternal effectを変更しない
+GIVEN 一貫した shutdown view を有限時間で構築できない。
+WHEN current または history query が 2 秒に達する。
+THEN partial result を返さず、安全な busy または deadline failure を返す。
 
-## B-070: 既存dataの互換読込
+## B-070: SQLite-only startup と旧 file-store 非参照
 
-GIVEN 変更前のopen / closed / archived session、event、terminal、permission、queue-linked inputと未完了作業がある
-WHEN 明示migration操作なしで自動migrationを完了し、SQLite authorityからliveとreloadを読む
-THEN 確定済み結果は変更前と一致し、未完了作業は元identityと既知observationを保ったPaused、Failed、またはReconciliationRequiredとして表示される
-AND 証明できないprovider effectは自動開始されず、legacy dataは自動書換え、dual write、record単位fallbackの対象にならない
+GIVEN `sessions/`、`session_titles.json`、`workflow_runs/`、`workflow_logs/`、`workflow_execution_logs/`、`workflow_executions/`、`workflow_event_logs/` に不正 byte と変更検出 sentinel を置き、filesystem operation を path 単位で記録できる app-data がある。
+WHEN production composition で cold startup、通常 send / query、idle maintenance、background GC、retention、cleanup、graceful shutdown、restart を順に実行する。
+THEN 各legacy path自身とその配下に対するopen、metadata / stat、read_dir、read、write、rename、remove、decode、およびlegacy entryを列挙し得るapp-data rootへのread_dirを0件とし、sentinelのbyte、metadata、directory entryを全て維持する。
+AND import、変換、merge、fallback、dual write を示す operation、state、progress、query、API、gate、checkpoint、parity、cutover、特殊 quit を作らない。
+AND 固定 SQLite store の通常 schema evolution、configuration migration、watch subscription initialization は別の入力と test anchor で引き続き実行できる。
 
-## B-071: Upgrade 中断と再開
+## B-071: SQLite startup failure と初回作成再開
 
-GIVEN legacy inventoryからstaging SQLiteへのmigration途中dataと、migration中に受理済みのquit operationがある
-WHEN source batch commit、parity verification、authority pointer切替の各中断点でprocessを終了して再起動し、同じcaller identityとoperation IDから進捗とquit resultを取得する
-THEN 完了確認済みのdataを重複させず同じmigration identityとcheckpointから再開し、既存message、turn、queue、terminal、permissionを重複させず、quit queryはnormal shutdown planへfallbackせず同じMigration projectionを返す
-AND 完了前のmutationはMigrationInProgressとなり、quitはagentまたはworkflow終了commandを開始せず15秒以内にprocessを終了し、次bootで同じflightをExitedへ確定する。cutover後のauthorityはSQLiteだけでありlegacyへ戻らない
+GIVEN 固定 SQLite path と initial-create evidence が次のいずれかである。
 
-## B-072: Tauri とWebSocketのsurface一致
+| Case | Fixed SQLite path | Initial-create evidence |
+| --- | --- | --- |
+| A | absent | absent、またはpartial / invalid |
+| B | absent、0 byte、または application table のない検証可能な SQLite | valid かつ未完了 |
+| C | application identity、ready metadata、schema が全て検証可能 | 任意。存在する evidence は Ready 前に除去する |
+| D | B / C に該当しない既存 file。0 byte、または application store と識別できない未初期化 / 別用途 SQLite / 非 SQLite | 任意 |
+| E | application store と識別できるが、integrity、schema、metadata、key のいずれかを検証不能 | 任意 |
 
-GIVEN 同じoperation、session、pending recovery、shutdown、feedback stateがある
-WHEN Tauriと認証済みWebSocketから対応するsend、identity query、recovery page / action、shutdown query / quit、feedback query / controlを行う
-THEN 両surfaceのresult、receipt、status、failure、action、page内容はsemanticに一致する
-AND transport固有の判断による追加stateまたはeffectは発生しない
+WHEN production startup を一回実行する。
+THEN A はdatabaseがabsentであることを再確認してpartial / invalid evidenceだけを作り直し、evidenceをdurability順に確定して同じfixed pathを初期化する。Bは同じpathの初回作成だけを安全に再試行し、Cは同じinstallation identityとkeyを保持してReadyになる。
+AND D は `InitializationStateInvalid`、E の未対応schemaは`UnsupportedStoreVersion`、E の既知schemaに対するmetadata / key / integrity不整合は`StoreValidationFailed`を返す。
+AND writer lock失敗は`StoreInUse`、SQLite runtime不足は`UnsupportedRuntime`、filesystem / permission / capacity failureは`StorageUnavailable`、supported schema stepのtransactionまたはreadback failureは`SchemaEvolutionFailed`を返し、既存SQLite fileを置換、削除、truncate、再初期化しない。
+AND failure は safe description、correlation、再起動時の扱い、利用可能 action `Quit` だけを返し、raw path、SQL、database error、Session、Workflow、normal command、durable quit / shutdown progress を公開または作成しない。
+AND startup用二command以外のTauri commandはdomain stateを解決する前に同じ`ApplicationUnavailable`として拒否され、WebSocket serverはlistenせず、空のnormal read modelへfallbackしない。
+AND Quit は SQLite を開き直さず request ingress から15秒以内にprocess-local effectを一度だけ開始し、同じprocess内の重複要求は二重effectを作らない。
+AND writer lock は待たず、SQLite busy wait は最大 2 秒、create / open / evolution / validation の自動再試行は 0 回である。
 
-## B-073: WebSocket認証とresource上限
+## B-072: Tauri と WebSocket の surface 一致
 
-GIVEN loopback local APIに16接続、1接続32 in-flight、rate 60 requests/s burst 120、request / response 16 MiB、outbound 32 responses / 16 MiBの各境界fixtureがある
-WHEN Bearerなし、17本目、各上限内、各上限超過を送る
-THEN BearerなしはHTTP 401、17本目はHTTP 503 CapacityExceeded、in-flight超過はCapacityExceeded、rate超過はRateLimited、response超過はResponseTooLarge、frame超過は1009、outbound超過は1013となる
-AND 上限内requestはconnectionを維持して処理される
+GIVEN 同じ authorized operation と state がある。
+WHEN Tauri と WebSocket から同じ command / query を使う。
+THEN transport 差を除き同じ receipt、status、failure、action semantics を返す。
+
+## B-073: WebSocket 認証と resource 上限
+
+GIVEN loopback local API に 16 connections、1 connection 32 in-flight、60 requests/s・burst 120、request / response 16 MiB、outbound 32 responses / 16 MiB の各境界と、未認証・権限外の request がある。
+WHEN 各上限内と一件超過を処理する。
+THEN 上限内だけを処理し、未認証・権限外・超過は state と effect を変更せず安全に拒否して他 request の進行を阻害しない。
 
 ## B-074: WebSocket request identity と切断
 
-GIVEN 同じconnectionで同じrequest IDの2 requestと、受理済みoperationがある
-WHEN 2 requestを並行送信してconnectionを切断し再接続する
-THEN 片方だけがoperationとして受理され、他方はRequestIdConflictを返し、再接続後はoperation identityで同じreceiptとstatusを取得できる
-AND connection切断はoperation結果を変更しない
+GIVEN WebSocket command が Accepted 後に接続が切れる。
+WHEN 再接続して同じ operation identity を照会する。
+THEN 接続 identity ではなく durable operation identity から同じ結果を返す。
 
-## B-075: 公開整数fieldのlossless境界
+## B-075: 公開整数 field の lossless 境界
 
-GIVEN 0、1、9223372036854775807、負数、先頭ゼロ、正符号、指数表記、空白、9223372036854775808、JSON numberを各semantic integer fieldへ入力する
-WHEN TauriとWebSocketでrequest / responseを往復する
-THEN 定義上0を許すfieldは0を、1始まりfieldは1以上をcanonical decimal stringでlosslessに返し、不正表現はInvalidRequestとなる
-AND 最大値から次値を必要とするmutationはCapacityExceededとなりstateとeffectを変更しない
+GIVEN `0`、`1`、`9223372036854775807`、負数、先頭ゼロ、正符号、指数表記、空白、`9223372036854775808`、JSON number を semantic integer field へ入力する。
+WHEN Tauri / WebSocket を round-trip する。
+THEN field が許す 0 と正数は canonical ASCII decimal string の同じ値を返し、範囲外または lossless でない表現は state 変更前に拒否する。
 
-## B-076: Current application shutdown のboot境界とerror境界
+## B-076: Current application shutdown の error 境界
 
-GIVEN shutdownなし、same-bootの各phase、previous-boot nonterminal、previous-boot terminal、plan identityをanchorする最初のwriterの結果不明、冗長authorityだけのsemantic mismatch、storage / decode / integrity / required-reference failure、複数または一意にanchorできないidentityの各fixtureがある
-WHEN TauriとWebSocketからcurrent application shutdownを取得し、previous-boot terminalだけはexact history queryも行う
-THEN shutdownなしはCurrent(None)、same-bootは同じidentityのexact phase、previous-boot nonterminalは同じidentityのReconciliationRequired、previous-boot terminalはCurrent(None)かつhistory queryで同じterminal plan、最初のwriter結果不明はOutcomeUnknownを返す
-AND 冗長authorityだけのmismatchはShutdownAuthorityMismatch付きReconciliationRequired、storage / decode / integrity / required-reference / identity一意性failureはInternalとなり、いずれもCurrent(None)、別plan、migration-safe quitへfallbackせずstateとexternal effectを変更しない
+GIVEN shutdown が存在しない、same-boot で進行中、previous-boot で未完了、previous-boot で完了、最初の受理結果不明、または authority を安全に読めない状態のいずれかである。
+WHEN current shutdown を照会する。
+THEN それぞれ no current、current status、同じ shutdown の needs resolution、no current かつ history から取得可能、同じ quit の結果不明、安全な internal failure を返し、別 shutdown や成功へ fallback しない。
 
-## B-077: Phase 0完了済み契約の非退行
+## B-077: 完了済み契約の非退行
 
-GIVEN 次のtrace matrixに記載したD1 design contractとF1 / L1 / L2 / L4 / L6 / L7 / L8 / L10 / S10a / P2 / X1の最小fixtureがある
-WHEN #1499適用後に各checkまたはtestを同じ入力で実行する
-THEN 各rowのexpected resultが維持される
-AND #1499のoperation、terminal、recovery、shutdown stateは既存message、terminal、queue item、notice、external effectを重複させない
+GIVEN 次の compatibility baseline と checked-in fixture / test anchor がある。
+WHEN #1499 の production composition を通して同じ入力を実行する。
+THEN 各行の public result を維持し、message、terminal、queue item、Notice、external effect を重複させず、旧 physical model を再導入しない。
+AND `issue_1499_d1_contract_is_not_redefined` で D1 #1445 の configuration / Goal / capability と frontend action enablementを再定義しないことを検査する。
 
-| Gate | 正本 path / exact anchor | Check / test name | 最小入力 | Expected result |
-| --- | --- | --- | --- | --- |
-| D1 #1445 | `docs/specs/issues-1445/behavior.md` — `Feature: Agent 実行設定の新 domain 確定（configuration / Goal / Reasoning effort / launch / permission）`; design-only根拠は`docs/specs/issues-1445/design.md`冒頭 | 新規doc contract check `issue_1499_d1_contract_is_not_redefined`。既存runtime testはD1の明示Non-goal | #1499の公開型・decision tableをD1のconfiguration / Goal / capability境界と照合する | #1499がAgentMode、Goal authority、reasoning effort、provider capability、frontend action enablementを再定義しない |
-| F1 #1383 | `docs/specs/feat-issues-1383/behavior.md` — `Rule: replay golden（convert 層）は現状の変換出力を固定する`、`Rule: 統合 golden（read model 層）は projector までの現状挙動を固定する` | `src-tauri/src/infrastructure/agent_session/fixtures/mod.rs::{claude_fixtures_match_convert_golden,codex_fixtures_match_convert_golden}`、`src-tauri/src/test_support/agent_session_wire_replay.rs::{claude_fixture_matches_read_model_golden,codex_fixture_matches_read_model_golden}` | `fixtures/{claude,codex}/normal_turn/wire.jsonl` | convert outputとread modelが各`convert.golden` / `read_model.golden`に一致し、fixtureごとのterminalが1件 |
-| L1 #1402 | `docs/specs/issues-1402/behavior.md` — `Rule: 停止操作はどの phase でも常に受理される`、`Rule: Codex の turn_id 未取得ウィンドウでの停止予約`、`Rule: 停止後に pending queue を自動実行しない` | `runtime/usecase.rs::production_interrupt_watchdog_finalizes_at_the_ten_second_boundary`、`codex/session.rs::read_loop_writes_the_reserved_interrupt_exactly_once_after_turn_started`、`runtime/usecase.rs::queue_pause_and_explicit_resume_survive_runtime_state_restart` | unresponsive backend、turn ID通知前Stop、pending queue 1件、fake clock 10秒、restart | Timeout terminalが10秒、reserved interrupt 1回、queueはPausedで明示resumeまで開始0件 |
-| L2 #1403 | `docs/specs/issues-1403/behavior.md` — `Rule: 実行中 turn への送信は成功以外の結果を持たない`、`Rule: queue に積むメッセージは欠落なく永続化される`、`Rule: 入力欄は送信成功時にのみクリアされる` | `runtime/usecase.rs::test_stale_watchdog_無進捗turnをstall_signalに留めruntimeを閉じない`、`MessageInput.test.tsx::clears input only after sending succeeds`、`MessageInput.test.tsx::serializes submissions and preserves edited input and attachments added in flight` | steering非対応stall turnへ本文、image、mention、editor_contextをsendし、send pending中にdraftを追加 | exact payloadのqueue item 1件、raw steering errorなし、Accepted分だけclear、追加入力は残る |
-| L4 #1405 | `docs/specs/issues-1405/behavior.md` — `Rule: 進行中 turn を持つ終了経路は turn を必ず終端させる`、`Rule: アプリ終了→再起動でも終端が保たれる` | `runtime/usecase.rs::close_session_finalizes_streaming_turn_and_persists_terminal_projection`、`close_session_without_active_turn_does_not_create_interruption`、`close_session_appends_terminal_batch_atomically_and_can_retry`、`ChatSessionView.test.ts::shows the durable SessionClosed interruption on the reopened agent turn` | streaming partsとpending permissionを持つactive session、およびIdle sessionをcloseしてreload | activeはparts保持＋SessionClosed terminal＋permission settlement、Idleはsynthetic terminal 0、reloadも同じ |
-| L6 #1407 | `docs/specs/issues-1407/behavior.md` — `Rule: Codex の backend thread 消失後もセッションは恒久死しない`、`Rule: backend セッション再確立時にユーザーへ通知する` | `runtime/usecase.rs::test_codex_resume失敗はfresh_sessionで復活しdead_threadを再利用しない`、`completed_recovery_notice_is_restored_once_before_the_next_turn_after_restart` | dead Codex thread IDでresume failure、次send、notice publication前restart | fresh backend sessionでturn継続、dead ID再利用0、recovery noticeは同一内容で1回 |
-| L7 #1408 | `docs/specs/issues-1408/behavior.md` — `Rule: 非 JSON 行はセッションを終了させず skip される`、`Rule: 1 行サイズ上限を超える行は保持されず読み捨てられる`、`Rule: 非 JSON 行・巨大行を混ぜた fixture でセッション継続が固定される` | `claude/session.rs::test_claude_read_loopは_mixed_stdout_fixture後も処理を継続する`、`codex/session.rs::test_codex_read_loopは_mixed_stdout_fixture後も処理を継続する` | `src-tauri/tests/fixtures/agent_session/mixed_stdout_{claude,codex}.jsonl` | non-JSON / oversizeをskip / dropし、その後のvalid eventを処理してsessionを継続 |
-| L8 #1409 | `docs/specs/issues-1409/behavior.md` — `永続化失敗を無言に握りつぶさない`、`破損した event log を append 側で自己修復する`、`最終永続化失敗時に persist 済み本文を失わない` | `event_store.rs::append_session_event_recovers_unclosed_log_then_appends`、`runtime/usecase.rs::reopen_runtime_persist_failure_retries_reports_and_returns_error`、`final_parts_append_failure_keeps_body_not_tool_only` | closing `]`欠損event log、persist retry全失敗、Text＋tool partsのFinalParts失敗 | log修復後append成功、継続failureはerror＋session notice、reload後も本文保持 |
-| L10 #1411 | `docs/specs/issues-1411/behavior.md` — `Rule: 解放済みの未参照 lock エントリは無期限に蓄積しない`、`Rule: 規約違反の lock 再入がテストビルドで検出される`、`Rule: 外部から観測可能な振る舞いは変わらない` | `runtime/usecase.rs::repeated_session_runtime_locks_do_not_accumulate_registry_entries`、`session_runtime_lock_reentry_is_detected_in_tests`、`sequential_session_runtime_lock_acquires_are_not_reentry` | 多数sessionのacquire / drop、同一flowの二重acquire、解放後の別session acquire | registryは保持中相当へ収束し、reentryだけを検出し、逐次通常操作は成功 |
-| S10a #1398 | `docs/specs/feat-issues-1398/behavior.md` — `Feature: turn 実行中の crash が live で chat panel に着地する`、`Feature: Idle 中の Fatal がその理由付きで記録され live に着地する`、`Feature: live と reload 後の表示が一致する` | `runtime/usecase.rs::crash_emits_projected_error_snapshot_before_state_change_and_matches_reload`、`idle_fatal_is_durable_live_and_survives_later_projection`、`ChatSessionView.test.ts::renders the live or reloaded error part as an Error block` | streaming中Crash、Idle中Fatal、その後reload | live Error block、既存parts保持、Error reason durable、live / reload一致 |
-| P2 #1414 | `docs/specs/feat-issues-1414/behavior.md` — `Rule: 表示スコープは発生元 session のパネルに限定される`、`Rule: 他 session の活動では banner が消えない`、`Rule: banner のクリア契機は 2 つに限定される` | `BoundSessionChat.test.tsx::shows each session error only in its source pane`、`keeps session A error visible when session B updates and dismisses only A`、`notice.rs::test_session_notice_update_matching_success_recovers_only_same_operation` | session A failure、session B update / success、A dismissまたはA同operation success | Aだけにbanner、B活動で消えず、Aの明示dismissまたはmatching successだけでclear |
-| X1 #1417 | `docs/specs/issues-1417/behavior.md` — `Rule: prompt が非空、または画像がないときだけ text block を含める` | `claude/wire.rs::test_claude_user_message画像のみなら空text_blockを含めない`、`test_claude_user_message本文も画像もなければ空text_blockを含める` | empty prompt＋image 1件、empty prompt＋image 0件 | image-onlyはtext block 0、画像なしempty inputは既存互換のempty text block 1 |
+| Baseline | 現行正本 | Existing anchor | Expected public result |
+| --- | --- | --- | --- |
+| F1 #1383 | B-047〜B-049、V-D9 / V-D12 | `fixtures/{claude,codex}/normal_turn/`、`b047_*_wire_converter_runtime_sqlite_reopen_matches_read_model_golden` | convert / read-model golden と一致し、terminal は一件 |
+| L1 #1402 / L2 #1403 | I4〜I6、B-006 / B-012〜B-014 / B-028〜B-034 | `production_interrupt_watchdog_finalizes_at_the_ten_second_boundary`、`queue_pause_and_explicit_resume_survive_runtime_state_restart`、`MessageInput.test.tsx` | Stop は 10 秒境界へ収束し queue は pause、Accepted attempt だけを clear |
+| L4 #1405 / L6 #1407 / L8 #1409 / S10a #1398 | I1〜I3、I7〜I9、I12 | `close_session_finalizes_streaming_turn_and_persists_terminal_projection`、`completed_recovery_notice_is_restored_once_before_the_next_turn_after_restart`、`crash_emits_projected_error_snapshot_before_state_change_and_matches_reload` | terminal / permission / queue は一つの outcome、recovery Notice は一回、failure は live / reload で一致 |
+| L7 #1408 / L10 #1411 | I10 / I13 | `mixed_stdout_{claude,codex}.jsonl`、`repeated_session_runtime_locks_do_not_accumulate_registry_entries`、`session_runtime_lock_reentry_is_detected_in_tests` | malformed / oversize 後も valid event を処理し、lock entry は蓄積せず reentry だけを拒否 |
+| D1 #1445 / P2 #1414 / X1 #1417 | I14〜I16、P4 / P5、R-022 | `BoundSessionChat.test.tsx`、`claude/wire.rs::test_claude_user_message画像のみなら空text_blockを含めない` | configuration / Goal 境界を再定義せず、feedback は発生元だけに残り、image-only input の意味を維持 |
 
 ## B-078: Stop winner の解決結果
 
-GIVEN started turnにAccepted Stopがある
-WHEN Stopがterminalを先に確定する
-THEN terminal resultと同時にStop resolutionはTerminalかつSucceededとして表示される
-AND final parts、assistant message、session state、permission、queue stateは同じ整合した結果を示す
+GIVEN Stop が canonical terminal の winner である。
+WHEN operation を照会する。
+THEN 同じ Stop receipt と stopped result を返し、queue は pause のままにする。
 
 ## B-079: Stop superseded の解決結果
 
-GIVEN started turnにAccepted Stopがありnormal completion、Fatal、またはcloseが競合する
-WHEN Stop以外のterminalが先に確定する
-THEN terminal resultと同時にStop resolutionはTerminalかつSupersededとして表示される
-AND terminalとStop resolutionはrestartまたは再試行後も各1件である
+GIVEN normal completion または別 terminal が Stop より先に確定した。
+WHEN Stop operation を照会する。
+THEN 重複 terminal を作らず、既存 canonical outcome により Stop が解決済みであることを返す。
 
-## B-080: Terminal 保存 failure とStop capacity
+## B-080: Terminal 保存 failure と Stop capacity
 
-GIVEN Accepted Stopを含むterminal closureで保存failureが起きる
-WHEN live、reload、restart後のStop operationを取得する
-THEN terminal各項目とStop resolutionは部分表示されず、同じ未解決identityが表示される
-AND Stop capacityは保持され、完全解決後だけ解放される
+GIVEN Accepted Stop の terminal が未確定である。
+WHEN 別 Stop の capacity を判定する。
+THEN 未解決 Stop を引き続き capacity に含め、保存 failure を slot 解放とみなさない。
 
-## B-081: Pending recovery action のclosed kind
+## B-081: Pending recovery の safe action set
 
-GIVEN current pending recoveryがReadAgain、RetrySameEffect、UseObservedResult、CancelIfSafe、KeepForManualResolutionの利用可能actionを提示する
-WHEN 各actionを提示されたidentityとcurrent revisionで実行する
-THEN ReadAgainはreadback、RetrySameEffectは同じeffect identity、UseObservedResultとCancelIfSafeは再検証可能な根拠だけを使い、KeepForManualResolutionはUnchangedを返す
-AND CancelIfSafeを提示しないtargetへの直接要求はActionUnavailableでeffect 0件となる
+GIVEN pending recovery がある。
+WHEN 利用可能な action を表示する。
+THEN [agent-chat-ideal-vocabulary.md](../../../specs/milestone-84-agent-chat-stabilization/agent-chat-ideal-vocabulary.md) が定める safe action のうち Rust が現在安全と判断したものだけを返し、frontend が generic retry を追加しない。
 
-## B-082: Recovery action のresponse喪失とrestart
+## B-082: Recovery action の response 喪失と restart
 
-GIVEN recovery action action-1が実行されresult保存後にresponseを失う
-WHEN restart後に同じactionを再実行しidentityだけで取得する
-THEN 保存済みと同じoutcome、classification、resource revision、canonical result hash、resource viewが返る
-AND external effectは増えない
+GIVEN recovery action が受理されたが response が失われた。
+WHEN 同じ action identity を再試行または restart 後に照会する。
+THEN 同じ attempt と保存済み result へ収束する。
 
-## B-083: Recovery action のinvalid identity とstale view
+## B-083: Recovery action の invalid identity と stale view
 
-GIVEN 未発行、改変、current viewで利用不能、stale revision、handoff前にtarget revision変更となるactionがある
-WHEN 各actionをTauriとWebSocketから実行する
-THEN 順にNotFound、NotFound、ActionUnavailable、RevisionConflict、TargetRevisionChangedが返る
-AND 公開stateとexternal effectは0件の変更である
+GIVEN action identity が不正、未知、権限外、または対象 revision が古い。
+WHEN 解決を要求する。
+THEN resource と effect を変更せず安全な rejection を返す。
 
 ## B-084: Recovery action classification の組合せ
 
-GIVEN provider observationが開始のみ、成功、未開始確認、ambiguousの各caseと取消可能・不能targetがある
-WHEN 提示されたrecovery actionを実行してresultを再取得する
-THEN Pending+Pending、Pending+ConfirmedNoEffect、Pending+Ambiguous、Terminal+Succeeded、Terminal+CancelledBeforeEffect、Unchanged+Unchangedのいずれかだけが返る
-AND 開始だけをSucceededへ、ambiguousをConfirmedNoEffectへ、取消不能targetをCancelledBeforeEffectへ読み替えない
+GIVEN recovery action の観測と安全な実行結果が、成功、effect 未開始、曖昧、開始前取消、または変更なしのいずれかである。
+WHEN recovery action を完了する。
+THEN vocabulary が定める Succeeded、Confirmed no effect、Ambiguous、Cancelled before effect、Unchanged のいずれかと、対応する owner state を一つの canonical outcome として確定する。
 
-## B-085: Shutdown target action とplan terminal
+## B-085: Shutdown target action と plan terminal
 
-GIVEN shutdown planに複数の未解決targetと各targetのsafe actionがある
-WHEN 各targetをsame action identityで解決する
-THEN owner側resultとtarget resultが一つの結果として確定し、全target解決後はplanがterminalになる
-AND 次のquitは未解決planを理由に拒否されない
+GIVEN 最後の未解決 shutdown target が安全に解決される。
+WHEN target action を確定する。
+THEN target result と shutdown summary / terminal を同じ outcome として公開し、partial completion を作らない。
 
 ## B-086: Recovery action の保存結果不明
 
-GIVEN action-1の実行結果を保存したか確認できない
-WHEN command resultを受け取り、action identityで再取得する
-THEN command resultはActionOutcomeUnknownとaction-1を返し、再取得は同じattemptのInProgress、OutcomeUnknown、ReconciliationRequired、Completedのいずれかを返す
-AND 別actionまたは別effectは作られない
+GIVEN recovery action の保存結果を確認できない。
+WHEN caller が結果を受け取る。
+THEN 別 action を開始せず、同じ action identity の結果不明として解決させる。
 
 ## B-087: Stop と quit の request identity 境界
 
-GIVEN 独立した受理可能fixtureごとに1 byteと128 bytesの許可文字だけからなるStop / quit request identity、および空、129 bytes、non-ASCII、または`[A-Za-z0-9._:-]`以外のASCIIを含む各request identityがある
-WHEN TauriとWebSocketから各identityを指定してStopとquitを要求する
-THEN 1 byteと128 bytesのidentityは各commandでAcceptedとなり、不正なidentityは両surfaceでInvalidRequestとなる
-AND 不正なidentityではStop受理、provider interrupt、shutdown identity、admission変更、shutdown effectは0件である
+GIVEN Stop と quit が同じ文字列の caller request identity を使用する。
+WHEN 両 command を処理する。
+THEN command kind の異なる identity scope として扱い、相互に replay / conflict させない。
 
 ## B-088: Known quit operation の読取境界
 
-GIVEN Availableなlive normal shutdown、Compactedなlive normal shutdown、compact shell削除後のarchive-only normal shutdown、liveとarchiveが一致または不一致のnormal shutdown、migration-safe flight、未発行operation、known operation固有の読取authorityまたは参照先が欠損・decode不能・integrity不一致のcase、acceptance保存結果不明のcase、Accepted後の参照先transaction結果不明のcaseが各1件ある
-WHEN operation identityを指定してTauriとWebSocketからquit operationを取得する
-THEN 正常なlive / archive-only / live+archive一致は同じShutdown projection、migrationはMigration projection、未発行identityはNotFound、live+archive不一致を含むauthority破損はInternal、acceptance保存結果不明はtop-level OutcomeUnknown、Accepted後の参照先transaction結果不明はAccepted内のOutcomeUnknownを両surfaceで返す
-AND compact shellの存否でterminal result bytesを変えず、authority破損、結果不明、MigrationをCurrent(None)、normal shutdown、別operationのprojectionへfallbackしない
+GIVEN normal shutdown の known quit operation がある。
+WHEN operation identity で照会する。
+THEN その operation の保存済み shutdown result だけを返し、current shutdown や startup failure へ fallback しない。
 
-## B-089: Plan固定 recovery snapshot の照会境界
+## B-089: Shutdown が記録した recovery の照会境界
 
-GIVEN shutdown plan p-1 / epoch 7が固定したrecovery snapshot s-1にClosedSession 1件、ArchivedSession 0件、UnownedRuntime 1件がある
-WHEN 同じplan / epoch / snapshotで3 partitionを取得し、別plan、別snapshot、別partitionのcursor、改変cursor、失効cursor、details compacted、unknown partition tagでも取得する
-THEN validな3 partitionは固定snapshotだけを返し、ArchivedSessionはentries 0件のempty pageとなり、順にSnapshotMismatch、SnapshotMismatch、CursorMismatch、CursorMismatch、CursorExpired、DetailsCompacted、InvalidRequestを返す
-AND error caseでpartial pageを返さず、emptyまたはerrorをcurrent recovery inventoryへfallbackしない
+GIVEN shutdown が開始時点の recovery collection を記録している。
+WHEN historical shutdown detail を照会する。
+THEN current recovery collection と混ぜず、その shutdown が記録した意味を返す。
 
-## B-090: Current recovery の shutdown plan association filter
+## B-090: Current recovery の shutdown association filter
 
-GIVEN current pending recoveryにplan p-1 / epoch 7へ関連付く201件、p-1 / epoch 8へ1件、p-2 / epoch 7へ1件、shutdown associationなし1件がある
-WHEN p-1 / epoch 7のshutdown plan association filterでcursorを使って末尾まで取得する
-THEN p-1 / epoch 7へ関連付く201件だけを200件かつencoded 4 MiB以下のpageで重複なく返す
-AND 別plan、別epoch、associationなしのentryを混ぜず、plan固定snapshotまたはfilterなしcurrent inventoryへfallbackしない
+GIVEN current pending recovery に shutdown と無関係な work もある。
+WHEN 特定 shutdown の current target recovery を照会する。
+THEN その shutdown に結び付く work だけを返す。
 
-## B-091: 別request identityのquit intent join
+## B-091: 別 request identity の quit intent join
 
-GIVEN request quit-1のExit / code 0がcurrent shutdown flightとしてAcceptedである
-WHEN 別のvalid request quit-2からRestart / code 42を要求する
-THEN quit-2はquit-1と同じbackend発行operation identity、Exit / code 0、plan、deadline、進行resultへ合流する
-AND PayloadConflict、新しいplan、Restart permit、追加shutdown effectは発生せず、quit-1のintentも変更されない
+GIVEN current quit flight がある。
+WHEN 別 request identity から異なる intent が届く。
+THEN first accepted intent の flight へ join し、intent と deadline を変更しない。
 
 ## B-092: RetryQuit の提示条件
 
-GIVEN same-bootでactivation前Failed、shutdown effect 0件、durable terminal fence確定、mutation admission Open、store Healthyを同じsnapshotで満たすplanと、各条件を一つずつ満たさないplan、fresh bootのplan、OutcomeUnknownのplanがある
-WHEN TauriとWebSocketからcurrent shutdown projectionを取得する
-THEN 全条件を同時に満たすplanだけがavailable actionsにRetryQuitを含み、他のplanはRetryQuitを含まない
-AND queryによってadmission、plan、terminal、shutdown effectは変更されない
+GIVEN quit が effect 開始前に安全に失敗した。
+WHEN backend が normal admission と保存状態の安全性を確認できる。
+THEN その場合だけ Retry Quit を提示し、開始結果不明または開始後には提示しない。
 
-## B-093: Completed recovery action の完全replay
+## B-093: Completed recovery action の完全 replay
 
-GIVEN recovery action action-1がCompletedとなりoutcome、classification、resource revision、canonical result hash、safe resource viewが保存されている
-WHEN 時間経過とrestart後にcurrent resource revisionを進め、shutdown detailsをcompactし、current resourceの通常queryをStorageUnavailableにした状態でaction-1をidentityだけから再取得する
-THEN 各取得はCompleted時に保存したoutcome、classification、resource revision、canonical result hash、safe resource viewとexactly同じresultを返す
-AND current resourceからresultを再構築せず、新しいactionまたはexternal effectを作らない
+GIVEN recovery action は Completed である。
+WHEN 同じ identity を再び照会する。
+THEN current resource から再構築せず、保存済み receipt と safe result を返す。
 
 ## B-094: Feedback resolution retry の再失敗
 
-GIVEN process全体の未解決feedbackが512件あり、feedback f-1のrevisionが2でresolution retry actionが利用可能である
-WHEN expected revision 2と提示済みaction identityでretryし、そのresolutionが再びfailureとなる
-THEN f-1と同じfeedback identityが更新後failure、利用可能action、revision 3を持って返り、未解決件数は512件のままである
-AND 新しいfeedback identityとcapacity slotを作らず、他のfeedbackを変更しない
+GIVEN feedback の解決 retry が再び失敗する。
+WHEN 結果を表示する。
+THEN 同じ feedback identity を新しい revision と failure へ更新し、重複 entry を作らない。
 
-## B-095: Session close のcrash境界
+## B-095: Session close の crash 境界
 
-GIVEN active turnを持つnormal sessionとIdle normal sessionに対するclose要求がある
-WHEN close acceptance保存前、保存確定直後、runtime close effect直後、result保存直前の各境界でprocessを終了して再起動する
-THEN 保存前caseは元のOpen stateとruntime close effect 0件を返し、保存後caseは同じclose identityの未完了作業または完全なClosed resultとして回収される
-AND active caseのSessionClosed terminal、Idle caseのsynthetic terminal 0件、queue pause、runtime close effect最大1件という結果はrestartとretry後も変わらない
+GIVEN Session lifecycle operation の途中で crash する。
+WHEN 再起動後に operation を照会する。
+THEN 同じ receipt と Session outcome または結果確認必要状態を返し、Session を自動 reopen しない。
 
-## B-096: Shutdown details の Available から Compacted への切替
+## B-096: Shutdown history detail の可用性
 
-GIVEN Completed / Failed / Cancelledのterminal shutdown planがdetails Availableで、同じplanからtarget detailとplan固定recovery detailを取得できる
-WHEN background compactionの任意時点でprocessを終了してrestartし、TauriとWebSocketから同じplan ID / epochを繰り返し取得する
-THEN 各取得結果は完全なAvailableまたは完全なCompactedのどちらかであり、途中のNotFound、empty Available、current inventoryへのfallback、CompactedからAvailableへの逆行を返さない
-AND Compacted後もplan identity、intent、terminal phase、target / completed / unresolved / preexisting recovery counts、cutoff、deadline、outcome、safe failureはAvailable時と一致し、pageはentries空、next cursorなし、exact target / recovery detail queryはDetailsCompactedを両surfaceで返す
+GIVEN full detail を持つ terminal shutdown が 2 件あり、3 件目を保持する。
+WHEN history と各 exact detail を照会する。
+THEN oldest は同じ identity、intent、terminal status、counts、deadline、safe failure を持つ summary-only へ一貫して切り替わり、古い detail や current collection と混在しない。
 
-## B-097: Previous shutdown compaction 中の new quit
+## B-097: Previous shutdown cleanup 中の new quit
 
-GIVEN terminal previous shutdownのdetailsがまだAvailableで、そのdetailを保持したまま新しいfull-detail flightを公開できない状態にある
-WHEN new quitを要求し、同時にold planをexact history queryする
-THEN new quitはRejectedBeforeAcceptanceのPreviousShutdownCompactionPendingとold planのblocking shutdown projectionを返し、新しいshutdown operation、admission変更、external effectを0件にする
-AND old planはAvailableまたはCompactedとして継続取得でき、Compactedへ確定した後のnew quitだけが通常の受理条件へ進み、old planは同じidentityのCompacted historyとして残る
+GIVEN previous shutdown の保存済み結果の更新が new flight と安全に共存できない。
+WHEN new quit を要求する。
+THEN 作用開始前に待機理由を返し、既存結果を破壊せず new flight を作らない。
 
-## B-098: LegacyからSQLiteへのone-shot cutover
+## B-098: SQLite schema evolution の atomicity
 
-GIVEN 固定したlegacy source inventory、staging SQLite、migration checkpoint、authority pointerと、未解決operation / shutdown detailを含むfixtureがある
-WHEN bounded import、projection parity、known-result parity、owner relation検証を行い、pointer切替の前後でfailureまたはrestartを発生させる
-THEN parity未達または参照不整合ではauthorityを切り替えずMigrationBlockedを返し、成功時はpointerをLegacyからSqliteへ一度だけ切り替え、operation identity、terminal result、shutdown Available / Compacted result、counts、deadline、failureを同じpublic queryから再取得できる
-AND cutover後のmutationと再起動はSQLiteだけを使い、legacyへのrollback、dual write、record単位fallback、managed backup / restoreのpublic commandを追加しない
+GIVEN 対応可能な旧 SQLite schema がある。
+WHEN normal admission 前に schema evolution を行い crash または response loss が起きる。
+THEN 再起動後は旧または新の検証可能な schema へ収束し、既存 operation、terminal、recovery、shutdown の意味と、同じ installation identity、cursor HMAC key、operation-binding HMAC key を維持する。
+AND 各 supported version step は一回の SQLite transaction 内で適用し、未対応 version、step failure、commit 結果不明では検証できるまで normal workbench を開かず safe startup failure にする。
+AND schema evolution は legacy path、initial-create evidence の progress、別 database、authority pointer、generation directory、legacy migration state を作成または参照しない。
 
-## B-099: 通常send operationのprincipal分離
+## B-099: 通常 send operation の principal 分離
 
-GIVEN principal p-1へ束縛されたoperation identity op-1のAccepted receiptがある
-WHEN principal p-2がop-1を同じpayloadでsendまたはoperation identity queryする
-THEN TauriとWebSocketはNotFoundを返し、receipt、status、session、message、turn、queue itemをp-2へ返さない
-AND p-1のoperationとsessionは変わらず、p-2用operation、human message、turn、queue item、provider effectは0件である
+GIVEN 別 principal が既存 send operation identity を推測する。
+WHEN query または replay を要求する。
+THEN operation の存在を開示せず state と effect を変更しない。
 
-## B-100: Quitの最初のplan writer結果不明
+## B-100: Quit の最初の受理結果不明
 
-GIVEN quit operation identityとintentはcallerへ返せるが、plan identityをanchorする最初のwriterの結果を確認できない
-WHEN request result、current shutdown、known quit operationを取得する
-THEN request resultとknown operationは同じoperation identity / intentのtop-level OutcomeUnknownを返し、current shutdownもnormal shutdown不在へ読み替えずOutcomeUnknownを返す
-AND frontendは別request identityでquitを自動再実行せず、新しいplan、admission変更、shutdown effectは0件である
+GIVEN 最初の quit を受理する保存結果が不明である。
+WHEN caller が再試行する。
+THEN 別 shutdown flight を作らず、同じ request の受理結果を解決する。
 
-## B-101: SessionLifecycle operationのreplayとprincipal分離
+## B-101: Session lifecycle operation の replay と principal 分離
 
-GIVEN principal p-1がrequest ID close-1、session s-1、expected revision 4、action CloseをAcceptedされ、responseを失っている
-WHEN restart後にp-1が同じrequestとpayloadをreplayし、principal p-2が返されたbackend operation identityを照会する
-THEN p-1は初回と同じoperation identity、immutable receipt、current stateを返され、p-2はNotFoundを返される
-AND terminal、queue pause、runtime close effectは各最大1件である
+GIVEN Session lifecycle operation が Accepted である。
+WHEN response loss、restart、または別 principal からの照会が起きる。
+THEN authorized replay には同じ receipt を返し、別 principal には存在を開示しない。
 
-## B-102: SessionLifecycle operationのconflictとjoin
+## B-102: Session lifecycle operation の conflict と join
 
-GIVEN principal p-1のsession s-1に未解決のArchiveOpen operationがある
-WHEN p-1が別request IDで同じsession、expected revision、ArchiveOpenを要求し、さらに別request IDでCloseを要求する
-THEN 同じArchiveOpen requestは既存operation identityへ合流し、Close requestはPendingOperationを返す
-AND 同じrequest IDを別session、revision、action、backend IDへ再利用した場合はPayloadConflictとなり、新しいoperation、terminal、queue変更、runtime effectは0件である
+GIVEN 同じ Session に未解決 lifecycle operation がある。
+WHEN 同じ action の別 request または異なる action が届く。
+THEN 同じ action は既存 operation へ join し、異なる action は新 effect なしで拒否する。
 
-## B-103: SessionLifecycle operationの10秒結果とstable query
+## B-103: Session lifecycle operation の 10 秒結果と stable query
 
-GIVEN active / Idle close、open / closed archive、Idle backend switchの各valid requestと、runtime処理が永久pendingになるcaseがある
-WHEN command受理直後、10秒時点、restart後に同じoperation identityを取得する
-THEN effect開始前にimmutable Accepted receiptを取得でき、10秒以内にCompletedまたはReconciliationRequiredへ進み、restart後も同じreceipt、state、outcomeを返す
-AND 受理前のBusy、PendingOperation、RevisionConflict、InvalidState、Failedではsession、queue、terminal、backend、external effectを変更しない
+GIVEN lifecycle operation が 10 秒以内に external result を確認できない。
+WHEN deadline 後または restart 後に照会する。
+THEN 同じ operation identity の結果確認必要状態を返し、current Session から別 result を合成しない。
 
-## B-104: Canonical MessagePart と永続化互換
+## B-104: Message content の永続化・公開互換
 
-GIVEN 変更前の既知message part JSON、Claude / Codex F1 fixture、SQLite persistence envelope、Tauri / WebSocket public DTO fixtureがある
-WHEN legacy JSONをdomainのcanonical MessagePartへdecodeし、SQLiteへ保存・reloadし、両public surfaceへpresentする
-THEN 既知variantのtag、field、順序、optionalityと公開結果は変更前と一致し、session usecase、runtime event、projectionは同じdomain typeを使う
-AND persistence DTOとpublic DTOはdomain typeから独立してversion管理され、unknown additive persistence payloadはraw bytesを保持し、unknown required variantはtyped incompatibilityとしてfail closedとなり、usecase layerに同義MessagePart enumを残さない
+GIVEN 全ての supported message content と、未知の必須 semantics がある。
+WHEN 保存、reopen、public projection を行う。
+THEN supported content は意味を失わず round-trip し、未知の必須 semantics は別の意味へ推測せず safe incompatibility にする。
 
-## 要件IDと検証方法の対応表
+## 要件 ID と検証方法の対応表
 
 | Requirement ID | Behavior ID | Verification Method |
 | --- | --- | --- |
-| R-001 | B-001, B-002, B-003, B-004, B-005, B-006, B-007, B-008, B-009, B-099 | fake storage / providerでexisting・new-session・queued sendを実行し、response喪失、restart、Tauri / WebSocket並行送信、保存結果不明、Accepted後failure、valid / invalid identity、別principalからのsame operation send / queryを入力する。同一principalのreceipt / disposition不変、別principalのNotFound、message / turn / queue / provider effect増分0を公開queryとprovider記録で比較する |
-| R-002 | B-010, B-011 | 受理済みoperationのcontent、image、mention、editor context、target、worktree、configurationを一項目ずつ変更しPayloadConflictとeffect増分0を観測する。受理後session stateだけを変更した同payload再試行では同じreceiptを観測する |
-| R-003 | B-008, B-012, B-013 | component testでAccepted、RejectedBeforeCommit、OutcomeUnknown、Accepted後ReconciliationRequired、送信待機中追加入力を投入し、対応snapshotだけのclear、未受理保持、入力復元0、自動send 0をDOMとbackend call記録で観測する |
-| R-004 | B-014, B-015, B-016, B-017, B-018, B-019, B-020, B-021, B-095 | fake providerとrestart harnessでsend・permission・create / resume・streaming・session closeに受理前failure、effect直後crash、readback可否、payload欠損、不正effect intentを投入し、受理前effect 0、依存前start 0、exact response最大1、未保存part非表示、same identityのstatus / actionsを観測する |
-| R-005 | B-007, B-014, B-018, B-019, B-022, B-023, B-036, B-063, B-064, B-088, B-095 | send、terminal、recovery、session close、shutdownとknown quit operation読取の各保存境界でerror / process crashを発生させ、live / reload / Tauri / WebSocketが変更前、完全確定後、または規定されたOutcomeUnknownだけを返し、authority破損を通常状態へ隠さず別effectが増えないことを比較する |
-| R-006 | B-022, B-023, B-024, B-025 | normal、Stop、close、archive、quitのterminalを保存failure / notification failure込みで実行し、parts、assistant message、terminal、session、permission、queueが同時に整合し、pause policyが一致することを観測する |
-| R-007 | B-026, B-027 | 同一turnへStop、watchdog、close、Fatal、completionを全順序で競合させ、後続turn開始後に旧eventを投入し、winner reason / parts不変とterminal count 1をlive / reloadで照合する |
-| R-008 | B-028, B-029, B-030, B-031, B-087 | fake clockでinterrupt / closeを永久pendingにし10秒terminalとstale result無効化を観測する。Stop payload各field、same-key conflict、別key same-target join、32 / 33件capacity、1 / 128 byte valid identity、0 / 129 byte・non-ASCII・許可文字外identityを入力し、公開Accepted / PayloadConflict / StopCapacityExceeded / InvalidRequest、terminal count、effect増分を比較する |
-| R-009 | B-032, B-033, B-034, B-080 | Stop受理保存failure、Accepted後terminal failure、10秒到達、storage復旧、restart / manual競合を実行し、受理前interrupt 0、ReconciliationRequired、Idle / drain抑止、capacity保持、terminal / resolution各1を観測する |
-| R-010 | B-035, B-036, B-037, B-038, B-039, B-040, B-090 | 全未完了categoryとowner partitionを個別session未読込で列挙し、201件paging、途中更新、cursor改変 / restart、shutdown plan / epoch association、各crash境界、未解決shutdown、mutation抑止を入力してidentity保持、filter純度、page上限、typed cursor error、effect / message最大1を観測する |
-| R-011 | B-041, B-042, B-043, B-044, B-045, B-046, B-094 | data / meta双方を壊したsessionへfailureを発生させ、33件paging、identity別dismiss、512件capacity、stale revision、resolution retry再失敗、UTF-8 byte上限を入力し、embedded SafeOperationFailure、flat field重複0、failure / log correlation identity一致、exact error、同一identity更新、件数 / slot、effect境界を両surfaceで照合する |
-| R-012 | B-047, B-048, B-049 | Claude / Codex wire fixtureをproduction public interfaceへ入力し、wire変換とprojection変換を別々にmutation testし、期待golden、独立failure、既存F1維持、network / process起動0をCI記録で観測する |
-| R-013 | B-050, B-098 | SQLite fault harnessでmulti-stream batchの各write / commit境界、same-key replay、expected-head conflict、queue件数 / byte上限、signed 64-bit境界、unknown additive / required payload、legacy cutover前後を検査する。変更前または全participant確定後だけ、sequence一回性、OutcomeUnknownのsame-identity解決、MigrationBlocked、cutover後legacy write / fallback 0件を確認する |
-| R-014 | B-051, B-052, B-053, B-054, B-055, B-056, B-095, B-101, B-102, B-103 | decision table全surfaceをschema検査し、active / Idle close、open / closed archive、backend switch、view closeへvalid / invalid request ID、same-key replay / conflict、別key join / PendingOperation、別principal query、response喪失、10秒hang、restart、close crashを入力する。同じoperation receipt / outcome、NotFound、terminal有無、queue pause、backend selection、effect最大1を公開command / queryで観測する |
-| R-015 | B-039, B-057, B-058, B-059, B-060, B-061, B-062, B-087, B-088, B-091, B-092, B-097, B-100 | 全graceful surfaceからsame / different request identityとintentでquitし、response喪失、SQLite transaction結果不明、same / previous boot nonterminal、migration-safe flight、terminal detail保持中、4096 / 4097 target、page / byte境界を入力する。同じbackend operation、first intent不変、blocking projection、Current / OutcomeUnknown / exact error、effect各最大1を観測する |
-| R-016 | B-063, B-064, B-065, B-066, B-067, B-089, B-096, B-097 | fake clockで準備failure、activation結果不明、activation後hang、exit-coupled child、old-flight遅延result、Available→Compacted切替の各公開境界へcrashを投入する。15秒以内のabortまたはexit、開始前effect 0、同一identityのrestart recovery、Compacted後のsame summary / empty entries / DetailsCompacted、fallback 0、重複effect 0を観測する |
-| R-017 | B-068, B-069 | 10件 / 1000000件fixtureで各1000 sampleを同一release環境から測定してidentity / page / effect一致とp95 / p99上限を集計し、同時commitと2秒超過でQueryBusy / DeadlineExceeded、partial result 0を観測する |
-| R-018 | B-038, B-062, B-070, B-071, B-072, B-073, B-074, B-075, B-076, B-088, B-089, B-098 | legacy fixtureでmigration各checkpoint / authority cutoverの中断・restart、migration-safe quit replay、Tauri / WebSocket parity、WebSocket認証 / resource上限、request ID競合 / reconnect、integer境界、same / previous boot shutdown、authority mismatch、storage / integrity failure、writer結果不明を入力する。重複0、MigrationInProgress、lossless decimal string、Current(None) / exact phase / ReconciliationRequired / Internal / OutcomeUnknownの非混同、cutover後legacy access 0を公開resultで観測する |
-| R-019 | B-077 | B-077 trace matrixのexact check / testを記載inputで実行し、各rowのexpected resultとmessage / terminal / queue / notice / external effectの重複0を観測する |
-| R-020 | B-026, B-034, B-078, B-079, B-080 | Stop winner / normal・Fatal・close winner、保存failure、restart / retryを組み合わせ、terminal全項目とSucceeded / Superseded resolutionの同時表示、各1件、capacity保持 / 解放を観測する |
-| R-021 | B-019, B-021, B-039, B-081, B-082, B-083, B-084, B-085, B-086, B-093 | five action kind、response喪失、restart、時間経過、resource revision更新、details compaction、current resolver failure、未発行 / 改変 / stale / unavailable / target競合、closed classification pair、shutdown全target解決、writer結果不明を入力し、same-action exact replay、exact typed error、effect増分0、plan terminal、ActionOutcomeUnknownを両surfaceで照合する |
-| R-022 | B-047, B-048, B-049, B-077, B-104 | compile-timeの単一定義check、legacy JSON / SQLite envelope round-trip、Claude / Codex F1 golden、Tauri / WebSocket presenter golden、unknown version fixtureを実行し、known public shape不変、domain型の単一所有、raw preservation、unknown required variantのfail-closed、usecase同義enum 0件を確認する |
+| R-001 | B-001〜B-009、B-074、B-099 | 同じ send の response loss、並行要求、切断、restart、別 principal を入力し、authorized callerには一つの receipt / turn、別 principal には情報非開示となることを観測する |
+| R-002 | B-010〜B-011 | 同じ identity へ同一入力と異なる入力を再送し、前者だけが replay、後者は既存 state・effect 0件の conflict となることを観測する |
+| R-003 | B-012〜B-014 | Accepted、受理前 rejection、conflict、結果不明を composer へ返し、Accepted attemptだけが clear されることを観測する |
+| R-004 | B-015〜B-021 | permission、provider start、readback可能・不能、stale ownerを入力し、durable intentと開始直前確認なしのeffectが0件であることを観測する |
+| R-005 | B-022、B-050、B-095 | terminal、複数state mutation、Session closeの各commit境界でcrashさせ、変更前または全確定後だけが公開されることを観測する |
+| R-006 | B-023〜B-025 | terminal確定後の通知失敗、normal completion、Stop / closeを入力し、terminal維持と規定どおりのqueue継続 / pauseを観測する |
+| R-007 | B-026〜B-027 | 同じturnの競合terminalと過去turnの遅延eventを入力し、canonical terminal一件とcurrent turn不変を観測する |
+| R-008 | B-028〜B-032 | active turnへのStop、response loss、別target conflict、capacity超過、受理保存失敗を入力し、requestから10秒以内の規定結果と重複effect 0件を観測する |
+| R-009 | B-033〜B-034、B-078〜B-080 | Accepted Stop後のterminal保存失敗とrestartを入力し、同じStop identity、queue pause、capacity占有、canonical resolutionを観測する |
+| R-010 | B-035〜B-040、B-081〜B-090、B-093 | 未解決workをowner別に用意し、startup discovery、page継続、action response loss、shutdown associationを通して同じidentityと保存済みresultを観測する |
+| R-011 | B-041〜B-046、B-094 | meta read failure、別Session成功、stale revision、capacity到達、retry再失敗を入力し、session-scoped feedbackの独立性と安全な更新を観測する |
+| R-012 | B-047〜B-049、B-072〜B-075 | Claude / Codex fixtureをproduction経路と両transportへ通し、同じpublic semantics、未認証・limit超過のeffect 0拒否、公開整数のlossless往復を観測する |
+| R-013 | B-050、B-062、B-070、B-098 | SQLite mutation、shutdown summary / ordered target read、旧file-store併存、schema evolutionの各crash境界で、単一authority、atomic outcome、同じrevisionのpublic read、旧file非参照を観測する |
+| R-014 | B-051〜B-056、B-095、B-101〜B-103 | view close、active / Idle close、archive、backend switch、response loss、restartを入力し、surface別結果とrequestから10秒以内のstable operationを観測する |
+| R-015 | B-057〜B-067、B-071、B-076、B-085、B-087〜B-093、B-096〜B-097、B-100 | 全graceful surface、startup failure、競合intent、previous shutdown、target action、historyを入力し、normal時は一つのfirst-intent flight、startup failure時はdurable stateなしのprocess-local Quitとなることを観測する |
+| R-016 | B-063〜B-067 | effect開始前failure、開始後のslow target、開始結果不明、process exitを入力し、最初のrequestから15秒以内のabortまたはrecovery付きexit / restartを観測する |
+| R-017 | B-035、B-038、B-042、B-062、B-068〜B-069、B-089、B-096 | recovery、feedback、shutdown target / history / associated recoveryと異なる無関係履歴量を入力し、同じ有限page / continuation / direct identity resultまたはpartial resultなしのdeadline failureを観測する |
+| R-018 | B-070〜B-071、B-098 | SQLite absent、evidence付き初回作成中断、evidenceなし空file、正常、対応可能 / 未対応schema、検証不能、旧file-store sentinelを入力し、closedなstartup分類、Ready前のeffect 0件、Quit一件、各legacy path access 0件とbyte / metadata不変を観測する |
+| R-019 | B-077 | milestone 84正本の代表fixtureをproduction compositionへ通し、send、terminal、permission、recovery、close / quit、live / reloadの公開結果が維持されることを観測する |
+| R-020 | B-078〜B-080 | Stop、normal completion、failure、closeのterminal競合と保存失敗を入力し、terminal一件、Stop resolution、queue pause、capacity不変を観測する |
+| R-021 | B-081〜B-086、B-092〜B-094 | safe action、stale action、response loss、ambiguous readback、最後のshutdown targetを入力し、提示済みactionだけが同じidentityのcanonical resultへ収束することを観測する |
+| R-022 | B-104 | supported message contentと未知の必須semanticsを保存・reopen・両transportへ通し、前者のlossless round-tripと後者のsafe incompatibilityを観測する |

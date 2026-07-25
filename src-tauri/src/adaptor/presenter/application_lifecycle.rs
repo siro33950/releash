@@ -2,26 +2,48 @@
 
 use crate::adaptor::protocol::agent_session_v1::{
     ApplicationQuitErrorDtoV1, ApplicationQuitLookupErrorDtoV1, CurrentShutdownErrorDtoV1,
-    MigrationQueryErrorDtoV1, OperationApplicationErrorDtoV1, ShutdownDetailsMutationErrorDtoV1,
-    ShutdownPlanQueryErrorDtoV1,
+    OperationApplicationErrorDtoV1, ShutdownDetailsMutationErrorDtoV1, ShutdownPlanQueryErrorDtoV1,
 };
 use crate::adaptor::protocol::application_lifecycle_v1::{
     ApplicationQuitIntentDtoV1, ApplicationQuitLookupDtoV1, ApplicationQuitOutcomeDtoV1,
-    ApplicationQuitReceiptDtoV1, ApplicationQuitStateDtoV1, CurrentShutdownResultDtoV1,
-    LocalStoreMigrationDtoV1, MigrationApplicationQuitProjectionDtoV1,
-    MigrationApplicationQuitReceiptDtoV1, MigrationApplicationQuitStateDtoV1,
-    SafeEffectObservationDtoV1, ShutdownPlanDtoV1, ShutdownPlanPageDtoV1, ShutdownTargetDtoV1,
+    ApplicationQuitReceiptDtoV1, ApplicationQuitStateDtoV1, ApplicationStartupOutcomeDtoV1,
+    CurrentShutdownResultDtoV1, SafeEffectObservationDtoV1, ShutdownPlanDtoV1,
+    ShutdownPlanPageDtoV1, ShutdownTargetDtoV1, StartupFailureActionDtoV1, StartupFailureKindDtoV1,
 };
-use crate::domain::local_event::{
-    ApplicationShutdownPhase, LocalStoreMigrationPhase, ShutdownDetailsState,
-};
+use crate::domain::local_event::{ApplicationShutdownPhase, ShutdownDetailsState};
 use crate::usecase::shutdown_coordinator::{
     ApplicationProcessAction, ApplicationQuitIntent, ApplicationQuitOutcome,
     ApplicationQuitProjection, ApplicationQuitState, ApplicationShutdownPlanPageReadModel,
     ApplicationShutdownPlanReadModel, CurrentApplicationShutdownProjection,
-    LocalStoreMigrationReadModel, MigrationApplicationQuitProjection,
-    MigrationApplicationQuitState,
 };
+
+pub(crate) fn application_startup_outcome(
+    value: crate::usecase::application_startup::ApplicationStartupOutcome,
+) -> ApplicationStartupOutcomeDtoV1 {
+    use crate::usecase::application_startup::{
+        ApplicationStartupOutcome as O, StartupFailureKind as K,
+    };
+    match value {
+        O::Ready => ApplicationStartupOutcomeDtoV1::Ready,
+        O::Failed(failure) => ApplicationStartupOutcomeDtoV1::Failed {
+            kind: match failure.kind {
+                K::StoreInUse => StartupFailureKindDtoV1::StoreInUse,
+                K::StorageUnavailable => StartupFailureKindDtoV1::StorageUnavailable,
+                K::UnsupportedRuntime => StartupFailureKindDtoV1::UnsupportedRuntime,
+                K::UnsupportedStoreVersion => StartupFailureKindDtoV1::UnsupportedStoreVersion,
+                K::InitializationStateInvalid => {
+                    StartupFailureKindDtoV1::InitializationStateInvalid
+                }
+                K::StoreValidationFailed => StartupFailureKindDtoV1::StoreValidationFailed,
+                K::SchemaEvolutionFailed => StartupFailureKindDtoV1::SchemaEvolutionFailed,
+            },
+            safe_description: failure.safe_description.to_string(),
+            correlation_id: failure.correlation_id,
+            retry_on_next_launch: failure.retry_on_next_launch,
+            actions: [StartupFailureActionDtoV1::Quit],
+        },
+    }
+}
 
 pub(crate) fn presentation_error(context: &str, detail: &str) -> OperationApplicationErrorDtoV1 {
     use sha2::{Digest, Sha256};
@@ -69,8 +91,7 @@ pub(crate) fn application_quit_error(
         E::InvalidRequest => Some(ApplicationQuitErrorDtoV1::InvalidRequest),
         E::PayloadConflict => Some(ApplicationQuitErrorDtoV1::PayloadConflict),
         E::CapacityExceeded => Some(ApplicationQuitErrorDtoV1::CapacityExceeded),
-        E::PreviousShutdownReconciliationRequired { .. }
-        | E::PreviousShutdownCompactionPending { .. } => None,
+        E::PreviousShutdownReconciliationRequired { .. } => None,
         E::Internal { correlation_id } => {
             Some(ApplicationQuitErrorDtoV1::Internal { correlation_id })
         }
@@ -84,12 +105,7 @@ pub(crate) fn application_quit_failure(
     match error {
         E::PreviousShutdownReconciliationRequired { blocking } => Ok(
             ApplicationQuitOutcomeDtoV1::PreviousShutdownReconciliationRequired {
-                blocking: plan(*blocking),
-            },
-        ),
-        E::PreviousShutdownCompactionPending { blocking } => Ok(
-            ApplicationQuitOutcomeDtoV1::PreviousShutdownCompactionPending {
-                blocking: plan(*blocking),
+                blocking: Box::new(plan(*blocking)),
             },
         ),
         other => Err(application_quit_error(other)
@@ -168,21 +184,6 @@ pub(crate) fn shutdown_plan_query_error(
     }
 }
 
-pub(crate) fn migration_query_error(
-    error: crate::domain::local_event::LocalEventQueryError,
-) -> MigrationQueryErrorDtoV1 {
-    match error {
-        crate::domain::local_event::LocalEventQueryError::StorageUnavailable { failure } => {
-            MigrationQueryErrorDtoV1::StorageUnavailable {
-                failure: failure.into(),
-            }
-        }
-        other => MigrationQueryErrorDtoV1::Internal {
-            correlation_id: query_correlation(other),
-        },
-    }
-}
-
 pub(crate) fn shutdown_details_mutation_error(
     error: crate::usecase::shutdown_coordinator::ApplicationQuitError,
 ) -> ShutdownDetailsMutationErrorDtoV1 {
@@ -209,13 +210,11 @@ pub(crate) fn state(value: ApplicationQuitState) -> ApplicationQuitStateDtoV1 {
         ApplicationQuitState::Completed => ApplicationQuitStateDtoV1::Completed,
         ApplicationQuitState::OutcomeUnknown {
             operation_id,
-            plan_id,
-            epoch,
+            shutdown_id,
             activation_commit_id,
         } => ApplicationQuitStateDtoV1::OutcomeUnknown {
             operation_id,
-            plan_id,
-            epoch: epoch.to_string(),
+            shutdown_id,
             activation_commit_id,
         },
         ApplicationQuitState::FailedBeforeActivation { failure } => {
@@ -257,17 +256,6 @@ pub(crate) fn application_quit_outcome(
                 process_action,
             )
         }
-        ApplicationQuitOutcome::MigrationAccepted { projection } => {
-            let process_action = projection
-                .grants_exit_permit()
-                .then(|| ApplicationProcessAction::from(projection.receipt.intent));
-            (
-                ApplicationQuitOutcomeDtoV1::MigrationAccepted {
-                    projection: migration_projection(*projection),
-                },
-                process_action,
-            )
-        }
         ApplicationQuitOutcome::RejectedBeforeCommit { failure } => (
             ApplicationQuitOutcomeDtoV1::RejectedBeforeCommit {
                 correlation_id: failure.correlation_id,
@@ -299,9 +287,6 @@ pub(crate) fn application_quit_lookup(
                 state: self::state(state),
             }
         }
-        ApplicationQuitProjection::Migration(projection) => ApplicationQuitLookupDtoV1::Migration {
-            projection: migration_projection(*projection),
-        },
         ApplicationQuitProjection::OutcomeUnknown {
             operation_id,
             intent: value,
@@ -340,8 +325,7 @@ pub(crate) fn receipt(
     };
     ApplicationQuitReceiptDtoV1 {
         operation_id: value.operation_id,
-        plan_id: value.plan_id,
-        epoch: value.epoch.to_string(),
+        shutdown_id: value.shutdown_id,
         intent,
         exit_code,
         t0_ms: value.t0_ms.to_string(),
@@ -349,42 +333,9 @@ pub(crate) fn receipt(
     }
 }
 
-pub(crate) fn migration_projection(
-    value: MigrationApplicationQuitProjection,
-) -> MigrationApplicationQuitProjectionDtoV1 {
-    let (intent, exit_code) = match value.receipt.intent {
-        ApplicationQuitIntent::Exit { code } => ("exit".to_string(), code),
-        ApplicationQuitIntent::Restart { code } => ("restart".to_string(), code),
-    };
-    let state = match value.state {
-        MigrationApplicationQuitState::ExitPending => {
-            MigrationApplicationQuitStateDtoV1::ExitPending
-        }
-        MigrationApplicationQuitState::Exited => MigrationApplicationQuitStateDtoV1::Exited,
-        MigrationApplicationQuitState::ReconciliationRequired { failure } => {
-            MigrationApplicationQuitStateDtoV1::ReconciliationRequired {
-                correlation_id: failure.correlation_id,
-            }
-        }
-    };
-    MigrationApplicationQuitProjectionDtoV1 {
-        receipt: MigrationApplicationQuitReceiptDtoV1 {
-            operation_id: value.receipt.operation_id,
-            migration_id: value.receipt.migration_id,
-            intent,
-            exit_code,
-            t0_ms: value.receipt.t0_ms.to_string(),
-            deadline_ms: value.receipt.deadline_ms.to_string(),
-        },
-        state,
-        migration_revision: value.migration_revision.value().to_string(),
-    }
-}
-
 fn phase(value: ApplicationShutdownPhase) -> &'static str {
     match value {
-        ApplicationShutdownPhase::Preparing => "preparing",
-        ApplicationShutdownPhase::Prepared => "prepared",
+        ApplicationShutdownPhase::Prepared => "preparing",
         ApplicationShutdownPhase::Activated => "activated",
         ApplicationShutdownPhase::Quiescing => "quiescing",
         ApplicationShutdownPhase::Completed => "completed",
@@ -396,8 +347,7 @@ fn phase(value: ApplicationShutdownPhase) -> &'static str {
 
 pub(crate) fn plan(value: ApplicationShutdownPlanReadModel) -> ShutdownPlanDtoV1 {
     ShutdownPlanDtoV1 {
-        plan_id: value.plan.plan_id,
-        epoch: value.plan.epoch.to_string(),
+        shutdown_id: value.plan.shutdown_id,
         phase: phase(value.phase).to_string(),
         revision: value.revision.value().to_string(),
         details_state: match value.details_state {
@@ -449,12 +399,8 @@ pub(crate) fn plan_page(value: ApplicationShutdownPlanPageReadModel) -> Shutdown
                     proof_sha256: hex::encode(proof_sha256),
                 },
                 crate::domain::local_event::SafeEffectObservation::ExitCoupledOutcomeUnknown {
-                    plan_id,
-                    epoch,
-                } => SafeEffectObservationDtoV1::ExitCoupledOutcomeUnknown {
-                    plan_id,
-                    epoch: epoch.to_string(),
-                },
+                    shutdown_id,
+                } => SafeEffectObservationDtoV1::ExitCoupledOutcomeUnknown { shutdown_id },
             }),
             actions: target.actions,
             action_identities: target
@@ -498,30 +444,9 @@ pub(crate) fn checked_plan_page(
     Ok(page)
 }
 
-pub(crate) fn migration(value: LocalStoreMigrationReadModel) -> LocalStoreMigrationDtoV1 {
-    LocalStoreMigrationDtoV1 {
-        migration_id: value.migration_id,
-        phase: match value.phase {
-            LocalStoreMigrationPhase::InspectingSource => "inspecting_source",
-            LocalStoreMigrationPhase::Importing => "importing",
-            LocalStoreMigrationPhase::Verifying => "verifying",
-            LocalStoreMigrationPhase::Activating => "activating",
-            LocalStoreMigrationPhase::Failed => "failed",
-        }
-        .to_string(),
-        source_inventory_sha256: hex::encode(value.source_inventory_hash),
-        next_source_ordinal: value.next_source_ordinal.to_string(),
-        total_source_count: value.total_source_count.to_string(),
-        imported_raw_record_count: value.imported_raw_record_count.to_string(),
-        revision: value.revision.value().to_string(),
-        safe_failure: value.safe_failure,
-        correlation_id: value.correlation_id,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{application_quit_outcome, plan, query_error};
+    use super::{application_quit_outcome, application_startup_outcome, plan, query_error};
     use crate::adaptor::protocol::agent_session_v1::OperationApplicationErrorDtoV1;
     use crate::domain::local_event::{
         ApplicationShutdownPhase, LocalEventQueryError, Revision, SafeOperationFailure,
@@ -533,13 +458,59 @@ mod tests {
     };
 
     #[test]
+    fn b071_failed_startup_presents_only_safe_fields_and_process_local_quit() {
+        use crate::usecase::application_startup::{
+            ApplicationStartupAuthority, StartupFailureKind,
+        };
+
+        for kind in [
+            StartupFailureKind::StoreInUse,
+            StartupFailureKind::StorageUnavailable,
+            StartupFailureKind::UnsupportedRuntime,
+            StartupFailureKind::UnsupportedStoreVersion,
+            StartupFailureKind::InitializationStateInvalid,
+            StartupFailureKind::StoreValidationFailed,
+            StartupFailureKind::SchemaEvolutionFailed,
+        ] {
+            let dto = application_startup_outcome(
+                ApplicationStartupAuthority::failed_kind(kind).outcome(),
+            );
+            let value = serde_json::to_value(dto).expect("serialize startup failure");
+            assert_eq!(value["type"], "failed");
+            assert_eq!(value["actions"], serde_json::json!(["quit"]));
+            let keys = value
+                .as_object()
+                .expect("startup failure DTO object")
+                .keys()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(
+                keys,
+                std::collections::BTreeSet::from([
+                    "type",
+                    "kind",
+                    "safeDescription",
+                    "correlationId",
+                    "retryOnNextLaunch",
+                    "actions",
+                ]),
+                "startup failure public representation must remain closed"
+            );
+            assert!(value.get("session").is_none());
+            assert!(value.get("workflow").is_none());
+            assert!(value.get("progress").is_none());
+            assert!(value.get("operation_id").is_none());
+            assert!(value.get("shutdown_id").is_none());
+        }
+    }
+
+    #[test]
     fn f11_exit_permit_preserves_restart_as_a_distinct_process_destination() {
         let present = |intent| {
             application_quit_outcome(ApplicationQuitOutcome::Accepted {
                 receipt: ApplicationQuitReceipt {
                     operation_id: "quit-operation-1".to_string(),
-                    plan_id: "quit-plan-1".to_string(),
-                    epoch: 1,
+                    shutdown_id: "quit-plan-1".to_string(),
                     intent,
                     t0_ms: 10,
                     deadline_ms: 15_010,
@@ -590,8 +561,7 @@ mod tests {
         let maximum = i64::MAX;
         let dto = plan(ApplicationShutdownPlanReadModel {
             plan: ShutdownPlanKey {
-                plan_id: "quit-operation-1".to_string(),
-                epoch: maximum,
+                shutdown_id: "quit-operation-1".to_string(),
             },
             phase: ApplicationShutdownPhase::Failed,
             details_state: ShutdownDetailsState::Compacted,
@@ -620,9 +590,8 @@ mod tests {
             actions: Vec::new(),
         });
 
-        assert_eq!(dto.plan_id, "quit-operation-1");
+        assert_eq!(dto.shutdown_id, "quit-operation-1");
         let maximum = maximum.to_string();
-        assert_eq!(dto.epoch, maximum);
         assert_eq!(dto.revision, maximum);
         assert_eq!(dto.details_state, "compacted");
         assert_eq!(dto.intent, "restart");

@@ -1,14 +1,15 @@
-//! Gateway-owned V1 DTOs for legacy session message and index JSON.
+//! Gateway-owned V1 DTOs for persisted session messages and test-only file indexes.
 
+#[cfg(test)]
 use std::path::{Path, PathBuf};
 
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::adaptor::gateway::bounded_json::collect_selected_object_fields;
+#[cfg(test)]
+use crate::usecase::agent_session::session::MessageIndexEntry;
 use crate::usecase::agent_session::session::{
-    parts_to_legacy, ActivityEntry, ChatMessage, ChatSession, ContextCarryState, MessageIndexEntry,
-    MessageMention, MessageRole, SessionState, WorkflowNodeContextDto,
+    ActivityEntry, ChatMessage, ChatSession, ContextCarryState, MessageMention, MessageRole,
+    SessionState, WorkflowNodeContextDto,
 };
 
 use super::stored_message_part_v1::{
@@ -19,6 +20,7 @@ use super::stored_message_part_v1::{
 #[derive(Debug, Clone)]
 pub(crate) struct DecodedStoredChatMessageV1 {
     pub message: ChatMessage,
+    #[cfg_attr(not(test), allow(dead_code))]
     pub preserved_additive_payload: Option<PreservedStoredPayload>,
 }
 
@@ -185,6 +187,7 @@ struct StoredToolOutputSummaryV1 {
     truncated: bool,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StoredMessageIndexEntryV1 {
@@ -253,98 +256,6 @@ pub(crate) fn decode_chat_message_v1(
     })
 }
 
-pub(crate) fn decode_streaming_chat_message_v1<R: std::io::Read>(
-    reader: R,
-) -> Result<ChatMessage, IncompatibleStoredEvent> {
-    const MAX_SEMANTIC_BYTES: usize = 16 * 1024 * 1024;
-    let selected = [
-        "id",
-        "role",
-        "parts",
-        "streamingFinalSeq",
-        "timestamp",
-        "mentions",
-    ];
-    let (_, mut fields) = collect_selected_object_fields(
-        std::io::BufReader::new(reader),
-        MAX_SEMANTIC_BYTES,
-        MAX_SEMANTIC_BYTES,
-        |key| selected.contains(&key),
-    )
-    .map_err(|error| {
-        incompatible(
-            "chat_message",
-            format!("invalid bounded streaming payload: {error}"),
-        )
-    })?;
-    let id: String = take_required_streaming_field(&mut fields, "id")?;
-    let role: StoredMessageRoleV1 = take_required_streaming_field(&mut fields, "role")?;
-    let stored_parts: Vec<StoredMessagePartV1> =
-        take_required_streaming_field(&mut fields, "parts")?;
-    let streaming_final_seq =
-        take_optional_streaming_field(&mut fields, "streamingFinalSeq")?.unwrap_or_default();
-    let timestamp: f64 = take_required_streaming_field(&mut fields, "timestamp")?;
-    let mentions: Option<Vec<StoredMessageMentionV1>> =
-        take_optional_streaming_field(&mut fields, "mentions")?.flatten();
-    if id.is_empty() || !timestamp.is_finite() || timestamp < 0.0 {
-        return Err(incompatible(
-            "chat_message",
-            "streaming message identity or timestamp is invalid".to_string(),
-        ));
-    }
-    let parts = stored_parts
-        .into_iter()
-        .map(TryInto::try_into)
-        .collect::<Result<Vec<_>, _>>()?;
-    let (content, thinking, activities) = parts_to_legacy(&parts);
-    Ok(ChatMessage {
-        id,
-        role: role.into(),
-        content,
-        thinking,
-        activities,
-        parts: Some(parts),
-        streaming_final_seq,
-        timestamp,
-        mentions: mentions.map(|items| items.into_iter().map(Into::into).collect()),
-    })
-}
-
-fn take_required_streaming_field<T: DeserializeOwned>(
-    fields: &mut std::collections::BTreeMap<String, Vec<u8>>,
-    field: &str,
-) -> Result<T, IncompatibleStoredEvent> {
-    let raw = fields.remove(field).ok_or_else(|| {
-        incompatible(
-            "chat_message",
-            format!("missing required streaming field {field}"),
-        )
-    })?;
-    serde_json::from_slice(&raw).map_err(|error| {
-        incompatible(
-            "chat_message",
-            format!("invalid streaming field {field}: {error}"),
-        )
-    })
-}
-
-fn take_optional_streaming_field<T: DeserializeOwned>(
-    fields: &mut std::collections::BTreeMap<String, Vec<u8>>,
-    field: &str,
-) -> Result<Option<T>, IncompatibleStoredEvent> {
-    fields
-        .remove(field)
-        .map(|raw| {
-            serde_json::from_slice(&raw).map_err(|error| {
-                incompatible(
-                    "chat_message",
-                    format!("invalid streaming field {field}: {error}"),
-                )
-            })
-        })
-        .transpose()
-}
-
 pub(crate) fn encode_chat_message_v1(message: &ChatMessage) -> Result<Vec<u8>, serde_json::Error> {
     serde_json::to_vec(&StoredChatMessageV1::from(message))
 }
@@ -370,6 +281,7 @@ pub(crate) fn encode_chat_session_v1(session: &ChatSession) -> Result<Vec<u8>, s
     serde_json::to_vec(&StoredChatSessionV1::from(session))
 }
 
+#[cfg(test)]
 pub(crate) fn decode_chat_session_v1(raw: &[u8]) -> Result<ChatSession, IncompatibleStoredEvent> {
     let stored: StoredChatSessionV1 = serde_json::from_slice(raw)
         .map_err(|error| incompatible("chat_session", format!("invalid known payload: {error}")))?;
@@ -388,6 +300,7 @@ pub(super) fn encode_message_index_v1(
     )
 }
 
+#[cfg(test)]
 pub(super) fn decode_message_index_v1(raw: &[u8]) -> Result<Vec<MessageIndexEntry>, String> {
     let stored: Vec<StoredMessageIndexEntryV1> =
         serde_json::from_slice(raw).map_err(|error| error.to_string())?;
@@ -416,10 +329,12 @@ pub(crate) fn write_message_index_v1(
     super::layout::write_binary_atomic(path, &bytes, "session index")
 }
 
+#[cfg(test)]
 pub(super) fn preservation_sidecar_path(path: &Path) -> PathBuf {
     path.with_extension("json.preserved-v1")
 }
 
+#[cfg(test)]
 pub(super) fn decode_preservation_sidecar(
     raw: &[u8],
 ) -> Result<PreservedStoredPayload, serde_json::Error> {
@@ -797,6 +712,7 @@ impl From<StoredToolOutputSummaryV1>
         }
     }
 }
+#[cfg(test)]
 impl From<&MessageIndexEntry> for StoredMessageIndexEntryV1 {
     fn from(v: &MessageIndexEntry) -> Self {
         Self {
@@ -811,6 +727,7 @@ impl From<&MessageIndexEntry> for StoredMessageIndexEntryV1 {
         }
     }
 }
+#[cfg(test)]
 impl From<StoredMessageIndexEntryV1> for MessageIndexEntry {
     fn from(v: StoredMessageIndexEntryV1) -> Self {
         Self {
@@ -823,31 +740,5 @@ impl From<StoredMessageIndexEntryV1> for MessageIndexEntry {
             tool_output_refs: v.tool_output_refs.into_iter().map(Into::into).collect(),
             token_meta: v.token_meta,
         }
-    }
-}
-
-#[cfg(test)]
-mod streaming_tests {
-    use std::io::{Cursor, Read};
-
-    use super::decode_streaming_chat_message_v1;
-
-    #[test]
-    fn oversized_typed_part_string_is_rejected_before_owned_decode() {
-        const LIMIT: usize = 16 * 1024 * 1024;
-        let prefix = Cursor::new(
-            br#"{"id":"oversized","role":"human","content":"","parts":[{"type":"text","content":""#,
-        );
-        let oversized = std::io::repeat(b'x').take((LIMIT + 1) as u64);
-        let suffix = Cursor::new(br#""}],"streamingFinalSeq":0,"timestamp":1.0}"#);
-        let error = decode_streaming_chat_message_v1(prefix.chain(oversized).chain(suffix))
-            .expect_err("one oversized typed part must fail closed");
-
-        assert!(
-            error
-                .reason
-                .contains("decoded allocation estimate exceeds its bound"),
-            "unexpected error: {error}"
-        );
     }
 }

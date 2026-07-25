@@ -1,6 +1,6 @@
-//! Versioned legacy JSON DTO and deterministic codec for agent-session events.
+//! Versioned gateway-owned JSON DTO and deterministic codec for agent-session events.
 //!
-//! The domain event vocabulary is serde-free. Legacy JSON crosses this gateway-
+//! The domain event vocabulary is serde-free. Stored JSON crosses this gateway-
 //! owned V1 DTO and preserves additive source payloads for later writeback.
 
 use serde::{Deserialize, Serialize};
@@ -17,11 +17,15 @@ use crate::domain::agent_session::value_objects::{
 };
 use crate::domain::code::MentionReference;
 
+#[cfg(test)]
 use super::stored_message_part_v1::{
-    contains_additive_fields, IncompatibleStoredEvent, PreservedStoredPayload, StoredMessagePartV1,
-    StoredPayloadSource, StoredPermissionRequestV1,
+    contains_additive_fields, PreservedStoredPayload, StoredPayloadSource,
+};
+use super::stored_message_part_v1::{
+    IncompatibleStoredEvent, StoredMessagePartV1, StoredPermissionRequestV1,
 };
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DecodedStoredAgentSessionEventV1 {
     pub event: AgentSessionEvent,
@@ -471,6 +475,7 @@ pub(super) enum StoredAgentSessionEventV1 {
     },
 }
 
+#[cfg(test)]
 pub(crate) fn decode_stored_agent_session_event_v1(
     raw: &[u8],
     payload_version: u32,

@@ -138,7 +138,6 @@ impl FileSessionStorage {
             MessagePart,
         >,
     ) -> Result<Vec<MessagePart>, String> {
-        self.ensure_legacy_mutation_admitted()?;
         self.ensure_loaded(app_data_dir)?;
         if let Some(error) = self.invalid_sessions.read().get(session_id) {
             return Err(error.clone());

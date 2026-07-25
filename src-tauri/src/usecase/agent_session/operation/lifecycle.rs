@@ -283,7 +283,6 @@ fn status_record(state: &SessionLifecycleOperationState) -> OperationStatusRecor
     };
     OperationStatusRecord {
         kind: OperationKind::SessionLifecycle,
-        migration_quit: false,
         value,
     }
 }
@@ -348,10 +347,9 @@ fn decode_lifecycle_record(
         OperationReceiptRecord::Send { .. }
         | OperationReceiptRecord::PermissionResponse { .. }
         | OperationReceiptRecord::Stop { .. }
-        | OperationReceiptRecord::ApplicationQuit { .. }
-        | OperationReceiptRecord::MigrationApplicationQuit { .. } => return None,
+        | OperationReceiptRecord::ApplicationQuit { .. } => return None,
     };
-    if status.kind != OperationKind::SessionLifecycle || status.migration_quit {
+    if status.kind != OperationKind::SessionLifecycle {
         return None;
     }
     let state = match status.value {
@@ -383,7 +381,6 @@ fn decode_lifecycle_record(
         | CommitOperationKind::Stop
         | CommitOperationKind::ApplicationQuit
         | CommitOperationKind::Recovery
-        | CommitOperationKind::Migration
         | CommitOperationKind::UserMutation
         | CommitOperationKind::OperationProgress
         | CommitOperationKind::Projection
@@ -430,7 +427,6 @@ fn lifecycle_obligation(
         | ObligationRecord::WorkflowShutdown { .. }
         | ObligationRecord::WorkflowTurnCompletion { .. }
         | ObligationRecord::RecoveryPublication { .. }
-        | ObligationRecord::LegacyReconciliation { .. }
         | ObligationRecord::ProviderEstablish { .. }
         | ObligationRecord::TurnExecution { .. }
         | ObligationRecord::TerminalCommit { .. }
@@ -460,7 +456,7 @@ pub struct SessionLifecycleOperationUsecase {
     repository: Arc<dyn LocalEventTransactionRepository>,
     authority: Arc<dyn OperationBindingAuthority>,
     gate: Arc<dyn SessionLifecycleGate>,
-    generation_id: String,
+    installation_id: String,
 }
 
 impl SessionLifecycleOperationUsecase {
@@ -468,13 +464,13 @@ impl SessionLifecycleOperationUsecase {
         repository: Arc<dyn LocalEventTransactionRepository>,
         authority: Arc<dyn OperationBindingAuthority>,
         gate: Arc<dyn SessionLifecycleGate>,
-        generation_id: String,
+        installation_id: String,
     ) -> Self {
         Self {
             repository,
             authority,
             gate,
-            generation_id,
+            installation_id,
         }
     }
 
@@ -510,7 +506,7 @@ impl SessionLifecycleOperationUsecase {
     fn caller_key(&self, request: &SessionLifecycleRequest) -> CallerOperationKey {
         CallerOperationKey {
             principal: request.principal.clone(),
-            generation_id: self.generation_id.clone(),
+            installation_id: self.installation_id.clone(),
             kind: OperationKind::SessionLifecycle,
             caller_request_id: request.request_id.clone(),
         }
@@ -691,7 +687,7 @@ impl SessionLifecycleOperationUsecase {
         let batch = LocalAtomicBatch {
             commit_id: commit_id.clone(),
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: commit_operation_kind,
                 idempotency_key: format!(
                     "slc.join.{}",
@@ -699,7 +695,7 @@ impl SessionLifecycleOperationUsecase {
                         &self.authority.digest(
                             format!(
                                 "slc-join-owner/v1\0{}\0{}\0{}",
-                                request.principal, self.generation_id, request.request_id
+                                request.principal, self.installation_id, request.request_id
                             )
                             .as_bytes(),
                         )
@@ -820,7 +816,7 @@ impl SessionLifecycleOperationUsecase {
         let binding_hmac = self.authority.mac(&super::binding::session_lifecycle(
             super::binding::SessionLifecycleBinding {
                 principal: &request.principal,
-                generation_id: &self.generation_id,
+                installation_id: &self.installation_id,
                 request_id: &request.request_id,
                 backend_operation_id: &entry.operation_id,
                 session_id: &request.session_id,
@@ -941,7 +937,7 @@ impl SessionLifecycleOperationUsecase {
             let requested_binding = self.authority.mac(&super::binding::session_lifecycle(
                 super::binding::SessionLifecycleBinding {
                     principal: &request.principal,
-                    generation_id: &self.generation_id,
+                    installation_id: &self.installation_id,
                     request_id: &request.request_id,
                     backend_operation_id: &saved_binding.operation_id,
                     session_id: &request.session_id,
@@ -977,7 +973,7 @@ impl SessionLifecycleOperationUsecase {
         let binding_hmac = self.authority.mac(&super::binding::session_lifecycle(
             super::binding::SessionLifecycleBinding {
                 principal: &request.principal,
-                generation_id: &self.generation_id,
+                installation_id: &self.installation_id,
                 request_id: &request.request_id,
                 backend_operation_id: &operation_id,
                 session_id: &request.session_id,
@@ -1163,7 +1159,7 @@ impl SessionLifecycleOperationUsecase {
             LocalStateMutation::OperationBinding(OperationBindingMutation {
                 key: CallerOperationKey {
                     principal: request.principal.clone(),
-                    generation_id: self.generation_id.clone(),
+                    installation_id: self.installation_id.clone(),
                     kind: OperationKind::SessionLifecycle,
                     caller_request_id: request.request_id.clone(),
                 },
@@ -1347,7 +1343,7 @@ impl SessionLifecycleOperationUsecase {
                 }
             })?,
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: commit_operation_kind,
                 idempotency_key: operation_id.clone(),
                 payload_hash: binding_hmac,
@@ -1609,7 +1605,7 @@ impl SessionLifecycleOperationUsecase {
         let batch = LocalAtomicBatch {
             commit_id,
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: if record.commit_operation_kind
                     == CommitOperationKind::ShutdownTarget
                 {

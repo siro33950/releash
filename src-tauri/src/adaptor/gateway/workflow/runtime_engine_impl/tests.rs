@@ -293,19 +293,19 @@ fn workflow_node_summary_uses_persisted_session_flag() {
     let store = crate::test_support::build_session_store();
 
     store
-        .save_full_session_for_migration_or_restore(
+        .save_full_session_for_restore(
             tmp.path(),
             &chat_session_for_test(TEST_PARENT_SESSION_ID, "/repo", None, false),
         )
         .unwrap();
     store
-        .save_full_session_for_migration_or_restore(
+        .save_full_session_for_restore(
             tmp.path(),
             &chat_session_for_test(TEST_NODE_SESSION_ID, "/repo", None, true),
         )
         .unwrap();
     store
-        .save_full_session_for_migration_or_restore(
+        .save_full_session_for_restore(
             tmp.path(),
             &chat_session_for_test(TEST_REGULAR_SESSION_ID, "/repo", None, false),
         )
@@ -331,7 +331,7 @@ fn node_session_tab_cleanup_is_view_only_and_preserves_history() {
     let session_id = uuid::Uuid::new_v4().to_string();
 
     store
-        .save_full_session_for_migration_or_restore(
+        .save_full_session_for_restore(
             tmp.path(),
             &chat_session_with_message_for_test(&session_id, "/repo"),
         )
@@ -7478,13 +7478,12 @@ mod dispatch_boundary_tests {
             ),
         )
         .expect("canonical dispatch store must open before legacy state is created");
-        assert!(local_event_store.normal_admission_ready());
         let session_store = Arc::new(crate::test_support::build_session_store());
         let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
             local_event_store.clone();
-        session_store.set_local_event_repository_with_projection_codec(
+        session_store.set_local_event_repository(
             repository,
-            local_event_store.generation_id().to_string(),
+            local_event_store.installation_id().to_string(),
             Arc::new(
                 crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
             ),
@@ -8820,7 +8819,7 @@ mod dispatch_boundary_tests {
             .unwrap();
 
         session_store
-            .save_full_session_for_migration_or_restore(
+            .save_full_session_for_restore(
                 &data_dir,
                 &chat_session_for_test(
                     &owned_session_id,
@@ -16268,7 +16267,7 @@ mod dispatch_boundary_tests {
             );
         }
         session_store
-            .save_full_session_for_migration_or_restore(
+            .save_full_session_for_restore(
                 &data_dir,
                 &chat_session_for_test(missing_child_session_id, worktree_path, None, true),
             )
@@ -18274,334 +18273,6 @@ mod dispatch_boundary_tests {
         );
     }
 
-    fn canonical_recovery_metadata(
-        execution_id: &str,
-        worktree_path: &str,
-    ) -> WorkflowExecutionMetadata {
-        WorkflowExecutionMetadata {
-            execution_id: execution_id.to_string(),
-            workflow_name: "wf".to_string(),
-            status: ExecutionStatus::Running,
-            worktree_path: worktree_path.to_string(),
-            current_node: Some("plan".to_string()),
-            created_from: ExecutionOrigin::DesktopUi,
-            started_at: 100.0,
-            updated_at: 100.0,
-            completed_at: None,
-            error_reason: None,
-            interruption_reason: None,
-            resume_from_node: None,
-            total_token_usage: Default::default(),
-        }
-    }
-
-    fn canonical_recovery_events(
-        execution_id: &str,
-        worktree_path: &str,
-        terminal: Option<ExecutionStatus>,
-    ) -> Vec<WorkflowEvent> {
-        let mut events = vec![
-            WorkflowEvent::ExecutionStarted {
-                execution_id: execution_id.to_string(),
-                workflow_name: "wf".to_string(),
-                worktree_path: worktree_path.to_string(),
-                created_from: ExecutionOrigin::DesktopUi,
-                request: String::new(),
-                permission_mode: "ask".to_string(),
-                definition: WorkflowDefinitionYaml {
-                    name: "wf".to_string(),
-                    nodes: vec![make_test_node(
-                        "plan",
-                        TestKind::Session,
-                        "plan",
-                        Vec::new(),
-                        None,
-                    )],
-                    ..Default::default()
-                },
-                timestamp: 100.0,
-            },
-            WorkflowEvent::NodeStarted {
-                execution_id: execution_id.to_string(),
-                node_execution_id: "plan-1".to_string(),
-                node_name: "plan".to_string(),
-                kind: NodeKindName::Session,
-                attempt: 1,
-                fanout_parent: None,
-                timestamp: 101.0,
-            },
-        ];
-        match terminal {
-            Some(ExecutionStatus::Interrupted) => {
-                events.push(WorkflowEvent::ExecutionInterrupted {
-                    execution_id: execution_id.to_string(),
-                    reason: ExecutionInterruptionReason::Orphan,
-                    timestamp: 102.0,
-                });
-            }
-            Some(ExecutionStatus::Completed) => {
-                events.extend([
-                    WorkflowEvent::NodeCompleted {
-                        execution_id: execution_id.to_string(),
-                        node_execution_id: "plan-1".to_string(),
-                        node_name: "plan".to_string(),
-                        attempt: 1,
-                        result_summary: Some("done".to_string()),
-                        token_usage: None,
-                        timestamp: 102.0,
-                    },
-                    WorkflowEvent::ExecutionCompleted {
-                        execution_id: execution_id.to_string(),
-                        total_token_usage: Default::default(),
-                        timestamp: 103.0,
-                    },
-                ]);
-            }
-            Some(other) => panic!("unsupported canonical recovery fixture state: {other:?}"),
-            None => {}
-        }
-        events
-    }
-
-    async fn open_migrated_workflow_recovery_store(
-        data_dir: &std::path::Path,
-        metadata: WorkflowExecutionMetadata,
-        events: &[WorkflowEvent],
-    ) -> Arc<crate::adaptor::gateway::local_event_store::LocalEventStore> {
-        let legacy_store =
-            crate::adaptor::gateway::workflow::execution_store::ExecutionStore::new();
-        legacy_store.set_data_dir(data_dir.to_path_buf()).await;
-        legacy_store
-            .register_active_execution(metadata)
-            .await
-            .unwrap();
-        if !events.is_empty() {
-            WorkflowEventLog::new(data_dir)
-                .append_batch(events)
-                .expect("legacy workflow events");
-        }
-        let store = crate::adaptor::gateway::local_event_store::LocalEventStore::open(
-            crate::adaptor::gateway::local_event_store::LocalEventStoreConfig::production(
-                data_dir.to_path_buf(),
-            ),
-        )
-        .expect("migration-shaped workflow recovery store");
-        if !store.normal_admission_ready() {
-            tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                loop {
-                    assert!(
-                        !store.migration_blocked(),
-                        "workflow recovery fixture migration must not block"
-                    );
-                    if store.cutover_ready() {
-                        break;
-                    }
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await
-            .expect("workflow recovery fixture migration cutover");
-            assert!(store.open_normal_admission_after_authority_install());
-        }
-        store
-    }
-
-    async fn canonical_recovery_engine(
-        data_dir: &std::path::Path,
-        store: &Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
-    ) -> WorkflowRuntimeService {
-        let engine = WorkflowRuntimeService::new_for_test();
-        let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
-            store.clone();
-        engine
-            .set_local_event_repository(repository, store.generation_id().to_string())
-            .await;
-        engine
-            .set_execution_store_data_dir(data_dir.to_path_buf())
-            .await;
-        engine
-    }
-
-    async fn canonical_workflow_projection_revision(
-        store: &crate::adaptor::gateway::local_event_store::LocalEventStore,
-        execution_id: &str,
-    ) -> crate::domain::local_event::Revision {
-        let result = crate::domain::local_event::LocalEventTransactionRepository::query(
-            store,
-            crate::domain::local_event::LocalEventQuery::SessionProjectionByIdentity {
-                session_id: format!("workflow:{execution_id}"),
-            },
-        )
-        .await
-        .unwrap();
-        let crate::domain::local_event::LocalEventQueryResult::SessionProjectionByIdentity(Some(
-            projection,
-        )) = result
-        else {
-            panic!("canonical workflow projection must exist");
-        };
-        projection.revision
-    }
-
-    fn make_canonical_recovery_app(
-        data_dir: &std::path::Path,
-    ) -> tauri::App<tauri::test::MockRuntime> {
-        tauri::test::mock_builder()
-            .manage(crate::infrastructure::platform::app_data_dir::TestDataDir(
-                data_dir.to_path_buf(),
-            ))
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .expect("canonical recovery app")
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn canonical_orphan_recovery_durably_deletes_eventless_reservation() {
-        let data_dir = TempDir::new().unwrap();
-        let execution_id = uuid::Uuid::new_v4().to_string();
-        let metadata = canonical_recovery_metadata(&execution_id, "/wt/canonical-eventless");
-        let store = open_migrated_workflow_recovery_store(data_dir.path(), metadata, &[]).await;
-        let app = make_canonical_recovery_app(data_dir.path());
-        let engine = canonical_recovery_engine(data_dir.path(), &store).await;
-
-        engine
-            .recover_orphan_executions(app.handle())
-            .await
-            .unwrap();
-        assert!(engine
-            .execution_store
-            .get_execution_record(&execution_id)
-            .await
-            .unwrap()
-            .is_none());
-        assert!(engine
-            .execution_store
-            .try_list_non_terminal_metadata()
-            .await
-            .unwrap()
-            .is_empty());
-
-        let revision = canonical_workflow_projection_revision(store.as_ref(), &execution_id).await;
-        let restarted = canonical_recovery_engine(data_dir.path(), &store).await;
-        restarted
-            .recover_orphan_executions(app.handle())
-            .await
-            .unwrap();
-        assert_eq!(
-            canonical_workflow_projection_revision(store.as_ref(), &execution_id).await,
-            revision,
-            "a second boot must not rediscover or rewrite the deleted reservation"
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn canonical_orphan_recovery_durably_reconciles_terminal_projection_once() {
-        let data_dir = TempDir::new().unwrap();
-        let execution_id = uuid::Uuid::new_v4().to_string();
-        let worktree_path = "/wt/canonical-terminal";
-        let metadata = canonical_recovery_metadata(&execution_id, worktree_path);
-        let events = canonical_recovery_events(
-            &execution_id,
-            worktree_path,
-            Some(ExecutionStatus::Completed),
-        );
-        let store = open_migrated_workflow_recovery_store(data_dir.path(), metadata, &events).await;
-        let app = make_canonical_recovery_app(data_dir.path());
-        let engine = canonical_recovery_engine(data_dir.path(), &store).await;
-
-        engine
-            .recover_orphan_executions(app.handle())
-            .await
-            .unwrap();
-        let completed = engine
-            .execution_store
-            .get_execution_record(&execution_id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(completed.status, ExecutionStatus::Completed);
-        assert!(engine
-            .execution_store
-            .try_list_non_terminal_metadata()
-            .await
-            .unwrap()
-            .is_empty());
-
-        let revision = canonical_workflow_projection_revision(store.as_ref(), &execution_id).await;
-        let restarted = canonical_recovery_engine(data_dir.path(), &store).await;
-        restarted
-            .recover_orphan_executions(app.handle())
-            .await
-            .unwrap();
-        assert_eq!(
-            canonical_workflow_projection_revision(store.as_ref(), &execution_id).await,
-            revision,
-            "terminal reconciliation must clear pending inventory after its first commit"
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn canonical_orphan_recovery_keeps_interrupted_pending_without_rewriting_next_boot() {
-        let data_dir = TempDir::new().unwrap();
-        let execution_id = uuid::Uuid::new_v4().to_string();
-        let worktree_path = "/wt/canonical-interrupted";
-        let metadata = canonical_recovery_metadata(&execution_id, worktree_path);
-        let events = canonical_recovery_events(
-            &execution_id,
-            worktree_path,
-            Some(ExecutionStatus::Interrupted),
-        );
-        let store = open_migrated_workflow_recovery_store(data_dir.path(), metadata, &events).await;
-        let app = make_canonical_recovery_app(data_dir.path());
-        let engine = canonical_recovery_engine(data_dir.path(), &store).await;
-
-        engine
-            .recover_orphan_executions(app.handle())
-            .await
-            .unwrap();
-        let interrupted = engine
-            .execution_store
-            .get_execution_record(&execution_id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(interrupted.status, ExecutionStatus::Interrupted);
-        assert_eq!(
-            engine
-                .execution_store
-                .try_list_non_terminal_metadata()
-                .await
-                .unwrap()
-                .len(),
-            1,
-            "a resumable Interrupted workflow remains pending"
-        );
-
-        let revision = canonical_workflow_projection_revision(store.as_ref(), &execution_id).await;
-        let restarted = canonical_recovery_engine(data_dir.path(), &store).await;
-        restarted
-            .recover_orphan_executions(app.handle())
-            .await
-            .unwrap();
-        assert_eq!(
-            canonical_workflow_projection_revision(store.as_ref(), &execution_id).await,
-            revision,
-            "an already reconciled Interrupted checkpoint must not be rewritten"
-        );
-        assert_eq!(
-            restarted
-                .execution_store
-                .try_list_non_terminal_metadata()
-                .await
-                .unwrap()
-                .len(),
-            1
-        );
-    }
-
-    /// 起動時 recovery: 前回起動中に確定 event が書かれないまま終了した execution について、
-    /// `recover_orphan_executions` が NDJSON 末尾に `ExecutionInterrupted(Orphan)` を append し、
-    /// metadata 上に再開 checkpoint を残す。既定で abort せず、abort / resume のどちらも
-    /// typed command の許可状態になる。
     #[tokio::test]
     async fn recover_orphan_executions_leaves_resumable_interrupted_checkpoint() {
         let app = make_dispatch_app();
@@ -19398,7 +19069,7 @@ mod dispatch_boundary_tests {
         }
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         session_store
-            .save_full_session_for_migration_or_restore(
+            .save_full_session_for_restore(
                 &data_dir,
                 &chat_session_for_test(session_id, worktree_path, None, true),
             )
@@ -19524,7 +19195,7 @@ mod dispatch_boundary_tests {
         }
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         session_store
-            .save_full_session_for_migration_or_restore(
+            .save_full_session_for_restore(
                 &data_dir,
                 &chat_session_for_test(selected_session_id, worktree_path, None, true),
             )
@@ -19969,7 +19640,7 @@ mod dispatch_boundary_tests {
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         let session_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
         session_store
-            .save_full_session_for_migration_or_restore(
+            .save_full_session_for_restore(
                 &data_dir,
                 &chat_session_for_test(session_id, worktree_path, None, true),
             )
@@ -20050,7 +19721,7 @@ mod dispatch_boundary_tests {
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         let session_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
         session_store
-            .save_full_session_for_migration_or_restore(
+            .save_full_session_for_restore(
                 &data_dir,
                 &chat_session_for_test(session_id, worktree_path, None, true),
             )
@@ -20380,7 +20051,7 @@ mod dispatch_boundary_tests {
 
         let (session_store, handles) = make_dispatch_deps(dispatch_data_dir(app.handle()));
         session_store
-            .save_full_session_for_migration_or_restore(
+            .save_full_session_for_restore(
                 &data_dir,
                 &chat_session_for_test(session_id, worktree_path, None, true),
             )

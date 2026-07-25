@@ -81,6 +81,7 @@ impl TurnEventLog {
         project(&self.events)
     }
 
+    #[cfg(test)]
     pub fn queue_paused_at(&self) -> Option<f64> {
         self.project().queue_paused_at
     }

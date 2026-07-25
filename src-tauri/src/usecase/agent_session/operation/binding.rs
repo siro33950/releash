@@ -18,7 +18,7 @@ fn push_lp(output: &mut Vec<u8>, value: &[u8]) {
 fn outer(
     domain: &[u8],
     principal: &str,
-    generation_id: &str,
+    installation_id: &str,
     caller_id: &str,
     backend_operation_id: Option<&str>,
     inner: &[u8],
@@ -26,7 +26,7 @@ fn outer(
     let mut output = Vec::new();
     push_lp(&mut output, domain);
     push_lp(&mut output, principal.as_bytes());
-    push_lp(&mut output, generation_id.as_bytes());
+    push_lp(&mut output, installation_id.as_bytes());
     push_lp(&mut output, caller_id.as_bytes());
     if let Some(operation_id) = backend_operation_id {
         push_lp(&mut output, operation_id.as_bytes());
@@ -37,14 +37,14 @@ fn outer(
 
 pub fn send(
     principal: &str,
-    generation_id: &str,
+    installation_id: &str,
     operation_id: &str,
     canonical_command: &[u8],
 ) -> Vec<u8> {
     outer(
         SEND_DOMAIN,
         principal,
-        generation_id,
+        installation_id,
         operation_id,
         None,
         canonical_command,
@@ -53,14 +53,14 @@ pub fn send(
 
 pub fn permission_response(
     principal: &str,
-    generation_id: &str,
+    installation_id: &str,
     operation_id: &str,
     canonical_command: &[u8],
 ) -> Vec<u8> {
     outer(
         PERMISSION_RESPONSE_DOMAIN,
         principal,
-        generation_id,
+        installation_id,
         operation_id,
         None,
         canonical_command,
@@ -77,7 +77,7 @@ pub fn stop_inner(session_id: &str, turn_id: &str, expected_revision: u64) -> Ve
 
 pub fn stop(
     principal: &str,
-    generation_id: &str,
+    installation_id: &str,
     request_id: &str,
     backend_operation_id: &str,
     session_id: &str,
@@ -87,7 +87,7 @@ pub fn stop(
     outer(
         STOP_DOMAIN,
         principal,
-        generation_id,
+        installation_id,
         request_id,
         Some(backend_operation_id),
         &stop_inner(session_id, turn_id, expected_revision),
@@ -103,7 +103,7 @@ pub fn quit_inner(mode: &str, exit_code: i32) -> Vec<u8> {
 
 pub fn application_quit(
     principal: &str,
-    generation_id: &str,
+    installation_id: &str,
     request_id: &str,
     backend_operation_id: &str,
     mode: &str,
@@ -112,7 +112,7 @@ pub fn application_quit(
     outer(
         QUIT_DOMAIN,
         principal,
-        generation_id,
+        installation_id,
         request_id,
         Some(backend_operation_id),
         &quit_inner(mode, exit_code),
@@ -141,7 +141,7 @@ pub fn session_lifecycle_inner(
 
 pub struct SessionLifecycleBinding<'a> {
     pub principal: &'a str,
-    pub generation_id: &'a str,
+    pub installation_id: &'a str,
     pub request_id: &'a str,
     pub backend_operation_id: &'a str,
     pub session_id: &'a str,
@@ -154,7 +154,7 @@ pub fn session_lifecycle(binding: SessionLifecycleBinding<'_>) -> Vec<u8> {
     outer(
         LIFECYCLE_DOMAIN,
         binding.principal,
-        binding.generation_id,
+        binding.installation_id,
         binding.request_id,
         Some(binding.backend_operation_id),
         &session_lifecycle_inner(
@@ -286,7 +286,7 @@ mod tests {
         kat(
             session_lifecycle(SessionLifecycleBinding {
                 principal: "principal_1",
-                generation_id: "app_1",
+                installation_id: "app_1",
                 request_id: "lifecycle_req_1",
                 backend_operation_id: "lifecycle_op_1",
                 session_id: "session_1",

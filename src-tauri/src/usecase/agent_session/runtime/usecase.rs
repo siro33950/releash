@@ -11573,9 +11573,9 @@ mod tests {
                 .unwrap();
         let session_store = Arc::new(SessionStore::new(Arc::new(FileSessionStorage::default())));
         let repository: Arc<dyn LocalEventTransactionRepository> = local_store.clone();
-        session_store.set_local_event_repository_with_projection_codec(
+        session_store.set_local_event_repository(
             repository,
-            local_store.generation_id().to_string(),
+            local_store.installation_id().to_string(),
             Arc::new(AgentSessionProjectionCodecV1),
         );
         let (usecase, controller) =
@@ -11591,7 +11591,7 @@ mod tests {
             .commit_batch(LocalAtomicBatch {
                 commit_id: CommitIdentity::parse("b040-blocker-commit").unwrap(),
                 idempotency: IdempotencyBinding {
-                    generation_id: local_store.generation_id().to_string(),
+                    installation_id: local_store.installation_id().to_string(),
                     operation_kind: CommitOperationKind::Recovery,
                     idempotency_key: "b040-blocker".to_string(),
                     payload_hash: [40; 32],
@@ -11600,12 +11600,14 @@ mod tests {
                 events: Vec::new(),
                 state_mutations: vec![LocalStateMutation::Obligation(ObligationMutation {
                     obligation_id: recovery_id.to_string(),
-					record: crate::domain::local_event::ObligationRecord::LegacyReconciliation {
-						detail: crate::domain::local_event::LegacyReconciliationRecord::BackendRecovery {
-							session_id: session_id.clone(),
-							recovery_id: recovery_id.to_string(),
+					record: crate::domain::local_event::ObligationRecord::BackendSessionRecovery {
+						session_id: session_id.clone(),
+						recovery_id: recovery_id.to_string(),
+						detail: crate::domain::local_event::BackendSessionRecoveryObligationRecord::EffectReserved {
+							old_provider_session_generation: 0,
+							reason: crate::domain::agent_session::events::BackendSessionRecoveryReason::BackendSessionLost,
+							reserved_at_bits: 0,
 						},
-						safe_actions: vec![crate::domain::agent_session::events::RecoveryActionKind::KeepForManualResolution],
 						state: crate::domain::local_event::ObligationStateRecord::ReconciliationRequired,
 					},
                     pending: Some(PendingIndexEntry {
@@ -15463,7 +15465,7 @@ mod tests {
                             mentions: None,
                         });
                         session_store
-                            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+                            .save_full_session_for_restore(tmp.path(), &session)
                             .unwrap();
                     }
                     LockedState::AgentSessionId => {
@@ -16726,9 +16728,9 @@ mod tests {
                 .unwrap();
         let session_store = Arc::new(SessionStore::new(Arc::new(FileSessionStorage::default())));
         let repository: Arc<dyn LocalEventTransactionRepository> = local_store.clone();
-        session_store.set_local_event_repository_with_projection_codec(
+        session_store.set_local_event_repository(
             repository,
-            local_store.generation_id().to_string(),
+            local_store.installation_id().to_string(),
             Arc::new(AgentSessionProjectionCodecV1),
         );
         let event_notifier = Arc::new(RecordingAgentNotifier::default());
@@ -17364,9 +17366,9 @@ mod tests {
                 .unwrap();
         let session_store = Arc::new(SessionStore::new(Arc::new(FileSessionStorage::default())));
         let repository: Arc<dyn LocalEventTransactionRepository> = local_store.clone();
-        session_store.set_local_event_repository_with_projection_codec(
+        session_store.set_local_event_repository(
             repository,
-            local_store.generation_id().to_string(),
+            local_store.installation_id().to_string(),
             Arc::new(AgentSessionProjectionCodecV1),
         );
         let (usecase, controller) =
@@ -17517,7 +17519,7 @@ mod tests {
         .unwrap();
         session.agent_session_id = Some("old-backend-session".to_string());
         session_store
-            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .save_full_session_for_restore(tmp.path(), &session)
             .unwrap();
         add_message_internal(
             &session_store,
@@ -17862,7 +17864,7 @@ mod tests {
         session.agent_session_id = Some("backend-session".to_string());
         session.context_carry = Some(ContextCarryState::Resumed);
         session_store
-            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .save_full_session_for_restore(tmp.path(), &session)
             .unwrap();
         usecase
             .send_message(SendAgentMessageRequest {
@@ -18171,7 +18173,7 @@ mod tests {
         .unwrap();
         session.agent_session_id = Some("dead-thread".to_string());
         session_store
-            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .save_full_session_for_restore(tmp.path(), &session)
             .unwrap();
         let unaffected_session = create_session_internal_with_attributes(
             &session_store,
@@ -18373,7 +18375,7 @@ mod tests {
         .unwrap();
         session.agent_session_id = Some("dead-thread".to_string());
         session_store
-            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .save_full_session_for_restore(tmp.path(), &session)
             .unwrap();
         controller.fail_next_resume_open();
 
@@ -18448,9 +18450,9 @@ mod tests {
             let session_store =
                 Arc::new(SessionStore::new(Arc::new(FileSessionStorage::default())));
             let repository: Arc<dyn LocalEventTransactionRepository> = local_store.clone();
-            session_store.set_local_event_repository_with_projection_codec(
+            session_store.set_local_event_repository(
                 repository,
-                local_store.generation_id().to_string(),
+                local_store.installation_id().to_string(),
                 Arc::new(AgentSessionProjectionCodecV1),
             );
             let session =
@@ -18596,9 +18598,9 @@ mod tests {
             let reopened_session_store =
                 Arc::new(SessionStore::new(Arc::new(FileSessionStorage::default())));
             let repository: Arc<dyn LocalEventTransactionRepository> = reopened_store.clone();
-            reopened_session_store.set_local_event_repository_with_projection_codec(
+            reopened_session_store.set_local_event_repository(
                 repository,
-                reopened_store.generation_id().to_string(),
+                reopened_store.installation_id().to_string(),
                 Arc::new(AgentSessionProjectionCodecV1),
             );
             let (restarted, restart_controller) = build_agent_runtime_usecase_with_controller(
@@ -18833,7 +18835,7 @@ mod tests {
         .unwrap();
         session.agent_session_id = Some("old-session".to_string());
         session_store
-            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .save_full_session_for_restore(tmp.path(), &session)
             .unwrap();
         usecase
             .send_message(SendAgentMessageRequest {
@@ -18906,7 +18908,7 @@ mod tests {
         .unwrap();
         session.agent_session_id = Some("dead-thread".to_string());
         session_store
-            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .save_full_session_for_restore(tmp.path(), &session)
             .unwrap();
         let fail_error_once = Arc::new(AtomicBool::new(true));
         session_store.set_persist_parts_hook_for_test(Arc::new({
@@ -19032,7 +19034,7 @@ mod tests {
         .unwrap();
         session.agent_session_id = Some("dead-thread".to_string());
         session_store
-            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .save_full_session_for_restore(tmp.path(), &session)
             .unwrap();
         controller.fail_next_resume_open();
 
@@ -19095,7 +19097,7 @@ mod tests {
         .unwrap();
         session.agent_session_id = Some("live-thread".to_string());
         session_store
-            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .save_full_session_for_restore(tmp.path(), &session)
             .unwrap();
         usecase
             .send_message(SendAgentMessageRequest {
@@ -19171,7 +19173,7 @@ mod tests {
         .unwrap();
         session.agent_session_id = Some("dead-thread".to_string());
         session_store
-            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .save_full_session_for_restore(tmp.path(), &session)
             .unwrap();
         controller.fail_next_resume_open();
         usecase
@@ -19254,7 +19256,7 @@ mod tests {
         .unwrap();
         session.agent_session_id = Some("dead-thread".to_string());
         session_store
-            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .save_full_session_for_restore(tmp.path(), &session)
             .unwrap();
         controller.fail_next_resume_open();
         usecase
@@ -19502,7 +19504,7 @@ mod tests {
         .unwrap();
         session.agent_session_id = Some("dead-thread".to_string());
         session_store
-            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .save_full_session_for_restore(tmp.path(), &session)
             .unwrap();
         controller.fail_next_resume_open();
         usecase
@@ -19591,7 +19593,7 @@ mod tests {
         .unwrap();
         session.agent_session_id = Some("dead-thread".to_string());
         session_store
-            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .save_full_session_for_restore(tmp.path(), &session)
             .unwrap();
         controller.fail_next_resume_open();
         usecase
@@ -19674,7 +19676,7 @@ mod tests {
         .unwrap();
         session.agent_session_id = Some("dead-thread".to_string());
         session_store
-            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .save_full_session_for_restore(tmp.path(), &session)
             .unwrap();
         controller.fail_next_resume_open();
         usecase

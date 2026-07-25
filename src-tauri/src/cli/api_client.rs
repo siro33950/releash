@@ -500,7 +500,7 @@ mod tests {
         };
         let router = api::build_router(
             Arc::new(
-                crate::adaptor::controller::wiring::build_file_direct_workflow_read_usecase(
+                crate::adaptor::controller::wiring::build_canonical_workflow_read_usecase(
                     query_data.path().to_path_buf(),
                     Some(workflows.path().to_path_buf()),
                 )

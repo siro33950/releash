@@ -91,16 +91,7 @@ impl FileSessionStorage {
             }
         }
         if !has_matching_entry {
-            #[cfg(not(test))]
             {
-                index = self.rebuild_index_from_messages(&dir)?;
-            }
-            #[cfg(test)]
-            if self.legacy_mutation_admission_closed() {
-                index = self.rebuild_index_from_messages(&dir)?;
-            }
-            #[cfg(test)]
-            if !self.legacy_mutation_admission_closed() {
                 let _lock = self.file_lock.lock();
                 index = self.repair_index_and_meta_from_messages(&dir, session_id)?;
             }

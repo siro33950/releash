@@ -22,7 +22,6 @@ pub enum QuitIntent {
 /// Closed shutdown phases from the issues-1499 design "Public closed types".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplicationShutdownPhase {
-    Preparing,
     Prepared,
     Activated,
     Quiescing,
@@ -32,19 +31,9 @@ pub enum ApplicationShutdownPhase {
     ReconciliationRequired,
 }
 
-/// Closed migration phases from the issues-1499 design "Public closed types".
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LocalStoreMigrationPhase {
-    InspectingSource,
-    Importing,
-    Verifying,
-    Activating,
-    Failed,
-}
-
 /// Minimal application-stream event vocabulary owned by this module.
-/// The shutdown coordinator and migration tasks append here; they must not
-/// invent a parallel event enum.
+/// The shutdown coordinator appends here; it must not invent a parallel
+/// event enum.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ApplicationDomainEvent {
     ApplicationQuitAccepted {
@@ -53,19 +42,12 @@ pub enum ApplicationDomainEvent {
         at_ms: i64,
     },
     ShutdownPhaseAdvanced {
-        plan_id: String,
-        epoch: i64,
+        shutdown_id: String,
         phase: ApplicationShutdownPhase,
         at_ms: i64,
     },
     ShutdownDetailsCompacted {
-        plan_id: String,
-        epoch: i64,
-        at_ms: i64,
-    },
-    LocalStoreMigrationPhaseAdvanced {
-        migration_id: String,
-        phase: LocalStoreMigrationPhase,
+        shutdown_id: String,
         at_ms: i64,
     },
 }

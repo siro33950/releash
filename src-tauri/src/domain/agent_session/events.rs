@@ -341,7 +341,7 @@ pub enum AgentSessionDomainEvent {
         operation_id: String,
         disposition: SendDisposition,
         /// Canonical semantic input saved with acceptance. `None` is only
-        /// decoded for pre-#1499 additive records during migration.
+        /// decoded for pre-#1499 additive records during schema evolution.
         human_message_id: Option<String>,
         prompt: Option<PromptInput>,
         reserved_turn_id: Option<String>,

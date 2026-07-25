@@ -133,14 +133,17 @@ async fn assert_runtime_event_read_model(
         clock: Arc::new(FakeStoreClock::at(1_000)),
         registry: Arc::new(registry),
         fault: Arc::new(FaultInjector::new()),
+        path_observer: Arc::new(
+            crate::adaptor::gateway::local_event_store::layout::NoopStorePathObserver,
+        ),
     })
     .expect("wire replay SQLite store");
     let session_store = Arc::new(SessionStore::new(Arc::new(FileSessionStorage::default())));
     let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
         local_store.clone();
-    session_store.set_local_event_repository_with_projection_codec(
+    session_store.set_local_event_repository(
         repository,
-        local_store.generation_id().to_string(),
+        local_store.installation_id().to_string(),
         Arc::new(AgentSessionProjectionCodecV1),
     );
     let projected = Arc::new(Mutex::new(None));
@@ -209,12 +212,12 @@ async fn assert_runtime_event_read_model(
         let reopened_read_store =
             LocalEventReadStore::open(temp.path()).expect("reopen wire replay SQLite reader");
         let reopened_session_store = SessionStore::new(Arc::new(FileSessionStorage::default()));
-        let generation_id = reopened_read_store.generation_id().to_string();
+        let installation_id = reopened_read_store.installation_id().to_string();
         let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
             reopened_read_store;
-        reopened_session_store.set_local_event_repository_with_projection_codec(
+        reopened_session_store.set_local_event_repository(
             repository,
-            generation_id,
+            installation_id,
             Arc::new(AgentSessionProjectionCodecV1),
         );
         let reopened_events = reopened_session_store

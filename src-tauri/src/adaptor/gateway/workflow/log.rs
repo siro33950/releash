@@ -1,12 +1,17 @@
 #[cfg(test)]
 use std::collections::HashMap;
+#[cfg(test)]
 use std::fs;
 #[cfg(test)]
 use std::fs::OpenOptions;
 #[cfg(test)]
 use std::io::Write;
+#[cfg(test)]
 use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::LazyLock;
@@ -17,10 +22,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
 
+#[cfg(test)]
 use crate::adaptor::gateway::workflow::event::{
-    decode_stored_workflow_event_v1, encode_stored_workflow_event_v1, to_domain_event,
-    DecodedStoredWorkflowEventV1, IncompatibleStoredWorkflowEvent, StoredWorkflowPayloadSource,
-    WorkflowEvent,
+    decode_stored_workflow_event_v1, DecodedStoredWorkflowEventV1, IncompatibleStoredWorkflowEvent,
+    StoredWorkflowPayloadSource,
+};
+use crate::adaptor::gateway::workflow::event::{
+    encode_stored_workflow_event_v1, to_domain_event, WorkflowEvent,
 };
 
 /// NDJSON persistence adapter for workflow execution events.
@@ -28,6 +36,7 @@ use crate::adaptor::gateway::workflow::event::{
 /// The adapter deliberately performs on-demand reads. Projection and lifecycle
 /// decisions belong to the workflow query/use-case layer, not to persistence.
 pub struct WorkflowEventLog {
+    #[cfg(test)]
     log_dir: PathBuf,
     authority: Option<WorkflowEventAuthority>,
 }
@@ -35,9 +44,10 @@ pub struct WorkflowEventLog {
 #[derive(Clone)]
 struct WorkflowEventAuthority {
     repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
-    generation_id: String,
+    installation_id: String,
 }
 
+#[cfg(test)]
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum WorkflowEventLogReadError {
     #[error("failed to read workflow execution log: {0}")]
@@ -62,57 +72,6 @@ pub(crate) enum WorkflowEventLogReadError {
 static LOG_FILE_LOCKS: LazyLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-pub(crate) type LegacyWorkflowEventRecordV1 = (crate::domain::workflow::WorkflowDomainEvent, i64);
-
-pub(crate) fn legacy_workflow_event_source_identity_v1(
-    relative_path: &str,
-) -> Result<Option<String>, String> {
-    let components = relative_path.split('/').collect::<Vec<_>>();
-    if components.len() != 2
-        || !matches!(
-            components[0],
-            "workflow_execution_logs" | "workflow_event_logs"
-        )
-        || !components[1].ends_with(".ndjson")
-    {
-        return Ok(None);
-    }
-    let execution_id = components[1].trim_end_matches(".ndjson");
-    crate::domain::local_event::StreamId::workflow(execution_id)
-        .map_err(|_| "known legacy workflow event log execution_id is invalid".to_string())?;
-    Ok(Some(execution_id.to_string()))
-}
-
-pub(crate) fn decode_legacy_workflow_event_record_v1(
-    raw: &[u8],
-    relative_path: &str,
-    record_ordinal: u64,
-) -> Result<LegacyWorkflowEventRecordV1, String> {
-    let execution_id = legacy_workflow_event_source_identity_v1(relative_path)?
-        .ok_or_else(|| "known legacy workflow event source path is invalid".to_string())?;
-    let decoded = decode_stored_workflow_event_v1(
-        raw,
-        1,
-        StoredWorkflowPayloadSource {
-            source_id: relative_path.to_string(),
-            record_ordinal,
-        },
-    )
-    .map_err(|error| format!("known legacy workflow event is incompatible: {error}"))?;
-    if decoded.event.execution_id() != execution_id {
-        return Err("known legacy workflow event identity does not match its path".to_string());
-    }
-    let timestamp = decoded.event.timestamp();
-    if !timestamp.is_finite() || timestamp < 0.0 {
-        return Err("known legacy workflow event timestamp is invalid".to_string());
-    }
-    Ok((
-        to_domain_event(&decoded.event)
-            .map_err(|error| format!("known legacy workflow event is invalid: {error}"))?,
-        (timestamp * 1000.0).round() as i64,
-    ))
-}
-
 #[cfg(test)]
 fn log_file_lock(path: &Path) -> Arc<Mutex<()>> {
     let mut locks = LOG_FILE_LOCKS.lock();
@@ -124,6 +83,7 @@ fn log_file_lock(path: &Path) -> Arc<Mutex<()>> {
 }
 
 impl WorkflowEventLog {
+    #[cfg(test)]
     pub fn new(data_dir: &Path) -> Self {
         Self {
             log_dir: data_dir.join("workflow_execution_logs"),
@@ -132,19 +92,20 @@ impl WorkflowEventLog {
     }
 
     pub(crate) fn with_authority(
-        data_dir: &Path,
         repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
-        generation_id: String,
+        installation_id: String,
     ) -> Self {
         Self {
-            log_dir: data_dir.join("workflow_execution_logs"),
+            #[cfg(test)]
+            log_dir: PathBuf::new(),
             authority: Some(WorkflowEventAuthority {
                 repository,
-                generation_id,
+                installation_id,
             }),
         }
     }
 
+    #[cfg(test)]
     fn log_path(&self, execution_id: &str) -> PathBuf {
         self.log_dir.join(format!("{execution_id}.ndjson"))
     }
@@ -224,17 +185,6 @@ impl WorkflowEventLog {
             let _ = fs::remove_file(&temp_path);
         }
         write_result
-    }
-
-    /// Canonically commit one workflow event batch to SQLite. The legacy
-    /// NDJSON source is immutable after cutover and is never refreshed here.
-    #[cfg(test)]
-    pub(crate) async fn append_batch_durable(
-        &self,
-        events: &[WorkflowEvent],
-    ) -> Result<(), String> {
-        self.append_batch_durable_with_mutations(events, Vec::new())
-            .await
     }
 
     #[cfg(test)]
@@ -368,7 +318,7 @@ impl WorkflowEventLog {
             commit_id: crate::domain::local_event::CommitIdentity::parse(&identity)
                 .map_err(|_| "workflow commit identity is invalid".to_string())?,
             idempotency: crate::domain::local_event::IdempotencyBinding {
-                generation_id: authority.generation_id.clone(),
+                installation_id: authority.installation_id.clone(),
                 operation_kind,
                 idempotency_key: hex::encode(payload_hash),
                 payload_hash,
@@ -517,6 +467,7 @@ impl WorkflowEventLog {
     }
 
     /// Reads and validates one execution log on demand.
+    #[cfg(test)]
     pub fn read_log(&self, execution_id: &str) -> Result<Vec<WorkflowEvent>, String> {
         self.read_log_records(execution_id)
             .map(|records| {
@@ -531,6 +482,7 @@ impl WorkflowEventLog {
             .map_err(|error| error.to_string())
     }
 
+    #[cfg(test)]
     pub(crate) fn read_log_records(
         &self,
         execution_id: &str,
@@ -578,6 +530,7 @@ impl WorkflowEventLog {
     /// complete NDJSON document. Callers can deserialize a payload-stripped
     /// event mirror while preserving the persistence adapter's UUID and
     /// per-line execution ownership checks.
+    #[cfg(test)]
     pub(crate) fn read_log_mapped<T, Parse, EventExecutionId>(
         &self,
         execution_id: &str,
@@ -820,56 +773,6 @@ mod tests {
             .append_batch(&[event(EXECUTION_ID, 1.0), event(OTHER_EXECUTION_ID, 2.0),])
             .is_err());
         assert!(log.read_log(EXECUTION_ID).unwrap().is_empty());
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn canonical_append_never_mutates_the_legacy_ndjson_source() {
-        use crate::adaptor::gateway::local_event_store::{LocalEventStore, LocalEventStoreConfig};
-
-        let temp = tempfile::tempdir().unwrap();
-        let legacy = WorkflowEventLog::new(temp.path());
-        legacy.append_batch(&[event(EXECUTION_ID, 1.0)]).unwrap();
-        let legacy_path = legacy.log_path(EXECUTION_ID);
-        let legacy_before = fs::read(&legacy_path).unwrap();
-
-        let store =
-            LocalEventStore::open(LocalEventStoreConfig::production(temp.path().to_path_buf()))
-                .unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while !store.cutover_ready() {
-                assert!(!store.migration_blocked());
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("legacy workflow migration must reach verified cutover");
-        assert!(store.open_normal_admission_after_authority_install());
-
-        let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
-            store.clone();
-        let canonical = WorkflowEventLog::with_authority(
-            temp.path(),
-            repository,
-            store.generation_id().to_string(),
-        );
-        canonical
-            .append_batch_durable(&[event(EXECUTION_ID, 2.0)])
-            .await
-            .unwrap();
-
-        assert_eq!(
-            canonical
-                .read_log_durable(EXECUTION_ID)
-                .await
-                .unwrap()
-                .len(),
-            2
-        );
-        assert_eq!(
-            fs::read(&legacy_path).unwrap(),
-            legacy_before,
-            "post-cutover workflow commits must leave the migration source byte-for-byte unchanged",
-        );
     }
 
     #[tokio::test]

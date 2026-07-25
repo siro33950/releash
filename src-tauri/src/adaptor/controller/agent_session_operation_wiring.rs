@@ -1248,9 +1248,9 @@ mod lifecycle_gate_tests {
         let session_store = Arc::new(crate::test_support::build_session_store());
         let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
             store.clone();
-        session_store.set_local_event_repository_with_projection_codec(
+        session_store.set_local_event_repository(
             repository.clone(),
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
             Arc::new(
                 crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
             ),
@@ -1269,7 +1269,7 @@ mod lifecycle_gate_tests {
         );
         session.state = SessionState::Idle;
         session_store
-            .save_full_session_for_migration_or_restore(data.path(), &session)
+            .save_full_session_for_restore(data.path(), &session)
             .unwrap();
         session_store
             .append_session_event_and_project_state(
@@ -1356,7 +1356,7 @@ mod lifecycle_gate_tests {
             repository.clone(),
             authority.clone(),
             lifecycle_gate,
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
         );
         let stop_gate: Arc<dyn crate::usecase::agent_session::operation::StopAdmissionGate> =
             operation_gate.clone();
@@ -1364,7 +1364,7 @@ mod lifecycle_gate_tests {
             repository,
             authority,
             stop_gate,
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
         ));
         operation_gate.bind_stop_operation(Arc::downgrade(&stop));
         let send_gate = Arc::new(RuntimeSendOperationGate::new(
@@ -1376,7 +1376,7 @@ mod lifecycle_gate_tests {
             store.clone(),
             store.clone(),
             send_gate.clone(),
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
         ));
         operation_gate.bind_send_operation(Arc::downgrade(&send));
         send_gate.bind_status_sink(Arc::downgrade(&send));
@@ -1901,7 +1901,6 @@ fn production_readback_request(
         | ObligationRecord::WorkflowShutdown { .. }
         | ObligationRecord::WorkflowTurnCompletion { .. }
         | ObligationRecord::RecoveryPublication { .. }
-        | ObligationRecord::LegacyReconciliation { .. }
         | ObligationRecord::ProviderEstablish { .. }
         | ObligationRecord::TurnExecution { .. }
         | ObligationRecord::RecoveryReserved { .. }
@@ -2244,9 +2243,9 @@ mod send_execution_tests {
         let session_store = Arc::new(crate::test_support::build_session_store());
         let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
             store.clone();
-        session_store.set_local_event_repository_with_projection_codec(
+        session_store.set_local_event_repository(
             repository.clone(),
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
             Arc::new(
                 crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
             ),
@@ -2268,7 +2267,7 @@ mod send_execution_tests {
         );
         session.state = crate::usecase::agent_session::session::SessionState::Idle;
         session_store
-            .save_full_session_for_migration_or_restore(&data_path, &session)
+            .save_full_session_for_restore(&data_path, &session)
             .unwrap();
         runtime
             .start_session(
@@ -2351,7 +2350,7 @@ mod send_execution_tests {
                 repository.clone(),
                 store.clone(),
                 gate.clone(),
-                store.generation_id().to_string(),
+                store.installation_id().to_string(),
             ),
         );
         gate.bind_status_sink(Arc::downgrade(&send));
@@ -2485,9 +2484,9 @@ mod send_execution_tests {
         let restarted_repository: Arc<
             dyn crate::domain::local_event::LocalEventTransactionRepository,
         > = reopened.clone();
-        restarted_session_store.set_local_event_repository_with_projection_codec(
+        restarted_session_store.set_local_event_repository(
             restarted_repository.clone(),
-            reopened.generation_id().to_string(),
+            reopened.installation_id().to_string(),
             Arc::new(
                 crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
             ),
@@ -2525,7 +2524,7 @@ mod send_execution_tests {
                 restarted_repository,
                 reopened.clone(),
                 restarted_gate.clone(),
-                reopened.generation_id().to_string(),
+                reopened.installation_id().to_string(),
             ),
         );
         restarted_gate.bind_status_sink(Arc::downgrade(&restarted_send));
@@ -2815,9 +2814,9 @@ mod send_execution_tests {
         let session_store = Arc::new(crate::test_support::build_session_store());
         let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
             store.clone();
-        session_store.set_local_event_repository_with_projection_codec(
+        session_store.set_local_event_repository(
             repository,
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
             Arc::new(
                 crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
             ),
@@ -2840,7 +2839,7 @@ mod send_execution_tests {
         );
         session.state = crate::usecase::agent_session::session::SessionState::Idle;
         session_store
-            .save_full_session_for_migration_or_restore(data.path(), &session)
+            .save_full_session_for_restore(data.path(), &session)
             .unwrap();
         runtime
             .start_session(
@@ -2878,14 +2877,14 @@ mod send_execution_tests {
                 store.clone(),
                 store.clone(),
                 gate.clone(),
-                store.generation_id().to_string(),
+                store.installation_id().to_string(),
             ),
         );
         gate.bind_status_sink(Arc::downgrade(&send));
         let journal = crate::usecase::agent_session::operation::CallerAttemptJournal::new(
             store.clone(),
             store.clone(),
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
         );
         let command = CanonicalSendCommandV1 {
             target: CanonicalSendTargetV1::Direct {
@@ -3015,9 +3014,9 @@ mod workflow_send_execution_tests {
         let session_store = Arc::new(crate::test_support::build_session_store());
         let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
             store.clone();
-        session_store.set_local_event_repository_with_projection_codec(
+        session_store.set_local_event_repository(
             repository,
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
             Arc::new(
                 crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
             ),
@@ -3040,7 +3039,7 @@ mod workflow_send_execution_tests {
         );
         session.state = crate::usecase::agent_session::session::SessionState::Idle;
         session_store
-            .save_full_session_for_migration_or_restore(data.path(), &session)
+            .save_full_session_for_restore(data.path(), &session)
             .unwrap();
         runtime
             .start_session(
@@ -3079,7 +3078,7 @@ mod workflow_send_execution_tests {
                 store.clone(),
                 store.clone(),
                 gate.clone(),
-                store.generation_id().to_string(),
+                store.installation_id().to_string(),
             ),
         );
         gate.bind_status_sink(Arc::downgrade(&send));
@@ -3270,9 +3269,9 @@ mod stop_execution_tests {
         let session_store = Arc::new(crate::test_support::build_session_store());
         let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
             store.clone();
-        session_store.set_local_event_repository_with_projection_codec(
+        session_store.set_local_event_repository(
 			repository.clone(),
-			store.generation_id().to_string(),
+			store.installation_id().to_string(),
 			Arc::new(
 				crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
 			),
@@ -3300,7 +3299,7 @@ mod stop_execution_tests {
         );
         session.state = SessionState::Idle;
         session_store
-            .save_full_session_for_migration_or_restore(data.path(), &session)
+            .save_full_session_for_restore(data.path(), &session)
             .unwrap();
         runtime
             .start_session(
@@ -3352,14 +3351,14 @@ mod stop_execution_tests {
             repository.clone(),
             store.clone(),
             send_gate,
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
         ));
         operation_gate.bind_send_operation(Arc::downgrade(&send));
         let stop = Arc::new(StopOperationUsecase::new(
             repository,
             store.clone(),
             operation_gate.clone(),
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
         ));
         operation_gate.bind_stop_operation(Arc::downgrade(&stop));
         bind_runtime_terminal_operation_participant_provider(&session_store, stop.clone(), send);
@@ -3553,9 +3552,9 @@ mod stop_execution_tests {
         let reader_repository: Arc<
             dyn crate::domain::local_event::LocalEventTransactionRepository,
         > = reader.clone();
-        reloaded_session_store.set_local_event_repository_with_projection_codec(
+        reloaded_session_store.set_local_event_repository(
 			reader_repository,
-			reader.generation_id().to_string(),
+			reader.installation_id().to_string(),
 			Arc::new(
 				crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
 			),
@@ -3995,7 +3994,7 @@ mod recovery_executor_tests {
             store.clone(),
             store.clone(),
             Arc::new(UnusedPermissionGate),
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
         ));
         let ports = Arc::new(RecordingReadbackPorts::default());
         let executor = ConservativeRecoveryExecutor::from_readback_ports(
@@ -4078,7 +4077,12 @@ mod recovery_executor_tests {
                 ObligationRecord::BackendSessionRecovery {
                     session_id: "session-backend".to_string(),
                     recovery_id: "recovery-1".to_string(),
-                    detail: None,
+                    detail:
+                        crate::domain::local_event::BackendSessionRecoveryObligationRecord::EffectReserved {
+                        old_provider_session_generation: 0,
+                        reason: BackendSessionRecoveryReason::BackendSessionLost,
+                        reserved_at_bits: 0,
+                    },
                     state: ObligationStateRecord::EffectReserved,
                 },
                 RecoveryResultClassification::Ambiguous,
@@ -4262,7 +4266,12 @@ mod recovery_executor_tests {
                 ObligationRecord::BackendSessionRecovery {
                     session_id: "session-backend".to_string(),
                     recovery_id: "recovery-1".to_string(),
-                    detail: None,
+                    detail:
+                        crate::domain::local_event::BackendSessionRecoveryObligationRecord::EffectReserved {
+                        old_provider_session_generation: 0,
+                        reason: BackendSessionRecoveryReason::BackendSessionLost,
+                        reserved_at_bits: 0,
+                    },
                     state: ObligationStateRecord::EffectReserved,
                 },
             ),
@@ -4340,9 +4349,9 @@ mod recovery_executor_tests {
         let authority: Arc<
             dyn crate::usecase::agent_session::operation::OperationBindingAuthority,
         > = store.clone();
-        session_store.set_local_event_repository_with_projection_codec(
+        session_store.set_local_event_repository(
             repository.clone(),
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
             Arc::new(
                 crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
             ),
@@ -4361,13 +4370,13 @@ mod recovery_executor_tests {
             repository.clone(),
             authority.clone(),
             operation_gate.clone(),
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
         ));
         let stop = Arc::new(StopOperationUsecase::new(
             repository.clone(),
             authority.clone(),
             operation_gate.clone(),
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
         ));
         operation_gate.bind_stop_operation(Arc::downgrade(&stop));
         let send_gate = Arc::new(RuntimeSendOperationGate::new(
@@ -4379,7 +4388,7 @@ mod recovery_executor_tests {
             repository.clone(),
             authority.clone(),
             send_gate.clone(),
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
         ));
         operation_gate.bind_send_operation(Arc::downgrade(&send));
         send_gate.bind_status_sink(Arc::downgrade(&send));
@@ -4395,7 +4404,7 @@ mod recovery_executor_tests {
                 runtime,
                 session_store,
             )),
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
         ));
         let executor = Arc::new(ConservativeRecoveryExecutor::new(
             stop.clone(),
@@ -4410,7 +4419,7 @@ mod recovery_executor_tests {
                 store.clone(),
                 store.clone(),
                 executor,
-                store.generation_id().to_string(),
+                store.installation_id().to_string(),
             ),
             stop,
             controller,
@@ -4431,7 +4440,7 @@ mod recovery_executor_tests {
             store.clone(),
             store.clone(),
             gate.clone(),
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
         );
         let session_id = "f05-production-stop-session";
         let turn_id = "1";
@@ -4587,9 +4596,9 @@ mod recovery_executor_tests {
         .unwrap();
         let session_store = Arc::new(crate::test_support::build_session_store());
         let repository: Arc<dyn LocalEventTransactionRepository> = store.clone();
-        session_store.set_local_event_repository_with_projection_codec(
+        session_store.set_local_event_repository(
             repository,
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
             Arc::new(
                 crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
             ),
@@ -4608,7 +4617,7 @@ mod recovery_executor_tests {
             None,
         );
         session_store
-            .save_full_session_for_migration_or_restore(directory.path(), &session)
+            .save_full_session_for_restore(directory.path(), &session)
             .unwrap();
         session_store
             .begin_backend_session_recovery(
@@ -4934,9 +4943,9 @@ mod recovery_executor_tests {
     ) -> Arc<crate::usecase::agent_session::session::SessionStore> {
         let session_store = Arc::new(crate::test_support::build_session_store());
         let repository: Arc<dyn LocalEventTransactionRepository> = store.clone();
-        session_store.set_local_event_repository_with_projection_codec(
+        session_store.set_local_event_repository(
             repository,
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
             Arc::new(
                 crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
             ),
@@ -4971,13 +4980,13 @@ mod recovery_executor_tests {
             repository.clone(),
             authority.clone(),
             operation_gate.clone(),
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
         ));
         let stop = Arc::new(StopOperationUsecase::new(
             repository.clone(),
             authority.clone(),
             operation_gate.clone(),
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
         ));
         operation_gate.bind_stop_operation(Arc::downgrade(&stop));
         let send_gate = Arc::new(RuntimeSendOperationGate::new(
@@ -4989,7 +4998,7 @@ mod recovery_executor_tests {
             repository.clone(),
             authority.clone(),
             send_gate.clone(),
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
         ));
         operation_gate.bind_send_operation(Arc::downgrade(&send));
         send_gate.bind_status_sink(Arc::downgrade(&send));
@@ -4997,7 +5006,7 @@ mod recovery_executor_tests {
             repository,
             authority,
             Arc::new(UnusedPermissionGate),
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
         ));
         let ports = Arc::new(AtomicProductionReadbackPorts {
             store: store.clone(),
@@ -5022,7 +5031,7 @@ mod recovery_executor_tests {
             store.clone(),
             store.clone(),
             executor,
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
         )
     }
 
@@ -5035,7 +5044,7 @@ mod recovery_executor_tests {
             .commit_batch(LocalAtomicBatch {
                 commit_id: CommitIdentity::parse(identity).unwrap(),
                 idempotency: IdempotencyBinding {
-                    generation_id: store.generation_id().to_string(),
+                    installation_id: store.installation_id().to_string(),
                     operation_kind: CommitOperationKind::Recovery,
                     idempotency_key: identity.to_string(),
                     payload_hash:
@@ -5238,11 +5247,7 @@ mod recovery_executor_tests {
                 kind,
                 operation_id: operation_id.clone(),
                 receipt,
-                latest_status: OperationStatusRecord {
-                    kind,
-                    migration_quit: false,
-                    value,
-                },
+                latest_status: OperationStatusRecord { kind, value },
                 expected: RevisionGuard::Absent,
                 revision: Revision::new(0).unwrap(),
             },
@@ -5301,7 +5306,7 @@ mod recovery_executor_tests {
             None,
         );
         session_store
-            .save_full_session_for_migration_or_restore(data_dir, &session)
+            .save_full_session_for_restore(data_dir, &session)
             .unwrap();
         session_store
             .begin_backend_session_recovery(
@@ -5508,7 +5513,12 @@ mod recovery_executor_tests {
                 ObligationRecord::BackendSessionRecovery {
                     session_id: "f05-backend-session".to_string(),
                     recovery_id: "f05-recovery".to_string(),
-                    detail: None,
+                    detail:
+                        crate::domain::local_event::BackendSessionRecoveryObligationRecord::EffectReserved {
+                        old_provider_session_generation: 0,
+                        reason: BackendSessionRecoveryReason::BackendSessionLost,
+                        reserved_at_bits: 0,
+                    },
                     state: ObligationStateRecord::EffectReserved,
                 },
             ),

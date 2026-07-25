@@ -23,14 +23,6 @@ use crate::usecase::workflow::ports::{
 #[allow(clippy::too_many_arguments)]
 #[async_trait]
 pub(crate) trait WorkflowRuntimeEngine: Send + Sync {
-    async fn set_local_event_repository(
-        &self,
-        repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
-        generation_id: String,
-    );
-
-    async fn set_execution_store_data_dir(&self, dir: PathBuf);
-
     async fn recover_orphan_executions(
         &self,
         app: &tauri::AppHandle,
@@ -173,29 +165,23 @@ pub(crate) fn new_workflow_runtime_engine(
     worktree_resolver: Arc<dyn ManagedWorktreeResolver>,
     branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
     open_tabs: Arc<OpenTabRegistry>,
+    data_dir: Option<PathBuf>,
+    repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
+    installation_id: String,
 ) -> Arc<dyn WorkflowRuntimeEngine> {
-    Arc::new(WorkflowRuntimeService::new(
+    Arc::new(WorkflowRuntimeService::new_canonical(
         workflow_resolver,
         worktree_resolver,
         branch_diff_context,
         open_tabs,
+        data_dir,
+        repository,
+        installation_id,
     ))
 }
 
 #[async_trait]
 impl WorkflowRuntimeEngine for WorkflowRuntimeService {
-    async fn set_local_event_repository(
-        &self,
-        repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
-        generation_id: String,
-    ) {
-        WorkflowRuntimeService::set_local_event_repository(self, repository, generation_id).await;
-    }
-
-    async fn set_execution_store_data_dir(&self, dir: PathBuf) {
-        WorkflowRuntimeService::set_execution_store_data_dir(self, dir).await;
-    }
-
     async fn recover_orphan_executions(
         &self,
         app: &tauri::AppHandle,

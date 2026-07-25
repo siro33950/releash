@@ -166,17 +166,6 @@ impl WriteQueue {
         }
     }
 
-    /// Non-blocking critical-lane drain used at durable migration
-    /// checkpoints. Normal admission is closed while migration owns the
-    /// writer, but application quit must still reach the same SQLite
-    /// authority within its deadline.
-    pub fn try_pop_critical(&self) -> Option<WriteRequest> {
-        let mut state = self.state.lock().expect("write queue poisoned");
-        let request = state.critical.queue.pop_front()?;
-        state.critical.bytes -= request.prepared.decoded_bytes;
-        Some(request)
-    }
-
     /// Close the queue; queued requests are dropped so their callers observe
     /// reply loss (`OutcomeUnknown` semantics decided by the caller).
     pub fn close(&self) {
@@ -204,7 +193,7 @@ mod tests {
                 batch: LocalAtomicBatch {
                     commit_id: CommitIdentity::parse("c-1").unwrap(),
                     idempotency: IdempotencyBinding {
-                        generation_id: "g".to_string(),
+                        installation_id: "g".to_string(),
                         operation_kind: OperationKind::Send.into(),
                         idempotency_key: "k".to_string(),
                         payload_hash: [0; 32],

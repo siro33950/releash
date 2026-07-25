@@ -4,13 +4,11 @@
 //! projection tables; they never repair, migrate, or rebuild implicitly, and
 //! they never return generic rows, JSON, or maps.
 
-#![allow(dead_code)] // Closed persisted query vocabulary retains compatibility variants.
-
 use std::fmt;
 
 use crate::domain::local_event::batch::CommitResolution;
 use crate::domain::local_event::events::{
-    ApplicationShutdownPhase, DomainEventPage, LoadStreamRequest, LocalStoreMigrationPhase,
+    ApplicationShutdownPhase, DomainEventPage, LoadStreamRequest,
 };
 use crate::domain::local_event::failure::SafeOperationFailure;
 use crate::domain::local_event::identifiers::{CommitIdentity, Revision};
@@ -19,9 +17,9 @@ use crate::domain::local_event::mutation::{
     ShutdownDetailsState, ShutdownPlanKey, StopResolutionKind,
 };
 use crate::domain::local_event::record::{
-    MessageProjectionRecord, MigrationCheckpointRecord, MigrationParityRecord, ObligationRecord,
-    OperationReceiptRecord, OperationStatusRecord, RecoveryAttemptRecord, RecoveryResultRecord,
-    SessionProjectionRecord, ShutdownPlanRecord, ShutdownTargetRecord, TerminalResultRecord,
+    MessageProjectionRecord, ObligationRecord, OperationReceiptRecord, OperationStatusRecord,
+    RecoveryAttemptRecord, RecoveryResultRecord, SessionProjectionRecord, ShutdownPlanRecord,
+    ShutdownTargetRecord, TerminalResultRecord,
 };
 
 /// Opaque MAC-protected pagination cursor issued by the store.
@@ -41,8 +39,9 @@ impl QueryCursor {
 }
 
 /// Closed query sum. F8 / F10 additions become new variants together with
-/// their schema migration.
+/// their schema evolution.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum LocalEventQuery {
     CommitByIdentity {
         commit_id: CommitIdentity,
@@ -56,7 +55,7 @@ pub enum LocalEventQuery {
         key: CallerOperationKey,
     },
     OperationBindingSummaryByOperation {
-        generation_id: String,
+        installation_id: String,
         kind: OperationKind,
         operation_id: String,
         expected_binding_hmac: Option<[u8; 32]>,
@@ -65,19 +64,19 @@ pub enum LocalEventQuery {
         key: CallerOperationKey,
     },
     PendingCallerAttemptsByOperation {
-        generation_id: String,
+        installation_id: String,
         kind: OperationKind,
         operation_id: String,
         limit: usize,
     },
     PendingCallerAttemptsByKind {
-        generation_id: String,
+        installation_id: String,
         kind: OperationKind,
         limit: usize,
     },
     CallerAttemptPage {
         principal: String,
-        generation_id: String,
+        installation_id: String,
         scope_id: String,
         limit: usize,
         after_kind: Option<OperationKind>,
@@ -100,6 +99,12 @@ pub enum LocalEventQuery {
         limit: usize,
         after_session_id: Option<String>,
     },
+    /// One bounded, lightweight owner inventory read by a single SQLite
+    /// statement. Startup GC uses this instead of composing independently
+    /// snapshotted projection pages.
+    CanonicalRuntimeOwnerSnapshot {
+        limit: usize,
+    },
     MessageProjectionByIdentity {
         session_id: String,
         message_id: String,
@@ -108,9 +113,6 @@ pub enum LocalEventQuery {
         session_id: String,
         before_position: Option<i64>,
         limit: usize,
-    },
-    LegacyRawRecordByPath {
-        source_path: String,
     },
     PendingRecoveryPage {
         limit: usize,
@@ -148,9 +150,6 @@ pub enum LocalEventQuery {
     AvailableShutdownHistory {
         limit: usize,
     },
-    /// Internal maintenance selector for the at-most-one plan whose public
-    /// archive has switched while physical detail detach is still pending.
-    ShutdownRetiringPlan,
     ShutdownTargetByIdentity {
         plan: ShutdownPlanKey,
         ordinal: i64,
@@ -159,13 +158,6 @@ pub enum LocalEventQuery {
         plan: ShutdownPlanKey,
         limit: usize,
         cursor: Option<QueryCursor>,
-    },
-    LocalStoreMigration,
-    MigrationQuitFlightByOperation {
-        operation_id: String,
-    },
-    MigrationQuitFlightByMigration {
-        migration_id: String,
     },
 }
 
@@ -223,6 +215,22 @@ pub struct SessionProjectionView {
     pub revision: Revision,
 }
 
+/// Lightweight runtime-ownership facts extracted from one canonical SQLite
+/// statement. Inactive sessions remain present so a live PID can be resolved
+/// to its canonical worktree without returning the full projection body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CanonicalRuntimeOwnerView {
+    AgentSession {
+        projection_id: String,
+        session_id: String,
+        worktree_path: String,
+        active: bool,
+    },
+    ActiveWorkflow {
+        worktree_path: String,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MessageProjectionView {
     pub session_id: String,
@@ -242,12 +250,6 @@ pub struct MessageProjectionPageView {
     pub entries: Vec<MessageProjectionPageEntryView>,
     pub next_before_position: Option<i64>,
     pub total_count: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LegacyRawRecordView {
-    pub source_path: String,
-    pub raw: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -366,26 +368,6 @@ pub struct ShutdownPlanPageView {
     pub next_cursor: Option<QueryCursor>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LocalStoreMigrationView {
-    pub migration_id: String,
-    pub phase: LocalStoreMigrationPhase,
-    pub source_inventory_hash: [u8; 32],
-    pub checkpoint: MigrationCheckpointRecord,
-    pub parity: Option<MigrationParityRecord>,
-    pub revision: Revision,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MigrationQuitFlightView {
-    pub operation_id: String,
-    pub migration_id: String,
-    pub migration_revision: Revision,
-    pub checkpoint: MigrationCheckpointRecord,
-    pub accepted_boot_id: String,
-    pub revision: Revision,
-}
-
 /// One-to-one result sum for [`LocalEventQuery`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum LocalEventQueryResult {
@@ -403,23 +385,21 @@ pub enum LocalEventQueryResult {
     ObligationByIdentity(Option<ObligationView>),
     SessionProjectionByIdentity(Option<SessionProjectionView>),
     SessionProjectionPage(Vec<SessionProjectionView>),
+    CanonicalRuntimeOwnerSnapshot(Vec<CanonicalRuntimeOwnerView>),
     MessageProjectionByIdentity(Option<MessageProjectionView>),
     MessageProjectionPage(MessageProjectionPageView),
-    LegacyRawRecordByPath(Option<LegacyRawRecordView>),
     PendingRecoveryPage(PendingRecoveryPageView),
     PendingRecoverySnapshotPage(PendingRecoverySnapshotPageView),
     RecoveryActionByIdentity(Option<RecoveryActionView>),
     CurrentShutdown(Option<ShutdownPlanView>),
     RetryQuitEligibility(bool),
     AvailableShutdownHistory(Vec<ShutdownPlanView>),
-    ShutdownRetiringPlan(Option<ShutdownPlanKey>),
     ShutdownTargetByIdentity(Option<ShutdownTargetView>),
     ShutdownPlanPage(ShutdownPlanPageView),
-    LocalStoreMigration(Option<LocalStoreMigrationView>),
-    MigrationQuitFlight(Option<MigrationQuitFlightView>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 pub enum LocalEventQueryError {
     InvalidRequest,
     NotFound,

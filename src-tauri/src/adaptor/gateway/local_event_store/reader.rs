@@ -21,36 +21,33 @@ use crate::adaptor::gateway::local_event_store::cursor::{
 #[cfg(test)]
 use crate::adaptor::gateway::local_event_store::envelope::StoredEventEnvelopeV1;
 use crate::adaptor::gateway::local_event_store::envelope::{
-    label_to_shutdown_phase, parse_migration_phase, DecodedStoredEvent, EventCodecRegistry,
+    label_to_shutdown_phase, DecodedStoredEvent, EventCodecRegistry,
 };
 use crate::adaptor::gateway::local_event_store::projection_record_codec::{
     decode_message_projection_record_v1, decode_session_projection_record_v1,
 };
 use crate::adaptor::gateway::local_event_store::state_record_codec::{
-    StoredMigrationCheckpointV1, StoredMigrationParityV1, StoredObligationV1,
-    StoredOperationReceiptV1, StoredOperationStatusV1, StoredRecoveryActionV1,
+    StoredObligationV1, StoredOperationReceiptV1, StoredOperationStatusV1, StoredRecoveryActionV1,
     StoredRecoveryResultV1, StoredShutdownPlanV1, StoredShutdownTargetV1, StoredTerminalV1,
 };
 use crate::domain::local_event::{
     validate_operation_record, validate_stop_resolution, validate_terminal_record,
-    AgentSessionStateRecord, ApplicationShutdownPhase, CallerAttemptResolution, CallerAttemptView,
-    CommitIdentity, CommittedDomainEvent, DomainEventPage, EventId, LegacyRawRecordView,
-    LoadStreamRequest, LoadedDomainEvent, LocalEventQuery, LocalEventQueryError,
-    LocalEventQueryResult, LocalStoreMigrationView, MessageProjectionPageEntryView,
-    MessageProjectionPageView, MessageProjectionRecord, MessageProjectionView,
-    MigrationQuitFlightView, ObligationView, OperationBindingView, OperationKind,
+    AgentSessionStateRecord, CallerAttemptResolution, CallerAttemptView, CanonicalRuntimeOwnerView,
+    CommitIdentity, CommittedDomainEvent, DomainEventPage, EventId, LoadStreamRequest,
+    LoadedDomainEvent, LocalEventQuery, LocalEventQueryError, LocalEventQueryResult,
+    MessageProjectionPageEntryView, MessageProjectionPageView, MessageProjectionRecord,
+    MessageProjectionView, ObligationView, OperationBindingView, OperationKind,
     OperationRecordView, PendingIndexEntryView, PendingObligationView, PendingPartition,
     PendingRecoveryPageView, PendingRecoverySnapshotPageView, QueryCursor, RecoveryActionView,
     SafeOperationFailure, SessionOperationFailureKind, SessionProjectionOwnerState,
     SessionProjectionRecord, SessionProjectionView, ShutdownDetailsState, ShutdownPlanKey,
     ShutdownPlanPageView, ShutdownPlanView, ShutdownSnapshotEntryView, ShutdownTargetView,
     StopResolutionKind, StopResolutionMutation, StopResolutionView, StreamSequence, StreamVersion,
-    TerminalRecordMutation, TerminalRecordView,
+    TerminalRecordMutation, TerminalRecordView, WorkflowExecutionProjectionRecord,
 };
 use crate::domain::local_event::{
-    MigrationCheckpointRecord, MigrationParityRecord, ObligationRecord, OperationReceiptRecord,
-    OperationStatusRecord, RecoveryAttemptRecord, RecoveryResultRecord, ShutdownPlanRecord,
-    ShutdownTargetRecord, TerminalResultRecord,
+    ObligationRecord, OperationReceiptRecord, OperationStatusRecord, RecoveryAttemptRecord,
+    RecoveryResultRecord, ShutdownPlanRecord, ShutdownTargetRecord, TerminalResultRecord,
 };
 
 pub const READER_POOL_SIZE: usize = 4;
@@ -68,15 +65,17 @@ pub const MAX_SHUTDOWN_PAGE: usize = 128;
 pub const SHUTDOWN_PAGE_MAX_BYTES: usize = 1024 * 1024;
 pub const MAX_STREAM_PAGE: usize = 200;
 pub const STREAM_PAGE_MAX_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_CANONICAL_RUNTIME_OWNER_SNAPSHOT: usize = 8_192;
+pub const CANONICAL_RUNTIME_OWNER_SNAPSHOT_MAX_BYTES: usize = 4 * 1024 * 1024;
 
 /// Query plans for these statements are snapshot-gated in tests: they must
 /// never contain a `SCAN events` step.
-pub(crate) const SQL_PENDING_FIRST_PAGE: &str = "SELECT po.obligation_id, po.ordered_key, po.owner, po.partition, po.shutdown_plan_id, po.shutdown_epoch, o.record, o.revision, sp.projection FROM pending_obligations po JOIN obligations o ON o.obligation_id = po.obligation_id LEFT JOIN session_projection sp ON sp.session_id = po.owner WHERE po.ordered_key > ?1 AND substr(po.ordered_key, 1, 9) <> 'feedback:' AND substr(po.ordered_key, 1, 19) <> 'workflow_execution:' ORDER BY po.ordered_key LIMIT ?2";
-pub(crate) const SQL_PENDING_FIRST_PAGE_PARTITION: &str = "SELECT po.obligation_id, po.ordered_key, po.owner, po.partition, po.shutdown_plan_id, po.shutdown_epoch, o.record, o.revision, sp.projection FROM pending_obligations po JOIN obligations o ON o.obligation_id = po.obligation_id LEFT JOIN session_projection sp ON sp.session_id = po.owner WHERE po.partition = ?1 AND po.ordered_key > ?2 AND substr(po.ordered_key, 1, 9) <> 'feedback:' AND substr(po.ordered_key, 1, 19) <> 'workflow_execution:' ORDER BY po.ordered_key LIMIT ?3";
-pub(crate) const SQL_PENDING_FIRST_PAGE_OWNER: &str = "SELECT po.obligation_id, po.ordered_key, po.owner, po.partition, po.shutdown_plan_id, po.shutdown_epoch, o.record, o.revision, sp.projection FROM pending_obligations po INDEXED BY idx_pending_obligations_owner JOIN obligations o ON o.obligation_id = po.obligation_id LEFT JOIN session_projection sp ON sp.session_id = po.owner WHERE po.owner = ?1 AND po.ordered_key > ?2 AND substr(po.ordered_key, 1, 9) <> 'feedback:' AND substr(po.ordered_key, 1, 19) <> 'workflow_execution:' ORDER BY po.ordered_key LIMIT ?3";
-pub(crate) const SQL_PENDING_FIRST_PAGE_OWNER_PREFIX: &str = "SELECT po.obligation_id, po.ordered_key, po.owner, po.partition, po.shutdown_plan_id, po.shutdown_epoch, o.record, o.revision, sp.projection FROM pending_obligations po JOIN obligations o ON o.obligation_id = po.obligation_id LEFT JOIN session_projection sp ON sp.session_id = po.owner WHERE po.owner = ?1 AND po.ordered_key > ?2 AND po.ordered_key >= ?3 AND po.ordered_key < ?4 ORDER BY po.ordered_key LIMIT ?5";
-pub(crate) const SQL_PENDING_FIRST_PAGE_PREFIX: &str = "SELECT po.obligation_id, po.ordered_key, po.owner, po.partition, po.shutdown_plan_id, po.shutdown_epoch, o.record, o.revision, sp.projection FROM pending_obligations po JOIN obligations o ON o.obligation_id = po.obligation_id LEFT JOIN session_projection sp ON sp.session_id = po.owner WHERE po.ordered_key > ?1 AND po.ordered_key >= ?2 AND po.ordered_key < ?3 ORDER BY po.ordered_key LIMIT ?4";
-pub(crate) const SQL_PENDING_FIRST_PAGE_SHUTDOWN_PLAN: &str = "SELECT po.obligation_id, po.ordered_key, po.owner, po.partition, po.shutdown_plan_id, po.shutdown_epoch, o.record, o.revision, sp.projection FROM pending_obligations po INDEXED BY idx_pending_obligations_shutdown JOIN obligations o ON o.obligation_id = po.obligation_id LEFT JOIN session_projection sp ON sp.session_id = po.owner WHERE po.shutdown_plan_id = ?1 AND po.shutdown_epoch = ?2 AND po.ordered_key > ?3 ORDER BY po.ordered_key LIMIT ?4";
+pub(crate) const SQL_PENDING_FIRST_PAGE: &str = "SELECT po.obligation_id, po.ordered_key, po.owner, po.partition, po.shutdown_id, o.record, o.revision, sp.projection FROM pending_obligations po JOIN obligations o ON o.obligation_id = po.obligation_id LEFT JOIN session_projection sp ON sp.session_id = po.owner WHERE po.ordered_key > ?1 AND substr(po.ordered_key, 1, 9) <> 'feedback:' AND substr(po.ordered_key, 1, 19) <> 'workflow_execution:' ORDER BY po.ordered_key LIMIT ?2";
+pub(crate) const SQL_PENDING_FIRST_PAGE_PARTITION: &str = "SELECT po.obligation_id, po.ordered_key, po.owner, po.partition, po.shutdown_id, o.record, o.revision, sp.projection FROM pending_obligations po JOIN obligations o ON o.obligation_id = po.obligation_id LEFT JOIN session_projection sp ON sp.session_id = po.owner WHERE po.partition = ?1 AND po.ordered_key > ?2 AND substr(po.ordered_key, 1, 9) <> 'feedback:' AND substr(po.ordered_key, 1, 19) <> 'workflow_execution:' ORDER BY po.ordered_key LIMIT ?3";
+pub(crate) const SQL_PENDING_FIRST_PAGE_OWNER: &str = "SELECT po.obligation_id, po.ordered_key, po.owner, po.partition, po.shutdown_id, o.record, o.revision, sp.projection FROM pending_obligations po INDEXED BY idx_pending_obligations_owner JOIN obligations o ON o.obligation_id = po.obligation_id LEFT JOIN session_projection sp ON sp.session_id = po.owner WHERE po.owner = ?1 AND po.ordered_key > ?2 AND substr(po.ordered_key, 1, 9) <> 'feedback:' AND substr(po.ordered_key, 1, 19) <> 'workflow_execution:' ORDER BY po.ordered_key LIMIT ?3";
+pub(crate) const SQL_PENDING_FIRST_PAGE_OWNER_PREFIX: &str = "SELECT po.obligation_id, po.ordered_key, po.owner, po.partition, po.shutdown_id, o.record, o.revision, sp.projection FROM pending_obligations po JOIN obligations o ON o.obligation_id = po.obligation_id LEFT JOIN session_projection sp ON sp.session_id = po.owner WHERE po.owner = ?1 AND po.ordered_key > ?2 AND po.ordered_key >= ?3 AND po.ordered_key < ?4 ORDER BY po.ordered_key LIMIT ?5";
+pub(crate) const SQL_PENDING_FIRST_PAGE_PREFIX: &str = "SELECT po.obligation_id, po.ordered_key, po.owner, po.partition, po.shutdown_id, o.record, o.revision, sp.projection FROM pending_obligations po JOIN obligations o ON o.obligation_id = po.obligation_id LEFT JOIN session_projection sp ON sp.session_id = po.owner WHERE po.ordered_key > ?1 AND po.ordered_key >= ?2 AND po.ordered_key < ?3 ORDER BY po.ordered_key LIMIT ?4";
+pub(crate) const SQL_PENDING_FIRST_PAGE_SHUTDOWN_PLAN: &str = "SELECT po.obligation_id, po.ordered_key, po.owner, po.partition, po.shutdown_id, o.record, o.revision, sp.projection FROM pending_obligations po INDEXED BY idx_pending_obligations_shutdown JOIN obligations o ON o.obligation_id = po.obligation_id LEFT JOIN session_projection sp ON sp.session_id = po.owner WHERE po.shutdown_id = ?1 AND po.ordered_key > ?2 ORDER BY po.ordered_key LIMIT ?3";
 pub(crate) const SQL_TERMINAL_LOOKUP: &str = "SELECT terminal_identity, result, participant_digest FROM terminal_records WHERE session_id = ?1 AND turn_id = ?2";
 pub(crate) const SQL_OPERATION_LOOKUP: &str = "SELECT receipt, latest_status, revision FROM operation_records WHERE kind = ?1 AND operation_id = ?2";
 
@@ -95,14 +94,12 @@ type ObligationRow = (
     Option<String>,
     Option<String>,
     Option<String>,
-    Option<i64>,
 );
-type MigrationRow = (String, String, Vec<u8>, String, Option<String>, i64);
 
 pub struct QueryContext {
     pub registry: Arc<EventCodecRegistry>,
     pub cursor_key: Vec<u8>,
-    pub boot_id: String,
+    pub process_instance_id: String,
     pub clock: Arc<dyn StoreClock>,
 }
 
@@ -246,20 +243,6 @@ fn shutdown_target_record(
     state_record(StoredShutdownTargetV1::decode(raw), context).map(|value| value.into_value())
 }
 
-fn migration_checkpoint_record(
-    raw: &str,
-    context: &'static str,
-) -> Result<MigrationCheckpointRecord, LocalEventQueryError> {
-    state_record(StoredMigrationCheckpointV1::decode(raw), context).map(|value| value.into_value())
-}
-
-fn migration_parity_record(
-    raw: &str,
-    context: &'static str,
-) -> Result<MigrationParityRecord, LocalEventQueryError> {
-    state_record(StoredMigrationParityV1::decode(raw), context).map(|value| value.into_value())
-}
-
 fn raw_sha256(raw: &str) -> [u8; 32] {
     Sha256::digest(raw.as_bytes()).into()
 }
@@ -303,14 +286,14 @@ pub(crate) fn run_query_in_recovery_snapshot(
             ))
         }
         LocalEventQuery::OperationBindingSummaryByOperation {
-            generation_id,
+            installation_id,
             kind,
             operation_id,
             expected_binding_hmac,
         } => Ok(LocalEventQueryResult::OperationBindingSummaryByOperation(
             operation_binding_summary_by_operation(
                 connection,
-                generation_id,
+                installation_id,
                 *kind,
                 operation_id,
                 expected_binding_hmac.as_ref(),
@@ -322,23 +305,29 @@ pub(crate) fn run_query_in_recovery_snapshot(
             ))
         }
         LocalEventQuery::PendingCallerAttemptsByOperation {
-            generation_id,
+            installation_id,
             kind,
             operation_id,
             limit,
         } => Ok(LocalEventQueryResult::PendingCallerAttemptsByOperation(
-            pending_caller_attempts(connection, generation_id, *kind, Some(operation_id), *limit)?,
+            pending_caller_attempts(
+                connection,
+                installation_id,
+                *kind,
+                Some(operation_id),
+                *limit,
+            )?,
         )),
         LocalEventQuery::PendingCallerAttemptsByKind {
-            generation_id,
+            installation_id,
             kind,
             limit,
         } => Ok(LocalEventQueryResult::PendingCallerAttemptsByKind(
-            pending_caller_attempts(connection, generation_id, *kind, None, *limit)?,
+            pending_caller_attempts(connection, installation_id, *kind, None, *limit)?,
         )),
         LocalEventQuery::CallerAttemptPage {
             principal,
-            generation_id,
+            installation_id,
             scope_id,
             limit,
             after_kind,
@@ -347,7 +336,7 @@ pub(crate) fn run_query_in_recovery_snapshot(
             caller_attempt_page(
                 connection,
                 principal,
-                generation_id,
+                installation_id,
                 scope_id,
                 *limit,
                 *after_kind,
@@ -381,6 +370,11 @@ pub(crate) fn run_query_in_recovery_snapshot(
         } => Ok(LocalEventQueryResult::SessionProjectionPage(
             session_projection_page(connection, *limit, after_session_id.as_deref())?,
         )),
+        LocalEventQuery::CanonicalRuntimeOwnerSnapshot { limit } => {
+            Ok(LocalEventQueryResult::CanonicalRuntimeOwnerSnapshot(
+                canonical_runtime_owner_snapshot(connection, *limit)?,
+            ))
+        }
         LocalEventQuery::MessageProjectionByIdentity {
             session_id,
             message_id,
@@ -394,11 +388,6 @@ pub(crate) fn run_query_in_recovery_snapshot(
         } => Ok(LocalEventQueryResult::MessageProjectionPage(
             message_projection_page(connection, session_id, *before_position, *limit)?,
         )),
-        LocalEventQuery::LegacyRawRecordByPath { source_path } => {
-            Ok(LocalEventQueryResult::LegacyRawRecordByPath(
-                legacy_raw_record_by_path(connection, source_path)?,
-            ))
-        }
         LocalEventQuery::PendingRecoveryPage {
             limit,
             partition,
@@ -459,9 +448,6 @@ pub(crate) fn run_query_in_recovery_snapshot(
                 available_shutdown_history(connection, *limit)?,
             ))
         }
-        LocalEventQuery::ShutdownRetiringPlan => Ok(LocalEventQueryResult::ShutdownRetiringPlan(
-            shutdown_retiring_plan(connection)?,
-        )),
         LocalEventQuery::ShutdownTargetByIdentity { plan, ordinal } => {
             Ok(LocalEventQueryResult::ShutdownTargetByIdentity(
                 shutdown_target_by_identity(connection, plan, *ordinal)?,
@@ -478,19 +464,6 @@ pub(crate) fn run_query_in_recovery_snapshot(
             *limit,
             cursor.as_ref(),
         )?)),
-        LocalEventQuery::LocalStoreMigration => Ok(LocalEventQueryResult::LocalStoreMigration(
-            local_store_migration(connection)?,
-        )),
-        LocalEventQuery::MigrationQuitFlightByOperation { operation_id } => {
-            Ok(LocalEventQueryResult::MigrationQuitFlight(
-                migration_quit_flight(connection, "operation_id", operation_id)?,
-            ))
-        }
-        LocalEventQuery::MigrationQuitFlightByMigration { migration_id } => {
-            Ok(LocalEventQueryResult::MigrationQuitFlight(
-                migration_quit_flight(connection, "migration_id", migration_id)?,
-            ))
-        }
     }
 }
 
@@ -501,11 +474,11 @@ fn operation_binding_by_identity(
     let row: Option<(String, Vec<u8>)> = connection
         .query_row(
             "SELECT operation_id, binding_hmac FROM operation_bindings
-             WHERE principal = ?1 AND generation_id = ?2 AND kind = ?3
+             WHERE principal = ?1 AND installation_id = ?2 AND kind = ?3
                AND caller_request_id = ?4",
             params![
                 key.principal,
-                key.generation_id,
+                key.installation_id,
                 key.kind.label(),
                 key.caller_request_id
             ],
@@ -533,13 +506,13 @@ fn caller_attempt_by_identity(
                     a.resolution, a.revision
              FROM caller_attempts a
              LEFT JOIN operation_bindings b
-               ON b.principal = a.principal AND b.generation_id = a.generation_id
+               ON b.principal = a.principal AND b.installation_id = a.installation_id
               AND b.kind = a.kind AND b.caller_request_id = a.caller_request_id
-             WHERE a.principal = ?1 AND a.generation_id = ?2 AND a.kind = ?3
+             WHERE a.principal = ?1 AND a.installation_id = ?2 AND a.kind = ?3
                AND a.caller_request_id = ?4",
             params![
                 key.principal,
-                key.generation_id,
+                key.installation_id,
                 key.kind.label(),
                 key.caller_request_id
             ],
@@ -576,12 +549,12 @@ fn caller_attempt_by_identity(
 
 fn pending_caller_attempts(
     connection: &Connection,
-    generation_id: &str,
+    installation_id: &str,
     kind: OperationKind,
     operation_id: Option<&str>,
     limit: usize,
 ) -> Result<Vec<CallerAttemptView>, LocalEventQueryError> {
-    if generation_id.is_empty()
+    if installation_id.is_empty()
         || operation_id.is_some_and(str::is_empty)
         || limit == 0
         || limit > 16
@@ -594,9 +567,9 @@ fn pending_caller_attempts(
                     a.command_hash, a.sealed_command, a.resolution, a.revision
              FROM caller_attempts AS a INDEXED BY idx_caller_attempts_pending_kind
              INNER JOIN operation_bindings AS b INDEXED BY idx_operation_bindings_operation
-               ON b.principal = a.principal AND b.generation_id = a.generation_id
+               ON b.principal = a.principal AND b.installation_id = a.installation_id
               AND b.kind = a.kind AND b.caller_request_id = a.caller_request_id
-             WHERE a.generation_id = ?1 AND a.kind = ?2 AND a.resolution = 'pending'
+             WHERE a.installation_id = ?1 AND a.kind = ?2 AND a.resolution = 'pending'
                AND (?3 IS NULL OR b.operation_id = ?3)
              ORDER BY a.principal, a.caller_request_id
              LIMIT ?4",
@@ -604,7 +577,7 @@ fn pending_caller_attempts(
         .map_err(|error| storage_unavailable(&error))?;
     let rows = statement
         .query_map(
-            params![generation_id, kind.label(), operation_id, limit as i64],
+            params![installation_id, kind.label(), operation_id, limit as i64],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -633,7 +606,7 @@ fn pending_caller_attempts(
         Ok(CallerAttemptView {
             key: crate::domain::local_event::CallerOperationKey {
                 principal,
-                generation_id: generation_id.to_string(),
+                installation_id: installation_id.to_string(),
                 kind,
                 caller_request_id,
             },
@@ -653,14 +626,14 @@ fn pending_caller_attempts(
 fn caller_attempt_page(
     connection: &Connection,
     principal: &str,
-    generation_id: &str,
+    installation_id: &str,
     scope_id: &str,
     limit: usize,
     after_kind: Option<OperationKind>,
     after_caller_request_id: Option<&str>,
 ) -> Result<Vec<CallerAttemptView>, LocalEventQueryError> {
     if principal.is_empty()
-        || generation_id.is_empty()
+        || installation_id.is_empty()
         || scope_id.is_empty()
         || limit == 0
         || limit > 128
@@ -676,9 +649,9 @@ fn caller_attempt_page(
                     a.command_hash, a.resolution, a.revision
              FROM caller_attempts AS a INDEXED BY idx_caller_attempts_scope
              LEFT JOIN operation_bindings b
-               ON b.principal = a.principal AND b.generation_id = a.generation_id
+               ON b.principal = a.principal AND b.installation_id = a.installation_id
               AND b.kind = a.kind AND b.caller_request_id = a.caller_request_id
-             WHERE a.principal = ?1 AND a.generation_id = ?2 AND a.scope_id = ?3
+             WHERE a.principal = ?1 AND a.installation_id = ?2 AND a.scope_id = ?3
                AND a.resolution <> 'cleared'
                AND (a.kind > ?4 OR (a.kind = ?4 AND a.caller_request_id > ?5))
              ORDER BY a.kind, a.caller_request_id LIMIT ?6",
@@ -688,7 +661,7 @@ fn caller_attempt_page(
         .query_map(
             params![
                 principal,
-                generation_id,
+                installation_id,
                 scope_id,
                 after_kind,
                 after_id,
@@ -712,7 +685,7 @@ fn caller_attempt_page(
         Ok(CallerAttemptView {
             key: crate::domain::local_event::CallerOperationKey {
                 principal: principal.to_string(),
-                generation_id: generation_id.to_string(),
+                installation_id: installation_id.to_string(),
                 kind: OperationKind::parse(&kind).ok_or_else(|| corrupt("caller attempt kind"))?,
                 caller_request_id,
             },
@@ -865,12 +838,12 @@ fn operation_by_identity(
 
 fn operation_binding_summary_by_operation(
     connection: &Connection,
-    generation_id: &str,
+    installation_id: &str,
     kind: OperationKind,
     operation_id: &str,
     expected_binding_hmac: Option<&[u8; 32]>,
 ) -> Result<crate::domain::local_event::OperationBindingSummaryView, LocalEventQueryError> {
-    if generation_id.is_empty() || operation_id.is_empty() {
+    if installation_id.is_empty() || operation_id.is_empty() {
         return Err(LocalEventQueryError::InvalidRequest);
     }
     let expected_binding_hmac = expected_binding_hmac.map(|binding| binding.to_vec());
@@ -881,9 +854,9 @@ fn operation_binding_summary_by_operation(
                         WHEN ?4 IS NOT NULL AND binding_hmac = ?4 THEN 1 ELSE 0
                     END), 0)
              FROM operation_bindings INDEXED BY idx_operation_bindings_operation
-             WHERE generation_id = ?1 AND kind = ?2 AND operation_id = ?3",
+             WHERE installation_id = ?1 AND kind = ?2 AND operation_id = ?3",
             params![
-                generation_id,
+                installation_id,
                 kind.label(),
                 operation_id,
                 expected_binding_hmac
@@ -966,7 +939,7 @@ fn obligation_by_identity(
     let row: Option<ObligationRow> = connection
         .query_row(
             "SELECT o.record, o.revision, po.ordered_key, po.owner, po.partition,
-                    po.shutdown_plan_id, po.shutdown_epoch
+                    po.shutdown_id
              FROM obligations o
              LEFT JOIN pending_obligations po ON po.obligation_id = o.obligation_id
              WHERE o.obligation_id = ?1",
@@ -979,28 +952,23 @@ fn obligation_by_identity(
                     row.get(3)?,
                     row.get(4)?,
                     row.get(5)?,
-                    row.get(6)?,
                 ))
             },
         )
         .optional()
         .map_err(|error| storage_unavailable(&error))?;
     row.map(
-        |(record, revision, ordered_key, owner, partition, plan_id, epoch)| {
+        |(record, revision, ordered_key, owner, partition, shutdown_id)| {
             let pending = match (ordered_key, owner, partition) {
                 (Some(ordered_key), Some(owner), Some(partition)) => Some(PendingIndexEntryView {
                     ordered_key,
                     owner,
                     partition: PendingPartition::parse(&partition)
                         .ok_or_else(|| corrupt("obligation partition tag"))?,
-                    shutdown_plan: match (plan_id, epoch) {
-                        (Some(plan_id), Some(epoch)) => Some(ShutdownPlanKey { plan_id, epoch }),
-                        (None, None) => None,
-                        _ => return Err(corrupt("obligation shutdown association")),
-                    },
+                    shutdown_plan: shutdown_id.map(|shutdown_id| ShutdownPlanKey { shutdown_id }),
                 }),
                 (None, None, None) => {
-                    if plan_id.is_some() || epoch.is_some() {
+                    if shutdown_id.is_some() {
                         return Err(corrupt("detached obligation shutdown association"));
                     }
                     None
@@ -1084,6 +1052,162 @@ fn session_projection_page(
     .collect()
 }
 
+/// Reads the complete bounded owner inventory through one SQLite statement.
+///
+/// The rows iterator keeps one SQLite read snapshot alive until exhaustion;
+/// concurrent inserts therefore cannot fall behind a page cursor. The extra
+/// row proves whether the caller's bound was sufficient without returning a
+/// partial inventory as complete.
+fn canonical_runtime_owner_snapshot(
+    connection: &Connection,
+    limit: usize,
+) -> Result<Vec<CanonicalRuntimeOwnerView>, LocalEventQueryError> {
+    if limit == 0 || limit > MAX_CANONICAL_RUNTIME_OWNER_SNAPSHOT {
+        return Err(LocalEventQueryError::InvalidRequest);
+    }
+    let fetch_limit =
+        i64::try_from(limit.saturating_add(1)).map_err(|_| LocalEventQueryError::InvalidRequest)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT session_id, projection FROM session_projection
+             ORDER BY session_id ASC LIMIT ?1",
+        )
+        .map_err(|error| storage_unavailable(&error))?;
+    let mut rows = statement
+        .query(params![fetch_limit])
+        .map_err(|error| storage_unavailable(&error))?;
+    let mut scanned = 0usize;
+    let mut response_bytes = 0usize;
+    let mut owners = Vec::new();
+    while let Some(row) = rows.next().map_err(|error| storage_unavailable(&error))? {
+        scanned = scanned.saturating_add(1);
+        if scanned > limit {
+            return Err(LocalEventQueryError::ResponseTooLarge);
+        }
+        let projection_id = row
+            .get::<_, String>(0)
+            .map_err(|error| storage_unavailable(&error))?;
+        let raw = row
+            .get::<_, String>(1)
+            .map_err(|error| storage_unavailable(&error))?;
+        let projection =
+            session_projection_record(raw, &projection_id, "canonical runtime owner snapshot")?;
+        let owner = match projection {
+            SessionProjectionRecord::AgentSession(session) => {
+                let owner = CanonicalRuntimeOwnerView::AgentSession {
+                    projection_id,
+                    session_id: session.meta.id,
+                    worktree_path: session.meta.worktree_path,
+                    active: session.meta.state == AgentSessionStateRecord::Active,
+                };
+                Some(owner)
+            }
+            SessionProjectionRecord::WorkflowExecution(
+                WorkflowExecutionProjectionRecord::Present(execution),
+            ) if execution.status.is_active() => Some(CanonicalRuntimeOwnerView::ActiveWorkflow {
+                worktree_path: execution.worktree_path,
+            }),
+            SessionProjectionRecord::WorkflowWorktreeOwner(owner) if owner.active => {
+                Some(CanonicalRuntimeOwnerView::ActiveWorkflow {
+                    worktree_path: owner.worktree_path,
+                })
+            }
+            SessionProjectionRecord::WorkflowExecution(
+                WorkflowExecutionProjectionRecord::Present(_)
+                | WorkflowExecutionProjectionRecord::Deleted { .. },
+            )
+            | SessionProjectionRecord::WorkflowWorktreeOwner(_) => None,
+        };
+        if let Some(owner) = owner {
+            response_bytes = response_bytes.saturating_add(match &owner {
+                CanonicalRuntimeOwnerView::AgentSession {
+                    projection_id,
+                    session_id,
+                    worktree_path,
+                    ..
+                } => projection_id
+                    .len()
+                    .saturating_add(session_id.len())
+                    .saturating_add(worktree_path.len())
+                    .saturating_add(32),
+                CanonicalRuntimeOwnerView::ActiveWorkflow { worktree_path } => {
+                    worktree_path.len().saturating_add(16)
+                }
+            });
+            if response_bytes > CANONICAL_RUNTIME_OWNER_SNAPSHOT_MAX_BYTES {
+                return Err(LocalEventQueryError::ResponseTooLarge);
+            }
+            owners.push(owner);
+        }
+    }
+    Ok(owners)
+}
+
+#[cfg(test)]
+mod canonical_runtime_owner_snapshot_tests {
+    use super::*;
+    use crate::adaptor::gateway::local_event_store::projection_record_codec::encode_session_projection_record_v1;
+    use crate::domain::local_event::{SessionProjectionRecord, WorkflowWorktreeOwnerRecord};
+
+    fn connection_with_active_workflow_owners(count: usize) -> Connection {
+        let connection = Connection::open_in_memory().expect("in-memory SQLite");
+        connection
+            .execute_batch(
+                "CREATE TABLE session_projection (
+                    session_id TEXT PRIMARY KEY,
+                    projection TEXT NOT NULL
+                );",
+            )
+            .expect("projection table");
+        for index in 0..count {
+            let worktree_path = format!("/snapshot/worktree-{index}");
+            let owner = WorkflowWorktreeOwnerRecord {
+                worktree_path: worktree_path.clone(),
+                execution_id: format!("execution-{index}"),
+                active: true,
+            };
+            let projection = encode_session_projection_record_v1(
+                &SessionProjectionRecord::WorkflowWorktreeOwner(owner),
+            )
+            .expect("encoded workflow owner");
+            let projection_id = format!(
+                "workflow-worktree:{}",
+                hex::encode(Sha256::digest(worktree_path.as_bytes()))
+            );
+            connection
+                .execute(
+                    "INSERT INTO session_projection (session_id, projection) VALUES (?1, ?2)",
+                    params![projection_id, projection],
+                )
+                .expect("insert workflow owner");
+        }
+        connection
+    }
+
+    #[test]
+    fn app_data_gc_owner_snapshot_returns_one_bounded_lightweight_inventory() {
+        let connection = connection_with_active_workflow_owners(2);
+
+        let owners =
+            canonical_runtime_owner_snapshot(&connection, 2).expect("complete owner snapshot");
+
+        assert_eq!(owners.len(), 2);
+        assert!(owners
+            .iter()
+            .all(|owner| matches!(owner, CanonicalRuntimeOwnerView::ActiveWorkflow { .. })));
+    }
+
+    #[test]
+    fn app_data_gc_owner_snapshot_limit_plus_one_fails_closed() {
+        let connection = connection_with_active_workflow_owners(2);
+
+        assert_eq!(
+            canonical_runtime_owner_snapshot(&connection, 1),
+            Err(LocalEventQueryError::ResponseTooLarge)
+        );
+    }
+}
+
 fn message_projection_by_identity(
     connection: &Connection,
     session_id: &str,
@@ -1113,29 +1237,6 @@ fn message_projection_by_identity(
         })
     })
     .transpose()
-}
-
-fn legacy_raw_record_by_path(
-    connection: &Connection,
-    source_path: &str,
-) -> Result<Option<LegacyRawRecordView>, LocalEventQueryError> {
-    if source_path.is_empty() || source_path.len() > 1_024 || source_path.contains("..") {
-        return Err(LocalEventQueryError::InvalidRequest);
-    }
-    connection
-        .query_row(
-            "SELECT source_path, raw FROM legacy_raw_records
-             WHERE source_path = ?1 ORDER BY migration_id DESC LIMIT 1",
-            params![source_path],
-            |row| {
-                Ok(LegacyRawRecordView {
-                    source_path: row.get(0)?,
-                    raw: row.get(1)?,
-                })
-            },
-        )
-        .optional()
-        .map_err(|error| storage_unavailable(&error))
 }
 
 fn message_projection_page(
@@ -1219,7 +1320,6 @@ type PendingRow = (
     String,
     String,
     Option<String>,
-    Option<i64>,
     String,
     i64,
     Option<String>,
@@ -1241,7 +1341,6 @@ fn pending_recovery_filter(
     ordered_key_prefix: Option<&str>,
     shutdown_plan: Option<&ShutdownPlanKey>,
 ) -> [u8; 32] {
-    let shutdown_epoch = shutdown_plan.map(|plan| plan.epoch.to_string());
     filter_hash(&[
         "pending_recovery",
         partition
@@ -1250,9 +1349,8 @@ fn pending_recovery_filter(
         owner.unwrap_or("all_owners"),
         ordered_key_prefix.unwrap_or("all_namespaces"),
         shutdown_plan
-            .map(|plan| plan.plan_id.as_str())
+            .map(|plan| plan.shutdown_id.as_str())
             .unwrap_or("all_shutdown_plans"),
-        shutdown_epoch.as_deref().unwrap_or("all_shutdown_epochs"),
     ])
 }
 
@@ -1261,11 +1359,9 @@ fn pending_recovery_snapshot_filter(
     snapshot_id: &str,
     partition: PendingPartition,
 ) -> [u8; 32] {
-    let epoch = plan.epoch.to_string();
     filter_hash(&[
         "recovery_snapshot",
-        &plan.plan_id,
-        &epoch,
+        &plan.shutdown_id,
         snapshot_id,
         partition.label(),
     ])
@@ -1313,7 +1409,7 @@ pub(crate) fn recovery_query_snapshot_id(
         &context.cursor_key,
         cursor.as_str(),
         &filter,
-        &context.boot_id,
+        &context.process_instance_id,
         context.clock.now_ms(),
     )
     .map(|claims| Some(claims.snapshot_id))
@@ -1368,7 +1464,7 @@ fn pending_recovery_page(
                 &context.cursor_key,
                 cursor.as_str(),
                 &filter,
-                &context.boot_id,
+                &context.process_instance_id,
                 now_ms,
             )?;
             if query_snapshot_id.is_some_and(|expected| expected != claims.snapshot_id) {
@@ -1397,7 +1493,6 @@ fn pending_recovery_page(
             row.get(5)?,
             row.get(6)?,
             row.get(7)?,
-            row.get(8)?,
         ))
     };
     macro_rules! collect_pending_rows {
@@ -1411,8 +1506,8 @@ fn pending_recovery_page(
                     .saturating_add(row.2.len())
                     .saturating_add(row.3.len())
                     .saturating_add(row.4.as_ref().map_or(0, String::len))
-                    .saturating_add(row.6.len())
-                    .saturating_add(row.8.as_ref().map_or(0, String::len))
+                    .saturating_add(row.5.len())
+                    .saturating_add(row.7.as_ref().map_or(0, String::len))
                     .saturating_add(std::mem::size_of::<i64>() * 2);
                 if !rows.is_empty()
                     && internal_bytes.saturating_add(row_bytes)
@@ -1432,7 +1527,7 @@ fn pending_recovery_page(
                 .prepare(SQL_PENDING_FIRST_PAGE_SHUTDOWN_PLAN)
                 .map_err(|error| storage_unavailable(&error))?;
             let mapped = statement
-                .query_map(params![plan.plan_id, plan.epoch, last_key, fetch], map_row)
+                .query_map(params![plan.shutdown_id, last_key, fetch], map_row)
                 .map_err(|error| storage_unavailable(&error))?;
             collect_pending_rows!(mapped);
         }
@@ -1495,8 +1590,7 @@ fn pending_recovery_page(
         ordered_key,
         owner,
         partition_label,
-        plan_id,
-        epoch,
+        shutdown_id,
         record,
         revision,
         owner_projection,
@@ -1507,7 +1601,7 @@ fn pending_recovery_page(
             &cursor_snapshot_id,
             &filter,
             &ordered_key,
-            &context.boot_id,
+            &context.process_instance_id,
             cursor_expiry_ms,
         )));
         let record_sha256 = raw_sha256(&record);
@@ -1520,11 +1614,7 @@ fn pending_recovery_page(
             owner,
             partition: PendingPartition::parse(&partition_label)
                 .ok_or_else(|| corrupt("pending partition tag"))?,
-            shutdown_plan: match (plan_id, epoch) {
-                (Some(plan_id), Some(epoch)) => Some(ShutdownPlanKey { plan_id, epoch }),
-                (None, None) => None,
-                _ => return Err(corrupt("pending shutdown association")),
-            },
+            shutdown_plan: shutdown_id.map(|shutdown_id| ShutdownPlanKey { shutdown_id }),
             record: obligation_record(&record, "pending obligation record")?,
             record_sha256,
             owner_projection,
@@ -1548,107 +1638,31 @@ fn load_plan(
     connection: &Connection,
     plan: &ShutdownPlanKey,
 ) -> Result<Option<ShutdownPlanView>, LocalEventQueryError> {
-    let row: Option<(String, String, String, i64, Option<String>)> = connection
+    let row: Option<(String, String, String, i64)> = connection
         .query_row(
-            "SELECT p.phase, p.summary, p.details_state, p.revision, a.archive
-             FROM shutdown_plans p
-             LEFT JOIN shutdown_compact_archives a
-               ON a.plan_id = p.plan_id AND a.epoch = p.epoch
-             WHERE p.plan_id = ?1 AND p.epoch = ?2",
-            params![plan.plan_id, plan.epoch],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                ))
-            },
+            "SELECT phase, summary, details_state, revision
+             FROM shutdown_plans
+             WHERE shutdown_id = ?1",
+            params![plan.shutdown_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .optional()
         .map_err(|error| storage_unavailable(&error))?;
-    if let Some((phase, plan_summary, details_state, revision, archive)) = row {
+    if let Some((phase, plan_summary, details_state, revision)) = row {
         let details_state = ShutdownDetailsState::parse(&details_state)
             .ok_or_else(|| corrupt("shutdown details state tag"))?;
-        return if details_state == ShutdownDetailsState::Compacted {
-            let archive = archive.ok_or_else(|| corrupt("compacted shutdown archive missing"))?;
-            decode_shutdown_archive(plan, &archive, Some((&phase, &plan_summary, revision)))
-                .map(Some)
-        } else {
-            if archive.is_some() {
-                return Err(corrupt("available shutdown unexpectedly has archive"));
-            }
-            let summary_sha256 = raw_sha256(&plan_summary);
-            Ok(Some(ShutdownPlanView {
-                plan: plan.clone(),
-                phase: label_to_shutdown_phase(&phase)
-                    .ok_or_else(|| corrupt("shutdown phase tag"))?,
-                summary: shutdown_plan_record(&plan_summary, "shutdown plan summary")?,
-                summary_sha256,
-                details_state,
-                revision: crate::domain::local_event::Revision::new(revision)
-                    .map_err(|_| corrupt("shutdown plan revision"))?,
-            }))
-        };
+        let summary_sha256 = raw_sha256(&plan_summary);
+        return Ok(Some(ShutdownPlanView {
+            plan: plan.clone(),
+            phase: label_to_shutdown_phase(&phase).ok_or_else(|| corrupt("shutdown phase tag"))?,
+            summary: shutdown_plan_record(&plan_summary, "shutdown plan summary")?,
+            summary_sha256,
+            details_state,
+            revision: crate::domain::local_event::Revision::new(revision)
+                .map_err(|_| corrupt("shutdown plan revision"))?,
+        }));
     }
-    let archive: Option<String> = connection
-        .query_row(
-            "SELECT archive FROM shutdown_compact_archives
-             WHERE plan_id = ?1 AND epoch = ?2",
-            params![plan.plan_id, plan.epoch],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|error| storage_unavailable(&error))?;
-    archive
-        .map(|archive| decode_shutdown_archive(plan, &archive, None))
-        .transpose()
-}
-
-fn decode_shutdown_archive(
-    plan: &ShutdownPlanKey,
-    archive: &str,
-    live: Option<(&str, &str, i64)>,
-) -> Result<ShutdownPlanView, LocalEventQueryError> {
-    let archive = state_record(
-        crate::adaptor::gateway::local_event_store::state_record_codec::StoredShutdownArchiveV1::decode(archive),
-        "shutdown compact archive",
-    )?
-    .into_value();
-    if &archive.plan != plan
-        || !matches!(
-            archive.terminal_phase,
-            ApplicationShutdownPhase::Completed
-                | ApplicationShutdownPhase::Failed
-                | ApplicationShutdownPhase::Cancelled
-                | ApplicationShutdownPhase::ReconciliationRequired
-        )
-    {
-        return Err(corrupt("shutdown compact archive identity"));
-    }
-    let revision = i64::try_from(archive.source_revision)
-        .ok()
-        .and_then(|source_revision| source_revision.checked_add(1))
-        .and_then(|revision| crate::domain::local_event::Revision::new(revision).ok())
-        .ok_or_else(|| corrupt("shutdown compact archive revision"))?;
-    if let Some((live_phase, live_summary, live_revision)) = live {
-        if label_to_shutdown_phase(live_phase) != Some(archive.terminal_phase)
-            || raw_sha256(live_summary) != archive.source_summary_sha256
-            || shutdown_plan_record(live_summary, "live shutdown plan summary")? != archive.summary
-            || live_revision != revision.value()
-        {
-            return Err(corrupt("shutdown compact archive live mismatch"));
-        }
-    }
-    Ok(ShutdownPlanView {
-        plan: plan.clone(),
-        phase: archive.terminal_phase,
-        summary: archive.summary,
-        summary_sha256: archive.source_summary_sha256,
-        details_state: ShutdownDetailsState::Compacted,
-        revision,
-    })
+    Ok(None)
 }
 
 fn available_shutdown_history(
@@ -1660,7 +1674,7 @@ fn available_shutdown_history(
     }
     let mut statement = connection
         .prepare(
-            "SELECT plan_id, epoch, phase, summary, details_state, revision
+            "SELECT shutdown_id, phase, summary, details_state, revision
              FROM shutdown_plans INDEXED BY idx_shutdown_plans_details_state
              WHERE details_state = 'available'
              ORDER BY rowid
@@ -1671,20 +1685,19 @@ fn available_shutdown_history(
         .query_map(params![limit as i64], |row| {
             Ok((
                 row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?,
+                row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(4)?,
             ))
         })
         .map_err(|error| storage_unavailable(&error))?;
     rows.map(|row| {
-        let (plan_id, epoch, phase, summary, details_state, revision) =
+        let (shutdown_id, phase, summary, details_state, revision) =
             row.map_err(|error| storage_unavailable(&error))?;
         let summary_sha256 = raw_sha256(&summary);
         Ok(ShutdownPlanView {
-            plan: ShutdownPlanKey { plan_id, epoch },
+            plan: ShutdownPlanKey { shutdown_id },
             phase: label_to_shutdown_phase(&phase).ok_or_else(|| corrupt("shutdown phase tag"))?,
             summary: shutdown_plan_record(&summary, "shutdown plan summary")?,
             summary_sha256,
@@ -1695,24 +1708,6 @@ fn available_shutdown_history(
         })
     })
     .collect()
-}
-
-fn shutdown_retiring_plan(
-    connection: &Connection,
-) -> Result<Option<ShutdownPlanKey>, LocalEventQueryError> {
-    let pointer: (Option<String>, Option<i64>) = connection
-        .query_row(
-            "SELECT retiring_shutdown_plan_id, retiring_shutdown_epoch
-             FROM store_metadata WHERE id = 1",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .map_err(|error| storage_unavailable(&error))?;
-    match pointer {
-        (None, None) => Ok(None),
-        (Some(plan_id), Some(epoch)) => Ok(Some(ShutdownPlanKey { plan_id, epoch })),
-        _ => Err(corrupt("partial shutdown retiring selector")),
-    }
 }
 
 struct PendingRecoverySnapshotPageRequest<'a> {
@@ -1764,7 +1759,7 @@ fn pending_recovery_snapshot_page(
                 &context.cursor_key,
                 cursor.as_str(),
                 &filter,
-                &context.boot_id,
+                &context.process_instance_id,
                 now_ms,
             )?;
             if query_snapshot_id.is_some_and(|expected| expected != claims.snapshot_id) {
@@ -1782,17 +1777,16 @@ fn pending_recovery_snapshot_page(
     let mut statement = connection
         .prepare(
             "SELECT ordinal, detail FROM shutdown_recovery_snapshots
-             WHERE plan_id = ?1 AND epoch = ?2 AND partition = ?3
-               AND printf('%019d', ordinal) > ?4
+             WHERE shutdown_id = ?1 AND partition = ?2
+               AND printf('%019d', ordinal) > ?3
              ORDER BY ordinal
-             LIMIT ?5",
+             LIMIT ?4",
         )
         .map_err(|error| storage_unavailable(&error))?;
     let mapped = statement
         .query_map(
             params![
-                plan.plan_id,
-                plan.epoch,
+                plan.shutdown_id,
                 partition.label(),
                 last_key,
                 (limit + 1) as i64
@@ -1828,7 +1822,7 @@ fn pending_recovery_snapshot_page(
             &cursor_snapshot_id,
             &filter,
             &key,
-            &context.boot_id,
+            &context.process_instance_id,
             cursor_expiry_ms,
         )));
         entries.push(ShutdownSnapshotEntryView {
@@ -1883,29 +1877,26 @@ fn current_shutdown(
     connection: &Connection,
     context: &QueryContext,
 ) -> Result<Option<ShutdownPlanView>, LocalEventQueryError> {
-    let pointer: (Option<String>, Option<i64>) = connection
+    let pointer: Option<String> = connection
         .query_row(
-            "SELECT current_shutdown_plan_id, current_shutdown_epoch
+            "SELECT current_shutdown_id
              FROM store_metadata WHERE id = 1",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| row.get(0),
         )
         .map_err(|error| storage_unavailable(&error))?;
-    let Some(key) = (match pointer {
-        (Some(plan_id), Some(epoch)) => Some(ShutdownPlanKey { plan_id, epoch }),
-        _ => None,
-    }) else {
+    let Some(shutdown_id) = pointer else {
         return Ok(None);
     };
+    let key = ShutdownPlanKey { shutdown_id };
     let mut plan = load_plan(connection, &key)?
         .ok_or_else(|| corrupt("current shutdown pointer without plan row"))?;
     if matches!(
         plan.phase,
-        crate::domain::local_event::ApplicationShutdownPhase::Preparing
-            | crate::domain::local_event::ApplicationShutdownPhase::Prepared
+        crate::domain::local_event::ApplicationShutdownPhase::Prepared
             | crate::domain::local_event::ApplicationShutdownPhase::Activated
             | crate::domain::local_event::ApplicationShutdownPhase::Quiescing
-    ) && plan.summary.boot_id != context.boot_id
+    ) && plan.summary.process_instance_id != context.process_instance_id
     {
         plan.phase = crate::domain::local_event::ApplicationShutdownPhase::ReconciliationRequired;
     }
@@ -1930,20 +1921,19 @@ fn retry_quit_eligibility(
     );
     let row: Option<RetryEvidence> = connection
         .query_row(
-            "SELECT m.health, m.boot_id, p.phase, p.summary, p.commit_id,
+            "SELECT m.health, m.process_instance_id, p.phase, p.summary, p.commit_id,
                     o.receipt, o.latest_status, o.commit_id
              FROM store_metadata AS m
              JOIN shutdown_plans AS p
-               ON p.plan_id = m.current_shutdown_plan_id
-              AND p.epoch = m.current_shutdown_epoch
+               ON p.shutdown_id = m.current_shutdown_id
              LEFT JOIN operation_records AS o
                ON o.kind = 'application_quit'
               AND o.operation_id = CASE
                     WHEN json_valid(p.summary) THEN json_extract(p.summary, '$.operation_id')
                     ELSE NULL
                   END
-             WHERE m.id = 1 AND p.plan_id = ?1 AND p.epoch = ?2 AND p.revision = ?3",
-            params![plan.plan_id, plan.epoch, revision.value()],
+             WHERE m.id = 1 AND p.shutdown_id = ?1 AND p.revision = ?2",
+            params![plan.shutdown_id, revision.value()],
             |row| {
                 Ok((
                     row.get(0)?,
@@ -1993,9 +1983,10 @@ fn retry_quit_eligibility(
             .get("operation_id")
             .and_then(serde_json::Value::as_str)
             == Some(operation_id)
-        && receipt.get("plan_id").and_then(serde_json::Value::as_str)
-            == Some(plan.plan_id.as_str())
-        && receipt.get("epoch").and_then(serde_json::Value::as_i64) == Some(plan.epoch);
+        && receipt
+            .get("shutdown_id")
+            .and_then(serde_json::Value::as_str)
+            == Some(plan.shutdown_id.as_str());
     if !receipt_matches {
         return Err(corrupt("retry quit operation receipt reference"));
     }
@@ -2014,10 +2005,12 @@ fn retry_quit_eligibility(
         return Err(corrupt("retry quit operation status state"));
     }
     Ok(health == "ok"
-        && metadata_boot_id == context.boot_id
+        && metadata_boot_id == context.process_instance_id
         && phase == "failed"
-        && summary.get("boot_id").and_then(serde_json::Value::as_str)
-            == Some(context.boot_id.as_str())
+        && summary
+            .get("process_instance_id")
+            .and_then(serde_json::Value::as_str)
+            == Some(context.process_instance_id.as_str())
         && summary.get("outcome").and_then(serde_json::Value::as_str)
             == Some("aborted_before_activation")
         && summary
@@ -2056,14 +2049,14 @@ fn shutdown_plan_page(
             next_cursor: None,
         });
     }
-    let filter = filter_hash(&["shutdown_targets", &plan.plan_id, &plan.epoch.to_string()]);
+    let filter = filter_hash(&["shutdown_targets", &plan.shutdown_id]);
     let now_ms = context.clock.now_ms();
     let last_ordinal: i64 = match cursor {
         Some(cursor) => verify_cursor(
             &context.cursor_key,
             cursor.as_str(),
             &filter,
-            &context.boot_id,
+            &context.process_instance_id,
             now_ms,
         )?
         .last_key
@@ -2075,14 +2068,14 @@ fn shutdown_plan_page(
     let mut statement = connection
         .prepare(
             "SELECT ordinal, detail, revision FROM shutdown_targets
-             WHERE plan_id = ?1 AND epoch = ?2 AND ordinal > ?3
+             WHERE shutdown_id = ?1 AND ordinal > ?2
              ORDER BY ordinal
-             LIMIT ?4",
+             LIMIT ?3",
         )
         .map_err(|error| storage_unavailable(&error))?;
     let mapped = statement
         .query_map(
-            params![plan.plan_id, plan.epoch, last_ordinal, (limit + 1) as i64],
+            params![plan.shutdown_id, last_ordinal, (limit + 1) as i64],
             |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
@@ -2128,7 +2121,7 @@ fn shutdown_plan_page(
                 "shutdown_targets",
                 &filter,
                 &target.ordinal.to_string(),
-                &context.boot_id,
+                &context.process_instance_id,
                 now_ms + CURSOR_TTL_MS,
             ))
         })
@@ -2157,8 +2150,8 @@ fn shutdown_target_by_identity(
     connection
         .query_row(
             "SELECT detail, revision FROM shutdown_targets
-             WHERE plan_id = ?1 AND epoch = ?2 AND ordinal = ?3",
-            params![plan.plan_id, plan.epoch, ordinal],
+             WHERE shutdown_id = ?1 AND ordinal = ?2",
+            params![plan.shutdown_id, ordinal],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
         )
         .optional()
@@ -2180,112 +2173,8 @@ fn shutdown_target_by_identity(
         .transpose()
 }
 
-fn local_store_migration(
-    connection: &Connection,
-) -> Result<Option<LocalStoreMigrationView>, LocalEventQueryError> {
-    let row: Option<MigrationRow> = connection
-        .query_row(
-            "SELECT migration_id, phase, source_inventory_hash, checkpoint, parity, revision
-             FROM local_store_migrations ORDER BY rowid DESC LIMIT 1",
-            [],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                ))
-            },
-        )
-        .optional()
-        .map_err(|error| storage_unavailable(&error))?;
-    row.map(
-        |(migration_id, phase, hash, checkpoint, parity, revision)| {
-            Ok(LocalStoreMigrationView {
-                migration_id,
-                phase: parse_migration_phase(&phase)
-                    .ok_or_else(|| corrupt("migration phase tag"))?,
-                source_inventory_hash: blob32(hash, "migration inventory hash")?,
-                checkpoint: migration_checkpoint_record(&checkpoint, "migration checkpoint")?,
-                parity: parity
-                    .map(|payload| migration_parity_record(&payload, "migration parity"))
-                    .transpose()?,
-                revision: crate::domain::local_event::Revision::new(revision)
-                    .map_err(|_| corrupt("migration revision"))?,
-            })
-        },
-    )
-    .transpose()
-}
-
-fn migration_quit_flight(
-    connection: &Connection,
-    key_column: &str,
-    key: &str,
-) -> Result<Option<MigrationQuitFlightView>, LocalEventQueryError> {
-    if key.is_empty() || key.len() > 256 {
-        return Err(LocalEventQueryError::InvalidRequest);
-    }
-    let sql = match key_column {
-        "operation_id" => {
-            "SELECT operation_id, migration_id, migration_revision, checkpoint,
-                    accepted_boot_id, revision
-             FROM migration_quit_flights WHERE operation_id = ?1"
-        }
-        "migration_id" => {
-            "SELECT operation_id, migration_id, migration_revision, checkpoint,
-                    accepted_boot_id, revision
-             FROM migration_quit_flights WHERE migration_id = ?1"
-        }
-        _ => unreachable!("closed migration flight query key"),
-    };
-    connection
-        .query_row(sql, params![key], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, i64>(5)?,
-            ))
-        })
-        .optional()
-        .map_err(|error| storage_unavailable(&error))?
-        .map(
-            |(
-                operation_id,
-                migration_id,
-                migration_revision,
-                checkpoint,
-                accepted_boot_id,
-                revision,
-            )| {
-                Ok(MigrationQuitFlightView {
-                    operation_id,
-                    migration_id,
-                    migration_revision: crate::domain::local_event::Revision::new(
-                        migration_revision,
-                    )
-                    .map_err(|_| corrupt("migration quit migration revision"))?,
-                    checkpoint: migration_checkpoint_record(
-                        &checkpoint,
-                        "migration quit checkpoint",
-                    )?,
-                    accepted_boot_id,
-                    revision: crate::domain::local_event::Revision::new(revision)
-                        .map_err(|_| corrupt("migration quit revision"))?,
-                })
-            },
-        )
-        .transpose()
-}
-
-/// Gateway-internal raw envelope read for migration / export style paths and
-/// tests. Bytes are returned exactly as stored; unknown payloads must never
-/// be modified.
+/// Gateway-internal raw envelope read for tests. Bytes are returned exactly
+/// as stored; unknown payloads must never be modified.
 #[cfg(test)]
 pub(crate) fn read_envelope(
     connection: &Connection,
@@ -2464,6 +2353,7 @@ pub struct RecoverySnapshotPager {
     database_path: PathBuf,
     context: Arc<QueryContext>,
     state: Mutex<RecoverySnapshotState>,
+    workers: Mutex<Vec<std::thread::JoinHandle<()>>>,
 }
 
 impl RecoverySnapshotPager {
@@ -2476,7 +2366,30 @@ impl RecoverySnapshotPager {
                 issue_order: VecDeque::new(),
                 closed: false,
             }),
+            workers: Mutex::new(Vec::new()),
         })
+    }
+
+    fn reap_finished_workers(&self) {
+        let finished = {
+            let mut workers = self
+                .workers
+                .lock()
+                .expect("recovery snapshot worker list poisoned");
+            let mut finished = Vec::new();
+            let mut index = 0;
+            while index < workers.len() {
+                if workers[index].is_finished() {
+                    finished.push(workers.swap_remove(index));
+                } else {
+                    index += 1;
+                }
+            }
+            finished
+        };
+        for worker in finished {
+            let _ = worker.join();
+        }
     }
 
     fn unavailable(context: &'static str, error: impl std::fmt::Display) -> LocalEventQueryError {
@@ -2591,12 +2504,13 @@ impl RecoverySnapshotPager {
         let snapshot_id = uuid::Uuid::new_v4().to_string();
         let expires_at_ms = self.context.clock.now_ms().saturating_add(CURSOR_TTL_MS);
         let (sender, receiver) = mpsc::channel::<RecoverySnapshotJob>();
+        self.reap_finished_workers();
         self.reserve(&snapshot_id, expires_at_ms, sender.clone())?;
 
         let database_path = self.database_path.clone();
         let context = Arc::clone(&self.context);
         let worker_snapshot_id = snapshot_id.clone();
-        if let Err(error) = std::thread::Builder::new()
+        let worker = match std::thread::Builder::new()
             .name(format!(
                 "local-event-recovery-snapshot-{}",
                 &snapshot_id[..8]
@@ -2638,18 +2552,35 @@ impl RecoverySnapshotPager {
                     }
                 }
                 let _ = connection.execute_batch("ROLLBACK");
-            })
-        {
-            self.remove(&snapshot_id);
-            return Err(Self::unavailable("spawn", error));
-        }
+            }) {
+            Ok(worker) => worker,
+            Err(error) => {
+                self.remove(&snapshot_id);
+                return Err(Self::unavailable("spawn", error));
+            }
+        };
+        self.workers
+            .lock()
+            .expect("recovery snapshot worker list poisoned")
+            .push(worker);
         self.dispatch(&snapshot_id, &sender, query).await
     }
 
     pub fn close(&self) {
-        let mut state = self.state.lock().expect("recovery snapshot pager poisoned");
-        state.closed = true;
-        state.active.clear();
-        state.issue_order.clear();
+        {
+            let mut state = self.state.lock().expect("recovery snapshot pager poisoned");
+            state.closed = true;
+            state.active.clear();
+            state.issue_order.clear();
+        }
+        let workers = self
+            .workers
+            .lock()
+            .expect("recovery snapshot worker list poisoned")
+            .drain(..)
+            .collect::<Vec<_>>();
+        for worker in workers {
+            let _ = worker.join();
+        }
     }
 }

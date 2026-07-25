@@ -916,12 +916,14 @@ impl From<StoredWorkflowEventV1> for WorkflowEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(test)]
 pub(crate) struct StoredWorkflowPayloadSource {
     pub source_id: String,
     pub record_ordinal: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(test)]
 pub(crate) struct PreservedStoredWorkflowPayload {
     pub source: StoredWorkflowPayloadSource,
     pub payload_version: u32,
@@ -930,6 +932,7 @@ pub(crate) struct PreservedStoredWorkflowPayload {
 }
 
 #[derive(Debug, Clone)]
+#[cfg(test)]
 pub(crate) struct DecodedStoredWorkflowEventV1 {
     pub event: WorkflowEvent,
     pub preserved_additive_payload: Option<PreservedStoredWorkflowPayload>,
@@ -937,12 +940,14 @@ pub(crate) struct DecodedStoredWorkflowEventV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("incompatible stored workflow event type={type_tag} version={payload_version}: {reason}")]
+#[cfg(test)]
 pub(crate) struct IncompatibleStoredWorkflowEvent {
     pub type_tag: String,
     pub payload_version: u32,
     pub reason: String,
 }
 
+#[cfg(test)]
 pub(crate) fn decode_stored_workflow_event_v1(
     raw: &[u8],
     payload_version: u32,
@@ -992,6 +997,7 @@ pub(crate) fn encode_stored_workflow_event_v1(
     serde_json::to_vec(&StoredWorkflowEventV1::from(event))
 }
 
+#[cfg(test)]
 fn incompatible_workflow_event(
     type_tag: impl Into<String>,
     reason: impl Into<String>,
@@ -1003,6 +1009,7 @@ fn incompatible_workflow_event(
     }
 }
 
+#[cfg(test)]
 fn contains_additive_fields(original: &serde_json::Value, canonical: &serde_json::Value) -> bool {
     match (original, canonical) {
         (serde_json::Value::Object(original), serde_json::Value::Object(canonical)) => {

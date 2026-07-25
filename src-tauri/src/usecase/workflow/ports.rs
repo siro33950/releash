@@ -198,7 +198,7 @@ pub trait WorkflowStallObservedGateway: Send + Sync {
 #[async_trait::async_trait]
 pub trait WorkflowRuntimeStateGateway: Send + Sync {
     /// Explicit startup recovery hook. Construction must never invoke this:
-    /// composition calls it once only after verified local-store cutover and
+    /// composition calls it once only after the fixed local store is verified and
     /// normal mutation admission.
     async fn recover_startup(&self) -> Result<(), WorkflowError> {
         Ok(())
@@ -213,14 +213,6 @@ pub trait WorkflowRuntimeStateGateway: Send + Sync {
         &self,
         worktree_path: &str,
     ) -> Result<Option<WorkflowRuntimeSnapshot>, WorkflowError>;
-}
-
-/// Startup recovery admission is owned outside the workflow runtime. The
-/// workflow usecase may observe this gate but cannot open it.
-#[cfg(test)]
-pub trait WorkflowStartupRecoveryAdmission: Send + Sync {
-    fn normal_mutation_admitted(&self) -> bool;
-    fn migration_blocked(&self) -> bool;
 }
 
 #[async_trait::async_trait]

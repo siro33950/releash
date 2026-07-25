@@ -181,37 +181,28 @@ pub fn resolve_session_data_dir_env(
     }
 }
 
-/// Tauri app 起動直後に呼び、自プロセスの `RELEASH_DATA_DIR` env を alias data_dir で正す。
+/// Tauri app 起動直後に呼び、自プロセスの `RELEASH_DATA_DIR` env を
+/// startup boundaryで解決済みのalias data_dirで正す。
 ///
 /// 別 Releash binary (例: prod 版 Releash の Terminal Panel) から inherit された env を
 /// 「ユーザー明示指定」と誤認すると、子プロセス (agent / pty / oneshot) への伝搬時に
 /// 異種 data_dir を渡してしまう。本関数は起動初期に env を判定 (`resolve_session_data_dir_env`)
 /// して必要なら `std::env::set_var` で自プロセスの alias data_dir に揃える。
 ///
-/// 失敗時 (data_dir 解決不能等) は env を変更せず log のみで済ませ、起動失敗を連鎖させない。
-pub fn ensure_release_data_dir_env_for_app<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
-    use tauri::Manager;
-    let self_data_dir = match app.path().app_data_dir() {
-        Ok(d) => d,
-        Err(e) => {
-            log::warn!(
-                "ensure_release_data_dir_env_for_app: failed to resolve own app_data_dir: {e}"
-            );
-            return;
-        }
-    };
+/// alias一覧の解決に失敗した場合はenvを変更せずlogのみに留める。
+pub fn ensure_release_data_dir_env_for_resolved_path(self_data_dir: &Path) {
     let known = match known_alias_data_dirs() {
         Ok(v) => v,
         Err(e) => {
             log::warn!(
-                "ensure_release_data_dir_env_for_app: failed to enumerate known alias data dirs: {e}"
+                "ensure_release_data_dir_env_for_resolved_path: failed to enumerate known alias data dirs: {e}"
             );
             return;
         }
     };
     let parent = std::env::var("RELEASH_DATA_DIR").ok();
     if let ResolvedDataDirEnv::Set(path) =
-        resolve_session_data_dir_env(parent.as_deref(), &self_data_dir, &known)
+        resolve_session_data_dir_env(parent.as_deref(), self_data_dir, &known)
     {
         std::env::set_var("RELEASH_DATA_DIR", &path);
     }

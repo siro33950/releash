@@ -241,7 +241,7 @@ mod tests {
         session.agent_session_id = Some("sdk-session".to_string());
         session.context_carry = Some(super::super::ContextCarryState::Resumed);
         store
-            .save_full_session_for_migration_or_restore(temp.path(), &session)
+            .save_full_session_for_restore(temp.path(), &session)
             .unwrap();
 
         let controller = SessionLifecycleController {

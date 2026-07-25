@@ -2,8 +2,8 @@ use super::layout::{
     attachment_file_in_dir, attachments_dir_in_dir, content_hash, event_batches_dir_in_dir,
     event_log_file_in_dir, event_tail_file_in_dir, index_file_in_dir, legacy_meta_file,
     message_file_in_dir, meta_event_transaction_file_in_dir, meta_file_in_dir,
-    private_context_file_in_dir, queue_pause_checkpoint_file_in_dir, session_dir, session_file,
-    sessions_dir, tool_output_file_in_dir, tool_outputs_dir_in_dir, write_json_pretty_atomic,
+    private_context_file_in_dir, session_dir, session_file, sessions_dir, tool_output_file_in_dir,
+    tool_outputs_dir_in_dir, write_json_pretty_atomic,
 };
 use super::transaction::{
     encode_transaction_v1, SessionMetaEventTransaction, TransactionApplyStep,
@@ -46,14 +46,6 @@ fn public_session_value(session: &ChatSession) -> serde_json::Value {
 
 fn public_page_json(page: SessionPage) -> String {
     serde_json::to_string(&SessionPageDtoV1::from(page)).unwrap()
-}
-
-fn semantic_agent_session_projection(
-    raw: &str,
-) -> crate::domain::local_event::SessionProjectionRecord {
-    crate::domain::local_event::SessionProjectionRecord::AgentSession(Box::new(
-        decode_agent_session_projection_record_v1(raw).unwrap(),
-    ))
 }
 
 fn write_stored_message(path: &Path, message: &ChatMessage) {
@@ -100,212 +92,6 @@ fn make_session(id: &str, worktree: &str) -> ChatSession {
         workflow_node_context: None,
         context_epoch: None,
     }
-}
-
-#[test]
-fn legacy_semantic_materialization_preserves_title_queue_token_terminal_and_pending_work() {
-    use crate::domain::agent_session::entities::{
-        PermissionRequest, PermissionRequestBody, PermissionRequestStatus,
-    };
-    use crate::domain::agent_session::events::{
-        SendDisposition, SessionLifecycleKind, StopResolution, TurnTokenUsage,
-    };
-    use crate::domain::agent_session::value_objects::JsonPayload;
-
-    let session = make_session(UUID1, "/repo");
-    let base = encode_sqlite_session_projection(SessionMeta::from_session(&session)).unwrap();
-    let events = vec![
-        AgentSessionEvent::TurnStarted {
-            turn_id: 1,
-            message_id: "human-1".to_string(),
-            assistant_message_id: Some("agent-1".to_string()),
-            prompt: PromptInput::default(),
-            at: 10.0,
-        },
-        AgentSessionEvent::TurnCompleted {
-            turn_id: 1,
-            exit_code: 0,
-            stop_reason: None,
-            token_usage: Some(TurnTokenUsage {
-                input_tokens: 10,
-                output_tokens: 20,
-            }),
-        },
-        AgentSessionEvent::TurnStarted {
-            turn_id: 2,
-            message_id: "human-2".to_string(),
-            assistant_message_id: Some("agent-2".to_string()),
-            prompt: PromptInput::default(),
-            at: 20.0,
-        },
-        AgentSessionEvent::PermissionRequested {
-            turn_id: 2,
-            tool_use_id: Some("tool-2".to_string()),
-            request: PermissionRequest {
-                id: "permission-2".to_string(),
-                tool_use_id: Some("tool-2".to_string()),
-                parent_tool_use_id: None,
-                tool_name: "Bash".to_string(),
-                body: PermissionRequestBody::ToolApproval {
-                    input: JsonPayload::new_unchecked("{\"command\":\"cargo test\"}".to_string()),
-                },
-                title: None,
-                display_name: None,
-                description: None,
-                decision_reason: None,
-                status: PermissionRequestStatus::Pending,
-            },
-        },
-        AgentSessionEvent::SendOperationAccepted {
-            operation_id: "send-queued-1".to_string(),
-            disposition: SendDisposition::Queued {
-                queue_item_id: "queue-1".to_string(),
-            },
-            human_message_id: Some("human-3".to_string()),
-            prompt: Some(PromptInput::default()),
-            reserved_turn_id: Some("3".to_string()),
-            at: 21.0,
-        },
-        AgentSessionEvent::QueuePaused { at: 22.0 },
-        AgentSessionEvent::StopOperationAccepted {
-            operation_id: "stop-2".to_string(),
-            target_turn_id: 2,
-            at: 23.0,
-        },
-        AgentSessionEvent::StopResolutionRecorded {
-            operation_id: "stop-2".to_string(),
-            turn_id: 2,
-            resolution: StopResolution::Superseded,
-            at: 24.0,
-        },
-        AgentSessionEvent::SessionLifecycleOperationAccepted {
-            operation_id: "lifecycle-2".to_string(),
-            kind: SessionLifecycleKind::Archive,
-            at: 25.0,
-        },
-    ];
-
-    let first = materialize_legacy_session_semantics_v1(
-        UUID1,
-        &base,
-        Some("Durable legacy title"),
-        &events,
-    )
-    .unwrap();
-    let decoded = AgentSessionProjectionCodecV1
-        .decode(&semantic_agent_session_projection(&first.projection))
-        .unwrap();
-    assert_eq!(decoded.title.as_deref(), Some("Durable legacy title"));
-    assert_eq!(decoded.queue_paused_at, Some(22.0));
-    assert_eq!(decoded.pending_send_queue.len(), 1);
-    assert_eq!(decoded.pending_send_queue[0].queue_item_id, "queue-1");
-    assert_eq!(decoded.meta.state, SessionState::Error);
-    assert_eq!(decoded.meta.last_turn_id, Some(2));
-    assert_eq!(
-        decoded.latest_token_usage,
-        Some(TokenUsage {
-            input_tokens: 10,
-            output_tokens: 20,
-            total_tokens: Some(30),
-            context_window_tokens: None,
-        })
-    );
-    assert_eq!(first.terminals.len(), 1);
-    assert!(first.terminals[0]
-        .result
-        .contains("\"terminal_kind\":\"completed\""));
-    assert_eq!(first.pending_queue_count, 1);
-    assert_eq!(first.pending_permission_count, 1);
-    assert_eq!(first.pending_obligations.len(), 6);
-    assert_eq!(first.stop_resolutions.len(), 1);
-    assert_eq!(first.stop_resolutions[0].stop_operation_id, "stop-2");
-    assert_eq!(first.stop_resolutions[0].resolution, "superseded");
-    let operation_quarantines = first
-        .pending_obligations
-        .iter()
-        .filter(|obligation| obligation.record.contains("\"kind\":\"operation_binding\""))
-        .count();
-    assert_eq!(operation_quarantines, 3);
-    assert!(first
-        .pending_obligations
-        .iter()
-        .all(|obligation| obligation.partition == "owner"));
-
-    let replay = materialize_legacy_session_semantics_v1(
-        UUID1,
-        &first.projection,
-        Some("Durable legacy title"),
-        &events,
-    )
-    .unwrap();
-    assert_eq!(replay, first);
-}
-
-#[test]
-fn legacy_semantic_materialization_keeps_archived_owner_partition_closed() {
-    let mut session = make_session(UUID2, "/repo");
-    session.state = SessionState::Archived;
-    let base = encode_sqlite_session_projection(SessionMeta::from_session(&session)).unwrap();
-    let events = vec![AgentSessionEvent::TurnStarted {
-        turn_id: 9,
-        message_id: "human-9".to_string(),
-        assistant_message_id: None,
-        prompt: PromptInput::default(),
-        at: 9.0,
-    }];
-    let materialized =
-        materialize_legacy_session_semantics_v1(UUID2, &base, None, &events).unwrap();
-    let decoded = AgentSessionProjectionCodecV1
-        .decode(&semantic_agent_session_projection(&materialized.projection))
-        .unwrap();
-    assert_eq!(decoded.meta.state, SessionState::Archived);
-    assert_eq!(materialized.pending_obligations.len(), 1);
-    assert_eq!(
-        materialized.pending_obligations[0].partition,
-        "archived_session"
-    );
-}
-
-#[test]
-fn legacy_semantic_accumulator_releases_completed_turn_identity_beyond_history_limit() {
-    const COMPLETED_TURNS: u64 = 4_097;
-
-    let session = make_session(UUID2, "/repo");
-    let base = encode_sqlite_session_projection(SessionMeta::from_session(&session)).unwrap();
-    let mut accumulator = LegacySessionSemanticAccumulatorV1::new(UUID2, &base, None).unwrap();
-    let mut terminal_count = 0_u64;
-    for turn_id in 1..=COMPLETED_TURNS {
-        assert!(accumulator
-            .push(AgentSessionEvent::TurnStarted {
-                turn_id,
-                message_id: format!("human-{turn_id}"),
-                assistant_message_id: Some(format!("agent-{turn_id}")),
-                prompt: PromptInput::default(),
-                at: turn_id as f64,
-            })
-            .unwrap()
-            .is_none());
-        let participant = accumulator
-            .push(AgentSessionEvent::TurnCompleted {
-                turn_id,
-                exit_code: 0,
-                stop_reason: None,
-                token_usage: None,
-            })
-            .unwrap();
-        assert!(matches!(
-            participant,
-            Some(LegacySessionSemanticParticipantV1::Terminal(_))
-        ));
-        terminal_count += 1;
-    }
-    let materialized = accumulator.finish().unwrap();
-    let decoded = AgentSessionProjectionCodecV1
-        .decode(&semantic_agent_session_projection(&materialized.projection))
-        .unwrap();
-    assert_eq!(terminal_count, COMPLETED_TURNS);
-    assert_eq!(decoded.meta.last_turn_id, Some(COMPLETED_TURNS));
-    assert_eq!(decoded.reducer_events.len(), 2);
 }
 
 fn context_epoch_meta_with_payload(payload: &str) -> ContextEpochMeta {
@@ -357,7 +143,7 @@ fn production_message_read_update_reload_preserves_additive_raw_and_source_metad
         parent_tool_use_id: None,
     }]);
     storage
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
     let dir = session_dir(tmp.path(), UUID1).unwrap();
     let path = message_file_in_dir(&dir, 1);
@@ -414,7 +200,7 @@ fn production_message_reader_fails_closed_for_unknown_required_part() {
     let tmp = TempDir::new().unwrap();
     let storage = FileSessionStorage::default();
     storage
-        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .save_full_session_for_restore(tmp.path(), &make_session(UUID1, "/repo"))
         .unwrap();
     let path = message_file_in_dir(&session_dir(tmp.path(), UUID1).unwrap(), 1);
     let mut value: serde_json::Value =
@@ -490,37 +276,6 @@ fn assert_projection_files_unchanged(snapshots: &[(std::path::PathBuf, Option<Ve
     }
 }
 
-fn capture_file_tree(root: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
-    fn visit(
-        root: &std::path::Path,
-        dir: &std::path::Path,
-        files: &mut std::collections::BTreeMap<String, Vec<u8>>,
-    ) {
-        let mut entries = std::fs::read_dir(dir)
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .collect::<Vec<_>>();
-        entries.sort();
-        for path in entries {
-            if path.is_dir() {
-                visit(root, &path, files);
-            } else {
-                files.insert(
-                    path.strip_prefix(root)
-                        .unwrap()
-                        .to_string_lossy()
-                        .into_owned(),
-                    std::fs::read(path).unwrap(),
-                );
-            }
-        }
-    }
-
-    let mut files = std::collections::BTreeMap::new();
-    visit(root, root, &mut files);
-    files
-}
-
 #[test]
 fn save_and_load_session() {
     let tmp = TempDir::new().unwrap();
@@ -528,7 +283,7 @@ fn save_and_load_session() {
     let session = make_session(UUID1, "/repo");
 
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
 
     let loaded = store
@@ -546,7 +301,7 @@ fn terminal_batch_append_does_not_read_or_rewrite_existing_event_history() {
     let store = FileSessionStorage::default();
     let session = make_session(UUID1, "/repo");
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
     for turn_id in 1..=128 {
         store
@@ -575,7 +330,7 @@ fn normal_events_after_terminal_batch_use_one_bounded_tail_without_directory_sca
     let tmp = TempDir::new().unwrap();
     let store = FileSessionStorage::default();
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .save_full_session_for_restore(tmp.path(), &make_session(UUID1, "/repo"))
         .unwrap();
     store
         .append_session_event_without_projection(tmp.path(), UUID1, &turn_started_event(1))
@@ -623,7 +378,7 @@ fn turn_id_allocation_and_start_projection_stay_bounded_and_survive_full_save() 
     let store = crate::usecase::agent_session::session::SessionStore::new(storage.clone());
     let session = make_session(UUID1, "/repo");
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
     store
         .append_turn_started_and_project_state(tmp.path(), UUID1, turn_started_event(1))
@@ -655,7 +410,7 @@ fn turn_id_allocation_and_start_projection_stay_bounded_and_survive_full_save() 
         .unwrap()
         .unwrap();
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &restored)
+        .save_full_session_for_restore(tmp.path(), &restored)
         .unwrap();
     let meta = store.get_session_meta(tmp.path(), UUID1).unwrap().unwrap();
     assert_eq!(meta.last_turn_id, Some(2));
@@ -669,7 +424,7 @@ fn legacy_meta_without_turn_id_projection_falls_back_to_event_history() {
     let storage = Arc::new(FileSessionStorage::default());
     let store = crate::usecase::agent_session::session::SessionStore::new(storage);
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .save_full_session_for_restore(tmp.path(), &make_session(UUID1, "/repo"))
         .unwrap();
     store
         .append_session_event_without_projection(tmp.path(), UUID1, turn_started_event(9))
@@ -697,7 +452,7 @@ fn next_turn_id_rejects_the_sqlite_integer_boundary_without_wrapping() {
     let storage = Arc::new(FileSessionStorage::default());
     let store = crate::usecase::agent_session::session::SessionStore::new(storage);
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .save_full_session_for_restore(tmp.path(), &make_session(UUID1, "/repo"))
         .unwrap();
     let meta_path = meta_file_in_dir(&session_dir(tmp.path(), UUID1).unwrap());
     let mut meta: serde_json::Value =
@@ -720,7 +475,7 @@ fn turn_start_projection_rejects_non_start_event_without_appending_it() {
     let tmp = TempDir::new().unwrap();
     let store = make_session_store();
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .save_full_session_for_restore(tmp.path(), &make_session(UUID1, "/repo"))
         .unwrap();
 
     let error = store
@@ -748,7 +503,7 @@ fn turn_start_projection_failure_recovers_committed_id_before_retry() {
     let tmp = TempDir::new().unwrap();
     let store = make_session_store();
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .save_full_session_for_restore(tmp.path(), &make_session(UUID1, "/repo"))
         .unwrap();
     let fail_once = Arc::new(std::sync::atomic::AtomicBool::new(true));
     store.set_event_projection_hook_for_test({
@@ -801,7 +556,7 @@ fn save_session_writes_split_layout() {
     let session = make_session(UUID1, "/repo");
 
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
 
     let dir = session_dir(tmp.path(), UUID1).unwrap();
@@ -828,7 +583,7 @@ fn session_meta_keeps_workflow_instructions_in_private_context_not_meta() {
     let session = make_session(UUID1, "/repo");
 
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
     store
         .update_session_meta(tmp.path(), UUID1, &mut |meta| {
@@ -862,7 +617,7 @@ fn save_session_keeps_context_epoch_payload_in_private_context_not_meta() {
     session.context_epoch = Some(context_epoch_meta_with_payload("repo payload"));
 
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
 
     let dir = session_dir(tmp.path(), UUID1).unwrap();
@@ -905,7 +660,7 @@ fn legacy_backend_system_prompt_payload_hydrates_backend_model_identity() {
     });
 
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
 
     let loaded = FileSessionStorage::default()
@@ -930,7 +685,7 @@ fn append_agent_read_paths_updates_private_context_cache_not_meta() {
     let store = FileSessionStorage::default();
     let session = make_session(UUID1, "/repo");
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
 
     let agent_message = ChatMessage {
@@ -976,7 +731,7 @@ fn meta_rmw_update_keeps_context_epoch_payload_cache_for_later_message_updates()
     let store = FileSessionStorage::default();
     let session = make_session(UUID1, "/repo");
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
 
     store
@@ -1015,7 +770,7 @@ fn append_message_writes_only_new_chunk_and_updates_meta() {
     let store = FileSessionStorage::default();
     let session = make_session(UUID1, "/repo");
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
     let dir = session_dir(tmp.path(), UUID1).unwrap();
     let first_chunk_before = std::fs::read_to_string(message_file_in_dir(&dir, 1)).unwrap();
@@ -1068,7 +823,7 @@ fn save_session_externalizes_image_attachments() {
     }]);
 
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
 
     let dir = session_dir(tmp.path(), UUID1).unwrap();
@@ -1128,7 +883,7 @@ fn save_session_externalizes_large_tool_output_and_pages_preview_ref() {
     }]);
 
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
 
     let dir = session_dir(tmp.path(), UUID1).unwrap();
@@ -1228,7 +983,7 @@ fn get_session_page_returns_preview_ref_after_tool_output_blob_removed() {
     }]);
 
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
 
     let dir = session_dir(tmp.path(), UUID1).unwrap();
@@ -1289,7 +1044,7 @@ fn get_session_tool_output_returns_none_for_missing_index_ref_without_rebuild() 
     }]);
 
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
 
     let dir = session_dir(tmp.path(), UUID1).unwrap();
@@ -1331,7 +1086,7 @@ fn get_session_tool_output_returns_none_for_unreferenced_stale_blob() {
     }]);
 
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
 
     let dir = session_dir(tmp.path(), UUID1).unwrap();
@@ -1387,7 +1142,7 @@ fn get_session_tool_output_reads_only_referencing_message_chunk_when_index_is_cu
         message("m3", "third", 1002.0),
     ];
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
     let dir = session_dir(tmp.path(), UUID1).unwrap();
     let index = store.read_index_from_dir(&dir).unwrap();
@@ -1408,7 +1163,7 @@ fn get_session_tool_output_returns_none_without_rebuild_when_index_has_no_refere
     let tmp = TempDir::new().unwrap();
     let store = FileSessionStorage::default();
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .save_full_session_for_restore(tmp.path(), &make_session(UUID1, "/repo"))
         .unwrap();
     let dir = session_dir(tmp.path(), UUID1).unwrap();
     let index_before = std::fs::read_to_string(index_file_in_dir(&dir)).unwrap();
@@ -1442,7 +1197,7 @@ fn small_tool_output_stays_inline_without_blob() {
     }]);
 
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
 
     let dir = session_dir(tmp.path(), UUID1).unwrap();
@@ -1576,7 +1331,7 @@ fn remove_session_deletes_tool_output_blobs() {
         summary: None,
     }]);
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
     let dir = session_dir(tmp.path(), UUID1).unwrap();
     assert_eq!(tool_output_blob_count(&dir), 1);
@@ -1614,7 +1369,7 @@ fn externalized_tool_output_records_safe_telemetry_only() {
     }]);
 
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
 
     let records = crate::other::telemetry::test_metric_records();
@@ -1644,7 +1399,7 @@ fn repeated_tool_output_persist_records_externalized_telemetry_once() {
     let mut session = make_session(UUID1, "/repo");
     session.messages = vec![message("m1", "", 1000.0)];
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
     let full_output = "x".repeat(crate::usecase::agent_session::session::MAX_TOOL_OUTPUT_BYTES + 1);
     let parts = [MessagePart::ToolResult {
@@ -1691,7 +1446,7 @@ fn existing_tool_output_content_ref_passes_through_without_blob_write_or_telemet
     let mut session = make_session(UUID1, "/repo");
     session.messages = vec![message("m1", "", 1000.0)];
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
     let dir = session_dir(tmp.path(), UUID1).unwrap();
     let content_ref = crate::usecase::agent_session::session::ToolOutputRef {
@@ -1757,7 +1512,7 @@ fn existing_tool_output_content_ref_rejects_invalid_id_on_persist() {
     let mut session = make_session(UUID1, "/repo");
     session.messages = vec![message("m1", "", 1000.0)];
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
     let part = MessagePart::ToolResult {
         content: "preview".to_string(),
@@ -1791,7 +1546,7 @@ fn save_session_rejects_oversized_image_attachment_before_blob_write() {
     }]);
 
     let err = store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap_err();
 
     assert!(err.contains("Image too large"), "got: {err}");
@@ -1811,7 +1566,7 @@ fn save_session_rejects_image_attachment_media_type_mismatch_before_blob_write()
     }]);
 
     let err = store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap_err();
 
     assert!(err.contains("media type mismatch"), "got: {err}");
@@ -1831,7 +1586,7 @@ fn save_session_rejects_non_image_attachment_bytes_before_blob_write() {
     }]);
 
     let err = store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap_err();
 
     assert!(err.contains("Unsupported image format"), "got: {err}");
@@ -1844,7 +1599,7 @@ fn get_session_attachment_rejects_invalid_id_before_blob_read() {
     let tmp = TempDir::new().unwrap();
     let store = make_session_store();
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .save_full_session_for_restore(tmp.path(), &make_session(UUID1, "/repo"))
         .unwrap();
 
     for invalid in ["../../etc/passwd", "/etc/passwd", "not-a-hex-id"] {
@@ -1860,7 +1615,7 @@ fn get_session_tool_output_rejects_invalid_id_before_blob_read() {
     let tmp = TempDir::new().unwrap();
     let store = make_session_store();
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .save_full_session_for_restore(tmp.path(), &make_session(UUID1, "/repo"))
         .unwrap();
 
     let invalid_ids = [
@@ -1883,7 +1638,7 @@ fn hydrate_attachment_rejects_path_traversal_image_ref() {
     let tmp = TempDir::new().unwrap();
     let store = FileSessionStorage::default();
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .save_full_session_for_restore(tmp.path(), &make_session(UUID1, "/repo"))
         .unwrap();
     let dir = session_dir(tmp.path(), UUID1).unwrap();
 
@@ -1912,7 +1667,7 @@ fn hydrate_attachment_rejects_canonical_path_outside_attachments_dir() {
     let tmp = TempDir::new().unwrap();
     let store = FileSessionStorage::default();
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .save_full_session_for_restore(tmp.path(), &make_session(UUID1, "/repo"))
         .unwrap();
     let dir = session_dir(tmp.path(), UUID1).unwrap();
     let outside = tmp.path().join("outside-attachment");
@@ -1954,7 +1709,7 @@ fn get_session_tool_output_rejects_canonical_path_outside_tool_outputs_dir() {
         summary: None,
     }]);
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
     let dir = session_dir(tmp.path(), UUID1).unwrap();
     let outside_secret = "OUTSIDE_TOOL_OUTPUT_SECRET";
@@ -1985,7 +1740,7 @@ fn externalize_rejects_invalid_image_ref_id() {
     let tmp = TempDir::new().unwrap();
     let store = FileSessionStorage::default();
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .save_full_session_for_restore(tmp.path(), &make_session(UUID1, "/repo"))
         .unwrap();
     let dir = session_dir(tmp.path(), UUID1).unwrap();
     let mut message = message("m2", "", 1001.0);
@@ -2009,7 +1764,7 @@ fn stale_index_hash_and_attachment_refs_are_repaired_from_message_chunks() {
     let store = FileSessionStorage::default();
     let session = make_session(UUID1, "/repo");
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
     let dir = session_dir(tmp.path(), UUID1).unwrap();
     let stale_index = store.read_index_from_dir(&dir).unwrap();
@@ -2083,7 +1838,7 @@ fn get_session_page_returns_latest_page_and_previous_cursor() {
         });
     }
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
 
     let latest = store
@@ -2170,7 +1925,7 @@ fn get_session_page_reads_only_requested_message_chunks() {
         })
         .collect();
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
 
     store.reset_message_read_count();
@@ -2199,7 +1954,7 @@ fn append_message_does_not_read_existing_message_chunks() {
         message("m2", "second", 1001.0),
     ];
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
 
     store.reset_message_read_count();
@@ -2215,7 +1970,7 @@ fn persist_message_parts_missing_target_returns_error() {
     let tmp = TempDir::new().unwrap();
     let store = FileSessionStorage::default();
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .save_full_session_for_restore(tmp.path(), &make_session(UUID1, "/repo"))
         .unwrap();
 
     let err = store
@@ -2250,7 +2005,7 @@ fn persist_message_parts_updates_only_target_chunk_index_and_meta() {
         message("m3", "third", 1002.0),
     ];
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
     let dir = session_dir(tmp.path(), UUID1).unwrap();
     let chunk1 = message_file_in_dir(&dir, 1);
@@ -2325,7 +2080,7 @@ fn persist_message_parts_returns_externalized_tool_output_parts() {
     let mut session = make_session(UUID1, "/repo");
     session.messages = vec![message("m1", "", 1000.0)];
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
     let full_output = format!(
         "{}PERSIST_RETURN_SECRET_TAIL",
@@ -2373,7 +2128,7 @@ fn list_sessions_uses_meta_without_message_chunks() {
     let store = FileSessionStorage::default();
     let session = make_session(UUID1, "/repo");
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
     let dir = session_dir(tmp.path(), UUID1).unwrap();
     std::fs::remove_file(message_file_in_dir(&dir, 1)).unwrap();
@@ -2393,7 +2148,7 @@ fn list_worktree_sessions_returns_shells_without_message_chunks() {
     let store = FileSessionStorage::default();
     let session = make_session(UUID1, "/repo");
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
     let dir = session_dir(tmp.path(), UUID1).unwrap();
     std::fs::write(message_file_in_dir(&dir, 1), "{not valid json").unwrap();
@@ -2424,7 +2179,7 @@ fn get_session_page_repairs_missing_index_entries() {
         mentions: None,
     });
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
     let dir = session_dir(tmp.path(), UUID1).unwrap();
     std::fs::remove_file(message_file_in_dir(&dir, 1)).unwrap();
@@ -2451,7 +2206,7 @@ fn get_session_page_repairs_orphan_message_chunks_missing_from_index() {
     let store = FileSessionStorage::default();
     let session = make_session(UUID1, "/repo");
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
     let dir = session_dir(tmp.path(), UUID1).unwrap();
     let orphan = ChatMessage {
@@ -2503,7 +2258,7 @@ fn concurrent_append_and_page_repair_preserve_index_and_meta() {
         })
         .collect();
     store
-        .save_full_session_for_migration_or_restore(&app_data_dir, &session)
+        .save_full_session_for_restore(&app_data_dir, &session)
         .unwrap();
     let dir = session_dir(&app_data_dir, UUID1).unwrap();
     let mut stale_index = store.read_index_from_dir(&dir).unwrap();
@@ -2570,7 +2325,7 @@ fn load_full_session_for_restore_repairs_orphan_message_chunks_missing_from_inde
     let store = FileSessionStorage::default();
     let session = make_session(UUID1, "/repo");
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
     let dir = session_dir(tmp.path(), UUID1).unwrap();
     let orphan = ChatMessage {
@@ -2609,7 +2364,7 @@ fn metadata_only_save_does_not_rewrite_message_chunks() {
     let store = FileSessionStorage::default();
     let session = make_session(UUID1, "/repo");
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
     let chunk = message_file_in_dir(&session_dir(tmp.path(), UUID1).unwrap(), 1);
     let before = std::fs::metadata(&chunk).unwrap().modified().unwrap();
@@ -2629,7 +2384,7 @@ fn metadata_only_update_does_not_read_message_chunks() {
     let store = FileSessionStorage::default();
     let session = make_session(UUID1, "/repo");
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
     let chunk = message_file_in_dir(&session_dir(tmp.path(), UUID1).unwrap(), 1);
     std::fs::write(&chunk, "{not valid json").unwrap();
@@ -2652,7 +2407,7 @@ fn resume_metadata_updates_do_not_read_message_chunks() {
     let store = FileSessionStorage::default();
     let session = make_session(UUID1, "/repo");
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
     let chunk = message_file_in_dir(&session_dir(tmp.path(), UUID1).unwrap(), 1);
     std::fs::write(&chunk, "{not valid json").unwrap();
@@ -2687,7 +2442,7 @@ fn fork_session_hardlinks_message_chunks() {
     let store = FileSessionStorage::default();
     let session = make_session(UUID1, "/repo");
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
 
     let forked = make_session_store()
@@ -2718,7 +2473,7 @@ fn fork_session_copies_tool_output_blobs() {
         summary: None,
     }]);
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
 
     let session_store = make_session_store();
@@ -2767,7 +2522,7 @@ fn full_session_restore_save_preserves_provider_session_generation() {
     let store = FileSessionStorage::default();
     let session = make_session(UUID1, "/repo");
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
     store
         .update_session_meta(tmp.path(), UUID1, &mut |meta| {
@@ -2782,7 +2537,7 @@ fn full_session_restore_save_preserves_provider_session_generation() {
         .unwrap()
         .unwrap();
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &restored)
+        .save_full_session_for_restore(tmp.path(), &restored)
         .unwrap();
 
     let meta = store.get_session_meta(tmp.path(), UUID1).unwrap().unwrap();
@@ -2795,7 +2550,7 @@ fn committed_meta_event_transaction_recovers_all_participants_after_restart() {
     let tmp = TempDir::new().unwrap();
     let store = FileSessionStorage::default();
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .save_full_session_for_restore(tmp.path(), &make_session(UUID1, "/repo"))
         .unwrap();
     let old_meta = store
         .update_session_meta(tmp.path(), UUID1, &mut |meta| {
@@ -2857,7 +2612,7 @@ fn committed_meta_event_transaction_replays_after_an_event_batch() {
     let tmp = TempDir::new().unwrap();
     let store = FileSessionStorage::default();
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .save_full_session_for_restore(tmp.path(), &make_session(UUID1, "/repo"))
         .unwrap();
     let base_event = AgentSessionEvent::BackendSessionRecoveryStarted {
         recovery_id: "recovery-base".to_string(),
@@ -2910,7 +2665,7 @@ fn committed_meta_event_transaction_repairs_interrupted_event_append_after_resta
         let tmp = TempDir::new().unwrap();
         let store = FileSessionStorage::default();
         store
-            .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+            .save_full_session_for_restore(tmp.path(), &make_session(UUID1, "/repo"))
             .unwrap();
         let dir = session_dir(tmp.path(), UUID1).unwrap();
         let base_event = AgentSessionEvent::BackendSessionRecoveryStarted {
@@ -2995,7 +2750,7 @@ fn committed_recovery_materialization_failures_converge_for_every_accessor() {
         let tmp = TempDir::new().unwrap();
         let storage = Arc::new(FileSessionStorage::default());
         storage
-            .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+            .save_full_session_for_restore(tmp.path(), &make_session(UUID1, "/repo"))
             .unwrap();
         let session_store =
             crate::usecase::agent_session::session::SessionStore::new(storage.clone());
@@ -3072,7 +2827,7 @@ fn startup_retryable_transaction_failure_stays_pending_until_a_later_list_reconc
     let tmp = TempDir::new().unwrap();
     let storage = Arc::new(FileSessionStorage::default());
     storage
-        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .save_full_session_for_restore(tmp.path(), &make_session(UUID1, "/repo"))
         .unwrap();
     let session_store = crate::usecase::agent_session::session::SessionStore::new(storage.clone());
     session_store
@@ -3151,7 +2906,7 @@ fn startup_corrupt_transaction_is_isolated_and_reconcile_fails_early() {
     let tmp = TempDir::new().unwrap();
     let writer = FileSessionStorage::default();
     writer
-        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .save_full_session_for_restore(tmp.path(), &make_session(UUID1, "/repo"))
         .unwrap();
     let transaction_path =
         meta_event_transaction_file_in_dir(&session_dir(tmp.path(), UUID1).unwrap());
@@ -3177,10 +2932,7 @@ fn list_metas_isolates_a_pending_session_that_cannot_be_materialized() {
     let storage = Arc::new(FileSessionStorage::default());
     for session_id in [UUID1, UUID2] {
         storage
-            .save_full_session_for_migration_or_restore(
-                tmp.path(),
-                &make_session(session_id, "/repo"),
-            )
+            .save_full_session_for_restore(tmp.path(), &make_session(session_id, "/repo"))
             .unwrap();
     }
     let session_store = crate::usecase::agent_session::session::SessionStore::new(storage.clone());
@@ -3246,10 +2998,7 @@ fn clean_session_list_and_page_reads_do_not_rescan_meta() {
     let storage = FileSessionStorage::default();
     for session_id in [UUID1, UUID2, UUID3] {
         storage
-            .save_full_session_for_migration_or_restore(
-                tmp.path(),
-                &make_session(session_id, "/repo"),
-            )
+            .save_full_session_for_restore(tmp.path(), &make_session(session_id, "/repo"))
             .unwrap();
     }
 
@@ -3351,7 +3100,7 @@ fn get_session_review_context_reads_only_target_split_meta_without_cache_warmup(
     let tmp = TempDir::new().unwrap();
     let store_for_save = FileSessionStorage::default();
     store_for_save
-        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .save_full_session_for_restore(tmp.path(), &make_session(UUID1, "/repo"))
         .unwrap();
 
     let invalid_dir = session_dir(tmp.path(), UUID2).unwrap();
@@ -3381,7 +3130,7 @@ fn save_and_load_session_with_backend_id() {
     session.backend_id = Some("claude".to_string());
 
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
 
     // Load from a fresh store to verify file persistence
@@ -3402,7 +3151,7 @@ fn save_session_with_none_backend_id_is_rejected() {
     assert_eq!(session.backend_id, None);
 
     let error = store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap_err();
     assert!(error.contains("Invalid session data"));
 }
@@ -3443,13 +3192,13 @@ fn list_sessions_filters_by_worktree() {
     let store = FileSessionStorage::default();
 
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo-a"))
+        .save_full_session_for_restore(tmp.path(), &make_session(UUID1, "/repo-a"))
         .unwrap();
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID2, "/repo-b"))
+        .save_full_session_for_restore(tmp.path(), &make_session(UUID2, "/repo-b"))
         .unwrap();
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID3, "/repo-a"))
+        .save_full_session_for_restore(tmp.path(), &make_session(UUID3, "/repo-a"))
         .unwrap();
 
     let sessions = make_session_store()
@@ -3476,7 +3225,7 @@ fn save_overwrites_existing_session() {
     let mut session = make_session(UUID1, "/repo");
 
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
 
     session.messages.push(ChatMessage {
@@ -3492,7 +3241,7 @@ fn save_overwrites_existing_session() {
     });
     session.updated_at = 1001.0;
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
 
     let loaded = store
@@ -3500,76 +3249,6 @@ fn save_overwrites_existing_session() {
         .unwrap()
         .unwrap();
     assert_eq!(loaded.messages.len(), 2);
-}
-
-#[test]
-fn sealed_legacy_source_reads_never_repair_or_mutate_migration_input() {
-    let tmp = TempDir::new().unwrap();
-    let writer = FileSessionStorage::default();
-    writer
-        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
-        .unwrap();
-    writer
-        .append_session_events(
-            tmp.path(),
-            UUID1,
-            &[AgentSessionEvent::QueuePaused { at: 4.0 }],
-        )
-        .unwrap();
-
-    let dir = session_dir(tmp.path(), UUID1).unwrap();
-    std::fs::remove_file(index_file_in_dir(&dir)).unwrap();
-    let mut pending_meta = writer.get_session_meta(tmp.path(), UUID1).unwrap().unwrap();
-    pending_meta.state = SessionState::Closed;
-    write_stored_transaction(
-        &meta_event_transaction_file_in_dir(&dir),
-        &SessionMetaEventTransaction::new(
-            UUID1,
-            1,
-            pending_meta,
-            &[AgentSessionEvent::SessionClosed { at: 5.0 }],
-        ),
-    );
-    assert!(!queue_pause_checkpoint_file_in_dir(&dir).exists());
-    let before = capture_file_tree(tmp.path());
-
-    let reader = FileSessionStorage::default();
-    crate::domain::agent_session::AgentSessionWriter::close_mutation_admission(&reader);
-    let metas = reader.list_metas(tmp.path()).unwrap();
-    assert_eq!(metas.len(), 1);
-    assert_eq!(metas[0].state, SessionState::Active);
-    assert_eq!(
-        reader
-            .get_session_page(tmp.path(), UUID1, None, 20)
-            .unwrap()
-            .unwrap()
-            .messages
-            .len(),
-        1
-    );
-    assert_eq!(
-        reader.load_queue_paused_at(tmp.path(), UUID1).unwrap(),
-        Some(4.0)
-    );
-    assert_eq!(
-        reader.load_session_events(tmp.path(), UUID1).unwrap().len(),
-        1
-    );
-    assert!(reader
-        .append_session_events(
-            tmp.path(),
-            UUID1,
-            &[AgentSessionEvent::SessionClosed { at: 6.0 }],
-        )
-        .unwrap_err()
-        .contains("mutation admission is closed"));
-    assert!(reader
-        .write_session_title(tmp.path(), UUID1, Some("mutated"))
-        .unwrap_err()
-        .contains("mutation admission is closed"));
-    reader.remove_session(tmp.path(), UUID1);
-
-    assert_eq!(capture_file_tree(tmp.path()), before);
 }
 
 #[test]
@@ -3589,13 +3268,13 @@ fn save_session_removes_chunks_for_deleted_messages() {
         mentions: None,
     });
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
 
     session.messages.pop();
     session.updated_at = 1002.0;
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
 
     let dir = session_dir(tmp.path(), UUID1).unwrap();
@@ -3630,13 +3309,13 @@ fn list_sessions_sorted_by_updated_at_desc() {
     s3.updated_at = 1500.0;
 
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &s1)
+        .save_full_session_for_restore(tmp.path(), &s1)
         .unwrap();
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &s2)
+        .save_full_session_for_restore(tmp.path(), &s2)
         .unwrap();
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &s3)
+        .save_full_session_for_restore(tmp.path(), &s3)
         .unwrap();
 
     let sessions = make_session_store()
@@ -3652,7 +3331,7 @@ fn persistence_across_store_instances() {
     let tmp = TempDir::new().unwrap();
     let store1 = FileSessionStorage::default();
     store1
-        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .save_full_session_for_restore(tmp.path(), &make_session(UUID1, "/repo"))
         .unwrap();
 
     let store2 = FileSessionStorage::default();
@@ -3690,7 +3369,7 @@ fn save_session_rejects_invalid_permission_mode() {
     let store = make_session_store();
     let valid = make_session(UUID1, "/repo");
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &valid)
+        .save_full_session_for_restore(tmp.path(), &valid)
         .unwrap();
 
     for invalid in [
@@ -3704,7 +3383,7 @@ fn save_session_rejects_invalid_permission_mode() {
         let mut bad = make_session(UUID2, "/repo");
         bad.permission_mode = invalid.to_string();
         let err = store
-            .save_full_session_for_migration_or_restore(tmp.path(), &bad)
+            .save_full_session_for_restore(tmp.path(), &bad)
             .unwrap_err();
         assert!(
             err.contains("ask, edit, full"),
@@ -3730,7 +3409,7 @@ fn save_session_rejects_invalid_id() {
     let store = FileSessionStorage::default();
     let session = make_session("bad-id", "/repo");
     assert!(store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .is_err());
 }
 
@@ -3740,12 +3419,12 @@ fn list_sessions_excludes_closed() {
     let store = FileSessionStorage::default();
 
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .save_full_session_for_restore(tmp.path(), &make_session(UUID1, "/repo"))
         .unwrap();
     let mut closed = make_session(UUID2, "/repo");
     closed.state = SessionState::Closed;
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &closed)
+        .save_full_session_for_restore(tmp.path(), &closed)
         .unwrap();
 
     let sessions = make_session_store()
@@ -3761,12 +3440,12 @@ fn list_sessions_excludes_archived() {
     let store = FileSessionStorage::default();
 
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .save_full_session_for_restore(tmp.path(), &make_session(UUID1, "/repo"))
         .unwrap();
     let mut archived = make_session(UUID2, "/repo");
     archived.state = SessionState::Archived;
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &archived)
+        .save_full_session_for_restore(tmp.path(), &archived)
         .unwrap();
 
     let session_store = make_session_store();
@@ -3788,7 +3467,7 @@ fn archive_session_moves_closed_session_out_of_closed_history() {
     let mut closed = make_session(UUID1, "/repo");
     closed.state = SessionState::Closed;
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &closed)
+        .save_full_session_for_restore(tmp.path(), &closed)
         .unwrap();
 
     let session_store = make_session_store();
@@ -3811,7 +3490,7 @@ fn archive_open_session_archives_active_session() {
     let store = FileSessionStorage::default();
 
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .save_full_session_for_restore(tmp.path(), &make_session(UUID1, "/repo"))
         .unwrap();
 
     let session_store = make_session_store();
@@ -3841,7 +3520,7 @@ fn archive_open_session_rejects_workflow_node_sessions() {
     let mut session = make_session(UUID1, "/repo");
     session.workflow_node_session = true;
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
 
     let err = make_session_store()
@@ -3857,7 +3536,7 @@ fn set_session_title_overrides_summary_and_can_clear() {
     let store = FileSessionStorage::default();
 
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .save_full_session_for_restore(tmp.path(), &make_session(UUID1, "/repo"))
         .unwrap();
 
     let session_store = make_session_store();
@@ -3885,7 +3564,7 @@ fn set_session_title_rejects_workflow_node_sessions() {
     let mut session = make_session(UUID1, "/repo");
     session.workflow_node_session = true;
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
 
     let err = make_session_store()
@@ -3916,7 +3595,7 @@ fn fork_session_creates_detached_copy() {
         mentions: None,
     });
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
 
     let session_store = make_session_store();
@@ -3954,7 +3633,7 @@ fn fork_session_persists_context_epoch_payload_for_fresh_load() {
     let mut session = make_session(UUID1, "/repo");
     session.context_epoch = Some(context_epoch_meta_with_payload("repo payload"));
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
 
     let forked = make_session_store()
@@ -3983,7 +3662,7 @@ fn fork_session_copies_custom_title() {
     let store = FileSessionStorage::default();
 
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .save_full_session_for_restore(tmp.path(), &make_session(UUID1, "/repo"))
         .unwrap();
     let session_store = make_session_store();
     session_store
@@ -4008,7 +3687,7 @@ fn fork_session_rejects_workflow_node_sessions() {
     let mut session = make_session(UUID1, "/repo");
     session.workflow_node_session = true;
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
 
     let err = make_session_store()
@@ -4026,7 +3705,7 @@ fn update_permission_mode_persists() {
     assert_eq!(session.permission_mode, "edit");
 
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
     let session_store = make_session_store();
     session_store
@@ -4048,7 +3727,7 @@ fn update_plan_mode_persists() {
     assert!(!session.plan_mode);
 
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
     let session_store = make_session_store();
     session_store
@@ -4086,7 +3765,7 @@ fn update_permission_mode_rejects_legacy_value() {
     let store = FileSessionStorage::default();
     let session = make_session(UUID1, "/repo");
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
     for legacy in ["acceptEdits", "bypassPermissions", "plan", "default", ""] {
         let err = make_session_store()
@@ -4181,7 +3860,7 @@ fn invalid_session_is_ignored_by_list_but_rejected_by_targeted_operations() {
     // valid session
     let store_for_save = FileSessionStorage::default();
     store_for_save
-        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .save_full_session_for_restore(tmp.path(), &make_session(UUID1, "/repo"))
         .unwrap();
     // invalid session（旧語彙を含む meta.json を直接書き込み）
     write_session_meta_json(
@@ -4267,7 +3946,7 @@ fn save_session_removes_stale_invalid_marker_for_same_id() {
     assert!(err.contains("ask, edit, full"), "got: {err}");
 
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .save_full_session_for_restore(tmp.path(), &make_session(UUID1, "/repo"))
         .unwrap();
 
     let loaded = store
@@ -4308,7 +3987,7 @@ fn state_change_listener_fires_on_close_and_restore() {
     let store = crate::test_support::build_session_store();
     let session = make_session(UUID1, "/repo");
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
 
     let events: Arc<PlMutex<Vec<(String, String, SessionState)>>> =
@@ -4349,7 +4028,7 @@ fn state_change_listener_does_not_fire_when_state_unchanged() {
     let store = crate::test_support::build_session_store();
     let session = make_session(UUID1, "/repo");
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
 
     let count = Arc::new(PlMutex::new(0usize));
@@ -4372,19 +4051,19 @@ fn list_closed_sessions_returns_only_closed() {
     let store = FileSessionStorage::default();
 
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .save_full_session_for_restore(tmp.path(), &make_session(UUID1, "/repo"))
         .unwrap();
     let mut closed1 = make_session(UUID2, "/repo");
     closed1.state = SessionState::Closed;
     closed1.updated_at = 2000.0;
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &closed1)
+        .save_full_session_for_restore(tmp.path(), &closed1)
         .unwrap();
     let mut closed2 = make_session(UUID3, "/repo");
     closed2.state = SessionState::Closed;
     closed2.updated_at = 3000.0;
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &closed2)
+        .save_full_session_for_restore(tmp.path(), &closed2)
         .unwrap();
 
     let closed = make_session_store()
@@ -4449,7 +4128,7 @@ fn terminal_projection_reads_only_the_target_message_for_long_transcript() {
         ])
         .collect();
     store
-        .save_full_session_for_migration_or_restore(app_data_dir.path(), &session)
+        .save_full_session_for_restore(app_data_dir.path(), &session)
         .unwrap();
     store
         .append_session_event_without_projection(
@@ -4645,7 +4324,7 @@ fn error_projection_repairs_unreadable_index_without_overwriting_existing_chunk(
     let storage = Arc::new(FileSessionStorage::default());
     let store = SessionStore::new(storage.clone());
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .save_full_session_for_restore(tmp.path(), &make_session(UUID1, "/repo"))
         .unwrap();
     let dir = session_dir(tmp.path(), UUID1).unwrap();
     let existing_chunk = message_file_in_dir(&dir, 1);
@@ -4702,7 +4381,7 @@ fn terminal_projection_repairs_stale_index_and_finds_target_message() {
         mentions: None,
     });
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
     store
         .append_session_event_without_projection(
@@ -4785,7 +4464,7 @@ fn assert_append_projection_rollback(stage: ProjectionCommitStage) {
     let storage = Arc::new(FileSessionStorage::default());
     let store = SessionStore::new(storage.clone());
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &make_session(UUID1, "/repo"))
+        .save_full_session_for_restore(tmp.path(), &make_session(UUID1, "/repo"))
         .unwrap();
     let notifications = Arc::new(parking_lot::Mutex::new(Vec::new()));
     store.register_state_change_listener({
@@ -4866,7 +4545,7 @@ fn assert_persist_parts_projection_rollback(stage: ProjectionCommitStage) {
         mentions: None,
     });
     store
-        .save_full_session_for_migration_or_restore(tmp.path(), &session)
+        .save_full_session_for_restore(tmp.path(), &session)
         .unwrap();
     store
         .append_session_event_without_projection(

@@ -35,7 +35,7 @@ mod agent_session_wire_replay;
 /// integration test cannot turn unrelated CLI/wire tests into lock failures.
 pub(crate) static TEST_ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
-/// SQLite boundary and large migration fixtures deliberately saturate local
+/// SQLite boundary and large schema-evolution fixtures deliberately saturate local
 /// disk/CPU resources. Keep them mutually exclusive so a capacity test's
 /// production 13-second cutoff measures its own work rather than unrelated
 /// test-harness contention.

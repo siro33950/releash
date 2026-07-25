@@ -15,7 +15,6 @@ pub fn failure_kind_label(kind: SessionOperationFailureKind) -> &'static str {
     match kind {
         SessionOperationFailureKind::StorageUnavailable => "storage_unavailable",
         SessionOperationFailureKind::StorageCorrupt => "storage_corrupt",
-        SessionOperationFailureKind::MigrationBlocked => "migration_blocked",
         SessionOperationFailureKind::PersistFailure => "persist_failure",
         SessionOperationFailureKind::ProtocolIncompatible => "protocol_incompatible",
         SessionOperationFailureKind::ProviderUnavailable => "provider_unavailable",
@@ -31,9 +30,6 @@ pub fn failure_kind_label(kind: SessionOperationFailureKind) -> &'static str {
         SessionOperationFailureKind::InvalidEffectIntent => "invalid_effect_intent",
         SessionOperationFailureKind::PreviousShutdownReconciliationRequired => {
             "previous_shutdown_reconciliation_required"
-        }
-        SessionOperationFailureKind::PreviousShutdownCompactionPending => {
-            "previous_shutdown_compaction_pending"
         }
         SessionOperationFailureKind::Internal => "internal",
     }

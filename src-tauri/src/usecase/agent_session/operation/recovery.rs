@@ -10,8 +10,8 @@ use crate::domain::agent_session::events::{
 };
 use crate::domain::local_event::{
     AuthoritativeEffectObservationRecord, CommitBatchError, CommitBatchResult, CommitIdentity,
-    CommitOperationKind, IdempotencyBinding, LegacyReconciliationRecord, LocalAtomicBatch,
-    LocalEventQuery, LocalEventQueryError, LocalEventQueryResult, LocalEventTransactionRepository,
+    CommitOperationKind, IdempotencyBinding, LocalAtomicBatch, LocalEventQuery,
+    LocalEventQueryError, LocalEventQueryResult, LocalEventTransactionRepository,
     LocalStateMutation, ObligationMutation, ObligationRecord, ObligationRecoveryActionRecord,
     ObligationStateRecord, ObligationView, OperationReceiptRecord, OperationStatusValue,
     PendingIndexEntry, PendingPartition, QueryCursor, RecoveryActionMutation,
@@ -124,7 +124,6 @@ fn original_obligation(record: &ObligationRecord) -> &ObligationRecord {
         | ObligationRecord::WorkflowShutdown { .. }
         | ObligationRecord::WorkflowTurnCompletion { .. }
         | ObligationRecord::RecoveryPublication { .. }
-        | ObligationRecord::LegacyReconciliation { .. }
         | ObligationRecord::ProviderEstablish { .. }
         | ObligationRecord::TurnExecution { .. }
         | ObligationRecord::TerminalCommit { .. }
@@ -305,7 +304,7 @@ pub struct RecoveryActionUsecase {
     repository: Arc<dyn LocalEventTransactionRepository>,
     authority: Arc<dyn OperationBindingAuthority>,
     executor: Arc<dyn RecoveryEffectExecutor>,
-    generation_id: String,
+    installation_id: String,
 }
 
 fn stop_completion_operation_is_bound(
@@ -366,13 +365,13 @@ impl RecoveryActionUsecase {
         repository: Arc<dyn LocalEventTransactionRepository>,
         authority: Arc<dyn OperationBindingAuthority>,
         executor: Arc<dyn RecoveryEffectExecutor>,
-        generation_id: String,
+        installation_id: String,
     ) -> Self {
         Self {
             repository,
             authority,
             executor,
-            generation_id,
+            installation_id,
         }
     }
 
@@ -417,7 +416,6 @@ impl RecoveryActionUsecase {
             | ObligationRecord::BackendSessionRecovery { .. }
             | ObligationRecord::WorkflowTurnCompletion { .. }
             | ObligationRecord::RecoveryPublication { .. }
-            | ObligationRecord::LegacyReconciliation { .. }
             | ObligationRecord::ProviderEstablish { .. }
             | ObligationRecord::TurnExecution { .. }
             | ObligationRecord::TerminalCommit { .. }
@@ -491,7 +489,7 @@ impl RecoveryActionUsecase {
                 &entry.record,
                 observation.as_ref(),
                 &*self.authority,
-                &self.generation_id,
+                &self.installation_id,
                 self.executor
                     .supports_read_again(&entry.obligation_id, &entry.record),
             );
@@ -588,7 +586,7 @@ impl RecoveryActionUsecase {
                 &record,
                 observation.as_ref(),
                 &*self.authority,
-                &self.generation_id,
+                &self.installation_id,
                 self.executor.supports_read_again(&obligation_id, &record),
             );
             let action_identities = match capabilities.active_action.clone() {
@@ -653,7 +651,8 @@ impl RecoveryActionUsecase {
         action_id: &str,
     ) -> Result<RecoveryActionStatus, RecoveryActionError> {
         let Some(saved) = self.get_action(action_id).await? else {
-            return if verify_recovery_action_id(&*self.authority, &self.generation_id, action_id) {
+            return if verify_recovery_action_id(&*self.authority, &self.installation_id, action_id)
+            {
                 Ok(RecoveryActionStatus::OutcomeUnknown {
                     action_id: action_id.to_string(),
                 })
@@ -672,7 +671,7 @@ impl RecoveryActionUsecase {
     ) -> String {
         derive_recovery_action_id(
             &*self.authority,
-            &self.generation_id,
+            &self.installation_id,
             obligation_id,
             origin_revision,
             action,
@@ -709,12 +708,7 @@ impl RecoveryActionUsecase {
                 }
                 | TerminalResultRecord::SessionClosed { result, .. }
                 | TerminalResultRecord::Stop { result, .. } => Some(result),
-                TerminalResultRecord::AgentTurn {
-                    result: crate::domain::local_event::AgentTurnTerminalResultRecord::Legacy { .. },
-                    ..
-                }
-                | TerminalResultRecord::StopSuperseded { .. }
-                | TerminalResultRecord::LegacyStopResolution { .. } => None,
+                TerminalResultRecord::StopSuperseded { .. } => None,
             }
         }
 
@@ -752,18 +746,17 @@ impl RecoveryActionUsecase {
                     // identity and digest below.
                     _ => crate::domain::agent_session::events::StopResolution::Superseded,
                 };
-                let resolution_matches = |resolution: StopResolutionKind,
-                                          detail: &TerminalResultRecord| {
-                    match (resolution, detail) {
+                let resolution_matches =
+                    |resolution: StopResolutionKind, detail: &TerminalResultRecord| match (
+                        resolution, detail,
+                    ) {
                         (
                             StopResolutionKind::Succeeded,
                             TerminalResultRecord::Stop {
                                 operation_id: result_operation_id,
                                 ..
                             },
-                        ) => {
-                            result_operation_id == operation_id && detail == &terminal.result
-                        }
+                        ) => result_operation_id == operation_id && detail == &terminal.result,
                         (
                             StopResolutionKind::Superseded,
                             TerminalResultRecord::StopSuperseded {
@@ -775,8 +768,7 @@ impl RecoveryActionUsecase {
                                 && terminal_result_sha256 == &terminal.participant_digest
                         }
                         _ => false,
-                    }
-                };
+                    };
                 let proposed_resolution = owner_mutations.iter().find_map(|mutation| {
                     let LocalStateMutation::StopResolution(resolution) = mutation else {
                         return None;
@@ -989,13 +981,11 @@ impl RecoveryActionUsecase {
                 session_id,
                 recovery_id,
                 detail:
-                    Some(
-                        crate::domain::local_event::BackendSessionRecoveryObligationRecord::EffectReserved {
-                            old_provider_session_generation,
-                            reserved_at_bits,
-                            ..
-                        },
-                    ),
+                    crate::domain::local_event::BackendSessionRecoveryObligationRecord::EffectReserved {
+                        old_provider_session_generation,
+                        reserved_at_bits,
+                        ..
+                    },
                 state: ObligationStateRecord::EffectReserved,
             } => {
                 let Some(expected_generation) = old_provider_session_generation.checked_add(1)
@@ -1054,7 +1044,6 @@ impl RecoveryActionUsecase {
             | ObligationRecord::WorkflowShutdown { .. }
             | ObligationRecord::WorkflowTurnCompletion { .. }
             | ObligationRecord::RecoveryPublication { .. }
-            | ObligationRecord::LegacyReconciliation { .. }
             | ObligationRecord::ProviderEstablish { .. }
             | ObligationRecord::TurnExecution { .. }
             | ObligationRecord::TerminalCommit { .. }
@@ -1216,7 +1205,7 @@ impl RecoveryActionUsecase {
         let finish = LocalAtomicBatch {
             commit_id: commit_identity(&self.authority, "finish", &request.action_id)?,
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: CommitOperationKind::OperationProgress,
                 idempotency_key: format!("{}.finish", request.action_id),
                 payload_hash: finish_payload_hash,
@@ -1432,7 +1421,7 @@ impl RecoveryActionUsecase {
         let finish = LocalAtomicBatch {
             commit_id: commit_identity(&self.authority, "finish", &request.action_id)?,
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: finish_operation_kind,
                 idempotency_key: format!("{}.finish", request.action_id),
                 payload_hash: finish_payload_hash,
@@ -1544,7 +1533,7 @@ impl RecoveryActionUsecase {
             &obligation.record,
             observation.as_ref(),
             &*self.authority,
-            &self.generation_id,
+            &self.installation_id,
             self.executor
                 .supports_read_again(&request.obligation_id, &obligation.record),
         );
@@ -1580,7 +1569,7 @@ impl RecoveryActionUsecase {
 
         let binding_material = format!(
             "recovery-action-binding/v1\0{}\0{}\0{}\0{}\0{}",
-            self.generation_id,
+            self.installation_id,
             request.action_id,
             request.obligation_id,
             request.origin_revision,
@@ -1615,7 +1604,7 @@ impl RecoveryActionUsecase {
         let reserve = LocalAtomicBatch {
             commit_id: commit_identity(&self.authority, "reserve", &request.action_id)?,
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: CommitOperationKind::Recovery,
                 idempotency_key: format!("{}.reserve", request.action_id),
                 payload_hash: binding_hash,
@@ -1807,7 +1796,7 @@ impl RecoveryActionUsecase {
         let finish = LocalAtomicBatch {
             commit_id: commit_identity(&self.authority, "finish", &request.action_id)?,
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: finish_operation_kind,
                 idempotency_key: format!("{}.finish", request.action_id),
                 payload_hash: finish_payload_hash,
@@ -1913,7 +1902,6 @@ fn ensure_succeeded_source_completion(
         | ObligationRecord::PermissionResponse { state, .. }
         | ObligationRecord::StopInterrupt { state, .. }
         | ObligationRecord::SessionClose { state, .. }
-        | ObligationRecord::LegacyReconciliation { state, .. }
         | ObligationRecord::RecoveryReserved { state, .. } => state,
         ObligationRecord::BackendSessionRecovery { .. } => {
             // Backend recovery completion carries the exact old/new
@@ -1971,27 +1959,23 @@ fn source_completion_matches(current: &ObligationRecord, proposed: &ObligationRe
             session_id,
             recovery_id,
             detail:
-                Some(
-                    crate::domain::local_event::BackendSessionRecoveryObligationRecord::EffectReserved {
-                        old_provider_session_generation,
-                        reserved_at_bits,
-                        ..
-                    },
-                ),
+                crate::domain::local_event::BackendSessionRecoveryObligationRecord::EffectReserved {
+                    old_provider_session_generation,
+                    reserved_at_bits,
+                    ..
+                },
             state: ObligationStateRecord::EffectReserved,
         },
         ObligationRecord::BackendSessionRecovery {
             session_id: proposed_session_id,
             recovery_id: proposed_recovery_id,
             detail:
-                Some(
-                    crate::domain::local_event::BackendSessionRecoveryObligationRecord::Completed {
-                        old_provider_session_generation: proposed_old_generation,
-                        provider_session_generation,
-                        backend_session_id,
-                        completed_at_bits,
-                    },
-                ),
+                crate::domain::local_event::BackendSessionRecoveryObligationRecord::Completed {
+                    old_provider_session_generation: proposed_old_generation,
+                    provider_session_generation,
+                    backend_session_id,
+                    completed_at_bits,
+                },
             state: ObligationStateRecord::Completed,
         },
     ) = (original_obligation(current), proposed)
@@ -2020,7 +2004,6 @@ fn source_completion_matches(current: &ObligationRecord, proposed: &ObligationRe
         | ObligationRecord::WorkflowShutdown { state, .. }
         | ObligationRecord::WorkflowTurnCompletion { state, .. }
         | ObligationRecord::RecoveryPublication { state, .. }
-        | ObligationRecord::LegacyReconciliation { state, .. }
         | ObligationRecord::ProviderEstablish { state, .. }
         | ObligationRecord::TurnExecution { state, .. }
         | ObligationRecord::TerminalCommit { state, .. }
@@ -2181,9 +2164,7 @@ fn validate_owner_mutations(
                 && lifecycle_operation_count <= 1
                 && mutations.len() == lifecycle_operation_count
         }
-        ObligationRecord::PermissionResponse { .. }
-        | ObligationRecord::LegacyReconciliation { .. }
-        | ObligationRecord::RecoveryReserved { .. } => {
+        ObligationRecord::PermissionResponse { .. } | ObligationRecord::RecoveryReserved { .. } => {
             owner_batch.is_none() && mutations.is_empty()
         }
         ObligationRecord::BackendSessionRecovery { .. } => {
@@ -2226,16 +2207,12 @@ fn requires_durable_read_again_owner_evidence(record: &ObligationRecord) -> bool
             | ObligationRecord::SessionClose {
                 action: SessionLifecycleRecordAction::Close,
                 ..
-            }
-            | ObligationRecord::BackendSessionRecovery {
-                detail: Some(
-                    crate::domain::local_event::BackendSessionRecoveryObligationRecord::EffectReserved {
-                        ..
-                    }
-                ),
-                state: ObligationStateRecord::EffectReserved,
-                ..
-            }
+            } | ObligationRecord::BackendSessionRecovery {
+            detail:
+                crate::domain::local_event::BackendSessionRecoveryObligationRecord::EffectReserved { .. },
+            state: ObligationStateRecord::EffectReserved,
+            ..
+        }
     )
 }
 
@@ -2350,29 +2327,24 @@ fn validate_owner_batch(
         }
         return Ok(());
     }
-    let (
-        source_session_id,
-        source_recovery_id,
-        old_provider_session_generation,
-    ) = match original_obligation(&current.record) {
-        ObligationRecord::BackendSessionRecovery {
-            session_id,
-            recovery_id,
-            detail:
-                Some(
+    let (source_session_id, source_recovery_id, old_provider_session_generation) =
+        match original_obligation(&current.record) {
+            ObligationRecord::BackendSessionRecovery {
+                session_id,
+                recovery_id,
+                detail:
                     crate::domain::local_event::BackendSessionRecoveryObligationRecord::EffectReserved {
                         old_provider_session_generation,
                         ..
                     },
-                ),
-            state: ObligationStateRecord::EffectReserved,
-        } => (
-            session_id.as_str(),
-            recovery_id.as_str(),
-            *old_provider_session_generation,
-        ),
-        _ => return Err(internal("readback-owner-batch-family")),
-    };
+                state: ObligationStateRecord::EffectReserved,
+            } => (
+                session_id.as_str(),
+                recovery_id.as_str(),
+                *old_provider_session_generation,
+            ),
+            _ => return Err(internal("readback-owner-batch-family")),
+        };
     let provider_session_generation = old_provider_session_generation
         .checked_add(1)
         .ok_or(RecoveryActionError::InvalidRequest)?;
@@ -2436,12 +2408,12 @@ fn validate_owner_batch(
             session_id,
             recovery_id,
             detail:
-                Some(crate::domain::local_event::BackendSessionRecoveryObligationRecord::Completed {
+                crate::domain::local_event::BackendSessionRecoveryObligationRecord::Completed {
                     old_provider_session_generation,
                     provider_session_generation,
                     backend_session_id,
                     completed_at_bits,
-                }),
+                },
             state: ObligationStateRecord::Completed,
         } if session_id == source_session_id && recovery_id == source_recovery_id => (
             *old_provider_session_generation,
@@ -2558,7 +2530,6 @@ fn valid_recovery_operation(
                     && source_turn_id == turn_id
             ) && mutation.kind == crate::domain::local_event::OperationKind::Stop
                 && mutation.latest_status.kind == mutation.kind
-                && !mutation.latest_status.migration_quit
                 && mutation.operation_id == *operation_id
                 && advances_one_revision(mutation.expected, mutation.revision)
                 && session_id == owner
@@ -2590,7 +2561,6 @@ fn valid_recovery_operation(
                         == Some(turn_id)
             ) && mutation.kind == crate::domain::local_event::OperationKind::Send
                 && mutation.latest_status.kind == mutation.kind
-                && !mutation.latest_status.migration_quit
                 && mutation.operation_id == *operation_id
                 && advances_one_revision(mutation.expected, mutation.revision)
                 && session_id == owner
@@ -2626,7 +2596,6 @@ fn valid_recovery_lifecycle_operation(
             )
             && mutation.kind == crate::domain::local_event::OperationKind::SessionLifecycle
             && mutation.latest_status.kind == mutation.kind
-            && !mutation.latest_status.migration_quit
             && mutation.operation_id == *operation_id
             && advances_one_revision(mutation.expected, mutation.revision)
             && session_id == owner
@@ -2643,9 +2612,9 @@ fn valid_recovery_publication(
         session_id: source_session_id,
         recovery_id: source_recovery_id,
         detail:
-            Some(crate::domain::local_event::BackendSessionRecoveryObligationRecord::EffectReserved {
+            crate::domain::local_event::BackendSessionRecoveryObligationRecord::EffectReserved {
                 ..
-            }),
+            },
         ..
     } = original
     else {
@@ -2823,115 +2792,9 @@ fn recovery_source_result_identity_v1(
     source: &ObligationMutation,
 ) -> Result<Vec<u8>, RecoveryActionError> {
     let mutation = LocalStateMutation::Obligation(source.clone());
-    if let Ok(identity) = repository.canonical_mutation_identity_v1(&mutation) {
-        return Ok(identity);
-    }
-
-    // Legacy reconciliation payloads deliberately have no general-purpose
-    // domain identity: they can contain historical event/request shapes that
-    // are not valid inputs for new operations. A recovery result can still
-    // update the already-stored row because the issued action identity and
-    // exact expected revision bind that immutable legacy payload. Encode only
-    // the closed recovery overlay and its CAS envelope here.
-    let ObligationRecord::LegacyReconciliation {
-        safe_actions,
-        state,
-        ..
-    } = original_obligation(&source.record)
-    else {
-        return Err(internal("readback-source-completion-identity"));
-    };
-    let Some(action) = recovery_action(&source.record) else {
-        return Err(internal("readback-source-completion-identity"));
-    };
-    let Some(classification) = action.classification else {
-        return Err(internal("readback-source-completion-identity"));
-    };
-    if action.state != ObligationStateRecord::Completed {
-        return Err(internal("readback-source-completion-identity"));
-    }
-
-    fn field(bytes: &mut Vec<u8>, value: &[u8]) {
-        bytes.extend_from_slice(&(value.len() as u64).to_be_bytes());
-        bytes.extend_from_slice(value);
-    }
-    fn text(bytes: &mut Vec<u8>, value: &str) {
-        field(bytes, value.as_bytes());
-    }
-    fn state_byte(state: ObligationStateRecord) -> u8 {
-        match state {
-            ObligationStateRecord::Prepared => 0,
-            ObligationStateRecord::Pending => 1,
-            ObligationStateRecord::EffectReserved => 2,
-            ObligationStateRecord::Running => 3,
-            ObligationStateRecord::WaitingApproval => 4,
-            ObligationStateRecord::OutcomeUnknown => 5,
-            ObligationStateRecord::ReconciliationRequired => 6,
-            ObligationStateRecord::Completed => 7,
-            ObligationStateRecord::Cancelled => 8,
-            ObligationStateRecord::Failed => 9,
-        }
-    }
-    fn observation(record: &ObligationRecord) -> Option<&AuthoritativeEffectObservationRecord> {
-        match record {
-            ObligationRecord::Observed { observation, .. } => Some(observation),
-            ObligationRecord::RecoveryTransition { original, .. } => observation(original),
-            _ => None,
-        }
-    }
-
-    let descriptor = pending_recovery_descriptor(&source.obligation_id, &source.record);
-    let mut bytes = b"legacy_recovery_source_result_identity_v1".to_vec();
-    text(&mut bytes, &source.obligation_id);
-    text(&mut bytes, &descriptor.original_identity);
-    match source.expected {
-        RevisionGuard::Absent => bytes.push(0),
-        RevisionGuard::Expected(revision) => {
-            bytes.push(1);
-            bytes.extend_from_slice(&revision.value().to_be_bytes());
-        }
-    }
-    bytes.extend_from_slice(&source.revision.value().to_be_bytes());
-    match &source.pending {
-        Some(pending) => {
-            bytes.push(1);
-            text(&mut bytes, &pending.ordered_key);
-            text(&mut bytes, &pending.owner);
-            text(&mut bytes, pending.partition.label());
-            match &pending.shutdown_plan {
-                Some(plan) => {
-                    bytes.push(1);
-                    text(&mut bytes, &plan.plan_id);
-                    bytes.extend_from_slice(&plan.epoch.to_be_bytes());
-                }
-                None => bytes.push(0),
-            }
-        }
-        None => bytes.push(0),
-    }
-    bytes.push(state_byte(*state));
-    bytes.extend_from_slice(&(safe_actions.len() as u64).to_be_bytes());
-    for safe_action in safe_actions {
-        text(&mut bytes, action_label(*safe_action));
-    }
-    text(&mut bytes, &action.action_id);
-    bytes.extend_from_slice(&action.origin_revision.to_be_bytes());
-    text(&mut bytes, action_label(action.action));
-    text(&mut bytes, &action.effect_identity);
-    text(&mut bytes, classification_label(classification));
-    if let Some(observation) = observation(&source.record) {
-        bytes.push(1);
-        text(&mut bytes, &observation.effect_identity);
-        bytes.extend_from_slice(&observation.origin_revision.to_be_bytes());
-        text(&mut bytes, classification_label(observation.classification));
-        bytes.push(u8::from(observation.cancellable));
-        text(&mut bytes, &observation.safe_view);
-        field(&mut bytes, &observation.result_sha256);
-        field(&mut bytes, &observation.proof_mac);
-    } else {
-        bytes.push(0);
-    }
-    Ok(bytes)
+    repository
+        .canonical_mutation_identity_v1(&mutation)
+        .map_err(|_| internal("readback-source-completion-identity"))
 }
 
 fn finish_payload_hash(
@@ -3010,7 +2873,7 @@ fn is_internal_feedback_reservation(record: &ObligationRecord) -> bool {
 /// resource/effect reference, never a presentation label.
 pub(crate) fn derive_recovery_action_id(
     authority: &dyn OperationBindingAuthority,
-    generation_id: &str,
+    installation_id: &str,
     resource_ref: &str,
     origin_revision: u64,
     action: RecoveryActionKind,
@@ -3028,7 +2891,7 @@ pub(crate) fn derive_recovery_action_id(
     body.extend_from_slice(&authority.digest(resource_ref.as_bytes())[..16]);
     let mac_material = [
         b"recovery-action-token/v1\0".as_slice(),
-        generation_id.as_bytes(),
+        installation_id.as_bytes(),
         b"\0".as_slice(),
         body.as_slice(),
     ]
@@ -3042,7 +2905,7 @@ pub(crate) fn derive_recovery_action_id(
 
 fn verify_recovery_action_id(
     authority: &dyn OperationBindingAuthority,
-    generation_id: &str,
+    installation_id: &str,
     action_id: &str,
 ) -> bool {
     let mut segments = action_id.split('.');
@@ -3067,7 +2930,7 @@ fn verify_recovery_action_id(
     }
     let mac_material = [
         b"recovery-action-token/v1\0".as_slice(),
-        generation_id.as_bytes(),
+        installation_id.as_bytes(),
         b"\0".as_slice(),
         body.as_slice(),
     ]
@@ -3098,7 +2961,6 @@ fn recovery_action(record: &ObligationRecord) -> Option<&ObligationRecoveryActio
         | ObligationRecord::WorkflowShutdown { .. }
         | ObligationRecord::WorkflowTurnCompletion { .. }
         | ObligationRecord::RecoveryPublication { .. }
-        | ObligationRecord::LegacyReconciliation { .. }
         | ObligationRecord::ProviderEstablish { .. }
         | ObligationRecord::TurnExecution { .. }
         | ObligationRecord::TerminalCommit { .. }
@@ -3198,7 +3060,6 @@ fn obligation_with_action_result(
         | ObligationRecord::WorkflowShutdown { .. }
         | ObligationRecord::WorkflowTurnCompletion { .. }
         | ObligationRecord::RecoveryPublication { .. }
-        | ObligationRecord::LegacyReconciliation { .. }
         | ObligationRecord::ProviderEstablish { .. }
         | ObligationRecord::TurnExecution { .. }
         | ObligationRecord::TerminalCommit { .. }
@@ -3325,7 +3186,6 @@ fn obligation_state(record: &ObligationRecord) -> Option<ObligationStateRecord> 
         | ObligationRecord::WorkflowShutdown { state, .. }
         | ObligationRecord::WorkflowTurnCompletion { state, .. }
         | ObligationRecord::RecoveryPublication { state, .. }
-        | ObligationRecord::LegacyReconciliation { state, .. }
         | ObligationRecord::ProviderEstablish { state, .. }
         | ObligationRecord::TurnExecution { state, .. }
         | ObligationRecord::TerminalCommit { state, .. }
@@ -3441,46 +3301,6 @@ fn pending_recovery_descriptor(
             identity(message_id).or_else(|| identity(recovery_id)),
             "Recovery message publication",
         ),
-        ObligationRecord::LegacyReconciliation { detail, .. } => match detail {
-            LegacyReconciliationRecord::TurnExecution { turn_id, .. } => (
-                PendingRecoveryCategory::TurnExecution,
-                identity(turn_id),
-                "Agent turn execution",
-            ),
-            LegacyReconciliationRecord::QueuedSend { queue_item_id, .. } => (
-                PendingRecoveryCategory::QueueExecution,
-                identity(queue_item_id),
-                "Queued agent execution",
-            ),
-            LegacyReconciliationRecord::Permission { request, .. } => (
-                PendingRecoveryCategory::PermissionDelivery,
-                identity(&request.id),
-                "Permission response delivery",
-            ),
-            LegacyReconciliationRecord::ProviderSession { session_id } => (
-                PendingRecoveryCategory::ProviderEstablish,
-                identity(session_id),
-                "Provider session establishment",
-            ),
-            LegacyReconciliationRecord::BackendRecovery { recovery_id, .. } => (
-                PendingRecoveryCategory::BackendRecovery,
-                identity(recovery_id),
-                "Backend session recovery",
-            ),
-            LegacyReconciliationRecord::RecoveryPublication {
-                session_id,
-                pending_message,
-            } => (
-                PendingRecoveryCategory::RecoveryPublication,
-                identity(&pending_message.message_id).or_else(|| identity(session_id)),
-                "Recovery message publication",
-            ),
-            LegacyReconciliationRecord::OperationBinding { operation_id, .. } => (
-                PendingRecoveryCategory::Unknown,
-                identity(operation_id),
-                "Pending local operation",
-            ),
-        },
         ObligationRecord::ProviderEstablish {
             operation_id,
             effect_identity,
@@ -3564,8 +3384,7 @@ pub(crate) fn unresolved_recovery_original_identity(
     let original = original_obligation(record);
     let recovery_owned = matches!(
         original,
-        ObligationRecord::LegacyReconciliation { .. }
-            | ObligationRecord::BackendSessionRecovery { .. }
+        ObligationRecord::BackendSessionRecovery { .. }
             | ObligationRecord::WorkflowShutdown { .. }
             | ObligationRecord::WorkflowTurnCompletion { .. }
             | ObligationRecord::RecoveryPublication { .. }
@@ -3599,7 +3418,7 @@ fn recovery_capabilities(
     record: &ObligationRecord,
     observation: Option<&AuthoritativeEffectObservation>,
     authority: &dyn OperationBindingAuthority,
-    generation_id: &str,
+    installation_id: &str,
     supports_read_again: bool,
 ) -> RecoveryCapabilities {
     let original = original_obligation(record);
@@ -3660,7 +3479,7 @@ fn recovery_capabilities(
             && active.action_id
                 == derive_recovery_action_id(
                     authority,
-                    generation_id,
+                    installation_id,
                     obligation_id,
                     active.origin_revision,
                     active.action,
@@ -3695,13 +3514,7 @@ fn recovery_capabilities(
     // Permission retry is allowed only before the provider effect is claimed
     // and only from the saved exact payload. `effect_reserved` is ambiguous
     // and deliberately never exposes blind retry.
-    let saved_idempotent_retry = matches!(
-        original,
-        ObligationRecord::LegacyReconciliation { safe_actions, .. }
-            if safe_actions.contains(&RecoveryActionKind::RetrySameEffect)
-                && obligation_state(record) != Some(ObligationStateRecord::EffectReserved)
-    );
-    if permission_payload_valid || saved_idempotent_retry {
+    if permission_payload_valid {
         actions.push(RecoveryActionKind::RetrySameEffect);
     }
     if observation.is_some() {
@@ -3747,7 +3560,6 @@ fn authoritative_observation(
             | ObligationRecord::WorkflowShutdown { .. }
             | ObligationRecord::WorkflowTurnCompletion { .. }
             | ObligationRecord::RecoveryPublication { .. }
-            | ObligationRecord::LegacyReconciliation { .. }
             | ObligationRecord::ProviderEstablish { .. }
             | ObligationRecord::TurnExecution { .. }
             | ObligationRecord::TerminalCommit { .. }
@@ -3835,7 +3647,6 @@ fn stable_effect_identity(record: &ObligationRecord) -> Option<String> {
             terminal_identity, ..
         } => Some(terminal_identity.clone()),
         ObligationRecord::StopInterrupt { .. }
-        | ObligationRecord::LegacyReconciliation { .. }
         | ObligationRecord::TurnExecution { .. }
         | ObligationRecord::FeedbackReservation { .. }
         | ObligationRecord::Feedback { .. }
@@ -3948,8 +3759,8 @@ pub(crate) fn decode_recovery_completed_result(
             target_id,
             state,
         } => format!(
-            "Shutdown target {target_id} in {}/{} at ordinal {ordinal}: {state:?}",
-            plan.plan_id, plan.epoch
+            "Shutdown target {target_id} in {} at ordinal {ordinal}: {state:?}",
+            plan.shutdown_id
         ),
         RecoveryResourceViewRecord::SafeSummary(summary) => summary.clone(),
         RecoveryResourceViewRecord::ReconciliationRequired { failure } => {
@@ -4325,7 +4136,6 @@ mod observation_tests {
             receipt: wrong_turn_receipt,
             latest_status: OperationStatusRecord {
                 kind: OperationKind::Send,
-                migration_quit: false,
                 value: status,
             },
             expected: RevisionGuard::Expected(Revision::new(0).unwrap()),

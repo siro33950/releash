@@ -22,7 +22,6 @@ impl FileSessionStorage {
         session_id: &str,
         forked_meta: &SessionMeta,
     ) -> Result<(), String> {
-        self.ensure_legacy_mutation_admitted()?;
         if !self.reconcile_session_transaction(app_data_dir, session_id)? {
             return Err(format!("Session not found: {session_id}"));
         }

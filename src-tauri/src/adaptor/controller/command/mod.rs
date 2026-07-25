@@ -29,6 +29,42 @@ struct CommandDomainRoute {
     handler: InvokeHandler,
 }
 
+const STARTUP_COMMANDS: [&str; 2] = [
+    "get_application_startup_outcome",
+    "quit_after_startup_failure",
+];
+
+fn command_admitted(
+    command: &str,
+    authority: Option<&crate::usecase::application_startup::ApplicationStartupAuthority>,
+) -> bool {
+    authority.is_some_and(|authority| {
+        STARTUP_COMMANDS.contains(&command) || authority.normal_admission_ready()
+    })
+}
+
+pub(crate) fn gate_invoke_before_domain_routing<R: tauri::Runtime>(
+    invoke: tauri::ipc::Invoke<R>,
+) -> Result<tauri::ipc::Invoke<R>, bool> {
+    let admitted = {
+        let authority = invoke.message.state_ref().try_get::<std::sync::Arc<
+            crate::usecase::application_startup::ApplicationStartupAuthority,
+        >>();
+        command_admitted(
+            invoke.message.command(),
+            authority.map(|authority| authority.inner().as_ref()),
+        )
+    };
+    if !admitted {
+        invoke.resolver.reject(
+            crate::usecase::application_startup::ApplicationUnavailable::ApplicationUnavailable,
+        );
+        Err(true)
+    } else {
+        Ok(invoke)
+    }
+}
+
 impl CommandRouter {
     fn new(fallback: InvokeHandler) -> Self {
         Self {
@@ -49,6 +85,10 @@ impl CommandRouter {
     }
 
     fn handle(&self, invoke: tauri::ipc::Invoke<tauri::Wry>) -> bool {
+        let invoke = match gate_invoke_before_domain_routing(invoke) {
+            Ok(invoke) => invoke,
+            Err(handled) => return handled,
+        };
         let route_index = self.domain_route_index(invoke.message.command());
 
         if let Some(route_index) = route_index {
@@ -93,6 +133,9 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tauri::Manager;
 
     fn dummy_handler() -> InvokeHandler {
         Box::new(|_invoke| true)
@@ -166,6 +209,146 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn failed_startup_admits_only_the_two_safe_commands_before_domain_routing() {
+        let failed = crate::usecase::application_startup::ApplicationStartupAuthority::failed_kind(
+            crate::usecase::application_startup::StartupFailureKind::StoreValidationFailed,
+        );
+        let ready = crate::usecase::application_startup::ApplicationStartupAuthority::ready();
+
+        for command in registered_command_names() {
+            assert_eq!(
+                command_admitted(command, Some(&failed)),
+                STARTUP_COMMANDS.contains(&command),
+                "unexpected failed-startup admission for {command}"
+            );
+            assert!(
+                command_admitted(command, Some(&ready)),
+                "ready startup rejected {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_startup_authority_fails_closed_before_any_command_routing() {
+        for command in registered_command_names() {
+            assert!(
+                !command_admitted(command, None),
+                "missing startup authority admitted {command}"
+            );
+        }
+        for command in STARTUP_COMMANDS {
+            assert!(
+                !command_admitted(command, None),
+                "startup command {command} cannot run without its authority"
+            );
+        }
+    }
+
+    #[tauri::command]
+    fn record_normal_command_effect(effects: tauri::State<'_, Arc<AtomicUsize>>) -> &'static str {
+        effects.fetch_add(1, Ordering::SeqCst);
+        "normal-effect-ran"
+    }
+
+    fn invoke_request(command: &str) -> tauri::webview::InvokeRequest {
+        tauri::webview::InvokeRequest {
+            cmd: command.to_string(),
+            callback: tauri::ipc::CallbackFn(0),
+            error: tauri::ipc::CallbackFn(1),
+            url: if cfg!(any(windows, target_os = "android")) {
+                "http://tauri.localhost"
+            } else {
+                "tauri://localhost"
+            }
+            .parse()
+            .unwrap(),
+            body: tauri::ipc::InvokeBody::default(),
+            headers: Default::default(),
+            invoke_key: tauri::test::INVOKE_KEY.to_string(),
+        }
+    }
+
+    fn command_gate_test_handler(
+    ) -> impl Fn(tauri::ipc::Invoke<tauri::test::MockRuntime>) -> bool + Send + Sync + 'static {
+        tauri::generate_handler![
+            application_lifecycle::get_application_startup_outcome,
+            record_normal_command_effect
+        ]
+    }
+
+    fn command_gate_test_app(
+        authority: Option<Arc<crate::usecase::application_startup::ApplicationStartupAuthority>>,
+    ) -> (tauri::App<tauri::test::MockRuntime>, Arc<AtomicUsize>) {
+        let effects = Arc::new(AtomicUsize::new(0));
+        let mut builder = tauri::test::mock_builder().manage(effects.clone());
+        if let Some(authority) = authority {
+            builder = builder.manage(authority);
+        }
+        let handler = command_gate_test_handler();
+        let app = builder
+            .invoke_handler(
+                move |invoke| match gate_invoke_before_domain_routing(invoke) {
+                    Ok(invoke) => handler(invoke),
+                    Err(handled) => handled,
+                },
+            )
+            .build(crate::application_context())
+            .expect("build startup command gate test app");
+        (app, effects)
+    }
+
+    #[test]
+    fn failed_and_missing_authority_reject_actual_normal_ipc_before_its_effect() {
+        let failed = Arc::new(
+            crate::usecase::application_startup::ApplicationStartupAuthority::failed_kind(
+                crate::usecase::application_startup::StartupFailureKind::StoreValidationFailed,
+            ),
+        );
+        for authority in [Some(failed), None] {
+            let (app, effects) = command_gate_test_app(authority);
+            let window = tauri::WebviewWindowBuilder::new(
+                &app,
+                crate::infrastructure::platform::window_lifecycle::STARTUP_FAILURE_WINDOW_LABEL,
+                Default::default(),
+            )
+            .build()
+            .expect("build startup command gate window");
+
+            let error = tauri::test::get_ipc_response(
+                &window,
+                invoke_request("record_normal_command_effect"),
+            )
+            .expect_err("normal command must be rejected before its handler");
+            assert_eq!(
+                error,
+                serde_json::json!({ "type": "application_unavailable" })
+            );
+            assert_eq!(effects.load(Ordering::SeqCst), 0);
+
+            let startup = tauri::test::get_ipc_response(
+                &window,
+                invoke_request("get_application_startup_outcome"),
+            );
+            if app
+                .try_state::<Arc<crate::usecase::application_startup::ApplicationStartupAuthority>>(
+                )
+                .is_some()
+            {
+                let startup = startup
+                    .expect("failed authority must expose its startup outcome")
+                    .deserialize::<serde_json::Value>()
+                    .expect("decode startup outcome");
+                assert_eq!(startup["type"], "failed");
+            } else {
+                assert_eq!(
+                    startup.expect_err("missing authority must reject even startup commands"),
+                    serde_json::json!({ "type": "application_unavailable" })
+                );
+            }
+        }
+    }
+
     fn canonical_command_names() -> &'static [&'static str] {
         &[
             "abort_workflow",
@@ -220,6 +403,7 @@ mod tests {
             "get_recovery_action",
             "get_stop_operation",
             "get_application_quit_operation",
+            "get_application_startup_outcome",
             "get_shutdown_plan",
             "get_app_settings",
             "get_automation_config_dir",
@@ -247,7 +431,6 @@ mod tests {
             "get_hooks_status",
             "get_language_from_path",
             "get_main_repo_path",
-            "get_local_store_migration",
             "get_notion_config",
             "get_notify_config",
             "get_or_spawn_pty",
@@ -326,6 +509,7 @@ mod tests {
             "query_worktree_node_statuses",
             "sync_worktree_node_statuses",
             "query_notion_tasks",
+            "quit_after_startup_failure",
             "reconcile_pty_sessions",
             "register_active_terminal",
             "remove_repo_path",

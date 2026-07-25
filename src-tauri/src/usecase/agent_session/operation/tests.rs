@@ -176,35 +176,6 @@ fn obligation_session_id(record: &ObligationRecord) -> Option<&str> {
         | ObligationRecord::TerminalCommit { session_id, .. }
         | ObligationRecord::FeedbackReservation { session_id, .. }
         | ObligationRecord::Feedback { session_id, .. } => Some(session_id),
-        ObligationRecord::LegacyReconciliation { detail, .. } => match detail {
-            crate::domain::local_event::LegacyReconciliationRecord::TurnExecution {
-                session_id,
-                ..
-            }
-            | crate::domain::local_event::LegacyReconciliationRecord::QueuedSend {
-                session_id,
-                ..
-            }
-            | crate::domain::local_event::LegacyReconciliationRecord::Permission {
-                session_id,
-                ..
-            }
-            | crate::domain::local_event::LegacyReconciliationRecord::ProviderSession {
-                session_id,
-            }
-            | crate::domain::local_event::LegacyReconciliationRecord::BackendRecovery {
-                session_id,
-                ..
-            }
-            | crate::domain::local_event::LegacyReconciliationRecord::RecoveryPublication {
-                session_id,
-                ..
-            }
-            | crate::domain::local_event::LegacyReconciliationRecord::OperationBinding {
-                session_id,
-                ..
-            } => Some(session_id),
-        },
         ObligationRecord::RecoveryTransition { original, .. }
         | ObligationRecord::Observed { original, .. } => obligation_session_id(original),
         ObligationRecord::WorkflowShutdown { .. }
@@ -706,7 +677,7 @@ impl LocalEventTransactionRepository for FakeRepo {
                             Some(crate::domain::local_event::CallerAttemptView {
                                 key: crate::domain::local_event::CallerOperationKey {
                                     principal: principal.clone(),
-                                    generation_id: GENERATION.to_string(),
+                                    installation_id: GENERATION.to_string(),
                                     kind: operation_kind,
                                     caller_request_id: id.clone(),
                                 },
@@ -2352,7 +2323,7 @@ async fn session_closed_terminal_winner_atomically_finishes_send_and_execution_o
     repo.commit_batch(LocalAtomicBatch {
         commit_id: CommitIdentity::parse("send-terminal-commit").unwrap(),
         idempotency: IdempotencyBinding {
-            generation_id: GENERATION.to_string(),
+            installation_id: GENERATION.to_string(),
             operation_kind: OperationKind::Send.into(),
             idempotency_key: "send-terminal-final".to_string(),
             payload_hash: fake_hash(2, b"send-terminal-final"),
@@ -5432,7 +5403,12 @@ async fn b035_first_pending_page_describes_every_recovery_category_without_sessi
             ObligationRecord::BackendSessionRecovery {
                 session_id: "session-7".to_string(),
                 recovery_id: "recovery-7".to_string(),
-                detail: None,
+                detail:
+                    crate::domain::local_event::BackendSessionRecoveryObligationRecord::EffectReserved {
+                        old_provider_session_generation: 0,
+                        reason: crate::domain::agent_session::events::BackendSessionRecoveryReason::BackendSessionLost,
+                        reserved_at_bits: 0,
+                    },
                 state: ObligationStateRecord::ReconciliationRequired,
             },
             PendingRecoveryCategory::BackendRecovery,
@@ -5952,7 +5928,6 @@ async fn b082_b084_completed_action_replays_only_closed_result_pairs() {
                         },
                         OperationStatusRecord {
                             kind: OperationKind::Stop,
-                            migration_quit: false,
                             value: OperationStatusValue::StopCompleted {
                                 resolution: StopResolution::Succeeded,
                             },
@@ -6765,7 +6740,6 @@ async fn permission_startup_recovery_pages_past_200_and_uses_only_the_indexed_pr
                     },
                     OperationStatusRecord {
                         kind: OperationKind::PermissionResponse,
-                        migration_quit: false,
                         value: OperationStatusValue::ReconciliationRequired {
                             failure: SafeOperationFailure::new(
                                 SessionOperationFailureKind::OutcomeUnknown,

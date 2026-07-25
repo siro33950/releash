@@ -29,7 +29,7 @@ export interface RecoveryCapability {
 		| "closed_session"
 		| "archived_session"
 		| "unowned_runtime";
-	shutdown_plan: { plan_id: string; epoch: string } | null;
+	shutdown_plan: { shutdown_id: string } | null;
 	revision: string;
 	state: "pending" | "failed";
 	known_status:
@@ -100,18 +100,8 @@ export interface PendingCallerAttempt {
 	resolution: "pending" | "accepted" | "rejected_before_commit";
 }
 
-interface MigrationProjection {
-	migration_id: string;
-	phase: string;
-	next_source_ordinal: string;
-	total_source_count: string;
-	safe_failure: string | null;
-	correlation_id: string | null;
-}
-
 interface ShutdownProjection {
-	plan_id: string;
-	epoch: string;
+	shutdown_id: string;
 	phase: string;
 	outcome: string | null;
 	actions: string[];
@@ -142,8 +132,7 @@ export interface ShutdownTargetCapability {
 		| { type: "confirmed_no_effect"; proof_sha256: string }
 		| {
 				type: "exit_coupled_outcome_unknown";
-				plan_id: string;
-				epoch: string;
+				shutdown_id: string;
 		  }
 		| null;
 	revision: string;
@@ -170,7 +159,6 @@ export interface OperationSupervisionState {
 		result: unknown;
 	}>;
 	recovery: RecoveryCapability[];
-	migration: MigrationProjection | null;
 	shutdown: ShutdownProjection | null;
 	shutdownOutcomeUnknown: ShutdownOutcomeUnknown | null;
 	shutdownTargets: ShutdownTargetCapability[];
@@ -183,7 +171,6 @@ const EMPTY: OperationSupervisionState = {
 	attempts: [],
 	operationReadbacks: [],
 	recovery: [],
-	migration: null,
 	shutdown: null,
 	shutdownOutcomeUnknown: null,
 	shutdownTargets: [],
@@ -296,7 +283,6 @@ export function useOperationSupervision(sessionId: string) {
 				sessionAttempts,
 				applicationAttempts,
 				recovery,
-				migrationResult,
 				shutdownResult,
 			] = await Promise.all([
 				getAcceptedSendOperation(sessionId),
@@ -306,14 +292,9 @@ export function useOperationSupervision(sessionId: string) {
 					limit: 32,
 					partition: null,
 					owner: sessionId,
-					shutdownPlanId: null,
-					shutdownEpoch: null,
+					shutdownId: null,
 					cursor: null,
 				}),
-				invoke<{
-					type: "current";
-					migration: MigrationProjection | null;
-				}>("get_local_store_migration"),
 				invoke<CurrentShutdownResult>("get_application_shutdown"),
 			]);
 			const attempts = [
@@ -468,8 +449,7 @@ export function useOperationSupervision(sessionId: string) {
 					: null;
 			if (shutdown) {
 				const page = await invoke<ShutdownPlanPage>("get_shutdown_plan", {
-					planId: shutdown.plan_id,
-					epoch: shutdown.epoch,
+					shutdownId: shutdown.shutdown_id,
 					limit: 128,
 					cursor: null,
 				});
@@ -480,7 +460,6 @@ export function useOperationSupervision(sessionId: string) {
 				attempts,
 				operationReadbacks,
 				recovery: recovery.entries,
-				migration: migrationResult.migration,
 				shutdown,
 				shutdownOutcomeUnknown,
 				shutdownTargets,
@@ -546,8 +525,7 @@ export function useOperationSupervision(sessionId: string) {
 			await invoke("resolve_shutdown_target_action", {
 				request: {
 					action_id: issued.action_id,
-					plan_id: state.shutdown.plan_id,
-					epoch: state.shutdown.epoch,
+					shutdown_id: state.shutdown.shutdown_id,
 					ordinal: target.ordinal,
 					target_key: target.target_key,
 					origin_revision: issued.origin_revision,

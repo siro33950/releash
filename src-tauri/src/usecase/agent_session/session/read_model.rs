@@ -766,7 +766,7 @@ mod tests {
         let mut session = session_with_messages(messages);
         session.id = session_id.clone();
         store
-            .save_full_session_for_migration_or_restore(data_dir.path(), &session)
+            .save_full_session_for_restore(data_dir.path(), &session)
             .unwrap();
 
         let latest_page = store

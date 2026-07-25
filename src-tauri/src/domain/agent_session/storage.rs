@@ -17,9 +17,6 @@ pub enum AgentSessionProjectedMessage<Message, MessagePart> {
 
 #[derive(Clone)]
 pub struct AgentSessionProjectionCommit<Meta, Message, MessagePart> {
-    // The legacy file projection adapter is test-only. Production keeps this
-    // builder result long enough to extract its already-canonical message
-    // parts, but never materializes the legacy metadata payload.
     #[cfg_attr(not(test), allow(dead_code))]
     pub meta: Meta,
     pub message: AgentSessionProjectedMessage<Message, MessagePart>,
@@ -64,6 +61,7 @@ pub trait AgentSessionStorageTypes: Send + Sync {
     type Event;
 }
 
+#[allow(dead_code)]
 pub trait AgentSessionReader: AgentSessionStorageTypes {
     fn list_metas(&self, app_data_dir: &Path) -> Result<Vec<Self::Meta>, String>;
 
@@ -123,15 +121,8 @@ pub trait AgentSessionReader: AgentSessionStorageTypes {
     ) -> Result<Vec<Self::Event>, String>;
 }
 
+#[cfg(test)]
 pub trait AgentSessionWriter: AgentSessionStorageTypes {
-    /// Permanently closes this legacy adapter's mutation paths.
-    ///
-    /// Production installs the SQLite authority before exposing session
-    /// commands.  The legacy adapter remains available only as a read model
-    /// while migration is in progress, so reads must not trigger repair writes
-    /// and direct legacy writer calls must fail closed after this latch is set.
-    fn close_mutation_admission(&self) {}
-
     #[cfg(test)]
     fn write_session_title(
         &self,
@@ -175,7 +166,7 @@ pub trait AgentSessionWriter: AgentSessionStorageTypes {
     ) -> Result<Self::Meta, String>;
 
     #[cfg(test)]
-    fn save_full_session_for_migration_or_restore(
+    fn save_full_session_for_restore(
         &self,
         app_data_dir: &Path,
         session: &Self::Session,
@@ -233,6 +224,8 @@ pub trait AgentSessionWriter: AgentSessionStorageTypes {
     ) -> Result<(), String>;
 }
 
+#[cfg(test)]
 pub trait AgentSessionStorage: AgentSessionReader + AgentSessionWriter {}
 
+#[cfg(test)]
 impl<T> AgentSessionStorage for T where T: AgentSessionReader + AgentSessionWriter + ?Sized {}

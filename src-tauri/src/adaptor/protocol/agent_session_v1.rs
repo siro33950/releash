@@ -209,7 +209,6 @@ pub(crate) enum OperationApplicationErrorDtoV1 {
     CapacityExceeded,
     RateLimited,
     RequestIdConflict,
-    MigrationInProgress,
     ShutdownInProgress,
     FeedbackCapacityExceeded,
     StaleTarget,
@@ -267,13 +266,6 @@ pub(crate) enum ShutdownPlanQueryErrorDtoV1 {
     QueryBusy,
     DeadlineExceeded,
     ResponseTooLarge,
-    StorageUnavailable { failure: SafeOperationFailureDtoV1 },
-    Internal { correlation_id: String },
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub(crate) enum MigrationQueryErrorDtoV1 {
     StorageUnavailable { failure: SafeOperationFailureDtoV1 },
     Internal { correlation_id: String },
 }
@@ -346,19 +338,6 @@ impl From<ShutdownPlanQueryErrorDtoV1> for OperationApplicationErrorDtoV1 {
     }
 }
 
-impl From<MigrationQueryErrorDtoV1> for OperationApplicationErrorDtoV1 {
-    fn from(value: MigrationQueryErrorDtoV1) -> Self {
-        match value {
-            MigrationQueryErrorDtoV1::StorageUnavailable { failure } => {
-                Self::StorageUnavailable { failure }
-            }
-            MigrationQueryErrorDtoV1::Internal { correlation_id } => {
-                Self::Internal { correlation_id }
-            }
-        }
-    }
-}
-
 impl From<ShutdownDetailsMutationErrorDtoV1> for OperationApplicationErrorDtoV1 {
     fn from(value: ShutdownDetailsMutationErrorDtoV1) -> Self {
         match value {
@@ -378,7 +357,6 @@ pub(crate) enum SendCommandErrorDtoV1 {
     NotFound,
     CapacityExceeded,
     FeedbackCapacityExceeded,
-    MigrationInProgress,
     ShutdownInProgress,
     ResponseTooLarge,
     Internal { correlation_id: String },
@@ -404,7 +382,6 @@ pub(crate) enum PermissionResponseCommandErrorDtoV1 {
     NotFound,
     CapacityExceeded,
     FeedbackCapacityExceeded,
-    MigrationInProgress,
     ShutdownInProgress,
     Internal { correlation_id: String },
 }
@@ -430,7 +407,6 @@ impl From<PermissionResponseCommandErrorDtoV1> for OperationApplicationErrorDtoV
             PermissionResponseCommandErrorDtoV1::FeedbackCapacityExceeded => {
                 Self::FeedbackCapacityExceeded
             }
-            PermissionResponseCommandErrorDtoV1::MigrationInProgress => Self::MigrationInProgress,
             PermissionResponseCommandErrorDtoV1::ShutdownInProgress => Self::ShutdownInProgress,
             PermissionResponseCommandErrorDtoV1::Internal { correlation_id } => {
                 Self::Internal { correlation_id }
@@ -462,7 +438,6 @@ pub(crate) enum StopCommandErrorDtoV1 {
     InvalidRequest,
     PayloadConflict,
     FeedbackCapacityExceeded,
-    MigrationInProgress,
     ShutdownInProgress,
     Internal { correlation_id: String },
 }
@@ -484,7 +459,6 @@ pub(crate) enum SessionLifecycleCommandErrorDtoV1 {
     InvalidRequest,
     PayloadConflict,
     FeedbackCapacityExceeded,
-    MigrationInProgress,
     ShutdownInProgress,
     Internal { correlation_id: String },
 }
@@ -534,7 +508,6 @@ pub(crate) enum PendingRecoverySnapshotQueryErrorDtoV1 {
 pub(crate) enum RecoveryActionCommandErrorDtoV1 {
     InvalidRequest,
     NotFound,
-    MigrationInProgress,
     ShutdownInProgress,
     StorageUnavailable { failure: SafeOperationFailureDtoV1 },
     Internal { correlation_id: String },
@@ -666,8 +639,7 @@ pub(crate) struct RecoveryActionIdentityDtoV1 {
 #[derive(Debug, Clone, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ShutdownPlanReferenceDtoV1 {
-    pub plan_id: String,
-    pub epoch: String,
+    pub shutdown_id: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -864,8 +836,7 @@ fn pending_recovery_entry(
         owner_target: entry.owner_target.into(),
         partition: entry.partition.into(),
         shutdown_plan: entry.shutdown_plan.map(|plan| ShutdownPlanReferenceDtoV1 {
-            plan_id: plan.plan_id,
-            epoch: plan.epoch.to_string(),
+            shutdown_id: plan.shutdown_id,
         }),
         revision: entry.revision.to_string(),
         state: match entry.state {
@@ -2289,7 +2260,6 @@ mod architecture_tests {
         assert_string_field(|value: &super::RecoveryActionRequestDtoV1| &value.origin_revision);
         assert_string_field(|value: &super::PendingRecoveryEntryDtoV1| &value.revision);
         assert_string_field(|value: &super::RecoveryActionIdentityDtoV1| &value.origin_revision);
-        assert_string_field(|value: &super::ShutdownPlanReferenceDtoV1| &value.epoch);
         assert_string_field(|value: &super::RecoveryActionCompletedResultDtoV1| {
             &value.resource_revision
         });
@@ -2460,7 +2430,6 @@ mod architecture_tests {
                 SendCommandErrorDtoV1::NotFound,
                 SendCommandErrorDtoV1::CapacityExceeded,
                 SendCommandErrorDtoV1::FeedbackCapacityExceeded,
-                SendCommandErrorDtoV1::MigrationInProgress,
                 SendCommandErrorDtoV1::ShutdownInProgress,
                 SendCommandErrorDtoV1::ResponseTooLarge,
                 SendCommandErrorDtoV1::Internal {
@@ -2473,7 +2442,6 @@ mod architecture_tests {
                 "not_found",
                 "capacity_exceeded",
                 "feedback_capacity_exceeded",
-                "migration_in_progress",
                 "shutdown_in_progress",
                 "response_too_large",
                 "internal",
@@ -2508,7 +2476,6 @@ mod architecture_tests {
                 StopCommandErrorDtoV1::InvalidRequest,
                 StopCommandErrorDtoV1::PayloadConflict,
                 StopCommandErrorDtoV1::FeedbackCapacityExceeded,
-                StopCommandErrorDtoV1::MigrationInProgress,
                 StopCommandErrorDtoV1::ShutdownInProgress,
                 StopCommandErrorDtoV1::Internal {
                     correlation_id: "internal-1".to_string(),
@@ -2518,7 +2485,6 @@ mod architecture_tests {
                 "invalid_request",
                 "payload_conflict",
                 "feedback_capacity_exceeded",
-                "migration_in_progress",
                 "shutdown_in_progress",
                 "internal",
             ]
@@ -2548,7 +2514,6 @@ mod architecture_tests {
                 SessionLifecycleCommandErrorDtoV1::InvalidRequest,
                 SessionLifecycleCommandErrorDtoV1::PayloadConflict,
                 SessionLifecycleCommandErrorDtoV1::FeedbackCapacityExceeded,
-                SessionLifecycleCommandErrorDtoV1::MigrationInProgress,
                 SessionLifecycleCommandErrorDtoV1::ShutdownInProgress,
                 SessionLifecycleCommandErrorDtoV1::Internal {
                     correlation_id: "internal-1".to_string(),
@@ -2558,7 +2523,6 @@ mod architecture_tests {
                 "invalid_request",
                 "payload_conflict",
                 "feedback_capacity_exceeded",
-                "migration_in_progress",
                 "shutdown_in_progress",
                 "internal",
             ]
@@ -2641,7 +2605,6 @@ mod architecture_tests {
             error_tags(vec![
                 RecoveryActionCommandErrorDtoV1::InvalidRequest,
                 RecoveryActionCommandErrorDtoV1::NotFound,
-                RecoveryActionCommandErrorDtoV1::MigrationInProgress,
                 RecoveryActionCommandErrorDtoV1::ShutdownInProgress,
                 RecoveryActionCommandErrorDtoV1::StorageUnavailable { failure: failure() },
                 RecoveryActionCommandErrorDtoV1::Internal {
@@ -2651,7 +2614,6 @@ mod architecture_tests {
             [
                 "invalid_request",
                 "not_found",
-                "migration_in_progress",
                 "shutdown_in_progress",
                 "storage_unavailable",
                 "internal",
@@ -2742,8 +2704,7 @@ mod architecture_tests {
     #[test]
     fn b090_public_pending_recovery_page_preserves_plan_and_workflow_owner() {
         let plan = crate::domain::local_event::ShutdownPlanKey {
-            plan_id: "b090-plan-1".to_string(),
-            epoch: 7,
+            shutdown_id: "b090-plan-1".to_string(),
         };
         let page = crate::usecase::agent_session::operation::PendingRecoveryPage {
             entries: vec![crate::usecase::agent_session::operation::PendingRecoveryEntry {
@@ -2778,10 +2739,9 @@ mod architecture_tests {
         let public = checked_pending_recovery_page(page).unwrap();
         let public = serde_json::to_value(public).unwrap();
         assert_eq!(
-            public["entries"][0]["shutdown_plan"]["plan_id"],
+            public["entries"][0]["shutdown_plan"]["shutdown_id"],
             "b090-plan-1"
         );
-        assert_eq!(public["entries"][0]["shutdown_plan"]["epoch"], "7");
         assert_eq!(
             public["entries"][0]["owner_target"]["type"],
             "workflow_node"

@@ -2,20 +2,47 @@ use std::sync::Arc;
 
 use crate::adaptor::protocol::agent_session_v1::{
     decode_nonnegative_i64_decimal, decode_nonnegative_u64_decimal, ApplicationQuitErrorDtoV1,
-    ApplicationQuitLookupErrorDtoV1, CurrentShutdownErrorDtoV1, MigrationQueryErrorDtoV1,
-    OperationApplicationErrorDtoV1, RecoveryActionCommandErrorDtoV1, RecoveryActionOutcomeDtoV1,
-    ShutdownDetailsMutationErrorDtoV1, ShutdownPlanQueryErrorDtoV1,
+    ApplicationQuitLookupErrorDtoV1, CurrentShutdownErrorDtoV1, OperationApplicationErrorDtoV1,
+    RecoveryActionCommandErrorDtoV1, RecoveryActionOutcomeDtoV1, ShutdownDetailsMutationErrorDtoV1,
+    ShutdownPlanQueryErrorDtoV1,
 };
 use crate::adaptor::protocol::application_lifecycle_v1::{
     ApplicationQuitIntentDtoV1, ApplicationQuitLookupDtoV1, ApplicationQuitOutcomeDtoV1,
-    ApplicationQuitRequestDtoV1, CurrentShutdownResultDtoV1, LocalStoreMigrationResultDtoV1,
+    ApplicationQuitRequestDtoV1, ApplicationStartupOutcomeDtoV1, CurrentShutdownResultDtoV1,
     ShutdownPlanDtoV1, ShutdownPlanPageDtoV1, ShutdownTargetActionRequestDtoV1,
+    StartupFailureQuitOutcomeDtoV1,
 };
 
 use crate::domain::local_event::ShutdownPlanKey;
 use crate::usecase::shutdown_coordinator::{
     ApplicationQuitIntent, ApplicationQuitRequest, ShutdownCoordinator, ShutdownTargetActionRequest,
 };
+
+#[tauri::command]
+pub(crate) fn get_application_startup_outcome(
+    authority: tauri::State<
+        '_,
+        Arc<crate::usecase::application_startup::ApplicationStartupAuthority>,
+    >,
+) -> ApplicationStartupOutcomeDtoV1 {
+    crate::adaptor::presenter::application_lifecycle::application_startup_outcome(
+        authority.outcome(),
+    )
+}
+
+#[tauri::command]
+pub(crate) fn quit_after_startup_failure(
+    authority: tauri::State<
+        '_,
+        Arc<crate::usecase::application_startup::ApplicationStartupAuthority>,
+    >,
+) -> Result<
+    StartupFailureQuitOutcomeDtoV1,
+    crate::usecase::application_startup::ApplicationUnavailable,
+> {
+    let correlation_id = authority.quit_after_failure()?;
+    Ok(StartupFailureQuitOutcomeDtoV1::Accepted { correlation_id })
+}
 
 pub(crate) fn query_error(
     error: crate::domain::local_event::LocalEventQueryError,
@@ -135,8 +162,6 @@ pub(crate) async fn resolve_shutdown_target_action(
     >,
     request: ShutdownTargetActionRequestDtoV1,
 ) -> Result<RecoveryActionOutcomeDtoV1, RecoveryActionCommandErrorDtoV1> {
-    let epoch = decode_nonnegative_i64_decimal(&request.epoch)
-        .ok_or(RecoveryActionCommandErrorDtoV1::InvalidRequest)?;
     let ordinal = decode_nonnegative_i64_decimal(&request.ordinal)
         .ok_or(RecoveryActionCommandErrorDtoV1::InvalidRequest)?;
     let origin_revision = decode_nonnegative_u64_decimal(&request.origin_revision)
@@ -145,8 +170,7 @@ pub(crate) async fn resolve_shutdown_target_action(
         .resolve_shutdown_target_action(ShutdownTargetActionRequest {
             action_id: request.action_id,
             plan: ShutdownPlanKey {
-                plan_id: request.plan_id,
-                epoch,
+                shutdown_id: request.shutdown_id,
             },
             ordinal,
             target_key: request.target_key,
@@ -195,26 +219,22 @@ pub(crate) async fn get_application_shutdown_result(
 #[tauri::command]
 pub(crate) async fn get_shutdown_plan(
     coordinator: tauri::State<'_, Arc<ShutdownCoordinator>>,
-    plan_id: String,
-    epoch: String,
+    shutdown_id: String,
     limit: Option<usize>,
     cursor: Option<String>,
 ) -> Result<ShutdownPlanPageDtoV1, ShutdownPlanQueryErrorDtoV1> {
-    get_shutdown_plan_result(coordinator.inner().as_ref(), plan_id, epoch, limit, cursor).await
+    get_shutdown_plan_result(coordinator.inner().as_ref(), shutdown_id, limit, cursor).await
 }
 
 pub(crate) async fn get_shutdown_plan_result(
     coordinator: &ShutdownCoordinator,
-    plan_id: String,
-    epoch: String,
+    shutdown_id: String,
     limit: Option<usize>,
     cursor: Option<String>,
 ) -> Result<ShutdownPlanPageDtoV1, ShutdownPlanQueryErrorDtoV1> {
-    let epoch = decode_nonnegative_i64_decimal(&epoch)
-        .ok_or(ShutdownPlanQueryErrorDtoV1::InvalidRequest)?;
     let page = coordinator
         .shutdown_plan_page_read_model(
-            ShutdownPlanKey { plan_id, epoch },
+            ShutdownPlanKey { shutdown_id },
             limit.unwrap_or(128),
             cursor,
         )
@@ -225,27 +245,12 @@ pub(crate) async fn get_shutdown_plan_result(
 }
 
 #[tauri::command]
-pub(crate) async fn get_local_store_migration(
-    coordinator: tauri::State<'_, Arc<ShutdownCoordinator>>,
-) -> Result<LocalStoreMigrationResultDtoV1, MigrationQueryErrorDtoV1> {
-    let migration = coordinator
-        .local_store_migration_read_model()
-        .await
-        .map_err(crate::adaptor::presenter::application_lifecycle::migration_query_error)?
-        .map(crate::adaptor::presenter::application_lifecycle::migration);
-    Ok(LocalStoreMigrationResultDtoV1::Current { migration })
-}
-
-#[tauri::command]
 pub(crate) async fn compact_application_shutdown_details(
     coordinator: tauri::State<'_, Arc<ShutdownCoordinator>>,
-    plan_id: String,
-    epoch: String,
+    shutdown_id: String,
 ) -> Result<ShutdownPlanDtoV1, ShutdownDetailsMutationErrorDtoV1> {
-    let epoch = decode_nonnegative_i64_decimal(&epoch)
-        .ok_or(ShutdownDetailsMutationErrorDtoV1::InvalidRequest)?;
     let compacted = coordinator
-        .compact_shutdown_details_read_model(ShutdownPlanKey { plan_id, epoch })
+        .compact_shutdown_details_read_model(ShutdownPlanKey { shutdown_id })
         .await
         .map_err(
             crate::adaptor::presenter::application_lifecycle::shutdown_details_mutation_error,
@@ -256,12 +261,13 @@ pub(crate) async fn compact_application_shutdown_details(
 }
 
 pub(super) const COMMAND_NAMES: &[&str] = &[
+    "get_application_startup_outcome",
+    "quit_after_startup_failure",
     "request_application_quit",
     "get_application_quit_operation",
     "get_application_shutdown",
     "get_shutdown_plan",
     "resolve_shutdown_target_action",
-    "get_local_store_migration",
     "compact_application_shutdown_details",
 ];
 
@@ -271,12 +277,13 @@ pub(crate) fn register(router: &mut super::CommandRouter) {
 
 fn invoke_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
+        get_application_startup_outcome,
+        quit_after_startup_failure,
         request_application_quit,
         get_application_quit_operation,
         get_application_shutdown,
         get_shutdown_plan,
         resolve_shutdown_target_action,
-        get_local_store_migration,
         compact_application_shutdown_details,
     ]
 }

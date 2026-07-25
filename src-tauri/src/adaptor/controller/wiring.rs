@@ -8,11 +8,12 @@
 //! repository / code / agent_session / workflow などの usecase builder を一元的に束ね、
 //! query service や gateway 協力者は対応する usecase の構築時に注入する。
 
-use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::adaptor::gateway::agent_session::{FileSessionStorage, GitAgentPromptSuggestionGateway};
+#[cfg(test)]
+use crate::adaptor::gateway::agent_session::FileSessionStorage;
+use crate::adaptor::gateway::agent_session::GitAgentPromptSuggestionGateway;
 use crate::adaptor::gateway::app_config::{read_config_if_exists, AppConfig, ReleashConfig};
 use crate::adaptor::gateway::code::branch_base::BranchBaseResolverGateway;
 use crate::adaptor::gateway::code::branch_diff::BranchDiffGateway;
@@ -28,8 +29,6 @@ use crate::adaptor::gateway::git_host::{GitHubGitHostGateway, InMemoryTtlCache};
 #[cfg(not(test))]
 use crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore;
 use crate::adaptor::gateway::local_event_store::LocalEventStore;
-#[cfg(not(test))]
-use crate::adaptor::gateway::local_event_store::LocalEventStoreConfig;
 #[cfg(test)]
 use crate::adaptor::gateway::pty_session::backend_impl::PtySessionRuntimeGateway;
 use crate::adaptor::gateway::repository::branch::BranchGateway;
@@ -166,31 +165,28 @@ pub(crate) fn build_session_store() -> SessionStore {
 }
 
 #[cfg(not(test))]
-pub(crate) fn build_file_direct_session_read_store(
+pub(crate) fn build_canonical_session_read_store(
     data_dir: impl Into<PathBuf>,
 ) -> Result<SessionStore, String> {
     let data_dir = data_dir.into();
     let local_event_store = LocalEventReadStore::open(&data_dir)?;
     let repository: Arc<dyn LocalEventTransactionRepository> = local_event_store.clone();
-    let session_store = SessionStore::new(Arc::new(FileSessionStorage::default()));
-    session_store.set_local_event_repository_with_projection_codec(
+    Ok(SessionStore::new_canonical(
         repository,
-        local_event_store.generation_id().to_string(),
+        local_event_store.installation_id().to_string(),
         Arc::new(
             crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
         ),
-    );
-    Ok(session_store)
+    ))
 }
 
 #[derive(Clone)]
 enum WorkflowReadComposition {
     #[cfg(test)]
     Legacy,
-    PhaseAware {
+    Canonical {
         repository: Arc<dyn LocalEventTransactionRepository>,
-        generation_id: String,
-        canonical_reads_active: Arc<dyn Fn() -> bool + Send + Sync>,
+        installation_id: String,
     },
 }
 
@@ -356,11 +352,7 @@ pub(crate) fn build_workflow_services_with_repository_worktrees<R: tauri::Runtim
         data_dir.clone(),
     ));
     let repository: Arc<dyn LocalEventTransactionRepository> = local_event_store.clone();
-    let generation_id = local_event_store.generation_id().to_string();
-    let admission_store = local_event_store;
-    let canonical_reads_active: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
-        admission_store.normal_admission_ready() || admission_store.cutover_ready()
-    });
+    let installation_id = local_event_store.installation_id().to_string();
     build_workflow_services_with_gateways(
         data_dir,
         Arc::new(RepositoryManagedWorktreeGateway::new(
@@ -370,35 +362,25 @@ pub(crate) fn build_workflow_services_with_repository_worktrees<R: tauri::Runtim
         Arc::new(TauriWorkflowExternalEditorGateway::new(app, app_config)),
         Arc::new(WorkflowSecretSourceConfigGateway::new(config_secrets)),
         sessions,
-        WorkflowReadComposition::PhaseAware {
+        WorkflowReadComposition::Canonical {
             repository,
-            generation_id,
-            canonical_reads_active,
+            installation_id,
         },
     )
 }
 
-pub(crate) fn build_file_direct_workflow_read_usecase(
+pub(crate) fn build_canonical_workflow_read_usecase(
     data_dir: impl Into<std::path::PathBuf>,
     workflows_dir: Option<std::path::PathBuf>,
 ) -> Result<WorkflowReadUsecase, String> {
     let data_dir = data_dir.into();
     #[cfg(not(test))]
-    let local_event_store =
-        LocalEventStore::open(LocalEventStoreConfig::production(data_dir.clone()))
-            .map_err(|error| format!("failed to open canonical local event store: {error}"))?;
-    #[cfg(not(test))]
-    if !local_event_store.normal_admission_ready() && !local_event_store.cutover_ready() {
-        return Err(
-            "canonical local event authority is not ready; legacy workflow fallback is disabled"
-                .to_string(),
-        );
-    }
+    let local_event_store = LocalEventReadStore::open(&data_dir)?;
     #[cfg(not(test))]
     let local_event_repository: Arc<dyn LocalEventTransactionRepository> =
         local_event_store.clone();
     #[cfg(not(test))]
-    let canonical_generation = local_event_store.generation_id().to_string();
+    let installation_id = local_event_store.installation_id().to_string();
     let workflows_dir =
         workflows_dir.unwrap_or_else(WorkflowDefinitionFileRepository::default_workflows_dir);
     let config_path = data_dir.join("releash.toml");
@@ -432,17 +414,15 @@ pub(crate) fn build_file_direct_workflow_read_usecase(
     let facets = Arc::new(WorkflowFacetFileRepository::new(workflows_dir));
     #[cfg(not(test))]
     let events = Arc::new(WorkflowEventLogRepository::with_authority(
-        data_dir.clone(),
         local_event_repository.clone(),
-        canonical_generation.clone(),
+        installation_id.clone(),
     ));
     #[cfg(test)]
     let events = Arc::new(WorkflowEventLogRepository::new(data_dir.clone()));
     #[cfg(not(test))]
     let execution_projection = Arc::new(WorkflowExecutionProjectionLogRepository::with_authority(
-        data_dir,
         local_event_repository,
-        canonical_generation,
+        installation_id,
     ));
     #[cfg(test)]
     let execution_projection = Arc::new(WorkflowExecutionProjectionLogRepository::new(data_dir));
@@ -490,15 +470,9 @@ fn build_workflow_services_with_gateways(
     let executions = Arc::new(match &read_composition {
         #[cfg(test)]
         WorkflowReadComposition::Legacy => WorkflowExecutionFileRepository::new(data_dir.clone()),
-        WorkflowReadComposition::PhaseAware {
-            repository,
-            canonical_reads_active,
-            ..
-        } => WorkflowExecutionFileRepository::with_phase_aware_authority(
-            data_dir.clone(),
-            repository.clone(),
-            canonical_reads_active.clone(),
-        ),
+        WorkflowReadComposition::Canonical { repository, .. } => {
+            WorkflowExecutionFileRepository::with_authority(repository.clone())
+        }
     });
     let execution_archives = Arc::new(WorkflowExecutionArchiveFileRepository::new(
         data_dir.clone(),
@@ -515,30 +489,20 @@ fn build_workflow_services_with_gateways(
     let events = Arc::new(match &read_composition {
         #[cfg(test)]
         WorkflowReadComposition::Legacy => WorkflowEventLogRepository::new(data_dir.clone()),
-        WorkflowReadComposition::PhaseAware {
+        WorkflowReadComposition::Canonical {
             repository,
-            generation_id,
-            canonical_reads_active,
-        } => WorkflowEventLogRepository::with_phase_aware_authority(
-            data_dir.clone(),
-            repository.clone(),
-            generation_id.clone(),
-            canonical_reads_active.clone(),
-        ),
+            installation_id,
+        } => {
+            WorkflowEventLogRepository::with_authority(repository.clone(), installation_id.clone())
+        }
     });
     let execution_projection = Arc::new(match read_composition {
         #[cfg(test)]
         WorkflowReadComposition::Legacy => WorkflowExecutionProjectionLogRepository::new(data_dir),
-        WorkflowReadComposition::PhaseAware {
+        WorkflowReadComposition::Canonical {
             repository,
-            generation_id,
-            canonical_reads_active,
-        } => WorkflowExecutionProjectionLogRepository::with_phase_aware_authority(
-            data_dir,
-            repository,
-            generation_id,
-            canonical_reads_active,
-        ),
+            installation_id,
+        } => WorkflowExecutionProjectionLogRepository::with_authority(repository, installation_id),
     });
     let diagnostics = Arc::new(WorkflowDiagnosticsFileGateway::new(
         workflows_dir.clone(),
@@ -595,87 +559,27 @@ pub(crate) fn build_node_execution_lifecycle_usecase(
     NodeExecutionLifecycleUsecase::new(gateway)
 }
 
+/// Runs issue #1372 maintenance only after the fixed SQLite authority is
+/// admitted. Inventory collection and sweeping are both blocking filesystem
+/// work, while canonical runtime-protection is read asynchronously from the
+/// already-open SQLite repository.
+///
+/// The GC inventory intentionally has no Session/Workflow file-store input.
+/// Active Session and running Workflow protection comes from the canonical
+/// the bounded `CanonicalRuntimeOwnerSnapshot`, so workspace-state/review
+/// retention remains functional without violating issue #1499 B-070 or
+/// composing independently snapshotted pages.
 pub(crate) fn spawn_startup_app_data_gc(
-    app_data_dir: PathBuf,
+    composition: crate::adaptor::controller::app_data_composition::ProductionAppDataComposition,
     shared_repo_paths: crate::adaptor::gateway::repository::repo_paths::SharedRepoPaths,
+    repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
 ) {
-    spawn_startup_gc_with(
-        move || {
-            let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                let fs = crate::adaptor::gateway::app_data_gc::StdGcFileSystem;
-                let archive_pruner = crate::adaptor::gateway::app_data_gc::StdWorkflowArchivePruner;
-                let revalidation_reader =
-                    crate::adaptor::gateway::app_data_gc::StdGcRevalidationReader;
-                let request = crate::adaptor::gateway::app_data_gc::build_startup_gc_request(
-                    app_data_dir,
-                    shared_repo_paths,
-                );
-                crate::usecase::app_data_gc::run_startup_gc(
-                    request,
-                    &fs,
-                    &archive_pruner,
-                    &revalidation_reader,
-                )
-            }));
-            if result.is_err() {
-                log::error!("app data gc task panicked");
-            }
-        },
-        |gc| {
-            tauri::async_runtime::spawn_blocking(gc);
-        },
-    );
-}
-
-fn spawn_startup_gc_with<F, S>(gc: F, spawn: S)
-where
-    F: FnOnce() + Send + 'static,
-    S: FnOnce(F),
-{
-    spawn(gc);
-}
-
-#[cfg(test)]
-mod startup_gc_spawn_tests {
-    use super::spawn_startup_gc_with;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{mpsc, Arc};
-    use std::time::{Duration, Instant};
-
-    #[test]
-    fn startup_gc_runner_spawns_once() {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let calls_for_spawn = calls.clone();
-
-        spawn_startup_gc_with(
-            || panic!("gc body should not be run by this spawn stub"),
-            move |gc| {
-                calls_for_spawn.fetch_add(1, Ordering::SeqCst);
-                let _ = gc;
-            },
-        );
-
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn startup_gc_runner_does_not_wait_for_gc_body() {
-        let (started_tx, started_rx) = mpsc::channel();
-        let (release_tx, release_rx) = mpsc::channel();
-        let started = Instant::now();
-
-        spawn_startup_gc_with(
-            move || {
-                started_tx.send(()).unwrap();
-                release_rx.recv().unwrap();
-            },
-            |gc| {
-                std::thread::spawn(gc);
-            },
-        );
-
-        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        assert!(started.elapsed() < Duration::from_millis(500));
-        release_tx.send(()).unwrap();
-    }
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = composition
+            .run_startup_gc_pass(shared_repo_paths, repository)
+            .await
+        {
+            log::error!("{error}");
+        }
+    });
 }

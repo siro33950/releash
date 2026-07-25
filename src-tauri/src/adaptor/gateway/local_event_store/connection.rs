@@ -43,7 +43,7 @@ pub fn check_sqlite_version() -> Result<(), ConnectionError> {
 }
 
 fn configure(connection: &Connection) -> Result<(), ConnectionError> {
-    connection.busy_timeout(Duration::from_millis(250))?;
+    connection.busy_timeout(Duration::from_secs(2))?;
     connection.pragma_update(None, "journal_mode", "WAL")?;
     connection.pragma_update(None, "synchronous", "FULL")?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
@@ -59,6 +59,17 @@ pub fn open_writer(path: &Path) -> Result<Connection, ConnectionError> {
         OpenFlags::SQLITE_OPEN_READ_WRITE
             | OpenFlags::SQLITE_OPEN_CREATE
             | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    configure(&connection)?;
+    Ok(connection)
+}
+
+/// Open an existing writer without allowing SQLite to create or replace it.
+pub fn open_existing_writer(path: &Path) -> Result<Connection, ConnectionError> {
+    check_sqlite_version()?;
+    let connection = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     configure(&connection)?;
     Ok(connection)

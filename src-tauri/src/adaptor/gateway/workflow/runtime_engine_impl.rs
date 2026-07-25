@@ -864,11 +864,50 @@ fn upsert_stall_observation(
 // engine と CLI の双方が同じ domain service を参照するため、本モジュールではメモのみ残す。
 
 impl WorkflowRuntimeService {
+    #[cfg(test)]
     pub(crate) fn new(
         workflow_resolver: Arc<dyn WorkflowDefinitionResolver>,
         worktree_resolver: Arc<dyn ManagedWorktreeResolver>,
         branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
         open_tabs: Arc<OpenTabRegistry>,
+    ) -> Self {
+        Self::with_execution_store(
+            workflow_resolver,
+            worktree_resolver,
+            branch_diff_context,
+            open_tabs,
+            Arc::new(ExecutionStore::new_in_memory_for_tests()),
+        )
+    }
+
+    pub(crate) fn new_canonical(
+        workflow_resolver: Arc<dyn WorkflowDefinitionResolver>,
+        worktree_resolver: Arc<dyn ManagedWorktreeResolver>,
+        branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
+        open_tabs: Arc<OpenTabRegistry>,
+        data_dir: Option<std::path::PathBuf>,
+        repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
+        installation_id: String,
+    ) -> Self {
+        Self::with_execution_store(
+            workflow_resolver,
+            worktree_resolver,
+            branch_diff_context,
+            open_tabs,
+            Arc::new(ExecutionStore::new_canonical(
+                data_dir,
+                repository,
+                installation_id,
+            )),
+        )
+    }
+
+    fn with_execution_store(
+        workflow_resolver: Arc<dyn WorkflowDefinitionResolver>,
+        worktree_resolver: Arc<dyn ManagedWorktreeResolver>,
+        branch_diff_context: Option<Arc<dyn BranchDiffContextPort>>,
+        open_tabs: Arc<OpenTabRegistry>,
+        execution_store: Arc<ExecutionStore>,
     ) -> Self {
         Self {
             executions: Arc::new(Mutex::new(HashMap::new())),
@@ -881,16 +920,7 @@ impl WorkflowRuntimeService {
             command_completion_observers: Arc::new(Mutex::new(HashMap::new())),
             command_shutdown_reasons: Arc::new(Mutex::new(HashMap::new())),
             recovery_effect_suppression: Arc::new(Mutex::new(HashSet::new())),
-            execution_store: Arc::new({
-                #[cfg(test)]
-                {
-                    ExecutionStore::new_in_memory_for_tests()
-                }
-                #[cfg(not(test))]
-                {
-                    ExecutionStore::new()
-                }
-            }),
+            execution_store,
             workflow_resolver,
             worktree_resolver,
             branch_diff_context,
@@ -904,14 +934,12 @@ impl WorkflowRuntimeService {
 
     #[cfg(test)]
     pub(crate) fn new_for_test() -> Self {
-        let mut service = Self::new(
+        Self::new(
             Arc::new(TestWorkflowDefinitionResolver),
             Arc::new(PassthroughManagedWorktreeResolver),
             None,
             Arc::new(OpenTabRegistry::default()),
-        );
-        service.execution_store = Arc::new(ExecutionStore::new_in_memory_for_tests());
-        service
+        )
     }
 
     async fn runtime_activation_gate(&self, execution_id: &str) -> Arc<RuntimeActivationGate> {
@@ -1342,37 +1370,28 @@ impl WorkflowRuntimeService {
     }
 
     /// Execution Store の永続化ディレクトリを設定する（アプリ起動時の setup から呼ぶ）。
+    #[cfg(test)]
     pub async fn set_execution_store_data_dir(&self, dir: std::path::PathBuf) {
         self.execution_store.set_data_dir(dir).await;
     }
 
-    pub async fn set_local_event_repository(
-        &self,
-        repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
-        generation_id: String,
-    ) {
-        self.execution_store
-            .set_local_event_repository(repository, generation_id)
-            .await;
-    }
-
     async fn durable_workflow_event_log(
         &self,
-        data_dir: &std::path::Path,
+        _data_dir: &std::path::Path,
     ) -> Result<WorkflowEventLog, WorkflowEngineError> {
-        let Some((repository, generation_id)) = self.execution_store.local_event_authority().await
+        let Some((repository, installation_id)) =
+            self.execution_store.local_event_authority().await
         else {
             #[cfg(test)]
-            return Ok(WorkflowEventLog::new(data_dir));
+            return Ok(WorkflowEventLog::new(_data_dir));
             #[cfg(not(test))]
             return Err(WorkflowEngineError::SessionStore(
                 "workflow SQLite event authority is not configured".to_string(),
             ));
         };
         Ok(WorkflowEventLog::with_authority(
-            data_dir,
             repository,
-            generation_id,
+            installation_id,
         ))
     }
 

@@ -237,6 +237,10 @@ export async function setupTauriMock(page: Page, config: MockConfig) {
 				return value;
 			}
 
+			if (cmd === "get_application_startup_outcome") {
+				return { type: "ready" };
+			}
+
 			if (
 				cmd === "get_agent_session_notice" ||
 				cmd === "update_agent_session_notice"

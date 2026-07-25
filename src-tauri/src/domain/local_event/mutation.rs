@@ -5,15 +5,12 @@
 //! converts a guard mismatch into last-write-wins; a same-content replay
 //! converges on the saved result, a different content is a typed conflict.
 
-#![allow(dead_code)] // Closed mutation vocabulary includes migration replay variants.
-
-use crate::domain::local_event::events::{ApplicationShutdownPhase, LocalStoreMigrationPhase};
+use crate::domain::local_event::events::ApplicationShutdownPhase;
 use crate::domain::local_event::identifiers::Revision;
 use crate::domain::local_event::record::{
-    MessageProjectionRecord, MigrationCheckpointRecord, MigrationParityRecord, ObligationRecord,
-    OperationReceiptRecord, OperationStatusRecord, RecoveryAttemptRecord, RecoveryResultRecord,
-    SessionProjectionRecord, ShutdownArchiveRecord, ShutdownPlanRecord, ShutdownTargetRecord,
-    TerminalResultRecord,
+    MessageProjectionRecord, ObligationRecord, OperationReceiptRecord, OperationStatusRecord,
+    RecoveryAttemptRecord, RecoveryResultRecord, SessionProjectionRecord, ShutdownPlanRecord,
+    ShutdownTargetRecord, TerminalResultRecord,
 };
 
 /// A complete message projection may legitimately carry an inline image.
@@ -67,7 +64,7 @@ pub enum RevisionGuard {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CallerOperationKey {
     pub principal: String,
-    pub generation_id: String,
+    pub installation_id: String,
     pub kind: OperationKind,
     pub caller_request_id: String,
 }
@@ -272,11 +269,11 @@ pub struct RecoveryActionMutation {
     pub revision: Revision,
 }
 
-/// `(plan_id, epoch)` shutdown plan key.
+/// Shutdown aggregate identity. It is the accepted application-quit
+/// operation identity; no second plan, epoch, or generation identity exists.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ShutdownPlanKey {
-    pub plan_id: String,
-    pub epoch: i64,
+    pub shutdown_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -332,13 +329,6 @@ pub struct ShutdownRecoverySnapshotMutation {
     pub detail: ShutdownTargetRecord,
 }
 
-/// Immutable compacted summary of a terminal shutdown plan (insert-once).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ShutdownCompactArchiveMutation {
-    pub key: ShutdownPlanKey,
-    pub archive: ShutdownArchiveRecord,
-}
-
 /// CAS on the store-wide "current shutdown plan" pointer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShutdownLatestPointerMutation {
@@ -346,47 +336,11 @@ pub struct ShutdownLatestPointerMutation {
     pub new: Option<ShutdownPlanKey>,
 }
 
-/// CAS on the store-wide physical-detail retirement selector.
-///
-/// The selector is distinct from the public latest/current shutdown pointer:
-/// an `ArchiveSwitch` installs it in the same commit that changes the public
-/// details state to `Compacted`, and the bounded writer-side detacher clears
-/// it only in the transaction that observes no remaining detail rows.
+/// Atomically converts one terminal shutdown to summary-only retention.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ShutdownRetiringPointerMutation {
-    pub expected: Option<ShutdownPlanKey>,
-    pub new: Option<ShutdownPlanKey>,
-}
-
-/// Migration checkpoint / phase row keyed by migration ID.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MigrationCheckpointMutation {
-    pub migration_id: String,
-    pub phase: LocalStoreMigrationPhase,
-    pub source_inventory_hash: [u8; 32],
-    pub checkpoint: MigrationCheckpointRecord,
-    pub expected: RevisionGuard,
-    pub revision: Revision,
-}
-
-/// Parity verification result for one migration.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MigrationParityMutation {
-    pub migration_id: String,
-    pub parity: MigrationParityRecord,
-    pub expected: RevisionGuard,
-    pub revision: Revision,
-}
-
-/// Migration-time application quit locator. The store captures the current
-/// migration checkpoint and revision in the same transaction that inserts
-/// this row; callers cannot provide or guess either value.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MigrationQuitFlightMutation {
-    pub operation_id: String,
-    pub migration_id: String,
-    pub accepted_boot_id: String,
-    pub expected: RevisionGuard,
+pub struct ShutdownDetailsCompactionMutation {
+    pub key: ShutdownPlanKey,
+    pub expected: Revision,
     pub revision: Revision,
 }
 
@@ -410,12 +364,8 @@ pub enum LocalStateMutation {
     ShutdownPlan(ShutdownPlanMutation),
     ShutdownTarget(ShutdownTargetMutation),
     ShutdownRecoverySnapshot(ShutdownRecoverySnapshotMutation),
-    ShutdownCompactArchive(ShutdownCompactArchiveMutation),
+    ShutdownDetailsCompaction(ShutdownDetailsCompactionMutation),
     ShutdownLatestPointer(ShutdownLatestPointerMutation),
-    ShutdownRetiringPointer(ShutdownRetiringPointerMutation),
-    MigrationCheckpoint(MigrationCheckpointMutation),
-    MigrationParity(MigrationParityMutation),
-    MigrationQuitFlight(MigrationQuitFlightMutation),
 }
 
 impl LocalStateMutation {
@@ -446,8 +396,7 @@ impl LocalStateMutation {
             bytes.extend_from_slice(&value.value().to_be_bytes());
         }
         fn plan_key(bytes: &mut Vec<u8>, key: &ShutdownPlanKey) {
-            text(bytes, &key.plan_id);
-            bytes.extend_from_slice(&key.epoch.to_be_bytes());
+            text(bytes, &key.shutdown_id);
         }
         let mut bytes = b"local_state_mutation_identity_v1".to_vec();
         match self {
@@ -509,12 +458,8 @@ impl LocalStateMutation {
             | Self::ShutdownPlan(_)
             | Self::ShutdownTarget(_)
             | Self::ShutdownRecoverySnapshot(_)
-            | Self::ShutdownCompactArchive(_)
-            | Self::ShutdownLatestPointer(_)
-            | Self::ShutdownRetiringPointer(_)
-            | Self::MigrationCheckpoint(_)
-            | Self::MigrationParity(_)
-            | Self::MigrationQuitFlight(_) => {
+            | Self::ShutdownDetailsCompaction(_)
+            | Self::ShutdownLatestPointer(_) => {
                 return Err("mutation has no local-state identity-v1 encoding")
             }
         }
@@ -553,14 +498,8 @@ impl LocalStateMutation {
             Self::ShutdownPlan(m) => typed(&m.summary) + 96,
             Self::ShutdownTarget(m) => typed(&m.detail) + 96,
             Self::ShutdownRecoverySnapshot(m) => typed(&m.detail) + 96,
-            Self::ShutdownCompactArchive(m) => typed(&m.archive) + 64,
+            Self::ShutdownDetailsCompaction(_) => 96,
             Self::ShutdownLatestPointer(_) => 64,
-            Self::ShutdownRetiringPointer(_) => 64,
-            Self::MigrationCheckpoint(m) => typed(&m.checkpoint) + 128,
-            Self::MigrationParity(m) => typed(&m.parity) + 64,
-            Self::MigrationQuitFlight(m) => {
-                m.operation_id.len() + m.migration_id.len() + m.accepted_boot_id.len() + 128
-            }
         }
     }
 
@@ -574,10 +513,8 @@ impl LocalStateMutation {
                 | Self::ShutdownPlan(_)
                 | Self::ShutdownTarget(_)
                 | Self::ShutdownRecoverySnapshot(_)
-                | Self::ShutdownCompactArchive(_)
+                | Self::ShutdownDetailsCompaction(_)
                 | Self::ShutdownLatestPointer(_)
-                | Self::ShutdownRetiringPointer(_)
-                | Self::MigrationQuitFlight(_)
         )
     }
 }
@@ -624,7 +561,7 @@ mod tests {
         let unsupported = LocalStateMutation::OperationBinding(OperationBindingMutation {
             key: CallerOperationKey {
                 principal: "principal".to_string(),
-                generation_id: "generation".to_string(),
+                installation_id: "generation".to_string(),
                 kind: OperationKind::Send,
                 caller_request_id: "request".to_string(),
             },

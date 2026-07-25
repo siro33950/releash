@@ -45,6 +45,7 @@ impl OpStatus {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(crate) enum HotPathMetric {
     GitStatusScan,
     DiffStats,

@@ -53,9 +53,6 @@ fn send_command_common(error: OperationApplicationErrorDtoV1) -> SendCommandErro
         OperationApplicationErrorDtoV1::FeedbackCapacityExceeded => {
             SendCommandErrorDtoV1::FeedbackCapacityExceeded
         }
-        OperationApplicationErrorDtoV1::MigrationInProgress => {
-            SendCommandErrorDtoV1::MigrationInProgress
-        }
         OperationApplicationErrorDtoV1::ShutdownInProgress => {
             SendCommandErrorDtoV1::ShutdownInProgress
         }
@@ -72,9 +69,6 @@ fn stop_command_common(error: OperationApplicationErrorDtoV1) -> StopCommandErro
         OperationApplicationErrorDtoV1::PayloadConflict => StopCommandErrorDtoV1::PayloadConflict,
         OperationApplicationErrorDtoV1::FeedbackCapacityExceeded => {
             StopCommandErrorDtoV1::FeedbackCapacityExceeded
-        }
-        OperationApplicationErrorDtoV1::MigrationInProgress => {
-            StopCommandErrorDtoV1::MigrationInProgress
         }
         OperationApplicationErrorDtoV1::ShutdownInProgress => {
             StopCommandErrorDtoV1::ShutdownInProgress
@@ -98,9 +92,6 @@ fn lifecycle_command_common(
         OperationApplicationErrorDtoV1::FeedbackCapacityExceeded => {
             SessionLifecycleCommandErrorDtoV1::FeedbackCapacityExceeded
         }
-        OperationApplicationErrorDtoV1::MigrationInProgress => {
-            SessionLifecycleCommandErrorDtoV1::MigrationInProgress
-        }
         OperationApplicationErrorDtoV1::ShutdownInProgress => {
             SessionLifecycleCommandErrorDtoV1::ShutdownInProgress
         }
@@ -116,9 +107,6 @@ fn recovery_command_common(
     match error {
         OperationApplicationErrorDtoV1::InvalidRequest => {
             RecoveryActionCommandErrorDtoV1::InvalidRequest
-        }
-        OperationApplicationErrorDtoV1::MigrationInProgress => {
-            RecoveryActionCommandErrorDtoV1::MigrationInProgress
         }
         OperationApplicationErrorDtoV1::ShutdownInProgress => {
             RecoveryActionCommandErrorDtoV1::ShutdownInProgress
@@ -136,9 +124,6 @@ pub(super) async fn ensure_mutation_admission(
     store: &crate::adaptor::gateway::local_event_store::LocalEventStore,
 ) -> Result<(), OperationApplicationErrorDtoV1> {
     use crate::domain::local_event::LocalEventTransactionRepository as _;
-    if !store.normal_admission_ready() {
-        return Err(OperationApplicationErrorDtoV1::MigrationInProgress);
-    }
     let current = store
         .query(crate::domain::local_event::LocalEventQuery::CurrentShutdown)
         .await
@@ -173,9 +158,6 @@ pub(super) async fn ensure_mutation_admission_message(
     ensure_mutation_admission(store)
         .await
         .map_err(|error| match error {
-            OperationApplicationErrorDtoV1::MigrationInProgress => {
-                "MigrationInProgress".to_string()
-            }
             OperationApplicationErrorDtoV1::ShutdownInProgress => "ShutdownInProgress".to_string(),
             OperationApplicationErrorDtoV1::StorageUnavailable { .. } => {
                 "StorageUnavailable".to_string()
@@ -192,8 +174,6 @@ pub(super) fn normalize_mutation_error(message: String) -> String {
         || message.contains("PreviousShutdownReconciliationRequired")
     {
         "ShutdownInProgress".to_string()
-    } else if message.contains("migration is in progress") {
-        "MigrationInProgress".to_string()
     } else {
         message
     }
@@ -478,7 +458,7 @@ pub async fn stop_agent_session(
     let exact_command =
         serde_json::to_vec(&request).map_err(|_| StopCommandErrorDtoV1::InvalidRequest)?;
     // Resolve the immutable caller identity before checking admission. A
-    // previously accepted Stop remains replayable after shutdown/migration
+    // previously accepted Stop remains replayable after shutdown
     // closes admission, while an unreadable lookup is outcome-unknown rather
     // than proof that a new mutation is safe.
     let replaying_existing = match usecase
@@ -730,8 +710,7 @@ pub async fn list_pending_agent_recovery(
     limit: Option<usize>,
     partition: Option<PendingPartitionDtoV1>,
     owner: Option<String>,
-    shutdown_plan_id: Option<String>,
-    shutdown_epoch: Option<String>,
+    shutdown_id: Option<String>,
     cursor: Option<String>,
 ) -> Result<PendingRecoveryPageDtoV1, PendingRecoveryQueryErrorDtoV1> {
     let partition = partition.map(|value| match value {
@@ -746,16 +725,12 @@ pub async fn list_pending_agent_recovery(
             crate::domain::local_event::PendingPartition::UnownedRuntime
         }
     });
-    let shutdown_plan = match (shutdown_plan_id, shutdown_epoch) {
-        (Some(plan_id), Some(epoch)) if !plan_id.is_empty() => {
-            Some(crate::domain::local_event::ShutdownPlanKey {
-                plan_id,
-                epoch: decode_nonnegative_i64_decimal(&epoch)
-                    .ok_or(PendingRecoveryQueryErrorDtoV1::InvalidRequest)?,
-            })
+    let shutdown_plan = match shutdown_id {
+        Some(shutdown_id) if !shutdown_id.is_empty() => {
+            Some(crate::domain::local_event::ShutdownPlanKey { shutdown_id })
         }
-        (None, None) => None,
-        _ => return Err(PendingRecoveryQueryErrorDtoV1::InvalidRequest),
+        None => None,
+        Some(_) => return Err(PendingRecoveryQueryErrorDtoV1::InvalidRequest),
     };
     usecase
         .pending(
@@ -775,15 +750,12 @@ pub async fn list_pending_agent_recovery(
 #[tauri::command]
 pub async fn get_pending_recovery_snapshot(
     usecase: tauri::State<'_, Arc<crate::usecase::agent_session::operation::RecoveryActionUsecase>>,
-    plan_id: String,
-    epoch: String,
+    shutdown_id: String,
     snapshot_id: String,
     partition: PendingPartitionDtoV1,
     limit: Option<usize>,
     cursor: Option<String>,
 ) -> Result<PendingRecoveryPageDtoV1, PendingRecoverySnapshotQueryErrorDtoV1> {
-    let epoch = decode_nonnegative_i64_decimal(&epoch)
-        .ok_or(PendingRecoverySnapshotQueryErrorDtoV1::InvalidRequest)?;
     let partition = match partition {
         PendingPartitionDtoV1::ClosedSession => {
             crate::domain::local_event::PendingPartition::ClosedSession
@@ -801,7 +773,7 @@ pub async fn get_pending_recovery_snapshot(
     usecase
         .pending_snapshot(
             crate::usecase::agent_session::operation::PendingRecoverySnapshotQuery {
-                plan: crate::domain::local_event::ShutdownPlanKey { plan_id, epoch },
+                plan: crate::domain::local_event::ShutdownPlanKey { shutdown_id },
                 snapshot_id,
                 partition,
                 limit: limit.unwrap_or(32),
@@ -1152,7 +1124,7 @@ mod tests {
         let feedback = Arc::new(
             crate::usecase::agent_session::feedback::SessionFeedbackUsecase::new(
                 store.clone(),
-                store.generation_id().to_string(),
+                store.installation_id().to_string(),
             ),
         );
         let load =
@@ -1400,9 +1372,9 @@ mod tests {
     ) {
         let repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository> =
             store.clone();
-        session_store.set_local_event_repository_with_projection_codec(
+        session_store.set_local_event_repository(
             repository,
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
             Arc::new(
                 crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
             ),
@@ -1590,7 +1562,7 @@ mod tests {
                         session.state = crate::usecase::agent_session::session::SessionState::Idle;
                     }
                     session_store
-                        .save_full_session_for_migration_or_restore(data.path(), &session)
+                        .save_full_session_for_restore(data.path(), &session)
                         .unwrap();
                     if active {
                         session_store
@@ -1640,7 +1612,7 @@ mod tests {
                         store.clone(),
                         store.clone(),
                         gate,
-                        store.generation_id().to_string(),
+                        store.installation_id().to_string(),
                     );
                     match boundary {
                         LifecycleCrashBoundary::BeforeAcceptance => {
@@ -1799,7 +1771,7 @@ mod tests {
                         store.clone(),
                         store.clone(),
                         restart_gate,
-                        store.generation_id().to_string(),
+                        store.installation_id().to_string(),
                     );
                 let replay = restarted.request(request.clone()).await.unwrap();
                 let crate::usecase::agent_session::operation::SessionLifecycleCommandResult::Accepted {
@@ -1889,7 +1861,7 @@ mod tests {
         );
         session.state = initial_state.clone();
         session_store
-            .save_full_session_for_migration_or_restore(data.path(), &session)
+            .save_full_session_for_restore(data.path(), &session)
             .unwrap();
         if active {
             session_store
@@ -1957,7 +1929,7 @@ mod tests {
                 store.clone(),
                 store.clone(),
                 gate,
-                store.generation_id().to_string(),
+                store.installation_id().to_string(),
             );
         let result = usecase
             .request(
@@ -2530,14 +2502,14 @@ mod tests {
                     repository,
                     authority,
                     gate.clone(),
-                    store.generation_id().to_string(),
+                    store.installation_id().to_string(),
                 ),
             );
             let journal = Arc::new(
                 crate::usecase::agent_session::operation::CallerAttemptJournal::new(
                     store.clone(),
                     store.clone(),
-                    store.generation_id().to_string(),
+                    store.installation_id().to_string(),
                 ),
             );
             let app = tauri::test::mock_builder()
@@ -2619,12 +2591,12 @@ mod tests {
                 store.clone(),
                 store.clone(),
                 gate.clone(),
-                store.generation_id().to_string(),
+                store.installation_id().to_string(),
             );
             let journal = crate::usecase::agent_session::operation::CallerAttemptJournal::new(
                 store.clone(),
                 store.clone(),
-                store.generation_id().to_string(),
+                store.installation_id().to_string(),
             );
             let response = dispatch_durable_send(
                 store.as_ref(),
@@ -2661,12 +2633,12 @@ mod tests {
                 store.clone(),
                 store.clone(),
                 restarted_gate.clone(),
-                store.generation_id().to_string(),
+                store.installation_id().to_string(),
             );
         let restarted_journal = crate::usecase::agent_session::operation::CallerAttemptJournal::new(
             store.clone(),
             store.clone(),
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
         );
         let replay = dispatch_durable_send(
             store.as_ref(),
@@ -2764,12 +2736,12 @@ mod tests {
             store.clone(),
             store.clone(),
             gate.clone(),
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
         );
         let journal = crate::usecase::agent_session::operation::CallerAttemptJournal::new(
             store.clone(),
             store.clone(),
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
         );
         let command = CanonicalSendCommandV1 {
             target: CanonicalSendTargetV1::Direct {
@@ -2849,12 +2821,12 @@ mod tests {
             store.clone(),
             store.clone(),
             Arc::new(CrossSurfaceReplaySendGate),
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
         );
         let journal = crate::usecase::agent_session::operation::CallerAttemptJournal::new(
             store.clone(),
             store.clone(),
-            store.generation_id().to_string(),
+            store.installation_id().to_string(),
         );
         let command = CanonicalSendCommandV1 {
             target: CanonicalSendTargetV1::Direct {
@@ -2887,8 +2859,7 @@ mod tests {
         ));
 
         let plan = crate::domain::local_event::ShutdownPlanKey {
-            plan_id: "cross-surface-shutdown".to_string(),
-            epoch: 1,
+            shutdown_id: "cross-surface-shutdown".to_string(),
         };
         store
             .commit_batch(crate::domain::local_event::LocalAtomicBatch {
@@ -2897,7 +2868,7 @@ mod tests {
                 )
                 .unwrap(),
                 idempotency: crate::domain::local_event::IdempotencyBinding {
-                    generation_id: store.generation_id().to_string(),
+                    installation_id: store.installation_id().to_string(),
                     operation_kind: crate::domain::local_event::OperationKind::ApplicationQuit
                         .into(),
                     idempotency_key: "cross-surface-shutdown".to_string(),
@@ -2909,9 +2880,9 @@ mod tests {
                     crate::domain::local_event::LocalStateMutation::ShutdownPlan(
                         crate::domain::local_event::ShutdownPlanMutation {
                             key: plan.clone(),
-                            phase: crate::domain::local_event::ApplicationShutdownPhase::Preparing,
+                            phase: crate::domain::local_event::ApplicationShutdownPhase::Prepared,
                             summary: crate::domain::local_event::ShutdownPlanRecord {
-                                operation_id: plan.plan_id.clone(),
+                                operation_id: plan.shutdown_id.clone(),
                                 intent: crate::domain::local_event::QuitIntent::Exit { code: 0 },
                                 t0_ms: 0,
                                 preparation_cutoff_ms: Some(13_000),
@@ -2924,7 +2895,7 @@ mod tests {
                                 unresolved_count: Some(0),
                                 recovery_snapshot_count: Some(0),
                                 recovery_snapshot_id: None,
-                                boot_id: "cross-surface-test-boot".to_string(),
+                                process_instance_id: "cross-surface-test-boot".to_string(),
                                 outcome: None,
                                 failure: None,
                                 shutdown_effect_count: None,
@@ -3060,7 +3031,7 @@ mod tests {
             context_epoch: None,
         };
         store
-            .save_full_session_for_migration_or_restore(data_dir.path(), &session)
+            .save_full_session_for_restore(data_dir.path(), &session)
             .unwrap();
 
         for invalid in [None, Some(String::new()), Some("acceptEdits".to_string())] {
@@ -3124,8 +3095,8 @@ pub(crate) async fn dispatch_durable_send_for_principal(
     };
 
     // Existing operation lookup must precede mutable admission. This lets a
-    // same-payload retry converge on its immutable receipt after shutdown or
-    // migration admission has changed. The subsequent send call still checks
+    // same-payload retry converge on its immutable receipt after shutdown
+    // admission has changed. The subsequent send call still checks
     // the exact payload binding and returns PayloadConflict when necessary.
     let replaying_existing = match send_operation.get_operation(principal, &operation_id).await {
         Ok(_) => true,

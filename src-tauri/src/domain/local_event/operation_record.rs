@@ -10,7 +10,6 @@ pub enum OperationRecordValidationError {
     RowIdentityMismatch,
     ReceiptFamilyMismatch,
     StatusFamilyMismatch,
-    MigrationQuitMismatch,
     IllegalStatus,
     EmbeddedRelationMismatch,
 }
@@ -21,28 +20,21 @@ pub fn validate_operation_record(
     receipt: &OperationReceiptRecord,
     status: &OperationStatusRecord,
 ) -> Result<(), OperationRecordValidationError> {
-    let (receipt_kind, receipt_operation_id, receipt_migration_quit) = match receipt {
+    let (receipt_kind, receipt_operation_id) = match receipt {
         OperationReceiptRecord::Send { operation_id, .. } => {
-            (OperationKind::Send, operation_id.as_str(), false)
+            (OperationKind::Send, operation_id.as_str())
         }
-        OperationReceiptRecord::PermissionResponse { operation_id, .. } => (
-            OperationKind::PermissionResponse,
-            operation_id.as_str(),
-            false,
-        ),
+        OperationReceiptRecord::PermissionResponse { operation_id, .. } => {
+            (OperationKind::PermissionResponse, operation_id.as_str())
+        }
         OperationReceiptRecord::Stop { operation_id, .. } => {
-            (OperationKind::Stop, operation_id.as_str(), false)
+            (OperationKind::Stop, operation_id.as_str())
         }
-        OperationReceiptRecord::SessionLifecycle { operation_id, .. } => (
-            OperationKind::SessionLifecycle,
-            operation_id.as_str(),
-            false,
-        ),
+        OperationReceiptRecord::SessionLifecycle { operation_id, .. } => {
+            (OperationKind::SessionLifecycle, operation_id.as_str())
+        }
         OperationReceiptRecord::ApplicationQuit { operation_id, .. } => {
-            (OperationKind::ApplicationQuit, operation_id.as_str(), false)
-        }
-        OperationReceiptRecord::MigrationApplicationQuit { operation_id, .. } => {
-            (OperationKind::ApplicationQuit, operation_id.as_str(), true)
+            (OperationKind::ApplicationQuit, operation_id.as_str())
         }
     };
 
@@ -55,15 +47,10 @@ pub fn validate_operation_record(
     if status.kind != row_kind {
         return Err(OperationRecordValidationError::StatusFamilyMismatch);
     }
-    if status.migration_quit != receipt_migration_quit {
-        return Err(OperationRecordValidationError::MigrationQuitMismatch);
-    }
-
     let legal = matches!(
-        (row_kind, status.migration_quit, &status.value),
+        (row_kind, &status.value),
         (
             OperationKind::Send,
-            false,
             OperationStatusValue::AwaitingProviderStart { .. }
                 | OperationStatusValue::Queued { .. }
                 | OperationStatusValue::ProviderStartReserved { .. }
@@ -73,37 +60,27 @@ pub fn validate_operation_record(
                 | OperationStatusValue::Terminal { .. },
         ) | (
             OperationKind::PermissionResponse,
-            false,
             OperationStatusValue::AwaitingProviderResponse { .. }
                 | OperationStatusValue::PermissionCompleted { .. }
                 | OperationStatusValue::ReconciliationRequired { .. }
                 | OperationStatusValue::Failed { .. },
         ) | (
             OperationKind::Stop,
-            false,
             OperationStatusValue::Accepted
                 | OperationStatusValue::StopCompleted { .. }
                 | OperationStatusValue::ReconciliationRequired { .. },
         ) | (
             OperationKind::SessionLifecycle,
-            false,
             OperationStatusValue::Accepted
                 | OperationStatusValue::Completed
                 | OperationStatusValue::ReconciliationRequired { .. },
         ) | (
             OperationKind::ApplicationQuit,
-            false,
             OperationStatusValue::Preparing
                 | OperationStatusValue::Activated
                 | OperationStatusValue::Completed
                 | OperationStatusValue::OutcomeUnknown { .. }
                 | OperationStatusValue::FailedBeforeActivation { .. }
-                | OperationStatusValue::ReconciliationRequired { .. },
-        ) | (
-            OperationKind::ApplicationQuit,
-            true,
-            OperationStatusValue::ExitPending
-                | OperationStatusValue::Exited
                 | OperationStatusValue::ReconciliationRequired { .. },
         )
     );
@@ -183,17 +160,6 @@ pub fn validate_terminal_record(
             // conflated.
             !operation_id.is_empty() && !terminal.terminal_identity.is_empty()
         }
-        TerminalResultRecord::LegacyStopResolution {
-            session_id,
-            turn_id,
-            operation_id,
-            ..
-        } => {
-            session_id == &terminal.session_id
-                && turn_id == &terminal.turn_id
-                && !operation_id.is_empty()
-                && !terminal.terminal_identity.is_empty()
-        }
         TerminalResultRecord::StopSuperseded { .. } => false,
     };
     if valid {
@@ -216,26 +182,6 @@ pub fn validate_stop_resolution(
                 terminal_identity, ..
             },
         ) => !terminal_identity.is_empty(),
-        (
-            stored,
-            TerminalResultRecord::LegacyStopResolution {
-                operation_id,
-                resolution: legacy,
-                ..
-            },
-        ) => {
-            operation_id == &resolution.stop_operation_id
-                && matches!(
-                    (stored, legacy),
-                    (
-                        StopResolutionKind::Succeeded,
-                        crate::domain::agent_session::events::StopResolution::Succeeded,
-                    ) | (
-                        StopResolutionKind::Superseded,
-                        crate::domain::agent_session::events::StopResolution::Superseded,
-                    )
-                )
-        }
         _ => false,
     };
     if valid {

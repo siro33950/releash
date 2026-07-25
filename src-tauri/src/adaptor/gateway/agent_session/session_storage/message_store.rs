@@ -128,12 +128,11 @@ impl FileSessionStorage {
     }
 
     #[cfg(test)]
-    pub fn save_full_session_for_migration_or_restore(
+    pub fn save_full_session_for_restore(
         &self,
         app_data_dir: &Path,
         session: &ChatSession,
     ) -> Result<(), String> {
-        self.ensure_legacy_mutation_admitted()?;
         measure_save_result(
             crate::other::telemetry::HotPath::SessionSaveFull,
             || {
@@ -203,21 +202,6 @@ impl FileSessionStorage {
                 let (mut page, needs_repair) =
                     self.read_page_from_index(&dir, session_id, &index, cursor.clone(), limit)?;
                 if needs_repair {
-                    #[cfg(not(test))]
-                    {
-                        index = self.rebuild_index_from_messages(&dir)?;
-                        (page, _) =
-                            self.read_page_from_index(&dir, session_id, &index, cursor, limit)?;
-                        return Ok(Some(page));
-                    }
-                    #[cfg(test)]
-                    if self.legacy_mutation_admission_closed() {
-                        index = self.rebuild_index_from_messages(&dir)?;
-                        (page, _) =
-                            self.read_page_from_index(&dir, session_id, &index, cursor, limit)?;
-                        return Ok(Some(page));
-                    }
-                    #[cfg(test)]
                     {
                         let _lock = self.file_lock.lock();
                         index =
@@ -377,7 +361,6 @@ impl FileSessionStorage {
         session_id: &str,
         message: &ChatMessage,
     ) -> Result<SessionMeta, String> {
-        self.ensure_legacy_mutation_admitted()?;
         measure_save_result(
             crate::other::telemetry::HotPath::SessionAppend,
             || {
@@ -419,7 +402,6 @@ impl FileSessionStorage {
         streaming_final_seq: u64,
         completed_at: Option<f64>,
     ) -> Result<Vec<MessagePart>, String> {
-        self.ensure_legacy_mutation_admitted()?;
         measure_save_result(
             crate::other::telemetry::HotPath::SessionPersistParts,
             || {
@@ -548,13 +530,6 @@ impl FileSessionStorage {
         if let Some(index) = self.try_read_consistent_index_from_dir(dir, session_id)? {
             return Ok(index);
         }
-        #[cfg(not(test))]
-        return self.rebuild_index_from_messages(dir);
-        #[cfg(test)]
-        if self.legacy_mutation_admission_closed() {
-            return self.rebuild_index_from_messages(dir);
-        }
-        #[cfg(test)]
         {
             let _lock = self.file_lock.lock();
             self.read_consistent_index_from_dir_with_lock_held(dir, session_id)
@@ -570,13 +545,6 @@ impl FileSessionStorage {
         if let Some(index) = self.try_read_consistent_index_from_dir(dir, session_id)? {
             return Ok(index);
         }
-        #[cfg(not(test))]
-        return self.rebuild_index_from_messages(dir);
-        #[cfg(test)]
-        if self.legacy_mutation_admission_closed() {
-            return self.rebuild_index_from_messages(dir);
-        }
-        #[cfg(test)]
         self.repair_index_and_meta_from_messages(dir, session_id)
     }
 
@@ -788,16 +756,7 @@ impl FileSessionStorage {
         let mut index = self.read_consistent_index_from_dir(&dir, session_id)?;
         if !self.index_matches_message_chunks_full(&dir, &index)? {
             log::warn!("Rebuilding stale session index for session {session_id}");
-            #[cfg(not(test))]
             {
-                index = self.rebuild_index_from_messages(&dir)?;
-            }
-            #[cfg(test)]
-            if self.legacy_mutation_admission_closed() {
-                index = self.rebuild_index_from_messages(&dir)?;
-            }
-            #[cfg(test)]
-            if !self.legacy_mutation_admission_closed() {
                 let _lock = self.file_lock.lock();
                 index = self.read_consistent_index_from_dir_with_lock_held(&dir, session_id)?;
                 if !self.index_matches_message_chunks_full(&dir, &index)? {

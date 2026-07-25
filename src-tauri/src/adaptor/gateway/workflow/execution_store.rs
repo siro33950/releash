@@ -8,10 +8,15 @@
 //! - 状態遷移ロジックは持たず、engine からの「開始通知」「終了通知」を受けて反映するのみ。
 
 use std::collections::{HashMap, HashSet};
+#[cfg(test)]
 use std::fs;
+#[cfg(test)]
 use std::fs::OpenOptions;
+#[cfg(test)]
 use std::io::Write;
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::path::Path;
+use std::path::PathBuf;
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -363,48 +368,19 @@ mod token_usage_serde {
 }
 
 /// Execution metadata 永続化のサブディレクトリ名。
+#[cfg(test)]
 const EXECUTIONS_SUBDIR: &str = "workflow_executions";
+#[cfg(test)]
 const MAX_EXECUTION_METADATA_BYTES: u64 = 256 * 1024;
 
+#[cfg(test)]
 fn executions_dir(data_dir: &Path) -> PathBuf {
     data_dir.join(EXECUTIONS_SUBDIR)
 }
 
+#[cfg(test)]
 fn execution_file_path(data_dir: &Path, execution_id: &str) -> PathBuf {
     executions_dir(data_dir).join(format!("{execution_id}.json"))
-}
-
-/// Decode one known legacy workflow execution projection for the one-shot
-/// SQLite migration without consulting the live `ExecutionStore` or adding
-/// a post-cutover file fallback.
-pub(crate) fn decode_legacy_workflow_projection_v1(
-    relative_path: &str,
-    raw: &[u8],
-) -> Result<Option<(String, String)>, String> {
-    let components = relative_path.split('/').collect::<Vec<_>>();
-    if components.len() != 2
-        || components[0] != EXECUTIONS_SUBDIR
-        || !components[1].ends_with(".json")
-    {
-        return Ok(None);
-    }
-    let expected_id = components[1].trim_end_matches(".json");
-    if !is_valid_execution_id(expected_id) {
-        return Err("known legacy workflow execution path has an invalid identity".to_string());
-    }
-    let execution: WorkflowExecutionMetadata = serde_json::from_slice(raw)
-        .map_err(|_| "known legacy workflow execution is incompatible".to_string())?;
-    if execution.execution_id != expected_id {
-        return Err("known legacy workflow execution identity does not match its path".to_string());
-    }
-    let execution_id = execution.execution_id.clone();
-    let canonical = serde_json::to_string(&serde_json::json!({
-        "schema": "workflow_execution_projection_v1",
-        "deleted": false,
-        "execution": execution,
-    }))
-    .map_err(|_| "known legacy workflow execution could not be canonicalized".to_string())?;
-    Ok(Some((execution_id, canonical)))
 }
 
 /// `execution_id` を UUID として検証する。Execution Store のすべての lookup/read 経路で path traversal
@@ -415,6 +391,7 @@ fn is_valid_execution_id(execution_id: &str) -> bool {
 
 /// `path` が `executions_dir` の直下にあり、ファイル名のステムが `execution_id` と一致することを検証する
 /// （canonicalize 後の prefix 一致 + metadata.execution_id == 渡された execution_id の二重検査）。
+#[cfg(test)]
 fn is_within_executions_dir(executions_dir: &Path, path: &Path) -> bool {
     let canonical_executions_dir = match fs::canonicalize(executions_dir) {
         Ok(p) => p,
@@ -437,6 +414,7 @@ fn is_within_executions_dir(executions_dir: &Path, path: &Path) -> bool {
 /// list / reverse lookup の両経路でこの loader を共有することで、検証ロジックを 1 箇所に
 /// 集約する（Spec issues-1011 finding 11: list_completed と resolve_worktree_by_execution の検証
 /// レベルの分散を解消）。
+#[cfg(test)]
 fn load_validated_execution_file(path: &Path) -> Result<WorkflowExecutionMetadata, String> {
     let stem = path
         .file_stem()
@@ -467,6 +445,7 @@ fn load_validated_execution_file(path: &Path) -> Result<WorkflowExecutionMetadat
     Ok(execution)
 }
 
+#[cfg(test)]
 fn load_validated_metadata_entry(
     executions_dir: &Path,
     path: &Path,
@@ -538,11 +517,13 @@ pub(crate) fn sort_summaries_active_first(summaries: &mut [WorkflowExecutionSumm
 }
 
 #[derive(Debug, Clone)]
+#[cfg(test)]
 pub(crate) struct WorkflowExecutionMetadataScan {
     pub(crate) executions: Vec<WorkflowExecutionMetadata>,
     pub(crate) is_complete: bool,
 }
 
+#[cfg(test)]
 impl Default for WorkflowExecutionMetadataScan {
     fn default() -> Self {
         Self {
@@ -552,6 +533,7 @@ impl Default for WorkflowExecutionMetadataScan {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn scan_valid_execution_metadata(data_dir: &Path) -> WorkflowExecutionMetadataScan {
     let executions_dir = executions_dir(data_dir);
     if !executions_dir.exists() {
@@ -599,6 +581,7 @@ pub(crate) fn scan_valid_execution_metadata(data_dir: &Path) -> WorkflowExecutio
     }
 }
 
+#[cfg(test)]
 pub(crate) fn read_valid_execution_metadata(
     data_dir: &Path,
     execution_id: &str,
@@ -790,7 +773,7 @@ impl ExecutionStoreInner {
     }
 }
 
-/// Execution Store: active/list UI projection と legacy-only metadata adapter を管理する。
+/// Execution Store: active/list UI projection と SQLite projection authority を管理する。
 ///
 /// active な execution は in-memory map（`active: HashMap<execution_id, WorkflowExecutionMetadata>`）と
 /// secondary index（`by_worktree: HashMap<worktree_path, execution_id>`）として保持する。
@@ -809,6 +792,7 @@ pub struct ExecutionStore {
 
 #[derive(Clone)]
 struct ExecutionMetadataStore {
+    #[cfg(test)]
     data_dir: PathBuf,
 }
 
@@ -819,14 +803,27 @@ impl ExecutionMetadataStore {
     }
 
     async fn persist(&self, execution: WorkflowExecutionMetadata) -> Result<(), String> {
-        // This adapter is constructed only while the legacy authority owns
-        // workflow metadata. Once SQLite authority is installed,
-        // `metadata_store` returns `None` and this path is not reached.
-        persist_metadata(self.data_dir.clone(), execution).await
+        #[cfg(test)]
+        {
+            persist_metadata(self.data_dir.clone(), execution).await
+        }
+        #[cfg(not(test))]
+        {
+            let _ = execution;
+            Err("legacy workflow metadata fixture is unavailable in production".to_string())
+        }
     }
 
     async fn remove(&self, execution_id: String) -> Result<(), String> {
-        remove_metadata_file(self.data_dir.clone(), execution_id).await
+        #[cfg(test)]
+        {
+            remove_metadata_file(self.data_dir.clone(), execution_id).await
+        }
+        #[cfg(not(test))]
+        {
+            let _ = execution_id;
+            Err("legacy workflow metadata fixture is unavailable in production".to_string())
+        }
     }
 
     #[cfg(test)]
@@ -844,7 +841,7 @@ impl ExecutionMetadataStore {
 #[derive(Clone)]
 struct WorkflowExecutionAuthority {
     repository: Arc<dyn LocalEventTransactionRepository>,
-    generation_id: String,
+    installation_id: String,
 }
 
 #[derive(Clone, Copy)]
@@ -1230,15 +1227,7 @@ pub(crate) fn decode_workflow_worktree_owner_record_v1(
     })
 }
 
-pub(crate) fn workflow_projection_is_non_terminal(raw: &str) -> Result<bool, String> {
-    match decode_workflow_execution_projection_record_v1(raw)? {
-        WorkflowExecutionProjectionRecord::Present(execution) => {
-            Ok(!execution.status.is_finished())
-        }
-        WorkflowExecutionProjectionRecord::Deleted { .. } => Ok(false),
-    }
-}
-
+#[cfg(test)]
 impl Default for ExecutionStore {
     fn default() -> Self {
         Self::new()
@@ -1246,11 +1235,33 @@ impl Default for ExecutionStore {
 }
 
 impl ExecutionStore {
+    #[cfg(test)]
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(ExecutionStoreInner::new()),
             data_dir: Mutex::new(None),
             authority: Mutex::new(None),
+            #[cfg(test)]
+            allow_in_memory_without_data_dir: false,
+            #[cfg(test)]
+            fail_next_resume_commit: AtomicBool::new(false),
+            #[cfg(test)]
+            fail_next_active_interruption_rollback: AtomicBool::new(false),
+        }
+    }
+
+    pub(crate) fn new_canonical(
+        data_dir: Option<PathBuf>,
+        repository: Arc<dyn LocalEventTransactionRepository>,
+        installation_id: String,
+    ) -> Self {
+        Self {
+            inner: Mutex::new(ExecutionStoreInner::new()),
+            data_dir: Mutex::new(data_dir),
+            authority: Mutex::new(Some(WorkflowExecutionAuthority {
+                repository,
+                installation_id,
+            })),
             #[cfg(test)]
             allow_in_memory_without_data_dir: false,
             #[cfg(test)]
@@ -1273,19 +1284,21 @@ impl ExecutionStore {
     }
 
     /// データディレクトリを設定する。アプリ起動時の setup から 1 度だけ呼ぶ。
+    #[cfg(test)]
     pub async fn set_data_dir(&self, dir: PathBuf) {
         let mut guard = self.data_dir.lock().await;
         *guard = Some(dir);
     }
 
+    #[cfg(test)]
     pub async fn set_local_event_repository(
         &self,
         repository: Arc<dyn LocalEventTransactionRepository>,
-        generation_id: String,
+        installation_id: String,
     ) {
         *self.authority.lock().await = Some(WorkflowExecutionAuthority {
             repository,
-            generation_id,
+            installation_id,
         });
     }
 
@@ -1295,7 +1308,7 @@ impl ExecutionStore {
         self.authority.lock().await.as_ref().map(|authority| {
             (
                 authority.repository.clone(),
-                authority.generation_id.clone(),
+                authority.installation_id.clone(),
             )
         })
     }
@@ -2445,8 +2458,8 @@ impl ExecutionStore {
     /// status / worktree filter を適用して返す。filter なしの場合は全件を返す。
     /// 並び順は active を先頭・以降は完了時刻降順とする。
     ///
-    /// Legacy-only 構成では file metadata を互換 projection として読む。SQLite authority 導入後は
-    /// filesystem を走査せず、authority から再構築した bounded in-memory projection だけを読む。最終的に CLI と同じ
+    /// Test-only file fixture または SQLite authority から再構築した bounded in-memory
+    /// projection を読む。最終的に CLI と同じ
     /// `project_executions_to_summaries` を経由することで観測ロジックの divergence を防ぐ
     /// （spec [05] API / CLI の意味的等価性境界, 観測値の整合性境界: list / get の
     /// データソース統一）。
@@ -2691,46 +2704,6 @@ impl ExecutionStore {
             .await
             .map_err(|reason| ExecutionStoreError::PersistFailed {
                 execution_id: snapshot.execution_id.clone(),
-                reason,
-            })
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn prepare_atomic_initial_metadata_mutations(
-        &self,
-        execution: &WorkflowExecutionMetadata,
-    ) -> Result<Vec<LocalStateMutation>, ExecutionStoreError> {
-        let authority = self.authority.lock().await.clone();
-        #[cfg(test)]
-        if authority.is_none() && self.allow_in_memory_without_data_dir {
-            return Ok(Vec::new());
-        }
-        let authority = authority.ok_or_else(|| ExecutionStoreError::AuthorityReadFailed {
-            reason: "workflow SQLite authority is not configured".to_string(),
-        })?;
-        match authority
-            .load(&execution.execution_id)
-            .await
-            .map_err(|reason| ExecutionStoreError::AuthorityReadFailed { reason })?
-        {
-            WorkflowExecutionAuthorityRead::Absent => {}
-            WorkflowExecutionAuthorityRead::Present { .. } => {
-                return Err(ExecutionStoreError::ExecutionAlreadyExists {
-                    execution_id: execution.execution_id.clone(),
-                });
-            }
-            WorkflowExecutionAuthorityRead::Deleted { revision } => {
-                return Err(ExecutionStoreError::ExecutionDeleted {
-                    execution_id: execution.execution_id.clone(),
-                    revision,
-                });
-            }
-        }
-        authority
-            .projection_mutations(execution, WorkflowProjectionMutationBase::Absent)
-            .await
-            .map_err(|reason| ExecutionStoreError::PersistFailed {
-                execution_id: execution.execution_id.clone(),
                 reason,
             })
     }
@@ -3002,6 +2975,7 @@ impl ExecutionStore {
     }
 }
 
+#[cfg(test)]
 async fn persist_metadata(
     dir: PathBuf,
     execution: WorkflowExecutionMetadata,
@@ -3014,6 +2988,7 @@ async fn persist_metadata(
 /// metadata を `workflow_executions/{execution_id}.json` に永続化する（同期 I/O）。
 /// async ExecutionStore API からは `spawn_blocking` 経由で呼び出し、active map の Mutex を
 /// ファイル I/O 中に保持しない。
+#[cfg(test)]
 fn persist_metadata_sync(dir: &Path, execution: &WorkflowExecutionMetadata) -> Result<(), String> {
     let executions_dir = executions_dir(dir);
     if let Err(e) = fs::create_dir_all(&executions_dir) {
@@ -3038,6 +3013,7 @@ fn persist_metadata_sync(dir: &Path, execution: &WorkflowExecutionMetadata) -> R
     Ok(())
 }
 
+#[cfg(test)]
 async fn remove_metadata_file(dir: PathBuf, execution_id: String) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
         let path = execution_file_path(&dir, &execution_id);
@@ -3050,6 +3026,7 @@ async fn remove_metadata_file(dir: PathBuf, execution_id: String) -> Result<(), 
     .map_err(|e| format!("metadata remove task failed: {e}"))?
 }
 
+#[cfg(test)]
 fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no parent")

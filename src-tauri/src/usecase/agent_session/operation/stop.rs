@@ -242,7 +242,6 @@ fn status_record(state: &StopOperationState) -> OperationStatusRecord {
     };
     OperationStatusRecord {
         kind: OperationKind::Stop,
-        migration_quit: false,
         value,
     }
 }
@@ -269,10 +268,9 @@ fn decode_record(
         OperationReceiptRecord::Send { .. }
         | OperationReceiptRecord::PermissionResponse { .. }
         | OperationReceiptRecord::SessionLifecycle { .. }
-        | OperationReceiptRecord::ApplicationQuit { .. }
-        | OperationReceiptRecord::MigrationApplicationQuit { .. } => return None,
+        | OperationReceiptRecord::ApplicationQuit { .. } => return None,
     };
-    if status.kind != OperationKind::Stop || status.migration_quit {
+    if status.kind != OperationKind::Stop {
         return None;
     }
     let state = match status.value {
@@ -341,7 +339,6 @@ fn stop_obligation(
         | ObligationRecord::WorkflowShutdown { .. }
         | ObligationRecord::WorkflowTurnCompletion { .. }
         | ObligationRecord::RecoveryPublication { .. }
-        | ObligationRecord::LegacyReconciliation { .. }
         | ObligationRecord::ProviderEstablish { .. }
         | ObligationRecord::TurnExecution { .. }
         | ObligationRecord::TerminalCommit { .. }
@@ -385,7 +382,7 @@ pub struct StopOperationUsecase {
     repository: Arc<dyn LocalEventTransactionRepository>,
     authority: Arc<dyn OperationBindingAuthority>,
     gate: Arc<dyn StopAdmissionGate>,
-    generation_id: String,
+    installation_id: String,
 }
 
 impl StopOperationUsecase {
@@ -393,13 +390,13 @@ impl StopOperationUsecase {
         repository: Arc<dyn LocalEventTransactionRepository>,
         authority: Arc<dyn OperationBindingAuthority>,
         gate: Arc<dyn StopAdmissionGate>,
-        generation_id: String,
+        installation_id: String,
     ) -> Self {
         Self {
             repository,
             authority,
             gate,
-            generation_id,
+            installation_id,
         }
     }
 
@@ -459,7 +456,7 @@ impl StopOperationUsecase {
     fn caller_key(&self, request: &StopOperationRequest) -> CallerOperationKey {
         CallerOperationKey {
             principal: request.principal.clone(),
-            generation_id: self.generation_id.clone(),
+            installation_id: self.installation_id.clone(),
             kind: OperationKind::Stop,
             caller_request_id: request.request_id.clone(),
         }
@@ -468,7 +465,7 @@ impl StopOperationUsecase {
     fn binding_for(&self, request: &StopOperationRequest, operation_id: &str) -> Vec<u8> {
         super::binding::stop(
             &request.principal,
-            &self.generation_id,
+            &self.installation_id,
             &request.request_id,
             operation_id,
             &request.session_id,
@@ -516,7 +513,7 @@ impl StopOperationUsecase {
         let batch = LocalAtomicBatch {
             commit_id: commit_id.clone(),
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: OperationKind::Stop.into(),
                 idempotency_key: format!("{operation_id}.join.{}", request.request_id),
                 payload_hash: self.authority.digest(binding),
@@ -1058,7 +1055,7 @@ impl StopOperationUsecase {
         let batch = LocalAtomicBatch {
             commit_id,
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: CommitOperationKind::OperationProgress,
                 idempotency_key: format!(
                     "{operation_id}.effect-reservation.{}",
@@ -1272,7 +1269,7 @@ impl StopOperationUsecase {
             LocalStateMutation::OperationBinding(OperationBindingMutation {
                 key: CallerOperationKey {
                     principal: request.principal.clone(),
-                    generation_id: self.generation_id.clone(),
+                    installation_id: self.installation_id.clone(),
                     kind: OperationKind::Stop,
                     caller_request_id: request.request_id.clone(),
                 },
@@ -1310,7 +1307,7 @@ impl StopOperationUsecase {
                 correlation_id: correlation("commit-id"),
             })?,
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: OperationKind::Stop.into(),
                 idempotency_key: operation_id.clone(),
                 payload_hash: self.authority.digest(&binding),
@@ -1812,7 +1809,7 @@ impl StopOperationUsecase {
             ))
             .expect("digest commit identity"),
             idempotency: IdempotencyBinding {
-                generation_id: self.generation_id.clone(),
+                installation_id: self.installation_id.clone(),
                 operation_kind: CommitOperationKind::OperationProgress,
                 idempotency_key: format!(
                     "{}.terminal.{}",
