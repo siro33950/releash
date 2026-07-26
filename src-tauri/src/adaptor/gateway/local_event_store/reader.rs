@@ -1143,71 +1143,6 @@ fn canonical_runtime_owner_snapshot(
     Ok(owners)
 }
 
-#[cfg(test)]
-mod canonical_runtime_owner_snapshot_tests {
-    use super::*;
-    use crate::adaptor::gateway::local_event_store::projection_record_codec::encode_session_projection_record_v1;
-    use crate::domain::local_event::{SessionProjectionRecord, WorkflowWorktreeOwnerRecord};
-
-    fn connection_with_active_workflow_owners(count: usize) -> Connection {
-        let connection = Connection::open_in_memory().expect("in-memory SQLite");
-        connection
-            .execute_batch(
-                "CREATE TABLE session_projection (
-                    session_id TEXT PRIMARY KEY,
-                    projection TEXT NOT NULL
-                );",
-            )
-            .expect("projection table");
-        for index in 0..count {
-            let worktree_path = format!("/snapshot/worktree-{index}");
-            let owner = WorkflowWorktreeOwnerRecord {
-                worktree_path: worktree_path.clone(),
-                execution_id: format!("execution-{index}"),
-                active: true,
-            };
-            let projection = encode_session_projection_record_v1(
-                &SessionProjectionRecord::WorkflowWorktreeOwner(owner),
-            )
-            .expect("encoded workflow owner");
-            let projection_id = format!(
-                "workflow-worktree:{}",
-                hex::encode(Sha256::digest(worktree_path.as_bytes()))
-            );
-            connection
-                .execute(
-                    "INSERT INTO session_projection (session_id, projection) VALUES (?1, ?2)",
-                    params![projection_id, projection],
-                )
-                .expect("insert workflow owner");
-        }
-        connection
-    }
-
-    #[test]
-    fn app_data_gc_owner_snapshot_returns_one_bounded_lightweight_inventory() {
-        let connection = connection_with_active_workflow_owners(2);
-
-        let owners =
-            canonical_runtime_owner_snapshot(&connection, 2).expect("complete owner snapshot");
-
-        assert_eq!(owners.len(), 2);
-        assert!(owners
-            .iter()
-            .all(|owner| matches!(owner, CanonicalRuntimeOwnerView::ActiveWorkflow { .. })));
-    }
-
-    #[test]
-    fn app_data_gc_owner_snapshot_limit_plus_one_fails_closed() {
-        let connection = connection_with_active_workflow_owners(2);
-
-        assert_eq!(
-            canonical_runtime_owner_snapshot(&connection, 1),
-            Err(LocalEventQueryError::ResponseTooLarge)
-        );
-    }
-}
-
 fn message_projection_by_identity(
     connection: &Connection,
     session_id: &str,
@@ -2582,5 +2517,70 @@ impl RecoverySnapshotPager {
         for worker in workers {
             let _ = worker.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod canonical_runtime_owner_snapshot_tests {
+    use super::*;
+    use crate::adaptor::gateway::local_event_store::projection_record_codec::encode_session_projection_record_v1;
+    use crate::domain::local_event::{SessionProjectionRecord, WorkflowWorktreeOwnerRecord};
+
+    fn connection_with_active_workflow_owners(count: usize) -> Connection {
+        let connection = Connection::open_in_memory().expect("in-memory SQLite");
+        connection
+            .execute_batch(
+                "CREATE TABLE session_projection (
+                    session_id TEXT PRIMARY KEY,
+                    projection TEXT NOT NULL
+                );",
+            )
+            .expect("projection table");
+        for index in 0..count {
+            let worktree_path = format!("/snapshot/worktree-{index}");
+            let owner = WorkflowWorktreeOwnerRecord {
+                worktree_path: worktree_path.clone(),
+                execution_id: format!("execution-{index}"),
+                active: true,
+            };
+            let projection = encode_session_projection_record_v1(
+                &SessionProjectionRecord::WorkflowWorktreeOwner(owner),
+            )
+            .expect("encoded workflow owner");
+            let projection_id = format!(
+                "workflow-worktree:{}",
+                hex::encode(Sha256::digest(worktree_path.as_bytes()))
+            );
+            connection
+                .execute(
+                    "INSERT INTO session_projection (session_id, projection) VALUES (?1, ?2)",
+                    params![projection_id, projection],
+                )
+                .expect("insert workflow owner");
+        }
+        connection
+    }
+
+    #[test]
+    fn app_data_gc_owner_snapshot_returns_one_bounded_lightweight_inventory() {
+        let connection = connection_with_active_workflow_owners(2);
+
+        let owners =
+            canonical_runtime_owner_snapshot(&connection, 2).expect("complete owner snapshot");
+
+        assert_eq!(owners.len(), 2);
+        assert!(owners
+            .iter()
+            .all(|owner| matches!(owner, CanonicalRuntimeOwnerView::ActiveWorkflow { .. })));
+    }
+
+    #[test]
+    fn app_data_gc_owner_snapshot_limit_plus_one_fails_closed() {
+        let connection = connection_with_active_workflow_owners(2);
+
+        assert_eq!(
+            canonical_runtime_owner_snapshot(&connection, 1),
+            Err(LocalEventQueryError::ResponseTooLarge)
+        );
     }
 }

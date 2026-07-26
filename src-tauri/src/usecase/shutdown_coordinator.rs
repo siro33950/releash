@@ -46,20 +46,39 @@ struct ShutdownDeadlines {
     decision_deadline: tokio::time::Instant,
 }
 
-impl ShutdownDeadlines {
-    fn from_ingress(ingress: tokio::time::Instant) -> Self {
+/// The wall-clock budget one quit flight may consume. Production always uses
+/// the published boundary; a test whose subject is fixture size rather than the
+/// deadline can widen it so a slow machine does not turn the flight into
+/// `OutcomeUnknown`.
+#[derive(Debug, Clone, Copy)]
+struct ShutdownBudget {
+    preparation: Duration,
+    decision: Duration,
+}
+
+impl Default for ShutdownBudget {
+    fn default() -> Self {
         Self {
-            preparation_cutoff: ingress + PREPARATION_CUTOFF,
-            decision_deadline: ingress + DECISION_DEADLINE,
+            preparation: PREPARATION_CUTOFF,
+            decision: DECISION_DEADLINE,
+        }
+    }
+}
+
+impl ShutdownDeadlines {
+    fn from_ingress(ingress: tokio::time::Instant, budget: ShutdownBudget) -> Self {
+        Self {
+            preparation_cutoff: ingress + budget.preparation,
+            decision_deadline: ingress + budget.decision,
         }
     }
 
-    fn from_receipt(receipt: &ApplicationQuitReceipt) -> Self {
+    fn from_receipt(receipt: &ApplicationQuitReceipt, budget: ShutdownBudget) -> Self {
         let now = tokio::time::Instant::now();
         let wall_now_ms = now_ms();
         let preparation_remaining_ms = receipt
             .t0_ms
-            .saturating_add(PREPARATION_CUTOFF.as_millis() as i64)
+            .saturating_add(budget.preparation.as_millis() as i64)
             .saturating_sub(wall_now_ms)
             .max(0) as u64;
         let decision_remaining_ms = receipt.deadline_ms.saturating_sub(wall_now_ms).max(0) as u64;
@@ -765,6 +784,7 @@ pub struct ShutdownCoordinator {
     process_instance_id: String,
     request_flight: tokio::sync::Mutex<()>,
     ingress_sequence: AtomicU64,
+    budget: ShutdownBudget,
     #[cfg(test)]
     recovery_pre_handoff_hook: StdMutex<Option<ShutdownRecoveryPreHandoffHook>>,
     #[cfg(test)]
@@ -779,6 +799,22 @@ pub struct ShutdownCoordinator {
 }
 
 impl ShutdownCoordinator {
+    /// Widen only the flight budget for a test whose subject is the fixture
+    /// size. Deadline behaviour itself stays covered by the tests that keep the
+    /// production budget.
+    #[cfg(test)]
+    pub fn with_flight_budget_for_test(
+        mut self,
+        preparation: Duration,
+        decision: Duration,
+    ) -> Self {
+        self.budget = ShutdownBudget {
+            preparation,
+            decision,
+        };
+        self
+    }
+
     pub fn new(
         repository: Arc<dyn LocalEventTransactionRepository>,
         authority: Arc<dyn OperationBindingAuthority>,
@@ -794,6 +830,7 @@ impl ShutdownCoordinator {
             process_instance_id,
             request_flight: tokio::sync::Mutex::new(()),
             ingress_sequence: AtomicU64::new(0),
+            budget: ShutdownBudget::default(),
             #[cfg(test)]
             recovery_pre_handoff_hook: StdMutex::new(None),
             #[cfg(test)]
@@ -1720,6 +1757,7 @@ impl ShutdownCoordinator {
             process_instance_id: self.process_instance_id.clone(),
             request_flight: tokio::sync::Mutex::new(()),
             ingress_sequence: AtomicU64::new(0),
+            budget: self.budget,
             #[cfg(test)]
             recovery_pre_handoff_hook: StdMutex::new(None),
             #[cfg(test)]
@@ -2643,7 +2681,7 @@ impl ShutdownCoordinator {
                 });
             self.schedule_oldest_shutdown_detail_compaction();
         } else if classification == RecoveryResultClassification::Succeeded {
-            let deadlines = ShutdownDeadlines::from_receipt(&receipt);
+            let deadlines = ShutdownDeadlines::from_receipt(&receipt, self.budget);
             let continued = self
                 .continue_activated(receipt, operation_binding, deadlines)
                 .await;
@@ -2906,7 +2944,7 @@ impl ShutdownCoordinator {
         request: ApplicationQuitRequest,
     ) -> Result<ApplicationQuitOutcome, ApplicationQuitError> {
         let ingress_instant = tokio::time::Instant::now();
-        let ingress_deadlines = ShutdownDeadlines::from_ingress(ingress_instant);
+        let ingress_deadlines = ShutdownDeadlines::from_ingress(ingress_instant, self.budget);
         let ingress_t0_ms = now_ms();
         let principal = request.principal.clone();
         let request_id = request.request_id.clone();
@@ -3008,13 +3046,13 @@ impl ShutdownCoordinator {
                 })?;
             if let Some((receipt, state, operation_binding, _)) = saved_operation {
                 if matches!(state, ApplicationQuitState::Preparing) {
-                    let deadlines = ShutdownDeadlines::from_receipt(&receipt);
+                    let deadlines = ShutdownDeadlines::from_receipt(&receipt, self.budget);
                     return Ok(self
                         .continue_prepared(receipt, operation_binding, deadlines)
                         .await);
                 }
                 if matches!(state, ApplicationQuitState::Activated) {
-                    let deadlines = ShutdownDeadlines::from_receipt(&receipt);
+                    let deadlines = ShutdownDeadlines::from_receipt(&receipt, self.budget);
                     return Ok(self
                         .continue_activated(receipt, operation_binding, deadlines)
                         .await);
@@ -3154,13 +3192,13 @@ impl ShutdownCoordinator {
                     });
                 }
                 if matches!(state, ApplicationQuitState::Preparing) {
-                    let deadlines = ShutdownDeadlines::from_receipt(&receipt);
+                    let deadlines = ShutdownDeadlines::from_receipt(&receipt, self.budget);
                     return Ok(self
                         .continue_prepared(receipt, operation_binding, deadlines)
                         .await);
                 }
                 if matches!(state, ApplicationQuitState::Activated) {
-                    let deadlines = ShutdownDeadlines::from_receipt(&receipt);
+                    let deadlines = ShutdownDeadlines::from_receipt(&receipt, self.budget);
                     return Ok(self
                         .continue_activated(receipt, operation_binding, deadlines)
                         .await);

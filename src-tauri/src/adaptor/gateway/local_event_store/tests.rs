@@ -8982,7 +8982,23 @@ async fn b062_shutdown_plan_page_closes_count_limit_unknown_and_cursor_boundarie
     let _heavy_test_lock = crate::test_support::LOCAL_EVENT_STORE_HEAVY_TEST_LOCK.lock();
     let harness = Harness::open();
     let executor = TestShutdownExecutor::with_targets(4096, ShutdownExecutorMode::Complete);
-    let coordinator = shutdown_coordinator(&harness, &executor);
+    // The subject here is paging, not the deadline: b060 owns the capacity
+    // oracle at the production cutoff. Reserving 4,096 targets takes seconds on
+    // a slow runner, so keep this flight's budget clear of that boundary
+    // instead of racing the machine.
+    let coordinator = Arc::new(
+        crate::usecase::shutdown_coordinator::ShutdownCoordinator::new(
+            harness.store.clone(),
+            harness.store.clone(),
+            executor.clone(),
+            harness.store.installation_id().to_string(),
+            "test-boot".to_string(),
+        )
+        .with_flight_budget_for_test(
+            std::time::Duration::from_secs(600),
+            std::time::Duration::from_secs(660),
+        ),
+    );
     let outcome = coordinator
         .request(
             crate::usecase::shutdown_coordinator::ApplicationQuitRequest {
