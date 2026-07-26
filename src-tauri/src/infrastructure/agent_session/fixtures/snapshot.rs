@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::domain::agent_session::entities::{
     Attachment, InterruptReason, MessagePart, PermissionDecision, PermissionRequest,
@@ -10,7 +10,7 @@ use crate::domain::agent_session::value_objects::{
     ToolOutputSummary,
 };
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub(super) enum RuntimeEventSnapshot {
     SessionEstablished {
         backend_session_id: String,
@@ -76,7 +76,7 @@ impl From<&AgentRuntimeEvent> for RuntimeEventSnapshot {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub(super) enum ResumeOutcomeSnapshot {
     NotRequested,
     Resumed,
@@ -95,7 +95,7 @@ impl From<&ResumeOutcome> for ResumeOutcomeSnapshot {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub(super) enum MessagePartSnapshot {
     Thinking {
         content: String,
@@ -220,7 +220,7 @@ impl From<&MessagePart> for MessagePartSnapshot {
                 content: content.clone(),
                 parent_tool_use_id: parent_tool_use_id.clone(),
             },
-            MessagePart::Permission { request } => Self::Permission {
+            MessagePart::Permission { request, .. } => Self::Permission {
                 request: request.into(),
             },
             MessagePart::TaskStatus {
@@ -281,7 +281,7 @@ impl From<&MessagePart> for MessagePartSnapshot {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub(super) struct PermissionRequestSnapshot {
     id: String,
     tool_use_id: Option<String>,
@@ -324,7 +324,7 @@ impl From<&PermissionRequest> for PermissionRequestSnapshot {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub(super) enum PermissionRequestBodySnapshot {
     ToolApproval {
         input: String,
@@ -385,13 +385,13 @@ impl From<&PermissionRequestBody> for PermissionRequestBodySnapshot {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub(super) struct PermissionAllowedPromptSnapshot {
     tool: String,
     prompt: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub(super) struct PermissionQuestionSnapshot {
     question: String,
     header: Option<String>,
@@ -399,13 +399,13 @@ pub(super) struct PermissionQuestionSnapshot {
     multi_select: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub(super) struct PermissionQuestionOptionSnapshot {
     label: String,
     description: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub(super) enum PermissionRequestStatusSnapshot {
     Pending,
     Resolved {
@@ -426,7 +426,7 @@ impl From<&PermissionRequestStatus> for PermissionRequestStatusSnapshot {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub(super) enum PermissionDecisionSnapshot {
     Allowed,
     Denied,
@@ -443,7 +443,7 @@ impl From<PermissionDecision> for PermissionDecisionSnapshot {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub(super) enum PermissionModeSnapshot {
     Ask,
     Edit,
@@ -460,14 +460,14 @@ impl From<PermissionMode> for PermissionModeSnapshot {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub(super) struct SlashCommandSnapshot {
     name: String,
     description: String,
     argument_hint: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub(super) enum TurnResultSnapshot {
     Completed {
         stop_reason: Option<TurnStopReasonSnapshot>,
@@ -505,7 +505,7 @@ impl From<&TurnResult> for TurnResultSnapshot {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub(super) enum TurnStopReasonSnapshot {
     Refusal,
 }
@@ -518,7 +518,7 @@ impl From<TurnStopReason> for TurnStopReasonSnapshot {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub(super) enum InterruptReasonSnapshot {
     Abort,
     Timeout,
@@ -537,7 +537,7 @@ impl From<InterruptReason> for InterruptReasonSnapshot {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub(super) struct TokenUsageSnapshot {
     input_tokens: u64,
     output_tokens: u64,
@@ -562,13 +562,13 @@ impl From<&TokenUsage> for TokenUsageSnapshot {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub(super) struct ToolOutputRefSnapshot {
     id: String,
     byte_size: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub(super) struct ToolOutputSummarySnapshot {
     line_count: u64,
     byte_size: u64,
@@ -576,13 +576,13 @@ pub(super) struct ToolOutputSummarySnapshot {
     truncated: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub(super) struct TodoListItemSnapshot {
     text: String,
     completed: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub(super) enum SystemNotificationTypeSnapshot {
     Compaction,
     SessionRecovery,
@@ -597,9 +597,338 @@ impl From<SystemNotificationType> for SystemNotificationTypeSnapshot {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub(super) struct AttachmentSnapshot {
     id: String,
     media_type: String,
     byte_size: u64,
+}
+
+pub(super) fn decode_runtime_events(
+    raw: &str,
+) -> Result<Vec<AgentRuntimeEvent>, serde_json::Error> {
+    serde_json::from_str::<Vec<RuntimeEventSnapshot>>(raw)
+        .map(|events| events.into_iter().map(AgentRuntimeEvent::from).collect())
+}
+
+impl From<RuntimeEventSnapshot> for AgentRuntimeEvent {
+    fn from(event: RuntimeEventSnapshot) -> Self {
+        match event {
+            RuntimeEventSnapshot::SessionEstablished {
+                backend_session_id,
+                resume,
+            } => Self::SessionEstablished {
+                backend_session_id,
+                resume: resume.into(),
+            },
+            RuntimeEventSnapshot::BackendSessionCleared => Self::BackendSessionCleared,
+            RuntimeEventSnapshot::PartsMerged(parts) => {
+                Self::PartsMerged(parts.into_iter().map(MessagePart::from).collect())
+            }
+            RuntimeEventSnapshot::PermissionRequested(request) => {
+                Self::PermissionRequested(request.into())
+            }
+            RuntimeEventSnapshot::PermissionModeChanged(mode) => {
+                Self::PermissionModeChanged(mode.into())
+            }
+            RuntimeEventSnapshot::SlashCommandsUpdated(commands) => Self::SlashCommandsUpdated(
+                commands
+                    .into_iter()
+                    .map(|command| SlashCommand {
+                        name: command.name,
+                        description: command.description,
+                        argument_hint: command.argument_hint,
+                    })
+                    .collect(),
+            ),
+            RuntimeEventSnapshot::TokenUsageUpdated(usage) => Self::TokenUsageUpdated(usage.into()),
+            RuntimeEventSnapshot::KeepAlive => Self::KeepAlive,
+            RuntimeEventSnapshot::TurnCompleted(result) => Self::TurnCompleted(result.into()),
+            RuntimeEventSnapshot::Fatal { message } => Self::Fatal { message },
+        }
+    }
+}
+
+impl From<ResumeOutcomeSnapshot> for ResumeOutcome {
+    fn from(outcome: ResumeOutcomeSnapshot) -> Self {
+        match outcome {
+            ResumeOutcomeSnapshot::NotRequested => Self::NotRequested,
+            ResumeOutcomeSnapshot::Resumed => Self::Resumed,
+            ResumeOutcomeSnapshot::Mismatch { actual } => Self::Mismatch { actual },
+        }
+    }
+}
+
+impl From<MessagePartSnapshot> for MessagePart {
+    fn from(part: MessagePartSnapshot) -> Self {
+        match part {
+            MessagePartSnapshot::Thinking {
+                content,
+                parent_tool_use_id,
+            } => Self::Thinking {
+                content,
+                parent_tool_use_id,
+            },
+            MessagePartSnapshot::Text {
+                content,
+                parent_tool_use_id,
+            } => Self::Text {
+                content,
+                parent_tool_use_id,
+            },
+            MessagePartSnapshot::ToolUse {
+                id,
+                tool,
+                input,
+                parent_tool_use_id,
+            } => Self::ToolUse {
+                id,
+                tool,
+                input: crate::domain::agent_session::value_objects::JsonPayload::new_unchecked(
+                    input,
+                ),
+                parent_tool_use_id,
+            },
+            MessagePartSnapshot::ToolResult {
+                content,
+                is_error,
+                tool_use_id,
+                parent_tool_use_id,
+                content_ref,
+                summary,
+            } => Self::ToolResult {
+                content,
+                is_error,
+                tool_use_id,
+                parent_tool_use_id,
+                content_ref: content_ref.map(|output| ToolOutputRef {
+                    id: output.id,
+                    byte_size: output.byte_size,
+                }),
+                summary: summary.map(|summary| ToolOutputSummary {
+                    line_count: summary.line_count,
+                    byte_size: summary.byte_size,
+                    is_error: summary.is_error,
+                    truncated: summary.truncated,
+                }),
+            },
+            MessagePartSnapshot::Error {
+                content,
+                parent_tool_use_id,
+            } => Self::Error {
+                content,
+                parent_tool_use_id,
+            },
+            MessagePartSnapshot::Permission { request } => Self::permission(request.into()),
+            MessagePartSnapshot::TaskStatus {
+                task_tool_use_id,
+                status,
+                description,
+                summary,
+            } => Self::TaskStatus {
+                task_tool_use_id,
+                status,
+                description,
+                summary,
+            },
+            MessagePartSnapshot::TodoListSnapshot { items } => Self::TodoListSnapshot {
+                items: items
+                    .into_iter()
+                    .map(|item| TodoListItem {
+                        text: item.text,
+                        completed: item.completed,
+                    })
+                    .collect(),
+            },
+            MessagePartSnapshot::SystemNotification {
+                notification_type,
+                status,
+                label,
+                detail,
+                hook_id,
+            } => Self::SystemNotification {
+                notification_type: notification_type.into(),
+                status,
+                label,
+                detail,
+                hook_id,
+            },
+            MessagePartSnapshot::Image { data, media_type } => Self::Image { data, media_type },
+            MessagePartSnapshot::ImageRef { attachment } => Self::ImageRef {
+                attachment: Attachment {
+                    id: attachment.id,
+                    media_type: attachment.media_type,
+                    byte_size: attachment.byte_size,
+                },
+            },
+        }
+    }
+}
+
+impl From<PermissionRequestSnapshot> for PermissionRequest {
+    fn from(request: PermissionRequestSnapshot) -> Self {
+        Self {
+            id: request.id,
+            tool_use_id: request.tool_use_id,
+            parent_tool_use_id: request.parent_tool_use_id,
+            tool_name: request.tool_name,
+            body: request.body.into(),
+            title: request.title,
+            display_name: request.display_name,
+            description: request.description,
+            decision_reason: request.decision_reason,
+            status: request.status.into(),
+        }
+    }
+}
+
+impl From<PermissionRequestBodySnapshot> for PermissionRequestBody {
+    fn from(body: PermissionRequestBodySnapshot) -> Self {
+        match body {
+            PermissionRequestBodySnapshot::ToolApproval { input } => Self::ToolApproval {
+                input: crate::domain::agent_session::value_objects::JsonPayload::new_unchecked(
+                    input,
+                ),
+            },
+            PermissionRequestBodySnapshot::PlanApproval {
+                plan,
+                allowed_prompts,
+            } => Self::PlanApproval {
+                plan,
+                allowed_prompts: allowed_prompts
+                    .into_iter()
+                    .map(|prompt| {
+                        crate::domain::agent_session::entities::PermissionAllowedPrompt {
+                            tool: prompt.tool,
+                            prompt: prompt.prompt,
+                        }
+                    })
+                    .collect(),
+            },
+            PermissionRequestBodySnapshot::Question { questions } => Self::Question {
+                questions: questions
+                    .into_iter()
+                    .map(|question| {
+                        crate::domain::agent_session::entities::PermissionQuestion {
+                            question: question.question,
+                            header: question.header,
+                            options: question
+                                .options
+                                .into_iter()
+                                .map(|option| {
+                                    crate::domain::agent_session::entities::PermissionQuestionOption {
+                                        label: option.label,
+                                        description: option.description,
+                                    }
+                                })
+                                .collect(),
+                            multi_select: question.multi_select,
+                        }
+                    })
+                    .collect(),
+            },
+            PermissionRequestBodySnapshot::PermissionGrant { requested } => {
+                Self::PermissionGrant {
+                    requested:
+                        crate::domain::agent_session::value_objects::JsonPayload::new_unchecked(
+                            requested,
+                        ),
+                }
+            }
+        }
+    }
+}
+
+impl From<PermissionRequestStatusSnapshot> for PermissionRequestStatus {
+    fn from(status: PermissionRequestStatusSnapshot) -> Self {
+        match status {
+            PermissionRequestStatusSnapshot::Pending => Self::Pending,
+            PermissionRequestStatusSnapshot::Resolved { decision, answers } => Self::Resolved {
+                decision: decision.into(),
+                answers: answers
+                    .map(crate::domain::agent_session::value_objects::JsonPayload::new_unchecked),
+            },
+        }
+    }
+}
+
+impl From<PermissionDecisionSnapshot> for PermissionDecision {
+    fn from(decision: PermissionDecisionSnapshot) -> Self {
+        match decision {
+            PermissionDecisionSnapshot::Allowed => Self::Allowed,
+            PermissionDecisionSnapshot::Denied => Self::Denied,
+            PermissionDecisionSnapshot::Cancelled => Self::Cancelled,
+        }
+    }
+}
+
+impl From<PermissionModeSnapshot> for PermissionMode {
+    fn from(mode: PermissionModeSnapshot) -> Self {
+        match mode {
+            PermissionModeSnapshot::Ask => Self::Ask,
+            PermissionModeSnapshot::Edit => Self::Edit,
+            PermissionModeSnapshot::Full => Self::Full,
+        }
+    }
+}
+
+impl From<TurnResultSnapshot> for TurnResult {
+    fn from(result: TurnResultSnapshot) -> Self {
+        match result {
+            TurnResultSnapshot::Completed {
+                stop_reason,
+                token_usage,
+            } => Self::Completed {
+                stop_reason: stop_reason.map(TurnStopReason::from),
+                token_usage: token_usage.map(TokenUsage::from),
+            },
+            TurnResultSnapshot::Failed { error, token_usage } => Self::Failed {
+                error,
+                token_usage: token_usage.map(TokenUsage::from),
+            },
+            TurnResultSnapshot::Interrupted { reason, error } => Self::Interrupted {
+                reason: reason.into(),
+                error,
+            },
+        }
+    }
+}
+
+impl From<TurnStopReasonSnapshot> for TurnStopReason {
+    fn from(reason: TurnStopReasonSnapshot) -> Self {
+        match reason {
+            TurnStopReasonSnapshot::Refusal => Self::Refusal,
+        }
+    }
+}
+
+impl From<InterruptReasonSnapshot> for InterruptReason {
+    fn from(reason: InterruptReasonSnapshot) -> Self {
+        match reason {
+            InterruptReasonSnapshot::Abort => Self::Abort,
+            InterruptReasonSnapshot::Timeout => Self::Timeout,
+            InterruptReasonSnapshot::Crash => Self::Crash,
+            InterruptReasonSnapshot::SessionClosed => Self::SessionClosed,
+        }
+    }
+}
+
+impl From<TokenUsageSnapshot> for TokenUsage {
+    fn from(usage: TokenUsageSnapshot) -> Self {
+        Self {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            total_tokens: usage.total_tokens,
+            context_window_tokens: usage.context_window_tokens,
+        }
+    }
+}
+
+impl From<SystemNotificationTypeSnapshot> for SystemNotificationType {
+    fn from(notification_type: SystemNotificationTypeSnapshot) -> Self {
+        match notification_type {
+            SystemNotificationTypeSnapshot::Compaction => Self::Compaction,
+            SystemNotificationTypeSnapshot::SessionRecovery => Self::SessionRecovery,
+        }
+    }
 }

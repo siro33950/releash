@@ -1,5 +1,6 @@
 pub(crate) mod agent_session;
 pub(crate) mod app_config;
+pub(crate) mod application_lifecycle;
 pub(crate) mod code;
 pub(crate) mod comment;
 pub(crate) mod external_editor;
@@ -28,6 +29,42 @@ struct CommandDomainRoute {
     handler: InvokeHandler,
 }
 
+const STARTUP_COMMANDS: [&str; 2] = [
+    "get_application_startup_outcome",
+    "quit_after_startup_failure",
+];
+
+fn command_admitted(
+    command: &str,
+    authority: Option<&crate::usecase::application_startup::ApplicationStartupAuthority>,
+) -> bool {
+    authority.is_some_and(|authority| {
+        STARTUP_COMMANDS.contains(&command) || authority.normal_admission_ready()
+    })
+}
+
+pub(crate) fn gate_invoke_before_domain_routing<R: tauri::Runtime>(
+    invoke: tauri::ipc::Invoke<R>,
+) -> Result<tauri::ipc::Invoke<R>, bool> {
+    let admitted = {
+        let authority = invoke.message.state_ref().try_get::<std::sync::Arc<
+            crate::usecase::application_startup::ApplicationStartupAuthority,
+        >>();
+        command_admitted(
+            invoke.message.command(),
+            authority.map(|authority| authority.inner().as_ref()),
+        )
+    };
+    if !admitted {
+        invoke.resolver.reject(
+            crate::usecase::application_startup::ApplicationUnavailable::ApplicationUnavailable,
+        );
+        Err(true)
+    } else {
+        Ok(invoke)
+    }
+}
+
 impl CommandRouter {
     fn new(fallback: InvokeHandler) -> Self {
         Self {
@@ -48,6 +85,10 @@ impl CommandRouter {
     }
 
     fn handle(&self, invoke: tauri::ipc::Invoke<tauri::Wry>) -> bool {
+        let invoke = match gate_invoke_before_domain_routing(invoke) {
+            Ok(invoke) => invoke,
+            Err(handled) => return handled,
+        };
         let route_index = self.domain_route_index(invoke.message.command());
 
         if let Some(route_index) = route_index {
@@ -69,6 +110,7 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
     let mut router = CommandRouter::new(app_handler);
     agent_session::register(&mut router);
     app_config::register(&mut router);
+    application_lifecycle::register(&mut router);
     code::register(&mut router);
     comment::register(&mut router);
     external_editor::register(&mut router);
@@ -91,6 +133,9 @@ pub(crate) fn register_all(builder: tauri::Builder<tauri::Wry>) -> tauri::Builde
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tauri::Manager;
 
     fn dummy_handler() -> InvokeHandler {
         Box::new(|_invoke| true)
@@ -109,6 +154,11 @@ mod tests {
                 "app_config",
                 app_config::COMMAND_NAMES,
                 app_config::register,
+            ),
+            (
+                "application_lifecycle",
+                application_lifecycle::COMMAND_NAMES,
+                application_lifecycle::register,
             ),
             ("code", code::COMMAND_NAMES, code::register),
             ("comment", comment::COMMAND_NAMES, comment::register),
@@ -159,17 +209,155 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn failed_startup_admits_only_the_two_safe_commands_before_domain_routing() {
+        let failed = crate::usecase::application_startup::ApplicationStartupAuthority::failed_kind(
+            crate::usecase::application_startup::StartupFailureKind::StoreValidationFailed,
+        );
+        let ready = crate::usecase::application_startup::ApplicationStartupAuthority::ready();
+
+        for command in registered_command_names() {
+            assert_eq!(
+                command_admitted(command, Some(&failed)),
+                STARTUP_COMMANDS.contains(&command),
+                "unexpected failed-startup admission for {command}"
+            );
+            assert!(
+                command_admitted(command, Some(&ready)),
+                "ready startup rejected {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_startup_authority_fails_closed_before_any_command_routing() {
+        for command in registered_command_names() {
+            assert!(
+                !command_admitted(command, None),
+                "missing startup authority admitted {command}"
+            );
+        }
+        for command in STARTUP_COMMANDS {
+            assert!(
+                !command_admitted(command, None),
+                "startup command {command} cannot run without its authority"
+            );
+        }
+    }
+
+    #[tauri::command]
+    fn record_normal_command_effect(effects: tauri::State<'_, Arc<AtomicUsize>>) -> &'static str {
+        effects.fetch_add(1, Ordering::SeqCst);
+        "normal-effect-ran"
+    }
+
+    fn invoke_request(command: &str) -> tauri::webview::InvokeRequest {
+        tauri::webview::InvokeRequest {
+            cmd: command.to_string(),
+            callback: tauri::ipc::CallbackFn(0),
+            error: tauri::ipc::CallbackFn(1),
+            url: if cfg!(any(windows, target_os = "android")) {
+                "http://tauri.localhost"
+            } else {
+                "tauri://localhost"
+            }
+            .parse()
+            .unwrap(),
+            body: tauri::ipc::InvokeBody::default(),
+            headers: Default::default(),
+            invoke_key: tauri::test::INVOKE_KEY.to_string(),
+        }
+    }
+
+    fn command_gate_test_handler(
+    ) -> impl Fn(tauri::ipc::Invoke<tauri::test::MockRuntime>) -> bool + Send + Sync + 'static {
+        tauri::generate_handler![
+            application_lifecycle::get_application_startup_outcome,
+            record_normal_command_effect
+        ]
+    }
+
+    fn command_gate_test_app(
+        authority: Option<Arc<crate::usecase::application_startup::ApplicationStartupAuthority>>,
+    ) -> (tauri::App<tauri::test::MockRuntime>, Arc<AtomicUsize>) {
+        let effects = Arc::new(AtomicUsize::new(0));
+        let mut builder = tauri::test::mock_builder().manage(effects.clone());
+        if let Some(authority) = authority {
+            builder = builder.manage(authority);
+        }
+        let handler = command_gate_test_handler();
+        let app = builder
+            .invoke_handler(
+                move |invoke| match gate_invoke_before_domain_routing(invoke) {
+                    Ok(invoke) => handler(invoke),
+                    Err(handled) => handled,
+                },
+            )
+            .build(crate::application_context())
+            .expect("build startup command gate test app");
+        (app, effects)
+    }
+
+    #[test]
+    fn failed_and_missing_authority_reject_actual_normal_ipc_before_its_effect() {
+        let failed = Arc::new(
+            crate::usecase::application_startup::ApplicationStartupAuthority::failed_kind(
+                crate::usecase::application_startup::StartupFailureKind::StoreValidationFailed,
+            ),
+        );
+        for authority in [Some(failed), None] {
+            let (app, effects) = command_gate_test_app(authority);
+            let window = tauri::WebviewWindowBuilder::new(
+                &app,
+                crate::infrastructure::platform::window_lifecycle::STARTUP_FAILURE_WINDOW_LABEL,
+                Default::default(),
+            )
+            .build()
+            .expect("build startup command gate window");
+
+            let error = tauri::test::get_ipc_response(
+                &window,
+                invoke_request("record_normal_command_effect"),
+            )
+            .expect_err("normal command must be rejected before its handler");
+            assert_eq!(
+                error,
+                serde_json::json!({ "type": "application_unavailable" })
+            );
+            assert_eq!(effects.load(Ordering::SeqCst), 0);
+
+            let startup = tauri::test::get_ipc_response(
+                &window,
+                invoke_request("get_application_startup_outcome"),
+            );
+            if app
+                .try_state::<Arc<crate::usecase::application_startup::ApplicationStartupAuthority>>(
+                )
+                .is_some()
+            {
+                let startup = startup
+                    .expect("failed authority must expose its startup outcome")
+                    .deserialize::<serde_json::Value>()
+                    .expect("decode startup outcome");
+                assert_eq!(startup["type"], "failed");
+            } else {
+                assert_eq!(
+                    startup.expect_err("missing authority must reject even startup commands"),
+                    serde_json::json!({ "type": "application_unavailable" })
+                );
+            }
+        }
+    }
+
     fn canonical_command_names() -> &'static [&'static str] {
         &[
             "abort_workflow",
-            "add_message",
+            "acknowledge_agent_attempt",
             "add_repo_path",
             "append_review_comment",
             "apply_hooks_config",
             "approve_workspace_node",
             "approve_workflow_node",
-            "archive_open_session",
-            "archive_session",
             "archive_workspace_workflow_execution",
             "build_agent_edit_preview",
             "build_agent_edited_multi_edit_tool_input",
@@ -181,8 +369,6 @@ mod tests {
             "build_review_thread_handoff",
             "cancel_agent_queued_turn",
             "check_pr_provider_status",
-            "close_agent_session",
-            "close_session",
             "close_workspace_node",
             "compute_hidden_ranges",
             "compute_hidden_ranges_from_content",
@@ -190,6 +376,7 @@ mod tests {
             "compute_markdown_inline_chunks",
             "compute_markdown_split_rows",
             "compute_visible_markdown_blocks",
+            "compact_application_shutdown_details",
             "create_review_thread",
             "create_session",
             "create_workspace_session",
@@ -210,7 +397,15 @@ mod tests {
             "fork_session",
             "gc_ptys_for_worktree",
             "generate_hooks_config",
+            "get_agent_session_display_window",
             "get_agent_session_notice",
+            "list_agent_session_feedback",
+            "retry_agent_session_feedback",
+            "get_recovery_action",
+            "get_stop_operation",
+            "get_application_quit_operation",
+            "get_application_startup_outcome",
+            "get_shutdown_plan",
             "get_app_settings",
             "get_automation_config_dir",
             "get_binary_file_at_branch_base",
@@ -222,6 +417,7 @@ mod tests {
             "get_cached_pr_status",
             "get_crash_reporting_enabled",
             "get_current_branch",
+            "get_application_shutdown",
             "get_cwd",
             "get_default_branch",
             "get_external_editor",
@@ -240,6 +436,7 @@ mod tests {
             "get_notify_config",
             "get_or_spawn_pty",
             "get_performance_telemetry_enabled",
+            "get_pending_recovery_snapshot",
             "get_pty_buffered_output",
             "get_relative_path",
             "get_releash_base",
@@ -252,9 +449,11 @@ mod tests {
             "get_session",
             "get_session_attachment",
             "get_session_page",
+            "get_session_lifecycle_operation",
             "get_session_status",
             "get_session_tool_output",
             "get_staged_content",
+            "get_agent_send_operation",
             "get_status_diff_stats",
             "get_status_diff_stats_snapshot",
             "get_workflow",
@@ -275,7 +474,6 @@ mod tests {
             "git_unstage",
             "git_unstage_review_group",
             "init_agent_sessions",
-            "interrupt_agent_query",
             "kill_pty",
             "kill_ptys_by_worktree",
             "list_agent_backends",
@@ -286,6 +484,8 @@ mod tests {
             "list_facet_summaries",
             "list_facets",
             "list_mentionable_files",
+            "list_pending_agent_attempts",
+            "list_pending_agent_recovery",
             "list_pty_sessions",
             "list_review_threads",
             "list_session_statuses",
@@ -310,18 +510,25 @@ mod tests {
             "query_worktree_node_statuses",
             "sync_worktree_node_statuses",
             "query_notion_tasks",
+            "quit_after_startup_failure",
             "reconcile_pty_sessions",
             "register_active_terminal",
             "remove_repo_path",
             "remove_worktree",
             "render_facet_preview",
             "report_agent_permission_request_observed",
+            "get_agent_permission_response_operation",
             "report_frontend_error",
             "report_mounted_xterm_count",
             "report_usage_event",
+            "resolve_pending_recovery_action",
+            "stop_agent_session",
+            "request_application_quit",
+            "request_session_lifecycle",
             "resize_pty",
             "resolve_active_execution_by_worktree",
             "resolve_review_thread",
+            "resolve_shutdown_target_action",
             "resolve_worktree_by_execution",
             "resume_workflow",
             "resume_agent_queue",
@@ -343,9 +550,7 @@ mod tests {
             "set_branch_base",
             "set_menu_items_enabled",
             "set_releash_base",
-            "set_session_backend",
             "set_session_title",
-            "start_agent_session",
             "start_git_dir_watching",
             "start_watching",
             "start_workflow",
@@ -354,12 +559,12 @@ mod tests {
             "sync_mentions_with_text",
             "unregister_active_terminal",
             "update_agent_session_notice",
+            "dismiss_agent_session_feedback",
             "update_app_settings",
             "update_crash_reporting",
             "update_external_editor",
             "update_notify_config",
             "update_performance_telemetry",
-            "update_session_agent_info",
             "update_webhook_url",
             "update_workflow_config",
             "validate_notion_config",

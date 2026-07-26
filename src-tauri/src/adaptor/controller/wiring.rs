@@ -8,14 +8,12 @@
 //! repository / code / agent_session / workflow などの usecase builder を一元的に束ね、
 //! query service や gateway 協力者は対応する usecase の構築時に注入する。
 
-use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::adaptor::gateway::agent_session::{
-    FileSessionStorage, GitAgentPromptSuggestionGateway,
-    RegistryAgentSessionBackendLifecycleGateway, RuntimeAgentSessionCloser,
-};
+#[cfg(test)]
+use crate::adaptor::gateway::agent_session::FileSessionStorage;
+use crate::adaptor::gateway::agent_session::GitAgentPromptSuggestionGateway;
 use crate::adaptor::gateway::app_config::{read_config_if_exists, AppConfig, ReleashConfig};
 use crate::adaptor::gateway::code::branch_base::BranchBaseResolverGateway;
 use crate::adaptor::gateway::code::branch_diff::BranchDiffGateway;
@@ -28,6 +26,9 @@ use crate::adaptor::gateway::comment::{
     FileReviewEventStore, SystemReviewClock, UuidReviewIdGenerator,
 };
 use crate::adaptor::gateway::git_host::{GitHubGitHostGateway, InMemoryTtlCache};
+#[cfg(not(test))]
+use crate::adaptor::gateway::local_event_store::read_only::LocalEventReadStore;
+use crate::adaptor::gateway::local_event_store::LocalEventStore;
 #[cfg(test)]
 use crate::adaptor::gateway::pty_session::backend_impl::PtySessionRuntimeGateway;
 use crate::adaptor::gateway::repository::branch::BranchGateway;
@@ -37,13 +38,10 @@ use crate::adaptor::gateway::repository::log::LogGateway;
 use crate::adaptor::gateway::repository::status::StatusGateway;
 use crate::adaptor::gateway::repository::util::RepoLocatorGateway;
 use crate::adaptor::gateway::repository::worktree::WorktreeGateway;
-#[cfg(test)]
+use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
 use crate::adaptor::gateway::workflow::{
-    EmptySecretSourceGateway, NoopWorkflowExternalEditorGateway, PassthroughManagedWorktreeGateway,
-};
-use crate::adaptor::gateway::workflow::{
-    RepoPathsManagedWorktreeGateway, RepositoryManagedWorktreeGateway,
-    StoredWorkspaceNodeSessionCloseGateway, StoredWorkspaceSessionGateway,
+    DurableWorkspaceNodeSessionCloseGateway, RepoPathsManagedWorktreeGateway,
+    RepositoryManagedWorktreeGateway, StoredWorkspaceSessionGateway,
     TauriNodeExecutionLifecycleGateway, TauriWorkflowExternalEditorGateway,
     TauriWorkflowRuntimeCommandGateway, TauriWorkflowRuntimeCommandGatewayDeps,
     WorkflowConfigPathFileGateway, WorkflowDefinitionFileRepository,
@@ -52,12 +50,18 @@ use crate::adaptor::gateway::workflow::{
     WorkflowExecutionFileRepository, WorkflowExecutionProjectionLogRepository,
     WorkflowFacetFileRepository, WorkflowSecretSourceConfigGateway,
 };
+#[cfg(test)]
+use crate::adaptor::gateway::workflow::{
+    EmptySecretSourceGateway, NoopWorkflowExternalEditorGateway, PassthroughManagedWorktreeGateway,
+};
 use crate::domain::app_config::{AgentConfigRepository, ConfigRepository, ConfigSecretRepository};
 use crate::domain::git_host::{CacheTtl, IssueInfo, PrStatus};
+use crate::domain::local_event::LocalEventTransactionRepository;
 use crate::domain::workflow::{ManagedWorktreeGateway, SecretSourceGateway};
 use crate::infrastructure::agent_session::{
     claude::ClaudeBackend as NewClaudeBackend, codex::CodexBackend as NewCodexBackend,
 };
+use crate::usecase::agent_session::operation::SessionLifecycleOperationUsecase;
 use crate::usecase::agent_session::runtime::AgentSessionRuntimeUsecase;
 use crate::usecase::agent_session::session::{
     AgentPromptSuggestionUsecase, OpenTabRegistry, SessionReaderPort, SessionStore,
@@ -156,8 +160,35 @@ pub(crate) fn build_pty_session_read_usecase_for_tests() -> PtySessionReadUsecas
     PtySessionReadUsecase::new(Arc::new(PtySessionRuntimeGateway::default()))
 }
 
+#[cfg(test)]
 pub(crate) fn build_session_store() -> SessionStore {
     SessionStore::new(Arc::new(FileSessionStorage::default()))
+}
+
+#[cfg(not(test))]
+pub(crate) fn build_canonical_session_read_store(
+    data_dir: impl Into<PathBuf>,
+) -> Result<SessionStore, String> {
+    let data_dir = data_dir.into();
+    let local_event_store = LocalEventReadStore::open(&data_dir)?;
+    let repository: Arc<dyn LocalEventTransactionRepository> = local_event_store.clone();
+    Ok(SessionStore::new_canonical(
+        repository,
+        local_event_store.installation_id().to_string(),
+        Arc::new(
+            crate::adaptor::gateway::agent_session::session_storage::AgentSessionProjectionCodecV1,
+        ),
+    ))
+}
+
+#[derive(Clone)]
+enum WorkflowReadComposition {
+    #[cfg(test)]
+    Legacy,
+    Canonical {
+        repository: Arc<dyn LocalEventTransactionRepository>,
+        installation_id: String,
+    },
 }
 
 pub(crate) fn build_agent_prompt_suggestion_usecase(
@@ -175,21 +206,15 @@ pub(crate) fn build_review_comment_usecase() -> ReviewCommentUsecase {
 
 pub(crate) fn build_stored_session_lifecycle_usecase(
     session_store: Arc<SessionStore>,
-    registry: Arc<crate::usecase::agent_session::backend_registry::AgentBackendRegistry>,
-    runtime: Arc<AgentSessionRuntimeUsecase>,
+    _registry: Arc<crate::usecase::agent_session::backend_registry::AgentBackendRegistry>,
+    _runtime: Arc<AgentSessionRuntimeUsecase>,
     workflow_node_restorer: Arc<NodeExecutionLifecycleUsecase>,
     notice_usecase: Arc<crate::usecase::agent_session::notice::AgentSessionNoticeUsecase>,
 ) -> StoredSessionLifecycleUsecase {
     let workflow_node_restorer = Arc::new(WorkflowNodeSessionRestorerAdapter {
         lifecycle: workflow_node_restorer,
     });
-    StoredSessionLifecycleUsecase::new(
-        session_store,
-        Arc::new(RegistryAgentSessionBackendLifecycleGateway::new(registry)),
-        Arc::new(RuntimeAgentSessionCloser::new(runtime)),
-        workflow_node_restorer,
-        notice_usecase,
-    )
+    StoredSessionLifecycleUsecase::new(session_store, workflow_node_restorer, notice_usecase)
 }
 
 struct WorkflowNodeSessionRestorerAdapter {
@@ -210,28 +235,19 @@ impl WorkflowNodeSessionRestorer for WorkflowNodeSessionRestorerAdapter {
                 crate::adaptor::controller::command::workflow::session_errors::workflow_node_tab_operation_failed()
             })
     }
-
-    async fn try_close_tab(&self, session_id: &str) -> Result<Option<String>, String> {
-        self.lifecycle
-            .close_tab_target(session_id)
-            .await
-            .map(|target| target.map(|target| target.worktree_path))
-            .map_err(|error| {
-                log::debug!("failed to close workflow node session tab for {session_id}: {error}");
-                crate::adaptor::controller::command::workflow::session_errors::workflow_node_tab_operation_failed()
-            })
-    }
 }
 
 pub(crate) fn build_workspace_node_command_usecase(
     resolver: Arc<dyn WorkspaceNodeActionResolver>,
-    lifecycle: Arc<StoredSessionLifecycleUsecase>,
+    lifecycle: Arc<SessionLifecycleOperationUsecase>,
+    session_store: Arc<SessionStore>,
     data_dir: impl Into<PathBuf>,
 ) -> WorkspaceNodeCommandUsecase {
     WorkspaceNodeCommandUsecase::new(
         resolver,
-        Arc::new(StoredWorkspaceNodeSessionCloseGateway::new(
+        Arc::new(DurableWorkspaceNodeSessionCloseGateway::new(
             lifecycle,
+            session_store,
             data_dir.into(),
         )),
     )
@@ -294,25 +310,6 @@ pub(crate) fn build_workflow_usecase_with_repository_worktrees<R: tauri::Runtime
     session_store: Arc<SessionStore>,
     app: tauri::AppHandle<R>,
 ) -> WorkflowUsecase {
-    build_workflow_services_with_repository_worktrees(
-        data_dir,
-        repository_usecase,
-        app_config,
-        config_secrets,
-        session_store,
-        app,
-    )
-    .0
-}
-
-pub(crate) fn build_workflow_services_with_repository_worktrees<R: tauri::Runtime + 'static>(
-    data_dir: impl Into<std::path::PathBuf>,
-    repository_usecase: Arc<RepositoryUsecase>,
-    app_config: Arc<dyn ConfigRepository>,
-    config_secrets: Arc<dyn ConfigSecretRepository>,
-    session_store: Arc<SessionStore>,
-    app: tauri::AppHandle<R>,
-) -> (WorkflowUsecase, WorkspaceTreeQueryService) {
     let data_dir = data_dir.into();
     let sessions = Arc::new(StoredWorkspaceSessionGateway::new(
         session_store,
@@ -327,14 +324,55 @@ pub(crate) fn build_workflow_services_with_repository_worktrees<R: tauri::Runtim
         Arc::new(TauriWorkflowExternalEditorGateway::new(app, app_config)),
         Arc::new(WorkflowSecretSourceConfigGateway::new(config_secrets)),
         sessions,
+        WorkflowReadComposition::Legacy,
+    )
+    .0
+}
+
+pub(crate) fn build_workflow_services_with_repository_worktrees<R: tauri::Runtime + 'static>(
+    data_dir: impl Into<std::path::PathBuf>,
+    repository_usecase: Arc<RepositoryUsecase>,
+    app_config: Arc<dyn ConfigRepository>,
+    config_secrets: Arc<dyn ConfigSecretRepository>,
+    session_store: Arc<SessionStore>,
+    app: tauri::AppHandle<R>,
+    local_event_store: Arc<LocalEventStore>,
+) -> (WorkflowUsecase, WorkspaceTreeQueryService) {
+    let data_dir = data_dir.into();
+    let sessions = Arc::new(StoredWorkspaceSessionGateway::new(
+        session_store,
+        data_dir.clone(),
+    ));
+    let repository: Arc<dyn LocalEventTransactionRepository> = local_event_store.clone();
+    let installation_id = local_event_store.installation_id().to_string();
+    build_workflow_services_with_gateways(
+        data_dir,
+        Arc::new(RepositoryManagedWorktreeGateway::new(
+            repository_usecase,
+            app_config.clone(),
+        )),
+        Arc::new(TauriWorkflowExternalEditorGateway::new(app, app_config)),
+        Arc::new(WorkflowSecretSourceConfigGateway::new(config_secrets)),
+        sessions,
+        WorkflowReadComposition::Canonical {
+            repository,
+            installation_id,
+        },
     )
 }
 
-pub(crate) fn build_file_direct_workflow_read_usecase(
+pub(crate) fn build_canonical_workflow_read_usecase(
     data_dir: impl Into<std::path::PathBuf>,
     workflows_dir: Option<std::path::PathBuf>,
 ) -> Result<WorkflowReadUsecase, String> {
     let data_dir = data_dir.into();
+    #[cfg(not(test))]
+    let local_event_store = LocalEventReadStore::open(&data_dir)?;
+    #[cfg(not(test))]
+    let local_event_repository: Arc<dyn LocalEventTransactionRepository> =
+        local_event_store.clone();
+    #[cfg(not(test))]
+    let installation_id = local_event_store.installation_id().to_string();
     let workflows_dir =
         workflows_dir.unwrap_or_else(WorkflowDefinitionFileRepository::default_workflows_dir);
     let config_path = data_dir.join("releash.toml");
@@ -351,6 +389,11 @@ pub(crate) fn build_file_direct_workflow_read_usecase(
     let secrets: Arc<dyn SecretSourceGateway> =
         Arc::new(WorkflowSecretSourceConfigGateway::new(config_secrets));
 
+    #[cfg(not(test))]
+    let executions = Arc::new(WorkflowExecutionFileRepository::with_authority(
+        local_event_repository.clone(),
+    ));
+    #[cfg(test)]
     let executions = Arc::new(WorkflowExecutionFileRepository::new(data_dir.clone()));
     let definitions = Arc::new(WorkflowDefinitionFileRepository::new(
         workflows_dir.clone(),
@@ -361,7 +404,19 @@ pub(crate) fn build_file_direct_workflow_read_usecase(
         workflows_dir.clone(),
     ));
     let facets = Arc::new(WorkflowFacetFileRepository::new(workflows_dir));
+    #[cfg(not(test))]
+    let events = Arc::new(WorkflowEventLogRepository::with_authority(
+        local_event_repository.clone(),
+        installation_id.clone(),
+    ));
+    #[cfg(test)]
     let events = Arc::new(WorkflowEventLogRepository::new(data_dir.clone()));
+    #[cfg(not(test))]
+    let execution_projection = Arc::new(WorkflowExecutionProjectionLogRepository::with_authority(
+        local_event_repository,
+        installation_id,
+    ));
+    #[cfg(test)]
     let execution_projection = Arc::new(WorkflowExecutionProjectionLogRepository::new(data_dir));
     let query = WorkflowQueryService::new(
         executions,
@@ -382,7 +437,15 @@ fn build_workflow_usecase_with_gateways(
     secrets: Arc<dyn SecretSourceGateway>,
     sessions: Arc<dyn WorkspaceSessionGateway>,
 ) -> WorkflowUsecase {
-    build_workflow_services_with_gateways(data_dir, worktrees, editors, secrets, sessions).0
+    build_workflow_services_with_gateways(
+        data_dir,
+        worktrees,
+        editors,
+        secrets,
+        sessions,
+        WorkflowReadComposition::Legacy,
+    )
+    .0
 }
 
 fn build_workflow_services_with_gateways(
@@ -391,11 +454,18 @@ fn build_workflow_services_with_gateways(
     editors: Arc<dyn ExternalEditorGateway>,
     secrets: Arc<dyn SecretSourceGateway>,
     sessions: Arc<dyn WorkspaceSessionGateway>,
+    read_composition: WorkflowReadComposition,
 ) -> (WorkflowUsecase, WorkspaceTreeQueryService) {
     let data_dir = data_dir.into();
     let workflows_dir = WorkflowDefinitionFileRepository::default_workflows_dir();
     let facets_base_dir = workflows_dir.clone();
-    let executions = Arc::new(WorkflowExecutionFileRepository::new(data_dir.clone()));
+    let executions = Arc::new(match &read_composition {
+        #[cfg(test)]
+        WorkflowReadComposition::Legacy => WorkflowExecutionFileRepository::new(data_dir.clone()),
+        WorkflowReadComposition::Canonical { repository, .. } => {
+            WorkflowExecutionFileRepository::with_authority(repository.clone())
+        }
+    });
     let execution_archives = Arc::new(WorkflowExecutionArchiveFileRepository::new(
         data_dir.clone(),
     ));
@@ -408,8 +478,24 @@ fn build_workflow_services_with_gateways(
         facets_base_dir.clone(),
     ));
     let facets = Arc::new(WorkflowFacetFileRepository::new(facets_base_dir.clone()));
-    let events = Arc::new(WorkflowEventLogRepository::new(data_dir.clone()));
-    let execution_projection = Arc::new(WorkflowExecutionProjectionLogRepository::new(data_dir));
+    let events = Arc::new(match &read_composition {
+        #[cfg(test)]
+        WorkflowReadComposition::Legacy => WorkflowEventLogRepository::new(data_dir.clone()),
+        WorkflowReadComposition::Canonical {
+            repository,
+            installation_id,
+        } => {
+            WorkflowEventLogRepository::with_authority(repository.clone(), installation_id.clone())
+        }
+    });
+    let execution_projection = Arc::new(match read_composition {
+        #[cfg(test)]
+        WorkflowReadComposition::Legacy => WorkflowExecutionProjectionLogRepository::new(data_dir),
+        WorkflowReadComposition::Canonical {
+            repository,
+            installation_id,
+        } => WorkflowExecutionProjectionLogRepository::with_authority(repository, installation_id),
+    });
     let diagnostics = Arc::new(WorkflowDiagnosticsFileGateway::new(
         workflows_dir.clone(),
         facets_base_dir,
@@ -444,10 +530,10 @@ fn build_workflow_services_with_gateways(
 pub(crate) fn build_workflow_runtime_usecase(
     app: tauri::AppHandle,
     deps: TauriWorkflowRuntimeCommandGatewayDeps,
-) -> WorkflowRuntimeUsecase {
-    WorkflowRuntimeUsecase::new(Arc::new(
-        TauriWorkflowRuntimeCommandGateway::new_with_default_engine(app, deps),
-    ))
+) -> Result<WorkflowRuntimeUsecase, WorkflowEngineError> {
+    Ok(WorkflowRuntimeUsecase::new(Arc::new(
+        TauriWorkflowRuntimeCommandGateway::new_with_default_engine(app, deps)?,
+    )))
 }
 
 pub(crate) fn build_node_execution_lifecycle_usecase(
@@ -462,90 +548,30 @@ pub(crate) fn build_node_execution_lifecycle_usecase(
         agent_runtime,
         open_tabs,
     ));
-    NodeExecutionLifecycleUsecase::new(gateway.clone(), gateway)
+    NodeExecutionLifecycleUsecase::new(gateway)
 }
 
+/// Runs issue #1372 maintenance only after the fixed SQLite authority is
+/// admitted. Inventory collection and sweeping are both blocking filesystem
+/// work, while canonical runtime-protection is read asynchronously from the
+/// already-open SQLite repository.
+///
+/// The GC inventory intentionally has no Session/Workflow file-store input.
+/// Active Session and running Workflow protection comes from the canonical
+/// the bounded `CanonicalRuntimeOwnerSnapshot`, so workspace-state/review
+/// retention remains functional without violating issue #1499 B-070 or
+/// composing independently snapshotted pages.
 pub(crate) fn spawn_startup_app_data_gc(
-    app_data_dir: PathBuf,
+    composition: crate::adaptor::controller::app_data_composition::ProductionAppDataComposition,
     shared_repo_paths: crate::adaptor::gateway::repository::repo_paths::SharedRepoPaths,
+    repository: Arc<dyn crate::domain::local_event::LocalEventTransactionRepository>,
 ) {
-    spawn_startup_gc_with(
-        move || {
-            let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                let fs = crate::adaptor::gateway::app_data_gc::StdGcFileSystem;
-                let archive_pruner = crate::adaptor::gateway::app_data_gc::StdWorkflowArchivePruner;
-                let revalidation_reader =
-                    crate::adaptor::gateway::app_data_gc::StdGcRevalidationReader;
-                let request = crate::adaptor::gateway::app_data_gc::build_startup_gc_request(
-                    app_data_dir,
-                    shared_repo_paths,
-                );
-                crate::usecase::app_data_gc::run_startup_gc(
-                    request,
-                    &fs,
-                    &archive_pruner,
-                    &revalidation_reader,
-                )
-            }));
-            if result.is_err() {
-                log::error!("app data gc task panicked");
-            }
-        },
-        |gc| {
-            tauri::async_runtime::spawn_blocking(gc);
-        },
-    );
-}
-
-fn spawn_startup_gc_with<F, S>(gc: F, spawn: S)
-where
-    F: FnOnce() + Send + 'static,
-    S: FnOnce(F),
-{
-    spawn(gc);
-}
-
-#[cfg(test)]
-mod startup_gc_spawn_tests {
-    use super::spawn_startup_gc_with;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{mpsc, Arc};
-    use std::time::{Duration, Instant};
-
-    #[test]
-    fn startup_gc_runner_spawns_once() {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let calls_for_spawn = calls.clone();
-
-        spawn_startup_gc_with(
-            || panic!("gc body should not be run by this spawn stub"),
-            move |gc| {
-                calls_for_spawn.fetch_add(1, Ordering::SeqCst);
-                let _ = gc;
-            },
-        );
-
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn startup_gc_runner_does_not_wait_for_gc_body() {
-        let (started_tx, started_rx) = mpsc::channel();
-        let (release_tx, release_rx) = mpsc::channel();
-        let started = Instant::now();
-
-        spawn_startup_gc_with(
-            move || {
-                started_tx.send(()).unwrap();
-                release_rx.recv().unwrap();
-            },
-            |gc| {
-                std::thread::spawn(gc);
-            },
-        );
-
-        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        assert!(started.elapsed() < Duration::from_millis(500));
-        release_tx.send(()).unwrap();
-    }
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = composition
+            .run_startup_gc_pass(shared_repo_paths, repository)
+            .await
+        {
+            log::error!("{error}");
+        }
+    });
 }

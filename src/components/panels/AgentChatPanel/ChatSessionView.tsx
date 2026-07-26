@@ -22,6 +22,8 @@ import React, {
 } from "react";
 import type { OlderMessageEvictionOptions } from "@/hooks/useAgentChat";
 import type { DropZoneType } from "@/hooks/useNativeFileDrop";
+import { useOperationSupervision } from "@/hooks/useOperationSupervision";
+import type { SessionFeedbackEntry } from "@/hooks/useSessionStore";
 import type {
 	AgentEditorContext,
 	AgentEditorSelection,
@@ -54,6 +56,7 @@ import type { MessageInputHandle } from "./MessageInput";
 import { MessageInput } from "./MessageInput";
 import { MODES } from "./ModeSelector";
 import { PermissionDialog } from "./PermissionDialog";
+import { SessionFeedbackBanners } from "./SessionFeedbackBanners";
 import { ShimmerPlaceholder } from "./ShimmerPlaceholder";
 import {
 	AgentMarkdown,
@@ -649,6 +652,11 @@ export interface ChatSessionViewProps {
 	queuePaused: boolean;
 	stallObservation?: AgentStallObservation | null;
 	notice?: SessionNotice | null;
+	feedback?: SessionFeedbackEntry[];
+	onDismissFeedback?: (entry: SessionFeedbackEntry) => void | Promise<void>;
+	onRetryFeedback?: (entry: SessionFeedbackEntry) => void | Promise<void>;
+	hasMoreFeedback?: boolean;
+	onLoadMoreFeedback?: () => void | Promise<void>;
 	runtimeSlashCommands?: SlashCommand[];
 	selectedBackendId: string | null;
 	canChangeBackend: boolean;
@@ -723,6 +731,11 @@ export function ChatSessionView({
 	queuePaused,
 	stallObservation,
 	notice,
+	feedback = [],
+	onDismissFeedback,
+	onRetryFeedback,
+	hasMoreFeedback = false,
+	onLoadMoreFeedback,
 	runtimeSlashCommands = [],
 	selectedBackendId,
 	canChangeBackend,
@@ -746,6 +759,15 @@ export function ChatSessionView({
 	sendMessageRef,
 }: ChatSessionViewProps) {
 	useActivityLogSessionScope(session.id);
+	const supervision = useOperationSupervision(session.id);
+	const permissionResponsesRequiringReconciliation = useMemo(
+		() =>
+			supervision.state.permissionResponseOperations.filter(
+				(operation) =>
+					operation.latest_status.type === "reconciliation_required",
+			),
+		[supervision.state.permissionResponseOperations],
+	);
 	const messageInputRef = useRef<MessageInputHandle>(null);
 	const [isFileDragOver, setIsFileDragOver] = useState(false);
 	const [copyState, setCopyState] = useState<"idle" | "copied" | "error">(
@@ -1400,6 +1422,34 @@ export function ChatSessionView({
 			onDragOver={handleFileDragOver}
 			onDragLeave={handleFileDragLeave}
 		>
+			{(permissionResponsesRequiringReconciliation.length > 0 ||
+				supervision.state.recovery.length > 0) && (
+				<div className="border-b border-border bg-muted/40 px-3 py-2 text-xs">
+					{permissionResponsesRequiringReconciliation.map((operation) => (
+						<div key={operation.receipt.operation_id}>
+							Accepted permission response requires reconciliation:{" "}
+							{operation.receipt.operation_id}
+						</div>
+					))}
+					{supervision.state.recovery.map((entry) => (
+						<div key={entry.obligation_id} className="flex items-center gap-2">
+							<span>{entry.safe_label}</span>
+							{entry.actions.map((action) => (
+								<button
+									type="button"
+									key={action}
+									className="rounded border border-border px-1.5 py-0.5"
+									onClick={() =>
+										void supervision.requestRecovery(entry, action)
+									}
+								>
+									{action.replace(/_/g, " ")}
+								</button>
+							))}
+						</div>
+					))}
+				</div>
+			)}
 			{isFileDragOver && (
 				<div className="absolute inset-0 flex items-center justify-center bg-primary/10 border-2 border-dashed border-primary rounded pointer-events-none z-10">
 					<span className="text-sm font-medium text-primary bg-background/80 px-3 py-1.5 rounded">
@@ -1760,7 +1810,14 @@ export function ChatSessionView({
 						</div>
 					</div>
 				)}
-				{notice && (
+				<SessionFeedbackBanners
+					entries={feedback}
+					onDismiss={onDismissFeedback}
+					onRetry={onRetryFeedback}
+					hasMore={hasMoreFeedback}
+					onLoadMore={onLoadMoreFeedback}
+				/>
+				{feedback.length === 0 && notice && (
 					<div className="px-2 pb-2">
 						<div
 							className={
@@ -1840,6 +1897,16 @@ export function ChatSessionView({
 								</button>
 							</div>
 						))}
+					</div>
+				)}
+				{supervision.state.sendOperation?.latest_status.type ===
+					"reconciliation_required" && (
+					<div
+						className="mx-3 mb-2 rounded border border-border bg-muted/40 px-2 py-1.5 text-xs"
+						data-testid="send-operation-reconciliation"
+					>
+						Accepted send requires reconciliation:{" "}
+						{supervision.state.sendOperation.receipt.operation_id}
 					</div>
 				)}
 				<TodoListFooter snapshot={todoListSnapshot} />

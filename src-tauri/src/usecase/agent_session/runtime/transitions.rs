@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 
 use tokio::sync::{watch, Mutex, OwnedMutexGuard};
 
+#[cfg(test)]
 use crate::domain::agent_session::entities::{
     InterruptReason as DomainInterruptReason, TurnResult,
 };
@@ -13,11 +14,17 @@ use crate::usecase::agent_session::status::TurnPhase;
 
 use super::session_state::{RuntimeSessionPhase, RuntimeSessionState};
 use super::usecase::{
-    append_session_events_blocking, complete_turn, emit_session_state_change, required_backend_id,
-    run_runtime_event_post_actions, start_next_queued_turn, turn_completion_post_actions,
-    AgentRuntimeError, AgentSessionRuntimeUsecase, RuntimeContext, StateChange,
+    acquire_session_control_after_recovery, append_user_session_events_blocking,
+    emit_session_state_change, ensure_backend_recovery_operation_allowed, required_backend_id,
+    start_next_queued_turn, AgentRuntimeError, AgentSessionRuntimeUsecase, StateChange,
+};
+#[cfg(test)]
+use super::usecase::{
+    append_session_events_blocking, complete_turn, run_runtime_event_post_actions,
+    turn_completion_post_actions, RuntimeContext,
 };
 
+#[cfg(test)]
 pub(super) const INTERRUPT_FORCE_FINALIZE_DELAY: std::time::Duration =
     std::time::Duration::from_secs(10);
 
@@ -204,6 +211,7 @@ impl SessionCommandLocks {
         }
     }
 
+    #[cfg(test)]
     pub(super) async fn invalidate(&self, session_id: &str) {
         let previous = {
             let mut entries = self.entries.lock().await;
@@ -348,110 +356,233 @@ impl Drop for TestSessionRuntimeLockOwnerReservation {
 }
 
 impl AgentSessionRuntimeUsecase {
-    pub async fn interrupt(&self, session_id: &str) -> Result<(), AgentRuntimeError> {
-        let transition_guard = self.ctx.transitions.acquire(session_id).await;
-        let (runtime, generation, repeated, pause_accepted_at, turn_id) = {
+    /// Fence the accepted turn in process memory, then execute only the
+    /// provider-side interrupt effect. Durable Stop admission owns all
+    /// acceptance/terminal mutations and calls this after its CAS commit.
+    ///
+    /// The fence must be installed before provider I/O: a late
+    /// `BackendSessionCleared` from the old runtime must not reopen and submit
+    /// the accepted turn after Stop owns it.
+    pub(crate) async fn interrupt_provider_effect_after_stop_acceptance(
+        &self,
+        session_id: &str,
+        turn_id: u64,
+    ) -> Result<(), AgentRuntimeError> {
+        let durable_queue_paused_at = self
+            .ctx
+            .session_store
+            .load_queue_paused_at(&self.ctx.data_dir, session_id);
+        let projected_queue_paused_at = durable_queue_paused_at.as_ref().ok().copied().flatten();
+        let runtime = {
+            let _runtime_event_guard = self.ctx.runtime_event_locks.acquire(session_id).await;
+            let _transition_guard = self.ctx.transitions.acquire(session_id).await;
             let mut sessions = self.ctx.sessions.lock().await;
             let Some(state) = sessions.get_mut(session_id) else {
                 return Ok(());
             };
-            if state.phase == RuntimeSessionPhase::Idle {
+            if state.phase == RuntimeSessionPhase::Idle || state.current_turn_id != Some(turn_id) {
                 return Ok(());
             }
-            let generation = state.generation;
-            let repeated =
-                state.interrupt_requested_generation == Some(generation) && state.queue_paused;
-            let pause_accepted_at =
-                (!repeated).then(crate::usecase::agent_session::session::now_timestamp);
-            (
-                state.runtime.clone(),
-                generation,
-                repeated,
-                pause_accepted_at,
-                state.current_turn_id.or(state.last_turn_id),
-            )
+            state.queue_paused = true;
+            state.queue_paused_at = projected_queue_paused_at
+                .or(state.queue_paused_at)
+                .or_else(|| Some(crate::usecase::agent_session::session::now_timestamp()));
+            state.interrupt_requested_generation = Some(state.generation);
+            state.runtime.clone()
         };
-
-        if repeated {
-            drop(transition_guard);
-            force_finalize_interrupted_turn(&self.ctx, session_id, generation).await;
-        } else {
-            let at = pause_accepted_at.expect("new interrupt acceptance timestamp");
-            let turn_id = turn_id.ok_or_else(|| {
-                AgentRuntimeError::Other(format!(
-                    "Cannot durably accept interrupt without a current turn id for session {session_id}"
-                ))
-            })?;
-            append_session_events_blocking(
-                &self.ctx,
-                session_id,
-                vec![
-                    AgentSessionEvent::TurnInterruptRequested { turn_id, at },
-                    AgentSessionEvent::QueuePaused { at },
-                ],
-            )
-            .await
-            .map_err(AgentRuntimeError::Other)?;
-            let (phase, pending_permission, permission_revision) = {
-                let mut sessions = self.ctx.sessions.lock().await;
-                let state = sessions.get_mut(session_id).ok_or_else(|| {
-                    AgentRuntimeError::Other(format!(
-                        "Runtime state disappeared while accepting interrupt for session {session_id}"
-                    ))
-                })?;
-                if state.phase == RuntimeSessionPhase::Idle || state.generation != generation {
-                    return Err(AgentRuntimeError::Other(format!(
-                        "Turn changed while accepting interrupt for session {session_id}"
-                    )));
-                }
-                state.queue_paused = true;
-                state.queue_paused_at = Some(at);
-                state.interrupt_requested_generation = Some(generation);
-                (
-                    TurnPhase::from(state.phase),
-                    state.pending_permission_request.clone(),
-                    state.pending_permission_state_revision,
-                )
-            };
-            spawn_interrupt_watchdog_task(
-                &self.ctx,
-                session_id.to_string(),
-                generation,
-                INTERRUPT_FORCE_FINALIZE_DELAY,
-            );
-            emit_session_state_change(
-                &self.ctx.session_store,
-                &self.ctx.notifier,
-                &self.ctx.status_center,
-                &self.ctx.status_notifier,
-                &self.ctx.data_dir,
-                session_id,
-                StateChange {
-                    turn_phase: phase,
-                    queue_paused: Some(true),
-                    pending_permission_request: pending_permission,
-                    pending_permission_state_revision: Some(permission_revision),
-                    exit_code: None,
-                    completed_at: None,
-                    interrupted: false,
-                    session_state: None,
-                },
-            );
-            drop(transition_guard);
-        }
-
-        if !repeated {
-            if let Some(runtime) = runtime {
-                if let Err(error) = runtime.interrupt().await {
-                    log::warn!("agent backend interrupt failed for {session_id}: {error}");
-                }
-            }
+        durable_queue_paused_at.map_err(AgentRuntimeError::Other)?;
+        if let Some(runtime) = runtime {
+            runtime.interrupt().await?;
         }
         Ok(())
     }
 
+    /// Converge the process-local runtime only after the durable Stop Timeout
+    /// terminal has won. The runtime epoch fences the detached provider event
+    /// pump, while the exact active turn check prevents a delayed cleanup from
+    /// closing a newer turn.
+    pub(crate) async fn seal_stop_timeout_terminal(&self, session_id: &str, turn_id: u64) {
+        let runtime = {
+            let _runtime_event_guard = self.ctx.runtime_event_locks.acquire(session_id).await;
+            let _transition_guard = self.ctx.transitions.acquire(session_id).await;
+            let mut sessions = self.ctx.sessions.lock().await;
+            let Some(state) = sessions.get_mut(session_id) else {
+                return;
+            };
+            if state.phase == RuntimeSessionPhase::Idle || state.current_turn_id != Some(turn_id) {
+                return;
+            }
+
+            let runtime = state.runtime.take();
+            state.bump_runtime_epoch();
+            state.rollback_started_turn();
+            state.terminal_turn_id = Some(turn_id);
+            state.interrupt_requested_generation = None;
+            runtime
+        };
+        if let Some(runtime) = runtime {
+            runtime.close().await;
+        }
+    }
+
+    pub async fn interrupt(&self, session_id: &str) -> Result<(), AgentRuntimeError> {
+        let durable_driver = self
+            .ctx
+            .durable_stop_driver
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        if let Some(driver) = durable_driver {
+            let meta = self
+                .ctx
+                .session_store
+                .get_session_meta(&self.ctx.data_dir, session_id)
+                .map_err(AgentRuntimeError::Other)?
+                .ok_or_else(|| {
+                    AgentRuntimeError::Other(format!("Session not found: {session_id}"))
+                })?;
+            let turn_id = {
+                let sessions = self.ctx.sessions.lock().await;
+                let Some(state) = sessions.get(session_id) else {
+                    return Ok(());
+                };
+                if state.phase == RuntimeSessionPhase::Idle {
+                    return Ok(());
+                }
+                state.current_turn_id.ok_or_else(|| {
+                    AgentRuntimeError::Other(format!(
+                        "Cannot durably stop a session without an active turn id: {session_id}"
+                    ))
+                })?
+            };
+            return driver
+                .stop(session_id, turn_id, meta.state_revision)
+                .await
+                .map_err(AgentRuntimeError::Other);
+        }
+        #[cfg(not(test))]
+        return Err(AgentRuntimeError::Other(
+            "Durable Stop driver is not configured".to_string(),
+        ));
+
+        #[cfg(test)]
+        {
+            let transition_guard = self.ctx.transitions.acquire(session_id).await;
+            let (runtime, generation, repeated, pause_accepted_at, turn_id) = {
+                let mut sessions = self.ctx.sessions.lock().await;
+                let Some(state) = sessions.get_mut(session_id) else {
+                    return Ok(());
+                };
+                if state.phase == RuntimeSessionPhase::Idle {
+                    return Ok(());
+                }
+                let generation = state.generation;
+                let repeated =
+                    state.interrupt_requested_generation == Some(generation) && state.queue_paused;
+                let pause_accepted_at =
+                    (!repeated).then(crate::usecase::agent_session::session::now_timestamp);
+                (
+                    state.runtime.clone(),
+                    generation,
+                    repeated,
+                    pause_accepted_at,
+                    state.current_turn_id,
+                )
+            };
+
+            if repeated {
+                drop(transition_guard);
+                force_finalize_interrupted_turn(&self.ctx, session_id, generation).await;
+            } else {
+                let at = pause_accepted_at.expect("new interrupt acceptance timestamp");
+                let turn_id = turn_id.ok_or_else(|| {
+                AgentRuntimeError::Other(format!(
+                    "Cannot durably accept interrupt without a current turn id for session {session_id}"
+                ))
+            })?;
+                append_session_events_blocking(
+                    &self.ctx,
+                    session_id,
+                    vec![
+                        AgentSessionEvent::TurnInterruptRequested { turn_id, at },
+                        AgentSessionEvent::QueuePaused { at },
+                    ],
+                )
+                .await
+                .map_err(AgentRuntimeError::Other)?;
+                let (phase, pending_permission, permission_revision) = {
+                    let mut sessions = self.ctx.sessions.lock().await;
+                    let state = sessions.get_mut(session_id).ok_or_else(|| {
+                    AgentRuntimeError::Other(format!(
+                        "Runtime state disappeared while accepting interrupt for session {session_id}"
+                    ))
+                })?;
+                    if state.phase == RuntimeSessionPhase::Idle || state.generation != generation {
+                        return Err(AgentRuntimeError::Other(format!(
+                            "Turn changed while accepting interrupt for session {session_id}"
+                        )));
+                    }
+                    state.queue_paused = true;
+                    state.queue_paused_at = Some(at);
+                    state.interrupt_requested_generation = Some(generation);
+                    (
+                        TurnPhase::from(state.phase),
+                        state.pending_permission_request.clone(),
+                        state.pending_permission_state_revision,
+                    )
+                };
+                spawn_interrupt_watchdog_task(
+                    &self.ctx,
+                    session_id.to_string(),
+                    generation,
+                    INTERRUPT_FORCE_FINALIZE_DELAY,
+                );
+                emit_session_state_change(
+                    &self.ctx.session_store,
+                    &self.ctx.notifier,
+                    &self.ctx.status_center,
+                    &self.ctx.status_notifier,
+                    &self.ctx.data_dir,
+                    session_id,
+                    StateChange {
+                        turn_phase: phase,
+                        queue_paused: Some(true),
+                        pending_permission_request: pending_permission,
+                        pending_permission_state_revision: Some(permission_revision),
+                        exit_code: None,
+                        completed_at: None,
+                        interrupted: false,
+                        session_state: None,
+                    },
+                );
+                drop(transition_guard);
+            }
+
+            if !repeated {
+                if let Some(runtime) = runtime {
+                    if let Err(error) = runtime.interrupt().await {
+                        log::warn!("agent backend interrupt failed for {session_id}: {error}");
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+
     pub async fn resume_queue(&self, session_id: &str) -> Result<(), AgentRuntimeError> {
-        let _session_guard = self.acquire_session_lock(session_id).await;
+        let _admission_guard = self.ctx.shutdown_admission.admit()?;
+        let _session_guard = acquire_session_control_after_recovery(&self.ctx, session_id).await;
+        self.ctx
+            .session_store
+            .ensure_no_unresolved_recovery(session_id)
+            .await
+            .map_err(|failure| {
+                AgentRuntimeError::Other(format!(
+                    "unresolved recovery {} blocks queue resume: {failure}",
+                    failure.correlation_id
+                ))
+            })?;
+        ensure_backend_recovery_operation_allowed(&self.ctx, session_id)?;
         let transition_guard = self.ctx.transitions.acquire(session_id).await;
         let session = self
             .ctx
@@ -480,7 +611,7 @@ impl AgentSessionRuntimeUsecase {
             })?
         };
         let resumed_at = crate::usecase::agent_session::session::now_timestamp();
-        append_session_events_blocking(
+        append_user_session_events_blocking(
             &self.ctx,
             session_id,
             vec![AgentSessionEvent::QueueResumed {
@@ -533,6 +664,7 @@ impl AgentSessionRuntimeUsecase {
     }
 }
 
+#[cfg(test)]
 pub(super) fn spawn_interrupt_watchdog_task(
     ctx: &RuntimeContext,
     session_id: String,
@@ -547,6 +679,7 @@ pub(super) fn spawn_interrupt_watchdog_task(
     }));
 }
 
+#[cfg(test)]
 pub(super) async fn force_finalize_interrupted_turn(
     ctx: &RuntimeContext,
     session_id: &str,

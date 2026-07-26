@@ -250,6 +250,10 @@ mod tests {
         assert_eq!(stored.worktree_path, "/repo/worktree");
         assert_eq!(stored.backend_id.as_deref(), Some("claude"));
         assert_eq!(stored.selected_model.as_deref(), Some("sonnet"));
+        assert_eq!(
+            stored.state,
+            crate::usecase::agent_session::session::SessionState::Idle
+        );
     }
 
     #[test]

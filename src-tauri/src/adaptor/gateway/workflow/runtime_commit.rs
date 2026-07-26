@@ -1,6 +1,8 @@
+#[cfg(test)]
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[cfg(test)]
 use tokio::sync::Mutex;
 
 use crate::adaptor::gateway::workflow::engine_error::WorkflowEngineError;
@@ -11,7 +13,6 @@ use crate::adaptor::gateway::workflow::execution_store::{
 use crate::adaptor::gateway::workflow::runtime_state::WorkflowExecution;
 use crate::adaptor::gateway::workflow::state::{RuntimeCommitSnapshot, RuntimeExecutionState};
 use crate::domain::workflow::{ExecutionInterruptionReason, ExecutionStatus};
-use crate::usecase::agent_session::status::current_timestamp;
 
 /// `abort_workflow_by_execution_id` 内部 lookup の typed 結果。
 #[derive(Debug)]
@@ -51,6 +52,7 @@ pub(crate) struct CommandMutationRollback<'a> {
 }
 
 pub(crate) struct RequiredEventCommit<'a> {
+    pub(crate) operation_kind: crate::domain::local_event::CommitOperationKind,
     pub(crate) execution_id: &'a str,
     pub(crate) snapshot_for_commit: &'a RuntimeCommitSnapshot,
     pub(crate) snapshot_before: WorkflowExecution,
@@ -144,7 +146,7 @@ pub(crate) async fn sync_execution_store_from_snapshot(
     execution_id: &str,
     snapshot: &RuntimeCommitSnapshot,
 ) -> Result<(), WorkflowEngineError> {
-    let now = current_timestamp();
+    let now = snapshot.updated_at;
     let total_token_usage = crate::domain::workflow::TokenUsage {
         input_tokens: snapshot.total_token_usage.input_tokens,
         output_tokens: snapshot.total_token_usage.output_tokens,
@@ -243,15 +245,17 @@ pub(crate) async fn restore_execution_store_active_snapshot(
         })
 }
 
+#[cfg(test)]
 pub(crate) async fn rollback_execution_projection_after_execution_store_sync_failure(
     executions: &Mutex<HashMap<String, WorkflowExecution>>,
     execution_store: &Arc<ExecutionStore>,
     execution_id: &str,
     failed_snapshot: &RuntimeCommitSnapshot,
 ) {
-    let active_projection = execution_store
-        .list_active()
-        .await
+    let Ok(active) = execution_store.list_active().await else {
+        return;
+    };
+    let active_projection = active
         .into_iter()
         .find(|execution| execution.execution_id == execution_id);
     let Some(active_projection) = active_projection else {

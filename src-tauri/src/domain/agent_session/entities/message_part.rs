@@ -1,5 +1,7 @@
 use super::attachment::Attachment;
-use super::permission_request::PermissionRequest;
+use super::permission_request::{
+    PermissionDecision, PermissionPartStatus, PermissionRequest, PermissionRequestStatus,
+};
 use crate::domain::agent_session::value_objects::{
     JsonPayload, SystemNotificationType, TodoListItem, ToolOutputRef, ToolOutputSummary,
 };
@@ -34,6 +36,9 @@ pub enum MessagePart {
     },
     Permission {
         request: PermissionRequest,
+        status: PermissionPartStatus,
+        answers: Option<JsonPayload>,
+        parent_tool_use_id: Option<String>,
     },
     TaskStatus {
         task_tool_use_id: String,
@@ -62,6 +67,30 @@ pub enum MessagePart {
     ImageRef {
         attachment: Attachment,
     },
+}
+
+impl MessagePart {
+    /// Creates a canonical permission part from provider permission semantics.
+    pub fn permission(request: PermissionRequest) -> Self {
+        let parent_tool_use_id = request.parent_tool_use_id.clone();
+        let (status, answers) = match &request.status {
+            PermissionRequestStatus::Pending => (PermissionPartStatus::Pending, None),
+            PermissionRequestStatus::Resolved { decision, answers } => {
+                let status = match decision {
+                    PermissionDecision::Allowed => PermissionPartStatus::Allowed,
+                    PermissionDecision::Denied => PermissionPartStatus::Denied,
+                    PermissionDecision::Cancelled => PermissionPartStatus::Cancelled,
+                };
+                (status, answers.clone())
+            }
+        };
+        Self::Permission {
+            request,
+            status,
+            answers,
+            parent_tool_use_id,
+        }
+    }
 }
 
 pub fn merge_part(parts: &mut Vec<MessagePart>, incoming: MessagePart) {
@@ -122,18 +151,36 @@ pub fn merge_part(parts: &mut Vec<MessagePart>, incoming: MessagePart) {
                 summary,
             },
         ),
-        MessagePart::Permission { request } => {
+        MessagePart::Permission {
+            mut request,
+            status,
+            answers,
+            parent_tool_use_id,
+        } => {
+            request.parent_tool_use_id = parent_tool_use_id.clone();
+            request.status = permission_request_status(status, answers.clone());
             if let Some(existing) = parts.iter_mut().find(|part| {
                 matches!(
                     part,
                     MessagePart::Permission {
-                        request: existing_request
+                        request: existing_request,
+                        ..
                     } if existing_request.id == request.id
                 )
             }) {
-                *existing = MessagePart::Permission { request };
+                *existing = MessagePart::Permission {
+                    request,
+                    status,
+                    answers,
+                    parent_tool_use_id,
+                };
             } else {
-                parts.push(MessagePart::Permission { request });
+                parts.push(MessagePart::Permission {
+                    request,
+                    status,
+                    answers,
+                    parent_tool_use_id,
+                });
             }
         }
         MessagePart::TaskStatus {
@@ -236,6 +283,27 @@ pub fn merge_part(parts: &mut Vec<MessagePart>, incoming: MessagePart) {
         MessagePart::ImageRef { attachment } => {
             parts.push(MessagePart::ImageRef { attachment });
         }
+    }
+}
+
+fn permission_request_status(
+    status: PermissionPartStatus,
+    answers: Option<JsonPayload>,
+) -> PermissionRequestStatus {
+    match status {
+        PermissionPartStatus::Pending => PermissionRequestStatus::Pending,
+        PermissionPartStatus::Allowed => PermissionRequestStatus::Resolved {
+            decision: PermissionDecision::Allowed,
+            answers,
+        },
+        PermissionPartStatus::Denied => PermissionRequestStatus::Resolved {
+            decision: PermissionDecision::Denied,
+            answers,
+        },
+        PermissionPartStatus::Cancelled => PermissionRequestStatus::Resolved {
+            decision: PermissionDecision::Cancelled,
+            answers,
+        },
     }
 }
 
@@ -488,6 +556,9 @@ mod tests {
             },
             MessagePart::Permission {
                 request: pending_permission("permission-1"),
+                status: PermissionPartStatus::Pending,
+                answers: None,
+                parent_tool_use_id: None,
             },
         ];
 
@@ -505,7 +576,15 @@ mod tests {
             decision: crate::domain::agent_session::entities::PermissionDecision::Allowed,
             answers: None,
         };
-        merge_part(&mut parts, MessagePart::Permission { request: resolved });
+        merge_part(
+            &mut parts,
+            MessagePart::Permission {
+                request: resolved,
+                status: PermissionPartStatus::Allowed,
+                answers: None,
+                parent_tool_use_id: None,
+            },
+        );
 
         assert!(matches!(
             &parts[0],
@@ -521,7 +600,9 @@ mod tests {
                 request: PermissionRequest {
                     status: PermissionRequestStatus::Resolved { .. },
                     ..
-                }
+                },
+                status: PermissionPartStatus::Allowed,
+                ..
             }
         ));
     }

@@ -70,12 +70,12 @@ mod tests {
             [
                 serde_json::json!({
                     "sessionId": "session-a",
-                    "revision": 1,
+                    "revision": "1",
                     "notice": { "message": "send failed" },
                 }),
                 serde_json::json!({
                     "sessionId": "session-a",
-                    "revision": 2,
+                    "revision": "2",
                     "notice": null,
                 }),
             ]

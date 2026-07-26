@@ -4,10 +4,15 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 #[cfg(test)]
 use std::path::Path;
+#[cfg(test)]
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::adaptor::gateway::workflow::execution_store;
-use crate::adaptor::gateway::workflow::log::WorkflowEventLog;
+use crate::domain::local_event::{
+    LocalEventQuery, LocalEventQueryResult, LocalEventTransactionRepository,
+    SessionProjectionRecord, WorkflowExecutionProjectionRecord,
+};
 #[cfg(test)]
 use crate::domain::workflow::WorkflowExecutionRecord;
 use crate::domain::workflow::{
@@ -21,42 +26,150 @@ use super::mapper;
 #[cfg(test)]
 const EXECUTIONS_SUBDIR: &str = "workflow_executions";
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct WorkflowExecutionFileRepository {
-    data_dir: PathBuf,
+    source: WorkflowExecutionReadSource,
+}
+
+#[derive(Clone)]
+enum WorkflowExecutionReadSource {
+    #[cfg(test)]
+    Legacy(PathBuf),
+    Canonical(Arc<dyn LocalEventTransactionRepository>),
 }
 
 impl WorkflowExecutionFileRepository {
+    #[cfg(test)]
     pub(crate) fn new(data_dir: impl Into<PathBuf>) -> Self {
         Self {
-            data_dir: data_dir.into(),
+            source: WorkflowExecutionReadSource::Legacy(data_dir.into()),
         }
     }
 
-    pub(crate) fn scan_gc_metadata(&self) -> execution_store::WorkflowExecutionMetadataScan {
-        execution_store::scan_valid_execution_metadata(&self.data_dir)
+    pub(crate) fn with_authority(repository: Arc<dyn LocalEventTransactionRepository>) -> Self {
+        Self {
+            source: WorkflowExecutionReadSource::Canonical(repository),
+        }
     }
 
-    pub(crate) fn read_gc_metadata(
+    #[cfg(test)]
+    fn legacy_data_dir(&self) -> &Path {
+        match &self.source {
+            WorkflowExecutionReadSource::Legacy(data_dir) => data_dir,
+            WorkflowExecutionReadSource::Canonical(_) => {
+                panic!("legacy workflow metadata operation used with canonical authority")
+            }
+        }
+    }
+
+    fn query_canonical(
         &self,
-        execution_id: &str,
-    ) -> Result<Option<execution_store::WorkflowExecutionMetadata>, String> {
-        execution_store::read_valid_execution_metadata(&self.data_dir, execution_id)
+        request: LocalEventQuery,
+    ) -> Result<LocalEventQueryResult, WorkflowError> {
+        #[cfg(not(test))]
+        let WorkflowExecutionReadSource::Canonical(repository) = &self.source;
+        #[cfg(test)]
+        let repository = match &self.source {
+            WorkflowExecutionReadSource::Canonical(repository) => repository,
+            WorkflowExecutionReadSource::Legacy(_) => {
+                return Err(WorkflowError::external(
+                    "canonical workflow projection authority is not active",
+                ));
+            }
+        };
+        let repository = repository.clone();
+        std::thread::scope(|scope| {
+            scope
+                .spawn(move || {
+                    tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(|error| {
+                            WorkflowError::external(format!(
+                                "failed to create workflow projection read runtime: {error}"
+                            ))
+                        })?
+                        .block_on(repository.query(request))
+                        .map_err(|error| {
+                            WorkflowError::external(format!(
+                                "workflow SQLite projection read failed: {error}"
+                            ))
+                        })
+                })
+                .join()
+                .map_err(|_| {
+                    WorkflowError::external("workflow SQLite projection read worker panicked")
+                })?
+        })
     }
 
-    pub(crate) fn gc_delete_paths(&self, execution_id: &str) -> Vec<PathBuf> {
-        let mut paths = vec![execution_store::workflow_execution_metadata_path(
-            &self.data_dir,
-            execution_id,
-        )];
-        paths.extend(WorkflowEventLog::new(&self.data_dir).gc_delete_paths(execution_id));
-        paths.extend(workflow_artifact_paths(&self.data_dir, execution_id));
-        paths
+    fn canonical_execution(
+        &self,
+        execution_id: &WorkflowExecutionId,
+    ) -> Result<Option<execution_store::WorkflowExecutionMetadata>, WorkflowError> {
+        let result = self.query_canonical(LocalEventQuery::SessionProjectionByIdentity {
+            session_id: workflow_projection_key(execution_id.as_str()),
+        })?;
+        let LocalEventQueryResult::SessionProjectionByIdentity(projection) = result else {
+            return Err(WorkflowError::external(
+                "workflow SQLite projection returned the wrong result type",
+            ));
+        };
+        projection
+            .map(|projection| {
+                decode_canonical_workflow_projection(&projection.projection, execution_id.as_str())
+            })
+            .transpose()
+            .map(Option::flatten)
+            .map_err(WorkflowError::external)
+    }
+
+    fn canonical_executions(
+        &self,
+    ) -> Result<Vec<execution_store::WorkflowExecutionMetadata>, WorkflowError> {
+        let mut after_session_id = None;
+        let mut executions = Vec::new();
+        loop {
+            let result = self.query_canonical(LocalEventQuery::SessionProjectionPage {
+                limit: 200,
+                after_session_id: after_session_id.clone(),
+            })?;
+            let LocalEventQueryResult::SessionProjectionPage(page) = result else {
+                return Err(WorkflowError::external(
+                    "workflow SQLite projection page returned the wrong result type",
+                ));
+            };
+            let page_len = page.len();
+            for projection in page {
+                after_session_id = Some(projection.session_id.clone());
+                let Some(execution_id) = projection.session_id.strip_prefix("workflow:") else {
+                    continue;
+                };
+                let execution_id =
+                    WorkflowExecutionId::new(execution_id.to_string()).map_err(|_| {
+                        WorkflowError::external(
+                            "workflow SQLite projection namespace contains an invalid identity",
+                        )
+                    })?;
+                if let Some(execution) = decode_canonical_workflow_projection(
+                    &projection.projection,
+                    execution_id.as_str(),
+                )
+                .map_err(WorkflowError::external)?
+                {
+                    executions.push(execution);
+                }
+            }
+            if page_len < 200 {
+                break;
+            }
+        }
+        Ok(executions)
     }
 
     #[cfg(test)]
     fn executions_dir(&self) -> PathBuf {
-        self.data_dir.join(EXECUTIONS_SUBDIR)
+        self.legacy_data_dir().join(EXECUTIONS_SUBDIR)
     }
 
     #[cfg(test)]
@@ -82,16 +195,25 @@ impl WorkflowExecutionFileRepository {
     }
 }
 
-fn workflow_artifact_paths(data_dir: &std::path::Path, execution_id: &str) -> Vec<PathBuf> {
-    let workflow_dir = data_dir.join("workflow");
-    [
-        workflow_dir.join(execution_id),
-        workflow_dir.join(format!("{execution_id}.json")),
-        workflow_dir.join(format!("{execution_id}.ndjson")),
-    ]
-    .into_iter()
-    .filter(|path| path.exists())
-    .collect()
+fn workflow_projection_key(execution_id: &str) -> String {
+    format!("workflow:{execution_id}")
+}
+
+fn decode_canonical_workflow_projection(
+    projection: &SessionProjectionRecord,
+    expected_execution_id: &str,
+) -> Result<Option<execution_store::WorkflowExecutionMetadata>, String> {
+    match projection {
+        SessionProjectionRecord::WorkflowExecution(WorkflowExecutionProjectionRecord::Present(
+            execution,
+        )) if execution.execution_id == expected_execution_id => Ok(Some(
+            execution_store::workflow_execution_metadata(execution),
+        )),
+        SessionProjectionRecord::WorkflowExecution(
+            WorkflowExecutionProjectionRecord::Deleted { execution_id },
+        ) if execution_id == expected_execution_id => Ok(None),
+        _ => Err("workflow SQLite projection invariant failed".to_string()),
+    }
 }
 
 impl WorkflowExecutionRepository for WorkflowExecutionFileRepository {
@@ -143,7 +265,20 @@ impl WorkflowExecutionRepository for WorkflowExecutionFileRepository {
         &self,
         filter: ExecutionListFilter,
     ) -> Result<Vec<WorkflowExecutionSummary>, WorkflowError> {
-        let executions = execution_store::iter_valid_execution_metadata(&self.data_dir);
+        #[cfg(test)]
+        if let WorkflowExecutionReadSource::Legacy(data_dir) = &self.source {
+            let scan = execution_store::scan_valid_execution_metadata(data_dir);
+            if !scan.is_complete {
+                return Err(WorkflowError::external(
+                    "workflow projection source is incomplete",
+                ));
+            }
+            return Ok(execution_store::project_executions_to_summaries(
+                scan.executions,
+                &filter,
+            ));
+        }
+        let executions = self.canonical_executions()?;
         Ok(execution_store::project_executions_to_summaries(
             executions, &filter,
         ))
@@ -154,21 +289,37 @@ impl WorkflowExecutionRepository for WorkflowExecutionFileRepository {
         filter: ExecutionListFilter,
         page: WorkflowPageRequest,
     ) -> Result<Vec<WorkflowExecutionSummary>, WorkflowError> {
-        Ok(execution_store::project_valid_execution_metadata_page(
-            &self.data_dir,
-            &filter,
-            page.offset,
-            page.limit,
-        ))
+        #[cfg(test)]
+        if let WorkflowExecutionReadSource::Legacy(data_dir) = &self.source {
+            return Ok(execution_store::project_valid_execution_metadata_page(
+                data_dir,
+                &filter,
+                page.offset,
+                page.limit,
+            ));
+        }
+        Ok(self
+            .list_executions(filter)?
+            .into_iter()
+            .skip(page.offset)
+            .take(page.limit)
+            .collect())
     }
 
     fn get_execution(
         &self,
         execution_id: &WorkflowExecutionId,
     ) -> Result<Option<WorkflowExecutionSummary>, WorkflowError> {
-        execution_store::read_valid_execution_metadata(&self.data_dir, execution_id.as_str())
+        #[cfg(test)]
+        if let WorkflowExecutionReadSource::Legacy(data_dir) = &self.source {
+            return execution_store::read_valid_execution_metadata(data_dir, execution_id.as_str())
+                .map(|execution| {
+                    execution.map(|metadata| WorkflowExecutionSummary::from(&metadata))
+                })
+                .map_err(WorkflowError::external);
+        }
+        self.canonical_execution(execution_id)
             .map(|execution| execution.map(|metadata| WorkflowExecutionSummary::from(&metadata)))
-            .map_err(WorkflowError::external)
     }
 
     #[cfg(test)]
@@ -223,6 +374,7 @@ fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::domain::workflow::{ExecutionOrigin, ExecutionStatus, TokenUsage};
     use tempfile::TempDir;
 

@@ -11,10 +11,12 @@ impl OpenTabRegistry {
         self.open_tabs.write().insert(chat_session_id.to_string())
     }
 
+    #[cfg(test)]
     pub fn remove(&self, chat_session_id: &str) -> bool {
         self.open_tabs.write().remove(chat_session_id)
     }
 
+    #[cfg(test)]
     pub fn contains(&self, chat_session_id: &str) -> bool {
         self.open_tabs.read().contains(chat_session_id)
     }

@@ -8,6 +8,10 @@ pub(crate) mod streaming;
 pub(crate) mod transitions;
 pub(crate) mod usecase;
 
+#[cfg(test)]
+pub(crate) use usecase::SendAgentMessageRequest;
 pub(crate) use usecase::{
-    AgentSessionRuntimeUsecase, SendAgentMessageRequest, SendMessageResponse,
+    durable_workflow_turn_operation_id, AcceptedQueueDrainOutcome, AcceptedQueueRedriveReadiness,
+    AcceptedSendExecution, AgentSessionRuntimeUsecase, DurableStopDriver,
+    DurableWorkflowSendDriver, DurableWorkflowTurnRequest,
 };

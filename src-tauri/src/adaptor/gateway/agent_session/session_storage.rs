@@ -1,41 +1,96 @@
-use std::collections::{HashMap, HashSet};
-use std::path::Path;
-use std::sync::atomic::AtomicBool;
+#[cfg(test)]
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+    sync::atomic::AtomicBool,
+};
 
-use parking_lot::RwLock;
-
+#[cfg(test)]
 use crate::usecase::agent_session::event_log::AgentSessionEvent;
+#[cfg(test)]
 use crate::usecase::agent_session::session::{
     ChatMessage, ChatSession, MessagePart, PageCursor, SessionAttachment,
     SessionEventLogRecoverySignal, SessionMeta, SessionPage, SessionQueuePauseReader,
     SessionReviewContext, SessionReviewContextReader, SessionToolOutput,
 };
+#[cfg(test)]
+use parking_lot::RwLock;
 
+#[cfg(test)]
 mod attachment_blob;
+#[cfg(test)]
 mod event_store;
+#[cfg(test)]
 mod fork_copier;
-mod gc;
+#[cfg(test)]
 mod layout;
+#[cfg(test)]
 mod message_store;
+#[cfg(test)]
 mod meta_repository;
+#[cfg(test)]
 mod private_context;
+#[cfg(test)]
 mod projection_commit;
+mod session_projection_v1;
+mod stored_event_v1;
+mod stored_message_part_v1;
+mod stored_session_v1;
+#[cfg(test)]
 mod titles;
+#[cfg(test)]
 mod tool_output_blob;
+#[cfg(test)]
 mod transaction;
 
 #[cfg(test)]
 mod tests;
 
-pub(crate) use gc::SessionGcMetaRead;
+pub(crate) use session_projection_v1::{
+    decode_agent_content_blob_record_v1, decode_agent_message_projection_record_v1,
+    decode_agent_session_projection_record_v1, encode_agent_content_blob_record_v1,
+    encode_agent_message_projection_record_v1, encode_agent_session_projection_record_v1,
+    AgentSessionProjectionCodecV1,
+};
+#[cfg(test)]
+pub(crate) use stored_session_v1::StoredChatMessageV1;
+
+#[cfg(test)]
+pub(crate) fn decode_legacy_chat_message_for_gc(
+    raw: &[u8],
+    source_id: String,
+) -> Result<ChatMessage, String> {
+    stored_session_v1::decode_chat_message_v1(
+        raw,
+        stored_message_part_v1::StoredPayloadSource {
+            source_id,
+            record_ordinal: None,
+        },
+    )
+    .map(|record| record.message)
+    .map_err(|error| error.to_string())
+}
 
 #[cfg(test)]
 pub(crate) use projection_commit::ProjectionCommitStage;
+#[cfg(test)]
+pub(crate) use stored_event_v1::{decode_agent_session_events_v1, encode_agent_session_events_v1};
+#[cfg(test)]
+pub(crate) use stored_message_part_v1::{
+    decode_stored_message_parts_v1, encode_stored_message_parts_v1,
+};
+#[cfg(test)]
+pub(crate) use stored_session_v1::{
+    decode_activity_entry_v1, decode_chat_session_v1, encode_activity_entry_v1,
+    encode_chat_message_pretty_v1, encode_chat_message_v1, encode_chat_session_v1,
+    write_message_index_v1,
+};
 
 #[cfg(test)]
 pub(crate) type ProjectionCommitHook =
     std::sync::Arc<dyn Fn(ProjectionCommitStage) -> Result<(), String> + Send + Sync>;
 
+#[cfg(test)]
 pub struct FileSessionStorage {
     pub(super) cache: RwLock<HashMap<String, SessionMeta>>,
     /// 壊れた / 旧形式の session JSON を session_id 単位で隔離する。
@@ -45,9 +100,11 @@ pub struct FileSessionStorage {
     /// Durable commit 済みだが meta/events への反映が完了していない session。
     /// clean session の read path で transaction marker を毎回確認しないため、
     /// process 内の reconciliation 対象を session id 単位で限定する。
+    #[cfg(test)]
     pub(super) materialization_pending_sessions: RwLock<HashSet<String>>,
     pub(super) file_lock: parking_lot::Mutex<()>,
     pub(super) loaded: AtomicBool,
+    #[cfg(test)]
     pub(super) recovered_event_logs: RwLock<HashSet<String>>,
     #[cfg(test)]
     pub(super) message_read_count: std::sync::atomic::AtomicUsize,
@@ -63,14 +120,17 @@ pub struct FileSessionStorage {
     pub(super) event_batch_directory_scan_count: std::sync::atomic::AtomicUsize,
 }
 
+#[cfg(test)]
 impl Default for FileSessionStorage {
     fn default() -> Self {
         Self {
             cache: RwLock::new(HashMap::new()),
             invalid_sessions: RwLock::new(HashMap::new()),
+            #[cfg(test)]
             materialization_pending_sessions: RwLock::new(HashSet::new()),
             file_lock: parking_lot::Mutex::new(()),
             loaded: AtomicBool::new(false),
+            #[cfg(test)]
             recovered_event_logs: RwLock::new(HashSet::new()),
             #[cfg(test)]
             message_read_count: std::sync::atomic::AtomicUsize::new(0),
@@ -88,6 +148,7 @@ impl Default for FileSessionStorage {
     }
 }
 
+#[cfg(test)]
 impl crate::domain::agent_session::AgentSessionStorageTypes for FileSessionStorage {
     type Session = ChatSession;
     type Meta = SessionMeta;
@@ -100,6 +161,7 @@ impl crate::domain::agent_session::AgentSessionStorageTypes for FileSessionStora
     type Event = AgentSessionEvent;
 }
 
+#[cfg(test)]
 impl crate::domain::agent_session::AgentSessionReader for FileSessionStorage {
     fn list_metas(&self, app_data_dir: &Path) -> Result<Vec<Self::Meta>, String> {
         FileSessionStorage::list_metas(self, app_data_dir)
@@ -184,6 +246,7 @@ impl crate::domain::agent_session::AgentSessionReader for FileSessionStorage {
     }
 }
 
+#[cfg(test)]
 impl SessionReviewContextReader for FileSessionStorage {
     fn get_session_review_context(
         &self,
@@ -194,12 +257,15 @@ impl SessionReviewContextReader for FileSessionStorage {
     }
 }
 
+#[cfg(test)]
 impl SessionEventLogRecoverySignal for FileSessionStorage {
+    #[cfg(test)]
     fn take_event_log_recovered(&self, session_id: &str) -> bool {
         self.recovered_event_logs.write().remove(session_id)
     }
 }
 
+#[cfg(test)]
 impl SessionQueuePauseReader for FileSessionStorage {
     fn load_queue_paused_at(
         &self,
@@ -210,7 +276,9 @@ impl SessionQueuePauseReader for FileSessionStorage {
     }
 }
 
+#[cfg(test)]
 impl crate::domain::agent_session::AgentSessionWriter for FileSessionStorage {
+    #[cfg(test)]
     fn write_session_title(
         &self,
         app_data_dir: &Path,
@@ -220,6 +288,7 @@ impl crate::domain::agent_session::AgentSessionWriter for FileSessionStorage {
         FileSessionStorage::write_session_title(self, app_data_dir, session_id, title)
     }
 
+    #[cfg(test)]
     fn fork_session_layout(
         &self,
         app_data_dir: &Path,
@@ -229,10 +298,12 @@ impl crate::domain::agent_session::AgentSessionWriter for FileSessionStorage {
         FileSessionStorage::fork_session_layout(self, app_data_dir, session_id, forked_meta)
     }
 
+    #[cfg(test)]
     fn remove_session(&self, app_data_dir: &Path, session_id: &str) {
         FileSessionStorage::remove_session(self, app_data_dir, session_id);
     }
 
+    #[cfg(test)]
     fn update_session_meta(
         &self,
         app_data_dir: &Path,
@@ -242,6 +313,7 @@ impl crate::domain::agent_session::AgentSessionWriter for FileSessionStorage {
         FileSessionStorage::update_session_meta(self, app_data_dir, session_id, update)
     }
 
+    #[cfg(test)]
     fn update_session_meta_and_append_session_events(
         &self,
         app_data_dir: &Path,
@@ -258,14 +330,16 @@ impl crate::domain::agent_session::AgentSessionWriter for FileSessionStorage {
         )
     }
 
-    fn save_full_session_for_migration_or_restore(
+    #[cfg(test)]
+    fn save_full_session_for_restore(
         &self,
         app_data_dir: &Path,
         session: &Self::Session,
     ) -> Result<(), String> {
-        FileSessionStorage::save_full_session_for_migration_or_restore(self, app_data_dir, session)
+        FileSessionStorage::save_full_session_for_restore(self, app_data_dir, session)
     }
 
+    #[cfg(test)]
     fn append_message(
         &self,
         app_data_dir: &Path,
@@ -275,6 +349,7 @@ impl crate::domain::agent_session::AgentSessionWriter for FileSessionStorage {
         FileSessionStorage::append_message(self, app_data_dir, session_id, message)
     }
 
+    #[cfg(test)]
     fn persist_message_parts(
         &self,
         app_data_dir: &Path,
@@ -295,15 +370,7 @@ impl crate::domain::agent_session::AgentSessionWriter for FileSessionStorage {
         )
     }
 
-    fn append_session_event(
-        &self,
-        app_data_dir: &Path,
-        session_id: &str,
-        event: &Self::Event,
-    ) -> Result<Vec<Self::Event>, String> {
-        FileSessionStorage::append_session_event(self, app_data_dir, session_id, event)
-    }
-
+    #[cfg(test)]
     fn append_session_event_without_projection(
         &self,
         app_data_dir: &Path,
@@ -318,6 +385,7 @@ impl crate::domain::agent_session::AgentSessionWriter for FileSessionStorage {
         )
     }
 
+    #[cfg(test)]
     fn commit_session_projection(
         &self,
         app_data_dir: &Path,
@@ -339,6 +407,7 @@ impl crate::domain::agent_session::AgentSessionWriter for FileSessionStorage {
         )
     }
 
+    #[cfg(test)]
     fn append_session_events(
         &self,
         app_data_dir: &Path,

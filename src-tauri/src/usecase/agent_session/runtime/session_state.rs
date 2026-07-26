@@ -77,14 +77,54 @@ pub(crate) struct RuntimeSessionState {
     pub generation: u64,
     pub runtime_epoch: u64,
     pub provider_session_established: bool,
+    pub provider_session_establishment: Option<ProviderSessionEstablishmentState>,
     pub backend_recovery: Option<BackendSessionRecoveryState>,
+}
+
+pub(crate) struct ProviderSessionEstablishmentState {
+    pub observation_id: String,
 }
 
 pub(crate) struct BackendSessionRecoveryState {
     pub recovery_id: String,
     pub old_provider_session_generation: u64,
     pub reason: BackendSessionRecoveryReason,
+    /// Once the provider-side recovery attempt has failed, retain the exact
+    /// failure until its terminal recovery batch is durably acknowledged.
+    /// The runtime event pump can then retry the same recovery identity
+    /// without reopening the provider or inventing a second failure.
+    pub pending_failure: Option<String>,
+    /// The accepted current turn submitted its replacement-runtime input
+    /// with this context outcome. Recovery completion creates the new
+    /// provider generation, then consumes that generation's reinjection
+    /// marker with this exact result.
+    pub turn_resume: BackendSessionRecoveryTurnResume,
+    /// Provider identity and input acceptance can arrive in either order.
+    /// An accepted turn recovery completes only after this identity and its
+    /// replacement input acceptance are both present. An idle recovery can
+    /// complete from the identity alone while retaining the next-turn
+    /// context-reinjection marker.
+    pub observed_backend_session_id: Option<String>,
+    /// Exactly one detached owner may perform the durable completion for a
+    /// recovery identity. The owner retries until the exact recovery is
+    /// completed, failed, or superseded.
+    pub completion_in_flight: bool,
+    /// Exactly one detached owner may persist a terminal recovery failure.
+    /// Completion and failure owners are mutually exclusive.
+    pub failure_in_flight: bool,
     pub completion: tokio::sync::watch::Sender<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BackendSessionRecoveryTurnResume {
+    /// No accepted input is owned by this recovery. Completion must leave the
+    /// new provider generation's reinjection marker for the next turn.
+    NoStartedTurn,
+    /// The accepted input still has to be submitted to the replacement
+    /// provider before recovery can complete.
+    AwaitingAcceptedTurnStart,
+    /// The replacement provider accepted the exact claimed input.
+    AcceptedTurnStarted { context_was_reinjected: bool },
 }
 
 #[derive(Debug, Clone)]
@@ -169,6 +209,7 @@ impl RuntimeSessionState {
             generation: 0,
             runtime_epoch: 0,
             provider_session_established: false,
+            provider_session_establishment: None,
             backend_recovery: None,
         }
     }
@@ -176,6 +217,7 @@ impl RuntimeSessionState {
     pub(crate) fn bump_runtime_epoch(&mut self) -> u64 {
         self.runtime_epoch = self.runtime_epoch.saturating_add(1);
         self.provider_session_established = false;
+        self.provider_session_establishment = None;
         self.runtime_epoch
     }
 

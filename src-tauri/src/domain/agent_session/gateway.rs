@@ -41,18 +41,6 @@ pub struct TurnInput {
     pub editor_context: Option<EditorContext>,
 }
 
-#[allow(dead_code)]
-// issues-1301 F-2: fork request fields are consumed by backend lifecycle implementations; production call coverage is restored with Codex thread lifecycle.
-#[derive(Debug, Clone)]
-pub struct ForkSessionRequest {
-    pub backend_session_id: String,
-    pub cwd: String,
-    pub model: Option<String>,
-    pub permission_mode: PermissionMode,
-    pub plan_mode: bool,
-    pub permission_profile_id: Option<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentRuntimeEvent {
     SessionEstablished {
@@ -127,23 +115,6 @@ pub trait AgentBackend: Send + Sync {
         spec: SessionSpec,
     ) -> Result<Box<dyn AgentSessionRuntime>, AgentBackendError>;
 
-    async fn archive_session(
-        &self,
-        backend_session_id: &str,
-        cwd: &str,
-    ) -> Result<(), AgentBackendError>;
-
-    async fn unarchive_session(
-        &self,
-        backend_session_id: &str,
-        cwd: &str,
-    ) -> Result<(), AgentBackendError>;
-
-    async fn fork_session(
-        &self,
-        req: ForkSessionRequest,
-    ) -> Result<Option<String>, AgentBackendError>;
-
     async fn skill_catalog(
         &self,
         cwd: &Path,
@@ -183,16 +154,7 @@ pub trait AgentSessionRuntime: Send + Sync {
         &self,
         response: PermissionResponse,
     ) -> Result<(), AgentBackendError>;
-    async fn set_permission_mode(
-        &self,
-        mode: PermissionMode,
-        plan_mode: bool,
-    ) -> Result<(), AgentBackendError>;
     async fn set_model(&self, model: &ModelId) -> Result<(), AgentBackendError>;
-
-    async fn set_session_title(&self, _title: &str) -> Result<(), AgentBackendError> {
-        Ok(())
-    }
 
     async fn close(&self);
 }

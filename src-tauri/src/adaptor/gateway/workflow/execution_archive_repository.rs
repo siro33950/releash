@@ -1,4 +1,6 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
+#[cfg(test)]
+use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -38,6 +40,7 @@ pub(crate) struct WorkflowExecutionArchiveFileRepository {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg(test)]
 pub(crate) struct WorkflowExecutionArchivePruneResult {
     pub(crate) records_removed: u64,
     pub(crate) reclaimed_bytes: u64,
@@ -100,6 +103,7 @@ impl WorkflowExecutionArchiveFileRepository {
         self.save_index_unlocked(&index)
     }
 
+    #[cfg(test)]
     pub(crate) fn prune_records(
         &self,
         execution_ids: &HashSet<String>,

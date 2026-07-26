@@ -1,13 +1,16 @@
 use std::collections::BTreeMap;
 
+/// Application-data families that remain eligible for GC after the canonical
+/// SQLite cutover.
+///
+/// Agent Session and Workflow file-store families deliberately do not appear
+/// here. They are legacy sources under issue #1499 B-070 and are never GC
+/// inputs, even when they coexist with the fixed SQLite store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum GcCategory {
     DeletedWorkspace,
-    UnrecoverableSession,
-    RecoverableExpired,
     RegenerableCache,
     LegacyComments,
-    OrphanBlob,
     StaleProcessRecord,
 }
 
@@ -15,11 +18,8 @@ impl GcCategory {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::DeletedWorkspace => "deleted_workspace",
-            Self::UnrecoverableSession => "unrecoverable_session",
-            Self::RecoverableExpired => "recoverable_expired",
             Self::RegenerableCache => "regenerable_cache",
             Self::LegacyComments => "legacy_comments",
-            Self::OrphanBlob => "orphan_blob",
             Self::StaleProcessRecord => "stale_process_record",
         }
     }
@@ -27,14 +27,12 @@ impl GcCategory {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RetentionPolicy {
-    pub(crate) archived_log_secs: u64,
     pub(crate) cache_secs: u64,
 }
 
 impl Default for RetentionPolicy {
     fn default() -> Self {
         Self {
-            archived_log_secs: 30 * 24 * 60 * 60,
             cache_secs: 7 * 24 * 60 * 60,
         }
     }
@@ -57,14 +55,14 @@ pub(crate) struct GcReport {
 impl GcReport {
     pub(crate) fn record_deleted(&mut self, category: GcCategory, reclaimed_bytes: u64) {
         let stat = self.categories.entry(category).or_default();
-        stat.deleted += 1;
-        stat.reclaimed_bytes += reclaimed_bytes;
-        self.total_files += 1;
-        self.total_bytes += reclaimed_bytes;
+        stat.deleted = stat.deleted.saturating_add(1);
+        stat.reclaimed_bytes = stat.reclaimed_bytes.saturating_add(reclaimed_bytes);
+        self.total_files = self.total_files.saturating_add(1);
+        self.total_bytes = self.total_bytes.saturating_add(reclaimed_bytes);
     }
 
     pub(crate) fn record_error(&mut self) {
-        self.errors += 1;
+        self.errors = self.errors.saturating_add(1);
     }
 
     pub(crate) fn log_summary(&self) -> String {
@@ -89,10 +87,9 @@ impl GcReport {
 }
 
 pub(crate) fn is_expired(now_secs: f64, updated_at_secs: f64, threshold_secs: u64) -> bool {
-    if !now_secs.is_finite() || !updated_at_secs.is_finite() {
-        return false;
-    }
-    now_secs - updated_at_secs > threshold_secs as f64
+    now_secs.is_finite()
+        && updated_at_secs.is_finite()
+        && now_secs - updated_at_secs > threshold_secs as f64
 }
 
 #[cfg(test)]
@@ -100,42 +97,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn is_expired_uses_strict_boundary() {
-        assert!(!is_expired(130.0, 100.0, 30));
-        assert!(is_expired(130.001, 100.0, 30));
+    fn retention_uses_the_strict_seven_day_boundary() {
+        assert!(!is_expired(604_800.0, 0.0, 604_800));
+        assert!(is_expired(604_800.001, 0.0, 604_800));
+        assert!(!is_expired(f64::NAN, 0.0, 604_800));
     }
 
     #[test]
-    fn report_tracks_category_and_total() {
+    fn report_keeps_category_and_total_accounting() {
         let mut report = GcReport::default();
-        report.record_deleted(GcCategory::LegacyComments, 10);
-        report.record_deleted(GcCategory::LegacyComments, 5);
-        report.record_deleted(GcCategory::OrphanBlob, 7);
+        report.record_deleted(GcCategory::RegenerableCache, 10);
+        report.record_deleted(GcCategory::RegenerableCache, 5);
         report.record_error();
 
-        assert_eq!(report.total_files, 3);
-        assert_eq!(report.total_bytes, 22);
+        assert_eq!(report.total_files, 2);
+        assert_eq!(report.total_bytes, 15);
         assert_eq!(report.errors, 1);
         assert_eq!(
-            report.categories[&GcCategory::LegacyComments],
+            report.categories[&GcCategory::RegenerableCache],
             CategoryStat {
                 deleted: 2,
-                reclaimed_bytes: 15
+                reclaimed_bytes: 15,
             }
         );
-    }
-
-    #[test]
-    fn log_summary_includes_deleted_count_and_reclaimed_bytes() {
-        let mut report = GcReport::default();
-        report.record_deleted(GcCategory::LegacyComments, 10);
-        report.record_deleted(GcCategory::OrphanBlob, 7);
-
-        let summary = report.log_summary();
-
-        assert_eq!(report.total_files, 2);
-        assert_eq!(report.total_bytes, 17);
-        assert!(summary.contains("deleted=2"));
-        assert!(summary.contains("reclaimed_bytes=17"));
+        assert!(report.log_summary().contains("reclaimed_bytes=15"));
     }
 }

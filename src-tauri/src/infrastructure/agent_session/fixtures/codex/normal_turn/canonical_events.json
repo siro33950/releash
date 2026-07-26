@@ -1,0 +1,97 @@
+[
+  {
+    "SessionEstablished": {
+      "backend_session_id": "<THREAD_ID>",
+      "resume": "NotRequested"
+    }
+  },
+  {
+    "PartsMerged": [
+      {
+        "Text": {
+          "content": "<ASSISTANT_TEXT>",
+          "parent_tool_use_id": null
+        }
+      }
+    ]
+  },
+  {
+    "PartsMerged": [
+      {
+        "ToolUse": {
+          "id": "<COMMAND_ITEM_ID>",
+          "tool": "Bash",
+          "input": "{\"command\":\"<COMMAND>\",\"cwd\":\"<WORKTREE>\",\"status\":\"inProgress\"}",
+          "parent_tool_use_id": null
+        }
+      }
+    ]
+  },
+  {
+    "PermissionRequested": {
+      "id": "42",
+      "tool_use_id": "<COMMAND_ITEM_ID>",
+      "parent_tool_use_id": null,
+      "tool_name": "CodexCommand",
+      "body": {
+        "ToolApproval": {
+          "input": "{\"command\":\"<COMMAND>\",\"cwd\":\"<WORKTREE>\",\"itemId\":\"<COMMAND_ITEM_ID>\",\"threadId\":\"<THREAD_ID>\",\"turnId\":\"<TURN_ID>\"}"
+        }
+      },
+      "title": "Codex approval requested",
+      "display_name": "CodexCommand",
+      "description": "Command approval",
+      "decision_reason": null,
+      "status": "Pending"
+    }
+  },
+  {
+    "PartsMerged": [
+      {
+        "ToolResult": {
+          "content": "<COMMAND_OUTPUT>",
+          "is_error": false,
+          "tool_use_id": "<COMMAND_ITEM_ID>",
+          "parent_tool_use_id": null,
+          "content_ref": null,
+          "summary": null
+        }
+      }
+    ]
+  },
+  {
+    "PartsMerged": [
+      {
+        "ToolResult": {
+          "content": "<TOOL_RESULT>",
+          "is_error": false,
+          "tool_use_id": "<COMMAND_ITEM_ID>",
+          "parent_tool_use_id": null,
+          "content_ref": null,
+          "summary": null
+        }
+      }
+    ]
+  },
+  {
+    "TokenUsageUpdated": {
+      "input_tokens": 4,
+      "output_tokens": 6,
+      "total_tokens": 10,
+      "context_window_tokens": 128000
+    }
+  },
+  {
+    "TurnCompleted": {
+      "Completed": {
+        "stop_reason": null,
+        "token_usage": {
+          "input_tokens": 4,
+          "output_tokens": 6,
+          "total_tokens": 10,
+          "context_window_tokens": 128000
+        }
+      }
+    }
+  }
+]

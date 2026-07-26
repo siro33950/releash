@@ -1,3 +1,7 @@
+import {
+	compareCanonicalDecimal,
+	isCanonicalDecimal,
+} from "@/lib/canonicalDecimal";
 import type {
 	AgentStallObservation,
 	BackendInfo,
@@ -40,13 +44,13 @@ export interface AgentChatState {
 	/** Rust-owned notice state の session_id 別 mirror。 */
 	sessionErrors: Record<string, string>;
 	/** 非同期 snapshot の逆転を拒否するための、session ごとの既知 revision。 */
-	sessionErrorRevisions: Record<string, number>;
+	sessionErrorRevisions: Record<string, string>;
 	permissionMode: PermissionMode;
 	planMode: PlanMode;
 	sessionPermissionModes: Record<string, PermissionMode>;
 	sessionPlanModes: Record<string, PlanMode>;
 	pendingPermissions: Record<string, PermissionRequest>;
-	pendingPermissionStateRevisions: Record<string, number>;
+	pendingPermissionStateRevisions: Record<string, string>;
 	clearedPendingPermissionIds: Record<string, string>;
 	pendingQueues: Record<string, QueuedAgentTurn[]>;
 	queuePaused: Record<string, boolean>;
@@ -77,13 +81,13 @@ export type AgentChatAction =
 			sessionId: string;
 			turnPhase: TurnPhase;
 			ignoreIfClearedPendingRequestId?: string | null;
-			pendingPermissionStateRevision?: number | null;
+			pendingPermissionStateRevision?: string | null;
 	  }
 	| { type: "SET_INTERRUPTING"; sessionId: string; value: boolean }
 	| {
 			type: "SYNC_SESSION_ERROR";
 			sessionId: string;
-			revision: number;
+			revision: string;
 			message: string | null;
 	  }
 	| {
@@ -109,7 +113,7 @@ export type AgentChatAction =
 			sessionId: string;
 			request: PermissionRequest | null;
 			ignoreIfCleared?: boolean;
-			pendingPermissionStateRevision?: number | null;
+			pendingPermissionStateRevision?: string | null;
 	  }
 	| {
 			type: "SET_PENDING_QUEUE";
@@ -157,7 +161,7 @@ export type AgentChatAction =
 			type: "APPLY_STREAMING_DELTA";
 			sessionId: string;
 			messageId: string;
-			seq: number;
+			seq: string;
 			parts: MessagePart[];
 	  }
 	| {
@@ -355,9 +359,9 @@ function applyContextCarryToSummary(
 }
 
 function normalizePermissionStateRevision(
-	revision: number | null | undefined,
-): number | null {
-	return typeof revision === "number" && Number.isFinite(revision)
+	revision: string | null | undefined,
+): string | null {
+	return typeof revision === "string" && isCanonicalDecimal(revision)
 		? revision
 		: null;
 }
@@ -365,25 +369,28 @@ function normalizePermissionStateRevision(
 function currentPermissionStateRevision(
 	state: AgentChatState,
 	sessionId: string,
-): number {
-	return state.pendingPermissionStateRevisions[sessionId] ?? 0;
+): string {
+	return state.pendingPermissionStateRevisions[sessionId] ?? "0";
 }
 
 function isOlderPermissionStateRevision(
 	state: AgentChatState,
 	sessionId: string,
-	revision: number | null,
+	revision: string | null,
 ): boolean {
 	return (
 		revision !== null &&
-		revision < currentPermissionStateRevision(state, sessionId)
+		compareCanonicalDecimal(
+			revision,
+			currentPermissionStateRevision(state, sessionId),
+		) < 0
 	);
 }
 
 function withPermissionStateRevision(
 	state: AgentChatState,
 	sessionId: string,
-	revision: number | null,
+	revision: string | null,
 ): Pick<AgentChatState, "pendingPermissionStateRevisions"> {
 	if (revision === null) {
 		return {
@@ -469,7 +476,10 @@ export function reducer(
 				state.clearedPendingPermissionIds[action.sessionId] ===
 					action.ignoreIfClearedPendingRequestId &&
 				(revision === null ||
-					revision <= currentPermissionStateRevision(state, action.sessionId))
+					compareCanonicalDecimal(
+						revision,
+						currentPermissionStateRevision(state, action.sessionId),
+					) <= 0)
 			) {
 				return state;
 			}
@@ -503,7 +513,10 @@ export function reducer(
 		}
 		case "SYNC_SESSION_ERROR": {
 			const knownRevision = state.sessionErrorRevisions[action.sessionId];
-			if (knownRevision !== undefined && action.revision <= knownRevision) {
+			if (
+				knownRevision !== undefined &&
+				compareCanonicalDecimal(action.revision, knownRevision) <= 0
+			) {
 				return state;
 			}
 			const sessionErrorRevisions = {
@@ -610,7 +623,10 @@ export function reducer(
 				state.clearedPendingPermissionIds[action.sessionId] ===
 					action.request.id &&
 				(revision === null ||
-					revision <= currentPermissionStateRevision(state, action.sessionId))
+					compareCanonicalDecimal(
+						revision,
+						currentPermissionStateRevision(state, action.sessionId),
+					) <= 0)
 			) {
 				return state;
 			}

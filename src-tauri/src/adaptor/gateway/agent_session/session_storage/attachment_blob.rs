@@ -1,11 +1,13 @@
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+#[cfg(test)]
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
-use super::layout::{
-    attachment_file_in_dir, attachments_dir_in_dir, session_dir, write_binary_atomic,
-};
+#[cfg(test)]
+use super::layout::write_binary_atomic;
+use super::layout::{attachment_file_in_dir, attachments_dir_in_dir, session_dir};
 use super::FileSessionStorage;
+#[cfg(test)]
 use crate::domain::agent_session::services::{
     AttachmentExternalizationPolicy, DefaultAttachmentExternalizationPolicy,
 };
@@ -13,6 +15,7 @@ use crate::usecase::agent_session::session::{
     AttachmentRef, ChatMessage, MessagePart, SessionAttachment,
 };
 
+#[cfg(test)]
 fn attachment_id(media_type: &str, bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(media_type.as_bytes());
@@ -58,6 +61,7 @@ impl FileSessionStorage {
         };
         self.hydrate_attachment(&dir, &attachment).map(Some)
     }
+    #[cfg(test)]
     pub(super) fn externalize_message_attachments(
         &self,
         dir: &Path,

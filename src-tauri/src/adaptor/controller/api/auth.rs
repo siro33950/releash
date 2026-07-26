@@ -48,7 +48,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bearer_middleware_rejects_missing_and_wrong_tokens() {
+    async fn b073_bearer_middleware_rejects_missing_and_wrong_tokens() {
         for authorization in [None, Some("Bearer wrong")] {
             let mut request = Request::builder().uri("/");
             if let Some(value) = authorization {
@@ -63,7 +63,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bearer_middleware_accepts_the_discovery_token() {
+    async fn b073_bearer_middleware_accepts_the_discovery_token() {
         let response = protected_router()
             .oneshot(
                 Request::builder()

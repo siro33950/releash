@@ -45,6 +45,7 @@ impl OpStatus {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(crate) enum HotPathMetric {
     GitStatusScan,
     DiffStats,
@@ -53,8 +54,11 @@ pub(crate) enum HotPathMetric {
     SessionGetMeta,
     SessionGetPage,
     SessionLoadFull,
+    #[cfg(test)]
     SessionAppend,
+    #[cfg(test)]
     SessionPersistParts,
+    #[cfg(test)]
     SessionSaveFull,
 }
 
@@ -119,8 +123,11 @@ impl HotPathMetric {
             Self::SessionGetMeta => "session.get_meta",
             Self::SessionGetPage => "session.get_page",
             Self::SessionLoadFull => "session.load_full",
+            #[cfg(test)]
             Self::SessionAppend => "session.append",
+            #[cfg(test)]
             Self::SessionPersistParts => "session.persist_parts",
+            #[cfg(test)]
             Self::SessionSaveFull => "session.save_full",
         }
     }
@@ -134,8 +141,11 @@ impl HotPathMetric {
             Self::SessionGetMeta => "Session get meta",
             Self::SessionGetPage => "Session get page",
             Self::SessionLoadFull => "Session load full",
+            #[cfg(test)]
             Self::SessionAppend => "Session append",
+            #[cfg(test)]
             Self::SessionPersistParts => "Session persist parts",
+            #[cfg(test)]
             Self::SessionSaveFull => "Session save full",
         }
     }

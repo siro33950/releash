@@ -174,6 +174,15 @@ pub trait WorkflowTurnCompleteGateway: Send + Sync {
         &self,
         command: WorkflowTurnCompleteCommand,
     ) -> Result<(), WorkflowError>;
+
+    async fn recover_turn_complete(
+        &self,
+        _command: WorkflowTurnCompleteRecoveryCommand,
+    ) -> Result<WorkflowTurnCompleteRecoveryOutcome, WorkflowError> {
+        Err(WorkflowError::external(
+            "durable workflow turn-completion recovery is unsupported",
+        ))
+    }
 }
 
 #[async_trait::async_trait]
@@ -188,6 +197,13 @@ pub trait WorkflowStallObservedGateway: Send + Sync {
 
 #[async_trait::async_trait]
 pub trait WorkflowRuntimeStateGateway: Send + Sync {
+    /// Explicit startup recovery hook. Construction must never invoke this:
+    /// composition calls it once only after the fixed local store is verified and
+    /// normal mutation admission.
+    async fn recover_startup(&self) -> Result<(), WorkflowError> {
+        Ok(())
+    }
+
     #[cfg(test)]
     async fn get_state_by_execution_id(
         &self,
@@ -202,6 +218,42 @@ pub trait WorkflowRuntimeStateGateway: Send + Sync {
 #[async_trait::async_trait]
 pub trait WorkflowRuntimeShutdownGateway: Send + Sync {
     async fn shutdown_active_commands(&self);
+
+    async fn shutdown_execution_commands(&self, execution_id: &str) {
+        let _ = execution_id;
+        self.shutdown_active_commands().await;
+    }
+
+    async fn application_shutdown_target_execution_ids(&self) -> Result<Vec<String>, String>;
+
+    async fn execute_shutdown_effect(
+        &self,
+        operation_id: &str,
+        effect_identity: &str,
+        owner_revision: i64,
+        execution_id: &str,
+    ) -> WorkflowShutdownEffectReadback {
+        let _ = (operation_id, effect_identity, owner_revision);
+        self.shutdown_execution_commands(execution_id).await;
+        WorkflowShutdownEffectReadback::Ambiguous
+    }
+
+    async fn read_shutdown_effect(
+        &self,
+        _operation_id: &str,
+        _effect_identity: &str,
+        _owner_revision: i64,
+        _execution_id: &str,
+    ) -> WorkflowShutdownEffectReadback {
+        WorkflowShutdownEffectReadback::Ambiguous
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkflowShutdownEffectReadback {
+    Completed,
+    ConfirmedNotStarted,
+    Ambiguous,
 }
 
 #[async_trait::async_trait]
@@ -281,6 +333,30 @@ pub struct WorkflowTurnCompleteNotification {
     pub failure_signal: Option<WorkflowTurnFailureSignal>,
     pub token_usage: Option<WorkflowTurnTokenUsage>,
     pub interrupted: bool,
+}
+
+/// Canonical ownership coordinates captured in the workflow-owned chat
+/// session before its terminal turn is committed. Startup replay uses these
+/// coordinates to reject a notification aimed at a different execution,
+/// node attempt, or fanout child.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowTurnCompleteRecoveryCommand {
+    pub notification: WorkflowTurnCompleteNotification,
+    pub turn_id: u64,
+    pub execution_id: String,
+    pub node_execution_id: String,
+    pub workflow_name: String,
+    pub node_name: String,
+    pub attempt: u32,
+    pub parent_node_name: Option<String>,
+    pub parent_attempt: Option<u32>,
+    pub order: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkflowTurnCompleteRecoveryOutcome {
+    Applied,
+    AlreadyApplied,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -48,8 +48,9 @@ import {
 	createSession,
 	createWorkspaceSession,
 	forkSession as forkSessionApi,
+	type GetSessionResponse,
+	getAgentSessionDisplayWindow,
 	getAgentSessionNotice,
-	getSession,
 	getSessionPage,
 	initAgentSessions,
 	type LoadedMessagePage,
@@ -57,6 +58,8 @@ import {
 	listClosedSessions,
 	listSessions,
 	planAgentChatEviction,
+	requestAgentStop,
+	respondAgentPermission,
 	restoreSession as restoreSessionApi,
 	resumeAgentQueue,
 	sendAgentMessage,
@@ -202,22 +205,6 @@ export interface UseAgentChatResult {
 		queuedTurnId?: string | null,
 	) => Promise<void>;
 	resumeQueue: (sessionId: string) => Promise<void>;
-}
-
-function startAgentProcess(
-	chatSessionId: string,
-	cwd: string,
-	permissionMode: PermissionMode,
-	planMode: PlanMode,
-): void {
-	invoke("start_agent_session", {
-		chatSessionId,
-		cwd,
-		permissionMode,
-		planMode,
-	}).catch((e) => {
-		console.error(`Failed to start agent session ${chatSessionId}:`, e);
-	});
 }
 
 function loadedMessageCount(pages: LoadedMessagePage[]): number {
@@ -371,7 +358,7 @@ function dispatchSessionMeta(
 		pendingQueue?: QueuedAgentTurn[];
 		queuePaused?: boolean;
 		pendingPermissionRequest?: PermissionRequest | null;
-		pendingPermissionStateRevision?: number | null;
+		pendingPermissionStateRevision?: string | null;
 		latestTokenUsage?: TokenUsage | null;
 	},
 ) {
@@ -470,6 +457,8 @@ export function useAgentChat(
 	sessionPlanModesRef.current = state.sessionPlanModes;
 	const turnPhasesRef = useRef(state.turnPhases);
 	turnPhasesRef.current = state.turnPhases;
+	const pendingQueuesRef = useRef(state.pendingQueues);
+	pendingQueuesRef.current = state.pendingQueues;
 	const selectedBackendIdRef = useRef(state.selectedBackendId);
 	selectedBackendIdRef.current = state.selectedBackendId;
 	const availableModelsRef = useRef(state.availableModels);
@@ -484,6 +473,8 @@ export function useAgentChat(
 	const sessionNoticeRequestControllersRef = useRef<
 		Map<string, AbortController>
 	>(new Map());
+	const sessionSelectionIntentRef = useRef(0);
+	const initSessionsGenerationRef = useRef(0);
 
 	useEffect(() => {
 		let unlisten: UnlistenFn | null = null;
@@ -542,6 +533,71 @@ export function useAgentChat(
 	// SDK listener gating: 表示中の session id 集合を管理する registry。
 	// 各 panel が register したものは getIds() で参照される（listener が更新を gate する）。
 	const viewableIdsRef = useRef<Map<string, number>>(new Map());
+	const displayWindowListenerReadyRef = useRef(false);
+	const displayWindowReadsCompletedBeforeListenerReadyRef = useRef<Set<string>>(
+		new Set(),
+	);
+	const applyDisplayWindow = useCallback(
+		(response: GetSessionResponse) => {
+			rememberInitialPage(response);
+			dispatch({ type: "UPSERT_SESSION", session: response.session });
+			dispatchSessionMeta(dispatch, response.session.id, response);
+			dispatchWorkspaceTreeRefresh(response.session.worktreePath);
+		},
+		[rememberInitialPage],
+	);
+	const readSessionFromAuthority = useCallback(
+		async (
+			sessionId: string,
+			options: {
+				requireViewable?: boolean;
+				refreshWorkspace?: boolean;
+				resetMessageWindow?: boolean;
+			} = {},
+		): Promise<{ response: GetSessionResponse | null; applied: boolean }> => {
+			if (
+				options.requireViewable === true &&
+				!viewableIdsRef.current.has(sessionId)
+			) {
+				return { response: null, applied: false };
+			}
+			const visibleMessageCount =
+				sessionsByIdRef.current[sessionId]?.messages.length;
+			const response = await getAgentSessionDisplayWindow(
+				sessionId,
+				visibleMessageCount,
+			);
+			if (response && !displayWindowListenerReadyRef.current) {
+				displayWindowReadsCompletedBeforeListenerReadyRef.current.add(
+					sessionId,
+				);
+			}
+			if (response && !sessionsByIdRef.current[sessionId]) {
+				applyDisplayWindow(response);
+			}
+			if (response && options.refreshWorkspace === true) {
+				dispatchWorkspaceTreeRefresh(response.session.worktreePath);
+			}
+			return {
+				response,
+				applied: response != null,
+			};
+		},
+		[applyDisplayWindow],
+	);
+	const refreshDisplayedSession = useCallback(
+		async (sessionId: string): Promise<void> => {
+			try {
+				await readSessionFromAuthority(sessionId, {
+					requireViewable: true,
+					refreshWorkspace: true,
+				});
+			} catch (error) {
+				console.error("Failed to reconcile visible agent session:", error);
+			}
+		},
+		[readSessionFromAuthority],
+	);
 	const viewableRegistry = useMemo<ViewableSessionRegistry>(
 		() => ({
 			register: (sessionId: string) => {
@@ -560,6 +616,14 @@ export function useAgentChat(
 				touchSessionAccess(sessionId);
 				const map = viewableIdsRef.current;
 				map.set(sessionId, (map.get(sessionId) ?? 0) + 1);
+				const mirroredSession = sessionsByIdRef.current[sessionId];
+				const mirrorMayBeStale =
+					mirroredSession &&
+					((pendingQueuesRef.current[sessionId]?.length ?? 0) > 0 ||
+						(turnPhasesRef.current[sessionId] ?? "idle") !== "idle");
+				if (mirrorMayBeStale) {
+					void refreshDisplayedSession(sessionId);
+				}
 				return () => {
 					const m = viewableIdsRef.current;
 					const next = (m.get(sessionId) ?? 0) - 1;
@@ -579,7 +643,7 @@ export function useAgentChat(
 			},
 			getIds: () => new Set(viewableIdsRef.current.keys()),
 		}),
-		[touchSessionAccess],
+		[touchSessionAccess, refreshDisplayedSession],
 	);
 
 	const dispatchWithMessageWindowTracking = useCallback(
@@ -747,16 +811,16 @@ export function useAgentChat(
 								]
 							: null;
 					if (nextSession) {
-						const response = await getSession(nextSession.id);
+						const { response } = await readSessionFromAuthority(
+							nextSession.id,
+							{ resetMessageWindow: true },
+						);
 						if (activeSessionIdRef.current === previousActiveSessionId) {
 							if (response) {
-								rememberInitialPage(response);
-								dispatch({ type: "UPSERT_SESSION", session: response.session });
 								dispatch({
 									type: "SET_ACTIVE_SESSION_ID",
 									sessionId: response.session.id,
 								});
-								dispatchSessionMeta(dispatch, nextSession.id, response);
 							} else {
 								dispatch({ type: "SET_ACTIVE_SESSION_ID", sessionId: null });
 							}
@@ -771,7 +835,7 @@ export function useAgentChat(
 				return [];
 			}
 		},
-		[rememberInitialPage],
+		[readSessionFromAuthority],
 	);
 
 	const refreshClosedSessions = useCallback(async () => {
@@ -785,22 +849,30 @@ export function useAgentChat(
 
 	const selectSession = useCallback(
 		async (sessionId: string) => {
+			const selectionIntent = sessionSelectionIntentRef.current + 1;
+			sessionSelectionIntentRef.current = selectionIntent;
 			try {
-				const response = await getSession(sessionId);
+				const { response, applied } = await readSessionFromAuthority(
+					sessionId,
+					{
+						resetMessageWindow: true,
+					},
+				);
+				if (sessionSelectionIntentRef.current !== selectionIntent) return;
 				if (response) {
-					await clearSessionError(
-						dispatch,
-						sessionNoticeRequestControllersRef,
-						sessionId,
-						"load_session",
-					);
-					rememberInitialPage(response);
-					dispatch({ type: "UPSERT_SESSION", session: response.session });
+					if (applied) {
+						await clearSessionError(
+							dispatch,
+							sessionNoticeRequestControllersRef,
+							sessionId,
+							"load_session",
+						);
+					}
+					if (sessionSelectionIntentRef.current !== selectionIntent) return;
 					dispatch({
 						type: "SET_ACTIVE_SESSION_ID",
 						sessionId: response.session.id,
 					});
-					dispatchSessionMeta(dispatch, sessionId, response);
 				} else {
 					dispatch({ type: "SET_ACTIVE_SESSION_ID", sessionId: null });
 				}
@@ -814,26 +886,28 @@ export function useAgentChat(
 				);
 			}
 		},
-		[rememberInitialPage],
+		[readSessionFromAuthority],
 	);
 
 	const loadSession = useCallback(
 		async (sessionId: string): Promise<ChatSession | null> => {
 			try {
-				const response = await getSession(sessionId);
-				if (response) {
+				const { response, applied } = await readSessionFromAuthority(
+					sessionId,
+					{
+						resetMessageWindow: true,
+					},
+				);
+				if (response && applied) {
 					await clearSessionError(
 						dispatch,
 						sessionNoticeRequestControllersRef,
 						sessionId,
 						"load_session",
 					);
-					rememberInitialPage(response);
-					dispatch({ type: "UPSERT_SESSION", session: response.session });
-					dispatchSessionMeta(dispatch, sessionId, response);
 					return response.session;
 				}
-				return null;
+				return sessionsByIdRef.current[sessionId] ?? null;
 			} catch (e) {
 				await setSessionError(
 					dispatch,
@@ -845,7 +919,7 @@ export function useAgentChat(
 				throw e;
 			}
 		},
-		[rememberInitialPage],
+		[readSessionFromAuthority],
 	);
 
 	const loadOlderMessages = useCallback(
@@ -927,10 +1001,21 @@ export function useAgentChat(
 
 	const interrupt = useCallback((sessionId: string) => {
 		if (!sessionId) return;
+		const session = sessionsByIdRef.current[sessionId];
+		if (!session?.sessionRevision || !session.activeTurnId) {
+			console.error(
+				"Cannot stop a session without a durable revision and turn identity",
+			);
+			return;
+		}
 		// 楽観的に interrupting 状態へ。turn が idle になった時点で reducer が
 		// 自動クリアする。これで停止押下が即座に UI へ反映される。
 		dispatch({ type: "SET_INTERRUPTING", sessionId, value: true });
-		invoke("interrupt_agent_query", { chatSessionId: sessionId }).catch((e) => {
+		requestAgentStop(
+			sessionId,
+			session.activeTurnId,
+			session.sessionRevision,
+		).catch((e) => {
 			console.error("Failed to interrupt agent query:", e);
 			// 送信自体に失敗したら楽観フラグを戻す。
 			dispatch({ type: "SET_INTERRUPTING", sessionId, value: false });
@@ -1045,7 +1130,8 @@ export function useAgentChat(
 										images,
 										mentions,
 									);
-				const responseSessionId = response.session.id;
+				if (response.type !== "accepted") return false;
+				const responseSessionId = response.operation.receipt.session_id;
 				await clearSessionError(
 					dispatch,
 					sessionNoticeRequestControllersRef,
@@ -1053,42 +1139,19 @@ export function useAgentChat(
 					"send",
 				);
 				touchSessionAccess(responseSessionId);
-				dispatch({ type: "UPSERT_SESSION", session: response.session });
-				if (!response.queuedTurn) {
-					dispatchWithMessageWindowTracking({
-						type: "ADD_MESSAGE",
-						sessionId: responseSessionId,
-						message: response.humanMessage,
-					});
-					if (response.agentMessage) {
-						dispatchWithMessageWindowTracking({
-							type: "ADD_MESSAGE",
-							sessionId: responseSessionId,
-							message: response.agentMessage,
-						});
-					}
-				}
-				dispatch({
-					type: "SET_PENDING_QUEUE",
-					sessionId: responseSessionId,
-					queue: response.pendingQueue,
+				// Accepted is the composer-clear boundary. Projection refresh is
+				// a readback only; failure never restores or automatically resends input.
+				void readSessionFromAuthority(responseSessionId, {
+					refreshWorkspace: true,
+				}).catch((error) => {
+					console.error("Failed to read accepted send projection:", error);
 				});
-				dispatch({
-					type: "SET_CAN_CHANGE_BACKEND",
-					sessionId: responseSessionId,
-					value: response.canChangeBackend,
-				});
-				// 新規作成 session の場合、active を切り替える（既存 sessionId 指定で送った場合は
-				// active を変更しない — Workflow panel から node session に送ったときに Main の
-				// active を上書きしないため）。
 				if (sessionId === null && options?.activateNewSession !== false) {
 					dispatch({
 						type: "SET_ACTIVE_SESSION_ID",
 						sessionId: responseSessionId,
 					});
 				}
-				dispatch({ type: "SET_SESSIONS", sessions: response.sessions });
-				dispatchWorkspaceTreeRefresh(response.session.worktreePath);
 				return true;
 			} catch (e) {
 				await setSessionError(
@@ -1102,9 +1165,9 @@ export function useAgentChat(
 			}
 		},
 		[
-			dispatchWithMessageWindowTracking,
 			resolvePermissionModeForSessionRef,
 			resolvePlanModeForSessionRef,
+			readSessionFromAuthority,
 			touchSessionAccess,
 		],
 	);
@@ -1180,12 +1243,6 @@ export function useAgentChat(
 				return;
 			}
 
-			await syncSessionError(
-				dispatch,
-				sessionNoticeRequestControllersRef,
-				sessionId,
-				{ action: "remove_session" },
-			);
 			cleanupSessionMirror(
 				dispatch,
 				sessionsByIdRef,
@@ -1201,15 +1258,15 @@ export function useAgentChat(
 						: null;
 				if (nextSession) {
 					try {
-						const response = await getSession(nextSession.id);
+						const { response } = await readSessionFromAuthority(
+							nextSession.id,
+							{ resetMessageWindow: true },
+						);
 						if (response) {
-							rememberInitialPage(response);
-							dispatch({ type: "UPSERT_SESSION", session: response.session });
 							dispatch({
 								type: "SET_ACTIVE_SESSION_ID",
 								sessionId: response.session.id,
 							});
-							dispatchSessionMeta(dispatch, nextSession.id, response);
 						} else {
 							dispatch({ type: "SET_ACTIVE_SESSION_ID", sessionId: null });
 						}
@@ -1231,7 +1288,7 @@ export function useAgentChat(
 			await refreshSessions();
 			await refreshClosedSessions();
 		},
-		[refreshSessions, refreshClosedSessions, rememberInitialPage],
+		[refreshSessions, refreshClosedSessions, readSessionFromAuthority],
 	);
 
 	const closeSessionFn = useCallback(
@@ -1247,10 +1304,8 @@ export function useAgentChat(
 
 	const restoreSessionFn = useCallback(
 		async (sessionId: string) => {
-			let restoredWorkflowNode = false;
 			try {
-				const restoreResult = await restoreSessionApi(sessionId);
-				restoredWorkflowNode = restoreResult.restoredWorkflowNode === true;
+				await restoreSessionApi(sessionId);
 			} catch (e) {
 				await setSessionError(
 					dispatch,
@@ -1268,27 +1323,14 @@ export function useAgentChat(
 				"restore_session",
 			);
 			try {
-				const response = await getSession(sessionId);
+				const { response } = await readSessionFromAuthority(sessionId, {
+					resetMessageWindow: true,
+				});
 				if (response) {
-					rememberInitialPage(response);
-					dispatch({ type: "UPSERT_SESSION", session: response.session });
 					dispatch({
 						type: "SET_ACTIVE_SESSION_ID",
 						sessionId: response.session.id,
 					});
-					dispatchSessionMeta(dispatch, sessionId, response);
-					if (
-						!restoredWorkflowNode &&
-						(response.session.messages.length > 0 ||
-							response.session.agentSessionId)
-					) {
-						startAgentProcess(
-							sessionId,
-							worktreePathRef.current,
-							response.session.permissionMode,
-							response.session.planMode ?? false,
-						);
-					}
 				} else {
 					dispatch({ type: "SET_ACTIVE_SESSION_ID", sessionId: null });
 				}
@@ -1304,19 +1346,13 @@ export function useAgentChat(
 			await refreshSessions();
 			await refreshClosedSessions();
 		},
-		[refreshSessions, refreshClosedSessions, rememberInitialPage],
+		[refreshSessions, refreshClosedSessions, readSessionFromAuthority],
 	);
 
 	const archiveSessionFn = useCallback(
 		async (sessionId: string) => {
 			try {
 				await archiveSessionApi(sessionId);
-				await syncSessionError(
-					dispatch,
-					sessionNoticeRequestControllersRef,
-					sessionId,
-					{ action: "remove_session" },
-				);
 				await refreshClosedSessions();
 			} catch (e) {
 				await setSessionError(
@@ -1371,12 +1407,9 @@ export function useAgentChat(
 				"fork_session",
 			);
 			try {
-				const response = await getSession(forked.id);
-				if (response) {
-					rememberInitialPage(response);
-					dispatch({ type: "UPSERT_SESSION", session: response.session });
-					dispatchSessionMeta(dispatch, response.session.id, response);
-				}
+				await readSessionFromAuthority(forked.id, {
+					resetMessageWindow: true,
+				});
 			} catch (e) {
 				await setSessionError(
 					dispatch,
@@ -1388,7 +1421,7 @@ export function useAgentChat(
 			}
 			await refreshSessions();
 		},
-		[refreshSessions, rememberInitialPage],
+		[refreshSessions, readSessionFromAuthority],
 	);
 
 	const setSessionTitleFn = useCallback(
@@ -1440,12 +1473,13 @@ export function useAgentChat(
 						permissionModeRef.current,
 						backendId,
 					);
-			const response = await getSession(session.id);
+			const { response } = await readSessionFromAuthority(session.id, {
+				resetMessageWindow: true,
+			});
 			const activeSession = response?.session ?? session;
-			if (response) {
-				rememberInitialPage(response);
+			if (!response) {
+				dispatch({ type: "UPSERT_SESSION", session: activeSession });
 			}
-			dispatch({ type: "UPSERT_SESSION", session: activeSession });
 			dispatch({
 				type: "SET_ACTIVE_SESSION_ID",
 				sessionId: activeSession.id,
@@ -1455,16 +1489,13 @@ export function useAgentChat(
 				sessionId: activeSession.id,
 				mode: activeSession.permissionMode,
 			});
-			if (response) {
-				dispatchSessionMeta(dispatch, session.id, response);
-			}
 			await refreshSessions();
 			return activeSession.id;
 		} catch (error) {
 			console.error("Failed to create agent session:", error);
 			return null;
 		}
-	}, [refreshSessions, rememberInitialPage]);
+	}, [refreshSessions, readSessionFromAuthority]);
 
 	const createNewWorkspaceSession = useCallback(
 		async (requestId: string): Promise<string> => {
@@ -1483,13 +1514,13 @@ export function useAgentChat(
 				backendId,
 				modelId,
 			);
-			const response = await getSession(sessionId);
+			const { response } = await readSessionFromAuthority(sessionId, {
+				resetMessageWindow: true,
+			});
 			if (!response) {
 				throw new Error(`Created Session is unavailable: ${sessionId}`);
 			}
 			const activeSession = response.session;
-			rememberInitialPage(response);
-			dispatch({ type: "UPSERT_SESSION", session: activeSession });
 			dispatch({
 				type: "SET_ACTIVE_SESSION_ID",
 				sessionId: activeSession.id,
@@ -1499,11 +1530,10 @@ export function useAgentChat(
 				sessionId: activeSession.id,
 				mode: activeSession.permissionMode,
 			});
-			dispatchSessionMeta(dispatch, activeSession.id, response);
 			await refreshSessions();
 			return activeSession.id;
 		},
-		[refreshSessions, rememberInitialPage],
+		[refreshSessions, readSessionFromAuthority],
 	);
 
 	const reorderSessions = useCallback((sessionOrder: string[]) => {
@@ -1517,18 +1547,24 @@ export function useAgentChat(
 			// 以外の pane 操作で単一 session 表示用の mode を上書きしない。
 			const isViewable =
 				sessionId === null || viewableIdsRef.current.has(sessionId);
-			if (isViewable) {
-				dispatch({ type: "SET_PERMISSION_MODE", sessionId, mode });
+			if (!sessionId) {
+				if (isViewable) {
+					dispatch({ type: "SET_PERMISSION_MODE", sessionId, mode });
+				}
+				return;
 			}
-			// Persist to Rust and sync to Bridge
-			if (sessionId) {
-				invoke("set_agent_permission_mode", {
-					chatSessionId: sessionId,
-					permissionMode: mode,
-				}).catch((e) => {
+			invoke("set_agent_permission_mode", {
+				chatSessionId: sessionId,
+				permissionMode: mode,
+			})
+				.then(() => {
+					if (isViewable) {
+						dispatch({ type: "SET_PERMISSION_MODE", sessionId, mode });
+					}
+				})
+				.catch((e) => {
 					console.error("Failed to set agent permission mode:", e);
 				});
-			}
 		},
 		[],
 	);
@@ -1537,17 +1573,24 @@ export function useAgentChat(
 		(sessionId: string | null, enabled: PlanMode) => {
 			const isViewable =
 				sessionId === null || viewableIdsRef.current.has(sessionId);
-			if (isViewable) {
-				dispatch({ type: "SET_PLAN_MODE", sessionId, enabled });
+			if (!sessionId) {
+				if (isViewable) {
+					dispatch({ type: "SET_PLAN_MODE", sessionId, enabled });
+				}
+				return;
 			}
-			if (sessionId) {
-				invoke("set_agent_plan_mode", {
-					chatSessionId: sessionId,
-					planMode: enabled,
-				}).catch((e) => {
+			invoke("set_agent_plan_mode", {
+				chatSessionId: sessionId,
+				planMode: enabled,
+			})
+				.then(() => {
+					if (isViewable) {
+						dispatch({ type: "SET_PLAN_MODE", sessionId, enabled });
+					}
+				})
+				.catch((e) => {
 					console.error("Failed to set agent plan mode:", e);
 				});
-			}
 		},
 		[],
 	);
@@ -1560,14 +1603,19 @@ export function useAgentChat(
 			updatedInput?: Record<string, unknown>,
 		) => {
 			if (!sessionId) return;
-			invoke("respond_agent_permission", {
-				chatSessionId: sessionId,
-				requestId,
-				behavior: allow ? "allow" : "deny",
-				message: allow ? null : "User denied",
-				updatedInput: updatedInput ? JSON.stringify(updatedInput) : null,
-			})
-				.then(async () => {
+			respondAgentPermission(sessionId, requestId, allow, updatedInput)
+				.then(async (result) => {
+					const status = result.operation.latest_status.type;
+					if (status === "reconciliation_required" || status === "failed") {
+						await setSessionError(
+							dispatch,
+							sessionNoticeRequestControllersRef,
+							sessionId,
+							"respond_permission",
+							`パーミッション応答は ${status} です`,
+						);
+						return;
+					}
 					await clearSessionError(
 						dispatch,
 						sessionNoticeRequestControllersRef,
@@ -1601,47 +1649,17 @@ export function useAgentChat(
 		const selectedBackend = selectedModel
 			? getModelInfoBackend(selectedModel)
 			: "";
-		const currentBackend = sessionsByIdRef.current[sessionId]?.backendId ?? "";
-		const persistSelectedModel = () =>
-			invoke("set_agent_model", {
-				chatSessionId: sessionId,
-				modelId: normalizedModelId,
-			});
-
-		if (
-			selectedBackend &&
-			currentBackend &&
-			selectedBackend !== currentBackend
-		) {
-			void persistSelectedModel()
-				.then(async () => {
-					await clearSessionError(
-						dispatch,
-						sessionNoticeRequestControllersRef,
-						sessionId,
-						"set_backend",
-					);
-					dispatch({
-						type: "SET_SESSION_MODEL",
-						sessionId,
-						modelId: normalizedModelId,
-						backendId: selectedBackend,
-					});
-				})
-				.catch(async (e) => {
-					await setSessionError(
-						dispatch,
-						sessionNoticeRequestControllersRef,
-						sessionId,
-						"set_backend",
-						`Agent の変更に失敗: ${e}`,
-					);
-				});
-			return;
-		}
-
-		persistSelectedModel()
-			.then(() => {
+		invoke("set_agent_model", {
+			chatSessionId: sessionId,
+			modelId: normalizedModelId,
+		})
+			.then(async () => {
+				await clearSessionError(
+					dispatch,
+					sessionNoticeRequestControllersRef,
+					sessionId,
+					"set_backend",
+				);
 				dispatch({
 					type: "SET_SESSION_MODEL",
 					sessionId,
@@ -1649,8 +1667,14 @@ export function useAgentChat(
 					backendId: selectedBackend || undefined,
 				});
 			})
-			.catch((e) => {
-				console.error("Failed to set agent model:", e);
+			.catch(async (e) => {
+				await setSessionError(
+					dispatch,
+					sessionNoticeRequestControllersRef,
+					sessionId,
+					"set_backend",
+					`モデルの変更に失敗: ${e}`,
+				);
 			});
 	}, []);
 
@@ -1685,8 +1709,7 @@ export function useAgentChat(
 						"set_backend",
 					);
 					if (activeSessionIdRef.current === sessionId) {
-						dispatch({ type: "UPSERT_SESSION", session: response.session });
-						dispatchSessionMeta(dispatch, sessionId, response);
+						applyDisplayWindow(response);
 					}
 				})
 				.catch(async (e) => {
@@ -1699,7 +1722,7 @@ export function useAgentChat(
 					);
 				});
 		},
-		[],
+		[applyDisplayWindow],
 	);
 
 	const getStreamingDeltaDropReason = useCallback(
@@ -1712,11 +1735,25 @@ export function useAgentChat(
 		},
 		[],
 	);
+	const onDisplayWindowListenerReady = useCallback(() => {
+		displayWindowListenerReadyRef.current = true;
+		const completedReads =
+			displayWindowReadsCompletedBeforeListenerReadyRef.current;
+		displayWindowReadsCompletedBeforeListenerReadyRef.current = new Set();
+		for (const sessionId of completedReads) {
+			if (viewableIdsRef.current.has(sessionId)) {
+				void refreshDisplayedSession(sessionId);
+			}
+		}
+	}, [refreshDisplayedSession]);
 
 	useAgentSdkListeners({
 		dispatch: dispatchWithMessageWindowTracking,
 		viewableRegistry,
 		refreshSessions,
+		refreshDisplayedSession,
+		applyDisplayWindow,
+		onDisplayWindowListenerReady,
 		getStreamingDeltaDropReason,
 		worktreePath,
 	});
@@ -1761,8 +1798,17 @@ export function useAgentChat(
 	}, []);
 
 	const initSessions = useCallback(async () => {
+		const initGeneration = initSessionsGenerationRef.current + 1;
+		initSessionsGenerationRef.current = initGeneration;
+		const requestedWorktreePath = worktreePathRef.current;
 		try {
-			const response = await initAgentSessions(worktreePathRef.current);
+			const response = await initAgentSessions(requestedWorktreePath);
+			if (
+				initSessionsGenerationRef.current !== initGeneration ||
+				worktreePathRef.current !== requestedWorktreePath
+			) {
+				return;
+			}
 			dispatch({ type: "SET_SESSIONS", sessions: response.sessions });
 			dispatch({
 				type: "SET_PERMISSION_MODE",
@@ -1773,25 +1819,19 @@ export function useAgentChat(
 				enabled: response.planMode ?? false,
 			});
 			if (response.activeSession) {
-				rememberInitialPage(response.activeSession);
-				dispatch({
-					type: "UPSERT_SESSION",
-					session: response.activeSession.session,
-				});
+				const sessionId = response.activeSession.session.id;
+				if (!sessionsByIdRef.current[sessionId]) {
+					applyDisplayWindow(response.activeSession);
+				}
 				dispatch({
 					type: "SET_ACTIVE_SESSION_ID",
-					sessionId: response.activeSession.session.id,
+					sessionId,
 				});
-				dispatchSessionMeta(
-					dispatch,
-					response.activeSession.session.id,
-					response.activeSession,
-				);
 			}
 		} catch (error) {
 			console.error("Failed to initialize agent sessions:", error);
 		}
-	}, [rememberInitialPage]);
+	}, [applyDisplayWindow]);
 
 	// Load sessions and backends on mount
 	useEffect(() => {

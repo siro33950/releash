@@ -69,6 +69,40 @@ pub enum PermissionDecision {
     Cancelled,
 }
 
+/// Presentation state of a permission request embedded in a canonical message part.
+///
+/// This is deliberately separate from [`PermissionRequestStatus`]: the request owns
+/// provider permission semantics, while a message part owns the stable read-model
+/// state and any answers displayed with that request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionPartStatus {
+    Pending,
+    Allowed,
+    Denied,
+    Cancelled,
+}
+
+impl PermissionPartStatus {
+    pub fn from_wire(status: &str) -> Option<Self> {
+        match status {
+            "pending" => Some(Self::Pending),
+            "allowed" | "allow" => Some(Self::Allowed),
+            "denied" | "deny" => Some(Self::Denied),
+            "cancelled" | "canceled" => Some(Self::Cancelled),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Allowed => "allowed",
+            Self::Denied => "denied",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PermissionResponse {
     pub request_id: String,

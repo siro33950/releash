@@ -12,6 +12,7 @@ use crate::adaptor::gateway::workflow::schema::WorkflowDefinitionYaml;
 use crate::domain::workflow::services::routing::LoopGuardResetBaselines;
 use crate::domain::workflow::{
     ExecutionOrigin, ExecutionStatus, NodeExecution, NodeExecutionStatus, TokenUsage,
+    WorkflowExecution as DomainWorkflowExecution,
 };
 
 #[derive(Debug, Clone)]
@@ -44,6 +45,88 @@ pub(crate) struct ResumeProjection {
     pub(crate) confirmed_fanout_children: Vec<ConfirmedFanoutChild>,
 }
 
+/// Canonical active execution shape used to finish a turn-completion handoff
+/// that survived an application restart. This deliberately carries only
+/// event-projected state; no runtime-local session/command state is trusted.
+#[derive(Debug, Clone)]
+pub(crate) struct ActiveTurnCompletionProjection {
+    pub(crate) execution_id: String,
+    pub(crate) workflow: WorkflowDefinitionYaml,
+    pub(crate) worktree_path: String,
+    pub(crate) request: String,
+    pub(crate) permission_mode: String,
+    pub(crate) created_from: ExecutionOrigin,
+    pub(crate) started_at: f64,
+    pub(crate) node_execution_counts: HashMap<String, u32>,
+    pub(crate) loop_guard_reset_baselines: LoopGuardResetBaselines,
+    pub(crate) projected_execution: DomainWorkflowExecution,
+}
+
+#[derive(Debug, Clone)]
+struct ExecutionStartSnapshot {
+    workflow: WorkflowDefinitionYaml,
+    worktree_path: String,
+    request: String,
+    permission_mode: String,
+    created_from: ExecutionOrigin,
+    started_at: f64,
+}
+
+fn unique_execution_start(
+    execution_id: &str,
+    events: &[WorkflowEvent],
+) -> Result<ExecutionStartSnapshot, String> {
+    let starts = events
+        .iter()
+        .filter_map(|event| match event {
+            WorkflowEvent::ExecutionStarted {
+                definition,
+                worktree_path,
+                request,
+                permission_mode,
+                created_from,
+                timestamp,
+                ..
+            } => Some(ExecutionStartSnapshot {
+                workflow: definition.clone(),
+                worktree_path: worktree_path.clone(),
+                request: request.clone(),
+                permission_mode: permission_mode.clone(),
+                created_from: *created_from,
+                started_at: *timestamp,
+            }),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let [start] = starts.as_slice() else {
+        return Err(format!(
+            "execution {execution_id} must contain exactly one execution_started event"
+        ));
+    };
+    Ok(start.clone())
+}
+
+pub(crate) fn project_turn_completion_checkpoint(
+    execution_id: &str,
+    events: &[WorkflowEvent],
+) -> Result<ActiveTurnCompletionProjection, String> {
+    let projection = project_retained_workflow_execution(execution_id, events)?
+        .ok_or_else(|| format!("execution {execution_id} has no execution_started event"))?;
+    let start = unique_execution_start(execution_id, events)?;
+    Ok(ActiveTurnCompletionProjection {
+        execution_id: execution_id.to_string(),
+        workflow: start.workflow,
+        worktree_path: start.worktree_path,
+        request: start.request,
+        permission_mode: start.permission_mode,
+        created_from: start.created_from,
+        started_at: start.started_at,
+        node_execution_counts: projection.node_execution_counts,
+        loop_guard_reset_baselines: projection.loop_guard_reset_baselines,
+        projected_execution: projection.execution,
+    })
+}
+
 pub(crate) fn project_resume_checkpoint(
     execution_id: &str,
     events: &[WorkflowEvent],
@@ -61,35 +144,7 @@ pub(crate) fn project_resume_checkpoint(
         format!("execution {execution_id} has no resumable NodeExecution checkpoint")
     })?;
 
-    let starts = events
-        .iter()
-        .filter_map(|event| match event {
-            WorkflowEvent::ExecutionStarted {
-                definition,
-                worktree_path,
-                request,
-                permission_mode,
-                created_from,
-                timestamp,
-                ..
-            } => Some((
-                definition,
-                worktree_path,
-                request,
-                permission_mode,
-                *created_from,
-                *timestamp,
-            )),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    let [(workflow, worktree_path, request, permission_mode, created_from, started_at)] =
-        starts.as_slice()
-    else {
-        return Err(format!(
-            "execution {execution_id} must contain exactly one execution_started event"
-        ));
-    };
+    let start = unique_execution_start(execution_id, events)?;
 
     let mut confirmed_top_level_nodes = execution
         .node_executions
@@ -204,12 +259,12 @@ pub(crate) fn project_resume_checkpoint(
 
     Ok(ResumeProjection {
         execution_id: execution_id.to_string(),
-        workflow: (*workflow).clone(),
-        worktree_path: (*worktree_path).clone(),
-        request: (*request).clone(),
-        permission_mode: (*permission_mode).clone(),
-        created_from: *created_from,
-        started_at: *started_at,
+        workflow: start.workflow,
+        worktree_path: start.worktree_path,
+        request: start.request,
+        permission_mode: start.permission_mode,
+        created_from: start.created_from,
+        started_at: start.started_at,
         resume_from_node,
         node_execution_counts: projection.node_execution_counts,
         loop_guard_reset_baselines: projection.loop_guard_reset_baselines,

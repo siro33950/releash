@@ -1,16 +1,64 @@
 use serde::Serialize;
 use tauri::Emitter;
 
+use crate::adaptor::protocol::agent::MessagePartDtoV1;
+use crate::adaptor::protocol::agent_session_v1::{
+    ChatMessageDtoV1, ChatSessionDtoV1, GetSessionResponseDtoV1,
+};
 use crate::adaptor::protocol::{AgentSupportedCommandMsg, AgentSupportedCommandsUpdated};
 use crate::usecase::agent_session::runtime::ports::{
     AgentSessionEventNotifier, AgentSessionStateChangedPayload, AgentStallObservedPayload,
     AgentStreamingDeltaPayload,
 };
 use crate::usecase::agent_session::session::{
-    project_tool_output_parts_for_stream, ChatMessage, ChatSession, ContextCarryState, ModelInfo,
-    PermissionRequestMsg, SessionState, TokenUsage,
+    project_tool_output_parts_for_stream, ChatMessage, ChatSession, ContextCarryState,
+    GetSessionResponse, ModelInfo, PermissionRequestMsg, SessionState, TokenUsage,
 };
 use crate::usecase::agent_session::status::{SessionNotice, TurnPhase};
+
+pub(crate) fn permission_response_outcome(
+    value: crate::usecase::agent_session::operation::PermissionResponseCommandOutcome,
+) -> crate::adaptor::protocol::agent_session_v1::PermissionResponseCommandOutcomeDtoV1 {
+    value.into()
+}
+
+pub(crate) fn permission_response_operation(
+    value: crate::usecase::agent_session::operation::AcceptedPermissionResponseOperation,
+) -> crate::adaptor::protocol::agent_session_v1::PermissionResponseOperationViewDtoV1 {
+    value.into()
+}
+
+pub(crate) fn permission_response_command_error(
+    value: crate::usecase::agent_session::operation::PermissionResponseOperationError,
+) -> crate::adaptor::protocol::agent_session_v1::PermissionResponseCommandErrorDtoV1 {
+    use crate::adaptor::protocol::agent_session_v1::PermissionResponseCommandErrorDtoV1 as D;
+    use crate::usecase::agent_session::operation::PermissionResponseOperationError as E;
+    match value {
+        E::InvalidRequest => D::InvalidRequest,
+        E::PayloadConflict => D::PayloadConflict,
+        E::ShutdownInProgress => D::ShutdownInProgress,
+        E::NotFound => D::NotFound,
+        E::CapacityExceeded => D::CapacityExceeded,
+        E::Internal { correlation_id } => D::Internal { correlation_id },
+    }
+}
+
+pub(crate) fn permission_response_lookup_error(
+    value: crate::usecase::agent_session::operation::GetPermissionResponseOperationError,
+) -> crate::adaptor::protocol::agent_session_v1::PermissionResponseLookupErrorDtoV1 {
+    use crate::adaptor::protocol::agent_session_v1::PermissionResponseLookupErrorDtoV1 as D;
+    use crate::usecase::agent_session::operation::GetPermissionResponseOperationError as E;
+    match value {
+        E::InvalidRequest => D::InvalidRequest,
+        E::NotFound => D::NotFound,
+        E::QueryBusy => D::QueryBusy,
+        E::DeadlineExceeded => D::DeadlineExceeded,
+        E::StorageUnavailable { failure } => D::StorageUnavailable {
+            failure: failure.into(),
+        },
+        E::Internal { correlation_id } => D::Internal { correlation_id },
+    }
+}
 
 pub(crate) struct TauriAgentSessionEventNotifier {
     app: tauri::AppHandle,
@@ -23,11 +71,11 @@ impl TauriAgentSessionEventNotifier {
 }
 
 #[derive(Clone, Serialize)]
-struct AgentTurnPreparedPayload<'a> {
-    chat_session_id: &'a str,
-    session: &'a ChatSession,
-    human_message: &'a ChatMessage,
-    agent_message: &'a ChatMessage,
+struct AgentTurnPreparedPayload {
+    chat_session_id: String,
+    session: ChatSessionDtoV1,
+    human_message: ChatMessageDtoV1,
+    agent_message: ChatMessageDtoV1,
 }
 
 #[derive(Clone, Serialize)]
@@ -42,15 +90,15 @@ struct AgentSessionStateChangedEventPayload {
     queue_paused: Option<bool>,
     pending_permission_request: Option<PermissionRequestMsg>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pending_permission_state_revision: Option<u64>,
+    pending_permission_state_revision: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
 struct AgentStallObservedEventPayload {
     chat_session_id: String,
     turn_phase: TurnPhase,
-    idle_secs: u64,
-    signal_count: u32,
+    idle_secs: String,
+    signal_count: String,
     cap_reached: bool,
 }
 
@@ -64,7 +112,27 @@ struct AgentStallClearedEventPayload<'a> {
 struct AgentTurnUsageUpdatedPayload {
     #[serde(rename = "chatSessionId")]
     chat_session_id: String,
-    token_usage: TokenUsage,
+    token_usage: AgentTurnUsageDtoV1,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentTurnUsageDtoV1 {
+    input_tokens: String,
+    output_tokens: String,
+    total_tokens: Option<String>,
+    context_window_tokens: Option<String>,
+}
+
+impl From<TokenUsage> for AgentTurnUsageDtoV1 {
+    fn from(value: TokenUsage) -> Self {
+        Self {
+            input_tokens: value.input_tokens.to_string(),
+            output_tokens: value.output_tokens.to_string(),
+            total_tokens: value.total_tokens.map(|tokens| tokens.to_string()),
+            context_window_tokens: value.context_window_tokens.map(|tokens| tokens.to_string()),
+        }
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -92,13 +160,32 @@ struct AgentSessionContextCarryUpdatedPayload {
 struct AgentPendingMessageConsumedPayload {
     chat_session_id: String,
     queued_turn_id: Option<String>,
-    human_message: Option<ChatMessage>,
-    agent_message: ChatMessage,
+    human_message: Option<ChatMessageDtoV1>,
+    agent_message: ChatMessageDtoV1,
+}
+
+#[derive(Clone, Serialize)]
+struct AgentStreamingDeltaEventPayload {
+    chat_session_id: String,
+    message_id: String,
+    seq: String,
+    snapshot: bool,
+    parts: Vec<MessagePartDtoV1>,
+    message: Option<ChatMessageDtoV1>,
 }
 
 impl AgentSessionEventNotifier for TauriAgentSessionEventNotifier {
     fn persist_notice(&self, notice: SessionNotice) {
         let _ = self.app.emit("agent-session-notice", notice);
+    }
+
+    fn display_window_updated(&self, response: &GetSessionResponse) -> bool {
+        self.app
+            .emit(
+                "agent-session-display-window-updated",
+                GetSessionResponseDtoV1::from(response.clone()),
+            )
+            .is_ok()
     }
 
     fn session_state_changed(&self, payload: AgentSessionStateChangedPayload) {
@@ -113,7 +200,9 @@ impl AgentSessionEventNotifier for TauriAgentSessionEventNotifier {
                 session_state: payload.session_state,
                 queue_paused: payload.queue_paused,
                 pending_permission_request: payload.pending_permission_request,
-                pending_permission_state_revision: payload.pending_permission_state_revision,
+                pending_permission_state_revision: payload
+                    .pending_permission_state_revision
+                    .map(|revision| revision.to_string()),
             },
         );
     }
@@ -124,8 +213,8 @@ impl AgentSessionEventNotifier for TauriAgentSessionEventNotifier {
             AgentStallObservedEventPayload {
                 chat_session_id: payload.chat_session_id,
                 turn_phase: payload.turn_phase,
-                idle_secs: payload.idle_secs,
-                signal_count: payload.signal_count,
+                idle_secs: payload.idle_secs.to_string(),
+                signal_count: payload.signal_count.to_string(),
                 cap_reached: payload.cap_reached,
             },
         );
@@ -141,18 +230,21 @@ impl AgentSessionEventNotifier for TauriAgentSessionEventNotifier {
     }
 
     fn streaming_delta(&self, payload: AgentStreamingDeltaPayload) -> bool {
-        let parts = project_tool_output_parts_for_stream(&payload.parts);
+        let parts = project_tool_output_parts_for_stream(&payload.parts)
+            .iter()
+            .map(MessagePartDtoV1::from)
+            .collect();
         self.app
             .emit(
                 "agent-streaming-delta",
-                serde_json::json!({
-                    "chat_session_id": payload.chat_session_id,
-                    "message_id": payload.message_id,
-                    "seq": payload.seq,
-                    "snapshot": payload.snapshot,
-                    "parts": parts,
-                    "message": payload.message,
-                }),
+                AgentStreamingDeltaEventPayload {
+                    chat_session_id: payload.chat_session_id,
+                    message_id: payload.message_id,
+                    seq: payload.seq.to_string(),
+                    snapshot: payload.snapshot,
+                    parts,
+                    message: payload.message.map(Into::into),
+                },
             )
             .is_ok()
     }
@@ -181,7 +273,7 @@ impl AgentSessionEventNotifier for TauriAgentSessionEventNotifier {
             "agent-turn-usage-updated",
             AgentTurnUsageUpdatedPayload {
                 chat_session_id: session_id.to_string(),
-                token_usage,
+                token_usage: token_usage.into(),
             },
         );
     }
@@ -242,8 +334,8 @@ impl AgentSessionEventNotifier for TauriAgentSessionEventNotifier {
             AgentPendingMessageConsumedPayload {
                 chat_session_id: session_id.to_string(),
                 queued_turn_id,
-                human_message,
-                agent_message,
+                human_message: human_message.map(Into::into),
+                agent_message: agent_message.into(),
             },
         );
     }
@@ -257,10 +349,10 @@ impl AgentSessionEventNotifier for TauriAgentSessionEventNotifier {
         let _ = self.app.emit(
             "agent-turn-prepared",
             AgentTurnPreparedPayload {
-                chat_session_id: &session.id,
-                session,
-                human_message,
-                agent_message,
+                chat_session_id: session.id.clone(),
+                session: session.into(),
+                human_message: human_message.into(),
+                agent_message: agent_message.into(),
             },
         );
     }
@@ -315,10 +407,10 @@ mod tests {
         let agent = message("agent-1", MessageRole::Agent);
 
         let value = serde_json::to_value(AgentTurnPreparedPayload {
-            chat_session_id: &session.id,
-            session: &session,
-            human_message: &human,
-            agent_message: &agent,
+            chat_session_id: session.id.clone(),
+            session: (&session).into(),
+            human_message: (&human).into(),
+            agent_message: (&agent).into(),
         })
         .unwrap();
 
@@ -328,7 +420,7 @@ mod tests {
     }
 
     #[test]
-    fn serializes_session_state_changed_payload() {
+    fn b075_serializes_session_state_changed_revision_as_a_decimal_string() {
         let value = serde_json::to_value(AgentSessionStateChangedEventPayload {
             chat_session_id: "session-1".to_string(),
             turn_phase: TurnPhase::WaitingPermission,
@@ -351,7 +443,7 @@ mod tests {
                 description: None,
                 decision_reason: None,
             }),
-            pending_permission_state_revision: Some(7),
+            pending_permission_state_revision: Some(i64::MAX.to_string()),
         })
         .unwrap();
 
@@ -360,24 +452,28 @@ mod tests {
         assert_eq!(value["turn_phase"], "waiting_permission");
         assert_eq!(value["session_state"], "error");
         assert_eq!(value["pending_permission_request"]["kind"], "tool_approval");
-        assert_eq!(value["pending_permission_state_revision"], 7);
+        assert_eq!(
+            value["pending_permission_state_revision"],
+            i64::MAX.to_string()
+        );
+        assert_eq!(value["exit_code"], 1);
     }
 
     #[test]
-    fn serializes_stall_observed_payload() {
+    fn b075_serializes_stall_counts_as_decimal_strings() {
         let value = serde_json::to_value(AgentStallObservedEventPayload {
             chat_session_id: "session-1".to_string(),
             turn_phase: TurnPhase::Streaming,
-            idle_secs: 180,
-            signal_count: 3,
+            idle_secs: i64::MAX.to_string(),
+            signal_count: i64::MAX.to_string(),
             cap_reached: true,
         })
         .unwrap();
 
         assert_eq!(value["chat_session_id"], "session-1");
         assert_eq!(value["turn_phase"], "streaming");
-        assert_eq!(value["idle_secs"], 180);
-        assert_eq!(value["signal_count"], 3);
+        assert_eq!(value["idle_secs"], i64::MAX.to_string());
+        assert_eq!(value["signal_count"], i64::MAX.to_string());
         assert_eq!(value["cap_reached"], true);
     }
 
@@ -392,21 +488,42 @@ mod tests {
     }
 
     #[test]
-    fn serializes_usage_payload_with_legacy_chat_session_id_key() {
+    fn b075_serializes_usage_counts_as_decimal_strings_with_legacy_keys() {
         let value = serde_json::to_value(AgentTurnUsageUpdatedPayload {
             chat_session_id: "session-1".to_string(),
-            token_usage: TokenUsage {
-                input_tokens: 1,
-                output_tokens: 2,
-                total_tokens: Some(3),
-                context_window_tokens: None,
-            },
+            token_usage: AgentTurnUsageDtoV1::from(TokenUsage {
+                input_tokens: i64::MAX as u64,
+                output_tokens: i64::MAX as u64,
+                total_tokens: Some(i64::MAX as u64),
+                context_window_tokens: Some(i64::MAX as u64),
+            }),
         })
         .unwrap();
 
         assert_eq!(value["chatSessionId"], "session-1");
-        assert_eq!(value["tokenUsage"]["inputTokens"], 1);
-        assert!(value["tokenUsage"].get("contextWindowTokens").is_none());
+        for field in [
+            "inputTokens",
+            "outputTokens",
+            "totalTokens",
+            "contextWindowTokens",
+        ] {
+            assert_eq!(value["tokenUsage"][field], i64::MAX.to_string(), "{field}");
+        }
+    }
+
+    #[test]
+    fn b075_serializes_stream_sequence_as_a_decimal_string() {
+        let value = serde_json::to_value(AgentStreamingDeltaEventPayload {
+            chat_session_id: "session-1".to_string(),
+            message_id: "message-1".to_string(),
+            seq: i64::MAX.to_string(),
+            snapshot: false,
+            parts: Vec::new(),
+            message: None,
+        })
+        .unwrap();
+
+        assert_eq!(value["seq"], i64::MAX.to_string());
     }
 
     #[test]
@@ -446,8 +563,8 @@ mod tests {
         let pending = serde_json::to_value(AgentPendingMessageConsumedPayload {
             chat_session_id: "session-1".to_string(),
             queued_turn_id: Some("queued-1".to_string()),
-            human_message: Some(message("human-1", MessageRole::Human)),
-            agent_message: message("agent-1", MessageRole::Agent),
+            human_message: Some(message("human-1", MessageRole::Human).into()),
+            agent_message: message("agent-1", MessageRole::Agent).into(),
         })
         .unwrap();
 

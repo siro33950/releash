@@ -1,0 +1,114 @@
+//! `LocalEventTransactionRepository`: the single mutation authority port.
+
+#![allow(dead_code)] // The required replayable subscription port has no always-on subscriber.
+
+use std::pin::Pin;
+
+use futures_util::stream::Stream;
+
+use crate::domain::local_event::batch::{
+    CommitBatchError, CommitBatchResult, CommitResolution, LocalAtomicBatch,
+};
+use crate::domain::local_event::events::{
+    DomainEventPage, LoadStreamRequest, UncommittedDomainEvent,
+};
+use crate::domain::local_event::identifiers::{CommitIdentity, GlobalSequence};
+use crate::domain::local_event::mutation::LocalStateMutation;
+use crate::domain::local_event::query::{
+    LocalEventQuery, LocalEventQueryError, LocalEventQueryResult,
+};
+
+/// One notification observed through a subscription. Notifications are not a
+/// commit authority; they only prompt bounded replay from the store.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LocalEventSignal {
+    Committed {
+        commit_id: CommitIdentity,
+        max_global_sequence: GlobalSequence,
+    },
+    /// The subscriber lagged past the bounded replay window; it must reload
+    /// through `load_stream` / queries instead of trusting notifications.
+    ReplayRequired,
+}
+
+/// Stream of post-commit signals starting after a global sequence.
+pub struct LocalEventSubscription {
+    stream: Pin<Box<dyn Stream<Item = LocalEventSignal> + Send>>,
+}
+
+impl LocalEventSubscription {
+    pub fn new(stream: Pin<Box<dyn Stream<Item = LocalEventSignal> + Send>>) -> Self {
+        Self { stream }
+    }
+
+    pub fn into_stream(self) -> Pin<Box<dyn Stream<Item = LocalEventSignal> + Send>> {
+        self.stream
+    }
+}
+
+impl std::fmt::Debug for LocalEventSubscription {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalEventSubscription")
+            .finish_non_exhaustive()
+    }
+}
+
+/// The only mutation authority across agent sessions and workflows.
+///
+/// `commit_batch` is the single mutation entry point. Query methods perform
+/// snapshot reads only and never repair, migrate, or rebuild projections
+/// implicitly. SQL, row IDs, WAL, and serialization never leak through this
+/// port.
+#[async_trait::async_trait]
+pub trait LocalEventTransactionRepository: Send + Sync {
+    /// Stable replay identity for a state mutation.
+    ///
+    /// The default covers domain-owned non-projection families. Persistence
+    /// gateways override this for projection rows because their historical
+    /// identity includes the exact Stored V1 representation.
+    fn canonical_mutation_identity_v1(
+        &self,
+        mutation: &LocalStateMutation,
+    ) -> Result<Vec<u8>, String> {
+        mutation.canonical_identity_v1().map_err(str::to_string)
+    }
+
+    /// Stable identity of the exact event envelopes that the gateway will
+    /// persist for an atomic owner batch.
+    ///
+    /// Event type/version and canonical payload bytes are persistence
+    /// concerns, so domain/usecase callers cannot provide a fallback. Writable
+    /// and read-only SQLite gateways override this through the same registry
+    /// used by commit preparation.
+    fn canonical_event_batch_identity_v1(
+        &self,
+        _events: &[UncommittedDomainEvent],
+    ) -> Result<Vec<u8>, String> {
+        Err("canonical event identity is unavailable".to_string())
+    }
+
+    async fn commit_batch(
+        &self,
+        batch: LocalAtomicBatch,
+    ) -> Result<CommitBatchResult, CommitBatchError>;
+
+    /// Resolve an `OutcomeUnknown` commit identity to Committed or proven
+    /// absence. Absence is only proof after writer exclusion and WAL
+    /// recovery, which the store guarantees before answering.
+    async fn resolve_commit(
+        &self,
+        identity: CommitIdentity,
+    ) -> Result<CommitResolution, LocalEventQueryError>;
+
+    async fn load_stream(
+        &self,
+        request: LoadStreamRequest,
+    ) -> Result<DomainEventPage, LocalEventQueryError>;
+
+    async fn query(
+        &self,
+        request: LocalEventQuery,
+    ) -> Result<LocalEventQueryResult, LocalEventQueryError>;
+
+    fn subscribe(&self, after: GlobalSequence) -> LocalEventSubscription;
+}

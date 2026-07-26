@@ -6,17 +6,17 @@ use super::events::{
     TurnTokenUsage,
 };
 use super::finalization::has_unresolved_permissions;
-use super::part_events::{permission_request_id, permission_tool_use_id};
-use crate::domain::agent_session::entities::ToolResultUpdate;
+use super::part_events::permission_request_id;
+use crate::domain::agent_session::entities::{PermissionRequest, ToolResultUpdate};
+use crate::domain::agent_session::value_objects::JsonPayload;
 use crate::usecase::agent_session::session::{
     apply_tool_result_update, parts_to_legacy, ChatMessage, MessagePart, MessageRole,
-    PermissionPartStatus, PermissionRequestMsg, SessionState, SystemNotificationType, TodoListItem,
-    ToolOutputRef, ToolOutputSummary, TurnInterruption, TurnInterruptionReason,
+    PermissionPartStatus, SessionState, SystemNotificationType, TodoListItem, ToolOutputRef,
+    ToolOutputSummary, TurnInterruption, TurnInterruptionReason,
 };
 use crate::usecase::agent_session::status::TurnPhase;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(test, derive(serde::Serialize))]
 pub struct ProjectedStatus {
     pub session_state: SessionState,
     pub turn_phase: TurnPhase,
@@ -56,7 +56,6 @@ fn interruption_reason(reason: InterruptReason) -> TurnInterruptionReason {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(test, derive(serde::Serialize))]
 pub struct WorkflowTurnCompleteInput {
     pub turn_id: TurnId,
     pub exit_code: i64,
@@ -67,13 +66,11 @@ pub struct WorkflowTurnCompleteInput {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(test, derive(serde::Serialize))]
 pub enum AgentTurnFailureSignal {
     ModelRefusal,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(test, derive(serde::Serialize))]
 pub struct ToolRetryProjection {
     pub turn_id: TurnId,
     pub tool_use_id: String,
@@ -81,7 +78,6 @@ pub struct ToolRetryProjection {
 }
 
 #[derive(Debug, Clone)]
-#[cfg_attr(test, derive(serde::Serialize))]
 pub struct SessionReadModel {
     pub messages: Vec<ChatMessage>,
     pub status: ProjectedStatus,
@@ -91,12 +87,10 @@ pub struct SessionReadModel {
     #[allow(dead_code)]
     // issues-1301 B-5/E-1: retry projection is retained for tool retry surface while runtime events are fully migrated.
     pub tool_retries: Vec<ToolRetryProjection>,
-    #[cfg_attr(test, serde(skip_serializing_if = "Option::is_none"))]
     pub backend_recovery: Option<BackendSessionRecoveryProjection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(test, derive(serde::Serialize))]
 pub enum BackendSessionRecoveryProjection {
     Recovering {
         recovery_id: String,
@@ -131,6 +125,7 @@ pub fn project(events: &[AgentSessionEvent]) -> SessionReadModel {
     let mut terminal_by_turn: HashMap<TurnId, TerminalEvent> = HashMap::new();
     let mut tool_retries = Vec::new();
     let mut session_closed = false;
+    let mut session_archived = false;
     let mut backend_recovery = None;
     let mut session_errored_reason = None;
     let mut session_error_messages = Vec::new();
@@ -527,6 +522,21 @@ pub fn project(events: &[AgentSessionEvent]) -> SessionReadModel {
             AgentSessionEvent::SessionClosed { .. } => {
                 session_closed = true;
             }
+            AgentSessionEvent::SessionLifecycleOperationAccepted {
+                kind: crate::domain::agent_session::events::SessionLifecycleKind::Archive,
+                ..
+            } => {
+                session_archived = true;
+            }
+            // issues-1499: operation / obligation / resolution facts do not
+            // change the streamed chat read model.
+            AgentSessionEvent::SendOperationAccepted { .. }
+            | AgentSessionEvent::StopOperationAccepted { .. }
+            | AgentSessionEvent::SessionLifecycleOperationAccepted { .. }
+            | AgentSessionEvent::ObligationRecorded { .. }
+            | AgentSessionEvent::StopResolutionRecorded { .. }
+            | AgentSessionEvent::PendingRecoveryPublished { .. }
+            | AgentSessionEvent::RecoveryActionResolved { .. } => {}
         }
     }
 
@@ -552,6 +562,7 @@ pub fn project(events: &[AgentSessionEvent]) -> SessionReadModel {
     let status = project_status(
         events,
         session_closed,
+        session_archived,
         &terminal_by_turn,
         session_errored_reason.as_deref(),
     );
@@ -690,7 +701,14 @@ impl TurnProjection {
             parts: (!prompt_parts.is_empty()).then_some(prompt_parts),
             streaming_final_seq: 0,
             timestamp: self.started_at,
-            mentions: (!self.prompt.mentions.is_empty()).then_some(self.prompt.mentions.clone()),
+            mentions: (!self.prompt.mentions.is_empty()).then(|| {
+                self.prompt
+                    .mentions
+                    .iter()
+                    .cloned()
+                    .map(crate::usecase::agent_session::session::MessageMention::from_domain)
+                    .collect()
+            }),
         });
 
         let (content, thinking, activities) = parts_to_legacy(&self.assistant_parts);
@@ -819,7 +837,7 @@ fn push_or_update_tool_use(
     parts: &mut Vec<MessagePart>,
     tool_use_id: &str,
     tool: &str,
-    input: &serde_json::Value,
+    input: &JsonPayload,
     parent_tool_use_id: &Option<String>,
 ) {
     if let Some(existing) = parts.iter_mut().rev().find(|part| {
@@ -860,8 +878,8 @@ fn push_or_update_tool_result(
             is_error,
             tool_use_id: Some(tool_use_id.to_string()),
             parent_tool_use_id,
-            content_ref: content_ref.map(Into::into),
-            summary: summary.map(Into::into),
+            content_ref,
+            summary,
         },
     );
 }
@@ -879,9 +897,9 @@ fn parent_tool_use_id_for_tool(parts: &[MessagePart], tool_use_id: &str) -> Opti
 
 fn push_or_update_permission(
     parts: &mut Vec<MessagePart>,
-    request: PermissionRequestMsg,
+    request: PermissionRequest,
     status: PermissionPartStatus,
-    answers: Option<serde_json::Value>,
+    answers: Option<JsonPayload>,
     tool_use_id: Option<String>,
 ) {
     let request_id = permission_request_id(&request);
@@ -890,8 +908,8 @@ fn push_or_update_permission(
             request: existing_request,
             ..
         } => {
-            permission_request_id(existing_request) == request_id
-                || permission_tool_use_id(existing_request) == tool_use_id
+            (!existing_request.id.is_empty()).then_some(existing_request.id.clone()) == request_id
+                || existing_request.tool_use_id == tool_use_id
         }
         _ => false,
     }) {
@@ -916,24 +934,48 @@ fn resolve_permission(
     tool_use_id: Option<&str>,
     request_id: Option<&str>,
     decision: super::events::PermissionDecision,
-    answers: Option<serde_json::Value>,
+    answers: Option<JsonPayload>,
 ) {
     if let Some(MessagePart::Permission {
+        request,
         status,
         answers: existing_answers,
         ..
     }) = parts.iter_mut().rev().find(|part| match part {
         MessagePart::Permission { request, .. } => {
-            request_id.is_some_and(|id| permission_request_id(request).as_deref() == Some(id))
-                || tool_use_id
-                    .is_some_and(|id| permission_tool_use_id(request).as_deref() == Some(id))
+            request_id.is_some_and(|id| request.id == id)
+                || tool_use_id.is_some_and(|id| request.tool_use_id.as_deref() == Some(id))
                 || (request_id.is_none() && tool_use_id.is_none())
         }
         _ => false,
     }) {
-        *status = PermissionPartStatus::from_wire(decision.status())
+        let part_status = PermissionPartStatus::from_wire(decision.status())
             .unwrap_or(PermissionPartStatus::Denied);
-        *existing_answers = answers;
+        *status = part_status;
+        *existing_answers = answers.clone();
+        request.status = match part_status {
+            PermissionPartStatus::Pending => {
+                crate::domain::agent_session::entities::PermissionRequestStatus::Pending
+            }
+            PermissionPartStatus::Allowed => {
+                crate::domain::agent_session::entities::PermissionRequestStatus::Resolved {
+                    decision: crate::domain::agent_session::entities::PermissionDecision::Allowed,
+                    answers,
+                }
+            }
+            PermissionPartStatus::Denied => {
+                crate::domain::agent_session::entities::PermissionRequestStatus::Resolved {
+                    decision: crate::domain::agent_session::entities::PermissionDecision::Denied,
+                    answers,
+                }
+            }
+            PermissionPartStatus::Cancelled => {
+                crate::domain::agent_session::entities::PermissionRequestStatus::Resolved {
+                    decision: crate::domain::agent_session::entities::PermissionDecision::Cancelled,
+                    answers,
+                }
+            }
+        };
     }
 }
 
@@ -1011,7 +1053,7 @@ fn push_or_update_system_notification(
         )
     }) {
         *existing = MessagePart::SystemNotification {
-            notification_type: notification_type.clone(),
+            notification_type: *notification_type,
             status: status.to_string(),
             label: label.to_string(),
             detail: detail.clone(),
@@ -1020,7 +1062,7 @@ fn push_or_update_system_notification(
         return;
     }
     parts.push(MessagePart::SystemNotification {
-        notification_type: notification_type.clone(),
+        notification_type: *notification_type,
         status: status.to_string(),
         label: label.to_string(),
         detail: detail.clone(),
@@ -1031,9 +1073,16 @@ fn push_or_update_system_notification(
 fn project_status(
     events: &[AgentSessionEvent],
     session_closed: bool,
+    session_archived: bool,
     terminal_by_turn: &HashMap<TurnId, TerminalEvent>,
     session_errored_reason: Option<&str>,
 ) -> ProjectedStatus {
+    if session_archived {
+        return ProjectedStatus {
+            session_state: SessionState::Archived,
+            turn_phase: TurnPhase::Idle,
+        };
+    }
     if session_closed {
         return ProjectedStatus {
             session_state: SessionState::Closed,

@@ -259,7 +259,7 @@ mod tests {
 
     #[test]
     fn unset_environment_does_not_record() {
-        let _lock = TEST_ENV_LOCK.lock().unwrap();
+        let _lock = TEST_ENV_LOCK.lock();
         let _restore = EnvRestore(std::env::var_os(WIRE_RECORD_ENV));
         std::env::remove_var(WIRE_RECORD_ENV);
         let recorder = WireRecorder::from_env(WireBackend::Claude);
@@ -271,7 +271,7 @@ mod tests {
 
     #[test]
     fn empty_environment_does_not_record() {
-        let _lock = TEST_ENV_LOCK.lock().unwrap();
+        let _lock = TEST_ENV_LOCK.lock();
         let _guard = EnvVarGuard::set_value(WIRE_RECORD_ENV, "");
         let recorder = WireRecorder::from_env(WireBackend::Claude);
 
@@ -282,7 +282,7 @@ mod tests {
 
     #[tokio::test]
     async fn configured_environment_appends_one_message_per_line_in_order() {
-        let env_lock = TEST_ENV_LOCK.lock().unwrap();
+        let env_lock = TEST_ENV_LOCK.lock();
         let dir = tempfile::tempdir().unwrap();
         let env_guard = EnvVarGuard::set_path(WIRE_RECORD_ENV, dir.path());
         let mut claude = WireRecorder::from_env(WireBackend::Claude);
@@ -308,7 +308,7 @@ mod tests {
 
     #[tokio::test]
     async fn io_failures_do_not_escape_the_tap() {
-        let env_lock = TEST_ENV_LOCK.lock().unwrap();
+        let env_lock = TEST_ENV_LOCK.lock();
         let dir = tempfile::tempdir().unwrap();
         let invalid_root = dir.path().join("not-a-directory");
         fs::write(&invalid_root, "occupied").unwrap();

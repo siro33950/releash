@@ -303,6 +303,8 @@ export interface ChatSession {
 	backendId?: string | null;
 	workflowNodeSession?: boolean;
 	workflowNodeContext?: WorkflowNodeContext | null;
+	sessionRevision?: string;
+	activeTurnId?: string | null;
 	lastTurnInterruption?: TurnInterruption | null;
 }
 

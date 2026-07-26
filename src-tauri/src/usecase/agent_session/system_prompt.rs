@@ -202,7 +202,7 @@ mod tests {
             "",
             Some(vec![MessagePart::ToolUse {
                 tool: "Read".to_string(),
-                input: serde_json::json!({"file_path": "src/local/file.rs"}),
+                input: serde_json::json!({"file_path": "src/local/file.rs"}).into(),
                 id: "tool-1".to_string(),
                 parent_tool_use_id: None,
             }]),
@@ -281,7 +281,7 @@ mod tests {
                 "",
                 Some(vec![MessagePart::ToolUse {
                     tool: "Read".to_string(),
-                    input: serde_json::json!({"file_path": format!("src/file-{index}.rs")}),
+                    input: serde_json::json!({"file_path": format!("src/file-{index}.rs")}).into(),
                     id: format!("tool-{index}"),
                     parent_tool_use_id: None,
                 }]),

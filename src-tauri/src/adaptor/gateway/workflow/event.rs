@@ -10,7 +10,7 @@ use crate::domain::workflow::{
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct TokenUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -24,7 +24,7 @@ impl TokenUsage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct FanoutParentRef {
     pub parent_node: String,
     pub parent_attempt: u32,
@@ -34,14 +34,14 @@ pub struct FanoutParentRef {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ContractViolationRecord {
     pub path: String,
     pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "event", deny_unknown_fields)]
+#[serde(rename_all = "snake_case", tag = "event")]
 pub enum WorkflowEvent {
     ExecutionStarted {
         execution_id: String,
@@ -183,6 +183,855 @@ pub enum WorkflowEvent {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum StoredExecutionOriginV1 {
+    #[serde(alias = "desktop-ui")]
+    DesktopUi,
+    Cli,
+    Agent,
+    Api,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum StoredNodeExecutionFailureKindV1 {
+    StartupTimeout,
+    StaleRuntimeTimeout,
+    ModelRefusal,
+    StructuredOutputMismatch,
+    ValidationFailure,
+    UserAbort,
+    InfrastructureCrash,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum StoredExecutionInterruptionReasonV1 {
+    Crash,
+    Stale,
+    Stop,
+    Orphan,
+}
+
+/// Gateway-owned V1 NDJSON record. It deliberately does not embed domain or
+/// use-case types; every semantic field crosses an explicit total converter.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "event")]
+enum StoredWorkflowEventV1 {
+    ExecutionStarted {
+        execution_id: String,
+        workflow_name: String,
+        worktree_path: String,
+        created_from: StoredExecutionOriginV1,
+        request: String,
+        permission_mode: String,
+        definition: WorkflowDefinitionYaml,
+        timestamp: f64,
+    },
+    NodeStarted {
+        execution_id: String,
+        node_execution_id: String,
+        node_name: String,
+        kind: NodeKindName,
+        attempt: u32,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        fanout_parent: Option<FanoutParentRef>,
+        timestamp: f64,
+    },
+    SessionAttached {
+        execution_id: String,
+        node_execution_id: String,
+        session_id: String,
+        timestamp: f64,
+    },
+    CommandPrepared {
+        execution_id: String,
+        node_execution_id: String,
+        display_command: String,
+        timestamp: f64,
+    },
+    ArtifactProduced {
+        execution_id: String,
+        node_execution_id: String,
+        node_name: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        contract: Option<String>,
+        value: serde_json::Value,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        request_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        submitted_at: Option<f64>,
+        timestamp: f64,
+    },
+    NodeCompleted {
+        execution_id: String,
+        node_execution_id: String,
+        node_name: String,
+        attempt: u32,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        result_summary: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        token_usage: Option<TokenUsage>,
+        timestamp: f64,
+    },
+    NodeFailed {
+        execution_id: String,
+        node_execution_id: String,
+        node_name: String,
+        attempt: u32,
+        reason: String,
+        failure_kind: StoredNodeExecutionFailureKindV1,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        retry_count: Option<u32>,
+        timestamp: f64,
+    },
+    ApprovalRequested {
+        execution_id: String,
+        node_execution_id: String,
+        node_name: String,
+        timestamp: f64,
+    },
+    ApprovalResolved {
+        execution_id: String,
+        node_execution_id: String,
+        node_name: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        comment: Option<String>,
+        timestamp: f64,
+    },
+    ContractViolated {
+        execution_id: String,
+        node_execution_id: String,
+        node_name: String,
+        violations: Vec<ContractViolationRecord>,
+        repair_attempt: u32,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        request_id: Option<String>,
+        timestamp: f64,
+    },
+    StallObserved {
+        execution_id: String,
+        node_execution_id: String,
+        node_name: String,
+        attempt: u32,
+        session_id: String,
+        turn_phase: String,
+        idle_secs: u64,
+        signal_count: u32,
+        cap_reached: bool,
+        timestamp: f64,
+    },
+    StallCleared {
+        execution_id: String,
+        node_execution_id: String,
+        session_id: String,
+        timestamp: f64,
+    },
+    ExecutionCompleted {
+        execution_id: String,
+        total_token_usage: TokenUsage,
+        timestamp: f64,
+    },
+    ExecutionFailed {
+        execution_id: String,
+        reason: String,
+        failure_kind: StoredNodeExecutionFailureKindV1,
+        timestamp: f64,
+    },
+    ExecutionAborted {
+        execution_id: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        aborted_node: Option<String>,
+        timestamp: f64,
+    },
+    ExecutionInterrupted {
+        execution_id: String,
+        reason: StoredExecutionInterruptionReasonV1,
+        timestamp: f64,
+    },
+    ExecutionResumed {
+        execution_id: String,
+        resume_from_node: String,
+        timestamp: f64,
+    },
+}
+
+impl From<ExecutionOrigin> for StoredExecutionOriginV1 {
+    fn from(value: ExecutionOrigin) -> Self {
+        match value {
+            ExecutionOrigin::DesktopUi => Self::DesktopUi,
+            ExecutionOrigin::Cli => Self::Cli,
+            ExecutionOrigin::Agent => Self::Agent,
+            ExecutionOrigin::Api => Self::Api,
+        }
+    }
+}
+
+impl From<StoredExecutionOriginV1> for ExecutionOrigin {
+    fn from(value: StoredExecutionOriginV1) -> Self {
+        match value {
+            StoredExecutionOriginV1::DesktopUi => Self::DesktopUi,
+            StoredExecutionOriginV1::Cli => Self::Cli,
+            StoredExecutionOriginV1::Agent => Self::Agent,
+            StoredExecutionOriginV1::Api => Self::Api,
+        }
+    }
+}
+
+impl From<NodeExecutionFailureKind> for StoredNodeExecutionFailureKindV1 {
+    fn from(value: NodeExecutionFailureKind) -> Self {
+        match value {
+            NodeExecutionFailureKind::StartupTimeout => Self::StartupTimeout,
+            NodeExecutionFailureKind::StaleRuntimeTimeout => Self::StaleRuntimeTimeout,
+            NodeExecutionFailureKind::ModelRefusal => Self::ModelRefusal,
+            NodeExecutionFailureKind::StructuredOutputMismatch => Self::StructuredOutputMismatch,
+            NodeExecutionFailureKind::ValidationFailure => Self::ValidationFailure,
+            NodeExecutionFailureKind::UserAbort => Self::UserAbort,
+            NodeExecutionFailureKind::InfrastructureCrash => Self::InfrastructureCrash,
+        }
+    }
+}
+
+impl From<StoredNodeExecutionFailureKindV1> for NodeExecutionFailureKind {
+    fn from(value: StoredNodeExecutionFailureKindV1) -> Self {
+        match value {
+            StoredNodeExecutionFailureKindV1::StartupTimeout => Self::StartupTimeout,
+            StoredNodeExecutionFailureKindV1::StaleRuntimeTimeout => Self::StaleRuntimeTimeout,
+            StoredNodeExecutionFailureKindV1::ModelRefusal => Self::ModelRefusal,
+            StoredNodeExecutionFailureKindV1::StructuredOutputMismatch => {
+                Self::StructuredOutputMismatch
+            }
+            StoredNodeExecutionFailureKindV1::ValidationFailure => Self::ValidationFailure,
+            StoredNodeExecutionFailureKindV1::UserAbort => Self::UserAbort,
+            StoredNodeExecutionFailureKindV1::InfrastructureCrash => Self::InfrastructureCrash,
+        }
+    }
+}
+
+impl From<ExecutionInterruptionReason> for StoredExecutionInterruptionReasonV1 {
+    fn from(value: ExecutionInterruptionReason) -> Self {
+        match value {
+            ExecutionInterruptionReason::Crash => Self::Crash,
+            ExecutionInterruptionReason::Stale => Self::Stale,
+            ExecutionInterruptionReason::Stop => Self::Stop,
+            ExecutionInterruptionReason::Orphan => Self::Orphan,
+        }
+    }
+}
+
+impl From<StoredExecutionInterruptionReasonV1> for ExecutionInterruptionReason {
+    fn from(value: StoredExecutionInterruptionReasonV1) -> Self {
+        match value {
+            StoredExecutionInterruptionReasonV1::Crash => Self::Crash,
+            StoredExecutionInterruptionReasonV1::Stale => Self::Stale,
+            StoredExecutionInterruptionReasonV1::Stop => Self::Stop,
+            StoredExecutionInterruptionReasonV1::Orphan => Self::Orphan,
+        }
+    }
+}
+
+impl From<&WorkflowEvent> for StoredWorkflowEventV1 {
+    fn from(event: &WorkflowEvent) -> Self {
+        match event {
+            WorkflowEvent::ExecutionStarted {
+                execution_id,
+                workflow_name,
+                worktree_path,
+                created_from,
+                request,
+                permission_mode,
+                definition,
+                timestamp,
+            } => Self::ExecutionStarted {
+                execution_id: execution_id.clone(),
+                workflow_name: workflow_name.clone(),
+                worktree_path: worktree_path.clone(),
+                created_from: (*created_from).into(),
+                request: request.clone(),
+                permission_mode: permission_mode.clone(),
+                definition: definition.clone(),
+                timestamp: *timestamp,
+            },
+            WorkflowEvent::NodeStarted {
+                execution_id,
+                node_execution_id,
+                node_name,
+                kind,
+                attempt,
+                fanout_parent,
+                timestamp,
+            } => Self::NodeStarted {
+                execution_id: execution_id.clone(),
+                node_execution_id: node_execution_id.clone(),
+                node_name: node_name.clone(),
+                kind: *kind,
+                attempt: *attempt,
+                fanout_parent: fanout_parent.clone(),
+                timestamp: *timestamp,
+            },
+            WorkflowEvent::SessionAttached {
+                execution_id,
+                node_execution_id,
+                session_id,
+                timestamp,
+            } => Self::SessionAttached {
+                execution_id: execution_id.clone(),
+                node_execution_id: node_execution_id.clone(),
+                session_id: session_id.clone(),
+                timestamp: *timestamp,
+            },
+            WorkflowEvent::CommandPrepared {
+                execution_id,
+                node_execution_id,
+                display_command,
+                timestamp,
+            } => Self::CommandPrepared {
+                execution_id: execution_id.clone(),
+                node_execution_id: node_execution_id.clone(),
+                display_command: display_command.clone(),
+                timestamp: *timestamp,
+            },
+            WorkflowEvent::ArtifactProduced {
+                execution_id,
+                node_execution_id,
+                node_name,
+                contract,
+                value,
+                request_id,
+                submitted_at,
+                timestamp,
+            } => Self::ArtifactProduced {
+                execution_id: execution_id.clone(),
+                node_execution_id: node_execution_id.clone(),
+                node_name: node_name.clone(),
+                contract: contract.clone(),
+                value: value.clone(),
+                request_id: request_id.clone(),
+                submitted_at: *submitted_at,
+                timestamp: *timestamp,
+            },
+            WorkflowEvent::NodeCompleted {
+                execution_id,
+                node_execution_id,
+                node_name,
+                attempt,
+                result_summary,
+                token_usage,
+                timestamp,
+            } => Self::NodeCompleted {
+                execution_id: execution_id.clone(),
+                node_execution_id: node_execution_id.clone(),
+                node_name: node_name.clone(),
+                attempt: *attempt,
+                result_summary: result_summary.clone(),
+                token_usage: token_usage.clone(),
+                timestamp: *timestamp,
+            },
+            WorkflowEvent::NodeFailed {
+                execution_id,
+                node_execution_id,
+                node_name,
+                attempt,
+                reason,
+                failure_kind,
+                retry_count,
+                timestamp,
+            } => Self::NodeFailed {
+                execution_id: execution_id.clone(),
+                node_execution_id: node_execution_id.clone(),
+                node_name: node_name.clone(),
+                attempt: *attempt,
+                reason: reason.clone(),
+                failure_kind: (*failure_kind).into(),
+                retry_count: *retry_count,
+                timestamp: *timestamp,
+            },
+            WorkflowEvent::ApprovalRequested {
+                execution_id,
+                node_execution_id,
+                node_name,
+                timestamp,
+            } => Self::ApprovalRequested {
+                execution_id: execution_id.clone(),
+                node_execution_id: node_execution_id.clone(),
+                node_name: node_name.clone(),
+                timestamp: *timestamp,
+            },
+            WorkflowEvent::ApprovalResolved {
+                execution_id,
+                node_execution_id,
+                node_name,
+                comment,
+                timestamp,
+            } => Self::ApprovalResolved {
+                execution_id: execution_id.clone(),
+                node_execution_id: node_execution_id.clone(),
+                node_name: node_name.clone(),
+                comment: comment.clone(),
+                timestamp: *timestamp,
+            },
+            WorkflowEvent::ContractViolated {
+                execution_id,
+                node_execution_id,
+                node_name,
+                violations,
+                repair_attempt,
+                request_id,
+                timestamp,
+            } => Self::ContractViolated {
+                execution_id: execution_id.clone(),
+                node_execution_id: node_execution_id.clone(),
+                node_name: node_name.clone(),
+                violations: violations.clone(),
+                repair_attempt: *repair_attempt,
+                request_id: request_id.clone(),
+                timestamp: *timestamp,
+            },
+            WorkflowEvent::StallObserved {
+                execution_id,
+                node_execution_id,
+                node_name,
+                attempt,
+                session_id,
+                turn_phase,
+                idle_secs,
+                signal_count,
+                cap_reached,
+                timestamp,
+            } => Self::StallObserved {
+                execution_id: execution_id.clone(),
+                node_execution_id: node_execution_id.clone(),
+                node_name: node_name.clone(),
+                attempt: *attempt,
+                session_id: session_id.clone(),
+                turn_phase: turn_phase.clone(),
+                idle_secs: *idle_secs,
+                signal_count: *signal_count,
+                cap_reached: *cap_reached,
+                timestamp: *timestamp,
+            },
+            WorkflowEvent::StallCleared {
+                execution_id,
+                node_execution_id,
+                session_id,
+                timestamp,
+            } => Self::StallCleared {
+                execution_id: execution_id.clone(),
+                node_execution_id: node_execution_id.clone(),
+                session_id: session_id.clone(),
+                timestamp: *timestamp,
+            },
+            WorkflowEvent::ExecutionCompleted {
+                execution_id,
+                total_token_usage,
+                timestamp,
+            } => Self::ExecutionCompleted {
+                execution_id: execution_id.clone(),
+                total_token_usage: total_token_usage.clone(),
+                timestamp: *timestamp,
+            },
+            WorkflowEvent::ExecutionFailed {
+                execution_id,
+                reason,
+                failure_kind,
+                timestamp,
+            } => Self::ExecutionFailed {
+                execution_id: execution_id.clone(),
+                reason: reason.clone(),
+                failure_kind: (*failure_kind).into(),
+                timestamp: *timestamp,
+            },
+            WorkflowEvent::ExecutionAborted {
+                execution_id,
+                aborted_node,
+                timestamp,
+            } => Self::ExecutionAborted {
+                execution_id: execution_id.clone(),
+                aborted_node: aborted_node.clone(),
+                timestamp: *timestamp,
+            },
+            WorkflowEvent::ExecutionInterrupted {
+                execution_id,
+                reason,
+                timestamp,
+            } => Self::ExecutionInterrupted {
+                execution_id: execution_id.clone(),
+                reason: (*reason).into(),
+                timestamp: *timestamp,
+            },
+            WorkflowEvent::ExecutionResumed {
+                execution_id,
+                resume_from_node,
+                timestamp,
+            } => Self::ExecutionResumed {
+                execution_id: execution_id.clone(),
+                resume_from_node: resume_from_node.clone(),
+                timestamp: *timestamp,
+            },
+        }
+    }
+}
+
+impl From<StoredWorkflowEventV1> for WorkflowEvent {
+    fn from(event: StoredWorkflowEventV1) -> Self {
+        match event {
+            StoredWorkflowEventV1::ExecutionStarted {
+                execution_id,
+                workflow_name,
+                worktree_path,
+                created_from,
+                request,
+                permission_mode,
+                definition,
+                timestamp,
+            } => Self::ExecutionStarted {
+                execution_id,
+                workflow_name,
+                worktree_path,
+                created_from: created_from.into(),
+                request,
+                permission_mode,
+                definition,
+                timestamp,
+            },
+            StoredWorkflowEventV1::NodeStarted {
+                execution_id,
+                node_execution_id,
+                node_name,
+                kind,
+                attempt,
+                fanout_parent,
+                timestamp,
+            } => Self::NodeStarted {
+                execution_id,
+                node_execution_id,
+                node_name,
+                kind,
+                attempt,
+                fanout_parent,
+                timestamp,
+            },
+            StoredWorkflowEventV1::SessionAttached {
+                execution_id,
+                node_execution_id,
+                session_id,
+                timestamp,
+            } => Self::SessionAttached {
+                execution_id,
+                node_execution_id,
+                session_id,
+                timestamp,
+            },
+            StoredWorkflowEventV1::CommandPrepared {
+                execution_id,
+                node_execution_id,
+                display_command,
+                timestamp,
+            } => Self::CommandPrepared {
+                execution_id,
+                node_execution_id,
+                display_command,
+                timestamp,
+            },
+            StoredWorkflowEventV1::ArtifactProduced {
+                execution_id,
+                node_execution_id,
+                node_name,
+                contract,
+                value,
+                request_id,
+                submitted_at,
+                timestamp,
+            } => Self::ArtifactProduced {
+                execution_id,
+                node_execution_id,
+                node_name,
+                contract,
+                value,
+                request_id,
+                submitted_at,
+                timestamp,
+            },
+            StoredWorkflowEventV1::NodeCompleted {
+                execution_id,
+                node_execution_id,
+                node_name,
+                attempt,
+                result_summary,
+                token_usage,
+                timestamp,
+            } => Self::NodeCompleted {
+                execution_id,
+                node_execution_id,
+                node_name,
+                attempt,
+                result_summary,
+                token_usage,
+                timestamp,
+            },
+            StoredWorkflowEventV1::NodeFailed {
+                execution_id,
+                node_execution_id,
+                node_name,
+                attempt,
+                reason,
+                failure_kind,
+                retry_count,
+                timestamp,
+            } => Self::NodeFailed {
+                execution_id,
+                node_execution_id,
+                node_name,
+                attempt,
+                reason,
+                failure_kind: failure_kind.into(),
+                retry_count,
+                timestamp,
+            },
+            StoredWorkflowEventV1::ApprovalRequested {
+                execution_id,
+                node_execution_id,
+                node_name,
+                timestamp,
+            } => Self::ApprovalRequested {
+                execution_id,
+                node_execution_id,
+                node_name,
+                timestamp,
+            },
+            StoredWorkflowEventV1::ApprovalResolved {
+                execution_id,
+                node_execution_id,
+                node_name,
+                comment,
+                timestamp,
+            } => Self::ApprovalResolved {
+                execution_id,
+                node_execution_id,
+                node_name,
+                comment,
+                timestamp,
+            },
+            StoredWorkflowEventV1::ContractViolated {
+                execution_id,
+                node_execution_id,
+                node_name,
+                violations,
+                repair_attempt,
+                request_id,
+                timestamp,
+            } => Self::ContractViolated {
+                execution_id,
+                node_execution_id,
+                node_name,
+                violations,
+                repair_attempt,
+                request_id,
+                timestamp,
+            },
+            StoredWorkflowEventV1::StallObserved {
+                execution_id,
+                node_execution_id,
+                node_name,
+                attempt,
+                session_id,
+                turn_phase,
+                idle_secs,
+                signal_count,
+                cap_reached,
+                timestamp,
+            } => Self::StallObserved {
+                execution_id,
+                node_execution_id,
+                node_name,
+                attempt,
+                session_id,
+                turn_phase,
+                idle_secs,
+                signal_count,
+                cap_reached,
+                timestamp,
+            },
+            StoredWorkflowEventV1::StallCleared {
+                execution_id,
+                node_execution_id,
+                session_id,
+                timestamp,
+            } => Self::StallCleared {
+                execution_id,
+                node_execution_id,
+                session_id,
+                timestamp,
+            },
+            StoredWorkflowEventV1::ExecutionCompleted {
+                execution_id,
+                total_token_usage,
+                timestamp,
+            } => Self::ExecutionCompleted {
+                execution_id,
+                total_token_usage,
+                timestamp,
+            },
+            StoredWorkflowEventV1::ExecutionFailed {
+                execution_id,
+                reason,
+                failure_kind,
+                timestamp,
+            } => Self::ExecutionFailed {
+                execution_id,
+                reason,
+                failure_kind: failure_kind.into(),
+                timestamp,
+            },
+            StoredWorkflowEventV1::ExecutionAborted {
+                execution_id,
+                aborted_node,
+                timestamp,
+            } => Self::ExecutionAborted {
+                execution_id,
+                aborted_node,
+                timestamp,
+            },
+            StoredWorkflowEventV1::ExecutionInterrupted {
+                execution_id,
+                reason,
+                timestamp,
+            } => Self::ExecutionInterrupted {
+                execution_id,
+                reason: reason.into(),
+                timestamp,
+            },
+            StoredWorkflowEventV1::ExecutionResumed {
+                execution_id,
+                resume_from_node,
+                timestamp,
+            } => Self::ExecutionResumed {
+                execution_id,
+                resume_from_node,
+                timestamp,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(test)]
+pub(crate) struct StoredWorkflowPayloadSource {
+    pub source_id: String,
+    pub record_ordinal: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(test)]
+pub(crate) struct PreservedStoredWorkflowPayload {
+    pub source: StoredWorkflowPayloadSource,
+    pub payload_version: u32,
+    pub type_tag: String,
+    pub raw_bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+#[cfg(test)]
+pub(crate) struct DecodedStoredWorkflowEventV1 {
+    pub event: WorkflowEvent,
+    pub preserved_additive_payload: Option<PreservedStoredWorkflowPayload>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("incompatible stored workflow event type={type_tag} version={payload_version}: {reason}")]
+#[cfg(test)]
+pub(crate) struct IncompatibleStoredWorkflowEvent {
+    pub type_tag: String,
+    pub payload_version: u32,
+    pub reason: String,
+}
+
+#[cfg(test)]
+pub(crate) fn decode_stored_workflow_event_v1(
+    raw: &[u8],
+    payload_version: u32,
+    source: StoredWorkflowPayloadSource,
+) -> Result<DecodedStoredWorkflowEventV1, IncompatibleStoredWorkflowEvent> {
+    if payload_version != 1 {
+        return Err(IncompatibleStoredWorkflowEvent {
+            type_tag: "workflow_event".to_string(),
+            payload_version,
+            reason: "unsupported required payload version".to_string(),
+        });
+    }
+    let original: serde_json::Value = serde_json::from_slice(raw).map_err(|error| {
+        incompatible_workflow_event("workflow_event", format!("invalid JSON: {error}"))
+    })?;
+    let type_tag = original
+        .as_object()
+        .and_then(|object| object.get("event"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| incompatible_workflow_event("workflow_event", "missing required event tag"))?
+        .to_string();
+    let stored: StoredWorkflowEventV1 =
+        serde_json::from_value(original.clone()).map_err(|error| {
+            incompatible_workflow_event(type_tag.clone(), format!("invalid known payload: {error}"))
+        })?;
+    let canonical = serde_json::to_value(&stored)
+        .expect("stored workflow event serialization must be deterministic");
+    let has_additive = contains_additive_fields(&original, &canonical);
+    let event = WorkflowEvent::from(stored);
+    to_domain_event(&event).map_err(|error| {
+        incompatible_workflow_event(type_tag.clone(), format!("invalid semantics: {error}"))
+    })?;
+    Ok(DecodedStoredWorkflowEventV1 {
+        event,
+        preserved_additive_payload: has_additive.then(|| PreservedStoredWorkflowPayload {
+            source,
+            payload_version,
+            type_tag,
+            raw_bytes: raw.to_vec(),
+        }),
+    })
+}
+
+pub(crate) fn encode_stored_workflow_event_v1(
+    event: &WorkflowEvent,
+) -> Result<Vec<u8>, serde_json::Error> {
+    serde_json::to_vec(&StoredWorkflowEventV1::from(event))
+}
+
+#[cfg(test)]
+fn incompatible_workflow_event(
+    type_tag: impl Into<String>,
+    reason: impl Into<String>,
+) -> IncompatibleStoredWorkflowEvent {
+    IncompatibleStoredWorkflowEvent {
+        type_tag: type_tag.into(),
+        payload_version: 1,
+        reason: reason.into(),
+    }
+}
+
+#[cfg(test)]
+fn contains_additive_fields(original: &serde_json::Value, canonical: &serde_json::Value) -> bool {
+    match (original, canonical) {
+        (serde_json::Value::Object(original), serde_json::Value::Object(canonical)) => {
+            original.iter().any(|(key, value)| {
+                canonical
+                    .get(key)
+                    .is_none_or(|canonical_value| contains_additive_fields(value, canonical_value))
+            })
+        }
+        (serde_json::Value::Array(original), serde_json::Value::Array(canonical)) => {
+            original.len() != canonical.len()
+                || original
+                    .iter()
+                    .zip(canonical)
+                    .any(|(value, canonical_value)| {
+                        contains_additive_fields(value, canonical_value)
+                    })
+        }
+        _ => false,
+    }
+}
+
 impl WorkflowEvent {
     pub fn execution_id(&self) -> &str {
         match self {
@@ -227,6 +1076,558 @@ impl WorkflowEvent {
             | Self::ExecutionResumed { timestamp, .. } => *timestamp,
         }
     }
+}
+
+/// Total conversion from the versioned NDJSON DTO into the canonical workflow
+/// domain event. Node-execution semantics are therefore owned only by
+/// `domain::workflow::WorkflowDomainEvent`.
+pub(crate) fn to_domain_event(
+    event: &WorkflowEvent,
+) -> Result<crate::domain::workflow::WorkflowDomainEvent, crate::domain::workflow::WorkflowError> {
+    use crate::domain::workflow::{
+        FanoutParentRef as DomainFanoutParentRef, NodeKindName as DomainNodeKindName,
+        TokenUsage as DomainTokenUsage, WorkflowContractViolation, WorkflowDomainEvent as Domain,
+        WorkflowJsonPayload,
+    };
+    use WorkflowEvent as Stored;
+
+    let token_usage = |usage: &TokenUsage| DomainTokenUsage {
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+    };
+    let fanout_parent = |parent: &FanoutParentRef| DomainFanoutParentRef {
+        parent_node: parent.parent_node.clone(),
+        parent_attempt: parent.parent_attempt,
+        item_index: parent.item_index,
+        child_index: parent.child_index,
+    };
+    let kind = |kind: NodeKindName| match kind {
+        NodeKindName::Command => DomainNodeKindName::Command,
+        NodeKindName::Session => DomainNodeKindName::Session,
+        NodeKindName::Fanout => DomainNodeKindName::Fanout,
+    };
+
+    Ok(match event {
+        Stored::ExecutionStarted {
+            execution_id,
+            workflow_name,
+            worktree_path,
+            created_from,
+            request,
+            permission_mode,
+            definition,
+            timestamp,
+        } => Domain::WorkflowExecutionStarted {
+            execution_id: execution_id.clone(),
+            workflow_name: workflow_name.clone(),
+            worktree_path: worktree_path.clone(),
+            created_from: *created_from,
+            request: request.clone(),
+            permission_mode: permission_mode.clone(),
+            definition: crate::adaptor::gateway::workflow::mapper::schema_workflow_to_domain(
+                definition.clone(),
+            )?,
+            timestamp: *timestamp,
+        },
+        Stored::NodeStarted {
+            execution_id,
+            node_execution_id,
+            node_name,
+            kind: node_kind,
+            attempt,
+            fanout_parent: parent,
+            timestamp,
+        } => Domain::NodeExecutionStarted {
+            execution_id: execution_id.clone(),
+            node_execution_id: node_execution_id.clone(),
+            node_name: node_name.clone(),
+            kind: kind(*node_kind),
+            attempt: *attempt,
+            fanout_parent: parent.as_ref().map(fanout_parent),
+            timestamp: *timestamp,
+        },
+        Stored::SessionAttached {
+            execution_id,
+            node_execution_id,
+            session_id,
+            timestamp,
+        } => Domain::NodeExecutionAgentBound {
+            execution_id: execution_id.clone(),
+            node_execution_id: node_execution_id.clone(),
+            session_id: session_id.clone(),
+            timestamp: *timestamp,
+        },
+        Stored::CommandPrepared {
+            execution_id,
+            node_execution_id,
+            display_command,
+            timestamp,
+        } => Domain::NodeExecutionCommandPrepared {
+            execution_id: execution_id.clone(),
+            node_execution_id: node_execution_id.clone(),
+            display_command: display_command.clone(),
+            timestamp: *timestamp,
+        },
+        Stored::ArtifactProduced {
+            execution_id,
+            node_execution_id,
+            node_name,
+            contract,
+            value,
+            request_id,
+            submitted_at,
+            timestamp,
+        } => Domain::WorkflowArtifactProduced {
+            execution_id: execution_id.clone(),
+            node_execution_id: node_execution_id.clone(),
+            node_name: node_name.clone(),
+            contract: contract.clone(),
+            value: WorkflowJsonPayload::new_validated(
+                serde_json::to_string(value).expect("JSON value serialization cannot fail"),
+            ),
+            request_id: request_id.clone(),
+            submitted_at: *submitted_at,
+            timestamp: *timestamp,
+        },
+        Stored::NodeCompleted {
+            execution_id,
+            node_execution_id,
+            node_name,
+            attempt,
+            result_summary,
+            token_usage: usage,
+            timestamp,
+        } => Domain::NodeExecutionCompleted {
+            execution_id: execution_id.clone(),
+            node_execution_id: node_execution_id.clone(),
+            node_name: node_name.clone(),
+            attempt: *attempt,
+            result_summary: result_summary.clone(),
+            token_usage: usage.as_ref().map(token_usage),
+            timestamp: *timestamp,
+        },
+        Stored::NodeFailed {
+            execution_id,
+            node_execution_id,
+            node_name,
+            attempt,
+            reason,
+            failure_kind,
+            retry_count,
+            timestamp,
+        } => Domain::NodeExecutionFailed {
+            execution_id: execution_id.clone(),
+            node_execution_id: node_execution_id.clone(),
+            node_name: node_name.clone(),
+            attempt: *attempt,
+            reason: reason.clone(),
+            failure_kind: *failure_kind,
+            retry_count: *retry_count,
+            timestamp: *timestamp,
+        },
+        Stored::ApprovalRequested {
+            execution_id,
+            node_execution_id,
+            node_name,
+            timestamp,
+        } => Domain::WorkflowApprovalRequested {
+            execution_id: execution_id.clone(),
+            node_execution_id: node_execution_id.clone(),
+            node_name: node_name.clone(),
+            timestamp: *timestamp,
+        },
+        Stored::ApprovalResolved {
+            execution_id,
+            node_execution_id,
+            node_name,
+            comment,
+            timestamp,
+        } => Domain::WorkflowApprovalResolved {
+            execution_id: execution_id.clone(),
+            node_execution_id: node_execution_id.clone(),
+            node_name: node_name.clone(),
+            comment: comment.clone(),
+            timestamp: *timestamp,
+        },
+        Stored::ContractViolated {
+            execution_id,
+            node_execution_id,
+            node_name,
+            violations,
+            repair_attempt,
+            request_id,
+            timestamp,
+        } => Domain::WorkflowContractViolated {
+            execution_id: execution_id.clone(),
+            node_execution_id: node_execution_id.clone(),
+            node_name: node_name.clone(),
+            violations: violations
+                .iter()
+                .map(|violation| WorkflowContractViolation {
+                    path: violation.path.clone(),
+                    reason: violation.reason.clone(),
+                })
+                .collect(),
+            repair_attempt: *repair_attempt,
+            request_id: request_id.clone(),
+            timestamp: *timestamp,
+        },
+        Stored::StallObserved {
+            execution_id,
+            node_execution_id,
+            node_name,
+            attempt,
+            session_id,
+            turn_phase,
+            idle_secs,
+            signal_count,
+            cap_reached,
+            timestamp,
+        } => Domain::NodeExecutionStallObserved {
+            execution_id: execution_id.clone(),
+            node_execution_id: node_execution_id.clone(),
+            node_name: node_name.clone(),
+            attempt: *attempt,
+            session_id: session_id.clone(),
+            turn_phase: turn_phase.clone(),
+            idle_secs: *idle_secs,
+            signal_count: *signal_count,
+            cap_reached: *cap_reached,
+            timestamp: *timestamp,
+        },
+        Stored::StallCleared {
+            execution_id,
+            node_execution_id,
+            session_id,
+            timestamp,
+        } => Domain::NodeExecutionStallCleared {
+            execution_id: execution_id.clone(),
+            node_execution_id: node_execution_id.clone(),
+            session_id: session_id.clone(),
+            timestamp: *timestamp,
+        },
+        Stored::ExecutionCompleted {
+            execution_id,
+            total_token_usage,
+            timestamp,
+        } => Domain::WorkflowExecutionCompleted {
+            execution_id: execution_id.clone(),
+            total_token_usage: token_usage(total_token_usage),
+            timestamp: *timestamp,
+        },
+        Stored::ExecutionFailed {
+            execution_id,
+            reason,
+            failure_kind,
+            timestamp,
+        } => Domain::WorkflowExecutionFailed {
+            execution_id: execution_id.clone(),
+            reason: reason.clone(),
+            failure_kind: *failure_kind,
+            timestamp: *timestamp,
+        },
+        Stored::ExecutionAborted {
+            execution_id,
+            aborted_node,
+            timestamp,
+        } => Domain::WorkflowExecutionAborted {
+            execution_id: execution_id.clone(),
+            aborted_node: aborted_node.clone(),
+            timestamp: *timestamp,
+        },
+        Stored::ExecutionInterrupted {
+            execution_id,
+            reason,
+            timestamp,
+        } => Domain::WorkflowExecutionInterrupted {
+            execution_id: execution_id.clone(),
+            reason: *reason,
+            timestamp: *timestamp,
+        },
+        Stored::ExecutionResumed {
+            execution_id,
+            resume_from_node,
+            timestamp,
+        } => Domain::WorkflowExecutionResumed {
+            execution_id: execution_id.clone(),
+            resume_from_node: resume_from_node.clone(),
+            timestamp: *timestamp,
+        },
+    })
+}
+
+/// Total conversion from the canonical workflow domain event into the
+/// versioned gateway DTO used by both legacy NDJSON and the SQLite codec.
+pub(crate) fn from_domain_event(
+    event: &crate::domain::workflow::WorkflowDomainEvent,
+) -> Result<WorkflowEvent, crate::domain::workflow::WorkflowError> {
+    use crate::domain::workflow::{NodeKindName as DomainNodeKindName, WorkflowDomainEvent as D};
+
+    let token_usage = |usage: &crate::domain::workflow::TokenUsage| TokenUsage {
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+    };
+    let fanout_parent = |parent: &crate::domain::workflow::FanoutParentRef| FanoutParentRef {
+        parent_node: parent.parent_node.clone(),
+        parent_attempt: parent.parent_attempt,
+        item_index: parent.item_index,
+        child_index: parent.child_index,
+    };
+    let node_kind = |kind: DomainNodeKindName| match kind {
+        DomainNodeKindName::Command => NodeKindName::Command,
+        DomainNodeKindName::Session => NodeKindName::Session,
+        DomainNodeKindName::Fanout => NodeKindName::Fanout,
+    };
+
+    Ok(match event {
+        D::WorkflowExecutionStarted {
+            execution_id,
+            workflow_name,
+            worktree_path,
+            created_from,
+            request,
+            permission_mode,
+            definition,
+            timestamp,
+        } => WorkflowEvent::ExecutionStarted {
+            execution_id: execution_id.clone(),
+            workflow_name: workflow_name.clone(),
+            worktree_path: worktree_path.clone(),
+            created_from: *created_from,
+            request: request.clone(),
+            permission_mode: permission_mode.clone(),
+            definition: crate::adaptor::gateway::workflow::mapper::domain_workflow_to_schema(
+                definition,
+            )?,
+            timestamp: *timestamp,
+        },
+        D::NodeExecutionStarted {
+            execution_id,
+            node_execution_id,
+            node_name,
+            kind,
+            attempt,
+            fanout_parent: parent,
+            timestamp,
+        } => WorkflowEvent::NodeStarted {
+            execution_id: execution_id.clone(),
+            node_execution_id: node_execution_id.clone(),
+            node_name: node_name.clone(),
+            kind: node_kind(*kind),
+            attempt: *attempt,
+            fanout_parent: parent.as_ref().map(fanout_parent),
+            timestamp: *timestamp,
+        },
+        D::NodeExecutionAgentBound {
+            execution_id,
+            node_execution_id,
+            session_id,
+            timestamp,
+        } => WorkflowEvent::SessionAttached {
+            execution_id: execution_id.clone(),
+            node_execution_id: node_execution_id.clone(),
+            session_id: session_id.clone(),
+            timestamp: *timestamp,
+        },
+        D::NodeExecutionCommandPrepared {
+            execution_id,
+            node_execution_id,
+            display_command,
+            timestamp,
+        } => WorkflowEvent::CommandPrepared {
+            execution_id: execution_id.clone(),
+            node_execution_id: node_execution_id.clone(),
+            display_command: display_command.clone(),
+            timestamp: *timestamp,
+        },
+        D::WorkflowArtifactProduced {
+            execution_id,
+            node_execution_id,
+            node_name,
+            contract,
+            value,
+            request_id,
+            submitted_at,
+            timestamp,
+        } => WorkflowEvent::ArtifactProduced {
+            execution_id: execution_id.clone(),
+            node_execution_id: node_execution_id.clone(),
+            node_name: node_name.clone(),
+            contract: contract.clone(),
+            value: serde_json::from_str(value.as_str()).map_err(|_| {
+                crate::domain::workflow::WorkflowError::validation(
+                    "workflow artifact payload is not valid JSON",
+                )
+            })?,
+            request_id: request_id.clone(),
+            submitted_at: *submitted_at,
+            timestamp: *timestamp,
+        },
+        D::NodeExecutionCompleted {
+            execution_id,
+            node_execution_id,
+            node_name,
+            attempt,
+            result_summary,
+            token_usage: usage,
+            timestamp,
+        } => WorkflowEvent::NodeCompleted {
+            execution_id: execution_id.clone(),
+            node_execution_id: node_execution_id.clone(),
+            node_name: node_name.clone(),
+            attempt: *attempt,
+            result_summary: result_summary.clone(),
+            token_usage: usage.as_ref().map(token_usage),
+            timestamp: *timestamp,
+        },
+        D::NodeExecutionFailed {
+            execution_id,
+            node_execution_id,
+            node_name,
+            attempt,
+            reason,
+            failure_kind,
+            retry_count,
+            timestamp,
+        } => WorkflowEvent::NodeFailed {
+            execution_id: execution_id.clone(),
+            node_execution_id: node_execution_id.clone(),
+            node_name: node_name.clone(),
+            attempt: *attempt,
+            reason: reason.clone(),
+            failure_kind: *failure_kind,
+            retry_count: *retry_count,
+            timestamp: *timestamp,
+        },
+        D::WorkflowApprovalRequested {
+            execution_id,
+            node_execution_id,
+            node_name,
+            timestamp,
+        } => WorkflowEvent::ApprovalRequested {
+            execution_id: execution_id.clone(),
+            node_execution_id: node_execution_id.clone(),
+            node_name: node_name.clone(),
+            timestamp: *timestamp,
+        },
+        D::WorkflowApprovalResolved {
+            execution_id,
+            node_execution_id,
+            node_name,
+            comment,
+            timestamp,
+        } => WorkflowEvent::ApprovalResolved {
+            execution_id: execution_id.clone(),
+            node_execution_id: node_execution_id.clone(),
+            node_name: node_name.clone(),
+            comment: comment.clone(),
+            timestamp: *timestamp,
+        },
+        D::WorkflowContractViolated {
+            execution_id,
+            node_execution_id,
+            node_name,
+            violations,
+            repair_attempt,
+            request_id,
+            timestamp,
+        } => WorkflowEvent::ContractViolated {
+            execution_id: execution_id.clone(),
+            node_execution_id: node_execution_id.clone(),
+            node_name: node_name.clone(),
+            violations: violations
+                .iter()
+                .map(|violation| ContractViolationRecord {
+                    path: violation.path.clone(),
+                    reason: violation.reason.clone(),
+                })
+                .collect(),
+            repair_attempt: *repair_attempt,
+            request_id: request_id.clone(),
+            timestamp: *timestamp,
+        },
+        D::NodeExecutionStallObserved {
+            execution_id,
+            node_execution_id,
+            node_name,
+            attempt,
+            session_id,
+            turn_phase,
+            idle_secs,
+            signal_count,
+            cap_reached,
+            timestamp,
+        } => WorkflowEvent::StallObserved {
+            execution_id: execution_id.clone(),
+            node_execution_id: node_execution_id.clone(),
+            node_name: node_name.clone(),
+            attempt: *attempt,
+            session_id: session_id.clone(),
+            turn_phase: turn_phase.clone(),
+            idle_secs: *idle_secs,
+            signal_count: *signal_count,
+            cap_reached: *cap_reached,
+            timestamp: *timestamp,
+        },
+        D::NodeExecutionStallCleared {
+            execution_id,
+            node_execution_id,
+            session_id,
+            timestamp,
+        } => WorkflowEvent::StallCleared {
+            execution_id: execution_id.clone(),
+            node_execution_id: node_execution_id.clone(),
+            session_id: session_id.clone(),
+            timestamp: *timestamp,
+        },
+        D::WorkflowExecutionCompleted {
+            execution_id,
+            total_token_usage,
+            timestamp,
+        } => WorkflowEvent::ExecutionCompleted {
+            execution_id: execution_id.clone(),
+            total_token_usage: token_usage(total_token_usage),
+            timestamp: *timestamp,
+        },
+        D::WorkflowExecutionFailed {
+            execution_id,
+            reason,
+            failure_kind,
+            timestamp,
+        } => WorkflowEvent::ExecutionFailed {
+            execution_id: execution_id.clone(),
+            reason: reason.clone(),
+            failure_kind: *failure_kind,
+            timestamp: *timestamp,
+        },
+        D::WorkflowExecutionAborted {
+            execution_id,
+            aborted_node,
+            timestamp,
+        } => WorkflowEvent::ExecutionAborted {
+            execution_id: execution_id.clone(),
+            aborted_node: aborted_node.clone(),
+            timestamp: *timestamp,
+        },
+        D::WorkflowExecutionInterrupted {
+            execution_id,
+            reason,
+            timestamp,
+        } => WorkflowEvent::ExecutionInterrupted {
+            execution_id: execution_id.clone(),
+            reason: *reason,
+            timestamp: *timestamp,
+        },
+        D::WorkflowExecutionResumed {
+            execution_id,
+            resume_from_node,
+            timestamp,
+        } => WorkflowEvent::ExecutionResumed {
+            execution_id: execution_id.clone(),
+            resume_from_node: resume_from_node.clone(),
+            timestamp: *timestamp,
+        },
+    })
 }
 
 mod execution_interruption_reason_serde {
@@ -311,6 +1712,54 @@ mod tests {
     }
 
     #[test]
+    fn stored_v1_does_not_embed_domain_enum_serialization() {
+        let source = include_str!("event.rs");
+        let stored = source
+            .split("enum StoredWorkflowEventV1")
+            .nth(1)
+            .unwrap()
+            .split("impl From<ExecutionOrigin>")
+            .next()
+            .unwrap();
+        assert!(!stored.contains("created_from: ExecutionOrigin"));
+        assert!(!stored.contains("failure_kind: NodeExecutionFailureKind"));
+        assert!(!stored.contains("reason: ExecutionInterruptionReason"));
+    }
+
+    #[test]
+    fn stored_v1_codec_preserves_existing_semantic_json_shape() {
+        let events = [
+            WorkflowEvent::ExecutionStarted {
+                execution_id: "00000000-0000-4000-8000-000000000001".into(),
+                workflow_name: "wf".into(),
+                worktree_path: "/repo".into(),
+                created_from: ExecutionOrigin::DesktopUi,
+                request: "run".into(),
+                permission_mode: "edit".into(),
+                definition: minimal_workflow(),
+                timestamp: 1.0,
+            },
+            WorkflowEvent::ExecutionFailed {
+                execution_id: "00000000-0000-4000-8000-000000000001".into(),
+                reason: "failed".into(),
+                failure_kind: NodeExecutionFailureKind::InfrastructureCrash,
+                timestamp: 2.0,
+            },
+            WorkflowEvent::ExecutionInterrupted {
+                execution_id: "00000000-0000-4000-8000-000000000001".into(),
+                reason: ExecutionInterruptionReason::Stop,
+                timestamp: 3.0,
+            },
+        ];
+        for event in events {
+            let semantic = serde_json::to_value(&event).unwrap();
+            let stored: serde_json::Value =
+                serde_json::from_slice(&encode_stored_workflow_event_v1(&event).unwrap()).unwrap();
+            assert_eq!(stored, semantic);
+        }
+    }
+
+    #[test]
     fn execution_started_round_trips_canonical_schema() {
         let event = WorkflowEvent::ExecutionStarted {
             execution_id: "00000000-0000-4000-8000-000000000001".to_string(),
@@ -329,6 +1778,14 @@ mod tests {
         assert_eq!(value["created_from"], "cli");
         assert_eq!(value["permission_mode"], "edit");
         assert!(serde_json::from_value::<WorkflowEvent>(value).is_ok());
+        let domain = to_domain_event(&event).unwrap();
+        assert!(matches!(
+            domain,
+            crate::domain::workflow::WorkflowDomainEvent::WorkflowExecutionStarted {
+                ref workflow_name,
+                ..
+            } if workflow_name == "wf"
+        ));
     }
 
     #[test]
@@ -522,14 +1979,25 @@ mod tests {
     }
 
     #[test]
-    fn canonical_variants_reject_legacy_identity_fields() {
+    fn canonical_variants_preserve_additive_identity_fields_but_reject_unknown_event() {
         let execution = serde_json::json!({
             "event": "execution_aborted",
             "execution_id": "00000000-0000-4000-8000-000000000001",
             "run_id": "00000000-0000-4000-8000-000000000001",
             "timestamp": 1.0
         });
-        assert!(serde_json::from_value::<WorkflowEvent>(execution).is_err());
+        let execution_raw = serde_json::to_vec(&execution).unwrap();
+        assert!(decode_stored_workflow_event_v1(
+            &execution_raw,
+            1,
+            StoredWorkflowPayloadSource {
+                source_id: "workflow.ndjson".into(),
+                record_ordinal: 0,
+            },
+        )
+        .unwrap()
+        .preserved_additive_payload
+        .is_some());
 
         let node = serde_json::json!({
             "event": "node_started",
@@ -541,7 +2009,18 @@ mod tests {
             "attempt": 1,
             "timestamp": 1.0
         });
-        assert!(serde_json::from_value::<WorkflowEvent>(node).is_err());
+        let node_raw = serde_json::to_vec(&node).unwrap();
+        assert!(decode_stored_workflow_event_v1(
+            &node_raw,
+            1,
+            StoredWorkflowPayloadSource {
+                source_id: "workflow.ndjson".into(),
+                record_ordinal: 1,
+            },
+        )
+        .unwrap()
+        .preserved_additive_payload
+        .is_some());
 
         let retired_mutation_event = ["cli_mutation", "requested"].join("_");
         let mutation = serde_json::json!({
@@ -561,7 +2040,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_variants_reject_unknown_nested_fields() {
+    fn canonical_variants_raw_preserve_unknown_nested_fields() {
         let usage = serde_json::json!({
             "event": "execution_completed",
             "execution_id": "00000000-0000-4000-8000-000000000001",
@@ -572,6 +2051,16 @@ mod tests {
             },
             "timestamp": 1.0
         });
-        assert!(serde_json::from_value::<WorkflowEvent>(usage).is_err());
+        let raw = serde_json::to_vec(&usage).unwrap();
+        let decoded = decode_stored_workflow_event_v1(
+            &raw,
+            1,
+            StoredWorkflowPayloadSource {
+                source_id: "workflow.ndjson".into(),
+                record_ordinal: 0,
+            },
+        )
+        .unwrap();
+        assert_eq!(decoded.preserved_additive_payload.unwrap().raw_bytes, raw);
     }
 }

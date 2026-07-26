@@ -86,13 +86,16 @@ struct Metrics {
     #[allow(dead_code)]
     // issues-1301 E-3: streaming coalescer metrics are retained until runtime/streaming is fully reconnected.
     stream_emit_interval_ms: Histogram<f64>,
+    #[cfg(test)]
     session_save_bytes: Histogram<f64>,
     operation_status: Counter<u64>,
     #[allow(dead_code)]
     // issues-1301 D-5: orphan cleanup metrics are retained for infrastructure/process restoration.
     orphan_cleanup: Counter<u64>,
     usage_events: Counter<u64>,
+    #[cfg(test)]
     tool_output_truncated: Counter<u64>,
+    #[cfg(test)]
     tool_output_bytes: Counter<u64>,
     _rss_gauge: ObservableGauge<u64>,
     _cpu_gauge: ObservableGauge<f64>,
@@ -244,6 +247,7 @@ pub(crate) fn install_metrics() {
             .f64_histogram("releash.agent_stream.emit_interval_ms")
             .with_unit("ms")
             .build(),
+        #[cfg(test)]
         session_save_bytes: meter
             .f64_histogram("releash.session.save_bytes")
             .with_unit("By")
@@ -251,9 +255,11 @@ pub(crate) fn install_metrics() {
         operation_status: meter.u64_counter("releash.operation.status").build(),
         orphan_cleanup: meter.u64_counter("releash.startup.orphan_cleanup").build(),
         usage_events: meter.u64_counter("releash.usage.events").build(),
+        #[cfg(test)]
         tool_output_truncated: meter
             .u64_counter("releash.tool_output.truncated_count")
             .build(),
+        #[cfg(test)]
         tool_output_bytes: meter
             .u64_counter("releash.tool_output.full_output_bytes")
             .with_unit("By")
@@ -496,6 +502,7 @@ pub(crate) fn record_agent_turn_duration(
         .record(elapsed.as_secs_f64() * 1000.0, &attrs);
 }
 
+#[cfg(test)]
 pub(crate) fn record_session_save_bytes<F>(metric: HotPathMetric, bytes: F)
 where
     F: FnOnce() -> usize,
@@ -531,6 +538,7 @@ where
     metrics.stream_payload_bytes.record(bytes as f64, &attrs);
 }
 
+#[cfg(test)]
 pub(crate) fn record_tool_output_externalized(byte_size: u64) {
     if !is_performance_active() {
         return;

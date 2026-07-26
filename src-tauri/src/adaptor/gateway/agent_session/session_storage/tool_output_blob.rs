@@ -1,18 +1,25 @@
+#[cfg(test)]
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
+#[cfg(test)]
+use super::layout::write_binary_atomic;
 use super::layout::{
     content_hash, message_file_in_dir, session_dir, tool_output_file_in_dir,
-    tool_outputs_dir_in_dir, write_binary_atomic,
+    tool_outputs_dir_in_dir,
 };
 use super::FileSessionStorage;
+#[cfg(test)]
 use crate::domain::agent_session::services::{
     DefaultToolOutputExternalizationPolicy, ToolOutputExternalizationPolicy,
 };
+#[cfg(test)]
+use crate::usecase::agent_session::session::{parts_to_legacy, ToolOutputSummary};
 use crate::usecase::agent_session::session::{
-    parts_to_legacy, ChatMessage, MessagePart, SessionToolOutput, ToolOutputRef, ToolOutputSummary,
+    ChatMessage, MessagePart, SessionToolOutput, ToolOutputRef,
 };
 
+#[cfg(test)]
 fn tool_output_id(content: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(content.as_bytes());
@@ -23,6 +30,7 @@ pub(super) fn is_valid_tool_output_id(id: &str) -> bool {
     id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+#[cfg(test)]
 fn validate_tool_output_ref(content_ref: &ToolOutputRef) -> Result<(), String> {
     if is_valid_tool_output_id(&content_ref.id) {
         Ok(())
@@ -31,6 +39,7 @@ fn validate_tool_output_ref(content_ref: &ToolOutputRef) -> Result<(), String> {
     }
 }
 
+#[cfg(test)]
 pub(super) fn tool_output_write_failure_log_message(
     message_id: &str,
     byte_size: usize,
@@ -82,8 +91,10 @@ impl FileSessionStorage {
             }
         }
         if !has_matching_entry {
-            let _lock = self.file_lock.lock();
-            index = self.repair_index_and_meta_from_messages(&dir, session_id)?;
+            {
+                let _lock = self.file_lock.lock();
+                index = self.repair_index_and_meta_from_messages(&dir, session_id)?;
+            }
             if !index
                 .iter()
                 .flat_map(|entry| entry.tool_output_refs.iter())
@@ -95,6 +106,7 @@ impl FileSessionStorage {
         self.read_tool_output(&dir, tool_output_id)
     }
 
+    #[cfg(test)]
     pub(super) fn externalize_message_tool_outputs(
         &self,
         dir: &Path,

@@ -26,14 +26,6 @@ pub(crate) enum ContextRestorePlan {
 }
 
 impl ContextRestorePlan {
-    pub(crate) fn carry_state(&self) -> Option<ContextCarryState> {
-        match self {
-            Self::NoContext => None,
-            Self::Resume { .. } => Some(ContextCarryState::Resumed),
-            Self::Reinject { .. } => Some(ContextCarryState::Reinjected),
-        }
-    }
-
     #[allow(dead_code)] // issues-1301 D-2: retained for resume-plan callers that only need the backend session id.
     pub(crate) fn resume_session_id(&self) -> Option<&str> {
         match self {
@@ -477,7 +469,7 @@ mod tests {
                 },
                 MessagePart::ToolUse {
                     tool: "Bash".to_string(),
-                    input: serde_json::json!({"command": "cat foo"}),
+                    input: serde_json::json!({"command": "cat foo"}).into(),
                     id: "t1".to_string(),
                     parent_tool_use_id: None,
                 },

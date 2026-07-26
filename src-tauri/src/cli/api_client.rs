@@ -428,7 +428,7 @@ mod tests {
         assert_eq!(explicit_cli.0, StatusCode::OK);
 
         let agent_node_execution_id = {
-            let _lock = TEST_ENV_LOCK.lock().unwrap();
+            let _lock = TEST_ENV_LOCK.lock();
             let _node_execution =
                 EnvVarGuard::set_value(NODE_EXECUTION_ID_ENV, "node-execution-shared");
             resolve_node_execution_id(None)
@@ -460,7 +460,7 @@ mod tests {
 
     #[test]
     fn cli_commands_cross_discovery_and_live_http_into_shared_typed_usecases() {
-        let _lock = TEST_ENV_LOCK.lock().unwrap();
+        let _lock = TEST_ENV_LOCK.lock();
         let _node_execution =
             EnvVarGuard::set_value(NODE_EXECUTION_ID_ENV, "node-execution-shared");
         let client_data = TempDir::new().unwrap();
@@ -500,7 +500,7 @@ mod tests {
         };
         let router = api::build_router(
             Arc::new(
-                crate::adaptor::controller::wiring::build_file_direct_workflow_read_usecase(
+                crate::adaptor::controller::wiring::build_canonical_workflow_read_usecase(
                     query_data.path().to_path_buf(),
                     Some(workflows.path().to_path_buf()),
                 )
@@ -508,6 +508,7 @@ mod tests {
             ),
             runtime.clone(),
             binding.bearer_token(),
+            None,
         );
         let server_runtime = tokio::runtime::Runtime::new().unwrap();
         let server = binding.start(router, server_runtime.handle());
@@ -914,7 +915,7 @@ mod tests {
 
     #[test]
     fn node_execution_id_prefers_explicit_value_and_falls_back_to_environment() {
-        let _lock = TEST_ENV_LOCK.lock().unwrap();
+        let _lock = TEST_ENV_LOCK.lock();
         let _guard = EnvVarGuard::set_value(NODE_EXECUTION_ID_ENV, "node-execution-env");
 
         assert_eq!(

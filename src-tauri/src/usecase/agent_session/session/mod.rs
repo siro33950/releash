@@ -1,4 +1,3 @@
-pub(crate) mod errors;
 pub(crate) mod image_attachment;
 pub(crate) mod lifecycle_controller;
 mod message_window;
@@ -18,9 +17,6 @@ use crate::domain::agent_session::entities::{
 use crate::domain::agent_session::services::{
     DefaultToolOutputExternalizationPolicy, ToolOutputExternalizationPolicy,
 };
-use crate::domain::agent_session::value_objects::{
-    ToolOutputRef as DomainToolOutputRef, ToolOutputSummary as DomainToolOutputSummary,
-};
 use crate::domain::repository::normalize_repo_path;
 use crate::domain::workflow::WorkflowNodeContext;
 use crate::usecase::agent_session::context_meta::ContextEpochMeta;
@@ -31,6 +27,7 @@ pub(crate) use image_attachment::{
 };
 pub(crate) use message_window::{
     plan_agent_chat_eviction, AgentChatEvictionPlan, AgentChatEvictionPlanRequest,
+    RETAINED_MESSAGE_CAP,
 };
 pub use open_tabs::OpenTabRegistry;
 pub(crate) use prompt_suggestion::{
@@ -41,19 +38,26 @@ pub(crate) use read_model::{
     build_agent_task_list_report_from_parts, search_agent_session_messages, search_agent_sessions,
     AgentTaskListReport, AgentThreadSearchMatch, SessionSearchResult,
 };
+pub(crate) use read_paths::agent_read_paths_from_messages;
+#[cfg(test)]
 pub(crate) use read_paths::{
-    agent_read_paths_from_message, agent_read_paths_from_messages, agent_read_paths_from_parts,
-    merge_agent_read_paths,
+    agent_read_paths_from_message, agent_read_paths_from_parts, merge_agent_read_paths,
 };
-pub(crate) use store::ErrorEpisodeInput;
-pub(crate) use store::SessionEventLogRecoverySignal;
-pub use store::{
-    SessionQueuePauseReader, SessionReaderPort, SessionReviewContextReader, SessionStore,
+pub(crate) use store::{
+    AcceptedQueuedTurnStartCommitOutcome, AgentSessionProjectionCodec,
+    BackendSessionRecoveryStartOutcome, CanonicalAgentSessionProjection, CanonicalQueuedSend,
+    ContextRestoreCompletionRequest, ErrorEpisodeInput, NextTurnIdError,
+    PendingWorkflowTurnCompletion, PendingWorkflowTurnCompletionPage,
+    ProviderSessionEstablishmentOutcome, RuntimeTerminalParticipantProvider,
+    RuntimeTerminalParticipants, SendAcceptanceAllocation, SendAcceptanceProjectionInput,
 };
+#[cfg(test)]
+pub(crate) use store::{
+    SessionEventLogRecoverySignal, SessionQueuePauseReader, SessionReviewContextReader,
+};
+pub use store::{SessionReaderPort, SessionStore};
 pub(crate) use stored_lifecycle::{
-    AgentSessionBackendLifecycleGateway, AgentSessionRuntimeCloser, BackendSessionLifecycleRequest,
-    CloseSessionOutcome, RestoreSessionOutcome, StoredSessionClosePort,
-    StoredSessionLifecycleUsecase, WorkflowNodeSessionRestorer,
+    RestoreSessionOutcome, StoredSessionLifecycleUsecase, WorkflowNodeSessionRestorer,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,13 +74,6 @@ pub enum TurnInterruptionReason {
 pub struct TurnInterruption {
     pub message_id: String,
     pub reason: TurnInterruptionReason,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TodoListItem {
-    pub text: String,
-    pub completed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,36 +111,6 @@ pub enum PermissionRequestKindMsg {
     PermissionGrant,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PermissionPartStatus {
-    Pending,
-    Allowed,
-    Denied,
-    Cancelled,
-}
-
-impl PermissionPartStatus {
-    pub fn from_wire(status: &str) -> Option<Self> {
-        match status {
-            "pending" => Some(Self::Pending),
-            "allowed" | "allow" => Some(Self::Allowed),
-            "denied" | "deny" => Some(Self::Denied),
-            "cancelled" | "canceled" => Some(Self::Cancelled),
-            _ => None,
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Pending => "pending",
-            Self::Allowed => "allowed",
-            Self::Denied => "denied",
-            Self::Cancelled => "cancelled",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PermissionRequestMsg {
@@ -170,131 +137,12 @@ pub struct PermissionRequestMsg {
     pub decision_reason: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SystemNotificationType {
-    Compaction,
-    SessionRecovery,
-}
-
-impl SystemNotificationType {
-    #[allow(dead_code)] // issues-1301 F-6: retained for system-notification presentation compatibility.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Compaction => "compaction",
-            Self::SessionRecovery => "session_recovery",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-#[allow(clippy::large_enum_variant)]
-pub enum MessagePart {
-    Thinking {
-        content: String,
-        #[serde(
-            skip_serializing_if = "Option::is_none",
-            default,
-            rename = "parentToolUseId"
-        )]
-        parent_tool_use_id: Option<String>,
-    },
-    Text {
-        content: String,
-        #[serde(
-            skip_serializing_if = "Option::is_none",
-            default,
-            rename = "parentToolUseId"
-        )]
-        parent_tool_use_id: Option<String>,
-    },
-    ToolUse {
-        tool: String,
-        input: serde_json::Value,
-        id: String,
-        #[serde(
-            skip_serializing_if = "Option::is_none",
-            default,
-            rename = "parentToolUseId"
-        )]
-        parent_tool_use_id: Option<String>,
-    },
-    ToolResult {
-        content: String,
-        #[serde(rename = "isError")]
-        is_error: bool,
-        #[serde(skip_serializing_if = "Option::is_none", default, rename = "toolUseId")]
-        tool_use_id: Option<String>,
-        #[serde(
-            skip_serializing_if = "Option::is_none",
-            default,
-            rename = "parentToolUseId"
-        )]
-        parent_tool_use_id: Option<String>,
-        #[serde(
-            skip_serializing_if = "Option::is_none",
-            default,
-            rename = "contentRef"
-        )]
-        content_ref: Option<ToolOutputRef>,
-        #[serde(skip_serializing_if = "Option::is_none", default)]
-        summary: Option<ToolOutputSummary>,
-    },
-    Error {
-        content: String,
-        #[serde(
-            skip_serializing_if = "Option::is_none",
-            default,
-            rename = "parentToolUseId"
-        )]
-        parent_tool_use_id: Option<String>,
-    },
-    Permission {
-        request: PermissionRequestMsg,
-        status: PermissionPartStatus,
-        #[serde(skip_serializing_if = "Option::is_none", default)]
-        answers: Option<serde_json::Value>,
-        #[serde(
-            skip_serializing_if = "Option::is_none",
-            default,
-            rename = "parentToolUseId"
-        )]
-        parent_tool_use_id: Option<String>,
-    },
-    TaskStatus {
-        #[serde(rename = "taskToolUseId")]
-        task_tool_use_id: String,
-        status: String,
-        #[serde(skip_serializing_if = "Option::is_none", default)]
-        description: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none", default)]
-        summary: Option<String>,
-    },
-    TodoListSnapshot {
-        items: Vec<TodoListItem>,
-    },
-    SystemNotification {
-        #[serde(rename = "notificationType")]
-        notification_type: SystemNotificationType,
-        status: String,
-        label: String,
-        #[serde(skip_serializing_if = "Option::is_none", default)]
-        detail: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none", default, rename = "hookId")]
-        hook_id: Option<String>,
-    },
-    Image {
-        /// Base64-encoded image data
-        data: String,
-        /// MIME type (e.g. "image/png", "image/jpeg")
-        #[serde(rename = "mediaType")]
-        media_type: String,
-    },
-    ImageRef {
-        attachment: AttachmentRef,
-    },
-}
+pub use crate::domain::agent_session::entities::{
+    Attachment as AttachmentRef, MessagePart, PermissionPartStatus,
+};
+pub use crate::domain::agent_session::value_objects::{
+    SystemNotificationType, TodoListItem, ToolOutputRef, ToolOutputSummary,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -393,7 +241,6 @@ pub(crate) mod workflow_node_context_mapper {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn to_domain(context: WorkflowNodeContextDto) -> WorkflowNodeContext {
         WorkflowNodeContext {
             execution_id: context.execution_id,
@@ -411,8 +258,7 @@ pub(crate) mod workflow_node_context_mapper {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ActivityEntry {
     ToolUse {
         tool: String,
@@ -421,21 +267,12 @@ pub enum ActivityEntry {
     },
     ToolResult {
         content: String,
-        #[serde(rename = "isError")]
         is_error: bool,
-        #[serde(skip_serializing_if = "Option::is_none", default, rename = "toolUseId")]
         tool_use_id: Option<String>,
-        #[serde(
-            skip_serializing_if = "Option::is_none",
-            default,
-            rename = "contentRef"
-        )]
         content_ref: Option<ToolOutputRef>,
-        #[serde(skip_serializing_if = "Option::is_none", default)]
         summary: Option<ToolOutputSummary>,
     },
     PermissionResult {
-        #[serde(rename = "toolName")]
         tool_name: String,
         status: String,
         summary: String,
@@ -445,6 +282,7 @@ pub enum ActivityEntry {
 pub trait SessionBackendResolver {
     #[cfg(test)]
     fn resolve_backend_id(&self, backend_id: Option<String>) -> Result<String, String>;
+    #[cfg(test)]
     fn default_model_for(&self, backend_id: &str) -> Result<String, String>;
     fn backend_exists(&self, backend_id: &str) -> bool;
     #[cfg(test)]
@@ -460,6 +298,7 @@ where
         self.as_ref().resolve_backend_id(backend_id)
     }
 
+    #[cfg(test)]
     fn default_model_for(&self, backend_id: &str) -> Result<String, String> {
         self.as_ref().default_model_for(backend_id)
     }
@@ -474,69 +313,53 @@ where
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub struct ChatMessage {
     pub id: String,
     pub role: MessageRole,
     pub content: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub thinking: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub activities: Option<Vec<ActivityEntry>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub parts: Option<Vec<MessagePart>>,
     /// Final streaming delta seq that produced the persisted parts for this
     /// message. Older sessions omit the field and deserialize to 0.
-    #[serde(default)]
     pub streaming_final_seq: u64,
     pub timestamp: f64,
     /// usecase 内の保存・転送用値型。serialize 表現（camelCase・行範囲省略）は
     /// controller protocol 境界の入力型と等価に保つ。
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub mentions: Option<Vec<MessageMention>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Debug, Clone)]
 pub struct ChatSession {
     pub id: String,
     pub worktree_path: String,
     pub messages: Vec<ChatMessage>,
     pub state: SessionState,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub error_reason: Option<String>,
     pub created_at: f64,
     pub updated_at: f64,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub agent_session_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub context_carry: Option<ContextCarryState>,
     /// 抽象モード文字列（"ask" / "edit" / "full"）。
     /// serde の default を意図的に付けない: 保存済みセッションで欠落していた場合は
     /// デシリアライズエラーで起動を拒否する（破壊的変更、Spec issues-947 参照）。
     pub permission_mode: String,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub plan_mode: bool,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub selected_model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub permission_profile_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub backend_id: Option<String>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub workflow_node_session: bool,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub workflow_node_context: Option<WorkflowNodeContextDto>,
     /// Backend-internal freshness meta. Persist it through [`SessionMeta`], but
     /// never expose it through flattened ChatSession command responses.
-    #[serde(default, skip_serializing)]
     pub context_epoch: Option<ContextEpochMeta>,
 }
 
 pub const SESSION_BODY_FORMAT_VERSION: u32 = 1;
 pub const INITIAL_SESSION_PAGE_LIMIT: usize = 50;
 pub const DEFAULT_SESSION_PAGE_LIMIT: usize = INITIAL_SESSION_PAGE_LIMIT;
+#[cfg(test)]
 pub const MAX_SESSION_PAGE_LIMIT: usize = 200;
 #[cfg(test)]
 pub const MAX_TOOL_OUTPUT_BYTES: usize =
@@ -616,6 +439,39 @@ pub(crate) enum PendingRecoveryMessage {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RecoveryPublicationList {
+    SessionList,
+    ClosedHistory,
+    ArchivedHistory,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RecoveryPublicationWorkflowOwner {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub(crate) execution_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub(crate) node_execution_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RecoveryPublicationClassification {
+    pub(crate) list: RecoveryPublicationList,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub(crate) workflow_owner: Option<RecoveryPublicationWorkflowOwner>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RecoveryPublicationSnapshot {
+    pub(crate) recovery_id: String,
+    pub(crate) summary: SessionSummary,
+    pub(crate) classification: RecoveryPublicationClassification,
+}
+
 /// meta.json。message body を含まない session 単位の保存正典。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -633,6 +489,10 @@ pub struct SessionMeta {
     pub agent_session_id: Option<String>,
     #[serde(default)]
     pub provider_session_generation: u64,
+    /// Idempotency identity of the provider-establishment observation that
+    /// advanced `provider_session_generation`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub(crate) provider_session_observation_id: Option<String>,
     /// The provider generation whose first turn must receive a transcript reinjection.
     /// Kept separate from `context_carry`, which reports the last applied carry strategy.
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -641,6 +501,8 @@ pub struct SessionMeta {
     pub context_carry: Option<ContextCarryState>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub(crate) pending_recovery_message: Option<PendingRecoveryMessage>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub(crate) recovery_publication_snapshot: Option<RecoveryPublicationSnapshot>,
     pub permission_mode: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub plan_mode: bool,
@@ -694,71 +556,6 @@ impl From<SessionMeta> for SessionReviewContext {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct AttachmentRef {
-    pub id: String,
-    pub media_type: String,
-    pub byte_size: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ToolOutputRef {
-    pub id: String,
-    pub byte_size: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ToolOutputSummary {
-    pub line_count: u64,
-    pub byte_size: u64,
-    pub is_error: bool,
-    #[serde(default)]
-    pub truncated: bool,
-}
-
-impl From<ToolOutputRef> for DomainToolOutputRef {
-    fn from(value: ToolOutputRef) -> Self {
-        Self {
-            id: value.id,
-            byte_size: value.byte_size,
-        }
-    }
-}
-
-impl From<DomainToolOutputRef> for ToolOutputRef {
-    fn from(value: DomainToolOutputRef) -> Self {
-        Self {
-            id: value.id,
-            byte_size: value.byte_size,
-        }
-    }
-}
-
-impl From<ToolOutputSummary> for DomainToolOutputSummary {
-    fn from(value: ToolOutputSummary) -> Self {
-        Self {
-            line_count: value.line_count,
-            byte_size: value.byte_size,
-            is_error: value.is_error,
-            truncated: value.truncated,
-        }
-    }
-}
-
-impl From<DomainToolOutputSummary> for ToolOutputSummary {
-    fn from(value: DomainToolOutputSummary) -> Self {
-        Self {
-            line_count: value.line_count,
-            byte_size: value.byte_size,
-            is_error: value.is_error,
-            truncated: value.truncated,
-        }
-    }
-}
-
 fn tool_result_delta_from_update(
     update: &ToolResultUpdate,
     parent_tool_use_id: Option<String>,
@@ -768,8 +565,8 @@ fn tool_result_delta_from_update(
         is_error: update.is_error,
         tool_use_id: update.tool_use_id.clone(),
         parent_tool_use_id,
-        content_ref: update.content_ref.clone().map(Into::into),
-        summary: update.summary.clone().map(Into::into),
+        content_ref: update.content_ref.clone(),
+        summary: update.summary.clone(),
     }
 }
 
@@ -779,8 +576,8 @@ fn tool_result_part_from_update(update: ToolResultUpdate) -> MessagePart {
         is_error: update.is_error,
         tool_use_id: update.tool_use_id,
         parent_tool_use_id: update.parent_tool_use_id,
-        content_ref: update.content_ref.map(Into::into),
-        summary: update.summary.map(Into::into),
+        content_ref: update.content_ref,
+        summary: update.summary,
     }
 }
 
@@ -817,7 +614,7 @@ pub(crate) fn apply_tool_result_update(
         return None;
     };
 
-    let existing_domain_content_ref = existing_content_ref.clone().map(Into::into);
+    let existing_domain_content_ref = existing_content_ref.clone();
     let decision = decide_tool_result_merge(
         &existing_domain_content_ref,
         *existing_error,
@@ -837,8 +634,8 @@ pub(crate) fn apply_tool_result_update(
             }
             *existing_content = update.content.clone();
             *existing_error = update.is_error;
-            *existing_content_ref = update.content_ref.clone().map(Into::into);
-            *existing_summary = update.summary.clone().map(Into::into);
+            *existing_content_ref = update.content_ref.clone();
+            *existing_summary = update.summary.clone();
             Some(tool_result_delta_from_update(
                 &update,
                 existing_parent_tool_use_id.clone(),
@@ -857,12 +654,12 @@ pub(crate) fn apply_tool_result_update(
                 if update.content.contains(existing_content.as_str()) || existing_content.is_empty()
                 {
                     *existing_content = update.content.clone();
-                    *existing_summary = update.summary.clone().map(Into::into);
+                    *existing_summary = update.summary.clone();
                 } else {
                     existing_content.push_str(&update.content);
                     *existing_summary = None;
                 }
-                *existing_content_ref = update.content_ref.clone().map(Into::into);
+                *existing_content_ref = update.content_ref.clone();
                 *existing_error = *existing_error || update.is_error;
             }
             Some(tool_result_delta_from_update(
@@ -880,19 +677,16 @@ pub struct SessionToolOutput {
     pub byte_size: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[cfg(test)]
+#[derive(Debug, Clone)]
 pub struct MessageIndexEntry {
     pub id: String,
     pub seq: u64,
     pub role: MessageRole,
     pub timestamp: f64,
     pub content_hash: String,
-    #[serde(default)]
     pub attachment_refs: Vec<AttachmentRef>,
-    #[serde(default)]
     pub tool_output_refs: Vec<ToolOutputRef>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub token_meta: Option<serde_json::Value>,
 }
 
@@ -954,17 +748,13 @@ pub struct MessagePageMetadata {
     pub run_meta: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub struct SessionPage {
     pub messages: Vec<ChatMessage>,
-    #[serde(default)]
     pub message_metadata: Vec<MessagePageMetadata>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub next_cursor: Option<PageCursor>,
     pub has_more: bool,
     pub total_count: usize,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub latest_token_usage: Option<TokenUsage>,
 }
 
@@ -984,25 +774,21 @@ pub struct InitialSessionPage {
     pub total_count: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub struct GetSessionResponse {
-    #[serde(flatten)]
     pub session: ChatSession,
+    pub session_revision: u64,
+    pub active_turn_id: Option<u64>,
     pub turn_phase: TurnPhase,
     pub available_models: Vec<ModelInfo>,
     pub can_change_backend: bool,
     pub pending_queue: Vec<QueuedAgentTurn>,
     pub pending_queue_count: usize,
     pub queue_paused: bool,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub pending_permission_request: Option<PermissionRequestMsg>,
     pub pending_permission_state_revision: u64,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub initial_page: Option<InitialSessionPage>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub latest_token_usage: Option<TokenUsage>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub last_turn_interruption: Option<TurnInterruption>,
 }
 
@@ -1117,9 +903,11 @@ impl SessionMeta {
             updated_at: session.updated_at,
             agent_session_id: session.agent_session_id.clone(),
             provider_session_generation: 0,
+            provider_session_observation_id: None,
             context_reinjection_generation: None,
             context_carry: session.context_carry.clone(),
             pending_recovery_message: None,
+            recovery_publication_snapshot: None,
             permission_mode: session.permission_mode.clone(),
             plan_mode: session.plan_mode,
             selected_model: session.selected_model.clone(),
@@ -1244,7 +1032,8 @@ pub fn parts_to_legacy(
             } => {
                 activities.push(ActivityEntry::ToolUse {
                     tool: tool.clone(),
-                    input: input.clone(),
+                    input: serde_json::from_str(input.as_str())
+                        .expect("domain JsonPayload must be validated at its boundary"),
                     id: id.clone(),
                 });
             }
@@ -1274,7 +1063,10 @@ pub fn parts_to_legacy(
                     let tool_name = request.tool_name.clone();
                     let summary = answers
                         .as_ref()
-                        .and_then(|a| a.as_object())
+                        .and_then(|answers| {
+                            serde_json::from_str::<serde_json::Value>(answers.as_str()).ok()
+                        })
+                        .and_then(|answers| answers.as_object().cloned())
                         .map(|obj| {
                             obj.values()
                                 .filter_map(|v| v.as_str())
@@ -1381,7 +1173,7 @@ pub fn create_session_internal_with_attributes(
         workflow_node_session,
         workflow_node_context,
     );
-    session_store.save_full_session_for_migration_or_restore(data_dir, &session)?;
+    session_store.save_full_session_for_restore(data_dir, &session)?;
     Ok(session)
 }
 
@@ -1407,7 +1199,7 @@ fn build_new_session(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_new_session_with_id(
+pub(crate) fn build_new_session_with_id(
     session_id: String,
     worktree_path: &str,
     backend_id: Option<String>,
@@ -1422,7 +1214,7 @@ fn build_new_session_with_id(
         id: session_id,
         worktree_path: normalize_repo_path(worktree_path),
         messages: Vec::new(),
-        state: SessionState::Active,
+        state: SessionState::Idle,
         error_reason: None,
         created_at: now,
         updated_at: now,
@@ -1489,6 +1281,7 @@ pub fn create_session_with_initial_model_and_plan_mode(
     )
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub fn create_session_with_model_and_plan_mode(
     session_store: &SessionStore,
@@ -1515,7 +1308,7 @@ pub fn create_session_with_model_and_plan_mode(
         false,
         None,
     );
-    session_store.save_full_session_for_migration_or_restore(data_dir, &session)?;
+    session_store.save_full_session_for_restore(data_dir, &session)?;
     Ok(session)
 }
 
@@ -1544,11 +1337,12 @@ pub(super) fn create_session_with_resolved_options_and_id(
         false,
         None,
     );
-    session_store.save_full_session_for_migration_or_restore(data_dir, &session)?;
+    session_store.save_full_session_from_user(data_dir, &session)?;
     Ok(session)
 }
 
 /// Internal (non-command) version of add_message, callable from agent_sdk.
+#[cfg(test)]
 pub fn add_message_internal(
     session_store: &SessionStore,
     data_dir: &std::path::Path,
@@ -1570,6 +1364,7 @@ pub fn add_message_internal(
     .map(|(message, _)| message)
 }
 
+#[cfg(test)]
 pub(super) fn add_message_with_meta_internal(
     session_store: &SessionStore,
     data_dir: &std::path::Path,
@@ -1622,6 +1417,7 @@ pub(crate) fn create_session_command_inner(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn update_session_state_in_data_dir(
     state: &SessionStore,
     data_dir: &std::path::Path,
@@ -1677,7 +1473,109 @@ pub struct RestoreSessionResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adaptor::gateway::agent_session::session_storage::decode_legacy_chat_message_for_gc;
+    use crate::adaptor::gateway::agent_session::session_storage::{
+        decode_activity_entry_v1, decode_chat_session_v1, decode_stored_message_parts_v1,
+        encode_activity_entry_v1, encode_chat_message_v1, encode_chat_session_v1,
+        encode_stored_message_parts_v1,
+    };
+    use crate::adaptor::protocol::agent_session_v1::{
+        GetSessionResponseDtoV1, MessageRoleDtoV1, SessionStateDtoV1,
+    };
     use std::collections::{BTreeMap, BTreeSet};
+
+    trait LegacyTestCodec: Sized {
+        fn encode(&self) -> Result<Vec<u8>, String>;
+        fn decode(raw: &[u8]) -> Result<Self, String>;
+    }
+
+    mod legacy_json {
+        use super::LegacyTestCodec;
+
+        pub(super) fn to_string<T: LegacyTestCodec>(value: &T) -> Result<String, String> {
+            String::from_utf8(value.encode()?).map_err(|error| error.to_string())
+        }
+
+        pub(super) fn from_str<T: LegacyTestCodec>(raw: &str) -> Result<T, String> {
+            T::decode(raw.as_bytes())
+        }
+    }
+
+    impl LegacyTestCodec for ChatMessage {
+        fn encode(&self) -> Result<Vec<u8>, String> {
+            encode_chat_message_v1(self).map_err(|error| error.to_string())
+        }
+
+        fn decode(raw: &[u8]) -> Result<Self, String> {
+            decode_legacy_chat_message_for_gc(raw, "session-test".to_string())
+        }
+    }
+
+    impl LegacyTestCodec for ChatSession {
+        fn encode(&self) -> Result<Vec<u8>, String> {
+            encode_chat_session_v1(self).map_err(|error| error.to_string())
+        }
+
+        fn decode(raw: &[u8]) -> Result<Self, String> {
+            decode_chat_session_v1(raw).map_err(|error| error.to_string())
+        }
+    }
+
+    impl LegacyTestCodec for ActivityEntry {
+        fn encode(&self) -> Result<Vec<u8>, String> {
+            encode_activity_entry_v1(self).map_err(|error| error.to_string())
+        }
+
+        fn decode(raw: &[u8]) -> Result<Self, String> {
+            decode_activity_entry_v1(raw).map_err(|error| error.to_string())
+        }
+    }
+
+    impl LegacyTestCodec for MessagePart {
+        fn encode(&self) -> Result<Vec<u8>, String> {
+            encode_stored_message_parts_v1(std::slice::from_ref(self))
+                .map(|mut value| {
+                    value.remove(0);
+                    value.pop();
+                    value
+                })
+                .map_err(|error| error.to_string())
+        }
+
+        fn decode(raw: &[u8]) -> Result<Self, String> {
+            let mut wrapped = Vec::with_capacity(raw.len() + 2);
+            wrapped.push(b'[');
+            wrapped.extend_from_slice(raw);
+            wrapped.push(b']');
+            decode_stored_message_parts_v1(&wrapped)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .next()
+                .ok_or_else(|| "missing message part".to_string())
+        }
+    }
+
+    impl LegacyTestCodec for Vec<MessagePart> {
+        fn encode(&self) -> Result<Vec<u8>, String> {
+            encode_stored_message_parts_v1(self).map_err(|error| error.to_string())
+        }
+
+        fn decode(raw: &[u8]) -> Result<Self, String> {
+            decode_stored_message_parts_v1(raw).map_err(|error| error.to_string())
+        }
+    }
+
+    fn public_message_value(value: &ChatMessage) -> serde_json::Value {
+        serde_json::from_slice(&encode_chat_message_v1(value).unwrap()).unwrap()
+    }
+
+    fn public_session_value(value: &ChatSession) -> serde_json::Value {
+        serde_json::from_slice(&encode_chat_session_v1(value).unwrap()).unwrap()
+    }
+
+    fn public_get_session_value(value: GetSessionResponse) -> serde_json::Value {
+        serde_json::to_value(GetSessionResponseDtoV1::from(value)).unwrap()
+    }
 
     #[derive(Default)]
     struct TestBackendResolver {
@@ -1907,7 +1805,7 @@ mod tests {
                 workflow_node_context_for_test(),
             )),
         );
-        let value = serde_json::to_value(&session).unwrap();
+        let value = public_session_value(&session);
         let context = &value["workflowNodeContext"];
         assert_eq!(context["executionId"], serde_json::json!("execution-1"));
         assert_eq!(
@@ -1931,7 +1829,7 @@ mod tests {
         );
 
         session.workflow_node_context = None;
-        let value = serde_json::to_value(&session).unwrap();
+        let value = public_session_value(&session);
         assert!(value.get("workflowNodeContext").is_none());
     }
 
@@ -1950,6 +1848,8 @@ mod tests {
         let meta = SessionMeta::from_session(&session);
         let response = GetSessionResponse {
             session,
+            session_revision: meta.state_revision,
+            active_turn_id: meta.last_turn_id,
             turn_phase: TurnPhase::Idle,
             available_models: Vec::new(),
             can_change_backend: false,
@@ -1963,7 +1863,7 @@ mod tests {
             last_turn_interruption: None,
         };
 
-        let response_value = serde_json::to_value(&response).unwrap();
+        let response_value = public_get_session_value(response);
         let meta_value = serde_json::to_value(&meta).unwrap();
 
         assert!(response_value.get("contextEpoch").is_none());
@@ -1996,7 +1896,7 @@ mod tests {
                 },
             ]),
         };
-        let v = serde_json::to_value(&msg).unwrap();
+        let v = public_message_value(&msg);
         let mentions = &v["mentions"];
         assert_eq!(mentions[0]["filePath"], serde_json::json!("src/a.rs"));
         assert!(mentions[0].get("startLine").is_none());
@@ -2010,7 +1910,7 @@ mod tests {
             mentions: None,
             ..msg
         };
-        let v = serde_json::to_value(&msg_none).unwrap();
+        let v = public_message_value(&msg_none);
         assert!(v.get("mentions").is_none());
     }
 
@@ -2019,7 +1919,7 @@ mod tests {
         // Spec issues-947: 保存済みセッションで permissionMode フィールドが欠落していた場合は、
         // serde default で補完せず、デシリアライズエラーで起動を拒否する（破壊的変更）。
         let json = r#"{"id":"s1","worktreePath":"/repo","messages":[],"state":"active","createdAt":1000.0,"updatedAt":1000.0}"#;
-        let err = serde_json::from_str::<ChatSession>(json).unwrap_err();
+        let err = legacy_json::from_str::<ChatSession>(json).unwrap_err();
         assert!(
             err.to_string().contains("permissionMode"),
             "missing permissionMode must be rejected, got: {err}"
@@ -2237,10 +2137,10 @@ mod tests {
         regular.workflow_node_session = false;
 
         store
-            .save_full_session_for_migration_or_restore(tmp.path(), &workflow_node)
+            .save_full_session_for_restore(tmp.path(), &workflow_node)
             .unwrap();
         store
-            .save_full_session_for_migration_or_restore(tmp.path(), &regular)
+            .save_full_session_for_restore(tmp.path(), &regular)
             .unwrap();
 
         update_session_state_in_data_dir(&store, tmp.path(), &workflow_node.id, SessionState::Idle)
@@ -2294,7 +2194,7 @@ mod tests {
             context_epoch: None,
         };
         store
-            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .save_full_session_for_restore(tmp.path(), &session)
             .unwrap();
         std::fs::write(
             tmp.path()
@@ -2363,7 +2263,7 @@ mod tests {
             context_epoch: None,
         };
         store
-            .save_full_session_for_migration_or_restore(tmp.path(), &session)
+            .save_full_session_for_restore(tmp.path(), &session)
             .unwrap();
 
         let shell = store
@@ -2395,15 +2295,15 @@ mod tests {
     #[test]
     fn message_role_serializes_snake_case() {
         assert_eq!(
-            serde_json::to_string(&MessageRole::Human).unwrap(),
+            serde_json::to_string(&MessageRoleDtoV1::from(&MessageRole::Human)).unwrap(),
             "\"human\""
         );
         assert_eq!(
-            serde_json::to_string(&MessageRole::Agent).unwrap(),
+            serde_json::to_string(&MessageRoleDtoV1::from(&MessageRole::Agent)).unwrap(),
             "\"agent\""
         );
         assert_eq!(
-            serde_json::to_string(&MessageRole::System).unwrap(),
+            serde_json::to_string(&MessageRoleDtoV1::from(&MessageRole::System)).unwrap(),
             "\"system\""
         );
     }
@@ -2411,23 +2311,23 @@ mod tests {
     #[test]
     fn session_state_serializes_snake_case() {
         assert_eq!(
-            serde_json::to_string(&SessionState::Active).unwrap(),
+            serde_json::to_string(&SessionStateDtoV1::from(&SessionState::Active)).unwrap(),
             "\"active\""
         );
         assert_eq!(
-            serde_json::to_string(&SessionState::Idle).unwrap(),
+            serde_json::to_string(&SessionStateDtoV1::from(&SessionState::Idle)).unwrap(),
             "\"idle\""
         );
         assert_eq!(
-            serde_json::to_string(&SessionState::Done).unwrap(),
+            serde_json::to_string(&SessionStateDtoV1::from(&SessionState::Done)).unwrap(),
             "\"done\""
         );
         assert_eq!(
-            serde_json::to_string(&SessionState::Error).unwrap(),
+            serde_json::to_string(&SessionStateDtoV1::from(&SessionState::Error)).unwrap(),
             "\"error\""
         );
         assert_eq!(
-            serde_json::to_string(&SessionState::Closed).unwrap(),
+            serde_json::to_string(&SessionStateDtoV1::from(&SessionState::Closed)).unwrap(),
             "\"closed\""
         );
     }
@@ -2445,9 +2345,9 @@ mod tests {
             timestamp: 1000.0,
             mentions: None,
         };
-        let json = serde_json::to_string(&msg_with).unwrap();
+        let json = legacy_json::to_string(&msg_with).unwrap();
         assert!(json.contains("\"thinking\":\"deep thought\""));
-        let back: ChatMessage = serde_json::from_str(&json).unwrap();
+        let back: ChatMessage = legacy_json::from_str(&json).unwrap();
         assert_eq!(back.thinking, Some("deep thought".to_string()));
 
         let msg_without = ChatMessage {
@@ -2461,16 +2361,16 @@ mod tests {
             timestamp: 1000.0,
             mentions: None,
         };
-        let json = serde_json::to_string(&msg_without).unwrap();
+        let json = legacy_json::to_string(&msg_without).unwrap();
         assert!(!json.contains("thinking"));
-        let back: ChatMessage = serde_json::from_str(&json).unwrap();
+        let back: ChatMessage = legacy_json::from_str(&json).unwrap();
         assert_eq!(back.thinking, None);
     }
 
     #[test]
     fn chat_message_without_thinking_field_deserializes() {
         let json = r#"{"id":"m1","role":"agent","content":"hello","timestamp":1000.0}"#;
-        let msg: ChatMessage = serde_json::from_str(json).unwrap();
+        let msg: ChatMessage = legacy_json::from_str(json).unwrap();
         assert_eq!(msg.thinking, None);
     }
 
@@ -2518,8 +2418,8 @@ mod tests {
             workflow_node_context: None,
             context_epoch: None,
         };
-        let json = serde_json::to_string(&session).unwrap();
-        let back: ChatSession = serde_json::from_str(&json).unwrap();
+        let json = legacy_json::to_string(&session).unwrap();
+        let back: ChatSession = legacy_json::from_str(&json).unwrap();
         assert_eq!(back.id, "s1");
         assert_eq!(back.messages.len(), 2);
         assert_eq!(back.messages[0].role, MessageRole::Human);
@@ -2540,8 +2440,8 @@ mod tests {
         session.state = SessionState::Error;
         session.error_reason = Some("app server stopped".to_string());
 
-        let json = serde_json::to_string(&session).unwrap();
-        let restored: ChatSession = serde_json::from_str(&json).unwrap();
+        let json = legacy_json::to_string(&session).unwrap();
+        let restored: ChatSession = legacy_json::from_str(&json).unwrap();
         assert_eq!(restored.error_reason.as_deref(), Some("app server stopped"));
         assert_eq!(
             restored.to_summary().error_reason.as_deref(),
@@ -2555,7 +2455,7 @@ mod tests {
     #[test]
     fn chat_session_without_selected_model_deserializes() {
         let json = r#"{"id":"s1","worktreePath":"/repo","messages":[],"state":"active","createdAt":1000.0,"updatedAt":1000.0,"permissionMode":"edit"}"#;
-        let session: ChatSession = serde_json::from_str(json).unwrap();
+        let session: ChatSession = legacy_json::from_str(json).unwrap();
         assert_eq!(session.selected_model, None);
         assert_eq!(session.context_carry, None);
     }
@@ -2581,9 +2481,9 @@ mod tests {
             workflow_node_context: None,
             context_epoch: None,
         };
-        let json = serde_json::to_string(&session).unwrap();
+        let json = legacy_json::to_string(&session).unwrap();
         assert!(json.contains("selectedModel"));
-        let back: ChatSession = serde_json::from_str(&json).unwrap();
+        let back: ChatSession = legacy_json::from_str(&json).unwrap();
         assert_eq!(back.selected_model, Some("claude-opus-4-6".to_string()));
     }
 
@@ -2594,7 +2494,7 @@ mod tests {
             input: serde_json::json!({"file_path": "/src/main.ts"}),
             id: "toolu_001".to_string(),
         };
-        let json = serde_json::to_string(&entry).unwrap();
+        let json = legacy_json::to_string(&entry).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["type"], "tool_use");
         assert_eq!(v["tool"], "Read");
@@ -2611,7 +2511,7 @@ mod tests {
             content_ref: None,
             summary: None,
         };
-        let json = serde_json::to_string(&entry).unwrap();
+        let json = legacy_json::to_string(&entry).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["type"], "tool_result");
         assert_eq!(v["content"], "file contents");
@@ -2626,14 +2526,14 @@ mod tests {
             status: "allowed".to_string(),
             summary: "Bash: allowed".to_string(),
         };
-        let json = serde_json::to_string(&entry).unwrap();
+        let json = legacy_json::to_string(&entry).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["type"], "permission_result");
         assert_eq!(v["toolName"], "Bash");
         assert_eq!(v["status"], "allowed");
         assert_eq!(v["summary"], "Bash: allowed");
 
-        let back: ActivityEntry = serde_json::from_str(&json).unwrap();
+        let back: ActivityEntry = legacy_json::from_str(&json).unwrap();
         assert_eq!(back, entry);
     }
 
@@ -2641,14 +2541,14 @@ mod tests {
     fn activity_entry_permission_result_backward_compat() {
         // Existing session files without permission_result should still deserialize
         let json = r#"{"type":"tool_use","tool":"Read","input":{},"id":"t1"}"#;
-        let entry: ActivityEntry = serde_json::from_str(json).unwrap();
+        let entry: ActivityEntry = legacy_json::from_str(json).unwrap();
         assert!(matches!(entry, ActivityEntry::ToolUse { .. }));
     }
 
     #[test]
     fn chat_message_without_activities_field_deserializes() {
         let json = r#"{"id":"m1","role":"agent","content":"hello","timestamp":1000.0}"#;
-        let msg: ChatMessage = serde_json::from_str(json).unwrap();
+        let msg: ChatMessage = legacy_json::from_str(json).unwrap();
         assert_eq!(msg.activities, None);
     }
 
@@ -2678,8 +2578,8 @@ mod tests {
             timestamp: 1000.0,
             mentions: None,
         };
-        let json = serde_json::to_string(&msg).unwrap();
-        let back: ChatMessage = serde_json::from_str(&json).unwrap();
+        let json = legacy_json::to_string(&msg).unwrap();
+        let back: ChatMessage = legacy_json::from_str(&json).unwrap();
         assert_eq!(back.activities.as_ref().unwrap().len(), 2);
     }
 
@@ -2700,7 +2600,7 @@ mod tests {
             },
             MessagePart::ToolUse {
                 tool: "Read".to_string(),
-                input: serde_json::json!({"file_path": "/a.ts"}),
+                input: serde_json::json!({"file_path": "/a.ts"}).into(),
                 id: "t1".to_string(),
                 parent_tool_use_id: None,
             },
@@ -2713,27 +2613,37 @@ mod tests {
                 summary: None,
             },
             MessagePart::Permission {
-                request: PermissionRequestMsg {
-                    id: "r1".to_string(),
-                    tool_use_id: Some("toolu_1".to_string()),
-                    tool_name: "Bash".to_string(),
-                    kind: PermissionRequestKindMsg::ToolApproval,
-                    input: Some(serde_json::json!({"command": "echo hi"})),
-                    plan: None,
-                    allowed_prompts: Vec::new(),
-                    questions: Vec::new(),
-                    title: None,
-                    display_name: None,
-                    description: None,
-                    decision_reason: None,
+                request: {
+                    let mut request = crate::usecase::agent_session::runtime::event_apply::pending_permission_request_from_msg(&PermissionRequestMsg {
+                        id: "r1".to_string(),
+                        tool_use_id: Some("toolu_1".to_string()),
+                        tool_name: "Bash".to_string(),
+                        kind: PermissionRequestKindMsg::ToolApproval,
+                        input: Some(serde_json::json!({"command": "echo hi"})),
+                        plan: None,
+                        allowed_prompts: Vec::new(),
+                        questions: Vec::new(),
+                        title: None,
+                        display_name: None,
+                        description: None,
+                        decision_reason: None,
+                    })
+                    .unwrap();
+                    request.status =
+                        crate::domain::agent_session::entities::PermissionRequestStatus::Resolved {
+                            decision:
+                                crate::domain::agent_session::entities::PermissionDecision::Allowed,
+                            answers: Some(serde_json::json!({"q1": "yes"}).into()),
+                        };
+                    request
                 },
                 status: PermissionPartStatus::Allowed,
-                answers: Some(serde_json::json!({"q1": "yes"})),
+                answers: Some(serde_json::json!({"q1": "yes"})).map(Into::into),
                 parent_tool_use_id: None,
             },
         ];
-        let json = serde_json::to_string(&parts).unwrap();
-        let back: Vec<MessagePart> = serde_json::from_str(&json).unwrap();
+        let json = legacy_json::to_string(&parts).unwrap();
+        let back: Vec<MessagePart> = legacy_json::from_str(&json).unwrap();
         assert_eq!(back.len(), 6);
         assert_eq!(back, parts);
     }
@@ -2744,11 +2654,11 @@ mod tests {
             content: "fail".to_string(),
             parent_tool_use_id: None,
         };
-        let json = serde_json::to_string(&part).unwrap();
+        let json = legacy_json::to_string(&part).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["type"], "error");
         assert_eq!(v["content"], "fail");
-        let back: MessagePart = serde_json::from_str(&json).unwrap();
+        let back: MessagePart = legacy_json::from_str(&json).unwrap();
         assert_eq!(back, part);
     }
 
@@ -2774,8 +2684,8 @@ mod tests {
             timestamp: 1000.0,
             mentions: None,
         };
-        let json = serde_json::to_string(&msg).unwrap();
-        let back: ChatMessage = serde_json::from_str(&json).unwrap();
+        let json = legacy_json::to_string(&msg).unwrap();
+        let back: ChatMessage = legacy_json::from_str(&json).unwrap();
         assert_eq!(back.parts.as_ref().unwrap().len(), 2);
         assert_eq!(back.streaming_final_seq, 12);
     }
@@ -2783,7 +2693,7 @@ mod tests {
     #[test]
     fn old_json_without_parts_deserializes_to_none() {
         let json = r#"{"id":"m1","role":"agent","content":"hello","timestamp":1000.0}"#;
-        let msg: ChatMessage = serde_json::from_str(json).unwrap();
+        let msg: ChatMessage = legacy_json::from_str(json).unwrap();
         assert_eq!(msg.parts, None);
         assert_eq!(msg.streaming_final_seq, 0);
     }
@@ -2791,7 +2701,7 @@ mod tests {
     #[test]
     fn message_part_permission_without_answers_serializes() {
         let part = MessagePart::Permission {
-            request: PermissionRequestMsg {
+            request: crate::usecase::agent_session::runtime::event_apply::pending_permission_request_from_msg(&PermissionRequestMsg {
                 id: "r1".to_string(),
                 tool_use_id: None,
                 tool_name: "Bash".to_string(),
@@ -2804,14 +2714,15 @@ mod tests {
                 display_name: None,
                 description: None,
                 decision_reason: None,
-            },
+            })
+            .unwrap(),
             status: PermissionPartStatus::Pending,
             answers: None,
             parent_tool_use_id: None,
         };
-        let json = serde_json::to_string(&part).unwrap();
+        let json = legacy_json::to_string(&part).unwrap();
         assert!(!json.contains("answers"));
-        let back: MessagePart = serde_json::from_str(&json).unwrap();
+        let back: MessagePart = legacy_json::from_str(&json).unwrap();
         if let MessagePart::Permission { answers, .. } = back {
             assert_eq!(answers, None);
         } else {
@@ -2822,14 +2733,14 @@ mod tests {
     #[test]
     fn tool_result_without_tool_use_id_deserializes() {
         let json = r#"{"type":"tool_result","content":"ok","isError":false}"#;
-        let part: MessagePart = serde_json::from_str(json).unwrap();
+        let part: MessagePart = legacy_json::from_str(json).unwrap();
         if let MessagePart::ToolResult { tool_use_id, .. } = part {
             assert_eq!(tool_use_id, None);
         } else {
             panic!("Expected ToolResult variant");
         }
 
-        let entry: ActivityEntry = serde_json::from_str(json).unwrap();
+        let entry: ActivityEntry = legacy_json::from_str(json).unwrap();
         if let ActivityEntry::ToolResult { tool_use_id, .. } = entry {
             assert_eq!(tool_use_id, None);
         } else {
@@ -2845,21 +2756,21 @@ mod tests {
             description: Some("Search codebase".to_string()),
             summary: Some("Found 3 files".to_string()),
         };
-        let json = serde_json::to_string(&part).unwrap();
+        let json = legacy_json::to_string(&part).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["type"], "task_status");
         assert_eq!(v["taskToolUseId"], "toolu_task_001");
         assert_eq!(v["status"], "completed");
         assert_eq!(v["description"], "Search codebase");
         assert_eq!(v["summary"], "Found 3 files");
-        let back: MessagePart = serde_json::from_str(&json).unwrap();
+        let back: MessagePart = legacy_json::from_str(&json).unwrap();
         assert_eq!(back, part);
     }
 
     #[test]
     fn task_status_without_optional_fields_deserializes() {
         let json = r#"{"type":"task_status","taskToolUseId":"t1","status":"started"}"#;
-        let part: MessagePart = serde_json::from_str(json).unwrap();
+        let part: MessagePart = legacy_json::from_str(json).unwrap();
         if let MessagePart::TaskStatus {
             task_tool_use_id,
             status,
@@ -2882,9 +2793,9 @@ mod tests {
             content: "sub-agent text".to_string(),
             parent_tool_use_id: Some("toolu_parent".to_string()),
         };
-        let json = serde_json::to_string(&part).unwrap();
+        let json = legacy_json::to_string(&part).unwrap();
         assert!(json.contains("parentToolUseId"));
-        let back: MessagePart = serde_json::from_str(&json).unwrap();
+        let back: MessagePart = legacy_json::from_str(&json).unwrap();
         if let MessagePart::Text {
             parent_tool_use_id, ..
         } = back
@@ -2904,7 +2815,7 @@ mod tests {
             detail: Some("trigger=auto, 50000 tokens".to_string()),
             hook_id: None,
         };
-        let json = serde_json::to_string(&part).unwrap();
+        let json = legacy_json::to_string(&part).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["type"], "system_notification");
         assert_eq!(v["notificationType"], "compaction");
@@ -2912,7 +2823,7 @@ mod tests {
         assert_eq!(v["label"], "Conversation compacted");
         assert_eq!(v["detail"], "trigger=auto, 50000 tokens");
         assert!(v.get("hookId").is_none());
-        let back: MessagePart = serde_json::from_str(&json).unwrap();
+        let back: MessagePart = legacy_json::from_str(&json).unwrap();
         assert_eq!(back, part);
     }
 
@@ -2926,11 +2837,11 @@ mod tests {
             hook_id: None,
         };
 
-        let json = serde_json::to_string(&part).unwrap();
+        let json = legacy_json::to_string(&part).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["notificationType"], "session_recovery");
         assert_eq!(value["status"], "recovered");
-        assert_eq!(serde_json::from_str::<MessagePart>(&json).unwrap(), part);
+        assert_eq!(legacy_json::from_str::<MessagePart>(&json).unwrap(), part);
     }
 
     #[test]
@@ -2942,7 +2853,7 @@ mod tests {
             "label":"SessionEnd",
             "hookId":"hook-001"
         }"#;
-        let parsed = serde_json::from_str::<MessagePart>(json);
+        let parsed = legacy_json::from_str::<MessagePart>(json);
         assert!(parsed.is_err());
     }
 
@@ -2950,7 +2861,7 @@ mod tests {
     fn old_json_without_system_notification_deserializes() {
         // Backward compat: old session JSON without system_notification parts
         let json = r#"[{"type":"text","content":"hello"},{"type":"task_status","taskToolUseId":"t1","status":"started"}]"#;
-        let parts: Vec<MessagePart> = serde_json::from_str(json).unwrap();
+        let parts: Vec<MessagePart> = legacy_json::from_str(json).unwrap();
         assert_eq!(parts.len(), 2);
         assert!(matches!(&parts[0], MessagePart::Text { .. }));
         assert!(matches!(&parts[1], MessagePart::TaskStatus { .. }));
@@ -2959,7 +2870,7 @@ mod tests {
     #[test]
     fn old_json_without_parent_tool_use_id_deserializes() {
         let json = r#"{"type":"text","content":"hello"}"#;
-        let part: MessagePart = serde_json::from_str(json).unwrap();
+        let part: MessagePart = legacy_json::from_str(json).unwrap();
         if let MessagePart::Text {
             parent_tool_use_id, ..
         } = part
@@ -2976,12 +2887,12 @@ mod tests {
             data: "iVBORw0KGgoAAAA==".to_string(),
             media_type: "image/png".to_string(),
         };
-        let json = serde_json::to_string(&part).unwrap();
+        let json = legacy_json::to_string(&part).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["type"], "image");
         assert_eq!(v["data"], "iVBORw0KGgoAAAA==");
         assert_eq!(v["mediaType"], "image/png");
-        let back: MessagePart = serde_json::from_str(&json).unwrap();
+        let back: MessagePart = legacy_json::from_str(&json).unwrap();
         assert_eq!(back, part);
     }
 
@@ -2994,13 +2905,13 @@ mod tests {
                 byte_size: 42,
             },
         };
-        let json = serde_json::to_string(&part).unwrap();
+        let json = legacy_json::to_string(&part).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["type"], "image_ref");
         assert_eq!(v["attachment"]["id"], "abc123");
         assert_eq!(v["attachment"]["mediaType"], "image/png");
         assert_eq!(v["attachment"]["byteSize"], 42);
-        let back: MessagePart = serde_json::from_str(&json).unwrap();
+        let back: MessagePart = legacy_json::from_str(&json).unwrap();
         assert_eq!(back, part);
     }
 
@@ -3026,8 +2937,8 @@ mod tests {
             timestamp: 1000.0,
             mentions: None,
         };
-        let json = serde_json::to_string(&msg).unwrap();
-        let back: ChatMessage = serde_json::from_str(&json).unwrap();
+        let json = legacy_json::to_string(&msg).unwrap();
+        let back: ChatMessage = legacy_json::from_str(&json).unwrap();
         assert_eq!(back.parts.as_ref().unwrap().len(), 2);
         assert!(matches!(
             &back.parts.as_ref().unwrap()[1],
@@ -3054,7 +2965,7 @@ mod tests {
     }
 
     #[test]
-    fn retired_workflow_state_field_is_rejected() {
+    fn retired_workflow_state_field_is_ignored_as_additive_legacy_data() {
         let json = r#"{
             "id": "s1",
             "worktreePath": "/repo",
@@ -3069,7 +2980,9 @@ mod tests {
                 "workflowName": "legacy"
             }
         }"#;
-        assert!(serde_json::from_str::<ChatSession>(json).is_err());
+        let decoded = legacy_json::from_str::<ChatSession>(json).unwrap();
+        assert!(!decoded.workflow_node_session);
+        assert!(decoded.workflow_node_context.is_none());
     }
 
     #[test]
@@ -3080,7 +2993,7 @@ mod tests {
             create_session_internal(&store, dir.path(), "/repo", Some("claude".to_string()))
                 .unwrap();
         assert_eq!(session.backend_id, Some("claude".to_string()));
-        assert_eq!(session.state, SessionState::Active);
+        assert_eq!(session.state, SessionState::Idle);
         assert_eq!(session.worktree_path, "/repo");
     }
 
@@ -3300,9 +3213,9 @@ mod tests {
             workflow_node_context: None,
             context_epoch: None,
         };
-        let json = serde_json::to_string(&session).unwrap();
+        let json = legacy_json::to_string(&session).unwrap();
         assert!(json.contains("\"backendId\":\"claude\""));
-        let back: ChatSession = serde_json::from_str(&json).unwrap();
+        let back: ChatSession = legacy_json::from_str(&json).unwrap();
         assert_eq!(back.backend_id, Some("claude".to_string()));
     }
 
@@ -3473,7 +3386,13 @@ mod workflow_node_context_meta_tests {
         let dto_json = serde_json::to_string(&dto).expect("serialize dto");
         let restored = workflow_node_context_mapper::to_domain(dto.clone());
         let session = session_with_context(Some(dto));
-        let session_json = serde_json::to_string(&session).expect("serialize session");
+        let session_json = String::from_utf8(
+            crate::adaptor::gateway::agent_session::session_storage::encode_chat_session_v1(
+                &session,
+            )
+            .expect("serialize session through legacy V1 DTO"),
+        )
+        .unwrap();
         let meta = SessionMeta::from_session(&session);
         let meta_json = serde_json::to_string(&meta).expect("serialize meta");
         let summary_json = serde_json::to_string(&session.to_summary()).expect("serialize summary");

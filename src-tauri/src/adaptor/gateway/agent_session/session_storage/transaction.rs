@@ -3,10 +3,13 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
+use super::layout::write_json_pretty_atomic_durable;
 use super::layout::{
     meta_event_transaction_file_in_dir, meta_file_in_dir, sync_file_and_parent, sync_parent_dir,
-    validate_meta, write_json_pretty_atomic, write_json_pretty_atomic_durable,
+    validate_meta, write_json_pretty_atomic,
 };
+use super::stored_event_v1::StoredAgentSessionEventV1;
 use super::FileSessionStorage;
 use crate::usecase::agent_session::event_log::AgentSessionEvent;
 use crate::usecase::agent_session::session::SessionMeta;
@@ -59,8 +62,7 @@ pub(crate) enum TransactionApplyStep {
 pub(super) type TransactionApplyHook =
     std::sync::Arc<dyn Fn(bool, TransactionApplyStep) -> Result<(), String> + Send + Sync>;
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug)]
 pub(super) struct SessionMetaEventTransaction {
     pub(super) version: u32,
     pub(super) session_id: String,
@@ -69,7 +71,48 @@ pub(super) struct SessionMetaEventTransaction {
     pub(super) events: Vec<AgentSessionEvent>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredSessionMetaEventTransactionV1 {
+    version: u32,
+    session_id: String,
+    base_event_count: usize,
+    meta: SessionMeta,
+    events: Vec<StoredAgentSessionEventV1>,
+}
+
+impl From<&SessionMetaEventTransaction> for StoredSessionMetaEventTransactionV1 {
+    fn from(value: &SessionMetaEventTransaction) -> Self {
+        Self {
+            version: value.version,
+            session_id: value.session_id.clone(),
+            base_event_count: value.base_event_count,
+            meta: value.meta.clone(),
+            events: value.events.iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl TryFrom<StoredSessionMetaEventTransactionV1> for SessionMetaEventTransaction {
+    type Error = String;
+
+    fn try_from(value: StoredSessionMetaEventTransactionV1) -> Result<Self, Self::Error> {
+        Ok(Self {
+            version: value.version,
+            session_id: value.session_id,
+            base_event_count: value.base_event_count,
+            meta: value.meta,
+            events: value
+                .events
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<_, _>>()?,
+        })
+    }
+}
+
 impl SessionMetaEventTransaction {
+    #[cfg(test)]
     pub(super) fn new(
         session_id: &str,
         base_event_count: usize,
@@ -86,14 +129,26 @@ impl SessionMetaEventTransaction {
     }
 }
 
+#[cfg(test)]
+pub(super) fn encode_transaction_v1(
+    transaction: &SessionMetaEventTransaction,
+) -> Result<Vec<u8>, serde_json::Error> {
+    serde_json::to_vec_pretty(&StoredSessionMetaEventTransactionV1::from(transaction))
+}
+
 impl FileSessionStorage {
+    #[cfg(test)]
     pub(super) fn commit_meta_event_transaction(
         &self,
         dir: &Path,
         transaction: &SessionMetaEventTransaction,
     ) -> Result<(), String> {
         let path = meta_event_transaction_file_in_dir(dir);
-        write_json_pretty_atomic_durable(&path, transaction, "session meta/event transaction")?;
+        write_json_pretty_atomic_durable(
+            &path,
+            &StoredSessionMetaEventTransactionV1::from(transaction),
+            "session meta/event transaction",
+        )?;
         match self.apply_committed_meta_event_transaction(dir, &transaction.session_id) {
             Ok(()) => Ok(()),
             Err(error) => {
@@ -129,12 +184,14 @@ impl FileSessionStorage {
                 )));
             }
         };
-        let transaction: SessionMetaEventTransaction =
+        let stored: StoredSessionMetaEventTransactionV1 =
             serde_json::from_reader(BufReader::new(file)).map_err(|error| {
                 TransactionApplyError::corrupt(format!(
                     "Failed to parse session meta/event transaction: {error}"
                 ))
             })?;
+        let transaction: SessionMetaEventTransaction =
+            stored.try_into().map_err(TransactionApplyError::corrupt)?;
         if transaction.version != META_EVENT_TRANSACTION_VERSION {
             return Err(TransactionApplyError::corrupt(format!(
                 "Unsupported session meta/event transaction version: {}",

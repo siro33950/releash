@@ -212,6 +212,7 @@ const baseIpcHandler: Record<string, unknown> = {
 	},
 	list_agent_backends: { backends: [], defaultId: null },
 	get_session: null,
+	get_agent_session_display_window: null,
 	get_session_page: null,
 	plan_agent_chat_eviction: { evictSessionIds: [] },
 	create_session: {
@@ -235,7 +236,8 @@ const baseIpcHandler: Record<string, unknown> = {
 	update_session_state: null,
 	update_message_parts: null,
 	update_session_agent_info: null,
-	interrupt_agent_query: null,
+	stop_agent_session: { __mockAcceptedStop: true },
+	get_stop_operation: null,
 	respond_agent_permission: null,
 	scan_slash_commands: [],
 

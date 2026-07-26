@@ -334,22 +334,51 @@ describe("agentChatReducer", () => {
 			expect(next.sessionErrors).toBe(sessionErrors);
 		});
 
-		it("SET_ACTIVE_SESSION_ID null clears the active selection", () => {
-			const session = makeSession();
-			const upserted = reducer(INITIAL_STATE, {
-				type: "UPSERT_SESSION",
-				session,
+		it("close_quit_chat_tab_close_is_view_only", () => {
+			const session = makeSession({
+				messages: [makeMessage()],
+				state: "active",
 			});
-			const withActive = reducer(upserted, {
-				type: "SET_ACTIVE_SESSION_ID",
-				sessionId: session.id,
-			});
+			const withActive: AgentChatState = {
+				...reducer(INITIAL_STATE, {
+					type: "UPSERT_SESSION",
+					session,
+				}),
+				activeSessionId: session.id,
+				turnPhases: { [session.id]: "waiting_permission" },
+				pendingPermissions: {
+					[session.id]: {
+						id: "permission-1",
+						toolName: "Bash",
+						kind: "tool_approval",
+						input: { command: "echo retained" },
+						title: "Run command",
+					},
+				},
+				pendingQueues: {
+					[session.id]: [
+						{
+							id: "queued-1",
+							contentPreview: "retained",
+							createdAt: 1,
+							permissionMode: "edit",
+							imageCount: 0,
+						},
+					],
+				},
+			};
 			const next = reducer(withActive, {
 				type: "SET_ACTIVE_SESSION_ID",
 				sessionId: null,
 			});
+
 			expect(next.activeSessionId).toBeNull();
 			expect(selectActiveSession(next)).toBeNull();
+			expect(next.sessionsById).toBe(withActive.sessionsById);
+			expect(next.turnPhases).toBe(withActive.turnPhases);
+			expect(next.pendingPermissions).toBe(withActive.pendingPermissions);
+			expect(next.pendingQueues).toBe(withActive.pendingQueues);
+			expect(next.sessionsById[session.id]).toEqual(session);
 		});
 	});
 
@@ -612,13 +641,13 @@ describe("agentChatReducer", () => {
 			const withA = reducer(INITIAL_STATE, {
 				type: "SYNC_SESSION_ERROR",
 				sessionId: "s1",
-				revision: 1,
+				revision: "1",
 				message: "send failed",
 			});
 			const withBoth = reducer(withA, {
 				type: "SYNC_SESSION_ERROR",
 				sessionId: "s2",
-				revision: 2,
+				revision: "2",
 				message: "load failed",
 			});
 
@@ -635,13 +664,13 @@ describe("agentChatReducer", () => {
 					s1: "send failed",
 					s2: "other error",
 				},
-				sessionErrorRevisions: { s1: 1, s2: 2 },
+				sessionErrorRevisions: { s1: "1", s2: "2" },
 			};
 
 			const cleared = reducer(state, {
 				type: "SYNC_SESSION_ERROR",
 				sessionId: "s1",
-				revision: 3,
+				revision: "3",
 				message: null,
 			});
 			expect(cleared.sessionErrors).toEqual({
@@ -653,29 +682,47 @@ describe("agentChatReducer", () => {
 			const next = reducer(INITIAL_STATE, {
 				type: "SYNC_SESSION_ERROR",
 				sessionId: "missing",
-				revision: 1,
+				revision: "1",
 				message: null,
 			});
-			expect(next.sessionErrorRevisions).toEqual({ missing: 1 });
+			expect(next.sessionErrorRevisions).toEqual({ missing: "1" });
 		});
 
 		it("ignores a delayed query snapshot after a newer event revision", () => {
 			const fromEvent = reducer(INITIAL_STATE, {
 				type: "SYNC_SESSION_ERROR",
 				sessionId: "s1",
-				revision: 2,
+				revision: "9007199254740993",
 				message: "new failure",
 			});
 
 			const afterDelayedQuery = reducer(fromEvent, {
 				type: "SYNC_SESSION_ERROR",
 				sessionId: "s1",
-				revision: 1,
+				revision: "9007199254740992",
 				message: null,
 			});
 
 			expect(afterDelayedQuery).toBe(fromEvent);
 			expect(afterDelayedQuery.sessionErrors.s1).toBe("new failure");
+		});
+
+		it("B075 orders maximum lossless notice revisions without Number coercion", () => {
+			const atMaximum = reducer(INITIAL_STATE, {
+				type: "SYNC_SESSION_ERROR",
+				sessionId: "s1",
+				revision: "9223372036854775807",
+				message: "maximum",
+			});
+			const stale = reducer(atMaximum, {
+				type: "SYNC_SESSION_ERROR",
+				sessionId: "s1",
+				revision: "9223372036854775806",
+				message: "stale",
+			});
+
+			expect(stale).toBe(atMaximum);
+			expect(stale.sessionErrors.s1).toBe("maximum");
 		});
 	});
 
@@ -830,7 +877,7 @@ describe("agentChatReducer", () => {
 			expect(next.clearedPendingPermissionIds.s1).toBe("req-1");
 		});
 
-		it("ignores stale null hydrate with an older permission state revision", () => {
+		it("B075 ignores a stale lossless maximum permission state revision", () => {
 			const request = {
 				id: "req-1",
 				toolName: "Edit",
@@ -840,16 +887,20 @@ describe("agentChatReducer", () => {
 			const state: AgentChatState = {
 				...INITIAL_STATE,
 				pendingPermissions: { s1: request },
-				pendingPermissionStateRevisions: { s1: 2 },
+				pendingPermissionStateRevisions: {
+					s1: "9223372036854775807",
+				},
 			};
 			const next = reducer(state, {
 				type: "SET_PENDING_PERMISSION",
 				sessionId: "s1",
 				request: null,
-				pendingPermissionStateRevision: 1,
+				pendingPermissionStateRevision: "9223372036854775806",
 			});
 			expect(next.pendingPermissions.s1).toBe(request);
-			expect(next.pendingPermissionStateRevisions.s1).toBe(2);
+			expect(next.pendingPermissionStateRevisions.s1).toBe(
+				"9223372036854775807",
+			);
 		});
 
 		it("clears pending permission when a fresh null hydrate has a newer revision", () => {
@@ -862,16 +913,16 @@ describe("agentChatReducer", () => {
 			const state: AgentChatState = {
 				...INITIAL_STATE,
 				pendingPermissions: { s1: request },
-				pendingPermissionStateRevisions: { s1: 2 },
+				pendingPermissionStateRevisions: { s1: "2" },
 			};
 			const next = reducer(state, {
 				type: "SET_PENDING_PERMISSION",
 				sessionId: "s1",
 				request: null,
-				pendingPermissionStateRevision: 3,
+				pendingPermissionStateRevision: "3",
 			});
 			expect(next.pendingPermissions.s1).toBeUndefined();
-			expect(next.pendingPermissionStateRevisions.s1).toBe(3);
+			expect(next.pendingPermissionStateRevisions.s1).toBe("3");
 			expect(next.clearedPendingPermissionIds.s1).toBe("req-1");
 		});
 
@@ -886,13 +937,13 @@ describe("agentChatReducer", () => {
 				...INITIAL_STATE,
 				turnPhases: { s1: "waiting_permission" },
 				pendingPermissions: { s1: request },
-				pendingPermissionStateRevisions: { s1: 2 },
+				pendingPermissionStateRevisions: { s1: "2" },
 			};
 			const next = reducer(state, {
 				type: "SET_TURN_PHASE",
 				sessionId: "s1",
 				turnPhase: "idle",
-				pendingPermissionStateRevision: 1,
+				pendingPermissionStateRevision: "1",
 			});
 			expect(next.turnPhases.s1).toBe("waiting_permission");
 		});
@@ -908,13 +959,13 @@ describe("agentChatReducer", () => {
 				{
 					...INITIAL_STATE,
 					pendingPermissions: { s1: request },
-					pendingPermissionStateRevisions: { s1: 1 },
+					pendingPermissionStateRevisions: { s1: "1" },
 				},
 				{
 					type: "SET_PENDING_PERMISSION",
 					sessionId: "s1",
 					request: null,
-					pendingPermissionStateRevision: 2,
+					pendingPermissionStateRevision: "2",
 				},
 			);
 			const hydrated = reducer(cleared, {
@@ -922,7 +973,7 @@ describe("agentChatReducer", () => {
 				sessionId: "s1",
 				request,
 				ignoreIfCleared: true,
-				pendingPermissionStateRevision: 1,
+				pendingPermissionStateRevision: "1",
 			});
 			expect(hydrated.pendingPermissions.s1).toBeUndefined();
 			expect(hydrated.clearedPendingPermissionIds.s1).toBe("req-1");
@@ -933,14 +984,14 @@ describe("agentChatReducer", () => {
 				...INITIAL_STATE,
 				turnPhases: { s1: "streaming" },
 				clearedPendingPermissionIds: { s1: "req-1" },
-				pendingPermissionStateRevisions: { s1: 2 },
+				pendingPermissionStateRevisions: { s1: "2" },
 			};
 			const next = reducer(state, {
 				type: "SET_TURN_PHASE",
 				sessionId: "s1",
 				turnPhase: "waiting_permission",
 				ignoreIfClearedPendingRequestId: "req-1",
-				pendingPermissionStateRevision: 1,
+				pendingPermissionStateRevision: "1",
 			});
 			expect(next.turnPhases.s1).toBe("streaming");
 		});
@@ -957,13 +1008,13 @@ describe("agentChatReducer", () => {
 					...INITIAL_STATE,
 					turnPhases: { s1: "streaming" },
 					pendingPermissions: { s1: request },
-					pendingPermissionStateRevisions: { s1: 1 },
+					pendingPermissionStateRevisions: { s1: "1" },
 				},
 				{
 					type: "SET_PENDING_PERMISSION",
 					sessionId: "s1",
 					request: null,
-					pendingPermissionStateRevision: 2,
+					pendingPermissionStateRevision: "2",
 				},
 			);
 
@@ -972,14 +1023,14 @@ describe("agentChatReducer", () => {
 				sessionId: "s1",
 				request,
 				ignoreIfCleared: true,
-				pendingPermissionStateRevision: 2,
+				pendingPermissionStateRevision: "2",
 			});
 			const hydratedTurnPhase = reducer(hydratedPending, {
 				type: "SET_TURN_PHASE",
 				sessionId: "s1",
 				turnPhase: "waiting_permission",
 				ignoreIfClearedPendingRequestId: "req-1",
-				pendingPermissionStateRevision: 2,
+				pendingPermissionStateRevision: "2",
 			});
 
 			expect(hydratedPending.pendingPermissions.s1).toBeUndefined();
@@ -1215,7 +1266,7 @@ describe("agentChatReducer", () => {
 				type: "APPLY_STREAMING_DELTA",
 				sessionId: "s1",
 				messageId: "m1",
-				seq: 2,
+				seq: "2",
 				parts: [{ type: "text", content: "lo" }],
 			});
 
@@ -1246,7 +1297,7 @@ describe("agentChatReducer", () => {
 				type: "APPLY_STREAMING_DELTA",
 				sessionId: "s1",
 				messageId: "m1",
-				seq: 2,
+				seq: "2",
 				parts: [
 					{
 						type: "task_status",
@@ -1312,14 +1363,14 @@ describe("agentChatReducer", () => {
 				type: "APPLY_STREAMING_DELTA",
 				sessionId: "s1",
 				messageId: "m1",
-				seq: 2,
+				seq: "2",
 				parts: [{ type: "thinking", content: " more" }],
 			});
 			const afterSecond = reducer(afterFirst, {
 				type: "APPLY_STREAMING_DELTA",
 				sessionId: "s1",
 				messageId: "m1",
-				seq: 3,
+				seq: "3",
 				parts: [{ type: "thinking", content: " now" }],
 			});
 
@@ -1343,7 +1394,7 @@ describe("agentChatReducer", () => {
 				type: "APPLY_STREAMING_DELTA",
 				sessionId: "s1",
 				messageId: "m1",
-				seq: 2,
+				seq: "2",
 				parts: [{ type: "text", content: "lo" }],
 			});
 
@@ -1367,7 +1418,7 @@ describe("agentChatReducer", () => {
 				type: "APPLY_STREAMING_DELTA",
 				sessionId: "s1",
 				messageId: "m1",
-				seq: 3,
+				seq: "3",
 				parts: [{ type: "text", content: " skipped" }],
 			});
 
@@ -1491,7 +1542,7 @@ describe("agentChatReducer", () => {
 					s1: "send failed",
 					s2: "load failed",
 				},
-				sessionErrorRevisions: { s1: 4, s2: 5 },
+				sessionErrorRevisions: { s1: "4", s2: "5" },
 				turnPhases: { s1: "streaming", s2: "idle" },
 				pendingPermissions: {
 					s1: {
@@ -1501,7 +1552,7 @@ describe("agentChatReducer", () => {
 						toolUseId: "toolu_001",
 					},
 				},
-				pendingPermissionStateRevisions: { s1: 4 },
+				pendingPermissionStateRevisions: { s1: "4" },
 				sessionModels: { s1: "claude-4", s2: "claude-3.5" },
 				latestTokenUsage: {
 					s1: { inputTokens: 100, outputTokens: 25 },
@@ -1516,7 +1567,7 @@ describe("agentChatReducer", () => {
 			expect(next.sessionErrors).toEqual({
 				s2: "load failed",
 			});
-			expect(next.sessionErrorRevisions).toEqual({ s2: 5 });
+			expect(next.sessionErrorRevisions).toEqual({ s2: "5" });
 			expect(next.pendingPermissions).toEqual({});
 			expect(next.pendingPermissionStateRevisions).toEqual({});
 			expect(next.sessionModels).toEqual({ s2: "claude-3.5" });

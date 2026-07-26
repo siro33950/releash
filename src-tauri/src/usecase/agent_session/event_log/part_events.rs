@@ -1,6 +1,7 @@
 use super::events::{AgentSessionEvent, PermissionDecision, TurnId};
+use crate::domain::agent_session::entities::PermissionRequest;
 use crate::usecase::agent_session::session::MessagePart;
-use crate::usecase::agent_session::session::{PermissionPartStatus, PermissionRequestMsg};
+use crate::usecase::agent_session::session::PermissionPartStatus;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PartEventMode {
@@ -144,7 +145,7 @@ pub fn append_part_events(
                     events.push(AgentSessionEvent::PermissionResolved {
                         turn_id,
                         tool_use_id,
-                        request_id: permission_request_id(request),
+                        request_id: (!request.id.is_empty()).then_some(request.id.clone()),
                         decision,
                         answers: answers.clone(),
                     });
@@ -182,7 +183,7 @@ pub fn append_part_events(
                 events.push(AgentSessionEvent::SystemNotificationRecorded {
                     turn_id,
                     message_id: message_id.to_string(),
-                    notification_type: notification_type.clone(),
+                    notification_type: *notification_type,
                     status: status.clone(),
                     label: label.clone(),
                     detail: detail.clone(),
@@ -231,13 +232,6 @@ fn next_tool_retry_attempt(
     (prior_starts > 0).then_some(prior_starts.saturating_add(1) as u32)
 }
 
-pub(super) fn permission_request_id(request: &PermissionRequestMsg) -> Option<String> {
+pub(super) fn permission_request_id(request: &PermissionRequest) -> Option<String> {
     (!request.id.is_empty()).then(|| request.id.clone())
-}
-
-pub(super) fn permission_tool_use_id(request: &PermissionRequestMsg) -> Option<String> {
-    request
-        .tool_use_id
-        .clone()
-        .filter(|value| !value.is_empty())
 }

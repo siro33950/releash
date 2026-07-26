@@ -1,25 +1,69 @@
+#[cfg(test)]
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::adaptor::gateway::workflow::log::WorkflowEventLog;
+use crate::domain::local_event::LocalEventTransactionRepository;
 use crate::domain::workflow::{WorkflowError, WorkflowExecutionId, WorkflowPageRequest};
 use crate::usecase::workflow::ports::{WorkflowEventDraft, WorkflowEventRepository};
 
 use super::mapper;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct WorkflowEventLogRepository {
-    data_dir: PathBuf,
+    source: WorkflowEventReadSource,
+}
+
+#[derive(Clone)]
+enum WorkflowEventReadSource {
+    #[cfg(test)]
+    Legacy(PathBuf),
+    Canonical {
+        repository: Arc<dyn LocalEventTransactionRepository>,
+        installation_id: String,
+    },
 }
 
 impl WorkflowEventLogRepository {
+    #[cfg(test)]
     pub(crate) fn new(data_dir: impl Into<PathBuf>) -> Self {
         Self {
-            data_dir: data_dir.into(),
+            source: WorkflowEventReadSource::Legacy(data_dir.into()),
+        }
+    }
+
+    pub(crate) fn with_authority(
+        repository: Arc<dyn LocalEventTransactionRepository>,
+        installation_id: String,
+    ) -> Self {
+        Self {
+            source: WorkflowEventReadSource::Canonical {
+                repository,
+                installation_id,
+            },
         }
     }
 
     fn log(&self) -> WorkflowEventLog {
-        WorkflowEventLog::new(&self.data_dir)
+        match &self.source {
+            #[cfg(test)]
+            WorkflowEventReadSource::Legacy(data_dir) => WorkflowEventLog::new(data_dir),
+            WorkflowEventReadSource::Canonical {
+                repository,
+                installation_id,
+            } => WorkflowEventLog::with_authority(repository.clone(), installation_id.clone()),
+        }
+    }
+
+    fn read_events(
+        &self,
+        execution_id: &WorkflowExecutionId,
+    ) -> Result<Vec<crate::adaptor::gateway::workflow::event::WorkflowEvent>, String> {
+        match &self.source {
+            #[cfg(test)]
+            WorkflowEventReadSource::Legacy(_) => self.log().read_log(execution_id.as_str()),
+            _ => self.log().read_log_durable_blocking(execution_id.as_str()),
+        }
     }
 }
 
@@ -44,8 +88,7 @@ impl WorkflowEventRepository for WorkflowEventLogRepository {
         &self,
         execution_id: &WorkflowExecutionId,
     ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
-        self.log()
-            .read_log(execution_id.as_str())
+        self.read_events(execution_id)
             .map_err(WorkflowError::external)?
             .iter()
             .map(mapper::workflow_event_to_domain_draft)
@@ -57,11 +100,12 @@ impl WorkflowEventRepository for WorkflowEventLogRepository {
         execution_id: &WorkflowExecutionId,
         page: WorkflowPageRequest,
     ) -> Result<Vec<WorkflowEventDraft>, WorkflowError> {
-        self.log()
-            .read_log_page(execution_id.as_str(), page.offset, page.limit)
+        self.read_events(execution_id)
             .map_err(WorkflowError::external)?
-            .iter()
-            .map(mapper::workflow_event_to_domain_draft)
+            .into_iter()
+            .skip(page.offset)
+            .take(page.limit)
+            .map(|event| mapper::workflow_event_to_domain_draft(&event))
             .collect()
     }
 }
@@ -69,6 +113,7 @@ impl WorkflowEventRepository for WorkflowEventLogRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use tempfile::TempDir;
 
     #[test]

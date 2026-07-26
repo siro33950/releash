@@ -96,8 +96,8 @@ pub(crate) trait NodeSessionDeps: Send + Sync {
     /// Runtime lock acquired by the caller variant.
     async fn start_agent_turn_locked(
         &self,
+        node_execution_id: &str,
         node_session_id: &str,
-        worktree_path: &str,
         permission_mode: &str,
         prompt: &str,
         system_prompt: Option<String>,
@@ -202,8 +202,8 @@ impl<'a, R: tauri::Runtime> NodeSessionDeps for RealNodeSessionDeps<'a, R> {
 
     async fn start_agent_turn_locked(
         &self,
+        node_execution_id: &str,
         node_session_id: &str,
-        worktree_path: &str,
         permission_mode: &str,
         prompt: &str,
         system_prompt: Option<String>,
@@ -213,7 +213,6 @@ impl<'a, R: tauri::Runtime> NodeSessionDeps for RealNodeSessionDeps<'a, R> {
             self.app,
             self.branch_diff_context.as_ref(),
             self.session_store,
-            worktree_path,
         );
         let permission_mode = PermissionMode::parse_canonical(permission_mode)
             .map_err(|e| WorkflowEngineError::InvalidWorkflow(e.to_string()))?;
@@ -222,12 +221,19 @@ impl<'a, R: tauri::Runtime> NodeSessionDeps for RealNodeSessionDeps<'a, R> {
             .acquire_session_control_after_recovery(node_session_id)
             .await;
         self.agent_runtime
-            .start_turn_locked(
-                node_session_id,
-                permission_mode,
-                prompt.to_string(),
-                system_prompt,
-                workflow_instruction.into_iter().collect(),
+            .start_workflow_turn_locked(
+                crate::usecase::agent_session::runtime::DurableWorkflowTurnRequest {
+                    operation_id:
+                        crate::usecase::agent_session::runtime::durable_workflow_turn_operation_id(
+                            node_execution_id,
+                            "initial",
+                        ),
+                    session_id: node_session_id.to_string(),
+                    content: prompt.to_string(),
+                    permission_mode,
+                    base_system_prompt: system_prompt,
+                    workflow_instructions: workflow_instruction.into_iter().collect(),
+                },
             )
             .await
             .map_err(WorkflowEngineError::from)

@@ -1,16 +1,16 @@
 use crate::domain::agent_session::entities::{
-    MessagePart as DomainMessagePart, PermissionDecision as DomainPermissionDecision,
-    PermissionRequest, PermissionRequestBody, PermissionRequestStatus,
-    TokenUsage as DomainTokenUsage,
+    MessagePart as DomainMessagePart, PermissionRequest, PermissionRequestBody,
+    PermissionRequestStatus, TokenUsage as DomainTokenUsage,
 };
-use crate::domain::agent_session::value_objects::{
-    SystemNotificationType as DomainSystemNotificationType, ToolOutputRef as DomainToolOutputRef,
-    ToolOutputSummary as DomainToolOutputSummary,
+#[cfg(test)]
+use crate::domain::agent_session::entities::{
+    PermissionAllowedPrompt, PermissionQuestion, PermissionQuestionOption,
 };
+#[cfg(test)]
+use crate::domain::agent_session::value_objects::JsonPayload;
 use crate::usecase::agent_session::session::{
-    MessagePart, PermissionAllowedPromptMsg, PermissionPartStatus, PermissionQuestionMsg,
-    PermissionQuestionOptionMsg, PermissionRequestKindMsg, PermissionRequestMsg,
-    SystemNotificationType, TokenUsage, ToolOutputRef, ToolOutputSummary,
+    MessagePart, PermissionAllowedPromptMsg, PermissionQuestionMsg, PermissionQuestionOptionMsg,
+    PermissionRequestKindMsg, PermissionRequestMsg, TokenUsage,
 };
 
 pub(crate) fn token_usage_from_domain(usage: DomainTokenUsage) -> TokenUsage {
@@ -23,7 +23,7 @@ pub(crate) fn token_usage_from_domain(usage: DomainTokenUsage) -> TokenUsage {
 }
 
 pub(crate) fn parts_from_domain(parts: Vec<DomainMessagePart>) -> Vec<MessagePart> {
-    parts.into_iter().map(part_from_domain).collect()
+    parts
 }
 
 pub(crate) fn permission_request_msg(request: &PermissionRequest) -> PermissionRequestMsg {
@@ -94,165 +94,89 @@ pub(crate) fn pending_permission_request_msg(
         .then(|| permission_request_msg(request))
 }
 
-fn part_from_domain(part: DomainMessagePart) -> MessagePart {
-    match part {
-        DomainMessagePart::Thinking {
-            content,
-            parent_tool_use_id,
-        } => MessagePart::Thinking {
-            content,
-            parent_tool_use_id,
+#[cfg(test)]
+pub(crate) fn pending_permission_request_from_msg(
+    msg: &PermissionRequestMsg,
+) -> Result<PermissionRequest, String> {
+    let body = match msg.kind {
+        PermissionRequestKindMsg::ToolApproval => PermissionRequestBody::ToolApproval {
+            input: msg
+                .input
+                .clone()
+                .map(json_value_payload)
+                .ok_or_else(|| "tool approval permission is missing input".to_string())?,
         },
-        DomainMessagePart::Text {
-            content,
-            parent_tool_use_id,
-        } => MessagePart::Text {
-            content,
-            parent_tool_use_id,
-        },
-        DomainMessagePart::ToolUse {
-            id,
-            tool,
-            input,
-            parent_tool_use_id,
-        } => MessagePart::ToolUse {
-            id,
-            tool,
-            input: json_payload(input.as_str()),
-            parent_tool_use_id,
-        },
-        DomainMessagePart::ToolResult {
-            content,
-            is_error,
-            tool_use_id,
-            parent_tool_use_id,
-            content_ref,
-            summary,
-        } => MessagePart::ToolResult {
-            content,
-            is_error,
-            tool_use_id,
-            parent_tool_use_id,
-            content_ref: content_ref.map(tool_output_ref_from_domain),
-            summary: summary.map(tool_output_summary_from_domain),
-        },
-        DomainMessagePart::Error {
-            content,
-            parent_tool_use_id,
-        } => MessagePart::Error {
-            content,
-            parent_tool_use_id,
-        },
-        DomainMessagePart::Permission { request } => {
-            let (status, answers) = permission_status_and_answers(&request.status);
-            MessagePart::Permission {
-                parent_tool_use_id: request.parent_tool_use_id.clone(),
-                request: permission_request_msg(&request),
-                status,
-                answers,
-            }
-        }
-        DomainMessagePart::TaskStatus {
-            task_tool_use_id,
-            status,
-            description,
-            summary,
-        } => MessagePart::TaskStatus {
-            task_tool_use_id,
-            status,
-            description,
-            summary,
-        },
-        DomainMessagePart::TodoListSnapshot { items } => MessagePart::TodoListSnapshot {
-            items: items
-                .into_iter()
-                .map(
-                    |item| crate::usecase::agent_session::session::TodoListItem {
-                        text: item.text,
-                        completed: item.completed,
-                    },
-                )
+        PermissionRequestKindMsg::PlanApproval => PermissionRequestBody::PlanApproval {
+            plan: msg
+                .plan
+                .clone()
+                .ok_or_else(|| "plan approval permission is missing plan".to_string())?,
+            allowed_prompts: msg
+                .allowed_prompts
+                .iter()
+                .map(|prompt| PermissionAllowedPrompt {
+                    tool: prompt.tool.clone(),
+                    prompt: prompt.prompt.clone(),
+                })
                 .collect(),
         },
-        DomainMessagePart::SystemNotification {
-            notification_type,
-            status,
-            label,
-            detail,
-            hook_id,
-        } => MessagePart::SystemNotification {
-            notification_type: system_notification_type_from_domain(notification_type),
-            status,
-            label,
-            detail,
-            hook_id,
+        PermissionRequestKindMsg::Question => PermissionRequestBody::Question {
+            questions: msg
+                .questions
+                .iter()
+                .map(|question| PermissionQuestion {
+                    question: question.question.clone(),
+                    header: question.header.clone(),
+                    options: question
+                        .options
+                        .iter()
+                        .map(|option| PermissionQuestionOption {
+                            label: option.label.clone(),
+                            description: option.description.clone(),
+                        })
+                        .collect(),
+                    multi_select: question.multi_select,
+                })
+                .collect(),
         },
-        DomainMessagePart::Image { data, media_type } => MessagePart::Image { data, media_type },
-        DomainMessagePart::ImageRef { attachment } => MessagePart::ImageRef {
-            attachment: crate::usecase::agent_session::session::AttachmentRef {
-                id: attachment.id,
-                media_type: attachment.media_type,
-                byte_size: attachment.byte_size,
-            },
+        PermissionRequestKindMsg::PermissionGrant => PermissionRequestBody::PermissionGrant {
+            requested: msg
+                .input
+                .clone()
+                .map(json_value_payload)
+                .ok_or_else(|| "permission grant is missing input".to_string())?,
         },
-    }
+    };
+    Ok(PermissionRequest {
+        id: msg.id.clone(),
+        tool_use_id: msg.tool_use_id.clone(),
+        parent_tool_use_id: None,
+        tool_name: msg.tool_name.clone(),
+        body,
+        title: msg.title.clone(),
+        display_name: msg.display_name.clone(),
+        description: msg.description.clone(),
+        decision_reason: msg.decision_reason.clone(),
+        status: PermissionRequestStatus::Pending,
+    })
 }
 
 fn json_payload(payload: &str) -> serde_json::Value {
-    serde_json::from_str(payload).unwrap_or_else(|_| serde_json::Value::String(payload.to_string()))
+    serde_json::from_str(payload).expect("domain JsonPayload must be validated at its boundary")
 }
 
-fn permission_status_and_answers(
-    status: &PermissionRequestStatus,
-) -> (PermissionPartStatus, Option<serde_json::Value>) {
-    match status {
-        PermissionRequestStatus::Pending => (PermissionPartStatus::Pending, None),
-        PermissionRequestStatus::Resolved { decision, answers } => {
-            let status = match decision {
-                DomainPermissionDecision::Allowed => PermissionPartStatus::Allowed,
-                DomainPermissionDecision::Denied => PermissionPartStatus::Denied,
-                DomainPermissionDecision::Cancelled => PermissionPartStatus::Cancelled,
-            };
-            (
-                status,
-                answers
-                    .as_ref()
-                    .map(|payload| json_payload(payload.as_str())),
-            )
-        }
-    }
-}
-
-fn tool_output_ref_from_domain(value: DomainToolOutputRef) -> ToolOutputRef {
-    ToolOutputRef {
-        id: value.id,
-        byte_size: value.byte_size,
-    }
-}
-
-fn tool_output_summary_from_domain(value: DomainToolOutputSummary) -> ToolOutputSummary {
-    ToolOutputSummary {
-        line_count: value.line_count,
-        byte_size: value.byte_size,
-        is_error: value.is_error,
-        truncated: value.truncated,
-    }
-}
-
-fn system_notification_type_from_domain(
-    value: DomainSystemNotificationType,
-) -> SystemNotificationType {
-    match value {
-        DomainSystemNotificationType::Compaction => SystemNotificationType::Compaction,
-        DomainSystemNotificationType::SessionRecovery => SystemNotificationType::SessionRecovery,
-    }
+#[cfg(test)]
+fn json_value_payload(value: serde_json::Value) -> JsonPayload {
+    JsonPayload::new_unchecked(
+        serde_json::to_string(&value).expect("JSON value serialization cannot fail"),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::agent_session::entities::{
-        PermissionAllowedPrompt, PermissionDecision, PermissionQuestion, PermissionQuestionOption,
+        PermissionAllowedPrompt, PermissionQuestion, PermissionQuestionOption,
     };
     use crate::domain::agent_session::value_objects::JsonPayload;
     use serde_json::json;
@@ -261,7 +185,9 @@ mod tests {
         PermissionRequest {
             id: "req-1".to_string(),
             tool_use_id: Some("tool-1".to_string()),
-            parent_tool_use_id: Some("parent-1".to_string()),
+            // Parent association is owned by MessagePart::Permission, not the
+            // compatibility request payload represented by PermissionRequestMsg.
+            parent_tool_use_id: None,
             tool_name: "Tool".to_string(),
             body,
             title: Some("Title".to_string()),
@@ -274,13 +200,15 @@ mod tests {
 
     #[test]
     fn permission_request_msg_maps_tool_approval() {
-        let msg = permission_request_msg(&request(PermissionRequestBody::ToolApproval {
+        let original = request(PermissionRequestBody::ToolApproval {
             input: JsonPayload::new_unchecked(r#"{"cmd":"test"}"#.to_string()),
-        }));
+        });
+        let msg = permission_request_msg(&original);
 
         assert_eq!(msg.kind, PermissionRequestKindMsg::ToolApproval);
         assert_eq!(msg.input, Some(json!({"cmd": "test"})));
         assert_eq!(msg.title.as_deref(), Some("Title"));
+        assert_eq!(pending_permission_request_from_msg(&msg).unwrap(), original);
     }
 
     #[test]
@@ -328,32 +256,15 @@ mod tests {
     }
 
     #[test]
-    fn permission_status_maps_resolved_decisions() {
-        for (decision, expected) in [
-            (PermissionDecision::Allowed, PermissionPartStatus::Allowed),
-            (PermissionDecision::Denied, PermissionPartStatus::Denied),
-            (
-                PermissionDecision::Cancelled,
-                PermissionPartStatus::Cancelled,
-            ),
-        ] {
-            let (status, answers) =
-                permission_status_and_answers(&PermissionRequestStatus::Resolved {
-                    decision,
-                    answers: Some(JsonPayload::new_unchecked(r#"{"ok":true}"#.to_string())),
-                });
-
-            assert_eq!(status, expected);
-            assert_eq!(answers, Some(json!({"ok": true})));
-        }
-    }
-
-    #[test]
-    fn json_payload_falls_back_to_string_when_parse_fails() {
-        let msg = permission_request_msg(&request(PermissionRequestBody::ToolApproval {
-            input: JsonPayload::new_unchecked("not json".to_string()),
+    fn permission_request_msg_missing_required_semantics_fails_closed() {
+        let mut msg = permission_request_msg(&request(PermissionRequestBody::ToolApproval {
+            input: JsonPayload::new_unchecked(r#"{"cmd":"test"}"#.to_string()),
         }));
+        msg.input = None;
 
-        assert_eq!(msg.input, Some(json!("not json")));
+        assert_eq!(
+            pending_permission_request_from_msg(&msg).unwrap_err(),
+            "tool approval permission is missing input"
+        );
     }
 }

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -29,11 +29,6 @@ use super::wire::{
 };
 
 const AGENT_PROCESS_EXITED_UNEXPECTEDLY: &str = "Agent process exited unexpectedly";
-
-#[cfg(not(test))]
-const ABORT_SYNTHESIS_DELAY: std::time::Duration = std::time::Duration::from_secs(10);
-#[cfg(test)]
-const ABORT_SYNTHESIS_DELAY: std::time::Duration = std::time::Duration::from_millis(20);
 
 pub(crate) struct ClaudeSessionRuntime {
     cli_path: String,
@@ -90,14 +85,7 @@ struct ClaudeRuntimeState {
     stale_timeout: Option<std::time::Duration>,
     extra_env: Vec<(String, String)>,
     turn_active: bool,
-    aborting: bool,
-    abort_generation: u64,
-    synthetic_abort_pending: bool,
-    last_successful_backend_session_id: Option<String>,
     pending_inputs: HashMap<String, Value>,
-    turn_generation: u64,
-    synthetic_abort_turn_generation: Option<u64>,
-    discarded_synthetic_abort_generations: HashSet<u64>,
     stdout_diagnostics: StdoutDiagnostics,
 }
 
@@ -166,14 +154,7 @@ impl ClaudeRuntimeState {
             stale_timeout: spec.stale_timeout,
             extra_env: spec.extra_env.clone(),
             turn_active: false,
-            aborting: false,
-            abort_generation: 0,
-            synthetic_abort_pending: false,
-            last_successful_backend_session_id: spec.resume.clone(),
             pending_inputs: HashMap::new(),
-            turn_generation: 0,
-            synthetic_abort_turn_generation: None,
-            discarded_synthetic_abort_generations: HashSet::new(),
             stdout_diagnostics: StdoutDiagnostics::default(),
         }
     }
@@ -223,7 +204,6 @@ impl AgentSessionRuntime for ClaudeSessionRuntime {
             state.system_prompt = system_prompt.clone();
             state.permission_mode = input.permission_mode;
             state.plan_mode = input.plan_mode;
-            state.discarded_synthetic_abort_generations.clear();
         }
 
         let handle = self.current_handle().await;
@@ -243,17 +223,6 @@ impl AgentSessionRuntime for ClaudeSessionRuntime {
     }
 
     async fn interrupt(&self) -> Result<(), AgentBackendError> {
-        let abort_generation = {
-            let mut state = self.state.lock().await;
-            state.aborting = true;
-            state.abort_generation = state.turn_generation;
-            state.abort_generation
-        };
-        spawn_abort_synthesis_timer(
-            Arc::clone(&self.state),
-            self.events_tx.clone(),
-            abort_generation,
-        );
         self.current_handle()
             .await
             .write_json(&interrupt_request(self.next_request_id()))
@@ -278,26 +247,6 @@ impl AgentSessionRuntime for ClaudeSessionRuntime {
             .map_err(AgentBackendError::Other)
     }
 
-    async fn set_permission_mode(
-        &self,
-        mode: PermissionMode,
-        plan_mode: bool,
-    ) -> Result<(), AgentBackendError> {
-        let wire_mode = claude_wire_mode(mode, plan_mode);
-        self.current_handle()
-            .await
-            .write_json(&set_permission_mode_request(
-                self.next_request_id(),
-                wire_mode,
-            ))
-            .await
-            .map_err(AgentBackendError::Other)?;
-        let mut state = self.state.lock().await;
-        state.permission_mode = mode;
-        state.plan_mode = plan_mode;
-        Ok(())
-    }
-
     async fn set_model(&self, model: &ModelId) -> Result<(), AgentBackendError> {
         self.state.lock().await.model = model.clone();
         self.current_handle()
@@ -308,10 +257,6 @@ impl AgentSessionRuntime for ClaudeSessionRuntime {
             ))
             .await
             .map_err(AgentBackendError::Other)
-    }
-
-    async fn set_session_title(&self, _title: &str) -> Result<(), AgentBackendError> {
-        Ok(())
     }
 
     async fn close(&self) {
@@ -425,9 +370,7 @@ async fn read_loop<R, W>(
                         let mut state = state.lock().await;
                         normalize_runtime_event(&mut state, event)
                     };
-                    if let Some(event) = event {
-                        let _ = events_tx.send(event);
-                    }
+                    let _ = events_tx.send(event);
                 }
             }
             Ok(None) => {
@@ -486,99 +429,20 @@ fn conversion_requires_permission_input(events: &[AgentRuntimeEvent]) -> bool {
 fn normalize_runtime_event(
     state: &mut ClaudeRuntimeState,
     event: AgentRuntimeEvent,
-) -> Option<AgentRuntimeEvent> {
+) -> AgentRuntimeEvent {
     match &event {
         AgentRuntimeEvent::SessionEstablished {
             backend_session_id, ..
         } => {
             state.backend_session_id = Some(backend_session_id.clone());
-            state.last_successful_backend_session_id = state
-                .last_successful_backend_session_id
-                .clone()
-                .or_else(|| Some(backend_session_id.clone()));
-            Some(event)
         }
         AgentRuntimeEvent::TurnCompleted(_) => {
-            if state.synthetic_abort_pending
-                && state.synthetic_abort_turn_generation == Some(state.turn_generation)
-            {
-                log::debug!(
-                    "discarding late turn result for generation {} already terminated by synthetic abort",
-                    state.turn_generation
-                );
-                state.synthetic_abort_pending = false;
-                state.synthetic_abort_turn_generation = None;
-                state
-                    .discarded_synthetic_abort_generations
-                    .remove(&state.turn_generation);
-                state.pending_inputs.clear();
-                return None;
-            }
-            if state.aborting {
-                state.aborting = false;
-                state.synthetic_abort_pending = false;
-                state.synthetic_abort_turn_generation = None;
-                state.turn_active = false;
-                state.backend_session_id = state.last_successful_backend_session_id.clone();
-                state.pending_inputs.clear();
-                return Some(AgentRuntimeEvent::TurnCompleted(TurnResult::Interrupted {
-                    reason: InterruptReason::Abort,
-                    error: None,
-                }));
-            }
-            if matches!(
-                event,
-                AgentRuntimeEvent::TurnCompleted(TurnResult::Completed { .. })
-            ) {
-                state.last_successful_backend_session_id = state.backend_session_id.clone();
-            }
             state.turn_active = false;
             state.pending_inputs.clear();
-            Some(event)
         }
-        _ => Some(event),
+        _ => {}
     }
-}
-
-fn spawn_abort_synthesis_timer(
-    state: Arc<Mutex<ClaudeRuntimeState>>,
-    events_tx: mpsc::UnboundedSender<AgentRuntimeEvent>,
-    abort_generation: u64,
-) {
-    tokio::spawn(async move {
-        tokio::time::sleep(ABORT_SYNTHESIS_DELAY).await;
-        let should_emit = {
-            let mut state = state.lock().await;
-            if state.abort_generation != abort_generation {
-                return;
-            }
-            if !state.aborting {
-                return;
-            }
-            if !state.turn_active {
-                state.aborting = false;
-                state.synthetic_abort_pending = false;
-                state.synthetic_abort_turn_generation = None;
-                return;
-            }
-            state.aborting = false;
-            state.turn_active = false;
-            state.synthetic_abort_pending = true;
-            state.synthetic_abort_turn_generation = Some(abort_generation);
-            state
-                .discarded_synthetic_abort_generations
-                .insert(abort_generation);
-            state.backend_session_id = state.last_successful_backend_session_id.clone();
-            state.pending_inputs.clear();
-            true
-        };
-        if should_emit {
-            let _ = events_tx.send(AgentRuntimeEvent::TurnCompleted(TurnResult::Interrupted {
-                reason: InterruptReason::Timeout,
-                error: None,
-            }));
-        }
-    });
+    event
 }
 
 async fn emit_crash_if_unexpected(
@@ -590,16 +454,13 @@ async fn emit_crash_if_unexpected(
     if closed.load(Ordering::Relaxed) {
         return;
     }
-    let (was_turn_active, aborting, oversize_dropped_count) = {
+    let (was_turn_active, oversize_dropped_count) = {
         let mut state = state.lock().await;
         let was_turn_active = state.turn_active;
-        let aborting = state.aborting;
         state.turn_active = false;
-        state.aborting = false;
         state.pending_inputs.clear();
         (
             was_turn_active,
-            aborting,
             state.stdout_diagnostics.oversize_dropped_count(),
         )
     };
@@ -610,12 +471,8 @@ async fn emit_crash_if_unexpected(
     };
     if was_turn_active {
         let _ = events_tx.send(AgentRuntimeEvent::TurnCompleted(TurnResult::Interrupted {
-            reason: if aborting {
-                InterruptReason::Abort
-            } else {
-                InterruptReason::Crash
-            },
-            error: (!aborting).then(|| message.clone()),
+            reason: InterruptReason::Crash,
+            error: Some(message.clone()),
         }));
     }
     let _ = events_tx.send(AgentRuntimeEvent::Fatal { message });
@@ -627,15 +484,10 @@ fn prepare_start_turn_state(
     system_prompt: Option<String>,
 ) -> (Option<SessionSpec>, Option<ClaudeWireMode>) {
     let previous_wire_mode = claude_wire_mode(state.permission_mode, state.plan_mode);
-    let restart_after_synthetic_abort = !state.discarded_synthetic_abort_generations.is_empty();
-    state.aborting = false;
-    state.synthetic_abort_pending = false;
-    state.synthetic_abort_turn_generation = None;
-    state.turn_generation = state.turn_generation.saturating_add(1);
     state.turn_active = true;
     state.stdout_diagnostics.reset();
     let next_wire_mode = claude_wire_mode(input.permission_mode, input.plan_mode);
-    let replace_spec = if restart_after_synthetic_abort || state.system_prompt != system_prompt {
+    let replace_spec = if state.system_prompt != system_prompt {
         let mut spec = state.session_spec_with_system_prompt(system_prompt);
         spec.permission_mode = input.permission_mode;
         spec.plan_mode = input.plan_mode;
@@ -667,6 +519,7 @@ mod tests {
     };
     use crate::domain::agent_session::value_objects::JsonPayload;
     use crate::infrastructure::agent_session::stdout_line_reader::{LineProbe, StdoutLineReader};
+    use futures_util::StreamExt;
     use tokio::io::AsyncWriteExt;
 
     struct NoopResponseWriter;
@@ -723,7 +576,7 @@ exec sleep 30
             permission_mode: PermissionMode::Edit,
             plan_mode: false,
             permission_profile_id: None,
-            model: ModelId::parse("claude-4-sonnet").unwrap(),
+            model: ModelId::parse("claude-sonnet-5").unwrap(),
             system_prompt: None,
             resume: Some("backend-good".to_string()),
             base_branch: None,
@@ -784,16 +637,9 @@ exec sleep 30
     }
 
     #[test]
-    fn test_normalize_runtime_event_aborting中の_completedも_abortへ変換してrollbackする() {
-        let mut state = test_state();
-        state.backend_session_id = Some("backend-new".to_string());
-        state.last_successful_backend_session_id = Some("backend-good".to_string());
-        state.turn_active = true;
-        state.aborting = true;
-
-        let event = normalize_runtime_event(
-            &mut state,
-            AgentRuntimeEvent::TurnCompleted(TurnResult::Completed {
+    fn test_normalize_runtime_eventは_providerの終端結果をそのまま通す() {
+        let terminal_results = vec![
+            TurnResult::Completed {
                 stop_reason: Some(TurnStopReason::Refusal),
                 token_usage: Some(TokenUsage {
                     input_tokens: 1,
@@ -801,73 +647,50 @@ exec sleep 30
                     total_tokens: Some(3),
                     context_window_tokens: None,
                 }),
-            }),
-        );
-
-        assert_eq!(
-            event,
-            Some(AgentRuntimeEvent::TurnCompleted(TurnResult::Interrupted {
-                reason: InterruptReason::Abort,
-                error: None,
-            }))
-        );
-        assert!(!state.aborting);
-        assert!(!state.turn_active);
-        assert_eq!(state.backend_session_id.as_deref(), Some("backend-good"));
-    }
-
-    #[test]
-    fn test_normalize_runtime_event_aborting中の_failedも_abortへ変換する() {
-        let mut state = test_state();
-        state.turn_active = true;
-        state.aborting = true;
-
-        let event = normalize_runtime_event(
-            &mut state,
-            AgentRuntimeEvent::TurnCompleted(TurnResult::Failed {
-                error: "boom".to_string(),
+            },
+            TurnResult::Failed {
+                error: "fatal provider result".to_string(),
                 token_usage: None,
-            }),
-        );
-
-        assert!(matches!(
-            event,
-            Some(AgentRuntimeEvent::TurnCompleted(TurnResult::Interrupted {
+            },
+            TurnResult::Interrupted {
                 reason: InterruptReason::Abort,
-                ..
-            }))
-        ));
-        assert!(!state.aborting);
-        assert!(!state.turn_active);
+                error: Some("provider abort".to_string()),
+            },
+            TurnResult::Interrupted {
+                reason: InterruptReason::Timeout,
+                error: Some("provider timeout".to_string()),
+            },
+            TurnResult::Interrupted {
+                reason: InterruptReason::Crash,
+                error: Some("provider crash".to_string()),
+            },
+            TurnResult::Interrupted {
+                reason: InterruptReason::SessionClosed,
+                error: Some("provider closed".to_string()),
+            },
+        ];
+
+        for result in terminal_results {
+            let mut state = test_state();
+            state.backend_session_id = Some("backend-new".to_string());
+            state.turn_active = true;
+            state
+                .pending_inputs
+                .insert("req-1".to_string(), Value::Null);
+            let provider_event = AgentRuntimeEvent::TurnCompleted(result);
+
+            let normalized = normalize_runtime_event(&mut state, provider_event.clone());
+
+            assert_eq!(normalized, provider_event);
+            assert!(!state.turn_active);
+            assert!(state.pending_inputs.is_empty());
+            assert_eq!(state.backend_session_id.as_deref(), Some("backend-new"));
+        }
     }
 
     #[test]
-    fn test_normalize_runtime_event_synthetic_abort後の同一turn結果は破棄する() {
+    fn test_prepare_start_turn_stateは同じ構成のprocessを維持してturnを開始する() {
         let mut state = test_state();
-        state.turn_generation = 7;
-        state.synthetic_abort_pending = true;
-        state.synthetic_abort_turn_generation = Some(7);
-
-        let event = normalize_runtime_event(
-            &mut state,
-            AgentRuntimeEvent::TurnCompleted(TurnResult::Failed {
-                error: "late".to_string(),
-                token_usage: None,
-            }),
-        );
-
-        assert_eq!(event, None);
-        assert!(!state.synthetic_abort_pending);
-        assert_eq!(state.synthetic_abort_turn_generation, None);
-    }
-
-    #[test]
-    fn test_prepare_start_turn_stateは_abortフラグを次turnへ持ち越さない() {
-        let mut state = test_state();
-        state.aborting = true;
-        state.synthetic_abort_pending = true;
-        state.synthetic_abort_turn_generation = Some(1);
-        state.turn_generation = 1;
 
         let input = TurnInput {
             prompt: "next".to_string(),
@@ -881,10 +704,6 @@ exec sleep 30
         let (replace_spec, mode_update) =
             prepare_start_turn_state(&mut state, &input, input.system_prompt.clone());
 
-        assert!(!state.aborting);
-        assert!(!state.synthetic_abort_pending);
-        assert_eq!(state.synthetic_abort_turn_generation, None);
-        assert_eq!(state.turn_generation, 2);
         assert!(state.turn_active);
         assert!(replace_spec.is_none());
         assert!(mode_update.is_none());
@@ -1104,49 +923,47 @@ exec sleep 30
         );
     }
 
-    #[tokio::test]
-    async fn test_abort_synthesis_timer_idle_early_returnで_abortフラグを復帰する() {
-        let state = Arc::new(Mutex::new(test_state()));
-        {
-            let mut state = state.lock().await;
-            state.aborting = true;
-            state.turn_active = false;
-            state.abort_generation = 3;
-            state.turn_generation = 3;
-        }
-        let (tx, mut rx) = mpsc::unbounded_channel();
-
-        spawn_abort_synthesis_timer(Arc::clone(&state), tx, 3);
-        tokio::time::sleep(ABORT_SYNTHESIS_DELAY + std::time::Duration::from_millis(10)).await;
-
-        assert!(rx.try_recv().is_err());
-        let state = state.lock().await;
-        assert!(!state.aborting);
-        assert!(!state.synthetic_abort_pending);
-    }
-
-    #[tokio::test]
-    async fn test_abort_synthesis_timer_unresponsive_turnを_timeoutとして合成する() {
-        let state = Arc::new(Mutex::new(test_state()));
-        {
-            let mut state = state.lock().await;
-            state.aborting = true;
-            state.turn_active = true;
-            state.abort_generation = 3;
-            state.turn_generation = 3;
-        }
-        let (tx, mut rx) = mpsc::unbounded_channel();
-
-        spawn_abort_synthesis_timer(Arc::clone(&state), tx, 3);
-        tokio::time::sleep(ABORT_SYNTHESIS_DELAY + std::time::Duration::from_millis(10)).await;
-
-        assert_eq!(
-            rx.try_recv().unwrap(),
-            AgentRuntimeEvent::TurnCompleted(TurnResult::Interrupted {
-                reason: InterruptReason::Timeout,
-                error: None,
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    // env 変数の直列化のため await 越しにロックを保持する必要がある（テスト用グローバルロック）
+    #[allow(clippy::await_holding_lock)]
+    async fn test_interruptは_transport書き込みだけを行い終端を合成しない() {
+        let _env_lock = crate::test_support::TEST_ENV_LOCK.lock();
+        let data_dir = tempfile::tempdir().unwrap();
+        let _env_guard =
+            crate::test_support::EnvVarGuard::set_path("RELEASH_DATA_DIR", data_dir.path());
+        let cli_path = write_fake_claude_cli(data_dir.path());
+        let mut spec = test_spec();
+        spec.session_id = "claude-interrupt-transport-only".to_string();
+        spec.cwd = data_dir.path().to_string_lossy().to_string();
+        spec.resume = None;
+        let mut runtime =
+            ClaudeSessionRuntime::open(cli_path.to_string_lossy().to_string(), spec.clone())
+                .await
+                .unwrap();
+        runtime
+            .start_turn(TurnInput {
+                prompt: "stay active".to_string(),
+                images: Vec::new(),
+                system_prompt: spec.system_prompt,
+                permission_mode: spec.permission_mode,
+                plan_mode: spec.plan_mode,
+                permission_profile_id: None,
+                editor_context: None,
             })
+            .await
+            .unwrap();
+        let mut events = runtime.take_events();
+
+        runtime.interrupt().await.unwrap();
+
+        let event = tokio::time::timeout(std::time::Duration::from_millis(60), events.next()).await;
+        assert!(
+            event.is_err(),
+            "interrupt synthesized a terminal event: {event:?}"
         );
+        assert!(runtime.state.lock().await.turn_active);
+        runtime.close().await;
     }
 
     #[cfg(unix)]
@@ -1154,7 +971,7 @@ exec sleep 30
     // env 変数の直列化のため await 越しにロックを保持する必要がある（テスト用グローバルロック）
     #[allow(clippy::await_holding_lock)]
     async fn test_spawn_runtime_process_initialize_write失敗時にpid登録を削除する() {
-        let _env_lock = crate::test_support::TEST_ENV_LOCK.lock().unwrap();
+        let _env_lock = crate::test_support::TEST_ENV_LOCK.lock();
         let data_dir = tempfile::tempdir().unwrap();
         let _env_guard =
             crate::test_support::EnvVarGuard::set_path("RELEASH_DATA_DIR", data_dir.path());

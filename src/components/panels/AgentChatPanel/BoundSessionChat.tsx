@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAgentChatContext } from "@/contexts/AgentChatContext";
 import { deriveActivityStatus } from "@/hooks/deriveActivityStatus";
 import type { DropZoneType } from "@/hooks/useNativeFileDrop";
+import { useSessionFeedback } from "@/hooks/useSessionFeedback";
 import type {
 	AgentEditorContext,
 	AgentEditorSelection,
@@ -12,6 +13,7 @@ import type {
 	PermissionMode,
 } from "@/types/session";
 import { ChatSessionView } from "./ChatSessionView";
+import { SessionFeedbackBanners } from "./SessionFeedbackBanners";
 
 interface BoundSessionChatProps {
 	/** 表示対象 session の id。null の場合は何もレンダリングしない（empty fallback は親側）。*/
@@ -96,6 +98,7 @@ export function BoundSessionChat({
 		sessionId: string | null;
 		status: "loading" | "loaded" | "unavailable";
 	}>({ sessionId: null, status: "loading" });
+	const sessionFeedback = useSessionFeedback(sessionId);
 
 	// SDK listener gating: 本 view が表示している session を viewable に登録する。
 	useEffect(() => {
@@ -233,7 +236,14 @@ export function BoundSessionChat({
 				>
 					{unavailable ? "Session unavailable." : "Loading session..."}
 				</div>
-				{error && sessionId && (
+				<SessionFeedbackBanners
+					entries={sessionFeedback.entries}
+					onDismiss={sessionFeedback.dismiss}
+					onRetry={sessionFeedback.retry}
+					hasMore={sessionFeedback.hasMore}
+					onLoadMore={sessionFeedback.loadNextPage}
+				/>
+				{error && sessionId && sessionFeedback.entries.length === 0 && (
 					<div className="px-2 pb-2">
 						<div
 							className="flex items-start gap-2 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive"
@@ -272,7 +282,7 @@ export function BoundSessionChat({
 			isStreaming={isStreaming}
 			isInterrupting={isInterrupting}
 			activityStatus={activityStatus}
-			error={error}
+			error={sessionFeedback.entries.length === 0 ? error : null}
 			onDismissError={() => dismissSessionError(session.id)}
 			permissionMode={permissionMode}
 			planMode={planMode}
@@ -284,6 +294,11 @@ export function BoundSessionChat({
 			queuePaused={queuePaused}
 			stallObservation={stallObservation}
 			notice={notice}
+			feedback={sessionFeedback.entries}
+			onDismissFeedback={sessionFeedback.dismiss}
+			onRetryFeedback={sessionFeedback.retry}
+			hasMoreFeedback={sessionFeedback.hasMore}
+			onLoadMoreFeedback={sessionFeedback.loadNextPage}
 			runtimeSlashCommands={runtimeSlashCommands}
 			selectedBackendId={session.backendId ?? null}
 			canChangeBackend={canChangeBackend}

@@ -53,8 +53,11 @@ impl WorkflowRuntimeService {
                         WorkflowEngineError::SessionStore(format!("resolve_data_dir: {error}"))
                     })?,
             };
-            let events = WorkflowEventLog::new(&data_dir)
-                .read_log(execution_id)
+            let events = self
+                .durable_workflow_event_log(&data_dir)
+                .await?
+                .read_log_durable(execution_id)
+                .await
                 .map_err(WorkflowEngineError::SessionStore)?;
             let projected =
                 crate::adaptor::gateway::workflow::event_projection::project_workflow_execution(
@@ -92,13 +95,23 @@ impl WorkflowRuntimeService {
                         "ExecutionStore interrupted abort reservation failed: {other}"
                     )),
                 })?;
-            let append_result = self.write_log_required_batch(
+            let projection_mutations = self
+                .execution_store
+                .prepare_atomic_interrupted_abort_metadata_mutations(
+                    &reservation.interrupted,
+                    reservation.aborted.updated_at,
+                )
+                .await
+                .map_err(|error| WorkflowEngineError::SessionStore(error.to_string()))?;
+            let append_result = self.write_log_required_batch_with_mutations_as(
                 app,
+                CommitOperationKind::UserMutation,
                 &[WorkflowEvent::ExecutionAborted {
                     execution_id: execution_id.to_string(),
                     aborted_node: metadata.resume_from_node.clone(),
                     timestamp,
                 }],
+                projection_mutations,
             );
             if let Err(error) = append_result {
                 self.execution_store
@@ -176,7 +189,8 @@ impl WorkflowRuntimeService {
                     activation_guard = Some(activation_gate.lock.lock().await);
                 }
                 let _activation_guard = activation_guard;
-                self.finish_committed_abort(app, agent_runtime, execution_id, &session_ids)
+                let terminal_cleanup_result = self
+                    .finish_committed_abort(app, agent_runtime, execution_id, &session_ids)
                     .await;
                 self.execution_store
                     .finish_active_interruption(interruption_reservation)
@@ -186,6 +200,7 @@ impl WorkflowRuntimeService {
                             "ExecutionStore abort reservation cleanup failed: {error}"
                         ))
                     })?;
+                terminal_cleanup_result?;
                 abort_outcome_to_command_result(AbortOutcome::Aborted, execution_id)
             }
             Ok(AbortCommit::NotFound) => {
@@ -259,11 +274,12 @@ impl WorkflowRuntimeService {
             )));
         }
         if !self
-            .interrupt_active_execution(
+            .interrupt_active_execution_as(
                 app,
                 agent_runtime,
                 execution_id,
                 ExecutionInterruptionReason::Stop,
+                CommitOperationKind::UserMutation,
             )
             .await?
         {
@@ -309,6 +325,11 @@ impl WorkflowRuntimeService {
             .execution_store
             .get_execution_record(execution_id)
             .await
+            .map_err(|error| {
+                WorkflowEngineError::SessionStore(format!(
+                    "canonical workflow execution read failed: {error}"
+                ))
+            })?
             .ok_or_else(|| WorkflowEngineError::ExecutionNotFound(execution_id.to_string()))?;
         let resolved = self
             .worktree_resolver
@@ -370,7 +391,7 @@ impl WorkflowRuntimeService {
         match commit {
             AbortCommit::Aborted { session_ids } => {
                 self.finish_committed_abort(app, agent_runtime, execution_id, &session_ids)
-                    .await;
+                    .await?;
                 Ok(AbortOutcome::Aborted)
             }
             AbortCommit::NotFound => Ok(AbortOutcome::NotFound),
@@ -387,7 +408,7 @@ impl WorkflowRuntimeService {
     ) -> Result<AbortCommit, WorkflowEngineError> {
         // 1. 対象 execution の存在 + active 性を判定。
         //    非受理経路 (NotFound / AlreadyTerminal) ではどんな外部副作用も発生させない。
-        let lookup = self.abort_target_lookup(execution_id).await;
+        let lookup = self.abort_target_lookup(execution_id).await?;
         let (current_node_session_id, fanout_session_ids) = match lookup {
             AbortTargetLookup::NotFound => {
                 return Ok(AbortCommit::NotFound);
@@ -419,7 +440,7 @@ impl WorkflowRuntimeService {
             let mut execs = self.executions.lock().await;
             let Some(exec) = execs.get_mut(execution_id) else {
                 drop(execs);
-                return Ok(if self.has_terminal_execution_record(execution_id).await {
+                return Ok(if self.has_terminal_execution_record(execution_id).await? {
                     AbortCommit::AlreadyTerminal
                 } else {
                     AbortCommit::NotFound
@@ -504,6 +525,7 @@ impl WorkflowRuntimeService {
                 app,
                 session_store,
                 RequiredEventCommit {
+                    operation_kind: CommitOperationKind::UserMutation,
                     execution_id,
                     snapshot_for_commit: &snapshot_state,
                     snapshot_before,
@@ -546,16 +568,16 @@ impl WorkflowRuntimeService {
         agent_runtime: &Arc<AgentSessionRuntimeUsecase>,
         execution_id: &str,
         session_ids: &[String],
-    ) {
+    ) -> Result<(), WorkflowEngineError> {
         // ExecutionAborted is durable before this method is called. Runtime activation must be
         // quiesced before entering this terminal cleanup so it cannot recreate a closed runtime.
         self.shutdown_active_commands_for_execution(execution_id)
             .await;
-        for session_id in session_ids {
-            workflow_runtime_session::interrupt_agent(agent_runtime, session_id).await;
-        }
+        let interrupt_result =
+            workflow_runtime_session::interrupt_agents(agent_runtime, session_ids).await;
         self.finalize_terminal_transition_after_required_append(app, agent_runtime, execution_id)
             .await;
+        interrupt_result
     }
 
     /// `abort_workflow_by_execution_id` の post-commit 区間。state は呼出し前に Aborted に
@@ -594,12 +616,15 @@ impl WorkflowRuntimeService {
         self.release_terminal_execution(execution_id).await;
     }
 
-    pub(super) async fn abort_target_lookup(&self, execution_id: &str) -> AbortTargetLookup {
+    pub(super) async fn abort_target_lookup(
+        &self,
+        execution_id: &str,
+    ) -> Result<AbortTargetLookup, WorkflowEngineError> {
         {
             let execs = self.executions.lock().await;
             if let Some(exec) = execs.get(execution_id) {
                 if !exec.is_active() {
-                    return AbortTargetLookup::AlreadyTerminal;
+                    return Ok(AbortTargetLookup::AlreadyTerminal);
                 }
                 let current_node_session_id = exec.current_session_id.clone();
                 let fanout_session_ids = exec.fanout_runtime.as_ref().map(|pr| {
@@ -609,23 +634,32 @@ impl WorkflowRuntimeService {
                         .map(|c| c.session_id.clone())
                         .collect::<Vec<_>>()
                 });
-                return AbortTargetLookup::Active {
+                return Ok(AbortTargetLookup::Active {
                     current_node_session_id,
                     fanout_session_ids,
-                };
+                });
             }
         }
-        if self.has_terminal_execution_record(execution_id).await {
-            AbortTargetLookup::AlreadyTerminal
+        if self.has_terminal_execution_record(execution_id).await? {
+            Ok(AbortTargetLookup::AlreadyTerminal)
         } else {
-            AbortTargetLookup::NotFound
+            Ok(AbortTargetLookup::NotFound)
         }
     }
 
-    pub(super) async fn has_terminal_execution_record(&self, execution_id: &str) -> bool {
-        self.execution_store
+    pub(super) async fn has_terminal_execution_record(
+        &self,
+        execution_id: &str,
+    ) -> Result<bool, WorkflowEngineError> {
+        Ok(self
+            .execution_store
             .get_execution_record(execution_id)
             .await
-            .is_some_and(|execution| execution.status.is_terminal())
+            .map_err(|error| {
+                WorkflowEngineError::SessionStore(format!(
+                    "canonical workflow execution read failed: {error}"
+                ))
+            })?
+            .is_some_and(|execution| execution.status.is_terminal()))
     }
 }

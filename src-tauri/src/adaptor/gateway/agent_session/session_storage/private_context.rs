@@ -1,7 +1,9 @@
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
-use super::layout::{private_context_file_in_dir, write_json_pretty_atomic};
+use super::layout::private_context_file_in_dir;
+#[cfg(test)]
+use super::layout::write_json_pretty_atomic;
 use crate::usecase::agent_session::context_meta::ContextSourcePayloadCache;
 use crate::usecase::agent_session::session::SessionMeta;
 use serde::{Deserialize, Serialize};
@@ -19,6 +21,21 @@ pub(super) struct SessionPrivateContext {
     pub agent_read_paths: Option<Vec<PathBuf>>,
 }
 
+fn apply_private_context(private_context: SessionPrivateContext, meta: &mut SessionMeta) {
+    meta.workflow_instructions = private_context.workflow_instructions;
+    meta.agent_read_paths = private_context.agent_read_paths;
+    if let Some(instruction) = private_context
+        .legacy_workflow_instruction
+        .filter(|instruction| !instruction.trim().is_empty())
+    {
+        meta.workflow_instructions.push(instruction);
+    }
+    if let Some(context_epoch) = meta.context_epoch.as_mut() {
+        context_epoch.hydrate_payload_cache(&private_context.context_epoch_payloads);
+    }
+}
+
+#[cfg(test)]
 fn private_context_from_meta(meta: &SessionMeta) -> SessionPrivateContext {
     SessionPrivateContext {
         legacy_workflow_instruction: None,
@@ -60,19 +77,10 @@ pub(super) fn hydrate_meta_private_context(dir: &Path, meta: &mut SessionMeta) {
             return;
         }
     };
-    meta.workflow_instructions = private_context.workflow_instructions;
-    meta.agent_read_paths = private_context.agent_read_paths;
-    if let Some(instruction) = private_context
-        .legacy_workflow_instruction
-        .filter(|instruction| !instruction.trim().is_empty())
-    {
-        meta.workflow_instructions.push(instruction);
-    }
-    if let Some(context_epoch) = meta.context_epoch.as_mut() {
-        context_epoch.hydrate_payload_cache(&private_context.context_epoch_payloads);
-    }
+    apply_private_context(private_context, meta);
 }
 
+#[cfg(test)]
 pub(super) fn write_private_context_to_dir(dir: &Path, meta: &SessionMeta) -> Result<(), String> {
     let path = private_context_file_in_dir(dir);
     let private_context = private_context_from_meta(meta);

@@ -125,6 +125,7 @@ impl EventLogSnapshot {
 }
 
 impl FileSessionStorage {
+    #[cfg(test)]
     pub fn commit_session_projection(
         &self,
         app_data_dir: &Path,
@@ -160,7 +161,7 @@ impl FileSessionStorage {
                         message.id
                     ));
                 }
-                Self::message_path_for_append(&dir, &index)
+                Self::message_path_for_append(&dir, &index)?
             }
             AgentSessionProjectedMessage::PersistParts { message_id, .. } => {
                 Self::message_path_for_persist(&dir, &index, session_id, message_id)?
@@ -204,7 +205,7 @@ impl FileSessionStorage {
             };
             self.run_projection_commit_hook(ProjectionCommitStage::Message)?;
             write_private_context_to_dir(&dir, &meta)?;
-            write_json_pretty_atomic(&index_file_in_dir(&dir), &index, "session index")?;
+            super::stored_session_v1::write_message_index_v1(&index_file_in_dir(&dir), &index)?;
             write_json_pretty_atomic(&meta_file_in_dir(&dir), &meta, "session meta")?;
             self.run_projection_commit_hook(ProjectionCommitStage::Meta)?;
             self.cache.write().insert(session_id.to_string(), meta);

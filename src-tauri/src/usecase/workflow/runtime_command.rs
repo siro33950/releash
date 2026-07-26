@@ -15,6 +15,7 @@ use super::ports::{
     ApprovalChatTarget, WorkflowRuntimeCommandGateway, WorkflowStallClearedCommand,
     WorkflowStallClearedNotification, WorkflowStallObservedCommand, WorkflowStallObservedGateway,
     WorkflowStallObservedNotification, WorkflowTurnCompleteNotification,
+    WorkflowTurnCompleteRecoveryCommand, WorkflowTurnCompleteRecoveryOutcome,
 };
 #[cfg(test)]
 use super::ports::{
@@ -64,6 +65,10 @@ impl WorkflowRuntimeUsecase {
         self.start_execution.execute(command).await
     }
 
+    pub async fn recover_startup(&self) -> Result<(), WorkflowError> {
+        self.runtime.recover_startup().await
+    }
+
     pub async fn abort_execution(
         &self,
         command: AbortExecutionCommand,
@@ -95,6 +100,13 @@ impl WorkflowRuntimeUsecase {
         command: WorkflowTurnCompleteNotification,
     ) -> Result<(), WorkflowError> {
         self.turn_complete.complete_turn(command).await
+    }
+
+    pub async fn recover_turn_complete(
+        &self,
+        command: WorkflowTurnCompleteRecoveryCommand,
+    ) -> Result<WorkflowTurnCompleteRecoveryOutcome, WorkflowError> {
+        self.turn_complete.recover_turn_complete(command).await
     }
 
     pub async fn observe_stall(
@@ -147,8 +159,39 @@ impl WorkflowRuntimeUsecase {
         self.runtime.get_state_by_worktree(worktree_path).await
     }
 
+    #[cfg(test)]
     pub async fn shutdown_active_commands(&self) {
         self.runtime.shutdown_active_commands().await;
+    }
+
+    pub async fn shutdown_execution_commands_for_effect(
+        &self,
+        operation_id: &str,
+        effect_identity: &str,
+        owner_revision: i64,
+        execution_id: &str,
+    ) -> crate::usecase::workflow::ports::WorkflowShutdownEffectReadback {
+        self.runtime
+            .execute_shutdown_effect(operation_id, effect_identity, owner_revision, execution_id)
+            .await
+    }
+
+    pub async fn read_shutdown_execution_effect(
+        &self,
+        operation_id: &str,
+        effect_identity: &str,
+        owner_revision: i64,
+        execution_id: &str,
+    ) -> crate::usecase::workflow::ports::WorkflowShutdownEffectReadback {
+        self.runtime
+            .read_shutdown_effect(operation_id, effect_identity, owner_revision, execution_id)
+            .await
+    }
+
+    pub async fn application_shutdown_target_execution_ids(&self) -> Result<Vec<String>, String> {
+        self.runtime
+            .application_shutdown_target_execution_ids()
+            .await
     }
 
     pub async fn prepare_approval_chat(
@@ -287,6 +330,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl WorkflowRuntimeStateGateway for FakeRuntimeGateway {
+        async fn recover_startup(&self) -> Result<(), WorkflowError> {
+            self.calls.lock().unwrap().push("recover_startup");
+            Ok(())
+        }
+
         async fn get_state_by_execution_id(
             &self,
             _execution_id: &str,
@@ -308,6 +356,10 @@ mod tests {
     impl WorkflowRuntimeShutdownGateway for FakeRuntimeGateway {
         async fn shutdown_active_commands(&self) {
             self.calls.lock().unwrap().push("shutdown_active_commands");
+        }
+
+        async fn application_shutdown_target_execution_ids(&self) -> Result<Vec<String>, String> {
+            Ok(Vec::new())
         }
     }
 

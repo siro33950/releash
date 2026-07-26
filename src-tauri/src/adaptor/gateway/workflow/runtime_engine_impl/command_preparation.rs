@@ -101,7 +101,7 @@ impl WorkflowRuntimeService {
         self.sync_state_after_required_event_commit(&snapshot)
             .await?;
         record_failed_snapshot_telemetry(&snapshot);
-        self.finalize_after_commit(app, &snapshot, &worktree_path, false)
+        self.finalize_after_commit(app, &snapshot, &worktree_path)
             .await;
         Ok(true)
     }

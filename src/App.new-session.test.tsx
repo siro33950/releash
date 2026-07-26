@@ -16,6 +16,9 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@tauri-apps/api/core", () => ({
 	invoke: vi.fn((command: string) => {
+		if (command === "get_application_startup_outcome") {
+			return Promise.resolve({ type: "ready" });
+		}
 		if (command === "get_cwd" || command === "get_main_repo_path") {
 			return Promise.resolve("/repo");
 		}
@@ -232,17 +235,20 @@ beforeEach(() => {
 });
 
 describe("App Workspace selection lifecycle", () => {
-	it("does not consume initial selection until preferred Node exists", () => {
+	it("does not consume initial selection until preferred Node exists", async () => {
 		render(<App />);
-		expect(screen.getByTestId("auto-select")).toHaveTextContent("awaiting");
+		expect(await screen.findByTestId("auto-select")).toHaveTextContent(
+			"awaiting",
+		);
 
 		fireEvent.click(screen.getByRole("button", { name: "Apply preferred A" }));
 		expect(screen.getByTestId("center-node")).toHaveTextContent("preferred-a");
 		expect(screen.getByTestId("auto-select")).toHaveTextContent("settled");
 	});
 
-	it("falls back to the new preferred Node after authoritative removal", () => {
+	it("falls back to the new preferred Node after authoritative removal", async () => {
 		render(<App />);
+		await screen.findByRole("button", { name: "Select A" });
 		fireEvent.click(screen.getByRole("button", { name: "Select A" }));
 		expect(screen.getByTestId("center-node")).toHaveTextContent("node-a");
 
@@ -257,8 +263,9 @@ describe("App Workspace selection lifecycle", () => {
 		expect(screen.getByTestId("auto-select")).toHaveTextContent("settled");
 	});
 
-	it("stays unselected when authoritative removal has no preferred Node", () => {
+	it("stays unselected when authoritative removal has no preferred Node", async () => {
 		render(<App />);
+		await screen.findByRole("button", { name: "Select A" });
 		fireEvent.click(screen.getByRole("button", { name: "Select A" }));
 		mocks.preferredNodeId = null;
 
@@ -271,9 +278,10 @@ describe("App Workspace selection lifecycle", () => {
 });
 
 describe("App NewSession creation requests", () => {
-	it("deduplicates pending clicks and retries a failure with the same request id", () => {
+	it("deduplicates pending clicks and retries a failure with the same request id", async () => {
 		render(<App />);
 
+		await screen.findByRole("button", { name: "Create A" });
 		fireEvent.click(screen.getByRole("button", { name: "Create A" }));
 		const requestId = screen.getByTestId("request-id").textContent;
 		expect(requestId).not.toBe("none");
@@ -298,8 +306,9 @@ describe("App NewSession creation requests", () => {
 		);
 	});
 
-	it("records an inactive Worktree completion without changing the active center", () => {
+	it("records an inactive Worktree completion without changing the active center", async () => {
 		const view = render(<App />);
+		await screen.findByRole("button", { name: "Create A" });
 		fireEvent.click(screen.getByRole("button", { name: "Create A" }));
 
 		mocks.selectedWorktreeId = "wt-b";

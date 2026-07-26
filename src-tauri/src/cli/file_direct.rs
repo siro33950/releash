@@ -87,7 +87,7 @@ fn read_usecase(
     data_dir: &Path,
     workflows_dir: Option<&Path>,
 ) -> Result<WorkflowReadUsecase, CliError> {
-    crate::adaptor::controller::wiring::build_file_direct_workflow_read_usecase(
+    crate::adaptor::controller::wiring::build_canonical_workflow_read_usecase(
         data_dir.to_path_buf(),
         workflows_dir.map(Path::to_path_buf),
     )

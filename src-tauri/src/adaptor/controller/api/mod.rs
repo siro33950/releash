@@ -1,3 +1,4 @@
+mod agent_session;
 mod auth;
 mod error;
 pub(crate) mod protocol;
@@ -11,23 +12,89 @@ use axum::Router;
 
 use crate::usecase::workflow::{WorkflowReadUsecase, WorkflowRuntimeUsecase};
 
+const MAX_AGENT_SESSION_CONNECTIONS: usize = 16;
+
 #[derive(Clone)]
 struct LocalApiState {
     workflow: Arc<WorkflowReadUsecase>,
     runtime: Arc<WorkflowRuntimeUsecase>,
+    agent_session: Option<AgentSessionApiDeps>,
+}
+
+#[derive(Clone)]
+pub(crate) struct AgentSessionApiDeps {
+    pub(crate) send: Arc<crate::usecase::agent_session::operation::AgentSendOperationUsecase>,
+    pub(crate) permission_response:
+        Arc<crate::usecase::agent_session::operation::PermissionResponseOperationUsecase>,
+    pub(crate) stop: Arc<crate::usecase::agent_session::operation::StopOperationUsecase>,
+    pub(crate) recovery: Arc<crate::usecase::agent_session::operation::RecoveryActionUsecase>,
+    pub(crate) feedback: Arc<crate::usecase::agent_session::feedback::SessionFeedbackUsecase>,
+    pub(crate) feedback_load:
+        Arc<crate::usecase::agent_session::session_feedback_load::SessionFeedbackLoadUsecase>,
+    pub(crate) shutdown: Arc<crate::usecase::shutdown_coordinator::ShutdownCoordinator>,
+    pub(crate) process_actions:
+        Arc<crate::adaptor::controller::application_lifecycle::ApplicationProcessActionDispatcher>,
+    pub(crate) local_store: Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
+    pub(crate) caller_journal: Arc<crate::usecase::agent_session::operation::CallerAttemptJournal>,
+    pub(crate) app: tauri::AppHandle,
+    pub(crate) connection_limit: Arc<tokio::sync::Semaphore>,
+}
+
+impl AgentSessionApiDeps {
+    #[allow(clippy::too_many_arguments)] // Composition root injects each independent durable service explicitly.
+    pub(crate) fn new(
+        send: Arc<crate::usecase::agent_session::operation::AgentSendOperationUsecase>,
+        permission_response: Arc<
+            crate::usecase::agent_session::operation::PermissionResponseOperationUsecase,
+        >,
+        stop: Arc<crate::usecase::agent_session::operation::StopOperationUsecase>,
+        recovery: Arc<crate::usecase::agent_session::operation::RecoveryActionUsecase>,
+        feedback: Arc<crate::usecase::agent_session::feedback::SessionFeedbackUsecase>,
+        feedback_load: Arc<
+            crate::usecase::agent_session::session_feedback_load::SessionFeedbackLoadUsecase,
+        >,
+        shutdown: Arc<crate::usecase::shutdown_coordinator::ShutdownCoordinator>,
+        process_actions: Arc<
+            crate::adaptor::controller::application_lifecycle::ApplicationProcessActionDispatcher,
+        >,
+        local_store: Arc<crate::adaptor::gateway::local_event_store::LocalEventStore>,
+        caller_journal: Arc<crate::usecase::agent_session::operation::CallerAttemptJournal>,
+        app: tauri::AppHandle,
+    ) -> Self {
+        Self {
+            send,
+            permission_response,
+            stop,
+            recovery,
+            feedback,
+            feedback_load,
+            shutdown,
+            process_actions,
+            local_store,
+            caller_journal,
+            app,
+            connection_limit: Arc::new(tokio::sync::Semaphore::new(MAX_AGENT_SESSION_CONNECTIONS)),
+        }
+    }
 }
 
 pub(crate) fn build_router(
     workflow: Arc<WorkflowReadUsecase>,
     runtime: Arc<WorkflowRuntimeUsecase>,
     token: Arc<str>,
+    agent_session: Option<AgentSessionApiDeps>,
 ) -> Router {
     workflow::router()
+        .merge(agent_session::router())
         .fallback(|| async {
             error::ApiError::not_found("local API endpoint was not found").into_response()
         })
         .layer(middleware::from_fn_with_state(token, auth::require_bearer))
-        .with_state(LocalApiState { workflow, runtime })
+        .with_state(LocalApiState {
+            workflow,
+            runtime,
+            agent_session,
+        })
 }
 
 #[cfg(test)]
@@ -283,6 +350,10 @@ pub(crate) mod test_support {
     #[async_trait::async_trait]
     impl WorkflowRuntimeShutdownGateway for RecordingRuntimeGateway {
         async fn shutdown_active_commands(&self) {}
+
+        async fn application_shutdown_target_execution_ids(&self) -> Result<Vec<String>, String> {
+            Ok(Vec::new())
+        }
     }
 
     #[async_trait::async_trait]
@@ -334,6 +405,7 @@ pub(crate) mod test_support {
             Arc::new(workflow.read_usecase()),
             runtime.clone(),
             Arc::<str>::from(token),
+            None,
         );
         (router, runtime, gateway)
     }
@@ -548,6 +620,7 @@ pub(crate) mod test_support {
         let (router, _, _) = test_router(directory.path(), "secret");
         let execution_id = "00000000-0000-4000-8000-000000000001";
         let endpoints = [
+            (Method::GET, "/v1/agent-session".to_string()),
             (Method::GET, "/v1/workflows".to_string()),
             (Method::GET, "/v1/workflow/executions".to_string()),
             (Method::POST, "/v1/workflow/executions".to_string()),

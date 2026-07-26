@@ -15,7 +15,9 @@ pub(crate) fn agent_read_paths_from_messages(messages: &[ChatMessage]) -> Vec<Pa
         if let Some(parts) = message.parts.as_ref() {
             for part in parts {
                 if let MessagePart::ToolUse { tool, input, .. } = part {
-                    push_tool_read_paths(tool, input, &mut seen, &mut paths);
+                    let input: Value = serde_json::from_str(input.as_str())
+                        .expect("domain JsonPayload must be validated at its boundary");
+                    push_tool_read_paths(tool, &input, &mut seen, &mut paths);
                 }
             }
         }
@@ -30,10 +32,12 @@ pub(crate) fn agent_read_paths_from_messages(messages: &[ChatMessage]) -> Vec<Pa
     paths
 }
 
+#[cfg(test)]
 pub(crate) fn agent_read_paths_from_message(message: &ChatMessage) -> Vec<PathBuf> {
     agent_read_paths_from_messages(std::slice::from_ref(message))
 }
 
+#[cfg(test)]
 pub(crate) fn agent_read_paths_from_parts(parts: &[MessagePart]) -> Vec<PathBuf> {
     let message = ChatMessage {
         id: String::new(),
@@ -49,6 +53,7 @@ pub(crate) fn agent_read_paths_from_parts(parts: &[MessagePart]) -> Vec<PathBuf>
     agent_read_paths_from_message(&message)
 }
 
+#[cfg(test)]
 pub(crate) fn merge_agent_read_paths(
     cache: &mut Option<Vec<PathBuf>>,
     new_paths: impl IntoIterator<Item = PathBuf>,
@@ -182,13 +187,13 @@ mod tests {
             parts: Some(vec![
                 MessagePart::ToolUse {
                     tool: "Read".to_string(),
-                    input: serde_json::json!({"file_path": "src/foo/bar.rs"}),
+                    input: serde_json::json!({"file_path": "src/foo/bar.rs"}).into(),
                     id: "tool-1".to_string(),
                     parent_tool_use_id: None,
                 },
                 MessagePart::ToolUse {
                     tool: "Bash".to_string(),
-                    input: serde_json::json!({"command": "sed -n '1,80p' src/foo/baz.rs && cat Cargo.toml"}),
+                    input: serde_json::json!({"command": "sed -n '1,80p' src/foo/baz.rs && cat Cargo.toml"}).into(),
                     id: "tool-2".to_string(),
                     parent_tool_use_id: None,
                 },

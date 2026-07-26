@@ -1,14 +1,22 @@
+#[cfg(test)]
 use std::path::PathBuf;
+use std::sync::Arc;
 
+#[cfg(test)]
 use serde::Deserialize;
 
-use crate::adaptor::gateway::workflow::event::{FanoutParentRef, TokenUsage, WorkflowEvent};
+use crate::adaptor::gateway::workflow::event::WorkflowEvent;
+#[cfg(test)]
+use crate::adaptor::gateway::workflow::event::{FanoutParentRef, TokenUsage};
 use crate::adaptor::gateway::workflow::log::WorkflowEventLog;
+#[cfg(test)]
 use crate::adaptor::gateway::workflow::schema::{NodeKindName, WorkflowDefinitionYaml};
+use crate::domain::local_event::LocalEventTransactionRepository;
+#[cfg(test)]
 use crate::domain::workflow::{
-    ExecutionInterruptionReason, ExecutionOrigin, NodeExecutionFailureKind, WorkflowError,
-    WorkflowExecution, WorkflowExecutionId,
+    ExecutionInterruptionReason, ExecutionOrigin, NodeExecutionFailureKind,
 };
+use crate::domain::workflow::{WorkflowError, WorkflowExecution, WorkflowExecutionId};
 use crate::usecase::workflow::ports::{
     WorkflowExecutionProjection, WorkflowExecutionProjectionRepository,
 };
@@ -21,6 +29,7 @@ use crate::usecase::workflow::ports::{
 /// strings/JSON values on this path.
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case", tag = "event")]
+#[cfg(test)]
 enum WorkspaceSummaryEvent {
     ExecutionStarted {
         execution_id: String,
@@ -121,6 +130,7 @@ enum WorkspaceSummaryEvent {
     },
 }
 
+#[cfg(test)]
 impl WorkspaceSummaryEvent {
     fn into_canonical(self) -> Result<WorkflowEvent, String> {
         Ok(match self {
@@ -336,15 +346,79 @@ impl WorkspaceSummaryEvent {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct WorkflowExecutionProjectionLogRepository {
-    data_dir: PathBuf,
+    source: WorkflowProjectionReadSource,
+}
+
+#[derive(Clone)]
+enum WorkflowProjectionReadSource {
+    #[cfg(test)]
+    Legacy(PathBuf),
+    Canonical {
+        repository: Arc<dyn LocalEventTransactionRepository>,
+        installation_id: String,
+    },
 }
 
 impl WorkflowExecutionProjectionLogRepository {
+    #[cfg(test)]
     pub(crate) fn new(data_dir: impl Into<PathBuf>) -> Self {
         Self {
-            data_dir: data_dir.into(),
+            source: WorkflowProjectionReadSource::Legacy(data_dir.into()),
+        }
+    }
+
+    pub(crate) fn with_authority(
+        repository: Arc<dyn LocalEventTransactionRepository>,
+        installation_id: String,
+    ) -> Self {
+        Self {
+            source: WorkflowProjectionReadSource::Canonical {
+                repository,
+                installation_id,
+            },
+        }
+    }
+
+    fn log(&self) -> WorkflowEventLog {
+        match &self.source {
+            #[cfg(test)]
+            WorkflowProjectionReadSource::Legacy(data_dir) => WorkflowEventLog::new(data_dir),
+            WorkflowProjectionReadSource::Canonical {
+                repository,
+                installation_id,
+            } => WorkflowEventLog::with_authority(repository.clone(), installation_id.clone()),
+        }
+    }
+
+    fn read_events(
+        &self,
+        execution_id: &WorkflowExecutionId,
+    ) -> Result<Vec<WorkflowEvent>, String> {
+        match &self.source {
+            #[cfg(test)]
+            WorkflowProjectionReadSource::Legacy(_) => self.log().read_log(execution_id.as_str()),
+            _ => self.log().read_log_durable_blocking(execution_id.as_str()),
+        }
+    }
+
+    fn read_workspace_events(
+        &self,
+        execution_id: &WorkflowExecutionId,
+    ) -> Result<Vec<WorkflowEvent>, String> {
+        match &self.source {
+            #[cfg(test)]
+            WorkflowProjectionReadSource::Legacy(_) => self.log().read_log_mapped(
+                execution_id.as_str(),
+                |line| {
+                    serde_json::from_str::<WorkspaceSummaryEvent>(line)
+                        .map_err(|error| error.to_string())?
+                        .into_canonical()
+                },
+                WorkflowEvent::execution_id,
+            ),
+            _ => self.log().read_log_durable_blocking(execution_id.as_str()),
         }
     }
 }
@@ -362,8 +436,8 @@ impl WorkflowExecutionProjectionRepository for WorkflowExecutionProjectionLogRep
         &self,
         execution_id: &WorkflowExecutionId,
     ) -> Result<Option<WorkflowExecutionProjection>, WorkflowError> {
-        let events = WorkflowEventLog::new(&self.data_dir)
-            .read_log(execution_id.as_str())
+        let events = self
+            .read_events(execution_id)
             .map_err(WorkflowError::external)?;
         let definition = events.iter().find_map(|event| match event {
             WorkflowEvent::ExecutionStarted { definition, .. } => Some(
@@ -385,16 +459,8 @@ impl WorkflowExecutionProjectionRepository for WorkflowExecutionProjectionLogRep
         &self,
         execution_id: &WorkflowExecutionId,
     ) -> Result<Option<WorkflowExecutionProjection>, WorkflowError> {
-        let events = WorkflowEventLog::new(&self.data_dir)
-            .read_log_mapped(
-                execution_id.as_str(),
-                |line| {
-                    serde_json::from_str::<WorkspaceSummaryEvent>(line)
-                        .map_err(|error| error.to_string())?
-                        .into_canonical()
-                },
-                WorkflowEvent::execution_id,
-            )
+        let events = self
+            .read_workspace_events(execution_id)
             .map_err(WorkflowError::external)?;
         let definition = events.iter().find_map(|event| match event {
             WorkflowEvent::ExecutionStarted { definition, .. } => Some(
@@ -419,6 +485,7 @@ impl WorkflowExecutionProjectionRepository for WorkflowExecutionProjectionLogRep
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::adaptor::gateway::workflow::event::WorkflowEvent;
     use crate::adaptor::gateway::workflow::schema::{
         CommandSpec, NodeDefinition, NodeKind, Rule, WorkflowDefinitionYaml,

@@ -5,20 +5,32 @@ use parking_lot::RwLock;
 use super::notice_query_service::AgentSessionNoticeQueryService;
 #[cfg(test)]
 use super::notice_state::new_shared_agent_session_notice_state;
-use super::notice_state::{SharedAgentSessionNoticeState, StoredAgentSessionNotice};
-
 pub use super::notice_state::{AgentSessionNoticeOperation, AgentSessionNoticeSnapshot};
+use super::notice_state::{SharedAgentSessionNoticeState, StoredAgentSessionNotice};
 
 pub trait AgentSessionNoticePublisher: Send + Sync {
     fn publish(&self, snapshot: AgentSessionNoticeSnapshot);
 }
 
+#[cfg(test)]
 pub trait AgentSessionNoticeSessionLookup: Send + Sync {
     fn contains_session(&self, session_id: &str) -> bool;
 }
 
-pub(crate) const MAX_AGENT_SESSION_NOTICE_ENTRIES: usize = 256;
-pub(crate) const MAX_AGENT_SESSION_NOTICE_MESSAGE_BYTES: usize = 8 * 1024;
+pub(crate) const MAX_AGENT_SESSION_NOTICE_ENTRIES: usize = 512;
+pub(crate) const MAX_AGENT_SESSION_NOTICE_MESSAGE_BYTES: usize = 2 * 1024;
+
+fn bounded_notice_message(message: &str) -> String {
+    if message.len() <= MAX_AGENT_SESSION_NOTICE_MESSAGE_BYTES {
+        return message.to_string();
+    }
+    const MARKER: &str = "…";
+    let mut cut = MAX_AGENT_SESSION_NOTICE_MESSAGE_BYTES - MARKER.len();
+    while cut > 0 && !message.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}{}", &message[..cut], MARKER)
+}
 
 #[cfg(test)]
 struct AllSessionsKnown;
@@ -39,17 +51,18 @@ pub enum AgentSessionNoticeUpdate {
         operation: AgentSessionNoticeOperation,
     },
     Dismiss,
-    RemoveSession,
 }
 
 /// Session-scoped transient notices and their recovery policy.
 ///
-/// The backend owns the operation classification and matching-success rule. UI
-/// clients only mirror the returned snapshot and may request an explicit dismiss.
+/// This legacy UI projection is intentionally isolated from R-011 durable
+/// feedback. Durable feedback creation and control must go through
+/// `SessionFeedbackUsecase`, where identity and revision guards are mandatory.
 pub struct AgentSessionNoticeUsecase {
     state: SharedAgentSessionNoticeState,
     query_service: AgentSessionNoticeQueryService,
-    session_lookup: Arc<dyn AgentSessionNoticeSessionLookup>,
+    #[cfg(test)]
+    session_lookup: Option<Arc<dyn AgentSessionNoticeSessionLookup>>,
     publishers: RwLock<Vec<Arc<dyn AgentSessionNoticePublisher>>>,
 }
 
@@ -62,6 +75,7 @@ impl Default for AgentSessionNoticeUsecase {
 }
 
 impl AgentSessionNoticeUsecase {
+    #[cfg(test)]
     pub(crate) fn new(
         state: SharedAgentSessionNoticeState,
         query_service: AgentSessionNoticeQueryService,
@@ -70,7 +84,20 @@ impl AgentSessionNoticeUsecase {
         Self {
             state,
             query_service,
-            session_lookup,
+            session_lookup: Some(session_lookup),
+            publishers: RwLock::new(Vec::new()),
+        }
+    }
+
+    pub(crate) fn new_for_runtime(
+        state: SharedAgentSessionNoticeState,
+        query_service: AgentSessionNoticeQueryService,
+    ) -> Self {
+        Self {
+            state,
+            query_service,
+            #[cfg(test)]
+            session_lookup: None,
             publishers: RwLock::new(Vec::new()),
         }
     }
@@ -93,28 +120,21 @@ impl AgentSessionNoticeUsecase {
         session_id: &str,
         update: AgentSessionNoticeUpdate,
     ) -> AgentSessionNoticeSnapshot {
-        if !self.session_lookup.contains_session(session_id) {
+        #[cfg(test)]
+        if self
+            .session_lookup
+            .as_ref()
+            .is_some_and(|lookup| !lookup.contains_session(session_id))
+        {
             return self.get_notice(session_id);
         }
-        if matches!(
-            &update,
-            AgentSessionNoticeUpdate::Failure { message, .. }
-                if message.len() > MAX_AGENT_SESSION_NOTICE_MESSAGE_BYTES
-        ) {
-            return self.get_notice(session_id);
-        }
-
         let mut state = self.state.write();
-        let mut evicted_session_id = None;
         let changed = match update {
             AgentSessionNoticeUpdate::Failure { operation, message } => {
                 if !state.notices.contains_key(session_id)
                     && state.notices.len() >= MAX_AGENT_SESSION_NOTICE_ENTRIES
                 {
-                    if let Some(oldest_session_id) = state.notice_order.pop_front() {
-                        state.notices.remove(&oldest_session_id);
-                        evicted_session_id = Some(oldest_session_id);
-                    }
+                    return state.snapshot(session_id);
                 }
                 state
                     .notice_order
@@ -122,7 +142,10 @@ impl AgentSessionNoticeUsecase {
                 state.notice_order.push_back(session_id.to_owned());
                 state.notices.insert(
                     session_id.to_owned(),
-                    StoredAgentSessionNotice { operation, message },
+                    StoredAgentSessionNotice {
+                        operation,
+                        message: bounded_notice_message(&message),
+                    },
                 );
                 true
             }
@@ -141,7 +164,7 @@ impl AgentSessionNoticeUsecase {
                     false
                 }
             }
-            AgentSessionNoticeUpdate::Dismiss | AgentSessionNoticeUpdate::RemoveSession => {
+            AgentSessionNoticeUpdate::Dismiss => {
                 let removed = state.notices.remove(session_id).is_some();
                 if removed {
                     state
@@ -156,18 +179,10 @@ impl AgentSessionNoticeUsecase {
             state.revision += 1;
         }
         let snapshot = state.snapshot(session_id);
-        let evicted_snapshot = evicted_session_id
-            .as_deref()
-            .map(|evicted_session_id| state.snapshot(evicted_session_id));
         drop(state);
 
         if changed {
             let publishers = self.publishers.read().clone();
-            if let Some(evicted_snapshot) = evicted_snapshot {
-                for publisher in &publishers {
-                    publisher.publish(evicted_snapshot.clone());
-                }
-            }
             for publisher in publishers {
                 publisher.publish(snapshot.clone());
             }
@@ -350,7 +365,7 @@ mod tests {
     }
 
     #[test]
-    fn test_session_notice_update_dismiss_and_session_removal_discard_notice() {
+    fn test_session_notice_update_dismiss_discards_transient_notice() {
         let usecase = AgentSessionNoticeUsecase::default();
         usecase.update(
             "session-a",
@@ -359,17 +374,6 @@ mod tests {
         assert_eq!(
             usecase
                 .update("session-a", AgentSessionNoticeUpdate::Dismiss)
-                .notice,
-            None
-        );
-
-        usecase.update(
-            "session-a",
-            failure(AgentSessionNoticeOperation::CloseSession, "close failed"),
-        );
-        assert_eq!(
-            usecase
-                .update("session-a", AgentSessionNoticeUpdate::RemoveSession)
                 .notice,
             None
         );
@@ -455,7 +459,7 @@ mod tests {
     }
 
     #[test]
-    fn test_session_notice_update_oversize_message_is_not_retained() {
+    fn test_session_notice_update_oversize_message_is_utf8_bounded() {
         let usecase = usecase_for_known_sessions(["session-a".to_string()]);
         let oversized = "x".repeat(MAX_AGENT_SESSION_NOTICE_MESSAGE_BYTES + 1);
 
@@ -464,13 +468,15 @@ mod tests {
             failure(AgentSessionNoticeOperation::Send, &oversized),
         );
 
-        assert_eq!(snapshot.revision, 0);
-        assert_eq!(snapshot.notice, None);
-        assert_eq!(usecase.state.read().notices.len(), 0);
+        assert_eq!(snapshot.revision, 1);
+        let message = snapshot.notice.unwrap().message;
+        assert!(message.len() <= MAX_AGENT_SESSION_NOTICE_MESSAGE_BYTES);
+        assert!(message.ends_with('…'));
+        assert_eq!(usecase.state.read().notices.len(), 1);
     }
 
     #[test]
-    fn test_session_notice_update_capacity_evicts_oldest_entry() {
+    fn test_session_notice_update_capacity_preserves_existing_entries() {
         let session_ids = (0..=MAX_AGENT_SESSION_NOTICE_ENTRIES)
             .map(|index| format!("session-{index}"))
             .collect::<Vec<_>>();
@@ -489,8 +495,8 @@ mod tests {
 
         let state = usecase.state.read();
         assert_eq!(state.notices.len(), MAX_AGENT_SESSION_NOTICE_ENTRIES);
-        assert!(!state.notices.contains_key(&session_ids[0]));
-        assert!(state
+        assert!(state.notices.contains_key(&session_ids[0]));
+        assert!(!state
             .notices
             .contains_key(&session_ids[MAX_AGENT_SESSION_NOTICE_ENTRIES]));
     }

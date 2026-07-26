@@ -1,15 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockInvoke = vi.fn().mockResolvedValue(undefined);
-const { mockAgentSessionNotices, mockAgentSessionNoticeState } = vi.hoisted(
-	() => ({
+const { mockAgentSessionNotices, mockAgentSessionNoticeState, mockGetSession } =
+	vi.hoisted(() => ({
 		mockAgentSessionNotices: new Map<
 			string,
 			{ operation: string; message: string }
 		>(),
-		mockAgentSessionNoticeState: { revision: 0 },
-	}),
-);
+		mockAgentSessionNoticeState: { revision: "0" },
+		mockGetSession: vi.fn().mockResolvedValue(null),
+	}));
 
 vi.mock("@tauri-apps/api/core", () => ({
 	invoke: (...args: unknown[]) => mockInvoke(...args),
@@ -40,7 +40,7 @@ vi.mock("./useSessionStore", () => ({
 		async (
 			sessionId: string,
 			update: {
-				action: "failure" | "success" | "dismiss" | "remove_session";
+				action: "failure" | "success" | "dismiss";
 				operation?: string;
 				message?: string;
 			},
@@ -59,14 +59,13 @@ vi.mock("./useSessionStore", () => ({
 					mockAgentSessionNotices.delete(sessionId);
 					changed = true;
 				}
-			} else if (
-				update.action === "dismiss" ||
-				update.action === "remove_session"
-			) {
+			} else if (update.action === "dismiss") {
 				changed = mockAgentSessionNotices.delete(sessionId);
 			}
 			if (changed) {
-				mockAgentSessionNoticeState.revision += 1;
+				mockAgentSessionNoticeState.revision = (
+					BigInt(mockAgentSessionNoticeState.revision) + 1n
+				).toString();
 			}
 			const notice = mockAgentSessionNotices.get(sessionId);
 			return {
@@ -77,7 +76,16 @@ vi.mock("./useSessionStore", () => ({
 		},
 	),
 	listSessions: vi.fn().mockResolvedValue([]),
-	getSession: vi.fn().mockResolvedValue(null),
+	getSession: mockGetSession,
+	getAgentSessionDisplayWindow: async (sessionId: string) => {
+		const response = await mockGetSession(sessionId);
+		if (response) {
+			listenCallbacks.get("agent-session-display-window-updated")?.({
+				payload: response,
+			});
+		}
+		return response;
+	},
 	getSessionPage: vi.fn().mockResolvedValue(null),
 	planAgentChatEviction: vi.fn().mockResolvedValue({
 		active: null,
@@ -137,6 +145,17 @@ vi.mock("./useSessionStore", () => ({
 		defaultId: null,
 	}),
 	resumeAgentQueue: vi.fn().mockResolvedValue(undefined),
+	requestAgentStop: vi.fn(
+		(sessionId: string, turnId: string, expectedSessionRevision: string) =>
+			mockInvoke("stop_agent_session", {
+				request: {
+					request_id: "stop-request-1",
+					session_id: sessionId,
+					turn_id: turnId,
+					expected_session_revision: expectedSessionRevision,
+				},
+			}),
+	),
 	convertLegacyMessage: vi.fn((message) => ({
 		...message,
 		parts:
@@ -149,6 +168,7 @@ vi.mock("./useSessionStore", () => ({
 		...session,
 		messages: session.messages ?? [],
 	})),
+	convertRawGetSessionResponse: vi.fn((response) => response),
 	setSessionBackend: vi.fn().mockResolvedValue({
 		session: {
 			id: "s1",
@@ -165,52 +185,40 @@ vi.mock("./useSessionStore", () => ({
 		availableModels: [],
 	}),
 	sendAgentMessage: vi.fn().mockResolvedValue({
-		session: {
-			id: "s1",
-			worktreePath: "/repo",
-			messages: [],
-			state: "active",
-			createdAt: 1000,
-			updatedAt: 1000,
-			permissionMode: "edit",
+		type: "accepted",
+		operation: {
+			receipt: {
+				operation_id: "send-direct-1",
+				session_id: "s1",
+				input_ref: "input-direct-1",
+				disposition: { type: "started_turn", turn_id: "1" },
+			},
+			latest_status: { type: "running", turn_id: "1" },
 		},
-		humanMessage: {
-			id: "msg-1",
-			role: "human",
-			parts: [{ type: "text", content: "hello" }],
-			timestamp: 1001,
-		},
-		agentMessage: {
-			id: "msg-2",
-			role: "agent",
-			parts: [],
-			timestamp: 1002,
-		},
-		sessions: [],
 	}),
 	sendWorkflowApprovalChatMessage: vi.fn().mockResolvedValue({
-		session: {
-			id: "s1",
-			worktreePath: "/repo",
-			messages: [],
-			state: "active",
-			createdAt: 1000,
-			updatedAt: 1000,
-			permissionMode: "edit",
+		type: "accepted",
+		operation: {
+			receipt: {
+				operation_id: "send-workflow-1",
+				session_id: "s1",
+				input_ref: "input-workflow-1",
+				disposition: { type: "started_turn", turn_id: "1" },
+			},
+			latest_status: { type: "running", turn_id: "1" },
 		},
-		humanMessage: {
-			id: "msg-1",
-			role: "human",
-			parts: [{ type: "text", content: "hello" }],
-			timestamp: 1001,
+	}),
+	respondAgentPermission: vi.fn().mockResolvedValue({
+		type: "accepted",
+		operation: {
+			receipt: {
+				operation_id: "permission-response-1",
+				session_id: "s1",
+				request_id: "request-1",
+				input_ref: "permission-input-1",
+			},
+			latest_status: { type: "completed", decision: "allowed" },
 		},
-		agentMessage: {
-			id: "msg-2",
-			role: "agent",
-			parts: [],
-			timestamp: 1002,
-		},
-		sessions: [],
 	}),
 	initAgentSessions: vi.fn().mockResolvedValue({
 		sessions: [],
@@ -223,6 +231,8 @@ vi.mock("./useSessionStore", () => ({
 				createdAt: 1000,
 				updatedAt: 1000,
 				permissionMode: "edit",
+				sessionRevision: "1",
+				activeTurnId: "1",
 			},
 			turnPhase: "idle",
 			selectedModel: null,
@@ -236,7 +246,7 @@ describe("useAgentChat", () => {
 		mockInvoke.mockReset();
 		mockInvoke.mockResolvedValue(undefined);
 		mockAgentSessionNotices.clear();
-		mockAgentSessionNoticeState.revision = 0;
+		mockAgentSessionNoticeState.revision = "0";
 		const sessionStore = await import("./useSessionStore");
 		vi.mocked(sessionStore.getAgentSessionNotice).mockClear();
 		vi.mocked(sessionStore.updateAgentSessionNotice).mockClear();
@@ -251,6 +261,19 @@ describe("useAgentChat", () => {
 		vi.mocked(sessionStore.planAgentChatEviction).mockClear();
 		vi.mocked(sessionStore.sendAgentMessage).mockClear();
 		vi.mocked(sessionStore.sendWorkflowApprovalChatMessage).mockClear();
+		vi.mocked(sessionStore.respondAgentPermission).mockResolvedValue({
+			type: "accepted",
+			operation: {
+				receipt: {
+					operation_id: "permission-response-1",
+					session_id: "s1",
+					request_id: "request-1",
+					input_ref: "permission-input-1",
+				},
+				latest_status: { type: "completed", decision: "allowed" },
+			},
+		});
+		vi.mocked(sessionStore.respondAgentPermission).mockClear();
 		vi.mocked(sessionStore.initAgentSessions).mockClear();
 		vi.mocked(sessionStore.restoreSession).mockResolvedValue({
 			restoredWorkflowNode: false,
@@ -621,8 +644,32 @@ describe("useAgentChat", () => {
 	});
 
 	it("sendMessage refreshes workspace tree after summaries change", async () => {
-		const { renderHook, act } = await import("@testing-library/react");
+		const { renderHook, act, waitFor } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
+			session: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [],
+				state: "active",
+				createdAt: 1000,
+				updatedAt: 1001,
+				permissionMode: "edit",
+				sessionRevision: "1",
+				activeTurnId: "1",
+			},
+			turnPhase: "streaming",
+			selectedModel: "",
+			availableModels: [],
+			canChangeBackend: false,
+			pendingQueue: [],
+			pendingQueueCount: 0,
+			queuePaused: false,
+			pendingPermissionRequest: null,
+			pendingPermissionStateRevision: "0",
+			latestTokenUsage: null,
+		} as never);
 		const dispatchSpy = vi.spyOn(window, "dispatchEvent");
 
 		try {
@@ -635,13 +682,15 @@ describe("useAgentChat", () => {
 				);
 			});
 
-			const refreshEvent = dispatchSpy.mock.calls
-				.map(([event]) => event)
-				.find(
-					(event): event is CustomEvent<{ worktreePath: string }> =>
-						event.type === "workspace-tree-refresh",
-				);
-			expect(refreshEvent?.detail).toEqual({ worktreePath: "/repo" });
+			await waitFor(() => {
+				const refreshEvent = dispatchSpy.mock.calls
+					.map(([event]) => event)
+					.find(
+						(event): event is CustomEvent<{ worktreePath: string }> =>
+							event.type === "workspace-tree-refresh",
+					);
+				expect(refreshEvent?.detail).toEqual({ worktreePath: "/repo" });
+			});
 		} finally {
 			dispatchSpy.mockRestore();
 		}
@@ -793,9 +842,10 @@ describe("useAgentChat", () => {
 		);
 	});
 
-	it("respondPermission invokes respond_agent_permission with chatSessionId", async () => {
+	it("respondPermission uses the durable permission response helper", async () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
 
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
@@ -806,8 +856,6 @@ describe("useAgentChat", () => {
 				"hello",
 			);
 		});
-		mockInvoke.mockClear();
-
 		act(() => {
 			result.current.respondPermission(
 				result.current.activeSession?.id ?? "",
@@ -816,18 +864,18 @@ describe("useAgentChat", () => {
 			);
 		});
 
-		expect(mockInvoke).toHaveBeenCalledWith("respond_agent_permission", {
-			chatSessionId: "s1",
-			requestId: "req-001",
-			behavior: "allow",
-			message: null,
-			updatedInput: null,
-		});
+		expect(sessionStore.respondAgentPermission).toHaveBeenCalledWith(
+			"s1",
+			"req-001",
+			true,
+			undefined,
+		);
 	});
 
 	it("respondPermission with deny sends deny behavior", async () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
 
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
@@ -837,8 +885,6 @@ describe("useAgentChat", () => {
 				"hello",
 			);
 		});
-		mockInvoke.mockClear();
-
 		act(() => {
 			result.current.respondPermission(
 				result.current.activeSession?.id ?? "",
@@ -847,13 +893,12 @@ describe("useAgentChat", () => {
 			);
 		});
 
-		expect(mockInvoke).toHaveBeenCalledWith("respond_agent_permission", {
-			chatSessionId: "s1",
-			requestId: "req-002",
-			behavior: "deny",
-			message: "User denied",
-			updatedInput: null,
-		});
+		expect(sessionStore.respondAgentPermission).toHaveBeenCalledWith(
+			"s1",
+			"req-002",
+			false,
+			undefined,
+		);
 	});
 
 	it("sendMessage creates session via Rust when no active session", async () => {
@@ -883,9 +928,36 @@ describe("useAgentChat", () => {
 		);
 	});
 
-	it("sendMessage appends returned messages when response session is a shell", async () => {
+	it("sendMessage mirrors messages from the post-Accepted readback", async () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
+			session: {
+				id: "s1",
+				worktreePath: "/repo",
+				messages: [
+					chatMessage("msg-1", "hello", 1001),
+					{ ...chatMessage("msg-2", "", 1002), role: "agent" },
+				],
+				state: "active",
+				createdAt: 1000,
+				updatedAt: 1002,
+				permissionMode: "edit",
+				sessionRevision: "1",
+				activeTurnId: "1",
+			},
+			turnPhase: "streaming",
+			selectedModel: "",
+			availableModels: [],
+			canChangeBackend: false,
+			pendingQueue: [],
+			pendingQueueCount: 0,
+			queuePaused: false,
+			pendingPermissionRequest: null,
+			pendingPermissionStateRevision: "0",
+			latestTokenUsage: null,
+		} as never);
 
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
@@ -911,7 +983,7 @@ describe("useAgentChat", () => {
 				imageCount: 0,
 			},
 		];
-		vi.mocked(sessionStore.sendAgentMessage).mockResolvedValueOnce({
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
 			session: {
 				id: "s1",
 				worktreePath: "/repo",
@@ -920,20 +992,36 @@ describe("useAgentChat", () => {
 				createdAt: 1000,
 				updatedAt: 1002,
 				permissionMode: "edit",
+				sessionRevision: "2",
+				activeTurnId: "1",
 			},
-			humanMessage: {
-				id: "msg-queued",
-				role: "human",
-				parts: [{ type: "text", content: "follow-up" }],
-				timestamp: 1002,
-			},
-			agentMessage: null,
-			queuedTurn: pendingQueue[0],
+			turnPhase: "streaming",
+			selectedModel: "",
+			availableModels: [],
+			canChangeBackend: false,
 			pendingQueue,
 			pendingQueueCount: 1,
-			canChangeBackend: false,
-			sessions: [],
-		});
+			queuePaused: false,
+			pendingPermissionRequest: null,
+			pendingPermissionStateRevision: "0",
+			latestTokenUsage: null,
+		} as never);
+		vi.mocked(sessionStore.sendAgentMessage).mockResolvedValueOnce({
+			type: "accepted",
+			operation: {
+				receipt: {
+					operation_id: "send-queued-1",
+					session_id: "s1",
+					input_ref: "input-queued-1",
+					disposition: { type: "queued", queue_item_id: "queued-1" },
+				},
+				latest_status: {
+					type: "queued",
+					queue_item_id: "queued-1",
+					reserved_turn_id: "2",
+				},
+			},
+		} as never);
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
 		await act(async () => {
@@ -941,6 +1029,683 @@ describe("useAgentChat", () => {
 		});
 
 		expect(result.current.getSessionPendingQueue("s1")).toEqual(pendingQueue);
+	});
+
+	it("reconciles a queue item consumed while the cold-start session was not viewable", async () => {
+		const { renderHook, act, waitFor } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		const staleQueue = [
+			{
+				id: "startup-queued-1",
+				contentPreview: "TEST",
+				createdAt: 1001,
+				permissionMode: "edit" as const,
+				imageCount: 0,
+			},
+		];
+		const session = {
+			id: "s1",
+			worktreePath: "/repo",
+			messages: [
+				{
+					id: "startup-human",
+					role: "human" as const,
+					parts: [{ type: "text" as const, content: "TEST" }],
+					timestamp: 1001,
+				},
+			],
+			state: "active" as const,
+			createdAt: 1000,
+			updatedAt: 1001,
+			permissionMode: "edit" as const,
+			sessionRevision: "1",
+			activeTurnId: "1",
+		};
+		vi.mocked(sessionStore.initAgentSessions).mockResolvedValueOnce({
+			sessions: [],
+			activeSession: {
+				session,
+				turnPhase: "streaming",
+				selectedModel: "",
+				availableModels: [],
+				canChangeBackend: false,
+				pendingQueue: staleQueue,
+				pendingQueueCount: 1,
+				queuePaused: false,
+				pendingPermissionRequest: null,
+				pendingPermissionStateRevision: "0",
+				latestTokenUsage: null,
+			},
+			permissionMode: "edit",
+			planMode: false,
+		} as never);
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
+			session: {
+				...session,
+				messages: [
+					...session.messages,
+					{
+						id: "startup-agent",
+						role: "agent",
+						parts: [{ type: "text", content: "ready" }],
+						timestamp: 1002,
+					},
+				],
+				state: "done",
+				updatedAt: 1002,
+				sessionRevision: "2",
+				activeTurnId: null,
+			},
+			turnPhase: "idle",
+			selectedModel: "",
+			availableModels: [],
+			canChangeBackend: false,
+			pendingQueue: [],
+			pendingQueueCount: 0,
+			queuePaused: false,
+			pendingPermissionRequest: null,
+			pendingPermissionStateRevision: "0",
+			latestTokenUsage: null,
+		} as never);
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		await waitFor(() =>
+			expect(sessionStore.getSession).toHaveBeenCalledWith("s1"),
+		);
+		await waitFor(() =>
+			expect(result.current.getSessionPendingQueue("s1")).toEqual([]),
+		);
+		expect(
+			result.current.activeSession?.messages.map((message) => message.id),
+		).toEqual(["startup-human", "startup-agent"]);
+		expect(result.current.getSessionTurnPhase("s1")).toBe("idle");
+
+		vi.mocked(sessionStore.planAgentChatEviction).mockClear();
+		await act(async () => {
+			await result.current.evictOlderMessages("s1");
+		});
+		expect(sessionStore.planAgentChatEviction).toHaveBeenCalledWith({
+			active: expect.objectContaining({
+				sessionId: "s1",
+				messageCount: 2,
+				loadedPages: [{ requestCursor: null, count: 2 }],
+			}),
+		});
+	});
+
+	it("applies a later consumed event after the Rust display window publication", async () => {
+		const { renderHook, act, waitFor } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		const staleQueue = [
+			{
+				id: "startup-queued-race",
+				contentPreview: "TEST",
+				createdAt: 1001,
+				permissionMode: "edit" as const,
+				imageCount: 0,
+			},
+		];
+		const session = {
+			id: "s1",
+			worktreePath: "/repo",
+			messages: [],
+			state: "active" as const,
+			createdAt: 1000,
+			updatedAt: 1001,
+			permissionMode: "edit" as const,
+			sessionRevision: "1",
+			activeTurnId: "1",
+		};
+		vi.mocked(sessionStore.initAgentSessions).mockResolvedValueOnce({
+			sessions: [],
+			activeSession: {
+				session,
+				turnPhase: "streaming",
+				selectedModel: "",
+				availableModels: [],
+				canChangeBackend: false,
+				pendingQueue: staleQueue,
+				pendingQueueCount: 1,
+				queuePaused: false,
+				pendingPermissionRequest: null,
+				pendingPermissionStateRevision: "0",
+				latestTokenUsage: null,
+			},
+			permissionMode: "edit",
+			planMode: false,
+		} as never);
+		let resolveReadback:
+			| ((value: Awaited<ReturnType<typeof sessionStore.getSession>>) => void)
+			| undefined;
+		vi.mocked(sessionStore.getSession).mockReturnValueOnce(
+			new Promise((resolve) => {
+				resolveReadback = resolve;
+			}),
+		);
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+		await waitFor(() =>
+			expect(sessionStore.getSession).toHaveBeenCalledWith("s1"),
+		);
+
+		await act(async () => {
+			resolveReadback?.({
+				session,
+				turnPhase: "streaming",
+				selectedModel: "",
+				availableModels: [],
+				canChangeBackend: false,
+				pendingQueue: staleQueue,
+				pendingQueueCount: 1,
+				queuePaused: false,
+				pendingPermissionRequest: null,
+				pendingPermissionStateRevision: "0",
+				latestTokenUsage: null,
+			} as never);
+			await Promise.resolve();
+			await Promise.resolve();
+			listenCallbacks.get("agent-pending-message-consumed")?.({
+				payload: {
+					chat_session_id: "s1",
+					queued_turn_id: "startup-queued-race",
+					agent_message: {
+						id: "startup-agent",
+						role: "agent",
+						parts: [],
+						timestamp: 1002,
+					},
+				},
+			});
+		});
+
+		await waitFor(() =>
+			expect(result.current.getSessionPendingQueue("s1")).toEqual([]),
+		);
+	});
+
+	it("applies a later streaming event after the Rust display window publication", async () => {
+		const { renderHook, act, waitFor } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		const staleQueue = [
+			{
+				id: "startup-streaming-race",
+				contentPreview: "TEST",
+				createdAt: 1001,
+				permissionMode: "edit" as const,
+				imageCount: 0,
+			},
+		];
+		const session = {
+			id: "s1",
+			worktreePath: "/repo",
+			messages: [
+				{
+					id: "streaming-agent",
+					role: "agent" as const,
+					parts: [{ type: "text" as const, content: "initial" }],
+					timestamp: 1001,
+				},
+			],
+			state: "active" as const,
+			createdAt: 1000,
+			updatedAt: 1001,
+			permissionMode: "edit" as const,
+			sessionRevision: "1",
+			activeTurnId: "1",
+		};
+		vi.mocked(sessionStore.initAgentSessions).mockResolvedValueOnce({
+			sessions: [],
+			activeSession: {
+				session,
+				turnPhase: "streaming",
+				selectedModel: "",
+				availableModels: [],
+				canChangeBackend: false,
+				pendingQueue: staleQueue,
+				pendingQueueCount: 1,
+				queuePaused: false,
+				pendingPermissionRequest: null,
+				pendingPermissionStateRevision: "0",
+				latestTokenUsage: null,
+			},
+			permissionMode: "edit",
+			planMode: false,
+		} as never);
+		let resolveReadback:
+			| ((value: Awaited<ReturnType<typeof sessionStore.getSession>>) => void)
+			| undefined;
+		vi.mocked(sessionStore.getSession).mockReturnValueOnce(
+			new Promise((resolve) => {
+				resolveReadback = resolve;
+			}),
+		);
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+		await waitFor(() =>
+			expect(sessionStore.getSession).toHaveBeenCalledWith("s1"),
+		);
+
+		await act(async () => {
+			resolveReadback?.({
+				session: {
+					...session,
+					messages: [
+						{
+							...session.messages[0],
+							parts: [{ type: "text", content: "old authority parts" }],
+						},
+					],
+				},
+				turnPhase: "streaming",
+				selectedModel: "",
+				availableModels: [],
+				canChangeBackend: false,
+				pendingQueue: [],
+				pendingQueueCount: 0,
+				queuePaused: false,
+				pendingPermissionRequest: null,
+				pendingPermissionStateRevision: "0",
+				latestTokenUsage: null,
+			} as never);
+			await Promise.resolve();
+			await Promise.resolve();
+			listenCallbacks.get("agent-streaming-delta")?.({
+				payload: {
+					chat_session_id: "s1",
+					message_id: "streaming-agent",
+					seq: "2",
+					snapshot: true,
+					parts: [{ type: "text", content: "new live parts" }],
+				},
+			});
+		});
+
+		await waitFor(() =>
+			expect(result.current.getSessionPendingQueue("s1")).toEqual([]),
+		);
+		expect(result.current.activeSession?.messages[0]?.parts).toEqual([
+			{ type: "text", content: "new live parts" },
+		]);
+	});
+
+	it("hydrates a missing session when a streaming event arrives during its initial read", async () => {
+		const { renderHook, act, waitFor } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		vi.mocked(sessionStore.initAgentSessions).mockResolvedValueOnce({
+			sessions: [],
+			activeSession: null,
+			permissionMode: "edit",
+			planMode: false,
+		} as never);
+		const session = {
+			id: "s1",
+			worktreePath: "/repo",
+			messages: [
+				{
+					id: "streaming-agent",
+					role: "agent" as const,
+					parts: [{ type: "text" as const, content: "authority snapshot" }],
+					timestamp: 1001,
+				},
+			],
+			state: "active" as const,
+			createdAt: 1000,
+			updatedAt: 1001,
+			permissionMode: "edit" as const,
+			sessionRevision: "1",
+			activeTurnId: "1",
+		};
+		let resolveReadback:
+			| ((value: Awaited<ReturnType<typeof sessionStore.getSession>>) => void)
+			| undefined;
+		vi.mocked(sessionStore.getSession).mockReturnValueOnce(
+			new Promise((resolve) => {
+				resolveReadback = resolve;
+			}),
+		);
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		let loadPromise = Promise.resolve<unknown>(null);
+		act(() => {
+			loadPromise = result.current.loadSession("s1");
+		});
+		await waitFor(() =>
+			expect(sessionStore.getSession).toHaveBeenCalledWith("s1"),
+		);
+
+		await act(async () => {
+			listenCallbacks.get("agent-streaming-delta")?.({
+				payload: {
+					chat_session_id: "s1",
+					message_id: "streaming-agent",
+					seq: "2",
+					snapshot: true,
+					parts: [{ type: "text", content: "live parts" }],
+				},
+			});
+			resolveReadback?.({
+				session,
+				turnPhase: "streaming",
+				selectedModel: "",
+				availableModels: [],
+				canChangeBackend: false,
+				pendingQueue: [],
+				pendingQueueCount: 0,
+				queuePaused: false,
+				pendingPermissionRequest: null,
+				pendingPermissionStateRevision: "0",
+				latestTokenUsage: null,
+			} as never);
+			await loadPromise;
+		});
+
+		expect(result.current.getSessionById("s1")).toEqual(session);
+		expect(result.current.getSessionTurnPhase("s1")).toBe("streaming");
+	});
+
+	it("does not let late workspace load or init snapshots overwrite terminal authority", async () => {
+		const { renderHook, act, waitFor } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		const staleQueue = [
+			{
+				id: "startup-full-read-race",
+				contentPreview: "TEST",
+				createdAt: 1001,
+				permissionMode: "edit" as const,
+				imageCount: 0,
+			},
+		];
+		const staleSession = {
+			id: "s1",
+			worktreePath: "/repo",
+			messages: [
+				{
+					id: "startup-human",
+					role: "human" as const,
+					parts: [{ type: "text" as const, content: "TEST" }],
+					timestamp: 1001,
+				},
+			],
+			state: "active" as const,
+			createdAt: 1000,
+			updatedAt: 1001,
+			permissionMode: "edit" as const,
+			sessionRevision: "1",
+			activeTurnId: "1",
+		};
+		const staleResponse = {
+			session: staleSession,
+			turnPhase: "streaming" as const,
+			selectedModel: "",
+			availableModels: [],
+			canChangeBackend: false,
+			pendingQueue: staleQueue,
+			pendingQueueCount: 1,
+			queuePaused: false,
+			pendingPermissionRequest: null,
+			pendingPermissionStateRevision: "0",
+			latestTokenUsage: null,
+		};
+		const terminalResponse = {
+			...staleResponse,
+			session: {
+				...staleSession,
+				messages: [
+					...staleSession.messages,
+					{
+						id: "startup-agent",
+						role: "agent" as const,
+						parts: [{ type: "text" as const, content: "ready" }],
+						timestamp: 1002,
+					},
+				],
+				state: "done" as const,
+				updatedAt: 1002,
+				sessionRevision: "2",
+				activeTurnId: null,
+			},
+			turnPhase: "idle" as const,
+			pendingQueue: [],
+			pendingQueueCount: 0,
+		};
+		let resolveInit:
+			| ((
+					value: Awaited<ReturnType<typeof sessionStore.initAgentSessions>>,
+			  ) => void)
+			| undefined;
+		vi.mocked(sessionStore.initAgentSessions).mockReturnValueOnce(
+			new Promise((resolve) => {
+				resolveInit = resolve;
+			}),
+		);
+		let resolveWorkspaceLoad:
+			| ((value: Awaited<ReturnType<typeof sessionStore.getSession>>) => void)
+			| undefined;
+		vi.mocked(sessionStore.getSession)
+			.mockReturnValueOnce(
+				new Promise((resolve) => {
+					resolveWorkspaceLoad = resolve;
+				}),
+			)
+			.mockResolvedValueOnce(terminalResponse as never);
+
+		const { result } = renderHook(() => useAgentChat("/repo"));
+		let unregister = () => {};
+		act(() => {
+			unregister = result.current.registerViewableSession("s1");
+		});
+		let workspaceLoad = Promise.resolve<unknown>(null);
+		act(() => {
+			workspaceLoad = result.current.loadSession("s1");
+		});
+		await waitFor(() =>
+			expect(sessionStore.getSession).toHaveBeenCalledTimes(1),
+		);
+
+		await act(async () => {
+			resolveWorkspaceLoad?.(staleResponse as never);
+			await workspaceLoad;
+			await Promise.resolve();
+			listenCallbacks.get("agent-session-state-changed")?.({
+				payload: {
+					chat_session_id: "s1",
+					turn_phase: "idle",
+					exit_code: 0,
+					completed_at: 1002,
+					session_state: "done",
+				},
+			});
+		});
+		await waitFor(() =>
+			expect(result.current.getSessionPendingQueue("s1")).toEqual([]),
+		);
+		expect(result.current.getSessionById("s1")?.state).toBe("done");
+
+		await act(async () => {
+			resolveInit?.({
+				sessions: [],
+				activeSession: staleResponse,
+				permissionMode: "edit",
+				planMode: false,
+			} as never);
+		});
+
+		await waitFor(() => expect(result.current.activeSession?.id).toBe("s1"));
+		expect(result.current.getSessionPendingQueue("s1")).toEqual([]);
+		expect(result.current.getSessionTurnPhase("s1")).toBe("idle");
+		expect(result.current.activeSession?.state).toBe("done");
+		expect(
+			result.current.activeSession?.messages.map((message) => message.id),
+		).toEqual(["startup-human", "startup-agent"]);
+		act(() => unregister());
+	});
+
+	it("ignores an older same-worktree init response after navigation returns", async () => {
+		const { renderHook, act, waitFor } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		const initResponse = (sessionId: string) =>
+			({
+				sessions: [],
+				activeSession: {
+					session: {
+						id: sessionId,
+						worktreePath: "/repo",
+						messages: [],
+						state: "done",
+						createdAt: 1000,
+						updatedAt: 1001,
+						permissionMode: "edit",
+						sessionRevision: "1",
+						activeTurnId: null,
+					},
+					turnPhase: "idle",
+					selectedModel: "",
+					availableModels: [],
+					canChangeBackend: false,
+					pendingQueue: [],
+					pendingQueueCount: 0,
+					queuePaused: false,
+					pendingPermissionRequest: null,
+					pendingPermissionStateRevision: "0",
+					latestTokenUsage: null,
+				},
+				permissionMode: "edit",
+				planMode: false,
+			}) as never;
+		let resolveOlder:
+			| ((
+					value: Awaited<ReturnType<typeof sessionStore.initAgentSessions>>,
+			  ) => void)
+			| undefined;
+		let resolveNewer:
+			| ((
+					value: Awaited<ReturnType<typeof sessionStore.initAgentSessions>>,
+			  ) => void)
+			| undefined;
+		let resolveOtherWorktree:
+			| ((
+					value: Awaited<ReturnType<typeof sessionStore.initAgentSessions>>,
+			  ) => void)
+			| undefined;
+		vi.mocked(sessionStore.initAgentSessions)
+			.mockReturnValueOnce(
+				new Promise((resolve) => {
+					resolveOlder = resolve;
+				}),
+			)
+			.mockReturnValueOnce(
+				new Promise((resolve) => {
+					resolveOtherWorktree = resolve;
+				}),
+			)
+			.mockReturnValueOnce(
+				new Promise((resolve) => {
+					resolveNewer = resolve;
+				}),
+			);
+
+		const { result, rerender } = renderHook(
+			({ worktreePath }) => useAgentChat(worktreePath),
+			{ initialProps: { worktreePath: "/repo" } },
+		);
+		await waitFor(() =>
+			expect(sessionStore.initAgentSessions).toHaveBeenCalledTimes(1),
+		);
+		rerender({ worktreePath: "/other" });
+		await waitFor(() =>
+			expect(sessionStore.initAgentSessions).toHaveBeenCalledTimes(2),
+		);
+		rerender({ worktreePath: "/repo" });
+		await waitFor(() =>
+			expect(sessionStore.initAgentSessions).toHaveBeenCalledTimes(3),
+		);
+		await act(async () => {
+			resolveOtherWorktree?.({
+				sessions: [],
+				activeSession: null,
+				permissionMode: "edit",
+				planMode: false,
+			} as never);
+			resolveNewer?.(initResponse("newer-session"));
+		});
+		await waitFor(() =>
+			expect(result.current.activeSession?.id).toBe("newer-session"),
+		);
+
+		await act(async () => {
+			resolveOlder?.(initResponse("older-session"));
+		});
+		expect(result.current.activeSession?.id).toBe("newer-session");
+	});
+
+	it("keeps the latest session selection when an older selection resolves last", async () => {
+		const { renderHook, act } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
+		vi.mocked(sessionStore.initAgentSessions).mockResolvedValueOnce({
+			sessions: [],
+			activeSession: null,
+			permissionMode: "edit",
+			planMode: false,
+		} as never);
+		let resolveOlderSelection:
+			| ((value: Awaited<ReturnType<typeof sessionStore.getSession>>) => void)
+			| undefined;
+		let resolveLatestSelection:
+			| ((value: Awaited<ReturnType<typeof sessionStore.getSession>>) => void)
+			| undefined;
+		vi.mocked(sessionStore.getSession)
+			.mockReturnValueOnce(
+				new Promise((resolve) => {
+					resolveOlderSelection = resolve;
+				}),
+			)
+			.mockReturnValueOnce(
+				new Promise((resolve) => {
+					resolveLatestSelection = resolve;
+				}),
+			);
+		const { result } = renderHook(() => useAgentChat("/repo"));
+
+		let olderSelection = Promise.resolve();
+		let latestSelection = Promise.resolve();
+		act(() => {
+			olderSelection = result.current.selectSession("older-session");
+			latestSelection = result.current.selectSession("latest-session");
+		});
+		await act(async () => {
+			resolveLatestSelection?.(
+				sessionResponse(chatSession("latest-session", []), {
+					nextCursor: null,
+					hasMore: false,
+					totalCount: 0,
+				}),
+			);
+			await latestSelection;
+		});
+		expect(result.current.activeSession?.id).toBe("latest-session");
+
+		await act(async () => {
+			resolveOlderSelection?.(
+				sessionResponse(chatSession("older-session", []), {
+					nextCursor: null,
+					hasMore: false,
+					totalCount: 0,
+				}),
+			);
+			await olderSelection;
+		});
+		expect(result.current.activeSession?.id).toBe("latest-session");
 	});
 
 	it("clears a send error only after the same session sends successfully", async () => {
@@ -1027,7 +1792,7 @@ describe("useAgentChat", () => {
 			listenCallbacks.get("agent-session-notice-changed")?.({
 				payload: {
 					sessionId: "s-closed",
-					revision: 1,
+					revision: "1",
 					notice: { message: "セッション復元に失敗: unavailable" },
 				},
 			});
@@ -1038,7 +1803,7 @@ describe("useAgentChat", () => {
 
 		act(() => {
 			listenCallbacks.get("agent-session-notice-changed")?.({
-				payload: { sessionId: "s-closed", revision: 2, notice: null },
+				payload: { sessionId: "s-closed", revision: "2", notice: null },
 			});
 		});
 		expect(result.current.getSessionError("s-closed")).toBeNull();
@@ -1051,7 +1816,7 @@ describe("useAgentChat", () => {
 		const sessionStore = await import("./useSessionStore");
 		let resolveQuery: (snapshot: {
 			sessionId: string;
-			revision: number;
+			revision: string;
 			notice: null;
 		}) => void = () => {};
 		vi.mocked(sessionStore.getAgentSessionNotice).mockImplementationOnce(
@@ -1072,7 +1837,7 @@ describe("useAgentChat", () => {
 			listenCallbacks.get("agent-session-notice-changed")?.({
 				payload: {
 					sessionId: "s1",
-					revision: 2,
+					revision: "9007199254740993",
 					notice: { message: "new failure" },
 				},
 			});
@@ -1080,7 +1845,11 @@ describe("useAgentChat", () => {
 		expect(result.current.getSessionError("s1")).toBe("new failure");
 
 		await act(async () => {
-			resolveQuery({ sessionId: "s1", revision: 1, notice: null });
+			resolveQuery({
+				sessionId: "s1",
+				revision: "9007199254740992",
+				notice: null,
+			});
 		});
 
 		expect(result.current.getSessionError("s1")).toBe("new failure");
@@ -1096,7 +1865,7 @@ describe("useAgentChat", () => {
 		} as never);
 		let resolveQuery: (snapshot: {
 			sessionId: string;
-			revision: number;
+			revision: string;
 			notice: { message: string };
 		}) => void = () => {};
 		vi.mocked(sessionStore.getAgentSessionNotice).mockImplementationOnce(
@@ -1117,7 +1886,7 @@ describe("useAgentChat", () => {
 		await act(async () => {
 			resolveQuery({
 				sessionId: "removed-session",
-				revision: 1,
+				revision: "1",
 				notice: { message: "stale failure" },
 			});
 		});
@@ -1125,7 +1894,7 @@ describe("useAgentChat", () => {
 			listenCallbacks.get("agent-session-notice-changed")?.({
 				payload: {
 					sessionId: "removed-session",
-					revision: 1,
+					revision: "1",
 					notice: { message: "stale event failure" },
 				},
 			});
@@ -1283,13 +2052,9 @@ describe("useAgentChat", () => {
 		const { renderHook, act, waitFor } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
 		const sessionStore = await import("./useSessionStore");
-		let rejectPermission = true;
-		mockInvoke.mockImplementation((command: string) => {
-			if (command === "respond_agent_permission" && rejectPermission) {
-				return Promise.reject(new Error("permission unavailable"));
-			}
-			return Promise.resolve(undefined);
-		});
+		vi.mocked(sessionStore.respondAgentPermission).mockRejectedValueOnce(
+			new Error("permission unavailable"),
+		);
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
 		act(() => {
@@ -1309,7 +2074,6 @@ describe("useAgentChat", () => {
 			}),
 		);
 
-		rejectPermission = false;
 		act(() => {
 			result.current.respondPermission("session-a", "request-1", true);
 		});
@@ -1329,33 +2093,17 @@ describe("useAgentChat", () => {
 		vi.mocked(sessionStore.sendAgentMessage)
 			.mockRejectedValueOnce(new Error("A is offline"))
 			.mockResolvedValueOnce({
-				session: {
-					id: "s2",
-					worktreePath: "/repo",
-					messages: [],
-					state: "active",
-					createdAt: 2000,
-					updatedAt: 2000,
-					permissionMode: "edit",
+				type: "accepted",
+				operation: {
+					receipt: {
+						operation_id: "send-s2-1",
+						session_id: "s2",
+						input_ref: "input-s2-1",
+						disposition: { type: "started_turn", turn_id: "1" },
+					},
+					latest_status: { type: "running", turn_id: "1" },
 				},
-				humanMessage: {
-					id: "msg-s2-human",
-					role: "human",
-					parts: [{ type: "text", content: "hello B" }],
-					timestamp: 2001,
-				},
-				agentMessage: {
-					id: "msg-s2-agent",
-					role: "agent",
-					parts: [],
-					timestamp: 2002,
-				},
-				sessions: [],
-				pendingQueue: [],
-				pendingQueueCount: 0,
-				queuedTurn: null,
-				canChangeBackend: false,
-			});
+			} as never);
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
 		await act(async () => {
@@ -1455,6 +2203,18 @@ describe("useAgentChat", () => {
 		const sessionStore = await import("./useSessionStore");
 
 		vi.mocked(sessionStore.sendAgentMessage).mockResolvedValueOnce({
+			type: "accepted",
+			operation: {
+				receipt: {
+					operation_id: "send-side-1",
+					session_id: "side",
+					input_ref: "input-side-1",
+					disposition: { type: "started_turn", turn_id: "1" },
+				},
+				latest_status: { type: "running", turn_id: "1" },
+			},
+		} as never);
+		vi.mocked(sessionStore.getSession).mockResolvedValueOnce({
 			session: {
 				id: "side",
 				worktreePath: "/repo",
@@ -1463,46 +2223,20 @@ describe("useAgentChat", () => {
 				createdAt: 1001,
 				updatedAt: 1001,
 				permissionMode: "edit",
+				sessionRevision: "1",
+				activeTurnId: "1",
 			},
-			humanMessage: {
-				id: "msg-side-human",
-				role: "human",
-				parts: [{ type: "text", content: "side prompt" }],
-				timestamp: 1001,
-			},
-			agentMessage: {
-				id: "msg-side-agent",
-				role: "agent",
-				parts: [],
-				timestamp: 1002,
-			},
-			sessions: [
-				{
-					id: "s1",
-					worktreePath: "/repo",
-					createdAt: 1000,
-					updatedAt: 1000,
-					firstMessage: "",
-					messageCount: 0,
-					state: "active",
-					permissionMode: "edit",
-				},
-				{
-					id: "side",
-					worktreePath: "/repo",
-					createdAt: 1001,
-					updatedAt: 1001,
-					firstMessage: "side prompt",
-					messageCount: 1,
-					state: "active",
-					permissionMode: "edit",
-				},
-			],
+			turnPhase: "streaming",
+			selectedModel: "",
+			availableModels: [],
+			canChangeBackend: false,
 			pendingQueue: [],
 			pendingQueueCount: 0,
-			queuedTurn: null,
-			canChangeBackend: false,
-		});
+			queuePaused: false,
+			pendingPermissionRequest: null,
+			pendingPermissionStateRevision: "0",
+			latestTokenUsage: null,
+		} as never);
 
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
@@ -1567,7 +2301,7 @@ describe("useAgentChat", () => {
 		);
 	});
 
-	it("interrupt re-sends interrupt_agent_query while already interrupting", async () => {
+	it("interrupt reuses the durable Stop target while already interrupting", async () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
 
@@ -1588,12 +2322,25 @@ describe("useAgentChat", () => {
 		});
 
 		expect(mockInvoke).toHaveBeenCalledTimes(2);
-		expect(mockInvoke).toHaveBeenNthCalledWith(1, "interrupt_agent_query", {
-			chatSessionId: "s1",
+		expect(mockInvoke).toHaveBeenNthCalledWith(1, "stop_agent_session", {
+			request: {
+				request_id: expect.stringMatching(/^stop-/),
+				session_id: "s1",
+				turn_id: "1",
+				expected_session_revision: "1",
+			},
 		});
-		expect(mockInvoke).toHaveBeenNthCalledWith(2, "interrupt_agent_query", {
-			chatSessionId: "s1",
+		expect(mockInvoke).toHaveBeenNthCalledWith(2, "stop_agent_session", {
+			request: {
+				request_id: "stop-request-1",
+				session_id: "s1",
+				turn_id: "1",
+				expected_session_revision: "1",
+			},
 		});
+		expect(mockInvoke.mock.calls[1]?.[1]).toEqual(
+			mockInvoke.mock.calls[0]?.[1],
+		);
 	});
 
 	it("resumeQueue invokes resume_agent_queue with chatSessionId", async () => {
@@ -2860,6 +3607,42 @@ describe("useAgentChat", () => {
 		});
 	});
 
+	it("permission and plan setters do not publish rejected configuration", async () => {
+		const { renderHook, act, waitFor } = await import("@testing-library/react");
+		const { useAgentChat } = await import("./useAgentChat");
+		const { result } = renderHook(() => useAgentChat("/repo"));
+		await waitFor(() => expect(result.current.activeSession?.id).toBe("s1"));
+		const unregister = result.current.registerViewableSession("s1");
+		mockInvoke.mockImplementation((command: string) => {
+			if (
+				command === "set_agent_permission_mode" ||
+				command === "set_agent_plan_mode"
+			) {
+				return Promise.reject(new Error("durable config rejected"));
+			}
+			return Promise.resolve(undefined);
+		});
+
+		act(() => {
+			result.current.setPermissionMode("s1", "full");
+			result.current.setPlanMode("s1", true);
+		});
+		await waitFor(() => {
+			expect(mockInvoke).toHaveBeenCalledWith("set_agent_permission_mode", {
+				chatSessionId: "s1",
+				permissionMode: "full",
+			});
+			expect(mockInvoke).toHaveBeenCalledWith("set_agent_plan_mode", {
+				chatSessionId: "s1",
+				planMode: true,
+			});
+		});
+
+		expect(result.current.getSessionPermissionMode("s1")).toBe("edit");
+		expect(result.current.getSessionPlanMode("s1")).toBe(false);
+		unregister();
+	});
+
 	it("sendMessage uses the addressed session permission and plan mode", async () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
@@ -2867,13 +3650,14 @@ describe("useAgentChat", () => {
 
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
-		act(() => {
+		await act(async () => {
 			const cleanupA = result.current.registerViewableSession("session-a");
 			const cleanupB = result.current.registerViewableSession("session-b");
 			result.current.setPermissionMode("session-a", "ask");
 			result.current.setPlanMode("session-a", true);
 			result.current.setPermissionMode("session-b", "full");
 			result.current.setPlanMode("session-b", false);
+			await Promise.resolve();
 			cleanupA();
 			cleanupB();
 		});
@@ -2916,11 +3700,12 @@ describe("useAgentChat", () => {
 			useAgentChat("/repo", "approval-session", "run-1"),
 		);
 
-		act(() => {
+		await act(async () => {
 			const cleanup =
 				result.current.registerViewableSession("approval-session");
 			result.current.setPermissionMode("approval-session", "full");
 			result.current.setPlanMode("approval-session", true);
+			await Promise.resolve();
 			cleanup();
 		});
 
@@ -3053,6 +3838,11 @@ describe("useAgentChat", () => {
 				"backend unavailable",
 			);
 		});
+		expect(sessionStore.setSessionBackend).not.toHaveBeenCalled();
+		expect(mockInvoke).toHaveBeenCalledWith("set_agent_model", {
+			chatSessionId: "session-a",
+			modelId: "codex:gpt-5",
+		});
 		expect(result.current.getSessionError("session-b")).toBeNull();
 		expect(sessionStore.updateAgentSessionNotice).toHaveBeenCalledWith(
 			"session-a",
@@ -3073,59 +3863,10 @@ describe("useAgentChat", () => {
 		);
 	});
 
-	it("sendMessage after setModel invokes sendAgentMessage for the active session", async () => {
-		const { renderHook, act } = await import("@testing-library/react");
-		const { useAgentChat } = await import("./useAgentChat");
-		const sessionStore = await import("./useSessionStore");
-
-		const { result } = renderHook(() => useAgentChat("/repo"));
-
-		// Create active session via first message
-		await act(async () => {
-			await result.current.sendMessage(
-				result.current.activeSession?.id ?? null,
-				"first",
-			);
-		});
-		mockInvoke.mockClear();
-		vi.mocked(sessionStore.sendAgentMessage).mockClear();
-
-		// Select model
-		act(() => {
-			result.current.setModel(
-				result.current.activeSession?.id ?? "",
-				"claude-4",
-			);
-		});
-
-		expect(mockInvoke).toHaveBeenCalledWith("set_agent_model", {
-			chatSessionId: "s1",
-			modelId: "claude-4",
-		});
-
-		// Send second message — model sync is handled by Rust's start_agent_turn
-		await act(async () => {
-			await result.current.sendMessage(
-				result.current.activeSession?.id ?? null,
-				"second",
-			);
-		});
-
-		expect(sessionStore.sendAgentMessage).toHaveBeenCalledWith(
-			"s1",
-			"/repo",
-			"second",
-			"edit",
-			false,
-			null,
-			undefined,
-			undefined,
-		);
-	});
-
 	it("respondPermission for ExitPlanMode sends { behavior: allow } without updatedInput", async () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
 
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
@@ -3135,8 +3876,6 @@ describe("useAgentChat", () => {
 				"hello",
 			);
 		});
-		mockInvoke.mockClear();
-
 		act(() => {
 			result.current.respondPermission(
 				result.current.activeSession?.id ?? "",
@@ -3145,18 +3884,18 @@ describe("useAgentChat", () => {
 			);
 		});
 
-		expect(mockInvoke).toHaveBeenCalledWith("respond_agent_permission", {
-			chatSessionId: "s1",
-			requestId: "req-exitplan-001",
-			behavior: "allow",
-			message: null,
-			updatedInput: null,
-		});
+		expect(sessionStore.respondAgentPermission).toHaveBeenCalledWith(
+			"s1",
+			"req-exitplan-001",
+			true,
+			undefined,
+		);
 	});
 
 	it("respondPermission passes updatedInput as JSON string", async () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
+		const sessionStore = await import("./useSessionStore");
 
 		const { result } = renderHook(() => useAgentChat("/repo"));
 
@@ -3166,8 +3905,6 @@ describe("useAgentChat", () => {
 				"hello",
 			);
 		});
-		mockInvoke.mockClear();
-
 		const updatedInput = {
 			questions: [
 				{ question: "Pick one", header: "Q", options: [], multiSelect: false },
@@ -3184,13 +3921,12 @@ describe("useAgentChat", () => {
 			);
 		});
 
-		expect(mockInvoke).toHaveBeenCalledWith("respond_agent_permission", {
-			chatSessionId: "s1",
-			requestId: "req-003",
-			behavior: "allow",
-			message: null,
-			updatedInput: JSON.stringify(updatedInput),
-		});
+		expect(sessionStore.respondAgentPermission).toHaveBeenCalledWith(
+			"s1",
+			"req-003",
+			true,
+			updatedInput,
+		);
 	});
 
 	it("orderedSessions returns sessions in sessionOrder", async () => {
@@ -3715,6 +4451,7 @@ describe("useAgentChat", () => {
 			// Refresh to populate sessions state
 			await result.current.refreshSessions();
 		});
+		vi.mocked(sessionStore.updateAgentSessionNotice).mockClear();
 
 		await act(async () => {
 			await result.current.closeSession("s2");
@@ -3725,6 +4462,7 @@ describe("useAgentChat", () => {
 			"close_agent_session",
 			expect.anything(),
 		);
+		expect(sessionStore.updateAgentSessionNotice).not.toHaveBeenCalled();
 		expect(result.current.activeSession?.id).toBe(activeSession?.id);
 	});
 
@@ -3857,6 +4595,7 @@ describe("useAgentChat", () => {
 		await act(async () => {
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		});
+		vi.mocked(sessionStore.updateAgentSessionNotice).mockClear();
 
 		vi.mocked(sessionStore.listClosedSessions).mockResolvedValueOnce([]);
 
@@ -3865,6 +4604,7 @@ describe("useAgentChat", () => {
 		});
 
 		expect(sessionStore.archiveSession).toHaveBeenCalledWith("s-closed");
+		expect(sessionStore.updateAgentSessionNotice).not.toHaveBeenCalled();
 		expect(sessionStore.listClosedSessions).toHaveBeenCalledWith("/repo");
 	});
 
@@ -4125,7 +4865,7 @@ describe("useAgentChat", () => {
 		expect(result.current.activeSession?.id).toBe("s-closed");
 	});
 
-	it("restoreSession starts agent process for restored session", async () => {
+	it("restoreSession leaves provider establishment to the next durable send", async () => {
 		const { renderHook, act } = await import("@testing-library/react");
 		const { useAgentChat } = await import("./useAgentChat");
 		const sessionStore = await import("./useSessionStore");
@@ -4165,13 +4905,9 @@ describe("useAgentChat", () => {
 			await result.current.restoreSession("s-closed");
 		});
 
-		expect(mockInvoke).toHaveBeenCalledWith(
+		expect(mockInvoke).not.toHaveBeenCalledWith(
 			"start_agent_session",
-			expect.objectContaining({
-				chatSessionId: "s-closed",
-				cwd: "/repo",
-				permissionMode: "edit",
-			}),
+			expect.anything(),
 		);
 	});
 
@@ -4573,7 +5309,7 @@ describe("useAgentChat", () => {
 					chat_session_id: "s1",
 					turn_phase: "waiting_permission",
 					pending_permission_request: request,
-					pending_permission_state_revision: 2,
+					pending_permission_state_revision: "2",
 				},
 			});
 		});
@@ -4586,7 +5322,7 @@ describe("useAgentChat", () => {
 					hasMore: false,
 					totalCount: 0,
 				}) as Record<string, unknown>),
-				pendingPermissionStateRevision: 1,
+				pendingPermissionStateRevision: "1",
 			} as never);
 			await loadPromise;
 		});
@@ -4628,7 +5364,7 @@ describe("useAgentChat", () => {
 					chat_session_id: "s1",
 					turn_phase: "waiting_permission",
 					pending_permission_request: request,
-					pending_permission_state_revision: 2,
+					pending_permission_state_revision: "2",
 				},
 			});
 		});
@@ -4643,7 +5379,7 @@ describe("useAgentChat", () => {
 					chat_session_id: "s1",
 					turn_phase: "streaming",
 					pending_permission_request: null,
-					pending_permission_state_revision: 3,
+					pending_permission_state_revision: "3",
 				},
 			});
 		});
@@ -4658,7 +5394,7 @@ describe("useAgentChat", () => {
 				}) as Record<string, unknown>),
 				turnPhase: "waiting_permission",
 				pendingPermissionRequest: request,
-				pendingPermissionStateRevision: 2,
+				pendingPermissionStateRevision: "2",
 			} as never);
 			await loadPromise;
 		});
@@ -4692,7 +5428,7 @@ describe("useAgentChat", () => {
 					chat_session_id: "s1",
 					turn_phase: "waiting_permission",
 					pending_permission_request: request,
-					pending_permission_state_revision: 2,
+					pending_permission_state_revision: "2",
 				},
 			});
 		});
@@ -4706,7 +5442,7 @@ describe("useAgentChat", () => {
 			}) as Record<string, unknown>),
 			turnPhase: "streaming",
 			pendingPermissionRequest: null,
-			pendingPermissionStateRevision: 3,
+			pendingPermissionStateRevision: "3",
 		} as never);
 
 		await act(async () => {
@@ -5159,11 +5895,12 @@ describe("permissionMode sync from agent-permission-mode-changed event", () => {
 		});
 
 		// User selects full
-		act(() => {
+		await act(async () => {
 			result.current.setPermissionMode(
 				result.current.activeSession?.id ?? null,
 				"full",
 			);
+			await Promise.resolve();
 		});
 		expect(result.current.permissionMode).toBe("full");
 

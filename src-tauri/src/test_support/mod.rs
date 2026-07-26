@@ -9,11 +9,10 @@ use tokio::sync::{mpsc, Notify};
 use crate::adaptor::gateway::agent_session::FileSessionStorage;
 use crate::domain::agent_session::entities::PermissionResponse;
 use crate::domain::agent_session::gateway::{
-    AgentBackend, AgentBackendError, AgentRuntimeEvent, AgentSessionRuntime, ForkSessionRequest,
-    SessionSpec, TurnInput,
+    AgentBackend, AgentBackendError, AgentRuntimeEvent, AgentSessionRuntime, SessionSpec, TurnInput,
 };
 use crate::domain::agent_session::value_objects::{
-    BackendCapabilities, ModelDescriptor, ModelId, PermissionMode, SkillEntry,
+    BackendCapabilities, JsonPayload, ModelDescriptor, ModelId, PermissionMode, SkillEntry,
 };
 use crate::usecase::agent_session::backend_registry::AgentBackendRegistry;
 use crate::usecase::agent_session::context::InstructionSourcePort;
@@ -31,7 +30,27 @@ pub(crate) mod git;
 
 mod agent_session_wire_replay;
 
-pub(crate) static TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
+/// Process-global environment tests must remain serialized even if one test
+/// panics. `parking_lot::Mutex` deliberately has no poison state, so a failed
+/// integration test cannot turn unrelated CLI/wire tests into lock failures.
+pub(crate) static TEST_ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+/// SQLite boundary and large schema-evolution fixtures deliberately saturate local
+/// disk/CPU resources. Keep them mutually exclusive so a capacity test's
+/// production 13-second cutoff measures its own work rather than unrelated
+/// test-harness contention.
+pub(crate) static LOCAL_EVENT_STORE_HEAVY_TEST_LOCK: parking_lot::Mutex<()> =
+    parking_lot::Mutex::new(());
+
+// Fixture construction stays ergonomic without giving the semantic value a
+// production serde contract. Serialization remains owned by adapter DTOs.
+impl From<serde_json::Value> for JsonPayload {
+    fn from(value: serde_json::Value) -> Self {
+        JsonPayload::new_unchecked(
+            serde_json::to_string(&value).expect("test JSON value must serialize"),
+        )
+    }
+}
 
 pub(crate) struct EnvVarGuard {
     key: &'static str,
@@ -78,11 +97,26 @@ pub(crate) fn build_agent_runtime_usecase_with_controller(
     session_store: Arc<SessionStore>,
     data_dir: impl Into<std::path::PathBuf>,
 ) -> (Arc<AgentSessionRuntimeUsecase>, TestAgentRuntimeController) {
-    build_agent_runtime_usecase_with_controller_and_notifiers(
+    build_agent_runtime_usecase_with_controller_and_notifiers_and_spawner(
         session_store,
         data_dir,
         Arc::new(NoopAgentSessionEventNotifier),
         Arc::new(NoopAgentStatusNotifier),
+        Arc::new(TokioTestAgentTaskSpawner),
+    )
+}
+
+pub(crate) fn build_agent_runtime_usecase_with_controller_and_spawner(
+    session_store: Arc<SessionStore>,
+    data_dir: impl Into<std::path::PathBuf>,
+    spawner: Arc<dyn AgentTaskSpawner>,
+) -> (Arc<AgentSessionRuntimeUsecase>, TestAgentRuntimeController) {
+    build_agent_runtime_usecase_with_controller_and_notifiers_and_spawner(
+        session_store,
+        data_dir,
+        Arc::new(NoopAgentSessionEventNotifier),
+        Arc::new(NoopAgentStatusNotifier),
+        spawner,
     )
 }
 
@@ -92,12 +126,28 @@ pub(crate) fn build_agent_runtime_usecase_with_controller_and_notifiers(
     event_notifier: Arc<dyn AgentSessionEventNotifier>,
     status_notifier: Arc<dyn AgentStatusNotifier>,
 ) -> (Arc<AgentSessionRuntimeUsecase>, TestAgentRuntimeController) {
+    build_agent_runtime_usecase_with_controller_and_notifiers_and_spawner(
+        session_store,
+        data_dir,
+        event_notifier,
+        status_notifier,
+        Arc::new(TokioTestAgentTaskSpawner),
+    )
+}
+
+fn build_agent_runtime_usecase_with_controller_and_notifiers_and_spawner(
+    session_store: Arc<SessionStore>,
+    data_dir: impl Into<std::path::PathBuf>,
+    event_notifier: Arc<dyn AgentSessionEventNotifier>,
+    status_notifier: Arc<dyn AgentStatusNotifier>,
+    spawner: Arc<dyn AgentTaskSpawner>,
+) -> (Arc<AgentSessionRuntimeUsecase>, TestAgentRuntimeController) {
     let controller = TestAgentRuntimeController::default();
     let mut registry = AgentBackendRegistry::new();
     registry.register(Arc::new(TestAgentBackend {
         id: "claude",
         name: "Claude",
-        models: vec!["claude-4-sonnet", "claude-opus-5"],
+        models: vec!["claude-sonnet-5", "claude-opus-5"],
         controller: controller.clone(),
     }));
     registry.register(Arc::new(TestAgentBackend {
@@ -118,7 +168,7 @@ pub(crate) fn build_agent_runtime_usecase_with_controller_and_notifiers(
         Arc::new(AgentStatusCenter::new()),
         status_notifier,
         event_notifier,
-        Arc::new(TokioTestAgentTaskSpawner),
+        spawner,
         None,
         Arc::new(EmptyInstructionSource),
         data_dir.into(),
@@ -247,6 +297,10 @@ impl TestAgentRuntimeController {
             .filter(|call| call.session_id == session_id)
             .map(|call| call.kind.clone())
             .collect()
+    }
+
+    pub(crate) fn close_event_streams_for_test(&self, session_id: &str) {
+        self.senders.lock().unwrap().remove(session_id);
     }
 
     pub(crate) fn pause_start_turn(&self) {
@@ -433,7 +487,6 @@ pub(crate) enum TestRuntimeCallKind {
     RespondPermission {
         request_id: String,
     },
-    SetPermissionMode,
     SetModel,
     Close,
 }
@@ -515,29 +568,6 @@ impl AgentBackend for TestAgentBackend {
             controller: self.controller.clone(),
             receiver: Some(receiver),
         }))
-    }
-
-    async fn archive_session(
-        &self,
-        _backend_session_id: &str,
-        _cwd: &str,
-    ) -> Result<(), AgentBackendError> {
-        Ok(())
-    }
-
-    async fn unarchive_session(
-        &self,
-        _backend_session_id: &str,
-        _cwd: &str,
-    ) -> Result<(), AgentBackendError> {
-        Ok(())
-    }
-
-    async fn fork_session(
-        &self,
-        _req: ForkSessionRequest,
-    ) -> Result<Option<String>, AgentBackendError> {
-        Ok(None)
     }
 
     async fn skill_catalog(
@@ -686,25 +716,9 @@ impl AgentSessionRuntime for TestAgentRuntime {
         Ok(())
     }
 
-    async fn set_permission_mode(
-        &self,
-        _mode: crate::domain::agent_session::PermissionMode,
-        _plan_mode: bool,
-    ) -> Result<(), AgentBackendError> {
-        self.controller.record(
-            self.session_id.clone(),
-            TestRuntimeCallKind::SetPermissionMode,
-        );
-        Ok(())
-    }
-
     async fn set_model(&self, _model: &ModelId) -> Result<(), AgentBackendError> {
         self.controller
             .record(self.session_id.clone(), TestRuntimeCallKind::SetModel);
-        Ok(())
-    }
-
-    async fn set_session_title(&self, _title: &str) -> Result<(), AgentBackendError> {
         Ok(())
     }
 
@@ -729,6 +743,13 @@ struct NoopAgentSessionEventNotifier;
 
 impl AgentSessionEventNotifier for NoopAgentSessionEventNotifier {
     fn persist_notice(&self, _notice: crate::usecase::agent_session::status::SessionNotice) {}
+
+    fn display_window_updated(
+        &self,
+        _response: &crate::usecase::agent_session::session::GetSessionResponse,
+    ) -> bool {
+        true
+    }
 
     fn session_state_changed(&self, _payload: AgentSessionStateChangedPayload) {}
 

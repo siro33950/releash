@@ -1,5 +1,7 @@
+#[cfg(test)]
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+#[cfg(test)]
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -21,6 +23,7 @@ pub(super) static UUID_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
         .unwrap()
 });
 
+#[cfg(test)]
 pub(super) fn session_file(app_data_dir: &Path, session_id: &str) -> Result<PathBuf, String> {
     if !UUID_RE.is_match(session_id) {
         return Err(format!("Invalid session_id: {session_id}"));
@@ -28,6 +31,7 @@ pub(super) fn session_file(app_data_dir: &Path, session_id: &str) -> Result<Path
     Ok(sessions_dir(app_data_dir).join(format!("{session_id}.json")))
 }
 
+#[cfg(test)]
 pub(super) fn legacy_meta_file(app_data_dir: &Path, session_id: &str) -> Result<PathBuf, String> {
     if !UUID_RE.is_match(session_id) {
         return Err(format!("Invalid session_id: {session_id}"));
@@ -58,6 +62,7 @@ pub(super) fn event_log_file_in_dir(session_dir: &Path) -> PathBuf {
     session_dir.join("events.json")
 }
 
+#[cfg(test)]
 pub(super) fn meta_event_transaction_file_in_dir(session_dir: &Path) -> PathBuf {
     session_dir.join("meta_event_transaction.json")
 }
@@ -113,13 +118,14 @@ pub(super) fn invalid_session_error_message() -> String {
 }
 
 pub(super) fn content_hash(message: &ChatMessage) -> Result<String, String> {
-    let bytes = serde_json::to_vec(message)
+    let bytes = super::stored_session_v1::encode_chat_message_v1(message)
         .map_err(|e| format!("Failed to serialize message for hashing: {e}"))?;
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     Ok(hex::encode(hasher.finalize()))
 }
 
+#[cfg(test)]
 pub(super) fn write_json_pretty_atomic<T: Serialize>(
     path: &Path,
     value: &T,
@@ -148,6 +154,7 @@ pub(super) fn write_json_pretty_atomic<T: Serialize>(
     std::fs::rename(&tmp, path).map_err(|e| format!("Failed to rename {label} temp file: {e}"))
 }
 
+#[cfg(test)]
 pub(super) fn write_json_pretty_atomic_durable<T: Serialize>(
     path: &Path,
     value: &T,
@@ -157,6 +164,7 @@ pub(super) fn write_json_pretty_atomic_durable<T: Serialize>(
     sync_file_and_parent(path, label)
 }
 
+#[cfg(test)]
 pub(super) fn sync_file_and_parent(path: &Path, label: &str) -> Result<(), String> {
     std::fs::File::open(path)
         .and_then(|file| file.sync_all())
@@ -164,6 +172,7 @@ pub(super) fn sync_file_and_parent(path: &Path, label: &str) -> Result<(), Strin
     sync_parent_dir(path, label)
 }
 
+#[cfg(test)]
 pub(super) fn sync_parent_dir(path: &Path, label: &str) -> Result<(), String> {
     let Some(parent) = path.parent() else {
         return Ok(());
@@ -173,6 +182,7 @@ pub(super) fn sync_parent_dir(path: &Path, label: &str) -> Result<(), String> {
         .map_err(|e| format!("Failed to sync {label} dir: {e}"))
 }
 
+#[cfg(test)]
 pub(super) fn write_binary_atomic(path: &Path, bytes: &[u8], label: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)

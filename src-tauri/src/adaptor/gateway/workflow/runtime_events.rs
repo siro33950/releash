@@ -273,13 +273,7 @@ pub(crate) fn terminal_required_events_for_snapshot(
     Ok(events)
 }
 
-pub(crate) fn last_node_completed_event_for_append(
-    snapshot: &RuntimeCommitSnapshot,
-) -> Result<Option<WorkflowEvent>, String> {
-    let mut local = snapshot.clone();
-    last_node_completed_event_for_snapshot(&mut local).map_err(|e| format!("{e:?}"))
-}
-
+#[cfg(test)]
 pub(crate) fn terminal_events_for_append(
     snapshot: &RuntimeCommitSnapshot,
 ) -> Result<Vec<WorkflowEvent>, String> {
@@ -381,41 +375,6 @@ pub(crate) fn node_session_started_event_for_snapshot(
         session_id,
         timestamp: snapshot.updated_at,
     }))
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PostCommitProgressEventPlan {
-    TransitionAndStart,
-    StartFanout,
-}
-
-impl PostCommitProgressEventPlan {
-    fn outcome_label(self) -> &'static str {
-        match self {
-            Self::TransitionAndStart => "TransitionAndStart",
-            Self::StartFanout => "StartFanout",
-        }
-    }
-
-    pub(crate) fn node_completed_append_error(
-        self,
-        error: impl std::fmt::Display,
-    ) -> WorkflowEngineError {
-        WorkflowEngineError::SessionStore(format!(
-            "{} pre-commit NodeCompleted append failed: {error}",
-            self.outcome_label()
-        ))
-    }
-
-    pub(crate) fn followup_event(
-        self,
-        snapshot: &RuntimeCommitSnapshot,
-    ) -> Result<Option<WorkflowEvent>, WorkflowEngineError> {
-        match self {
-            Self::TransitionAndStart => node_started_event_for_snapshot(snapshot).map(Some),
-            Self::StartFanout => fanout_parent_started_event_for_snapshot(snapshot).map(Some),
-        }
-    }
 }
 
 pub(crate) fn fanout_parent_started_event_for_snapshot(
@@ -821,56 +780,5 @@ mod tests {
 
         assert!(matches!(error, WorkflowEngineError::InvalidState(message)
             if message.contains("NodeExecution") && message.contains("implement")));
-    }
-
-    #[test]
-    fn post_commit_progress_event_plan_emits_only_next_node_start() {
-        let snapshot = commit_snapshot_fixture();
-        let fanout_snapshot = fanout_commit_snapshot_fixture();
-
-        assert!(matches!(
-            PostCommitProgressEventPlan::TransitionAndStart
-                .followup_event(&snapshot)
-                .unwrap(),
-            Some(WorkflowEvent::NodeStarted {
-                execution_id,
-                node_execution_id,
-                node_name,
-                kind,
-                attempt,
-                fanout_parent,
-                timestamp,
-            }) if execution_id == "execution-1"
-                && node_execution_id == "node-execution-implement-3"
-                && node_name == "implement"
-                && kind == NodeKindName::Session
-                && attempt == 3
-                && fanout_parent.is_none()
-                && (timestamp - 42.0).abs() < f64::EPSILON
-        ));
-        assert!(matches!(
-            PostCommitProgressEventPlan::StartFanout
-                .followup_event(&fanout_snapshot)
-                .unwrap(),
-            Some(WorkflowEvent::NodeStarted {
-                node_execution_id,
-                node_name,
-                kind: NodeKindName::Fanout,
-                fanout_parent: None,
-                ..
-            }) if node_execution_id == "node-execution-reviews-1" && node_name == "reviews"
-        ));
-    }
-
-    #[test]
-    fn post_commit_progress_event_plan_formats_node_completed_error() {
-        let error = PostCommitProgressEventPlan::StartFanout
-            .node_completed_append_error("append failed")
-            .to_string();
-
-        assert_eq!(
-            error,
-            "StartFanout pre-commit NodeCompleted append failed: append failed"
-        );
     }
 }

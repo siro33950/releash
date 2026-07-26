@@ -1,21 +1,53 @@
+#[cfg(test)]
 use std::collections::HashMap;
-use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
 use super::layout::{
-    attachments_dir_in_dir, content_hash, index_file_in_dir, legacy_meta_file, message_file_in_dir,
-    messages_dir_in_dir, meta_file_in_dir, session_dir, session_file, sessions_dir,
-    tool_outputs_dir_in_dir, validate_meta, write_json_pretty_atomic,
+    attachments_dir_in_dir, legacy_meta_file, session_file, sessions_dir, tool_outputs_dir_in_dir,
+    validate_meta, write_json_pretty_atomic,
 };
+use super::layout::{
+    content_hash, index_file_in_dir, message_file_in_dir, messages_dir_in_dir, meta_file_in_dir,
+    session_dir,
+};
+#[cfg(test)]
 use super::private_context::write_private_context_to_dir;
+#[cfg(test)]
+use super::stored_message_part_v1::PreservedStoredPayload;
+use super::stored_message_part_v1::StoredPayloadSource;
+use super::stored_session_v1::{
+    decode_chat_message_v1, decode_message_index_v1, decode_preservation_sidecar,
+    preservation_sidecar_path, DecodedStoredChatMessageV1,
+};
+#[cfg(test)]
+use super::stored_session_v1::{
+    encode_chat_message_pretty_v1, encode_chat_message_v1, encode_chat_session_v1,
+    encode_preservation_sidecar, write_message_index_v1,
+};
 use super::FileSessionStorage;
+#[cfg(test)]
 use crate::usecase::agent_session::session::{
     agent_read_paths_from_message, agent_read_paths_from_parts, first_message_preview,
-    merge_agent_read_paths, now_timestamp, parts_to_legacy, ChatMessage, ChatSession,
-    MessageIndexEntry, MessagePageMetadata, MessagePart, MessageRole, PageCursor, SessionMeta,
-    SessionPage, MAX_SESSION_PAGE_LIMIT, SESSION_BODY_FORMAT_VERSION,
+    merge_agent_read_paths, now_timestamp, parts_to_legacy, MessagePart, SessionMeta,
+    SESSION_BODY_FORMAT_VERSION,
+};
+use crate::usecase::agent_session::session::{
+    ChatMessage, ChatSession, MessageIndexEntry, MessagePageMetadata, MessageRole, PageCursor,
+    SessionPage, MAX_SESSION_PAGE_LIMIT,
 };
 
+#[derive(Debug, thiserror::Error)]
+pub(super) enum LegacyMessageReadError {
+    #[error("failed to read message chunk: {0}")]
+    Io(String),
+    #[error(transparent)]
+    Incompatible(#[from] super::stored_message_part_v1::IncompatibleStoredEvent),
+    #[error("failed to parse message preservation sidecar: {0}")]
+    Preservation(String),
+}
+
+#[cfg(test)]
 fn measure_save_result<T, F, S>(
     metric: crate::other::telemetry::HotPath,
     size: S,
@@ -30,6 +62,17 @@ where
         crate::other::telemetry::record_session_save_bytes(metric, size);
     }
     result
+}
+
+#[cfg(test)]
+fn next_legacy_sqlite_counter(value: u64, label: &str) -> Result<u64, String> {
+    let next = value
+        .checked_add(1)
+        .ok_or_else(|| format!("{label} capacity is exhausted"))?;
+    if next > i64::MAX as u64 {
+        return Err(format!("{label} capacity is exhausted"));
+    }
+    Ok(next)
 }
 
 impl FileSessionStorage {
@@ -84,7 +127,8 @@ impl FileSessionStorage {
         )
     }
 
-    pub fn save_full_session_for_migration_or_restore(
+    #[cfg(test)]
+    pub fn save_full_session_for_restore(
         &self,
         app_data_dir: &Path,
         session: &ChatSession,
@@ -92,7 +136,7 @@ impl FileSessionStorage {
         measure_save_result(
             crate::other::telemetry::HotPath::SessionSaveFull,
             || {
-                serde_json::to_vec(session)
+                encode_chat_session_v1(session)
                     .map(|body| body.len())
                     .unwrap_or(0)
             },
@@ -103,6 +147,7 @@ impl FileSessionStorage {
         )
     }
 
+    #[cfg(test)]
     pub(super) fn persist_and_update_cache(
         &self,
         app_data_dir: &Path,
@@ -117,10 +162,12 @@ impl FileSessionStorage {
                 .map_err(|error| error.into_message())?;
         }
         let previous_meta = self.read_meta_from_dir(&session_dir, &session.id).ok();
-        let state_revision = previous_meta
-            .as_ref()
-            .map(|meta| meta.state_revision.saturating_add(1))
-            .unwrap_or(1);
+        let state_revision = match previous_meta.as_ref() {
+            Some(meta) => {
+                next_legacy_sqlite_counter(meta.state_revision, "session state revision")?
+            }
+            None => 1,
+        };
         self.write_split_session_to_dir(&session_dir, session, true, state_revision)?;
         if let Ok(file) = session_file(app_data_dir, &session.id) {
             let _ = std::fs::remove_file(file);
@@ -155,16 +202,24 @@ impl FileSessionStorage {
                 let (mut page, needs_repair) =
                     self.read_page_from_index(&dir, session_id, &index, cursor.clone(), limit)?;
                 if needs_repair {
-                    let _lock = self.file_lock.lock();
-                    index = self.read_consistent_index_from_dir_with_lock_held(&dir, session_id)?;
-                    let (reread_page, reread_needs_repair) =
-                        self.read_page_from_index(&dir, session_id, &index, cursor.clone(), limit)?;
-                    if reread_needs_repair {
-                        index = self.repair_index_and_meta_from_messages(&dir, session_id)?;
-                        (page, _) =
-                            self.read_page_from_index(&dir, session_id, &index, cursor, limit)?;
-                    } else {
-                        page = reread_page;
+                    {
+                        let _lock = self.file_lock.lock();
+                        index =
+                            self.read_consistent_index_from_dir_with_lock_held(&dir, session_id)?;
+                        let (reread_page, reread_needs_repair) = self.read_page_from_index(
+                            &dir,
+                            session_id,
+                            &index,
+                            cursor.clone(),
+                            limit,
+                        )?;
+                        if reread_needs_repair {
+                            index = self.repair_index_and_meta_from_messages(&dir, session_id)?;
+                            (page, _) =
+                                self.read_page_from_index(&dir, session_id, &index, cursor, limit)?;
+                        } else {
+                            page = reread_page;
+                        }
                     }
                 }
                 Ok(Some(page))
@@ -172,19 +227,23 @@ impl FileSessionStorage {
         )
     }
 
-    pub(super) fn next_message_seq(index: &[MessageIndexEntry]) -> u64 {
-        index
-            .iter()
-            .map(|entry| entry.seq)
-            .max()
-            .unwrap_or(0)
-            .saturating_add(1)
+    #[cfg(test)]
+    pub(super) fn next_message_seq(index: &[MessageIndexEntry]) -> Result<u64, String> {
+        next_legacy_sqlite_counter(
+            index.iter().map(|entry| entry.seq).max().unwrap_or(0),
+            "message sequence",
+        )
     }
 
-    pub(super) fn message_path_for_append(dir: &Path, index: &[MessageIndexEntry]) -> PathBuf {
-        message_file_in_dir(dir, Self::next_message_seq(index))
+    #[cfg(test)]
+    pub(super) fn message_path_for_append(
+        dir: &Path,
+        index: &[MessageIndexEntry],
+    ) -> Result<PathBuf, String> {
+        Ok(message_file_in_dir(dir, Self::next_message_seq(index)?))
     }
 
+    #[cfg(test)]
     pub(super) fn message_path_for_persist(
         dir: &Path,
         index: &[MessageIndexEntry],
@@ -198,6 +257,7 @@ impl FileSessionStorage {
         Ok(message_file_in_dir(dir, entry.seq))
     }
 
+    #[cfg(test)]
     pub(super) fn append_message_with_lock_held(
         &self,
         dir: &Path,
@@ -205,16 +265,12 @@ impl FileSessionStorage {
         mut meta: SessionMeta,
         message: &ChatMessage,
     ) -> Result<(SessionMeta, Vec<MessagePart>), String> {
-        let seq = Self::next_message_seq(index);
+        let seq = Self::next_message_seq(index)?;
         let (stored_message, attachment_refs) =
             self.externalize_message_attachments(dir, message)?;
         let stored_message = self.externalize_message_tool_outputs(dir, stored_message)?;
         let hash = content_hash(&stored_message)?;
-        write_json_pretty_atomic(
-            &message_file_in_dir(dir, seq),
-            &stored_message,
-            "message chunk",
-        )?;
+        self.write_message_file(&message_file_in_dir(dir, seq), &stored_message, None)?;
 
         let was_empty = index.is_empty();
         index.push(MessageIndexEntry {
@@ -243,6 +299,7 @@ impl FileSessionStorage {
         Ok((meta, persisted_parts))
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(super) fn persist_message_parts_with_lock_held(
         &self,
@@ -260,7 +317,11 @@ impl FileSessionStorage {
             .find(|entry| entry.id == message_id)
             .ok_or_else(|| format!("Message not found: {session_id}/{message_id}"))?;
         let path = message_file_in_dir(dir, entry.seq);
-        let mut message = self.read_message_file(&path)?;
+        let decoded = self
+            .read_message_record_file(&path)
+            .map_err(|error| error.to_string())?;
+        let mut message = decoded.message;
+        let preserved = decoded.preserved_additive_payload;
         let (content, thinking, activities) = parts_to_legacy(parts);
         message.content = content;
         message.thinking = thinking;
@@ -277,7 +338,7 @@ impl FileSessionStorage {
         entry.content_hash = content_hash(&message)?;
         entry.attachment_refs = attachment_refs;
         entry.tool_output_refs = self.tool_output_refs_from_message(&message);
-        write_json_pretty_atomic(&path, &message, "message chunk")?;
+        self.write_message_file(&path, &message, preserved.as_ref())?;
 
         meta.updated_at = updated_at;
         if index.first().is_some_and(|first| first.id == message_id) {
@@ -293,6 +354,7 @@ impl FileSessionStorage {
         Ok((meta, persisted_parts))
     }
 
+    #[cfg(test)]
     pub fn append_message(
         &self,
         app_data_dir: &Path,
@@ -302,7 +364,7 @@ impl FileSessionStorage {
         measure_save_result(
             crate::other::telemetry::HotPath::SessionAppend,
             || {
-                serde_json::to_vec(message)
+                encode_chat_message_v1(message)
                     .map(|body| body.len())
                     .unwrap_or(0)
             },
@@ -320,7 +382,7 @@ impl FileSessionStorage {
                     self.append_message_with_lock_held(&dir, &mut index, meta, message)?;
 
                 write_private_context_to_dir(&dir, &meta)?;
-                write_json_pretty_atomic(&index_file_in_dir(&dir), &index, "session index")?;
+                write_message_index_v1(&index_file_in_dir(&dir), &index)?;
                 write_json_pretty_atomic(&meta_file_in_dir(&dir), &meta, "session meta")?;
                 self.cache
                     .write()
@@ -330,6 +392,7 @@ impl FileSessionStorage {
             },
         )
     }
+    #[cfg(test)]
     pub fn persist_message_parts(
         &self,
         app_data_dir: &Path,
@@ -342,9 +405,13 @@ impl FileSessionStorage {
         measure_save_result(
             crate::other::telemetry::HotPath::SessionPersistParts,
             || {
-                serde_json::to_vec(parts)
+                parts
+                    .iter()
+                    .filter_map(|part| {
+                        super::stored_message_part_v1::encode_stored_message_part_v1(part).ok()
+                    })
                     .map(|body| body.len())
-                    .unwrap_or(0)
+                    .sum()
             },
             || {
                 if !self.reconcile_session_transaction(app_data_dir, session_id)? {
@@ -367,7 +434,7 @@ impl FileSessionStorage {
                     completed_at,
                 )?;
                 write_private_context_to_dir(&dir, &meta)?;
-                write_json_pretty_atomic(&index_file_in_dir(&dir), &index, "session index")?;
+                write_message_index_v1(&index_file_in_dir(&dir), &index)?;
                 write_json_pretty_atomic(&meta_file_in_dir(&dir), &meta, "session meta")?;
                 self.cache.write().insert(session_id.to_string(), meta);
                 Ok(persisted_parts)
@@ -376,13 +443,57 @@ impl FileSessionStorage {
     }
 
     pub(super) fn read_message_file(&self, path: &Path) -> Result<ChatMessage, String> {
+        self.read_message_record_file(path)
+            .map(|record| record.message)
+            .map_err(|error| error.to_string())
+    }
+
+    pub(super) fn read_message_record_file(
+        &self,
+        path: &Path,
+    ) -> Result<DecodedStoredChatMessageV1, LegacyMessageReadError> {
         #[cfg(test)]
         self.message_read_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let file =
-            std::fs::File::open(path).map_err(|e| format!("Failed to read message chunk: {e}"))?;
-        serde_json::from_reader(BufReader::new(file))
-            .map_err(|e| format!("Failed to parse message chunk: {e}"))
+        let raw =
+            std::fs::read(path).map_err(|error| LegacyMessageReadError::Io(error.to_string()))?;
+        let mut decoded = decode_chat_message_v1(
+            &raw,
+            StoredPayloadSource {
+                source_id: path.to_string_lossy().into_owned(),
+                record_ordinal: message_ordinal(path),
+            },
+        )?;
+        let sidecar = preservation_sidecar_path(path);
+        if let Ok(raw) = std::fs::read(&sidecar) {
+            decoded.preserved_additive_payload = Some(
+                decode_preservation_sidecar(&raw)
+                    .map_err(|error| LegacyMessageReadError::Preservation(error.to_string()))?,
+            );
+        }
+        Ok(decoded)
+    }
+
+    #[cfg(test)]
+    pub(super) fn write_message_file(
+        &self,
+        path: &Path,
+        message: &ChatMessage,
+        preserved: Option<&PreservedStoredPayload>,
+    ) -> Result<(), String> {
+        if let Some(preserved) = preserved {
+            let bytes = encode_preservation_sidecar(preserved).map_err(|error| {
+                format!("Failed to serialize message preservation sidecar: {error}")
+            })?;
+            super::layout::write_binary_atomic(
+                &preservation_sidecar_path(path),
+                &bytes,
+                "message preservation sidecar",
+            )?;
+        }
+        let bytes = encode_chat_message_pretty_v1(message, preserved)
+            .map_err(|error| format!("Failed to serialize message chunk: {error}"))?;
+        super::layout::write_binary_atomic(path, &bytes, "message chunk")
     }
 
     #[cfg(test)]
@@ -396,10 +507,11 @@ impl FileSessionStorage {
         self.message_read_count
             .load(std::sync::atomic::Ordering::SeqCst)
     }
+    #[cfg(test)]
     pub(super) fn read_index_from_dir(&self, dir: &Path) -> Result<Vec<MessageIndexEntry>, String> {
         let path = index_file_in_dir(dir);
-        let mut index: Vec<MessageIndexEntry> = match std::fs::File::open(&path) {
-            Ok(file) => serde_json::from_reader(BufReader::new(file))
+        let mut index: Vec<MessageIndexEntry> = match std::fs::read(&path) {
+            Ok(raw) => decode_message_index_v1(&raw)
                 .map_err(|e| format!("Failed to parse session index: {e}"))?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 self.rebuild_index_from_messages(dir)?
@@ -418,10 +530,13 @@ impl FileSessionStorage {
         if let Some(index) = self.try_read_consistent_index_from_dir(dir, session_id)? {
             return Ok(index);
         }
-        let _lock = self.file_lock.lock();
-        self.read_consistent_index_from_dir_with_lock_held(dir, session_id)
+        {
+            let _lock = self.file_lock.lock();
+            self.read_consistent_index_from_dir_with_lock_held(dir, session_id)
+        }
     }
 
+    #[cfg(test)]
     pub(super) fn read_consistent_index_from_dir_with_lock_held(
         &self,
         dir: &Path,
@@ -439,8 +554,8 @@ impl FileSessionStorage {
         session_id: &str,
     ) -> Result<Option<Vec<MessageIndexEntry>>, String> {
         let path = index_file_in_dir(dir);
-        let mut index: Vec<MessageIndexEntry> = match std::fs::File::open(&path) {
-            Ok(file) => match serde_json::from_reader(BufReader::new(file)) {
+        let mut index: Vec<MessageIndexEntry> = match std::fs::read(&path) {
+            Ok(raw) => match decode_message_index_v1(&raw) {
                 Ok(index) => index,
                 Err(err) => {
                     log::warn!(
@@ -502,6 +617,7 @@ impl FileSessionStorage {
         }))
     }
 
+    #[cfg(test)]
     pub(super) fn repair_index_and_meta_from_messages(
         &self,
         dir: &Path,
@@ -512,7 +628,7 @@ impl FileSessionStorage {
         meta.message_count = index.len();
         meta.first_message_preview = self.first_indexed_message_preview(dir, &index)?;
         write_private_context_to_dir(dir, &meta)?;
-        write_json_pretty_atomic(&index_file_in_dir(dir), &index, "session index")?;
+        write_message_index_v1(&index_file_in_dir(dir), &index)?;
         write_json_pretty_atomic(&meta_file_in_dir(dir), &meta, "session meta")?;
         self.cache
             .write()
@@ -520,6 +636,7 @@ impl FileSessionStorage {
         Ok(index)
     }
 
+    #[cfg(test)]
     pub(super) fn first_indexed_message_preview(
         &self,
         dir: &Path,
@@ -639,10 +756,12 @@ impl FileSessionStorage {
         let mut index = self.read_consistent_index_from_dir(&dir, session_id)?;
         if !self.index_matches_message_chunks_full(&dir, &index)? {
             log::warn!("Rebuilding stale session index for session {session_id}");
-            let _lock = self.file_lock.lock();
-            index = self.read_consistent_index_from_dir_with_lock_held(&dir, session_id)?;
-            if !self.index_matches_message_chunks_full(&dir, &index)? {
-                index = self.repair_index_and_meta_from_messages(&dir, session_id)?;
+            {
+                let _lock = self.file_lock.lock();
+                index = self.read_consistent_index_from_dir_with_lock_held(&dir, session_id)?;
+                if !self.index_matches_message_chunks_full(&dir, &index)? {
+                    index = self.repair_index_and_meta_from_messages(&dir, session_id)?;
+                }
             }
         }
         let mut messages = Vec::with_capacity(index.len());
@@ -661,6 +780,7 @@ impl FileSessionStorage {
         Ok(meta.to_session(messages))
     }
 
+    #[cfg(test)]
     pub(super) fn write_split_session_to_dir(
         &self,
         dir: &Path,
@@ -693,12 +813,14 @@ impl FileSessionStorage {
             .into_iter()
             .map(|entry| (entry.id.clone(), entry))
             .collect();
-        let mut next_seq = old_by_id
-            .values()
-            .map(|entry| entry.seq)
-            .max()
-            .unwrap_or(0)
-            .saturating_add(1);
+        let existing_index = old_by_id.values().cloned().collect::<Vec<_>>();
+        let mut next_seq = Some(Self::next_message_seq(&existing_index)?);
+        let mut allocate_seq = || -> Result<u64, String> {
+            let seq =
+                next_seq.ok_or_else(|| "message sequence capacity is exhausted".to_string())?;
+            next_seq = (seq < i64::MAX as u64).then_some(seq + 1);
+            Ok(seq)
+        };
         let mut used_seq = std::collections::HashSet::new();
         let mut index = Vec::with_capacity(session.messages.len());
         for message in &session.messages {
@@ -706,17 +828,12 @@ impl FileSessionStorage {
                 self.externalize_message_attachments(dir, message)?;
             let stored_message = self.externalize_message_tool_outputs(dir, stored_message)?;
             let old_entry = old_by_id.remove(&message.id);
-            let mut seq = old_entry
-                .as_ref()
-                .map(|entry| entry.seq)
-                .unwrap_or_else(|| {
-                    let seq = next_seq;
-                    next_seq = next_seq.saturating_add(1);
-                    seq
-                });
+            let mut seq = match old_entry.as_ref() {
+                Some(entry) => entry.seq,
+                None => allocate_seq()?,
+            };
             if !used_seq.insert(seq) {
-                seq = next_seq;
-                next_seq = next_seq.saturating_add(1);
+                seq = allocate_seq()?;
                 used_seq.insert(seq);
             }
             let hash = content_hash(&stored_message)?;
@@ -726,7 +843,14 @@ impl FileSessionStorage {
                 .is_none_or(|entry| entry.content_hash != hash)
                 || !chunk_path.exists()
             {
-                write_json_pretty_atomic(&chunk_path, &stored_message, "message chunk")?;
+                let preserved = if chunk_path.exists() {
+                    self.read_message_record_file(&chunk_path)
+                        .ok()
+                        .and_then(|record| record.preserved_additive_payload)
+                } else {
+                    None
+                };
+                self.write_message_file(&chunk_path, &stored_message, preserved.as_ref())?;
             }
             index.push(MessageIndexEntry {
                 id: message.id.clone(),
@@ -751,10 +875,11 @@ impl FileSessionStorage {
         meta.body_format_version = SESSION_BODY_FORMAT_VERSION;
         write_private_context_to_dir(dir, &meta)?;
         write_json_pretty_atomic(&meta_file_in_dir(dir), &meta, "session meta")?;
-        write_json_pretty_atomic(&index_file_in_dir(dir), &index, "session index")?;
+        write_message_index_v1(&index_file_in_dir(dir), &index)?;
         self.remove_stale_message_chunks(dir, &used_seq)
     }
 
+    #[cfg(test)]
     pub(super) fn remove_stale_message_chunks(
         &self,
         dir: &Path,
@@ -794,4 +919,10 @@ pub(super) fn message_chunk_entries(dir: &Path) -> Result<Vec<(u64, PathBuf)>, S
         entries.push((seq, path));
     }
     Ok(entries)
+}
+
+fn message_ordinal(path: &Path) -> Option<u64> {
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .and_then(|stem| stem.parse().ok())
 }
