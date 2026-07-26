@@ -1,5 +1,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { listAcceptedPermissionResponseOperations } from "@/hooks/useSessionStore";
 import { useOperationSupervision } from "./useOperationSupervision";
 
 const mockInvoke = vi.fn();
@@ -10,6 +11,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 vi.mock("@/hooks/useSessionStore", () => ({
 	getAcceptedSendOperation: vi.fn().mockResolvedValue(null),
+	listAcceptedPermissionResponseOperations: vi.fn().mockResolvedValue([]),
 	redispatchPendingLifecycleAttempts: vi.fn().mockResolvedValue(undefined),
 	redispatchPendingPermissionResponseAttempts: vi
 		.fn()
@@ -139,6 +141,37 @@ describe("useOperationSupervision", () => {
 			"request_application_quit",
 			expect.anything(),
 		);
+		unmount();
+	});
+
+	it("surfaces an accepted permission response that later needs reconciliation", async () => {
+		vi.mocked(listAcceptedPermissionResponseOperations).mockResolvedValue([
+			{
+				receipt: {
+					operation_id: "permission-operation-1",
+					session_id: "session-1",
+					request_id: "permission-request-1",
+					input_ref: "permission-response:permission-request-1",
+				},
+				latest_status: {
+					type: "reconciliation_required",
+					failure: { kind: "storage_unavailable" },
+				},
+			},
+		]);
+		const { result, unmount } = renderHook(() =>
+			useOperationSupervision("session-1"),
+		);
+
+		await waitFor(() =>
+			expect(result.current.state.permissionResponseOperations).toHaveLength(1),
+		);
+		expect(listAcceptedPermissionResponseOperations).toHaveBeenCalledWith(
+			"session-1",
+		);
+		expect(
+			result.current.state.permissionResponseOperations[0]?.latest_status.type,
+		).toBe("reconciliation_required");
 		unmount();
 	});
 

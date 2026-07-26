@@ -1344,18 +1344,58 @@ function rememberAcceptedPermissionResponse(
 	);
 }
 
-export async function getAcceptedPermissionResponseOperation(
+/**
+ * Read back the Session's accepted permission responses by their retained
+ * operation identity. The command response only reports the status at
+ * acceptance time, so a response that later needs reconciliation is only
+ * observable here. Settled decisions are dropped from the mirror because the
+ * transcript owns them from that point on.
+ */
+export async function listAcceptedPermissionResponseOperations(
 	sessionId: string,
-	requestId: string,
-): Promise<PermissionResponseOperationView | null> {
-	const operationId = acceptedPermissionResponseOperations.get(
-		permissionResponseTargetKey(sessionId, requestId),
-	);
-	if (!operationId) return null;
-	return invoke<PermissionResponseOperationView>(
-		"get_agent_permission_response_operation",
-		{ operationId },
-	);
+): Promise<PermissionResponseOperationView[]> {
+	const operations: PermissionResponseOperationView[] = [];
+	let mirrorChanged = false;
+	for (const [target, operationId] of [
+		...acceptedPermissionResponseOperations,
+	]) {
+		let targetSessionId: string;
+		try {
+			[targetSessionId] = JSON.parse(target) as [string, string];
+		} catch {
+			acceptedPermissionResponseOperations.delete(target);
+			mirrorChanged = true;
+			continue;
+		}
+		if (targetSessionId !== sessionId) continue;
+		let operation: PermissionResponseOperationView | null = null;
+		try {
+			operation = await invoke<PermissionResponseOperationView | null>(
+				"get_agent_permission_response_operation",
+				{ operationId },
+			);
+		} catch {
+			// A settled operation may age out of backend retention.
+		}
+		if (
+			!operation?.latest_status ||
+			operation.latest_status.type === "completed"
+		) {
+			// Nothing left to supervise: the backend no longer reports the
+			// operation, or the decision is settled and owned by the transcript.
+			acceptedPermissionResponseOperations.delete(target);
+			mirrorChanged = true;
+			continue;
+		}
+		operations.push(operation);
+	}
+	if (mirrorChanged) {
+		saveBoundedStringMap(
+			ACCEPTED_PERMISSION_RESPONSE_STORAGE_KEY,
+			acceptedPermissionResponseOperations,
+		);
+	}
+	return operations;
 }
 
 /**

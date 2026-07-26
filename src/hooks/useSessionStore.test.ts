@@ -4,6 +4,7 @@ import {
 	createWorkspaceSession,
 	getSession,
 	getSessionPage,
+	listAcceptedPermissionResponseOperations,
 	planAgentChatEviction,
 	redispatchPendingPermissionResponseAttempts,
 	requestAgentStop,
@@ -743,5 +744,99 @@ describe("session paging", () => {
 		expect(invoke).toHaveBeenCalledWith("resume_agent_queue", {
 			chatSessionId: "s1",
 		});
+	});
+
+	it("reads back an accepted permission response that later needs reconciliation", async () => {
+		vi.mocked(invoke).mockImplementationOnce((_command, args) => {
+			const input = args as { operationId: string };
+			return Promise.resolve({
+				type: "accepted",
+				operation: {
+					receipt: {
+						operation_id: input.operationId,
+						session_id: "permission-readback-session",
+						request_id: "permission-readback-request",
+						input_ref: "permission-readback-input",
+					},
+					latest_status: { type: "awaiting_provider_response" },
+				},
+			});
+		});
+		const accepted = await respondAgentPermission(
+			"permission-readback-session",
+			"permission-readback-request",
+			true,
+		);
+		const operationId = accepted.operation.receipt.operation_id;
+
+		vi.mocked(invoke).mockResolvedValueOnce({
+			receipt: {
+				operation_id: operationId,
+				session_id: "permission-readback-session",
+				request_id: "permission-readback-request",
+				input_ref: "permission-readback-input",
+			},
+			latest_status: {
+				type: "reconciliation_required",
+				failure: { kind: "storage_unavailable" },
+			},
+		});
+
+		const operations = await listAcceptedPermissionResponseOperations(
+			"permission-readback-session",
+		);
+
+		expect(invoke).toHaveBeenLastCalledWith(
+			"get_agent_permission_response_operation",
+			{ operationId },
+		);
+		expect(operations).toHaveLength(1);
+		expect(operations[0]?.latest_status.type).toBe("reconciliation_required");
+	});
+
+	it("drops the mirrored identity once the permission decision is settled", async () => {
+		vi.mocked(invoke).mockImplementationOnce((_command, args) => {
+			const input = args as { operationId: string };
+			return Promise.resolve({
+				type: "accepted",
+				operation: {
+					receipt: {
+						operation_id: input.operationId,
+						session_id: "permission-settled-session",
+						request_id: "permission-settled-request",
+						input_ref: "permission-settled-input",
+					},
+					latest_status: { type: "awaiting_provider_response" },
+				},
+			});
+		});
+		await respondAgentPermission(
+			"permission-settled-session",
+			"permission-settled-request",
+			true,
+		);
+
+		vi.mocked(invoke).mockResolvedValueOnce({
+			receipt: {
+				operation_id: "permission-settled-operation",
+				session_id: "permission-settled-session",
+				request_id: "permission-settled-request",
+				input_ref: "permission-settled-input",
+			},
+			latest_status: { type: "completed", decision: "allowed" },
+		});
+		expect(
+			await listAcceptedPermissionResponseOperations(
+				"permission-settled-session",
+			),
+		).toHaveLength(0);
+
+		const readbackCalls = vi.mocked(invoke).mock.calls.length;
+		expect(
+			await listAcceptedPermissionResponseOperations(
+				"permission-settled-session",
+			),
+		).toHaveLength(0);
+		expect(vi.mocked(invoke).mock.calls).toHaveLength(readbackCalls);
 	});
 });

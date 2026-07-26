@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
 	getAcceptedSendOperation,
+	listAcceptedPermissionResponseOperations,
+	type PermissionResponseOperationView,
 	redispatchPendingLifecycleAttempts,
 	redispatchPendingPermissionResponseAttempts,
 	redispatchPendingSendAttempts,
@@ -152,6 +154,7 @@ interface ShutdownPlanPage {
 
 export interface OperationSupervisionState {
 	sendOperation: SendOperationView | null;
+	permissionResponseOperations: PermissionResponseOperationView[];
 	attempts: PendingCallerAttempt[];
 	operationReadbacks: Array<{
 		kind: PendingCallerAttempt["kind"];
@@ -167,6 +170,7 @@ export interface OperationSupervisionState {
 
 const EMPTY: OperationSupervisionState = {
 	sendOperation: null,
+	permissionResponseOperations: [],
 	attempts: [],
 	operationReadbacks: [],
 	recovery: [],
@@ -289,12 +293,14 @@ export function useOperationSupervision(sessionId: string) {
 		try {
 			const [
 				localSendOperation,
+				permissionResponseOperations,
 				sessionAttempts,
 				applicationAttempts,
 				recovery,
 				shutdownResult,
 			] = await Promise.all([
 				getAcceptedSendOperation(sessionId),
+				listAcceptedPermissionResponseOperations(sessionId),
 				loadAttemptPages(sessionId, sessionAttemptCursor.current),
 				loadAttemptPages("application", applicationAttemptCursor.current),
 				invoke<PendingRecoveryPage>("list_pending_agent_recovery", {
@@ -467,6 +473,7 @@ export function useOperationSupervision(sessionId: string) {
 			setState((current) =>
 				nextSupervisionState(current, {
 					sendOperation,
+					permissionResponseOperations,
 					attempts,
 					operationReadbacks,
 					recovery: recovery.entries,

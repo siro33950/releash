@@ -85,6 +85,23 @@ Object.defineProperty(navigator, "clipboard", {
 	value: { writeText: clipboardWriteText },
 });
 
+const PERMISSION_RECONCILE_SESSION_ID = "permission-reconcile-session";
+
+vi.hoisted(() => {
+	globalThis.localStorage?.setItem(
+		"releash.accepted-permission-response-operations.v1",
+		JSON.stringify([
+			[
+				JSON.stringify([
+					"permission-reconcile-session",
+					"permission-request-1",
+				]),
+				"permission-operation-1",
+			],
+		]),
+	);
+});
+
 const session: ChatSession = {
 	id: "s1",
 	worktreePath: "/repo",
@@ -289,6 +306,41 @@ describe("ChatSessionView operation supervision", () => {
 		expect(warning).toHaveTextContent("Application shutdown outcome unknown");
 		expect(warning).toHaveTextContent("quit-unknown-42");
 		expect(warning).toHaveTextContent("restart (42)");
+	});
+
+	it("surfaces an accepted permission response that later requires reconciliation", async () => {
+		mockInvoke.mockImplementation((command: string) => {
+			switch (command) {
+				case "list_pending_agent_attempts":
+				case "list_pending_agent_recovery":
+					return Promise.resolve({ entries: [], next_cursor: null });
+				case "get_application_shutdown":
+					return Promise.resolve({ type: "current", plan: null });
+				case "get_agent_permission_response_operation":
+					return Promise.resolve({
+						receipt: {
+							operation_id: "permission-operation-1",
+							session_id: PERMISSION_RECONCILE_SESSION_ID,
+							request_id: "permission-request-1",
+							input_ref: "permission-response:permission-request-1",
+						},
+						latest_status: {
+							type: "reconciliation_required",
+							failure: { kind: "storage_unavailable" },
+						},
+					});
+				default:
+					return Promise.resolve(null);
+			}
+		});
+
+		renderChatSessionView({
+			testSession: { ...session, id: PERMISSION_RECONCILE_SESSION_ID },
+		});
+
+		expect(
+			await screen.findByText(/Accepted permission response requires/),
+		).toHaveTextContent("permission-operation-1");
 	});
 });
 

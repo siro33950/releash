@@ -760,6 +760,14 @@ export function ChatSessionView({
 }: ChatSessionViewProps) {
 	useActivityLogSessionScope(session.id);
 	const supervision = useOperationSupervision(session.id);
+	const permissionResponsesRequiringReconciliation = useMemo(
+		() =>
+			supervision.state.permissionResponseOperations.filter(
+				(operation) =>
+					operation.latest_status.type === "reconciliation_required",
+			),
+		[supervision.state.permissionResponseOperations],
+	);
 	const messageInputRef = useRef<MessageInputHandle>(null);
 	const [isFileDragOver, setIsFileDragOver] = useState(false);
 	const [copyState, setCopyState] = useState<"idle" | "copied" | "error">(
@@ -1416,6 +1424,7 @@ export function ChatSessionView({
 		>
 			{(supervision.state.sendOperation?.latest_status.type ===
 				"reconciliation_required" ||
+				permissionResponsesRequiringReconciliation.length > 0 ||
 				supervision.state.recovery.length > 0 ||
 				supervision.state.shutdown ||
 				supervision.state.shutdownOutcomeUnknown) && (
@@ -1427,6 +1436,12 @@ export function ChatSessionView({
 							{supervision.state.sendOperation.receipt.operation_id}
 						</div>
 					)}
+					{permissionResponsesRequiringReconciliation.map((operation) => (
+						<div key={operation.receipt.operation_id}>
+							Accepted permission response requires reconciliation:{" "}
+							{operation.receipt.operation_id}
+						</div>
+					))}
 					{supervision.state.shutdown && (
 						<div className="flex items-center gap-2">
 							<span>
