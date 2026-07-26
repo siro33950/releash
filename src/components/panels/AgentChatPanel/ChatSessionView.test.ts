@@ -283,31 +283,6 @@ describe("ChatSessionView error parts", () => {
 });
 
 describe("ChatSessionView operation supervision", () => {
-	it("renders the durable quit identity and intent when shutdown outcome is unknown", async () => {
-		mockInvoke.mockImplementation((command: string) => {
-			switch (command) {
-				case "list_pending_agent_attempts":
-				case "list_pending_agent_recovery":
-					return Promise.resolve({ entries: [], next_cursor: null });
-				case "get_application_shutdown":
-					return Promise.resolve({
-						type: "outcome_unknown",
-						operation_id: "quit-unknown-42",
-						intent: { type: "restart", code: 42 },
-					});
-				default:
-					return Promise.resolve(null);
-			}
-		});
-
-		renderChatSessionView();
-
-		const warning = await screen.findByTestId("shutdown-outcome-unknown");
-		expect(warning).toHaveTextContent("Application shutdown outcome unknown");
-		expect(warning).toHaveTextContent("quit-unknown-42");
-		expect(warning).toHaveTextContent("restart (42)");
-	});
-
 	it("surfaces an accepted permission response that later requires reconciliation", async () => {
 		mockInvoke.mockImplementation((command: string) => {
 			switch (command) {

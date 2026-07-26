@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ApplicationShutdownBanner } from "@/components/layout/ApplicationShutdownBanner";
 import { SettingsModal } from "@/components/panels/SettingsModal";
 import { UpdateDialog } from "@/components/UpdateDialog";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -398,6 +399,7 @@ function WorkbenchApp() {
 	return (
 		<TooltipProvider>
 			<UpdateDialog update={updateChecker} />
+			<ApplicationShutdownBanner />
 			<MainLayout
 				selectedRootPath={selectedRootPath}
 				settings={settings}

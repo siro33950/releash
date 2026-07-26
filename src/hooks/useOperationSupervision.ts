@@ -152,16 +152,26 @@ interface ShutdownPlanPage {
 	next_cursor: string | null;
 }
 
+export interface OperationReadback {
+	kind: PendingCallerAttempt["kind"];
+	operation_id: string;
+	result: unknown;
+}
+
+/** Session scope (S4 / S5 / S6): the operations owned by one Session. */
 export interface OperationSupervisionState {
 	sendOperation: SendOperationView | null;
 	permissionResponseOperations: PermissionResponseOperationView[];
 	attempts: PendingCallerAttempt[];
-	operationReadbacks: Array<{
-		kind: PendingCallerAttempt["kind"];
-		operation_id: string;
-		result: unknown;
-	}>;
+	operationReadbacks: OperationReadback[];
 	recovery: RecoveryCapability[];
+	error: string | null;
+}
+
+/** Application scope (S10): the single quit flight and its targets. */
+export interface ApplicationShutdownSupervisionState {
+	attempts: PendingCallerAttempt[];
+	operationReadbacks: OperationReadback[];
 	shutdown: ShutdownProjection | null;
 	shutdownOutcomeUnknown: ShutdownOutcomeUnknown | null;
 	shutdownTargets: ShutdownTargetCapability[];
@@ -174,6 +184,12 @@ const EMPTY: OperationSupervisionState = {
 	attempts: [],
 	operationReadbacks: [],
 	recovery: [],
+	error: null,
+};
+
+const EMPTY_SHUTDOWN: ApplicationShutdownSupervisionState = {
+	attempts: [],
+	operationReadbacks: [],
 	shutdown: null,
 	shutdownOutcomeUnknown: null,
 	shutdownTargets: [],
@@ -185,10 +201,7 @@ const EMPTY: OperationSupervisionState = {
  * for an unchanged backend snapshot would re-render every consumer twice per
  * cycle, so keep the previous object whenever the mirrored projection is equal.
  */
-function nextSupervisionState(
-	current: OperationSupervisionState,
-	next: OperationSupervisionState,
-): OperationSupervisionState {
+function nextSupervisionState<T>(current: T, next: T): T {
 	return JSON.stringify(current) === JSON.stringify(next) ? current : next;
 }
 
@@ -282,27 +295,89 @@ async function redispatchPendingQuitAttempts(
 }
 
 /**
- * A bounded UI mirror of backend-owned supervision projections.  It never
- * derives capabilities or retries an effect by itself.
+ * Adopt every accepted caller attempt of one scope by its durable operation
+ * identity, then replay the identities this renderer already adopted. Both
+ * halves are scope-local so Session and application supervision never publish
+ * each other's operations.
+ */
+async function adoptAcceptedAttempts(
+	scopeId: string,
+	attempts: PendingCallerAttempt[],
+	onAdopted: (readback: OperationReadback) => void,
+): Promise<OperationReadback[]> {
+	const seenOperationIdentities = new Set<string>();
+	const adoptedReadbacks = new Map<string, OperationReadback>();
+	const operationReadbacks: OperationReadback[] = [];
+	for (const attempt of attempts.filter(
+		(entry) => entry.resolution === "accepted",
+	)) {
+		const operationId = attempt.operation_id ?? attempt.caller_request_id;
+		const identity = `${attempt.kind}:${operationId}`;
+		if (!adoptedReadbacks.has(identity)) {
+			const command = operationReadbackCommand(attempt.kind);
+			const adoptedReadback: OperationReadback = {
+				kind: attempt.kind,
+				operation_id: operationId,
+				result: await invoke(command, { operationId }),
+			};
+			adoptedReadbacks.set(identity, adoptedReadback);
+			seenOperationIdentities.add(identity);
+			operationReadbacks.push(adoptedReadback);
+			onAdopted(adoptedReadback);
+		}
+		// Adoption is attempt-local. A crash before this point leaves the
+		// caller attempt unacknowledged; a crash after it can recover by the
+		// durable operation identity retained in renderer state.
+		rememberAdoptedOperation({
+			kind: attempt.kind,
+			operation_id: operationId,
+			scope_id: scopeId,
+		});
+		await invoke("acknowledge_agent_attempt", {
+			kind: attempt.kind,
+			callerRequestId: attempt.caller_request_id,
+		}).catch(() => undefined);
+	}
+	for (const adopted of loadAdoptedOperationIdentities()) {
+		if (adopted.scope_id !== scopeId) continue;
+		const identity = `${adopted.kind}:${adopted.operation_id}`;
+		if (seenOperationIdentities.has(identity)) continue;
+		seenOperationIdentities.add(identity);
+		const command = operationReadbackCommand(adopted.kind);
+		try {
+			operationReadbacks.push({
+				kind: adopted.kind,
+				operation_id: adopted.operation_id,
+				result: await invoke(command, {
+					operationId: adopted.operation_id,
+				}),
+			});
+		} catch {
+			// A terminal operation may eventually age out of backend retention.
+			// It must not prevent newer supervision entries from being adopted.
+		}
+	}
+	return operationReadbacks;
+}
+
+/**
+ * A bounded UI mirror of the backend-owned supervision projections owned by one
+ * Session. It never derives capabilities or retries an effect by itself.
  */
 export function useOperationSupervision(sessionId: string) {
 	const [state, setState] = useState<OperationSupervisionState>(EMPTY);
 	const sessionAttemptCursor = useRef<string | null>(null);
-	const applicationAttemptCursor = useRef<string | null>(null);
 	const refresh = useCallback(async () => {
 		try {
 			const [
 				localSendOperation,
 				permissionResponseOperations,
 				sessionAttempts,
-				applicationAttempts,
 				recovery,
-				shutdownResult,
 			] = await Promise.all([
 				getAcceptedSendOperation(sessionId),
 				listAcceptedPermissionResponseOperations(sessionId),
 				loadAttemptPages(sessionId, sessionAttemptCursor.current),
-				loadAttemptPages("application", applicationAttemptCursor.current),
 				invoke<PendingRecoveryPage>("list_pending_agent_recovery", {
 					limit: 32,
 					partition: null,
@@ -310,95 +385,32 @@ export function useOperationSupervision(sessionId: string) {
 					shutdownId: null,
 					cursor: null,
 				}),
-				invoke<CurrentShutdownResult>("get_application_shutdown"),
 			]);
-			const attempts = [
-				...sessionAttempts.entries,
-				...applicationAttempts.entries,
-			];
+			const attempts = sessionAttempts.entries;
 			sessionAttemptCursor.current = sessionAttempts.nextCursor;
-			applicationAttemptCursor.current = applicationAttempts.nextCursor;
+			const pendingRequestIds = (kind: PendingCallerAttempt["kind"]) =>
+				new Set(
+					attempts
+						.filter(
+							(attempt) =>
+								attempt.kind === kind && attempt.resolution === "pending",
+						)
+						.map((attempt) => attempt.caller_request_id),
+				);
 			await Promise.all([
-				redispatchPendingSendAttempts(
-					new Set(
-						attempts
-							.filter(
-								(attempt) =>
-									attempt.kind === "send" && attempt.resolution === "pending",
-							)
-							.map((attempt) => attempt.caller_request_id),
-					),
-				),
+				redispatchPendingSendAttempts(pendingRequestIds("send")),
 				redispatchPendingPermissionResponseAttempts(
-					new Set(
-						attempts
-							.filter(
-								(attempt) =>
-									attempt.kind === "permission_response" &&
-									attempt.resolution === "pending",
-							)
-							.map((attempt) => attempt.caller_request_id),
-					),
+					pendingRequestIds("permission_response"),
 				),
-				redispatchPendingStopAttempts(
-					new Set(
-						attempts
-							.filter(
-								(attempt) =>
-									attempt.kind === "stop" && attempt.resolution === "pending",
-							)
-							.map((attempt) => attempt.caller_request_id),
-					),
-				),
+				redispatchPendingStopAttempts(pendingRequestIds("stop")),
 				redispatchPendingLifecycleAttempts(
-					new Set(
-						attempts
-							.filter(
-								(attempt) =>
-									attempt.kind === "session_lifecycle" &&
-									attempt.resolution === "pending",
-							)
-							.map((attempt) => attempt.caller_request_id),
-					),
-				),
-				redispatchPendingQuitAttempts(
-					new Set(
-						attempts
-							.filter(
-								(attempt) =>
-									attempt.kind === "application_quit" &&
-									attempt.resolution === "pending",
-							)
-							.map((attempt) => attempt.caller_request_id),
-					),
+					pendingRequestIds("session_lifecycle"),
 				),
 			]);
-			const acceptedAttempts = attempts.filter(
-				(attempt) => attempt.resolution === "accepted",
-			);
-			const seenOperationIdentities = new Set<string>();
-			const adoptedReadbacks = new Map<
-				string,
-				OperationSupervisionState["operationReadbacks"][number]
-			>();
-			const operationReadbacks: OperationSupervisionState["operationReadbacks"] =
-				[];
-			for (const attempt of acceptedAttempts) {
-				const operationId = attempt.operation_id ?? attempt.caller_request_id;
-				const identity = `${attempt.kind}:${operationId}`;
-				let readback = adoptedReadbacks.get(identity);
-				if (!readback) {
-					const command = operationReadbackCommand(attempt.kind);
-					const adoptedReadback: OperationSupervisionState["operationReadbacks"][number] =
-						{
-							kind: attempt.kind,
-							operation_id: operationId,
-							result: await invoke(command, { operationId }),
-						};
-					readback = adoptedReadback;
-					adoptedReadbacks.set(identity, adoptedReadback);
-					seenOperationIdentities.add(identity);
-					operationReadbacks.push(adoptedReadback);
+			const operationReadbacks = await adoptAcceptedAttempts(
+				sessionId,
+				attempts,
+				(adoptedReadback) => {
 					setState((current) => ({
 						...current,
 						operationReadbacks: [
@@ -406,45 +418,8 @@ export function useOperationSupervision(sessionId: string) {
 							adoptedReadback,
 						],
 					}));
-				}
-				// Adoption is attempt-local. A crash before this point leaves the
-				// caller attempt unacknowledged; a crash after it can recover by the
-				// durable operation identity retained in renderer state.
-				rememberAdoptedOperation({
-					kind: attempt.kind,
-					operation_id: operationId,
-					scope_id:
-						attempt.kind === "application_quit" ? "application" : sessionId,
-				});
-				await invoke("acknowledge_agent_attempt", {
-					kind: attempt.kind,
-					callerRequestId: attempt.caller_request_id,
-				}).catch(() => undefined);
-			}
-			for (const adopted of loadAdoptedOperationIdentities()) {
-				if (
-					adopted.scope_id !== sessionId &&
-					adopted.scope_id !== "application"
-				) {
-					continue;
-				}
-				const identity = `${adopted.kind}:${adopted.operation_id}`;
-				if (seenOperationIdentities.has(identity)) continue;
-				seenOperationIdentities.add(identity);
-				const command = operationReadbackCommand(adopted.kind);
-				try {
-					operationReadbacks.push({
-						kind: adopted.kind,
-						operation_id: adopted.operation_id,
-						result: await invoke(command, {
-							operationId: adopted.operation_id,
-						}),
-					});
-				} catch {
-					// A terminal operation may eventually age out of backend retention.
-					// It must not prevent newer supervision entries from being adopted.
-				}
-			}
+				},
+			);
 			const backendSendOperations = operationReadbacks
 				.filter((entry) => entry.kind === "send")
 				.map((entry) => entry.result as SendOperationView);
@@ -452,24 +427,6 @@ export function useOperationSupervision(sessionId: string) {
 				backendSendOperations[backendSendOperations.length - 1];
 			const sendOperation =
 				localSendOperation ?? latestBackendSendOperation ?? null;
-			const shutdownTargets: ShutdownTargetCapability[] = [];
-			const shutdown =
-				shutdownResult.type === "current" ? shutdownResult.plan : null;
-			const shutdownOutcomeUnknown =
-				shutdownResult.type === "outcome_unknown"
-					? {
-							operation_id: shutdownResult.operation_id,
-							intent: shutdownResult.intent,
-						}
-					: null;
-			if (shutdown) {
-				const page = await invoke<ShutdownPlanPage>("get_shutdown_plan", {
-					shutdownId: shutdown.shutdown_id,
-					limit: 128,
-					cursor: null,
-				});
-				shutdownTargets.push(...page.targets);
-			}
 			setState((current) =>
 				nextSupervisionState(current, {
 					sendOperation,
@@ -477,16 +434,12 @@ export function useOperationSupervision(sessionId: string) {
 					attempts,
 					operationReadbacks,
 					recovery: recovery.entries,
-					shutdown,
-					shutdownOutcomeUnknown,
-					shutdownTargets,
 					error: null,
 				}),
 			);
 		} catch (error) {
 			if (String(error).includes("cursor")) {
 				sessionAttemptCursor.current = null;
-				applicationAttemptCursor.current = null;
 			}
 			setState((current) =>
 				nextSupervisionState(current, {
@@ -499,7 +452,6 @@ export function useOperationSupervision(sessionId: string) {
 
 	useEffect(() => {
 		sessionAttemptCursor.current = null;
-		applicationAttemptCursor.current = null;
 		void refresh();
 		const interval = globalThis.setInterval(() => void refresh(), 2_000);
 		return () => globalThis.clearInterval(interval);
@@ -525,6 +477,98 @@ export function useOperationSupervision(sessionId: string) {
 		},
 		[refresh],
 	);
+
+	return { state, refresh, requestRecovery };
+}
+
+/**
+ * A bounded UI mirror of the single application quit flight (S10). It is
+ * application-scoped on purpose: a Session surface must not present another
+ * scope's failure or action.
+ */
+export function useApplicationShutdownSupervision() {
+	const [state, setState] =
+		useState<ApplicationShutdownSupervisionState>(EMPTY_SHUTDOWN);
+	const applicationAttemptCursor = useRef<string | null>(null);
+	const refresh = useCallback(async () => {
+		try {
+			const [applicationAttempts, shutdownResult] = await Promise.all([
+				loadAttemptPages("application", applicationAttemptCursor.current),
+				invoke<CurrentShutdownResult>("get_application_shutdown"),
+			]);
+			const attempts = applicationAttempts.entries;
+			applicationAttemptCursor.current = applicationAttempts.nextCursor;
+			await redispatchPendingQuitAttempts(
+				new Set(
+					attempts
+						.filter(
+							(attempt) =>
+								attempt.kind === "application_quit" &&
+								attempt.resolution === "pending",
+						)
+						.map((attempt) => attempt.caller_request_id),
+				),
+			);
+			const operationReadbacks = await adoptAcceptedAttempts(
+				"application",
+				attempts,
+				(adoptedReadback) => {
+					setState((current) => ({
+						...current,
+						operationReadbacks: [
+							...current.operationReadbacks,
+							adoptedReadback,
+						],
+					}));
+				},
+			);
+			const shutdownTargets: ShutdownTargetCapability[] = [];
+			const shutdown =
+				shutdownResult.type === "current" ? shutdownResult.plan : null;
+			const shutdownOutcomeUnknown =
+				shutdownResult.type === "outcome_unknown"
+					? {
+							operation_id: shutdownResult.operation_id,
+							intent: shutdownResult.intent,
+						}
+					: null;
+			if (shutdown) {
+				const page = await invoke<ShutdownPlanPage>("get_shutdown_plan", {
+					shutdownId: shutdown.shutdown_id,
+					limit: 128,
+					cursor: null,
+				});
+				shutdownTargets.push(...page.targets);
+			}
+			setState((current) =>
+				nextSupervisionState(current, {
+					attempts,
+					operationReadbacks,
+					shutdown,
+					shutdownOutcomeUnknown,
+					shutdownTargets,
+					error: null,
+				}),
+			);
+		} catch (error) {
+			if (String(error).includes("cursor")) {
+				applicationAttemptCursor.current = null;
+			}
+			setState((current) =>
+				nextSupervisionState(current, {
+					...current,
+					error: String(error),
+				}),
+			);
+		}
+	}, []);
+
+	useEffect(() => {
+		applicationAttemptCursor.current = null;
+		void refresh();
+		const interval = globalThis.setInterval(() => void refresh(), 2_000);
+		return () => globalThis.clearInterval(interval);
+	}, [refresh]);
 
 	const retryShutdownTarget = useCallback(
 		async (target: ShutdownTargetCapability) => {
@@ -579,5 +623,5 @@ export function useOperationSupervision(sessionId: string) {
 		await refresh();
 	}, [refresh, state.shutdown]);
 
-	return { state, refresh, requestRecovery, retryShutdownTarget, retryQuit };
+	return { state, refresh, retryShutdownTarget, retryQuit };
 }

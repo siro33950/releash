@@ -1422,66 +1422,15 @@ export function ChatSessionView({
 			onDragOver={handleFileDragOver}
 			onDragLeave={handleFileDragLeave}
 		>
-			{(supervision.state.sendOperation?.latest_status.type ===
-				"reconciliation_required" ||
-				permissionResponsesRequiringReconciliation.length > 0 ||
-				supervision.state.recovery.length > 0 ||
-				supervision.state.shutdown ||
-				supervision.state.shutdownOutcomeUnknown) && (
+			{(permissionResponsesRequiringReconciliation.length > 0 ||
+				supervision.state.recovery.length > 0) && (
 				<div className="border-b border-border bg-muted/40 px-3 py-2 text-xs">
-					{supervision.state.sendOperation?.latest_status.type ===
-						"reconciliation_required" && (
-						<div>
-							Accepted send requires reconciliation:{" "}
-							{supervision.state.sendOperation.receipt.operation_id}
-						</div>
-					)}
 					{permissionResponsesRequiringReconciliation.map((operation) => (
 						<div key={operation.receipt.operation_id}>
 							Accepted permission response requires reconciliation:{" "}
 							{operation.receipt.operation_id}
 						</div>
 					))}
-					{supervision.state.shutdown && (
-						<div className="flex items-center gap-2">
-							<span>
-								Application shutdown: {supervision.state.shutdown.phase}
-							</span>
-							{supervision.state.shutdown.actions.includes("retry_quit") && (
-								<button
-									type="button"
-									className="rounded border border-border px-1.5 py-0.5"
-									onClick={() => void supervision.retryQuit()}
-								>
-									Retry quit
-								</button>
-							)}
-						</div>
-					)}
-					{supervision.state.shutdownOutcomeUnknown && (
-						<div data-testid="shutdown-outcome-unknown">
-							Application shutdown outcome unknown:{" "}
-							{supervision.state.shutdownOutcomeUnknown.operation_id} —{" "}
-							{supervision.state.shutdownOutcomeUnknown.intent.type} (
-							{supervision.state.shutdownOutcomeUnknown.intent.code})
-						</div>
-					)}
-					{supervision.state.shutdownTargets
-						.filter((target) => target.actions.includes("retry_same_effect"))
-						.map((target) => (
-							<div key={target.ordinal} className="flex items-center gap-2">
-								<span>
-									Shutdown target {target.kind} requires reconciliation
-								</span>
-								<button
-									type="button"
-									className="rounded border border-border px-1.5 py-0.5"
-									onClick={() => void supervision.retryShutdownTarget(target)}
-								>
-									Retry same effect
-								</button>
-							</div>
-						))}
 					{supervision.state.recovery.map((entry) => (
 						<div key={entry.obligation_id} className="flex items-center gap-2">
 							<span>{entry.safe_label}</span>
@@ -1948,6 +1897,16 @@ export function ChatSessionView({
 								</button>
 							</div>
 						))}
+					</div>
+				)}
+				{supervision.state.sendOperation?.latest_status.type ===
+					"reconciliation_required" && (
+					<div
+						className="mx-3 mb-2 rounded border border-border bg-muted/40 px-2 py-1.5 text-xs"
+						data-testid="send-operation-reconciliation"
+					>
+						Accepted send requires reconciliation:{" "}
+						{supervision.state.sendOperation.receipt.operation_id}
 					</div>
 				)}
 				<TodoListFooter snapshot={todoListSnapshot} />

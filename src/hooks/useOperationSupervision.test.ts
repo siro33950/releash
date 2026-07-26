@@ -1,7 +1,10 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { listAcceptedPermissionResponseOperations } from "@/hooks/useSessionStore";
-import { useOperationSupervision } from "./useOperationSupervision";
+import {
+	useApplicationShutdownSupervision,
+	useOperationSupervision,
+} from "./useOperationSupervision";
 
 const mockInvoke = vi.fn();
 
@@ -20,128 +23,60 @@ vi.mock("@/hooks/useSessionStore", () => ({
 	redispatchPendingStopAttempts: vi.fn().mockResolvedValue(undefined),
 }));
 
+function defaultShutdownInvoke(command: string) {
+	switch (command) {
+		case "list_pending_agent_attempts":
+			return Promise.resolve({ entries: [], next_cursor: null });
+		case "list_pending_agent_recovery":
+			return Promise.resolve({ entries: [], next_cursor: null });
+		case "get_application_shutdown":
+			return Promise.resolve({
+				type: "current",
+				plan: {
+					shutdown_id: "plan-1",
+					phase: "reconciliation_required",
+					outcome: "reconciliation_required",
+					actions: [],
+				},
+			});
+		case "get_shutdown_plan":
+			return Promise.resolve({
+				plan: {},
+				targets: [
+					{
+						ordinal: "0",
+						target_key: "target-key-1",
+						target_id: "session-1",
+						kind: "agent_session",
+						effect_identity: "shutdown-target/plan-1/0",
+						state: "reconciliation_required",
+						observation: {
+							type: "exit_coupled_outcome_unknown",
+							shutdown_id: "plan-1",
+						},
+						revision: "2",
+						actions: ["retry_same_effect"],
+						action_identities: [
+							{
+								action_id: "shutdown-action-1",
+								action: "retry_same_effect",
+								origin_revision: "2",
+							},
+						],
+					},
+				],
+				next_cursor: null,
+			});
+		default:
+			return Promise.resolve(undefined);
+	}
+}
+
 describe("useOperationSupervision", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		globalThis.localStorage.clear();
-		mockInvoke.mockImplementation((command: string) => {
-			switch (command) {
-				case "list_pending_agent_attempts":
-					return Promise.resolve({ entries: [], next_cursor: null });
-				case "list_pending_agent_recovery":
-					return Promise.resolve({ entries: [], next_cursor: null });
-				case "get_application_shutdown":
-					return Promise.resolve({
-						type: "current",
-						plan: {
-							shutdown_id: "plan-1",
-							phase: "reconciliation_required",
-							outcome: "reconciliation_required",
-							actions: [],
-						},
-					});
-				case "get_shutdown_plan":
-					return Promise.resolve({
-						plan: {},
-						targets: [
-							{
-								ordinal: "0",
-								target_key: "target-key-1",
-								target_id: "session-1",
-								kind: "agent_session",
-								effect_identity: "shutdown-target/plan-1/0",
-								state: "reconciliation_required",
-								observation: {
-									type: "exit_coupled_outcome_unknown",
-									shutdown_id: "plan-1",
-								},
-								revision: "2",
-								actions: ["retry_same_effect"],
-								action_identities: [
-									{
-										action_id: "shutdown-action-1",
-										action: "retry_same_effect",
-										origin_revision: "2",
-									},
-								],
-							},
-						],
-						next_cursor: null,
-					});
-				default:
-					return Promise.resolve(undefined);
-			}
-		});
-	});
-
-	it("uses only the backend-issued shutdown target capability", async () => {
-		const { result, unmount } = renderHook(() =>
-			useOperationSupervision("session-1"),
-		);
-		await waitFor(() =>
-			expect(result.current.state.shutdownTargets).toHaveLength(1),
-		);
-		expect(result.current.state.shutdownTargets[0].observation).toEqual({
-			type: "exit_coupled_outcome_unknown",
-			shutdown_id: "plan-1",
-		});
-
-		await act(async () => {
-			await result.current.retryShutdownTarget(
-				result.current.state.shutdownTargets[0],
-			);
-		});
-
-		expect(mockInvoke).toHaveBeenCalledWith("resolve_shutdown_target_action", {
-			request: {
-				action_id: "shutdown-action-1",
-				shutdown_id: "plan-1",
-				ordinal: "0",
-				target_key: "target-key-1",
-				origin_revision: "2",
-				action: "retry_same_effect",
-			},
-		});
-		unmount();
-	});
-
-	it("keeps a first-writer shutdown outcome unknown distinct from no shutdown", async () => {
-		mockInvoke.mockImplementation((command: string) => {
-			switch (command) {
-				case "list_pending_agent_attempts":
-					return Promise.resolve({ entries: [], next_cursor: null });
-				case "list_pending_agent_recovery":
-					return Promise.resolve({ entries: [], next_cursor: null });
-				case "get_application_shutdown":
-					return Promise.resolve({
-						type: "outcome_unknown",
-						operation_id: "quit-unknown-1",
-						intent: { type: "restart", code: 42 },
-					});
-				default:
-					return Promise.resolve(undefined);
-			}
-		});
-		const { result, unmount } = renderHook(() =>
-			useOperationSupervision("session-1"),
-		);
-
-		await waitFor(() =>
-			expect(result.current.state.shutdownOutcomeUnknown).toEqual({
-				operation_id: "quit-unknown-1",
-				intent: { type: "restart", code: 42 },
-			}),
-		);
-		expect(result.current.state.shutdown).toBeNull();
-		expect(mockInvoke).not.toHaveBeenCalledWith(
-			"get_shutdown_plan",
-			expect.anything(),
-		);
-		expect(mockInvoke).not.toHaveBeenCalledWith(
-			"request_application_quit",
-			expect.anything(),
-		);
-		unmount();
+		mockInvoke.mockImplementation(defaultShutdownInvoke);
 	});
 
 	it("surfaces an accepted permission response that later needs reconciliation", async () => {
@@ -446,10 +381,88 @@ describe("useOperationSupervision", () => {
 		});
 		unmount();
 	});
+});
+
+describe("useApplicationShutdownSupervision", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		globalThis.localStorage.clear();
+		mockInvoke.mockImplementation(defaultShutdownInvoke);
+	});
+
+	it("uses only the backend-issued shutdown target capability", async () => {
+		const { result, unmount } = renderHook(() =>
+			useApplicationShutdownSupervision(),
+		);
+		await waitFor(() =>
+			expect(result.current.state.shutdownTargets).toHaveLength(1),
+		);
+		expect(result.current.state.shutdownTargets[0].observation).toEqual({
+			type: "exit_coupled_outcome_unknown",
+			shutdown_id: "plan-1",
+		});
+
+		await act(async () => {
+			await result.current.retryShutdownTarget(
+				result.current.state.shutdownTargets[0],
+			);
+		});
+
+		expect(mockInvoke).toHaveBeenCalledWith("resolve_shutdown_target_action", {
+			request: {
+				action_id: "shutdown-action-1",
+				shutdown_id: "plan-1",
+				ordinal: "0",
+				target_key: "target-key-1",
+				origin_revision: "2",
+				action: "retry_same_effect",
+			},
+		});
+		unmount();
+	});
+
+	it("keeps a first-writer shutdown outcome unknown distinct from no shutdown", async () => {
+		mockInvoke.mockImplementation((command: string) => {
+			switch (command) {
+				case "list_pending_agent_attempts":
+					return Promise.resolve({ entries: [], next_cursor: null });
+				case "list_pending_agent_recovery":
+					return Promise.resolve({ entries: [], next_cursor: null });
+				case "get_application_shutdown":
+					return Promise.resolve({
+						type: "outcome_unknown",
+						operation_id: "quit-unknown-1",
+						intent: { type: "restart", code: 42 },
+					});
+				default:
+					return Promise.resolve(undefined);
+			}
+		});
+		const { result, unmount } = renderHook(() =>
+			useApplicationShutdownSupervision(),
+		);
+
+		await waitFor(() =>
+			expect(result.current.state.shutdownOutcomeUnknown).toEqual({
+				operation_id: "quit-unknown-1",
+				intent: { type: "restart", code: 42 },
+			}),
+		);
+		expect(result.current.state.shutdown).toBeNull();
+		expect(mockInvoke).not.toHaveBeenCalledWith(
+			"get_shutdown_plan",
+			expect.anything(),
+		);
+		expect(mockInvoke).not.toHaveBeenCalledWith(
+			"request_application_quit",
+			expect.anything(),
+		);
+		unmount();
+	});
 
 	it("does not infer a retry capability from target state", async () => {
 		const { result, unmount } = renderHook(() =>
-			useOperationSupervision("session-1"),
+			useApplicationShutdownSupervision(),
 		);
 		await waitFor(() =>
 			expect(result.current.state.shutdownTargets).toHaveLength(1),
@@ -495,7 +508,7 @@ describe("useOperationSupervision", () => {
 			}
 		});
 		const { result, unmount } = renderHook(() =>
-			useOperationSupervision("session-1"),
+			useApplicationShutdownSupervision(),
 		);
 		await waitFor(() =>
 			expect(result.current.state.shutdown?.actions).toEqual(["retry_quit"]),
