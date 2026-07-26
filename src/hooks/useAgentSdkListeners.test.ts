@@ -726,6 +726,29 @@ describe("agent-streaming-delta event", () => {
 });
 
 describe("agent-session-state-changed event", () => {
+	it("marks every state event dirty and reconciles a visible non-terminal session", async () => {
+		const reconcileSession = vi.fn().mockResolvedValue(undefined);
+		const markSessionForReconciliation = vi.fn();
+		const refs = {
+			...makeRefs(),
+			reconcileSession,
+			markSessionForReconciliation,
+		};
+		setViewable(refs, "session-1");
+		renderHook(() => useAgentSdkListeners(refs));
+
+		await listenCallbacks.get("agent-session-state-changed")?.({
+			payload: {
+				chat_session_id: "session-1",
+				turn_phase: "streaming",
+				exit_code: null,
+			},
+		});
+
+		expect(markSessionForReconciliation).toHaveBeenCalledWith("session-1");
+		expect(reconcileSession).toHaveBeenCalledWith("session-1");
+	});
+
 	it("mirrors backend-owned queue pause changes", () => {
 		listenResolvers = [];
 		listenCallbacks.clear();
