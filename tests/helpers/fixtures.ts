@@ -212,6 +212,7 @@ const baseIpcHandler: Record<string, unknown> = {
 	},
 	list_agent_backends: { backends: [], defaultId: null },
 	get_session: null,
+	get_agent_session_display_window: null,
 	get_session_page: null,
 	plan_agent_chat_eviction: { evictSessionIds: [] },
 	create_session: {

@@ -162,7 +162,6 @@ export interface OperationSupervisionState {
 	shutdown: ShutdownProjection | null;
 	shutdownOutcomeUnknown: ShutdownOutcomeUnknown | null;
 	shutdownTargets: ShutdownTargetCapability[];
-	refreshing: boolean;
 	error: string | null;
 }
 
@@ -174,9 +173,20 @@ const EMPTY: OperationSupervisionState = {
 	shutdown: null,
 	shutdownOutcomeUnknown: null,
 	shutdownTargets: [],
-	refreshing: false,
 	error: null,
 };
+
+/**
+ * The supervision poll runs on a fixed interval. Emitting a fresh state object
+ * for an unchanged backend snapshot would re-render every consumer twice per
+ * cycle, so keep the previous object whenever the mirrored projection is equal.
+ */
+function nextSupervisionState(
+	current: OperationSupervisionState,
+	next: OperationSupervisionState,
+): OperationSupervisionState {
+	return JSON.stringify(current) === JSON.stringify(next) ? current : next;
+}
 
 const QUIT_ATTEMPT_STORAGE_KEY = "releash:application-quit-attempt:v1";
 const ADOPTED_OPERATION_STORAGE_KEY = "releash:adopted-operation-identities:v1";
@@ -276,7 +286,6 @@ export function useOperationSupervision(sessionId: string) {
 	const sessionAttemptCursor = useRef<string | null>(null);
 	const applicationAttemptCursor = useRef<string | null>(null);
 	const refresh = useCallback(async () => {
-		setState((current) => ({ ...current, refreshing: true }));
 		try {
 			const [
 				localSendOperation,
@@ -455,27 +464,29 @@ export function useOperationSupervision(sessionId: string) {
 				});
 				shutdownTargets.push(...page.targets);
 			}
-			setState({
-				sendOperation,
-				attempts,
-				operationReadbacks,
-				recovery: recovery.entries,
-				shutdown,
-				shutdownOutcomeUnknown,
-				shutdownTargets,
-				refreshing: false,
-				error: null,
-			});
+			setState((current) =>
+				nextSupervisionState(current, {
+					sendOperation,
+					attempts,
+					operationReadbacks,
+					recovery: recovery.entries,
+					shutdown,
+					shutdownOutcomeUnknown,
+					shutdownTargets,
+					error: null,
+				}),
+			);
 		} catch (error) {
 			if (String(error).includes("cursor")) {
 				sessionAttemptCursor.current = null;
 				applicationAttemptCursor.current = null;
 			}
-			setState((current) => ({
-				...current,
-				refreshing: false,
-				error: String(error),
-			}));
+			setState((current) =>
+				nextSupervisionState(current, {
+					...current,
+					error: String(error),
+				}),
+			);
 		}
 	}, [sessionId]);
 

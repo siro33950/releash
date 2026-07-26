@@ -86,6 +86,7 @@ fn active_window_label(
     })
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn show_and_focus_active_surface(
     authority: Option<&crate::usecase::application_startup::ApplicationStartupAuthority>,
     show_and_focus: impl FnOnce(&str),
@@ -357,6 +358,7 @@ fn show_and_focus_window<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>, la
     }
 }
 
+#[cfg(target_os = "macos")]
 fn show_and_focus_active_window<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
     let authority = app_handle
         .try_state::<Arc<crate::usecase::application_startup::ApplicationStartupAuthority>>();

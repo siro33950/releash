@@ -9,7 +9,10 @@ import {
 	setupTauriMock,
 	workspaceTreeReconciliation,
 } from "./helpers/tauri-mock";
-import { waitForApp } from "./helpers/utils";
+import {
+	waitForApp,
+	waitForWorkspaceTreeQuiescence,
+} from "./helpers/utils";
 
 async function waitForAnimations(locator: Locator) {
 	await locator.evaluate(async (element) => {
@@ -90,6 +93,16 @@ function rawSession(
 			has_more: false,
 			total_count: message ? "1" : "0",
 		},
+	};
+}
+
+// Session の権威 read は表示 window (`get_agent_session_display_window`) と
+// revision read (`get_session`) の 2 コマンドがあり、同じ
+// RawGetSessionResponse を返す。両方へ同じフィクスチャを配る。
+function sessionReads(raw: unknown) {
+	return {
+		get_session: raw,
+		get_agent_session_display_window: raw,
 	};
 }
 
@@ -261,7 +274,7 @@ test.describe("Workspace Manager", () => {
 				(branch) => branch.name === "feat/wip",
 			),
 			create_workspace_session: session.id,
-			get_session: rawSession("session-new", worktreePath, ""),
+			...sessionReads(rawSession("session-new", worktreePath, "")),
 			get_workspace_session_node_id: "node-new-opaque",
 			get_workspace_node_detail: {
 				id: "node-new-opaque",
@@ -334,7 +347,9 @@ test.describe("Workspace Manager", () => {
 				preferredNodeId: node.id,
 			},
 			get_workspace_node_detail: detail,
-			get_session: rawSession("session-direct", worktreePath, "Before close"),
+			...sessionReads(
+				rawSession("session-direct", worktreePath, "Before close"),
+			),
 			close_workspace_node: null,
 		});
 		await setupTauriMock(page, config);
@@ -343,6 +358,7 @@ test.describe("Workspace Manager", () => {
 			.getByRole("button", { name: "Direct session, running" })
 			.click();
 		await expect(page.getByText("Before close", { exact: true })).toBeVisible();
+		await waitForWorkspaceTreeQuiescence(page);
 
 		await page.evaluate(() => {
 			window.__TAURI_INTERNALS__?.setMockResponse(
@@ -450,6 +466,10 @@ test.describe("Workspace Manager", () => {
 					"get_session",
 					firstWorkflowSession,
 				);
+				window.__TAURI_INTERNALS__?.setMockResponse(
+					"get_agent_session_display_window",
+					firstWorkflowSession,
+				);
 				window.dispatchEvent(
 					new CustomEvent("workspace-tree-refresh", {
 						detail: { worktreePath },
@@ -514,11 +534,13 @@ test.describe("Workspace Manager", () => {
 				updatedAt: 1000,
 				content: { kind: "session", sessionId: "workflow-session" },
 			},
-			get_session: rawSession(
-				"workflow-session",
-				worktreePath,
-				"Workflow session conversation body",
-				{ pendingPermission: true },
+			...sessionReads(
+				rawSession(
+					"workflow-session",
+					worktreePath,
+					"Workflow session conversation body",
+					{ pendingPermission: true },
+				),
 			),
 			present_agent_permission_request: null,
 			report_agent_permission_request_observed: null,
@@ -604,7 +626,7 @@ test.describe("Workspace Manager", () => {
 				updatedAt: 1000,
 				content: { kind: "session", sessionId },
 			},
-			get_session: {
+			...sessionReads({
 				...rawSession(sessionId, worktreePath, "Starting Codex turn"),
 				backend_id: "codex",
 				active_turn_id: "1",
@@ -620,7 +642,7 @@ test.describe("Workspace Manager", () => {
 				],
 				pending_queue_count: "1",
 				queue_paused: false,
-			},
+			}),
 			resume_agent_queue: null,
 		});
 		await setupTauriMock(page, config);
@@ -925,10 +947,12 @@ test.describe("Workspace Manager", () => {
 				updatedAt: 2000,
 				content: { kind: "session", sessionId: "archive-selected-session" },
 			},
-			get_session: rawSession(
-				"archive-selected-session",
-				worktreePath,
-				"Archive selected body",
+			...sessionReads(
+				rawSession(
+					"archive-selected-session",
+					worktreePath,
+					"Archive selected body",
+				),
 			),
 		});
 		await setupTauriMock(page, config);
@@ -1008,10 +1032,12 @@ test.describe("Workspace Manager", () => {
 				updatedAt: 1000,
 				content: { kind: "session", sessionId: "loop-session-a-1" },
 			},
-			get_session: rawSession(
-				"loop-session-a-1",
-				worktreePath,
-				"First occurrence body",
+			...sessionReads(
+				rawSession(
+					"loop-session-a-1",
+					worktreePath,
+					"First occurrence body",
+				),
 			),
 		});
 		await setupTauriMock(page, config);
@@ -1118,6 +1144,10 @@ test.describe("Workspace Manager", () => {
 					content: { kind: "session", sessionId: "loop-session-a-2" },
 				});
 				internals.setMockResponse("get_session", secondSession);
+				internals.setMockResponse(
+					"get_agent_session_display_window",
+					secondSession,
+				);
 			},
 			{ worktreePath, secondSession },
 		);
