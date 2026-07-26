@@ -29,7 +29,7 @@ Requirements、Behavior、Designはそれぞれ独立した次のSequenceで管�
 
 ## 実装可能性
 
-Designの完了は、実装者が追加の仕様判断をせず、責務owner、主要な変更対象、interface、data、control flow、error処理、互換境界、必要な検証を特定できることを意味する。既存規約から安全に決められるprivateな細部まで固定する必要はない。
+Designの完了は、実装者が追加の仕様判断をせず、Design Knowledgeが定める各対象を特定できることを意味する。特定できる粒度もKnowledgeの粒度境界が定める。境界を超えた記述は、実装可能性を高めるものではなく、Knowledge違反として扱う。
 
 ## 人間への確認
 
