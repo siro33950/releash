@@ -54,7 +54,7 @@
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.5.4",
-		"@playwright/test": "^1.61.1",
+		"@playwright/test": "^1.62.0",
 		"@tailwindcss/vite": "^4.3.3",
 		"@tauri-apps/cli": "^2.11.4",
 		"@testing-library/dom": "^10.4.1",
