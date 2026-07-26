@@ -40,7 +40,7 @@
 		"lucide-react": "^1.25.0",
 		"monaco-editor": "0.55.1",
 		"radix-ui": "^1.6.2",
-		"react": "^19.2.7",
+		"react": "^19.2.8",
 		"react-dom": "^19.2.7",
 		"react-markdown": "^10.1.0",
 		"react-resizable-panels": "^4.12.2",
