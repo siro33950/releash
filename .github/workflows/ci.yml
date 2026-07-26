@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main]
   pull_request:
-    branches: [main, develop]
+    branches: [main]
 
 permissions:
   contents: read
@@ -24,18 +24,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
-      - run: pnpm exec vitest run --coverage
-      - uses: actions/upload-artifact@v7
-        with:
-          name: ts-coverage
-          path: coverage/coverage-final.json
-          retention-days: 7
-      - uses: codecov/codecov-action@v7
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: coverage/coverage-final.json
-          flags: typescript
-          fail_ci_if_error: false
+      - run: pnpm test
       - run: pnpm build
 
   integration:
@@ -50,7 +39,15 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec playwright install --with-deps chromium
+      - id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+      - if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: pnpm exec playwright install --with-deps chromium
+      - if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: pnpm exec playwright install-deps chromium
       - id: test
         run: pnpm test:integration
       - uses: actions/upload-artifact@v7
@@ -100,7 +97,7 @@ jobs:
               });
             }
 
-  rust:
+  rust-lint:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -123,29 +120,62 @@ jobs:
         run: pnpm install --frozen-lockfile
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy, llvm-tools-preview
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-          key: rust-ci
+          key: rust-lint
       - uses: taiki-e/install-action@cargo-deny
-      - uses: taiki-e/install-action@cargo-llvm-cov
       - run: cargo fmt --check
       - run: cargo clippy --locked -- -D warnings
       - run: cargo deny --locked check
-      - run: cargo llvm-cov --locked --codecov --output-path rust-codecov.json
-      - uses: actions/upload-artifact@v7
-        with:
-          name: rust-coverage
-          path: src-tauri/rust-codecov.json
-          retention-days: 7
-      - uses: codecov/codecov-action@v7
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: src-tauri/rust-codecov.json
-          flags: rust
-          fail_ci_if_error: false
       - run: cargo build --locked
+
+  rust-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Tauri dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Build frontend assets for Tauri
+        working-directory: .
+        run: pnpm install --frozen-lockfile
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: rust-test
+      - run: cargo test --locked
+
+  # ruleset の required status check が参照する名前を保つための集約ジョブ。
+  # lint と test を並列に回しても、片方の失敗でもう片方の結果を失わない。
+  rust:
+    needs: [rust-lint, rust-test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify Rust jobs
+        run: |
+          lint='${{ needs.rust-lint.result }}'
+          test='${{ needs.rust-test.result }}'
+          echo "rust-lint=$lint rust-test=$test"
+          for result in "$lint" "$test"; do
+            if [ "$result" != "success" ]; then
+              exit 1
+            fi
+          done
 
   quality:
     runs-on: ubuntu-latest
@@ -159,3 +189,46 @@ jobs:
       - uses: qltysh/qlty-action/install@v2
       - run: qlty install
       - run: qlty check --no-progress --all
+
+  # カバレッジ計測は instrument 付きの追加ビルドを伴うため PR の待ち時間へ乗せない。
+  # main への push でだけ測り、推移を Codecov で追う。
+  coverage:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Tauri dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec vitest run --coverage
+      - uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage/coverage-final.json
+          flags: typescript
+          fail_ci_if_error: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: rust-coverage
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - run: cargo llvm-cov --locked --codecov --output-path rust-codecov.json
+        working-directory: src-tauri
+      - uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: src-tauri/rust-codecov.json
+          flags: rust
+          fail_ci_if_error: false
