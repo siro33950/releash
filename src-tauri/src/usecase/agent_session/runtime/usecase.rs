@@ -10345,7 +10345,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: false,
                 workflow_node_context: None,
@@ -11025,7 +11025,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: false,
                 workflow_node_context: None,
@@ -11096,7 +11096,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: true,
                 workflow_node_context: None,
@@ -11110,7 +11110,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: false,
                 workflow_node_context: None,
@@ -11215,7 +11215,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: false,
                 workflow_node_context: None,
@@ -11457,7 +11457,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: false,
                 workflow_node_context: None,
@@ -11535,7 +11535,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: false,
                 workflow_node_context: None,
@@ -11592,7 +11592,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: false,
                 workflow_node_context: None,
@@ -11719,7 +11719,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: false,
                 workflow_node_context: None,
@@ -11798,7 +11798,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: false,
                 workflow_node_context: None,
@@ -11864,7 +11864,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: false,
                 workflow_node_context: None,
@@ -12380,7 +12380,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: false,
                 workflow_node_context: None,
@@ -12579,7 +12579,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: false,
                 workflow_node_context: None,
@@ -16944,7 +16944,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Ask,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: true,
                 workflow_node_session: false,
                 workflow_node_context: None,
@@ -16958,7 +16958,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: true,
                 workflow_node_context: Some(workflow_node_context(None, None, None)),
@@ -18070,7 +18070,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: false,
                 workflow_node_context: None,
@@ -18129,7 +18129,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: false,
                 workflow_node_context: None,
@@ -18182,7 +18182,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: false,
                 workflow_node_context: None,
@@ -18201,7 +18201,7 @@ mod tests {
             .unwrap();
 
         usecase
-            .set_model(&session.id, "claude:claude-opus-4-8")
+            .set_model(&session.id, "claude:claude-opus-5")
             .await
             .unwrap();
 
@@ -18212,7 +18212,7 @@ mod tests {
                 .unwrap()
                 .selected_model
                 .as_deref(),
-            Some("claude-opus-4-8")
+            Some("claude-opus-5")
         );
         assert!(!controller
             .call_kinds_for(&session.id)
@@ -18226,7 +18226,7 @@ mod tests {
                 permission_mode: PermissionMode::Edit,
                 plan_mode: false,
                 backend_id: Some("claude".to_string()),
-                model_id: Some("claude-opus-4-8".to_string()),
+                model_id: Some("claude-opus-5".to_string()),
                 images: None,
                 mentions: None,
                 editor_context: None,
@@ -18263,7 +18263,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: false,
                 workflow_node_context: None,
@@ -18322,7 +18322,7 @@ mod tests {
                     Some("claude".to_string()),
                     PermissionMode::Edit,
                     SessionCreationAttributes {
-                        selected_model: Some("claude-4-sonnet".to_string()),
+                        selected_model: Some("claude-sonnet-5".to_string()),
                         plan_mode: false,
                         workflow_node_session: false,
                         workflow_node_context: None,
@@ -18376,7 +18376,7 @@ mod tests {
                     .unwrap()
                     .unwrap();
                 assert_eq!(saved.backend_id, "claude");
-                assert_eq!(saved.selected_model.as_deref(), Some("claude-4-sonnet"));
+                assert_eq!(saved.selected_model.as_deref(), Some("claude-sonnet-5"));
                 assert!(!controller
                     .call_kinds_for(&session.id)
                     .contains(&TestRuntimeCallKind::Close));
@@ -18402,7 +18402,7 @@ mod tests {
                 Some("claude".to_string()),
                 PermissionMode::Edit,
                 SessionCreationAttributes {
-                    selected_model: Some("claude-4-sonnet".to_string()),
+                    selected_model: Some("claude-sonnet-5".to_string()),
                     plan_mode: false,
                     workflow_node_session: false,
                     workflow_node_context: None,
@@ -18446,7 +18446,7 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert_eq!(saved.backend_id, "claude");
-            assert_eq!(saved.selected_model.as_deref(), Some("claude-4-sonnet"));
+            assert_eq!(saved.selected_model.as_deref(), Some("claude-sonnet-5"));
             assert_eq!(
                 controller
                     .call_kinds_for(&session.id)
@@ -18475,7 +18475,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: false,
                 workflow_node_context: None,
@@ -18553,7 +18553,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: false,
                 workflow_node_context: None,
@@ -18871,7 +18871,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: true,
                 workflow_node_context: Some(workflow_node_context(None, None, Some(0))),
@@ -19931,7 +19931,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: false,
                 workflow_node_context: None,
@@ -20391,7 +20391,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: false,
                 workflow_node_context: None,
@@ -20735,7 +20735,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: false,
                 workflow_node_context: None,
@@ -21698,7 +21698,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: false,
                 workflow_node_context: None,
@@ -22613,7 +22613,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: true,
                 workflow_node_context: Some(workflow_node_context(Some(12), Some(3), Some(44))),
@@ -22643,7 +22643,7 @@ mod tests {
                         startup_max_retries: Some(3),
                         stale_timeout_ms: None,
                         resume: None,
-                        model: "claude-4-sonnet".to_string(),
+                        model: "claude-sonnet-5".to_string(),
                         permission_mode: PermissionMode::Edit,
                         plan_mode: false,
                     }
@@ -22661,7 +22661,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: true,
                 workflow_node_context: Some(workflow_node_context(None, None, None)),
@@ -22743,7 +22743,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: true,
                 workflow_node_context: Some(workflow_node_context(None, None, None)),
@@ -22873,7 +22873,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: true,
                 workflow_node_context: Some(workflow_node_context(None, None, Some(0))),
@@ -23021,7 +23021,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: true,
                 workflow_node_context: Some(workflow_node_context(None, None, Some(0))),
@@ -23101,7 +23101,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: true,
                 workflow_node_context: Some(workflow_node_context(None, None, Some(0))),
@@ -23183,7 +23183,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: true,
                 workflow_node_context: Some(workflow_node_context(None, None, None)),
@@ -23280,7 +23280,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: true,
                 workflow_node_context: Some(workflow_node_context(None, None, None)),
@@ -23340,7 +23340,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: true,
                 workflow_node_context: Some(workflow_node_context(None, None, None)),
@@ -23422,7 +23422,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: true,
                 workflow_node_context: Some(workflow_node_context(None, None, Some(0))),
@@ -23492,7 +23492,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: true,
                 workflow_node_context: Some(workflow_node_context(None, None, Some(0))),
@@ -23568,7 +23568,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: true,
                 workflow_node_context: Some(workflow_node_context(None, None, Some(1))),
@@ -23633,7 +23633,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: true,
                 workflow_node_context: Some(workflow_node_context(None, None, Some(0))),
@@ -23696,7 +23696,7 @@ mod tests {
             Some("claude".to_string()),
             PermissionMode::Edit,
             SessionCreationAttributes {
-                selected_model: Some("claude-4-sonnet".to_string()),
+                selected_model: Some("claude-sonnet-5".to_string()),
                 plan_mode: false,
                 workflow_node_session: true,
                 workflow_node_context: Some(workflow_node_context(None, None, Some(0))),

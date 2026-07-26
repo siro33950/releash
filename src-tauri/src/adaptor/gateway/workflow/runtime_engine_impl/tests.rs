@@ -9486,7 +9486,7 @@ mod dispatch_boundary_tests {
             None,
         );
         if let NodeKind::Session(session) = &mut review_node.kind {
-            session.model = Some("claude-4-sonnet".to_string());
+            session.model = Some("claude-sonnet-5".to_string());
         }
         let workflow = WorkflowDefinitionYaml {
             name: "stop-during-session-activation".to_string(),
@@ -9975,7 +9975,7 @@ mod dispatch_boundary_tests {
             None,
         );
         if let NodeKind::Session(session) = &mut review_node.kind {
-            session.model = Some("claude-4-sonnet".to_string());
+            session.model = Some("claude-sonnet-5".to_string());
         }
         let workflow = WorkflowDefinitionYaml {
             name: "stop-append-failure-during-activation".to_string(),
@@ -10111,7 +10111,7 @@ mod dispatch_boundary_tests {
             None,
         );
         if let NodeKind::Session(session) = &mut review_node.kind {
-            session.model = Some("claude-4-sonnet".to_string());
+            session.model = Some("claude-sonnet-5".to_string());
         }
         let workflow = WorkflowDefinitionYaml {
             name: "abort-during-session-activation".to_string(),

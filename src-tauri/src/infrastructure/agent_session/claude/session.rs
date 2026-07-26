@@ -576,7 +576,7 @@ exec sleep 30
             permission_mode: PermissionMode::Edit,
             plan_mode: false,
             permission_profile_id: None,
-            model: ModelId::parse("claude-4-sonnet").unwrap(),
+            model: ModelId::parse("claude-sonnet-5").unwrap(),
             system_prompt: None,
             resume: Some("backend-good".to_string()),
             base_branch: None,

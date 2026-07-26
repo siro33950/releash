@@ -3172,7 +3172,7 @@ fn load_session_missing_backend_id_is_isolated_as_invalid() {
                 "updatedAt":1000.0,
                 "permissionMode":"edit",
                 "planMode":false,
-                "selectedModel":"claude-4-sonnet",
+                "selectedModel":"claude-sonnet-5",
                 "firstMessagePreview":"",
                 "messageCount":0,
                 "bodyFormatVersion":{SESSION_BODY_FORMAT_VERSION}
